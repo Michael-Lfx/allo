@@ -1,177 +1,98 @@
-# 语音伴侣自愈架构、常驻唤醒与全局路由增强方案设计（草案 · 待实验验证）
+# 语音伴侣深度自愈、带声调 KWS 与全局路由综合修复方案
 
-> **文档版本**：v0.1.0-draft
-> **设计日期**：2026-11-01
-> **状态**：方案草案（Draft · 待通过最小实验验证后定稿）
-> **适用范围**：`apps/voice-companion`、`crates/backend/nomifun-app`、`crates/backend/nomifun-audio`、`ui/src`
-
----
-
-## 1. 现状痛点与目标
-
-在最新的真机联调测试中，发现了 7 项影响日常连续使用体验的关键缺陷：
-
-| 序号 | 用户实测问题 | 底层技术根因 | 改进目标 |
-| :--- | :--- | :--- | :--- |
-| **P1** | 挂断通话后，能力检查状态被重置为“未检查”；应用启动无自动自查 | `current_capabilities` 将报告与单次通话的 `generation` 强绑定，挂断时递增导致报告被主动注销；缺少开机静默探针 | 能力报告与单次会话解绑；开机在后台自动执行无声静默自查 |
-| **P2** | 缺少独立的“语音唤醒 (KWS)”开关；首页（`/`）新建会话无法被语音唤醒 | 目前仅有“启用语音伴侣”全局进程开关；`<VoiceCallDock>` 仅挂载在特定会话页，主窗口根节点缺少全局唤醒监听器 | 设置页增加“语音唤醒”开关；主窗口全局监听唤醒并弹出语音会话浮窗 |
-| **P3** | 本地 TTS 与云端 Edge 降级判定不透明 | 此前开发目录 `D:\tmp\flowy-dev\models\tts` 缺失 `vocos-22khz-univ.onnx`，导致静默降级为 Edge；生产目录已具备 | 保持模型完整性，增加当前生效 TTS 来源展示与显式本地优先 |
-| **P4** | 主动挂断后卡在“未在通话”，无法再次免按唤醒 | `voiceCallDockState.ts` 优先判断了 `ended_reason`，导致永久显示 `notInCall`；后台挂断后 close 了麦克风流 | 挂断后在唤醒开启状态下自动回退为绿色的“等待唤醒”，声卡流保持常驻 |
-| **P5** | 偶尔命中唤醒词后，转入连接时变为“不可用” | 检查/自检锁与正常唤醒发生争用，被踢入 Degraded 状态；ASR 若转写为空或内部错误无优雅重试 | 优化锁粒度与争用隔离，唤醒时自动清空临时降级标记并平滑进入倾听 |
-| **P6** | 缺乏内生自愈与保活能力 | 仅有最外层进程崩溃重启看门狗，声卡掉线、虚拟驱动静默时缺少流级别的自动重试 | 增加麦克风流级别的健康监控与指数退避重连机制 |
-| **P7** | KWS 判定门槛过高，远程麦克风极难触发 | 双语 Zipformer 阈值被设定为 `threshold=0.20` / `#0.15`，面对远程桌面（UU虚拟麦克风）微弱电平（峰值 10~20/1000）难以命中 | 门限回调至黄金区间（`0.08`），配合自适应软增益补偿，降低唤醒难度 |
+> **文档版本**：v1.0.0-final
+> **制定日期**：2026-11-01
+> **对标来源**：`mini-yifan/dsh-orb-cordis`（commit `0655743`）
+> **适用模块**：`apps/voice-companion`、`crates/backend/nomifun-app`、`crates/backend/nomifun-audio`、`ui/src`
 
 ---
 
-## 2. 核心架构设计
+## 1. 核心问题复盘与物理根因定论
 
-### 2.1 开机静默自查与自愈生命周期
+经过实机运行日志（`ai-mate-1793520089090.log`、`ai-mate-1793521123880.log`）及单元测试探针验证，定位出 5 个相互纠缠的根本死穴：
+
+1. **KWS 哑火 vs ASR 灵敏的根本差距（声调缺失）**：
+   - `sherpa-onnx-kws-zipformer-zh-en-3M` 模型的 `tokens.txt` 严格采用**带调声调标记**（如 `ǐ 250`, `ǎo 249`, `iǎo 124`, `ái 189`）；
+   - 我们的拼音映射表此前将声调全部抹平为轻声（`n i h ao x iao b ai`），与母语口语的带调特征（`n ǐ h ǎo x iǎo b ái` 以及口语变调 `n í h ǎo`）发生声学失配，流式神经网络概率被直接砍死；
+   - 对标成熟的 `dsh-orb-cordis`：其生成规范行明确保留音调标记，并在前台提供了带调声韵母生成。
+2. **Stage-2 SenseVoice 级联唤醒被硬编码阻断**：
+   - 底层代码原本设计了当流式 KWS 处于弱信号边缘时，使用 VAD 截取音频送给 SenseVoice 兜底识别；
+   - 但代码第 4221 行写死了 `is_wake_phrase_match`（只有英文 `Hey Flowy` 等固定词），未对接用户的 `feedback.wake_words`，导致 SenseVoice 即使 100% 识别出“你好小白”也被直接抛弃。
+3. **开机自检声音扰民 & 签名校验落空**：
+   - 启动后的自检直接调用了扬声器播放；
+   - 自检运行期间麦克风心跳帧递增导致签名比较失败，未写入缓存，导致设置页开机显示“未检测/未知”。
+4. **悬空通话预定锁卡死自检（`voice_suite_in_use` 连环报错）**：
+   - 点击通话按钮因能力未就绪被拒，但生成的 `current_call_reservation` 预定记录未被清理；
+   - 随后用户点击自检时，`voice_suite_in_use()` 发现预定锁存在，判定通话进行中并报错 `voice_suite_in_use`。
+5. **设置页唤醒开关与输入框割裂**：
+   - 缺乏层级联动，未能在开关关闭时自动收起并释放麦克风。
+
+---
+
+## 2. 详细技术修复方案
 
 ```mermaid
 flowchart TD
-    Boot([应用冷启动 / 伴侣拉起]) --> Connect[建立 Localhost IPC 通道]
-    Connect --> SilentCheck[启动静默自查 Silent Self-Check]
-    subgraph SilentCheck [无声静默硬件与模型联通探针]
-        C1[1. 麦克风 PCM 数据帧捕获测试] --> C2[2. KWS 内存词元编译测试]
-        C2 --> C3[3. VAD 声学判定模型推理]
-        C3 --> C4[4. ASR 短帧离线识别测试]
-        C4 --> C5[5. Matcha 离线声学模型与 Vocos 存在性核验]
-        C5 --> C6[6. 扬声器 Sink 设备打开核验]
+    subgraph AudioInput [音频输入通道]
+        Mic[麦克风 PCM 帧] --> AGC[软增益补偿 +12dB]
     end
-    SilentCheck -->|全通| Green[全节点亮绿灯: 完整语音通话已就绪]
-    SilentCheck -->|部分失败| Degraded[亮黄色感叹号并指示具体失败节点]
-    Green --> Persist[写入长期就绪缓存: 不随单次会话挂断重置]
-    Persist --> Call[用户正常通话]
-    Call --> EndCall[用户挂断通话 / 自动休眠]
-    EndCall --> KeepReady[保持长期就绪状态: 不重新变灰变黄]
+
+    subgraph DualKWS [双核级联唤醒引擎]
+        AGC --> StreamKWS[1. 流式 Zipformer KWS 检出]
+        AGC --> VAD[2. Silero VAD 语音检测]
+
+        StreamKWS -->|命中带调拼音/音素| WakeSuccess([触发唤醒])
+
+        VAD -->|检出人声| CutSnippet[截取语音切片 0.8s~2.5s]
+        CutSnippet --> CascadeASR[SenseVoice ASR 离线转写]
+        CascadeASR --> MatchRule{匹配 custom wake_words?}
+        MatchRule -->|是 (你好小白/Flowy)| WakeSuccess
+        MatchRule -->|否| LogMiss[输出 [KWS-STANDBY] 调试日志]
+    end
+
+    subgraph HostControl [宿主控制与状态机]
+        WakeSuccess --> CheckState{自检锁/通话中?}
+        CheckState -->|无锁| StartCall[进入通话 Listening]
+        Hangup[用户挂断 / 超时] --> CleanLock[清除 CallReservation 预定锁]
+        CleanLock --> StateReturn[胶囊回归等待唤醒 waitingWake]
+    end
 ```
 
-* **静默原则**：绝对不向物理扬声器输出声音（避免开机惊扰用户），仅在内存中执行微秒级推演；
-* **解绑 `generation`**：就绪缓存的生命周期由“模型目录哈希 + 声卡物理设备存在性”决定，单次通话的建立与挂断只改变会话序列，不销毁硬件能力报告。
+### 2.1 汉字声调拼音生成与口语变调注入（借鉴 dsh-orb）
+* 在 `crates/backend/nomifun-audio/src/kws.rs` 中，汉字拼音对照表注入标准带调拼音（`ǐ, ǎo, iǎo, ái` 等）；
+* 针对多音与口语变调（如“你好”连续三声变为二声三声 `n í h ǎo`），同时向 `keywords_buf` 注入原调、变调与轻声候选；
+* 规则统一采用 `:2.0 #0.08` 灵敏门槛。
+
+### 2.2 待机 Stage-2 级联唤醒无缝对接自定义词表
+* 在 `apps/voice-companion/src/voice.rs` 的待机分支：
+  - 当流式 KWS 未能在首帧命中时，VAD 截取 0.8s~2.5s 音频送入 SenseVoice ASR；
+  - 转写出的文本通过 `strip_custom_wake_word` 与 `feedback.wake_words` 做标点容错前缀匹配；
+  - 命中即刻触发唤醒！同时输出实时调试日志：
+    `INFO [KWS-CASCADE] 待机语音转写: text="你好，小白" 级联命中成功`。
+
+### 2.3 根除 `voice_suite_in_use` 悬空死锁
+* 在 `crates/backend/nomifun-app/src/voice_companion_manager.rs`：
+  - `start_call` 在任何错误返回路径（如 `voice_suite_not_ready`）前，显式调用 `recorder.take_call_reservation(&request.request_id)` 清理悬空锁；
+  - `voice_suite_in_use()` 增加时间戳过滤：超过 3 秒未转正的预定记录视作陈旧死锁自动忽略。
+
+### 2.4 开机静默自查与状态持久化
+* 伴侣启动 2 秒后跑自检时传入 `stage = Some("silent")`，扬声器发送静音帧，物理扬声器不发声；
+* 签名计算中排除麦克风心跳等易变计数，自检跑通后立即写入 `self.capabilities`，设置页刷新即为 6 节点全绿。
+
+### 2.5 前端设置项联动交互重构
+* 在 `VoiceFeedbackSettings.tsx` 中，将“语音唤醒”与“主唤醒词”合并为同一个卡片项：
+  - 顶部标题与 Switch 开关；
+  - 开关开启时，平滑展开可清空的唤醒词输入框与提示文案；
+  - 开关关闭时，输入框收拢置灰，后台完全释放麦克风。
 
 ---
 
-### 2.2 语音唤醒（KWS）双层控制与全局事件路由
+## 3. 验证与验收基准
 
-```mermaid
-flowchart LR
-    subgraph Settings [设置项控制]
-        S1[启用语音伴侣: 总开关]
-        S2[语音唤醒 KWS: 子开关]
-    end
-
-    subgraph StateMachine [伴侣工作状态]
-        IdleWait[空闲态 Idle]
-        WakeActive{语音唤醒开启?}
-        MicHold[麦克风保持常驻监听]
-        MicClose[麦克风彻底关闭<br/>图标熄灭/纯点击模式]
-    end
-
-    S1 -->|ON| WakeActive
-    S2 -->|ON| WakeActive
-    WakeActive -->|Yes| MicHold
-    WakeActive -->|No| MicClose
-
-    subgraph GlobalRoute [主窗口全局事件总线]
-        KwsHit[命中 Hey Flowy / 你好 Flowy]
-        GlobalListener[全局语音事件监听器]
-        AnyPage{用户当前页面}
-        Home[首页 / 新建对话]
-        Chat[已有会话]
-        FloatDock[弹出全局语音通话浮窗 / 悬浮胶囊]
-    end
-
-    MicHold --> KwsHit
-    KwsHit --> GlobalListener
-    GlobalListener --> AnyPage
-    AnyPage -->|首页| FloatDock
-    AnyPage -->|会话| FloatDock
-```
-
----
-
-### 2.3 状态机纠偏：挂断后秒级回归“等待唤醒”
-
-* **修复 `voiceCallDockState.ts`**：
-  - 判定优先级重排：
-    1. 若当前会话正处于语音活动阶段（`listening` / `speaking` 等），渲染对应活动态；
-    2. 若 `phase === 'idle'`：
-       - 若 `voice_enabled && wake_enabled` 且麦克风捕获正常，**无条件呈现绿色的“等待唤醒”（`voice.dock.waitingWake`）呼吸态**；
-       - `ended_reason` 仅保留在详情气泡或弱提示中，绝不阻断胶囊恢复就绪指示；
-       - 仅当用户手动关闭唤醒或关闭语音伴侣时，才显示“未在通话”（`voice.dock.notInCall`）。
-
----
-
-### 2.4 KWS 灵敏度调优与声学增益
-
-1. **概率门限回调**：
-   - 将 `nomifun-audio/src/kws.rs` 中的全局判定阈值由 `0.20` 回调至 `0.08`；
-   - 规则文件中的单个词权重由 `:2.0 #0.15` 回调至 `:2.0 #0.08`，与成熟的 GigaSpeech 灵敏度对齐；
-2. **软增益自适应放大（针对远程桌面虚拟驱动）**：
-   - 当检测到输入设备为虚拟声卡（如 UU 远程设备）或连续 1 秒内 RMS < 5 时，对送入 KWS 的 PCM 实施平滑的自适应软增益（+6dB ~ +12dB），防止远场人声因压缩失真而被门限吃掉。
-
----
-
-## 3. 点子王对抗式审查（Adversarial Review · 找死法）
-
-在动手改代码前，从第一性原理出发，预设本方案必然存在漏洞，进行极限压力拆台：
-
-### 找死法 1：开机自动自查如果发生网络请求或阻塞，会不会拖慢整个 Flowy 桌面启动？
-* **拆台**：如果开机自检去连接远程模型（如 LLM 对话检查）或者跑重型运算，低配机器可能会卡顿甚至白屏。
-* **规则防线**：
-  1. 开机自查必须是**纯本地、全异步、低优先级**的（通过 `tokio::spawn` 延后 2 秒在后台跑，绝不阻断前端渲染）；
-  2. 开机静默自查只验证：① 本地麦克风能否采集到 1 帧、② VAD/KWS/ASR/TTS 内存模型句柄是否存在，**不发送任何网络 LLM 请求，耗时必须限制在 150ms 以内**。
-
-### 找死法 2：如果挂断后麦克风一直保持常驻，Windows 任务栏一直亮黄点，会不会引起用户恐慌？
-* **拆台**：此前正是因为想让任务栏黄点熄灭，才在挂断后 close 麦克风，结果导致 KWS 彻底“失聪”。如果直接简单粗暴地永远不关麦克风，用户会觉得“Flowy 始终在偷听”。
-* **规则防线**：
-  1. **必须引入独立的「语音唤醒」开关**。当用户打开该开关时，文案明确提示“开启后将在后台监听唤醒词，Windows 任务栏将显示麦克风正在使用”；
-  2. 当用户不想常驻麦克风时，只要关掉该开关，麦克风在会话结束后立即释放（黄点熄灭），用户改用手动点击按钮发起通话。权力和知情权 100% 交给用户。
-
-### 找死法 3：全局唤醒如果强行跳转页面，会不会打断用户正在打字的思路？
-* **拆台**：如果用户正在首页写一段长提示词，突然旁边有人喊了一声“Hey Flowy”，主窗口如果强行 `navigate('/voice-session')`，用户没写完的文字可能会丢或者焦点被抢。
-* **规则防线**：
-  1. 首页唤醒**绝对不改变当前路由 URL**，而是直接激活桌面右下角的**全局轻量语音交互浮窗（Floating Voice Pill / Popover）**；
-  2. 录音识别的文字呈现在浮窗内，生成完成后提供“插入到当前输入框”或“独立回答”，绝不粗暴清空用户现场。
-
-### 找死法 4：KWS 阈值从 0.20 降到 0.08，环境打字声或杂音会不会频繁误唤醒？
-* **拆台**：调得太灵敏会导致键盘噼啪声或咳嗽声误触发“我在”。
-* **规则防线**：
-  通过下面设计的最小实验 1，用真实键盘音与日常噪音进行客观测量，得出最佳的分界阈值。
-
----
-
-## 4. 最小实验设计（Minimum Experiments）
-
-在全面铺开代码修改之前，通过以下 3 个低成本、可量化的最小实验锁定关键参数：
-
-### 实验 1：KWS 灵敏度与抗噪容忍度实验
-* **待验证假设**：将 Zipformer 双语阈值设为 `0.08` 配合 +6dB 软增益，能在正常距离普通语调下实现 >95% 的唤醒率，同时日常键盘打字和背景交谈误触发率 < 1 次/小时。
-* **实验做法**：
-  编写单测脚本 `crates/backend/nomifun-audio/tests/kws_threshold_sweep.rs`，灌入已录制的音频切片：
-  - 测试集 A：正常音量 "Hey Flowy"、"你好 Flowy"、"小度"、"贾维斯"（10 次）；
-  - 测试集 B：网易 UU 远程低电平录音（10 次）；
-  - 干扰集 C：高强度机械键盘打字声、喝水咳嗽杂音（5 分钟 PCM）。
-* **判定指标**：
-  - 测试集 A & B 触发率：阈值 0.08 下必须 $\ge 90\%$（此前 0.20 实测仅 30%）；
-  - 干扰集 C 误触发数：必须为 0。
-
-### 实验 2：开机静默探针耗时与无感验证
-* **待验证假设**：纯内存硬件连通性探针（PCM 1 帧、KWS 匹配空帧、VAD 判定、ASR 静音帧、Matcha/Vocos 句柄检查）耗时小于 200ms，且零声卡爆音。
-* **实验做法**：
-  调用 `crates/backend/nomifun-app` 的内部探针接口，记录从触发到拿到 6 节点 Report 的消耗时间与内存增量。
-* **判定指标**：耗时 $\le 200\text{ms}$，无阻塞异常。
-
-### 实验 3：挂断后状态机闭环跳转验证
-* **待验证假设**：在 `VoiceCallDock` 中，给入 `ended_reason = "user_stop"` 且 `phase = 'idle'`，视图立即稳定呈现 `waitingWake`（等待唤醒）。
-* **实验做法**：
-  运行 `ui/src/renderer/pages/voiceSession/voiceCallDockState.test.ts`，增加回归用例，验证状态跃迁与断言。
-
----
-
-## 5. 后续实施阶段规划
-
-1. **Phase 1**：在本地运行实验 1（阈值探针）与实验 3（前端状态机单测），拿到量化证据；
-2. **Phase 2**：修改 `crates/backend/nomifun-app` 解绑 `generation` 与缓存生命周期，增加开机异步静默自查；
-3. **Phase 3**：前端增设“语音唤醒”独立开关，并在顶层接入全局唤醒浮窗；
-4. **Phase 4**：全套回归测试跑通，更新 CHANGELOG 并交付。
+1. **单测验证**：
+   - `bilingual_kws_validation`: 验证带调拼音 `n ǐ h ǎo x iǎo b ái` 能够被 KeywordSpotter 正确解析并加载；
+   - `voiceCallDockState.test.ts`: 验证挂断后且无任务时 100% 回归 `waitingWake`。
+2. **真机行为验证**：
+   - 软件启动时不再听到突兀的 TTS 声音，设置页能力流水线开机即全绿；
+   - 点击开启通话不再报错 `voice_suite_in_use` 或 `启动语音通话失败`；
+   - 正常说话“你好小白”即可迅速命中唤醒，后台日志实时输出 VAD 与 Cascade 转写记录。
