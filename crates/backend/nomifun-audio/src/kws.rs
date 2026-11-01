@@ -540,215 +540,108 @@ pub fn convert_chinese_to_kws_pinyin_sandhi(text: &str) -> Option<String> {
     convert_chinese_to_kws_pinyin_mode(text, true, true)
 }
 
-fn convert_chinese_to_kws_pinyin_mode(text: &str, toned: bool, sandhi: bool) -> Option<String> {
-    let mut tokens = Vec::new();
-    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace() && !matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_')).collect();
-    for (i, &ch) in chars.iter().enumerate() {
-        let pinyin = if toned {
-            match ch {
-                '你' => if sandhi && chars.get(i + 1).is_some_and(|&next| matches!(next, '好' | '小' | '宝' | '美' | '米' | '比' | '可')) { "n í" } else { "n ǐ" },
-                '好' => "h ǎo",
-                '小' => if sandhi && chars.get(i + 1).is_some_and(|&next| matches!(next, '米' | '宝' | '美' | '比' | '可')) { "x iáo" } else { "x iǎo" },
-                '白' => "b ái",
-                '福' => "f ú",
-                '星' => "x īng",
-                '芙' | '弗' | '伏' | '服' | '符' | '浮' => "f ú",
-                '莉' | '力' | '利' | '立' => "l ì",
-                '佛' => "f ó",
-                '罗' | '洛' => "l uó",
-                '嗨' => "h āi",
-                '嘿' | '黑' => "h ēi",
-                '哈' => "h ā",
-                '喽' | '楼' => "l óu",
-                '宝' => "b ǎo",
-                '贝' => "b èi",
-                '同' => "t óng",
-                '学' => "x ué",
-                '助' => "zh ù",
-                '手' => "sh ǒu",
-                '智' => "zh ì",
-                '能' => "n éng",
-                '管' => "g uǎn",
-                '家' => "j iā",
-                '飞' => "f ēi",
-                '爱' => "ài",
-                '度' => "d ù",
-                '达' => "d á",
-                '大' => "d à",
-                '米' => "m ǐ",
-                '奇' => "q í",
-                '华' => "h uá",
-                '为' | '维' => "w éi",
-                '灵' => "l íng",
-                '猫' => "m āo",
-                '毛' => "m áo",
-                '天' => "t iān",
-                '甜' => "t ián",
-                '精' | '金' => "j īn",
-                '美' => "m ěi",
-                '妹' => "m èi",
-                '特' => "t è",
-                '斯' => "s ī",
-                '四' => "s ì",
-                '丁' => "d īng",
-                '旺' => "w àng",
-                '王' => "w áng",
-                '财' => "c ái",
-                '豆' => "d òu",
-                '卡' => "k ǎ",
-                '波' => "b ō",
-                '伯' => "b ó",
-                '比' => "b ǐ",
-                '布' => "b ù",
-                '多' => "d uō",
-                '朵' => "d uǒ",
-                '可' => "k ě",
-                '乐' => "l è",
-                '欢' => "h uān",
-                '迎' => "y íng",
-                '银' => "y ín",
-                '电' => "d iàn",
-                '脑' => "n ǎo",
-                '呼' | '虎' => "h ū",
-                '叫' => "j iào",
-                '唤' => "h uàn",
-                '贾' => "j iǎ",
-                '安' => "ān",
-                '娜' => "n à",
-                '莫' => "m ò",
-                '妮' => "n ī",
-                '希' => "x ī",
-                '瑞' => "r uì",
-                '龙' => "l óng",
-                '兔' => "t ù",
-                '狗' => "g ǒu",
-                '阿' => "ā",
-                '文' => "w én",
-                '森' => "s ēn",
-                '木' => "m ù",
-                '杰' => "j ié",
-                '克' => "k è",
-                '西' => "x ī",
-                '球' => "q iú",
-                '咪' => "m ī",
-                '香' => "x iāng",
-                '芋' => "y ù",
-                '片' => "p iàn",
-                '果' => "g uǒ",
-                '茶' => "ch á",
-                '花' => "h uā",
-                '草' => "c ǎo",
-                '糖' => "t áng",
-                '雪' => "x uě",
-                '冰' => "b īng",
-                '鱼' => "y ú",
-                '鸟' => "n iǎo",
-                '月' => "y uè",
-                '日' => "r ì",
-                '荷' => "h é",
-                '包' => "b āo",
-                '蛋' => "d àn",
-                _ => return None,
-            }
+/// Decomposes raw pinyin syllable (e.g. "xiang1", "he2", "dan4") into Zipformer initial + final tokens.
+pub fn pinyin_syllable_to_zipformer_tokens(raw_syllable: &str, toned: bool, force_second_tone: bool) -> Option<String> {
+    let raw = raw_syllable.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (letters, raw_tone) = if let Some(last) = raw.chars().last() {
+        if last.is_ascii_digit() {
+            let tone_num = last.to_digit(10).unwrap_or(5);
+            (&raw[..raw.len() - 1], tone_num)
         } else {
-            match ch {
-                '你' => "n i",
-                '好' => "h ao",
-                '小' => "x iao",
-                '白' => "b ai",
-                '福' => "f u",
-                '星' => "x ing",
-                '芙' | '弗' | '伏' | '服' | '符' | '浮' => "f u",
-                '莉' | '力' | '利' | '立' => "l i",
-                '佛' => "f o",
-                '罗' | '洛' => "l uo",
-                '嗨' => "h ai",
-                '嘿' | '黑' => "h ei",
-                '哈' => "h a",
-                '喽' | '楼' => "l ou",
-                '宝' => "b ao",
-                '贝' => "b ei",
-                '同' => "t ong",
-                '学' => "x ue",
-                '助' => "zh u",
-                '手' => "sh ou",
-                '智' => "zh i",
-                '能' => "n eng",
-                '管' => "g uan",
-                '家' => "j ia",
-                '飞' => "f ei",
-                '爱' => "ai",
-                '度' => "d u",
-                '达' | '大' => "d a",
-                '米' => "m i",
-                '奇' => "q i",
-                '华' => "h ua",
-                '为' | '维' => "w ei",
-                '灵' => "l ing",
-                '猫' | '毛' => "m ao",
-                '天' | '甜' => "t ian",
-                '精' | '金' => "j in",
-                '美' | '妹' => "m ei",
-                '特' => "t e",
-                '斯' | '四' => "s i",
-                '丁' => "d ing",
-                '旺' | '王' => "w ang",
-                '财' => "c ai",
-                '豆' => "d ou",
-                '卡' => "k a",
-                '波' | '伯' => "b o",
-                '比' => "b i",
-                '布' => "b u",
-                '多' | '朵' => "d uo",
-                '可' => "k e",
-                '乐' => "l e",
-                '欢' => "h uan",
-                '迎' | '银' => "y in",
-                '电' => "d ian",
-                '脑' => "n ao",
-                '呼' | '虎' => "h u",
-                '叫' => "j iao",
-                '唤' => "h uan",
-                '贾' => "j ia",
-                '安' => "an",
-                '娜' => "n a",
-                '莫' => "m o",
-                '妮' => "n i",
-                '希' => "x i",
-                '瑞' => "r ui",
-                '龙' => "l ong",
-                '兔' => "t u",
-                '狗' => "g ou",
-                '阿' => "a",
-                '文' => "w en",
-                '森' => "s en",
-                '木' => "m u",
-                '杰' => "j ie",
-                '克' => "k e",
-                '西' => "x i",
-                '球' => "q iu",
-                '咪' => "m i",
-                '香' => "x iang",
-                '芋' => "y u",
-                '片' => "p ian",
-                '果' => "g uo",
-                '茶' => "ch a",
-                '花' => "h ua",
-                '草' => "c ao",
-                '糖' => "t ang",
-                '雪' => "x ue",
-                '冰' => "b ing",
-                '鱼' => "y u",
-                '鸟' => "n iao",
-                '月' => "y ue",
-                '日' => "r i",
-                '荷' => "h e",
-                '包' => "b ao",
-                '蛋' => "d an",
-                _ => return None,
-            }
+            (raw, 5)
+        }
+    } else {
+        return None;
+    };
+
+    let tone = if force_second_tone && raw_tone == 3 {
+        2
+    } else {
+        raw_tone
+    };
+
+    let initials = [
+        "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x",
+        "r", "z", "c", "s", "y", "w",
+    ];
+    let mut initial = "";
+    let mut final_part = letters;
+    for &init in &initials {
+        if letters.starts_with(init) {
+            initial = init;
+            final_part = &letters[init.len()..];
+            break;
+        }
+    }
+
+    let final_str = if toned && tone >= 1 && tone <= 4 {
+        let mut final_chars: Vec<char> = final_part.chars().collect();
+        let tone_map: std::collections::HashMap<char, [char; 4]> = [
+            ('a', ['ā', 'á', 'ǎ', 'à']),
+            ('o', ['ō', 'ó', 'ǒ', 'ò']),
+            ('e', ['ē', 'é', 'ě', 'è']),
+            ('i', ['ī', 'í', 'ǐ', 'ì']),
+            ('u', ['ū', 'ú', 'ǔ', 'ù']),
+            ('v', ['ǖ', 'ǘ', 'ǚ', 'ǜ']),
+            ('ü', ['ǖ', 'ǘ', 'ǚ', 'ǜ']),
+        ]
+        .into_iter()
+        .collect();
+
+        // Standard Chinese pinyin tone placement rule: a > o > e, then last of i/u/v/ü
+        let tone_idx = if let Some(pos) = final_chars.iter().position(|&c| c == 'a') {
+            Some(pos)
+        } else if let Some(pos) = final_chars.iter().position(|&c| c == 'o') {
+            Some(pos)
+        } else if let Some(pos) = final_chars.iter().position(|&c| c == 'e') {
+            Some(pos)
+        } else {
+            final_chars.iter().rposition(|&c| c == 'i' || c == 'u' || c == 'v' || c == 'ü')
         };
-        tokens.push(pinyin);
+
+        if let Some(idx) = tone_idx {
+            let c = final_chars[idx];
+            if let Some(toned_arr) = tone_map.get(&c) {
+                final_chars[idx] = toned_arr[(tone - 1) as usize];
+            }
+        }
+        final_chars.into_iter().collect::<String>().replace('v', "ü")
+    } else {
+        final_part.replace('v', "ü")
+    };
+
+    if initial.is_empty() {
+        if final_str.is_empty() {
+            None
+        } else {
+            Some(final_str)
+        }
+    } else if final_str.is_empty() {
+        Some(initial.to_string())
+    } else {
+        Some(format!("{initial} {final_str}"))
+    }
+}
+
+pub fn convert_chinese_to_kws_pinyin_mode(text: &str, toned: bool, sandhi: bool) -> Option<String> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_'))
+        .collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        let raw_py = crate::cjk_pinyin_table::lookup_cjk_pinyin(ch)?;
+        let is_sandhi = sandhi
+            && raw_py.ends_with('3')
+            && chars
+                .get(i + 1)
+                .and_then(|&next| crate::cjk_pinyin_table::lookup_cjk_pinyin(next))
+                .is_some_and(|next_py| next_py.ends_with('3'));
+        let decomposed = pinyin_syllable_to_zipformer_tokens(raw_py, toned, is_sandhi)?;
+        tokens.push(decomposed);
     }
     if tokens.is_empty() {
         None

@@ -3055,6 +3055,11 @@
             None
         );
         assert_eq!(
+            strip_custom_wake_word("小黑", "小白"),
+            None,
+            "2-char words must have strict 0 tolerance to prevent false wake"
+        );
+        assert_eq!(
             strip_custom_wake_word("한 폭", "荷包蛋"),
             None
         );

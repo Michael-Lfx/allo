@@ -17,6 +17,7 @@
 //! ```
 
 pub mod capture;
+pub mod cjk_pinyin_table;
 pub mod devices;
 pub mod diagnostics;
 pub mod diarization;

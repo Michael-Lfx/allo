@@ -15,21 +15,8 @@ const isKwsDirectSupported = (word?: string): boolean => {
   if (!word || !word.trim()) return true;
   const clean = word.trim().toLowerCase();
   if (clean === 'hey flowy' || clean === 'flowy') return true;
-  if (/^[a-zA-Z\s,.'!?-]+$/.test(clean)) return true;
-  const supportedChars = new Set([
-    '你','好','小','白','福','星','芙','弗','伏','服','符','浮',
-    '莉','力','利','立','佛','罗','洛','嗨','嘿','黑','哈','喽',
-    '楼','宝','贝','同','学','助','手','智','能','管','家','飞',
-    '爱','度','达','大','米','奇','华','为','维','灵','猫','毛',
-    '天','甜','精','金','美','妹','特','斯','四','丁','旺','王',
-    '财','豆','卡','波','伯','比','布','多','朵','可','乐','欢',
-    '迎','银','电','脑','呼','虎','叫','唤','贾','安','娜','莫',
-    '妮','希','瑞','龙','兔','狗','阿','文','森','木','杰','克',
-    '西','球','咪','香','芋','片','果','茶','花','草','糖','雪',
-    '冰','鱼','鸟','月','日','荷','包','蛋'
-  ]);
-  const chars = clean.replace(/[\s，。！？,.\-_!?:：；;、—…]+/g, '').split('');
-  return chars.length > 0 && chars.every((c) => supportedChars.has(c));
+  // English letters and standard Chinese characters (6,700+ GB2312) are natively supported by Zipformer KWS
+  return /^[\u4e00-\u9fa5a-zA-Z\s,.'!?-]+$/.test(clean);
 };
 
 export default function VoiceFeedbackSettingsSection({ connected }: { connected: boolean }) {

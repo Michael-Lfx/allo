@@ -65,6 +65,12 @@ x iao f u x ing @XIAO_FU_XING
     let custom_keywords = vec![
         "你好，小白".to_string(),
         "你好小白".to_string(),
+        "荷包蛋".to_string(),
+        "香芋片".to_string(),
+        "菠萝蜜".to_string(),
+        "麻辣烫".to_string(),
+        "皮卡丘".to_string(),
+        "小白同学".to_string(),
         "Hey Flowy".to_string(),
         "Hi Flowy".to_string(),
         "小度".to_string(),
@@ -75,6 +81,12 @@ x iao f u x ing @XIAO_FU_XING
     let dynamic_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&custom_keywords);
     println!("=== DYNAMIC KEYWORDS BUF ===\n{}", dynamic_buf);
     assert!(dynamic_buf.contains("n i h ao x iao b ai"), "must contain pinyin for 你好小白");
+    assert!(dynamic_buf.contains("h e b ao d an") || dynamic_buf.contains("h é b āo d àn"), "must contain pinyin for 荷包蛋");
+    assert!(dynamic_buf.contains("x iang y u p ian") || dynamic_buf.contains("x iāng y ù p iàn"), "must contain pinyin for 香芋片");
+    assert!(dynamic_buf.contains("b o l uo m i") || dynamic_buf.contains("b ō l uó m ì"), "must contain pinyin for 菠萝蜜");
+    assert!(dynamic_buf.contains("m a l a t ang") || dynamic_buf.contains("m á l à t àng"), "must contain pinyin for 麻辣烫");
+    assert!(dynamic_buf.contains("p i k a q iu") || dynamic_buf.contains("p í k ǎ q iū"), "must contain pinyin for 皮卡丘");
+    assert!(dynamic_buf.contains("x iao b ai t ong x ue") || dynamic_buf.contains("x iǎo b ái t óng x ué"), "must contain pinyin for 小白同学");
     assert!(dynamic_buf.contains("HH EY1 F L OW1 IY0"), "must contain phonemes for HEY_FLOWY");
     assert!(dynamic_buf.contains("HH AY1 F L OW1 IY0"), "must contain phonemes for HI_FLOWY");
     assert!(dynamic_buf.contains("x iao d u"), "must contain pinyin for 小度");
