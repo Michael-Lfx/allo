@@ -113,7 +113,20 @@ impl LearningService {
     /// generation stage's [`LessonOutput`] and is removed from the store
     /// (with its resume mapping). The caller (synchronous pipeline or
     /// engine loop) persists it.
-    pub fn finish_lesson_draft(&self, draft_id: &str) -> Result<LessonOutput, AppError> {
+    ///
+    /// `math_verify_failed`（w1/蓝图 4.5/A3；w1 评审修复口径）：**未复核修
+    /// 正**的 verify_math 失败数（ls_finish handler 从计数槽的 unresolved
+    /// 槽读出传入——Fail 置增、任一复核 Pass 清零）。> 0 时在 finish 门
+    /// refresh 之后追加 warning 留痕（viz_block_lint_dropped 同位——audit
+    /// 整表重算会覆盖先加的条目）；不挡发布（发布面无法重放核验，danger
+    /// 会把「一道题改不对」放大成整课失败——Q1 裁决）；0 = 零痕迹。自修正
+    /// 会话（核验失败→打回→复核过→过闸）零 warning——累计失败数只进观测
+    /// 读数面，不进留痕门（自修正不是失败）。
+    pub fn finish_lesson_draft(
+        &self,
+        draft_id: &str,
+        math_verify_failed: u32,
+    ) -> Result<LessonOutput, AppError> {
         // The finish gate re-runs the deterministic audit LIVE on the
         // draft's current state — the cached findings snapshot is never
         // trusted at the publish boundary, so a draft that was never
@@ -128,6 +141,23 @@ impl LearningService {
         // 剔除 findings 在审计重算之后追加（audit 整表重算会覆盖先加的
         // 条目）——阻塞报告与 publish 面都能看见剔除事实。
         draft.findings.extend(dropped_findings);
+        // w1 verify_math 留痕：同为 refresh 之后追加（整表重算覆盖面同上）。
+        // w1 评审修复：计数语义 = 未复核修正数（传入侧见计数槽 unresolved），
+        // 文案随之点名「未复核修正」而非累计失败。
+        if math_verify_failed > 0 {
+            draft
+                .findings
+                .push(crate::lesson_draft::LessonFinding {
+                    severity: crate::course_outline::SEV_WARNING,
+                    kind: "math_verify_failed".to_owned(),
+                    message: format!("本课 verify_math 有 {math_verify_failed} 次失败未复核修正"),
+                });
+            tracing::warn!(
+                target: "nomifun_learning",
+                math_verify_failed,
+                "math_verify_failed"
+            );
+        }
         if draft
             .findings
             .iter()
@@ -271,7 +301,7 @@ mod tests {
             .insert(view.draft_id.clone(), (draft, std::time::Instant::now()));
 
         let output = service
-            .finish_lesson_draft(&view.draft_id)
+            .finish_lesson_draft(&view.draft_id, 0)
             .expect("剔块降声明后发布成功（demo 硬门 degraded 豁免）");
         assert_eq!(
             output.degraded_keys,
@@ -321,7 +351,7 @@ mod tests {
         );
 
         // 门禁未过时发布被拒，草稿与映射保留（续跑的前提）。
-        assert!(service.finish_lesson_draft(&view.draft_id).is_err());
+        assert!(service.finish_lesson_draft(&view.draft_id, 0).is_err());
         assert!(service.live_lesson_draft_for_lesson("lesson-x").is_some());
 
         // 补齐到门禁通过后发布：草稿移除，映射清除。
@@ -347,8 +377,74 @@ mod tests {
                 ],
             )
             .unwrap();
-        let output = service.finish_lesson_draft(&view.draft_id).unwrap();
+        let output = service.finish_lesson_draft(&view.draft_id, 0).unwrap();
         assert_eq!(output.activities.len(), 3);
         assert!(service.live_lesson_draft_for_lesson("lesson-x").is_none());
+    }
+
+    /// w1 verify_math 发布面留痕（蓝图 4.5/A3；w1 评审修复口径）：传入计数
+    /// > 0 → finish 门 refresh 之后追加 `math_verify_failed` warning
+    /// （viz_block_lint_dropped 同位）——不挡发布（干净草稿照样 Ok）；草稿
+    /// 另有 danger 时 warning 随阻塞报告可见（留痕的消费面）；计数 = 0 →
+    /// 零痕迹（自修正会话——核验失败后复核 Pass——不留痕）。
+    #[tokio::test]
+    async fn finish_appends_math_verify_failed_warning_and_never_blocks() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let body = "这是一个足够长的正文段落，用于通过课时级文档契约的长度下限要求。".repeat(12);
+
+        // 干净草稿 + failed=3 → 发布成功（warning 不挡发布）。
+        let view = service.create_lesson_draft(context()).unwrap();
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    LessonOp::SetDocument {
+                        document: format!("## 描述\n{body}\n## 例子\n{body}\n## 验证\n{body}\n"),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("single_choice", serde_json::json!({
+                            "options": ["权利", "义务", "债务"], "answer": "权利"
+                        })),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("true_false", serde_json::json!({ "answer": true })),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("reflection", serde_json::json!({ "answer": null })),
+                    },
+                ],
+            )
+            .unwrap();
+        let output = service
+            .finish_lesson_draft(&view.draft_id, 3)
+            .expect("warning 是信息性留痕，不挡发布");
+        assert_eq!(output.activities.len(), 3);
+
+        // 带 danger 的草稿：failed=2 → 阻塞报告携带 warning（留痕可见）。
+        let flagged = service.create_lesson_draft(context()).unwrap();
+        service
+            .patch_lesson_draft(
+                &flagged.draft_id,
+                vec![LessonOp::SetDocument {
+                    document: format!("## 描述\n{body}\n## 例子\n{body}\n## 验证\n{body}\n"),
+                }],
+            )
+            .unwrap();
+        let blocked = service
+            .finish_lesson_draft(&flagged.draft_id, 2)
+            .expect_err("缺活动 = danger，发布被拒");
+        let report = blocked.to_string();
+        assert!(report.contains("math_verify_failed"), "{report}");
+        assert!(report.contains("verify_math 有 2 次失败未复核修正"), "{report}");
+
+        // 同草稿 failed=0 → 阻塞报告零 math_verify 痕迹。
+        let blocked = service
+            .finish_lesson_draft(&flagged.draft_id, 0)
+            .expect_err("缺活动 = danger，发布被拒");
+        assert!(
+            !blocked.to_string().contains("math_verify_failed"),
+            "failed=0 必须零痕迹: {blocked}"
+        );
     }
 }

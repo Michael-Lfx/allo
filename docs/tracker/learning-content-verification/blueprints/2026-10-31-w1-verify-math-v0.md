@@ -4,7 +4,7 @@
 
 - **目标**：课时内容引擎新增 verify_math 工具 op——模型把数学翻译成 claim JSON，确定性核验器执行 eval/identity 采样核验；R14 条款双宿随批；smoke 种子预埋 oracle 对账；顺带修复 f3 viz_lint_events 读数写端缺陷
 - **版本**：v1
-- **状态**：草稿
+- **状态**：定稿
 - **日期**：2026-10-31
 - **票**：[tickets/w1-verify-math-v0.md](../tickets/w1-verify-math-v0.md)（Resolution 已记裁决与勘误）
 
@@ -208,3 +208,5 @@ Identity: 确定性 LCG 伪随机（固定种子，零 rand 依赖）逐变量�
 | 日期 | 类型 | 位置 | 变更 | 根因/触发 |
 |---|---|---|---|---|
 | 2026-10-31 | 修订（定稿前） | 全图 | v1 成图：六问裁决入图（失败语义/f3 缺陷顺带修/接线包/oracle 形态/w2 收窄/编排）；票面三处勘误（smoke 宿主/R14 双宿/f3 读数恒 0） | grilling 2026-10-31 + 双代理影响面核查 |
+| 2026-11-01 | 修订（定稿前） | 4.1 求值器语义 | identity 采样数下限误判修复（`valid==0` 才 Fail，文案报真实非有限计数）+ MathClaim 容多余字段 | 双轴评审（Standards 硬 1 + Spec 过严 1） |
+| 2026-11-01 | 缺陷回写 | 4.6 判据⑧ + A6 | ①判据口径改 finish findings（新增 unresolved 计数槽：Fail 置增/复核 Pass 清零；自修正会话须绿）——原「累计 failed≠0 即红」与 A3 失败语义自相矛盾；②**A6 首跑复案**：种子 σ 字符串硬门降为软读数 `seed_series adopted=`——b 臂实录模型自选例题全程实算（calls=3 passed=3）被种子字符串误红，预埋序列只是测试夹具 | Standards 判据张力 + w1 真机 b 臂实录（A6 预留复案条款触发） |

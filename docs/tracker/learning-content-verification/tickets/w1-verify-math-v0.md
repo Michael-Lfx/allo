@@ -130,3 +130,26 @@ part_of: ../map.md
 - 容差先例：ActivityKind::Numeric 绝对容差，缺省/下限 1e-9（progress.rs:493）。
 
 施工图：[blueprints/2026-10-31-w1-verify-math-v0.md](../blueprints/2026-10-31-w1-verify-math-v0.md)。
+
+## 真机验收（2026-11-01，quality-fixes-verify/w1-content-*，三臂单飞）
+
+**判据全过（status: closed）。**
+
+- **a 臂**：`math_verify read-out: calls=6 passed=5 failed=1 unresolved=0`——
+  模型真实调用核验 6 次，**1 次失败后自修改、复核通过**，判据全过 EXIT=0。
+  「核验失败→打回→自修改→过闸」在生产自然发生（非脚本驱动），正是本票要造
+  的行为：a3 类「写错数无人报警」有了确定性闸+自愈环。
+- **b 臂（首跑，红）**：`calls=3 passed=3 failed=0 unresolved=0` 但正文未采用
+  预埋序列——σ 字符串硬门把数学合规（全程工具实算）的课误判红。**触发蓝图
+  A6 预留复案条款**：种子 σ 门降为软读数 `seed_series read-out: adopted=`，
+  硬门保留「调用 ≥1 ∧ unresolved==0」（提交 b30036ff1）。
+- **b2 臂（复案后）**：`calls=4 passed=4 failed=0 unresolved=0`、
+  `adopted=false`（软读数如实）、判据全过 EXIT=0。
+- **viz_lint 读数恢复真实**：f3 写端修复后 `viz_lint read-out: viz_lint_events=0`
+  为真值（观测帧带字段）；瞬断注入照常吸收（attempts_used=2/success）。
+- 测试基线：learning 735 / ai-agent 1126 / app lib 431 全绿；fmt 三包；
+  workspace check 过（nomifun-app 集成测试 auth_e2e 等 27 失败经基座 detached
+  复跑逐字同败，环境引导问题与本票无关）。
+
+提交：`46ac67816`/`1d420ab4e`/`49ab34b39`（票本体）+ `5ac1f27a0`/`a6a4ca960`
+（评审修复批）+ `b30036ff1`（A6 复案）。分支 feat/verify-math，合并待通知。

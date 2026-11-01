@@ -2315,6 +2315,14 @@ async fn run_quiz(
     Ok(ExitCode::SUCCESS)
 }
 
+/// w1 verify_math oracle 种子序列（蓝图 4.6 双保险）：模型必然见到的收益
+/// 数据，多通道预埋（先行节点例题正文与要点、前置概念定义、本节 summary、
+/// 本节点概念定义）。期望值算死（与 nomifun-learning 求值器单测对账）：
+/// 均值 0、平方和 30、/3 = 10、σ = √10 ≈ 3.1623——判据比对正文中
+/// 「3.16」/「3.2」字符串变体。种子只带数据不带答案（σ 不得预埋，否则
+/// oracle 不再测试计算）。
+const SMOKE_RETURN_SERIES: &str = "四个交易日的日对数收益（%）：+3.0, -1.0, +2.0, -4.0";
+
 /// `learning-smoke content`（j07 + n3 判据升级）：内容成色冒烟。立一门两
 /// 节点学习图课程（概念挂接 + 别名池 + 引用名 + 已会声明锚 + 先行节点两节
 /// 正文），为汇合节点（assumes 前置 + teaches 两概念）生成正文——概念面
@@ -2328,7 +2336,14 @@ async fn run_quiz(
 /// 用点：生成/发布失败即 EXIT=2，ready 正文发布即落位）；⑥（#179 入册）
 /// 属豁免项，不在本波判据清单。e4 追加⑦：瞬断注入臂——生成前掐断两次
 /// 开流再恢复（provider 层单次重试吸收第一断、门面重试环吸收第二断），
-/// 生成仍成功且重试读数 attempts_used=2/success。读数
+/// 生成仍成功且重试读数 attempts_used=2/success。w1 追加⑧：verify_math
+/// oracle——种子收益序列多通道预埋（概念定义/先行节要点与正文/summary，
+/// 期望 σ=√10≈3.1623 算死），判据（w1 评审修复口径+A6 首跑复案）= verify_math 调用 ≥1
+/// 且 finish findings 无 `math_verify_failed` warning（发布观测帧 unresolved
+/// 槽 == 0——只数 Fail 后无复核 Pass 的未修正失败；累计 failed 只进读数行
+/// 不进硬门，自修正会话必须绿）且正文含「3.16」/「3.2」期望值变体（
+/// `math_verify read-out` 随附；viz_lint 读数经 f3 修复恢复真实）。
+/// 读数
 /// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
 /// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
 /// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
@@ -2373,18 +2388,37 @@ async fn run_content(
     .await?;
     let lesson_a = nomifun_common::LearningLessonId::new().into_string();
     let lesson_b = nomifun_common::LearningLessonId::new().into_string();
-    for (lesson_id, title, purpose, position) in [
-        (&lesson_a, "收益率与对数收益率", "建立收益率概念并能相互换算", 0),
-        (&lesson_b, "波动率的直观刻画", "用收益分布理解波动率的度量动机", 1),
+    // w1 种子预埋（蓝图 4.6 双保险）：L2 summary 带种子序列。走查结论（报
+    // 告回写）：图线路径 generate_graph_lesson_content 的 SELECT 不取
+    // l.summary、LessonGenerationContext 也无 summary 字段——该通道不进生
+    // 成上下文（预埋保留为无害留痕，答案不经此泄露）；真实流通通道见下方
+    // 概念定义（前置路径「定义：」行）与先行节要点（前置摘要行）。
+    let lesson_b_summary = format!("波动率度量的直观动机；布景参考数据：{SMOKE_RETURN_SERIES}");
+    for (lesson_id, title, purpose, summary, position) in [
+        (
+            &lesson_a,
+            "收益率与对数收益率",
+            "建立收益率概念并能相互换算",
+            "",
+            0,
+        ),
+        (
+            &lesson_b,
+            "波动率的直观刻画",
+            "用收益分布理解波动率的度量动机",
+            lesson_b_summary.as_str(),
+            1,
+        ),
     ] {
         sqlx::query(
             "INSERT INTO learning_lessons \
              (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-              content_generated) VALUES (?, ?, ?, '', ?, ?, 20, 0)",
+              content_generated) VALUES (?, ?, ?, ?, ?, ?, 20, 0)",
         )
         .bind(lesson_id)
         .bind(&module_id)
         .bind(title)
+        .bind(summary)
         .bind(purpose)
         .bind(position)
         .execute(&wiring.pool)
@@ -2392,18 +2426,23 @@ async fn run_content(
     }
     let concept_alpha = nomifun_common::LearningConceptId::new().into_string();
     let concept_beta = nomifun_common::LearningConceptId::new().into_string();
+    // w1 种子预埋（蓝图 4.6「概念定义通道兜底」+ 走查修正）：概念定义才是
+    // 图线真实流通的通道——assumes 概念（α）的定义经前置路径「定义：」行
+    // 进上下文（lesson.rs render_prerequisite_path）；teaches 概念（β）的
+    // 定义在 graph_node_topology 里不投影（仅 assumes 分支携带）——照蓝图
+    // 原文预埋 β，另按最小修正补 α（缺陷回写见报告）。
     for (concept_id, canonical, aliases, definition) in [
         (
             &concept_alpha,
             "对数收益率",
             serde_json::json!([]),
-            "价格比取对数的一阶近似收益度量",
+            format!("价格比取对数的一阶近似收益度量；参考数据：{SMOKE_RETURN_SERIES}"),
         ),
         (
             &concept_beta,
             "历史波动率",
             serde_json::json!([{"name": "贝塔系数", "status": "active"}]),
-            "收益序列离散程度的年化度量",
+            format!("收益序列离散程度的年化度量；参考数据：{SMOKE_RETURN_SERIES}"),
         ),
     ] {
         sqlx::query(
@@ -2451,7 +2490,12 @@ async fn run_content(
     .execute(&wiring.pool)
     .await?;
     // 先行节点正文两节（n3 布景对齐 learnhub 先行节点节）：L1 落两节
-    // ready 正文——先例摘要的先行节标题判据面（#180）。
+    // ready 正文——先例摘要的先行节标题判据面（#180）。标题不动（判据⑤
+    // 机械 grep 面已核实）；w1 种子序列走 s2 例题的正文与要点——要点经
+    // 前置路径「已教节」行（title：points）进生成上下文，正文照蓝图 4.6
+    // 第 1 条预埋。
+    // w1 种子预埋：s2 例题要点带序列（前置路径「已教节」行的流通通道）。
+    let s2_points = format!("相邻两日收益相加等于区间收益；参考数据：{SMOKE_RETURN_SERIES}");
     for (section_key, kind, title, points, position) in [
         (
             "s1",
@@ -2464,10 +2508,15 @@ async fn run_content(
             "s2",
             "example",
             "例题：两日收益的对数换算",
-            "相邻两日收益相加等于区间收益",
+            s2_points.as_str(),
             1,
         ),
     ] {
+        let body_seed = if section_key == "s2" {
+            format!("{title}\n\n布景正文（先行节点，供先例摘要引用节标题）。\n\n本例数据——{SMOKE_RETURN_SERIES}。")
+        } else {
+            format!("{title}\n\n布景正文（先行节点，供先例摘要引用节标题）。")
+        };
         sqlx::query(
             "INSERT INTO learning_lesson_sections \
              (section_key, lesson_id, kind, title, points, visual, body_md, degraded, \
@@ -2479,7 +2528,7 @@ async fn run_content(
         .bind(kind)
         .bind(title)
         .bind(points)
-        .bind(format!("{title}\n\n布景正文（先行节点，供先例摘要引用节标题）。"))
+        .bind(body_seed)
         .bind(position)
         .bind(now)
         .bind(now)
@@ -2663,6 +2712,51 @@ async fn run_content(
         view.sections.len(),
         view.activities.len(),
         view.est,
+    );
+    // w1 verify_math oracle（蓝图 4.6/A6）：计数取自修复后的发布观测帧
+    // （calls.jsonl 的 lesson_agent_publish 行——f3 修复后该帧带 viz_lint_
+    // events 与 math_verify）。判据⑧（硬，进 EXIT；w1 评审修复口径+A6 首跑
+    // 复案）：verify_math 调用 ≥1 且 finish findings 无 `math_verify_failed`
+    // warning（帧 unresolved 槽 == 0：Fail 后无复核 Pass 的未修正失败数，
+    // Q1 口径——自修正会话「核验失败→打回→复核过→过闸」必须绿）。累计 failed
+    // 是会话计数（含已自修正失败），只进 read-out 读数行不进硬门。
+    // **A6 首跑复案（w1 真机 b 臂实录）**：种子 σ 字符串门从硬门降为软读数
+    // ——模型自选例题数字并全程 verify_math 实算（calls≥1 且 unresolved==0）
+    // 即合规，预埋序列只是测试夹具；硬门用种子字符串把数学合规的课误判红。
+    let (mut math_calls, mut math_passed, mut math_failed, mut math_unresolved) =
+        (0u64, 0u64, 0u64, 0u64);
+    for value in rows
+        .iter()
+        .filter(|value| value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish"))
+    {
+        if let Some(counters) = value.get("math_verify") {
+            math_calls += counters.get("calls").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_passed += counters.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_failed += counters.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_unresolved += counters.get("unresolved").and_then(|v| v.as_u64()).unwrap_or(0);
+        }
+    }
+    println!(
+        "math_verify read-out: calls={math_calls} passed={math_passed} failed={math_failed} unresolved={math_unresolved}"
+    );
+    if math_calls == 0 {
+        failed.push(
+            "判据8红（w1）：verify_math 调用计数为 0——模型未把可算量送核验（R14 条款未落地或工具面未生效）"
+                .into(),
+        );
+    }
+    // 硬门按 finish findings 口径：finish 门按传入的未复核修正数追加
+    // `math_verify_failed` warning（lesson_draft.rs），unresolved > 0 = 有
+    // 核验失败未按 R14 复核闭环。累计 failed 不在此判（含已自修正失败）。
+    if math_unresolved != 0 {
+        failed.push(format!(
+            "判据8红（w1）：finish findings 带 math_verify_failed warning（unresolved={math_unresolved}）——核验失败未按 R14 复核闭环（改正文后用 verify_math 重新提交）；累计 failed={math_failed} 只作读数"
+        ));
+    }
+    // 种子序列采用率（软读数非门禁——A6 首跑复案，见上）。
+    let seed_adopted = joined.contains("3.16") || joined.contains("3.2");
+    println!(
+        "seed_series read-out: adopted={seed_adopted}（期望 σ=√10≈3.1623；软读数非门禁）"
     );
     println!(
         "faces: mentions_log_returns={} mentions_beta_canonical={} mentions_alias={}",

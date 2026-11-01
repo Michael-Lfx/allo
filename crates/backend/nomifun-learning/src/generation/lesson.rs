@@ -812,14 +812,18 @@ pub fn content_discipline_v2_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// R10/R11/R12/R13（k05，learnhub ldata1 写作纪律；域中立措辞、零机械门）：
-/// 抽象对象首讲具象替身 / 例子情境取受众生活域 / 正式表述的记号术语在已知
-/// 集内 / 断言-例子数字一致。开关关闭时整块省略（= j07 后提示词）。
+/// R10/R11/R12/R13/R14（k05 起家，w1 追 R14；learnhub ldata1 写作纪律；域
+/// 中立措辞、零机械门）：抽象对象首讲具象替身 / 例子情境取受众生活域 / 正式
+/// 表述的记号术语在已知集内 / 断言-例子数字一致 / 可算量必须实算。开关关闭
+/// 时整块省略（= j07 后提示词）。R14 的 ai-agent 图线孪生绑 verify_math
+/// 工具（CONTENT_DISCIPLINE_V2_CN）；本块消费方（传统线）没有工具循环——
+/// 纯纪律版，非对称记档（蓝图 A4，传统线接工具循环时合并）。
 pub const CONTENT_DISCIPLINE_V2_BLOCK: &str = r#"
 - Concrete stand-in first (R10): when a section first teaches an abstract object (a structure, a notation, an operation), give one concrete stand-in first — a geometric picture, an action metaphor, or a quantity you can touch in a specific situation — so the rules and properties that follow can be explained through it. Pair each key rule with one sentence of "why this holds", told through the stand-in; never expect the learner to memorise bare symbols.
 - Audience register (R11): when the course declares an adult, professional or other non-child audience, write the people and settings of examples from that audience's daily life — not juvenile, no primary-school classroom scenes; keep hands-on objects and teaching aids, and never lock a scenario to an age.
 - Vocabulary stays inside the known set (R12): symbols and terms used in a rule's formal statement must be declared (the lesson's teaches ∪ assumptions) — never improvise an undeclared symbol or term: rephrase in natural language instead. "Introduce it formally in the body first" applies ONLY to notation and its reading (expression tools this lesson must teach, such as how a new symbol is written and read); domain concepts are never covered by that escape — an undeclared concept belongs to a later lesson, so never name and introduce it in the body; say it in everyday words (the range, find an example that fails, at least one).
 - Assertion-example consistency (R13): the numbers in an example cited to support a consequence claim must actually entail that claim (a missing-number example reports fewer than the total, a duplicate example more than the total). For operation-style demonstrations, verify every intermediate result step by step — checking only the final state is not verification.
+- Computable quantities are computed, never guessed (R14): any number derivable from data printed in the section (sums, means, unit conversions, counts, date spans) is calculated explicitly with the intermediate steps shown; a contrast column gets the same step-by-step expansion as the worked column (never jump from the mean straight to the sum); "≈" is reserved for the final root/limit step.
 "#;
 
 /// 传统管线写作面纪律块（j07 基线 + k05 四条按开关追加）。

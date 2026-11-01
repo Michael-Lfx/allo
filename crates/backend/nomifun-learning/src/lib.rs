@@ -12,6 +12,7 @@ mod service;
 mod state;
 mod switches;
 mod tutorial;
+mod verify_math;
 
 pub use switches::{
     is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
@@ -43,8 +44,10 @@ pub use generation::{
     Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure,
 };
 pub use generation::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
+// R14 EN 块随开关常量再导出（w1 评审修复）：ai-agent 的跨宿互钉测试经
+// crate 根引用（generation 模块私有，类型/常量公开先例同 SampleDisclosure）。
 pub use generation::{
-    CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
+    CONTENT_DISCIPLINE_V2_BLOCK, CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
     is_content_discipline_v2_disabled_value,
 };
 pub use generation::{
@@ -113,6 +116,9 @@ pub use models::{
     PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,
     visual_menu_text,
 };
+/// verify_math 断言核验接口（票 w1/蓝图 4.1）：求值器与 claim 核验单源在
+/// learning（A1），ai-agent 工具 handler 直调——零新依赖。
+pub use verify_math::{ClaimVerdict, ExprError, MathClaim, eval_expr, verify_claim};
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
 /// 课时生成双模面（e4）：异步臂 202 响应体 + 门面重试环读数（smoke 判据）。
