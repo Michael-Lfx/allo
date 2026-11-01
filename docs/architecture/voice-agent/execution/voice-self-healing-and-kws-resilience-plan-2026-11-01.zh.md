@@ -126,14 +126,29 @@ flowchart TD
   - 若字符被 Zipformer KWS 本地词典完整支持：呈现 `● 双核流式声学秒级唤醒` 绿色微标；
   - 若字符包含罕见字符或纯自定义组合：呈现 `● SenseVoice 级联神经兜底` 蓝色微标，让用户清晰知晓唤醒词的技术生效模式。
 
+### 2.12 声学回声全状态闭环消除（消灭任务派发与追问阶段 ASR 自言自语）
+* 最小实验实测证实：ASR 录到播报声并非仅仅因播报停止延迟，而是因为在整个播报持续期间（如 5.5 秒），`DispatchingTask` 和 `FollowUpListening` 两个状态完全缺少 `in_echo_cooldown` 拦截，麦克风将扬声器声音全盘累积进 `utterance_pcm`（87,360 采样点），扬声器停止瞬间能量骤降触发 VAD 结束，在 0.5 毫秒内将自身音频倾倒给 ASR 并再次派发新任务；
+* 治本方案：在 `FollowUpListening`、`Deciding` 和 `DispatchingTask` 全状态分支均严格执行 `if !barge_in_ready && in_echo_cooldown { utterance_pcm.clear(); speech_started = false; continue; }`，发声期间麦克风帧一律丢弃，彻底消除回声自吞。
+
+### 2.13 设置页已就绪打勾图标契约修正（Arco 鲜艳绿色呈现）
+* `@icon-park/react` 源码契约证实：`theme='filled'` 模式下若未显式传递 `fill` 属性，底层 SVG 强制填充硬编码的 `#333333`（深灰色），外层 CSS `className="text-success-6"` 只修改 `currentColor`，filled 风格并不继承；
+* 治本方案：显式指定 `fill="currentColor"` 并绑定 `(capabilities?.can_start_full_call || allStagesReady)`，圆圈打勾 100% 呈现鲜亮标准的 Arco 绿色。
+
+### 2.14 三场景智能唤醒分流
+* 首页/新建对话页唤醒：自动创建新语音通话并平滑导航切入；
+* 已有语音通话页唤醒：原地激活当前语音通话继续听音；
+* 普通文本任务会话唤醒：识别到非语音通话，自动创建独立新语音通话并跳转，保护文本上下文。
+
 ---
 
 ## 3. 验证与验收基准
 
 1. **单测验证**：
-   - `bilingual_kws_validation`: 验证带调拼音 `n ǐ h ǎo x iǎo b ái` 能够被 KeywordSpotter 正确解析并加载；
-   - `voiceCallDockState.test.ts`: 验证挂断后且无任务时 100% 回归 `waitingWake`。
+   - `bilingual_kws_validation`: 验证覆盖 6700+ GB2312 常用汉字的自动带调拼音音素生成与 KeywordSpotter 加载；
+   - `voiceCallDockState.test.ts`: 验证挂断后且无任务时 100% 回归 `waitingWake`；
+   - `test_strip_custom_wake_word_punctuation_tolerance`: 验证前置语气助词子串截取、1 字同音近音容错及短串防御性不越界（0 Panic）。
 2. **真机行为验证**：
-   - 软件启动时不再听到突兀的 TTS 声音，设置页能力流水线开机即全绿；
-   - 点击开启通话不再报错 `voice_suite_in_use` 或 `启动语音通话失败`；
-   - 正常说话“你好小白”即可迅速命中唤醒，后台日志实时输出 VAD 与 Cascade 转写记录。
+   - 软件启动时扬声器零发声，设置页能力流水线开机即全绿，打勾图标为纯正绿色；
+   - 播报确认语或任务进展时，麦克风绝不录入扬声器自身声音，0 连环二次派发；
+   - 点击开启通话不再报错 `voice_suite_in_use` 或 `尚未运行对话检查`；
+   - 首页或普通文本会话唤醒自动创建并跳转新通话，已有语音通话原地继续。
