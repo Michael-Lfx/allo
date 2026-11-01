@@ -82,13 +82,31 @@ flowchart TD
 * 在主应用 Shell 顶层 `Router.tsx` 的 `GlobalVoiceWakeListener` 中增加路由守卫：身处设置页（`location.pathname.startsWith('/settings')`）或处于自查诊断状态时，严禁自动跳转离开设置页！
 
 ### 2.5 前端设置项联动交互重构与状态机历史任务解绑
-* 在 `VoiceFeedbackSettings.tsx` 中，将“语音唤醒”与“主唤醒词”合并为同一个卡片项：
-  - 顶部标题与 Switch 开关；
-  - 开关开启时，平滑展开可清空的唤醒词输入框与提示文案；
-  - 开关关闭时，输入框收拢置灰，后台完全释放麦克风。
+* 在 `VoiceFeedbackSettings.tsx` 中，彻底重构为极简的两行标准排版：
+  - 第 1 行：左侧 `语音唤醒`，右侧直接放置 `<Switch>` 开关；
+  - 第 2 行（开启时展开）：左侧 `主唤醒词`，右侧放置 `<Input placeholder="例如：你好小白 或 Hey Flowy" />`；
+  - 彻底删除“默认推荐使用 Hey Flowy，中英文环境均可自然免按唤醒...”等啰嗦冗余文本，所见即所得。
 * 在 `voiceCallDockState.ts` 中：
   - 将 `!task` 判定更正为 `!activeTask`：历史已完成/失败的任务不阻断胶囊回归“等待唤醒”（`waitingWake`）；
   - `ZH_DISMISS_CORE` 扩充支持“退一下”、“退一下吧”，避免口语轻声吞字被当成普通聊天。
+
+### 2.6 清除基线短词 `NI_HAO`/`FLOWY` 误触风暴与平衡门槛设置
+* 在 `crates/backend/nomifun-audio/src/kws.rs`：
+  - 彻底从通用基线规则池中删除裸词 `NI_HAO`（“你好”）与 `FLOWY`（两音节短词抗噪极弱，极易与环境声碰撞引发频繁误触）；
+  - 通用基线仅保留 `Hey Flowy`、`Hi Flowy` 和 `你好 Flowy` 等 $\ge 3$ 音节长词；
+  - 规则门槛调整为 Sherpa 官方推荐的平衡值 `:2.0 #0.15`，彻底消除退出通话 1 秒后又被杂音拉回通话的死循环。
+
+### 2.7 扬声器播报期声学回声消除与冷却窗口（Playback Muting Cooldown 600ms）
+* 在 `apps/voice-companion/src/voice.rs` 的主收音处理循环中：
+  - 实时监听 `playback.has_pending_audio()`，并维护 `last_playback_active` 时间戳；
+  - 在扬声器播报中及播报刚结束的 600ms 冷却期内，主动阻断麦克风收音帧：
+    * `Idle` 待机态：跳过 KWS 与 VAD 处理，清空语音缓冲，防止播报“再见”时自言自语被唤醒；
+    * `Listening` 听音态：丢弃收音帧，防止把扬声器播出的“我在”或“好的，再见”漏进麦克风录入 ASR。
+
+### 2.8 设置页 6 大能力指示灯全面绑定实时 `voiceSnapshot` 动态健康流与自动无声自检
+* 在 `VoiceSettings.tsx` 中：
+  - 6 大组件节点不再死等静态 Benchmark，而是直接优先绑定实时的 `voiceSnapshot` 动态健康流：麦克风收流、KWS、VAD、ASR、TTS、扬声器实时在线时瞬间点亮绿色 ● 并显示“完整通话已就绪”；
+  - 组件挂载时，若 `capabilities` 尚未写入，后台静默自动触发一次无声自查（`stage = "silent"`），无需用户每次来到设置页都手动点击。
 
 ---
 
