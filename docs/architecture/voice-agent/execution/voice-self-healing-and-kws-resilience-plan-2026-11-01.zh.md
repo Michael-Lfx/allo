@@ -63,8 +63,9 @@ flowchart TD
 * 针对多音与口语变调（如“你好”连续三声变为二声三声 `n í h ǎo`），同时向 `keywords_buf` 注入原调、变调与轻声候选；
 * 规则统一采用 `:2.0 #0.08` 灵敏门槛。
 
-### 2.2 待机 Stage-2 级联唤醒无缝对接自定义词表
+### 2.2 待机 Stage-2 级联唤醒无缝对接自定义词表与彻底解除过期门禁
 * 在 `apps/voice-companion/src/voice.rs` 的待机分支：
+  - 彻底移除 `!admission_valid_for(&wake_admission_until_ms)` 的丢弃逻辑，避免被后台 `refresh_wake_admission` 临时推 0 导致 `admission_expired`；只要语音开启且声学模型在，无论流式还是级联一律放行唤醒！
   - 当流式 KWS 未能在首帧命中时，VAD 截取 0.8s~2.5s 音频送入 SenseVoice ASR；
   - 转写出的文本通过 `strip_custom_wake_word` 与 `feedback.wake_words` 做标点容错前缀匹配；
   - 命中即刻触发唤醒！同时输出实时调试日志：
@@ -75,15 +76,19 @@ flowchart TD
   - `start_call` 在任何错误返回路径（如 `voice_suite_not_ready`）前，显式调用 `recorder.take_call_reservation(&request.request_id)` 清理悬空锁；
   - `voice_suite_in_use()` 增加时间戳过滤：超过 3 秒未转正的预定记录视作陈旧死锁自动忽略。
 
-### 2.4 开机静默自查与状态持久化
+### 2.4 开机静默自查、状态持久化与设置页自检隔离
 * 伴侣启动 2 秒后跑自检时传入 `stage = Some("silent")`，扬声器发送静音帧，物理扬声器不发声；
-* 签名计算中排除麦克风心跳等易变计数，自检跑通后立即写入 `self.capabilities`，设置页刷新即为 6 节点全绿。
+* 签名计算中排除麦克风心跳等易变计数，自检跑通后立即写入 `self.capabilities`，设置页刷新即为 6 节点全绿；
+* 在主应用 Shell 顶层 `Router.tsx` 的 `GlobalVoiceWakeListener` 中增加路由守卫：身处设置页（`location.pathname.startsWith('/settings')`）或处于自查诊断状态时，严禁自动跳转离开设置页！
 
-### 2.5 前端设置项联动交互重构
+### 2.5 前端设置项联动交互重构与状态机历史任务解绑
 * 在 `VoiceFeedbackSettings.tsx` 中，将“语音唤醒”与“主唤醒词”合并为同一个卡片项：
   - 顶部标题与 Switch 开关；
   - 开关开启时，平滑展开可清空的唤醒词输入框与提示文案；
   - 开关关闭时，输入框收拢置灰，后台完全释放麦克风。
+* 在 `voiceCallDockState.ts` 中：
+  - 将 `!task` 判定更正为 `!activeTask`：历史已完成/失败的任务不阻断胶囊回归“等待唤醒”（`waitingWake`）；
+  - `ZH_DISMISS_CORE` 扩充支持“退一下”、“退一下吧”，避免口语轻声吞字被当成普通聊天。
 
 ---
 
