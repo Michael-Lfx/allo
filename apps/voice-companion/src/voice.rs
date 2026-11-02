@@ -745,6 +745,9 @@ trait KwsBackend: Send {
     fn process_pcm_chunk(&mut self, chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult>;
     fn reset(&mut self);
     fn is_initialized(&self) -> bool;
+    fn has_default_wake_words(&self) -> bool {
+        true
+    }
 }
 
 impl KwsBackend for KwsEngine {
@@ -759,6 +762,10 @@ impl KwsBackend for KwsEngine {
     fn is_initialized(&self) -> bool {
         KwsEngine::is_initialized(self)
     }
+
+    fn has_default_wake_words(&self) -> bool {
+        KwsEngine::has_default_wake_words(self)
+    }
 }
 
 struct NativeKws {
@@ -768,6 +775,9 @@ struct NativeKws {
 }
 
 impl NativeKws {
+    pub(super) fn has_default_wake_words(&self) -> bool {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).has_default_wake_words()
+    }
     fn new(kws: Box<dyn KwsBackend>, runner: NativeCallRunner) -> Self {
         let initialized = kws.is_initialized();
         Self {

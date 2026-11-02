@@ -155,6 +155,25 @@ x iao f u x ing @XIAO_FU_XING
     }
 
     // Phase C: Feed real spoken wake word to verify low-latency detection
+    let jenny_wav = fixtures_dir.join("wake-jenny-16k.wav");
+    if jenny_wav.exists() {
+        let mut default_kws = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+            model_dir: Some(kws_dir.clone()),
+            keywords: vec![],
+            ..Default::default()
+        }).expect("create default kws");
+        let bytes = std::fs::read(&jenny_wav).unwrap();
+        let (raw_pcm, _) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        let mut raw_hit = None;
+        for chunk in raw_pcm.chunks(320) {
+            if let Some(h) = default_kws.process_pcm_chunk(chunk) {
+                raw_hit = Some(h);
+                break;
+            }
+        }
+        println!("Default KWS tested with RAW wake-jenny (no trailing silence): hit = {:?}", raw_hit);
+    }
+
     if wake_wav.exists() {
         kws_engine.reset();
         let bytes = std::fs::read(&wake_wav).expect("read wake_wav");

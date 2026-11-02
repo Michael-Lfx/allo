@@ -240,6 +240,15 @@ impl KwsEngine {
         self.config.sample_rate == 16000 && self.config.sensitivity > 0.0
     }
 
+    /// Returns true if the spotter includes default "Hey Flowy" or "Hi Flowy" rules.
+    pub fn has_default_wake_words(&self) -> bool {
+        self.config.keywords.is_empty()
+            || self.config.keywords.iter().any(|k| {
+                let l = k.trim().to_ascii_lowercase();
+                l == "hey flowy" || l == "hi flowy"
+            })
+    }
+
     /// Processes an audio chunk (~10-20ms @ 16kHz) and returns a detected keyword if spotted.
     pub fn process_pcm_chunk(&mut self, chunk: &[f32]) -> Option<KwsResult> {
         if chunk.is_empty() {
