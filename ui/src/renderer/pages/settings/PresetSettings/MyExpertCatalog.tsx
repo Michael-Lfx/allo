@@ -5,6 +5,7 @@ import { Plus } from '@icon-park/react';
 import type { Preset, PresetTag } from '@/common/types/agent/presetTypes';
 import { useCapabilityHubSearch } from '../capabilityHub/CapabilityHubShell';
 import ExpertTile, { EXPERT_CARD_GRID_COLS } from './ExpertTile';
+import { expertSearchMatches } from './expertCatalogModel';
 import { isEmoji, resolveAvatarImageSrc } from './presetUtils';
 
 type MyExpertCatalogProps = {
@@ -15,6 +16,12 @@ type MyExpertCatalogProps = {
   onOpen: (preset: Preset) => void;
   onCreate: () => void;
 };
+
+const presetTagLabels = (preset: Preset, tagById: Map<string, PresetTag>, localeKey: string): string[] =>
+  [...(preset.audience_tag_ids ?? []), ...(preset.scenario_tag_ids ?? [])]
+    .map((presetTagId) => tagById.get(presetTagId))
+    .filter((tag): tag is PresetTag => Boolean(tag))
+    .map((tag) => tag.label_i18n?.[localeKey] || tag.label);
 
 const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({
   presets,
@@ -30,21 +37,17 @@ const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({
   const mine = useMemo(() => presets.filter((preset) => preset.source === 'user'), [presets]);
 
   const visible = useMemo(() => {
-    const needle = searchQuery.trim().toLowerCase();
-    if (!needle) return mine;
     return mine.filter((preset) =>
-      [preset.name_i18n?.[localeKey] || preset.name, preset.description_i18n?.[localeKey] || preset.description || '']
-        .join(' ')
-        .toLowerCase()
-        .includes(needle)
+      expertSearchMatches(
+        [
+          preset.name_i18n?.[localeKey] || preset.name,
+          preset.description_i18n?.[localeKey] || preset.description || '',
+          ...presetTagLabels(preset, tagById, localeKey),
+        ].join(' '),
+        searchQuery
+      )
     );
-  }, [mine, searchQuery, localeKey]);
-
-  const tagLabels = (preset: Preset) =>
-    [...(preset.audience_tag_ids ?? []), ...(preset.scenario_tag_ids ?? [])]
-      .map((presetTagId) => tagById.get(presetTagId))
-      .filter((tag): tag is PresetTag => Boolean(tag))
-      .map((tag) => tag.label_i18n?.[localeKey] || tag.label);
+  }, [localeKey, mine, searchQuery, tagById]);
 
   const emptyClassName =
     'flex min-h-220px items-center justify-center rd-8px border border-dashed border-arco-2 bg-2 px-20px py-32px text-center text-13px text-t-secondary';
@@ -79,7 +82,7 @@ const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({
               testId={`my-expert-card-${preset.preset_id}`}
               name={preset.name_i18n?.[localeKey] || preset.name}
               summary={preset.description_i18n?.[localeKey] || preset.description || ''}
-              tags={tagLabels(preset)}
+              tags={presetTagLabels(preset, tagById, localeKey)}
               avatarImageSrc={resolveAvatarImageSrc(preset.avatar, avatarImageMap)}
               avatarEmoji={preset.avatar && isEmoji(preset.avatar.trim()) ? preset.avatar.trim() : undefined}
               onOpen={() => onOpen(preset)}

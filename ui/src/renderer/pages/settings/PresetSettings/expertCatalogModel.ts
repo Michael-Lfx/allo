@@ -4,6 +4,27 @@ import type { I18nKey } from '@/renderer/services/i18n/i18n-keys';
 
 export const EXPERT_PAGE_SIZE = 24;
 export const EXPERT_MAX_PAGES = 30;
+/** Same cap as the desktop catalog client and `GET /experts?keyword=`. */
+export const EXPERT_KEYWORD_MAX = 200;
+/** Same token cap as the experts list query. Extra words stay one phrase. */
+export const EXPERT_KEYWORD_TOKEN_MAX = 8;
+
+/** Trim a catalog search and keep it inside the list query limit. */
+export const expertSearchKeyword = (query: string): string => {
+  const trimmed = query.trim();
+  if (!trimmed) return '';
+  return Array.from(trimmed).slice(0, EXPERT_KEYWORD_MAX).join('');
+};
+
+/** Blank query matches everything. Each word must appear; a long phrase stays intact. */
+export const expertSearchMatches = (haystack: string, query: string): boolean => {
+  const keyword = expertSearchKeyword(query).toLowerCase();
+  if (!keyword) return true;
+  const tokens = keyword.split(/\s+/u).filter((token) => token.length > 0);
+  const parts = tokens.length > EXPERT_KEYWORD_TOKEN_MAX ? [keyword] : tokens;
+  const text = haystack.toLowerCase();
+  return parts.every((token) => text.includes(token));
+};
 
 /** Catalog categories. Ids match Flowy `categoryId`; labels live in i18n. */
 export const EXPERT_CATEGORIES = [
