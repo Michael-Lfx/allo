@@ -78,7 +78,10 @@ pub use learning_graph::basis_declaration::{
 pub use learning_graph::AutoRefillVerdict;
 pub use learning_graph::definition_audit;
 pub use learning_graph::lexicon;
-pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
+pub use learning_graph::mounting::{
+    fnv1a_64 as learning_graph_hash, hash_structure_column, mounts_stale,
+    STRUCTURE_HASH_VERSION, STRUCTURE_HASH_VERSION_V1,
+};
 pub use learning_graph::structure_contract::{
     reconcile_doors as reconcile_structure_doors,
     validate_terrain as validate_terrain_artifact,

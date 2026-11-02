@@ -19,15 +19,15 @@ use crate::models::{
 
 /// 从快照信封构建结构视图。`envelope` 为 None = 结构未生成（Missing 合法
 /// 空状态）：200 恒答，`structure`/`terrain` 均为 None。`mount_row` =
-/// (mounts_json, stored_hash)；`current_hash` = 当前 structure_json 字节的
-/// FNV-1a 64——两者比对即 `stale`（结构变过，挂载显影）。`node_titles` =
+/// (mounts_json, stored_hash, hash_version)；`stale` = 调用方按存量
+/// hash_version 选算法比较后的结论（结构变过，挂载显影）。`node_titles` =
 /// 现存节点标题（三态分母）。
 pub fn build_structure_view(
     course_id: nomifun_common::LearningCourseId,
     envelope: Option<&Value>,
     node_titles: &[String],
-    mount_row: Option<(&str, i64)>,
-    current_hash: u64,
+    mount_row: Option<(&str, i64, i64)>,
+    stale: bool,
 ) -> LearningStructureView {
     let Some(envelope) = envelope else {
         return LearningStructureView {
@@ -41,16 +41,11 @@ pub fn build_structure_view(
     let structure = envelope.get("structure").cloned().unwrap_or(Value::Null);
     let terrain = envelope.get("terrain").cloned().unwrap_or(Value::Null);
     let generated_at = envelope.get("generated_at").and_then(Value::as_i64);
-    let mounts = mount_row.map(|(mounts_json, stored_hash)| {
+    let mounts = mount_row.map(|(mounts_json, _stored_hash, _stored_version)| {
         let stored = serde_json::from_str::<Value>(mounts_json)
             .map(|value| super::mounting::parse_mount_entries(&value))
             .unwrap_or_default();
-        build_mounts_view(
-            &structure,
-            &stored,
-            node_titles,
-            (stored_hash as u64) != current_hash,
-        )
+        build_mounts_view(&structure, &stored, node_titles, stale)
     });
     let structure_view = build_structure(&structure);
     let terrain_view = build_terrain(&terrain, &structure_view.blocks);
@@ -597,7 +592,7 @@ mod tests {
             Some(&sample_envelope()),
             &[],
             None,
-            0,
+            false,
         )
         .structure
         .expect("sample has structure")
@@ -656,7 +651,7 @@ mod tests {
     /// None 信封 = Missing：全 None、200 恒答形状。
     #[test]
     fn missing_envelope_is_a_legal_empty_view() {
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), None, &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), None, &[], None, false);
         assert!(view.structure.is_none());
         assert!(view.terrain.is_none());
         assert!(view.generated_at.is_none());
@@ -665,14 +660,14 @@ mod tests {
     /// 地形投影：门口列表 + 基础声明回执；空门口 = None（未生成地形）。
     #[test]
     fn terrain_view_carries_doors() {
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()), &[], None, false);
         let terrain = view.terrain.expect("sample has terrain");
         assert_eq!(terrain.doors.len(), 2);
         assert_eq!(terrain.doors[0].id, "G1");
         assert_eq!(terrain.learner_basis_assumed, "纯零基础（未声明）");
 
         let doorless = json!({ "version": 1, "structure": {}, "terrain": { "doors": [] } });
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless), &[], None, false);
         assert!(view.terrain.is_none());
     }
 
@@ -704,7 +699,7 @@ mod tests {
             Some(&sample_envelope()),
             &[],
             None,
-            0,
+            false,
         );
         let terrain = full.terrain.expect("sample has terrain");
         let count = |id: &str| {
@@ -723,7 +718,7 @@ mod tests {
         for block in legacy["structure"]["blocks"].as_array_mut().unwrap() {
             block.as_object_mut().unwrap().remove("door_refs");
         }
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&legacy), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&legacy), &[], None, false);
         let terrain = view.terrain.expect("legacy has terrain");
         assert!(terrain.doors.iter().all(|door| door.covered_blocks == 0));
     }
@@ -744,7 +739,7 @@ mod tests {
                 ]
             }
         });
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&envelope), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&envelope), &[], None, false);
         let structure = view.structure.expect("structure present");
         assert!(structure.blocks.iter().all(|block| block.layer == 0), "环冻结在 0 层");
     }

@@ -42,7 +42,8 @@ pub const MOUNT_OVERLOAD_THRESHOLD: usize = 5;
 
 // ── 结构 hash ─────────────────────────────────────────────────────────────
 
-/// FNV-1a 64（手写，跨版本稳定）：对 `structure_json` 列的原样字节做锚。
+/// FNV-1a 64（手写，跨版本稳定）。v1 口径 = 对列原样字节求 hash；v2 口径
+/// 见 [`canonical_structure_hash`]（只取内层 structure 的规范化投影）。
 pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
@@ -50,6 +51,57 @@ pub fn fnv1a_64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// 历史算法代际：对 `structure_json` 列原样字节求 hash（dev 库存量 mounts 行）。
+pub const STRUCTURE_HASH_VERSION_V1: i64 = 1;
+/// 现行算法代际：对内层 `structure` 的规范化投影求 hash。
+pub const STRUCTURE_HASH_VERSION: i64 = 2;
+
+/// 规范化投影 hash：解析后的信封取内层 `structure`，紧凑序列化（serde_json
+/// 默认 BTreeMap 键序，消灭键序与空白差异）再 FNV-1a 64。
+/// `terrain`/`lexicon`/`generated_at`/信封 `version`（以及未来 `ext`）一律
+/// 不进 hash 输入。结构缺失或非对象 → None，调用方回退 v1 口径。
+pub fn canonical_structure_hash(envelope: &Value) -> Option<u64> {
+    let structure = envelope.get("structure")?;
+    if !structure.is_object() {
+        return None;
+    }
+    let canonical = serde_json::to_string(structure).ok()?;
+    Some(fnv1a_64(canonical.as_bytes()))
+}
+
+/// 当前列 → `(hash, version)`：信封可解析且内层 structure 是对象 → 规范化
+/// v2；否则（空/坏/无 structure 键）→ 原样字节 v1。写侧用它取 hash，
+/// 读侧新行比较也用它。
+pub fn hash_structure_column(raw_column: &str) -> (u64, i64) {
+    match serde_json::from_str::<Value>(raw_column) {
+        Ok(envelope) => match canonical_structure_hash(&envelope) {
+            Some(hash) => (hash, STRUCTURE_HASH_VERSION),
+            None => (fnv1a_64(raw_column.as_bytes()), STRUCTURE_HASH_VERSION_V1),
+        },
+        Err(_) => (fnv1a_64(raw_column.as_bytes()), STRUCTURE_HASH_VERSION_V1),
+    }
+}
+
+/// 按存量行的 `hash_version` 选择算法比较是否 stale（读路径不写库：v1 行
+/// 只要结构没变就保持 fresh，直到该课程下一次 mount/repair 回合自然升级）。
+/// 不识别的更高版本视为 fresh 并告警——未来版本写下的行不应在旧版本里
+/// 误报全量 stale。
+pub fn mounts_stale(stored_hash: i64, stored_version: i64, raw_column: &str) -> bool {
+    match stored_version {
+        version if version <= STRUCTURE_HASH_VERSION_V1 => {
+            (stored_hash as u64) != fnv1a_64(raw_column.as_bytes())
+        }
+        STRUCTURE_HASH_VERSION => (stored_hash as u64) != hash_structure_column(raw_column).0,
+        unknown => {
+            tracing::warn!(
+                stored_version = unknown,
+                "unknown structure hash version; treating mounts as fresh"
+            );
+            false
+        }
+    }
 }
 
 // ── 挂载条目 ──────────────────────────────────────────────────────────────
@@ -567,6 +619,76 @@ mod tests {
         assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(fnv1a_64(b"foobar"), 0x85944171f73967e8);
+    }
+
+    fn envelope(structure: serde_json::Value) -> Value {
+        json!({
+            "version": 1,
+            "generated_at": 1_700_000_000_000_i64,
+            "structure": structure,
+            "terrain": { "doors": [] },
+            "lexicon": { "terms": [] }
+        })
+    }
+
+    #[test]
+    fn canonical_hash_ignores_key_order_and_whitespace() {
+        // 同内容不同键序（手工构造两个 Value 的插入序在 BTreeMap 下相同，
+        // 这里用不同缩进/换行路径覆盖空白差异）。
+        let a = envelope(json!({"blocks": [{"slug": "b1", "name": "块一"}], "goal": "g"}));
+        let b: Value = serde_json::from_str(
+            r#"{
+                "structure": { "goal": "g", "blocks": [ { "name": "块一", "slug": "b1" } ] },
+                "terrain": { "doors": [] },
+                "generated_at": 1700000000000,
+                "version": 1,
+                "lexicon": { "terms": [] }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_structure_hash(&a),
+            canonical_structure_hash(&b),
+            "key order and whitespace must not change the projection hash"
+        );
+    }
+
+    #[test]
+    fn canonical_hash_changes_only_when_structure_changes() {
+        let base = envelope(json!({"blocks": [{"slug": "b1", "name": "块一"}]}));
+        let renamed = envelope(json!({"blocks": [{"slug": "b1", "name": "块二"}]}));
+        let with_side_keys = json!({
+            "version": 2,
+            "generated_at": 2_000_000_000_000_i64,
+            "structure": base.get("structure").unwrap().clone(),
+            "terrain": { "doors": [{"id": "d1"}] },
+            "lexicon": { "terms": ["新词"] },
+            "ext": { "future": true }
+        });
+        let base_hash = canonical_structure_hash(&base).unwrap();
+        assert_ne!(base_hash, canonical_structure_hash(&renamed).unwrap());
+        assert_eq!(
+            base_hash,
+            canonical_structure_hash(&with_side_keys).unwrap(),
+            "terrain/lexicon/generated_at/version/ext must stay outside the hash"
+        );
+    }
+
+    #[test]
+    fn stale_compares_by_stored_generation() {
+        let raw = envelope(json!({"blocks": [{"slug": "b1", "name": "块一"}]})).to_string();
+        let (v2_hash, version) = hash_structure_column(&raw);
+        assert_eq!(version, STRUCTURE_HASH_VERSION);
+        assert!(!mounts_stale(v2_hash as i64, version, &raw), "v2 row is fresh");
+        assert!(mounts_stale((v2_hash ^ 1) as i64, version, &raw), "v2 mismatch is stale");
+
+        // v1 存量行：原样字节 hash 与列一致 = fresh，即使该列现在能算 v2。
+        let v1_hash = fnv1a_64(raw.as_bytes());
+        assert!(!mounts_stale(v1_hash as i64, STRUCTURE_HASH_VERSION_V1, &raw));
+        assert!(mounts_stale((v1_hash ^ 1) as i64, STRUCTURE_HASH_VERSION_V1, &raw));
+
+        // 不认识的更高版本：视为 fresh（不误报全量 stale）。
+        assert!(!mounts_stale(123, STRUCTURE_HASH_VERSION + 1, &raw));
     }
 
     #[test]
