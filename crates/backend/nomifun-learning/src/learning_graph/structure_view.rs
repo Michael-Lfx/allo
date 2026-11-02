@@ -38,9 +38,13 @@ pub fn build_structure_view(
             mounts: None,
         };
     };
-    let structure = envelope.get("structure").cloned().unwrap_or(Value::Null);
-    let terrain = envelope.get("terrain").cloned().unwrap_or(Value::Null);
-    let generated_at = envelope.get("generated_at").and_then(Value::as_i64);
+    // 读侧归一（x08）：legacy v1 中文字面量只在视图层转码显示，不落盘；
+    // v2 数据零改写。
+    let mut normalized = envelope.clone();
+    super::structure_contract::normalize_structure_vocab(&mut normalized);
+    let structure = normalized.get("structure").cloned().unwrap_or(Value::Null);
+    let terrain = normalized.get("terrain").cloned().unwrap_or(Value::Null);
+    let generated_at = normalized.get("generated_at").and_then(Value::as_i64);
     let mounts = mount_row.map(|(mounts_json, _stored_hash, _stored_version)| {
         let stored = serde_json::from_str::<Value>(mounts_json)
             .map(|value| super::mounting::parse_mount_entries(&value))
@@ -541,9 +545,9 @@ mod tests {
                 "goal": "能独立求解",
                 "goal_type": "capability",
                 "proficiency_statement": "达成后能独立解题",
-                "domain_type": "理论",
+                "domain_type": "theory",
                 "form_reference": "Flowy 学习结构模板 v1",
-                "source_tier": "名录",
+                "source_tier": "catalog",
                 "generated_by": "model-x",
                 "disclaimer": "参考地图",
                 "domain": {
@@ -560,14 +564,14 @@ mod tests {
                     { "name": "主干二", "definition": "d2", "key_points": ["k"], "instance": "i" }
                 ],
                 "blocks": [
-                    { "name": "块A", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "n", "door_refs": ["G1"] },
-                    { "name": "块B", "slug": "block-b", "spine": "主干一", "stage": "进阶", "note": "n" },
-                    { "name": "块C", "slug": "block-c", "spine": "主干二", "stage": "高级", "note": "n" },
-                    { "name": "块D", "slug": "block-d", "spine": "主干二", "stage": "入门", "note": "n", "door_refs": ["G1", "G2"] }
+                    { "name": "块A", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "n", "door_refs": ["G1"] },
+                    { "name": "块B", "slug": "block-b", "spine": "主干一", "stage": "advanced", "note": "n" },
+                    { "name": "块C", "slug": "block-c", "spine": "主干二", "stage": "expert", "note": "n" },
+                    { "name": "块D", "slug": "block-d", "spine": "主干二", "stage": "basic", "note": "n", "door_refs": ["G1", "G2"] }
                 ],
                 "edges": [
                     { "source": "块B", "target": "块A", "type": "assumes", "tier": "know", "note": "" },
-                    { "source": "块C", "target": "块B", "type": "assumes", "tier": "use", "note": "" },
+                    { "source": "块C", "target": "块B", "type": "assumes", "tier": "apply", "note": "" },
                     { "source": "块C", "target": "块D", "type": "composes", "tier": "know", "note": "" }
                 ],
                 "gaps": [{ "item": "g", "direction": "d" }],
@@ -730,8 +734,8 @@ mod tests {
             "structure": {
                 "spines": [{ "name": "s", "definition": "d", "key_points": ["k"], "instance": "i" }],
                 "blocks": [
-                    { "name": "X", "slug": "x", "spine": "s", "stage": "入门", "note": "" },
-                    { "name": "Y", "slug": "y", "spine": "s", "stage": "入门", "note": "" }
+                    { "name": "X", "slug": "x", "spine": "s", "stage": "basic", "note": "" },
+                    { "name": "Y", "slug": "y", "spine": "s", "stage": "basic", "note": "" }
                 ],
                 "edges": [
                     { "source": "X", "target": "Y", "type": "assumes", "tier": "know" },

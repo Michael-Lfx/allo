@@ -123,3 +123,8 @@ pub fn normalize_structure_vocab(value: &mut Value) -> usize
 | 日期 | 类型 | 位置 | 变更 | 根因/触发 |
 |---|---|---|---|---|
 | 2026-11-02 | 修订 | 2/4.3 | `use` 字面量清单落定（13 处 + `generation/lesson.rs:791` 概念 tier 误写一处）；x14 的 ext 阶段二回写位挂在本图（等 x07 合入后补 §ext 键条款） | 图 4 读码底稿 C4/B 节 |
+| 2026-11-02 | 施工记录 | 4.1/4.2 | 常量换码（STAGES basic/advanced/expert、DOMAIN_TYPES theory/engineering/history/skill、SOURCE_TIERS catalog/chapter、EDGE_TIERS know/apply/teach）；`normalize_structure_vocab` 单函数覆盖顶层两标量 + `blocks[].stage` + `edges[].tier` + 修补产物 `ops[].stage/tier`（表外值不造值）。接线：structure_gen 解析后、structure_ops 修补产物解析后、structure_view 读侧克隆归一（不落盘）。`STRUCTURE_ENVELOPE_VERSION=2` 同时用于生成快照与修补重写信封。 | 图 4 施工 |
+| 2026-11-02 | 施工记录 | 4.3 | 提示词两份资产（goal-decomposition / structure-repair）改码并保留中文注；金样快照用 `LEARNING_UPDATE_GOLDEN=1` 重生成；Rust 夹具全量换码（含 structure_gen/ops/view/contract/smoke/basis/service tests 与 `mod.rs` 参考行）；前端 `types.ts` union、`BlockDetail.tsx` stage switch + tierLabel（未知码原样降级；`learningGraphTier_*` 双语键已存在，无需新增）；`mindmapLayout.test.ts` 夹具改码。 | 图 4 施工 |
+| 2026-11-02 | 勘误 | 4.3 | `gd_edges_resolve_against_block_names_only` 原用 `tier="apply"` 造违约——`apply` 从本票起是合法码，改 `bogus`；`envelope_carries_both_artifacts` 版本断言 1→2。 | 施工实测 |
+| 2026-11-02 | 施工记录 | 4.4 | 文档 `learning-structure-artifacts.md` 取值/条款行改码（含「两套词」括注删除，改为「与概念网 tier 同集」）；`generation/lesson.rs` 英文散文 `use`→`apply`。 | 图 4 施工 |
+| 2026-11-02 | 勘误 | 4.1 | 归一闭包初版捕捉 `rewrites` 造成借用冲突，改为两次内联循环；`current` 先 `map(str::to_owned)` 再 `insert`（避免持有 map 借用）。 | 施工编译 |

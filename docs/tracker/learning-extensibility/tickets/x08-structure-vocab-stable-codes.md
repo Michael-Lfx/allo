@@ -2,7 +2,7 @@
 id: x08
 title: "structure_json 稳定码统一——中文字面量改落库码、EDGE_TIERS 与 ConceptTier 合一取 apply"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [x21]
 part_of: ../map.md
@@ -50,3 +50,27 @@ part_of: ../map.md
 ## 非目标
 
 - `visual` 取值（x17）。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **落库码**：`stage basic|advanced|expert`、`domain_type theory|engineering|history|skill`、
+  `source_tier catalog|chapter`、`EDGE_TIERS know|apply|teach`（`use` 旧词合一为 apply）；
+  `stage_rank` 顺序随码，矩阵三格键不变。
+- **机械归一**：`normalize_structure_vocab`（structure_contract.rs）覆盖顶层两标量 +
+  `blocks[].stage` + `edges[].tier` + 修补产物 `ops[].stage/tier`；中文/旧词/大小写
+  → 码，表外值不造值。接线 = 生成解析后（structure_gen）、修补产物解析后
+  （structure_ops run_repair_round）、视图读侧克隆归一（不落盘）。
+- **信封代际**：`STRUCTURE_ENVELOPE_VERSION=2`，生成快照与修补重写信封统一写 2。
+- **提示词**：goal-decomposition / structure-repair 两份资产改码（保留中文注）；
+  金样快照 `LEARNING_UPDATE_GOLDEN=1` 重生成。
+- **夹具/读侧**：Rust 全量换码（structure_gen/ops/view/contract/smoke/basis/service
+  tests、mod.rs 参考行）；前端 `types.ts` union、`BlockDetail` stage switch + tier i18n
+  （未知码原样降级；双语键已存在）、`mindmapLayout.test.ts` 夹具。
+- **文档**：`learning-structure-artifacts.md` 取值/条款行改码，删「两套词」括注。
+- **验收**：`cargo test -p nomifun-learning` 745 绿；`bun run check:i18n` 通过；
+  结构组件测试 3 绿；`bun run typecheck` 仅剩 videoCanvas 存量债（与学习面无关）；
+  `learning-smoke structure/mount/repair` 需 provider 的真机档本会话未跑（临时库无
+  provider），留波次真机批。
+- 偏差：无（图 A2 的「模型仍吐中文、机械归一」按图执行）。

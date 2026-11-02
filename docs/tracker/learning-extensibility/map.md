@@ -156,3 +156,6 @@
 - 2026-11-02：x06/x07 关闭——findings 加每课程单调 `seq`，水位改锚 seq（还原重编号
   不漂移、不重跑）；mounts/repairs 加 `hash_version`，hash 改为内层 structure 规范化
   投影（v2），读侧按存量版本比较不回写（GET 不写库），重序列化不再误判 stale。
+- 2026-11-02：x08 关闭——structure 落库码统一（stage/domain_type/source_tier 三组 +
+  EDGE_TIERS 的 use 合一为 apply）；模型仍可吐中文，`normalize_structure_vocab` 在
+  生成/修补/视图三面机械归一；信封 version bump 2；提示词与金样、前后端夹具全量换码。
