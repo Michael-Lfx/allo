@@ -1919,7 +1919,10 @@ async fn run_quiz(
     let mut activity_ids = Vec::new();
     // 每道 bank 题的判分底（kind + config）：answer 不再硬编码 "B"。
     let mut bank_configs: HashMap<String, (String, serde_json::Value)> = HashMap::new();
-    let numeric_unit = nomifun_learning::NumericUnit::Percent;
+    // 种子题的显示口径（写进 config_json；后续重算一律从 config 解析回来，
+    // 不再用硬编码的 unit/precision 覆盖 config 自报值）。
+    let seed_unit = nomifun_learning::NumericUnit::Percent;
+    let seed_precision = 1u8;
     for index in 0..k {
         let lesson_id = nomifun_common::LearningLessonId::new().into_string();
         sqlx::query(
@@ -1946,7 +1949,7 @@ async fn run_quiz(
                 .into(),
             };
             let cast =
-                nomifun_learning::cast_numeric_claim(&claim, 1, numeric_unit)
+                nomifun_learning::cast_numeric_claim(&claim, seed_precision, seed_unit)
                     .map_err(|error| anyhow::anyhow!("numeric seed cast: {error}"))?;
             (
                 "numeric",
@@ -1959,8 +1962,8 @@ async fn run_quiz(
                     "matches": [],
                     "tol": cast.tol,
                     "claim": claim,
-                    "precision": 1,
-                    "unit": "percent",
+                    "precision": seed_precision,
+                    "unit": seed_unit,
                 }),
             )
         } else {
@@ -2163,15 +2166,32 @@ async fn run_quiz(
     let numeric_tol = numeric_config["tol"].as_f64().expect("numeric bank tol");
     let numeric_claim: nomifun_learning::NumericClaim =
         serde_json::from_value(numeric_config["claim"].clone())?;
-    let recast = nomifun_learning::cast_numeric_claim(
-        &numeric_claim,
-        numeric_config
-            .get("precision")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0) as u8,
-        numeric_unit,
-    )
-    .map_err(|error| anyhow::anyhow!("numeric bank recast: {error}"))?;
+    // 重算口径一律取自 config 自身（评审修复：不再硬编码 Percent/1）。
+    // unit 可选、缺省 Raw（契约），缺席时按有效单位 Raw 参与重算/比对。
+    let parse_unit = |config: &serde_json::Value,
+                      label: &str|
+     -> anyhow::Result<nomifun_learning::NumericUnit> {
+        match config.get("unit") {
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|error| anyhow::anyhow!("{label} numeric unit: {error}")),
+            None => Ok(nomifun_learning::NumericUnit::Raw),
+        }
+    };
+    let parse_precision =
+        |config: &serde_json::Value, label: &str| -> anyhow::Result<u8> {
+            config
+                .get("precision")
+                .and_then(|value| value.as_u64())
+                .filter(|value| *value <= 10)
+                .map(|value| value as u8)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{label} numeric config missing precision (0-10)")
+                })
+        };
+    let bank_unit = parse_unit(&numeric_config, "bank")?;
+    let bank_precision = parse_precision(&numeric_config, "bank")?;
+    let recast = nomifun_learning::cast_numeric_claim(&numeric_claim, bank_precision, bank_unit)
+        .map_err(|error| anyhow::anyhow!("numeric bank recast: {error}"))?;
     anyhow::ensure!(
         (numeric_answer - recast.answer).abs() < 1e-12 && numeric_tol == recast.tol,
         "numeric bank answer key must equal the tool cast ({} vs {}, tol {} vs {})",
@@ -2192,8 +2212,11 @@ async fn run_quiz(
         "numeric exact answer must grade correct and reveal the cast key"
     );
     anyhow::ensure!(
-        graded_numeric.precision == Some(1)
-            && graded_numeric.unit == Some(numeric_unit),
+        graded_numeric.precision == Some(bank_precision)
+            && graded_numeric
+                .unit
+                .unwrap_or(nomifun_learning::NumericUnit::Raw)
+                == bank_unit,
         "numeric grade feedback must carry precision/unit for reveal"
     );
     let within = service
@@ -2228,15 +2251,18 @@ async fn run_quiz(
         let config = item_basis(item).1;
         let claim: nomifun_learning::NumericClaim =
             serde_json::from_value(config["claim"].clone())?;
-        let cast = nomifun_learning::cast_numeric_claim(
-            &claim,
-            config
-                .get("precision")
-                .and_then(|value| value.as_u64())
-                .expect("variant precision") as u8,
-            numeric_unit,
-        )
-        .map_err(|error| anyhow::anyhow!("variant recast: {error}"))?;
+        // 变式重算用 config 自己的 unit/precision（评审修复：不再硬编码），
+        // 并钉住变式单位与 bank 单位一致（同模板换参的显示口径不变）。
+        let variant_unit = parse_unit(&config, "variant")?;
+        let variant_precision = parse_precision(&config, "variant")?;
+        anyhow::ensure!(
+            variant_unit == bank_unit,
+            "variant unit {:?} must equal the bank unit {:?}",
+            variant_unit,
+            bank_unit
+        );
+        let cast = nomifun_learning::cast_numeric_claim(&claim, variant_precision, variant_unit)
+            .map_err(|error| anyhow::anyhow!("variant recast: {error}"))?;
         let variant_answer = config["answer"].as_f64().expect("variant answer number");
         anyhow::ensure!(
             (variant_answer - cast.answer).abs() < 1e-12,

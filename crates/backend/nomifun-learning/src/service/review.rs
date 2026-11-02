@@ -570,7 +570,11 @@ impl LearningService {
         .map_err(internal)?
         .and_then(|config_json| serde_json::from_str::<StoredActivityConfig>(&config_json).ok());
         if let Some(stored) = &stored_config {
-            if stored.claim.is_some() && request.answer != stored.answer {
+            // 客户端 JSON 往返会把 25.0 变成 25（Float → PosInt），按数值
+            // 比较而不是 serde_json::Value 相等（w2 评审修复）。
+            if stored.claim.is_some()
+                && !numeric_answers_equivalent(&request.answer, &stored.answer)
+            {
                 return Err(AppError::BadRequest(
                     "numeric activity answer is cast from its claim by the system and cannot be edited; \
                      update the prompt/explanation or regenerate the question instead"
@@ -1755,6 +1759,21 @@ fn source_text(source: ReviewSource) -> &'static str {
     match source {
         ReviewSource::Course => "course",
         ReviewSource::Custom => "custom",
+    }
+}
+
+/// 数值答案键的等价判定（w2 编辑面）：以 `as_f64()` 比较而不是
+/// `serde_json::Value` 相等——浏览器 JSON 往返会把落库的 `25.0`（Float）
+/// 读回成 `25`（PosInt），同一数值不该被当成手改。相对容差
+/// `1e-9 × max(1, |a|, |b|)` 只吸收浮点表示噪声，真正不同的数值仍拒绝。
+/// 非数值（异常形状）退回严格相等，行为与旧路径一致。
+fn numeric_answers_equivalent(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    match (left.as_f64(), right.as_f64()) {
+        (Some(left), Some(right)) => {
+            left == right
+                || (left - right).abs() <= 1e-9 * left.abs().max(right.abs()).max(1.0)
+        }
+        _ => left == right,
     }
 }
 

@@ -1529,7 +1529,8 @@ impl ActivityKind {
 
 /// 铸值接线模式（w2）：
 /// - [`NumericCastMode::Strict`]：模型面（整课生成 / 单题 / agent 草稿）——
-///   claim 在场时 answer/tol 必须缺席（系统铸值），写了就报可读错误重试。
+///   numeric 必须带 claim（precision/unit 随 claim 轨），且 answer/tol 必须
+///   缺席（系统铸值）；缺 claim 或写了 answer/tol 都报可读错误重试。
 /// - [`NumericCastMode::Force`]：导入/落库/审计兜底——claim 在场时无条件重算
 ///   并覆盖 answer/tol（幂等；旧行 claim 缺席时原样保留 legacy answer/tol）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1540,13 +1541,22 @@ pub(crate) enum NumericCastMode {
 
 impl ActivityPack {
     /// w2 铸值：numeric claim 轨调用 [`crate::verify_math::cast_numeric_claim`]
-    /// 实算 answer（显示单位）与系统 tol。非 numeric 或 claim 缺席 = 无操作
-    /// （legacy 手写 answer/tol 路径不变）。
+    /// 实算 answer（显示单位）与系统 tol。非 numeric = 无操作；numeric 且
+    /// claim 缺席时 Strict 报错（模型面必须走 claim 轨），Force 保留 legacy
+    /// 手写 answer/tol（导入/旧行）。
     pub(crate) fn cast_numeric_claim(&mut self, mode: NumericCastMode) -> Result<(), String> {
         if self.kind != ActivityKind::Numeric {
             return Ok(());
         }
         let Some(claim) = self.claim.clone() else {
+            if mode == NumericCastMode::Strict {
+                return Err(format!(
+                    "numeric \"{}\" must provide \"claim\" + \"precision\" + \"unit\"; \
+                     do not write \"answer\" or \"tol\" — the system casts the answer key \
+                     from the claim expression and its parameters",
+                    self.prompt.trim()
+                ));
+            }
             return Ok(());
         };
         if mode == NumericCastMode::Strict && (!self.answer.is_null() || self.tol.is_some()) {
@@ -3554,8 +3564,10 @@ pub(crate) struct StoredActivityConfig {
 impl StoredActivityConfig {
     /// 落库配置的统一构造（w2）：从生成面 [`ActivityPack`] 派生——matching
     /// 候选由 answer 派生、evidence 去空白、claim/precision/unit 原样携带；
-    /// `difficulty` 由装配面注入（传 `None` = 沿用题包自报值）。course
-    /// import / lesson persist / manual payload / quiz variant / smoke 共用。
+    /// `difficulty` 由装配面显式注入并原样写入（传 `None` = 本行无难度档，
+    /// 不会回填题包自报值；需要继承题包自报值的调用方自行
+    /// `injected.or(activity.difficulty)`）。course import / lesson persist /
+    /// manual payload / quiz variant / smoke 共用。
     pub(crate) fn from_activity(activity: &ActivityPack, difficulty: Option<u8>) -> Self {
         Self {
             options: activity.options.clone(),
@@ -3620,6 +3632,37 @@ mod numeric_claim_tests {
         claimed.answer = serde_json::Value::Null;
         let nulled = claimed.validate_shape((3, 5), true).unwrap_err();
         assert!(nulled.contains("JSON number"), "{nulled}");
+    }
+
+    #[test]
+    fn strict_mode_requires_a_claim_for_numeric_and_force_keeps_legacy_path() {
+        // 模型面（Strict）：numeric 必须给 claim + precision + unit，无 claim
+        // 的自报 answer 一律拒绝（评审修复：此前 Strict 直接放行）。
+        let mut legacy = pack(ActivityKind::Numeric);
+        legacy.answer = serde_json::json!(42.0);
+        let error = legacy
+            .cast_numeric_claim(NumericCastMode::Strict)
+            .unwrap_err();
+        assert!(
+            error.contains("claim")
+                && error.contains("precision")
+                && error.contains("unit")
+                && error.contains("do not write \"answer\" or \"tol\""),
+            "{error}"
+        );
+        // Force（导入/落库/审计兜底）：claim 缺席 = legacy 手写 answer/tol
+        // 原样保留，不误伤旧行。
+        let mut preserved = legacy.clone();
+        preserved
+            .cast_numeric_claim(NumericCastMode::Force)
+            .unwrap();
+        assert_eq!(preserved.answer, serde_json::json!(42.0));
+        assert_eq!(preserved.tol, None);
+        // 非 numeric 题型两模式都无操作。
+        let mut choice = pack(ActivityKind::SingleChoice);
+        choice
+            .cast_numeric_claim(NumericCastMode::Strict)
+            .unwrap();
     }
 
     #[test]

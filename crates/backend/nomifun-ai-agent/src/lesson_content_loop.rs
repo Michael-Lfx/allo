@@ -131,7 +131,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
-- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 严禁自算或写 answer/tol：给 "claim"（{{"expr": "ASCII 表达式", "params": {{参数: 数值}}}}，显式 *、^、sqrt 等函数）+ precision（0-10 显示小数位）+ unit（raw/percent，percent 时系统按 ×100 存显示值），答案键由系统实算；题面必须写清 params 绑定的参数值；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
+- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 严禁自算或写 answer/tol：给 "claim"（{{"expr": "ASCII 表达式，支持 eval_expr 文法（显式 *、^、函数、pi/e）", "params": {{参数: 数值}}}}）+ precision（0-10 显示小数位）+ unit（raw/percent，percent 时系统按 ×100 存显示值），答案键由系统实算；题面必须写清 params 绑定的参数值；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
@@ -1548,33 +1548,6 @@ mod tests {
     /// 工具）进图管线系统提示词（默认开；off 臂由 nomifun-learning 的开关
     /// 测试锁装配函数）。R12 为 #177 收窄版条款覆盖断言：逃生门只许记号与
     /// 读法，旧「正文先行引入」全量门必须消失。
-    /// w2 条款覆盖（CN 双宿，无 golden）：图线系统提示词 + 工具描述 + 修复
-    /// 对照表都必须把 numeric 钉成 claim + precision + unit、禁写 answer/tol。
-    #[tokio::test]
-    async fn numeric_claim_clause_is_pinned_across_the_cn_host_prompts() {
-        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
-        for phrase in [
-            "严禁自算或写 answer/tol",
-            "\"claim\"",
-            "precision（0-10",
-            "unit（raw/percent",
-            "答案键由系统实算",
-        ] {
-            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
-        }
-        assert!(!system.contains("numeric 是数字（可带 tol 容差）"));
-        let (service, _dir) = test_service().await;
-        let (ctx, _draft, _published) = context(service);
-        let tool = ls_patch_activities(ctx);
-        assert!(tool.description.contains("\"claim\""), "{}", tool.description);
-        assert!(tool.description.contains("\"precision\""), "{}", tool.description);
-        assert!(tool.description.contains("\"unit\""), "{}", tool.description);
-        assert!(
-            REPAIR_LESSON_AGENT_SYSTEM.contains("numeric 的形状由 claim"),
-            "repair table must route claim-track shape failures to claim/precision/unit"
-        );
-    }
-
     #[test]
     fn lesson_agent_system_prompt_carries_content_discipline_v2() {
         let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
@@ -1597,6 +1570,37 @@ mod tests {
         // j07 基线条款仍在（回归护栏）。
         assert!(system.contains("先推后练"));
         assert!(system.contains("对照要真对照"));
+    }
+
+    /// w2 条款覆盖（CN 双宿，无 golden）：图线系统提示词 + 工具描述 + 修复
+    /// 对照表都必须把 numeric 钉成 claim + precision + unit、禁写 answer/tol。
+    /// 文法口径单源（w2 评审修复）：CN 与 EN 共用同一短语，不再各自维护
+    /// 「sqrt 等」这类函数清单。
+    #[tokio::test]
+    async fn numeric_claim_clause_is_pinned_across_the_cn_host_prompts() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "严禁自算或写 answer/tol",
+            "\"claim\"",
+            "precision（0-10",
+            "unit（raw/percent",
+            "答案键由系统实算",
+            "支持 eval_expr 文法（显式 *、^、函数、pi/e）",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        assert!(!system.contains("numeric 是数字（可带 tol 容差）"));
+        assert!(!system.contains("sqrt 等"), "function-list drift must be gone");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(service);
+        let tool = ls_patch_activities(ctx);
+        assert!(tool.description.contains("\"claim\""), "{}", tool.description);
+        assert!(tool.description.contains("\"precision\""), "{}", tool.description);
+        assert!(tool.description.contains("\"unit\""), "{}", tool.description);
+        assert!(
+            REPAIR_LESSON_AGENT_SYSTEM.contains("numeric 的形状由 claim"),
+            "repair table must route claim-track shape failures to claim/precision/unit"
+        );
     }
 
     /// R14 跨宿互钉（w1 评审修复，轻量漂移钉）：非对称孪生的两宿各自携带

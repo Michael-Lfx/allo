@@ -8614,6 +8614,127 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(stored.claim.is_none());
     }
 
+    /// w2 Strict 只咬模型面：课程导入走 Force，legacy numeric（无 claim）
+    /// 的手写 answer/tol 原样落库（不要求 claim，也不重铸）。
+    #[tokio::test]
+    async fn import_course_keeps_legacy_numeric_without_claim() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let mut pack = valid_pack();
+        pack.modules[0].lessons[0].activities = vec![ActivityPack {
+            difficulty: None,
+            kind: ActivityKind::Numeric,
+            prompt: "2 + 2 = ?".into(),
+            options: Vec::new(),
+            answer: json!(4.0),
+            explanation: "2 + 2 = 4。".into(),
+            distractors: Vec::new(),
+            tol: Some(0.5),
+            section_key: None,
+            evidence: None,
+            claim: None,
+            precision: None,
+            unit: None,
+        }];
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let config_json: String = sqlx::query_scalar(
+            "SELECT a.config_json FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ?",
+        )
+        .bind(course.course.id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        let stored: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(stored.answer, json!(4.0), "legacy answer survives import");
+        assert_eq!(stored.tol, Some(0.5), "legacy tol survives import");
+        assert!(stored.claim.is_none());
+        assert!(stored.precision.is_none() && stored.unit.is_none());
+    }
+
+    /// w2 编辑面数值等价（JS 往返回归）：落库答案键是 25.0（JSON Float），
+    /// 浏览器 JSON 往返后回传 25（PosInt）——同一数值必须视为「未改」而接受；
+    /// 真正改值（24）仍是手改，400 拒绝。
+    #[tokio::test]
+    async fn update_question_accepts_js_round_tripped_numeric_answer() {
+        use crate::models::UpdateQuestionRequest;
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        // 落库 claim 轨：answer 25.0（Float）+ 系统 tol。
+        sqlx::query(
+            "UPDATE learning_activities SET kind = 'numeric', config_json = ? WHERE activity_id = ?",
+        )
+        .bind(
+            r#"{"options":[],"answer":25.0,"explanation":"e","tol":0.05,"claim":{"expr":"rate*years","params":{"rate":0.125,"years":2}},"precision":1,"unit":"percent"}"#,
+        )
+        .bind(activity_id.as_str())
+        .execute(database.pool())
+        .await
+        .unwrap();
+        // JS 往返：25.0 → 25（PosInt）。数值相同 = 未手改，编辑必须成功。
+        service
+            .update_question(
+                &activity_id,
+                &user_id,
+                UpdateQuestionRequest {
+                    prompt: "改题面，不动答案键".into(),
+                    options: Vec::new(),
+                    answer: json!(25),
+                    explanation: "改解析".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let config_json: String =
+            sqlx::query_scalar("SELECT config_json FROM learning_activities WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        let stored: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(stored.answer, json!(25.0), "stored answer key stays as cast");
+        assert!(stored.claim.is_some());
+
+        // 真正的不同数值仍是手改：400 拒绝。
+        let error = service
+            .update_question(
+                &activity_id,
+                &user_id,
+                UpdateQuestionRequest {
+                    prompt: "改题面".into(),
+                    options: Vec::new(),
+                    answer: json!(24),
+                    explanation: "改答案".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::BadRequest(ref message) if message.contains("cannot be edited")),
+            "{error:?}"
+        );
+    }
+
     /// q2 开测全链路前置：due 门（Conflict 附 N/K）→ 到期后出脱敏回合
     /// （判底零字段）。
     #[tokio::test]
@@ -9245,6 +9366,68 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .await
             .unwrap();
         assert!(!outside.correct, "0.2 > tol 0.05 → 判错");
+    }
+
+    /// w2 变式数值契约的机械执法（评审修复）：提示词只是约定——变式必须
+    /// 同模板换参。不同表达式 / 参数未变 / 答案未变三种违约都在服务面如实
+    /// 跳过（不落变式，节点只出旧题），而不是把不合格题当变式落库。
+    #[tokio::test]
+    async fn quiz_numeric_variant_contract_is_enforced_mechanically() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let bank_prompt = "年化 12.5%，单利 2 年的收益率（百分数）？";
+        let bank_config = r#"{"options":[],"answer":25.0,"explanation":"0.125×2=25.0%","tol":0.05,"claim":{"expr":"rate*years","params":{"rate":0.125,"years":2}},"precision":1,"unit":"percent","evidence":"「单利」"}"#;
+        for activity in &activities {
+            sqlx::query(
+                "UPDATE learning_activities SET kind = 'numeric', prompt = ?, config_json = ? WHERE activity_id = ?",
+            )
+            .bind(bank_prompt)
+            .bind(bank_config)
+            .bind(activity)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        // 逐题轮换三种违约回包（末项重复兜剩余节点）：不同表达式 / 参数未变
+        // / 换参但答案未变。任何一条若被落成变式，题目数就会 > 6。
+        let replies = vec![
+            r#"{"kind":"numeric","prompt":"年化 12.5%，单利 2 年的收益率（百分数）？","options":[],"claim":{"expr":"rate+years","params":{"rate":0.125,"years":2}},"precision":1,"unit":"percent","explanation":"e","evidence":"「单利」"}"#.to_owned(),
+            r#"{"kind":"numeric","prompt":"年化 12.5%，单利 2 年的收益率（百分数）？","options":[],"claim":{"expr":"rate*years","params":{"rate":0.125,"years":2}},"precision":1,"unit":"percent","explanation":"e","evidence":"「单利」"}"#.to_owned(),
+            r#"{"kind":"numeric","prompt":"年化 25%，单利 1 年的收益率（百分数）？","options":[],"claim":{"expr":"rate*years","params":{"rate":0.25,"years":1}},"precision":1,"unit":"percent","explanation":"e","evidence":"「单利」"}"#.to_owned(),
+        ];
+        let kb_dir = std::env::temp_dir().join("quiz-numeric-contract-test-kb");
+        let knowledge_service = Arc::new(KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                service.pool_for_tests().clone(),
+            )),
+            &kb_dir,
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(user_id.as_str()),
+            ),
+        ));
+        service.set_generation_dependencies(knowledge_service, SequencedCompleter::new(replies));
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(
+            round.questions.len(),
+            6,
+            "every contract violation must skip the variant"
+        );
+        let plan_json: String = sqlx::query_scalar(
+            "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
+        )
+        .bind(&round.round_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert!(
+            !plan_json.contains(r#""origin":"variant""#),
+            "no variant must be planned: {plan_json}"
+        );
     }
 
     /// 校准（q3）：被真实推进过的卡出题时点带预测 R（Some），未推卡/变式
