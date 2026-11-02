@@ -14,6 +14,16 @@
 
 use serde::Deserialize;
 
+/// 表达式原始字符数上限（h1；learnhub c14467e 原值 512，allo 用户评审后取
+/// 2048——长度不是爆栈向量，深度闸才是；512 会误伤多点求和/长展开，2048
+/// 字符的词法/解析开销可忽略）。模型输出受 LLM 预算软约束，不能当安全边界
+/// ——超长表达式在词法前拒绝。
+const MAX_EXPR_LEN: usize = 2048;
+/// 表达式嵌套深度上限（h1，对齐 learnhub c14467e 的 `MAX_DEPTH`）：括号、
+/// 单参函数、一元负号与 `^` 右结合链每递归下降一层计一层；顶层表达式为
+/// 第 0 层，第 65 层起报错（不爆栈）。
+const MAX_DEPTH: usize = 64;
+
 /// 相对容差缺省（A2，对齐 progress.rs Numeric 容差先例精神）。
 const DEFAULT_REL_TOLERANCE: f64 = 1e-9;
 /// 绝对容差地板（A2）：极小期望值下相对容差塌缩时的保底比较阈。
@@ -113,14 +123,25 @@ impl std::fmt::Display for ExprError {
 /// 求值按 f64 语义：除零/ln 负数/溢出产生非有限值**原样返回**（不 panic、
 /// 不在此处报错）——非有限的失败路径由核验语义层处理。
 pub fn eval_expr(expr: &str, bindings: &[(String, f64)]) -> Result<f64, ExprError> {
+    // 长度闸（h1）先于词法：超长输入不进 tokenize，更不进递归下降。位置
+    // 指向第 2049 个字符（第一个越界字符）的字节偏移。
+    if let Some((position, _)) = expr.char_indices().nth(MAX_EXPR_LEN) {
+        return Err(ExprError {
+            position,
+            message: format!("表达式过长（上限 {MAX_EXPR_LEN} 字符）——请拆分或化简"),
+        });
+    }
     let tokens = tokenize(expr)?;
     let mut parser = Parser {
         tokens: &tokens,
         pos: 0,
         bindings,
         end: expr.len(),
+        depth: 0,
     };
-    let value = parser.parse_expr(0)?;
+    // 顶层表达式是第 0 层、不占深度预算：所有递归下降统一过 `parse_expr`
+    // 包装器（64 层通过、第 65 层报错，h1 边界测试钉死）。
+    let value = parser.parse_expr_inner(0)?;
     if parser.pos < tokens.len() {
         let (position, message) = trailing_token_error(&tokens, parser.pos);
         return Err(ExprError { position, message });
@@ -302,6 +323,9 @@ struct Parser<'a> {
     pos: usize,
     bindings: &'a [(String, f64)],
     end: usize,
+    /// 当前递归下降层数（h1 深度预算）：顶层表达式为 0，`parse_expr` 包装器
+    /// 进入递归时 +1、退出时 -1。
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -313,9 +337,33 @@ impl<'a> Parser<'a> {
             .map(|(token, position)| (token.clone(), *position))
     }
 
+    /// 当前记号的字节偏移（预算错误定位）；表达式结束（pos 越界）取 `self.end`。
+    fn peek_position(&self) -> usize {
+        self.tokens
+            .get(self.pos)
+            .map(|(_, position)| *position)
+            .unwrap_or(self.end)
+    }
+
+    /// 深度预算包装器（h1）：所有递归下降（括号、函数实参、一元负号、二元
+    /// 右操作数）都经此进入 `parse_expr_inner`。inner 内的早返回全部经这里
+    /// 减 depth，预算不会泄漏。
+    fn parse_expr(&mut self, min_bp: u8) -> Result<f64, ExprError> {
+        if self.depth >= MAX_DEPTH {
+            return Err(ExprError {
+                position: self.peek_position(),
+                message: format!("表达式嵌套过深（上限 {MAX_DEPTH} 层）——请拆分或化简"),
+            });
+        }
+        self.depth += 1;
+        let result = self.parse_expr_inner(min_bp);
+        self.depth -= 1;
+        result
+    }
+
     /// Pratt 主循环：先取前缀项，然后按结合力消费二元运算。紧跟在 primary
     /// 之后的 primary 记号 = 隐式乘法，按蓝图钉死的文案报错。
-    fn parse_expr(&mut self, min_bp: u8) -> Result<f64, ExprError> {
+    fn parse_expr_inner(&mut self, min_bp: u8) -> Result<f64, ExprError> {
         let mut lhs = self.parse_prefix()?;
         loop {
             let Some((token, position)) = self.peek_owned() else {
@@ -756,6 +804,121 @@ mod tests {
         assert!(eval_err("(1+2))").message.contains("多余的右括号"));
         assert!(eval_err("1.2.3").message.contains("无法解析的数字"));
         assert!(eval_err("3美元").message.contains("不支持的字符"));
+    }
+
+    // ── 预算（h1）：表达式长度上限 / 嵌套深度上限 ──────────────────────
+
+    #[test]
+    fn long_expression_reports() {
+        // 票面 2049 字符（"1+" × 1024 + "1"）：超 MAX_EXPR_LEN=2048，词法前拦截。
+        let expr = "1+".repeat(1024) + "1";
+        assert_eq!(expr.chars().count(), MAX_EXPR_LEN + 1);
+        let error = eval_err(&expr);
+        assert!(error.message.contains("表达式过长"), "{error}");
+        assert!(error.message.contains("2048"), "{error}");
+        // 位置 = 第 2049 个字符的字节偏移（纯 ASCII 表达式 → 字节 2048）。
+        assert_eq!(error.position, MAX_EXPR_LEN);
+
+        // 预算边界（恰好 2048 字符）不回归：照常求值。
+        let at_limit = "1+".repeat(1023) + "11";
+        assert_eq!(at_limit.chars().count(), MAX_EXPR_LEN);
+        assert_eq!(eval(&at_limit), 1023.0 + 11.0);
+    }
+
+    #[test]
+    fn depth_64_boundary() {
+        // 64 层嵌套括号通过、第 65 层报错（实现口径：顶层表达式为第 0 层）。
+        let at_limit = "(".repeat(MAX_DEPTH) + "1" + &")".repeat(MAX_DEPTH);
+        assert_eq!(at_limit.chars().count(), MAX_DEPTH * 2 + 1);
+        assert_eq!(eval(&at_limit), 1.0);
+        let over = "(".repeat(MAX_DEPTH + 1) + "1" + &")".repeat(MAX_DEPTH + 1);
+        let error = eval_err(&over);
+        assert!(error.message.contains("嵌套过深"), "{error}");
+        assert!(error.message.contains("64"), "{error}");
+
+        // ^ 右结合链走同一递归下降预算（不只护括号）：64 个 ^ 通过、
+        // 第 65 个 ^ 报错。
+        let caret_at_limit = vec!["1"; MAX_DEPTH + 1].join("^");
+        assert_eq!(eval(&caret_at_limit), 1.0);
+        let caret_over = vec!["1"; MAX_DEPTH + 2].join("^");
+        let error = eval_err(&caret_over);
+        assert!(error.message.contains("嵌套过深"), "{error}");
+
+        // 函数实参嵌套同样计入预算：64 层通过、第 65 层报错。
+        let func_at_limit = "sqrt(".repeat(MAX_DEPTH) + "1" + &")".repeat(MAX_DEPTH);
+        assert_eq!(eval(&func_at_limit), 1.0);
+        let func_over = "sqrt(".repeat(MAX_DEPTH + 1) + "1" + &")".repeat(MAX_DEPTH + 1);
+        let error = eval_err(&func_over);
+        assert!(error.message.contains("嵌套过深"), "{error}");
+    }
+
+    #[test]
+    fn deep_parens_report_instead_of_overflow() {
+        // 票面 2000 层输入 = 4001 字符：长度闸先于词法（不进入 parser）。
+        let huge = "(".repeat(2000) + "1" + &")".repeat(2000);
+        let error = eval_err(&huge);
+        assert!(error.message.contains("表达式过长"), "{error}");
+
+        // 预算内但深于 MAX_DEPTH 的输入（2001 字符）由深度闸接住——这才是
+        // 防爆栈的那道闸，且不 panic / 不栈溢出。
+        let nested = "(".repeat(1000) + "1" + &")".repeat(1000);
+        assert!(nested.chars().count() <= MAX_EXPR_LEN);
+        let error = eval_err(&nested);
+        assert!(error.message.contains("嵌套过深"), "{error}");
+    }
+
+    #[test]
+    fn deep_unary_reports() {
+        // 2000 个一元负号 + 1 = 2001 字符（预算内）：深度闸拦截，不爆栈。
+        let huge = "-".repeat(2000) + "1";
+        assert!(huge.chars().count() <= MAX_EXPR_LEN);
+        let error = eval_err(&huge);
+        assert!(error.message.contains("嵌套过深"), "{error}");
+
+        // 边界：64 个一元负号照常求值（偶数个 → +1），第 65 个报错。
+        assert_eq!(eval(&("-".repeat(MAX_DEPTH) + "1")), 1.0);
+        let error = eval_err(&("-".repeat(MAX_DEPTH + 1) + "1"));
+        assert!(error.message.contains("嵌套过深"), "{error}");
+    }
+
+    #[test]
+    fn normal_expressions_unchanged() {
+        // 预算不改变正常表达式（既有套件之外的代表性抽查）。
+        assert_eq!(eval("(1+2)*3"), 9.0);
+        assert!((eval("sqrt(2)") - std::f64::consts::SQRT_2).abs() < 1e-15);
+        assert_eq!(eval("2^3^2"), 512.0);
+        assert_eq!(eval("(1+2)*(3+4)/(5-2)"), 7.0);
+        // 601 字符平铺表达式在 2048 预算内：照常求值（用户评审口径）。
+        let flat = "1+".repeat(300) + "1";
+        assert_eq!(flat.chars().count(), 601);
+        assert_eq!(eval(&flat), 301.0);
+        // 预算内的长链 / 深嵌套（32 层）也照常求值。
+        assert_eq!(eval(&("1+".repeat(200) + "1")), 201.0);
+        assert_eq!(eval(&("(".repeat(32) + "1+1" + &")".repeat(32))), 2.0);
+    }
+
+    #[test]
+    fn budget_errors_are_fail_verdicts() {
+        // 预算错误是核验结论 Fail（不是工具 Err）：模型可据此拆分/化简 claim。
+        let long = "1+".repeat(1024) + "1";
+        match verify(&eval_claim(&long)) {
+            ClaimVerdict::Fail {
+                reason, computed, ..
+            } => {
+                assert!(reason.contains("表达式过长"), "{reason}");
+                assert!(reason.contains("位置"), "定位面不可缺：{reason}");
+                assert_eq!(computed, None);
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        // identity 的 lhs/rhs 各自走同一预算（深嵌套在采样前就报出）。
+        let deep = "(".repeat(1000) + "1" + &")".repeat(1000);
+        match verify(&identity_claim(&deep, "1", &[])) {
+            ClaimVerdict::Fail { reason, .. } => {
+                assert!(reason.contains("嵌套过深"), "{reason}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
     }
 
     // ── a3 病例与 smoke oracle 期望值对账（蓝图 4.6：期望值算死） ────────
