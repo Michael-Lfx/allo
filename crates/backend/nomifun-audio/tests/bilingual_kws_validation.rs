@@ -95,10 +95,74 @@ x iao f u x ing @XIAO_FU_XING
     assert!(dynamic_buf.contains("n i h ao F L OW1 IY0"), "must contain mixed tokens for 你好 Flowy");
 
     // Test KwsEngine integration with custom keywords
-    let kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+    let mut kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
         model_dir: Some(kws_dir.clone()),
         keywords: custom_keywords,
         ..Default::default()
     }).expect("KwsEngine creation with custom bilingual keywords must succeed");
     assert!(kws_engine.is_initialized(), "KwsEngine must be initialized");
+
+    // =========================================================================
+    // Minimum Experiment Verification: Playback Echo Immunity & Wake Interruption
+    // =========================================================================
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../docs/architecture/voice-agent/execution/audio-fixtures");
+    let non_wake_wav = fixtures_dir.join("non-wake-16k.wav");
+    let command_wav = fixtures_dir.join("command-16k.wav");
+    let wake_wav = fixtures_dir.join("wake-guy-16k.wav");
+
+    // Phase A: Feed non-wake speech (3.41s) into KWS to verify 0 false triggers
+    if non_wake_wav.exists() {
+        let bytes = std::fs::read(&non_wake_wav).expect("read non_wake_wav");
+        let (samples, sr) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(sr, 16000);
+        let mut false_alarms = 0;
+        for chunk in samples.chunks(320) {
+            if let Some(hit) = kws_engine.process_pcm_chunk(chunk) {
+                println!("UNEXPECTED FALSE ALARM on non-wake speech: {:?}", hit);
+                false_alarms += 1;
+            }
+        }
+        println!("Phase A (Non-wake speech echo immunity): {} samples, false_alarms = {}", samples.len(), false_alarms);
+        assert_eq!(false_alarms, 0, "KWS must have ZERO false triggers during non-wake speech playback!");
+    }
+
+    // Phase B: Feed command speech without wake word to verify 0 false triggers
+    if command_wav.exists() {
+        let bytes = std::fs::read(&command_wav).expect("read command_wav");
+        let (samples, sr) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(sr, 16000);
+        let mut false_alarms = 0;
+        for chunk in samples.chunks(320) {
+            if let Some(hit) = kws_engine.process_pcm_chunk(chunk) {
+                println!("UNEXPECTED FALSE ALARM on command speech: {:?}", hit);
+                false_alarms += 1;
+            }
+        }
+        println!("Phase B (Command speech echo immunity): {} samples, false_alarms = {}", samples.len(), false_alarms);
+        assert_eq!(false_alarms, 0, "KWS must have ZERO false triggers during command speech playback!");
+    }
+
+    // Phase C: Feed real spoken wake word to verify low-latency detection
+    if wake_wav.exists() {
+        kws_engine.reset();
+        let bytes = std::fs::read(&wake_wav).expect("read wake_wav");
+        let (mut samples, sr) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(sr, 16000);
+        // Trailing frames for lookahead chunking
+        samples.extend(vec![0.0f32; 16000]);
+        let mut detected_keyword = None;
+        let mut chunk_idx = 0;
+        for (i, chunk) in samples.chunks(320).enumerate() {
+            if let Some(hit) = kws_engine.process_pcm_chunk(chunk) {
+                detected_keyword = Some(hit.keyword);
+                chunk_idx = i;
+                break;
+            }
+        }
+        println!("Phase C (Wake word barge-in detection): hit = {:?}, chunk = {}, latency = {}ms",
+            detected_keyword, chunk_idx, chunk_idx * 20);
+        assert!(detected_keyword.is_some(), "KWS must detect wake word for barge-in!");
+        assert!(chunk_idx * 20 <= 2500, "Wake word must be detected promptly!");
+    }
 }

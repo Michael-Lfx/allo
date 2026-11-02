@@ -34,6 +34,35 @@ struct ModelStream {
 impl Drop for ModelStream {fn drop(&mut self){self.job.abort();}}
 impl ModelStream {
     async fn new()->Self {Self::with_error(false).await}
+    async fn with_reply(first_sentence: &str) -> Self {
+        let first_text = first_sentence.to_string();
+        let release=Arc::new(tokio::sync::Notify::new());let completed=Arc::new(AtomicBool::new(false));let calls=Arc::new(AtomicUsize::new(0));
+        let gate=release.clone();let done=completed.clone();let count=calls.clone();
+        let app=axum::Router::new().route("/complete",axum::routing::post(move |headers:axum::http::HeaderMap,axum::Json(body):axum::Json<serde_json::Value>| {
+            let gate=gate.clone();let done=done.clone();let count=count.clone();
+            let first_text = first_text.clone();
+            async move {
+                assert_eq!(headers.get("x-ai-mate-control-token").unwrap(),"stream-fixture");
+                assert_eq!(body["stream"],true,"the production worker must request incremental completion");
+                count.fetch_add(1,Ordering::SeqCst);
+                let (tx,rx)=tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    let first=serde_json::json!({"type":"sentence","sentence":{"text":first_text,"understood_request":"用户问好"}}).to_string()+"\n";
+                    if tx.send(Ok::<_,std::convert::Infallible>(first)).await.is_err(){return;}
+                    tokio::select!{_ = gate.notified()=>{},_ = tx.closed()=>return}
+                    let next=serde_json::json!({"type":"sentence","sentence":{"text":"很高兴服务。","understood_request":null}}).to_string()+"\n";
+                    if tx.send(Ok(next)).await.is_err(){return;}
+                    let raw=serde_json::json!({"intent_type":"chat","understood_request":"用户问好","reply_tts":"请继续"}).to_string();
+                    done.store(true,Ordering::SeqCst);
+                    let _=tx.send(Ok(serde_json::json!({"type":"complete","response":{"content":raw}}).to_string()+"\n")).await;
+                });
+                axum::response::Response::builder().header("content-type","application/x-ndjson").body(axum::body::Body::from_stream(futures_util::stream::unfold(rx,|mut rx|async {rx.recv().await.map(|item|(item,rx))}))).unwrap()
+            }
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let endpoint=format!("http://{}/complete",listener.local_addr().unwrap());
+        let job=tokio::spawn(async move {axum::serve(listener,app).await.unwrap();});
+        Self{endpoint,release,completed,calls,job}
+    }
     async fn with_error(fail:bool)->Self {
         let release=Arc::new(tokio::sync::Notify::new());let completed=Arc::new(AtomicBool::new(false));let calls=Arc::new(AtomicUsize::new(0));
         let gate=release.clone();let done=completed.clone();let count=calls.clone();
@@ -119,6 +148,24 @@ impl StreamingWorker {
     async fn new()->Self {Self::with_error(false).await}
     async fn with_error(fail:bool)->Self {
         Self::with_barge_in(fail, true).await
+    }
+    async fn with_sentence(first_sentence: &str) -> Self {
+        let server = ModelStream::with_reply(first_sentence).await;
+        let models = tempfile::tempdir().unwrap();
+        let (capture, producer) = nomifun_audio::voice_pipeline::VoiceCapturePipeline::new(Default::default());
+        let (runtime, _) = voice_companion::voice::VoiceCompanionRuntime::from_capture(
+            Arc::new(nomifun_voice_models::ModelManager::new(models.path())),
+            Arc::new(voice_companion::oobe::OobeManager::new_bypassed()),
+            Arc::new(tokio::sync::Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("你好")),
+            server.router(),
+        );
+        let sink = Arc::new(SpeechSink::default());
+        let speech = Arc::new(SentenceSpeech::default());
+        let runtime = runtime.with_test_playback(Arc::new(nomifun_voice_terminal::playback::PlaybackPipeline::new(sink.clone())), speech.clone());
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
+        let worker = runtime.start_worker();
+        Self { server, runtime, producer, sink, speech, worker, _models: models }
     }
     async fn with_barge_in(fail:bool,enabled:bool)->Self {
         let server=ModelStream::with_error(fail).await;let models=tempfile::tempdir().unwrap();

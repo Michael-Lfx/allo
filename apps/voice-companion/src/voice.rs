@@ -1604,6 +1604,13 @@ impl VoiceCompanionRuntime {
         self
     }
 
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub fn publish_synthetic_assistant_text_for_test(&self, text: &str) {
+        let _ = self.event_tx.send(VoiceCompanionEvent::ResponseReady {
+            text: text.to_string(),
+        });
+    }
+
     pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<VoiceCompanionEvent> {
         self.event_tx.sender()
     }
@@ -3696,6 +3703,7 @@ impl VoiceCompanionRuntime {
             let mut last_asr_load_warning: Option<std::time::Instant> = None;
             let mut processing_feedback: Option<(String, std::time::Instant, u8)> = None;
             let mut last_playback_busy: Option<std::time::Instant> = None;
+            let mut was_playback_active = false;
             let quiet_input = Arc::new(AtomicBool::new(false));
             let mut quiet_since: Option<std::time::Instant> = None;
             let mut reminded_session: Option<String> = None;
@@ -4224,8 +4232,14 @@ impl VoiceCompanionRuntime {
 
                 let is_playback_active = playback.is_speaking();
                 if is_playback_active {
+                    if !was_playback_active {
+                        // 🛡️ Hard reset KWS and VAD on playback transition to prevent stale acoustic residue
+                        native_worker_call!("kws_reset", kws.reset().await, ());
+                        native_worker_call!("vad_reset", vad.reset().await, ());
+                    }
                     last_playback_busy = Some(std::time::Instant::now());
                 }
+                was_playback_active = is_playback_active;
                 let in_echo_cooldown = is_playback_active
                     || last_playback_busy.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(600));
 
@@ -4678,6 +4692,65 @@ impl VoiceCompanionRuntime {
                     AcousticState::SpeakingFast
                     | AcousticState::SpeakingControl
                     | AcousticState::SpeakingSummary => {
+                        // 1. KWS Barge-In: Always active and safe without AEC
+                        let kws_hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
+                        if let Some(kw) = kws_hit {
+                            let clean_kw = kw.trim().trim_start_matches('@').trim();
+                            let kw_lower = clean_kw.to_lowercase();
+                            let assistant_spoken_text = event_tx.snapshot().assistant_text;
+                            let is_self_speech = assistant_spoken_text.as_deref().is_some_and(|text| {
+                                let text_lower = text.to_lowercase();
+                                if text_lower.contains(&kw_lower) {
+                                    return true;
+                                }
+                                for part in kw_lower.split_whitespace() {
+                                    if part.len() >= 3 && text_lower.contains(part) {
+                                        return true;
+                                    }
+                                }
+                                false
+                            });
+                            if is_self_speech {
+                                info!(
+                                    kw = %clean_kw,
+                                    spoken = ?assistant_spoken_text,
+                                    "KWS barge-in hit ignored: assistant is speaking text containing the keyword"
+                                );
+                            } else {
+                                info!(
+                                    state = ?current_state,
+                                    kw = %clean_kw,
+                                    "kws_barge_in_playback_interrupted"
+                                );
+                                let mut d = driver.lock().await;
+                                if d.current_state() == current_state {
+                                    if playback.interrupt().await.is_err() {
+                                        d.reset();
+                                        let _ = event_tx.send(VoiceCompanionEvent::Error { stage: "playback".into(), code: "speaker_failed".into() });
+                                        let _ = event_tx.send(VoiceCompanionEvent::SessionEnded { reason: VoiceSessionEndReason::Failed });
+                                        continue;
+                                    }
+                                    if let Ok(AcousticState::Listening) = d.handle_event(AcousticEvent::BargeIn) {
+                                        input_generation.fetch_add(1, Ordering::SeqCst);
+                                        d.mark_speech_started();
+                                        speech_started = false;
+                                        utterance_pcm.clear();
+                                        last_playback_busy = None;
+                                        native_worker_call!("kws_reset", kws.reset().await, ());
+                                        native_worker_call!("vad_reset", vad.reset().await, ());
+                                        let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
+                                        let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                                        let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
+                                            diagnostics: audio.clone(),
+                                        });
+                                        last_audio_publish = std::time::Instant::now();
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // 2. VAD Barge-In: only active when full AEC is calibrated and ready
                         if !barge_in_ready || !playback.has_pending_audio() { continue; }
                         utterance_pcm.extend_from_slice(&chunk);
                         if !speech_started && utterance_pcm.len() > BARGE_IN_PREROLL_SAMPLES {
@@ -4707,6 +4780,7 @@ impl VoiceCompanionRuntime {
                                 input_generation.fetch_add(1, Ordering::SeqCst);
                                 d.mark_speech_started();
                                 speech_started = true;
+                                last_playback_busy = None;
                                 let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
                                 let _ = event_tx.send(VoiceCompanionEvent::Listening);
                                 let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
@@ -4718,6 +4792,66 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::AwaitingConfirmation => {
+                        // 1. KWS Barge-In for Confirmation prompt
+                        let kws_hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
+                        if let Some(kw) = kws_hit {
+                            let clean_kw = kw.trim().trim_start_matches('@').trim();
+                            let kw_lower = clean_kw.to_lowercase();
+                            let assistant_spoken_text = event_tx.snapshot().assistant_text;
+                            let is_self_speech = assistant_spoken_text.as_deref().is_some_and(|text| {
+                                let text_lower = text.to_lowercase();
+                                if text_lower.contains(&kw_lower) {
+                                    return true;
+                                }
+                                for part in kw_lower.split_whitespace() {
+                                    if part.len() >= 3 && text_lower.contains(part) {
+                                        return true;
+                                    }
+                                }
+                                false
+                            });
+                            if is_self_speech {
+                                info!(
+                                    kw = %clean_kw,
+                                    spoken = ?assistant_spoken_text,
+                                    "KWS barge-in hit ignored in confirmation: assistant is speaking keyword"
+                                );
+                            } else {
+                                info!(
+                                    state = ?current_state,
+                                    kw = %clean_kw,
+                                    "kws_barge_in_confirmation_interrupted"
+                                );
+                                let mut d = driver.lock().await;
+                                if d.current_state() == current_state {
+                                    if playback.interrupt().await.is_err() {
+                                        d.reset();
+                                        let _ = event_tx.send(VoiceCompanionEvent::Error { stage: "playback".into(), code: "speaker_failed".into() });
+                                        let _ = event_tx.send(VoiceCompanionEvent::SessionEnded { reason: VoiceSessionEndReason::Failed });
+                                        continue;
+                                    }
+                                    if let Ok(AcousticState::ListeningConfirm) = d.handle_event(AcousticEvent::BargeIn) {
+                                        if let Some(pending) = pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                                            pending.begin_listening();
+                                        }
+                                        input_generation.fetch_add(1, Ordering::SeqCst);
+                                        speech_started = false;
+                                        utterance_pcm.clear();
+                                        last_playback_busy = None;
+                                        native_worker_call!("kws_reset", kws.reset().await, ());
+                                        native_worker_call!("vad_reset", vad.reset().await, ());
+                                        let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                                        let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
+                                            diagnostics: audio.clone(),
+                                        });
+                                        last_audio_publish = std::time::Instant::now();
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // 2. VAD Barge-In for Confirmation
                         if !barge_in_ready || !playback.has_pending_audio() { continue; }
                         utterance_pcm.extend_from_slice(&chunk);
                         if !speech_started && utterance_pcm.len() > BARGE_IN_PREROLL_SAMPLES {
@@ -4748,6 +4882,7 @@ impl VoiceCompanionRuntime {
                                 }
                                 d.mark_speech_started();
                                 speech_started = true;
+                                last_playback_busy = None;
                                 let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
                                 let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
                                     diagnostics: audio.clone(),

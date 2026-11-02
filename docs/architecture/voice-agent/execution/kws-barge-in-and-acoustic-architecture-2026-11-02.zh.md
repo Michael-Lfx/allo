@@ -1,7 +1,7 @@
 # Flowy 语音伴侣 · 基于 KWS 的唤醒打断架构与开源方案调研报告
 
-> **文档定位**：针对 Flowy 桌面语音伴侣在长篇播报与任务执行中“如何实现快速、精准、零误伤打断”的核心诉求，基于开源社区（Bolt-Pet、Wyoming-Satellite、OVOS）与工业界学术成果（Amazon Alexa SLT 论文）的深度调研，结合 Flowy 当前代码事实，制定**免 AEC 复杂依赖的“KWS 唤醒词/插话词打断架构（Keyword-Spotting Barge-in）”**设计规范与落地演进路线。  
-> **文档日期**：2026-11-02，Asia/Hong_Kong。  
+> **文档定位**：针对 Flowy 桌面语音伴侣在长篇播报与任务执行中“如何实现快速、精准、零误伤打断”的核心诉求，基于开源社区（Bolt-Pet、Wyoming-Satellite、OVOS）与工业界学术成果（Amazon Alexa SLT 论文）的深度调研，结合 Flowy 当前代码事实，制定**免 AEC 复杂依赖的“KWS 唤醒词/插话词打断架构（Keyword-Spotting Barge-in）”**设计规范与落地演进路线。
+> **文档日期**：2026-11-02，Asia/Hong_Kong。
 > **代码分支**：`feat/voice-kws-barge-in`（基于 `origin/main` commit `6d666a6a1`）。
 
 ---

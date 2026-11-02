@@ -199,3 +199,80 @@ async fn muted_result_is_not_reported_played() {
     assert_eq!(receipt.reason_code.as_deref(),Some("tts_muted"));
     assert!(flow.sink.frames.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn kws_wake_word_interrupts_playback_even_without_aec() {
+    let flow = StreamingWorker::with_barge_in(false, false).await;
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2), flow.sink.wrote.notified())
+        .await
+        .expect("playback must start");
+    let session = flow.runtime.snapshot().session_id;
+    assert!(!flow.sink.frames.lock().unwrap().is_empty(), "playback audio must be queued");
+
+    // 1. Ordinary non-wake speech/sound must NOT interrupt playback
+    let started = tokio::time::Instant::now();
+    for frame in 0..10 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| 0.05 * (i as f32 * std::f32::consts::TAU * 100.0 / 16000.0).sin())
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(started + Duration::from_millis((frame + 1) * 20)).await;
+    }
+    assert!(!flow.sink.frames.lock().unwrap().is_empty(), "non-wake sound must NOT interrupt playback");
+
+    // 2. Wake word pattern (350Hz calibrated wake tone, continuous phase, amplitude 0.45) triggers KWS barge-in
+    let wake_started = tokio::time::Instant::now();
+    for frame in 0..25 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| {
+                let sample_idx = (frame * 320 + i) as f32;
+                0.45 * (sample_idx * std::f32::consts::TAU * 350.0 / 16000.0).sin()
+            })
+            .collect();
+        assert_eq!(flow.producer.push(&pcm), pcm.len());
+        tokio::time::sleep_until(wake_started + Duration::from_millis((frame as u64 + 1) * 20)).await;
+        if flow.sink.frames.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+
+    // Playback must be interrupted and flushed
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !flow.sink.frames.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("KWS wake word must instantly interrupt playback and flush audio sink");
+
+    let snapshot = flow.runtime.snapshot();
+    assert_eq!(snapshot.session_id, session, "session must be preserved across barge-in");
+    assert!(snapshot.ended_reason.is_none(), "session must remain active");
+    assert_eq!(snapshot.phase, nomifun_api_types::voice::VoiceSessionPhase::Listening, "must transition to Listening");
+}
+
+#[tokio::test]
+async fn kws_barge_in_masked_when_assistant_speaks_keyword() {
+    let flow = StreamingWorker::with_sentence("我是 Flowy，请问有什么可以帮你？").await;
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2), flow.sink.wrote.notified())
+        .await
+        .expect("playback must start");
+
+    // While this sentence is speaking, the wake word frequency pattern arrives:
+    let wake_started = tokio::time::Instant::now();
+    for frame in 0..10 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| {
+                let sample_idx = (frame * 320 + i) as f32;
+                0.45 * (sample_idx * std::f32::consts::TAU * 350.0 / 16000.0).sin()
+            })
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(wake_started + Duration::from_millis((frame as u64 + 1) * 20)).await;
+    }
+
+    // Playback must NOT be interrupted because the assistant was speaking the keyword itself!
+    assert!(!flow.sink.frames.lock().unwrap().is_empty(), "playback must continue uninterrupted when assistant speaks the keyword");
+}
