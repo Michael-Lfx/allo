@@ -1091,6 +1091,9 @@ fn stalest_first(a: &Option<i64>, b: &Option<i64>) -> std::cmp::Ordering {
 /// 把它变成可验证的门——表达式/单位/精度必须沿用 bank，参数必须真的换，
 /// 铸值答案必须真的变。返回 `Some(reason)` = 这不是合格变式：调用方如实
 /// 跳过（节点只出旧题），不把换了题的输出当变式落库。
+///
+/// 比较口径是「语义等价」而非 `Option`/字符串字面：unit 缺席 = Raw（契约的
+/// 缺省），表达式按求值器口径忽略空白（`rate * years` ≡ `rate*years`）。
 fn numeric_variant_contract_error(
     pack: &crate::models::ActivityPack,
     bank_claim: &crate::verify_math::NumericClaim,
@@ -1099,7 +1102,7 @@ fn numeric_variant_contract_error(
     let Some(variant_claim) = pack.claim.as_ref() else {
         return Some("variant dropped the bank claim".into());
     };
-    if variant_claim.expr != bank_claim.expr {
+    if normalized_claim_expr(&variant_claim.expr) != normalized_claim_expr(&bank_claim.expr) {
         return Some(format!(
             "variant claim expr \"{}\" differs from bank expr \"{}\"",
             variant_claim.expr, bank_claim.expr
@@ -1108,10 +1111,11 @@ fn numeric_variant_contract_error(
     if variant_claim.params == bank_claim.params {
         return Some("variant params are identical to the bank params".into());
     }
-    if pack.unit != bank.unit {
+    let bank_unit = bank.unit.unwrap_or(crate::verify_math::NumericUnit::Raw);
+    let variant_unit = pack.unit.unwrap_or(crate::verify_math::NumericUnit::Raw);
+    if variant_unit != bank_unit {
         return Some(format!(
-            "variant unit {:?} differs from bank unit {:?}",
-            pack.unit, bank.unit
+            "variant unit {variant_unit:?} differs from bank unit {bank_unit:?}"
         ));
     }
     if pack.precision != bank.precision {
@@ -1133,6 +1137,11 @@ fn numeric_variant_contract_error(
         ));
     }
     None
+}
+
+/// claim 表达式的比较形态：求值器忽略空白，仅空白/首尾差异不算换模板。
+fn normalized_claim_expr(expr: &str) -> String {
+    expr.chars().filter(|character| !character.is_whitespace()).collect()
 }
 
 struct GeneratedVariant {
@@ -1164,7 +1173,151 @@ struct StoredCalibrationPoint {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_round_shape;
+    use super::*;
+    use crate::models::ActivityPack;
+    use crate::verify_math::{NumericClaim, NumericUnit};
+
+    /// 变式契约的最小题包：claim 表达式 + 参数 + 显示口径 + 已铸值答案。
+    fn numeric_pack(
+        expr: &str,
+        params: &[(&str, f64)],
+        precision: u8,
+        unit: Option<NumericUnit>,
+        answer: f64,
+    ) -> ActivityPack {
+        ActivityPack {
+            kind: ActivityKind::Numeric,
+            prompt: "variant".into(),
+            options: Vec::new(),
+            answer: serde_json::json!(answer),
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            tol: Some(0.5 * 10f64.powi(-(precision as i32))),
+            section_key: None,
+            difficulty: None,
+            evidence: Some("「单利」".into()),
+            claim: Some(NumericClaim {
+                expr: expr.into(),
+                params: params
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), *value))
+                    .collect(),
+            }),
+            precision: Some(precision),
+            unit,
+        }
+    }
+
+    fn contract_error(
+        variant: &ActivityPack,
+        bank: &ActivityPack,
+    ) -> Option<String> {
+        numeric_variant_contract_error(
+            variant,
+            bank.claim.as_ref().expect("bank claim"),
+            &StoredActivityConfig::from_activity(bank, None),
+        )
+    }
+
+    /// 变式契约的容差边（评审修复）：unit 的比较按“有效单位”——缺席与显式
+    /// Raw 等价（契约说 unit 可选、缺省 Raw），两个方向都不能误杀。
+    #[test]
+    fn variant_contract_compares_effective_units_not_option_wrappers() {
+        let bank = numeric_pack(
+            "rate*years",
+            &[("rate", 0.125), ("years", 2.0)],
+            2,
+            None,
+            0.25,
+        );
+        let explicit_raw = numeric_pack(
+            "rate*years",
+            &[("rate", 0.25), ("years", 2.0)],
+            2,
+            Some(NumericUnit::Raw),
+            0.5,
+        );
+        assert_eq!(
+            contract_error(&explicit_raw, &bank),
+            None,
+            "bank None + variant raw must be the same effective unit"
+        );
+
+        let explicit_bank = numeric_pack(
+            "rate*years",
+            &[("rate", 0.125), ("years", 2.0)],
+            2,
+            Some(NumericUnit::Raw),
+            0.25,
+        );
+        let implicit_variant = numeric_pack(
+            "rate*years",
+            &[("rate", 0.25), ("years", 2.0)],
+            2,
+            None,
+            0.5,
+        );
+        assert_eq!(
+            contract_error(&implicit_variant, &explicit_bank),
+            None,
+            "bank raw + variant None must be the same effective unit"
+        );
+    }
+
+    /// 变式契约的表达式比较忽略空白（求值器本就忽略）：仅空白差异不算换题。
+    #[test]
+    fn variant_contract_ignores_whitespace_only_expression_differences() {
+        let bank = numeric_pack(
+            "rate*years",
+            &[("rate", 0.125), ("years", 2.0)],
+            1,
+            Some(NumericUnit::Percent),
+            25.0,
+        );
+        let spaced = numeric_pack(
+            "rate * years",
+            &[("rate", 0.15), ("years", 2.0)],
+            1,
+            Some(NumericUnit::Percent),
+            30.0,
+        );
+        assert_eq!(
+            contract_error(&spaced, &bank),
+            None,
+            "whitespace-only expr difference must reuse the same template"
+        );
+    }
+
+    /// 真正的换题/换口径仍被跳过（归一化不能放松契约）。
+    #[test]
+    fn variant_contract_still_skips_a_different_expr_or_unit() {
+        let bank = numeric_pack(
+            "rate*years",
+            &[("rate", 0.125), ("years", 2.0)],
+            1,
+            Some(NumericUnit::Raw),
+            0.25,
+        );
+        let different_expr = numeric_pack(
+            "rate+years",
+            &[("rate", 0.25), ("years", 2.0)],
+            1,
+            Some(NumericUnit::Raw),
+            0.5,
+        );
+        let expr_error = contract_error(&different_expr, &bank).expect("different expr skips");
+        assert!(expr_error.contains("expr"), "{expr_error}");
+
+        let different_unit = numeric_pack(
+            "rate*years",
+            &[("rate", 0.25), ("years", 2.0)],
+            1,
+            Some(NumericUnit::Percent),
+            0.5,
+        );
+        let unit_error = contract_error(&different_unit, &bank).expect("different unit skips");
+        assert!(unit_error.contains("unit"), "{unit_error}");
+    }
 
     /// 三条形态规则（原 084 表级 CHECK）逐条钉住：合法三态 + 非法三样。
     #[test]

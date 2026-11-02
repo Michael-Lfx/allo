@@ -2167,15 +2167,15 @@ async fn run_quiz(
     let numeric_claim: nomifun_learning::NumericClaim =
         serde_json::from_value(numeric_config["claim"].clone())?;
     // 重算口径一律取自 config 自身（评审修复：不再硬编码 Percent/1）。
+    // unit 可选、缺省 Raw（契约），缺席时按有效单位 Raw 参与重算/比对。
     let parse_unit = |config: &serde_json::Value,
                       label: &str|
      -> anyhow::Result<nomifun_learning::NumericUnit> {
-        let value = config
-            .get("unit")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("{label} numeric config missing unit"))?;
-        serde_json::from_value(value)
-            .map_err(|error| anyhow::anyhow!("{label} numeric unit: {error}"))
+        match config.get("unit") {
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|error| anyhow::anyhow!("{label} numeric unit: {error}")),
+            None => Ok(nomifun_learning::NumericUnit::Raw),
+        }
     };
     let parse_precision =
         |config: &serde_json::Value, label: &str| -> anyhow::Result<u8> {
@@ -2213,7 +2213,10 @@ async fn run_quiz(
     );
     anyhow::ensure!(
         graded_numeric.precision == Some(bank_precision)
-            && graded_numeric.unit == Some(bank_unit),
+            && graded_numeric
+                .unit
+                .unwrap_or(nomifun_learning::NumericUnit::Raw)
+                == bank_unit,
         "numeric grade feedback must carry precision/unit for reveal"
     );
     let within = service
