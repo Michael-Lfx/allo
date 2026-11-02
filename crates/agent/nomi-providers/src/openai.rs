@@ -23,8 +23,26 @@ const MAX_STRUCTURED_TOOL_CALLS_PER_TURN: usize = 128;
 
 /// Private key that tags the wire `user` message built from the internal
 /// message that opens the current user turn. Set by `build_messages` and
-/// stripped by `drop_prior_turn_reasoning`, so it never reaches the provider.
+/// stripped before the body is sent, so it never reaches the provider.
 const TURN_START_MARKER: &str = "__nomi_turn_start";
+
+/// Non-empty stand-in used when a thinking-mode gateway requires
+/// `reasoning_content` but the turn did not produce any. A single space is
+/// intentional: unlike `""`, OpenCode's DeepSeek endpoint accepts it.
+const REASONING_CONTENT_PLACEHOLDER: &str = " ";
+
+/// How missing `reasoning_content` is repaired on the Chat Completions wire.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReasoningPassback {
+    /// Fill a current-turn tool-call assistant only when that turn already
+    /// echoed real reasoning. Ordinary tool calls stay untouched.
+    Observed,
+    /// Every current-turn tool-call assistant gets `reasoning_content`.
+    CurrentTurnTools,
+    /// Every assistant message gets `reasoning_content`. Used after a gateway
+    /// rejected the history for omitting the field.
+    AllAssistants,
+}
 
 pub struct OpenAIProvider {
     api_keys: Vec<String>,
@@ -40,6 +58,10 @@ pub struct OpenAIProvider {
     /// Per-model output ceilings learned from `supported range` rejections.
     /// Later requests send `min(requested, learned)`.
     learned_output_caps: Mutex<HashMap<String, u32>>,
+    /// Models whose thinking-mode history was rejected until every assistant
+    /// message carried `reasoning_content`. Later requests send the placeholder
+    /// up front instead of failing the turn once per request.
+    learned_reasoning_passback: Mutex<HashSet<String>>,
 }
 
 impl OpenAIProvider {
@@ -52,6 +74,7 @@ impl OpenAIProvider {
             sanitize_tool_schemas: AtomicBool::new(false),
             learned_effort_none: Mutex::new(HashSet::new()),
             learned_output_caps: Mutex::new(HashMap::new()),
+            learned_reasoning_passback: Mutex::new(HashSet::new()),
         }
     }
 
@@ -88,6 +111,30 @@ impl OpenAIProvider {
             .insert(model.to_owned(), cap);
     }
 
+    fn requires_reasoning_passback(&self, model: &str) -> bool {
+        self.learned_reasoning_passback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(model)
+    }
+
+    fn remember_reasoning_passback(&self, model: &str) {
+        self.learned_reasoning_passback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(model.to_owned());
+    }
+
+    fn reasoning_passback(&self, request: &LlmRequest, force_all: bool) -> ReasoningPassback {
+        if force_all || self.requires_reasoning_passback(&request.model) {
+            ReasoningPassback::AllAssistants
+        } else if matches!(request.thinking, Some(ThinkingConfig::Enabled { .. })) {
+            ReasoningPassback::CurrentTurnTools
+        } else {
+            ReasoningPassback::Observed
+        }
+    }
+
     fn build_headers(&self, api_key: &str) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
         let bearer = format!("Bearer {api_key}");
@@ -107,6 +154,22 @@ impl OpenAIProvider {
         compat: &ProviderCompat,
         require_reasoning_content: bool,
     ) -> Vec<Value> {
+        Self::build_messages_with_passback(
+            messages,
+            system,
+            compat,
+            require_reasoning_content,
+            ReasoningPassback::Observed,
+        )
+    }
+
+    fn build_messages_with_passback(
+        messages: &[Message],
+        system: &str,
+        compat: &ProviderCompat,
+        require_reasoning_content: bool,
+        passback: ReasoningPassback,
+    ) -> Vec<Value> {
         let mut result: Vec<Value> = Vec::new();
 
         // System message first
@@ -117,10 +180,10 @@ impl OpenAIProvider {
             }));
         }
 
-        let turn_start = compat
-            .drop_prior_turn_reasoning()
-            .then(|| messages.iter().rposition(Message::starts_user_turn))
-            .flatten();
+        // Always marked, including when prior-turn reasoning is kept. The
+        // passback repair below needs the same boundary, and the marker is
+        // removed before the body leaves this function.
+        let turn_start = messages.iter().rposition(Message::starts_user_turn);
 
         for (index, msg) in messages.iter().enumerate() {
             let wire_start = result.len();
@@ -288,7 +351,7 @@ impl OpenAIProvider {
                         // when persisted/compacted history lost the original
                         // thinking block.
                         let reasoning_content = if require_reasoning_content && thinking.is_empty() {
-                            " ".to_owned()
+                            REASONING_CONTENT_PLACEHOLDER.to_owned()
                         } else {
                             thinking
                         };
@@ -408,9 +471,12 @@ impl OpenAIProvider {
             repair_openai_chat_tool_pairing(&mut result);
         }
 
-        if compat.drop_prior_turn_reasoning() {
-            drop_prior_turn_reasoning(&mut result, require_reasoning_content);
-        }
+        let turn_start = if compat.drop_prior_turn_reasoning() {
+            drop_prior_turn_reasoning(&mut result, require_reasoning_content)
+        } else {
+            take_turn_start(&mut result)
+        };
+        apply_reasoning_passback(&mut result, turn_start, passback);
 
         result
     }
@@ -459,6 +525,7 @@ impl OpenAIProvider {
         sanitize_tool_schemas: bool,
         include_stream_usage: bool,
         force_effort_none: bool,
+        force_reasoning_passback: bool,
         output_cap: Option<u32>,
     ) -> Value {
         let max_tokens_field = self
@@ -469,11 +536,12 @@ impl OpenAIProvider {
 
         let mut body = json!({
             "model": request.model,
-            "messages": Self::build_messages(
+            "messages": Self::build_messages_with_passback(
                 &request.messages,
                 &request.system,
                 &self.compat,
                 self.compat.require_reasoning_content(),
+                self.reasoning_passback(request, force_reasoning_passback),
             ),
             "stream": true
         });
@@ -803,17 +871,12 @@ fn wire_facts(messages: &[Value], compat: &ProviderCompat) -> WireFacts {
     facts
 }
 
-fn drop_prior_turn_reasoning(messages: &mut [Value], require_reasoning_content: bool) {
-    let turn_start = messages
-        .iter()
-        .position(|m| m.get(TURN_START_MARKER).is_some());
-    for msg in messages.iter_mut() {
-        if let Some(obj) = msg.as_object_mut() {
-            obj.remove(TURN_START_MARKER);
-        }
-    }
-    let Some(turn_start) = turn_start else {
-        return;
+fn drop_prior_turn_reasoning(
+    messages: &mut [Value],
+    require_reasoning_content: bool,
+) -> Option<usize> {
+    let Some(turn_start) = take_turn_start(messages) else {
+        return None;
     };
     for msg in &mut messages[..turn_start] {
         if msg["role"].as_str() != Some("assistant") {
@@ -823,11 +886,83 @@ fn drop_prior_turn_reasoning(messages: &mut [Value], require_reasoning_content: 
             continue;
         };
         if require_reasoning_content {
-            obj.insert("reasoning_content".into(), json!(" "));
+            obj.insert(
+                "reasoning_content".into(),
+                json!(REASONING_CONTENT_PLACEHOLDER),
+            );
         } else {
             obj.remove("reasoning_content");
         }
     }
+    Some(turn_start)
+}
+
+fn take_turn_start(messages: &mut [Value]) -> Option<usize> {
+    let turn_start = messages
+        .iter()
+        .position(|m| m.get(TURN_START_MARKER).is_some());
+    for msg in messages.iter_mut() {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.remove(TURN_START_MARKER);
+        }
+    }
+    turn_start
+}
+
+fn apply_reasoning_passback(
+    messages: &mut [Value],
+    turn_start: Option<usize>,
+    passback: ReasoningPassback,
+) {
+    let current_from = turn_start.unwrap_or(0);
+    let fill_all = passback == ReasoningPassback::AllAssistants;
+    let fill_current_tools = match passback {
+        ReasoningPassback::AllAssistants | ReasoningPassback::CurrentTurnTools => true,
+        ReasoningPassback::Observed => current_turn_has_real_reasoning(messages, current_from),
+    };
+    if !fill_all && !fill_current_tools {
+        return;
+    }
+    for (index, msg) in messages.iter_mut().enumerate() {
+        if msg["role"].as_str() != Some("assistant") || reasoning_content_present(msg) {
+            continue;
+        }
+        let fill = if fill_all {
+            true
+        } else {
+            index >= current_from && has_tool_calls(msg)
+        };
+        if fill {
+            msg["reasoning_content"] = json!(REASONING_CONTENT_PLACEHOLDER);
+        }
+    }
+}
+
+fn reasoning_content_present(message: &Value) -> bool {
+    message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty())
+}
+
+fn has_tool_calls(message: &Value) -> bool {
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty())
+}
+
+/// Real chain-of-thought, not the single-space placeholder. Checked after
+/// prior-turn stripping so an older turn cannot force placeholders onto a
+/// fresh tool call that never entered thinking mode.
+fn current_turn_has_real_reasoning(messages: &[Value], current_from: usize) -> bool {
+    messages.iter().skip(current_from).any(|message| {
+        message["role"].as_str() == Some("assistant")
+            && message
+                .get("reasoning_content")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+    })
 }
 
 const MALFORMED_ARGUMENT_EXCERPT_CHARS: usize = 300;
@@ -1028,11 +1163,12 @@ impl StreamState {
 #[async_trait]
 impl LlmProvider for OpenAIProvider {
     fn describe_request(&self, request: &LlmRequest) -> Option<WireFacts> {
-        let messages = Self::build_messages(
+        let messages = Self::build_messages_with_passback(
             &request.messages,
             &request.system,
             &self.compat,
             self.compat.require_reasoning_content(),
+            self.reasoning_passback(request, false),
         );
         Some(wire_facts(&messages, &self.compat))
     }
@@ -1050,24 +1186,27 @@ impl LlmProvider for OpenAIProvider {
         let mut force_effort_none = !request.tools.is_empty()
             && self.requires_effort_none_with_tools(&request.model);
         let mut learned_effort_fallback = false;
+        let mut force_reasoning_passback = self.requires_reasoning_passback(&request.model);
+        let mut learned_reasoning_passback = false;
         let mut output_cap = request
             .max_tokens
             .and_then(|_| self.learned_output_cap(&request.model));
         let mut negotiated_output_cap: Option<u32> = None;
         let initial_deadline = tokio::time::Instant::now() + crate::INITIAL_REQUEST_DEADLINE;
 
-        // Negotiate the four optional OpenAI extensions independently. A
-        // gateway can reject stream usage metadata, rich tool schemas, the
-        // tools + reasoning_effort combination, and an output ceiling above its
-        // supported range; a bounded loop lets us remove or lower each
-        // incompatible extension once without retrying unrelated 4xx
-        // responses.
+        // Negotiate the optional OpenAI extensions independently. A gateway can
+        // reject stream usage metadata, rich tool schemas, the tools +
+        // reasoning_effort combination, an output ceiling above its supported
+        // range, or a thinking-mode history that omitted `reasoning_content`.
+        // A bounded loop adjusts each incompatible extension once without
+        // retrying unrelated 4xx responses.
         let (response, headers, body) = loop {
             let body = self.build_request_body(
                 request,
                 sanitize_tool_schemas,
                 include_stream_usage,
                 force_effort_none,
+                force_reasoning_passback,
                 output_cap,
             );
             let max_tokens_field = self
@@ -1151,6 +1290,19 @@ impl LlmProvider for OpenAIProvider {
                     force_effort_none = true;
                     learned_effort_fallback = true;
                 }
+                Err(error)
+                    if !force_reasoning_passback
+                        && error.is_missing_reasoning_content_passback() =>
+                {
+                    tracing::warn!(
+                        target: "nomi_providers",
+                        provider = "openai",
+                        model = %request.model,
+                        "provider requires reasoning_content on thinking-mode history; retrying with placeholders"
+                    );
+                    force_reasoning_passback = true;
+                    learned_reasoning_passback = true;
+                }
                 Err(error) if negotiated_output_cap.is_none() && request.max_tokens.is_some() => {
                     let Some(rejected_cap) = error.output_limit_rejection() else {
                         return Err(error);
@@ -1184,6 +1336,9 @@ impl LlmProvider for OpenAIProvider {
         }
         if learned_effort_fallback {
             self.remember_effort_none_for_tools(&request.model);
+        }
+        if learned_reasoning_passback {
+            self.remember_reasoning_passback(&request.model);
         }
         if let Some(cap) = negotiated_output_cap {
             self.remember_output_cap(&request.model, cap);
@@ -3664,6 +3819,7 @@ mod tests {
             provider.should_sanitize_tool_schemas(),
             true,
             false,
+            false,
             None,
         );
         let assistant = body["messages"]
@@ -3693,11 +3849,146 @@ mod tests {
             provider.should_sanitize_tool_schemas(),
             true,
             false,
+            false,
             None,
         );
         assert!(
             body["messages"][0].get("reasoning_content").is_none(),
             "unrelated models must retain normal OpenAI message semantics"
+        );
+    }
+
+    fn silent_tool_call(id: &str) -> Message {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: id.into(),
+                name: "read".into(),
+                input: json!({"path": "README.md"}),
+                extra: None,
+            }],
+        )
+    }
+
+    fn silent_tool_history() -> Vec<Message> {
+        vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "go".into() }],
+            ),
+            silent_tool_call("call_1"),
+            Message::new(
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "contents".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                }],
+            ),
+        ]
+    }
+
+    #[test]
+    fn silent_tool_round_after_real_reasoning_gets_a_placeholder() {
+        let mut history = two_turn_history_with_context_carriers();
+        history.push(silent_tool_call("call_silent"));
+        history.push(context_carrier("call_silent", Vec::new()));
+
+        let out = OpenAIProvider::build_messages(&history, "", &reasoning_compat(), false);
+
+        assert_eq!(
+            assistant_reasoning(&out),
+            vec![
+                None,
+                None,
+                Some("cur-a".to_owned()),
+                Some("cur-b".to_owned()),
+                Some(" ".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_call_without_any_reasoning_stays_unmarked() {
+        let out = OpenAIProvider::build_messages(&silent_tool_history(), "", &openai_compat(), false);
+        assert_eq!(assistant_reasoning(&out), vec![None]);
+    }
+
+    #[test]
+    fn enabled_thinking_placeholders_a_silent_tool_call() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut request = simple_request();
+        request.thinking = Some(ThinkingConfig::Enabled { budget_tokens: 1024 });
+        request.messages = silent_tool_history();
+
+        let body = provider.build_request_body(
+            &request,
+            false,
+            true,
+            false,
+            false,
+            None,
+        );
+        let assistant = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["reasoning_content"], " ");
+    }
+
+    #[test]
+    fn disabled_thinking_does_not_placeholder_a_silent_tool_call() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut request = simple_request();
+        request.thinking = Some(ThinkingConfig::Disabled);
+        request.messages = silent_tool_history();
+
+        let body = provider.build_request_body(&request, false, true, false, false, None);
+        let assistant = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert!(assistant.get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn forced_passback_fills_history_and_keeps_real_reasoning() {
+        let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
+        let mut request = simple_request();
+        request.messages = vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "first".into() }],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text { text: "plain".into() }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: "second".into() }],
+            ),
+            reasoning_call("current", "call_2"),
+            Message::new(
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_2".into(),
+                    content: "contents".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                }],
+            ),
+        ];
+
+        let body = provider.build_request_body(&request, false, true, false, true, None);
+        assert_eq!(
+            assistant_reasoning(body["messages"].as_array().unwrap()),
+            vec![Some(" ".to_owned()), Some("current".to_owned())]
         );
     }
 
@@ -4268,6 +4559,77 @@ mod tests {
         assert!(matches!(events.last(), Some(LlmEvent::Done { .. })));
     }
 
+    #[tokio::test]
+    async fn stream_retries_once_when_thinking_history_omits_reasoning_content() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+        #[derive(Clone, Copy)]
+        struct ReasoningPassbackResponder;
+
+        impl Respond for ReasoningPassbackResponder {
+            fn respond(&self, request: &Request) -> ResponseTemplate {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                let missing = body["messages"].as_array().is_some_and(|messages| {
+                    messages.iter().any(|message| {
+                        message["role"] == "assistant"
+                            && message.get("reasoning_content").is_none()
+                    })
+                });
+                if missing {
+                    ResponseTemplate::new(400).set_body_string(
+                        r#"{"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API.","type":"invalid_request_error","code":"invalid_request_error"}}"#,
+                    )
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(concat!(
+                            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: [DONE]\n\n",
+                        ))
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ReasoningPassbackResponder)
+            .mount(&server)
+            .await;
+        let provider = OpenAIProvider::new("key", &server.uri(), openai_compat());
+        let mut request = simple_request();
+        request.model = "channel-model-80".into();
+        request.messages = silent_tool_history();
+
+        let mut rx = provider.stream(&request).await.unwrap();
+        while rx.recv().await.is_some() {}
+        // The learned placeholder is sent on the next request, so this one
+        // must not burn another 400.
+        let mut rx = provider.stream(&request).await.unwrap();
+        while rx.recv().await.is_some() {}
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 3, "one rejection, one repair, one learned request");
+        let bodies: Vec<Value> = received
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert!(bodies[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "assistant" && message.get("reasoning_content").is_none()));
+        for body in &bodies[1..] {
+            let assistant = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "assistant")
+                .unwrap();
+            assert_eq!(assistant["reasoning_content"], " ");
+        }
+    }
+
     // --- max_tokens_field ---
 
     #[test]
@@ -4285,7 +4647,7 @@ mod tests {
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
         };
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert_eq!(body["max_tokens"], 1024);
         assert!(body.get("max_completion_tokens").is_none());
     }
@@ -4309,7 +4671,7 @@ mod tests {
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
         };
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert_eq!(body["max_completion_tokens"], 2048);
         assert!(body.get("max_tokens").is_none());
     }
@@ -4323,7 +4685,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", compat);
         let mut req = simple_request();
         req.max_tokens = Some(200);
-        let body = provider.build_request_body(&req, false, true, false, Some(100));
+        let body = provider.build_request_body(&req, false, true, false, false, Some(100));
         assert_eq!(body["max_completion_tokens"], 100);
         assert!(body.get("max_tokens").is_none());
     }
@@ -4334,7 +4696,7 @@ mod tests {
         let req = simple_request();
         assert!(req.reasoning_effort.is_none());
 
-        let body = provider.build_request_body(&req, false, true, true, None);
+        let body = provider.build_request_body(&req, false, true, true, false, None);
         assert_eq!(
             body["reasoning_effort"], "none",
             "a gateway that demands effort=none for tools must receive it even when the caller configured no effort"
@@ -4348,7 +4710,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.temperature = Some(0.5);
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert_eq!(body["temperature"], 0.5);
     }
 
@@ -4356,7 +4718,7 @@ mod tests {
     fn test_temperature_none_is_omitted() {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let req = simple_request();
-        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let with_none = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert!(with_none.get("temperature").is_none());
     }
 
@@ -4367,7 +4729,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.thinking = Some(ThinkingConfig::Disabled);
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert_eq!(body["thinking"], json!({ "type": "disabled" }));
     }
 
@@ -4376,7 +4738,7 @@ mod tests {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let mut req = simple_request();
         req.thinking = Some(ThinkingConfig::Enabled { budget_tokens: 8000 });
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert_eq!(
             body["thinking"],
             json!({ "type": "enabled", "budget_tokens": 8000 })
@@ -4387,7 +4749,7 @@ mod tests {
     fn test_thinking_none_is_omitted() {
         let provider = OpenAIProvider::new("key", "http://localhost", openai_compat());
         let req = simple_request();
-        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
+        let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, false, None);
         assert!(body.get("thinking").is_none());
     }
 
@@ -4827,14 +5189,14 @@ mod tests {
 
         provider.sanitize_tool_schemas.store(true, Ordering::Release);
 
-        let unsanitized = provider.build_request_body(&request, false, true, false, None);
+        let unsanitized = provider.build_request_body(&request, false, true, false, false, None);
         assert!(
             unsanitized["tools"][0]["function"]["parameters"]
                 .get("oneOf")
                 .is_some()
         );
 
-        let sanitized = provider.build_request_body(&request, true, true, false, None);
+        let sanitized = provider.build_request_body(&request, true, true, false, false, None);
         assert!(
             sanitized["tools"][0]["function"]["parameters"]
                 .get("oneOf")

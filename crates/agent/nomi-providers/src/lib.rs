@@ -303,6 +303,17 @@ impl ProviderError {
         names_tools && names_effort && rejects_parameter
     }
 
+    /// Whether an API rejection is the thinking-mode rule that assistant
+    /// history must carry `reasoning_content`. The match is the missing-field
+    /// error, not a generic 400 that merely mentions reasoning.
+    pub(crate) fn is_missing_reasoning_content_passback(&self) -> bool {
+        let ProviderError::Api { status: 400, message } = self else {
+            return false;
+        };
+        let lower = message.to_ascii_lowercase();
+        lower.contains("reasoning_content") && lower.contains("must be passed back")
+    }
+
     /// Whether an API rejection identifies an output-token ceiling above the
     /// upstream supported range, together with the largest allowed ceiling.
     pub(crate) fn output_limit_rejection(&self) -> Option<u32> {
@@ -1156,6 +1167,32 @@ mod retryable_tests {
             errors
                 .iter()
                 .all(|error| !error.is_tools_with_reasoning_effort_incompatible())
+        );
+    }
+
+    #[test]
+    fn reasoning_passback_classifier_matches_the_thinking_mode_rejection() {
+        let body = "\u{8b}p\u{80}{\"error\":{\"message\":\"The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 8a9f8e93-8c68-483e-af5f-6997e6f9adb2)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_request_error\"}}\u{3}";
+        assert!(
+            ProviderError::Api {
+                status: 400,
+                message: body.into(),
+            }
+            .is_missing_reasoning_content_passback()
+        );
+        assert!(
+            !ProviderError::Api {
+                status: 500,
+                message: "The `reasoning_content` in the thinking mode must be passed back to the API.".into(),
+            }
+            .is_missing_reasoning_content_passback()
+        );
+        assert!(
+            !ProviderError::Api {
+                status: 400,
+                message: "reasoning_content is not supported".into(),
+            }
+            .is_missing_reasoning_content_passback()
         );
     }
 
