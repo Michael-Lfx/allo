@@ -1,6 +1,6 @@
 # 语音伴侣深度体验优化与会话解耦架构方案 (2026-11-03)
 
-> **状态**：📐 架构方案与执行计划定稿；2026-11-03。
+> **状态**：✅ 已全量落地交付并通过多轮独立对抗式审计；最新提交 `3904529ea`；2026-11-03。
 > **关联痛点**：打断无明确人声回执导致“盲听失知”、新建任务页唤醒死锁至历史单例会话、以及云端 TTS 忽略语速滑块导致 1.0x 拖沓缓慢。
 > **核心原则**：听觉交互绝对明确、会话归属严格按需新建、声学 0ms 直通防自激、全链路语速真实生效。
 
@@ -121,3 +121,19 @@
 | **Phase 2** | **会话解耦与新建任务页智能分流** | `recorder.rs` 废除静态单例查表，为首页/新建页分配独立全新会话；前端路由增加切页候选注销；自动化测试验证首页唤醒必新建会话。 |
 | **Phase 3** | **打断/唤醒明晰人声回执落地** | 打断挂接预置人声“你说”（中文）/“Go ahead”（英文）；首次唤醒挂接“我在”；验证 `is_playback_active` 0ms 盲区与单测全绿。 |
 | **Phase 4** | **多轮独立代码审计与全量质量门禁** | 调用 Opencode CLI 进行深度复查，跑通全量单元与流式测试，重新构建生产二进制。 |
+
+---
+
+## 5. 落地交付与收尾审计闭环记录
+
+经过多轮真实代码重构与 Opencode CLI 深度对抗式代码审计（含变异测试），方案已全部落地闭环：
+
+1. **T52 交付**：在 `EdgeTtsProvider` 中实现 `build_edge_ssml`，动态注入 `<prosody rate='{pct:+}%'>`，使 0.5x~2.0x 动态微调真实生效；将出厂默认语速从 1.0x 升级为对话黄金基准 1.3x。
+2. **T53 交付**：在 `stop_session` 与 `mark_active_request_stopped` 清理 candidate 幽灵 ID；在 `nomifun-audio::vocal` 嵌入预固化 16kHz WAV 资产 `barge_zh.wav`（“你说”，448ms）与 `barge_en.wav`（“Go ahead”，489ms），首次唤醒恢复“我在/I'm here”。
+3. **T54 交付**：将 `AcousticState::ListeningConfirm` 盲区条件同步升级为 `is_playback_active`，彻底消灭高危工具确认态的 600ms 残留盲区。
+4. **T55 交付**：
+   - 彻底修复 P1-1：实现 `format_voice_spec` 始终显式透传 user 选定的 `speed`（覆盖 1.0x、1.3x、1.5x 全档位），修复 1.0x 被静默替换为 1.3x 的缺陷，并将 `format_voice_spec` 覆盖 `play_response`、流式 chat、直接/LLM dismiss、任务工单受理工单及总结全路径；
+   - 彻底修复 P1-2：移除 `voice_session_bridge.rs` 中绕过 sequence fence 的无条件候选清空，由 `report_window_context` 在顺序屏障下严格托管；
+   - 彻底修复 P2-1：`accept_wake` 严格尊崇 UI 契约——`wake_reply` 留空则静音只播和弦，默认短语走预固化人声，自定义短语走 TTS；
+   - 补齐 `ListeningConfirm` 盲区消除回归单测（`tests/voice_confirmation.rs` 7 项全过）；
+   - 重新构建生产二进制（SHA-256: `422626f2...`，61,198,336 字节），全量 997 项测试全绿。
