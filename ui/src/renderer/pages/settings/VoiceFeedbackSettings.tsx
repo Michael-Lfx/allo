@@ -100,6 +100,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
               <Input
                 aria-label={t('voice.feedback.wakeWords')}
                 placeholder={t('voice.feedback.wakeWordsPlaceholder')}
+                maxLength={12}
                 value={
                   !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === 'hey flowy'
                     ? ''
@@ -107,7 +108,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 }
                 allowClear
                 disabled={!draft || !(draft.wake_enabled ?? true) || busy}
-                className={`w-240px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
+                className={`w-140px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
                 onChange={(val) => {
                   const word = val.trim();
                   setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
