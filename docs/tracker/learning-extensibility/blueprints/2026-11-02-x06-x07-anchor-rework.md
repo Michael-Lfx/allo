@@ -152,3 +152,7 @@ let mut next_seq: i64 = SELECT COALESCE(MAX(seq), 0) + 1 FROM learning_structure
 | 日期 | 类型 | 位置 | 变更 | 根因/触发 |
 |---|---|---|---|---|
 | 2026-11-02 | 修订 | 2 | 「还原钳位在 backup_bundle」勘误：nomifun-db 内无水位修正代码，clamp 全在 learning 读侧（svc:1086/1103）；本票动作 = 删读侧 clamp，还原路径零改动 | 图 3 读码底稿 F 节 |
+| 2026-11-02 | 守图裁决 | 4.1/A2 | **票面 x07「v1 相等则静默升级写回」与图 A2「读路径不回写」冲突**：按定稿图执行 A2——三处 stale 比较按存量 `hash_version` 选算法、不回写；v1 行保持 fresh 直到下一次 mount/repair 回合自然升级（GET 幂等不被破坏）。票面该句作废。 | 图优先于票（六图定稿，用户 2026-11-02 确认） |
+| 2026-11-02 | 施工记录 | 4.1/4.2 | 落地：`mounting.rs` 新增 `STRUCTURE_HASH_VERSION(_V1)` / `canonical_structure_hash` / `hash_structure_column` / `mounts_stale`（未知更高版本 fresh + warn）；mount upsert、repairs 行写 v2；maintenance_needs 与 structure_view 改按存量版本比较（view 签名收 `stale: bool`）。基线 §6 加 `findings.seq`（索引改 `(course_id, seq)`）与 mounts/repairs 的 `hash_version`；`record_review_findings` 取 `MAX(seq)+1` 单写者自增；repair 输入/needs 计数改 `seq > 水位`；水位读写删 clamp。 | 图 3 施工 |
+| 2026-11-02 | 施工记录 | 4.3 | 测试：hash 键序/空白相等、改块名不等、旁键不进 hash、v1/v2/未来版本比较三态；原「越界水位钳到 MAX(id)」用例替换为**还原重编号模拟**（改 id 重插、seq 不变 → 水位不漂、回合 skipped 零 LLM）。散落的 findings 直插（service tests + smoke 三处）补 `seq`。 | 图 3 施工 |
+| 2026-11-02 | 勘误 | 4.1 | `structure_view::build_structure_view` 的 `current_hash: u64` 参数改为 `stale: bool`（stale 单源在 service 的 `mounts_stale`），避免 view 层重复实现版本选择；view 测试同步改 `false`。 | 施工时签名收敛 |

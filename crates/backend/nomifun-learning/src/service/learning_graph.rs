@@ -466,7 +466,7 @@ impl LearningService {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_owned();
-        let hash = mounting::fnv1a_64(structure_raw.as_bytes());
+        let (hash, hash_version) = mounting::hash_structure_column(&structure_raw);
 
         // 块参考行与 slug 集合。
         let mut block_rows: Vec<(String, String)> = Vec::new();
@@ -501,20 +501,23 @@ impl LearningService {
         let node_title_set: std::collections::HashSet<String> =
             node_titles.iter().cloned().collect();
 
-        // 既有挂载行 + stale 判定（hash 失配 = 结构变过，全量重评）。
-        let existing_row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        // 既有挂载行 + stale 判定（按存量 hash_version 选算法比较）。
+        let existing_row: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash, hash_version \
+             FROM learning_structure_mounts WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
         let (existing, stale) = match &existing_row {
-            Some((mounts_json, stored_hash)) => {
-                let stored = (*stored_hash) as u64;
+            Some((mounts_json, stored_hash, stored_version)) => {
                 let value: serde_json::Value =
                     serde_json::from_str(mounts_json).map_err(internal)?;
-                (mounting::parse_mount_entries(&value), stored != hash)
+                (
+                    mounting::parse_mount_entries(&value),
+                    mounting::mounts_stale(*stored_hash, *stored_version, &structure_raw),
+                )
             }
             None => (Vec::new(), true),
         };
@@ -629,16 +632,19 @@ impl LearningService {
         );
         let payload = mounting::entries_json(&merged);
         sqlx::query(
-            "INSERT INTO learning_structure_mounts (course_id, mounts_json, structure_hash, updated_at) \
-             VALUES (?, ?, ?, ?) \
+            "INSERT INTO learning_structure_mounts \
+             (course_id, mounts_json, structure_hash, hash_version, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(course_id) DO UPDATE SET \
                mounts_json = excluded.mounts_json, \
                structure_hash = excluded.structure_hash, \
+               hash_version = excluded.hash_version, \
                updated_at = excluded.updated_at",
         )
         .bind(course_id.as_str())
         .bind(&payload)
         .bind(hash as i64)
+        .bind(hash_version)
         .bind(now_ms())
         .execute(&self.pool)
         .await
@@ -739,7 +745,8 @@ impl LearningService {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_owned();
-        let old_hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
+        let (old_hash, _old_hash_version) =
+            crate::learning_graph::mounting::hash_structure_column(&structure_raw);
 
         // 触发面：findings 行（k02 水位化——只读未消费留痕）+ 挂载观察。
         // off 臂 = 水位恒 0 读全量且不推（旧行为）。
@@ -750,15 +757,15 @@ impl LearningService {
             0
         };
         let finding_rows: Vec<(i64, String, String, String, String, String)> = sqlx::query_as(
-            "SELECT id, source, node, field, issue, advice FROM learning_structure_findings \
-             WHERE course_id = ? AND id > ? ORDER BY id",
+            "SELECT seq, source, node, field, issue, advice FROM learning_structure_findings \
+             WHERE course_id = ? AND seq > ? ORDER BY seq",
         )
         .bind(course_id.as_str())
         .bind(watermark)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        // 本回合消费上界 = 本回合读到的最大 id（成功终态才推进）。
+        // 本回合消费上界 = 本回合读到的最大 seq（成功终态才推进）。
         let consumed_through = finding_rows.last().map(|row| row.0);
         let findings_text = if finding_rows.is_empty() {
             "（无留痕）".to_owned()
@@ -954,7 +961,8 @@ impl LearningService {
             envelope.get(crate::learning_graph::lexicon::COURSE_LEXICON_KEY),
         );
         let new_structure_raw = serde_json::to_string(&next_envelope).map_err(internal)?;
-        let new_hash = crate::learning_graph::mounting::fnv1a_64(new_structure_raw.as_bytes());
+        let (new_hash, new_hash_version) =
+            crate::learning_graph::mounting::hash_structure_column(&new_structure_raw);
         if !noop {
             // 结构快照原子写（唯一权威）+ 修补审计行。
             sqlx::query("UPDATE learning_courses SET structure_json = ?, updated_at = ? WHERE course_id = ?")
@@ -975,13 +983,14 @@ impl LearningService {
                 .collect();
             sqlx::query(
                 "INSERT INTO learning_structure_repairs \
-                 (ts, course_id, old_hash, new_hash, result, ops_json, note) \
-                 VALUES (?, ?, ?, ?, 'applied', ?, ?)",
+                 (ts, course_id, old_hash, new_hash, hash_version, result, ops_json, note) \
+                 VALUES (?, ?, ?, ?, ?, 'applied', ?, ?)",
             )
             .bind(now_ms())
             .bind(course_id.as_str())
             .bind(old_hash as i64)
             .bind(new_hash as i64)
+            .bind(new_hash_version)
             .bind(serde_json::to_string(&ops_log).map_err(internal)?.as_str())
             .bind(cascade.join("；"))
             .execute(&self.pool)
@@ -1034,6 +1043,25 @@ impl LearningService {
         findings: &[crate::learning_graph::ReviewFinding],
     ) {
         let now = now_ms();
+        // 每课程单调 seq（x06）：水位锚它而非自增 id。回合持 generation
+        // slot（单写者），取号与插入之间无并发源。
+        let mut next_seq: i64 = match sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        {
+            Ok(seq) => seq,
+            Err(error) => {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    error = %error,
+                    "review finding seq lookup failed — 留痕不阻断生长"
+                );
+                return;
+            }
+        };
         for finding in findings {
             if finding.issue.trim().is_empty() {
                 tracing::warn!(
@@ -1044,30 +1072,33 @@ impl LearningService {
             }
             let result = sqlx::query(
                 "INSERT INTO learning_structure_findings \
-                 (ts, course_id, source, node, field, issue, advice) \
-                 VALUES (?, ?, 'concept-review', ?, ?, ?, ?)",
+                 (ts, course_id, seq, source, node, field, issue, advice) \
+                 VALUES (?, ?, ?, 'concept-review', ?, ?, ?, ?)",
             )
             .bind(now)
             .bind(course_id.as_str())
+            .bind(next_seq)
             .bind(finding.node.trim())
             .bind(finding.field.trim())
             .bind(finding.issue.trim())
             .bind(finding.advice.trim())
             .execute(&self.pool)
             .await;
-            if let Err(error) = result {
-                tracing::warn!(
+            match result {
+                Ok(_) => next_seq += 1,
+                Err(error) => tracing::warn!(
                     course = course_id.as_str(),
                     error = %error,
                     "review finding insert failed — 留痕不阻断生长"
-                );
+                ),
             }
         }
     }
 
     // ── 维护水位 + 自动维护回合（k02）────────────────────────────────────
 
-    /// 当前消费水位（钳制到本课 findings 的 MAX(id)，越界不阻断）。
+    /// 当前消费水位（锚 findings 的每课程 seq；不再按 MAX(id) 钳制——seq
+    /// 随 bundle 原值复制，还原后水位不漂移）。
     async fn findings_watermark(&self, course_id: &LearningCourseId) -> Result<i64, AppError> {
         let stored: Option<i64> = sqlx::query_scalar(
             "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
@@ -1076,31 +1107,17 @@ impl LearningService {
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        let max_id: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(id), 0) FROM learning_structure_findings WHERE course_id = ?",
-        )
-        .bind(course_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal)?;
-        Ok(stored.unwrap_or(0).clamp(0, max_id))
+        Ok(stored.unwrap_or(0).max(0))
     }
 
-    /// 推进消费水位（只升不降：`max(旧值, 新值)` 的原子 upsert；钳制到
-    /// MAX(id)）。成功回合才调用。
+    /// 推进消费水位（只升不降：`max(旧值, 新值)` 的原子 upsert；seq 游标
+    /// 无需钳制）。成功回合才调用。
     async fn advance_findings_watermark(
         &self,
         course_id: &LearningCourseId,
-        through_id: i64,
+        through_seq: i64,
     ) -> Result<(), AppError> {
-        let max_id: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(id), 0) FROM learning_structure_findings WHERE course_id = ?",
-        )
-        .bind(course_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal)?;
-        let through = through_id.clamp(0, max_id);
+        let through = through_seq.max(0);
         sqlx::query(
             "INSERT INTO learning_maintenance_state \
              (course_id, findings_watermark, updated_at) VALUES (?, ?, ?) \
@@ -1157,7 +1174,7 @@ impl LearningService {
         };
         let unconsumed_findings: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_structure_findings \
-             WHERE course_id = ? AND id > ?",
+             WHERE course_id = ? AND seq > ?",
         )
         .bind(course_id.as_str())
         .bind(watermark)
@@ -1165,8 +1182,8 @@ impl LearningService {
         .await
         .map_err(internal)?;
 
-        // 挂载面：待挂集（未评估 ∪ 失效 slug）+ stale（hash 失配/无挂载行）。
-        let hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
+        // 挂载面：待挂集（未评估 ∪ 失效 slug）+ stale（按存量 hash_version
+        // 选算法比较/无挂载行）。
         let node_titles: Vec<String> = sqlx::query_scalar(
             "SELECT l.title FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
@@ -1176,8 +1193,9 @@ impl LearningService {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        let mount_row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        let mount_row: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash, hash_version \
+             FROM learning_structure_mounts WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_optional(&self.pool)
@@ -1198,12 +1216,16 @@ impl LearningService {
             })
             .unwrap_or_default();
         let (existing, mounts_stale) = match &mount_row {
-            Some((mounts_json, stored_hash)) => {
+            Some((mounts_json, stored_hash, stored_version)) => {
                 let value: serde_json::Value =
                     serde_json::from_str(mounts_json).unwrap_or(serde_json::Value::Null);
                 (
                     crate::learning_graph::mounting::parse_mount_entries(&value),
-                    (*stored_hash as u64) != hash,
+                    crate::learning_graph::mounting::mounts_stale(
+                        *stored_hash,
+                        *stored_version,
+                        &structure_raw,
+                    ),
                 )
             }
             None => (Vec::new(), true),
@@ -3467,21 +3489,29 @@ impl LearningService {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        let mount_row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        let mount_row: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash, hash_version \
+             FROM learning_structure_mounts WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        let current_hash =
-            crate::learning_graph::mounting::fnv1a_64(snapshot.as_deref().unwrap_or("").as_bytes());
+        let stale = mount_row.as_ref().is_some_and(|(_, hash, version)| {
+            crate::learning_graph::mounting::mounts_stale(
+                *hash,
+                *version,
+                snapshot.as_deref().unwrap_or(""),
+            )
+        });
         Ok(crate::learning_graph::structure_view::build_structure_view(
             course_id.clone(),
             envelope.as_ref(),
             &node_titles,
-            mount_row.as_ref().map(|(json, hash)| (json.as_str(), *hash)),
-            current_hash,
+            mount_row
+                .as_ref()
+                .map(|(json, hash, version)| (json.as_str(), *hash, *version)),
+            stale,
         ))
     }
 

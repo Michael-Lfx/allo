@@ -486,9 +486,11 @@ CREATE TABLE learning_structure_mounts (
     mounts_json    TEXT NOT NULL CHECK (
         json_valid(mounts_json) AND json_type(mounts_json) = 'array'
     ),
-    -- 落盘时刻 structure_json 列字节的 FNV-1a 64（u64 存为有符号整型，
-    -- 读侧按无符号语义比较）。
+    -- 落盘时刻 structure_json 的 FNV-1a 64（u64 存为有符号整型，读侧按
+    -- 无符号语义比较）。v2 = 内层 structure 规范化投影；v1 = 历史原样字节。
     structure_hash INTEGER NOT NULL,
+    -- 算法代际（x07）：写侧恒 v2；读侧按存量版本选算法比较，不回写升级。
+    hash_version   INTEGER NOT NULL DEFAULT 1,
     updated_at     INTEGER NOT NULL
 );
 
@@ -501,6 +503,9 @@ CREATE TABLE learning_structure_findings (
         AND course_id GLOB '????????-????-7???-[89ab]???-????????????'
         AND replace(course_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
+    -- 每课程单调业务游标（x06）：水位锚本列而非自增 id——自增 id 不可移植，
+    -- 备份还原重编号后水位会漂移；seq 随 bundle 原值复制。
+    seq       INTEGER NOT NULL CHECK (seq > 0),
     -- 生产方：'concept-review'（评审 warn 通道，随 j09）/ 'mount-observation'
     -- （挂载观察派生，纯读函数不打点）；枚举集校验在 Rust（ADR-0015）。
     source    TEXT NOT NULL,
@@ -512,7 +517,7 @@ CREATE TABLE learning_structure_findings (
 );
 
 CREATE INDEX idx_learning_structure_findings_course
-    ON learning_structure_findings(course_id, ts);
+    ON learning_structure_findings(course_id, seq);
 
 -- 逻辑引用前缀索引（挂载行 UNIQUE(course_id) 已保证身份，这里补具名索引
 -- 供 v3 逻辑引用契约挂靠）。
@@ -540,6 +545,9 @@ CREATE TABLE learning_structure_repairs (
     -- 结构 hash 迁移（FNV-1a 64，有符号整型承载）；noop 时两者相等。
     old_hash   INTEGER NOT NULL,
     new_hash   INTEGER NOT NULL,
+    -- 算法代际（x07）：行内两 hash 自洽即可（写侧恒 v2）；跨表与 mounts 行
+    -- 比较必须先对齐 hash_version。
+    hash_version INTEGER NOT NULL DEFAULT 1,
     -- applied | noop（ops 空 = 合法结论；noop 不写结构快照，仅留痕）；
     -- 枚举集校验在 Rust（ADR-0015）。
     result     TEXT NOT NULL,

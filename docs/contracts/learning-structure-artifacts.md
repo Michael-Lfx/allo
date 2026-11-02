@@ -316,10 +316,19 @@ learnhub ldata1 战役的四条同族写作纪律落两管线写作面（**零�
 ### 9.1 载体与回合形态
 
 - 挂载表一课一行（`learning_structure_mounts`：`course_id UNIQUE, mounts_json,
-  structure_hash, updated_at`），与 `structure_json` 单字段快照先例同构；回合内单行
-  原子覆盖（merge upsert：本轮替换、未评估保留、孤儿清出），无中间态。
-- **structure_hash = 手写 FNV-1a 64**（勿用语言默认 hash——跨版本稳定）对
-  `structure_json` 列原样字节；读侧 hash 失配 = `mounts_stale`（结构变了挂载即显影）。
+  structure_hash, hash_version, updated_at`），与 `structure_json` 单字段快照先例
+  同构；回合内单行原子覆盖（merge upsert：本轮替换、未评估保留、孤儿清出），无中间态。
+- **structure_hash = 手写 FNV-1a 64**（勿用语言默认 hash——跨版本稳定），作用域 =
+  **内层 `structure` 的规范化投影**（解析信封 → 只取 `structure` → 紧凑序列化 →
+  FNV-1a）；`terrain`/`lexicon`/`generated_at`/信封 `version`/未来 `ext` 一律不进
+  hash。任意重序列化（键序/空白/旁键）不再误判 stale。
+- **hash_version 标算法代际**：v1 = 历史「列原样字节」口径（dev 库存量行），
+  v2 = 规范化投影（现行写侧恒写 v2）。读侧按存量行的 `hash_version` 选算法比较，
+  **不回写升级**——v1 行只要结构没变就保持 fresh，直到该课程下一次 mount/repair
+  回合自然升级；不认识的更高版本视为 fresh 并告警（降级运行不误报全量 stale）。
+  读侧 hash 失配 = `mounts_stale`（结构变了挂载即显影）。
+- **findings 水位锚每课程单调 `seq`**（非自增 id）：`learning_structure_findings.seq`
+  随备份 bundle 原值复制，还原重编号后水位不漂移、已消费留痕不重跑。
 - **触发 = 显式命令**（`POST /courses/{id}/graph/structure/mount`）；单课串行、可取消
   （j03 注册表，kind = `structure_mount`）。
 - **待挂集** = 现存节点 ∧（未评估 ∪ 失效 slug）；hash 失配 = stale = 全量。
@@ -395,8 +404,9 @@ gd.* 全量重过零放宽。三重护栏 = 全量 validator 门 + 观测审计�
 - 装配（宪章三项 + 结构快照投影 + findings 行 + mount_observations + retry_feedback）
   → RoundRetry ≤3（同指纹早停）→ ops 空 = noop（LLM 已跑、不写盘，**不留审计行**——
   「无修补动作不留档案」）→ apply → gd.* 全量重过 → 结构快照原子写 → 修补审计行落
-  `learning_structure_repairs`（old_hash/new_hash/逐 op 含理由与级联注记；**仅 applied
-  落行**）。
+  `learning_structure_repairs`（old_hash/new_hash/hash_version/逐 op 含理由与级联注记；
+  **仅 applied 落行**）。两 hash 均为 v2 规范化投影，行内自洽；**跨表与 mounts 行
+  比较必须先对齐 `hash_version`**（v1 历史行与 v2 行不可直接互比）。
 - **级联口径（ADR-0017）**：修补先落 → 挂载本回合不动 → hash 变 = 既有挂载待重评估
   （mounts_stale）→ 下回合全量重挂。**不建逐 op 跟迁**——挂载无判定身份，误编只伤
   导航，失效降级本即既定语义。

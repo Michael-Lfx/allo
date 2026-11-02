@@ -2,7 +2,7 @@
 id: x06
 title: "findings_watermark 换锚——自增 id 不是可移植身份，备份还原后水位漂移"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [x21]
 part_of: ../map.md
@@ -41,3 +41,23 @@ part_of: ../map.md
 ## 非目标
 
 - findings 台账加 kind/code 机器列（gd.*/ng.* 目前只在 message 文本里）——记入 x20。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **基线 §6**：`learning_structure_findings` 加 `seq INTEGER NOT NULL CHECK (seq > 0)`，
+  索引由 `(course_id, ts)` 改 `(course_id, seq)`；水位列名不改、语义改锚 seq。
+- **写入**：`record_review_findings` 进入时取 `MAX(seq)+1`（回合同持 generation slot，
+  单写者无竞态），逐行成功后自增；空 issue / 插入失败仍只 warn 不阻断。
+- **读取/推进**：`findings_watermark` / `advance_findings_watermark` 删除
+  `MAX(id)` 钳制（只保留 `max(0)`）；repair 输入查询与 maintenance_needs 计数改
+  `seq > 水位`，消费上界 = 本回合最后一行 seq。
+- **还原**：`backup_bundle.rs` 零改动（水位作为普通列随 bundle 复制）；新增
+  `restore_reindexing_keeps_the_seq_watermark` 单测——模拟清空重插、id 重编号而
+  seq 不变 → 未消费 = 0、回合 skipped 零 LLM。
+- **散落直插**：service tests 与 smoke 三处 findings 种子补 seq。
+- **验收**：`cargo test -p nomifun-db` 全绿；`cargo test -p nomifun-learning` 全绿；
+  `learning-smoke repair` 需配置 provider 的真机档本会话未跑（临时库无 provider），
+  留波次真机批。
+- 偏差：无。

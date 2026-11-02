@@ -2962,23 +2962,28 @@ async fn run_mount(
         first.pending_nodes == 3 && first.mounted_nodes + first.outside_nodes == 3,
         "three nodes must all be evaluated"
     );
-    // hash 锚定：挂载行 hash = 结构字节 FNV-1a。
+    // hash 锚定：挂载行 hash = 规范化 structure 投影的 FNV-1a（v2）。
     let structure_raw: String =
         sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
             .bind(&course_id)
             .fetch_one(&pool)
             .await?;
-    let (row_hash, mounts_json): (i64, String) = sqlx::query_as(
-        "SELECT structure_hash, mounts_json FROM learning_structure_mounts WHERE course_id = ?",
+    let (row_hash, row_version, mounts_json): (i64, i64, String) = sqlx::query_as(
+        "SELECT structure_hash, hash_version, mounts_json \
+         FROM learning_structure_mounts WHERE course_id = ?",
     )
     .bind(&course_id)
     .fetch_one(&pool)
     .await?;
-    let expected = nomifun_learning::learning_graph_hash(structure_raw.as_bytes());
+    let expected = nomifun_learning::hash_structure_column(&structure_raw).0;
     anyhow::ensure!(
         row_hash as u64 == expected,
-        "mount row hash {} != fnv1a(structure) {expected}",
+        "mount row hash {} != canonical(structure) {expected}",
         row_hash
+    );
+    anyhow::ensure!(
+        row_version == nomifun_learning::STRUCTURE_HASH_VERSION,
+        "mount row hash_version {row_version} must be the current generation"
     );
     let entries: serde_json::Value = serde_json::from_str(&mounts_json)?;
     anyhow::ensure!(
@@ -3126,8 +3131,8 @@ async fn run_repair(
     .await?;
     sqlx::query(
         "INSERT INTO learning_structure_findings \
-         (ts, course_id, source, node, field, issue, advice) \
-         VALUES (?, ?, 'concept-review', '', '', '冒烟留痕：结构缺少一条对照边', '补一条 contrasts 边连接两块')",
+         (ts, course_id, seq, source, node, field, issue, advice) \
+         VALUES (?, ?, 1, 'concept-review', '', '', '冒烟留痕：结构缺少一条对照边', '补一条 contrasts 边连接两块')",
     )
     .bind(now)
     .bind(&course_id)
@@ -3186,8 +3191,8 @@ async fn run_repair(
     // 验收面可见。
     let warnings = violations.iter().filter(|violation| violation.warning).count();
 
-    // 级联标记：结构已改时挂载必须判 stale（读侧 hash 比对单点兜住）。
-    let new_hash = nomifun_learning::learning_graph_hash(disk_raw.as_bytes());
+    // 级联标记：结构已改时挂载必须判 stale（读侧按 hash_version 比对兜住）。
+    let new_hash = nomifun_learning::hash_structure_column(&disk_raw).0;
     if first.old_hash != first.new_hash {
         let view = service.structure_view(&course).await?;
         let stale = view.mounts.as_ref().map(|mounts| mounts.stale).unwrap_or(false);
@@ -3266,11 +3271,12 @@ async fn run_maintenance(
     for (index, issue) in ["留痕一：缺一条对照边", "留痕二：块粒度偏粗"].iter().enumerate() {
         sqlx::query(
             "INSERT INTO learning_structure_findings \
-             (ts, course_id, source, node, field, issue, advice) \
-             VALUES (?, ?, 'concept-review', '', '', ?, '按建议修补')",
+             (ts, course_id, seq, source, node, field, issue, advice) \
+             VALUES (?, ?, ?, 'concept-review', '', '', ?, '按建议修补')",
         )
         .bind(now + index as i64)
         .bind(&course_id)
+        .bind(index as i64 + 1)
         .bind(*issue)
         .execute(&pool)
         .await?;
@@ -3292,8 +3298,8 @@ async fn run_maintenance(
     .await?;
     sqlx::query(
         "INSERT INTO learning_structure_findings \
-         (ts, course_id, source, node, field, issue, advice) \
-         VALUES (?, ?, 'concept-review', '', '', '归档课留痕', '不应被扫')",
+         (ts, course_id, seq, source, node, field, issue, advice) \
+         VALUES (?, ?, 1, 'concept-review', '', '', '归档课留痕', '不应被扫')",
     )
     .bind(now)
     .bind(&archived_id)

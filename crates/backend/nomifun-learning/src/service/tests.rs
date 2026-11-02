@@ -7845,7 +7845,7 @@ async fn structure_mount_round_mounts_then_skips() {
     assert_eq!(first.status, "mounted");
     assert_eq!(first.pending_nodes, 3);
     assert_eq!((first.mounted_nodes, first.outside_nodes), (2, 1));
-    // hash 锚定：挂载行 hash = 结构字节 FNV-1a 64。
+    // hash 锚定：挂载行 hash = 规范化 structure 投影的 FNV-1a（v2）。
     let structure_raw: String = sqlx::query_scalar(
         "SELECT structure_json FROM learning_courses WHERE course_id = ?",
     )
@@ -7853,16 +7853,18 @@ async fn structure_mount_round_mounts_then_skips() {
     .fetch_one(service.pool_for_tests())
     .await
     .unwrap();
-    let (row_hash, mounts_json): (i64, String) = sqlx::query_as(
-        "SELECT structure_hash, mounts_json FROM learning_structure_mounts WHERE course_id = ?",
+    let (row_hash, row_version, mounts_json): (i64, i64, String) = sqlx::query_as(
+        "SELECT structure_hash, hash_version, mounts_json \
+         FROM learning_structure_mounts WHERE course_id = ?",
     )
     .bind(&course_id)
     .fetch_one(service.pool_for_tests())
     .await
     .unwrap();
+    assert_eq!(row_version, mounting::STRUCTURE_HASH_VERSION);
     assert_eq!(
         row_hash as u64,
-        mounting::fnv1a_64(structure_raw.as_bytes())
+        mounting::hash_structure_column(&structure_raw).0
     );
     let entries = mounting::parse_mount_entries(
         &serde_json::from_str::<serde_json::Value>(&mounts_json).unwrap(),
@@ -7887,7 +7889,7 @@ async fn structure_mount_round_mounts_then_skips() {
     assert_eq!(second.status, "skipped");
     assert_eq!(second.total_entries, first.total_entries);
 
-    // 结构变了（改一个字节）→ stale 显影 + 全量重评待挂。
+    // 重序列化（尾随空白）不再误判 stale（x07 规范化投影）。
     sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
         .bind(&format!("{structure_raw} "))
         .bind(&course_id)
@@ -7895,8 +7897,21 @@ async fn structure_mount_round_mounts_then_skips() {
         .await
         .unwrap();
     let view = service.structure_view(&course).await.unwrap();
+    assert!(
+        !view.mounts.expect("mount row exists").stale,
+        "whitespace re-serialization must not stale the mounts"
+    );
+
+    // 结构真的变了（改一个块名）→ stale 显影 + 全量重评待挂。
+    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+        .bind(structure_raw.replace("块一", "块一（改名）"))
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let view = service.structure_view(&course).await.unwrap();
     let mounts = view.mounts.expect("mount row exists");
-    assert!(mounts.stale, "hash mismatch must surface as stale");
+    assert!(mounts.stale, "real structure change must surface as stale");
 }
 
 /// 结构修补回合（j09）：触发门槛（皆空 = skipped 零 LLM 零写）+ findings
@@ -7958,8 +7973,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     // 道不可用（Conflict）——触发门槛本身已验证。
     sqlx::query(
         "INSERT INTO learning_structure_findings \
-         (ts, course_id, source, node, field, issue, advice) \
-         VALUES (?, ?, 'concept-review', '', '', '测试留痕', '建议')",
+         (ts, course_id, seq, source, node, field, issue, advice) \
+         VALUES (?, ?, 1, 'concept-review', '', '', '测试留痕', '建议')",
     )
     .bind(now_ms())
     .bind(&course_id)
@@ -10224,11 +10239,12 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         for index in 0..findings {
             sqlx::query(
                 "INSERT INTO learning_structure_findings \
-                 (ts, course_id, source, node, field, issue, advice) \
-                 VALUES (?, ?, 'concept-review', '块一', 'definition', ?, '建议')",
+                 (ts, course_id, seq, source, node, field, issue, advice) \
+                 VALUES (?, ?, ?, 'concept-review', '块一', 'definition', ?, '建议')",
             )
             .bind(now_ms() + index as i64)
             .bind(&course_id)
+            .bind(index as i64 + 1)
             .bind(format!("留痕 {index}"))
             .execute(service.pool_for_tests())
             .await
@@ -10318,24 +10334,69 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(needs.needs_repair);
     }
 
-    /// 水位越界钳制：手工写超 MAX(id) → 读侧钳到 max（不炸、不误消费）。
+    /// 换锚兑现（x06）：备份还原重编号（id 变、seq 不变）后水位不漂移——
+    /// 已消费 findings 不重跑。
     #[tokio::test]
     #[serial_test::serial]
-    async fn out_of_range_watermark_is_clamped_to_max_finding_id() {
+    async fn restore_reindexing_keeps_the_seq_watermark() {
         let completer = ScriptedCompleter::new(r#"{"ops": []}"#, false);
         let calls = completer.clone();
         let (service, user_id, course) =
-            seed_maintenance_course(1, 1, completer).await;
+            seed_maintenance_course(2, 1, completer).await;
+        // 模拟已消费到 seq 2（bundle 内水位原值）。
         sqlx::query(
             "INSERT INTO learning_maintenance_state (course_id, findings_watermark, updated_at) \
-             VALUES (?, 999999, ?)",
+             VALUES (?, 2, ?)",
         )
         .bind(course.as_str())
         .bind(now_ms())
         .execute(service.pool_for_tests())
         .await
         .unwrap();
-        // 钳制后 = MAX(id) = 1 → 无未消费留痕 → skipped 零 LLM。
+
+        // 还原模拟：导出业务列（seq 原值），清空后按新自增 id 重插——自增 id
+        // 被重编号，seq 原样复制。
+        let rows: Vec<(i64, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT seq, source, node, field, issue, advice FROM learning_structure_findings \
+             WHERE course_id = ? ORDER BY seq",
+        )
+        .bind(course.as_str())
+        .fetch_all(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM learning_structure_findings WHERE course_id = ?")
+            .bind(course.as_str())
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        for (seq, source, node, field, issue, advice) in rows {
+            sqlx::query(
+                "INSERT INTO learning_structure_findings \
+                 (ts, course_id, seq, source, node, field, issue, advice) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(now_ms())
+            .bind(course.as_str())
+            .bind(seq)
+            .bind(source)
+            .bind(node)
+            .bind(field)
+            .bind(issue)
+            .bind(advice)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM learning_structure_findings WHERE course_id = ? ORDER BY seq",
+        )
+        .bind(course.as_str())
+        .fetch_all(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert!(ids.iter().all(|id| *id > 2), "restore renumbers autoincrement ids: {ids:?}");
+
+        // 水位仍锚 seq=2 → 无未消费留痕；回合 skipped 零 LLM（id 水位会误判）。
         let needs = service.maintenance_needs(&course).await.unwrap();
         assert_eq!(needs.unconsumed_findings, 0);
         let summary = service
@@ -10343,7 +10404,11 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .await
             .unwrap();
         assert_eq!(summary.status, "skipped");
-        assert_eq!(calls.calls.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(
+            calls.calls.load(AtomicOrdering::SeqCst),
+            0,
+            "已消费留痕不得因重编号重跑"
+        );
     }
 
     /// off 臂：`NOMI_LEARNING_FINDINGS_WATERMARK=off` → 读全量、不推水位

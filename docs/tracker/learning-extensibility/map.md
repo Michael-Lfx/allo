@@ -153,3 +153,6 @@
   progress 跨列形态），§11 退役 course_jobs；两处死列（progress.extra_json /
   courses.graph_meta_json）随重建消失；跨列规则移入 quiz/progress/settle 写路径校验
   并有单测；表数 125→124；Q8 fixture 固化为永久测试。
+- 2026-11-02：x06/x07 关闭——findings 加每课程单调 `seq`，水位改锚 seq（还原重编号
+  不漂移、不重跑）；mounts/repairs 加 `hash_version`，hash 改为内层 structure 规范化
+  投影（v2），读侧按存量版本比较不回写（GET 不写库），重序列化不再误判 stale。
