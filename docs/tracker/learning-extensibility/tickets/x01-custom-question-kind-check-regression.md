@@ -10,8 +10,8 @@ part_of: ../map.md
 
 # x01: 自建题 kind CHECK 回退修复
 
-**What to build:** 让 `learning_custom_questions.kind` 的 DB 约束与**已发布词表**和代码放行
-词表一致。当前：① 用户库里只要有一行 4 类自建题，升级迁移中断 → 应用启动失败；
+**What to build:** 让 `learning_custom_questions.kind` 的 DB 约束与**已发布枚举集**和代码放行
+枚举集一致。当前：① 用户库里只要有一行 4 类自建题，升级迁移中断 → 应用启动失败；
 ② 新建 multi_choice / numeric / ordering / matching 自建题撞 CHECK → 500。
 
 ## 现状（2026-11-01 实码核实）
@@ -37,14 +37,16 @@ part_of: ../map.md
 
 ## 实施要点
 
-- [ ] 069 未发布 → **原地改**：CHECK 词表取 `ActivityKind` 全集 9 种（与已发布的 050 同集，
-      **永不收窄已发布词表**）。不要只补到代码放行的 7 种。
+- [ ] 069 未发布 → **原地改**：CHECK 取值取 `ActivityKind` 全集 9 种（与已发布的 050 同集，
+      **永不收窄已发布枚举集**）。不要只补到代码放行的 7 种。
       若 x05 先落地（去 CHECK），本票收口为「仅修测试 + 补回归样」。
 - [ ] 修 `learning_concept_web_migration.rs` 断言：**fixture 先按 050 形状插入 9 种 kind 各
       一行**，再跑 069 至尖端，9 行全部存活。这是 map 裁决点 1「已发布表 fixture 基线」的
       第一个样板。
 - [ ] 加 Rust 单测互钉：`ActivityKind` 全变体 `as_str()` 都能 INSERT 进
       custom_questions（内存库跑全链）。这是 x12 互钉测试的第一块。
+- [ ] 时序（2026-11-02 Q14/Q20）：本票先落 069 走短分支并回；x21 折叠时随链带入基线
+      （x21 blocked_by 本票，避免同文件两头改）。
 
 ## 验收
 
@@ -55,5 +57,5 @@ part_of: ../map.md
 
 ## 非目标
 
-- 其它词表列的 CHECK 治理（x05）。
+- 其它枚举集列的 CHECK 治理（x05）。
 - 前端自建题菜单只开放 3 种——产品面，map 裁决点 5 / x12。

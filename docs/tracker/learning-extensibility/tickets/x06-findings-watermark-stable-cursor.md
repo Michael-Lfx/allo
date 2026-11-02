@@ -4,7 +4,7 @@ title: "findings_watermark 换锚——自增 id 不是可移植身份，备份�
 type: task
 status: open
 assignee:
-blocked_by: []
+blocked_by: [x21]
 part_of: ../map.md
 ---
 
@@ -25,11 +25,12 @@ part_of: ../map.md
 
 ## 实施要点
 
-- [ ] 方案 A：水位 = `(ts, 同 ts 内已消费计数)` 两列，零改 findings 表。
-      方案 B（推荐，更干净）：findings 加 `seq INTEGER NOT NULL`（每课程单调，写入
-      `MAX(seq)+1`），水位锚 seq——业务列随 bundle 导出导入不变。开工裁决。
-- [ ] 两张表均未发布 → **原地改** 082/087 创建迁移。列名遵守 v3 契约命名禁忌
-      （参照 070 `findings_watermark` 命名讨论：不用 `_id` 后缀 INTEGER）。
+- [ ] **方案 B（已裁决，2026-11-02 Q15）**：findings 加每课程单调
+      `seq INTEGER NOT NULL`（写入 `MAX(seq)+1`，插入点单处 `service/learning_graph.rs:1046`，
+      SQLite 单写者安全），水位锚 seq——业务列随 bundle 导入导出不变；方案 A `(ts, 同 ts 计数)`
+      作废。
+- [ ] 两张表均未发布 → 在 **x21 基线**内落列（082 findings 加 seq、087 水位列改锚）。列名遵守
+      v3 契约命名禁忌（参照 070 `findings_watermark` 命名讨论：不用 `_id` 后缀 INTEGER）。
 - [ ] 还原路径：`backup_bundle.rs` 钳位逻辑移除；补「导出→还原→水位不变、不重跑已消费
       findings」集成测试。
 

@@ -4,7 +4,7 @@ title: "anchor 单源 + review_day 重算工具——幂等键格式与本地日
 type: task
 status: open
 assignee:
-blocked_by: []
+blocked_by: [x21]
 part_of: ../map.md
 ---
 
@@ -27,8 +27,9 @@ part_of: ../map.md
 ## 实施要点
 
 - [ ] `Anchor` 类型：`enum Anchor { Node{..}, Review{..}, Quiz{..} }` + `fmt`/`parse` 单源；
-      两处拼接改调用；格式文档化为 v1（是否加 `v1:` 前缀开工裁决——081 未发布，可原地改
-      种子口径）。单测：往返 + 旧格式解析。
+      两处拼接改调用；格式文档化为 v1——**已裁决不加版本前缀**（2026-11-02 Q16）：
+      `node:/review:/quiz:` 的 kind 前缀即判别位，单源 `parse` 拒未知形状，将来格式变就用新 kind
+      前缀、不动旧行。081 未发布，种子口径在 x21 基线内定。单测：往返 + 未知形状拒绝。
 - [ ] `review_day` 契约：写进 `CONTEXT.md` 复习口径「派生列，源 = ts + tz_offset + 02:00
       滚动；规则变更用重算不用迁移」。
 - [ ] 重算命令 `nomicore learning-recompute-review-day --db <path> [--dry-run]`：按当前规则

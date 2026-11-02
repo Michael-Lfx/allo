@@ -4,7 +4,7 @@ title: "答案 payload 自带判别——attempts.response 可回放、前端按
 type: task
 status: open
 assignee:
-blocked_by: [x09]
+blocked_by: [x09, x21]
 part_of: ../map.md
 ---
 
@@ -27,7 +27,7 @@ part_of: ../map.md
 - [ ] 答案对象：`{"kind":"numeric","value":3.14,"tol":0.01}` 等——`kind` 冗余自带；Rust 侧
       `#[serde(tag="kind")] enum Answer { SingleChoice{..}, Numeric{..}, … }` 替代 Value +
       validate_shape（validate_shape 退化为 enum 反序列化 + 语义校验）。
-- [ ] `attempts` 加 `kind TEXT`（冗余，写入时取自 activity）；015 已发布 → **追加**
+- [ ] `attempts` 加 `kind TEXT`（冗余，写入时取自 activity）；015 已发布 → 在 **x21 基线**内
       `ALTER TABLE ADD COLUMN`，历史行 NULL。
 - [ ] 读侧兼容：历史裸 answer（无 kind）按 activity.kind 补判别（x09 的 v0 路径）。
 - [ ] 前端：`Answer` TS 判别联合，`answerText` 按 kind switch + default。

@@ -4,7 +4,7 @@ title: "FSRS 参数算法版本包装——fsrs crate 升级不再静默误读�
 type: task
 status: open
 assignee:
-blocked_by: []
+blocked_by: [x21]
 part_of: ../map.md
 ---
 
@@ -31,7 +31,7 @@ part_of: ../map.md
       视为 fsrs6；`algo` 不识别 → 忽略用户参数用库默认 + warn 日志 + 设置页显式提示
       「参数来自旧算法，已回退默认」。
 - [ ] `w[20]` 等位置访问收口到按 `algo` 分支的单源 accessor。
-- [ ] `review_log` 加 `algo TEXT`（nullable，历史 NULL=fsrs6）——052 已发布 → **追加**
+- [ ] `review_log` 加 `algo TEXT`（nullable，历史 NULL=fsrs6）——052 已发布 → 在 **x21 基线**内
       `ALTER TABLE ADD COLUMN`。
 - [ ] `difficulty CHECK 1..10` 是 FSRS 域烘进已发布表：x05 保留清单里，记档「算法换域需
       重建」；本票不动。

@@ -1,6 +1,6 @@
 ---
 id: x17
-title: "可视化 fence 注册表单源——visual 词表/校验/提示词/渲染/修复不再三角锁死"
+title: "可视化 fence 注册表单源——visual 取值/校验/提示词/渲染/修复不再三角锁死"
 type: task
 status: open
 assignee:
@@ -11,12 +11,12 @@ part_of: ../map.md
 # x17: 可视化 fence 注册表单源
 
 **What to build:** 一张 Rust 单源注册表 `{visual_code, fence_langs, repairable, renderer_hint}`
-驱动后端 visual 词表、`validate_body` 围栏白名单、lint、提示词装配、API 披露与前端渲染/修复
+驱动后端 visual 枚举集、`validate_body` 围栏白名单、lint、提示词装配、API 披露与前端渲染/修复
 分发；`visual` 列存稳定码。
 
 ## 现状（盘点 2026-11-01，行号实现会话复核）
 
-- 后端 `visual` 中文词表 `公式/函数图/示意图/流程图/图表/表格/无`（`models.rs:1208-1214`）
+- 后端 `visual` 中文取值 `公式/函数图/示意图/流程图/图表/表格/无`（`models.rs:1208-1214`）
   → `:590-612` 映射到围栏语言族 → `validate_body`（`:489`）写死 `svg/jsxgraph/mermaid`
   （`:533-535, 642, 698, 752, 800-816`）→ f3 的 viz lint → 提示词可视化承诺条款。
 - 前端 `components/Markdown/CodeBlock.tsx:135-166` 按 fence 语言分发（latex/mermaid/svg/

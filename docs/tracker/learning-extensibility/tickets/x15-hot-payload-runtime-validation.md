@@ -22,8 +22,9 @@ part_of: ../map.md
 
 ## 实施要点
 
-- [ ] map 裁决点 4：先查 `ui/package.json` 是否已有 zod/valibot/superstruct；无则选型并走
-      CONTRIBUTING 许可核查；也可零依赖手写 `guard<T>()`（热点少，可接受）。
+- [ ] **已裁决零依赖手写 `guard<T>()`**（2026-11-02 Q11）：`ui/package.json` 与根 `package.json`
+      均无 zod/valibot/superstruct 类依赖（已核实）；schema 超过 ~10 个再议引库（届时走
+      CONTRIBUTING 许可核查）。
 - [ ] 热点清单：课程列表项、课程详情、课时详情（sections/activities）、复习 due/answer、
       structure view、WS course/lesson 两帧。每个 schema `passthrough()` + 枚举
       `.catch('unknown')` + 可选字段默认。

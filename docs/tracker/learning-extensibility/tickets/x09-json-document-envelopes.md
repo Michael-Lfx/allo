@@ -37,8 +37,9 @@ part_of: ../map.md
 
 ## 实施要点
 
-- [ ] 信封形状统一 `{"version":1,"data":{...}}`（与 source plan / structure 同形，顶层只有
-      version + 载荷键）；常量命名 `*_SCHEMA_VERSION` 与 x20 对齐。
+- [ ] 信封形状统一为**扁平**（2026-11-02 Q7 勘误）：`version` 与载荷键并列，不包 `data` 层——
+      与现存两信封同形（`generation/snapshot.rs:29-38`、`learning_graph/lexicon.rs:202` 已核实）；
+      常量命名 `*_SCHEMA_VERSION` 与 x20 对齐。发版门槛只含优先 1 的学习者状态五列（Q1）。
 - [ ] 读侧单源 `read_envelope::<T>(raw, CURRENT) -> Result<Versioned<T>>`：缺 version 视为
       v0（历史裸对象，**已发布列必走此路**），未知高版本 → 显式 `Unsupported`，禁止猜形。
 - [ ] 写侧：所有 INSERT/UPDATE 经同一 `write_envelope`；禁止散落 `json!`。
