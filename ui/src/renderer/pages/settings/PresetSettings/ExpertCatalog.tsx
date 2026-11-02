@@ -16,6 +16,7 @@ import {
   expertCategoryParam,
   expertListErrorKind,
   expertListHasMore,
+  expertSearchKeyword,
   localizedPair,
   mergeExpertPage,
   localizedTags,
@@ -100,7 +101,7 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
   filterRef.current = { keyword, category };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setKeyword(searchQuery.trim()), 300);
+    const timer = window.setTimeout(() => setKeyword(expertSearchKeyword(searchQuery)), 300);
     return () => window.clearTimeout(timer);
   }, [searchQuery]);
 

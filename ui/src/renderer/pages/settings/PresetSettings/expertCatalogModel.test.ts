@@ -2,8 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import type { IExpertListResponse } from '@/common/adapter/ipcBridge';
 import {
   EXPERT_CATEGORIES,
+  EXPERT_KEYWORD_MAX,
   EXPERT_MAX_PAGES,
   EXPERT_PAGE_SIZE,
+  expertSearchKeyword,
+  expertSearchMatches,
   expertCategoryParam,
   expertDetailErrorKind,
   expertListErrorKind,
@@ -42,6 +45,15 @@ describe('expert catalog model', () => {
     expect(displayableExpertAvatar('avatars/team.png')).toBeUndefined();
     expect(displayableExpertAvatar('javascript:alert(1)')).toBeUndefined();
     expect(displayableExpertAvatar('')).toBeUndefined();
+  });
+
+  test('trims the catalog search and keeps it inside the list query', () => {
+    expect(expertSearchKeyword('  广告分析  ')).toBe('广告分析');
+    expect(expertSearchKeyword('   ')).toBe('');
+    expect(Array.from(expertSearchKeyword('测'.repeat(EXPERT_KEYWORD_MAX + 5))).length).toBe(EXPERT_KEYWORD_MAX);
+    expect(expertSearchMatches('SQL 调优专家', 'sql 调优')).toBe(true);
+    expect(expertSearchMatches('SQL 调优专家', '广告')).toBe(false);
+    expect(expertSearchMatches('任何专家', '   ')).toBe(true);
   });
 
   test('maps the type filter onto the catalog query', () => {
