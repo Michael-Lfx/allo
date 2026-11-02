@@ -145,7 +145,8 @@ pub(crate) fn keyword_is_in_text(keyword: &str, text: &str) -> bool {
         return false;
     }
     let text_lower = text.to_lowercase();
-    if text_lower.contains(&clean_kw) {
+    // Only check whole-string substring if keyword is multi-word or non-ASCII (CJK)
+    if (clean_kw.contains(' ') || clean_kw.chars().any(|c| !c.is_ascii())) && text_lower.contains(&clean_kw) {
         return true;
     }
     // Extract discrete ASCII words to prevent substring over-masking (e.g. "they" matching "hey")
@@ -2167,19 +2168,7 @@ impl VoiceCompanionRuntime {
         let events = events.clone();
         let generation = playback.generation_id();
         tokio::spawn(async move {
-            let feedback = events.feedback();
-            let is_en = nomifun_api_types::voice::is_english_locale(events.snapshot().locale.as_deref());
-            let custom_reply = feedback.wake_reply.trim();
-            let is_default_phrase = custom_reply.is_empty()
-                || custom_reply == "我在"
-                || custom_reply.eq_ignore_ascii_case("i'm here");
-
-            if feedback.speak_replies && is_default_phrase {
-                let vocal_bytes = nomifun_audio::vocal::VocalPhrase::wake_bytes(is_en);
-                let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, VoiceCueKind::Wake, generation).await;
-            } else {
-                voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
-            }
+            voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
             let mut d = driver.lock().await;
             let idle_secs = effective_idle_timeout(&events);
             if playback.generation_id() == generation && d.begin_listening_window_with_secs(idle_secs) {
@@ -2398,12 +2387,17 @@ impl VoiceCompanionRuntime {
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, scope);
             drop(d);
-            let pb = playback.clone();
-            let ev = events.clone();
-            let cue_gen = playback.generation_id();
-            tokio::spawn(async move {
-                voice_feedback::play(&pb, &ev, VoiceCueKind::ListeningReminder, cue_gen).await;
-            });
+            // Play light listening reminder earcon only when in Light feedback mode with volume > 0,
+            // respecting Essential mode (which keeps transition cues like Wake/Sleep but omits reminders).
+            let config = events.feedback();
+            if config.mode == nomifun_api_types::voice::VoiceFeedbackMode::Light && config.volume > 0 {
+                let pb = playback.clone();
+                let ev = events.clone();
+                let cue_gen = playback.generation_id();
+                tokio::spawn(async move {
+                    voice_feedback::play(&pb, &ev, VoiceCueKind::ListeningReminder, cue_gen).await;
+                });
+            }
         }
     }
 
@@ -3052,20 +3046,19 @@ impl VoiceCompanionRuntime {
                     Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 }
                 IntentType::Dismiss => {
-                    drop(d);
                     let goodbye_text = dec.reply_tts.as_deref().unwrap_or("好的，您先忙。有需要随时叫我。");
                     info!(reply = %goodbye_text, "LLM decided Dismiss intent; speaking farewell and ending session");
-                    let mut driver_guard = driver.lock().await;
-                    driver_guard.reset();
-                    pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    let _ = playback.interrupt().await;
                     let sleep_gen = playback.generation_id();
+                    d.reset();
+                    pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    drop(d);
                     let _ = event_tx.send_scoped(
                         VoiceCompanionEvent::SessionEnded {
                             reason: VoiceSessionEndReason::UserStop,
                         },
                         &control_scope,
                     );
-                    drop(driver_guard);
                     let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
                     let is_default_dismiss = goodbye_text == "好的，再见"
                         || goodbye_text == "好的，您先忙。有需要随时叫我。"
@@ -3089,12 +3082,6 @@ impl VoiceCompanionRuntime {
                             });
                         }
                     }
-                    voice_feedback::schedule(
-                        playback.clone(),
-                        event_tx.clone(),
-                        VoiceCueKind::Sleep,
-                        sleep_gen,
-                    );
                     return;
                 }
                 IntentType::Chat => {

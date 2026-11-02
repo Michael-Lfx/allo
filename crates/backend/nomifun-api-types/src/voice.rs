@@ -1765,8 +1765,9 @@ pub fn classify_voice_direct_control(
     // 2. Reject explicit negation
     const NEGATORS: &[&str] = &[
         "不要", "千万别", "千万不要", "不用", "不能", "请勿", "无需", "不必", "不准", "绝不", "永不", "禁止", "勿",
-        "别退下", "别挂断", "别关", "别结束", "别停止", "别取消",
-        "don't", "dont", "never", "without", "no "
+        "别退下", "别挂断", "别关", "别结束", "别停止", "别取消", "不退下", "不挂断", "还没", "还没退下", "还没挂断",
+        "不想", "不愿", "不会", "不是", "不打算",
+        "don't", "dont", "never", "without", "no ", "not "
     ];
     for neg in NEGATORS {
         if lower.contains(neg) {
@@ -1783,10 +1784,11 @@ pub fn classify_voice_direct_control(
         }
     }
 
-    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals, questions
+    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals, questions, 3rd-person
     const META_GUARDS: &[&str] = &[
         "翻译", "translate", "英文", "english", "小说", "台词", "角色", "剧本", "如果我说", "如果说", "假如", "会怎样", "做什么",
-        "什么", "meaning", "what does", "what is", "after", "之后", "然后再", "接着", "then", "会议", "海阔天空"
+        "什么", "meaning", "what does", "what is", "after", "之后", "然后再", "接着", "then", "会议", "海阔天空",
+        "怎么", "如何", "怎样", "为什么", "能否", "可不可以", "可以不", "how", "why", "who", "他", "她", "它"
     ];
     for guard in META_GUARDS {
         if lower.contains(guard) {
@@ -1831,8 +1833,20 @@ pub fn classify_voice_direct_control(
     // This catches speech recognition homophones/typos such as "谢解退下吧", "OK 退下吧", "Bye 啦".
     let char_count = clean.chars().count();
     if char_count <= 8 {
-        for core in ZH_DISMISS_CORE.iter().chain(EN_DISMISS_CORE.iter()) {
-            if clean.ends_with(core) || lower.ends_with(core) {
+        for core in ZH_DISMISS_CORE {
+            if clean.ends_with(core) {
+                if let Some(prefix) = clean.strip_suffix(core) {
+                    let p = prefix.trim();
+                    if p.ends_with('不') || p.ends_with('没') || p.ends_with('别') {
+                        return None;
+                    }
+                }
+                return Some(VoiceDirectControlAction::DismissSession);
+            }
+        }
+        let words: Vec<&str> = lower.split_whitespace().collect();
+        for core in EN_DISMISS_CORE {
+            if words.last() == Some(core) || lower == *core {
                 return Some(VoiceDirectControlAction::DismissSession);
             }
         }
@@ -2069,6 +2083,14 @@ mod task_control_classifier_tests {
             "“退下吧”",
             "“停止播报”",
             "他说“退下吧”",
+            "我不退下",
+            "还没挂断",
+            "怎么挂断",
+            "他退下",
+            "maybe",
+            "I said maybe",
+            "how do I hang up",
+            "I might say bye",
         ];
         for input in negatives {
             assert_eq!(
