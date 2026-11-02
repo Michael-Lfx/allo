@@ -89,6 +89,7 @@ x iao f u x ing @XIAO_FU_XING
     assert!(dynamic_buf.contains("x iao b ai t ong x ue") || dynamic_buf.contains("x iǎo b ái t óng x ué"), "must contain pinyin for 小白同学");
     assert!(dynamic_buf.contains("HH EY1 F L OW1 IY0"), "must contain phonemes for HEY_FLOWY");
     assert!(dynamic_buf.contains("HH AY1 F L OW1 IY0"), "must contain phonemes for HI_FLOWY");
+    assert!(dynamic_buf.contains("F L OW1 IY0 :2.0 #0.15 @FLOWY"), "must contain bare FLOWY rule");
     assert!(dynamic_buf.contains("x iao d u"), "must contain pinyin for 小度");
     assert!(dynamic_buf.contains("j ia w ei s i"), "must contain pinyin for 贾维斯");
     assert!(dynamic_buf.contains("w ang c ai"), "must contain pinyin for 旺财");

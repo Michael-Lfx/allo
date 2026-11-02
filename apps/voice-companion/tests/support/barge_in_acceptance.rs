@@ -276,3 +276,91 @@ async fn kws_barge_in_masked_when_assistant_speaks_keyword() {
     // Playback must NOT be interrupted because the assistant was speaking the keyword itself!
     assert!(!flow.sink.frames.lock().unwrap().is_empty(), "playback must continue uninterrupted when assistant speaks the keyword");
 }
+
+#[tokio::test]
+async fn kws_barge_in_has_listening_deadline_and_times_out_on_silence() {
+    let flow = StreamingWorker::with_barge_in(false, false).await;
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2), flow.sink.wrote.notified())
+        .await
+        .expect("playback must start");
+
+    let started = tokio::time::Instant::now();
+    for frame in 0..25 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| {
+                let sample_idx = (frame * 320 + i) as f32;
+                0.45 * (sample_idx * std::f32::consts::TAU * 350.0 / 16000.0).sin()
+            })
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(started + Duration::from_millis((frame as u64 + 1) * 20)).await;
+        if flow.sink.frames.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+
+    let barge = flow.runtime.snapshot();
+    assert_eq!(barge.phase, nomifun_api_types::voice::VoiceSessionPhase::Listening);
+    assert!(barge.listening_deadline_ms.is_some(), "barge-in must arm a listening deadline for the user's follow-up");
+
+    // Manually expire listening deadline via driver watchdog helper
+    flow.runtime.expire_listening_deadline().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let after = flow.runtime.snapshot();
+    assert!(
+        after.ended_reason.is_some() || after.phase != nomifun_api_types::voice::VoiceSessionPhase::Listening,
+        "silence watchdog must transition out of Listening; snapshot={after:?}"
+    );
+}
+
+#[tokio::test]
+async fn kws_barge_then_command_reaches_asr() {
+    let flow = StreamingWorker::with_barge_in(false, false).await;
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2), flow.sink.wrote.notified())
+        .await
+        .expect("playback must start");
+
+    // 1. Interrupt via wake tone
+    let started = tokio::time::Instant::now();
+    for frame in 0..25 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| {
+                let sample_idx = (frame * 320 + i) as f32;
+                0.45 * (sample_idx * std::f32::consts::TAU * 350.0 / 16000.0).sin()
+            })
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(started + Duration::from_millis((frame as u64 + 1) * 20)).await;
+        if flow.sink.frames.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+    assert!(flow.sink.frames.lock().unwrap().is_empty());
+
+    // 2. User immediately speaks their new command
+    let cmd = tokio::time::Instant::now();
+    for frame in 0..30 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| 0.03 * (i as f32 * std::f32::consts::TAU * 200.0 / 16000.0).sin())
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(cmd + Duration::from_millis((frame + 1) * 20)).await;
+    }
+
+    // 3. User finishes command (silence)
+    let c = tokio::time::Instant::now();
+    for frame in 0..50 {
+        flow.producer.push(&vec![0.0f32; 320]);
+        tokio::time::sleep_until(c + Duration::from_millis((frame + 1) * 20)).await;
+        if flow.server.calls.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+    }
+
+    assert!(
+        flow.server.calls.load(Ordering::SeqCst) >= 2,
+        "post-barge command must reach ASR and model"
+    );
+}

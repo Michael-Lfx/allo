@@ -31,6 +31,7 @@ export interface VoiceSnapshot {
   user_text: string | null;
   understood_request?: string | null;
   assistant_text: string | null;
+  active_speaking_sentence?: string | null;
   error: { stage: string; code: string } | null;
   ended_reason?: 'initial_silence' | 'follow_up_silence' | 'user_stop' | 'no_intent' | 'failed' | null;
   feedback?: {

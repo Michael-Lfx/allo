@@ -859,6 +859,8 @@ pub struct VoiceSessionSnapshot {
     #[serde(default)]
     pub understood_request: Option<String>,
     pub assistant_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_speaking_sentence: Option<String>,
     pub follow_up_deadline_ms: Option<i64>,
     #[serde(default)]
     pub listening_deadline_ms: Option<i64>,

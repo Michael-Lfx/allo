@@ -499,8 +499,17 @@ impl PlaybackPipeline {
 
     /// Speaks sentence stream with a specific voice selection (e.g. for locale-specific TTS).
     pub async fn speak_sentence_stream_with_voice(
+        &self,tts:&dyn crate::tts::TtsProvider,sentences:mpsc::Receiver<String>,expected_gen:u64,
+        cancelled:tokio::sync::watch::Receiver<bool>,voice:&str,started:impl FnOnce()+Send,
+    )->Result<(),AudioSinkError> {
+        self.speak_sentence_stream_with_reporter(tts, sentences, expected_gen, cancelled, voice, started, |_| {}).await
+    }
+
+    /// Speaks sentence stream with a specific voice selection and reports each sentence as it begins playing.
+    pub async fn speak_sentence_stream_with_reporter(
         &self,tts:&dyn crate::tts::TtsProvider,mut sentences:mpsc::Receiver<String>,expected_gen:u64,
         mut cancelled:tokio::sync::watch::Receiver<bool>,voice:&str,started:impl FnOnce()+Send,
+        mut on_sentence_started:impl FnMut(&str)+Send,
     )->Result<(),AudioSinkError> {
         let (audio,mut ready)=mpsc::channel(1);
         let synthesize=async {
@@ -512,16 +521,17 @@ impl PlaybackPipeline {
                 let began=std::time::Instant::now();
                 let result=tts.synthesize_stream(&text,voice).await.map_err(Self::synthesis_error);
                 tracing::info!(generation=expected_gen,chars=text.chars().count(),elapsed_ms=began.elapsed().as_millis() as u64,ok=result.is_ok(),"voice_sentence_synthesis_finished");
-                failed=result.is_err();permit.send(result);
+                failed=result.is_err();permit.send((text, result));
             }
             drop(audio);
         };
         let consume=async {
             let mut started=Some(started);let mut failure=None;let mut has_audio=false;
             let mut output=None;let mut pending=None;
-            while let Some(result)=ready.recv().await {
+            while let Some((text, result))=ready.recv().await {
                 let mut stream=match result {Ok(stream)=>stream,Err(error)=>{if failure.is_none(){failure=Some(error);}continue;}};
                 let mut segment_audio=false;
+                let mut sentence_notified=false;
                 while let Some(chunk)=stream.recv().await {
                     if self.generation_id()!=expected_gen {return Ok(());}
                     if chunk.is_empty(){continue;}segment_audio=true;
@@ -530,7 +540,12 @@ impl PlaybackPipeline {
                     if output.is_none(){pending=Some(self.request_output());output=Some(self.output.lock().await);}
                     if let Err(error)=self.sink.write_frame(chunk).await {failure=Some(error);continue;}
                     if self.generation_id()!=expected_gen {self.sink.flush().await?;return Ok(());}
-                    has_audio=true;if let Some(started)=started.take(){started();}
+                    has_audio=true;
+                    if !sentence_notified {
+                        sentence_notified = true;
+                        on_sentence_started(&text);
+                    }
+                    if let Some(started)=started.take(){started();}
                 }
                 if !segment_audio && failure.is_none(){failure=Some(AudioSinkError::NoAudio);}
             }
