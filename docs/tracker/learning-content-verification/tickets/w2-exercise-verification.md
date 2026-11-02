@@ -99,7 +99,7 @@ part_of: ../map.md
    编辑保留三键与 tol。
 5. **变式路跳过题面相似门**（同考点换面是设计目的）；课时加题/重出的防复用池
    语义不变。变式 `tol` 由铸值给出，不再 `None`。
-6. **h1 先行**：w2 的 claim 表达式直接进求值器，512 字符/64 层预算必须先落地；
+6. **h1 先行**：w2 的 claim 表达式直接进求值器，2048 字符/64 层预算必须先落地；
    本票 `blocked_by: [w1, h1]`。
 7. **v0 边界**：手工/自定义 numeric 仍走 legacy 手写 answer；不做题干模板渲染
    （只保证答案键同源）；不吸收 claims 围栏；多步题/部分分仍在雾区。
@@ -109,7 +109,10 @@ part_of: ../map.md
 - [ ] `verify_math.rs` 新增 `NumericClaim { expr, params: BTreeMap<String,f64> }`、
       `NumericUnit { Raw, Percent }`、`cast_numeric_claim(...) -> CastNumeric{answer,tol}`。
 - [ ] `ActivityPack` / `StoredActivityConfig` 增 `claim/precision/unit`（serde default，
-      零迁移）；五处 `StoredActivityConfig` 构造统一走 constructor。
+      零迁移）；五处 `StoredActivityConfig` 构造统一走 constructor。`ActivityPack`
+      加字段会打断约 20 处测试字面量（`generation/tests.rs`、`service/tests.rs`、
+      `lesson_draft.rs` 测试 helper 等）——统一补 `claim: None, precision: None,
+      unit: None`，或引入测试构造器。
 - [ ] 铸值接线：整课生成 `activities.rs:203-215`、单题 `:313-315`、agent 草稿
       `lesson_draft.rs:770-790` + `refresh_audit` 兜底、落库 `lesson.rs:2154-2168`、
       导入 `course.rs:162-190`、变式 `quiz.rs:875-890`。

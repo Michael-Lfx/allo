@@ -402,7 +402,7 @@ Unit::Percent => format!("{:.precision$}%", value * 100.0),
 
 | 落点 | 现状 | w2 变更 |
 |---|---|---|
-| `models.rs:1430-1462` | `ActivityPack` answer/tol | 加 `claim/precision/unit`（serde default） |
+| `models.rs:1430-1462` | `ActivityPack` answer/tol | 加 `claim/precision/unit`（serde default）；会打断约 20 处测试字面量，统一补 `None` 或测试构造器 |
 | `models.rs:1524` / `:1671-1686` | numeric validate_shape | 加 claim 轨校验；legacy 分支保留 |
 | `models.rs:3355-3382` | `StoredActivityConfig` | 加三键；五处构造统一用 constructor |
 | `lesson_draft.rs:770-790` | Add/Update activity 直接 push/replace | 铸值后再存；`refresh_audit` 幂等兜底 |
