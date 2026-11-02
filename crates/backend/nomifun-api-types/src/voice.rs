@@ -1766,7 +1766,7 @@ pub fn classify_voice_direct_control(
     const NEGATORS: &[&str] = &[
         "不要", "千万别", "千万不要", "不用", "不能", "请勿", "无需", "不必", "不准", "绝不", "永不", "禁止", "勿",
         "别退下", "别挂断", "别关", "别结束", "别停止", "别取消", "不退下", "不挂断", "还没", "还没退下", "还没挂断",
-        "不想", "不愿", "不会", "不是", "不打算",
+        "不想", "不愿", "不会", "不是", "不打算", "没有",
         "don't", "dont", "never", "without", "no ", "not "
     ];
     for neg in NEGATORS {
@@ -1788,7 +1788,7 @@ pub fn classify_voice_direct_control(
     const META_GUARDS: &[&str] = &[
         "翻译", "translate", "英文", "english", "小说", "台词", "角色", "剧本", "如果我说", "如果说", "假如", "会怎样", "做什么",
         "什么", "meaning", "what does", "what is", "after", "之后", "然后再", "接着", "then", "会议", "海阔天空",
-        "怎么", "如何", "怎样", "为什么", "能否", "可不可以", "可以不", "how", "why", "who", "他", "她", "它"
+        "怎么", "如何", "怎样", "为什么", "能否", "可不可以", "可以不", "how", "why", "who", "他", "她", "它", "你说", "她说"
     ];
     for guard in META_GUARDS {
         if lower.contains(guard) {
@@ -1829,25 +1829,41 @@ pub fn classify_voice_direct_control(
     }
 
     // 6. Short imperative dismissal fallback: for short utterances (<= 8 CJK chars or <= 4 words),
-    // if the utterance ends with a primary dismissal core and contains no negation/guards, match dismiss directly!
-    // This catches speech recognition homophones/typos such as "谢解退下吧", "OK 退下吧", "Bye 啦".
+    // if the utterance ends with an imperative dismissal particle (e.g. "退下吧", "挂断吧") AND its prefix
+    // is strictly an allowed polite filler ("谢解", "OK", "好的", "先"), match dismiss directly!
+    // Reject compound tasks (e.g. "帮我查天气退下吧") and non-control nouns ("潮水退下", "电话挂断").
+    const TASK_ACTION_GUARDS: &[&str] = &[
+        "查", "看", "搜", "帮我", "打开", "关闭", "关掉", "发", "做", "写", "订", "定", "导航", "播放", "运行", "建立",
+        "query", "search", "open", "close", "send", "turn on", "turn off", "play", "run", "create"
+    ];
+    const ALLOWED_DISMISS_PREFIXES: &[&str] = &[
+        "请", "请你", "请您", "麻烦", "麻烦你", "麻烦您", "好的", "行了", "好了", "那就", "那先", "你先",
+        "行吧", "成吧", "得嘞", "行", "那", "ok", "okay", "please", "alright", "then",
+        "谢解", "谢谢", "谢了", "多谢", "先"
+    ];
+    const ZH_SUFFIX_DISMISS_CORE: &[&str] = &[
+        "退下吧", "退一下吧", "退一下", "退下啦", "退退退",
+        "结束通话", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧"
+    ];
+
     let char_count = clean.chars().count();
-    if char_count <= 8 {
-        for core in ZH_DISMISS_CORE {
+    if char_count <= 8 && !TASK_ACTION_GUARDS.iter().any(|&verb| lower.contains(verb)) {
+        for core in ZH_SUFFIX_DISMISS_CORE {
             if clean.ends_with(core) {
                 if let Some(prefix) = clean.strip_suffix(core) {
                     let p = prefix.trim();
-                    if p.ends_with('不') || p.ends_with('没') || p.ends_with('别') {
-                        return None;
+                    if p.is_empty() || ALLOWED_DISMISS_PREFIXES.contains(&p) {
+                        return Some(VoiceDirectControlAction::DismissSession);
                     }
                 }
-                return Some(VoiceDirectControlAction::DismissSession);
             }
         }
         let words: Vec<&str> = lower.split_whitespace().collect();
         for core in EN_DISMISS_CORE {
             if words.last() == Some(core) || lower == *core {
-                return Some(VoiceDirectControlAction::DismissSession);
+                if words.len() <= 1 || (words.len() == 2 && ALLOWED_DISMISS_PREFIXES.contains(&words[0])) {
+                    return Some(VoiceDirectControlAction::DismissSession);
+                }
             }
         }
     }
@@ -2091,6 +2107,18 @@ mod task_control_classifier_tests {
             "I said maybe",
             "how do I hang up",
             "I might say bye",
+            "帮我查天气退下吧",
+            "打开灯退下吧",
+            "把空调关掉退下吧",
+            "帮我订机票退下吧",
+            "导航回家退下吧",
+            "潮水退下",
+            "电话挂断",
+            "电话挂断吧",
+            "said bye",
+            "just bye",
+            "没有结束通话",
+            "你说退下",
         ];
         for input in negatives {
             assert_eq!(
