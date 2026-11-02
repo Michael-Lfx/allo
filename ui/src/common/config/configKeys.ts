@@ -162,8 +162,12 @@ export type ConfigKeyMap = {
   // service from client preferences.
   // Target recall probability for the FSRS scheduler (0.7–0.99; default 0.9).
   'learning.desiredRetention': number | undefined;
-  // Custom FSRS model weights; empty/absent means the library defaults.
-  'learning.fsrsParameters': number[] | undefined;
+  // Custom FSRS model weights. Legacy shape = bare number[]; current shape =
+  // { algo: 'fsrs6', w: number[] }. Empty/absent means library defaults.
+  'learning.fsrsParameters':
+    | number[]
+    | { algo: string; w: number[] }
+    | undefined;
   // Max due-review items fetched per review queue load (default 30).
   'learning.reviewSessionLimit': number | undefined;
   // Max questions in a diagnostic plan (default 10).

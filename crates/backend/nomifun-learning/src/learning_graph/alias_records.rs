@@ -32,6 +32,9 @@ pub struct AliasRecord {
 pub const ALIAS_ACTIVE: &str = "active";
 pub const ALIAS_RETIRED: &str = "retired";
 
+/// 别名文档代际（x09，行级）：记录形状跨版本演进；未知版本读侧降级为空池。
+pub const ALIAS_DOC_VERSION: i64 = 1;
+
 /// 解析 `aliases_json`（双读：新形状对象 / 旧形状字符串——旧字符串回填为
 /// `{name, status: active}`）。坏元素（非对象非字符串、缺 name、空名）跳过
 /// ——别名是展示与解析的辅助面，坏档不让整个概念行失效。
@@ -177,19 +180,29 @@ pub(crate) async fn register_alias_tx(
         return Ok(RegisterAliasOutcome::Skipped);
     }
 
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT aliases_json FROM learning_concept_registry WHERE concept_id = ?",
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT aliases_json, doc_version FROM learning_concept_registry WHERE concept_id = ?",
     )
     .bind(concept_id)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(internal)?;
-    let Some(aliases_json) = row else {
+    let Some((aliases_json, doc_version)) = row else {
         return Err(AppError::Conflict(format!(
             "alias host concept {concept_id} is missing"
         )));
     };
-    let mut records = parse_alias_records(&aliases_json);
+    // 未知文档代际：别名池降级为空（铸名门走「无候选」分支）+ warn，不猜形。
+    let mut records = if doc_version == ALIAS_DOC_VERSION {
+        parse_alias_records(&aliases_json)
+    } else {
+        tracing::warn!(
+            concept_id,
+            doc_version,
+            "alias doc version unsupported; treating the alias pool as empty"
+        );
+        Vec::new()
+    };
 
     // 保证 4：复活——本概念的退役名 = 翻 active + 刷新定义面。
     if let Some(record) = records
@@ -226,10 +239,11 @@ async fn write_alias_records(
     let json =
         serde_json::to_string(records).map_err(|error| AppError::Internal(error.to_string()))?;
     sqlx::query(
-        "UPDATE learning_concept_registry SET aliases_json = ?, updated_at = ? \
+        "UPDATE learning_concept_registry SET aliases_json = ?, doc_version = ?, updated_at = ? \
          WHERE concept_id = ?",
     )
     .bind(json)
+    .bind(ALIAS_DOC_VERSION)
     .bind(nomifun_common::now_ms())
     .bind(concept_id)
     .execute(&mut **transaction)

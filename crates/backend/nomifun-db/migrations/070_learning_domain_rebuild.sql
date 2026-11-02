@@ -191,6 +191,8 @@ CREATE TABLE learning_concept_registry (
     ),
     definition  TEXT NOT NULL DEFAULT '',
     deprecated  INTEGER NOT NULL DEFAULT 0 CHECK (deprecated IN (0, 1)),
+    -- 行级文档代际（x09）：别名记录形状跨版本演进；未知版本读侧降级为空池。
+    doc_version INTEGER NOT NULL DEFAULT 1,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
     source TEXT
@@ -551,9 +553,10 @@ CREATE TABLE learning_structure_repairs (
     -- applied | noop（ops 空 = 合法结论；noop 不写结构快照，仅留痕）；
     -- 枚举集校验在 Rust（ADR-0015）。
     result     TEXT NOT NULL,
-    -- 逐 op 数组：[{op, ...字段, reason, 跟随改写说明}]；noop 为空数组。
+    -- 扁平信封（x09）：`{version, ops:[{op, ...字段, reason, 跟随改写说明}]}`；
+    -- noop 为空数组。历史裸形（无 version）读侧按 v0 兼容。
     ops_json   TEXT NOT NULL CHECK (
-        json_valid(ops_json) AND json_type(ops_json) = 'array'
+        json_valid(ops_json) AND json_type(ops_json) = 'object'
     ),
     note       TEXT NOT NULL DEFAULT ''
 );
@@ -681,6 +684,9 @@ CREATE TABLE learning_quiz_rounds (
     -- 都移到 Rust：validate_round_shape（quiz.rs），每条规则一个有单测
     -- （ADR-0015）。
     status      TEXT NOT NULL,
+    -- 行级文档代际（x09）：plan/answers/report 三载荷共享一个代际（同生同灭）；
+    -- 未知版本在活动状态面报错、统计面跳过。
+    doc_version INTEGER NOT NULL DEFAULT 1 CHECK (doc_version >= 1),
     -- 选题快照：[{node, node_name, activity, kind}]（判底不入表）。
     plan_json   TEXT NOT NULL CHECK (
         json_valid(plan_json) AND json_type(plan_json) = 'array'
@@ -1000,3 +1006,8 @@ CREATE INDEX idx_learning_courses_source_kb_ids_json
 -- service、ui 零引用）；直接 DROP，不走 RENAME 观察期（还原按 PRODUCT_TABLES
 -- 枚举表跳过，谱系必须 Current——删表不新增还原风险，Q9）。
 DROP TABLE learning_course_jobs;
+
+-- ==== §12 FSRS 算法代际列（x10）====
+-- learning_review_log（052 已发布 → 基线承载）：记录推进时的算法代际。
+-- NULL = 历史行（按 fsrs6 口径）；新真实行写 'fsrs6'，合成种卡行写 NULL。
+ALTER TABLE learning_review_log ADD COLUMN algo TEXT;

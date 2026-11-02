@@ -2,7 +2,7 @@
 id: x09
 title: "JSON 文档列 v1 信封——不可再生状态优先，复用 CourseSourcePlanSnapshot 模式"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -56,3 +56,27 @@ part_of: ../map.md
 ## 非目标
 
 - 任何语义改动（只加壳）；答案判别（x16）；契约总表（x20）。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **helper**：新增 `src/envelope.rs`——`FlatEnvelope<T>`（version 与载荷并列）、
+  `EnvelopeRead{Bare, Current, Unsupported}`、`read_envelope`（缺 version = v0 裸形；
+  未知版本显式 Unsupported，禁止猜形）、`write_envelope`；载荷 `ResponseDoc`/`OpsLog`。
+- **优先 1 四列**：
+  - `quiz_rounds`：基线 §7 加行级 `doc_version`（CHECK >= 1）；INSERT 绑 1；活动面
+    `load_round_row` 未知版本 → `Internal`，`quiz_calibration` → warn + skip。
+  - `concept_registry.aliases_json`：基线 §2 加行级 `doc_version`；复位 UPDATE 写 1
+    （新行走 DEFAULT 1）；五个读点未知版本 → 空池 + warn。
+  - `structure_repairs.ops_json`：基线 §6 列 CHECK 改 object；写侧
+    `write_envelope(1, OpsLog{ops})`；零读点。
+  - `attempts.response_json`：progress/review 两写点写 `ResponseDoc` 信封（已发布列
+    CHECK 兼容 object，零迁移）；读侧零改动（x16 阶段二）。
+- **豁免**：basis 三列、source_paths、node_ids、source_kb_ids —— 纯字符串数组，
+  x20 登记 `envelope=array-exempt`。
+- **测试**：envelope 三态、attempt 信封落库、quiz 校准跳未知版本、别名未知版本空池。
+- **验收**：`cargo test -p nomifun-db`（49 二进制）与 `cargo test -p nomifun-learning`
+  （754）全绿；`learning-smoke quiz/xp` EXIT=0；structure/mount/repair 需 provider，
+  留波次真机批。
+- 偏差：无。

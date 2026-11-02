@@ -1566,7 +1566,15 @@ impl LearningService {
         .bind(attempt_id.as_str())
         .bind(enrollment_id.as_str())
         .bind(activity_id.as_str())
-        .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
+        .bind(
+            crate::envelope::write_envelope(
+                crate::envelope::ATTEMPT_RESPONSE_SCHEMA_VERSION,
+                &crate::envelope::ResponseDoc {
+                    response: if forgot { Value::Null } else { response.clone() },
+                },
+            )
+            .map_err(internal)?,
+        )
         .bind(score)
         .bind(correct)
         .bind(&feedback)
@@ -1782,8 +1790,8 @@ async fn record_review_log(
     sqlx::query(
         "INSERT INTO learning_review_log \
          (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
-          stability_before, difficulty_before, r_pred, review_day, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          stability_before, difficulty_before, r_pred, review_day, created_at, algo) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(generate_id())
     .bind(user_id.as_str())
@@ -1797,6 +1805,7 @@ async fn record_review_log(
     .bind(r_pred)
     .bind(review_day_number(now, settings.tz_offset_minutes))
     .bind(now)
+    .bind(crate::scheduler::FSRS_ALGO)
     .execute(executor)
     .await
     .map_err(internal)?;

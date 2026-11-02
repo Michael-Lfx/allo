@@ -66,6 +66,9 @@ use crate::models::{
 };
 use crate::settle::{Settlement, QUIZ_QUESTION_BUDGET, QUIZ_TRIGGER_SETTLEMENTS};
 
+/// 回合行文档代际（x09）：plan/answers/report 三载荷共享一个行级版本。
+const QUIZ_ROUND_DOC_VERSION: i64 = 1;
+
 /// 回合三态形态规则（原迁移 084 的三条表级 CHECK，ADR-0015 移到写路径）：
 /// - active：finished/answers/report/earned 全空；
 /// - completed：四者全在（走完结算）；
@@ -395,13 +398,14 @@ impl LearningService {
         validate_round_shape("active", None, None, None, None)?;
         let inserted = sqlx::query(
             "INSERT INTO learning_quiz_rounds \
-             (round_id, user_id, course_id, started_at, status, plan_json) \
-             VALUES (?, ?, ?, ?, 'active', ?)",
+             (round_id, user_id, course_id, started_at, status, doc_version, plan_json) \
+             VALUES (?, ?, ?, ?, 'active', ?, ?)",
         )
         .bind(&round_id)
         .bind(user_id.as_str())
         .bind(course_id.as_str())
         .bind(now)
+        .bind(QUIZ_ROUND_DOC_VERSION)
         .bind(&plan_json)
         .execute(&self.pool)
         .await;
@@ -633,8 +637,8 @@ impl LearningService {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<MemoryCalibrationBin>, AppError> {
-        let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT report_json FROM learning_quiz_rounds \
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT doc_version, report_json FROM learning_quiz_rounds \
              WHERE user_id = ? AND status = 'completed' ORDER BY id",
         )
         .bind(user_id.as_str())
@@ -646,7 +650,15 @@ impl LearningService {
             r: f64,
         }
         let mut points: Vec<Point> = Vec::new();
-        for report_json in rows {
+        for (doc_version, report_json) in rows {
+            // 统计面：未知代际显式跳过并告警（禁止猜形）。
+            if doc_version != QUIZ_ROUND_DOC_VERSION {
+                tracing::warn!(
+                    doc_version,
+                    "quiz round doc version unsupported; calibration skips this round"
+                );
+                continue;
+            }
             // 宽松读面：只取校准点（旧档/异形行如实跳过，读数面不 fail loud）。
             let Ok(covered) = serde_json::from_str::<Vec<StoredRoundReport>>(&report_json) else {
                 continue;
@@ -998,7 +1010,7 @@ impl LearningService {
         round_id: &str,
     ) -> Result<(String, String), AppError> {
         let row = sqlx::query(
-            "SELECT status, plan_json FROM learning_quiz_rounds \
+            "SELECT status, plan_json, doc_version FROM learning_quiz_rounds \
              WHERE round_id = ? AND user_id = ? AND course_id = ?",
         )
         .bind(round_id)
@@ -1008,6 +1020,13 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("quiz round {round_id}")))?;
+        let doc_version: i64 = row.try_get("doc_version").map_err(internal)?;
+        // 活动状态面：未知代际报错（错误优于静默半解析）。
+        if doc_version != QUIZ_ROUND_DOC_VERSION {
+            return Err(AppError::Internal(format!(
+                "quiz round doc v{doc_version} unsupported"
+            )));
+        }
         let status: String = row.try_get("status").map_err(internal)?;
         let plan_json: String = row.try_get("plan_json").map_err(internal)?;
         Ok((status, plan_json))

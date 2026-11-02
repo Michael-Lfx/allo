@@ -33,17 +33,16 @@ impl LearningService {
                     }
                 }
                 "learning.fsrsParameters" => {
-                    if let Some(items) = parsed.as_array() {
-                        let params: Vec<f32> = items
-                            .iter()
-                            .filter_map(|item| item.as_f64())
-                            .map(|v| v as f32)
-                            .collect();
-                        if !params.is_empty()
-                            && params.len() == items.len()
-                            && params.iter().all(|v| v.is_finite())
-                        {
+                    match crate::scheduler::parse_fsrs_params(&parsed) {
+                        crate::scheduler::FsrsParams::Fsrs6(params) => {
                             settings.parameters = params;
+                        }
+                        crate::scheduler::FsrsParams::Unsupported(algo) => {
+                            // 未知算法整体回退默认（w 布局与算法绑定，不混搭）。
+                            tracing::warn!(
+                                algo = %algo,
+                                "fsrs params algo unsupported, falling back to defaults"
+                            );
                         }
                     }
                 }
