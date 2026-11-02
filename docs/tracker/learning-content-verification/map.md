@@ -30,8 +30,8 @@
 | id | 票 | 优先 | 依赖 |
 | --- | --- | --- | --- |
 | w1 | verify_math 断言核验接口 v0（求值器+采样核验+工具 op+R14+smoke oracle+f3 读数修复）——**closed（2026-11-01）** | **高** | — |
-| h1 | verify_math 求值器预算硬化（2048 字符/64 层防爆栈）——**2026-11-02 新增** | **高** | — |
-| w2 | 练习题型接核验器（numeric 答案键工具铸值/变式换参/修复变式 tol 硬编码）——已收窄；2026-11-02 复核有 learnhub 实码参考 | 中 | w1, h1 |
+| h1 | verify_math 求值器预算硬化（2048 字符/64 层防爆栈）——**closed（2026-11-02）** | **高** | — |
+| w2 | 练习题型接核验器（numeric 答案键工具铸值/变式换参/修复变式 tol 硬编码）——**closed（2026-11-02）**；2026-11-02 复核有 learnhub 实码参考 | 中 | w1, h1 |
 | w3 | 核验 kind 扩展（导数/积分/极限/ODE 采样核验） | 低 | w1 |
 
 ## 裁决记档（2026-10-31 grilling，六问全按推荐）
@@ -111,3 +111,19 @@ w3 仍隔波，待 w1 真机后按翻译质量抽验再定。
 **账目修正**：w1 票面 `status: open` 与正文「真机验收 status: closed」不一致，
 本次同步 frontmatter 为 closed；w2 票面追加 2026-11-02 Resolution 增补（旧
 2026-10-31 裁决保留，零删除）。
+
+## Decisions so far
+
+- [h1 verify_math 求值器预算硬化](tickets/h1-evaluator-budget.md) — **closed
+  （2026-11-02）**：`MAX_EXPR_LEN=2048` / `MAX_DEPTH=64`；长度闸先于词法、深度
+  闸覆盖全部递归；预算错误仍是 `ClaimVerdict::Fail`。实施 `1013270de`、合并
+  `e13b9745c`；`verify_math` 33 / 全量 762 / agent 27 全绿。
+- [w2 练习题型接核验器](tickets/w2-exercise-verification.md) — **closed
+  （2026-11-02）**：`answer` 保 JSON number；`claim{expr,params}` +
+  `precision/unit` 系统铸值；Strict 生成必须带 claim，Force 兼容 legacy；
+  变式同模板换参机械契约 + 跳过相似门；DTO 只加 precision/unit、claim 永不
+  下发；编辑按数值等价保留 claim 轨。实施 `dbca554f1`、review 修复
+  `43748212f` + `d58f15fbb`、合并 `696278e44` + `90e8215ce`；
+  `nomifun-learning` 799 / agent 28 / UI 64 / smoke EXIT 0。集成分支
+  `feat/verify-math-cast` 已推送，未并回 `feat/learn0928`（等合并通知）。
+- **w3** 仍 open/隔波：待 w1 真机后的 claim 翻译质量抽验再定；不在本波。

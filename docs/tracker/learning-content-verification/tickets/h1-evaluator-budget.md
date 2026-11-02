@@ -2,8 +2,8 @@
 id: h1
 title: "verify_math 求值器预算硬化——表达式长度/嵌套深度防爆栈"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -75,3 +75,25 @@ part_of: ../map.md
 - 前置：无（可独立先行）。
 - 后继：w2 依赖本票（数值 claim 表达式直接进求值器；预算先落地）。
 - 分支建议：`feat/verify-math-budget`；若与 w2 同波，h1 先合、w2 紧随。
+
+## Resolution（2026-11-02 施工关闭）
+
+**交付**：`1013270de`（h1 实施，分支 `feat/verify-math-h1`）→ 合并
+`e13b9745c`（集成分支 `feat/verify-math-cast`）。
+
+- `verify_math.rs` 新增 `MAX_EXPR_LEN = 2048`（用户评审从 learnhub 的 512
+  上调；长度不是爆栈向量，512 会误伤多点求和/长展开）与 `MAX_DEPTH = 64`。
+- 长度闸在 `eval_expr` 入口、`tokenize` 之前；深度闸用 `parse_expr` 薄包装
+  + `parse_expr_inner`，覆盖括号、函数实参、一元负号、`^` 右结合链；顶层
+  为第 0 层，64 层过 / 65 层报错。
+- 预算错误仍是 `ClaimVerdict::Fail`（不是工具 `Err`），模型可据此拆分/化简
+  claim；`position` 指向越界字符的字节偏移。
+- 测试：`verify_math` 33 过（含 2049 字符、2048 边界、2000 层、2001 字符
+  深度、64/65 边界、一元负号/函数/`^` 链）；`nomifun-learning` 全量 762 过；
+  `nomifun-ai-agent lesson_content_loop` 27 过；fmt 干净。
+- 零迁移、零 UI、零 API 变更。
+
+**如实记录**：2000 层括号的 4001 字符输入先撞长度闸（文案「表达式过长」），
+另以 2001 字符的 1000 层括号用例证明深度闸；两者都不 panic。本票只取预算，
+learnhub 同批的 `%`/Unicode 归一化、三值 verdict、容差量纲、claims 剥离均未
+吸收（见非目标）。

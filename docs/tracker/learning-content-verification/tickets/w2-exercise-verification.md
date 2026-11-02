@@ -2,8 +2,8 @@
 id: w2
 title: "练习题型接核验器——numeric 答案键工具算/变式换参/多步批改"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [w1, h1]
 part_of: ../map.md
 ---
@@ -149,3 +149,56 @@ part_of: ../map.md
 + tol 修复）继续有效；本增补只把「工具算」落成 claim/params + 系统铸值，并把
 多步题/部分分继续留在雾区。旧清单中「题面渲染与答案键同源（同一表达式两处消费）」
 按 D7 解释为「答案键同源」，不是题干模板渲染。
+
+## Resolution（2026-11-02 施工关闭）
+
+**交付**：
+
+- `dbca554f1`（w2 实施，分支 `feat/verify-math-w2`）→ 合并 `696278e44`。
+- `43748212f` + `d58f15fbb`（双轴 code-review 修复，分支
+  `feat/verify-math-review`）→ 合并 `90e8215ce`（集成分支
+  `feat/verify-math-cast` 尖端，已推送）。
+
+**落地**：
+
+- `answer` 保持 JSON number（显示单位；percent ×100），判分通道
+  `progress.rs` 语义不动；`claim{expr,params}` + `precision(0–10)` +
+  `unit(raw|percent)` 落 `ActivityPack`/`StoredActivityConfig`，零迁移。
+- `cast_numeric_claim` 系统铸值：percent ×100、精确整数 + precision 0 → tol 0、
+  否则半显示位；`Strict` 模型面必须带 claim 且禁写 answer/tol，`Force` 导入/
+  落库/审计兜底保留 legacy 无 claim 行。
+- 变式：bank config 进提示词；`GenerationPurpose::Variant` 跳过题面相似门；
+  机械契约要求同 `expr`（空白归一）、同 effective unit、同 precision、参数
+  必须变、铸值答案必须变，不合格如实跳过；`tol` 不再 `None`。
+- DTO：`ActivityView`/`ReviewQuestion`/`QuizRoundQuestionView`/`QuestionEntry`/
+  `GeneratedLessonActivity`/`QuizGradeFeedback`/`ReviewAnswerResult` 只加
+  `precision/unit`，`claim` 永不出现；泄漏断言覆盖 lesson/review/quiz start。
+- 编辑面：`update_question` 保留 claim/precision/unit/tol；claim 轨 answer
+  按数值等价比较（`25.0` / `25` 往返不算手改），真正改值仍拒绝。
+- 提示词 EN/CN 统一为「eval_expr 文法（显式 *、^、函数、pi/e）」，修复函数表
+  漂移；变式 prompt 使用专用「同模板换参」段落。
+- UI：`ActivityInput` percent 后缀；`reviewAnswerText` 按 precision/unit 揭示；
+  无新增 i18n key。
+- smoke：`learning-smoke quiz` 节点 0 numeric claim 种子；答案键按 config 重算；
+  精确/容差内/容差外、变式重算、start 投影无 claim/tol、XP 按
+  `question_equivalent(kind)` 求和（numeric 权重 2）。
+
+**验证**：
+
+- `cargo test -p nomifun-learning`：**799 passed, 0 failed**。
+- `cargo test -p nomifun-ai-agent --lib lesson_content_loop`：**28 passed**。
+- `cargo check -p nomifun-app` 通过；`bun test src/renderer/pages/learning`
+  **64 passed**；`bun run check:i18n` up to date（11541 keys / 54 modules）。
+- 真机 `learning-smoke quiz`：**EXIT 0**；`[numeric] cast answer=25 tol=0.05
+  (exact/within/outside all correct)`；`settled=6 earned=13`。
+- 零迁移：`git diff -- crates/backend/nomifun-db/migrations` 为空。
+- `bun run typecheck` 仍有 54 个仓库既有错误（videoCanvas/auth 等），
+  `pages/learning` 零新增错误。
+
+**如实记录（残留）**：
+
+- 真机 smoke 未带 provider，变式生成如实跳过；变式契约由脚本化 completer
+  服务测试覆盖，未在真机 LLM 上自然触发。
+- 题干措辞与 claim 的「同源」只到提示词条款 + smoke 抽验，不做模板渲染（D7）。
+- claims 围栏、多步题/部分分、手工/自定义 numeric claim 作者面仍在非目标/雾区。
+- 集成分支未并回 `feat/learn0928`；按用户合并纪律等通知。
