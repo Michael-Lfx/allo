@@ -919,13 +919,26 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         .try_get("course_source_plan_json")
         .map_err(internal)?;
     let source_plan = parse_source_plan_view(source_plan_json.as_deref());
+    let course_kind = CourseKind::try_from(
+        row.try_get::<String, _>("course_kind").map_err(internal)?.as_str(),
+    )
+    .map_err(AppError::Internal)?;
+    // 管线代际（x11）：graph 课程不标；传统课程按来源计划列是否非空判定
+    // （老行 NULL = sampling，与前端旧嗅探结果一致）。
+    let pipeline = match course_kind {
+        CourseKind::LearningGraph => None,
+        _ => Some(if source_plan_json.is_some() {
+            "source_plan"
+        } else {
+            "sampling"
+        }),
+    };
     Ok(CourseSummary {
         id: parse_id(row.try_get("course_id").map_err(internal)?)?,
         title: row.try_get("title").map_err(internal)?,
         description: row.try_get("description").map_err(internal)?,
         domain: row.try_get("domain").map_err(internal)?,
-        course_kind: CourseKind::try_from(row.try_get::<String, _>("course_kind").map_err(internal)?.as_str())
-            .map_err(AppError::Internal)?,
+        course_kind,
         // 主来源：列表首个（过滤后由 `apply_existing_kb_ids` 修正）。
         source_kb_id: source_kb_ids.first().cloned().or(source_kb_id),
         source_kb_ids,
@@ -949,6 +962,7 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         learning_goal,
         sampling,
         source_plan,
+        pipeline,
     })
 }
 

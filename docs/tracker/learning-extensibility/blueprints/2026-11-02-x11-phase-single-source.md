@@ -161,4 +161,10 @@ export function isModernPipeline(events, declared?: 'sampling' | 'source_plan'):
 | 日期 | 类型 | 位置 | 变更 | 根因/触发 |
 |---|---|---|---|---|
 | 2026-11-02 | 修订 | 2/4.1 | phase 全集从「19 值散三文件」精查为 43 处发射点清单（含 AG 翻译层 generate/repair/audit/round 与 basis_declared/basis_revoked；`scope` 确认死值）；TS 双向漂移清单入档 | 图 6 读码底稿 A2/B1 |
+| 2026-11-02 | 勘误 | 4.1 | **phase 全集实为 20 值**（core 4 + course 8 + lesson 4 + loop 4；图面「19 值」为计数笔误，名称表本身正确）。manifest 测试按 20 断言。 | 施工时按实码枚举 |
+| 2026-11-02 | 施工记录 | 4.1/4.4 | `events.rs` 新增事件名常量 + `phase` 模块（分组切片 + `ALL`）；43 处发射点字面量换常量（learning crate 用 `crate::events::phase::*`，ai-agent 用 `nomifun_learning::phase::*`；AG 的 `generate/repair` 循环标签与 `loop` 字段同换）。manifest 测试写 **workspace 根** `target/learning-phase-manifest.json`（`CARGO_MANIFEST_DIR/../../..`；初版少一级写到 `crates/target`，已修）。 | 图 6 施工 |
+| 2026-11-02 | 施工记录 | 4.2 | pipeline 门提取为自由函数 `course_pipeline(brief, outline_engine_present)`（门判定唯一处）；`generate_course` 算一次并传入 discover/expand，12 个课程流帧全部带 `pipeline`；`CourseSummary` 加 `pipeline: Option<&'static str>`（graph=None，传统课按 `course_source_plan_json` 是否 NULL 判定）。 | 图 6 施工 |
+| 2026-11-02 | 勘误 | 4.3 | `CourseGenerationProgress` 实际只在 CreateCourseDialog 生成中渲染（无 CourseSummary 可传）——pipeline 以 WS 帧声明为主（`events.find(e=>e.pipeline)`），prop 保留给未来课程摘要面；`isModernPipeline(events, declared?)` 声明优先、嗅探兜底。 | 施工时按实际组件树修正 |
+| 2026-11-02 | 施工记录 | 4.3 | 新增 `pages/learning/phaseMeta.ts`（`PHASE` 对象 + `COURSE_PHASES`/`LESSON_PHASES` + `MODERN/LEGACY_VISIBLE_PHASES` + `PET_PHASE_ALIAS`）；ipcBridge 两接口 phase 放开为 string 并加 `pipeline?`；model/components/pet 全部改引 PHASE；`scope` 死值随 union 删除；宠物别名含 `cancelled→failed`（nomi.json 无 cancelled 键）。 | 图 6 施工 |
+| 2026-11-02 | 施工记录 | 验收 | 新增/加固测试：manifest 20 值与去重、kb 流每帧 `pipeline=source_plan`、kill switch 回退每帧 `pipeline=sampling`、`CourseSummary` 三态（sampling/source_plan/graph=None）、model.test 的 declared 三态；前端 model 测试 20 绿。 | 4.2/4.3 验收 |
 | 2026-11-02 | 修订 | 4.2 | 「kb 流但 kill switch 回退会被嗅探误判」入 A2 理由——tests.rs:9878 证明回退流无 triage 帧 | 读码底稿 C 节 |

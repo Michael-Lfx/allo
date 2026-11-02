@@ -1,6 +1,7 @@
-//! 迁移 076（`learning_courses.source_kb_ids`）的契约：多知识库（t4）的
-//! 来源库列表是 `source_kb_id` 的伴随列（首个 = 主来源 = 旧单列），老行由
-//! 单列回填成单元素数组；`source_kb_id` 列保留不动（读侧对已删库 id 过滤）。
+//! 基线 070（`learning_courses.source_kb_ids`，原迁移 076）的契约：多知识库
+//! （t4）的来源库列表是 `source_kb_id` 的伴随列（首个 = 主来源 = 旧单列），
+//! 老行由单列回填成单元素数组；`source_kb_id` 列保留不动（读侧对已删库 id
+//! 过滤）。
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -46,7 +47,7 @@ async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 75).await;
+    migrate_range(&pool, 0, 69).await;
     sqlx::query(
         "INSERT INTO knowledge_bases (knowledge_base_id, name, root_path, created_at, updated_at) \
          VALUES (?, '金融笔记', '/tmp/kb', 1000, 1000)",
@@ -73,7 +74,7 @@ async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
     .await
     .unwrap();
 
-    migrate_range(&pool, 75, i64::MAX).await;
+    migrate_range(&pool, 69, i64::MAX).await;
 
     let backfilled: String =
         sqlx::query_scalar("SELECT source_kb_ids FROM learning_courses WHERE course_id = ?")

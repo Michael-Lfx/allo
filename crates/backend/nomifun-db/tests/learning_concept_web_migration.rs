@@ -1,6 +1,6 @@
 use nomifun_db::sqlx::{self, SqlitePool};
 
-/// 066 之前的全部学习域迁移（按序），拼出与生产一致的旧世界基线。
+/// 068 之前的全部学习域迁移（按序），拼出与生产一致的旧世界基线。
 const LEGACY_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/015_learning_engine.sql"),
     include_str!("../migrations/029_learning_custom_questions.sql"),
@@ -18,12 +18,8 @@ const LEGACY_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/052_learning_review_log.sql"),
     include_str!("../migrations/053_learning_section_degraded.sql"),
 ];
-const M066: &str = include_str!("../migrations/069_retire_graph_dag_and_concepts.sql");
-const M067: &str = include_str!("../migrations/070_concept_web_growth.sql");
-const M068: &str = include_str!("../migrations/071_growth_batch_status.sql");
-const M069: &str = include_str!("../migrations/072_learning_course_soft_delete.sql");
-const M070: &str = include_str!("../migrations/073_learning_lesson_difficulty.sql");
-const M071: &str = include_str!("../migrations/074_retire_endpoints_compass_structure_snapshot.sql");
+/// 折叠后的学习域基线（x21：原 069–088 净形合并）。
+const BASELINE: &str = include_str!("../migrations/070_learning_domain_rebuild.sql");
 
 const GRAPH_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const TRAD_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
@@ -36,6 +32,8 @@ const TRAD_ACTIVITY: &str = "0190f5fe-7c00-7a00-8abc-012345678908";
 const ENROLLMENT: &str = "0190f5fe-7c00-7a00-8abc-012345678909";
 const USER_ID: &str = "0190f5fe-7c00-7a00-8abc-01234567890a";
 const CONCEPT: &str = "0190f5fe-7c00-7a00-8abc-01234567890b";
+const REVIEW_ITEM: &str = "0190f5fe-7c00-7a00-8abc-01234567890d";
+
 /// 050 已发布的 `ActivityKind` 全集。重建迁移必须原样保留这个约束集合，
 /// 九种 kind 各落一行作为升级搬行的回归样（x01）。
 const ACTIVITY_KINDS: [&str; 9] = [
@@ -49,16 +47,20 @@ const ACTIVITY_KINDS: [&str; 9] = [
     "matching",
     "open_question",
 ];
-const REVIEW_ITEM: &str = "0190f5fe-7c00-7a00-8abc-01234567890d";
 
-/// 建 015 + 048 的旧世界：一门图课程（含全套派生数据）与一门传统课程
-/// （含概念体系与自建题），供 066/067 做破坏性清理与新建表验证。
+/// 建 015+048 的旧世界：一门图课程（含全套派生数据）与一门传统课程
+/// （含概念体系与自建题），供基线做破坏性清理与终态表验证。
 async fn setup_legacy_world() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for migration in LEGACY_MIGRATIONS {
         sqlx::query(migration).execute(&pool).await.unwrap();
     }
+    seed_legacy_world(&pool).await;
+    sqlx::query(BASELINE).execute(&pool).await.unwrap();
+    pool
+}
 
+async fn seed_legacy_world(pool: &SqlitePool) {
     for (course_id, module_id, kind, title) in [
         (GRAPH_COURSE, MODULE_GRAPH, "learning_graph", "旧图课程"),
         (TRAD_COURSE, MODULE_TRAD, "traditional", "传统课程"),
@@ -71,7 +73,7 @@ async fn setup_legacy_world() -> SqlitePool {
         .bind(course_id)
         .bind(title)
         .bind(kind)
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
         sqlx::query(
@@ -80,7 +82,7 @@ async fn setup_legacy_world() -> SqlitePool {
         )
         .bind(module_id)
         .bind(course_id)
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
     }
@@ -92,7 +94,7 @@ async fn setup_legacy_world() -> SqlitePool {
         )
         .bind(lesson_id)
         .bind(module_id)
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
     }
@@ -104,7 +106,7 @@ async fn setup_legacy_world() -> SqlitePool {
         )
         .bind(activity_id)
         .bind(if activity_id == GRAPH_ACTIVITY { GRAPH_LESSON } else { TRAD_LESSON })
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
     }
@@ -116,7 +118,7 @@ async fn setup_legacy_world() -> SqlitePool {
     .bind(ENROLLMENT)
     .bind(USER_ID)
     .bind(GRAPH_COURSE)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -126,7 +128,7 @@ async fn setup_legacy_world() -> SqlitePool {
     )
     .bind(ENROLLMENT)
     .bind(GRAPH_LESSON)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -137,7 +139,7 @@ async fn setup_legacy_world() -> SqlitePool {
     .bind("0190f5fe-7c00-7a00-8abc-01234567890e")
     .bind(ENROLLMENT)
     .bind(GRAPH_ACTIVITY)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -148,7 +150,7 @@ async fn setup_legacy_world() -> SqlitePool {
     .bind(REVIEW_ITEM)
     .bind(ENROLLMENT)
     .bind(GRAPH_ACTIVITY)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -158,7 +160,7 @@ async fn setup_legacy_world() -> SqlitePool {
     )
     .bind(USER_ID)
     .bind(REVIEW_ITEM)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
 
@@ -168,7 +170,7 @@ async fn setup_legacy_world() -> SqlitePool {
     )
     .bind(CONCEPT)
     .bind(TRAD_COURSE)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -176,7 +178,7 @@ async fn setup_legacy_world() -> SqlitePool {
     )
     .bind(TRAD_LESSON)
     .bind(CONCEPT)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -184,7 +186,7 @@ async fn setup_legacy_world() -> SqlitePool {
     )
     .bind(TRAD_ACTIVITY)
     .bind(CONCEPT)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -193,11 +195,12 @@ async fn setup_legacy_world() -> SqlitePool {
     )
     .bind(ENROLLMENT)
     .bind(CONCEPT)
-    .execute(&pool)
+    .execute(pool)
     .await
     .unwrap();
-    // 050 形状的自建题：九种 kind 各一行。069 的 rebuild 若收窄 kind CHECK，
-    // 这里就会在 INSERT…SELECT 撞 CHECK，整个升级中断（x01 回归基线）。
+
+    // 050 形状的自建题：九种 kind 各一行。重建若收窄 kind CHECK，这里就会
+    // 在 INSERT…SELECT 撞 CHECK，整个升级中断（x01 回归基线）。
     for (index, kind) in ACTIVITY_KINDS.iter().enumerate() {
         sqlx::query(
             "INSERT INTO learning_custom_questions \
@@ -208,18 +211,15 @@ async fn setup_legacy_world() -> SqlitePool {
         .bind(USER_ID)
         .bind(kind)
         .bind(CONCEPT)
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
     }
-
-    pool
 }
 
 #[tokio::test]
-async fn migration_069_removes_graph_world_and_concept_tables() {
+async fn learning_domain_rebuild_removes_graph_world_and_concept_tables() {
     let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
 
     // 图课程全套派生数据清零。
     for table in [
@@ -246,10 +246,10 @@ async fn migration_069_removes_graph_world_and_concept_tables() {
             _ => format!("SELECT COUNT(*) FROM {table}"),
         };
         let count: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
-        assert_eq!(count, 0, "{table} must be empty after 066");
+        assert_eq!(count, 0, "{table} must be empty after the rebuild");
     }
 
-    // 先修边表与概念体系五表消失。
+    // 先修边表与被退役的旧概念体系五表消失。
     let dropped: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN \
          ('learning_graph_prerequisites', 'learning_concepts', 'learning_concept_prerequisites', \
@@ -258,7 +258,8 @@ async fn migration_069_removes_graph_world_and_concept_tables() {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert!(dropped.is_empty(), "retired tables must be dropped: {dropped:?}");
+    // learning_lesson_concepts 在基线里按新语义重建，只应剩下这一张同名表。
+    assert_eq!(dropped, vec!["learning_lesson_concepts".to_owned()], "retired tables must be dropped: {dropped:?}");
 
     // 传统课程本体与内容保留。
     let kept: i64 = sqlx::query_scalar(
@@ -306,17 +307,14 @@ async fn migration_069_removes_graph_world_and_concept_tables() {
 }
 
 #[tokio::test]
-async fn migration_070_creates_concept_web_tables() {
+async fn learning_domain_rebuild_creates_concept_web_tables() {
     let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
-    sqlx::query(M067).execute(&pool).await.unwrap();
-    sqlx::query(M068).execute(&pool).await.unwrap();
 
-    // 登记表：canonical 必填。
+    // 登记表：canonical 必填；085 的 source 列随净形 CREATE 在场。
     sqlx::query(
         "INSERT INTO learning_concept_registry \
-         (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
-         VALUES (?, '因式分解', '[\"因式拆解\"]', '', 1000, 1000)",
+         (concept_id, canonical, aliases_json, definition, created_at, updated_at, source) \
+         VALUES (?, '因式分解', '[\"因式拆解\"]', '', 1000, 1000, '教练提名')",
     )
     .bind("0190f5fe-7c00-7a00-8abc-012345678910")
     .execute(&pool)
@@ -331,7 +329,7 @@ async fn migration_070_creates_concept_web_tables() {
     .await;
     assert!(empty.is_err(), "blank canonical must be rejected");
 
-    // 概念网：role/tier CHECK 生效。
+    // 概念网：role/tier CHECK 生效（x05 之前仍在 DB 层），ref_name 可空。
     let insert_edge = |role: &'static str, tier: &'static str| {
         let pool = pool.clone();
         async move {
@@ -348,18 +346,36 @@ async fn migration_070_creates_concept_web_tables() {
     };
     insert_edge("teaches", "know").await.unwrap();
     assert!(insert_edge("teaches", "know").await.is_err(), "duplicate edge must be rejected");
-    assert!(insert_edge("implies", "know").await.is_err(), "unknown role must be rejected");
-    assert!(insert_edge("teaches", "mastered").await.is_err(), "unknown tier must be rejected");
-
-    // 生长批次：seq 唯一、node_ids_json 必须是数组。
-    sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, created_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678914', ?, 1, '[\"x\"]', 1000)",
+    // 枚举集校验收口 Rust（ADR-0015）：未知 role/tier 现在能落库。
+    assert!(
+        insert_edge("implies", "know").await.is_ok(),
+        "DB no longer rejects unknown roles"
+    );
+    assert!(
+        insert_edge("assumes", "mastered").await.is_ok(),
+        "DB no longer rejects unknown tiers"
+    );
+    let ref_name_nullable: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), SUM(NOT \"notnull\") FROM pragma_table_info('learning_lesson_concepts') \
+         WHERE name = 'ref_name'",
     )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
+    .fetch_one(&pool)
     .await
     .unwrap();
+    assert_eq!(ref_name_nullable, (1, 1), "ref_name exists and is nullable");
+
+    // 生长批次：status 随净形 CREATE 直接在场，seq 唯一、node_ids_json 必须是数组。
+    let applied: String = sqlx::query_scalar(
+        "INSERT INTO learning_growth_batches \
+         (batch_id, course_id, seq, node_ids_json, created_at) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-012345678914', ?, 1, '[\"x\"]', 1000) \
+         RETURNING status",
+    )
+    .bind(TRAD_COURSE)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, "applied", "new batch rows default to applied");
     let dup = sqlx::query(
         "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, created_at) \
          VALUES ('0190f5fe-7c00-7a00-8abc-012345678915', ?, 1, '[]', 1000)",
@@ -378,56 +394,11 @@ async fn migration_070_creates_concept_web_tables() {
     assert!(non_array.is_err(), "node_ids_json must be an array");
 }
 
-/// 071（ADR-0010）：终点锚与罗盘整体退役——终点行、标记课时与进度行清空、
-/// 表 DROP、compass 列 DROP；structure_json 快照列落地（NULL = 未生成，
-/// CHECK 只收 JSON 对象）。
+/// 074 的净形替身：终点表与罗盘从未存在；structure_json 快照列落地
+/// （NULL = 未生成，CHECK 只收 JSON 对象），课程本体原样保留。
 #[tokio::test]
-async fn migration_074_retires_endpoints_compass_and_lands_structure_snapshot() {
+async fn structure_snapshot_lands_without_endpoint_scaffolding() {
     let pool = setup_legacy_world().await;
-    // 066–070 先导到 067 世界（终点表存在），存量数据就位后再跑 071。
-    for migration in [M066, M067, M068, M069, M070] {
-        sqlx::query(migration).execute(&pool).await.unwrap();
-    }
-
-    // 067 世界的存量终点：一条终点行 + 标记课时 + 其进度行。
-    sqlx::query(
-        "INSERT INTO learning_lessons (lesson_id, module_id, title, position, estimated_minutes) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678912', ?, '终点', 99, 1)",
-    )
-    .bind(MODULE_TRAD)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_course_endpoints \
-         (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678913', ?, '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 '独立交易', '能独立完成一笔交易', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_enrollments (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', ?, ?, 1000, 1000)",
-    )
-    .bind(USER_ID)
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_lesson_progress \
-         (enrollment_id, lesson_id, status, started_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 'in_progress', 1000, 1000)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(M071).execute(&pool).await.unwrap();
 
     let endpoints_table: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'learning_course_endpoints'",
@@ -435,23 +406,7 @@ async fn migration_074_retires_endpoints_compass_and_lands_structure_snapshot() 
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(endpoints_table, 0, "the endpoint table must be dropped");
-
-    let marker_lesson: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = '0190f5fe-7c00-7a00-8abc-012345678912'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(marker_lesson, 0, "the endpoint marker lesson row must go with its table");
-
-    let marker_progress: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_lesson_progress WHERE lesson_id = '0190f5fe-7c00-7a00-8abc-012345678912'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(marker_progress, 0, "marker-lesson progress rows must not outlive the marker");
+    assert_eq!(endpoints_table, 0, "the endpoint table never exists in the net baseline");
 
     let compass_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('learning_courses') \
@@ -460,7 +415,7 @@ async fn migration_074_retires_endpoints_compass_and_lands_structure_snapshot() 
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(compass_columns, 0, "compass columns must be dropped");
+    assert_eq!(compass_columns, 0, "compass columns never exist in the net baseline");
 
     let structure_json: Option<String> =
         sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
@@ -493,53 +448,41 @@ async fn migration_074_retires_endpoints_compass_and_lands_structure_snapshot() 
     assert_eq!(kept, 1, "the course row survives the destructive migration");
 }
 
+/// 071 的状态机随净形 CREATE 落地（无「存量行补 applied」中间态）。
 #[tokio::test]
-async fn migration_071_adds_batch_status_lifecycle() {
+async fn growth_batch_status_lifecycle_lands_with_the_create() {
     let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
-    sqlx::query(M067).execute(&pool).await.unwrap();
-    // 068 之前的批行：无 status 列（067 的默认），068 后应取 'applied'。
+
     sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891b', ?, 1, '[\"x\"]', 1000)",
+        "INSERT INTO learning_growth_batches \
+         (batch_id, course_id, seq, node_ids_json, status, created_at) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-012345678918', ?, 3, '[]', 'pending', 1000)",
     )
     .bind(TRAD_COURSE)
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(M068).execute(&pool).await.unwrap();
-
-    let applied: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_growth_batches WHERE status = 'applied'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(applied, 1, "pre-existing rows default to applied");
-
-    // pending 行合法（生长开始即落）。
     sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678918', ?, 3, '[]', 'pending', 1000)",
+        "INSERT INTO learning_growth_batches \
+         (batch_id, course_id, seq, node_ids_json, status, created_at) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-012345678919', ?, 4, '[]', 'failed', 1000)",
     )
     .bind(TRAD_COURSE)
     .execute(&pool)
     .await
     .unwrap();
-
-    // failed 行合法。
-    sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678919', ?, 4, '[]', 'failed', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // 非法：未知状态。
     let invalid = sqlx::query(
-        "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, status, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891a', ?, 5, '[]', 'running', 1000)",
+        "INSERT INTO learning_growth_batches \
+         (batch_id, course_id, seq, node_ids_json, status, created_at) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-01234567891a', ?, 5, '[]', 'running', 1000)",
     )
     .bind(TRAD_COURSE)
     .execute(&pool)
     .await;
-    assert!(invalid.is_err(), "unknown status must be rejected");
+    // 枚举集校验收口 Rust（ADR-0015）：未知 status 现在能落库。
+    assert!(
+        invalid.is_ok(),
+        "DB no longer rejects unknown batch statuses: {:?}",
+        invalid.err()
+    );
 }

@@ -1,7 +1,7 @@
 //! 迁移 081（XP 结算账本 + 复习作答流水补列）的契约（三轮 t1/t3，j05）：
-//! `learning_xp_events` 四形态写侧条款的数据库地板（full 非负 / partial 必带
-//! ratio / trimmed 恰 0 / guess-penalty 必为负 / quiz 恒非负 / bonus 仅 full）
-//! 与幂等锚 UNIQUE(user_id, anchor)；`learning_review_events` 补
+//! 跨列结算条款已移出 DB（ADR-0015，写侧 `validate_settlement` 执法），DB
+//! 只保留数值域 CHECK（xp_bonus >= 0 / ratio ∈ [0,1]）与幂等锚
+//! UNIQUE(user_id, anchor)；`learning_review_events` 补
 //! elapsed_ms/response/session_id/forgot/predicted 五列（forgot 缺省 0）。
 
 use sqlx::migrate::Migrator;
@@ -17,11 +17,6 @@ const EVENT: &str = "0190f5fe-7c00-7a00-8abc-444444444444";
 // 36 字符 UUIDv7 形状（CHECK：小写、version 7、variant [89ab]）。
 const EVENT_2: &str = "0190f5fe-7c00-7a00-8abc-555555555555";
 const EVENT_3: &str = "0190f5fe-7c00-7a00-8abc-666666666666";
-const EVENT_4: &str = "0190f5fe-7c00-7a00-8abc-777777777777";
-const EVENT_5: &str = "0190f5fe-7c00-7a00-8abc-888888888888";
-const EVENT_6: &str = "0190f5fe-7c00-7a00-8abc-999999999999";
-const EVENT_7: &str = "0190f5fe-7c00-7a00-8abc-aaaa99999999";
-const EVENT_8: &str = "0190f5fe-7c00-7a00-8abc-bbbb99999999";
 
 async fn migrated_pool() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -51,10 +46,12 @@ async fn accepts_well_formed_full_event() {
     assert!(result.is_ok(), "legal full settlement rejected: {result:?}");
 }
 
-/// 条款地板逐条拒绝违约行：guess-penalty 必为负、非 guess-penalty 必非负、
-/// trimmed 恰 0、bonus 仅 full、partial 必带 ratio、quiz 恒非负。
+/// 跨列结算条款（full 非负 / partial 必带 ratio / trimmed 恰 0 / guess-penalty
+/// 必为负 / quiz 恒非负 / bonus 仅 full）已移出 DB（ADR-0015），由
+/// `settle.rs::validate_settlement` 写侧执法并有逐条单测；DB 只保留两条数值域
+/// 硬 CHECK：`xp_bonus >= 0` 与 `ratio ∈ [0,1]`。
 #[tokio::test]
-async fn clause_floor_rejects_violations() {
+async fn numeric_domain_checks_survive_while_clause_floor_moves_to_rust() {
     let pool = migrated_pool().await;
     async fn insert(
         pool: &SqlitePool,
@@ -81,52 +78,27 @@ async fn clause_floor_rejects_violations() {
         .execute(pool)
         .await
     }
+    // 保留的数值域 CHECK：负的 bonus 分量被拒。
     assert!(
-        insert(&pool, EVENT, "node-completed", 5, 0, "guess-penalty", None)
+        insert(&pool, EVENT, "node-completed", 5, -1, "full", None)
             .await
             .is_err(),
-        "guess-penalty must be negative"
+        "negative xp_bonus must still be rejected"
     );
+    // 保留的数值域 CHECK：ratio 越界被拒（条款 [0,1]）。
     assert!(
-        insert(&pool, EVENT_2, "node-completed", -1, 0, "partial", Some(0.5))
-            .await
-            .is_err(),
-        "non-penalty forms settle non-negative"
-    );
-    assert!(
-        insert(&pool, EVENT_3, "node-completed", 3, 0, "trimmed", None)
-            .await
-            .is_err(),
-        "trimmed settles exactly 0"
-    );
-    // full 允许零奖励分量（零练习课时走 full、bonus 0）；bonus 出现在
-    // 其余形态才是违约。
-    let full_no_bonus = insert(&pool, EVENT_4, "node-completed", 27, 0, "full", None).await;
-    assert!(full_no_bonus.is_ok(), "full without a bonus component stays legal: {full_no_bonus:?}");
-    assert!(
-        insert(&pool, EVENT_5, "node-completed", 1, 2, "partial", Some(0.5))
-            .await
-            .is_err(),
-        "bonus is full-only"
-    );
-    assert!(
-        insert(&pool, EVENT_6, "node-completed", 1, 0, "partial", None)
-            .await
-            .is_err(),
-        "partial requires its ratio"
-    );
-    assert!(
-        insert(&pool, EVENT_7, "quiz-completed", -1, 0, "partial", Some(0.5))
-            .await
-            .is_err(),
-        "quiz settlements are never negative"
-    );
-    // ratio 越界同样被拒（条款 [0,1]）。
-    assert!(
-        insert(&pool, EVENT_8, "node-completed", 1, 0, "partial", Some(1.5))
+        insert(&pool, EVENT_2, "node-completed", 1, 0, "partial", Some(1.5))
             .await
             .is_err(),
         "ratio is clamped to [0,1]"
+    );
+    // 跨列条款已移出 DB：guess-penalty 携正分现在能落库，拒绝责任在
+    // settle.rs::validate_settlement（其单测逐条覆盖四形态）。
+    assert!(
+        insert(&pool, EVENT_3, "node-completed", 5, 0, "guess-penalty", None)
+            .await
+            .is_ok(),
+        "DB no longer enforces the cross-column settlement clause"
     );
 }
 

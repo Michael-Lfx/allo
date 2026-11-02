@@ -178,21 +178,17 @@ teaching_style）、`051_learning_section_visual.sql`（节 visual 承诺落库�
 `052_learning_review_log.sql`（逐次复习日志 `learning_review_log` +
 `learning_attempts.elapsed_ms`）、`053_learning_section_degraded.sql`
 （节降级兜底标记落库，ADR-0008）、
-`068_learning_domain_rebuild.sql`（**学习域合并基线**：原 068–084 十七段学习
-迁移按序合并为一个版本；分段链未随正式版本发布、没有真实用户库承载。含：
-旧 DAG 图课程数据与 per-course 概念体系五表退役，ADR-0009；概念登记表 /
-概念网边 `learning_lesson_concepts(role,tier)` / 生长批次与批行状态机；
-终点表 + 标记课时行 + `compass_md`/`compass_updated_at` 列退役、新增
-`learning_courses.structure_json` 结构快照列，ADR-0010；课程软删墓碑 /
+`070_learning_domain_rebuild.sql`（**学习域合并基线 v2**：折叠自
+`069_retire_graph_dag_and_concepts`–`088_learning_basis_declarations` 二十段
+未发布学习迁移；净形——未发布表直接建终态、已发布表的数据变换逐字保留。
+含：旧 DAG 图课程数据与 per-course 概念体系五表退役（ADR-0009）、自建题
+kind 恢复 050 九值全集；概念登记表 / 概念网边
+`learning_lesson_concepts(role,tier,ref_name)` / 生长批次与批行状态机；
+`learning_courses.structure_json` 结构快照（ADR-0010）；课程软删墓碑 /
 课时难度 / `samples_meta_json` / `source_kb_ids` / `source_paths_json` /
-`enabled` 等课程与课时列演进；别名结构化记录 + 概念网边 ref_name；
-XP 结算账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表，
-ADR-0012；quiz 回合记录表）、
-`069_learning_course_source_plan.sql`（t4：`learning_courses` 加
-`course_source_plan_json` TEXT 列，nullable + CHECK JSON object；承载来源
-计划 v1 信封 {version, inventory, triage, plan, coverage, warnings}——
-ADR-0014 脏库路径的落盘真相；旧行 NULL 不回填，读侧未知 version 降级
-available=false；契约见
+`enabled` / `course_source_plan_json` 等列演进；别名结构化记录；XP 结算
+账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表
+（ADR-0012）；quiz 回合记录表。来源计划信封的契约见
 [docs/contracts/learning-course-source-plan.md](../contracts/learning-course-source-plan.md)）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
@@ -205,9 +201,9 @@ HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 修补回合，j08/j09；进度走 WS structure_* 事件）、
 `/api/learning/xp/reading` 与 `/api/learning/xp/calendar`（XP 读数与日历，
 j05）、
-`/api/learning/course-jobs*`、`/api/learning/generation-tasks*`（长任务
-状态/取消，j03 注册表：growth/structure/structure_mount/structure_repair/
-outline/lesson）、
+`/api/learning/generation-tasks*`（长任务状态/取消，j03 注册表：
+growth/structure/structure_mount/structure_repair/outline/lesson；旧
+`course-jobs*` 端点随 `learning_course_jobs` 表退役，x02）、
 `/api/learning/lessons/{id}`（详情按需加载）、
 `/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`（j05 起按 XP 口径
@@ -223,7 +219,11 @@ structure_mount_* / structure_repair_* 同通道；v2 脏库路径的知识库�
 `triage_started/triage_completed`（七角色计数 + degraded + 有界跳过/重复/
 uncertain 示例）、`source_plan_started/source_plan_ready`（章/概念/gaps）、
 `coverage_ready`（topic 覆盖/跳过/兜底），旧客户端忽略未知 phase，
-started/publishing/completed/failed 语义不变）。
+started/publishing/completed/failed 语义不变）。**phase 取值单源** =
+`nomifun_learning::events::phase` 常量（20 值，分组清单随 `cargo test` 导出到
+`target/learning-phase-manifest.json`）；课程流帧另带 `pipeline:
+sampling|source_plan`（门判定单源 `course_pipeline`），前端按声明字段选步骤条、
+无字段时退回 triage 嗅探（滚动部署兜底）。
 
 ## 前端
 
@@ -237,10 +237,10 @@ LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
 补前导）、矩阵；j08/j09 起结构图带挂载三态段（三态计数/stale 显影/已挂清
 单/观察标签）与挂载/修补双入口；投影非权威标注收敛在详情层与页脚）、
 CreateCourseDialog（学习图单步向导：目标 + 可选程度/基础声明）、
-ReviewSession、CourseJobTable、XpPanel（今日 XP 卡 + 进度尺 + 84 格 XP 日
+ReviewSession、XpPanel（今日 XP 卡 + 进度尺 + 84 格 XP 日
 历，j06 打卡退役接管）、MemoryHealthPanel（复习横幅下的记忆健康折叠条）、
 QuestionManager、LearningModelSelector 等；hooks `useCourseLearning` /
-`useReviewSession` / `useCourseJobs` / `useCourseCreation` /
+`useReviewSession` / `useCourseCreation` /
 `useCheckinStatus`（j05 起 XP 口径）。
 
 ## 真机冒烟（无头）

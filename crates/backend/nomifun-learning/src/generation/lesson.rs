@@ -788,7 +788,7 @@ When a figure is mandatory — if the content touches any of these, a diagram is
 const CONTENT_DISCIPLINE_BLOCK: &str = r#"
 Content discipline (domain-neutral guidance — a writing orientation, not a format template):
 - Derive before drilling: method- and formula-style conclusions are first derived from what the prerequisites already taught, then exercised in worked examples — never state a bare assertion and backfill its proof.
-- Tier shapes the content form: a concept marked "know" gets a recognition-level introduction; "use" leads with worked application; only "teach" earns a full derivation with counterexamples. Where no tier is declared, let the section task's named content form set the depth.
+- Tier shapes the content form: a concept marked "know" gets a recognition-level introduction; "apply" leads with worked application; only "teach" earns a full derivation with counterexamples. Where no tier is declared, let the section task's named content form set the depth.
 - Convergence fade: a node with many prerequisites (>= 4 prerequisite statements or prior sections) is a convergence point — add new ingredients to its examples gradually, never all at once.
 - Real contrasts only: comparisons must land on checkable dimensions (scope of applicability, cost, failure modes) — never an empty "X is better".
 - Worked-example density: a 15-30 minute lesson body carries 3-6 progressive worked examples (easy to hard, the last touching a boundary case); when example sections already split the load, each carries its share without stacking.

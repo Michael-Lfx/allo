@@ -19,15 +19,15 @@ use crate::models::{
 
 /// 从快照信封构建结构视图。`envelope` 为 None = 结构未生成（Missing 合法
 /// 空状态）：200 恒答，`structure`/`terrain` 均为 None。`mount_row` =
-/// (mounts_json, stored_hash)；`current_hash` = 当前 structure_json 字节的
-/// FNV-1a 64——两者比对即 `stale`（结构变过，挂载显影）。`node_titles` =
+/// (mounts_json, stored_hash, hash_version)；`stale` = 调用方按存量
+/// hash_version 选算法比较后的结论（结构变过，挂载显影）。`node_titles` =
 /// 现存节点标题（三态分母）。
 pub fn build_structure_view(
     course_id: nomifun_common::LearningCourseId,
     envelope: Option<&Value>,
     node_titles: &[String],
-    mount_row: Option<(&str, i64)>,
-    current_hash: u64,
+    mount_row: Option<(&str, i64, i64)>,
+    stale: bool,
 ) -> LearningStructureView {
     let Some(envelope) = envelope else {
         return LearningStructureView {
@@ -38,19 +38,18 @@ pub fn build_structure_view(
             mounts: None,
         };
     };
-    let structure = envelope.get("structure").cloned().unwrap_or(Value::Null);
-    let terrain = envelope.get("terrain").cloned().unwrap_or(Value::Null);
-    let generated_at = envelope.get("generated_at").and_then(Value::as_i64);
-    let mounts = mount_row.map(|(mounts_json, stored_hash)| {
+    // 读侧归一（x08）：legacy v1 中文字面量只在视图层转码显示，不落盘；
+    // v2 数据零改写。
+    let mut normalized = envelope.clone();
+    super::structure_contract::normalize_structure_vocab(&mut normalized);
+    let structure = normalized.get("structure").cloned().unwrap_or(Value::Null);
+    let terrain = normalized.get("terrain").cloned().unwrap_or(Value::Null);
+    let generated_at = normalized.get("generated_at").and_then(Value::as_i64);
+    let mounts = mount_row.map(|(mounts_json, _stored_hash, _stored_version)| {
         let stored = serde_json::from_str::<Value>(mounts_json)
             .map(|value| super::mounting::parse_mount_entries(&value))
             .unwrap_or_default();
-        build_mounts_view(
-            &structure,
-            &stored,
-            node_titles,
-            (stored_hash as u64) != current_hash,
-        )
+        build_mounts_view(&structure, &stored, node_titles, stale)
     });
     let structure_view = build_structure(&structure);
     let terrain_view = build_terrain(&terrain, &structure_view.blocks);
@@ -546,9 +545,9 @@ mod tests {
                 "goal": "能独立求解",
                 "goal_type": "capability",
                 "proficiency_statement": "达成后能独立解题",
-                "domain_type": "理论",
+                "domain_type": "theory",
                 "form_reference": "Flowy 学习结构模板 v1",
-                "source_tier": "名录",
+                "source_tier": "catalog",
                 "generated_by": "model-x",
                 "disclaimer": "参考地图",
                 "domain": {
@@ -565,14 +564,14 @@ mod tests {
                     { "name": "主干二", "definition": "d2", "key_points": ["k"], "instance": "i" }
                 ],
                 "blocks": [
-                    { "name": "块A", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "n", "door_refs": ["G1"] },
-                    { "name": "块B", "slug": "block-b", "spine": "主干一", "stage": "进阶", "note": "n" },
-                    { "name": "块C", "slug": "block-c", "spine": "主干二", "stage": "高级", "note": "n" },
-                    { "name": "块D", "slug": "block-d", "spine": "主干二", "stage": "入门", "note": "n", "door_refs": ["G1", "G2"] }
+                    { "name": "块A", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "n", "door_refs": ["G1"] },
+                    { "name": "块B", "slug": "block-b", "spine": "主干一", "stage": "advanced", "note": "n" },
+                    { "name": "块C", "slug": "block-c", "spine": "主干二", "stage": "expert", "note": "n" },
+                    { "name": "块D", "slug": "block-d", "spine": "主干二", "stage": "basic", "note": "n", "door_refs": ["G1", "G2"] }
                 ],
                 "edges": [
                     { "source": "块B", "target": "块A", "type": "assumes", "tier": "know", "note": "" },
-                    { "source": "块C", "target": "块B", "type": "assumes", "tier": "use", "note": "" },
+                    { "source": "块C", "target": "块B", "type": "assumes", "tier": "apply", "note": "" },
                     { "source": "块C", "target": "块D", "type": "composes", "tier": "know", "note": "" }
                 ],
                 "gaps": [{ "item": "g", "direction": "d" }],
@@ -597,7 +596,7 @@ mod tests {
             Some(&sample_envelope()),
             &[],
             None,
-            0,
+            false,
         )
         .structure
         .expect("sample has structure")
@@ -656,7 +655,7 @@ mod tests {
     /// None 信封 = Missing：全 None、200 恒答形状。
     #[test]
     fn missing_envelope_is_a_legal_empty_view() {
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), None, &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), None, &[], None, false);
         assert!(view.structure.is_none());
         assert!(view.terrain.is_none());
         assert!(view.generated_at.is_none());
@@ -665,14 +664,14 @@ mod tests {
     /// 地形投影：门口列表 + 基础声明回执；空门口 = None（未生成地形）。
     #[test]
     fn terrain_view_carries_doors() {
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()), &[], None, false);
         let terrain = view.terrain.expect("sample has terrain");
         assert_eq!(terrain.doors.len(), 2);
         assert_eq!(terrain.doors[0].id, "G1");
         assert_eq!(terrain.learner_basis_assumed, "纯零基础（未声明）");
 
         let doorless = json!({ "version": 1, "structure": {}, "terrain": { "doors": [] } });
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless), &[], None, false);
         assert!(view.terrain.is_none());
     }
 
@@ -704,7 +703,7 @@ mod tests {
             Some(&sample_envelope()),
             &[],
             None,
-            0,
+            false,
         );
         let terrain = full.terrain.expect("sample has terrain");
         let count = |id: &str| {
@@ -723,7 +722,7 @@ mod tests {
         for block in legacy["structure"]["blocks"].as_array_mut().unwrap() {
             block.as_object_mut().unwrap().remove("door_refs");
         }
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&legacy), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&legacy), &[], None, false);
         let terrain = view.terrain.expect("legacy has terrain");
         assert!(terrain.doors.iter().all(|door| door.covered_blocks == 0));
     }
@@ -735,8 +734,8 @@ mod tests {
             "structure": {
                 "spines": [{ "name": "s", "definition": "d", "key_points": ["k"], "instance": "i" }],
                 "blocks": [
-                    { "name": "X", "slug": "x", "spine": "s", "stage": "入门", "note": "" },
-                    { "name": "Y", "slug": "y", "spine": "s", "stage": "入门", "note": "" }
+                    { "name": "X", "slug": "x", "spine": "s", "stage": "basic", "note": "" },
+                    { "name": "Y", "slug": "y", "spine": "s", "stage": "basic", "note": "" }
                 ],
                 "edges": [
                     { "source": "X", "target": "Y", "type": "assumes", "tier": "know" },
@@ -744,7 +743,7 @@ mod tests {
                 ]
             }
         });
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&envelope), &[], None, 0);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&envelope), &[], None, false);
         let structure = view.structure.expect("structure present");
         assert!(structure.blocks.iter().all(|block| block.layer == 0), "环冻结在 0 层");
     }

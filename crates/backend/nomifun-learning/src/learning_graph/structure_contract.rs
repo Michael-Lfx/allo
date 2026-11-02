@@ -103,8 +103,9 @@ pub fn block_key_allowed(key: &str) -> bool {
 /// 主干条目键白名单（thin_spine + reason = 每干块数不足的豁免声明）。
 pub const SPINE_KEYS: &[&str] = &["name", "definition", "key_points", "instance", "thin_spine", "reason"];
 
-/// 难度档词表（顺序即矩阵列序）。
-pub const STAGES: &[&str] = &["入门", "进阶", "高级"];
+/// 难度档词表（顺序即矩阵列序；落库码，中文只住展示面——CONTEXT.md
+/// Stored Code）。
+pub const STAGES: &[&str] = &["basic", "advanced", "expert"];
 
 /// 阶段排序权重（词表单源：未知值排最后）——矩阵分格与参考材料呈现序共用。
 pub fn stage_rank(stage: &str) -> usize {
@@ -115,16 +116,128 @@ pub fn stage_rank(stage: &str) -> usize {
 }
 /// 边型词表。
 pub const EDGE_TYPES: &[&str] = &["assumes", "composes", "contrasts"];
-/// 结构边档位词表（机面英文；注意与概念网 tier 的 know/apply/teach 是两套词）。
-pub const EDGE_TIERS: &[&str] = &["know", "use", "teach"];
-/// 领域适配四型词表（由模型自判）。
-pub const DOMAIN_TYPES: &[&str] = &["理论", "工程", "历史", "技能"];
-/// source 两档制词表。
-pub const SOURCE_TIERS: &[&str] = &["名录", "章节"];
+/// 结构边档位词表（与概念网 tier 同集，tier 合一取 apply）。
+pub const EDGE_TIERS: &[&str] = &["know", "apply", "teach"];
+/// 领域适配四型词表（由模型自判；落库码）。
+pub const DOMAIN_TYPES: &[&str] = &["theory", "engineering", "history", "skill"];
+/// source 两档制词表（落库码）。
+pub const SOURCE_TIERS: &[&str] = &["catalog", "chapter"];
 /// 目标类型词表。
 pub const GOAL_TYPES: &[&str] = &["capability", "coverage"];
 /// 质量清单状态词表。
 pub const QUALITY_STATUS: &[&str] = &["met", "unmet"];
+
+/// 中文/旧词 → 落库码的机械映射（只收编已知同义词，不造值）。返回 None =
+/// 不在表内，留给契约门照常打回。
+fn normalize_vocab_code(field: &str, raw: &str) -> Option<&'static str> {
+    let key = raw.trim();
+    let lower = key.to_lowercase();
+    match field {
+        "domain_type" => match key {
+            "理论" => Some("theory"),
+            "工程" => Some("engineering"),
+            "历史" => Some("history"),
+            "技能" => Some("skill"),
+            _ => match lower.as_str() {
+                "theory" => Some("theory"),
+                "engineering" => Some("engineering"),
+                "history" => Some("history"),
+                "skill" => Some("skill"),
+                _ => None,
+            },
+        },
+        "source_tier" => match key {
+            "名录" => Some("catalog"),
+            "章节" => Some("chapter"),
+            _ => match lower.as_str() {
+                "catalog" => Some("catalog"),
+                "chapter" => Some("chapter"),
+                _ => None,
+            },
+        },
+        "stage" => match key {
+            "入门" => Some("basic"),
+            "进阶" => Some("advanced"),
+            "高级" => Some("expert"),
+            _ => match lower.as_str() {
+                "basic" => Some("basic"),
+                "advanced" => Some("advanced"),
+                "expert" => Some("expert"),
+                _ => None,
+            },
+        },
+        "tier" => match key {
+            "知道" => Some("know"),
+            "会用" => Some("apply"),
+            "能教" => Some("teach"),
+            // 旧词 `use` 与概念网 tier 合一取 apply（裁决 Q5）。
+            "use" => Some("apply"),
+            _ => match lower.as_str() {
+                "know" => Some("know"),
+                "apply" => Some("apply"),
+                "teach" => Some("teach"),
+                _ => None,
+            },
+        },
+        _ => None,
+    }
+}
+
+/// 结构产物的机械归一面：模型仍可吐中文（或旧词 `use`/大小写变体），契约
+/// 门前统一成落库码。作用域 = 顶层 `domain_type`/`source_tier`、
+/// `blocks[].stage`、`edges[].tier`，以及修补产物的 `ops[].stage`/
+/// `ops[].tier`（同一函数覆盖两种产物）。只收编已知同义词，表外值原样留给
+/// 契约门打回。返回改写条数（调用方 warn 留痕）。
+pub fn normalize_structure_vocab(value: &mut Value) -> usize {
+    let Some(map) = value.as_object_mut() else {
+        return 0;
+    };
+    let mut rewrites = 0usize;
+    for field in ["domain_type", "source_tier"] {
+        let Some(current) = map.get(field).and_then(Value::as_str).map(str::to_owned) else {
+            continue;
+        };
+        let Some(code) = normalize_vocab_code(field, &current) else {
+            continue;
+        };
+        if current != code
+            && map
+                .insert(field.to_owned(), Value::String(code.to_owned()))
+                .is_some()
+        {
+            rewrites += 1;
+        }
+    }
+    for (array_key, field) in [
+        ("blocks", "stage"),
+        ("edges", "tier"),
+        ("ops", "stage"),
+        ("ops", "tier"),
+    ] {
+        let Some(items) = map.get_mut(array_key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for item in items {
+            let Some(item_map) = item.as_object_mut() else {
+                continue;
+            };
+            let Some(current) = item_map.get(field).and_then(Value::as_str).map(str::to_owned) else {
+                continue;
+            };
+            let Some(code) = normalize_vocab_code(field, &current) else {
+                continue;
+            };
+            if current != code
+                && item_map
+                    .insert(field.to_owned(), Value::String(code.to_owned()))
+                    .is_some()
+            {
+                rewrites += 1;
+            }
+        }
+    }
+    rewrites
+}
 
 /// 块表量级档：硬下限 / 密度参考档（低于即告警）/ 越档线（告警）/ 硬上限。
 /// f2 三档制（A1）：25 以下是结构非法（红）；25–39「低于 40 参考档」只警告
@@ -1130,6 +1243,66 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 归一面红绿样（x08）：中文/旧词/大小写 → 落库码；表外值不动（留给
+    /// 契约门打回，归一不造值）。
+    #[test]
+    fn structure_vocab_normalizes_known_synonyms_only() {
+        let mut structure = json!({
+            "domain_type": "理论",
+            "source_tier": "章节",
+            "blocks": [
+                { "name": "块一", "stage": "入门" },
+                { "name": "块二", "stage": "Advanced" },
+                { "name": "块三", "stage": "高级" }
+            ],
+            "edges": [
+                { "tier": "use" },
+                { "tier": "知道" },
+                { "tier": "会用" },
+                { "tier": "TEACH" }
+            ]
+        });
+        assert_eq!(normalize_structure_vocab(&mut structure), 9);
+        assert_eq!(structure["domain_type"], json!("theory"));
+        assert_eq!(structure["source_tier"], json!("chapter"));
+        assert_eq!(structure["blocks"][0]["stage"], json!("basic"));
+        assert_eq!(structure["blocks"][1]["stage"], json!("advanced"));
+        assert_eq!(structure["blocks"][2]["stage"], json!("expert"));
+        assert_eq!(structure["edges"][0]["tier"], json!("apply"));
+        assert_eq!(structure["edges"][1]["tier"], json!("know"));
+        assert_eq!(structure["edges"][2]["tier"], json!("apply"));
+        assert_eq!(structure["edges"][3]["tier"], json!("teach"));
+
+        // 已是码 → 零改写（幂等）。
+        assert_eq!(normalize_structure_vocab(&mut structure), 0);
+
+        // 表外值不造值：原样保留，由 gd.* 打回。
+        let mut unknown = json!({
+            "domain_type": "玄学",
+            "blocks": [{ "name": "块", "stage": "宗师" }],
+            "edges": [{ "tier": "bogus" }]
+        });
+        assert_eq!(normalize_structure_vocab(&mut unknown), 0);
+        assert_eq!(unknown["domain_type"], json!("玄学"));
+        assert_eq!(unknown["blocks"][0]["stage"], json!("宗师"));
+        assert_eq!(unknown["edges"][0]["tier"], json!("bogus"));
+    }
+
+    /// 修补产物同函数覆盖：ops[].stage/tier 也归一。
+    #[test]
+    fn structure_vocab_normalizes_repair_ops() {
+        let mut artifact = json!({
+            "ops": [
+                { "op": "add_edge", "tier": "use" },
+                { "op": "add_block", "stage": "入门" }
+            ]
+        });
+        assert_eq!(normalize_structure_vocab(&mut artifact), 2);
+        assert_eq!(artifact["ops"][0]["tier"], json!("apply"));
+        assert_eq!(artifact["ops"][1]["stage"], json!("basic"));
+    }
+
+
     /// 一份恰好过门的 structure 样本（42 块 / 6 主干 / 每干 7 块）。
     fn golden_structure() -> Value {
         let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
@@ -1150,9 +1323,9 @@ mod tests {
             "goal": "能独立完成一元二次方程的求解与检验",
             "goal_type": "capability",
             "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
-            "domain_type": "理论",
+            "domain_type": "theory",
             "form_reference": "Flowy 学习结构模板 v1",
-            "source_tier": "名录",
+            "source_tier": "catalog",
             "generated_by": "test-model",
             "disclaimer": "快照为生成时点参考地图，可能存在盲区",
             "domain": {
@@ -1173,7 +1346,7 @@ mod tests {
             "blocks": blocks,
             "edges": [
                 { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" },
-                { "source": "块08", "target": "块09", "type": "composes", "tier": "use" },
+                { "source": "块08", "target": "块09", "type": "composes", "tier": "apply" },
                 { "source": "块15", "target": "块16", "type": "contrasts", "tier": "know" },
             ],
             "gaps": [
@@ -1225,8 +1398,8 @@ mod tests {
         let mut inverted = golden_structure();
         {
             let blocks = inverted.get_mut("blocks").unwrap().as_array_mut().unwrap();
-            blocks[0]["stage"] = json!("入门");
-            blocks[1]["stage"] = json!("进阶");
+            blocks[0]["stage"] = json!("basic");
+            blocks[1]["stage"] = json!("advanced");
             let edges = inverted.get_mut("edges").unwrap().as_array_mut().unwrap();
             edges[0] = json!({ "source": "块00", "target": "块01", "type": "assumes", "tier": "know", "note": "倒挂" });
         }
@@ -1243,8 +1416,8 @@ mod tests {
         let mut aligned = golden_structure();
         {
             let blocks = aligned.get_mut("blocks").unwrap().as_array_mut().unwrap();
-            blocks[0]["stage"] = json!("入门");
-            blocks[1]["stage"] = json!("进阶");
+            blocks[0]["stage"] = json!("basic");
+            blocks[1]["stage"] = json!("advanced");
             let edges = aligned.get_mut("edges").unwrap().as_array_mut().unwrap();
             edges[0] = json!({ "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "同向" });
         }
@@ -1252,8 +1425,8 @@ mod tests {
         let mut same_stage = golden_structure();
         {
             let blocks = same_stage.get_mut("blocks").unwrap().as_array_mut().unwrap();
-            blocks[0]["stage"] = json!("入门");
-            blocks[1]["stage"] = json!("入门");
+            blocks[0]["stage"] = json!("basic");
+            blocks[1]["stage"] = json!("basic");
             let edges = same_stage.get_mut("edges").unwrap().as_array_mut().unwrap();
             edges[0] = json!({ "source": "块00", "target": "块01", "type": "assumes", "tier": "know", "note": "同档" });
         }
@@ -1261,10 +1434,10 @@ mod tests {
         let mut composes = golden_structure();
         {
             let blocks = composes.get_mut("blocks").unwrap().as_array_mut().unwrap();
-            blocks[0]["stage"] = json!("入门");
-            blocks[1]["stage"] = json!("高级");
+            blocks[0]["stage"] = json!("basic");
+            blocks[1]["stage"] = json!("expert");
             let edges = composes.get_mut("edges").unwrap().as_array_mut().unwrap();
-            edges[0] = json!({ "source": "块00", "target": "块01", "type": "composes", "tier": "use", "note": "组装不限档" });
+            edges[0] = json!({ "source": "块00", "target": "块01", "type": "composes", "tier": "apply", "note": "组装不限档" });
         }
         assert!(validate_structure(&composes).is_empty(), "{:?}", validate_structure(&composes));
     }
@@ -1385,7 +1558,7 @@ mod tests {
                         "name": format!("块{ordinal:02}"),
                         "slug": format!("block-{ordinal:02}"),
                         "spine": "主干一",
-                        "stage": "入门",
+                        "stage": "basic",
                         "note": "越档补块",
                     })
                 })
@@ -1407,7 +1580,7 @@ mod tests {
                         "name": format!("块{ordinal:03}"),
                         "slug": format!("block-{ordinal:03}"),
                         "spine": "主干一",
-                        "stage": "入门",
+                        "stage": "basic",
                         "note": "超硬上限",
                     })
                 })
@@ -1573,7 +1746,7 @@ mod tests {
                     "name": "挪走块".to_owned() + block["name"].as_str().unwrap(),
                     "slug": block["slug"].as_str().unwrap().to_owned() + "-moved",
                     "spine": "主干二",
-                    "stage": "入门",
+                    "stage": "basic",
                     "note": "挪走凑配额",
                 });
             }
@@ -1599,7 +1772,7 @@ mod tests {
     fn gd_edges_resolve_against_block_names_only() {
         let mut value = golden_structure();
         value["edges"][0]["target"] = json!("不在块表的边端点");
-        value["edges"][1]["tier"] = json!("apply");
+        value["edges"][1]["tier"] = json!("bogus");
         value["edges"][2]["type"] = json!("requires");
         let violations = validate_structure(&value);
         let codes = codes(&violations);

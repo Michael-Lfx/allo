@@ -462,7 +462,7 @@ impl FlowCycle for LiveLessonContentAgentEngine {
         draft_id: &str,
         round: usize,
     ) -> Result<String, AppError> {
-        audit_report(ctx, draft_id, "repair", round)
+        audit_report(ctx, draft_id, nomifun_learning::phase::REPAIR, round)
     }
 
     fn exhausted_audit(&self, _ctx: &LoopContext, draft_id: &str) -> Result<String, AppError> {
@@ -670,7 +670,7 @@ fn audit_report(
     ctx.log(
         "audit",
         serde_json::json!({
-            "phase": "audit",
+            "phase": nomifun_learning::phase::AUDIT,
             "loop": loop_label,
             "round": round,
             "danger": count("danger"),
@@ -1767,7 +1767,7 @@ mod tests {
             BUDGETS.round_tokens,
             ThinkingConfig::Disabled,
             GENERATE_REASONING_EFFORT,
-            "generate",
+            nomifun_learning::phase::GENERATE,
             Some(ctx.as_ref()),
         )
         .await
@@ -2551,10 +2551,10 @@ mod tests {
         };
         let frame = <LiveLessonContentAgentEngine as FlowCycle>::publish_frame(
             &output,
-            "repair",
+            nomifun_learning::phase::REPAIR,
             Some(2),
         );
-        assert_eq!(frame["phase"], "repair");
+        assert_eq!(frame["phase"], nomifun_learning::phase::REPAIR);
         assert_eq!(frame["round"], 2);
         assert_eq!(frame["visuals"]["表格"], 1);
         assert_eq!(frame["visuals"]["无"], 2);

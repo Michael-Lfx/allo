@@ -2,7 +2,7 @@
 id: x10
 title: "FSRS 参数算法版本包装——fsrs crate 升级不再静默误读用户权重"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [x21]
 part_of: ../map.md
@@ -45,3 +45,22 @@ part_of: ../map.md
 ## 非目标
 
 - 升级 fsrs crate；参数优化器。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **设置形状**：`learning.fsrsParameters` 新形 `{"algo":"fsrs6","w":[…]}`；读侧旧裸数组
+  照认（视为 fsrs6）。`scheduler.rs` 新增 `FSRS_ALGO` / `FsrsParams` /
+  `parse_fsrs_params` / `SchedulerSettings::decay_component`；未知 algo →
+  `Unsupported`，checkin 整体回退库默认 + warn；`FSRS::new` 失败补 warn。
+- **review_log**：基线 §12 `ALTER TABLE learning_review_log ADD COLUMN algo TEXT`；
+  真实推进行写 `fsrs6`，合成种卡行写 NULL（历史行 NULL = fsrs6 口径）。
+- **前端**：`configKeys` 联合类型（裸数组 / 信封）；设置页双读、未知 algo 输入置空 +
+  双语提示（新 key `fsrsParametersUnsupportedAlgo`）、保存恒写信封；hint 补「算法标签
+  自动附加」。
+- **测试**：旧数组/新信封同解析、未知 algo 显式回退、非数整组作废、decay 缺省与
+  w[20] 分支。
+- **验收**：`cargo test -p nomifun-learning -p nomifun-db` 全绿；`learning-smoke xp`
+  EXIT=0（含合成/真实 review_log 写法）。
+- 偏差：无（`difficulty 1..10` FSRS 域 CHECK 保留，x05 原条款）。

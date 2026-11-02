@@ -146,3 +146,23 @@
 
 - 2026-11-02：grilling 22 问全按推荐；影响面核查无决策翻转（细化 x09 门槛、x19 增
   edited_at；消除还原顾虑）；x21 入列，枚举集正名，ADR-0015/0016 落档。
+- 2026-11-02：x21 关闭——未发布 069_retire…–088 折叠为净形基线
+  `070_learning_domain_rebuild.sql`（旧 20 文件删除；一次性等价校验：428 个 schema
+  对象 / 28 张学习表 / 差异 0，记图纸 §8）。此后迁移票只编辑该基线对应节。
+- 2026-11-02：x05/x02 关闭——基线 §10 保 id 重建七张已发布表去枚举集 CHECK（含
+  progress 跨列形态），§11 退役 course_jobs；两处死列（progress.extra_json /
+  courses.graph_meta_json）随重建消失；跨列规则移入 quiz/progress/settle 写路径校验
+  并有单测；表数 125→124；Q8 fixture 固化为永久测试。
+- 2026-11-02：x06/x07 关闭——findings 加每课程单调 `seq`，水位改锚 seq（还原重编号
+  不漂移、不重跑）；mounts/repairs 加 `hash_version`，hash 改为内层 structure 规范化
+  投影（v2），读侧按存量版本比较不回写（GET 不写库），重序列化不再误判 stale。
+- 2026-11-02：x08 关闭——structure 落库码统一（stage/domain_type/source_tier 三组 +
+  EDGE_TIERS 的 use 合一为 apply）；模型仍可吐中文，`normalize_structure_vocab` 在
+  生成/修补/视图三面机械归一；信封 version bump 2；提示词与金样、前后端夹具全量换码。
+- 2026-11-02：x09/x10 关闭——`envelope.rs` 扁平信封 helper 落地；优先 1 四列（quiz
+  行级 doc_version / aliases 行级 doc_version / repairs ops 对象信封 / attempts
+  response 对象信封）写读版本化，未知版本按列显式降级；FSRS 参数 `{algo,w}` 包装、
+  未知算法整体回退、review_log 加 `algo` 列（历史 NULL = fsrs6）。
+- 2026-11-02：x11 关闭——phase 取值收成 Rust 单源（20 值，manifest 导出给 x12）；
+  课程流帧与 `CourseSummary` 显式带 `pipeline: sampling|source_plan`；前端
+  `phaseMeta.ts` 单源 + 声明优先/嗅探兜底，`scope` 死值删除。

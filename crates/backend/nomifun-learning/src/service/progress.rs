@@ -1,6 +1,30 @@
 use super::*;
 use super::open_judge::OpenJudgeInput;
 
+/// 课时进度的四态形态规则（原迁移 048 的表级 CHECK，ADR-0015 移到写路径）：
+/// not_started 双空、in_progress 有起点无终点、completed 双全、skipped 无终点
+/// （保留既有 in_progress 起点历史）。
+fn validate_progress_shape(
+    status: LessonStatus,
+    started_at: Option<i64>,
+    completed_at: Option<i64>,
+) -> Result<(), AppError> {
+    let shaped = match status {
+        LessonStatus::NotStarted => started_at.is_none() && completed_at.is_none(),
+        LessonStatus::InProgress => started_at.is_some() && completed_at.is_none(),
+        LessonStatus::Completed => started_at.is_some() && completed_at.is_some(),
+        LessonStatus::Skipped => completed_at.is_none(),
+    };
+    if shaped {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "lesson progress shape is invalid for status '{}'",
+            status.as_str()
+        )))
+    }
+}
+
 impl LearningService {
 
     pub async fn update_lesson_progress(
@@ -58,6 +82,7 @@ impl LearningService {
             // completed_at 为 NULL）：保留已有的 in_progress 历史即可。
             LessonStatus::Skipped => (existing_started, None),
         };
+        validate_progress_shape(status, started_at, completed_at)?;
         sqlx::query(
             "INSERT INTO learning_lesson_progress \
              (enrollment_id, lesson_id, status, started_at, completed_at, updated_at) \
@@ -203,7 +228,15 @@ impl LearningService {
         .bind(attempt_id.as_str())
         .bind(enrollment_id.as_str())
         .bind(activity_id.as_str())
-        .bind(serde_json::to_string(&response).map_err(internal)?)
+        .bind(
+            crate::envelope::write_envelope(
+                crate::envelope::ATTEMPT_RESPONSE_SCHEMA_VERSION,
+                &crate::envelope::ResponseDoc {
+                    response: response.clone(),
+                },
+            )
+            .map_err(internal)?,
+        )
         .bind(score)
         .bind(passed)
         .bind(&feedback)
@@ -679,8 +712,8 @@ pub(super) async fn ensure_review_item(
     sqlx::query(
         "INSERT INTO learning_review_log \
          (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
-          stability_before, difficulty_before, r_pred, review_day, created_at) \
-         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?)",
+          stability_before, difficulty_before, r_pred, review_day, created_at, algo) \
+         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?, NULL)",
     )
     .bind(generate_id())
     .bind(&user_id)
@@ -691,4 +724,25 @@ pub(super) async fn ensure_review_item(
     .await
     .map_err(internal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_progress_shape;
+    use crate::models::LessonStatus;
+
+    /// 四态形态规则（原 048 表级 CHECK）逐条钉住：合法四态 + 非法四样。
+    #[test]
+    fn progress_shape_rules_cover_four_lesson_states() {
+        assert!(validate_progress_shape(LessonStatus::NotStarted, None, None).is_ok());
+        assert!(validate_progress_shape(LessonStatus::InProgress, Some(1), None).is_ok());
+        assert!(validate_progress_shape(LessonStatus::Completed, Some(1), Some(2)).is_ok());
+        assert!(validate_progress_shape(LessonStatus::Skipped, None, None).is_ok());
+        assert!(validate_progress_shape(LessonStatus::Skipped, Some(1), None).is_ok());
+
+        assert!(validate_progress_shape(LessonStatus::NotStarted, Some(1), None).is_err());
+        assert!(validate_progress_shape(LessonStatus::InProgress, None, None).is_err());
+        assert!(validate_progress_shape(LessonStatus::Completed, Some(1), None).is_err());
+        assert!(validate_progress_shape(LessonStatus::Skipped, Some(1), Some(2)).is_err());
+    }
 }

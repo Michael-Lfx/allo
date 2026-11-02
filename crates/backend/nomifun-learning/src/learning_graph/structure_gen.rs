@@ -248,7 +248,12 @@ async fn attempt_once(
     )
     .await
     .map_err(|error| error.to_string())?;
-    let structure = parse_artifact(&structure_raw, "知识结构")?;
+    let mut structure = parse_artifact(&structure_raw, "知识结构")?;
+    // 机械归一（x08）：模型仍可吐中文/旧词，契约门前收编为落库码。
+    let vocab_rewrites = structure_contract::normalize_structure_vocab(&mut structure);
+    if vocab_rewrites > 0 {
+        tracing::info!(rewrites = vocab_rewrites, "structure vocab normalized to stored codes");
+    }
 
     // 契约门：双产物逐条款执法 + 门口对账（g2：structure 的门口只准引用
     // 地形门口）。警告级只透出，不触发重试。
@@ -286,9 +291,13 @@ fn parse_artifact(raw: &str, label: &str) -> Result<Value, String> {
 }
 
 /// 快照信封（契约 §5）：version + generated_at + 双产物，单 UPDATE 原子写列。
+/// structure_json 信封代际：2 = 落库码取值集（x08 起）；1 = 中文字面量旧档
+/// （读侧视图归一，不落盘）。x19 的懒再生按此判定。
+pub const STRUCTURE_ENVELOPE_VERSION: i64 = 2;
+
 pub(crate) fn snapshot_envelope(structure: &Value, terrain: &Value, generated_at: i64) -> Value {
     serde_json::json!({
-        "version": 1,
+        "version": STRUCTURE_ENVELOPE_VERSION,
         "generated_at": generated_at,
         "structure": structure,
         "terrain": terrain,
@@ -307,7 +316,7 @@ mod tests {
         for (spine_index, spine) in spine_names.iter().enumerate() {
             for block_index in 0..7 {
                 let ordinal = spine_index * 7 + block_index;
-                let stage = ["入门", "进阶", "高级"][ordinal % 3];
+                let stage = ["basic", "advanced", "expert"][ordinal % 3];
                 blocks.push(json!({
                     "name": format!("块{ordinal:02}"),
                     "slug": format!("block-{ordinal:02}"),
@@ -321,9 +330,9 @@ mod tests {
             "goal": "能独立完成一元二次方程的求解与检验",
             "goal_type": "capability",
             "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
-            "domain_type": "理论",
+            "domain_type": "theory",
             "form_reference": "Flowy 学习结构模板 v1",
-            "source_tier": "名录",
+            "source_tier": "catalog",
             "generated_by": "test-model",
             "disclaimer": "快照为生成时点参考地图，可能存在盲区",
             "domain": {
@@ -615,10 +624,10 @@ mod tests {
     fn count_door_labeled_blocks_counts_only_non_empty_refs() {
         let structure = json!({
             "blocks": [
-                { "name": "块A", "slug": "block-a", "spine": "s", "stage": "入门", "note": "n", "door_refs": ["G1"] },
-                { "name": "块B", "slug": "block-b", "spine": "s", "stage": "入门", "note": "n", "door_refs": ["G1", "G2"] },
-                { "name": "块C", "slug": "block-c", "spine": "s", "stage": "进阶", "note": "n", "door_refs": [] },
-                { "name": "块D", "slug": "block-d", "spine": "s", "stage": "高级", "note": "n" }
+                { "name": "块A", "slug": "block-a", "spine": "s", "stage": "basic", "note": "n", "door_refs": ["G1"] },
+                { "name": "块B", "slug": "block-b", "spine": "s", "stage": "basic", "note": "n", "door_refs": ["G1", "G2"] },
+                { "name": "块C", "slug": "block-c", "spine": "s", "stage": "advanced", "note": "n", "door_refs": [] },
+                { "name": "块D", "slug": "block-d", "spine": "s", "stage": "expert", "note": "n" }
             ]
         });
         assert_eq!(count_door_labeled_blocks(&structure), 2);
@@ -631,7 +640,7 @@ mod tests {
     fn envelope_carries_both_artifacts() {
         let envelope = snapshot_envelope(&golden_structure(), &golden_terrain(), 1000);
         assert!(envelope.is_object());
-        assert_eq!(envelope["version"], json!(1));
+        assert_eq!(envelope["version"], json!(2));
         assert_eq!(envelope["generated_at"], json!(1000));
         assert!(envelope["structure"].is_object());
         assert!(envelope["terrain"].is_object());

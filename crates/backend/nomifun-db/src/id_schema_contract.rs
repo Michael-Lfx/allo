@@ -70,7 +70,6 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_concept_registry",
     "learning_course_tags",
     "learning_courses",
-    "learning_course_jobs",
     "learning_checkins",
     "learning_custom_questions",
     "learning_enrollments",
@@ -177,7 +176,6 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_attempts", "attempt_id"),
     ("learning_concept_registry", "concept_id"),
     ("learning_courses", "course_id"),
-    ("learning_course_jobs", "job_id"),
     ("learning_checkins", "checkin_id"),
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
@@ -293,23 +291,21 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_attempts", "attempt_id"),
     ("learning_concept_registry", "concept_id"),
     ("learning_courses", "course_id"),
-    ("learning_course_jobs", "job_id"),
-    ("learning_course_jobs", "session_id"),
     ("learning_checkins", "checkin_id"),
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
-    // quiz 回合的身份列（migration 084）：回合行的业务主标识，选题/作答/
-    // 结算都在行内 JSON，不被其他表引用——非关系链接。
+    // quiz 回合的身份列（基线 070 §7，原 migration 084）：回合行的业务主
+    // 标识，选题/作答/结算都在行内 JSON，不被其他表引用——非关系链接。
     ("learning_quiz_rounds", "round_id"),
     // The card id in a review event is a plain identifier: deleting the card
     // must not wipe the check-in accounting that aggregates these rows.
     ("learning_review_events", "event_id"),
     ("learning_review_events", "item_id"),
-    // 学习行为组锚（g4 数据面前置列，migration 081）：会话实体缺位时恒
-    // NULL，将来升会话即 session ULID——不是对现存表的引用。
+    // 学习行为组锚（g4 数据面前置列，基线 070 §5，原 migration 081）：会话
+    // 实体缺位时恒 NULL，将来升会话即 session ULID——不是对现存表的引用。
     ("learning_review_events", "session_id"),
     ("learning_review_items", "review_item_id"),
     ("learning_review_log", "log_id"),
@@ -921,38 +917,32 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // a non-reference id column.
     text_ref!("learning_review_log", "user_id" => "users", "user_id", false, "idx_learning_review_log_user_day", Cascade),
     text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
-    // Course-generation jobs: user-scoped tasks; kb/course links are history —
-    // jobs keep working from persisted snapshots even if the base or the
-    // produced course is later deleted.
-    text_ref!("learning_course_jobs", "user_id" => "users", "user_id", false, "idx_learning_course_jobs_user_id", Cascade),
-    text_ref!("learning_course_jobs", "kb_id" => "knowledge_bases", "knowledge_base_id", false, "idx_learning_course_jobs_kb_id", KeepHistory),
-    text_ref!("learning_course_jobs", "course_id" => "learning_courses", "course_id", true, "idx_learning_course_jobs_course_id", KeepHistory),
     text_ref!("learning_course_tags", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_tags_course_id", Cascade),
     text_ref!("learning_course_tags", "tag_id" => "learning_tags", "tag_id", false, "idx_learning_course_tags_tag_id", Cascade),
-    // XP 结算账本（migration 081）：追加只增的回放真相——课程/课时被删
-    // （墓碑式）后历史事件必须原样保留，两链接都是历史面（KeepHistory +
-    // 容忍缺失父行）；自建题复习事件两列同空。
+    // XP 结算账本（基线 070 §5，原 migration 081）：追加只增的回放真相——
+    // 课程/课时被删（墓碑式）后历史事件必须原样保留，两链接都是历史面
+    // （KeepHistory + 容忍缺失父行）；自建题复习事件两列同空。
     text_ref!("learning_xp_events", "user_id" => "users", "user_id", false, "idx_learning_xp_events_user_anchor", Cascade),
     historical_text_ref!("learning_xp_events", "course_id" => "learning_courses", "course_id", true, "idx_learning_xp_events_course", KeepHistory),
     historical_text_ref!("learning_xp_events", "node_id" => "learning_lessons", "lesson_id", true, "idx_learning_xp_events_node", KeepHistory),
-    // 挂载事实层（migration 082）：一课一行的导航事实与 findings 留痕——
-    // 课程删除后挂载/留痕是否随删？挂载行随课（Cascade，纯导航派生面可
-    // 重建）；findings 是追加留痕（KeepHistory，历史观察不追删）。
+    // 挂载事实层（基线 070 §6，原 migration 082）：一课一行的导航事实与
+    // findings 留痕——课程删除后挂载/留痕是否随删？挂载行随课（Cascade，
+    // 纯导航派生面可重建）；findings 是追加留痕（KeepHistory，历史观察不追删）。
     historical_text_ref!("learning_structure_mounts", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_mounts_course", Cascade),
     historical_text_ref!("learning_structure_findings", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_findings_course", KeepHistory),
-    // 修补审计（migration 083）：结构编辑的历史档案——课程删除后审计行
-    // 保留（KeepHistory，出处不追删）。
+    // 修补审计（基线 070 §6，原 migration 083）：结构编辑的历史档案——课程
+    // 删除后审计行保留（KeepHistory，出处不追删）。
     historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
-    // 维护水位（migration 071）：findings 消费记账是派生面——随课删
-    // （Cascade；留痕本身仍 KeepHistory 保留）。
+    // 维护水位（基线 070 §6，原 migration 087）：findings 消费记账是派生面
+    // ——随课删（Cascade；留痕本身仍 KeepHistory 保留）。
     historical_text_ref!("learning_maintenance_state", "course_id" => "learning_courses", "course_id", false, "idx_learning_maintenance_state_course", Cascade),
-    // 已会声明锚（migration 072）：一行一次声明，声明是本课事实——随课删
-    // （Cascade）；锚行里铸出/复用的 concept_id 只作出处留痕（KeepHistory，
-    // 概念留池「声明可撤、概念不灭」——撤销只删锚行，登记表不动）。
+    // 已会声明锚（基线 070 §6，原 migration 088）：一行一次声明，声明是本课
+    // 事实——随课删（Cascade）；锚行里铸出/复用的 concept_id 只作出处留痕
+    // （KeepHistory，概念留池「声明可撤、概念不灭」——撤销只删锚行，登记表不动）。
     text_ref!("learning_basis_declarations", "course_id" => "learning_courses", "course_id", false, "idx_learning_basis_declarations_course", Cascade),
-    // quiz 回合（migration 084）：学习者行为历史——用户删除随账（Cascade）；
-    // 课程删除（墓碑式）后回合记录原样保留（KeepHistory，与 XP 账本同律：
-    // 行为历史不追删）。
+    // quiz 回合（基线 070 §7，原 migration 084）：学习者行为历史——用户删除
+    // 随账（Cascade）；课程删除（墓碑式）后回合记录原样保留（KeepHistory，
+    // 与 XP 账本同律：行为历史不追删）。
     text_ref!("learning_quiz_rounds", "user_id" => "users", "user_id", false, "idx_learning_quiz_rounds_user", Cascade),
     historical_text_ref!("learning_quiz_rounds", "course_id" => "learning_courses", "course_id", false, "idx_learning_quiz_rounds_course", KeepHistory),
     text_ref!("learning_question_tags", "question_id" => "learning_activities", "activity_id", false, "idx_learning_question_tags_activity_id", Cascade)
@@ -1083,10 +1073,10 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT item.value AS value FROM learning_growth_batches, json_each(learning_growth_batches.node_ids_json) item" =>
         "learning_lessons", "lesson_id", "idx_learning_growth_batches_nodes", Cascade, RequireParent
     ),
-    // 已会声明锚（migration 072）的铸造出处面：锚行的 concept_ids_json 指向
-    // 概念登记表。概念留池（撤销声明不回滚登记表），声明引用不追删——
-    // 概念被废弃/移除后锚行原样保留（KeepHistory + 容忍缺失父行，XP 账本
-    // 同律；读侧解析失败 = Broken 如实降级不炸）。
+    // 已会声明锚（基线 070 §6，原 migration 088）的铸造出处面：锚行的
+    // concept_ids_json 指向概念登记表。概念留池（撤销声明不回滚登记表），
+    // 声明引用不追删——概念被废弃/移除后锚行原样保留（KeepHistory + 容忍
+    // 缺失父行，XP 账本同律；读侧解析失败 = Broken 如实降级不炸）。
     json_text_ref!(
         "learning_basis_declarations", "concept_ids_json", "$[]",
         "SELECT item.value AS value FROM learning_basis_declarations, json_each(learning_basis_declarations.concept_ids_json) item" =>
@@ -1144,11 +1134,12 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT item.value AS value FROM cs_agents, json_each(cs_agents.knowledge_base_ids) item" =>
         "knowledge_bases", "knowledge_base_id", "idx_cs_agents_knowledge_base_ids_json", KeepHistory, AllowMissingHistoricalParent
     ),
-    // Course source-library list (migration 086): the same story as the
-    // customer-service mount list — the first element is the primary source
-    // (mirrored by the legacy single column `source_kb_id`, which keeps its
-    // own SetNull entry above), and a deleted base stops contributing: the
-    // read side filters deleted ids out of the list, so history keeps them.
+    // Course source-library list (基线 070 §3, originally migration 086): the
+    // same story as the customer-service mount list — the first element is the
+    // primary source (mirrored by the legacy single column `source_kb_id`,
+    // which keeps its own SetNull entry above), and a deleted base stops
+    // contributing: the read side filters deleted ids out of the list, so
+    // history keeps them.
     json_text_ref!(
         "learning_courses", "source_kb_ids", "$[]",
         "SELECT item.value AS value FROM learning_courses, json_each(learning_courses.source_kb_ids) item" =>

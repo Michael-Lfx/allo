@@ -2,7 +2,7 @@
 id: x07
 title: "structure_hash 规范化投影 + hash 版本——重序列化不再让全部课程挂载 stale"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [x21]
 part_of: ../map.md
@@ -46,3 +46,27 @@ part_of: ../map.md
 ## 非目标
 
 - 扩展键命名空间本身（x14）。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **单源 helper**（`learning_graph/mounting.rs`）：`STRUCTURE_HASH_VERSION_V1=1` /
+  `STRUCTURE_HASH_VERSION=2`、`canonical_structure_hash(envelope)`（只取内层
+  `structure`，紧凑序列化后 FNV-1a）、`hash_structure_column(raw)`（列 → (hash,
+  version)）、`mounts_stale(stored_hash, stored_version, raw)`（按存量版本选算法；
+  未知更高版本 fresh + warn）。
+- **写侧恒 v2**：mount upsert 与 repairs INSERT 都写 `hash_version`；repairs 行内
+  old/new 两 hash 自洽。
+- **读侧按存量版本、不回写**（图 A2 覆盖票面「v1 相等静默升级写回」：GET 不写库；
+  v1 行保持 fresh 直到下一次 mount/repair 回合自然升级）。view 的 `stale` 单源在
+  service，`build_structure_view` 收 `stale: bool`。
+- **基线 §6**：mounts / repairs 各加 `hash_version INTEGER NOT NULL DEFAULT 1`。
+- **测试**：键序/空白相等、改块名不等、`terrain/lexicon/generated_at/version/ext`
+  不进 hash、v1/v2/未来版本三态比较；mount 回合测试改为「尾随空白不 stale、真改块名
+  才 stale」；smoke mount 断言改 `hash_structure_column` + hash_version 检查。
+- **契约文档**：`learning-structure-artifacts.md` §9.1 改写 hash 作用域/版本/水位口径，
+  §10.3 repairs 行补 hash_version 与跨表比较约束。
+- **验收**：`cargo test -p nomifun-db -p nomifun-learning` 全绿；`learning-smoke
+  mount/repair` 需 provider 的真机档本会话未跑（临时库无 provider），留波次真机批。
+- 偏差：票面「静默升级写回」作废（图 A2），已记图纸 §8。

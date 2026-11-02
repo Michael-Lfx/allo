@@ -1,7 +1,7 @@
 import { Empty, Tag, Typography } from '@arco-design/web-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { BlockView, StructureView } from '../../types';
+import type { BlockView, StructureEdgeView, StructureView } from '../../types';
 import { buildGroupPalette } from './palette';
 
 const { Text } = Typography;
@@ -9,8 +9,8 @@ const { Text } = Typography;
 /**
  * 结构块详情（投影非权威标注收敛到详情层）：五键结构位 + 所在主干/阶段 +
  * 依赖层 + 门位标签（door_refs，m1 过门自检读侧）+ 关联关系（三型边，双向
- * 列出）+ 固定文案。点图上的块节点弹出。块 stage 是契约闭词表中文字面
- * （入门/进阶/高级）——展示走 i18n 映射，不直出（en-US 红线）。
+ * 列出）+ 固定文案。点图上的块节点弹出。块 stage/tier 是落库稳定码——展示
+ * 走 i18n 映射，未知码原样可见降级（en-US 红线）。
  */
 export function BlockDetail({
   block,
@@ -31,12 +31,15 @@ export function BlockDetail({
   );
   const stageLabel = (stage: BlockView['stage']) => {
     switch (stage) {
-      case '入门':
+      case 'basic':
         return t('learningGraphStructStage_entry');
-      case '进阶':
+      case 'advanced':
         return t('learningGraphStructStage_intermediate');
-      default:
+      case 'expert':
         return t('learningGraphStructStage_advanced');
+      default:
+        // 未知落库码（未来版本新增档位）原样可见降级，不吞值。
+        return stage;
     }
   };
   const relationLabel = (type: string) => {
@@ -51,6 +54,10 @@ export function BlockDetail({
         return type;
     }
   };
+  const tierLabel = (tier: StructureEdgeView['tier']) =>
+    tier === 'know' || tier === 'apply' || tier === 'teach'
+      ? t(`learningGraphTier_${tier}`)
+      : tier;
 
   return (
     <div
@@ -110,11 +117,11 @@ export function BlockDetail({
                 {edge.source === block.name
                   ? t('learningGraphStructRelationOut', {
                       target: edge.target,
-                      tier: edge.tier,
+                      tier: tierLabel(edge.tier),
                     })
                   : t('learningGraphStructRelationIn', {
                       source: edge.source,
-                      tier: edge.tier,
+                      tier: tierLabel(edge.tier),
                     })}
               </span>
               {edge.note.trim() !== '' && (

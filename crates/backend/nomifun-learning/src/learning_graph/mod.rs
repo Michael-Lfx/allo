@@ -3756,13 +3756,13 @@ mod tests {
     fn coach_context_renders_structure_reference_and_first_batch_discipline() {
         let with_material = CoachContext {
             roster: String::new(),
-            structure_reference: "- 块A(a)|主题描述|入门|主干一|无前置".into(),
+            structure_reference: "- 块A(a)|主题描述|basic|主干一|无前置".into(),
             terrain_doors: "- [G1]（硬前置）能用配方法解形如 x²=p 的方程".into(),
             ..Default::default()
         };
         let rendered = with_material.render();
         assert!(rendered.contains("结构参考材料"), "{rendered}");
-        assert!(rendered.contains("- 块A(a)|主题描述|入门|主干一|无前置"), "{rendered}");
+        assert!(rendered.contains("- 块A(a)|主题描述|basic|主干一|无前置"), "{rendered}");
         assert!(rendered.contains("首批入口重点参照"), "{rendered}");
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
         assert!(rendered.contains("首批纪律"), "{rendered}");
