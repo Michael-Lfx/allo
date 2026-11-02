@@ -739,27 +739,37 @@ fn convert_bilingual_phrase_to_tokens_mode(text: &str, toned: bool, sandhi: bool
 /// Builds dynamic bilingual keywords rules buffer for Sherpa-ONNX Zipformer KWS.
 pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
     let mut lines = Vec::new();
-
-    // Universal baseline wake phrases: strictly multi-syllable phrases (>= 3 syllables)
-    // to prevent false-wake storms caused by 2-syllable words like bare "你好" or "Flowy".
-    lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
-    lines.push("HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY".to_string());
-    lines.push("F L OW1 IY0 :2.0 #0.15 @FLOWY".to_string());
-    lines.push("n ǐ h ǎo F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
-    lines.push("n í h ǎo F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
-    lines.push("n i h ao F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
-
     let mut seen = std::collections::HashSet::new();
 
-    for kw in keywords {
-        let clean = kw.trim();
-        if clean.is_empty() {
-            continue;
-        }
+    let valid_keywords: Vec<&str> = keywords
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // If user cleared/deleted custom wake words, default strictly to universal cross-lingual "Hey Flowy"
+    if valid_keywords.is_empty() {
+        lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
+        lines.push("HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY".to_string());
+        return lines.join("\n") + "\n";
+    }
+
+    for clean in valid_keywords {
         let lower = clean.to_ascii_lowercase();
-        if lower == "hey flowy" || lower == "flowy" {
+        if lower == "hey flowy" {
+            let rule = "HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string();
+            if seen.insert(rule.clone()) {
+                lines.push(rule);
+            }
+            continue;
+        } else if lower == "hi flowy" {
+            let rule = "HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY".to_string();
+            if seen.insert(rule.clone()) {
+                lines.push(rule);
+            }
             continue;
         }
+
         let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
 
         let mut variants = Vec::new();

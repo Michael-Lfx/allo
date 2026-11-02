@@ -89,11 +89,21 @@ x iao f u x ing @XIAO_FU_XING
     assert!(dynamic_buf.contains("x iao b ai t ong x ue") || dynamic_buf.contains("x iǎo b ái t óng x ué"), "must contain pinyin for 小白同学");
     assert!(dynamic_buf.contains("HH EY1 F L OW1 IY0"), "must contain phonemes for HEY_FLOWY");
     assert!(dynamic_buf.contains("HH AY1 F L OW1 IY0"), "must contain phonemes for HI_FLOWY");
-    assert!(dynamic_buf.contains("F L OW1 IY0 :2.0 #0.15 @FLOWY"), "must contain bare FLOWY rule");
     assert!(dynamic_buf.contains("x iao d u"), "must contain pinyin for 小度");
     assert!(dynamic_buf.contains("j ia w ei s i"), "must contain pinyin for 贾维斯");
     assert!(dynamic_buf.contains("w ang c ai"), "must contain pinyin for 旺财");
     assert!(dynamic_buf.contains("n i h ao F L OW1 IY0"), "must contain mixed tokens for 你好 Flowy");
+
+    // Verify empty keywords defaults strictly to cross-lingual Hey Flowy / Hi Flowy
+    let empty_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&[]);
+    assert!(empty_buf.contains("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY"));
+    assert!(empty_buf.contains("HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY"));
+    assert!(!empty_buf.contains("荷包蛋"));
+
+    // Verify custom keyword only contains custom keyword, never silently injects Flowy
+    let custom_only_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&["荷包蛋".to_string()]);
+    assert!(custom_only_buf.contains("h é b āo d àn") || custom_only_buf.contains("h e b ao d an"));
+    assert!(!custom_only_buf.contains("FLOWY"), "must NOT inject Flowy when user defined custom keywords");
 
     // Test KwsEngine integration with custom keywords
     let mut kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
