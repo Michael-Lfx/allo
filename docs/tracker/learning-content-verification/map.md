@@ -4,6 +4,9 @@
 <!-- 状态：开图（2026-10-31）。来源 = quality-fixes 波真机产物双轴评审揪出 a3 例题
       对照列算术瑕疵（偏离平方和 ≈0.7 实算 0.50，链内自洽）+ 内容验证四层版图
       设计讨论。设计全文见记忆 learning-verification-roadmap。 -->
+<!-- 2026-11-02 复核：w1 已关闭（status: closed，2026-11-01 三臂真机）；learnhub
+      在 bd31277..b6a8c4e 新增 21 提交（数学线 13），w2 从「无参考实码」变为
+      「有完整判底铸值参考」；新增 h1（求值器预算硬化，P0）并作为 w2 前置。 -->
 
 ## 背景与裁决（2026-10-31）
 
@@ -26,8 +29,9 @@
 
 | id | 票 | 优先 | 依赖 |
 | --- | --- | --- | --- |
-| w1 | verify_math 断言核验接口 v0（求值器+采样核验+工具 op+R14+smoke oracle+f3 读数修复） | **高** | — |
-| w2 | 练习题型接核验器（numeric 答案键工具算/变式换参/修复变式 tol 硬编码）——已收窄 | 中 | w1 |
+| w1 | verify_math 断言核验接口 v0（求值器+采样核验+工具 op+R14+smoke oracle+f3 读数修复）——**closed（2026-11-01）** | **高** | — |
+| h1 | verify_math 求值器预算硬化（512 字符/64 层防爆栈）——**2026-11-02 新增** | **高** | — |
+| w2 | 练习题型接核验器（numeric 答案键工具铸值/变式换参/修复变式 tol 硬编码）——已收窄；2026-11-02 复核有 learnhub 实码参考 | 中 | w1, h1 |
 | w3 | 核验 kind 扩展（导数/积分/极限/ODE 采样核验） | 低 | w1 |
 
 ## 裁决记档（2026-10-31 grilling，六问全按推荐）
@@ -66,3 +70,44 @@
    自修改→过闸」真机走通（或如实记录零打回）。
 2. w2 真机判据：quiz smoke numeric 题答案键与工具输出一致；变式换参后答案键仍精确。
 3. verify_math 属 allo 首创域（learnhub 无对应物），无需参考实码比对，票内记档即可。
+   **2026-11-02 更正**：learnhub 已在 `bd31277..b6a8c4e` 独立实现 verify_math
+   （ADR-0038 + #186/#187/#188 + #195 铸值 + #196 写侧工具 op）；w2 改为参考
+   实码对账，见下方复核节与
+   [assets/2026-11-02-w2-numeric-cast-impact.md](assets/2026-11-02-w2-numeric-cast-impact.md)。
+
+## 2026-11-02 复核：learnhub 数学线（b6a8c4e）
+
+**来源**：learnhub `C:\Users\test\Desktop\my\learnhub`，`bd31277..b6a8c4e`
+（21 提交 / 66 文件 / +5742 −241；数学线 13 提交）。完整影响面、逐文件落点、
+决策矩阵与参考归档见
+[assets/2026-11-02-w2-numeric-cast-impact.md](assets/2026-11-02-w2-numeric-cast-impact.md)。
+
+**关键发现：**
+
+1. **w1 的诚实限制被 learnhub 用另一条路补上，但不建议照搬**：learnhub #187
+   用 `claims` 自报围栏 + `cc.math.shape/verified` 硬闸 + 装配剥离 + 覆盖率读数，
+   让发布正文可重放核验；allo w1 的执法面是工具 op + R14 + finish warning。
+   learnhub ADR-0038 增补（2026-11-02）自己把「自报+事后核验」降为过渡脚手架，
+   终态 = 写侧工具 op + 判底铸值——allo 已在终态，**claims 围栏不吸收**，
+   w1.5 暂不立。
+2. **`c14467e` 的求值器预算是 allo 现缺的 P0**：`MAX_EXPR_LEN=512` /
+   `MAX_DEPTH=64`；allo 的 `Parser` 无 depth、`eval_expr` 无长度检查，模型
+   深嵌套表达式可爆栈。→ **h1 立票**，作为 w2 前置。
+3. **#195 铸值是 w2 的直接参考**：模型只给 `claim + precision(0–10) +
+   unit(原值|百分数)`，`answer` 由系统 `cast_display(eval(claim))` 铸出；
+   变式 `qv.math.claim_required`；管理面重铸；claim 与 answer 同等待遇脱敏。
+   w2 采纳其「系统铸值/显示精度容差/claim 脱敏」骨架，但保持 allo 的
+   `answer` JSON number + `claim{expr,params}` 参数化，不照搬显示字符串。
+4. **#196 写侧工具 op 是 allo 已覆盖面**：learnhub 刚把工具 op 补进 content-write
+   （单面），allo w1 已是生成+修复双面 + 计数 + finish warning；不重复吸收。
+5. **开放题判分尾部（#181–#185 的 5 提交）不吸收**：allo 无 keywords 机械兜底，
+   `degraded`/`CachedGrade` 链无存在条件；`unavailable` UX 与 allo fail-loud
+   裁决冲突，属产品拍板项，不立项。
+6. **ADR-0039 / dsh 研究 / 清理规则不吸收**：治理约定与 ops，无学习域代码可搬。
+
+**编排**：h1 先行（小票，P0，独立）；w2 紧随（`blocked_by: [w1, h1]`）。
+w3 仍隔波，待 w1 真机后按翻译质量抽验再定。
+
+**账目修正**：w1 票面 `status: open` 与正文「真机验收 status: closed」不一致，
+本次同步 frontmatter 为 closed；w2 票面追加 2026-11-02 Resolution 增补（旧
+2026-10-31 裁决保留，零删除）。

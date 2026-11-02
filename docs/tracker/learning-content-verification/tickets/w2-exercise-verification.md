@@ -4,7 +4,7 @@ title: "练习题型接核验器——numeric 答案键工具算/变式换参/�
 type: task
 status: open
 assignee:
-blocked_by: [w1]
+blocked_by: [w1, h1]
 part_of: ../map.md
 ---
 
@@ -76,3 +76,73 @@ part_of: ../map.md
   3350-3377，serde default 容旧行→**零迁移可扩表达式+参数字段**）；
   LESSON_ACTIVITY_SYSTEM（mod.rs:142-166）**无 numeric 形状条款**，换参契约要新增；
   变式单次 LLM 调用一次给题面+答案，无参数分离（quiz.rs:768-852）。
+
+## Resolution 增补（2026-11-02，learnhub `b6a8c4e` 数学线复核）
+
+**背景**：上次引用 learnhub 基线是 `bd31277`（e2e-fixes 波）。learnhub 在
+`bd31277..b6a8c4e` 新增 21 提交，其中 13 是数学线（ADR-0038 + #186/#187/#188 +
+`c14467e` 硬化 + #195 铸值 + #196 写侧工具 op）。w2 从「无参考实码」变成
+「有完整判底铸值参考」。完整影响面、逐文件落点与决策矩阵见
+[assets/2026-11-02-w2-numeric-cast-impact.md](../assets/2026-11-02-w2-numeric-cast-impact.md)。
+
+**裁决（按推荐，2026-11-02）：**
+
+1. **`answer` 保持 JSON number（显示单位）**，不改成 learnhub 式显示字符串。
+   判分臂 `progress.rs:515-528`、smoke `item_answer`、编辑回传都不动。
+2. **claim 形状 = `{expr, params}`**（不是 learnhub 的单表达式）：支持 w2 原始
+   动机「同模板换参」；求值走 `eval_expr(expr, bindings)`。
+3. **系统铸值**：模型 numeric 轨只给 `claim + precision(0–10) + unit(raw|percent)`，
+   **禁写 `answer`/`tol`**；`cast_numeric_claim` 实算并写入 `answer`（percent 存
+   显示单位 ×100）与系统 tol（精确整数 = 0；否则 `0.5×10^-precision`）。
+4. **claim 只在生成面/服务端结构（`ActivityPack` + `StoredActivityConfig`）**；学习者
+   DTO 只加 `precision/unit`，零 `claim`。管理面 claim 轨的 answer 不可手改；
+   编辑保留三键与 tol。
+5. **变式路跳过题面相似门**（同考点换面是设计目的）；课时加题/重出的防复用池
+   语义不变。变式 `tol` 由铸值给出，不再 `None`。
+6. **h1 先行**：w2 的 claim 表达式直接进求值器，512 字符/64 层预算必须先落地；
+   本票 `blocked_by: [w1, h1]`。
+7. **v0 边界**：手工/自定义 numeric 仍走 legacy 手写 answer；不做题干模板渲染
+   （只保证答案键同源）；不吸收 claims 围栏；多步题/部分分仍在雾区。
+
+**实施要点（2026-11-02 版，覆盖上方旧清单中冲突项）：**
+
+- [ ] `verify_math.rs` 新增 `NumericClaim { expr, params: BTreeMap<String,f64> }`、
+      `NumericUnit { Raw, Percent }`、`cast_numeric_claim(...) -> CastNumeric{answer,tol}`。
+- [ ] `ActivityPack` / `StoredActivityConfig` 增 `claim/precision/unit`（serde default，
+      零迁移）；五处 `StoredActivityConfig` 构造统一走 constructor。
+- [ ] 铸值接线：整课生成 `activities.rs:203-215`、单题 `:313-315`、agent 草稿
+      `lesson_draft.rs:770-790` + `refresh_audit` 兜底、落库 `lesson.rs:2154-2168`、
+      导入 `course.rs:162-190`、变式 `quiz.rs:875-890`。
+- [ ] 模型面提示词：`generation/mod.rs:114`（LESSON_SYSTEM numeric 条款）、
+      `:142-166`（LESSON_ACTIVITY_SYSTEM 新增 numeric 条款）、
+      `lesson_content_loop.rs:134/1153/164`（中文 agent 双宿 + 修复表）；
+      加条款覆盖断言（无 golden）。
+- [ ] 变式：`generate_quiz_variant` 传 bank config；`GenerationPurpose::Variant`
+      跳过相似门；`VariantPayload.config_json` 带 claim/precision/unit/tol；
+      `QUIZ_ROUND_DOC_VERSION=1` 不 bump。
+- [ ] DTO/UI：`ActivityView` / `ReviewQuestion` / `QuizRoundQuestionView` /
+      `QuestionEntry` / `GeneratedLessonActivity` 加 `precision/unit`；
+      `QuizGradeFeedback` / `ReviewAnswerResult` 揭示格式化；`ActivityInput`
+      percent 后缀；`reviewAnswerText` 精度/单位；`types.ts` 同步。
+- [ ] 判分/编辑：numeric 臂语义不变；加 exact/within/outside/legacy 测试；
+      `update_question` 保留 claim/precision/unit/tol，claim 轨 answer 手改拒。
+- [ ] smoke：numeric 种子 + `item_answer` 按 config + 泄漏断言扩 claim/tol +
+      变式重算 + XP 按 `question_equivalent(kind)` 求和（numeric 权重 2）。
+- [ ] 红绿样：cast（raw/percent/params/精确整数/非有限/未绑定）、生成 claim-only
+      与带 answer 重试、agent 草稿 audit、变式换参、legacy 旧行、DTO 无 claim。
+
+**验收（2026-11-02 版）：**
+
+- `cargo test -p nomifun-learning`、`cargo test -p nomifun-ai-agent` 全绿；fmt。
+- `bun run typecheck`；若新增 i18n key 则 `bun run gen:i18n && bun run check:i18n`。
+- 零迁移：`git diff -- crates/backend/nomifun-db/migrations` 必须为空。
+- 真机：`learning-smoke quiz`（建议新增 `quiz-numeric`）numeric 题答案键与铸值
+  一致；变式换参后答案变化且精确；start 投影无 claim/tol；XP 断言按题型权重。
+- 如实记录：题干措辞与 claim 的「同源」只到提示词条款 + smoke 抽验，不做模板
+  渲染（见 D7）；learnhub 的 false 打回路径也从未自然触发，allo 的 smoke 要
+  主动构造 outside-tol 反例。
+
+**与旧 Resolution 的关系**：2026-10-31 的收窄裁决（三件：答案键工具算 + 变式换参
++ tol 修复）继续有效；本增补只把「工具算」落成 claim/params + 系统铸值，并把
+多步题/部分分继续留在雾区。旧清单中「题面渲染与答案键同源（同一表达式两处消费）」
+按 D7 解释为「答案键同源」，不是题干模板渲染。
