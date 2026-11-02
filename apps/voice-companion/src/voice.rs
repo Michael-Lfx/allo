@@ -4502,7 +4502,7 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::ListeningConfirm=>{
-                        if !barge_in_ready && in_echo_cooldown {
+                        if !barge_in_ready && is_playback_active {
                             utterance_pcm.clear();
                             speech_started = false;
                             native_worker_call!("vad_reset", vad.reset().await, ());
