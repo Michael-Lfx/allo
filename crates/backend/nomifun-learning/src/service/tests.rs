@@ -1728,6 +1728,30 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(due.len(), 4, "all four kinds join the review queue");
     }
 
+    /// x04：图修复白名单接受 svg / jsxgraph / mermaid 三族，且修复调用的
+    /// user 装配带上语言、渲染错误与源码（mermaid 的 parse error 随请求走）。
+    #[tokio::test]
+    async fn repair_figure_accepts_three_figure_languages() {
+        let (service, knowledge, _owner) = job_test_service().await;
+        for language in ["svg", "jsxgraph", "mermaid"] {
+            let completer = ScriptedCompleter::new("fixed figure body", false);
+            service.set_generation_dependencies(knowledge.clone(), completer.clone());
+            let response = service
+                .repair_figure(&crate::models::RepairFigureRequest {
+                    language: language.into(),
+                    code: "broken figure source".into(),
+                    error: "parse failed at line 1".into(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(response.code, "fixed figure body");
+            let prompt = completer.last_user.lock().unwrap().clone().unwrap();
+            assert!(prompt.contains(&format!("Language: {language}")), "{prompt}");
+            assert!(prompt.contains("parse failed at line 1"), "{prompt}");
+            assert!(prompt.contains("broken figure source"), "{prompt}");
+        }
+    }
+
     async fn checkin_test_service() -> (LearningService, UserId) {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())

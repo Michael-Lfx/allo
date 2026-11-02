@@ -8,7 +8,7 @@ import { httpRequest } from '@/common/adapter/httpBridge';
 
 export interface RepairFigureRequest {
   /** Fence language of the broken figure. */
-  language: 'svg' | 'jsxgraph';
+  language: 'svg' | 'jsxgraph' | 'mermaid';
   /** Original figure source code. */
   code: string;
   /** Error message the renderer produced. */
