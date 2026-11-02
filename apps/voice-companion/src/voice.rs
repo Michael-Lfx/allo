@@ -2552,11 +2552,11 @@ impl VoiceCompanionRuntime {
                     }
                     nomifun_api_types::voice::VoiceDirectControlAction::DismissSession => {
                         info!(action = "dismiss_session", "Voice direct control: dismiss session");
+                        let _ = playback.interrupt().await;
+                        let sleep_gen = playback.generation_id();
                         let mut d = driver.lock().await;
                         d.reset();
                         pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        let _ = playback.interrupt().await;
-                        let sleep_gen = playback.generation_id();
                         let _ = event_tx.send_scoped(
                             VoiceCompanionEvent::IntentDecided {
                                 intent: "Ignore".into(),
@@ -2601,13 +2601,14 @@ impl VoiceCompanionRuntime {
                                     let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
                                 });
                             }
+                        } else {
+                            voice_feedback::schedule(
+                                playback.clone(),
+                                event_tx.clone(),
+                                VoiceCueKind::Sleep,
+                                sleep_gen,
+                            );
                         }
-                        voice_feedback::schedule(
-                            playback.clone(),
-                            event_tx.clone(),
-                            VoiceCueKind::Sleep,
-                            sleep_gen,
-                        );
                         return;
                     }
                 }
@@ -4587,7 +4588,7 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     AcousticState::Listening => {
-                        if !barge_in_ready && in_echo_cooldown {
+                        if !barge_in_ready && is_playback_active {
                             utterance_pcm.clear();
                             speech_started = false;
                             native_worker_call!("vad_reset", vad.reset().await, ());
