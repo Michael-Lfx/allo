@@ -346,8 +346,15 @@ async fn learning_domain_rebuild_creates_concept_web_tables() {
     };
     insert_edge("teaches", "know").await.unwrap();
     assert!(insert_edge("teaches", "know").await.is_err(), "duplicate edge must be rejected");
-    assert!(insert_edge("implies", "know").await.is_err(), "unknown role must be rejected");
-    assert!(insert_edge("teaches", "mastered").await.is_err(), "unknown tier must be rejected");
+    // 枚举集校验收口 Rust（ADR-0015）：未知 role/tier 现在能落库。
+    assert!(
+        insert_edge("implies", "know").await.is_ok(),
+        "DB no longer rejects unknown roles"
+    );
+    assert!(
+        insert_edge("assumes", "mastered").await.is_ok(),
+        "DB no longer rejects unknown tiers"
+    );
     let ref_name_nullable: (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), SUM(NOT \"notnull\") FROM pragma_table_info('learning_lesson_concepts') \
          WHERE name = 'ref_name'",
@@ -472,5 +479,10 @@ async fn growth_batch_status_lifecycle_lands_with_the_create() {
     .bind(TRAD_COURSE)
     .execute(&pool)
     .await;
-    assert!(invalid.is_err(), "unknown status must be rejected");
+    // 枚举集校验收口 Rust（ADR-0015）：未知 status 现在能落库。
+    assert!(
+        invalid.is_ok(),
+        "DB no longer rejects unknown batch statuses: {:?}",
+        invalid.err()
+    );
 }

@@ -133,13 +133,10 @@ CREATE TABLE learning_custom_questions_new (
         AND user_id GLOB '????????-????-7???-[89ab]???-????????????'
         AND replace(user_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
-    -- kind CHECK 以已发布 050 的全集为准（ActivityKind 九种）：重建必须逐字
-    -- 保留既有约束集合，收窄会让 050 之后落库的多选/数值/排序/匹配自建题在
-    -- INSERT…SELECT 搬行时 CHECK 失败，升级随之中断（且永不收窄已发布枚举集）。
-    kind                 TEXT NOT NULL CHECK (
-        kind IN ('single_choice', 'true_false', 'reflection', 'fill_in_blank',
-                 'multi_choice', 'numeric', 'ordering', 'matching', 'open_question')
-    ),
+    -- 枚举集不设 DB CHECK（ADR-0015）：ActivityKind 单源在 Rust，写侧严格
+    -- 拒绝未知值、读侧宽容。x01 的九值 CHECK 修复随本票收口（列表仍在
+    -- ActivityKind::as_str，永不收窄）。
+    kind                 TEXT NOT NULL,
     prompt               TEXT NOT NULL CHECK (trim(prompt) <> ''),
     config_json          TEXT NOT NULL DEFAULT '{}' CHECK (
         json_valid(config_json) AND json_type(config_json) = 'object'
@@ -215,8 +212,10 @@ CREATE TABLE learning_lesson_concepts (
         AND concept_id GLOB '????????-????-7???-[89ab]???-????????????'
         AND replace(concept_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
-    role       TEXT NOT NULL CHECK (role IN ('teaches', 'assumes')),
-    tier       TEXT NOT NULL CHECK (tier IN ('know', 'apply', 'teach')),
+    -- 枚举集（role / tier）不设 DB CHECK（ADR-0015）：Rust 单源在
+    -- ActivityKind/ConceptRole/ConceptTier，写侧严格、读侧宽容。
+    role       TEXT NOT NULL,
+    tier       TEXT NOT NULL,
     ref_name TEXT,
     UNIQUE (lesson_id, concept_id, role)
 );
@@ -241,8 +240,9 @@ CREATE TABLE learning_growth_batches (
     ),
     note          TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'applied'
-        CHECK (status IN ('pending', 'applied', 'failed')),
+    -- 071 的状态机（pending 出生即落，成功 applied，失败 failed）；枚举集
+    -- 校验在 Rust（ADR-0015）。
+    status TEXT NOT NULL DEFAULT 'applied',
     UNIQUE (course_id, seq)
 );
 
@@ -428,26 +428,21 @@ CREATE TABLE learning_xp_events (
             AND replace(node_id, '-', '') NOT GLOB '*[^0-9a-f]*'
         )
     ),
-    kind      TEXT NOT NULL CHECK (kind IN ('node-completed', 'review-completed', 'quiz-completed')),
+    -- 枚举集（kind / basis）不设 DB CHECK；跨列结算规则（四形态 + quiz
+    -- 恒非负）也移到 Rust：validate_settlement（settle.rs）是完整判官，
+    -- 每条规则一个有单测（ADR-0015）。
+    kind      TEXT NOT NULL,
     -- 净入账（full 时含 xp_bonus 分量）；guess-penalty 必为负，quiz 恒非负。
     earned_xp INTEGER NOT NULL,
     -- 「全对奖励」分量（缺省 2）；仅 full 形态允许非零。
     xp_bonus  INTEGER NOT NULL DEFAULT 0 CHECK (xp_bonus >= 0),
-    basis     TEXT NOT NULL CHECK (basis IN ('full', 'partial', 'trimmed', 'guess-penalty')),
+    basis     TEXT NOT NULL,
     -- 部分正确的授予比例（earned_xp = (基数 × ratio).floor()）；仅 partial 携带。
     ratio     REAL CHECK (ratio IS NULL OR (ratio >= 0.0 AND ratio <= 1.0)),
     -- 结算来源注记（lesson-progress / review-course / review-custom），审计面。
     origin    TEXT,
     -- 幂等键：教新 = 'node:{lesson_id}'；复习 = 'review:{course|custom}:{item_id}:{review_day}'。
-    anchor    TEXT NOT NULL CHECK (trim(anchor) <> ''),
-    -- 写侧条款 validate_settlement 的数据库地板（四形态 + quiz 恒非负）：
-    CHECK (basis = 'guess-penalty' OR earned_xp >= 0),
-    CHECK (basis <> 'guess-penalty' OR earned_xp < 0),
-    CHECK (kind <> 'quiz-completed' OR earned_xp >= 0),
-    CHECK (basis = 'partial' OR ratio IS NULL),
-    CHECK (basis <> 'partial' OR ratio IS NOT NULL),
-    CHECK (basis = 'full' OR xp_bonus = 0),
-    CHECK (basis <> 'trimmed' OR earned_xp = 0)
+    anchor    TEXT NOT NULL CHECK (trim(anchor) <> '')
 );
 
 -- 幂等兜底：同用户同锚只允许一行，重复结算 INSERT OR IGNORE 即失效。
@@ -507,8 +502,8 @@ CREATE TABLE learning_structure_findings (
         AND replace(course_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
     -- 生产方：'concept-review'（评审 warn 通道，随 j09）/ 'mount-observation'
-    -- （挂载观察派生，纯读函数不打点）。
-    source    TEXT NOT NULL CHECK (source IN ('concept-review', 'mount-observation')),
+    -- （挂载观察派生，纯读函数不打点）；枚举集校验在 Rust（ADR-0015）。
+    source    TEXT NOT NULL,
     -- 上下文锚：节点标题或块 slug（自由文本，允许空串 = 全课面）。
     node      TEXT NOT NULL DEFAULT '',
     field     TEXT NOT NULL DEFAULT '',
@@ -545,8 +540,9 @@ CREATE TABLE learning_structure_repairs (
     -- 结构 hash 迁移（FNV-1a 64，有符号整型承载）；noop 时两者相等。
     old_hash   INTEGER NOT NULL,
     new_hash   INTEGER NOT NULL,
-    -- applied | noop（ops 空 = 合法结论；noop 不写结构快照，仅留痕）。
-    result     TEXT NOT NULL CHECK (result IN ('applied', 'noop')),
+    -- applied | noop（ops 空 = 合法结论；noop 不写结构快照，仅留痕）；
+    -- 枚举集校验在 Rust（ADR-0015）。
+    result     TEXT NOT NULL,
     -- 逐 op 数组：[{op, ...字段, reason, 跟随改写说明}]；noop 为空数组。
     ops_json   TEXT NOT NULL CHECK (
         json_valid(ops_json) AND json_type(ops_json) = 'array'
@@ -673,7 +669,10 @@ CREATE TABLE learning_quiz_rounds (
     started_at  INTEGER NOT NULL,
     finished_at INTEGER,
     -- active（进行中）/ completed（走完结算）/ abandoned（被新回合取代）。
-    status      TEXT NOT NULL CHECK (status IN ('active', 'completed', 'abandoned')),
+    -- 枚举集与三条形态规则（status × finished/answers/report/earned 的组合）
+    -- 都移到 Rust：validate_round_shape（quiz.rs），每条规则一个有单测
+    -- （ADR-0015）。
+    status      TEXT NOT NULL,
     -- 选题快照：[{node, node_name, activity, kind}]（判底不入表）。
     plan_json   TEXT NOT NULL CHECK (
         json_valid(plan_json) AND json_type(plan_json) = 'array'
@@ -692,19 +691,7 @@ CREATE TABLE learning_quiz_rounds (
         )
     ),
     -- 全卷净入账（completed 时在场；折叠不计薪）。
-    earned_xp   INTEGER,
-    CHECK (status <> 'active' OR (
-        finished_at IS NULL AND answers_json IS NULL
-        AND report_json IS NULL AND earned_xp IS NULL
-    )),
-    CHECK (status <> 'completed' OR (
-        finished_at IS NOT NULL AND answers_json IS NOT NULL
-        AND report_json IS NOT NULL AND earned_xp IS NOT NULL
-    )),
-    CHECK (status <> 'abandoned' OR (
-        finished_at IS NOT NULL AND answers_json IS NULL
-        AND report_json IS NULL AND earned_xp IS NULL
-    ))
+    earned_xp   INTEGER
 );
 
 -- 同用户同课程至多一个进行中回合（start supersede 流的并发地板）。
@@ -715,3 +702,293 @@ CREATE INDEX idx_learning_quiz_rounds_user
     ON learning_quiz_rounds(user_id);
 CREATE INDEX idx_learning_quiz_rounds_course
     ON learning_quiz_rounds(course_id);
+
+
+-- ==== §10 已发布表枚举集去 CHECK（x05，保 id 式重建，ADR-0015）====
+-- 只删枚举集 CHECK（kind/source/status/course_kind/teaching_style）与
+-- lesson_progress 的跨列形态 CHECK；其余列定义（UUID7、json_valid、
+-- NOT NULL/DEFAULT、UNIQUE、数值域）与索引逐字保留。x02 的两处死列
+-- （lesson_progress.extra_json、learning_courses.graph_meta_json）在重建时
+-- 自然不再拷贝。跨列规则改由 Rust 写路径执法（settle.rs / quiz.rs /
+-- progress.rs），每条原规则一个有单测。
+
+-- x05: drop enum-set CHECK on learning_activities
+CREATE TABLE learning_activities_new (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id TEXT NOT NULL UNIQUE CHECK (
+        length(activity_id) = 36
+        AND lower(activity_id) = activity_id
+        AND activity_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(activity_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    lesson_id   TEXT NOT NULL CHECK (
+        length(lesson_id) = 36
+        AND lower(lesson_id) = lesson_id
+        AND lesson_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(lesson_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    kind        TEXT NOT NULL,
+    prompt      TEXT NOT NULL CHECK (trim(prompt) <> ''),
+    config_json TEXT NOT NULL DEFAULT '{}' CHECK (
+        json_valid(config_json) AND json_type(config_json) = 'object'
+    ),
+    section_key TEXT,
+    position    INTEGER NOT NULL CHECK (position >= 0),
+    UNIQUE (lesson_id, position)
+);
+INSERT INTO learning_activities_new
+    (id, activity_id, lesson_id, kind, prompt, config_json, section_key, position)
+SELECT id, activity_id, lesson_id, kind, prompt, config_json, section_key, position
+FROM learning_activities;
+DROP TABLE learning_activities;
+ALTER TABLE learning_activities_new RENAME TO learning_activities;
+CREATE INDEX idx_learning_activities_lesson_id
+    ON learning_activities(lesson_id, position);
+
+-- x05: drop enum-set CHECK on learning_lesson_sections
+CREATE TABLE learning_lesson_sections_new (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    section_key TEXT NOT NULL CHECK (length(section_key) > 0 AND length(section_key) <= 32),
+    lesson_id   TEXT NOT NULL CHECK (
+        length(lesson_id) = 36
+        AND lower(lesson_id) = lesson_id
+        AND lesson_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(lesson_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    kind        TEXT NOT NULL,
+    title       TEXT NOT NULL CHECK (trim(title) <> ''),
+    points      TEXT NOT NULL DEFAULT '',
+    body_md     TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    version     INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    position    INTEGER NOT NULL CHECK (position >= 0),
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    visual      TEXT NOT NULL DEFAULT '',
+    degraded    INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (lesson_id, section_key),
+    UNIQUE (lesson_id, position)
+);
+INSERT INTO learning_lesson_sections_new
+    (id, section_key, lesson_id, kind, title, points, body_md, status, version,
+     position, created_at, updated_at, visual, degraded)
+SELECT id, section_key, lesson_id, kind, title, points, body_md, status, version,
+       position, created_at, updated_at, visual, degraded
+FROM learning_lesson_sections;
+DROP TABLE learning_lesson_sections;
+ALTER TABLE learning_lesson_sections_new RENAME TO learning_lesson_sections;
+CREATE INDEX idx_learning_lesson_sections_lesson_id
+    ON learning_lesson_sections (lesson_id, position);
+
+-- x05: drop enum-set CHECK on learning_review_events
+CREATE TABLE learning_review_events_new (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id   TEXT NOT NULL UNIQUE CHECK (
+        length(event_id) = 36
+        AND lower(event_id) = event_id
+        AND event_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(event_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    user_id    TEXT NOT NULL CHECK (
+        length(user_id) = 36
+        AND lower(user_id) = user_id
+        AND user_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(user_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    source     TEXT NOT NULL,
+    item_id    TEXT NOT NULL CHECK (trim(item_id) <> ''),
+    created_at INTEGER NOT NULL,
+    elapsed_ms INTEGER,
+    response   TEXT,
+    session_id TEXT,
+    forgot     INTEGER NOT NULL DEFAULT 0 CHECK (forgot IN (0, 1)),
+    predicted  REAL CHECK (predicted IS NULL OR (predicted > 0.0 AND predicted <= 1.0))
+);
+INSERT INTO learning_review_events_new
+    (id, event_id, user_id, source, item_id, created_at, elapsed_ms, response,
+     session_id, forgot, predicted)
+SELECT id, event_id, user_id, source, item_id, created_at, elapsed_ms, response,
+       session_id, forgot, predicted
+FROM learning_review_events;
+DROP TABLE learning_review_events;
+ALTER TABLE learning_review_events_new RENAME TO learning_review_events;
+CREATE INDEX idx_learning_review_events_user_created
+    ON learning_review_events (user_id, created_at);
+CREATE INDEX idx_learning_review_events_user_id
+    ON learning_review_events (user_id);
+
+-- x05: drop enum-set CHECK on learning_review_log
+CREATE TABLE learning_review_log_new (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_id    TEXT NOT NULL UNIQUE CHECK (
+        length(log_id) = 36
+        AND lower(log_id) = log_id
+        AND log_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(log_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    user_id   TEXT NOT NULL CHECK (
+        length(user_id) = 36
+        AND lower(user_id) = user_id
+        AND user_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(user_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    source    TEXT NOT NULL,
+    item_id   TEXT NOT NULL CHECK (trim(item_id) <> ''),
+    rating    INTEGER NOT NULL CHECK (rating >= 0 AND rating <= 4),
+    rating_source TEXT NOT NULL,
+    elapsed_days INTEGER NOT NULL CHECK (elapsed_days >= 0),
+    stability_before REAL,
+    difficulty_before REAL,
+    r_pred REAL,
+    review_day INTEGER NOT NULL CHECK (review_day >= 19000101),
+    created_at INTEGER NOT NULL,
+    CHECK ((stability_before IS NULL) = (difficulty_before IS NULL)),
+    CHECK (stability_before IS NULL OR stability_before >= 0.0),
+    CHECK (difficulty_before IS NULL OR (difficulty_before >= 1.0 AND difficulty_before <= 10.0)),
+    CHECK (r_pred IS NULL OR (r_pred > 0.0 AND r_pred <= 1.0))
+);
+INSERT INTO learning_review_log_new
+    (id, log_id, user_id, source, item_id, rating, rating_source, elapsed_days,
+     stability_before, difficulty_before, r_pred, review_day, created_at)
+SELECT id, log_id, user_id, source, item_id, rating, rating_source, elapsed_days,
+       stability_before, difficulty_before, r_pred, review_day, created_at
+FROM learning_review_log;
+DROP TABLE learning_review_log;
+ALTER TABLE learning_review_log_new RENAME TO learning_review_log;
+CREATE INDEX idx_learning_review_log_item_day
+    ON learning_review_log(source, item_id, review_day);
+CREATE INDEX idx_learning_review_log_user_day
+    ON learning_review_log(user_id, review_day);
+
+-- x05: drop enum-set CHECK on learning_question_tags
+CREATE TABLE learning_question_tags_new (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id TEXT NOT NULL CHECK (
+        length(question_id) = 36
+        AND lower(question_id) = question_id
+        AND question_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(question_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    source      TEXT NOT NULL,
+    tag_id      TEXT NOT NULL CHECK (
+        length(tag_id) = 36
+        AND lower(tag_id) = tag_id
+        AND tag_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(tag_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    UNIQUE (question_id, source, tag_id)
+);
+INSERT INTO learning_question_tags_new (id, question_id, source, tag_id)
+SELECT id, question_id, source, tag_id FROM learning_question_tags;
+DROP TABLE learning_question_tags;
+ALTER TABLE learning_question_tags_new RENAME TO learning_question_tags;
+CREATE INDEX idx_learning_question_tags_activity_id
+    ON learning_question_tags(question_id) WHERE source = 'course';
+CREATE INDEX idx_learning_question_tags_custom_question_id
+    ON learning_question_tags(question_id) WHERE source = 'custom';
+CREATE INDEX idx_learning_question_tags_tag_id
+    ON learning_question_tags(tag_id);
+
+-- x05 + x02: drop enum-set CHECK and the dead extra_json column on
+-- learning_lesson_progress
+CREATE TABLE learning_lesson_progress_new (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    enrollment_id TEXT NOT NULL CHECK (
+        length(enrollment_id) = 36
+        AND lower(enrollment_id) = enrollment_id
+        AND enrollment_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(enrollment_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    lesson_id     TEXT NOT NULL CHECK (
+        length(lesson_id) = 36
+        AND lower(lesson_id) = lesson_id
+        AND lesson_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(lesson_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    status        TEXT NOT NULL,
+    started_at    INTEGER,
+    completed_at  INTEGER,
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (enrollment_id, lesson_id)
+);
+INSERT INTO learning_lesson_progress_new
+    (id, enrollment_id, lesson_id, status, started_at, completed_at, updated_at)
+SELECT id, enrollment_id, lesson_id, status, started_at, completed_at, updated_at
+FROM learning_lesson_progress;
+DROP TABLE learning_lesson_progress;
+ALTER TABLE learning_lesson_progress_new RENAME TO learning_lesson_progress;
+CREATE INDEX idx_learning_lesson_progress_enrollment_id ON learning_lesson_progress (enrollment_id);
+CREATE INDEX idx_learning_lesson_progress_lesson_id     ON learning_lesson_progress (lesson_id);
+
+-- x05 + x02: drop enum-set CHECK and the dead graph_meta_json column on
+-- learning_courses
+CREATE TABLE learning_courses_new (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id    TEXT NOT NULL UNIQUE CHECK (
+        length(course_id) = 36
+        AND lower(course_id) = course_id
+        AND course_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(course_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    title        TEXT NOT NULL CHECK (trim(title) <> ''),
+    description  TEXT NOT NULL DEFAULT '',
+    domain       TEXT NOT NULL DEFAULT 'general' CHECK (trim(domain) <> ''),
+    source_kb_id TEXT CHECK (
+        source_kb_id IS NULL OR (
+            length(source_kb_id) = 36
+            AND lower(source_kb_id) = source_kb_id
+            AND source_kb_id GLOB '????????-????-7???-[89ab]???-????????????'
+            AND replace(source_kb_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    version      INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    blueprint_json TEXT,
+    samples_json TEXT,
+    course_kind  TEXT NOT NULL DEFAULT 'traditional',
+    learning_goal TEXT NOT NULL DEFAULT '',
+    learning_scope TEXT NOT NULL DEFAULT '',
+    teaching_style TEXT NOT NULL DEFAULT 'standard',
+    deleted_at   INTEGER,
+    structure_json TEXT CHECK (
+        structure_json IS NULL
+        OR (json_valid(structure_json) AND json_type(structure_json) = 'object')
+    ),
+    samples_meta_json TEXT CHECK (
+        samples_meta_json IS NULL OR (
+            json_valid(samples_meta_json) AND json_type(samples_meta_json) = 'object'
+        )
+    ),
+    source_kb_ids TEXT NOT NULL DEFAULT '[]' CHECK (
+        json_valid(source_kb_ids) AND json_type(source_kb_ids) = 'array'
+    ),
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    course_source_plan_json TEXT CHECK (
+        course_source_plan_json IS NULL OR (
+            json_valid(course_source_plan_json) AND json_type(course_source_plan_json) = 'object'
+        )
+    )
+);
+INSERT INTO learning_courses_new
+    (id, course_id, title, description, domain, source_kb_id, version, created_at,
+     updated_at, blueprint_json, samples_json, course_kind, learning_goal,
+     learning_scope, teaching_style, deleted_at, structure_json, samples_meta_json,
+     source_kb_ids, enabled, course_source_plan_json)
+SELECT id, course_id, title, description, domain, source_kb_id, version, created_at,
+       updated_at, blueprint_json, samples_json, course_kind, learning_goal,
+       learning_scope, teaching_style, deleted_at, structure_json, samples_meta_json,
+       source_kb_ids, enabled, course_source_plan_json
+FROM learning_courses;
+DROP TABLE learning_courses;
+ALTER TABLE learning_courses_new RENAME TO learning_courses;
+CREATE INDEX idx_learning_courses_source_kb_id
+    ON learning_courses(source_kb_id);
+CREATE INDEX idx_learning_courses_source_kb_ids_json
+    ON learning_courses(source_kb_ids);
+
+-- ==== §11 退役死物（x02）====
+-- learning_course_jobs：自 j03 生成任务注册表接管后零消费者（无路由、无
+-- service、ui 零引用）；直接 DROP，不走 RENAME 观察期（还原按 PRODUCT_TABLES
+-- 枚举表跳过，谱系必须 Current——删表不新增还原风险，Q9）。
+DROP TABLE learning_course_jobs;

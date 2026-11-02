@@ -201,9 +201,9 @@ HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 修补回合，j08/j09；进度走 WS structure_* 事件）、
 `/api/learning/xp/reading` 与 `/api/learning/xp/calendar`（XP 读数与日历，
 j05）、
-`/api/learning/course-jobs*`、`/api/learning/generation-tasks*`（长任务
-状态/取消，j03 注册表：growth/structure/structure_mount/structure_repair/
-outline/lesson）、
+`/api/learning/generation-tasks*`（长任务状态/取消，j03 注册表：
+growth/structure/structure_mount/structure_repair/outline/lesson；旧
+`course-jobs*` 端点随 `learning_course_jobs` 表退役，x02）、
 `/api/learning/lessons/{id}`（详情按需加载）、
 `/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`（j05 起按 XP 口径
@@ -233,10 +233,10 @@ LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
 补前导）、矩阵；j08/j09 起结构图带挂载三态段（三态计数/stale 显影/已挂清
 单/观察标签）与挂载/修补双入口；投影非权威标注收敛在详情层与页脚）、
 CreateCourseDialog（学习图单步向导：目标 + 可选程度/基础声明）、
-ReviewSession、CourseJobTable、XpPanel（今日 XP 卡 + 进度尺 + 84 格 XP 日
+ReviewSession、XpPanel（今日 XP 卡 + 进度尺 + 84 格 XP 日
 历，j06 打卡退役接管）、MemoryHealthPanel（复习横幅下的记忆健康折叠条）、
 QuestionManager、LearningModelSelector 等；hooks `useCourseLearning` /
-`useReviewSession` / `useCourseJobs` / `useCourseCreation` /
+`useReviewSession` / `useCourseCreation` /
 `useCheckinStatus`（j05 起 XP 口径）。
 
 ## 真机冒烟（无头）

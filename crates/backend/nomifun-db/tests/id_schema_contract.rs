@@ -131,19 +131,17 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
 
     // 数字跟着 schema 走，是两侧迁移合并后的显式契约（新增表时应当被刻意改一次），不是
     // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
-    // 学习侧:050 课时分节:+learning_lesson_sections;052 复习日志:
-    // +learning_review_log;068 退役 DAG 图与 per-course 概念体系:-5;069
-    // 概念网生长:+learning_concept_registry/+learning_growth_batches;
-    // 073 终点锚退役:-learning_course_endpoints;080 XP 结算账本:
-    // +learning_xp_events;081 挂载事实层:+learning_structure_mounts/
-    // +learning_structure_findings;082 修补审计:+learning_structure_repairs;
-    // 083 quiz 回合:+learning_quiz_rounds;071 学习维护水位（四轮吸收 k02）:
-    // +learning_maintenance_state;072 已会声明锚（m2，ADR-0032 移植）:
-    // +learning_basis_declarations。主分支 068 linked_devices:+1。
-    // Agent Store 侧:`058` / `059` / `061` 共 4 张；主分支 066/067 的
-    // Skill 选择与固定三表：+conversation_skill_pins/+skill_invocation_overrides/
-    // +skill_selection_event。
-    assert_eq!(tables.len(), 125);
+    // 学习侧（折叠为基线 070_learning_domain_rebuild 后）：退役 DAG 图与
+    // per-course 概念体系 -5；概念网生长 +learning_concept_registry/
+    // +learning_growth_batches；终点锚从未存在；XP 结算账本 +learning_xp_events；
+    // 挂载事实层 +learning_structure_mounts/+learning_structure_findings；修补
+    // 审计 +learning_structure_repairs；quiz 回合 +learning_quiz_rounds；学习维护
+    // 水位 +learning_maintenance_state；已会声明锚 +learning_basis_declarations。
+    // x02：学习任务孤儿表 learning_course_jobs 退役 -1。主分支 068
+    // linked_devices:+1。Agent Store 侧:`058` / `059` / `061` 共 4 张；主分支
+    // 066/067 的 Skill 选择与固定三表：+conversation_skill_pins/
+    // +skill_invocation_overrides/+skill_selection_event。
+    assert_eq!(tables.len(), 124);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)

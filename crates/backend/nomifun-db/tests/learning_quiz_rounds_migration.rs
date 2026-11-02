@@ -1,7 +1,8 @@
-//! 迁移 084（quiz 回合记录表，q2）的契约：终态三态形状 CHECK（active 零
-//! 结算面 / completed 必带作答对账与总额 / abandoned 只留情境）、round_id/
-//! user_id/course_id 的 UUIDv7 形状地板、同课程至多一个 active 回合的部分
-//! 唯一索引（supersede 流的并发地板）。
+//! 迁移 084（quiz 回合记录表，q2）的契约：json 形状 CHECK（plan/answers/
+//! report）、round_id/user_id/course_id 的 UUIDv7 形状地板、同课程至多一个
+//! active 回合的部分唯一索引（supersede 流的并发地板）。终态三态形态规则与
+//! status 枚举集已移出 DB（ADR-0015），由 quiz.rs::validate_round_shape 写侧
+//! 执法。
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -14,6 +15,8 @@ const USER_2: &str = "0190f5fe-7c00-7a00-8abc-121111111111";
 const COURSE: &str = "0190f5fe-7c00-7a00-8abc-222222222222";
 const ROUND: &str = "0190f5fe-7c00-7a00-8abc-333333333333";
 const ROUND_2: &str = "0190f5fe-7c00-7a00-8abc-343333333333";
+const ROUND_3: &str = "0190f5fe-7c00-7a00-8abc-353333333333";
+const ROUND_4: &str = "0190f5fe-7c00-7a00-8abc-363333333333";
 
 async fn migrated_pool() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -57,10 +60,13 @@ async fn accepts_active_then_completed_transition_shapes() {
     assert_eq!((status.as_str(), earned), ("completed", 3));
 }
 
+/// 三条终态形态规则与 status 枚举集已移出 DB（ADR-0015），由
+/// quiz.rs::validate_round_shape 写侧执法（其单测逐条覆盖合法 3 态 + 非法
+/// 3 样）；DB 只保留 JSON 形状 CHECK。
 #[tokio::test]
-async fn rejects_incomplete_terminal_shapes() {
+async fn json_shape_checks_survive_while_terminal_form_moves_to_rust() {
     let pool = migrated_pool().await;
-    // completed 缺 answers/report/earned → CHECK 拒绝。
+    // completed 缺 answers/report/earned 现在能落库（DB 不设防）。
     let result = sqlx::query(
         "INSERT INTO learning_quiz_rounds \
          (round_id, user_id, course_id, started_at, finished_at, status, plan_json, earned_xp) \
@@ -71,38 +77,38 @@ async fn rejects_incomplete_terminal_shapes() {
     .bind(COURSE)
     .execute(&pool)
     .await;
-    assert!(result.is_err(), "completed 缺作答/对账面必须被 CHECK 拦截");
-    // abandoned 带 earned → CHECK 拒绝（放弃零结算）。
+    assert!(result.is_ok(), "DB no longer enforces the completed form: {result:?}");
+    // abandoned 带 earned 同样能落库（Rust 拒绝）。
     let result = sqlx::query(
         "INSERT INTO learning_quiz_rounds \
          (round_id, user_id, course_id, started_at, finished_at, status, plan_json, earned_xp) \
          VALUES (?, ?, ?, 1, 2, 'abandoned', '[]', 5)",
     )
-    .bind(ROUND)
+    .bind(ROUND_2)
     .bind(USER)
     .bind(COURSE)
     .execute(&pool)
     .await;
-    assert!(result.is_err(), "abandoned 必须零结算零作答面");
-    // 非法 status → CHECK 拒绝。
+    assert!(result.is_ok(), "DB no longer enforces the abandoned form: {result:?}");
+    // 未知 status 能落库（枚举集校验在 Rust）。
     let result = sqlx::query(
         "INSERT INTO learning_quiz_rounds \
          (round_id, user_id, course_id, started_at, status, plan_json) \
          VALUES (?, ?, ?, 1, 'fetched', '[]')",
     )
-    .bind(ROUND)
+    .bind(ROUND_3)
     .bind(USER)
     .bind(COURSE)
     .execute(&pool)
     .await;
-    assert!(result.is_err(), "status 三态白名单");
-    // plan_json 非数组 → CHECK 拒绝。
+    assert!(result.is_ok(), "DB no longer rejects unknown statuses: {result:?}");
+    // plan_json 非数组 → JSON 形状 CHECK 仍拒绝。
     let result = sqlx::query(
         "INSERT INTO learning_quiz_rounds \
          (round_id, user_id, course_id, started_at, status, plan_json) \
          VALUES (?, ?, ?, 1, 'active', '{\"node\":1}')",
     )
-    .bind(ROUND)
+    .bind(ROUND_4)
     .bind(USER)
     .bind(COURSE)
     .execute(&pool)
