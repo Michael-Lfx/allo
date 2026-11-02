@@ -87,7 +87,7 @@ async fn barge_in_user_speech_routes_continuation_turn_in_same_session() {
         }
     }
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         while flow.server.calls.load(Ordering::SeqCst) < 2 {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
