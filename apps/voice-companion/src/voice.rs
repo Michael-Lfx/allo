@@ -3586,15 +3586,19 @@ impl VoiceCompanionRuntime {
             );
             let kws = loop {
                 let dir = models.models_dir().to_path_buf();
-                let wake_words = event_tx.feedback().wake_words;
+                let mut keywords = event_tx.feedback().wake_words;
+                let interject = event_tx.feedback().interject_keyword;
+                if !interject.trim().is_empty() && !keywords.iter().any(|w| w.eq_ignore_ascii_case(&interject)) {
+                    keywords.push(interject);
+                }
                 match native_runner
                     .load(std::time::Duration::from_secs(30), move || {
                         KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                             model_dir: Some(dir),
-                            keywords: if wake_words.is_empty() {
+                            keywords: if keywords.is_empty() {
                                 vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
                             } else {
-                                wake_words
+                                keywords
                             },
                             ..Default::default()
                         })
@@ -3820,15 +3824,19 @@ impl VoiceCompanionRuntime {
                 }
                 if kws_reload_needed.swap(false, Ordering::AcqRel) {
                     let dir = models.models_dir().to_path_buf();
-                    let wake_words = event_tx.feedback().wake_words;
+                    let mut keywords = event_tx.feedback().wake_words;
+                    let interject = event_tx.feedback().interject_keyword;
+                    if !interject.trim().is_empty() && !keywords.iter().any(|w| w.eq_ignore_ascii_case(&interject)) {
+                        keywords.push(interject);
+                    }
                     let loaded = native_runner
                         .load(std::time::Duration::from_secs(30), move || {
                             KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                                 model_dir: Some(dir),
-                                keywords: if wake_words.is_empty() {
+                                keywords: if keywords.is_empty() {
                                     vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
                                 } else {
-                                    wake_words
+                                    keywords
                                 },
                                 ..Default::default()
                             })
@@ -3861,15 +3869,19 @@ impl VoiceCompanionRuntime {
                     if models.get_status().await.state.is_ready() {
                         if !kws.is_initialized() {
                             let dir = models.models_dir().to_path_buf();
-                            let wake_words = event_tx.feedback().wake_words;
+                            let mut keywords = event_tx.feedback().wake_words;
+                            let interject = event_tx.feedback().interject_keyword;
+                            if !interject.trim().is_empty() && !keywords.iter().any(|w| w.eq_ignore_ascii_case(&interject)) {
+                                keywords.push(interject);
+                            }
                             let loaded = native_runner
                                 .load(std::time::Duration::from_secs(30), move || {
                                     KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                                         model_dir: Some(dir),
-                                        keywords: if wake_words.is_empty() {
+                                        keywords: if keywords.is_empty() {
                                             vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
                                         } else {
-                                            wake_words
+                                            keywords
                                         },
                                         ..Default::default()
                                     })
