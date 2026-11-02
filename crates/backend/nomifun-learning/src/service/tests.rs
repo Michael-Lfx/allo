@@ -3470,8 +3470,8 @@ async fn structure_view_serves_missing_filled_and_soft_deleted_courses() {
         "generated_at": 1000,
         "structure": {
             "goal": "能独立求解", "goal_type": "capability",
-            "proficiency_statement": "p", "domain_type": "理论",
-            "form_reference": "F", "source_tier": "名录",
+            "proficiency_statement": "p", "domain_type": "theory",
+            "form_reference": "F", "source_tier": "catalog",
             "generated_by": "m", "disclaimer": "d",
             "domain": { "core_definition": "c", "includes": ["i1", "i2", "i3"],
                         "excludes": ["e1", "e2", "e3"], "prerequisite_doors": ["G1"],
@@ -3480,7 +3480,7 @@ async fn structure_view_serves_missing_filled_and_soft_deleted_courses() {
                 { "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }
             ],
             "blocks": [
-                { "name": "块A", "slug": "a", "spine": "主干一", "stage": "入门", "note": "n" }
+                { "name": "块A", "slug": "a", "spine": "主干一", "stage": "basic", "note": "n" }
             ],
             "edges": [],
             "gaps": [{ "item": "g", "direction": "d" }],
@@ -3737,7 +3737,7 @@ async fn graph_course_creation_stops_at_structure_with_zero_growth_tasks() {
         for (spine_index, spine) in spine_names.iter().enumerate() {
             for block_index in 0..7 {
                 let ordinal = spine_index * 7 + block_index;
-                let stage = ["入门", "进阶", "高级"][ordinal % 3];
+                let stage = ["basic", "advanced", "expert"][ordinal % 3];
                 blocks.push(serde_json::json!({
                     "name": format!("块{ordinal:02}"),
                     "slug": format!("block-{ordinal:02}"),
@@ -3751,9 +3751,9 @@ async fn graph_course_creation_stops_at_structure_with_zero_growth_tasks() {
             "goal": "能独立完成一元二次方程的求解与检验",
             "goal_type": "capability",
             "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
-            "domain_type": "理论",
+            "domain_type": "theory",
             "form_reference": "Flowy 学习结构模板 v1",
-            "source_tier": "名录",
+            "source_tier": "catalog",
             "generated_by": "test-model",
             "disclaimer": "快照为生成时点参考地图，可能存在盲区",
             "domain": {
@@ -4271,9 +4271,9 @@ async fn structure_generation_stops_early_on_repeated_violations() {
     let bad_structure = serde_json::json!({
         "goal": "目标", "goal_type": "capability",
         "proficiency_statement": "程度",
-        "domain_type": "理论",
+        "domain_type": "theory",
         "form_reference": "Flowy 学习结构模板 v1",
-        "source_tier": "名录",
+        "source_tier": "catalog",
         "generated_by": "test",
         "disclaimer": "d",
         "domain": {
@@ -7793,8 +7793,8 @@ async fn structure_mount_round_mounts_then_skips() {
             "goal": "g",
             "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
             "blocks": [
-                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" },
-                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "n" }
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" },
+                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "advanced", "note": "n" }
             ],
             "edges": []
         },
@@ -7935,7 +7935,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             "goal": "g",
             "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
             "blocks": [
-                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" }
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" }
             ],
             "edges": []
         },
@@ -10197,7 +10197,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 "goal": "g",
                 "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
                 "blocks": [
-                    { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" }
+                    { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" }
                 ],
                 "edges": []
             },

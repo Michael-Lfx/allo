@@ -24,10 +24,10 @@ review: cargo test -p nomifun-learning——金样(golden/)、围栏、契约后
 ## 修补规范
 - 顶层形态：单个 JSON 对象；顶层键只有 ops（数组，可为空）。
 - 七型 op（每条必带 reason，一条依据对应一条留痕或观察；输入里没有依据的编辑不做）：
-  - add_edge：补一条边。source/target 是块名逐字；type 只允许 assumes、composes、contrasts；add_edge 的 tier 只允许 know、use、teach。
+  - add_edge：补一条边。source/target 是块名逐字；type 只允许 assumes、composes、contrasts；add_edge 的 tier 只允许 know、apply、teach。
   - remove_edge：删一条边——三元组（source, target, type）必须唯一命中。
   - flip_edge：方向纠正——端点对调，type/tier/note 保持。
-  - add_block：补块——name/slug/spine/stage/note；slug 必须新发（不得与现有或曾退场的 slug 重复）。
+  - add_block：补块——name/slug/spine/stage/note（stage 只允许 basic / advanced / expert）；slug 必须新发（不得与现有或曾退场的 slug 重复）。
   - split_block：把 target 块换成新块（旧块退场，引用旧块的边随块退场——需要的关系随后用 add_edge 补回）。
   - rename_block：只改块名（from → to）；**不准携带 slug 键**——slug 终身不变；引用旧名的边自动跟改。
   - merge_blocks：把 sources 各块合并为一个新块（新名 + 新 slug）；引用源块的边自动改指新块，重复边去重，自环自动退场。

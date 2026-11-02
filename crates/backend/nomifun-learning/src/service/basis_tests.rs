@@ -107,8 +107,8 @@ async fn seed_basis_course(
                 { "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }
             ],
             "blocks": [
-                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "第一块", "door_refs": ["G1"] },
-                { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "入门", "note": "第二块", "door_refs": ["G1", "G2"] }
+                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "第一块", "door_refs": ["G1"] },
+                { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "basic", "note": "第二块", "door_refs": ["G1", "G2"] }
             ],
             "edges": []
         },

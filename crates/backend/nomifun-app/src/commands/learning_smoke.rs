@@ -2892,8 +2892,8 @@ async fn run_mount(
         "goal": "挂载冒烟目标",
         "spines": [{ "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }],
         "blocks": [
-            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "第一块" },
-            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "第二块" }
+            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "第一块" },
+            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "advanced", "note": "第二块" }
         ],
         "edges": []
     });
@@ -3021,7 +3021,7 @@ async fn run_mount(
 /// 误杀）。
 fn valid_structure_seed_envelope(goal: &str, now: i64) -> serde_json::Value {
     let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
-    let stages = ["入门", "进阶", "高级"];
+    let stages = ["basic", "advanced", "expert"];
     let mut blocks = Vec::new();
     for (spine_index, spine) in spine_names.iter().enumerate() {
         for block_index in 0..7 {
@@ -3039,9 +3039,9 @@ fn valid_structure_seed_envelope(goal: &str, now: i64) -> serde_json::Value {
         "goal": goal,
         "goal_type": "capability",
         "proficiency_statement": "达成后能独立复述本结构的修补判据",
-        "domain_type": "理论",
+        "domain_type": "theory",
         "form_reference": "Flowy 学习结构模板 v1",
-        "source_tier": "名录",
+        "source_tier": "catalog",
         "generated_by": "learning-smoke-seed",
         "disclaimer": "冒烟种子为静态合法盘面，仅供回合验证",
         "domain": {
@@ -3062,7 +3062,7 @@ fn valid_structure_seed_envelope(goal: &str, now: i64) -> serde_json::Value {
         "blocks": blocks,
         "edges": [
             { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" },
-            { "source": "块08", "target": "块09", "type": "composes", "tier": "use", "note": "组装" },
+            { "source": "块08", "target": "块09", "type": "composes", "tier": "apply", "note": "组装" },
             { "source": "块15", "target": "块16", "type": "contrasts", "tier": "know", "note": "对照" },
         ],
         "gaps": [
@@ -3574,8 +3574,8 @@ async fn run_basis(
                 { "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }
             ],
             "blocks": [
-                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "第一块", "door_refs": ["G1"] },
-                { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "入门", "note": "第二块", "door_refs": ["G1", "G2"] }
+                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "第一块", "door_refs": ["G1"] },
+                { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "basic", "note": "第二块", "door_refs": ["G1", "G2"] }
             ],
             "edges": []
         },

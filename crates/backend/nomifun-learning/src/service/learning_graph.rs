@@ -950,7 +950,7 @@ impl LearningService {
             (candidate, cascade)
         };
         let mut next_envelope = serde_json::json!({
-            "version": envelope.get("version").cloned().unwrap_or(serde_json::json!(1)),
+            "version": crate::learning_graph::structure_gen::STRUCTURE_ENVELOPE_VERSION,
             "generated_at": envelope.get("generated_at").cloned().unwrap_or(serde_json::json!(now_ms())),
             "structure": new_structure,
             "terrain": terrain,

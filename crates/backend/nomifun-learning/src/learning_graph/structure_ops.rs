@@ -737,7 +737,7 @@ pub(crate) async fn run_repair_round(
             }
         };
         last_was_llm = false;
-        let artifact = match crate::generation::parse_json_object::<Value>(&raw) {
+        let mut artifact = match crate::generation::parse_json_object::<Value>(&raw) {
             Ok(value) if value.is_object() => value,
             Ok(_) => {
                 last = "修补产物必须是单个 JSON 对象".to_owned();
@@ -750,6 +750,11 @@ pub(crate) async fn run_repair_round(
                 continue;
             }
         };
+        // 机械归一（x08）：ops 的 stage/tier 中文/旧词在契约门前收编为码。
+        let vocab_rewrites = structure_contract::normalize_structure_vocab(&mut artifact);
+        if vocab_rewrites > 0 {
+            tracing::info!(rewrites = vocab_rewrites, "repair ops vocab normalized to stored codes");
+        }
         let violations = validate_ops(&artifact, structure);
         let red: Vec<&ContractViolation> =
             violations.iter().filter(|item| !item.warning).collect();
@@ -813,8 +818,8 @@ mod tests {
             "goal": "g",
             "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
             "blocks": [
-                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" },
-                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "n" }
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" },
+                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "advanced", "note": "n" }
             ],
             "edges": [
                 { "source": "块二", "target": "块一", "type": "assumes", "tier": "know", "note": "" }
@@ -839,7 +844,7 @@ mod tests {
                 source: "块一".into(),
                 target: "块二".into(),
                 edge_type: "contrasts".into(),
-                tier: "use".into(),
+                tier: "apply".into(),
                 note: "对照".into(),
                 reason: "真对照".into(),
             },
@@ -928,9 +933,9 @@ mod tests {
             "goal": "g",
             "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
             "blocks": [
-                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" },
-                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "入门", "note": "n" },
-                { "name": "块三", "slug": "block-03", "spine": "主干一", "stage": "进阶", "note": "n" }
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" },
+                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "basic", "note": "n" },
+                { "name": "块三", "slug": "block-03", "spine": "主干一", "stage": "advanced", "note": "n" }
             ],
             "edges": [
                 { "source": "块二", "target": "块一", "type": "assumes", "tier": "know", "note": "" },
@@ -964,7 +969,7 @@ mod tests {
         // 绿：合法产物零红。
         let green = ops_artifact(json!([
             { "op": "add_edge", "source": "块一", "target": "块二", "type": "contrasts",
-              "tier": "use", "note": "", "reason": "真对照" },
+              "tier": "apply", "note": "", "reason": "真对照" },
             { "op": "rename_block", "from": "块二", "to": "块贰", "reason": "纠偏" }
         ]));
         assert!(validate_ops(&green, &sample_structure()).is_empty());
@@ -975,7 +980,7 @@ mod tests {
               "tier": "bogus", "reason": "" },
             { "op": "rename_block", "from": "块二", "to": "块贰", "slug": "block-x", "reason": "r" },
             { "op": "add_block", "name": "新块", "slug": "block-01", "spine": "主干一",
-              "stage": "入门", "note": "n", "reason": "r" }
+              "stage": "basic", "note": "n", "reason": "r" }
         ]));
         let violations = validate_ops(&bad_ops_artifact, &sample_structure());
         let codes: HashSet<&str> = violations.iter().map(|item| item.code).collect();
@@ -991,16 +996,16 @@ mod tests {
         // add_block 之后引用新块 = 合法（应用序模拟：前序块 ops 即时进端点域）。
         let fresh = ops_artifact(json!([
             { "op": "add_block", "name": "块三", "slug": "block-03", "spine": "主干一",
-              "stage": "高级", "note": "n", "reason": "补块" },
+              "stage": "expert", "note": "n", "reason": "补块" },
             { "op": "add_edge", "source": "块三", "target": "块一", "type": "composes",
-              "tier": "use", "note": "", "reason": "组装" }
+              "tier": "apply", "note": "", "reason": "组装" }
         ]));
         assert!(validate_ops(&fresh, &sample_structure()).is_empty());
 
         // 不加块直接引用 = 端点越界。
         let dangling = ops_artifact(json!([
             { "op": "add_edge", "source": "块三", "target": "块一", "type": "composes",
-              "tier": "use", "note": "", "reason": "r" }
+              "tier": "apply", "note": "", "reason": "r" }
         ]));
         let violations = validate_ops(&dangling, &sample_structure());
         assert!(
@@ -1015,9 +1020,9 @@ mod tests {
         // split 退场 block-01 后，后续 add_block 复用 block-01 = 红条。
         let ops_artifact = ops_artifact(json!([
             { "op": "split_block", "target": "块一", "name": "块一分", "slug": "block-new",
-              "stage": "入门", "note": "n", "reason": "r" },
+              "stage": "basic", "note": "n", "reason": "r" },
             { "op": "add_block", "name": "块新", "slug": "block-01", "spine": "主干一",
-              "stage": "入门", "note": "n", "reason": "r" }
+              "stage": "basic", "note": "n", "reason": "r" }
         ]));
         let violations = validate_ops(&ops_artifact, &sample_structure());
         assert!(

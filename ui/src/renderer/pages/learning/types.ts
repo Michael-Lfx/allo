@@ -748,10 +748,10 @@ export interface StructureScalarsView {
   /** capability | coverage */
   goal_type: string;
   proficiency_statement: string;
-  /** 理论 | 工程 | 历史 | 技能 */
+  /** theory | engineering | history | skill（落库码；中文住展示面） */
   domain_type: string;
   form_reference: string;
-  /** 名录 | 章节 */
+  /** catalog | chapter（落库码） */
   source_tier: string;
   generated_by: string;
   disclaimer: string;
@@ -784,8 +784,8 @@ export interface BlockView {
   name: string;
   slug: string;
   spine: string;
-  /** 入门 | 进阶 | 高级 */
-  stage: '入门' | '进阶' | '高级';
+  /** basic | advanced | expert（落库码；中文住展示面） */
+  stage: 'basic' | 'advanced' | 'expert';
   note: string;
   layer: number;
   no_prereq: boolean;
@@ -797,8 +797,8 @@ export interface StructureEdgeView {
   target: string;
   /** assumes | composes | contrasts（assumes：source = 需求方、target = 前置） */
   edge_type: 'assumes' | 'composes' | 'contrasts';
-  /** know | use | teach */
-  tier: 'know' | 'use' | 'teach';
+  /** know | apply | teach（与概念网 tier 同集，`use` 旧词已合一为 apply） */
+  tier: 'know' | 'apply' | 'teach';
   note: string;
 }
 

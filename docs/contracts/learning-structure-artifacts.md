@@ -60,9 +60,9 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
   "goal": "<目标原句回执，不得改写>",
   "goal_type": "capability | coverage",
   "proficiency_statement": "<程度声明>",
-  "domain_type": "理论 | 工程 | 历史 | 技能",
+  "domain_type": "theory | engineering | history | skill",
   "form_reference": "<结构模板出处>",
-  "source_tier": "名录 | 章节",
+  "source_tier": "catalog | chapter",
   "generated_by": "<模型标识>",
   "disclaimer": "<一句诚实边界：出处档位与已知局限>",
 
@@ -81,12 +81,12 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
   ],
   "blocks": [
     { "name": "<块名>", "slug": "<英文标识>", "spine": "<主干名>",
-      "stage": "入门 | 进阶 | 高级", "note": "<一句话主题描述>",
+      "stage": "basic | advanced | expert", "note": "<一句话主题描述>",
       "door_refs": ["G1"] }
   ],
   "edges": [
     { "source": "<块名>", "target": "<块名>", "type": "assumes | composes | contrasts",
-      "tier": "know | use | teach", "note": "<一句说明>" }
+      "tier": "know | apply | teach", "note": "<一句说明>" }
   ],
   "gaps":  [ { "item": "<此处未覆盖>", "direction": "<补全方向>" } ],
   "quality": [ { "check": "<自检项>", "status": "met | unmet", "reason": "" } ]
@@ -97,9 +97,9 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 结构位（五键纪律）加**唯一可选键 `door_refs`**（v1.6，learnhub #165 契约
 v2.14 门位标签）——定义/操作/实例/易错/source 等其余判据形字段一律不进块；
 块不是概念，`note` 明令非判据、永不进登记表。**door_refs 语义** =「学习者能
-满足这些门口判据，就必然已会本块」：入门档各块被某条门口判据**整体覆盖**才标
+满足这些门口判据，就必然已会本块」：basic 档各块被某条门口判据**整体覆盖**才标
 （编号逐字取自 `domain.prerequisite_doors`，一块可引多条），**宁缺勿滥**——
-错标比漏标严重；进阶/高级（正式内容段）不标；旧快照无键合法（键可选）。消费
+错标比漏标严重；advanced/expert（正式内容段）不标；旧快照无键合法（键可选）。消费
 面 = 过门自检读侧（TerrainView 覆盖统计 + 结构 Tab 门口→覆盖块映射 + 块详情
 door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一名**：名字禁并列连词
 与并列分隔符（官方术语自身含并列形的以「」包裹豁免；「和」在词首/词尾位是名词
@@ -110,7 +110,7 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 一切依赖视图方向反转展示（assumes = 门）；`composes` 不钉方向、仅参考组装展示；
 `contrasts` 无方向、同屏对照防混。`weight` 不进源。
 
-**领域适配四型**：`domain_type` 由模型自判（理论/工程/历史/技能），决定维度与
+**领域适配四型**：`domain_type` 由模型自判（theory/engineering/history/skill），决定维度与
 关系偏好；型分支指引住提示词资产，不进本契约。
 
 ### 2.2 硬条款（validator 逐条执法，违者整批打回）
@@ -119,13 +119,13 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 |---|---|
 | gd.parse | 产物必须是单个 JSON 对象（读侧条款：语法合法性由 json 模式前置保证） |
 | gd.keys | 顶层键 ⊆ 白名单 14 键；结构五件（domain/spines/blocks/gaps/quality）全在 |
-| gd.frontmatter | 八个标量键全非空；goal_type ∈ {capability, coverage}；domain_type ∈ 四型词表；source_tier ∈ {名录, 章节} |
+| gd.frontmatter | 八个标量键全非空；goal_type ∈ {capability, coverage}；domain_type ∈ 四型词表；source_tier ∈ {catalog, chapter} |
 | gd.domain.required | domain.core_definition/audience/granularity 非空；includes/excludes ≥3；scenarios ∈ 2..=3 |
 | gd.domain.doors | prerequisite_doors ≥1 条、逐条形态 `G<数字>`（对账解析见 §4） |
 | gd.spines.count | spines 条数 ∈ 6..=12 |
 | gd.spines.required | 每条 name/definition/instance 非空、key_points ≥1；键 ⊆ {name, definition, key_points, instance, thin_spine, reason}；name 在产物内唯一 |
 | gd.blocks.count | 条数 < 25 红、25 ≤ n < 40 记「低于 40 参考档」**警告**（不拒收）、> 100 红；80 < n ≤ 100 记「越档」警告 |
-| gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note} + 唯一可选 door_refs（其余判据形字段 = 红）；stage ∈ {入门, 进阶, 高级}；note 非空 |
+| gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note} + 唯一可选 door_refs（其余判据形字段 = 红）；stage ∈ {basic, advanced, expert}；note 非空 |
 | gd.blocks.door_refs | `door_refs` 逐条形态 `G<数字>` 且块内不重复；跨产物解析（引用 ⊆ 地形门口产出 **且** ⊆ 本课声明课程门）归 §4 对账面（悬挂/越出 = 红，learnhub `check_door_references` 同款） |
 | gd.blocks.one_name | 块名不含并列标记（与/和/及/、/,/，/斜杠），「…」段内豁免、词边「和」豁免 |
 | gd.blocks.slug | slug 匹配 `^[a-z0-9-]+$`；name 唯一、slug 唯一 |
@@ -133,7 +133,7 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 | gd.blocks.quota | 每主干块数 ≥5；不足者该主干须 `thin_spine: true` + 非空 reason，否则红 |
 | gd.edges.endpoints | 边两端 ∈ 块表名集（解析域就是块表，悬挂 = 红） |
 | gd.edges.type | type ∈ {assumes, composes, contrasts} |
-| gd.edges.tier | tier ∈ {know, use, teach}（注意与概念网 tier 的 know/apply/teach 是两套词） |
+| gd.edges.tier | tier ∈ {know, apply, teach}（与概念网 tier 同集，旧词 use 合一为 apply） |
 | gd.edges.dup | 同 (source, target, type) 三元组唯一 |
 | gd.gaps | ≥3 条且 item/direction 均非空 |
 | gd.quality | ≥5 条；status ∈ {met, unmet}；unmet 必带非空 reason |
@@ -170,7 +170,7 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 地形与结构同为**参考面**产物：不参与判定、不与概念关联。**门位口径（v2.10）**：门画在
 学习者的**真实起步地板**上——地板 = 基线学习者今天已具备、能直接踩着开始的那条线；
 「教材第一章」「正式入门」都不等于地板。门口以下是假设已会的前置（地板以下），不属于
-本课程教学单元；**地板以上的一切内容全进知识结构**（开局贴地、可学可挂）——结构入门档
+本课程教学单元；**地板以上的一切内容全进知识结构**（开局贴地、可学可挂）——结构 basic 档
 从门口贴地起排，门口与入门档之间不留无主地带。地形由此收缩为**地板以下与临门自检**
 两类判据（`hard` / `self_check`），由生长循环自己教出来的部分照旧归生长。
 
@@ -178,7 +178,7 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 单条起步线，而是一支**入门段梯队**——首门贴真实起步地板，其余各门沿入门段内容带
 向上立，每条判据覆盖一段**可整体自检**的内容带；带分不清或判据写不实就不硬凑门
 （宁缺勿滥；allo 量级档维持 4–8 条）。梯队各门是**自检参考**，不是进入闸门、不是
-免学承诺——带内内容照常进知识结构、由课程教出。door_refs 标注面 =「入门档各块被
+免学承诺——带内内容照常进知识结构、由课程教出。door_refs 标注面 =「basic 档各块被
 哪条梯队判据**整体**覆盖才标」（§2.1）。
 
 ## 4 门口对账
@@ -379,7 +379,7 @@ gd.* 全量重过零放宽。三重护栏 = 全量 validator 门 + 观测审计�
 
 | op | 语义 | 引用面机械自洽（引擎代管，级联注记记数） |
 |---|---|---|
-| add_edge | 加边（type ∈ assumes/composes/contrasts，tier ∈ know/use/teach） | 同三元组已存在 = 拒 |
+| add_edge | 加边（type ∈ assumes/composes/contrasts，tier ∈ know/apply/teach） | 同三元组已存在 = 拒 |
 | remove_edge | 三元组唯一命中即删 | 不命中或多命中 = 拒回合 |
 | flip_edge | 方向纠正：端点对调，type/tier/note 保持 | — |
 | add_block | 补块发新 slug | — |

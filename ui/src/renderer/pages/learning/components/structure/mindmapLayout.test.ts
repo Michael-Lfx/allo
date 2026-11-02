@@ -36,7 +36,7 @@ const makeBlock = (spine: string, index: number): BlockView => ({
   name: `${spine}-b${index}`,
   slug: `${spine}-b${index}`,
   spine,
-  stage: '入门',
+  stage: 'basic',
   note: '',
   layer: 0,
   no_prereq: true,
