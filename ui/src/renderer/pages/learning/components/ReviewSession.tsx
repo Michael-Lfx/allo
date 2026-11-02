@@ -20,6 +20,7 @@ import { errorMessage, isReviewUnderdeveloped } from '../utils';
 import { ActivityInput } from './ActivityInput';
 import { QuestionExplanation } from './QuestionExplanation';
 import { QuestionEditDialog } from './QuestionDialogs';
+import { answerText } from './reviewAnswerText';
 
 const { Text } = Typography;
 
@@ -79,18 +80,6 @@ export function ReviewCard({
   const question = review.question;
   const hasResponse =
     typeof response === 'string' ? response.trim().length > 0 : response !== undefined;
-  const answerText = (value: unknown): string => {
-    if (typeof value === 'boolean') {
-      return value ? t('learning.trueLabel') : t('learning.falseLabel');
-    }
-    if (Array.isArray(value)) {
-      return value
-        .map((item) => (typeof item === 'string' ? item : ''))
-        .filter((item) => item !== '')
-        .join(' / ');
-    }
-    return typeof value === 'string' ? value : '';
-  };
   const actions = (
     <Dropdown
       position='br'
@@ -297,7 +286,7 @@ export function ReviewCard({
             <Text type='secondary'>
               {/* 正确答案文本内联渲染（可能含 $…$ 公式） */}
               {t('learning.reviewCorrectAnswer')}:{' '}
-              <InlineMarkdown text={answerText(result.correct_answer)} />
+              <InlineMarkdown text={answerText(result.correct_answer, question.kind, question.options, t)} />
             </Text>
           )}
           {/* 答错揭示的解析与课时面口径统一：按内容分流（围栏/多段 → 块级
