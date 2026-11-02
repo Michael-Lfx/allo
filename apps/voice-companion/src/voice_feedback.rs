@@ -48,6 +48,7 @@ pub(crate) async fn play(
         VoiceCueKind::Wake | VoiceCueKind::FollowUp | VoiceCueKind::ListeningReminder => {
             EarconKind::Wake
         }
+        VoiceCueKind::BargeIn => EarconKind::BargeIn,
         VoiceCueKind::Recognized | VoiceCueKind::Processing => EarconKind::Guide,
         VoiceCueKind::Sleep | VoiceCueKind::Stopped => EarconKind::Sleep,
         VoiceCueKind::Error => EarconKind::Error,
@@ -84,6 +85,28 @@ pub(crate) async fn play(
         "voice_feedback_finished");
     publish(&diagnostic);
     completed
+}
+
+pub(crate) async fn play_vocal(
+    playback: &Arc<PlaybackPipeline>,
+    events: &Arc<VoiceEventHub>,
+    wav_bytes: &[u8],
+    generation: u64,
+) -> bool {
+    if playback.generation_id() != generation {
+        return false;
+    }
+    let config = events.feedback();
+    if config.mode == VoiceFeedbackMode::Off || config.volume == 0 {
+        return playback.generation_id() == generation;
+    }
+    let (mut pcm, rate) = nomifun_audio::parse_audio_frame_to_pcm(wav_bytes);
+    let gain = config.volume as f32 / 100.0;
+    for sample in &mut pcm {
+        *sample *= gain;
+    }
+    let frame = nomifun_audio::pcm_to_wav(&pcm, rate);
+    playback.play_cue_frame_with_started(frame, generation, || {}).await.is_ok()
 }
 
 pub(crate) fn schedule_optional(
@@ -226,6 +249,7 @@ pub(crate) fn preview_frame(kind: VoiceCueKind, volume: u8) -> Vec<u8> {
         VoiceCueKind::Wake | VoiceCueKind::FollowUp | VoiceCueKind::ListeningReminder => {
             EarconKind::Wake
         }
+        VoiceCueKind::BargeIn => EarconKind::BargeIn,
         VoiceCueKind::Recognized | VoiceCueKind::Processing => EarconKind::Guide,
         VoiceCueKind::Sleep | VoiceCueKind::Stopped => EarconKind::Sleep,
         VoiceCueKind::Error => EarconKind::Error,

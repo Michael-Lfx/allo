@@ -10,6 +10,7 @@
 
 pub const GUIDE_WAV: &[u8] = include_bytes!("../assets/earcon/guide.wav");
 pub const WAKE_WAV: &[u8] = include_bytes!("../assets/earcon/wake.wav");
+pub const BARGE_IN_WAV: &[u8] = include_bytes!("../assets/earcon/barge_in.wav");
 pub const ALERT_WAV: &[u8] = include_bytes!("../assets/earcon/alert.wav");
 pub const DONE_WAV: &[u8] = include_bytes!("../assets/earcon/done.wav");
 pub const SLEEP_WAV: &[u8] = include_bytes!("../assets/earcon/sleep.wav");
@@ -20,6 +21,7 @@ pub const ERROR_WAV: &[u8] = include_bytes!("../assets/earcon/error.wav");
 pub enum Earcon {
     Guide,
     Wake,
+    BargeIn,
     Alert,
     Done,
     Sleep,
@@ -30,17 +32,18 @@ pub enum Earcon {
 pub type EarconKind = Earcon;
 
 impl Earcon {
-    /// Array of all 6 earcon kinds.
-    pub const ALL: [Earcon; 6] = [
+    /// Array of all 7 earcon kinds.
+    pub const ALL: [Earcon; 7] = [
         Earcon::Guide,
         Earcon::Wake,
+        Earcon::BargeIn,
         Earcon::Alert,
         Earcon::Done,
         Earcon::Sleep,
         Earcon::Error,
     ];
 
-    /// Slice of all 6 earcon kinds.
+    /// Slice of all 7 earcon kinds.
     pub const fn all() -> &'static [Earcon] {
         &Self::ALL
     }
@@ -50,6 +53,7 @@ impl Earcon {
         match self {
             Earcon::Guide => GUIDE_WAV,
             Earcon::Wake => WAKE_WAV,
+            Earcon::BargeIn => BARGE_IN_WAV,
             Earcon::Alert => ALERT_WAV,
             Earcon::Done => DONE_WAV,
             Earcon::Sleep => SLEEP_WAV,
@@ -62,6 +66,7 @@ impl Earcon {
         match self {
             Earcon::Guide => "guide.wav",
             Earcon::Wake => "wake.wav",
+            Earcon::BargeIn => "barge_in.wav",
             Earcon::Alert => "alert.wav",
             Earcon::Done => "done.wav",
             Earcon::Sleep => "sleep.wav",

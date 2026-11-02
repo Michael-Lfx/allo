@@ -38,7 +38,7 @@ export interface VoiceSnapshot {
     request_id: string;
     session_id: string | null;
     turn_id: string | null;
-    kind: 'wake' | 'recognized' | 'follow_up' | 'sleep' | 'stopped' | 'error' | 'processing' | 'listening_reminder';
+    kind: 'wake' | 'barge_in' | 'recognized' | 'follow_up' | 'sleep' | 'stopped' | 'error' | 'processing' | 'listening_reminder';
     status: 'pending' | 'started' | 'completed' | 'cancelled' | 'failed' | 'skipped';
     reason_code: string | null;
     at_ms: number;

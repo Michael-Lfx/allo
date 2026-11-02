@@ -2158,7 +2158,19 @@ impl VoiceCompanionRuntime {
         let events = events.clone();
         let generation = playback.generation_id();
         tokio::spawn(async move {
-            voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            let feedback = events.feedback();
+            let is_en = nomifun_api_types::voice::is_english_locale(events.snapshot().locale.as_deref());
+            let custom_reply = feedback.wake_reply.trim();
+            let is_default_phrase = custom_reply.is_empty()
+                || custom_reply == "我在"
+                || custom_reply.eq_ignore_ascii_case("i'm here");
+
+            if feedback.speak_replies && is_default_phrase {
+                let vocal_bytes = nomifun_audio::vocal::VocalPhrase::wake_bytes(is_en);
+                let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, generation).await;
+            } else {
+                voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            }
             let mut d = driver.lock().await;
             let idle_secs = effective_idle_timeout(&events);
             if playback.generation_id() == generation && d.begin_listening_window_with_secs(idle_secs) {
@@ -2546,13 +2558,25 @@ impl VoiceCompanionRuntime {
                             "好的，再见"
                         };
                         if event_tx.feedback().speak_replies {
-                            let tts_clone = tts.clone();
-                            let playback_clone = playback.clone();
-                            let reply = goodbye_text.to_string();
-                            let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
-                            tokio::spawn(async move {
-                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
-                            });
+                            let is_default_dismiss = custom_dismiss.is_empty()
+                                || custom_dismiss == "好的，再见"
+                                || custom_dismiss.eq_ignore_ascii_case("goodbye");
+                            if is_default_dismiss {
+                                let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+                                let playback_clone = playback.clone();
+                                let event_tx_clone = event_tx.clone();
+                                tokio::spawn(async move {
+                                    let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, sleep_gen).await;
+                                });
+                            } else {
+                                let tts_clone = tts.clone();
+                                let playback_clone = playback.clone();
+                                let reply = goodbye_text.to_string();
+                                let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                                tokio::spawn(async move {
+                                    let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                });
+                            }
                         }
                         voice_feedback::schedule(
                             playback.clone(),
@@ -4760,6 +4784,12 @@ impl VoiceCompanionRuntime {
                                             diagnostics: audio.clone(),
                                         });
                                         last_audio_publish = std::time::Instant::now();
+                                        let barge_gen = playback.generation_id();
+                                        let barge_playback = playback.clone();
+                                        let barge_events = event_tx.clone();
+                                        tokio::spawn(async move {
+                                            voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                        });
                                     } else {
                                         drop(d);
                                         let _ = playback.interrupt().await;
@@ -4851,6 +4881,12 @@ impl VoiceCompanionRuntime {
                                             diagnostics: audio.clone(),
                                         });
                                         last_audio_publish = std::time::Instant::now();
+                                        let barge_gen = playback.generation_id();
+                                        let barge_playback = playback.clone();
+                                        let barge_events = event_tx.clone();
+                                        tokio::spawn(async move {
+                                            voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                        });
                                     } else {
                                         drop(d);
                                         let _ = playback.interrupt().await;

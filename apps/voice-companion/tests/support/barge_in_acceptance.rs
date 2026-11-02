@@ -364,3 +364,39 @@ async fn kws_barge_then_command_reaches_asr() {
         "post-barge command must reach ASR and model"
     );
 }
+
+#[tokio::test]
+async fn kws_barge_in_emits_barge_in_feedback_cue() {
+    let flow = StreamingWorker::with_barge_in(false, false).await;
+    let mut rx = flow.runtime.event_sender().subscribe();
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2), flow.sink.wrote.notified())
+        .await
+        .expect("playback must start");
+
+    let started = tokio::time::Instant::now();
+    for frame in 0..25 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| {
+                let sample_idx = (frame * 320 + i) as f32;
+                0.45 * (sample_idx * std::f32::consts::TAU * 350.0 / 16000.0).sin()
+            })
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(started + Duration::from_millis((frame as u64 + 1) * 20)).await;
+        if flow.sink.frames.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+
+    let hit = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(nomifun_api_types::voice::VoiceCompanionEvent::Feedback { diagnostic }) = rx.recv().await {
+                if diagnostic.kind == nomifun_api_types::voice::VoiceCueKind::BargeIn {
+                    return true;
+                }
+            }
+        }
+    }).await;
+    assert!(hit.is_ok(), "barge-in must emit a BargeIn feedback cue event");
+}

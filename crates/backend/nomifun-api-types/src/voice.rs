@@ -698,6 +698,7 @@ pub struct VoiceSessionError {
 #[serde(rename_all = "snake_case")]
 pub enum VoiceCueKind {
     Wake,
+    BargeIn,
     Recognized,
     FollowUp,
     Sleep,

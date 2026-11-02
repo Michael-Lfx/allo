@@ -31,7 +31,7 @@ pub mod kws;
 pub mod loopback;
 pub mod mic;
 pub mod mixer;
-pub(crate) mod pcm_util;
+pub mod pcm_util;
 pub mod process_watch;
 pub mod recorder;
 pub mod routes;
@@ -40,6 +40,7 @@ pub mod session;
 pub mod speaker;
 pub mod stt;
 pub mod vad;
+pub mod vocal;
 pub mod voice_pipeline;
 pub mod voiceprint;
 
@@ -52,7 +53,11 @@ pub use diarization::{
     SpeakerSpan, create_diarizer, dominant_speaker_key,
 };
 pub use earcon::{
-    ALERT_WAV, DONE_WAV, ERROR_WAV, Earcon, EarconKind, GUIDE_WAV, SLEEP_WAV, WAKE_WAV,
+    ALERT_WAV, BARGE_IN_WAV, DONE_WAV, ERROR_WAV, Earcon, EarconKind, GUIDE_WAV, SLEEP_WAV,
+    WAKE_WAV,
+};
+pub use vocal::{
+    DISMISS_EN_WAV, DISMISS_ZH_WAV, VocalPhrase, WAKE_EN_WAV, WAKE_ZH_WAV,
 };
 pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use events::spawn_meeting_event_bridge;
