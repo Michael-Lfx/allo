@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .map(|raw| serde_json::from_str::<nomifun_api_types::voice::VoiceFeedbackConfig>(&raw))
         .transpose()?;
-    if let Some(config) = feedback {
+    if let Some(ref config) = feedback {
         config.validate()?;
     }
     let markers = voice_companion::voice::parse_startup_markers(
@@ -161,7 +161,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         voice_companion::voice::StartupMode::Default => {
-            VoiceCompanionRuntime::assemble(model_manager.clone(), oobe_manager.clone())
+            let preferred_device = feedback.as_ref().and_then(|f| f.input_device.as_deref());
+            VoiceCompanionRuntime::assemble_with_mic(model_manager.clone(), oobe_manager.clone(), preferred_device)
         }
     };
     if let Some(config) = feedback {

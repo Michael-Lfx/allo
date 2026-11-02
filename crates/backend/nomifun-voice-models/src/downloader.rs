@@ -198,6 +198,36 @@ impl MirrorConfig {
                 "asr/tokens.txt" => {
                     "https://modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=tokens.txt".to_string()
                 }
+                "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=model-steps-3.onnx".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/tokens.txt" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=tokens.txt".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/lexicon.txt" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=lexicon.txt".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/date.fst" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=date.fst".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/number.fst" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=number.fst".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/phone.fst" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=phone.fst".to_string()
+                }
+                "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=model-steps-3.onnx".to_string()
+                }
+                "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=tokens.txt".to_string()
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=espeak-ng-data/en_dict".to_string()
+                }
+                "tts/vocos-22khz-univ.onnx" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/sherpa-onnx-models/repo?Revision=master&FilePath=vocoder-models/vocos-22khz-univ.onnx".to_string()
+                }
                 other => {
                     format!("{}/{}", self.base_url.trim_end_matches('/'), other)
                 }
@@ -218,6 +248,48 @@ impl MirrorConfig {
                 "asr/tokens.txt" => {
                     format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt")
                 }
+                "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/model-steps-3.onnx")
+                }
+                "tts/matcha-icefall-zh-baker/tokens.txt" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/tokens.txt")
+                }
+                "tts/matcha-icefall-zh-baker/lexicon.txt" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/lexicon.txt")
+                }
+                "tts/matcha-icefall-zh-baker/date.fst" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/date.fst")
+                }
+                "tts/matcha-icefall-zh-baker/number.fst" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/number.fst")
+                }
+                "tts/matcha-icefall-zh-baker/phone.fst" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/phone.fst")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/model-steps-3.onnx")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/tokens.txt")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/en_dict")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phontab")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phonindex")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phondata")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/intonations")
+                }
+                "tts/vocos-22khz-univ.onnx" => {
+                    format!("{base}/k2-fsa/sherpa-onnx-models/resolve/main/vocoder-models/vocos-22khz-univ.onnx")
+                }
                 other => {
                     format!("{base}/{other}")
                 }
@@ -229,12 +301,19 @@ impl MirrorConfig {
 
     pub fn supports(&self, rel_path: &str) -> bool {
         let clean_path = rel_path.replace('\\', "/");
+        if self.is_modelscope && self.base_url.contains("modelscope.cn") {
+            // ModelScope upstream hosts ASR, KWS and VAD models directly.
+            // Offline TTS models (Matcha + Vocos) are hosted on HuggingFace / hf-mirror.
+            return !clean_path.starts_with("tts/");
+        }
         if self.id == "hf_mirror"
             || self.id == "hf_official"
             || self.base_url.contains("hf-mirror.com")
             || self.base_url.contains("huggingface.co")
         {
-            return clean_path.starts_with("asr/") || clean_path.starts_with("vad/");
+            return clean_path.starts_with("asr/")
+                || clean_path.starts_with("vad/")
+                || clean_path.starts_with("tts/");
         }
         true
     }

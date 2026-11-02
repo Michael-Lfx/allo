@@ -198,6 +198,18 @@ impl ConversationVoiceDialogueRecorder {
                 .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
             if let Some(row) = row {
                 let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+                let is_voice_conv = extra.get("voice").and_then(|v| v.as_bool()) == Some(true)
+                    || extra.get("is_default_voice").and_then(|v| v.as_bool()) == Some(true)
+                    || extra.get("is_voice_conversation").and_then(|v| v.as_bool()) == Some(true)
+                    || extra.get("voice_task_workspace").is_some()
+                    || extra.get("session_mode").and_then(|v| v.as_str()) == Some("voice")
+                    || extra.get("session_mode").and_then(|v| v.as_str()) == Some("companion")
+                    || row.name == "Voice Call"
+                    || row.name.starts_with("语音");
+                if is_voice_conv {
+                    // 🛡️ Rule 1: Waking inside an existing voice conversation must stay in it!
+                    return Ok((id.clone(), Some(id)));
+                }
                 let is_temp_workspace = extra.get("temp_workspace_id").is_some();
                 let candidate_ws = extra.get("voice_task_workspace").and_then(|v| v.as_str())
                     .or_else(|| {
@@ -330,7 +342,6 @@ impl ConversationVoiceDialogueRecorder {
             }
         }
 
-        if let Some(id) = self.retained_default_call().await? { return Ok((id, source_id)); }
         let memory_owner = match &self.companion_service {Some(companions)=>companions.default_companion_id().await,None=>None};
         let home = self.conversation_service.ensure_default_voice_conversation_with_mode(&self.user_id,memory_owner.as_deref(),session_mode).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
         Ok((home, source_id))

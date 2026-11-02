@@ -21,7 +21,10 @@ pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Optio
         conversation_id
     };
     if view_only == Some(true) {
-        manager.report_voice_view(candidate, sequence);
+        manager.report_voice_view(candidate.clone(), sequence);
+        if candidate.is_none() {
+            manager.set_candidate_conversation(None);
+        }
     } else {
         manager.report_window_context(VoiceWindowContext { conversation_id: candidate, workspace, sequence });
     }

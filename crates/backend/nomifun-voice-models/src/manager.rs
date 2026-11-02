@@ -111,10 +111,12 @@ pub struct ModelManager {
 impl ModelManager {
     /// Initializes a new `ModelManager` targeting the specified directory with defaults.
     pub fn new(models_dir: impl AsRef<Path>) -> Self {
+        let mut manifest = crate::verifier::default_canonical_manifest();
+        manifest.extend(crate::verifier::default_tts_manifest());
         Self::with_config(
             models_dir,
             MirrorConfig::default_mirrors(),
-            crate::verifier::default_canonical_manifest(),
+            manifest,
         )
     }
 
@@ -192,7 +194,10 @@ impl ModelManager {
     /// Returns the current status response of local voice models.
     pub async fn get_status(&self) -> VoiceModelStatusResponse {
         let _operation = self.install_task.lock().await;
-        let (disk_state, files, total_size_bytes) = inspect_model_files(&self.models_dir);
+        let (disk_state, mut files, mut total_size_bytes) = inspect_model_files(&self.models_dir);
+        let (_, tts_files, tts_size) = crate::layout::inspect_tts_files(&self.models_dir);
+        files.extend(tts_files);
+        total_size_bytes = total_size_bytes.saturating_add(tts_size);
         let state = self.refresh_integrity(disk_state).await;
 
         VoiceModelStatusResponse {
@@ -201,6 +206,11 @@ impl ModelManager {
             total_size_bytes,
             files,
         }
+    }
+
+    /// Returns whether the offline TTS models are present and pass SHA256 integrity verification.
+    pub async fn is_tts_ready(&self) -> bool {
+        self.verifier.verify_tts(&self.models_dir).await
     }
 
     fn file_stamps(&self) -> std::io::Result<Vec<(u64, SystemTime)>> {
@@ -373,12 +383,21 @@ impl ModelManager {
         };
 
         // Step 2: Download files with progress tracking
-        let total_files = DOWNLOAD_FILES.len();
+        let all_files: Vec<&str> = if self.verifier.baseline_manifest().contains_key("tts/matcha-icefall-zh-baker/model-steps-3.onnx") {
+            DOWNLOAD_FILES
+                .iter()
+                .chain(crate::verifier::DOWNLOAD_TTS_FILES.iter())
+                .copied()
+                .collect()
+        } else {
+            DOWNLOAD_FILES.to_vec()
+        };
+        let total_files = all_files.len();
         let mut overall_downloaded: u64 = 0;
         let mut total_estimated_bytes: u64 = 0;
 
         // Estimate size if possible or use cumulative progress
-        for (idx, &rel_path) in DOWNLOAD_FILES.iter().enumerate() {
+        for (idx, &rel_path) in all_files.iter().enumerate() {
             let file_index = idx + 1;
             let target_path = self.models_dir.join(rel_path);
 
@@ -501,7 +520,7 @@ impl ModelManager {
         }
 
         // Step 3: SHA256 Verification
-        for (idx, &rel_path) in DOWNLOAD_FILES.iter().enumerate() {
+        for (idx, &rel_path) in all_files.iter().enumerate() {
             self.set_state(ModelInstallState::VerifyingSha256 {
                 current_file: rel_path.to_string(),
                 verified_files: idx,
@@ -543,7 +562,7 @@ impl ModelManager {
         let mut failures: Vec<String> = Vec::new();
 
         let mut targets: Vec<PathBuf> = Vec::new();
-        for &rel in EXPECTED_FILES {
+        for &rel in EXPECTED_FILES.iter().chain(crate::layout::EXPECTED_TTS_FILES.iter()) {
             let path = self.models_dir.join(rel);
             targets.push(path.clone());
             targets.push(PathBuf::from(format!("{}.part", path.display())));
@@ -571,7 +590,7 @@ impl ModelManager {
             }
         }
 
-        for directory in ["kws", "vad", "asr"] {
+        for directory in ["kws", "vad", "asr", "tts"] {
             let _ = tokio::fs::remove_dir(self.models_dir.join(directory)).await;
         }
 

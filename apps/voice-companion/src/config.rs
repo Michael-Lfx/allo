@@ -89,19 +89,21 @@ pub fn default_models_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let app_models = PathBuf::from(&local_app_data)
+                .join("Flowy")
+                .join("models");
+            if app_models.join("asr").exists() {
+                return app_models;
+            }
             let primary = PathBuf::from(&local_app_data)
                 .join("Flowy")
                 .join("Voice-Companion")
                 .join("models");
-            if primary.exists() {
+            if primary.join("asr").exists() {
                 return primary;
             }
-            let legacy = PathBuf::from(&local_app_data)
-                .join("Flowy")
-                .join("AI-Mate")
-                .join("models");
-            if legacy.exists() {
-                return legacy;
+            if app_models.exists() {
+                return app_models;
             }
             return primary;
         }

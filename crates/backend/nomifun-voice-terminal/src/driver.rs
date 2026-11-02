@@ -331,15 +331,23 @@ impl VoiceSessionDriver {
 
     /// A cue completion must not rearm a deadline after speech has already begun.
     pub fn begin_listening_window(&mut self) -> bool {
+        self.begin_listening_window_with_secs(180)
+    }
+
+    /// Sets listening deadline according to requested timeout (0 = never timeout).
+    pub fn begin_listening_window_with_secs(&mut self, timeout_secs: u32) -> bool {
         if self.speech_started {
             return false;
         }
-        let seconds = match self.fsm.state() {
-            AcousticState::Listening => 180,
-            AcousticState::FollowUpListening => 180,
+        match self.fsm.state() {
+            AcousticState::Listening | AcousticState::FollowUpListening => {}
             _ => return false,
         };
-        self.listening_deadline = Some(self.now() + Duration::from_secs(seconds));
+        if timeout_secs == 0 {
+            self.listening_deadline = None;
+        } else {
+            self.listening_deadline = Some(self.now() + Duration::from_secs(u64::from(timeout_secs)));
+        }
         true
     }
 

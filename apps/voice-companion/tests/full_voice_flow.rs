@@ -563,11 +563,11 @@ mod flow {
         assert_eq!(flow.calls.load(Ordering::SeqCst), 0);
         assert!(after.conversation.is_empty());
         let original = flow.runtime.feedback();
-        let mut invalid = original;
+        let mut invalid = original.clone();
         invalid.volume = 101;
         assert!(flow.runtime.update_feedback(invalid.into()).is_err());
         assert_eq!(flow.runtime.feedback(), original);
-        let mut muted = original;
+        let mut muted = original.clone();
         muted.mode = nomifun_api_types::voice::VoiceFeedbackMode::Off;
         flow.runtime.update_feedback(muted.into()).unwrap();
         assert_eq!(

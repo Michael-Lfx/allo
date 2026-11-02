@@ -180,6 +180,7 @@ async fn long_initial_silence_does_not_cut_off_the_first_spoken_sentence() {
                 mode: nomifun_voice_models::VoiceFeedbackMode::Off,
                 volume: 0,
                 speak_replies: false,
+                ..Default::default()
             }
             .into(),
         )

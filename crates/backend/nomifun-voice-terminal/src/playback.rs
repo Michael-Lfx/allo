@@ -299,8 +299,12 @@ impl PlaybackPipeline {
         self.generation_id.load(Ordering::SeqCst)
     }
 
+    pub fn is_speaking(&self) -> bool {
+        self.pending_output.load(Ordering::SeqCst) > 0
+    }
+
     pub fn has_pending_audio(&self) -> bool {
-        self.sink.has_pending_audio()
+        self.pending_output.load(Ordering::SeqCst) > 0 && self.sink.has_pending_audio()
     }
 
     /// Wakes even when synthesis, a channel receive or an output lock is stalled.

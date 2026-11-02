@@ -1,4 +1,11 @@
-import { clampRectToDisplays, isReachableOnDisplays, type GeomRect } from './windowGeometry';
+import {
+  clampRectToDisplays,
+  dockCompanionToEdge,
+  isReachableOnDisplays,
+  undockCompanionFromEdge,
+  type DockSide,
+  type GeomRect,
+} from './windowGeometry';
 
 /** Minimal Tauri monitor shape used for work-area clamping. */
 export interface TauriMonitorLike {
@@ -53,14 +60,51 @@ export function clampSavedCompanionPosition(
  * `force` = always fully inside one display (drag end / restore).
  * Otherwise only correct a window that has left every display.
  */
+let currentDockedSide: DockSide | null = null;
+
+export function getCurrentDockedSide(): DockSide | null {
+  return currentDockedSide;
+}
+
 export async function snapCompanionWindow(opts?: { force?: boolean }): Promise<{ x: number; y: number } | null> {
   const { getCurrentWindow, PhysicalPosition } = await import('@tauri-apps/api/window');
   const win = getCurrentWindow();
   const [pos, size, displays] = await Promise.all([win.outerPosition(), win.outerSize(), loadCompanionWorkAreas()]);
   if (displays.length === 0) return { x: pos.x, y: pos.y };
   const rect: GeomRect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+
+  // Check edge docking threshold
+  const docked = dockCompanionToEdge(rect, displays);
+  if (docked) {
+    currentDockedSide = docked.side;
+    if (docked.x !== pos.x || docked.y !== pos.y) {
+      await win.setPosition(new PhysicalPosition(docked.x, docked.y));
+    }
+    return { x: docked.x, y: docked.y };
+  }
+
+  currentDockedSide = null;
   if (!opts?.force && isReachableOnDisplays(rect, displays)) return { x: pos.x, y: pos.y };
   const next = clampRectToDisplays(rect, displays);
+  if (next.x !== pos.x || next.y !== pos.y) {
+    await win.setPosition(new PhysicalPosition(next.x, next.y));
+  }
+  return next;
+}
+
+/**
+ * Undocks an edge-docked companion window back into full view on its host display.
+ */
+export async function undockCompanionWindow(side?: DockSide): Promise<{ x: number; y: number } | null> {
+  const actualSide = side ?? currentDockedSide;
+  if (!actualSide) return null;
+  const { getCurrentWindow, PhysicalPosition } = await import('@tauri-apps/api/window');
+  const win = getCurrentWindow();
+  const [pos, size, displays] = await Promise.all([win.outerPosition(), win.outerSize(), loadCompanionWorkAreas()]);
+  if (displays.length === 0) return { x: pos.x, y: pos.y };
+  const rect: GeomRect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+  const next = undockCompanionFromEdge(rect, actualSide, displays);
+  currentDockedSide = null;
   if (next.x !== pos.x || next.y !== pos.y) {
     await win.setPosition(new PhysicalPosition(next.x, next.y));
   }

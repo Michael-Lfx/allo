@@ -11,8 +11,11 @@ export default function VoiceAudioStatus({ snapshot, includeError = true, compac
   const audio = snapshot?.audio;
   const recent = Boolean(audio?.last_frame_at_ms && now - audio.last_frame_at_ms < 2000);
   const receiving = snapshot?.connection === 'connected' && audio?.capture_state === 'receiving' && recent;
-  const rms = receiving ? Math.max(0, Math.min(1000, audio?.rms_milli ?? 0)) : 0;
-  const db = rms > 0 ? Math.round(20 * Math.log10(rms / 1000)) : null;
+  const rms = audio?.rms_milli ?? 0;
+  const peak = audio?.peak_milli ?? 0;
+  // Composite level: blend RMS and Peak so low-gain or virtual mics respond dynamically
+  const level = receiving ? Math.max(rms, Math.round(peak * 0.7)) : 0;
+  const db = level > 0 ? Math.max(-60, Math.round(20 * Math.log10(Math.min(1000, level) / 1000))) : null;
   const deadline = snapshot?.phase === 'listening' ? snapshot.listening_deadline_ms : snapshot?.follow_up_deadline_ms;
   const cuePending = (snapshot?.feedback?.kind === 'wake' || snapshot?.feedback?.kind === 'follow_up')
     && (snapshot.feedback.status === 'pending' || snapshot.feedback.status === 'started') && !audio?.speech_detected;

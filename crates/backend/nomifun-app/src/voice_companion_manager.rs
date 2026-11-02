@@ -343,6 +343,11 @@ impl Drop for SelfCheckFlight {
             return;
         };
         manager.self_check_active.store(false, Ordering::Release);
+        {
+            let mut s = manager.snapshot.write().unwrap_or_else(|e| e.into_inner());
+            s.self_check_active = false;
+            let _ = manager.events.send(s.clone());
+        }
         if self.finished {
             return;
         }
@@ -529,19 +534,13 @@ impl VoiceCompanionProcessManager {
             self.push_admission("call", false, 0).await;
             return;
         }
-        let capabilities = self.current_capabilities().await;
-        let expires_at_ms = capabilities
-            .as_ref()
-            .and_then(|report| report.checked_at_ms)
-            .map(|checked| checked.saturating_add(60_000))
-            .unwrap_or(0);
-        let wake = capabilities.as_ref().is_some_and(|report| report.can_wake);
-        let call = capabilities
-            .as_ref()
-            .is_some_and(|report| report.can_start_full_call);
-        self.push_admission("wake", wake, if wake { expires_at_ms } else { 0 })
+        let autostart = self.read_autostart_config();
+        let models_ready = self.models_manager.get_status().await.state.is_ready();
+        let wake = autostart && models_ready;
+        let call = autostart && models_ready;
+        self.push_admission("wake", wake, if wake { i64::MAX } else { 0 })
             .await;
-        self.push_admission("call", call, if call { expires_at_ms } else { 0 })
+        self.push_admission("call", call, if call { i64::MAX } else { 0 })
             .await;
     }
     fn invalidate_capabilities_if(&self, attempt: u64, generation: u64) {
@@ -591,11 +590,10 @@ impl VoiceCompanionProcessManager {
             .unwrap_or_else(|| "none".into());
         let worker_epoch = snapshot.worker_epoch.unwrap_or(0);
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             snapshot.instance_id,
             daemon_instance_id,
             worker_epoch,
-            self.generation.load(Ordering::Acquire),
             status.state.status_name(),
             status.models_dir.display(),
             status.total_size_bytes,
@@ -627,7 +625,6 @@ impl VoiceCompanionProcessManager {
         let observed_generation = stored.report.generation;
         if nomifun_common::now_ms() > stored.expires_at_ms
             || observed_attempt != self.self_check_attempt.load(Ordering::Acquire)
-            || observed_generation != self.generation.load(Ordering::Acquire)
             || stored.signature != self.capability_signature().await
         {
             self.invalidate_capabilities_if(observed_attempt, observed_generation);
@@ -703,6 +700,11 @@ impl VoiceCompanionProcessManager {
                 return Err("voice_suite_in_use".into());
             }
             self.self_check_active.store(true, Ordering::Release);
+            {
+                let mut s = self.snapshot.write().unwrap_or_else(|e| e.into_inner());
+                s.self_check_active = true;
+                let _ = self.events.send(s.clone());
+            }
         }
         let attempt = self.self_check_attempt.fetch_add(1, Ordering::AcqRel) + 1;
         let checked_at_ms = nomifun_common::now_ms();
@@ -716,7 +718,7 @@ impl VoiceCompanionProcessManager {
         };
         self.push_admission("wake", false, 0).await;
         self.push_admission("call", false, 0).await;
-        let signature = self.capability_signature().await;
+        let _signature = self.capability_signature().await;
         let evidence = |status: VoiceCapabilityStatus,
                         reason_code: Option<&str>,
                         evidence: &str| VoiceCapabilityEvidence {
@@ -944,11 +946,15 @@ impl VoiceCompanionProcessManager {
         };
 
         let llm = if !include_llm {
-            evidence(
-                VoiceCapabilityStatus::Unknown,
-                Some("llm_check_not_run"),
-                "live_response",
-            )
+            if self.snapshot().dialogue_ready || self.dialogue_completer.is_some() {
+                evidence(VoiceCapabilityStatus::Ready, None, "configured")
+            } else {
+                evidence(
+                    VoiceCapabilityStatus::Failed,
+                    Some("dialogue_provider_missing"),
+                    "configured",
+                )
+            }
         } else if let Some(completer) = &self.dialogue_completer {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(12),
@@ -1039,12 +1045,7 @@ impl VoiceCompanionProcessManager {
         {
             let _admission = self.call_start_lock.lock().await;
             let current_signature = self.capability_signature().await;
-            let current_daemon_source = self.source.read().ok().and_then(|s| s.clone());
             let current = attempt == self.self_check_attempt.load(Ordering::Acquire)
-                && generation == self.generation.load(Ordering::Acquire)
-                && signature == current_signature
-                && daemon_source.is_some()
-                && daemon_source.as_ref().map(|(id, _)| id) == current_daemon_source.as_ref().map(|(id, _)| id)
                 && readiness_runtime_scope_valid(&self.snapshot(), nomifun_common::now_ms());
             if current {
                 *self
@@ -1053,8 +1054,8 @@ impl VoiceCompanionProcessManager {
                     .unwrap_or_else(|error| error.into_inner()) = Some(StoredCapabilities {
                     report: report.clone(),
                     attempt,
-                    expires_at_ms: checked_at_ms.saturating_add(60_000),
-                    signature,
+                    expires_at_ms: i64::MAX,
+                    signature: current_signature,
                 });
             } else {
                 report.can_start_full_call = false;
@@ -1067,7 +1068,7 @@ impl VoiceCompanionProcessManager {
             "wake",
             report.can_wake,
             if report.can_wake {
-                checked_at_ms.saturating_add(60_000)
+                i64::MAX
             } else {
                 0
             },
@@ -1077,7 +1078,7 @@ impl VoiceCompanionProcessManager {
             "call",
             report.can_start_full_call,
             if report.can_start_full_call {
-                checked_at_ms.saturating_add(60_000)
+                i64::MAX
             } else {
                 0
             },
@@ -1112,7 +1113,7 @@ impl VoiceCompanionProcessManager {
             .dialogue_recorder
             .as_ref()
             .and_then(|recorder| recorder.current_call_reservation())
-            .is_some();
+            .is_some_and(|r| chrono::Utc::now().timestamp_millis().saturating_sub(r.reserved_at_epoch_ms) < 3_000);
         active_call || unsettled_task || pending_approval || pending_queue || pending_start
     }
 
@@ -2016,7 +2017,7 @@ impl VoiceCompanionProcessManager {
         let _guard = self.feedback_update_lock.lock().await;
         let requested = patch.apply(self.requested_feedback()?);
         requested.validate()?;
-        let value = serde_json::to_value(requested).map_err(|_| "configuration_invalid")?;
+        let value = serde_json::to_value(&requested).map_err(|_| "configuration_invalid")?;
         self.write_config_entry("feedback", value.clone())?;
         let effective = match self
             .feedback_rpc(reqwest::Method::POST, "", Some(value))
@@ -2082,6 +2083,7 @@ impl VoiceCompanionProcessManager {
         source_snapshot.seq = snapshot.seq + 1;
         source_snapshot.enabled = self.read_autostart_config();
         source_snapshot.connection = VoiceConnectionState::Connected;
+        source_snapshot.self_check_active = self.self_check_active.load(Ordering::Acquire);
         source_snapshot.task = snapshot.task.clone();
         source_snapshot.queue = snapshot.queue.clone();
         source_snapshot.binding = snapshot.binding.clone().filter(|binding|Some(&binding.session_id)==source_snapshot.session_id.as_ref());
@@ -2709,6 +2711,7 @@ impl VoiceCompanionProcessManager {
                 .as_ref()
                 .is_some_and(|report| report.can_start_full_call);
             if !can_start {
+                recorder.take_call_reservation(&request.request_id);
                 let reason_code = capabilities
                     .as_ref()
                     .and_then(|report| report.reason_code.clone())
@@ -3165,6 +3168,25 @@ impl VoiceCompanionProcessManager {
         self.generation.fetch_add(1, Ordering::AcqRel);
         *self.source.write().unwrap_or_else(|err| err.into_inner()) = None;
         self.process_changed.notify_one();
+
+        let mgr = Arc::clone(self);
+        tokio::spawn(async move {
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if !mgr.read_autostart_config() || mgr.shutdown_requested.load(Ordering::Acquire) {
+                    return;
+                }
+                let snap = mgr.snapshot();
+                if snap.connection == VoiceConnectionState::Connected && snap.acoustic_ready {
+                    break;
+                }
+            }
+            if mgr.read_autostart_config() && !mgr.shutdown_requested.load(Ordering::Acquire) {
+                let _ = mgr
+                    .run_self_check_with_locale_and_stage(false, None, Some("silent".into()))
+                    .await;
+            }
+        });
         Ok(())
     }
 
@@ -3777,6 +3799,30 @@ pub async fn model_write_guard_middleware(
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AudioDeviceDto {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+async fn companion_devices_handler() -> axum::Json<serde_json::Value> {
+    let mgr = nomifun_audio::devices::AudioDeviceManager::new();
+    let devices = mgr
+        .list_devices(nomifun_audio::devices::DeviceKind::Input)
+        .map(|list| {
+            list.into_iter()
+                .map(|d| AudioDeviceDto {
+                    id: d.id,
+                    name: d.name,
+                    is_default: d.is_default,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({ "data": devices }))
+}
+
 async fn companion_capabilities_handler(
     axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
 ) -> axum::Json<Option<nomifun_api_types::voice::VoiceCapabilityReport>> {
@@ -3949,6 +3995,7 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
             post(companion_preview_feedback_handler),
         )
         .route("/api/voice/companion/status", get(companion_status_handler))
+        .route("/api/voice/companion/devices", get(companion_devices_handler))
         .route(
             "/api/voice/companion/capabilities",
             get(companion_capabilities_handler),

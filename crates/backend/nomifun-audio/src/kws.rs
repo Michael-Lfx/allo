@@ -108,12 +108,34 @@ impl KwsEngine {
         model_dir: Option<&std::path::Path>,
     ) -> Option<NeuralKwsSession> {
         let dir = model_dir?;
-        let encoder = dir.join("encoder.int8.onnx");
-        let decoder = dir.join("decoder.int8.onnx");
-        let joiner = dir.join("joiner.int8.onnx");
+        let find_file = |candidates: &[&str]| -> Option<PathBuf> {
+            for c in candidates {
+                let p = dir.join(c);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            None
+        };
+        let encoder = find_file(&[
+            "encoder.int8.onnx",
+            "encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+            "encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+        ])?;
+        let decoder = find_file(&[
+            "decoder.int8.onnx",
+            "decoder.onnx",
+            "decoder-epoch-13-avg-2-chunk-16-left-64.onnx",
+            "decoder-epoch-13-avg-2-chunk-8-left-64.onnx",
+        ])?;
+        let joiner = find_file(&[
+            "joiner.int8.onnx",
+            "joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+            "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+        ])?;
         let tokens = dir.join("tokens.txt");
 
-        if !encoder.is_file() || !decoder.is_file() || !joiner.is_file() || !tokens.is_file() {
+        if !tokens.is_file() {
             return None;
         }
 
@@ -126,16 +148,22 @@ impl KwsEngine {
         spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
 
-        // Configure our fixed vocabulary in memory from the authoritative candidate table
-        // without modifying downloaded files or invalidating their checksums.
-        // Calibrated for wide trigger coverage: score 2.2 (strong beam bias), threshold 0.08 (high recall).
-        spotter_config.keywords_buf = Some(default_keywords_bpe());
-        spotter_config.keywords_score = 2.2;
-        spotter_config.keywords_threshold = 0.08;
+        let tokens_str = std::fs::read_to_string(&tokens).unwrap_or_default();
+        let is_bilingual = tokens_str.contains("ao 76") || tokens_str.contains("ang 75") || tokens_str.contains("AA0");
+
+        if is_bilingual {
+            spotter_config.keywords_buf = Some(build_bilingual_keywords_buf(&config.keywords));
+            spotter_config.keywords_score = 2.0;
+            spotter_config.keywords_threshold = 0.08;
+        } else {
+            spotter_config.keywords_buf = Some(default_keywords_bpe());
+            spotter_config.keywords_score = 2.2;
+            spotter_config.keywords_threshold = 0.08;
+        }
 
         let spotter = sherpa_onnx::KeywordSpotter::create(&spotter_config)?;
         let stream = spotter.create_stream();
-        tracing::info!(dir = %dir.display(), "Sherpa-ONNX KeywordSpotter successfully loaded and initialized");
+        tracing::info!(dir = %dir.display(), is_bilingual, "Sherpa-ONNX KeywordSpotter successfully loaded and initialized");
         Some(NeuralKwsSession { spotter, stream })
     }
 
@@ -153,13 +181,18 @@ impl KwsEngine {
 
     /// Resolves the directory containing neural KWS weights on disk.
     pub fn resolve_neural_kws_dir(&self) -> Option<PathBuf> {
+        let has_encoder = |base: &std::path::Path| -> bool {
+            base.join("encoder.int8.onnx").is_file()
+                || base.join("encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx").is_file()
+                || base.join("encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx").is_file()
+        };
         let mut candidates = Vec::new();
         if let Some(ref dir) = self.config.model_dir {
             // An explicitly selected suite must not silently borrow another installation.
-            if dir.join("kws").join("encoder.int8.onnx").is_file() {
+            if has_encoder(&dir.join("kws")) {
                 return Some(dir.join("kws"));
             }
-            return dir.join("encoder.int8.onnx").is_file().then(|| dir.clone());
+            return has_encoder(dir).then(|| dir.clone());
         }
         if let Some(registered) = crate::stt::active_model_dir() {
             candidates.push(registered);
@@ -175,10 +208,10 @@ impl KwsEngine {
         }
 
         for c in candidates {
-            if c.join("kws").join("encoder.int8.onnx").is_file() {
+            if has_encoder(&c.join("kws")) {
                 return Some(c.join("kws"));
             }
-            if c.join("encoder.int8.onnx").is_file() {
+            if has_encoder(&c) {
                 return Some(c);
             }
         }
@@ -490,6 +523,272 @@ pub static WAKE_CANDIDATES: &[WakeCandidateDef] = &[
     WakeCandidateDef { phrase: "佛 洛", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
     WakeCandidateDef { phrase: "佛洛", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
 ];
+
+/// Maps common Chinese characters into standard pinyin initial + final tokens
+/// for Sherpa-ONNX bilingual Zipformer KWS model.
+pub fn convert_chinese_to_kws_pinyin(text: &str) -> Option<String> {
+    convert_chinese_to_kws_pinyin_mode(text, false, false)
+}
+
+/// Maps Chinese characters into toned initial + final tokens.
+pub fn convert_chinese_to_kws_pinyin_toned(text: &str) -> Option<String> {
+    convert_chinese_to_kws_pinyin_mode(text, true, false)
+}
+
+/// Maps Chinese characters into tone-sandhi tokens (e.g. 你好 nǐ hǎo -> ní hǎo).
+pub fn convert_chinese_to_kws_pinyin_sandhi(text: &str) -> Option<String> {
+    convert_chinese_to_kws_pinyin_mode(text, true, true)
+}
+
+/// Decomposes raw pinyin syllable (e.g. "xiang1", "he2", "dan4") into Zipformer initial + final tokens.
+pub fn pinyin_syllable_to_zipformer_tokens(raw_syllable: &str, toned: bool, force_second_tone: bool) -> Option<String> {
+    let raw = raw_syllable.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (letters, raw_tone) = if let Some(last) = raw.chars().last() {
+        if last.is_ascii_digit() {
+            let tone_num = last.to_digit(10).unwrap_or(5);
+            (&raw[..raw.len() - 1], tone_num)
+        } else {
+            (raw, 5)
+        }
+    } else {
+        return None;
+    };
+
+    let tone = if force_second_tone && raw_tone == 3 {
+        2
+    } else {
+        raw_tone
+    };
+
+    let initials = [
+        "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x",
+        "r", "z", "c", "s", "y", "w",
+    ];
+    let mut initial = "";
+    let mut final_part = letters;
+    for &init in &initials {
+        if letters.starts_with(init) {
+            initial = init;
+            final_part = &letters[init.len()..];
+            break;
+        }
+    }
+
+    let final_str = if toned && tone >= 1 && tone <= 4 {
+        let mut final_chars: Vec<char> = final_part.chars().collect();
+        let tone_map: std::collections::HashMap<char, [char; 4]> = [
+            ('a', ['ā', 'á', 'ǎ', 'à']),
+            ('o', ['ō', 'ó', 'ǒ', 'ò']),
+            ('e', ['ē', 'é', 'ě', 'è']),
+            ('i', ['ī', 'í', 'ǐ', 'ì']),
+            ('u', ['ū', 'ú', 'ǔ', 'ù']),
+            ('v', ['ǖ', 'ǘ', 'ǚ', 'ǜ']),
+            ('ü', ['ǖ', 'ǘ', 'ǚ', 'ǜ']),
+        ]
+        .into_iter()
+        .collect();
+
+        // Standard Chinese pinyin tone placement rule: a > o > e, then last of i/u/v/ü
+        let tone_idx = if let Some(pos) = final_chars.iter().position(|&c| c == 'a') {
+            Some(pos)
+        } else if let Some(pos) = final_chars.iter().position(|&c| c == 'o') {
+            Some(pos)
+        } else if let Some(pos) = final_chars.iter().position(|&c| c == 'e') {
+            Some(pos)
+        } else {
+            final_chars.iter().rposition(|&c| c == 'i' || c == 'u' || c == 'v' || c == 'ü')
+        };
+
+        if let Some(idx) = tone_idx {
+            let c = final_chars[idx];
+            if let Some(toned_arr) = tone_map.get(&c) {
+                final_chars[idx] = toned_arr[(tone - 1) as usize];
+            }
+        }
+        final_chars.into_iter().collect::<String>().replace('v', "ü")
+    } else {
+        final_part.replace('v', "ü")
+    };
+
+    if initial.is_empty() {
+        if final_str.is_empty() {
+            None
+        } else {
+            Some(final_str)
+        }
+    } else if final_str.is_empty() {
+        Some(initial.to_string())
+    } else {
+        Some(format!("{initial} {final_str}"))
+    }
+}
+
+pub fn convert_chinese_to_kws_pinyin_mode(text: &str, toned: bool, sandhi: bool) -> Option<String> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_'))
+        .collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        let raw_py = crate::cjk_pinyin_table::lookup_cjk_pinyin(ch)?;
+        let is_sandhi = sandhi
+            && raw_py.ends_with('3')
+            && chars
+                .get(i + 1)
+                .and_then(|&next| crate::cjk_pinyin_table::lookup_cjk_pinyin(next))
+                .is_some_and(|next_py| next_py.ends_with('3'));
+        let decomposed = pinyin_syllable_to_zipformer_tokens(raw_py, toned, is_sandhi)?;
+        tokens.push(decomposed);
+    }
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" "))
+    }
+}
+
+/// Maps common English wake words into CMUdict phonemes for bilingual Zipformer KWS.
+pub fn convert_english_to_kws_phonemes(text: &str) -> Option<String> {
+    let clean = text.trim().to_ascii_lowercase();
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    let mut phones = Vec::new();
+    for word in words {
+        let p = match word {
+            "hi" => "HH AY1",
+            "hey" => "HH EY1",
+            "hello" => "HH AH0 L OW1",
+            "flowy" => "F L OW1 IY0",
+            "ok" | "okay" => "OW1 K EY1",
+            "alexa" => "AH0 L EH1 K S AH0",
+            "computer" => "K AH0 M P Y UW1 T ER0",
+            "jarvis" => "JH AA1 R V IH0 S",
+            _ => return None,
+        };
+        phones.push(p);
+    }
+    if phones.is_empty() {
+        None
+    } else {
+        Some(phones.join(" "))
+    }
+}
+
+/// Converts any bilingual Chinese/English mixed wake phrase into standard Sherpa-ONNX Zipformer tokens.
+pub fn convert_bilingual_phrase_to_tokens(text: &str) -> Option<String> {
+    convert_bilingual_phrase_to_tokens_mode(text, true, true)
+}
+
+fn convert_bilingual_phrase_to_tokens_mode(text: &str, toned: bool, sandhi: bool) -> Option<String> {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    let mut result_tokens = Vec::new();
+    let mut current_en_word = String::new();
+
+    let flush_en = |en: &mut String, out: &mut Vec<String>| -> bool {
+        if en.is_empty() {
+            return true;
+        }
+        if let Some(phones) = convert_english_to_kws_phonemes(en) {
+            out.push(phones);
+            en.clear();
+            true
+        } else {
+            false
+        }
+    };
+
+    let chars: Vec<char> = clean.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch.is_whitespace() || matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_') {
+            if !flush_en(&mut current_en_word, &mut result_tokens) {
+                return None;
+            }
+            continue;
+        }
+        if ch.is_ascii_alphabetic() {
+            current_en_word.push(ch);
+        } else {
+            if !flush_en(&mut current_en_word, &mut result_tokens) {
+                return None;
+            }
+            let sub: String = chars[i..].iter().collect();
+            if let Some(pinyin) = convert_chinese_to_kws_pinyin_mode(&sub[..ch.len_utf8()], toned, sandhi) {
+                result_tokens.push(pinyin);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    if !flush_en(&mut current_en_word, &mut result_tokens) {
+        return None;
+    }
+
+    if result_tokens.is_empty() {
+        None
+    } else {
+        Some(result_tokens.join(" "))
+    }
+}
+
+/// Builds dynamic bilingual keywords rules buffer for Sherpa-ONNX Zipformer KWS.
+pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
+    let mut lines = Vec::new();
+
+    // Universal baseline wake phrases: strictly multi-syllable phrases (>= 3 syllables)
+    // to prevent false-wake storms caused by 2-syllable words like bare "你好" or "Flowy".
+    lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
+    lines.push("HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY".to_string());
+    lines.push("n ǐ h ǎo F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
+    lines.push("n í h ǎo F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
+    lines.push("n i h ao F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
+
+    let mut seen = std::collections::HashSet::new();
+
+    for kw in keywords {
+        let clean = kw.trim();
+        if clean.is_empty() {
+            continue;
+        }
+        let lower = clean.to_ascii_lowercase();
+        if lower == "hey flowy" || lower == "flowy" {
+            continue;
+        }
+        let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
+
+        let mut variants = Vec::new();
+        // 1. Toned variant with tone sandhi (most common in natural speech)
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens_mode(clean, true, true) {
+            variants.push(tokens);
+        }
+        // 2. Standard toned variant
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens_mode(clean, true, false) {
+            variants.push(tokens);
+        }
+        // 3. Untoned fallback variant
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens_mode(clean, false, false) {
+            variants.push(tokens);
+        }
+
+        if variants.is_empty() {
+            tracing::warn!(keyword = %clean, "Custom wake phrase contains unsupported characters; skipping KWS rule generation");
+        } else {
+            for tokens in variants {
+                let rule = format!("{tokens} :2.0 #0.15 @{label}");
+                if seen.insert(rule.clone()) {
+                    lines.push(rule);
+                }
+            }
+        }
+    }
+
+    lines.join("\n") + "\n"
+}
 
 // Verified against the matching GigaSpeech bpe.model, SHA256
 // c8a2a0129c4ab8e463164c142f82d25649661b122c8cd0b7aab5c9e80b90ad24.

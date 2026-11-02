@@ -217,6 +217,7 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
       <MeetingOpenListener />
       <CompanionWindowsSyncMount />
       <TrayLabelsMount />
+      <GlobalVoiceWakeListener />
       {React.cloneElement(layout)}
     </>
   );
@@ -307,6 +308,57 @@ const MeetingOpenListener: React.FC = () => {
       unlisten?.();
     };
   }, [navigate]);
+  return null;
+};
+
+// Global voice companion wake listener: when wake word is detected from any idle page
+// (e.g. Home / Guid / New Conversation), navigates seamlessly to the bound active voice session.
+const GlobalVoiceWakeListener: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.location.hash.startsWith('#/companion')) return;
+    if (location.pathname.startsWith('/settings') || location.pathname.startsWith('/models')) return;
+
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+
+    void import('@common/adapter/voiceCompanion').then(({ subscribeVoiceSession }) => {
+      if (disposed) return;
+      void subscribeVoiceSession((snapshot) => {
+        if (disposed) return;
+        if (snapshot.self_check_active) return;
+
+        const isVoiceActive = Boolean(
+          snapshot.enabled &&
+          snapshot.connection === 'connected' &&
+          snapshot.phase &&
+          snapshot.phase !== 'idle' &&
+          snapshot.phase !== 'error'
+        );
+
+        if (isVoiceActive) {
+          const targetConvId = snapshot.binding?.conversation_id;
+          if (targetConvId) {
+            const isTargetActive = location.pathname === `/conversation/${encodeURIComponent(targetConvId)}`;
+            if (!isTargetActive) {
+              void navigate(`/conversation/${encodeURIComponent(targetConvId)}`);
+            }
+          }
+        }
+      }).then((unsub) => {
+        if (disposed) unsub();
+        else cleanup = unsub;
+      });
+    });
+
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }, [navigate, location.pathname]);
+
   return null;
 };
 

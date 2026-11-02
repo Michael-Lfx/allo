@@ -20,6 +20,7 @@ export interface VoiceSnapshot {
   task?: VoiceTaskSnapshot | null;
   task_ready?: boolean;
   task_error_code?: string | null;
+  self_check_active?: boolean;
   instance_id: string;
   seq: number;
   session_id: string | null;
@@ -122,9 +123,43 @@ export function cancelVoiceTask(instanceId:string,task:VoiceTaskSnapshot):Promis
     instance_id:instanceId,command_id:task.command_id,conversation_id:task.conversation_id,message_id:task.message_id,
   });
 }
-export interface VoiceFeedbackConfig { mode: 'light' | 'essential' | 'off'; volume: number; speak_replies: boolean }
+export interface VoiceFeedbackConfig {
+  mode: 'light' | 'essential' | 'off';
+  volume: number;
+  speak_replies: boolean;
+  wake_enabled?: boolean;
+  wake_words?: string[];
+  wake_reply?: string;
+  interject_keyword?: string;
+  dismiss_phrases?: string[];
+  dismiss_reply?: string;
+  tts_backend?: string;
+  tts_speed?: number;
+  idle_timeout_secs?: number;
+  input_device?: string;
+}
+export interface AudioDeviceInfo {
+  id: string;
+  name: string;
+  is_default: boolean;
+}
 export interface VoiceFeedbackSettings { requested: VoiceFeedbackConfig; effective: VoiceFeedbackConfig | null }
 export type VoicePreviewKind = 'wake' | 'recognized' | 'processing' | 'follow_up' | 'sleep' | 'error';
+
+export async function getVoiceInputDevices(): Promise<AudioDeviceInfo[]> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/voice/companion/devices`, {
+      headers: buildBackendAuthHeaders('GET'),
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const json = await res.json() as { data?: AudioDeviceInfo[] };
+    return json.data ?? [];
+  } catch {
+    return [];
+  }
+}
 
 async function feedbackRequest(suffix: string, body?: unknown) {
   const method = body === undefined ? 'GET' : 'POST';

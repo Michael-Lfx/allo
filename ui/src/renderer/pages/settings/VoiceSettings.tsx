@@ -7,16 +7,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Switch } from '@arco-design/web-react';
-import { CheckOne, CloseOne, Info } from '@icon-park/react';
+import { Button, Dropdown, Menu, Message, Switch } from '@arco-design/web-react';
+import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
-import { requestDictationIntent } from '@/renderer/pages/guid/dictationIntent';
-import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
+import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey, voiceErrorTranslationKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
-import VoiceDialogueStatusSection from './VoiceDialogueStatus';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
   SettingsList,
@@ -274,7 +272,6 @@ const VoiceSettings: React.FC = () => {
   const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceSnapshot | null>(null);
   const [voiceSyncError, setVoiceSyncError] = useState<string | null>(null);
   const [voiceStatusRefresh, setVoiceStatusRefresh] = useState(0);
-  const [waking, setWaking] = useState(false);
   const [isTogglingCompanion, setIsTogglingCompanion] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -594,6 +591,7 @@ const VoiceSettings: React.FC = () => {
   }, []);
 
   const handleSelfCheck = useCallback(async () => {
+    if (checkingCapabilities || voiceSnapshot?.self_check_active) return;
     setCheckingCapabilities(true);
     try {
       // Explicit user action: may make one short, tool-free request through the
@@ -605,20 +603,27 @@ const VoiceSettings: React.FC = () => {
       } else {
         Message.warning(t('voice.capabilities.notReady'));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.code === 'self_check_in_progress') {
+        // Another check is already running in background; silently re-fetch capabilities after delay
+        setTimeout(() => { void fetchCapabilities(); }, 1500);
+        return;
+      }
       Message.error(e instanceof Error ? e.message : t('voice.capabilities.checkFailed'));
     } finally {
       setCheckingCapabilities(false);
     }
-  }, [t]);
+  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, fetchCapabilities]);
 
-  const handleUseTextReply = useCallback(() => {
-    const intent = requestDictationIntent('/');
-    navigate('/', { state: { dictationIntentId: intent.id } });
-  }, [navigate]);
   useEffect(() => {
     if (modelStatus === 'Ready') {
       void fetchCapabilities();
+      // Auto-trigger background silent self-check on settings mount if not yet cached
+      if (!capabilities && !voiceSnapshot?.self_check_active) {
+        void runVoiceSelfCheck(false, undefined, 'silent')
+          .then((report) => setCapabilities(report))
+          .catch(() => {});
+      }
     }
   }, [modelStatus, fetchCapabilities]);
 
@@ -836,6 +841,42 @@ const VoiceSettings: React.FC = () => {
     : serviceAvailability === 'syncFailed' && voiceSyncError === 'voice_status_api_missing'
       ? t('voice.service.apiMissingDesc')
       : t(`voice.service.${serviceAvailability}Desc`);
+
+  const resolveStageStatus = useCallback((name: 'capture' | 'kws' | 'vad' | 'asr' | 'tts' | 'playback'): 'ready' | 'failed' | 'unknown' => {
+    if (capabilities?.[name]?.status) {
+      const s = capabilities[name].status;
+      return s === 'ready' || s === 'failed' ? s : 'unknown';
+    }
+    if (!voiceSnapshot || voiceSnapshot.connection !== 'connected') {
+      return 'unknown';
+    }
+    const audio = voiceSnapshot.audio;
+    switch (name) {
+      case 'capture':
+        return audio?.capture_state === 'receiving' && (audio?.frames_received ?? 0) > 0
+          ? 'ready'
+          : audio?.capture_state === 'closed' || audio?.capture_state === 'no_pcm'
+            ? 'failed'
+            : 'unknown';
+      case 'kws':
+        return audio?.kws_ready ? 'ready' : 'unknown';
+      case 'vad':
+        return audio?.vad_ready ? 'ready' : 'unknown';
+      case 'asr':
+        return audio?.asr_ready ? 'ready' : 'unknown';
+      case 'tts':
+        return voiceSnapshot.tts && !voiceSnapshot.tts.fallback_reason ? 'ready' : 'unknown';
+      case 'playback':
+        return voiceSnapshot.playback_ready ? 'ready' : 'unknown';
+      default:
+        return 'unknown';
+    }
+  }, [capabilities, voiceSnapshot]);
+
+  const allStagesReady = (['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).every(
+    (name) => resolveStageStatus(name) === 'ready'
+  );
+
   let rowLabel = t('voice.phases.notInstalled');
   let rowDescription: React.ReactNode = t('voice.phases.notInstalledDesc');
 
@@ -855,8 +896,19 @@ const VoiceSettings: React.FC = () => {
     rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
     rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
   } else if (modelStatus === 'Ready') {
-    rowLabel = t(`voice.service.${serviceAvailability}`);
-    rowDescription = serviceDescription;
+    const isReady = capabilities ? capabilities.can_start_full_call : allStagesReady;
+    if (isReady) {
+      rowLabel = t('voice.capabilities.fullReadyTitle');
+      rowDescription = t('voice.capabilities.fullReady');
+    } else if (!capabilities && !allStagesReady) {
+      rowLabel = t('voice.capabilities.pendingTitle');
+      rowDescription = t('voice.capabilities.notChecked');
+    } else {
+      rowLabel = t('voice.capabilities.notReadyTitle');
+      rowDescription = capabilities?.degraded_text_only
+        ? t('voice.capabilities.textOnly')
+        : t('voice.capabilities.notReady');
+    }
   } else if (modelStatus === 'Failed') {
     rowLabel = t('voice.status.failed');
     rowDescription = (
@@ -892,19 +944,36 @@ const VoiceSettings: React.FC = () => {
                   label={
                     <div className='flex items-center gap-8px'>
                       {modelStatus === 'Ready' && (
-                        <CheckOne
-                          theme='filled'
-                          size='16'
-                          className='text-primary-6'
-                          style={{
-                            transition: reducedMotion
-                              ? 'none'
-                              : 'transform 240ms cubic-bezier(0.16, 1, 0.3, 1)',
-                            transform: reducedMotion
-                              ? 'scale(1)'
-                              : (readyIconScaled ? 'scale(1)' : 'scale(0.9)'),
-                          }}
-                        />
+                        (capabilities ? capabilities.can_start_full_call : allStagesReady) ? (
+                          <CheckOne
+                            theme='filled'
+                            size='16'
+                            fill='currentColor'
+                            className='text-success-6'
+                            style={{
+                              transition: reducedMotion
+                                ? 'none'
+                                : 'transform 240ms cubic-bezier(0.16, 1, 0.3, 1)',
+                              transform: reducedMotion
+                                ? 'scale(1)'
+                                : (readyIconScaled ? 'scale(1)' : 'scale(0.9)'),
+                            }}
+                          />
+                        ) : capabilities ? (
+                          <CloseOne
+                            theme='filled'
+                            size='16'
+                            fill='currentColor'
+                            className='text-danger-6'
+                          />
+                        ) : (
+                          <Attention
+                            theme='filled'
+                            size='16'
+                            fill='currentColor'
+                            className='text-warning-6'
+                          />
+                        )
                       )}
                       {modelStatus === 'Failed' && (
                         <CloseOne
@@ -960,6 +1029,15 @@ const VoiceSettings: React.FC = () => {
 
                       {modelStatus === 'Ready' && (
                         <div className='flex items-center gap-12px'>
+                          <Button
+                            type='primary'
+                            size='small'
+                            loading={checkingCapabilities || Boolean(voiceSnapshot?.self_check_active)}
+                            disabled={checkingCapabilities || Boolean(voiceSnapshot?.self_check_active)}
+                            onClick={handleSelfCheck}
+                          >
+                            {t('voice.capabilities.run')}
+                          </Button>
                           <Switch
                             aria-label={t('voice.service.enableIntent')}
                             checked={voiceEnabled}
@@ -967,25 +1045,29 @@ const VoiceSettings: React.FC = () => {
                             loading={isTogglingCompanion}
                             onChange={handleToggleVoiceEnabled}
                           />
-                          <Button
-                            type='text'
-                            size='small'
-                            className='text-t-secondary'
-                            onClick={() => handleInstall(true)}
+                          <Dropdown
+                            droplist={
+                              <Menu>
+                                <Menu.Item key='repair' onClick={() => handleInstall(true)}>
+                                  {t('voice.actions.repair')}
+                                </Menu.Item>
+                                <Menu.Item key='release' onClick={handleReleaseClick} className='text-danger-6'>
+                                  {isConfirmingRelease
+                                    ? t('voice.actions.confirmRelease')
+                                    : t('voice.actions.releaseSpace')}
+                                </Menu.Item>
+                              </Menu>
+                            }
+                            position='br'
                           >
-                            {t('voice.actions.repair')}
-                          </Button>
-                          <Button
-                            type={isConfirmingRelease ? 'secondary' : 'text'}
-                            status={isConfirmingRelease ? 'danger' : 'default'}
-                            size='small'
-                            className={isConfirmingRelease ? 'tabular-nums text-danger-6' : 'text-t-secondary'}
-                            onClick={handleReleaseClick}
-                          >
-                            {isConfirmingRelease
-                              ? t('voice.actions.confirmRelease')
-                              : t('voice.actions.releaseSpace')}
-                          </Button>
+                            <Button
+                              type='secondary'
+                              size='small'
+                              icon={<MoreOne />}
+                              className='text-t-secondary'
+                              aria-label={t('voice.actions.more')}
+                            />
+                          </Dropdown>
                         </div>
                       )}
 
@@ -1035,79 +1117,38 @@ const VoiceSettings: React.FC = () => {
                 />
               </div>
             </div>
+
+            {modelStatus === 'Ready' && (
+              <div className='flex flex-wrap items-center gap-2 px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px' role='status'>
+                {(['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).map((name, idx) => {
+                  const status = resolveStageStatus(name);
+                  const isReady = status === 'ready';
+                  const isFailed = status === 'failed';
+                  const statusColor = isReady
+                    ? 'text-success-6 border-success-3 bg-success-1'
+                    : isFailed
+                      ? 'text-danger-6 border-danger-3 bg-danger-1'
+                      : 'text-t-tertiary border-[var(--border-base)] bg-fill-2';
+                  const icon = isReady ? '●' : isFailed ? '✕' : '○';
+
+                  return (
+                    <React.Fragment key={name}>
+                      {idx > 0 && <span className='text-t-tertiary font-mono select-none'>→</span>}
+                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
+                        <span>{icon}</span>
+                        <span>{t(`voice.capabilities.item.${name}`)}</span>
+                        <span>{t(`voice.capabilities.status.${status}`)}</span>
+                      </span>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            )}
           </SettingsList>
         </SettingsSection>
 
-        {modelStatus === 'Ready' && (
-          <SettingsSection
-            title={t('voice.capabilities.title')}
-            description={t('voice.capabilities.description')}
-          >
-            <SettingsList>
-              <SettingsRow
-                label={t('voice.capabilities.title')}
-                description={
-                  capabilities
-                    ? (capabilities.can_start_full_call
-                        ? t('voice.capabilities.fullReady')
-                        : t('voice.capabilities.notReady'))
-                    : t('voice.capabilities.notChecked')
-                }
-                controlLayout='actions'
-                control={
-                  <Button
-                    type='primary'
-                    size='small'
-                    loading={checkingCapabilities}
-                    onClick={handleSelfCheck}
-                  >
-                    {t('voice.capabilities.run')}
-                  </Button>
-                }
-              />
-            </SettingsList>
-            {capabilities && (
-              <div className='flex flex-col gap-2 px-4 pb-3 text-12px' role='status'>
-                {(['capture', 'kws', 'vad', 'asr', 'llm', 'tts', 'playback'] as const).map((name) => {
-                  const item = capabilities[name];
-                  return (
-                    <div key={name} className='flex items-start justify-between gap-3'>
-                      <span className='text-t-secondary'>{t(`voice.capabilities.item.${name}`)}</span>
-                      <span
-                        className={
-                          item.status === 'ready'
-                            ? 'text-success-6'
-                            : item.status === 'failed'
-                              ? 'text-danger-6'
-                              : 'text-t-tertiary'
-                        }
-                      >
-                        {t(`voice.capabilities.status.${item.status}`)}
-                        {item.reason_code && item.status !== 'ready'
-                          ? ` · ${t(`voice.capabilities.reason.${item.reason_code}`, { defaultValue: item.reason_code })}`
-                          : ''}
-                      </span>
-                    </div>
-                  );
-                })}
-                {!capabilities.can_start_full_call && (
-                  <div className='mt-1 flex flex-col gap-2 border-t border-t-solid border-[var(--border-base)] pt-2'>
-                    <div role='alert' className='text-danger-6'>
-                      {capabilities.degraded_text_only
-                        ? t('voice.capabilities.textOnly')
-                        : t('voice.capabilities.fixHint')}
-                    </div>
-                    <Button size='small' onClick={handleUseTextReply}>
-                      {t('voice.capabilities.useTextReply')}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-          </SettingsSection>
-        )}
-
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
+
         <p className='m-0 text-12px text-t-secondary' role='status'>
           {voiceSnapshot?.tts ? t('voice.presentation.ttsActual', {
             provider: voiceSnapshot.tts.provider,
@@ -1132,17 +1173,7 @@ const VoiceSettings: React.FC = () => {
               </summary>
 
               <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
-                <VoiceDialogueStatusSection />
                 <SettingsList>
-                  <SettingsRow
-                    label={t('voice.session.tryWake')}
-                    description={serviceAvailability === 'ready' ? t('voice.session.tryWakeDescription') : serviceDescription}
-                    controlLayout='actions'
-                    control={<Button size='small' loading={waking} disabled={serviceAvailability !== 'ready' || asrRunning} onClick={() => {
-                      setWaking(true);
-                      void wakeVoiceSession().catch(() => Message.error(t('voice.session.unavailable'))).finally(() => setWaking(false));
-                    }}>{t('voice.session.tryWake')}</Button>}
-                  />
                   <div className='min-h-68px flex items-center'>
                     <div className='w-full'>
                       <SettingsRow

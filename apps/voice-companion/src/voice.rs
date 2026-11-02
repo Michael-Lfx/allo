@@ -119,6 +119,102 @@ fn task_status_for_prompt(
     }).to_string())
 }
 
+/// Pure-function device ownership gate determining whether the physical microphone stream
+/// must be active based on valid consumers (active calls, pending tool confirmations, self-checks, and wake standby).
+pub fn should_hold_microphone(
+    voice_enabled: bool,
+    wake_enabled: bool,
+    active_call: bool,
+    has_pending_confirmation: bool,
+    self_check_active: bool,
+    kws_ready: bool,
+) -> bool {
+    if !voice_enabled {
+        return self_check_active;
+    }
+    if active_call || has_pending_confirmation || self_check_active {
+        return true;
+    }
+    wake_enabled && kws_ready
+}
+
+fn effective_idle_timeout(events: &VoiceEventHub) -> u32 {
+    events.feedback().idle_timeout_secs
+}
+
+fn strip_custom_wake_word(input: &str, custom_kw: &str) -> Option<String> {
+    let is_punct_or_ws = |c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '，' | '。'
+                    | '！'
+                    | '？'
+                    | ','
+                    | '.'
+                    | '!'
+                    | '?'
+                    | ':'
+                    | '：'
+                    | '-'
+                    | '_'
+                    | '；'
+                    | ';'
+                    | '、'
+                    | '—'
+                    | '…'
+            )
+    };
+    let kw_chars: Vec<char> = custom_kw.chars().filter(|c| !is_punct_or_ws(*c)).map(|c| c.to_ascii_lowercase()).collect();
+    if kw_chars.is_empty() {
+        return None;
+    }
+    let input_filtered: Vec<(usize, char)> = input.char_indices().filter(|(_, c)| !is_punct_or_ws(*c)).collect();
+    if input_filtered.is_empty() {
+        return None;
+    }
+
+    let kw_len = kw_chars.len();
+    let n = input_filtered.len();
+    if n < kw_len {
+        return None;
+    }
+
+    // Sliding window search across the whole input string
+    // Allows leading filler ("喂", "好", "哎", "请问"), repetitions ("香芋片香芋片")
+    // and 1-character homophone substitution tolerance for words >= 3 chars.
+    for start in 0..=(n - kw_len) {
+        let window = &input_filtered[start..start + kw_len];
+        let mut diff_count = 0;
+        for (i, &(_, ch)) in window.iter().enumerate() {
+            if ch.to_ascii_lowercase() != kw_chars[i] {
+                diff_count += 1;
+            }
+        }
+
+        let matched = if diff_count == 0 {
+            true
+        } else if diff_count == 1 && kw_len >= 3 {
+            // For 3+ character words, allow 1 substituted homophone character
+            true
+        } else {
+            false
+        };
+
+        if matched {
+            let match_end_byte_idx = window.last().map(|(idx, ch)| idx + ch.len_utf8()).unwrap_or(input.len());
+            let remainder = input
+                .get(match_end_byte_idx..)
+                .unwrap_or("")
+                .trim_start_matches(is_punct_or_ws)
+                .to_string();
+            return Some(remainder);
+        }
+    }
+
+    None
+}
+
 /// Pre-roll sample buffer (500ms @ 16kHz) preserved during active playback
 /// to ensure the leading onset of user speech is not clipped upon barge-in interruption.
 const BARGE_IN_PREROLL_SAMPLES: usize = 8_000;
@@ -1209,9 +1305,11 @@ pub struct VoiceCompanionRuntime {
     active_turn: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     input_generation: Arc<AtomicU64>,
     pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
+    kws_reload_needed: Arc<AtomicBool>,
+    mic_reload_needed: Arc<AtomicBool>,
     /// Active RAII guard holding the cpal input stream open. Dropping this closes the mic.
     #[allow(dead_code)]
-    mic_source: Option<Arc<nomifun_audio::MicSource>>,
+    mic_source: Arc<std::sync::Mutex<Option<Arc<nomifun_audio::MicSource>>>>,
     #[cfg(any(test, feature = "voice-skeleton"))]
     replay_capture: bool,
     #[cfg(any(test, feature = "voice-skeleton"))]
@@ -1275,6 +1373,7 @@ impl Drop for SelfCheckGuard {
         *self.id.lock().unwrap_or_else(|error| error.into_inner()) = None;
     }
 }
+#[allow(dead_code)]
 fn admission_valid_for(until: &Arc<AtomicU64>) -> bool {
     let now = nomifun_common::now_ms().max(0) as u64;
     now < until.load(Ordering::Acquire)
@@ -1289,8 +1388,17 @@ impl VoiceCompanionRuntime {
     }
     /// Assembles the complete voice pipeline with capture, playback, session driver, and router.
     pub fn assemble(model_manager: Arc<ModelManager>, oobe_manager: Arc<OobeManager>) -> Self {
+        Self::assemble_with_mic(model_manager, oobe_manager, None)
+    }
+
+    /// Assembles the complete voice pipeline with a preferred or default microphone.
+    pub fn assemble_with_mic(
+        model_manager: Arc<ModelManager>,
+        oobe_manager: Arc<OobeManager>,
+        preferred_device: Option<&str>,
+    ) -> Self {
         HARDWARE_MIC_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-        let (capture_pipeline, mic_source) = match nomifun_audio::MicSource::new(16_000) {
+        let (capture_pipeline, mic_source) = match nomifun_audio::MicSource::with_device(16_000, preferred_device) {
             Ok(mic) => {
                 info!("Hardware microphone successfully initialized for AI Mate");
                 let pipeline = mic.pipeline();
@@ -1331,15 +1439,13 @@ impl VoiceCompanionRuntime {
             driver,
             playback,
             tts: {
-                let edge = Arc::new(EdgeTtsProvider::new());
-                let model_dir = std::env::var("NOMIFUN_VOICE_TTS_MODEL_DIR")
+                let model_dir = std::env::var("VOICE_TTS_MODEL_DIR")
+                    .or_else(|_| std::env::var("NOMIFUN_VOICE_TTS_MODEL_DIR"))
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(|_| model_manager.models_dir().join("tts"));
-                let sherpa = Arc::new(SherpaOfflineTtsProvider::from_dir(model_dir));
-                let prefer_offline = std::env::var("NOMIFUN_VOICE_TTS_OFFLINE")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
-                if prefer_offline {
+                let sherpa = Arc::new(SherpaOfflineTtsProvider::from_dir(&model_dir));
+                let edge = Arc::new(EdgeTtsProvider::new());
+                if sherpa.is_available() {
                     Arc::new(FallbackTtsProvider::new(sherpa, edge))
                 } else {
                     Arc::new(FallbackTtsProvider::new(edge, sherpa))
@@ -1362,13 +1468,15 @@ impl VoiceCompanionRuntime {
             worker_epoch: Arc::new(AtomicU64::new(0)),
             engine_check_tx: std::sync::Mutex::new(Some(engine_check_tx)),
             engine_check_rx: std::sync::Mutex::new(Some(engine_check_rx)),
-            wake_admission_until_ms: Arc::new(AtomicU64::new(0)),
-            call_admission_until_ms: Arc::new(AtomicU64::new(0)),
+            wake_admission_until_ms: Arc::new(AtomicU64::new(u64::MAX)),
+            call_admission_until_ms: Arc::new(AtomicU64::new(u64::MAX)),
             event_tx,
             active_turn: Arc::new(std::sync::Mutex::new(None)),
+            kws_reload_needed: Arc::new(AtomicBool::new(false)),
+            mic_reload_needed: Arc::new(AtomicBool::new(false)),
             input_generation: Arc::new(AtomicU64::new(0)),
             pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-            mic_source,
+            mic_source: Arc::new(std::sync::Mutex::new(mic_source)),
             #[cfg(any(test, feature = "voice-skeleton"))]
             replay_capture: false,
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -1452,7 +1560,9 @@ impl VoiceCompanionRuntime {
                 active_turn: Arc::new(std::sync::Mutex::new(None)),
                 input_generation: Arc::new(AtomicU64::new(0)),
                 pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-                mic_source: None,
+                kws_reload_needed: Arc::new(AtomicBool::new(false)),
+                mic_reload_needed: Arc::new(AtomicBool::new(false)),
+                mic_source: Arc::new(std::sync::Mutex::new(None)),
                 acoustic_ready: Arc::new(AtomicBool::new(true)),
                 self_check_active: Arc::new(AtomicBool::new(false)),
                 self_check_cancel: Arc::new(AtomicBool::new(false)),
@@ -1556,14 +1666,15 @@ impl VoiceCompanionRuntime {
                     let _ = d.handle_event(AcousticEvent::PlaybackDone);
                     if d.current_state() == AcousticState::Idle {
                         let _ = d.handle_event(AcousticEvent::WakeHit);
-                        if d.begin_listening_window() {
+                        let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                        if d.begin_listening_window_with_secs(idle_secs) {
                             let scope = VoiceSessionControlRequest {
                                 instance_id: snapshot.instance_id.clone(),
                                 session_id: Some(session_id.clone()),
                                 turn_id: Some(turn_id.clone()),
                             };
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &scope);
-                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, &scope);
                         }
                     }
                 }
@@ -1781,9 +1892,15 @@ impl VoiceCompanionRuntime {
         &self,
         patch: nomifun_api_types::voice::VoiceFeedbackPatch,
     ) -> Result<(), &'static str> {
-        let config = patch.apply(self.feedback());
+        let old = self.feedback();
+        let config = patch.apply(old.clone());
         config.validate()?;
+        let mic_changed = config.input_device != old.input_device;
         self.event_tx.set_feedback(config);
+        self.kws_reload_needed.store(true, Ordering::Release);
+        if mic_changed {
+            self.mic_reload_needed.store(true, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -1902,7 +2019,7 @@ impl VoiceCompanionRuntime {
         if self.replay_capture {
             return true;
         }
-        self.mic_source.is_some()
+        self.mic_source.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
     async fn models_ready(&self) -> bool {
@@ -2008,8 +2125,9 @@ impl VoiceCompanionRuntime {
         tokio::spawn(async move {
             voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
             let mut d = driver.lock().await;
-            if playback.generation_id() == generation && d.begin_listening_window() {
-                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+            let idle_secs = effective_idle_timeout(&events);
+            if playback.generation_id() == generation && d.begin_listening_window_with_secs(idle_secs) {
+                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs });
             }
         });
         Ok(())
@@ -2063,7 +2181,8 @@ impl VoiceCompanionRuntime {
             }
             if matches!(d.current_state(), AcousticState::SpeakingFast | AcousticState::SpeakingSummary | AcousticState::SpeakingControl) {
                 let _ = d.handle_event(AcousticEvent::PlaybackDone);
-                if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
+                let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window_with_secs(idle_secs) {
                     let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, scope);
                 }
             }
@@ -2103,8 +2222,9 @@ impl VoiceCompanionRuntime {
         if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
-        if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+        let idle_secs = effective_idle_timeout(event_tx.as_ref());
+        if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window_with_secs(idle_secs) {
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: idle_secs }, scope);
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -2218,7 +2338,7 @@ impl VoiceCompanionRuntime {
         if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
             let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
-            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(events.as_ref()) }, scope);
         }
     }
 
@@ -2240,7 +2360,7 @@ impl VoiceCompanionRuntime {
             let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Error { stage: "asr".into(), code: code.into() }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
-            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(events.as_ref()) }, scope);
         }
     }
 
@@ -2327,13 +2447,89 @@ impl VoiceCompanionRuntime {
             Self::report_asr_failure(driver, playback, event_tx, generation, &control_scope, "asr_empty_result").await;
             return;
         }
-        let clean_input = if already_recognized {
+        let mut clean_input = if already_recognized {
             text_opt.clone().unwrap_or_default()
         } else {
             text_opt.as_deref().map(nomifun_audio::strip_wake_phrase).unwrap_or_default()
         };
+        let feedback = event_tx.feedback();
+        for custom_kw in &feedback.wake_words {
+            if let Some(stripped) = strip_custom_wake_word(&clean_input, custom_kw) {
+                clean_input = stripped;
+                break;
+            }
+        }
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
+
+            // Direct session controls (Stop Speaking & Dismiss Session) fast path BEFORE SpeechRecognized:
+            let direct_control = nomifun_api_types::voice::classify_voice_direct_control(&clean_input, &feedback.dismiss_phrases);
+            if let Some(direct) = direct_control {
+                match direct {
+                    nomifun_api_types::voice::VoiceDirectControlAction::StopSpeaking => {
+                        info!(action = "stop_speaking", "Voice direct control: stop speaking");
+                        let mut d = driver.lock().await;
+                        if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
+                            let idle_secs = if feedback.idle_timeout_secs > 0 { feedback.idle_timeout_secs } else { 180 };
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, &control_scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &control_scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, &control_scope);
+                        }
+                        drop(d);
+                        let _ = playback.interrupt().await;
+                        return;
+                    }
+                    nomifun_api_types::voice::VoiceDirectControlAction::DismissSession => {
+                        info!(action = "dismiss_session", "Voice direct control: dismiss session");
+                        let mut d = driver.lock().await;
+                        d.reset();
+                        pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        let _ = playback.interrupt().await;
+                        let sleep_gen = playback.generation_id();
+                        let _ = event_tx.send_scoped(
+                            VoiceCompanionEvent::IntentDecided {
+                                intent: "Ignore".into(),
+                                reply: None,
+                                understood_request: None,
+                            },
+                            &control_scope,
+                        );
+                        let _ = event_tx.send_scoped(
+                            VoiceCompanionEvent::SessionEnded {
+                                reason: VoiceSessionEndReason::UserStop,
+                            },
+                            &control_scope,
+                        );
+                        drop(d);
+                        let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+                        let custom_dismiss = feedback.dismiss_reply.trim();
+                        let goodbye_text = if !custom_dismiss.is_empty() && (custom_dismiss != "好的，再见" || !is_en) {
+                            custom_dismiss
+                        } else if is_en {
+                            "Goodbye"
+                        } else {
+                            "好的，再见"
+                        };
+                        if event_tx.feedback().speak_replies {
+                            let tts_clone = tts.clone();
+                            let playback_clone = playback.clone();
+                            let reply = goodbye_text.to_string();
+                            let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                            tokio::spawn(async move {
+                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                            });
+                        }
+                        voice_feedback::schedule(
+                            playback.clone(),
+                            event_tx.clone(),
+                            VoiceCueKind::Sleep,
+                            sleep_gen,
+                        );
+                        return;
+                    }
+                }
+            }
+
             if matches!(event_tx.send_scoped(VoiceCompanionEvent::SpeechRecognized { text: text.clone() }, &control_scope), Ok(0)) {
                 return;
             }
@@ -2352,6 +2548,19 @@ impl VoiceCompanionRuntime {
             let current = event_tx.snapshot();
             if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
             if clean_input.is_empty() {
+                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+                let custom_wake = feedback.wake_reply.trim();
+                let reply_phrase = if !custom_wake.is_empty() && (custom_wake != "我在" || !is_en) {
+                    custom_wake
+                } else if is_en {
+                    "I'm here"
+                } else {
+                    "我在"
+                };
+                let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                if event_tx.feedback().speak_replies {
+                    let _ = playback.speak_text_for_generation(tts.as_ref(), reply_phrase, voice_spec, generation, || {}).await;
+                }
                 Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 return;
             } else if let Some(action) = is_local_task_control {
@@ -2418,7 +2627,13 @@ impl VoiceCompanionRuntime {
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
                 let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
                 let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
+                let base_voice = if is_en { "en-US-JennyNeural" } else { "" };
+                let tts_speed = event_tx.feedback().tts_speed;
+                let voice_spec = if (tts_speed - 1.0).abs() > 0.01 {
+                    format!("{base_voice};speed={tts_speed}")
+                } else {
+                    base_voice.to_string()
+                };
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
                     let tts = tts.clone();
@@ -2443,7 +2658,7 @@ impl VoiceCompanionRuntime {
                         }
                     };
                     AbortOnDrop(Some(tokio::spawn(async move {
-                        playback.speak_sentence_stream_with_voice(tts.as_ref(), speech_rx, expected_generation, cancel_rx, voice_name, on_started).await
+                        playback.speak_sentence_stream_with_voice(tts.as_ref(), speech_rx, expected_generation, cancel_rx, &voice_spec, on_started).await
                     })))
                 } else {
                     AbortOnDrop(None)
@@ -3023,9 +3238,10 @@ impl VoiceCompanionRuntime {
                             }
                             if d.current_state() == AcousticState::Idle {
                                 let _ = d.handle_event(AcousticEvent::WakeHit);
-                                if d.begin_listening_window() {
+                                let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                                if d.begin_listening_window_with_secs(idle_secs) {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &control_scope);
-                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &control_scope);
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, &control_scope);
                                 }
                             }
                         }
@@ -3289,7 +3505,7 @@ impl VoiceCompanionRuntime {
         #[cfg(any(test, feature = "voice-skeleton"))]
         let dispatch_queue_gate = self.dispatch_queue_gate.clone();
         let driver = Arc::clone(&self.driver);
-        let capture = Arc::clone(&self.capture_pipeline);
+        let mut capture = Arc::clone(&self.capture_pipeline);
         let playback = Arc::clone(&self.playback);
         let tts = Arc::clone(&self.tts);
         let router = Arc::clone(&self.router);
@@ -3312,7 +3528,7 @@ impl VoiceCompanionRuntime {
             .take();
         let worker_epoch = self.worker_epoch.fetch_add(1, Ordering::AcqRel) + 1;
         self.event_tx.set_worker_epoch(worker_epoch);
-        let wake_admission_until_ms = self.wake_admission_until_ms.clone();
+        let _wake_admission_until_ms = self.wake_admission_until_ms.clone();
         let capture_available = self.capture_available();
         let replay = {
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -3330,6 +3546,9 @@ impl VoiceCompanionRuntime {
         let active_turn = self.active_turn.clone();
         let pending_utterances = Arc::clone(&self.pending_utterances);
         let input_generation = self.input_generation.clone();
+        let kws_reload_needed = self.kws_reload_needed.clone();
+        let mic_reload_needed = self.mic_reload_needed.clone();
+        let mic_source_slot = self.mic_source.clone();
         // Native capture has no render reference/AEC yet. Raw VAD is not safe barge-in.
         let barge_in_ready = {
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -3360,10 +3579,16 @@ impl VoiceCompanionRuntime {
             );
             let kws = loop {
                 let dir = models.models_dir().to_path_buf();
+                let wake_words = event_tx.feedback().wake_words;
                 match native_runner
                     .load(std::time::Duration::from_secs(30), move || {
                         KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                             model_dir: Some(dir),
+                            keywords: if wake_words.is_empty() {
+                                vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
+                            } else {
+                                wake_words
+                            },
                             ..Default::default()
                         })
                     })
@@ -3415,6 +3640,24 @@ impl VoiceCompanionRuntime {
             let kws = NativeKws::new(Box::new(kws), native_runner.clone());
             let vad = NativeVad::new(vad, native_runner.clone());
             info!(silence_ms = 800, "voice_vad_loaded");
+
+            if transcriber.is_none() && !replay {
+                let dir = models.models_dir().to_path_buf();
+                match native_runner
+                    .load(std::time::Duration::from_secs(30), move || {
+                        nomifun_audio::stt::try_load_sherpa(Some(&dir))
+                    })
+                    .await
+                {
+                    Ok(Ok(Some(stt))) => {
+                        transcriber = Some(Arc::new(stt));
+                        info!("SenseVoice ASR engine loaded and standing by for cascade wake");
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => warn!(error = %e, "Failed to load SenseVoice ASR on startup"),
+                    Err(r) => warn!(reason = %r, "Timeout loading SenseVoice ASR on startup"),
+                }
+            }
             macro_rules! native_worker_call {
                 ($operation:expr, $call:expr, $default:expr) => {{
                     match $call {
@@ -3452,6 +3695,7 @@ impl VoiceCompanionRuntime {
             let mut last_pcm = std::time::Instant::now();
             let mut last_asr_load_warning: Option<std::time::Instant> = None;
             let mut processing_feedback: Option<(String, std::time::Instant, u8)> = None;
+            let mut last_playback_busy: Option<std::time::Instant> = None;
             let quiet_input = Arc::new(AtomicBool::new(false));
             let mut quiet_since: Option<std::time::Instant> = None;
             let mut reminded_session: Option<String> = None;
@@ -3566,6 +3810,41 @@ impl VoiceCompanionRuntime {
                     native_worker_call!("vad_reset", vad.reset().await, ());
                     native_worker_call!("kws_reset", kws.reset().await, ());
                 }
+                if kws_reload_needed.swap(false, Ordering::AcqRel) {
+                    let dir = models.models_dir().to_path_buf();
+                    let wake_words = event_tx.feedback().wake_words;
+                    let loaded = native_runner
+                        .load(std::time::Duration::from_secs(30), move || {
+                            KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+                                model_dir: Some(dir),
+                                keywords: if wake_words.is_empty() {
+                                    vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
+                                } else {
+                                    wake_words
+                                },
+                                ..Default::default()
+                            })
+                        })
+                        .await;
+                    if let Ok(Ok(next)) = loaded {
+                        native_worker_call!("kws_reload", kws.replace(Box::new(next)).await, ());
+                        info!("KWS engine hot-reloaded with custom wake words");
+                    }
+                }
+                if mic_reload_needed.swap(false, Ordering::AcqRel) {
+                    let pref = event_tx.feedback().input_device;
+                    match nomifun_audio::MicSource::with_device(16_000, pref.as_deref()) {
+                        Ok(new_mic) => {
+                            let new_pipeline = new_mic.pipeline();
+                            *mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(new_mic));
+                            capture = new_pipeline;
+                            info!(device = ?pref, "Microphone hot-swapped to user-specified device");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to hot-swap microphone");
+                        }
+                    }
+                }
                 if !replay
                     && last_model_check
                         .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(1))
@@ -3574,10 +3853,16 @@ impl VoiceCompanionRuntime {
                     if models.get_status().await.state.is_ready() {
                         if !kws.is_initialized() {
                             let dir = models.models_dir().to_path_buf();
+                            let wake_words = event_tx.feedback().wake_words;
                             let loaded = native_runner
                                 .load(std::time::Duration::from_secs(30), move || {
                                     KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                                         model_dir: Some(dir),
+                                        keywords: if wake_words.is_empty() {
+                                            vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
+                                        } else {
+                                            wake_words
+                                        },
                                         ..Default::default()
                                     })
                                 })
@@ -3666,6 +3951,35 @@ impl VoiceCompanionRuntime {
                 }
                 // 1. Check FSM watchdog timers (e.g. 8-second confirmation timeout)
                 let snapshot = event_tx.snapshot();
+                let has_confirmation = pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+                let active_call = snapshot.phase != nomifun_api_types::voice::VoiceSessionPhase::Idle;
+                let wake_enabled = event_tx.feedback().wake_enabled;
+                let hold_mic = should_hold_microphone(
+                    snapshot.enabled,
+                    wake_enabled,
+                    active_call,
+                    has_confirmation,
+                    self_check_active.load(Ordering::Acquire),
+                    kws.is_initialized(),
+                );
+                if !hold_mic {
+                    // Physically release the microphone stream so OS privacy indicator turns off
+                    if mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+                        *mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        info!("Microphone physically released for privacy indicator compliance");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                } else if mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()).is_none() && !replay {
+                    // Re-acquire microphone when needed
+                    let pref = event_tx.feedback().input_device;
+                    if let Ok(new_mic) = nomifun_audio::MicSource::with_device(16_000, pref.as_deref()) {
+                        let new_pipeline = new_mic.pipeline();
+                        *mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(new_mic));
+                        capture = new_pipeline;
+                        info!(device = ?pref, "Microphone re-acquired upon active listening");
+                    }
+                }
                 if matches!(
                     snapshot.phase,
                     nomifun_api_types::voice::VoiceSessionPhase::Transcribing
@@ -3699,14 +4013,14 @@ impl VoiceCompanionRuntime {
                     if native_owned
                         && matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening)
                     {
-                        d.begin_listening_window();
+                        d.begin_listening_window_with_secs(effective_idle_timeout(event_tx.as_ref()));
                     }
                     if matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening) {
                         let task_active = snapshot.task.as_ref().is_some_and(|t| {
                             !matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Completed | nomifun_api_types::voice::VoiceTaskStatus::Failed)
                         });
                         if task_active {
-                            d.begin_listening_window();
+                            d.begin_listening_window_with_secs(effective_idle_timeout(event_tx.as_ref()));
                         }
                     }
                     if timed_state == AcousticState::Listening
@@ -3908,8 +4222,22 @@ impl VoiceCompanionRuntime {
                     d.current_state()
                 };
 
+                let is_playback_active = playback.is_speaking();
+                if is_playback_active {
+                    last_playback_busy = Some(std::time::Instant::now());
+                }
+                let in_echo_cooldown = is_playback_active
+                    || last_playback_busy.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(600));
+
                 match current_state {
                     AcousticState::Idle => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         // Standby: feed audio chunk to Keyword Spotter
                         let mut hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
                         let mut wake_command = None;
@@ -3918,6 +4246,9 @@ impl VoiceCompanionRuntime {
                         if hit.is_none() {
                             let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                             if is_active {
+                                if utterance_pcm.is_empty() {
+                                    info!(peak = audio.peak_milli, rms = audio.rms_milli, "[KWS-LISTEN] Standby VAD detected voice activity; recording snippet");
+                                }
                                 utterance_pcm.extend_from_slice(&chunk);
                                 if utterance_pcm.len() > 16_000 * 4 {
                                     utterance_pcm.drain(0..16_000);
@@ -3947,12 +4278,25 @@ impl VoiceCompanionRuntime {
                                         .await;
                                         match transcribe_res {
                                             Ok(Some(text)) => {
-                                                if let Some(matched) = nomifun_audio::match_wake_phrase(&text) {
-                                                    info!(matched = %matched.matched_phrase, "Cascade wake hit accepted via SenseVoice");
+                                                info!(text = %text, "[KWS-CASCADE] Standby audio transcribed via SenseVoice");
+                                                let feedback = event_tx.feedback();
+                                                let mut matched_custom = None;
+                                                for custom_kw in &feedback.wake_words {
+                                                    if let Some(remainder) = strip_custom_wake_word(&text, custom_kw) {
+                                                        matched_custom = Some((custom_kw.clone(), if remainder.trim().is_empty() { None } else { Some(remainder) }));
+                                                        break;
+                                                    }
+                                                }
+                                                if let Some((kw, rem)) = matched_custom {
+                                                    info!(matched = %kw, "[KWS-CASCADE] Custom wake word matched successfully!");
+                                                    wake_command = rem;
+                                                    hit = Some(kw);
+                                                } else if let Some(matched) = nomifun_audio::match_wake_phrase(&text) {
+                                                    info!(matched = %matched.matched_phrase, "[KWS-CASCADE] Standard wake phrase matched via SenseVoice");
                                                     wake_command = matched.remainder;
                                                     hit = Some(matched.matched_phrase);
                                                 } else {
-                                                    debug!(stage = "text_no_match", chars = text.chars().count(), "Cascade ASR transcription did not match wake phrase");
+                                                    info!(text = %text, "[KWS-CASCADE] Standby transcription did not match any wake words");
                                                 }
                                             }
                                             Ok(None) => {
@@ -3983,8 +4327,6 @@ impl VoiceCompanionRuntime {
                                 || native_busy.load(Ordering::Acquire)
                             {
                                 info!(stage = "host_rejected", reason = "exclusively_owned", "Wake ignored while the runtime is exclusively owned");
-                            } else if !admission_valid_for(&wake_admission_until_ms) {
-                                info!(stage = "host_rejected", reason = "admission_expired", "Wake hit ignored because host readiness admission is absent or expired");
                             } else {
                                 if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None, event_tx.snapshot().locale.as_deref(), wake_command.is_none())
                                     .await
@@ -4026,7 +4368,7 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::ListeningConfirm=>{
-                        if !barge_in_ready && playback.has_pending_audio() {
+                        if !barge_in_ready && in_echo_cooldown {
                             utterance_pcm.clear();
                             speech_started = false;
                             native_worker_call!("vad_reset", vad.reset().await, ());
@@ -4045,7 +4387,7 @@ impl VoiceCompanionRuntime {
                             }
                             let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms,pending.approval_id.clone(),pending.session_id.clone())))};
                             if let Some((response,generation,deadline_ms,approval_id,session_id))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();let tts=tts.clone();
                                 let reservation = lease_admission.reserve();
                                 let pending_for_turn = pending_confirmation.clone();
                                 let snapshot = events.snapshot();
@@ -4078,7 +4420,51 @@ impl VoiceCompanionRuntime {
                                     let current=events.snapshot();
                                     let owned=pending_for_turn.lock().unwrap_or_else(|error|error.into_inner()).as_ref().is_some_and(|pending|pending.approval_id==approval_id && pending.session_id==session_id && pending.generation==generation);
                                     if owned && scope.matches(&current) && current.ended_reason.is_none() && output.generation_id()==generation && chrono::Utc::now().timestamp_millis()<deadline_ms && guard.current_state()==AcousticState::ListeningConfirm {
-                                        if let Ok(Some(text))=&result {if !text.trim().is_empty() {let _=events.send_scoped(VoiceCompanionEvent::ConfirmationHeard {text:text.clone()}, &scope);}}
+                                        if let Ok(Some(text))=&result {
+                                            if !text.trim().is_empty() {
+                                                let feedback = events.feedback();
+                                                if nomifun_api_types::voice::classify_voice_direct_control(text, &feedback.dismiss_phrases) == Some(nomifun_api_types::voice::VoiceDirectControlAction::DismissSession) {
+                                                    drop(guard);
+                                                    let mut d = states.lock().await;
+                                                    let current = events.snapshot();
+                                                    let owned = pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|p| p.approval_id == approval_id && p.session_id == session_id && p.generation == generation);
+                                                    if !owned || !scope.matches(&current) || current.ended_reason.is_some() || output.generation_id() != generation {
+                                                        return;
+                                                    }
+                                                    d.reset();
+                                                    pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).take();
+                                                    let _ = output.interrupt().await;
+                                                    let sleep_gen = output.generation_id();
+                                                    let _ = events.send_scoped(
+                                                        VoiceCompanionEvent::SessionEnded {
+                                                            reason: VoiceSessionEndReason::UserStop,
+                                                        },
+                                                        &scope,
+                                                    );
+                                                    drop(d);
+                                                    let is_en = nomifun_api_types::voice::is_english_locale(current.locale.as_deref());
+                                                    let goodbye_text = if is_en { "Goodbye" } else { "好的，再见" };
+                                                    if events.feedback().speak_replies {
+                                                        let output_clone = output.clone();
+                                                        let reply = goodbye_text.to_string();
+                                                        let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                                                        let tts_prov = tts.clone();
+                                                        tokio::spawn(async move {
+                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                                        });
+                                                    }
+                                                    voice_feedback::schedule(
+                                                        output.clone(),
+                                                        events.clone(),
+                                                        VoiceCueKind::Sleep,
+                                                        sleep_gen,
+                                                    );
+                                                    let _ = response.send(Ok(Some("cancel".to_string())));
+                                                    return;
+                                                }
+                                                let _=events.send_scoped(VoiceCompanionEvent::ConfirmationHeard {text:text.clone()}, &scope);
+                                            }
+                                        }
                                         let _=response.send(result);
                                     }
                                 });
@@ -4088,6 +4474,13 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     AcousticState::Listening => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         // Match follow-up listening: retain VAD onset, not the
                         // preceding silence, in the 30-second utterance budget.
                         utterance_pcm.extend_from_slice(&chunk);
@@ -4182,6 +4575,13 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::FollowUpListening => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         // 180-second follow-up window (seamless continuous dialogue without wake phrase)
                         if listen_start.is_none() {
                             listen_start = Some(std::time::Instant::now());
@@ -4358,6 +4758,13 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::Deciding | AcousticState::DispatchingTask => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             utterance_pcm.extend_from_slice(&chunk);
