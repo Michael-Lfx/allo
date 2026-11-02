@@ -1,3 +1,5 @@
+> **2026-11-02 基于 KWS 的免 AEC 唤醒打断架构与开源方案调研**：[架构设计与开源调研报告](kws-barge-in-and-acoustic-architecture-2026-11-02.zh.md)。深度调研 Bolt-Pet、Wyoming-Satellite、OVOS 与 Amazon Alexa SLT 学术方案，确立了 Flowy 极简且高可靠的“KWS 唤醒词/插话词打断（免 AEC）”架构方案，系统阐明了“文本预检动态屏蔽 + 3 音节门禁 + 播放态 Hard Reset”四道防自激防线。
+
 > **2026-11-01 语音伴侣自愈架构、常驻唤醒与全局路由增强方案设计（草案）**：[设计方案与最小实验验证](voice-self-healing-and-kws-resilience-plan-2026-11-01.zh.md)。针对真机实测 7 项问题（自检状态解绑与开机静默自查、独立语音唤醒开关、首页全局路由唤醒、挂断后状态机回退等待唤醒、KWS 灵敏度回调至 0.08 与软增益）系统设计并给出最小实验验证方案。草案待测试数据验证后正式定稿。
 
 > **2026-10-31 语音伴侣深度吸收插件 KWS、极简设置重塑与离线 TTS 完整闭环**：[实施与验证方案](voice-companion-overhaul-plan-2026-10-31.zh.md)与[执行交接任务书](voice-companion-overhaul-agent-brief-2026-10-31.zh.md)。已全量落地：① 9MB 双语 Zipformer KWS 引擎与拼音/音素动态热重载及 ASR 标点容错剥离；② 10 项 Matcha-TTS/Vocos 模型并入 ModelManager 17 项全量下载与 SHA-256 校验管线；③ 设置页终极极简卡片重构与输入框清空修复；④ 语言自适应预设发音（中文“我在”/“好的，再见”，英文“I'm here”/“Goodbye”）；⑤ 桌宠 6px 吸边与 36px 缓冲还原；⑥ 线上发布打包自动守卫（29 项通过）。本地编译与全量测试梯子 100% 绿灯。下方记录保留历史语境。
