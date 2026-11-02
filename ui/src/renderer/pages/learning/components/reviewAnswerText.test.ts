@@ -37,6 +37,15 @@ describe('复习正确答案渲染（x03）', () => {
     expect(answerText(null, 'open_question', [], translate)).toBe('');
   });
 
+  test('numeric 按 precision/unit 格式化（w2：percent 加 %、固定小数位）', () => {
+    expect(answerText(25, 'numeric', [], translate, { precision: 1, unit: 'percent' })).toBe('25.0%');
+    expect(answerText(25, 'numeric', [], translate, { precision: 0, unit: 'percent' })).toBe('25%');
+    expect(answerText(3.14159, 'numeric', [], translate, { precision: 2, unit: 'raw' })).toBe('3.14');
+    // 未带格式化元数据 → 旧口径 String(number)，不凭空补零/补 %。
+    expect(answerText(3.14, 'numeric', [], translate)).toBe('3.14');
+    expect(answerText(3.14, 'numeric', [], translate, { precision: null, unit: null })).toBe('3.14');
+  });
+
   test('未知形状走 JSON 兜底，不吞成空串', () => {
     expect(answerText({ 左一: 'B' }, 'matching', [], translate)).toBe('左一 → B');
     expect(answerText([1, 2], 'numeric', [], translate)).toBe('1 / 2');

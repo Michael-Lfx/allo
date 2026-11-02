@@ -96,4 +96,15 @@ describe('题面作答面渲染管线（n1 页面集成断言）', () => {
     expect(markup).toContain('arco-input');
     expect(markup).not.toContain('data-blank-slot');
   });
+
+  test('numeric percent 单位加 % 后缀，raw 不加（w2 显示元数据）', async () => {
+    const percent = await renderInput(
+      <ActivityInput kind='numeric' options={[]} value={25} unit='percent' onChange={noop} />
+    );
+    expect(percent).toContain('%');
+    const raw = await renderInput(
+      <ActivityInput kind='numeric' options={[]} value={25} unit='raw' onChange={noop} />
+    );
+    expect(raw).not.toContain('%');
+  });
 });

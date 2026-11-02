@@ -46,6 +46,8 @@ const makeReview = (prompt: string): DueReview => ({
     prompt,
     options: ['$0.375$', '$0.303003\\ldots$'],
     matches: [],
+    precision: null,
+    unit: null,
   },
   due_at: 0,
   stability_days: 0,

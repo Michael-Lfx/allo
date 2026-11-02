@@ -186,6 +186,7 @@ export function ReviewCard({
         kind={question.kind}
         options={question.options}
         matches={question.matches}
+        unit={question.unit}
         value={response}
         disabled={result !== null || locked}
         onChange={setResponse}
@@ -286,7 +287,12 @@ export function ReviewCard({
             <Text type='secondary'>
               {/* 正确答案文本内联渲染（可能含 $…$ 公式） */}
               {t('learning.reviewCorrectAnswer')}:{' '}
-              <InlineMarkdown text={answerText(result.correct_answer, question.kind, question.options, t)} />
+              <InlineMarkdown
+                text={answerText(result.correct_answer, question.kind, question.options, t, {
+                  precision: result.precision ?? question.precision,
+                  unit: result.unit ?? question.unit,
+                })}
+              />
             </Text>
           )}
           {/* 答错揭示的解析与课时面口径统一：按内容分流（围栏/多段 → 块级
@@ -382,6 +388,8 @@ export function ReviewSessionModal({
         prompt: entry.prompt ?? target.question.prompt,
         options: entry.options,
         matches: target.question.matches,
+        precision: entry.precision ?? target.question.precision,
+        unit: entry.unit ?? target.question.unit,
       },
       // 编辑已保存，待编辑标记随之清除（后端同步清除）
       edit_pending: false,

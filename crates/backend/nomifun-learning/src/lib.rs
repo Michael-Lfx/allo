@@ -123,7 +123,10 @@ pub use models::{
 };
 /// verify_math 断言核验接口（票 w1/蓝图 4.1）：求值器与 claim 核验单源在
 /// learning（A1），ai-agent 工具 handler 直调——零新依赖。
-pub use verify_math::{ClaimVerdict, ExprError, MathClaim, eval_expr, verify_claim};
+pub use verify_math::{
+    CastNumeric, ClaimVerdict, ExprError, MathClaim, NumericClaim, NumericUnit,
+    cast_numeric_claim, eval_expr, verify_claim,
+};
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
 /// 课时生成双模面（e4）：异步臂 202 响应体 + 门面重试环读数（smoke 判据）。
@@ -136,6 +139,6 @@ pub use learning_graph::mint_evidence::MintResearchStats;
 pub use switches::{MINT_RESEARCH_SWITCH_ENV, mint_research_enabled};
 pub use settle::{
     QUIZ_EXCELLENT_RATIO, QUIZ_HALF_RATIO, QUIZ_PASS_RATIO, QUIZ_QUESTION_BUDGET,
-    QUIZ_TRIGGER_SETTLEMENTS,
+    QUIZ_TRIGGER_SETTLEMENTS, question_equivalent,
 };
 pub use state::LearningRouterState;

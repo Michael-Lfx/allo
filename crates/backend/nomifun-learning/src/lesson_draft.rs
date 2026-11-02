@@ -767,7 +767,10 @@ impl LessonDraft {
                 self.estimated_minutes = minutes;
                 Ok(format!("estimated_minutes set to {minutes}"))
             }
-            LessonOp::AddActivity { activity } => {
+            LessonOp::AddActivity { mut activity } => {
+                // w2 铸值（claim 轨）：push 前实算答案键；带 answer/tol 的
+                // claim 轨输出在此拒绝（可读错误回给模型重试）。
+                activity.cast_numeric_claim(crate::models::NumericCastMode::Strict)?;
                 if self.activities.len() >= MAX_ACTIVITIES {
                     return Err(format!(
                         "lesson already holds {} activities (cap {MAX_ACTIVITIES}); remove one first",
@@ -778,7 +781,10 @@ impl LessonDraft {
                 self.activities.push(activity);
                 Ok(format!("activity added at position {position}"))
             }
-            LessonOp::UpdateActivity { position, activity } => {
+            LessonOp::UpdateActivity {
+                position,
+                mut activity,
+            } => {
                 if position >= self.activities.len() {
                     return Err(format!(
                         "position {position} out of range (lesson holds {} activities, positions 0..{})",
@@ -786,6 +792,7 @@ impl LessonDraft {
                         self.activities.len()
                     ));
                 }
+                activity.cast_numeric_claim(crate::models::NumericCastMode::Strict)?;
                 self.activities[position] = activity;
                 Ok(format!("activity at position {position} replaced"))
             }
@@ -806,19 +813,35 @@ impl LessonDraft {
     pub fn refresh_audit(&mut self) {
         let document = self.document.clone();
         let estimated_minutes = self.estimated_minutes;
-        let activities = self.activities.clone();
-        let section_manifest = self.section_manifest.clone();
-        let section_bodies = self.section_bodies.clone();
-        let capacity_note = self.capacity_note.clone();
-        self.findings = audit_findings(
+        // w2 幂等兜底：存量/续跑草稿里的 claim 轨活动在审计前重铸一次；
+        // 失败项以 activity_shape_invalid danger 点名（不静默）。
+        let mut activities = self.activities.clone();
+        let mut cast_errors: Vec<(usize, String)> = Vec::new();
+        for (position, activity) in activities.iter_mut().enumerate() {
+            if let Err(error) =
+                activity.cast_numeric_claim(crate::models::NumericCastMode::Force)
+            {
+                cast_errors.push((position, error));
+            }
+        }
+        let mut findings = audit_findings(
             &self.context,
             document.as_deref(),
             estimated_minutes,
             &activities,
-            section_manifest.as_deref(),
-            &section_bodies,
-            capacity_note.as_deref(),
+            self.section_manifest.as_deref(),
+            &self.section_bodies,
+            self.capacity_note.as_deref(),
         );
+        for (position, error) in cast_errors {
+            findings.push(LessonFinding {
+                severity: SEV_DANGER,
+                kind: "activity_shape_invalid".into(),
+                message: format!("activity at position {position}: {error}"),
+            });
+        }
+        self.activities = activities;
+        self.findings = findings;
     }
 
     /// The full findings text — the repair loop's primary input.
@@ -1627,6 +1650,115 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.severity == SEV_DANGER && f.kind.starts_with("activity")));
+    }
+
+    #[test]
+    fn add_activity_casts_numeric_claim_before_audit() {
+        // w2：agent 草稿 claim-only numeric 在 push 前系统铸值；审计无
+        // activity_shape_invalid。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: long_document(),
+        }]);
+        let report = draft.apply_ops(vec![LessonOp::AddActivity {
+            activity: activity_json(
+                "numeric",
+                serde_json::json!({
+                    "claim": { "expr": "rate*years", "params": { "rate": 0.125, "years": 2 } },
+                    "precision": 1,
+                    "unit": "percent"
+                }),
+            ),
+        }]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        assert_eq!(draft.activities.len(), 1);
+        assert_eq!(draft.activities[0].answer, serde_json::json!(25.0));
+        assert_eq!(draft.activities[0].tol, Some(0.05));
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|finding| finding.kind == "activity_shape_invalid"),
+            "{:?}",
+            draft.findings
+        );
+    }
+
+    #[test]
+    fn add_activity_rejects_claim_track_with_model_answer() {
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: long_document(),
+        }]);
+        let report = draft.apply_ops(vec![LessonOp::AddActivity {
+            activity: activity_json(
+                "numeric",
+                serde_json::json!({
+                    "claim": { "expr": "1+1", "params": {} },
+                    "precision": 0,
+                    "answer": 2
+                }),
+            ),
+        }]);
+        assert_eq!(report.rejected.len(), 1);
+        assert!(
+            report.rejected[0]
+                .reason
+                .contains("do not write \"answer\" or \"tol\""),
+            "{}",
+            report.rejected[0].reason
+        );
+        assert!(draft.activities.is_empty());
+    }
+
+    #[test]
+    fn refresh_audit_casts_stale_claim_activities_idempotently() {
+        // 续跑/存量草稿里的未铸值 claim 活动：审计前 force 重铸一次。
+        let mut draft = LessonDraft::new(context());
+        let mut stale = activity_json(
+            "numeric",
+            serde_json::json!({
+                "claim": { "expr": "6*7", "params": {} },
+                "precision": 0
+            }),
+        );
+        stale.answer = serde_json::Value::Null;
+        stale.tol = None;
+        draft.activities.push(stale);
+        draft.refresh_audit();
+        assert_eq!(draft.activities[0].answer, serde_json::json!(42.0));
+        assert_eq!(draft.activities[0].tol, Some(0.0));
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|finding| finding.kind == "activity_shape_invalid"),
+            "{:?}",
+            draft.findings
+        );
+    }
+
+    #[test]
+    fn refresh_audit_reports_uncastable_claim_as_shape_danger() {
+        let mut draft = LessonDraft::new(context());
+        let mut broken = activity_json(
+            "numeric",
+            serde_json::json!({
+                "claim": { "expr": "1/0", "params": {} },
+                "precision": 2
+            }),
+        );
+        broken.answer = serde_json::Value::Null;
+        broken.tol = None;
+        draft.activities.push(broken);
+        draft.refresh_audit();
+        assert!(
+            draft.findings.iter().any(|finding| {
+                finding.kind == "activity_shape_invalid" && finding.message.contains("非有限")
+            }),
+            "{:?}",
+            draft.findings
+        );
     }
 
     #[test]

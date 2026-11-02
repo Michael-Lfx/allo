@@ -117,6 +117,8 @@ impl LearningService {
                     prompt: row.try_get("prompt").map_err(internal)?,
                     options: config.options,
                     matches: config.matches,
+                    precision: config.precision,
+                    unit: config.unit,
                 },
                 due_at: row.try_get("due_at").map_err(internal)?,
                 stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -189,6 +191,8 @@ impl LearningService {
                         prompt: row.try_get("prompt").map_err(internal)?,
                         options: config.options,
                         matches: config.matches,
+                        precision: config.precision,
+                        unit: config.unit,
                     },
                     due_at: row.try_get("due_at").map_err(internal)?,
                     stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -362,6 +366,8 @@ impl LearningService {
                 options: config.options.clone(),
                 answer: Some(config.answer.clone()),
                 distractors: config.distractors.clone(),
+                precision: config.precision,
+                unit: config.unit,
                 explanation: Some(config.explanation.clone()),
                 due_at,
                 overdue: due_at.is_some_and(|value| value <= now),
@@ -479,6 +485,8 @@ impl LearningService {
                     options: config.options.clone(),
                     answer: Some(config.answer.clone()),
                     distractors: config.distractors.clone(),
+                    precision: config.precision,
+                    unit: config.unit,
                     explanation: Some(config.explanation.clone()),
                     due_at: Some(due_at),
                     overdue: due_at <= now,
@@ -551,6 +559,25 @@ impl LearningService {
         let kind_text: String = row.try_get("kind").map_err(internal)?;
         let kind = ActivityKind::try_from(kind_text.as_str())
             .map_err(|message| AppError::BadRequest(message))?;
+        // w2 编辑面：先读存量配置——claim 轨保留三键与系统 tol；answer 由
+        // 系统铸值，提交不同的 answer = 手改，拒绝（重出题走生成面）。
+        let stored_config: Option<StoredActivityConfig> = sqlx::query_scalar::<_, String>(
+            "SELECT config_json FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .and_then(|config_json| serde_json::from_str::<StoredActivityConfig>(&config_json).ok());
+        if let Some(stored) = &stored_config {
+            if stored.claim.is_some() && request.answer != stored.answer {
+                return Err(AppError::BadRequest(
+                    "numeric activity answer is cast from its claim by the system and cannot be edited; \
+                     update the prompt/explanation or regenerate the question instead"
+                        .into(),
+                ));
+            }
+        }
         let (prompt, mut config) = validate_question_payload(
             kind,
             &request.prompt,
@@ -559,16 +586,20 @@ impl LearningService {
             &request.explanation,
             &request.distractors,
         )?;
-        // 手工编辑面没有 evidence 字段：保留原回引（t2 证据不随编辑抹除）。
-        config.evidence = sqlx::query_scalar::<_, String>(
-            "SELECT config_json FROM learning_activities WHERE activity_id = ?",
-        )
-        .bind(activity_id.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?
-        .and_then(|config_json| serde_json::from_str::<StoredActivityConfig>(&config_json).ok())
-        .and_then(|stored| stored.evidence);
+        // 手工编辑面没有 evidence/claim 字段：保留原回引与 claim 轨元数据
+        // （t2 证据与 w2 铸值都不随编辑抹除）。
+        if let Some(stored) = stored_config {
+            config.evidence = stored.evidence;
+            config.claim = stored.claim;
+            config.precision = stored.precision;
+            config.unit = stored.unit;
+            config.tol = stored.tol;
+            if config.claim.is_some() {
+                // 系统铸值的 answer 原样保留（client 回传值可能与落库浮点
+                // 表示不同；答案键以落库为准）。
+                config.answer = stored.answer;
+            }
+        }
         sqlx::query("UPDATE learning_activities SET prompt = ?, config_json = ? WHERE activity_id = ?")
             .bind(prompt)
             .bind(serde_json::to_string(&config).map_err(internal)?)
@@ -789,6 +820,8 @@ impl LearningService {
             options: config.options.clone(),
             answer: Some(config.answer.clone()),
             distractors: config.distractors.clone(),
+            precision: config.precision,
+            unit: config.unit,
             explanation: Some(config.explanation.clone()),
             due_at,
             overdue: due_at.is_some_and(|value| value <= now_ms()),
@@ -1038,6 +1071,8 @@ impl LearningService {
             options: config.options.clone(),
             answer: Some(config.answer.clone()),
             distractors: config.distractors.clone(),
+            precision: config.precision,
+            unit: config.unit,
             explanation: Some(config.explanation.clone()),
             due_at: Some(due_at),
             overdue: due_at <= now_ms(),
@@ -1143,6 +1178,8 @@ impl LearningService {
             } else {
                 Some(config.answer.clone())
             },
+            precision: config.precision,
+            unit: config.unit,
             rated,
             advanced: !correct && allowed,
         })
@@ -1676,6 +1713,8 @@ impl LearningService {
             } else {
                 Some(config.answer.clone())
             },
+            precision: config.precision,
+            unit: config.unit,
             rated,
             advanced: !correct && allowed,
         })

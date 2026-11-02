@@ -12,7 +12,9 @@
 //! （单向依赖已核实），w2 quiz 线与未来消费方复用最近。零新依赖：解析器
 //! 手写（全仓无 evalexpr/meval，AGENTS 依赖纪律）。
 
-use serde::Deserialize;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 /// 表达式原始字符数上限（h1；learnhub c14467e 原值 512，allo 用户评审后取
 /// 2048——长度不是爆栈向量，深度闸才是；512 会误伤多点求和/长展开，2048
@@ -64,6 +66,100 @@ pub enum MathClaim {
         #[serde(default)]
         samples: Option<u8>,
     },
+}
+
+/// 数值题的参数化答案键 claim（w2）：模型只给表达式与参数绑定，答案键
+/// 由 [`cast_numeric_claim`] 实算——不再信任模型口算。与工具 op 的
+/// [`MathClaim`]（Deserialize-only wire 形状）分开：claim 是服务端存储
+/// 结构（`ActivityPack` / `StoredActivityConfig`），不是工具参数。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NumericClaim {
+    /// ASCII 表达式；支持 [`eval_expr`] 文法（显式 `*`、`^`、单参函数、pi/e）。
+    pub expr: String,
+    /// 参数绑定（BTreeMap 保证序列化稳定）；表达式里的标识符按此求值。
+    #[serde(default)]
+    pub params: BTreeMap<String, f64>,
+}
+
+/// 数值题答案的显示单位（w2）：`answer` 永远存显示单位的值——
+/// `Percent` 时 = eval × 100（「所见即所判」，不在判分时换算）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumericUnit {
+    /// 原值（不加百分号）。
+    Raw,
+    /// 百分数显示（answer 已 ×100）。
+    Percent,
+}
+
+/// 系统铸值结果（`answer` 显示单位、`tol` 系统判分容差）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CastNumeric {
+    /// 显示单位的答案键（percent 已 ×100；不预先舍入）。
+    pub answer: f64,
+    /// 系统判分容差：显示值精确整数且 precision=0 → 0，否则半个显示位。
+    pub tol: f64,
+}
+
+/// 按 claim 实算数值答案键（w2 铸值单源）。
+///
+/// 规则（票面 D3/D4）：
+/// - `precision` 0–10；params 必须是有限数；表达式非空且可求值。
+/// - 求值走 [`eval_expr`]（h1 后的长度/深度预算自动生效）。
+/// - 结果非有限（除零/定义域外/溢出，含 percent ×100 后的溢出）→ Err。
+/// - `answer` = 显示单位值（percent ×100），不预先舍入。
+/// - `tol` = 显示值恰为整数且 precision=0 时 0；否则 `0.5 × 10^-precision`
+///   （半个显示位，任何正确舍入的显示值都落在容差内）。
+pub fn cast_numeric_claim(
+    claim: &NumericClaim,
+    precision: u8,
+    unit: NumericUnit,
+) -> Result<CastNumeric, String> {
+    if precision > 10 {
+        return Err(format!(
+            "precision 必须在 0-10 之间（收到 {precision}）——显示精度最多 10 位小数"
+        ));
+    }
+    let expr = claim.expr.trim();
+    if expr.is_empty() {
+        return Err("claim.expr 不能为空——请给出可求值的 ASCII 表达式".into());
+    }
+    for (name, value) in &claim.params {
+        if !value.is_finite() {
+            return Err(format!("参数 {name} 必须是有限数（收到 {value}）"));
+        }
+    }
+    let bindings: Vec<(String, f64)> = claim
+        .params
+        .iter()
+        .map(|(name, value)| (name.clone(), *value))
+        .collect();
+    let value = eval_expr(expr, &bindings)
+        .map_err(|error| format!("表达式「{expr}」无法求值：{error}"))?;
+    if !value.is_finite() {
+        return Err(format!(
+            "表达式「{expr}」求值结果非有限（除零、定义域外或溢出——检查分母与函数定义域）"
+        ));
+    }
+    let display = match unit {
+        NumericUnit::Raw => value,
+        NumericUnit::Percent => value * 100.0,
+    };
+    if !display.is_finite() {
+        return Err(format!(
+            "表达式「{expr}」按百分数显示后非有限（数值过大溢出）"
+        ));
+    }
+    let tol = if precision == 0 && (display - display.round()).abs() < 1e-9 {
+        // 精确整数：判分臂的 1e-9 地板仍兜浮点噪声。
+        0.0
+    } else {
+        0.5 * 10f64.powi(-(precision as i32))
+    };
+    Ok(CastNumeric {
+        answer: display,
+        tol,
+    })
 }
 
 /// 核验结论（工具 op 把它序列化回给模型；`kind` 标签让 verdict JSON 自明）。
@@ -1236,5 +1332,114 @@ mod tests {
         let fail_json = serde_json::to_value(fail("boom")).expect("serialize");
         assert_eq!(fail_json["kind"], "fail");
         assert_eq!(fail_json["reason"], "boom");
+    }
+
+    // ── 数值答案键铸值（w2）：claim → 显示单位 answer + 系统 tol ─────────
+
+    fn claim(expr: &str, params: &[(&str, f64)]) -> NumericClaim {
+        NumericClaim {
+            expr: expr.into(),
+            params: params
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn cast_raw_absolute_value_and_half_display_tolerance() {
+        // 3.14159 在 precision=2 下按显示位取半位容差：0.5 × 10^-2。
+        let cast = cast_numeric_claim(&claim("355/113", &[]), 2, NumericUnit::Raw).unwrap();
+        assert!((cast.answer - 355.0 / 113.0).abs() < 1e-12);
+        assert_eq!(cast.tol, 0.005);
+
+        // precision=0 且显示值恰为整数：tol 0（判分臂的 1e-9 地板兜浮点噪声）。
+        let exact = cast_numeric_claim(&claim("6*7", &[]), 0, NumericUnit::Raw).unwrap();
+        assert_eq!(exact.answer, 42.0);
+        assert_eq!(exact.tol, 0.0);
+
+        // precision=0 但显示值非整数：仍是半个显示位（0.5），不误判精确整数。
+        let rounded = cast_numeric_claim(&claim("7/2", &[]), 0, NumericUnit::Raw).unwrap();
+        assert_eq!(rounded.answer, 3.5);
+        assert_eq!(rounded.tol, 0.5);
+    }
+
+    #[test]
+    fn cast_percent_stores_display_units_not_raw() {
+        // 0.125 × 2 = 0.25 → percent 显示单位 25.0，precision=1 半位 0.05。
+        let cast = cast_numeric_claim(
+            &claim("rate*years", &[("rate", 0.125), ("years", 2.0)]),
+            1,
+            NumericUnit::Percent,
+        )
+        .unwrap();
+        assert_eq!(cast.answer, 25.0);
+        assert_eq!(cast.tol, 0.05);
+
+        // percent 显示值恰为整数 + precision=0 → tol 0（百分数精确整数）。
+        let whole = cast_numeric_claim(&claim("1/4", &[]), 0, NumericUnit::Percent).unwrap();
+        assert_eq!(whole.answer, 25.0);
+        assert_eq!(whole.tol, 0.0);
+    }
+
+    #[test]
+    fn cast_binds_parameters_and_resolves_constants() {
+        let cast = cast_numeric_claim(&claim("pi*r^2", &[("r", 2.0)]), 4, NumericUnit::Raw).unwrap();
+        assert!((cast.answer - std::f64::consts::PI * 4.0).abs() < 1e-12);
+        assert_eq!(cast.tol, 0.00005);
+
+        // 参数绑定走 BTreeMap（稳定序）；未绑定变量如实报错。
+        let unbound = cast_numeric_claim(&claim("x+1", &[]), 2, NumericUnit::Raw).unwrap_err();
+        assert!(unbound.contains("未知变量"), "{unbound}");
+    }
+
+    #[test]
+    fn cast_rejects_invalid_precision_and_expression() {
+        let over = cast_numeric_claim(&claim("1+1", &[]), 11, NumericUnit::Raw).unwrap_err();
+        assert!(over.contains("precision"), "{over}");
+
+        let empty = cast_numeric_claim(&claim("   ", &[]), 0, NumericUnit::Raw).unwrap_err();
+        assert!(empty.contains("表达式"), "{empty}");
+
+        let syntax = cast_numeric_claim(&claim("2x", &[]), 0, NumericUnit::Raw).unwrap_err();
+        assert!(syntax.contains("隐式乘法"), "{syntax}");
+    }
+
+    #[test]
+    fn cast_rejects_non_finite_values() {
+        let divide = cast_numeric_claim(&claim("1/0", &[]), 2, NumericUnit::Raw).unwrap_err();
+        assert!(divide.contains("非有限"), "{divide}");
+
+        // percent 变换本身溢出也是非有限。
+        let overflow =
+            cast_numeric_claim(&claim("1e308", &[]), 2, NumericUnit::Percent).unwrap_err();
+        assert!(overflow.contains("非有限"), "{overflow}");
+
+        // 参数非有限：如实报参数名。
+        let bad_param =
+            cast_numeric_claim(&claim("x", &[("x", f64::INFINITY)]), 2, NumericUnit::Raw)
+                .unwrap_err();
+        assert!(bad_param.contains("参数 x"), "{bad_param}");
+    }
+
+    #[test]
+    fn cast_claim_json_round_trips_and_tolerates_missing_params() {
+        let parsed: NumericClaim = serde_json::from_value(serde_json::json!({
+            "expr": "rate*years", "params": {"rate": 0.125, "years": 2}
+        }))
+        .expect("claim parses");
+        assert_eq!(parsed.expr, "rate*years");
+        assert_eq!(parsed.params.len(), 2);
+
+        let bare: NumericClaim =
+            serde_json::from_value(serde_json::json!({ "expr": "1+1" })).expect("params default");
+        assert!(bare.params.is_empty());
+
+        // BTreeMap 稳定序：同一 claim 两次序列化逐字节一致。
+        let first = serde_json::to_string(&parsed).unwrap();
+        let second = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(serde_json::to_value(NumericUnit::Raw).unwrap(), "raw");
+        assert_eq!(serde_json::to_value(NumericUnit::Percent).unwrap(), "percent");
     }
 }

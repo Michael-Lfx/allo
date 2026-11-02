@@ -2151,21 +2151,16 @@ impl LearningService {
             Self::injected_activity_difficulty(&mut *transaction, lesson_id).await;
         for (position, activity) in output.activities.iter().enumerate() {
             let activity_id = LearningActivityId::new();
-            let config = StoredActivityConfig {
-                options: activity.options.clone(),
-                answer: activity.answer.clone(),
-                explanation: activity.explanation.clone(),
-                distractors: activity.distractors.clone(),
-                tol: activity.tol,
-                matches: matching_candidates(activity),
-                difficulty: injected_difficulty.or(activity.difficulty),
-                evidence: activity
-                    .evidence
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|evidence| !evidence.is_empty())
-                    .map(str::to_owned),
-            };
+            // w2 幂等落库兜底：claim 轨重铸一次（agent/旧管线可能未铸）；
+            // claim 缺席的 legacy 行 answer/tol 原样保留。
+            let mut activity = activity.clone();
+            activity
+                .cast_numeric_claim(crate::models::NumericCastMode::Force)
+                .map_err(|error| AppError::UnprocessableEntity(error))?;
+            let config = StoredActivityConfig::from_activity(
+                &activity,
+                injected_difficulty.or(activity.difficulty),
+            );
             // 「general」是提示词对跨节综合题的约定写法，落库归一为 NULL。
             let section_key = activity
                 .section_key
@@ -2416,6 +2411,7 @@ impl LearningService {
             &summary,
             &excerpt,
             &existing_questions,
+            crate::generation::GenerationPurpose::Lesson,
         )
         .await
         .map_err(|error| {
@@ -2429,6 +2425,8 @@ impl LearningService {
             answer: activity.answer,
             explanation: activity.explanation,
             distractors: activity.distractors,
+            precision: activity.precision,
+            unit: activity.unit,
         })
     }
 
@@ -2707,24 +2705,6 @@ fn render_forbidden_descendants(descendants: &[(String, String, String)]) -> Str
     text
 }
 
-/// Matching questions expose their right-column candidates to the UI (a
-/// scrambled copy is rendered per client); every other kind stores none.
-pub(super) fn matching_candidates(activity: &crate::models::ActivityPack) -> Vec<String> {
-    if activity.kind != ActivityKind::Matching {
-        return Vec::new();
-    }
-    activity
-        .answer
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Shared payload validation for course activities and custom questions so
 /// `evaluate` keeps working for both. Returns the trimmed prompt and the
 /// persisted config. The per-kind shape rules live in
@@ -2764,23 +2744,16 @@ pub(super) fn validate_question_payload(
         section_key: None,
         difficulty: None,
         evidence: None,
+        claim: None,
+        precision: None,
+        unit: None,
     };
     pack.validate_shape((2, 5), false)
         .map_err(AppError::BadRequest)?;
     // fill_in_blank keeps its distractor rule through validate_shape; the
     // numeric tol is learner-authored so it rides in the config as given.
     // 手工编辑面没有 evidence 字段：保留原值（t2 证据回引不随编辑抹除）。
-    let matches = matching_candidates(&pack);
-    let config = StoredActivityConfig {
-        options: pack.options,
-        answer: pack.answer,
-        explanation: pack.explanation,
-        distractors: pack.distractors,
-        tol: pack.tol,
-        matches,
-        difficulty: pack.difficulty,
-        evidence: None,
-    };
+    let config = StoredActivityConfig::from_activity(&pack, None);
     Ok((prompt.to_string(), config))
 }
 

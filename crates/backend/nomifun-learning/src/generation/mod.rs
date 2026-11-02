@@ -111,7 +111,7 @@ The nine kinds and their answer shapes:
 - true_false: answer is a JSON boolean.
 - fill_in_blank: prompt contains exactly one "___" blank; answer is a JSON array of 1-3 equivalent accepted answers; distractors carries near-synonym traps (or physically adjacent quantities) that force fine discrimination.
 - multi_choice: 3-5 distinct options; answer is a JSON array of 2+ option strings, order-insensitive.
-- numeric: answer is a JSON number; "tol" is the accepted deviation (include it when the answer is measured or rounded).
+- numeric: do NOT compute or write the answer yourself. Provide "claim": {"expr": "ASCII arithmetic expression", "params": {"name": number}} (explicit * for multiplication, ^ for powers, functions sqrt/sin/cos/tan/ln/log/exp/abs, constants pi/e), plus "precision" (integer 0-10 display decimals) and "unit" ("raw" or "percent"; percent means the result is displayed as a percentage and the stored value is expr × 100). Never write "answer" or "tol": the system evaluates the claim and casts the answer key. The prompt must state exactly the parameter values bound in "params".
 - ordering: options list the items in scrambled order; answer is the same items in the CORRECT order.
 - matching: options are the left-column items; answer is an array of right-column values aligned one-to-one with options.
 - reflection: answer must be null; asks the learner to explain or apply one idea.
@@ -126,7 +126,7 @@ Rules:
 - Choice options are BARE text without letter prefixes ("A." / "B、" are added by the system automatically) — an option like "A. 权利" is WRONG, write "权利".
 - ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other).
 - Every explanation states WHY the answer is right AND why the tempting wrong options are wrong — for choice questions (single_choice/multi_choice/true_false) walk EVERY option in the explanation and say per option why it is right or wrong, not just the correct one; for geometry/function/data questions the explanation may include one ```svg block.
-- Before submitting, re-solve every question as if you were the candidate: the answer key must match your re-solution, the explanation must match the answer key, and every field must be filled in — AI-graded questions (reflection/open_question) must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
+- Before submitting, re-solve every question as if you were the candidate: the answer key must match your re-solution, the explanation must match the answer key, and every field must be filled in — AI-graded questions (reflection/open_question) must carry a real "explanation" too. For numeric questions the check is structural: every identifier in "claim.expr" is bound in "claim.params", the expression is valid ASCII arithmetic, and the prompt states the same parameter values — never restate or self-compute the numeric answer. When anything disagrees, fix it to match the re-solution before submitting.
 - Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it. A missing or empty "evidence" on an objective question is a contract violation.
 - Only test what the section bodies teach — never introduce a concept, notation or conclusion the bodies do not contain.
 - null is allowed ONLY for a reflection or open_question answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
@@ -157,10 +157,11 @@ Rules:
 - single_choice needs 2-4 distinct options and the answer must exactly equal one option.
 - true_false answer must be a JSON boolean.
 - fill_in_blank prompt contains exactly one "___" blank; answer is a JSON array of 1-3 equivalent accepted answers; provide near-synonym distractors in "distractors" to force fine discrimination.
+- numeric: do NOT compute or write the answer yourself. Provide "claim": {"expr": "ASCII arithmetic expression", "params": {"name": number}} (explicit * for multiplication, ^ for powers, functions sqrt/sin/cos/tan/ln/log/exp/abs, constants pi/e), plus "precision" (integer 0-10 display decimals) and "unit" ("raw" or "percent"; percent means the result is displayed as a percentage and the stored value is expr × 100). Never write "answer" or "tol": the system evaluates the claim and casts the answer key. The question text must state exactly the parameter values bound in "params".
 - reflection answer must be null and asks the learner to explain or apply an idea from the document.
 - Every OBJECTIVE kind carries "evidence": a verbatim quote of at most 120 characters copied word-for-word from the lesson document or cited excerpt that anchors the question.
 - The explanation walks every option of a choice question (why right / why wrong), not just the correct one.
-- Before submitting, re-solve this question as if you were the candidate: the answer key must match your re-solution and the explanation must match the answer key — a reflection question must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
+- Before submitting, re-solve this question as if you were the candidate: the answer key must match your re-solution and the explanation must match the answer key — a reflection question must carry a real "explanation" too. For numeric questions the check is structural: every identifier in "claim.expr" is bound in "claim.params", the expression is valid ASCII arithmetic, and the question text states the same parameter values — never restate or self-compute the numeric answer. When anything disagrees, fix it to match the re-solution before submitting.
 - null is allowed ONLY for a reflection answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the lesson document and its cited excerpt; never invent facts outside them.
 - Output JSON only, without Markdown fences or commentary."#;
@@ -336,7 +337,7 @@ pub(crate) struct ActivitiesOutput {
 
 
 pub(crate) use self::activities::{
-    ExistingLessonQuestion, filter_novel_activities, generate_lesson_activity,
+    ExistingLessonQuestion, GenerationPurpose, filter_novel_activities, generate_lesson_activity,
     legacy_duplicate_hit, qb_similarity_enabled, similarity_hit,
 };
 pub use self::activities::{QB_SIMILARITY_SWITCH_ENV, qb_readings};

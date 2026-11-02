@@ -145,6 +145,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     tol: None,
                     section_key: None,
                     evidence: None,
+                    claim: None,
+                    precision: None,
+                    unit: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -459,6 +462,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             tol: None,
                             section_key: None,
                             evidence: Some("「有大小有方向的量」".into()),
+                            claim: None,
+                            precision: None,
+                            unit: None,
                         },
                         ActivityPack {
                             difficulty: Some(3),
@@ -471,6 +477,27 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             tol: None,
                             section_key: None,
                             evidence: None,
+                            claim: None,
+                            precision: None,
+                            unit: None,
+                        },
+                        ActivityPack {
+                            difficulty: None,
+                            kind: ActivityKind::Numeric,
+                            prompt: "向量强度的平方？".into(),
+                            options: Vec::new(),
+                            answer: Value::Null,
+                            explanation: "6×7=42。".into(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: Some("「大小」".into()),
+                            claim: Some(crate::verify_math::NumericClaim {
+                                expr: "6*7".into(),
+                                params: Default::default(),
+                            }),
+                            precision: Some(0),
+                            unit: None,
                         },
                     ],
                     sections: Vec::new(),
@@ -496,21 +523,27 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
 
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT config_json FROM learning_activities WHERE lesson_id = ? ORDER BY position",
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT kind, config_json FROM learning_activities WHERE lesson_id = ? ORDER BY position",
         )
         .bind(lesson_id.as_str())
         .fetch_all(database.pool())
         .await
         .unwrap();
-        assert_eq!(rows.len(), 2);
-        for (config_json,) in rows {
+        assert_eq!(rows.len(), 3);
+        for (kind, config_json) in rows {
             let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
             assert_eq!(
                 config.difficulty,
                 Some(2),
                 "apply tier must cast difficulty 2 (injected wins over declared): {config_json}"
             );
+            if kind == "numeric" {
+                // w2 落库兜底：引擎给的 claim-only numeric 在 persist 面重铸。
+                assert_eq!(config.answer, json!(42.0), "{config_json}");
+                assert_eq!(config.tol, Some(0.0), "{config_json}");
+                assert!(config.claim.is_some(), "{config_json}");
+            }
         }
     }
 
@@ -529,18 +562,80 @@ teaching_style: crate::models::TeachingStyle::Standard,
 
     #[test]
     fn builtin_evaluator_does_not_trust_client_scores() {
-        let config = StoredActivityConfig {
-            options: Vec::new(),
-            matches: Vec::new(),
-            answer: Value::Bool(true),
-            explanation: "source-backed explanation".into(),
-            distractors: Vec::new(),
-            tol: None,
-            difficulty: None,
-        evidence: None,
-        };
+        let config = StoredActivityConfig::from_activity(
+            &ActivityPack {
+                kind: ActivityKind::TrueFalse,
+                prompt: "q".into(),
+                options: Vec::new(),
+                answer: Value::Bool(true),
+                explanation: "source-backed explanation".into(),
+                distractors: Vec::new(),
+                tol: None,
+                section_key: None,
+                difficulty: None,
+                evidence: None,
+                claim: None,
+                precision: None,
+                unit: None,
+            },
+            None,
+        );
         let (score, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
         assert_eq!(score, 0.0);
+    }
+
+    /// w2 判分臂语义回归：numeric 仍是 |response − answer| ≤ tol（绝对容差；
+    /// tol 缺席 = 1e-9 地板）；精确、边界内、边界外、legacy 旧行四态。
+    #[test]
+    fn numeric_evaluate_exact_within_outside_and_legacy() {
+        let config = |answer: f64, tol: Option<f64>| -> StoredActivityConfig {
+            serde_json::from_value(json!({
+                "options": [],
+                "answer": answer,
+                "explanation": "",
+                "tol": tol,
+            }))
+            .unwrap()
+        };
+        // 精确命中。
+        assert_eq!(
+            evaluate(ActivityKind::Numeric, &config(4.0, Some(0.5)), &json!(4.0))
+                .unwrap()
+                .0,
+            1.0
+        );
+        // 容差边界内（3.5 与 4.0 差 0.5，二进制精确）。
+        assert_eq!(
+            evaluate(ActivityKind::Numeric, &config(4.0, Some(0.5)), &json!(3.5))
+                .unwrap()
+                .0,
+            1.0
+        );
+        // 边界外一格（差 0.501）。
+        assert_eq!(
+            evaluate(ActivityKind::Numeric, &config(4.0, Some(0.5)), &json!(3.499))
+                .unwrap()
+                .0,
+            0.0
+        );
+        // legacy tol=None：1e-9 绝对地板——浮点噪声级差判对，1e-6 判错。
+        assert_eq!(
+            evaluate(ActivityKind::Numeric, &config(2.0, None), &json!(2.0 + 1e-12))
+                .unwrap()
+                .0,
+            1.0
+        );
+        assert_eq!(
+            evaluate(ActivityKind::Numeric, &config(2.0, None), &json!(2.0 + 1e-6))
+                .unwrap()
+                .0,
+            0.0
+        );
+        // 非数字 response：400（判分面契约不变）。
+        assert!(matches!(
+            evaluate(ActivityKind::Numeric, &config(2.0, None), &json!("2.0")),
+            Err(AppError::BadRequest(_))
+        ));
     }
 
     #[test]
@@ -731,6 +826,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
             tol: None,
             section_key: None,
         evidence: None,
+        claim: None,
+        precision: None,
+        unit: None,
         };
         let pack = CoursePack {
             title: "Shared Concepts".into(),
@@ -856,6 +954,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     tol: None,
                     section_key: None,
                     evidence: None,
+                    claim: None,
+                    precision: None,
+                    unit: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -1292,6 +1393,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         tol: None,
                         section_key: None,
                     evidence: None,
+                    claim: None,
+                    precision: None,
+                    unit: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -1448,6 +1552,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             tol: None,
                             section_key: None,
                         evidence: None,
+                        claim: None,
+                        precision: None,
+                        unit: None,
                         },
                         ActivityPack {
                             difficulty: None,
@@ -1460,6 +1567,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             tol: None,
                             section_key: None,
                         evidence: None,
+                        claim: None,
+                        precision: None,
+                        unit: None,
                         },
                     ],
                     sections: Vec::new(),
@@ -2476,6 +2586,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         tol: None,
                         section_key: None,
                     evidence: None,
+                    claim: None,
+                    precision: None,
+                    unit: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -2781,6 +2894,9 @@ fn review_log_test_pack() -> CoursePack {
                     tol: None,
                     section_key: None,
                 evidence: None,
+                claim: None,
+                precision: None,
+                unit: None,
                 }],
                 sections: Vec::new(),
             }],
@@ -7372,6 +7488,9 @@ async fn xp_node_settlement_excludes_ai_graded_questions_from_ratio() {
         tol: None,
         section_key: None,
         evidence: None,
+        claim: None,
+        precision: None,
+        unit: None,
     });
     let course = service.import_course(pack).await.unwrap();
     service.enroll(&course.course.id, &user_id).await.unwrap();
@@ -8234,6 +8353,267 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(matches!(missing, Err(AppError::NotFound(_))), "{missing:?}");
     }
 
+    /// w2：numeric claim 轨端到端——导入时系统铸值；学习者/管理面 DTO 带
+    /// precision/unit 显示元数据，claim/tol 永不出场；判错揭示按显示单位。
+    #[tokio::test]
+    async fn numeric_claim_metadata_reaches_dtos_but_claim_never_leaks() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "数值铸值".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "单利".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![ActivityPack {
+                        difficulty: None,
+                        kind: ActivityKind::Numeric,
+                        prompt: "年化 12.5%，单利 2 年的收益率（百分数）？".into(),
+                        options: Vec::new(),
+                        answer: Value::Null,
+                        explanation: "0.125 × 2 = 0.25，即 25.0%。".into(),
+                        distractors: Vec::new(),
+                        tol: None,
+                        section_key: None,
+                        evidence: Some("「单利」".into()),
+                        claim: Some(crate::verify_math::NumericClaim {
+                            expr: "rate*years".into(),
+                            params: [
+                                ("rate".to_owned(), 0.125),
+                                ("years".to_owned(), 2.0),
+                            ]
+                            .into(),
+                        }),
+                        precision: Some(1),
+                        unit: Some(crate::verify_math::NumericUnit::Percent),
+                    }],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+        let view = &detail.modules[0].lessons[0].activities[0];
+        assert_eq!(view.precision, Some(1));
+        assert_eq!(view.unit, Some(crate::verify_math::NumericUnit::Percent));
+        let view_json = serde_json::to_string(view).unwrap();
+        assert!(!view_json.contains("claim"), "{view_json}");
+        assert!(!view_json.contains("\"tol\""), "{view_json}");
+
+        service
+            .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        make_all_due(&service, &user_id).await;
+        let due = service
+            .due_reviews(&user_id, 10, &[], true, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1);
+        let question_json = serde_json::to_string(&due[0].question).unwrap();
+        assert!(question_json.contains("\"precision\":1"), "{question_json}");
+        assert!(question_json.contains("\"unit\":\"percent\""), "{question_json}");
+        assert!(!question_json.contains("claim"), "{question_json}");
+        assert!(!question_json.contains("\"tol\""), "{question_json}");
+
+        let graded = service
+            .answer_review(&due[0].id, &user_id, serde_json::json!(20.0), false, None)
+            .await
+            .unwrap();
+        assert!(!graded.correct);
+        assert_eq!(graded.correct_answer, Some(serde_json::json!(25.0)));
+        assert_eq!(graded.precision, Some(1));
+        assert_eq!(graded.unit, Some(crate::verify_math::NumericUnit::Percent));
+        let graded_json = serde_json::to_string(&graded).unwrap();
+        assert!(!graded_json.contains("claim"), "{graded_json}");
+    }
+
+    /// w2 编辑面：claim 轨 update 保留 claim/precision/unit/tol 与 evidence；
+    /// 提交不同的 answer = 手改，400 拒绝。
+    #[tokio::test]
+    async fn update_question_preserves_claim_metadata_and_rejects_answer_edits() {
+        use crate::models::UpdateQuestionRequest;
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "数值编辑".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "单利".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![ActivityPack {
+                        difficulty: None,
+                        kind: ActivityKind::Numeric,
+                        prompt: "年化 12.5%，单利 2 年的收益率（百分数）？".into(),
+                        options: Vec::new(),
+                        answer: Value::Null,
+                        explanation: "0.125 × 2 = 25.0%。".into(),
+                        distractors: Vec::new(),
+                        tol: None,
+                        section_key: None,
+                        evidence: Some("「单利」".into()),
+                        claim: Some(crate::verify_math::NumericClaim {
+                            expr: "rate*years".into(),
+                            params: [
+                                ("rate".to_owned(), 0.125),
+                                ("years".to_owned(), 2.0),
+                            ]
+                            .into(),
+                        }),
+                        precision: Some(1),
+                        unit: Some(crate::verify_math::NumericUnit::Percent),
+                    }],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+
+        // 同答案 + 改题面：接受，claim 轨元数据原样保留。
+        service
+            .update_question(
+                &activity_id,
+                &user_id,
+                UpdateQuestionRequest {
+                    prompt: "新题干：年化 12.5%，单利 2 年的收益率（%）？".into(),
+                    options: Vec::new(),
+                    answer: json!(25.0),
+                    explanation: "0.125 × 2 = 0.25，即 25.0%。".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let config_json: String =
+            sqlx::query_scalar("SELECT config_json FROM learning_activities WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        let stored: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(stored.answer, json!(25.0));
+        assert_eq!(stored.tol, Some(0.05));
+        assert_eq!(stored.precision, Some(1));
+        assert_eq!(stored.unit, Some(crate::verify_math::NumericUnit::Percent));
+        assert_eq!(stored.claim.as_ref().map(|claim| claim.expr.as_str()), Some("rate*years"));
+        assert_eq!(stored.evidence.as_deref(), Some("「单利」"));
+
+        // 手改答案：400 拒绝（提示由系统铸值）。
+        let error = service
+            .update_question(
+                &activity_id,
+                &user_id,
+                UpdateQuestionRequest {
+                    prompt: "新题干".into(),
+                    options: Vec::new(),
+                    answer: json!(24.0),
+                    explanation: "改答案".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::BadRequest(ref message) if message.contains("cannot be edited")),
+            "{error:?}"
+        );
+    }
+
+    /// w2 legacy 编辑：无 claim 的 numeric 手写 answer 可改，且存量 tol 不再
+    /// 被编辑面抹掉（今天 update 重建 config 只保 evidence 的缺陷修复）。
+    #[tokio::test]
+    async fn update_question_keeps_legacy_numeric_tol() {
+        use crate::models::UpdateQuestionRequest;
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = valid_pack();
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        // 存量 legacy 行：手写 answer + tol（无 claim 三键）。
+        sqlx::query(
+            "UPDATE learning_activities SET kind = 'numeric', config_json = ? WHERE activity_id = ?",
+        )
+        .bind(r#"{"options":[],"answer":1.5,"explanation":"e","tol":0.25}"#)
+        .bind(activity_id.as_str())
+        .execute(database.pool())
+        .await
+        .unwrap();
+        service
+            .update_question(
+                &activity_id,
+                &user_id,
+                UpdateQuestionRequest {
+                    prompt: "新 numeric 题干".into(),
+                    options: Vec::new(),
+                    answer: json!(2.5),
+                    explanation: "手写解析".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let config_json: String =
+            sqlx::query_scalar("SELECT config_json FROM learning_activities WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        let stored: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(stored.answer, json!(2.5), "legacy numeric answer remains editable");
+        assert_eq!(stored.tol, Some(0.25), "stored legacy tol must survive the edit");
+        assert!(stored.claim.is_none());
+    }
+
     /// q2 开测全链路前置：due 门（Conflict 附 N/K）→ 到期后出脱敏回合
     /// （判底零字段）。
     #[tokio::test]
@@ -8735,6 +9115,136 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 .all(|node| node.answered == 2 && node.correct == 2),
             "每节点 2 题全对"
         );
+    }
+
+    /// w2：numeric 变式——bank claim 进提示词（同表达式换参），变式答案键
+    /// 由系统按 claim 重铸（≠ bank answer，tol 不再 None）；同模板题面
+    /// 不被相似门误杀。
+    #[tokio::test]
+    async fn quiz_numeric_variants_recast_from_claim_and_skip_similarity_gate() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        // 六节点同模板 numeric bank（同题面 = 相似门必然命中）。
+        let bank_prompt = "年化 12.5%，单利 2 年的收益率（百分数）？";
+        let bank_config = r#"{"options":[],"answer":25.0,"explanation":"0.125×2=25.0%","tol":0.05,"claim":{"expr":"rate*years","params":{"rate":0.125,"years":2}},"precision":1,"unit":"percent","evidence":"「单利」"}"#;
+        for activity in &activities {
+            sqlx::query(
+                "UPDATE learning_activities SET kind = 'numeric', prompt = ?, config_json = ? WHERE activity_id = ?",
+            )
+            .bind(bank_prompt)
+            .bind(bank_config)
+            .bind(activity)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        let reply = r#"{"kind":"numeric","prompt":"年化 15%，单利 2 年的收益率（百分数）？","options":[],"claim":{"expr":"rate*years","params":{"rate":0.15,"years":2}},"precision":1,"unit":"percent","explanation":"0.15×2=30.0%","evidence":"「单利」"}"#;
+        let kb_dir = std::env::temp_dir().join("quiz-numeric-variant-test-kb");
+        let knowledge_service = Arc::new(KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                service.pool_for_tests().clone(),
+            )),
+            &kb_dir,
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(user_id.as_str()),
+            ),
+        ));
+        service.set_generation_dependencies(
+            knowledge_service,
+            ScriptedCompleter::new(reply, false),
+        );
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(round.questions.len(), 12, "6 节点 × (bank + numeric 变式)");
+        // 变式面带显示元数据，claim/tol 不出场。
+        let start_json = serde_json::to_string(&round).unwrap();
+        assert!(!start_json.contains("claim"), "{start_json}");
+        assert!(!start_json.contains("\"tol\""), "{start_json}");
+        let variant = round
+            .questions
+            .iter()
+            .find(|question| question.prompt.contains("15%"))
+            .expect("numeric variant present despite identical stems");
+        assert_eq!(variant.precision, Some(1));
+        assert_eq!(variant.unit, Some(crate::verify_math::NumericUnit::Percent));
+
+        // plan 内判分底：config_json 带 claim/precision/unit/tol，answer 重铸。
+        let plan_json: String = sqlx::query_scalar(
+            "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
+        )
+        .bind(&round.round_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        let plan_items: Vec<serde_json::Value> = serde_json::from_str(&plan_json).unwrap();
+        let variant_item = plan_items
+            .iter()
+            .find(|item| {
+                item.get("activity").and_then(|value| value.as_str())
+                    == Some(variant.activity_id.as_str())
+            })
+            .expect("variant plan row");
+        let variant_config: serde_json::Value = serde_json::from_str(
+            variant_item
+                .pointer("/variant/config_json")
+                .and_then(|value| value.as_str())
+                .expect("variant config_json"),
+        )
+        .unwrap();
+        assert_eq!(variant_config["claim"]["expr"], json!("rate*years"));
+        assert_eq!(variant_config["claim"]["params"]["rate"], json!(0.15));
+        assert_eq!(variant_config["precision"], json!(1));
+        assert_eq!(variant_config["unit"], json!("percent"));
+        assert_eq!(variant_config["tol"], json!(0.05), "变式 tol 不再是 None");
+        assert_eq!(variant_config["answer"], json!(30.0));
+        assert_ne!(variant_config["answer"], json!(25.0), "换参后答案必须变化");
+
+        let graded = service
+            .quiz_grade(
+                &user_id,
+                &course,
+                &round.round_id,
+                variant.activity_id.as_str(),
+                &json!(30.0),
+            )
+            .await
+            .unwrap();
+        assert!(graded.correct, "变式答案键 = 系统铸值");
+        assert_eq!(graded.answer, json!(30.0));
+        assert_eq!(graded.precision, Some(1));
+        assert_eq!(graded.unit, Some(crate::verify_math::NumericUnit::Percent));
+        // bank 题仍判自己的 25.0。
+        let bank = round
+            .questions
+            .iter()
+            .find(|question| question.prompt.contains("12.5%"))
+            .expect("bank numeric present");
+        let bank_graded = service
+            .quiz_grade(
+                &user_id,
+                &course,
+                &round.round_id,
+                bank.activity_id.as_str(),
+                &json!(25.0),
+            )
+            .await
+            .unwrap();
+        assert!(bank_graded.correct);
+        let outside = service
+            .quiz_grade(
+                &user_id,
+                &course,
+                &round.round_id,
+                bank.activity_id.as_str(),
+                &json!(25.2),
+            )
+            .await
+            .unwrap();
+        assert!(!outside.correct, "0.2 > tol 0.05 → 判错");
     }
 
     /// 校准（q3）：被真实推进过的卡出题时点带预测 R（Some），未推卡/变式

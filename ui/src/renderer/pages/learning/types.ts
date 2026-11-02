@@ -288,6 +288,9 @@ export interface CourseSummary {
   source_plan: CourseSourcePlanView | null;
 }
 
+/** 数值题显示单位（w2）：percent 时 answer 已按 ×100 存显示值 */
+export type NumericUnit = 'raw' | 'percent';
+
 export interface Activity {
   id: string;
   kind: ActivityKind;
@@ -295,6 +298,10 @@ export interface Activity {
   options: string[];
   /** matching 题的右列候选（按存储顺序；前端渲染时本地打乱） */
   matches: string[];
+  /** 数值题显示精度（claim 轨才有；claim 本身永不下发） */
+  precision: number | null;
+  /** 数值题显示单位（null = raw） */
+  unit: NumericUnit | null;
   /** 来源节 key；null = 跨节综合题（通用） */
   section_key: string | null;
   position: number;
@@ -370,6 +377,9 @@ export interface ReviewQuestion {
   prompt: string;
   options: string[];
   matches: string[];
+  /** 数值题揭示格式化元数据（w2；claim 永不下发） */
+  precision: number | null;
+  unit: NumericUnit | null;
 }
 
 export interface DueReview {
@@ -499,6 +509,9 @@ export interface ReviewAnswerResult {
   correct: boolean;
   feedback: string;
   correct_answer: unknown | null;
+  /** 数值题揭示格式化元数据（w2；claim 永不下发） */
+  precision: number | null;
+  unit: NumericUnit | null;
   rated: ReviewResult | null;
   /** 本次作答是否真实推进了排期；被到期门拦下的重复作答为 false */
   advanced: boolean;
@@ -517,6 +530,9 @@ export interface QuestionEntry {
   answer: unknown | null;
   /** 填空题的近义干扰项，仅用于展示 */
   distractors: string[];
+  /** 数值题显示精度/单位（w2；claim 仍不下发） */
+  precision: number | null;
+  unit: NumericUnit | null;
   explanation: string | null;
   due_at: number | null;
   overdue: boolean;
@@ -579,6 +595,9 @@ export interface GeneratedLessonActivity {
   answer: unknown;
   explanation: string;
   distractors: string[];
+  /** 数值题显示精度/单位（w2；draft 预览不暴露 claim） */
+  precision: number | null;
+  unit: NumericUnit | null;
 }
 
 export interface SetTagsRequest {
