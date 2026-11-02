@@ -2392,9 +2392,18 @@ impl VoiceCompanionRuntime {
         let current = events.snapshot();
         if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() { return; }
         if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
+            let idle_secs = effective_idle_timeout(events.as_ref());
+            let _ = d.begin_listening_window_with_secs(idle_secs);
             let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
-            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(events.as_ref()) }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, scope);
+            drop(d);
+            let pb = playback.clone();
+            let ev = events.clone();
+            let cue_gen = playback.generation_id();
+            tokio::spawn(async move {
+                voice_feedback::play(&pb, &ev, VoiceCueKind::ListeningReminder, cue_gen).await;
+            });
         }
     }
 
@@ -2515,6 +2524,18 @@ impl VoiceCompanionRuntime {
                 break;
             }
         }
+
+        // Pre-LLM Sanitizer: if input contains purely punctuation or whitespace without any CJK or alphanumeric content,
+        // drop it locally immediately without wasting LLM tokens or credit quota.
+        let has_semantic_content = clean_input.chars().any(|c| {
+            c.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c)
+        });
+        if !has_semantic_content {
+            info!(raw = ?text_opt, "ASR produced only non-semantic punctuation or whitespace; dropping locally to save quota");
+            Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
+            return;
+        }
+
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
 
@@ -3029,6 +3050,52 @@ impl VoiceCompanionRuntime {
                 IntentType::Ignore => {
                     drop(d);
                     Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
+                }
+                IntentType::Dismiss => {
+                    drop(d);
+                    let goodbye_text = dec.reply_tts.as_deref().unwrap_or("好的，您先忙。有需要随时叫我。");
+                    info!(reply = %goodbye_text, "LLM decided Dismiss intent; speaking farewell and ending session");
+                    let mut driver_guard = driver.lock().await;
+                    driver_guard.reset();
+                    pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    let sleep_gen = playback.generation_id();
+                    let _ = event_tx.send_scoped(
+                        VoiceCompanionEvent::SessionEnded {
+                            reason: VoiceSessionEndReason::UserStop,
+                        },
+                        &control_scope,
+                    );
+                    drop(driver_guard);
+                    let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+                    let is_default_dismiss = goodbye_text == "好的，再见"
+                        || goodbye_text == "好的，您先忙。有需要随时叫我。"
+                        || goodbye_text.eq_ignore_ascii_case("goodbye");
+
+                    if event_tx.feedback().speak_replies {
+                        if is_default_dismiss {
+                            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+                            let playback_clone = playback.clone();
+                            let event_tx_clone = event_tx.clone();
+                            tokio::spawn(async move {
+                                let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
+                            });
+                        } else {
+                            let tts_clone = tts.clone();
+                            let playback_clone = playback.clone();
+                            let reply = goodbye_text.to_string();
+                            let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                            tokio::spawn(async move {
+                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                            });
+                        }
+                    }
+                    voice_feedback::schedule(
+                        playback.clone(),
+                        event_tx.clone(),
+                        VoiceCueKind::Sleep,
+                        sleep_gen,
+                    );
+                    return;
                 }
                 IntentType::Chat => {
                     let _ = d.handle_event(AcousticEvent::IntentChat);

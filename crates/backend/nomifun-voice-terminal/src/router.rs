@@ -466,7 +466,8 @@ impl OpenAiCompatibleVoiceRouter {
                 {}\n\
                 ```\n\
                 Field specifications and constraints:\n\
-                - intent_type: Must be one of \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\".\n\
+                - intent_type: Must be one of \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" | \"dismiss\".\n\
+                - When intent_type is \"dismiss\", reply_tts must be provided (polite concise farewell, <= 25 words). Used when the user explicitly requests to end the call, leave, or dismiss the assistant (e.g. \"hang up\", \"goodbye\", \"dismiss\", \"that's all for now\"), without any follow-up task. Never classify as dismiss if the user asks a question or gives a task!\n\
                 - When intent_type is \"chat\", reply_tts must be provided (concise spoken answer, <= 60 words). Used for casual conversation, daily greetings, general knowledge, or clarifying questions. Natural language reply and understood_request must default to English unless the user explicitly requests another language; respect explicit user requests for a different language while preserving original proper nouns, code, and numbers.\n\
                 - Capabilities requiring tools, such as real-time weather (with a specific city or location), reading/writing/searching files, desktop or system operations, code execution, multi-step business logic, must be classified as \"agent_task\" and delegated to the software session. Strictly forbid fabricating real-time data without tools (e.g. fake weather, fake file contents).\n\
                 - If the user asks about weather without specifying a city (e.g. \"how is the weather today\"), classify as \"chat\", and ask a single friendly follow-up question in reply_tts (e.g. \"Which city's weather would you like to check?\").\n\
@@ -485,7 +486,8 @@ impl OpenAiCompatibleVoiceRouter {
                 {}\n\
                 ```\n\
                 字段说明与约束：\n\
-                - intent_type: 必须为 \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" 之一。\n\
+                - intent_type: 必须为 \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" | \"dismiss\" 之一。\n\
+                - 当 intent_type 为 \"dismiss\" 时，必须提供 reply_tts (简短礼貌告别语，<=25字，如“好的，您先忙”、“好的，随时叫我”)。用于用户明确表达结束通话、告别、离开或让助理退下时（例如“退下吧”、“你先撤吧”、“拜拜”、“退出语音”），且不含后续新任务。如果用户提出问题或下发任务，严禁归为 dismiss！\n\
                 - 当 intent_type 为 \"chat\" 时，必须提供 reply_tts (简短口语回答，<=60字)。用于闲聊短答、日常问候、知识常识或追问澄清。\n\
                 - 涉及实时天气（且指定了具体城市或位置）、文件读写查找、桌面或系统操作、代码执行、多步业务等需要工具的能力，必须归为 \"agent_task\"，委派给软件会话执行。严禁在没有工具的情况下编造实时数据（如假天气、假文件内容）。\n\
                 - 如果用户询问天气但未指明城市（如“今天天气怎么样”），应归为 \"chat\"，并在 reply_tts 中一句话友好追问（例如“请问你想查询哪个城市的天气？”）。\n\

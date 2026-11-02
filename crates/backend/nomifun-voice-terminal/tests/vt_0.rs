@@ -121,7 +121,7 @@ fn test_c3_voice_decision_schema_golden() {
         .expect("intent_type enum must be array");
     let mut intents: Vec<&str> = intent_enums.iter().filter_map(|v| v.as_str()).collect();
     intents.sort();
-    assert_eq!(intents, vec!["agent_task", "chat", "ignore", "task_control"]);
+    assert_eq!(intents, vec!["agent_task", "chat", "dismiss", "ignore", "task_control"]);
 
     // Verify task_control_action enum
     let action_enums = props["task_control_action"]["enum"]
@@ -192,6 +192,15 @@ fn test_c3_voice_decision_schema_valid_examples() {
     assert!(validate_voice_decision(&valid_ignore).is_ok());
     let dec_ignore: VoiceDecision = serde_json::from_value(valid_ignore).unwrap();
     assert_eq!(dec_ignore.intent_type, IntentType::Ignore);
+
+    let valid_dismiss = json!({
+        "intent_type": "dismiss",
+        "reply_tts": "好的，您先忙。有需要随时叫我。"
+    });
+    assert!(validate_voice_decision(&valid_dismiss).is_ok());
+    let dec_dismiss: VoiceDecision = serde_json::from_value(valid_dismiss).unwrap();
+    assert_eq!(dec_dismiss.intent_type, IntentType::Dismiss);
+    assert_eq!(dec_dismiss.reply_tts.as_deref(), Some("好的，您先忙。有需要随时叫我。"));
 }
 
 #[test]

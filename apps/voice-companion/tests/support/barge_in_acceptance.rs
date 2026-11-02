@@ -400,3 +400,72 @@ async fn kws_barge_in_emits_barge_in_feedback_cue() {
     }).await;
     assert!(hit.is_ok(), "barge-in must emit a BargeIn feedback cue event");
 }
+
+#[test]
+fn test_direct_control_short_phrase_and_codeswitching_dismissal() {
+    use nomifun_api_types::voice::{classify_voice_direct_control, VoiceDirectControlAction};
+
+    let custom = vec![];
+    // Homophone typos / spoken prefixes ending with dismissal core
+    assert_eq!(
+        classify_voice_direct_control("谢解退下吧。", &custom),
+        Some(VoiceDirectControlAction::DismissSession),
+        "typo prefix with dismiss suffix must match"
+    );
+    assert_eq!(
+        classify_voice_direct_control("OK 退下吧", &custom),
+        Some(VoiceDirectControlAction::DismissSession),
+        "code-switching 'OK 退下吧' must match"
+    );
+    assert_eq!(
+        classify_voice_direct_control("Bye 啦", &custom),
+        Some(VoiceDirectControlAction::DismissSession),
+        "code-switching 'Bye 啦' must match"
+    );
+    assert_eq!(
+        classify_voice_direct_control("谢了退下吧", &custom),
+        Some(VoiceDirectControlAction::DismissSession)
+    );
+
+    // Negative guards: CLI/technical commands must NOT match dismissal
+    assert_eq!(
+        classify_voice_direct_control("How do I exit vim?", &custom),
+        None,
+        "technical question mentioning exit must NOT dismiss"
+    );
+    assert_eq!(
+        classify_voice_direct_control("The script returned exit code 1", &custom),
+        None,
+        "error description mentioning exit must NOT dismiss"
+    );
+    assert_eq!(
+        classify_voice_direct_control("Don't end the call", &custom),
+        None,
+        "negated dismissal must NOT dismiss"
+    );
+}
+
+#[test]
+fn test_pre_llm_sanitizer_filter_rules() {
+    let is_semantic = |text: &str| {
+        text.chars().any(|c| c.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c))
+    };
+
+    // Non-semantic noise (pure punctuation / whitespace) must be rejected
+    assert!(!is_semantic("。"));
+    assert!(!is_semantic("，"));
+    assert!(!is_semantic("？？？"));
+    assert!(!is_semantic("..."));
+    assert!(!is_semantic("   \n\t  "));
+    assert!(!is_semantic("——"));
+
+    // Valid single-character and short commands must be preserved
+    assert!(is_semantic("好。"));
+    assert!(is_semantic("对"));
+    assert!(is_semantic("行！"));
+    assert!(is_semantic("停"));
+    assert!(is_semantic("嗯"));
+    assert!(is_semantic("No."));
+    assert!(is_semantic("K."));
+    assert!(is_semantic("Go"));
+}

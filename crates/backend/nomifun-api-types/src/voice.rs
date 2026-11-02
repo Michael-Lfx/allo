@@ -373,7 +373,7 @@ pub struct VoiceDialogueSettings {
 /// Shared wire contract used by the daemon and the host's durable decision authority.
 #[derive(Debug,Clone,Copy,PartialEq,Eq,PartialOrd,Ord,Serialize,Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum VoiceIntentType {Ignore,Chat,AgentTask,TaskControl}
+pub enum VoiceIntentType {Ignore,Chat,AgentTask,TaskControl,Dismiss}
 
 #[derive(Debug,Clone,PartialEq,Eq,Serialize,Deserialize)]
 pub struct VoiceDecision {
@@ -403,7 +403,7 @@ pub fn parse_voice_decision(raw:&str)->Result<VoiceDecision,String> {
     if value.get("requires_confirmation").is_some_and(|v|!v.is_boolean()) {return Err("model_response_invalid".into());}
     let decision:VoiceDecision=serde_json::from_value(value).map_err(|_|"model_response_invalid")?;
     if decision.understood_request.as_deref()==Some("")
-        || (decision.intent_type==VoiceIntentType::Chat && decision.reply_tts.as_deref().is_none_or(|s|s.trim().is_empty())) {
+        || ((decision.intent_type==VoiceIntentType::Chat || decision.intent_type==VoiceIntentType::Dismiss) && decision.reply_tts.as_deref().is_none_or(|s|s.trim().is_empty())) {
         return Err("model_response_invalid".into());
     }
     Ok(decision)
@@ -1699,10 +1699,11 @@ fn is_exact_or_polite_wrapped(normalized: &str, core: &str) -> bool {
     }
     const PREFIXES: &[&str] = &[
         "请你", "请您", "麻烦你", "那你就", "ok please", "okay please",
-        "好的", "行了", "好了", "那你", "那就", "麻烦", "请", "please", "ok", "okay"
+        "好的", "行了", "好了", "那你", "那就", "麻烦", "请", "谢了", "谢谢",
+        "那先", "你先", "行吧", "成吧", "please", "ok", "okay", "alright", "then"
     ];
     const SUFFIXES: &[&str] = &[
-        "一下", "please", "吧", "了", "呀"
+        "一下", "please", "吧", "了", "呀", "啦", "呗", "哈", "先", "咯"
     ];
 
     for &p in PREFIXES {
@@ -1782,10 +1783,10 @@ pub fn classify_voice_direct_control(
         }
     }
 
-    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals
+    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals, questions
     const META_GUARDS: &[&str] = &[
-        "翻译", "translate", "英文", "english", "小说", "台词", "角色", "如果我说", "如果说", "假如", "会怎样", "做什么",
-        "什么意思", "meaning", "what does", "after", "之后", "然后再", "接着", "then"
+        "翻译", "translate", "英文", "english", "小说", "台词", "角色", "剧本", "如果我说", "如果说", "假如", "会怎样", "做什么",
+        "什么", "meaning", "what does", "what is", "after", "之后", "然后再", "接着", "then", "会议", "海阔天空"
     ];
     for guard in META_GUARDS {
         if lower.contains(guard) {
@@ -1805,9 +1806,12 @@ pub fn classify_voice_direct_control(
     // 5. Match Dismiss Session
     const ZH_DISMISS_CORE: &[&str] = &[
         "退下吧", "退下", "退一下", "退一下吧", "退下啦", "退退退",
-        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了"
+        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧"
     ];
-    const EN_DISMISS_CORE: &[&str] = &["end the call", "hang up", "exit voice", "goodbye flowy", "dismiss"];
+    const EN_DISMISS_CORE: &[&str] = &[
+        "end the call", "hang up", "exit voice", "goodbye flowy", "dismiss",
+        "bye", "byebye", "goodbye"
+    ];
 
     for core in ZH_DISMISS_CORE.iter().chain(EN_DISMISS_CORE.iter()) {
         if is_exact_or_polite_wrapped(&lower, core) {
@@ -1819,6 +1823,18 @@ pub fn classify_voice_direct_control(
         let c = custom.trim().to_ascii_lowercase();
         if !c.is_empty() && is_exact_or_polite_wrapped(&lower, &c) {
             return Some(VoiceDirectControlAction::DismissSession);
+        }
+    }
+
+    // 6. Short imperative dismissal fallback: for short utterances (<= 8 CJK chars or <= 4 words),
+    // if the utterance ends with a primary dismissal core and contains no negation/guards, match dismiss directly!
+    // This catches speech recognition homophones/typos such as "谢解退下吧", "OK 退下吧", "Bye 啦".
+    let char_count = clean.chars().count();
+    if char_count <= 8 {
+        for core in ZH_DISMISS_CORE.iter().chain(EN_DISMISS_CORE.iter()) {
+            if clean.ends_with(core) || lower.ends_with(core) {
+                return Some(VoiceDirectControlAction::DismissSession);
+            }
         }
     }
 
@@ -2014,6 +2030,10 @@ mod task_control_classifier_tests {
             ("闭嘴", Some(StopSpeaking)),
             ("stop speaking", Some(StopSpeaking)),
             ("please stop speaking", Some(StopSpeaking)),
+            ("谢解退下吧。", Some(DismissSession)),
+            ("OK 退下吧", Some(DismissSession)),
+            ("Bye 啦", Some(DismissSession)),
+            ("谢了退下吧", Some(DismissSession)),
         ];
         for (input, expected) in positives {
             assert_eq!(
@@ -2074,5 +2094,17 @@ mod task_control_classifier_tests {
         assert_eq!(from_empty.tts_volume, 100);
         assert!(from_empty.wake_enabled);
         assert_eq!(from_empty.dismiss_phrases.len(), 3);
+    }
+
+    #[test]
+    fn test_dismiss_decision_parsing() {
+        let json = r#"{"intent_type": "dismiss", "understood_request": "用户请求退出通话", "reply_tts": "好的，您先忙。有需要随时叫我。"}"#;
+        let decision = parse_voice_decision(json).expect("parse dismiss decision");
+        assert_eq!(decision.intent_type, VoiceIntentType::Dismiss);
+        assert_eq!(decision.reply_tts.as_deref(), Some("好的，您先忙。有需要随时叫我。"));
+
+        // Missing reply_tts must fail validation for dismiss
+        let invalid_json = r#"{"intent_type": "dismiss", "understood_request": "用户请求退出通话"}"#;
+        assert!(parse_voice_decision(invalid_json).is_err());
     }
 }

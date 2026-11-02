@@ -60,6 +60,7 @@ fn test_vt_2_02_parse_decision_payloads() {
         (IntentType::Chat, r#"{"intent_type": "chat", "reply_tts": "我是 Flowy。"}"#),
         (IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "已启动单元测试。", "task_goal": "运行测试"}"#),
         (IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "正在导出数据库备份。", "task_goal": "导出备份", "requires_confirmation": true}"#),
+        (IntentType::Dismiss, r#"{"intent_type": "dismiss", "reply_tts": "好的，您先忙。有需要随时叫我。"}"#),
     ];
 
     for (expected, mock_json) in &test_cases {
