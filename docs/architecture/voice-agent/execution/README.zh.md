@@ -1,3 +1,5 @@
+> **2026-11-03 语音伴侣深度体验优化与会话解耦架构方案**：[架构设计与执行计划](voice-vocal-cues-session-decoupling-and-speed-plan-2026-11-03.zh.md)。深度闭环三大真机体验瓶颈：① 打断与唤醒采用明确人声微短语回执（打断播报“你说/Go ahead”，唤醒播报“我在/I'm here”），结合 0ms 盲区释放彻底消灭“盲听失知”；② 斩断 `ensure_default_voice_conversation` 静态单例查表与前端候选残留，落实首页/新建页唤醒强制动态新建独立会话；③ 修复 Edge TTS 语速丢失 Bug 并将对话基线语速出厂优化至符合人类日常对话节奏的 1.3x。
+>
 > **2026-11-02 语义退出、ASR 前置净化与交互式声学反馈架构方案**：[架构设计与技术规范](voice-semantic-dismiss-and-acoustic-feedback-architecture-2026-11-02.zh.md)。深度攻坚语音通话中“非标退下口令导致闲聊不退出”、“纯标点符号穿透消耗大模型积分”以及“未听清判定缺乏声音回执”三大真机断层，确立了双轨退出收敛（短句尾缀规则秒退 + LLM 原生 Dismiss 意图兜底）、纯数学标点零网络短路门禁，以及闭麦熔断疑问回执架构，筑牢复合意图与声学自激死循环防线。
 
 > **2026-11-02 基于 KWS 的免 AEC 唤醒打断架构与开源方案调研**：[架构设计与开源调研报告](kws-barge-in-and-acoustic-architecture-2026-11-02.zh.md)。深度调研 Bolt-Pet、Wyoming-Satellite、OVOS 与 Amazon Alexa SLT 学术方案，确立了 Flowy 极简且高可靠的“KWS 唤醒词/插话词打断（免 AEC）”架构方案，系统阐明了“文本预检动态屏蔽 + 3 音节门禁 + 播放态 Hard Reset”四道防自激防线。
