@@ -20,6 +20,13 @@ describe('dynamic import route recovery', () => {
   test('recognizes browser module-load failures but not ordinary route errors', () => {
     expect(isDynamicImportFailure(new TypeError('Failed to fetch dynamically imported module'))).toBe(true);
     expect(isDynamicImportFailure(new Error('Importing a module script failed'))).toBe(true);
+    expect(
+      isDynamicImportFailure(
+        new SyntaxError(
+          "The requested module '/src/renderer/pages/guid/components/GuidEntryFlyout.tsx' does not provide an export named 'entryFlyoutAlignTop'",
+        ),
+      ),
+    ).toBe(true);
     expect(isDynamicImportFailure(new Error('route component crashed'))).toBe(false);
   });
 

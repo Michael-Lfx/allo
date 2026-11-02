@@ -8,7 +8,10 @@ const styles = readFileSync(new URL('./index.module.css', import.meta.url), 'utf
 
 describe('guid phase-one visual sample', () => {
   test('keeps the composer as the primary stage without changing its behavior seams', () => {
-    expect(page.includes('styles.heroTitlePrimary')).toBe(true);
+    expect(page.includes('<HeroSection />')).toBe(false);
+    expect(page.includes('onStartFromLocal={() => void handleLinkWorkspace()}')).toBe(true);
+    expect(page.includes("if (next === 'studio')")).toBe(false);
+    expect(page.includes('onOpenLocalDialog={() => void handleLinkWorkspace()}')).toBe(true);
     expect(page.includes('onPaste={guidInput.onPaste}')).toBe(true);
     expect(page.includes('onSend={handleComposerSend}')).toBe(true);
     expect(page.includes('const handleComposerSend = send.sendMessageHandler;')).toBe(true);
@@ -47,5 +50,7 @@ describe('guid phase-one visual sample', () => {
     expect(picker.includes('WORKSPACE_PICKER_POPOVER_Z_INDEX = 10020')).toBe(true);
     expect(picker.includes('zIndex: WORKSPACE_PICKER_POPOVER_Z_INDEX')).toBe(true);
     expect(workspaceFootnote.includes("t('common.filePicker.chooseDifferentFolder')")).toBe(true);
+    expect(workspaceFootnote.includes('onClick={handleBrowseWorkspace}')).toBe(true);
+    expect(workspaceFootnote.includes('onOpenLocalDialog()')).toBe(true);
   });
 });

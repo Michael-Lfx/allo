@@ -252,7 +252,7 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
           ) : (
             <div className={styles.drawerEmptyState}>
               {skills.length === 0
-                ? t('guid.drawer.skillEmpty', { defaultValue: 'No Skills are available for this runtime.' })
+                ? t('guid.drawer.skillEmpty', { defaultValue: 'No skills installed yet.' })
                 : t('guid.drawer.skillNoMatch', { defaultValue: 'No Skills match the current search.' })}
             </div>
           )}

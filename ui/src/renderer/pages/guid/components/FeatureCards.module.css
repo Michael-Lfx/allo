@@ -1,0 +1,212 @@
+.board {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.78fr);
+  grid-template-rows: 156px 156px;
+  gap: 12px;
+  width: 100%;
+}
+
+.entry,
+.studio {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--color-fill-2) 55%, var(--color-bg-1));
+  transition: background-color 220ms ease;
+}
+
+.studio {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.entry:hover,
+.studio:hover {
+  background: color-mix(in srgb, var(--color-text-1) 5%, color-mix(in srgb, var(--color-fill-2) 55%, var(--color-bg-1)));
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  align-self: stretch;
+  min-height: 0;
+  padding: 16px 22px;
+  text-align: left;
+}
+
+.build {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.create {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.mark {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 8px;
+}
+
+.entryTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.chevron {
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-2);
+}
+
+.entryDescription {
+  margin: 4px 0 0;
+  max-width: 46%;
+  color: var(--color-text-3);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.sketch {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  width: min(44%, 196px);
+  height: auto;
+  transform: translateY(-50%);
+  pointer-events: none;
+  overflow: visible;
+}
+
+.sketchFloat {
+  transform-box: fill-box;
+  animation: sketchFloat 3.8s ease-in-out infinite;
+}
+
+.slabSides,
+.slabTop,
+.sheetMid,
+.sheetFront {
+  transform-box: fill-box;
+  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.build:hover .slabSides {
+  transform: translate(5px, 4px);
+}
+
+.build:hover .slabTop {
+  transform: translate(-8px, -14px);
+}
+
+.create:hover .sheetMid {
+  transform: translate(-7px, -6px);
+}
+
+.create:hover .sheetFront {
+  transform: translate(-16px, -14px);
+}
+
+.folder {
+  width: 112px;
+  height: auto;
+  margin: 0 0 16px;
+  overflow: visible;
+}
+
+.folderSheets {
+  transform-box: fill-box;
+  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.studio:hover .folderSheets {
+  transform: translateY(-14px);
+}
+
+@keyframes sketchFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.studio {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  text-align: center;
+}
+
+.entry:focus-visible,
+.studio:focus-visible {
+  outline: 2px solid rgb(var(--primary-6));
+  outline-offset: 2px;
+}
+
+.studioTitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .board {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  .build,
+  .create,
+  .studio {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .studio {
+    min-height: 220px;
+  }
+
+  .entryDescription {
+    max-width: 58%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sketchFloat,
+  .slabSides,
+  .slabTop,
+  .sheetMid,
+  .sheetFront,
+  .folderSheets,
+  .folder {
+    animation: none;
+    transition: none;
+  }
+}

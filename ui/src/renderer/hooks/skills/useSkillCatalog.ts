@@ -41,6 +41,19 @@ function mapCatalogEntry(entry: {
   };
 }
 
+/**
+ * Composer pickers list skills installed into the Flowy library.
+ * Shipped builtins stay available to the model, but they are not choices
+ * until a copy is installed. Skills only discovered from `~/.agents/skills`
+ * or a workspace checkout are not installed either.
+ */
+export function isInstalledPickerSkill(
+  skill: Pick<SkillCatalogEntry, 'source' | 'sourceKey'>,
+): boolean {
+  if (skill.source === 'extension' || skill.source === 'mcp') return true;
+  return skill.source === 'user' && !skill.sourceKey;
+}
+
 export function useSkillCatalog(enabled = true) {
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([]);
   const [loading, setLoading] = useState(false);

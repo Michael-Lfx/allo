@@ -181,7 +181,7 @@ const ConversationShell: React.FC = () => {
     <PendingConversationProvider>
       <div className='relative flex size-full min-h-0'>
         {/* 隐藏右侧的会话列表侧边栏，只保留主内容区域 */}
-        <div className='relative flex-1 min-w-0 min-h-0 flex flex-col'>
+        <div className='relative flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden'>
           <Outlet />
           <PendingConversationOverlay />
         </div>

@@ -28,6 +28,18 @@ describe('Guid homepage single-screen layout', () => {
     expect(source.includes('QuickActionButtons')).toBe(false);
   });
 
+  test('places the sidebar wordmark above the homepage cards', () => {
+    const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
+    const primaryStageIndex = source.indexOf('className={styles.guidPrimaryStage}');
+    const brandIndex = source.indexOf('<GuidHomeBrand');
+    const shortcutIndex = source.indexOf('<GuidVideoShortcut');
+    const featureIndex = source.indexOf('<FeatureCards');
+
+    expect(brandIndex).toBeGreaterThan(primaryStageIndex);
+    expect(shortcutIndex).toBeGreaterThan(brandIndex);
+    expect(featureIndex).toBeGreaterThan(shortcutIndex);
+  });
+
   test('allows vertical scroll on guidContainer so short viewports can reach editor-host content', () => {
     const css = readSource(new URL('../index.module.css', import.meta.url));
     const block = css.match(/\.guidContainer\s*\{[^}]*\}/)?.[0] ?? '';
