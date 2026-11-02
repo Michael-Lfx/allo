@@ -154,7 +154,7 @@
     "selectedSkillCount": "{{count}} selected",
     "skillNoDescription": "No description.",
     "skillLoadFailed": "Skills could not be loaded. Try again later.",
-    "skillEmpty": "No Skills are available for this runtime.",
+    "skillEmpty": "No skills installed yet.",
     "skillHint": "Selected Skills apply to this conversation only."
   },
   "flyout": {

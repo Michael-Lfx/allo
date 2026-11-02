@@ -8,21 +8,16 @@ import type { Preset, PresetReference } from '@/common/types/agent/presetTypes';
 import type { SkillCatalogEntry } from '@/renderer/hooks/skills/useSkillCatalog';
 import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import FlowySearch from '@renderer/components/base/FlowySearch';
-import { WORKSPACE_PICKER_POPOVER_Z_INDEX } from '@/renderer/components/workspace/WorkspacePickerPopover';
 import PresetAvatar from '@/renderer/pages/settings/PresetSettings/PresetAvatar';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
-import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
+import { entryFlyoutPositionStyle, useEntryFlyoutBox } from './entryFlyoutPlacement';
 
 export type GuidEntryFlyoutMode = 'preset' | 'skills';
-
-const FLYOUT_WIDTH = 320;
-const FLYOUT_GAP = 0;
-const FLYOUT_MARGIN = 8;
-const FLYOUT_MAX_HEIGHT = 440;
 
 export interface GuidEntryFlyoutProps {
   mode: GuidEntryFlyoutMode;
@@ -40,34 +35,6 @@ export interface GuidEntryFlyoutProps {
   onManage: () => void;
 }
 
-type FlyoutBox = {
-  left: number;
-  top: number;
-  width: number;
-  maxHeight: number;
-};
-
-/** Top of the open primary row, so the submenu's top edge lines up with it. */
-export const entryFlyoutAlignTop = (root: ParentNode | null, fallback: number): number => {
-  const row = root?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
-  return row?.getBoundingClientRect().top ?? fallback;
-};
-
-export const measureEntryFlyout = (anchor: DOMRect, alignTop = anchor.top): FlyoutBox => {
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-  const width = Math.min(FLYOUT_WIDTH, Math.max(0, viewportWidth - FLYOUT_MARGIN * 2));
-  const spaceRight = viewportWidth - anchor.right - FLYOUT_GAP - FLYOUT_MARGIN;
-  const spaceLeft = anchor.left - FLYOUT_GAP - FLYOUT_MARGIN;
-  const placeRight = spaceRight >= width || spaceRight >= spaceLeft;
-  const left = placeRight
-    ? Math.min(Math.max(FLYOUT_MARGIN, anchor.right + FLYOUT_GAP), Math.max(FLYOUT_MARGIN, viewportWidth - width - FLYOUT_MARGIN))
-    : Math.max(FLYOUT_MARGIN, anchor.left - FLYOUT_GAP - width);
-  const top = Math.max(FLYOUT_MARGIN, Math.min(alignTop, viewportHeight - FLYOUT_MARGIN - 48));
-  const maxHeight = Math.min(FLYOUT_MAX_HEIGHT, Math.max(48, viewportHeight - top - FLYOUT_MARGIN));
-  return { left, top, width, maxHeight };
-};
-
 export const GuidAnchoredFlyout = React.forwardRef<
   HTMLDivElement,
   {
@@ -77,23 +44,7 @@ export const GuidAnchoredFlyout = React.forwardRef<
     children: React.ReactNode;
   }
 >(function GuidAnchoredFlyout({ anchorRef, label, testId, children }, ref) {
-  const [box, setBox] = useState<FlyoutBox | null>(null);
-
-  useLayoutEffect(() => {
-    const update = () => {
-      const anchor = anchorRef.current;
-      if (!anchor) return;
-      const rect = anchor.getBoundingClientRect();
-      setBox(measureEntryFlyout(rect, entryFlyoutAlignTop(anchor, rect.top)));
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [anchorRef]);
+  const box = useEntryFlyoutBox(anchorRef, true);
 
   if (typeof document === 'undefined') return null;
 
@@ -104,16 +55,7 @@ export const GuidAnchoredFlyout = React.forwardRef<
       data-testid={testId}
       role='dialog'
       aria-label={label}
-      style={{
-        position: 'fixed',
-        left: box?.left ?? -9999,
-        top: box?.top ?? FLYOUT_MARGIN,
-        width: box?.width ?? FLYOUT_WIDTH,
-        maxHeight: box?.maxHeight ?? FLYOUT_MAX_HEIGHT,
-        overflowY: 'auto',
-        visibility: box ? 'visible' : 'hidden',
-        zIndex: WORKSPACE_PICKER_POPOVER_Z_INDEX,
-      }}
+      style={{ ...entryFlyoutPositionStyle(box), overflowY: 'auto' }}
     >
       {children}
     </div>,
@@ -141,27 +83,11 @@ const GuidEntryFlyout = React.forwardRef<HTMLDivElement, GuidEntryFlyoutProps>(f
 ) {
   const { t, i18n } = useTranslation();
   const [query, setQuery] = useState('');
-  const [box, setBox] = useState<FlyoutBox | null>(null);
+  const box = useEntryFlyoutBox(anchorRef, true);
 
   useEffect(() => {
     setQuery('');
   }, [mode]);
-
-  useLayoutEffect(() => {
-    const update = () => {
-      const anchor = anchorRef.current;
-      if (!anchor) return;
-      const rect = anchor.getBoundingClientRect();
-      setBox(measureEntryFlyout(rect, entryFlyoutAlignTop(anchor, rect.top)));
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [anchorRef, mode]);
 
   const filteredPresets = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -259,7 +185,7 @@ const GuidEntryFlyout = React.forwardRef<HTMLDivElement, GuidEntryFlyoutProps>(f
       return (
         <div className={styles.entryFlyoutEmpty}>
           {skills.length === 0
-            ? t('guid.drawer.skillEmpty', { defaultValue: '当前运行环境没有可用的 Skill。' })
+            ? t('guid.drawer.skillEmpty', { defaultValue: '还没有已安装的技能。' })
             : t('guid.drawer.skillNoMatch', { defaultValue: '没有匹配当前搜索条件的 Skill。' })}
         </div>
       );
@@ -320,15 +246,7 @@ const GuidEntryFlyout = React.forwardRef<HTMLDivElement, GuidEntryFlyoutProps>(f
           ? t('guid.drawer.presetTab', { defaultValue: '设定' })
           : t('guid.drawer.skillsTab', { defaultValue: 'Skills' })
       }
-      style={{
-        position: 'fixed',
-        left: box?.left ?? -9999,
-        top: box?.top ?? FLYOUT_MARGIN,
-        width: box?.width ?? FLYOUT_WIDTH,
-        maxHeight: box?.maxHeight ?? FLYOUT_MAX_HEIGHT,
-        visibility: box ? 'visible' : 'hidden',
-        zIndex: WORKSPACE_PICKER_POPOVER_Z_INDEX,
-      }}
+      style={entryFlyoutPositionStyle(box)}
     >
       <button
         type='button'

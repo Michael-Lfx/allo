@@ -13,9 +13,9 @@ describe('Nomi Skill load delivery', () => {
     expect(source.includes('onSendWithSkills={onSendWithSkillsHandler}')).toBe(true);
     expect(source.includes('skillChips={skillChips}')).toBe(true);
     expect(source.includes('onSkillChipsChange={setSkillChips}')).toBe(true);
-    expect(sendBoxSource.includes("skillsButtonTestId='sendbox-adjust-skills'")).toBe(true);
-    expect(sendBoxSource.includes('PresetPickerDrawer')).toBe(true);
-    expect(sendBoxSource.includes('hidePreset')).toBe(true);
+    expect(sendBoxSource.includes("key: 'skills'")).toBe(true);
+    expect(sendBoxSource.includes('GuidEntryFlyout')).toBe(true);
+    expect(sendBoxSource.includes('onToggleSkill={handleToggleCatalogSkill}')).toBe(true);
   });
 
   test('keeps a failed explicit Skill load observable to the shared composer recovery path', () => {

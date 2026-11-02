@@ -154,7 +154,7 @@
     "selectedSkillCount": "已选择 {{count}} 个",
     "skillNoDescription": "暂无描述。",
     "skillLoadFailed": "Skills 暂时无法加载，请稍后重试。",
-    "skillEmpty": "当前运行环境没有可用的 Skill。",
+    "skillEmpty": "还没有已安装的技能。",
     "skillHint": "选择的 Skills 只应用于当前对话。"
   },
   "flyout": {

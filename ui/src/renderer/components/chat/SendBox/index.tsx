@@ -1,6 +1,7 @@
 
 
 import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import type { IMcpServer } from '@/common/config/storage';
 import type { ConversationId, MessageId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import AtFileMenu from '@/renderer/components/chat/AtFileMenu';
@@ -14,9 +15,12 @@ import {
   useSlashLauncherController,
   type SlashLauncherSelectionContext,
 } from '@/renderer/hooks/chat/useSlashLauncherController';
-import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
+import { isInstalledPickerSkill, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
+import { useOptionalConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
+import { ensureBackendMcpCatalog, isMcpServerSelectable } from '@/renderer/hooks/mcp/catalog';
+import { fetchPresetCatalog, PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { warmupConversation } from '@/renderer/pages/conversation/utils/warmupConversation';
 import { buildAtFileInsertion, getActiveAtFileQuery, getAllAtFileQueries } from '@/renderer/utils/chat/atFileQuery';
@@ -27,7 +31,7 @@ import type { FileOrFolderItem } from '@/renderer/utils/file/fileTypes';
 import { filterWorkspaceMentionItems } from '@/renderer/utils/file/workspaceMentions';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { blurActiveElement, shouldBlockMobileInputFocus } from '@/renderer/utils/ui/focus';
-import { Button, Input, Tag } from '@arco-design/web-react';
+import { Button, Checkbox, Input, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
@@ -38,6 +42,9 @@ import {
 } from '@/common/chat/slash/launcher';
 import type { TFunction } from 'i18next';
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
+import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { useCompositionInput } from '@renderer/hooks/chat/useCompositionInput';
 import { useConfig } from '@renderer/hooks/config/useConfig';
@@ -57,9 +64,12 @@ import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { resolveCreditsBubbleState } from '@/renderer/utils/credits/creditsBubbleModel';
 import classNames from 'classnames';
 import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
+import WorkspacePickerPopover from '@/renderer/components/workspace/WorkspacePickerPopover';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
-import ComposerEntryStrip from '@/renderer/pages/guid/components/ComposerEntryStrip';
-import PresetPickerDrawer from '@/renderer/pages/guid/components/PresetPickerDrawer';
+import GuidEntryFlyout, { GuidAnchoredFlyout } from '@/renderer/pages/guid/components/GuidEntryFlyout';
+import { entryFlyoutPositionStyle, useEntryFlyoutBox } from '@/renderer/pages/guid/components/entryFlyoutPlacement';
+import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
+import guidStyles from '@/renderer/pages/guid/index.module.css';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
 import ComposerSkillTokenInput, {
@@ -107,6 +117,11 @@ const constVoid = (): void => undefined;
 const MAX_SINGLE_LINE_CHARACTERS = 800;
 const BTW_COMMAND_RE = /^\/btw(?:\s+([\s\S]*))?$/i;
 const COMPOSER_MENU_BORDER_COLOR = 'color-mix(in srgb, var(--color-border-2) 68%, var(--color-bg-1))';
+
+type ComposerAddFlyout = 'preset' | 'skills' | 'knowledge' | 'mcp';
+
+const isComposerAddFlyoutKey = (key: string | undefined): key is Exclude<ComposerAddFlyout, 'mcp'> =>
+  key === 'preset' || key === 'skills' || key === 'knowledge';
 
 const getSelectedItemMatchKeys = (item: FileSelectionItem): string[] => {
   if (typeof item === 'string') {
@@ -368,6 +383,7 @@ const SendBox: React.FC<{
   const effectiveLockMultiLine = lockMultiLine && !isMobileCompact;
   const effectiveDefaultMultiLine = defaultMultiLine && !isMobileCompact;
   const conversationContext = useConversationContextSafe();
+  const navigate = useNavigate();
   const { t, i18n } = useTranslation();
   const { balance, authenticated, isFetchingBalance, lastRefreshAt } = useCredits();
   const [blockedTriggerCount, setBlockedTriggerCount] = useState(0);
@@ -389,10 +405,30 @@ const SendBox: React.FC<{
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [addMenuActiveIndex, setAddMenuActiveIndex] = useState(0);
-  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [addFlyout, setAddFlyout] = useState<ComposerAddFlyout | null>(null);
+  const [mcpServers, setMcpServers] = useState<IMcpServer[]>([]);
   const isInputActive = isInputFocused;
   const { activeBorderColor, inactiveBorderColor } = useInputFocusRing();
   const containerRef = useRef<HTMLDivElement>(null);
+  const addMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const addMenuPopoverRef = useRef<HTMLDivElement | null>(null);
+  const addMenuFlyoutRef = useRef<HTMLDivElement | null>(null);
+  const mcpFlyoutRef = useRef<HTMLDivElement | null>(null);
+  const mcpFlyoutBox = useEntryFlyoutBox(addMenuPopoverRef, addFlyout === 'mcp', '[data-testid="sendbox-mcp-menu-btn"]');
+  const addFlyoutSuppressedRef = useRef<string | null>(null);
+  const mcpOpenedAtRef = useRef(0);
+  const history = useOptionalConversationHistoryContext();
+  const { data: presetCatalog = [] } = useSWR(
+    conversationContext ? PRESET_CATALOG_SWR_KEY : null,
+    fetchPresetCatalog,
+  );
+  const selectedPresetId = history?.conversations.find(
+    (conversation) => conversation.id === conversationContext?.conversation_id,
+  )?.preset_id;
+  const bindAddMenuTools = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    addMenuTriggerRef.current = node.querySelector<HTMLElement>('.sendbox-composer-plus-btn');
+  }, []);
   // Outer wrapper ref (the `relative` shell around `.sendbox-panel`). Used as the
   // Tauri native drag-drop hit-test scope so the catch includes floating children
   // that live OUTSIDE the panel box — notably PinnedPlan, rendered as a sibling
@@ -489,6 +525,7 @@ const SendBox: React.FC<{
     () => {
       setAddMenuActiveIndex(0);
       setIsAddMenuOpen(true);
+      window.requestAnimationFrame(() => tokenInputRef.current?.focus());
     },
     []
   );
@@ -941,9 +978,13 @@ const SendBox: React.FC<{
 
   const canPickSkills = !isVoiceConversation && Boolean(onSendWithSkills && onSkillChipsChange);
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(canPickSkills);
+  const pickerSkills = useMemo(
+    () => catalogSkills.filter(isInstalledPickerSkill),
+    [catalogSkills],
+  );
   const handleToggleCatalogSkill = useCallback(
     (skillId: string) => {
-      const skill = catalogSkills.find((candidate) => candidate.skillId === skillId);
+      const skill = pickerSkills.find((candidate) => candidate.skillId === skillId);
       if (!skill || !onSkillChipsChange) {
         return;
       }
@@ -958,7 +999,7 @@ const SendBox: React.FC<{
           : [...skillChips, chip]
       );
     },
-    [catalogSkills, i18n.language, onSkillChipsChange, skillChips, t]
+    [pickerSkills, i18n.language, onSkillChipsChange, skillChips, t]
   );
   const launcherItems = useMemo<SlashLauncherItem[]>(
     () => [
@@ -974,7 +1015,7 @@ const SendBox: React.FC<{
         name: command.name,
         description: getSlashCommandDescription(command, t),
       })),
-      ...catalogSkills.map((skill) => {
+      ...pickerSkills.map((skill) => {
         const display = resolveSkillDisplay(
           {
             name: skill.name,
@@ -994,7 +1035,7 @@ const SendBox: React.FC<{
         };
       }),
     ],
-    [builtinSlashCommands, catalogSkills, i18n.language, slash_commands, t],
+    [builtinSlashCommands, pickerSkills, i18n.language, slash_commands, t],
   );
 
   const orderedLauncherItems = useMemo(
@@ -1080,7 +1121,7 @@ const SendBox: React.FC<{
       }
     },
     onSelectSkill: (item) => {
-      const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
+      const skill = pickerSkills.find((candidate) => candidate.skillId === item.id);
       if (!skill || !onSkillChipsChange) {
         return;
       }
@@ -1125,34 +1166,98 @@ const SendBox: React.FC<{
     [slashController.filteredItems, t]
   );
 
+  const showConversationAddMenu = Boolean(conversationContext?.conversation_id);
+  const loadedMcpServerIds = useMemo(
+    () =>
+      (conversationContext?.loadedMcpStatuses ?? [])
+        .filter((item) => item.status === 'loaded')
+        .map((item) => item.mcp_server_id),
+    [conversationContext?.loadedMcpStatuses],
+  );
+
+  useEffect(() => {
+    if (!showConversationAddMenu) return;
+    void ensureBackendMcpCatalog()
+      .then(({ allServers }) => {
+        setMcpServers(allServers.filter(isMcpServerSelectable));
+      })
+      .catch((error) => {
+        console.error('[SendBox] Failed to load MCP catalog:', error);
+        setMcpServers([]);
+      });
+  }, [showConversationAddMenu]);
+
   const addMenuItems = useMemo<SlashCommandMenuItem[]>(
     () => [
       {
         key: 'files',
         label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
-        section: t('common.add'),
-        icon: <FlowyIcon name='paperclip' size={17} />,
+        icon: <FlowyIcon name='paperclip' size={16} />,
       },
+      ...(showConversationAddMenu
+        ? [
+            {
+              key: 'preset',
+              label: t('guid.drawer.presetTab', { defaultValue: 'Experts' }),
+              icon: <FlowyIcon name='graduationCap' size={16} />,
+              trailing: <FlowyIcon name='right' size={14} />,
+            },
+          ]
+        : []),
+      ...(canPickSkills
+        ? [
+            {
+              key: 'skills',
+              label: t('guid.entry.skills', { defaultValue: 'Use skills' }),
+              icon: <FlowyIcon name='puzzle' size={16} />,
+              trailing: <FlowyIcon name='right' size={14} />,
+            },
+          ]
+        : []),
+      ...(showConversationAddMenu
+        ? [
+            {
+              key: 'knowledge',
+              label: t('knowledge.control.label', { defaultValue: 'Knowledge' }),
+              icon: <FlowyIcon name='book' size={16} />,
+              trailing: <FlowyIcon name='right' size={14} />,
+            },
+          ]
+        : []),
       ...(enableGoalMenu
         ? [
             {
               key: 'goal',
               label: t('conversation.goal.chip.label', { defaultValue: 'Goal' }),
-              description:
-                goalLauncherItem?.description ??
-                t('conversation.goal.menu.description', {
-                  defaultValue: 'Set a goal to keep pursuing',
-                }),
-              icon: <FlowyIcon name='aiming' size={17} />,
+              icon: <FlowyIcon name='aiming' size={16} />,
             },
           ]
         : []),
     ],
-    [enableGoalMenu, goalLauncherItem, t]
+    [canPickSkills, enableGoalMenu, showConversationAddMenu, t]
   );
+
+  const openAddFlyout = useCallback((key: ComposerAddFlyout) => {
+    addFlyoutSuppressedRef.current = null;
+    setAddFlyout(key);
+  }, []);
 
   const handleAddMenuSelect = useCallback(
     (item: SlashCommandMenuItem) => {
+      const flyoutKey = item.key;
+      if (isComposerAddFlyoutKey(flyoutKey)) {
+        setAddFlyout((current) => {
+          if (current === flyoutKey) {
+            addFlyoutSuppressedRef.current = flyoutKey;
+            return null;
+          }
+          addFlyoutSuppressedRef.current = null;
+          return flyoutKey;
+        });
+        return;
+      }
+      addFlyoutSuppressedRef.current = null;
+      setAddFlyout(null);
       setIsAddMenuOpen(false);
       if (item.key === 'files') {
         onAddFiles?.();
@@ -1176,19 +1281,41 @@ const SendBox: React.FC<{
       if (!isAddMenuOpen || addMenuItems.length === 0) {
         return false;
       }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setIsAddMenuOpen(false);
-        return true;
+      if (event.key === 'Escape' || event.key === 'ArrowLeft') {
+        if (addFlyout) {
+          event.preventDefault();
+          addFlyoutSuppressedRef.current = addFlyout === 'mcp' ? '*' : addFlyout;
+          setAddFlyout(null);
+          return true;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setIsAddMenuOpen(false);
+          return true;
+        }
+        return false;
+      }
+      if (event.key === 'ArrowRight' || (event.key === 'Enter' && !event.shiftKey)) {
+        const activeItem = addMenuItems[addMenuActiveIndex];
+        if (event.key === 'ArrowRight' && !isComposerAddFlyoutKey(activeItem?.key)) {
+          return false;
+        }
+        if (isComposerAddFlyoutKey(activeItem?.key)) {
+          event.preventDefault();
+          openAddFlyout(activeItem.key);
+          return true;
+        }
       }
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        setAddMenuActiveIndex((current) => (current + 1) % addMenuItems.length);
+        setAddMenuActiveIndex((current) => (current < 0 ? 0 : (current + 1) % addMenuItems.length));
         return true;
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault();
-        setAddMenuActiveIndex((current) => (current - 1 + addMenuItems.length) % addMenuItems.length);
+        setAddMenuActiveIndex((current) =>
+          current < 0 ? addMenuItems.length - 1 : (current - 1 + addMenuItems.length) % addMenuItems.length,
+        );
         return true;
       }
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -1201,8 +1328,40 @@ const SendBox: React.FC<{
       }
       return false;
     },
-    [addMenuActiveIndex, addMenuItems, handleAddMenuSelect, isAddMenuOpen]
+    [addFlyout, addMenuActiveIndex, addMenuItems, handleAddMenuSelect, isAddMenuOpen, openAddFlyout]
   );
+
+  const activeAddMenuKey = addMenuItems[addMenuActiveIndex]?.key;
+  useEffect(() => {
+    if (!isAddMenuOpen) {
+      addFlyoutSuppressedRef.current = null;
+      setAddFlyout(null);
+      return;
+    }
+    if (addMenuActiveIndex < 0) return;
+    setAddFlyout((current) => (current === 'mcp' ? null : current));
+    if (!isComposerAddFlyoutKey(activeAddMenuKey)) {
+      addFlyoutSuppressedRef.current = null;
+      setAddFlyout(null);
+      return;
+    }
+    if (addFlyoutSuppressedRef.current === activeAddMenuKey) {
+      setAddFlyout((current) => (current === 'mcp' ? null : current));
+      return;
+    }
+    const key = activeAddMenuKey;
+    const timer = window.setTimeout(() => {
+      if (addFlyoutSuppressedRef.current === key) return;
+      setAddFlyout(key);
+    }, 160);
+    return () => window.clearTimeout(timer);
+  }, [activeAddMenuKey, addMenuActiveIndex, isAddMenuOpen]);
+
+  useEffect(() => {
+    if (slashController.isOpen || conversationExport.isOpen) {
+      setIsAddMenuOpen(false);
+    }
+  }, [conversationExport.isOpen, slashController.isOpen]);
 
   const isCommandMenuOpen = conversationExport.isOpen || slashController.isOpen;
   const isAtFileMenuOpen =
@@ -1210,12 +1369,12 @@ const SendBox: React.FC<{
     Boolean(activeAtFileQuery) &&
     activeAtFileTokenKey !== dismissedAtFileToken &&
     !isCommandMenuOpen;
-  const isComposerMenuOpen = isCommandMenuOpen || isAddMenuOpen || isAtFileMenuOpen;
+  const isComposerMenuOpen = isCommandMenuOpen || isAtFileMenuOpen;
   const visibleAtFileMenuItems = useMemo(
     () => filterWorkspaceMentionItems(workspaceMentionItems, deferredAtFileQuery),
     [deferredAtFileQuery, workspaceMentionItems]
   );
-  const isOverlayOpen = isCommandMenuOpen || isAddMenuOpen || btwCommand.isOpen || isAtFileMenuOpen;
+  const isOverlayOpen = isCommandMenuOpen || btwCommand.isOpen || isAtFileMenuOpen;
 
   const handleTokenInputChange = (value: string) => {
     if (historyNavigationIndex !== null) {
@@ -2242,6 +2401,8 @@ const SendBox: React.FC<{
     isProcessing &&
     (!allowSendWhileLoading || compactActions || !hasDraftToSend || disabled || isUploading);
 
+  const matchesHomeComposer = !className?.includes('terminal-sendbox-compact');
+
   const composerSubmitCluster = (
     <div
       className={classNames('relative flex items-center', isShakingSend && 'credits-shake')}
@@ -2310,10 +2471,29 @@ const SendBox: React.FC<{
       dragHandlersTarget='panel'
       isOverlayOpen={isOverlayOpen}
       overflowTarget='panel'
-      className={className}
-      panelClassName={`sendbox-panel p-16px border-3 b bg-dialog-fill-0 b-solid rd-20px ${
-        isFileDragging ? 'b-dashed sendbox-panel--dragging' : ''
-      }`}
+      className={classNames(
+        className,
+        matchesHomeComposer && guidStyles.guidInputCardWrap,
+        matchesHomeComposer && isInputActive && guidStyles.guidInputCardWrapActive,
+        matchesHomeComposer && 'guid-input-card-shell',
+        matchesHomeComposer && isFileDragging && 'b b-solid border-dashed guid-input-card-shell--dragging',
+      )}
+      style={
+        matchesHomeComposer && isFileDragging
+          ? {
+              backgroundColor: 'color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-2))',
+              borderColor: 'rgb(var(--primary-6))',
+              borderWidth: '1px',
+            }
+          : undefined
+      }
+      panelClassName={classNames(
+        'sendbox-panel',
+        matchesHomeComposer
+          ? `${guidStyles.guidInputInner} p-12px bg-dialog-fill-0`
+          : 'p-16px border-3 b bg-dialog-fill-0 b-solid rd-20px',
+        !matchesHomeComposer && isFileDragging && 'b-dashed sendbox-panel--dragging',
+      )}
       before={
         pinnedPlan ? (
           <div
@@ -2324,23 +2504,36 @@ const SendBox: React.FC<{
           </div>
         ) : null
       }
-      panelStyle={{
-        ...(isFileDragging
+      panelStyle={
+        matchesHomeComposer
           ? {
-              backgroundColor: 'color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-2))',
-              borderColor: 'rgb(var(--primary-6))',
-              borderWidth: '1px',
+              borderColor: isFileDragging
+                ? 'rgb(var(--primary-6))'
+                : isComposerMenuOpen
+                  ? COMPOSER_MENU_BORDER_COLOR
+                  : isInputActive
+                    ? activeBorderColor
+                    : inactiveBorderColor,
+              boxShadow: 'none',
             }
           : {
-              borderWidth: '1px',
-              borderColor: isComposerMenuOpen
-                ? COMPOSER_MENU_BORDER_COLOR
-                : isInputActive
-                  ? activeBorderColor
-                  : inactiveBorderColor,
-              boxShadow: 'none',
-            }),
-      }}
+              ...(isFileDragging
+                ? {
+                    backgroundColor: 'color-mix(in srgb, rgb(var(--primary-6)) 8%, var(--color-bg-2))',
+                    borderColor: 'rgb(var(--primary-6))',
+                    borderWidth: '1px',
+                  }
+                : {
+                    borderWidth: '1px',
+                    borderColor: isComposerMenuOpen
+                      ? COMPOSER_MENU_BORDER_COLOR
+                      : isInputActive
+                        ? activeBorderColor
+                        : inactiveBorderColor,
+                    boxShadow: 'none',
+                  }),
+            }
+      }
     >
       <BtwOverlay
         answer={btwCommand.answer}
@@ -2369,19 +2562,9 @@ const SendBox: React.FC<{
           />
         </div>
       )}
-      {(isAddMenuOpen || isCommandMenuOpen) && (
+      {isCommandMenuOpen && (
         <div className='absolute left-0 right-0 bottom-[calc(100%+10px)] z-70'>
-          {isAddMenuOpen ? (
-            <SlashCommandMenu
-              title={t('common.add')}
-              compact
-              items={addMenuItems}
-              activeIndex={addMenuActiveIndex}
-              onHoverItem={setAddMenuActiveIndex}
-              onSelectItem={handleAddMenuSelect}
-              emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-            />
-          ) : conversationExport.step === 'menu' ? (
+          {conversationExport.step === 'menu' ? (
             <SlashCommandMenu
               title={t('messages.export.menuTitle')}
               hint={t('messages.export.menuHint')}
@@ -2429,18 +2612,6 @@ const SendBox: React.FC<{
           </div>
         )}
         <div style={{ width: '100%' }}>
-          {canPickSkills ? (
-            <ComposerEntryStrip
-              isPresetAgent={false}
-              hidePreset
-              forceOpaque
-              skillsButtonTestId='sendbox-adjust-skills'
-              onChoosePreset={() => undefined}
-              onFree={() => undefined}
-              onAdjustSkills={() => setSkillPickerOpen(true)}
-              activeSkillCount={skillChips.length}
-            />
-          ) : null}
           {prefix}
           {context}
           {/* 编辑消息提示条 / Editing message banner */}
@@ -2532,6 +2703,7 @@ const SendBox: React.FC<{
         >
           {isSingleLine && (
             <div
+              ref={bindAddMenuTools}
               className={
                 isMobileCompact
                   ? 'flex-shrink-0 sendbox-tools sendbox-tools-mobile-compact'
@@ -2566,14 +2738,20 @@ const SendBox: React.FC<{
                     : ((bottomHint as string | undefined) ??
                       t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }))
               }
-              className={`pl-0 pr-0 focus:shadow-none m-0 !bg-transparent lh-[20px] text-14px ${isMobile ? 'sendbox-input--mobile' : ''}`}
+              className={`pl-0 pr-0 focus:shadow-none m-0 !bg-transparent lh-[20px] text-14px ${matchesHomeComposer ? guidStyles.lightPlaceholder : ''} ${isMobile ? 'sendbox-input--mobile' : ''}`}
               dataTestId='sendbox-input'
               singleLine={isSingleLine}
               style={{
                 minHeight: isSingleLine ? (isMobile ? '22px' : '20px') : '40px',
-                maxHeight: isSingleLine ? (isMobile ? '22px' : '20px') : '200px',
+                maxHeight: isSingleLine
+                  ? (isMobile ? '22px' : '20px')
+                  : matchesHomeComposer
+                    ? (isMobile ? '160px' : '400px')
+                    : '200px',
                 overflowY: isSingleLine ? 'hidden' : 'auto',
-                marginBottom: isSingleLine ? 0 : '8px',
+                marginBottom: isSingleLine || matchesHomeComposer ? 0 : '8px',
+                paddingLeft: matchesHomeComposer && !isSingleLine ? '7px' : undefined,
+                paddingRight: matchesHomeComposer && !isSingleLine ? 0 : undefined,
               }}
               onPaste={onPaste}
               onMouseDown={markMobileFocusIntent}
@@ -2614,9 +2792,11 @@ const SendBox: React.FC<{
             </div>
           )}
         </div>
+        {matchesHomeComposer && !isSingleLine && <div style={{ height: 12, flexShrink: 0 }} aria-hidden='true' />}
         {!isSingleLine && (
           <div className='sendbox-toolbar flex items-center justify-between gap-2 w-full'>
             <div
+              ref={bindAddMenuTools}
               className={
                 isMobileCompact
                   ? 'flex-shrink-0 sendbox-tools sendbox-tools-mobile-compact'
@@ -2639,25 +2819,138 @@ const SendBox: React.FC<{
           </div>
         )}
         {footer&&<div className='mt-8px w-full' data-testid='sendbox-footer'>{footer}</div>}
+        <WorkspacePickerPopover
+          className={guidStyles.addMenuPopover}
+          open={isAddMenuOpen}
+          onOpenChange={setIsAddMenuOpen}
+          triggerRef={addMenuTriggerRef}
+          preferredPlacement='above'
+          minWidth={200}
+          maxWidth={200}
+          contentRef={addMenuPopoverRef}
+          accessoryRef={addMenuFlyoutRef}
+          extraAccessoryRef={mcpFlyoutRef}
+          testId='sendbox-add-menu'
+          onEscape={(event) => {
+            if (!addFlyout) return false;
+            event.preventDefault();
+            addFlyoutSuppressedRef.current = addFlyout === 'mcp' ? '*' : addFlyout;
+            setAddFlyout(null);
+            return true;
+          }}
+        >
+          <SlashCommandMenu
+            title={t('common.add')}
+            compact
+            items={addMenuItems}
+            activeIndex={addMenuActiveIndex}
+            onHoverItem={setAddMenuActiveIndex}
+            onSelectItem={handleAddMenuSelect}
+            emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+          />
+          {mcpServers.length > 0 && (
+            <button
+              type='button'
+              className={[guidStyles.addMenuSheetRow, addFlyout === 'mcp' ? guidStyles.addMenuSheetRowActive : ''].filter(Boolean).join(' ')}
+              onPointerEnter={() => {
+                mcpOpenedAtRef.current = Date.now();
+                addFlyoutSuppressedRef.current = activeAddMenuKey ?? '*';
+                setAddMenuActiveIndex(-1);
+                setAddFlyout('mcp');
+              }}
+              onClick={() => {
+                if (addFlyout === 'mcp' && Date.now() - mcpOpenedAtRef.current > 250) {
+                  addFlyoutSuppressedRef.current = '*';
+                  setAddFlyout(null);
+                  return;
+                }
+                mcpOpenedAtRef.current = Date.now();
+                addFlyoutSuppressedRef.current = activeAddMenuKey ?? '*';
+                setAddMenuActiveIndex(-1);
+                setAddFlyout('mcp');
+              }}
+              aria-label={t('mcp.label')}
+              aria-expanded={addFlyout === 'mcp'}
+              aria-haspopup='dialog'
+              data-testid='sendbox-mcp-menu-btn'
+            >
+              <FlowyIcon name='tool' size={16} />
+              <span className={`${guidStyles.addMenuSheetLabel} text-13px`}>{t('mcp.label')}</span>
+              <FlowyIcon name='right' size={14} />
+            </button>
+          )}
+        </WorkspacePickerPopover>
+        {addFlyout === 'preset' || addFlyout === 'skills' ? (
+          <GuidEntryFlyout
+            ref={addMenuFlyoutRef}
+            mode={addFlyout}
+            anchorRef={addMenuPopoverRef}
+            presets={presetCatalog}
+            localeKey={i18n.language || 'en-US'}
+            selectedPresetId={selectedPresetId}
+            skills={pickerSkills}
+            selectedSkillIds={skillChips.map((skill) => skill.skillId)}
+            onToggleSkill={handleToggleCatalogSkill}
+            skillsLoading={catalogSkillsLoading}
+            skillsError={catalogSkillsError}
+            onSelectPreset={() => undefined}
+            onFree={() => undefined}
+            onManage={() => {
+              const target = addFlyout === 'skills' ? '/skills' : '/settings/presets';
+              setAddFlyout(null);
+              setIsAddMenuOpen(false);
+              void navigate(target);
+            }}
+          />
+        ) : null}
+        {addFlyout === 'knowledge' && conversationContext?.conversation_id ? (
+          <GuidAnchoredFlyout
+            ref={addMenuFlyoutRef}
+            anchorRef={addMenuPopoverRef}
+            label={t('knowledge.control.label', { defaultValue: 'Knowledge' })}
+            testId='sendbox-knowledge-control'
+          >
+            <KnowledgeControl
+              presentation='panel'
+              target={{ kind: 'conversation', id: conversationContext.conversation_id }}
+            />
+          </GuidAnchoredFlyout>
+        ) : null}
+        {addFlyout === 'mcp' && typeof document !== 'undefined'
+          ? createPortal(
+              <div
+                ref={mcpFlyoutRef}
+                className={guidStyles.entryFlyout}
+                data-testid='sendbox-mcp-menu'
+                role='dialog'
+                aria-label={t('mcp.label')}
+                style={entryFlyoutPositionStyle(mcpFlyoutBox)}
+              >
+                <div className={guidStyles.entryFlyoutList}>
+                  {mcpServers.map((server) => (
+                    <button
+                      key={`mcp-${server.mcp_server_id}`}
+                      type='button'
+                      className={guidStyles.entryFlyoutAction}
+                    >
+                        <Checkbox
+                          checked={loadedMcpServerIds.includes(server.mcp_server_id)}
+                          className='guid-mcp-selection-checkbox'
+                          onClick={(event: React.MouseEvent) => event.preventDefault()}
+                          onChange={() => undefined}
+                        />
+                      <span className={guidStyles.entryFlyoutActionLabel}>
+                        {server.name}
+                        {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
     </ComposerSurface>
-    {canPickSkills ? (
-      <PresetPickerDrawer
-        visible={skillPickerOpen}
-        onClose={() => setSkillPickerOpen(false)}
-        presets={[]}
-        localeKey={i18n.language || 'en-US'}
-        mode='skills'
-        onModeChange={() => undefined}
-        skillsOnly
-        skills={catalogSkills}
-        selectedSkillIds={skillChips.map((skill) => skill.skillId)}
-        onToggleSkill={handleToggleCatalogSkill}
-        skillsLoading={catalogSkillsLoading}
-        skillsError={catalogSkillsError}
-        onSelectPreset={() => undefined}
-        onFree={() => undefined}
-      />
-    ) : null}
     </>
   );
 };

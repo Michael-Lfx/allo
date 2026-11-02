@@ -18,10 +18,19 @@ describe('homepage entry flyout', () => {
     expect(flyout.includes('guid.flyout.manageSkills')).toBe(true);
     expect(flyout.includes('PresetTagFilterBar')).toBe(false);
     expect(flyout.includes('<Drawer')).toBe(false);
+    const placement = readSource(new URL('./entryFlyoutPlacement.ts', import.meta.url));
+    const sendbox = readSource(new URL('../../../components/chat/SendBox/index.tsx', import.meta.url));
+
     expect(flyout.includes('height: box?.maxHeight')).toBe(false);
-    expect(flyout.includes('entryFlyoutAlignTop(anchor, rect.top)')).toBe(true);
-    expect(flyout.includes('top: box?.top ?? FLYOUT_MARGIN')).toBe(true);
-    expect(flyout.includes('maxHeight: box?.maxHeight ?? FLYOUT_MAX_HEIGHT')).toBe(true);
+    expect(flyout.includes('useEntryFlyoutBox(anchorRef, true)')).toBe(true);
+    expect(flyout.includes('entryFlyoutPositionStyle(box)')).toBe(true);
+    expect(flyout.includes('entryFlyoutAlignTop')).toBe(false);
+    expect(placement.includes('bottom: round(Math.max(0, viewportHeight - alignBottom))')).toBe(true);
+    expect(placement.includes("rowSelector = '[role=\"option\"][aria-selected=\"true\"]'")).toBe(true);
+    expect(actionRow.includes('useEntryFlyoutBox(')).toBe(true);
+    expect(actionRow.includes('[data-testid="guid-mcp-menu-btn"]')).toBe(true);
+    expect(sendbox.includes('useEntryFlyoutBox(')).toBe(true);
+    expect(sendbox.includes('[data-testid="sendbox-mcp-menu-btn"]')).toBe(true);
     expect(page.includes('<GuidEntryFlyout')).toBe(true);
     expect(page.includes("navigate(target)")).toBe(true);
     expect(page.includes("entryFlyout === 'skills' ? '/skills' : '/settings/presets'")).toBe(true);

@@ -22,7 +22,7 @@ import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
 import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
-import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
+import { isInstalledPickerSkill, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
@@ -605,9 +605,13 @@ const GuidPage: React.FC = () => {
   );
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
+  const pickerSkills = useMemo(
+    () => catalogSkills.filter(isInstalledPickerSkill),
+    [catalogSkills],
+  );
   const handleToggleHomeSkill = useCallback(
     (skillId: string) => {
-      const skill = catalogSkills.find((candidate) => candidate.skillId === skillId);
+      const skill = pickerSkills.find((candidate) => candidate.skillId === skillId);
       if (!skill) return;
       const chip = composerChipFromCatalog(
         skill,
@@ -621,7 +625,7 @@ const GuidPage: React.FC = () => {
         return [...current, chip];
       });
     },
-    [catalogSkills, localeKey, t],
+    [pickerSkills, localeKey, t],
   );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
@@ -646,7 +650,7 @@ const GuidPage: React.FC = () => {
             }]
           : []),
         ...(supportsHomeSkillLoading
-          ? catalogSkills.map((skill) => {
+          ? pickerSkills.map((skill) => {
               const display = resolveSkillDisplay(
                 {
                   name: skill.name,
@@ -667,7 +671,7 @@ const GuidPage: React.FC = () => {
             })
           : []),
       ],
-    [catalogSkills, localeKey, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
+    [pickerSkills, localeKey, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
   );
   const homeSlashController = useSlashLauncherController({
     input: homeTokenInputState.projection,
@@ -701,7 +705,7 @@ const GuidPage: React.FC = () => {
       }
     },
     onSelectSkill: (item) => {
-      const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
+      const skill = pickerSkills.find((candidate) => candidate.skillId === item.id);
       if (!skill) {
         return;
       }
@@ -1481,7 +1485,7 @@ const GuidPage: React.FC = () => {
             presets={agentSelection.presets}
             localeKey={localeKey}
             selectedPresetId={selectedPresetRecord?.preset_id}
-            skills={supportsHomeSkillLoading ? catalogSkills : []}
+            skills={supportsHomeSkillLoading ? pickerSkills : []}
             selectedSkillIds={homeSkillChips.map((skill) => skill.skillId)}
             onToggleSkill={supportsHomeSkillLoading ? handleToggleHomeSkill : undefined}
             skillsLoading={catalogSkillsLoading}

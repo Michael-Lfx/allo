@@ -71,7 +71,7 @@ describe('PinnedPlan composer chip', () => {
     expect(nomiSendBoxSource.includes('topRightTools=')).toBe(false);
 
     const composerSurfaceIndex = sendBoxSource.indexOf('<ComposerSurface');
-    const panelIndex = sendBoxSource.indexOf('panelClassName={`sendbox-panel');
+    const panelIndex = sendBoxSource.indexOf("panelClassName={classNames(");
     const beforeIndex = sendBoxSource.indexOf('before={');
     const anchorIndex = sendBoxSource.indexOf("data-testid='sendbox-plan-anchor'");
     const pinnedIndex = sendBoxSource.indexOf("data-testid='sendbox-internal-status-row'");

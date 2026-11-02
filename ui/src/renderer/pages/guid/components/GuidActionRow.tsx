@@ -3,8 +3,8 @@
 import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import type { IMcpServer } from '@/common/config/storage';
 import type { McpServerId } from '@/common/types/ids';
-import { measureEntryFlyout, entryFlyoutAlignTop } from './GuidEntryFlyout';
-import React, { useLayoutEffect, useState } from 'react';
+import { entryFlyoutPositionStyle, useEntryFlyoutBox } from './entryFlyoutPlacement';
+import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
@@ -16,9 +16,7 @@ import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
-import WorkspacePickerPopover, {
-  WORKSPACE_PICKER_POPOVER_Z_INDEX,
-} from '@/renderer/components/workspace/WorkspacePickerPopover';
+import WorkspacePickerPopover from '@/renderer/components/workspace/WorkspacePickerPopover';
 import { Button, Checkbox } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
@@ -143,7 +141,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const addMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
   const mcpFlyoutRef = React.useRef<HTMLDivElement>(null);
   const [mcpFlyoutOpen, setMcpFlyoutOpen] = useState(false);
-  const [mcpFlyoutBox, setMcpFlyoutBox] = useState<ReturnType<typeof measureEntryFlyout> | null>(null);
+  const mcpFlyoutBox = useEntryFlyoutBox(addMenuPopoverRef, mcpFlyoutOpen, '[data-testid="guid-mcp-menu-btn"]');
   const mcpOpenedAtRef = React.useRef(0);
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
@@ -181,25 +179,6 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   React.useEffect(() => {
     if (addMenuActiveIndex >= 0) setMcpFlyoutOpen(false);
   }, [addMenuActiveIndex]);
-
-  useLayoutEffect(() => {
-    if (!mcpFlyoutOpen) return;
-    const update = () => {
-      const anchor = addMenuPopoverRef?.current;
-      if (!anchor) return;
-      const rect = anchor.getBoundingClientRect();
-      const trigger = anchor.querySelector<HTMLElement>('[data-testid="guid-mcp-menu-btn"]');
-      const alignTop = trigger?.getBoundingClientRect().top ?? entryFlyoutAlignTop(anchor, rect.top);
-      setMcpFlyoutBox(measureEntryFlyout(rect, alignTop));
-    };
-    update();
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return () => {
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [addMenuPopoverRef, mcpFlyoutOpen]);
 
   const openMcpFlyout = () => {
     mcpOpenedAtRef.current = Date.now();
@@ -277,15 +256,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
                   data-testid='guid-mcp-menu'
                   role='dialog'
                   aria-label={t('mcp.label')}
-                  style={{
-                    position: 'fixed',
-                    left: mcpFlyoutBox?.left ?? -9999,
-                    top: mcpFlyoutBox?.top ?? 8,
-                    width: mcpFlyoutBox?.width ?? 320,
-                    maxHeight: mcpFlyoutBox?.maxHeight ?? 440,
-                    visibility: mcpFlyoutBox ? 'visible' : 'hidden',
-                    zIndex: WORKSPACE_PICKER_POPOVER_Z_INDEX,
-                  }}
+                  style={entryFlyoutPositionStyle(mcpFlyoutBox)}
                 >
                   <div className={styles.entryFlyoutList}>
                     {mcpServers.map((server) => (
