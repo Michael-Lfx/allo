@@ -1628,6 +1628,254 @@
   margin-right: 0;
 }
 
+.entryFlyout {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  overflow: hidden;
+  background: var(--color-bg-popup);
+  border: 1px solid var(--color-border-2);
+  border-radius: 12px;
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--flowy-text-primary) 8%, transparent),
+    0 12px 24px color-mix(in srgb, var(--flowy-text-primary) 12%, transparent);
+  color: var(--text-primary);
+}
+
+.entryFlyoutAction,
+.entryFlyoutRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.entryFlyoutAction {
+  height: 36px;
+  flex: 0 0 auto;
+  padding: 0 8px;
+}
+
+.entryFlyoutActionLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryFlyoutAction:hover,
+.entryFlyoutAction:focus-visible,
+.entryFlyoutRow:hover,
+.entryFlyoutRow:focus-visible {
+  background: var(--bg-hover);
+}
+
+.entryFlyoutAction:focus-visible,
+.entryFlyoutRow:focus-visible {
+  outline: 2px solid var(--flowy-focus-ring);
+  outline-offset: -2px;
+}
+
+.entryFlyoutList {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.entryFlyoutRow {
+  align-items: flex-start;
+  padding: 8px;
+}
+
+.entryFlyoutIcon {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.entryFlyoutBody {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entryFlyoutTitle {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryFlyoutDesc {
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryFlyoutMark {
+  display: flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: rgb(var(--primary-6));
+}
+
+.entryFlyoutEmpty {
+  padding: 16px 8px;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.entryFlyoutSearch {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--color-border-2);
+  padding: 6px 2px 2px;
+}
+
+.entryFlyoutEmbed {
+  padding: 0;
+}
+
+.addMenuPopover {
+  box-sizing: border-box;
+  padding: 4px;
+  background: var(--color-bg-popup) !important;
+  border: 1px solid var(--color-border-2) !important;
+  border-radius: 12px !important;
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--flowy-text-primary) 8%, transparent),
+    0 12px 24px color-mix(in srgb, var(--flowy-text-primary) 12%, transparent) !important;
+  color: var(--text-primary);
+}
+
+.addMenuPopover > div {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.addMenuPopover [role='listbox'] {
+  padding: 0 !important;
+}
+
+.addMenuPopover [role='option'] {
+  display: flex !important;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  min-height: 32px !important;
+  margin: 0 !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+.addMenuPopover [role='option'][aria-selected='true'] {
+  background: var(--bg-hover) !important;
+}
+
+.addMenuPopover [role='option']:active {
+  background: var(--bg-active) !important;
+}
+
+.addMenuPopover [role='option']:focus-visible {
+  outline: 2px solid var(--flowy-focus-ring);
+  outline-offset: -2px;
+}
+
+.addMenuPopover [role='option'] > div {
+  width: 100%;
+}
+
+.addMenuPopover [role='option'] :global(.gap-8px) {
+  gap: 8px !important;
+}
+
+.addMenuPopover [role='option'] :global(.h-18px) {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.addMenuPopover [role='option'] :global(.flowy-icon) {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.addMenuPopover :global(.text-13px) {
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  line-height: 20px !important;
+  color: var(--text-primary) !important;
+}
+
+.addMenuPopover [aria-selected='true'] :global(.text-13px) {
+  font-weight: 400 !important;
+  color: var(--text-primary) !important;
+}
+
+.addMenuSheetLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.addMenuSheetRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.addMenuSheetRow:hover,
+.addMenuSheetRow:focus-visible,
+.addMenuSheetRowActive {
+  background: var(--bg-hover);
+}
+
 .actionEntry :global(.arco-btn),
 .actionEntry :global(.arco-btn:active),
 .actionEntry :global(.arco-btn:focus),
@@ -2365,17 +2613,6 @@
     opacity 0.5s cubic-bezier(0.2, 0.8, 0.3, 1),
     background-color 0.25s ease-out;
   animation: agentSelectPop 0.4s ease-out forwards;
-}
-
-/* 首页右上角：会话创建前的知识库挂载草稿 */
-.guidCornerActions {
-  position: absolute;
-  top: 12px;
-  right: 16px;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
 }
 
 /* 矮视口（含 1280×720）：取消负 margin，避免内容被裁切 */

@@ -55,18 +55,20 @@ describe('GuidActionRow MCP checkbox selection treatment', () => {
     expect(modeSelectorIndex).toBeGreaterThan(addButtonIndex);
   });
 
-  test('does not nest Tooltip around the MCP dropdown trigger', () => {
-    const mcpBlockStart = actionRowSource.indexOf('{mcpServers.length > 0 && (');
-    const mcpBlockEnd = actionRowSource.indexOf('{showModeSwitch && (');
+  test('opens MCP servers from the add menu instead of a toolbar dropdown', () => {
+    const popoverStart = actionRowSource.indexOf('<WorkspacePickerPopover');
+    const popoverEnd = actionRowSource.indexOf('</WorkspacePickerPopover>');
+    const popover = actionRowSource.slice(popoverStart, popoverEnd);
 
-    expect(mcpBlockStart).toBeGreaterThan(-1);
-    expect(mcpBlockEnd).toBeGreaterThan(mcpBlockStart);
-
-    const mcpBlock = actionRowSource.slice(mcpBlockStart, mcpBlockEnd);
-    expect(mcpBlock.includes('<Dropdown')).toBe(true);
-    expect(mcpBlock.includes("data-testid='guid-mcp-menu-btn'")).toBe(true);
-    expect(mcpBlock.includes('<Tooltip')).toBe(false);
-    expect(mcpBlock.includes('<Tool theme')).toBe(true);
-    expect(mcpBlock.includes('<Shield')).toBe(false);
+    expect(popover.includes("data-testid='guid-mcp-menu-btn'")).toBe(true);
+    expect(popover.includes("name='tool'")).toBe(true);
+    expect(popover.includes("name='right'")).toBe(true);
+    expect(popover.includes('arrowLeft')).toBe(false);
+    expect(popover.includes('guid-mcp-selection-checkbox')).toBe(false);
+    expect(actionRowSource.includes("data-testid='guid-mcp-menu'")).toBe(true);
+    expect(actionRowSource.includes('guid-mcp-selection-checkbox')).toBe(true);
+    expect(actionRowSource.includes('<Dropdown')).toBe(false);
+    expect(actionRowSource.includes('<Tooltip')).toBe(false);
+    expect(actionRowSource.includes('<Tool theme')).toBe(false);
   });
 });

@@ -15,7 +15,10 @@ describe('Guid homepage slash launcher', () => {
     expect(pageSource.includes('replaceActiveSlashToken')).toBe(true);
     expect(pageSource.includes('guidEnabledSkills')).toBe(false);
     expect(pageSource.includes('guidDisabledBuiltinSkills')).toBe(false);
-    expect(pageSource.includes("setDrawerMode('skills')")).toBe(true);
+    expect(pageSource.includes("key === 'skills'")).toBe(true);
+    expect(pageSource.includes('asHomeFlyout(item.key)')).toBe(true);
+    expect(pageSource.includes('return flyoutKey')).toBe(true);
+    expect(pageSource.includes('setEntryFlyout(flyoutKey)')).toBe(true);
   });
 
   test('keeps selected Skills as source-qualified atomic tokens in the shared editor', () => {
@@ -56,14 +59,16 @@ describe('Guid homepage slash launcher', () => {
     expect(cardSource.includes("left-0 right-0 bottom-[calc(100%+10px)] z-70")).toBe(true);
   });
 
-  test('keeps the home preset chooser while leaving Skills to the slash launcher', () => {
+  test('keeps the home preset chooser in the add menu instead of the composer top strip', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
     const editorHostSource = readSource(new URL('./components/GuidPresetEditorHost.tsx', import.meta.url));
 
-    expect(pageSource.includes("import ComposerEntryStrip from './components/ComposerEntryStrip'")).toBe(true);
-    expect(pageSource.includes('<ComposerEntryStrip')).toBe(true);
-    expect(pageSource.includes('onChoosePreset={() => {')).toBe(true);
-    expect(pageSource.includes('setDrawerOpen(true)')).toBe(true);
+    expect(pageSource.includes("import ComposerEntryStrip from './components/ComposerEntryStrip'")).toBe(false);
+    expect(pageSource.includes('<ComposerEntryStrip')).toBe(false);
+    expect(pageSource.includes("key: 'preset'")).toBe(true);
+    expect(pageSource.includes('<GuidEntryFlyout')).toBe(true);
+    expect(pageSource.includes('PresetPickerDrawer')).toBe(false);
+    expect(pageSource.includes('setDrawerOpen(true)')).toBe(false);
     expect(editorHostSource.includes('onClick={openPresetDetails}')).toBe(false);
   });
 

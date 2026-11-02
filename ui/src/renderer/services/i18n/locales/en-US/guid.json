@@ -128,10 +128,10 @@
   },
   "entry": {
     "free": "Free-form",
-    "usePreset": "Use preset",
+    "usePreset": "Experts",
     "backToFree": "Free-form",
     "adjustSkills": "Adjust Skills for this conversation",
-    "skills": "Skills",
+    "skills": "Use skills",
     "skillCount": "{{count}} Skill(s) selected"
   },
   "drawer": {
@@ -156,5 +156,10 @@
     "skillLoadFailed": "Skills could not be loaded. Try again later.",
     "skillEmpty": "No Skills are available for this runtime.",
     "skillHint": "Selected Skills apply to this conversation only."
+  },
+  "flyout": {
+    "managePreset": "Manage presets",
+    "manageSkills": "Manage skills",
+    "presetNoMatch": "No presets match the current search."
   }
 }

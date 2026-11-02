@@ -28,20 +28,20 @@ describe('GuidPage homepage controls', () => {
     expect(source.includes('knowledge: IKnowledgeBinding')).toBe(true);
     expect(source.includes('autoWork: AutoWorkDraftValue')).toBe(true);
     expect(source.includes('idmm: IIdmmConfig')).toBe(true);
+    expect(source.includes('kb.writeback ||')).toBe(false);
+    expect(source.includes('kb.kb_ids.length > 0')).toBe(true);
   });
 
-  test('exposes the knowledge draft control in the homepage top-right corner', () => {
+  test('exposes the knowledge draft control in the homepage add-menu flyout', () => {
     const source = readSource(new URL('./GuidPage.tsx', import.meta.url));
-    const css = readSource(new URL('./index.module.css', import.meta.url));
-    const corner = css.match(/\.guidCornerActions\s*\{[^}]*\}/)?.[0] ?? '';
 
     expect(source.includes('<KnowledgeControl')).toBe(true);
+    expect(source.includes("presentation='panel'")).toBe(true);
     expect(source.includes('draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}')).toBe(
       true
     );
-    expect(source.includes("data-testid='guid-knowledge-control'")).toBe(true);
-    expect(corner.includes('position: absolute')).toBe(true);
-    expect(corner.includes('top: 12px')).toBe(true);
-    expect(corner.includes('right: 16px')).toBe(true);
+    expect(source.includes("testId='guid-knowledge-control'")).toBe(true);
+    expect(source.includes("key: 'knowledge'")).toBe(true);
+    expect(source.includes('guidCornerActions')).toBe(false);
   });
 });

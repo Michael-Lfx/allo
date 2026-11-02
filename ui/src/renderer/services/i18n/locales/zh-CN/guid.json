@@ -128,10 +128,10 @@
   },
   "entry": {
     "free": "自由发挥",
-    "usePreset": "使用设定",
+    "usePreset": "专家",
     "backToFree": "自由发挥",
     "adjustSkills": "调整当前对话 Skills",
-    "skills": "Skills",
+    "skills": "使用技能",
     "skillCount": "已选择 {{count}} 个 Skill"
   },
   "drawer": {
@@ -156,5 +156,10 @@
     "skillLoadFailed": "Skills 暂时无法加载，请稍后重试。",
     "skillEmpty": "当前运行环境没有可用的 Skill。",
     "skillHint": "选择的 Skills 只应用于当前对话。"
+  },
+  "flyout": {
+    "managePreset": "管理设定",
+    "manageSkills": "管理技能",
+    "presetNoMatch": "没有匹配当前搜索的设定。"
   }
 }

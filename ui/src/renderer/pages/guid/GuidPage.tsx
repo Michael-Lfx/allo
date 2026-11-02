@@ -26,8 +26,6 @@ import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
-import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
-import ComposerEntryStrip from './components/ComposerEntryStrip';
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
@@ -46,7 +44,7 @@ import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector
 import { useTaskProfileStore } from '@/renderer/stores/taskProfileStore';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
-import PresetPickerDrawer from './components/PresetPickerDrawer';
+import GuidEntryFlyout, { GuidAnchoredFlyout, type GuidEntryFlyoutMode } from './components/GuidEntryFlyout';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import {
   catalogReasoningEffortForModel,
@@ -89,6 +87,10 @@ import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import styles from './index.module.css';
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
+type HomeFlyout = GuidEntryFlyoutMode | 'knowledge';
+
+const asHomeFlyout = (key: string | undefined): HomeFlyout | null =>
+  key === 'preset' || key === 'skills' || key === 'knowledge' ? key : null;
 
 const GuidPage: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -118,9 +120,11 @@ const GuidPage: React.FC = () => {
 
   const localeKey = resolveLocaleKey(i18n.language);
 
-  // --- Drawer state ---
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
+  const [entryFlyout, setEntryFlyout] = useState<HomeFlyout | null>(null);
+  const homeAddMenuPopoverRef = useRef<HTMLDivElement>(null);
+  const homeEntryFlyoutRef = useRef<HTMLDivElement>(null);
+  const entryFlyoutSuppressedKeyRef = useRef<string | null>(null);
+  const entryFlyoutPausedKeyRef = useRef<string | null>(null);
   const delegationPolicy: TDelegationPolicy = 'automatic';
   const decisionPolicy: TDecisionPolicy = 'automatic';
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
@@ -739,29 +743,70 @@ const GuidPage: React.FC = () => {
       {
         key: 'files',
         label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
-        section: t('common.add'),
-        icon: <FlowyIcon name='paperclip' size={17} />,
+        icon: <FlowyIcon name='paperclip' size={16} />,
+      },
+      {
+        key: 'preset',
+        label: t('guid.drawer.presetTab', { defaultValue: '设定' }),
+        icon: <FlowyIcon name='graduationCap' size={16} />,
+        trailing: <FlowyIcon name='right' size={14} />,
+      },
+      ...(supportsHomeSkillLoading
+        ? [
+            {
+              key: 'skills',
+              label: t('guid.entry.skills', { defaultValue: 'Use skills' }),
+              icon: <FlowyIcon name='puzzle' size={16} />,
+              trailing: <FlowyIcon name='right' size={14} />,
+            },
+          ]
+        : []),
+      {
+        key: 'knowledge',
+        label: t('knowledge.control.label', { defaultValue: '知识库' }),
+        icon: <FlowyIcon name='book' size={16} />,
+        trailing: <FlowyIcon name='right' size={14} />,
       },
       ...(supportsHomeGoalCommand
         ? [
             {
               key: 'goal',
               label: t('conversation.goal.chip.label', { defaultValue: 'Goal' }),
-              description: t('guid.goalMode.tooltip'),
-              icon: <FlowyIcon name='aiming' size={17} />,
+              icon: <FlowyIcon name='aiming' size={16} />,
             },
           ]
         : []),
     ],
-    [supportsHomeGoalCommand, t],
+    [supportsHomeGoalCommand, supportsHomeSkillLoading, t],
   );
   const handleOpenHomeAddMenu = useCallback(() => {
     setHomeAddMenuActiveIndex(0);
     setIsHomeAddMenuOpen(true);
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
   }, []);
+  const closeEntryFlyout = useCallback((suppressKey?: string | null) => {
+    entryFlyoutSuppressedKeyRef.current = suppressKey ?? entryFlyout;
+    setEntryFlyout(null);
+  }, [entryFlyout]);
   const handleHomeAddMenuSelect = useCallback(
     (item: SlashCommandMenuItem) => {
+      const flyoutKey = asHomeFlyout(item.key);
+      if (flyoutKey) {
+        const nextIndex = homeAddMenuItems.findIndex((candidate) => candidate.key === flyoutKey);
+        if (nextIndex >= 0) setHomeAddMenuActiveIndex(nextIndex);
+        entryFlyoutPausedKeyRef.current = null;
+        setEntryFlyout((current) => {
+          if (current === flyoutKey) {
+            entryFlyoutSuppressedKeyRef.current = flyoutKey;
+            return null;
+          }
+          entryFlyoutSuppressedKeyRef.current = null;
+          return flyoutKey;
+        });
+        return;
+      }
+      setEntryFlyout(null);
+      entryFlyoutSuppressedKeyRef.current = null;
       setIsHomeAddMenuOpen(false);
       if (item.key === 'files') {
         openHomeFileSelector();
@@ -769,17 +814,37 @@ const GuidPage: React.FC = () => {
         setGoalMode(true);
       }
     },
-    [openHomeFileSelector],
+    [homeAddMenuItems, openHomeFileSelector],
   );
   const handleHomeAddMenuKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (!isHomeAddMenuOpen || homeAddMenuItems.length === 0) {
         return false;
       }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setIsHomeAddMenuOpen(false);
-        return true;
+      if (event.key === 'Escape' || event.key === 'ArrowLeft') {
+        if (entryFlyout) {
+          event.preventDefault();
+          closeEntryFlyout(entryFlyout);
+          return true;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setIsHomeAddMenuOpen(false);
+          return true;
+        }
+        return false;
+      }
+      if (event.key === 'ArrowRight') {
+        const activeItem = homeAddMenuItems[homeAddMenuActiveIndex];
+        const flyoutKey = asHomeFlyout(activeItem?.key);
+        if (flyoutKey) {
+          event.preventDefault();
+          entryFlyoutSuppressedKeyRef.current = null;
+          entryFlyoutPausedKeyRef.current = null;
+          setEntryFlyout(flyoutKey);
+          return true;
+        }
+        return false;
       }
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -794,15 +859,58 @@ const GuidPage: React.FC = () => {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         const activeItem = homeAddMenuItems[homeAddMenuActiveIndex];
-        if (activeItem) {
-          handleHomeAddMenuSelect(activeItem);
+        if (!activeItem) return true;
+        const flyoutKey = asHomeFlyout(activeItem.key);
+        if (flyoutKey) {
+          entryFlyoutSuppressedKeyRef.current = null;
+          entryFlyoutPausedKeyRef.current = null;
+          setEntryFlyout(flyoutKey);
+          return true;
         }
+        handleHomeAddMenuSelect(activeItem);
         return true;
       }
       return false;
     },
-    [handleHomeAddMenuSelect, homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen],
+    [closeEntryFlyout, entryFlyout, handleHomeAddMenuSelect, homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen],
   );
+  const handleAddMenuEscape = useCallback(
+    (event: KeyboardEvent) => {
+      if (!entryFlyout) return false;
+      event.preventDefault();
+      closeEntryFlyout(entryFlyout);
+      return true;
+    },
+    [closeEntryFlyout, entryFlyout],
+  );
+  useEffect(() => {
+    if (!isHomeAddMenuOpen) {
+      entryFlyoutSuppressedKeyRef.current = null;
+      entryFlyoutPausedKeyRef.current = null;
+      setEntryFlyout(null);
+      return;
+    }
+    const item = homeAddMenuItems[homeAddMenuActiveIndex];
+    if (entryFlyoutPausedKeyRef.current && entryFlyoutPausedKeyRef.current !== item?.key) {
+      entryFlyoutPausedKeyRef.current = null;
+    }
+    const flyoutKey = asHomeFlyout(item?.key);
+    if (!flyoutKey) {
+      entryFlyoutSuppressedKeyRef.current = null;
+      setEntryFlyout(null);
+      return;
+    }
+    if (entryFlyoutSuppressedKeyRef.current === flyoutKey || entryFlyoutPausedKeyRef.current === flyoutKey) return;
+    const key = flyoutKey;
+    // Wait briefly so the click that enters the row opens the flyout instead
+    // of toggling a panel the pointer movement just revealed.
+    const timer = window.setTimeout(() => {
+      if (entryFlyoutPausedKeyRef.current === key || entryFlyoutSuppressedKeyRef.current === key) return;
+      entryFlyoutSuppressedKeyRef.current = null;
+      setEntryFlyout(key);
+    }, 160);
+    return () => window.clearTimeout(timer);
+  }, [homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen]);
   useEffect(() => {
     if (homeSlashController.isOpen) {
       setIsHomeAddMenuOpen(false);
@@ -1109,38 +1217,6 @@ const GuidPage: React.FC = () => {
     );
   }, [agentSelection.presets, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id]);
 
-  const heroTitle = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return t('conversation.welcome.title');
-    const i18nName = selectedPresetRecord?.name_i18n?.[localeKey];
-    if (i18nName) return i18nName;
-    return mention.selectedAgentLabel || t('conversation.welcome.title');
-  }, [agentSelection.is_presetAgent, selectedPresetRecord, localeKey, mention.selectedAgentLabel, t]);
-
-  const selectedPresetAvatar = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return null;
-    const selectedPreset = agentSelection.presets.find(
-      (item) => item.preset_id === agentSelection.selectedAgentInfo?.preset_id,
-    );
-    const avatarValue = selectedPreset?.avatar?.trim() || agentSelection.selectedAgentInfo?.avatar?.trim();
-    if (!avatarValue) return { kind: 'icon' as const };
-    const mappedAvatar = CUSTOM_AVATAR_IMAGE_MAP[avatarValue];
-    const resolvedAvatar = resolveExtensionAssetUrl(avatarValue);
-    const avatarImage = mappedAvatar || resolvedAvatar;
-    const isImageAvatar = Boolean(
-      avatarImage &&
-      (/\.(svg|png|jpe?g|webp|gif)$/i.test(avatarImage) || /^(https?:|file:\/\/|data:|\/)/i.test(avatarImage)),
-    );
-    if (isImageAvatar && avatarImage) {
-      return { kind: 'image' as const, value: avatarImage };
-    }
-    return { kind: 'emoji' as const, value: avatarValue };
-  }, [
-    agentSelection.presets,
-    agentSelection.is_presetAgent,
-    agentSelection.selectedAgentInfo?.avatar,
-    agentSelection.selectedAgentInfo?.preset_id,
-  ]);
-
   // Reset guid-local UI state before paint so same-route navigations do not
   // briefly show the previous draft or preset preset layout.
   useLayoutEffect(() => {
@@ -1364,6 +1440,77 @@ const GuidPage: React.FC = () => {
               : 'voice.entry.setup'
       )}
       onOpenAddMenu={handleOpenHomeAddMenu}
+      addMenuOpen={isHomeAddMenuOpen}
+      onAddMenuOpenChange={setIsHomeAddMenuOpen}
+      addMenuActiveIndex={homeAddMenuActiveIndex}
+      addMenuPopoverRef={homeAddMenuPopoverRef}
+      entryFlyoutRef={homeEntryFlyoutRef}
+      onAddMenuEscape={handleAddMenuEscape}
+      onDismissEntryFlyout={() => {
+        entryFlyoutPausedKeyRef.current = entryFlyout ?? homeAddMenuItems[homeAddMenuActiveIndex]?.key ?? '*';
+        setEntryFlyout(null);
+        setHomeAddMenuActiveIndex(-1);
+      }}
+      entryFlyout={
+        entryFlyout === 'knowledge' ? (
+          <GuidAnchoredFlyout
+            ref={homeEntryFlyoutRef}
+            anchorRef={homeAddMenuPopoverRef}
+            label={t('knowledge.control.label', { defaultValue: '知识库' })}
+            testId='guid-knowledge-control'
+          >
+            <KnowledgeControl
+              presentation='panel'
+              draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}
+              applyNote={t('guid.advanced.applyNote')}
+            />
+          </GuidAnchoredFlyout>
+        ) : entryFlyout ? (
+          <GuidEntryFlyout
+            ref={homeEntryFlyoutRef}
+            mode={entryFlyout}
+            anchorRef={homeAddMenuPopoverRef}
+            presets={agentSelection.presets}
+            localeKey={localeKey}
+            selectedPresetId={selectedPresetRecord?.preset_id}
+            skills={supportsHomeSkillLoading ? catalogSkills : []}
+            selectedSkillIds={homeSkillChips.map((skill) => skill.skillId)}
+            onToggleSkill={supportsHomeSkillLoading ? handleToggleHomeSkill : undefined}
+            skillsLoading={catalogSkillsLoading}
+            skillsError={catalogSkillsError}
+            onSelectPreset={(id) => {
+              handleSelectPresetKey(`preset:${id}`);
+              setEntryFlyout(null);
+              entryFlyoutSuppressedKeyRef.current = null;
+              setIsHomeAddMenuOpen(false);
+            }}
+            onFree={() => {
+              agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+              setEntryFlyout(null);
+              entryFlyoutSuppressedKeyRef.current = null;
+              setIsHomeAddMenuOpen(false);
+            }}
+            onManage={() => {
+              const target = entryFlyout === 'skills' ? '/skills' : '/settings/presets';
+              setEntryFlyout(null);
+              entryFlyoutSuppressedKeyRef.current = null;
+              setIsHomeAddMenuOpen(false);
+              void navigate(target);
+            }}
+          />
+        ) : null
+      }
+      addMenu={
+        <SlashCommandMenu
+          title={t('common.add')}
+          compact
+          items={homeAddMenuItems}
+          activeIndex={homeAddMenuActiveIndex}
+          onHoverItem={setHomeAddMenuActiveIndex}
+          onSelectItem={handleHomeAddMenuSelect}
+          emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+        />
+      }
       modelSelectorNode={modelSelectorNode}
       modelSelectorIsChat={isGeminiMode}
       activeChatPopup={activeChatPopup}
@@ -1406,12 +1553,6 @@ const GuidPage: React.FC = () => {
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
       <div ref={guidContainerRef} className={styles.guidContainer}>
-        <div className={styles.guidCornerActions} data-testid='guid-knowledge-control'>
-          <KnowledgeControl
-            draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}
-            applyNote={t('guid.advanced.applyNote')}
-          />
-        </div>
         <div className={styles.guidPrimaryStage}>
           <div className={styles.guidLayout}>
             <div className={styles.heroHeader}>
@@ -1457,37 +1598,25 @@ const GuidPage: React.FC = () => {
                 />
               }
               mentionDropdown={mentionDropdownNode}
-              slashMenuOpen={isHomeAddMenuOpen || homeSlashController.isOpen}
+              slashMenuOpen={homeSlashController.isOpen}
               slashMenu={
-                isHomeAddMenuOpen ? (
-                  <SlashCommandMenu
-                    title={t('common.add')}
-                    compact
-                    items={homeAddMenuItems}
-                    activeIndex={homeAddMenuActiveIndex}
-                    onHoverItem={setHomeAddMenuActiveIndex}
-                    onSelectItem={handleHomeAddMenuSelect}
-                    emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-                  />
-                ) : (
-                  <SlashCommandMenu
-                    title={t('messages.slash.title', { defaultValue: 'Commands' })}
-                    hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
-                    compact
-                    items={homeSlashMenuItems}
-                    activeIndex={homeSlashController.activeIndex}
-                    onHoverItem={homeSlashController.setActiveIndex}
-                    onSelectItem={(item) => {
-                      const targetIndex = homeSlashController.filteredItems.findIndex(
-                        (launcherItem) => launcherItem.id === item.key
-                      );
-                      if (targetIndex >= 0) {
-                        homeSlashController.onSelectByIndex(targetIndex);
-                      }
-                    }}
-                    emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-                  />
-                )
+                <SlashCommandMenu
+                  title={t('messages.slash.title', { defaultValue: 'Commands' })}
+                  hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+                  compact
+                  items={homeSlashMenuItems}
+                  activeIndex={homeSlashController.activeIndex}
+                  onHoverItem={homeSlashController.setActiveIndex}
+                  onSelectItem={(item) => {
+                    const targetIndex = homeSlashController.filteredItems.findIndex(
+                      (launcherItem) => launcherItem.id === item.key
+                    );
+                    if (targetIndex >= 0) {
+                      homeSlashController.onSelectByIndex(targetIndex);
+                    }
+                  }}
+                  emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+                />
               }
               skillChips={supportsHomeSkillLoading ? homeSkillChips : []}
               onSkillChipsChange={supportsHomeSkillLoading ? setHomeSkillChips : undefined}
@@ -1499,25 +1628,6 @@ const GuidPage: React.FC = () => {
               workspaceDir={guidInput.dir}
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
-              entryStrip={
-                <ComposerEntryStrip
-                  isPresetAgent={agentSelection.is_presetAgent}
-                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                  presetAvatar={selectedPresetAvatar ?? undefined}
-                  onChoosePreset={() => {
-                    setDrawerMode('preset');
-                    setDrawerOpen(true);
-                  }}
-                  onAdjustSkills={supportsHomeSkillLoading ? () => {
-                    setDrawerMode('skills');
-                    setDrawerOpen(true);
-                  } : undefined}
-                  activeSkillCount={homeSkillChips.length}
-                  onFree={() => {
-                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                  }}
-                />
-              }
             />
 
             {/* Editor host (modals + fallback notice) */}
@@ -1527,30 +1637,6 @@ const GuidPage: React.FC = () => {
             />
           </div>
         </div>
-
-        {/* PresetPickerDrawer (right-side) */}
-        <PresetPickerDrawer
-          visible={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-          presets={agentSelection.presets}
-          localeKey={localeKey}
-          mode={drawerMode}
-          onModeChange={setDrawerMode}
-          selectedPresetId={selectedPresetRecord?.preset_id}
-          skills={supportsHomeSkillLoading ? catalogSkills : []}
-          selectedSkillIds={homeSkillChips.map((skill) => skill.skillId)}
-          onToggleSkill={supportsHomeSkillLoading ? handleToggleHomeSkill : undefined}
-          skillsLoading={catalogSkillsLoading}
-          skillsError={catalogSkillsError}
-          onSelectPreset={(id) => {
-            handleSelectPresetKey(`preset:${id}`);
-            setDrawerOpen(false);
-          }}
-          onFree={() => {
-            agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-            setDrawerOpen(false);
-          }}
-        />
 
         <GuidAddProviderModal
           ref={addProviderRef}

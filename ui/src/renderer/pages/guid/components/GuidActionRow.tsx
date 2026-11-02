@@ -3,6 +3,9 @@
 import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import type { IMcpServer } from '@/common/config/storage';
 import type { McpServerId } from '@/common/types/ids';
+import { measureEntryFlyout, entryFlyoutAlignTop } from './GuidEntryFlyout';
+import React, { useLayoutEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
@@ -12,14 +15,26 @@ import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
-import { Button, Checkbox, Dropdown, Menu } from '@arco-design/web-react';
-import React from 'react';
+import WorkspacePickerPopover, {
+  WORKSPACE_PICKER_POPOVER_Z_INDEX,
+} from '@/renderer/components/workspace/WorkspacePickerPopover';
+import { Button, Checkbox } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import styles from '../index.module.css';
 
 type GuidActionRowProps = {
   onOpenAddMenu: () => void;
+  addMenuOpen: boolean;
+  onAddMenuOpenChange: (open: boolean) => void;
+  addMenu: React.ReactNode;
+  /** -1 while the MCP row owns the highlight. Any real row closes the MCP flyout. */
+  addMenuActiveIndex?: number;
+  addMenuPopoverRef?: React.RefObject<HTMLDivElement | null>;
+  entryFlyout?: React.ReactNode;
+  entryFlyoutRef?: React.RefObject<HTMLDivElement | null>;
+  onAddMenuEscape?: (event: KeyboardEvent) => boolean;
+  onDismissEntryFlyout?: () => void;
 
   // Model selector node (rendered by parent)
   modelSelectorNode: React.ReactNode;
@@ -79,6 +94,15 @@ type GuidActionRowProps = {
 
 const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onOpenAddMenu,
+  addMenuOpen,
+  onAddMenuOpenChange,
+  addMenu,
+  addMenuActiveIndex = -1,
+  addMenuPopoverRef,
+  entryFlyout,
+  entryFlyoutRef,
+  onAddMenuEscape,
+  onDismissEntryFlyout,
   modelSelectorNode,
   modelSelectorIsChat = false,
   activeChatPopup = null,
@@ -115,6 +139,11 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   autoWorkMode = false,
 }) => {
   const { t } = useTranslation();
+  const addMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const mcpFlyoutRef = React.useRef<HTMLDivElement>(null);
+  const [mcpFlyoutOpen, setMcpFlyoutOpen] = useState(false);
+  const [mcpFlyoutBox, setMcpFlyoutBox] = useState<ReturnType<typeof measureEntryFlyout> | null>(null);
+  const mcpOpenedAtRef = React.useRef(0);
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const modeBackend = effectiveModeAgent || selectedAgent;
@@ -140,31 +169,42 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   const activeMcpCount = selectedMcpServerIds.length;
   const mcpTriggerLabel = `${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`;
 
-  const mcpMenuContent = (
-    <Menu className='min-w-200px'>
-      {mcpServers.map((server) => (
-        <Menu.Item
-          key={`mcp-${server.mcp_server_id}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleMcpServer(server.mcp_server_id);
-          }}
-        >
-          <Checkbox
-            checked={selectedMcpServerIds.includes(server.mcp_server_id)}
-            className='guid-mcp-selection-checkbox'
-            onClick={(e: React.MouseEvent) => e.stopPropagation()}
-            onChange={() => onToggleMcpServer(server.mcp_server_id)}
-          >
-            <span className='text-13px'>
-              {server.name}
-              {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
-            </span>
-          </Checkbox>
-        </Menu.Item>
-      ))}
-    </Menu>
-  );
+  React.useEffect(() => {
+    if (!addMenuOpen) setMcpFlyoutOpen(false);
+  }, [addMenuOpen]);
+
+  React.useEffect(() => {
+    if (entryFlyout) setMcpFlyoutOpen(false);
+  }, [entryFlyout]);
+
+  React.useEffect(() => {
+    if (addMenuActiveIndex >= 0) setMcpFlyoutOpen(false);
+  }, [addMenuActiveIndex]);
+
+  useLayoutEffect(() => {
+    if (!mcpFlyoutOpen) return;
+    const update = () => {
+      const anchor = addMenuPopoverRef?.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const trigger = anchor.querySelector<HTMLElement>('[data-testid="guid-mcp-menu-btn"]');
+      const alignTop = trigger?.getBoundingClientRect().top ?? entryFlyoutAlignTop(anchor, rect.top);
+      setMcpFlyoutBox(measureEntryFlyout(rect, alignTop));
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [addMenuPopoverRef, mcpFlyoutOpen]);
+
+  const openMcpFlyout = () => {
+    mcpOpenedAtRef.current = Date.now();
+    onDismissEntryFlyout?.();
+    setMcpFlyoutOpen(true);
+  };
 
   return (
     <div className={styles.actionRow}>
@@ -172,6 +212,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         <div className={styles.actionEntry}>
           <span className='flex items-center gap-4px lh-[1]'>
             <Button
+              ref={addMenuTriggerRef}
               type='secondary'
               shape='circle'
               size='small'
@@ -182,20 +223,95 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               aria-label={t('common.add')}
             />
           </span>
+          <WorkspacePickerPopover
+            className={styles.addMenuPopover}
+            open={addMenuOpen}
+            onOpenChange={onAddMenuOpenChange}
+            triggerRef={addMenuTriggerRef}
+            preferredPlacement='above'
+            minWidth={200}
+            maxWidth={200}
+            contentRef={addMenuPopoverRef}
+            accessoryRef={entryFlyoutRef}
+            extraAccessoryRef={mcpFlyoutRef}
+            onEscape={(event) => {
+              if (mcpFlyoutOpen) {
+                event.preventDefault();
+                setMcpFlyoutOpen(false);
+                return true;
+              }
+              return onAddMenuEscape?.(event) ?? false;
+            }}
+          >
+            {addMenu}
+            {mcpServers.length > 0 && (
+              <button
+                type='button'
+                className={[styles.addMenuSheetRow, mcpFlyoutOpen ? styles.addMenuSheetRowActive : ''].filter(Boolean).join(' ')}
+                onPointerEnter={openMcpFlyout}
+                onClick={() => {
+                  if (mcpFlyoutOpen && Date.now() - mcpOpenedAtRef.current > 250) {
+                    setMcpFlyoutOpen(false);
+                    return;
+                  }
+                  openMcpFlyout();
+                }}
+                aria-label={mcpTriggerLabel}
+                aria-expanded={mcpFlyoutOpen}
+                aria-haspopup='dialog'
+                data-testid='guid-mcp-menu-btn'
+              >
+                <FlowyIcon name='tool' size={16} />
+                <span className={`${styles.addMenuSheetLabel} text-13px`}>{t('mcp.label')}</span>
+                <FlowyIcon name='right' size={14} />
+              </button>
+            )}
+          </WorkspacePickerPopover>
+          {entryFlyout}
+          {mcpFlyoutOpen && typeof document !== 'undefined'
+            ? createPortal(
+                <div
+                  ref={mcpFlyoutRef}
+                  className={styles.entryFlyout}
+                  data-testid='guid-mcp-menu'
+                  role='dialog'
+                  aria-label={t('mcp.label')}
+                  style={{
+                    position: 'fixed',
+                    left: mcpFlyoutBox?.left ?? -9999,
+                    top: mcpFlyoutBox?.top ?? 8,
+                    width: mcpFlyoutBox?.width ?? 320,
+                    maxHeight: mcpFlyoutBox?.maxHeight ?? 440,
+                    visibility: mcpFlyoutBox ? 'visible' : 'hidden',
+                    zIndex: WORKSPACE_PICKER_POPOVER_Z_INDEX,
+                  }}
+                >
+                  <div className={styles.entryFlyoutList}>
+                    {mcpServers.map((server) => (
+                      <button
+                        key={`mcp-${server.mcp_server_id}`}
+                        type='button'
+                        className={styles.entryFlyoutAction}
+                        onClick={() => onToggleMcpServer(server.mcp_server_id)}
+                      >
+                        <Checkbox
+                          checked={selectedMcpServerIds.includes(server.mcp_server_id)}
+                          className='guid-mcp-selection-checkbox'
+                          onClick={(event: React.MouseEvent) => event.stopPropagation()}
+                          onChange={() => onToggleMcpServer(server.mcp_server_id)}
+                        />
+                        <span className={styles.entryFlyoutActionLabel}>
+                          {server.name}
+                          {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
         </div>
-        {mcpServers.length > 0 && (
-          <Dropdown trigger='click' droplist={mcpMenuContent}>
-            <Button
-              type='text'
-              shape='circle'
-              size='small'
-              icon={<FlowyIcon name='tool' size={16} />}
-              title={mcpTriggerLabel}
-              aria-label={mcpTriggerLabel}
-              data-testid='guid-mcp-menu-btn'
-            />
-          </Dropdown>
-        )}
         {showModeSwitch && (
           <AgentModeSelector
             backend={modeBackend}

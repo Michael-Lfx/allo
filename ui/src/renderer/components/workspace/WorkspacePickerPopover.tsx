@@ -28,6 +28,13 @@ export type WorkspacePickerPopoverProps = {
   className?: string;
   children: React.ReactNode;
   testId?: string;
+  /** Portal root, so a sibling flyout can align to this layer. */
+  contentRef?: React.Ref<HTMLDivElement | null>;
+  /** Extra surfaces that should not dismiss the popover, such as side flyouts. */
+  accessoryRef?: React.RefObject<HTMLDivElement | null>;
+  extraAccessoryRef?: React.RefObject<HTMLDivElement | null>;
+  /** Return true to keep the popover open and handle Escape elsewhere. */
+  onEscape?: (event: KeyboardEvent) => boolean;
 };
 
 export type WorkspacePickerPopoverPosition = {
@@ -93,8 +100,25 @@ const WorkspacePickerPopover: React.FC<WorkspacePickerPopoverProps> = ({
   className,
   children,
   testId,
+  contentRef,
+  accessoryRef,
+  extraAccessoryRef,
+  onEscape,
 }) => {
   const popoverRef = useRef<HTMLDivElement>(null);
+  const setPopoverRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      popoverRef.current = node;
+      if (typeof contentRef === 'function') {
+        contentRef(node);
+        return;
+      }
+      if (contentRef) {
+        contentRef.current = node;
+      }
+    },
+    [contentRef],
+  );
   const [position, setPosition] = useState<WorkspacePickerPopoverPosition | null>(null);
 
   const updatePosition = useCallback(() => {
@@ -126,12 +150,21 @@ const WorkspacePickerPopover: React.FC<WorkspacePickerPopoverProps> = ({
 
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!triggerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+      if (
+        !triggerRef.current?.contains(target) &&
+        !popoverRef.current?.contains(target) &&
+        !accessoryRef?.current?.contains(target) &&
+        !extraAccessoryRef?.current?.contains(target)
+      ) {
         closeFromDismiss();
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (onEscape?.(event)) {
+          event.preventDefault();
+          return;
+        }
         event.preventDefault();
         closeFromDismiss();
       }
@@ -150,13 +183,13 @@ const WorkspacePickerPopover: React.FC<WorkspacePickerPopoverProps> = ({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [closeFromDismiss, open, triggerRef, updatePosition]);
+  }, [accessoryRef, closeFromDismiss, extraAccessoryRef, onEscape, open, triggerRef, updatePosition]);
 
   if (!open || typeof document === 'undefined' || !position) return null;
 
   return createPortal(
     <div
-      ref={popoverRef}
+      ref={setPopoverRef}
       className={className}
       data-testid={testId}
       data-workspace-picker-popover='true'

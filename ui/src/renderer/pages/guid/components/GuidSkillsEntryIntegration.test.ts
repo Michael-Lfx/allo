@@ -11,9 +11,9 @@ describe('Guid Skill launcher integration', () => {
     expect(source.includes('skillChips={')).toBe(true);
     expect(source.includes('tokenInputRef={homeTokenInputRef}')).toBe(true);
     expect(source.includes('activeSkills={')).toBe(false);
-    expect(source.includes('onAdjustSkills=')).toBe(true);
-    expect(source.includes("setDrawerMode('skills')")).toBe(true);
+    expect(source.includes('<GuidEntryFlyout')).toBe(true);
     expect(source.includes('selectedSkillIds=')).toBe(true);
+    expect(source.includes('PresetPickerDrawer')).toBe(false);
   });
 
   test('does not use a preset binding to pre-filter the slash catalog', () => {
