@@ -4,7 +4,7 @@ title: "structure_hash 规范化投影 + hash 版本——重序列化不再让�
 type: task
 status: open
 assignee:
-blocked_by: []
+blocked_by: [x21]
 part_of: ../map.md
 ---
 
@@ -29,9 +29,11 @@ part_of: ../map.md
 - [ ] 规范化输入：解析信封 → 取内层 `structure`（排除 `lexicon`/`generated_at`/`version`/
       未来 `ext`）→ 键排序 + 紧凑序列化 → FNV-1a。单源
       `structure_hash(envelope) -> (hash_version, u64)`。
-- [ ] 版本：mounts/repairs 加 `hash_version INTEGER NOT NULL DEFAULT 1`（推荐；
-      map 裁决点 3）；v1=原样字节（dev 库历史），v2=规范化。读侧 `hash_version<当前` →
-      按旧算法复算比对，相等则**静默升级**写回，不等才 stale。两表未发布 → 原地改。
+- [ ] 版本：mounts/repairs 加 `hash_version INTEGER NOT NULL DEFAULT 1`（**已裁决**，2026-11-02
+      Q10）；v1=原样字节（dev 库历史），v2=规范化。读侧 `hash_version<当前` →
+      按旧算法复算比对，相等则**静默升级**写回，不等才 stale。两表未发布 → **x21 基线**内落列。
+      与 ADR-0012 §4 兼容（锚仍 FNV-1a 64、级联语义不变，只收窄「结构变」的判定面）——
+      契约文档记档，不出后继 ADR。
 - [ ] 契约文档 `docs/contracts/learning-structure-artifacts.md` 补「hash 作用域与版本」节。
 - [ ] 测试：同结构不同键序/空白 → 相等；改一个 block 名 → 不等；信封加旁键 → 不 stale；
       v1→v2 静默升级。

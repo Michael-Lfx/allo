@@ -41,4 +41,4 @@ part_of: ../map.md
 
 ## 非目标
 
-- 内层 structure 词表（x08）。
+- 内层 structure 取值（x08）。

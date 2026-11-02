@@ -10,8 +10,8 @@ part_of: ../map.md
 
 # x11: WS phase 单源 + pipeline 显式字段
 
-**What to build:** 生成/生长进度帧的 `phase` 词表收成 Rust 单源常量，帧与课程行显式携带
-`pipeline` 版本；前端 phase 处理集中到带 default 的查表函数。
+**What to build:** 生成/生长进度帧的 `phase` 取值集收成 Rust 单源常量，帧与课程行显式携带
+`pipeline`（`sampling | source_plan`）；前端 phase 处理集中到带 default 的查表函数。
 
 ## 现状（盘点 2026-11-01，行号实现会话复核）
 
@@ -32,12 +32,13 @@ part_of: ../map.md
 - [ ] Rust：`events.rs` 定义 `pub mod phase { pub const STARTED: &str; … pub const ALL }`
       按 course/lesson/graph 三组；全部发射点改引用常量；测试断言发射点集合 ⊆ `ALL`
       （smoke 读数或 grep 式单测）。
-- [ ] 帧字段：`pipeline: "v1" | "v2"`（course 生成），后端按 `NOMI_LEARNING_SOURCE_PLAN`
+- [ ] 帧字段：`pipeline: "sampling" | "source_plan"`（2026-11-02 Q6 裁决：词汇表「来源结构计划
+      Source Plan」对齐，不用 v1/v2），后端按 `NOMI_LEARNING_SOURCE_PLAN`
       （`service/generate.rs:43`）与知识库流判定**显式写出**；课程详情 DTO 同步带
-      `pipeline`（有 `course_source_plan_json` 即 v2）。
+      `pipeline`（有 `course_source_plan_json` 即 `source_plan`）。
 - [ ] 前端：删 `isModernPipeline` 嗅探改读字段；`phaseMeta(phase): {step, label, tone}`
       单文件查表 + default（未知 phase → 「处理中」中性态，不丢帧）；`ipcBridge` union 改
-      `string`（phase 是开放词表，由 phaseMeta 兜底）。
+      `string`（phase 是开放取值集，由 phaseMeta 兜底）。
 - [ ] x12 的互钉脚本把 Rust `phase::ALL` 与 `phaseMeta` 键集对拼——本票先把两端单源化。
 - [ ] 文档：`docs/architecture/learning.zh.md` WS 段改引用常量清单。
 

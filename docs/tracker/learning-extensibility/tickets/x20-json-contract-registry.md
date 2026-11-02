@@ -22,10 +22,11 @@ version, 可再生?, 演进规则}` 与应用层不变量，配测试断言「�
 - JSON 列版本契约散在：`docs/contracts/learning-structure-artifacts.md:196-215`（structure
   信封）、`docs/contracts/learning-course-source-plan.md`、各结构体注释——**无总表**；
   `data-and-storage.md:162-186` 迁移计数过时。
-- 应用层不变量无处登记：`source_kb_id`↔`source_kb_ids[0]`、`source_path`↔
-  `source_paths_json[0]` 双写（x02 记档）、`concept_registry.canonical` 全库唯一仅代码保证
-  （070）、findings 台账 kind/code 缺列（x06 记档）、`generation_mode` CHECK 含代码已不认的
-  `'full'`（x02 记档）。
+- 应用层不变量登记：`source_kb_id`↔`source_kb_ids[0]`、`source_path`↔`source_paths_json[0]`
+  双写是 **ADR-0011 已接受的刻意决定**（单列是兼容位，登记 enforced_by=ADR-0011 + 写点成对
+  维护）；`concept_registry.canonical` 全库唯一仅代码保证（070）；findings 台账 kind/code 缺列
+  （x06 记档）；`generation_mode` CHECK 含代码已不认的 `'full'`（x02 记档）；已发布 `version`
+  列实为修订计数（CONTEXT.md「Generation」legacy 口径，不改名）。
 
 ## 实施要点
 
