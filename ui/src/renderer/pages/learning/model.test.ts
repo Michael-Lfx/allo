@@ -20,6 +20,7 @@ import {
   stepLocked,
 } from './model';
 import type { Activity, Section } from './types';
+import { PHASE } from './phaseMeta';
 import type { Translate } from './utils';
 
 const t = ((key: string, vars?: Record<string, unknown>) =>
@@ -115,10 +116,10 @@ describe('状态映射', () => {
 describe('deriveStep / lessonProgressLine', () => {
   test('事件流折叠：构建 → 审计 → 修复 → 发布', () => {
     const events = [
-      { phase: 'round', loop: 'generate' },
-      { phase: 'audit', danger: 2 },
-      { phase: 'round', loop: 'repair' },
-      { phase: 'publishing' },
+      { phase: PHASE.round, loop: PHASE.generate },
+      { phase: PHASE.audit, danger: 2 },
+      { phase: PHASE.round, loop: PHASE.repair },
+      { phase: PHASE.publishing },
     ] as unknown as Parameters<typeof deriveStep>[0];
     const { step, repairRounds, sawDanger } = deriveStep(events);
     expect(step).toBe(4);
@@ -131,14 +132,14 @@ describe('deriveStep / lessonProgressLine', () => {
   });
 
   test('行内进度：round/audit 出文案，终态清空', () => {
-    expect(lessonProgressLine({ phase: 'round', round: 3 } as never, t)).toContain(
+    expect(lessonProgressLine({ phase: PHASE.round, round: 3 } as never, t)).toContain(
       'learning.lessonGenRound'
     );
-    expect(lessonProgressLine({ phase: 'audit', danger: 1 } as never, t)).toContain(
+    expect(lessonProgressLine({ phase: PHASE.audit, danger: 1 } as never, t)).toContain(
       'learning.lessonGenAudit'
     );
-    expect(lessonProgressLine({ phase: 'completed' } as never, t)).toBeNull();
-    expect(lessonProgressLine({ phase: 'failed' } as never, t)).toBeNull();
+    expect(lessonProgressLine({ phase: PHASE.completed } as never, t)).toBeNull();
+    expect(lessonProgressLine({ phase: PHASE.failed } as never, t)).toBeNull();
   });
 });
 
@@ -146,35 +147,35 @@ describe('deriveStep / lessonProgressLine', () => {
 
 describe('t5 新管线步骤折叠', () => {
   test('triage/source_plan/coverage 阶段推进到对应档', () => {
-    const base = { phase: 'triage_started' } as never;
+    const base = { phase: PHASE.triageStarted } as never;
     expect(deriveModernStep([base])).toBe(1);
     expect(
-      deriveModernStep([{ phase: 'triage_completed' } as never])
+      deriveModernStep([{ phase: PHASE.triageCompleted } as never])
     ).toBe(1);
     expect(
       deriveModernStep([
-        { phase: 'triage_completed' } as never,
-        { phase: 'source_plan_started' } as never,
+        { phase: PHASE.triageCompleted } as never,
+        { phase: PHASE.sourcePlanStarted } as never,
       ])
     ).toBe(2);
     expect(
       deriveModernStep([
-        { phase: 'source_plan_ready', chapters: 3 } as never,
+        { phase: PHASE.sourcePlanReady, chapters: 3 } as never,
       ])
     ).toBe(2);
     expect(
-      deriveModernStep([{ phase: 'coverage_ready' } as never])
+      deriveModernStep([{ phase: PHASE.coverageReady } as never])
     ).toBe(3);
     expect(
       deriveModernStep([
-        { phase: 'coverage_ready' } as never,
-        { phase: 'publishing' } as never,
+        { phase: PHASE.coverageReady } as never,
+        { phase: PHASE.publishing } as never,
       ])
     ).toBe(3);
     expect(
       deriveModernStep([
-        { phase: 'coverage_ready' } as never,
-        { phase: 'completed' } as never,
+        { phase: PHASE.coverageReady } as never,
+        { phase: PHASE.completed } as never,
       ])
     ).toBe(4);
   });
@@ -184,15 +185,24 @@ describe('t5 新管线步骤折叠', () => {
   });
 
   test('新管线判定：看到 triage 阶段即切换新步骤条', () => {
-    expect(isModernPipeline([{ phase: 'triage_started' } as never])).toBe(true);
-    expect(isModernPipeline([{ phase: 'triage_completed' } as never])).toBe(true);
+    expect(isModernPipeline([{ phase: PHASE.triageStarted } as never])).toBe(true);
+    expect(isModernPipeline([{ phase: PHASE.triageCompleted } as never])).toBe(true);
     expect(
       isModernPipeline([
-        { phase: 'started' } as never,
-        { phase: 'round', loop: 'generate' } as never,
+        { phase: PHASE.started } as never,
+        { phase: PHASE.round, loop: PHASE.generate } as never,
       ])
     ).toBe(false);
     expect(isModernPipeline([])).toBe(false);
+  });
+
+  test('声明字段优先于 triage 嗅探（x11）', () => {
+    expect(isModernPipeline([], 'source_plan')).toBe(true);
+    expect(
+      isModernPipeline([{ phase: PHASE.triageStarted } as never], 'sampling')
+    ).toBe(false);
+    // 无声明时退回嗅探（滚动部署期旧帧兜底）。
+    expect(isModernPipeline([{ phase: PHASE.triageStarted } as never])).toBe(true);
   });
 });
 

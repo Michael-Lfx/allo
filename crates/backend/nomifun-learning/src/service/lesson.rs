@@ -288,7 +288,7 @@ impl LearningService {
         match self.live_lesson_draft_for_lesson(context.lesson_id.as_str()) {
             Some(draft_id) => {
                 self.emit_lesson_event(serde_json::json!({
-                    "phase": "resumed",
+                    "phase": crate::events::phase::RESUMED,
                     "lesson_id": context.lesson_id,
                     "draft_id": draft_id,
                 }));
@@ -731,7 +731,7 @@ impl LearningService {
                     &format!("瞬断重试：第 {attempt}/{LESSON_GENERATE_ATTEMPTS} 次尝试…"),
                 );
                 self.emit_lesson_event(serde_json::json!({
-                    "phase": "retry",
+                    "phase": crate::events::phase::RETRY,
                     "lesson_id": context.lesson_id,
                     "attempt": attempt,
                     "last_error": last_fingerprint,
@@ -905,7 +905,7 @@ impl LearningService {
         // 读数（票面「读数」项）：命中数/扩读文件数/是否降级——课时写作是否
         // 真的接上了库，事后可核对（WS 事件 + 进程内日志）。
         self.emit_lesson_event(serde_json::json!({
-            "phase": "grounding",
+            "phase": crate::events::phase::GROUNDING,
             "lesson_id": lesson_id.as_str(),
             "primary_live": grounding.primary_live,
             "hits": grounding.hits,
@@ -970,7 +970,7 @@ impl LearningService {
             retry_feedback: None,
         };
         self.emit_lesson_event(serde_json::json!({
-            "phase": "started",
+            "phase": crate::events::phase::STARTED,
             "lesson_id": lesson_id.as_str(),
             "title": lesson.title,
             "module": module.title,
@@ -995,7 +995,7 @@ impl LearningService {
                     .await;
                 match &result {
                     Ok((output, _stats)) => self.emit_lesson_event(serde_json::json!({
-                        "phase": "completed",
+                        "phase": crate::events::phase::COMPLETED,
                         "lesson_id": lesson_id.as_str(),
                         "title": lesson.title,
                         "activities": output.activities.len(),
@@ -1003,7 +1003,7 @@ impl LearningService {
                         "visuals": crate::models::visual_distribution(&output.sections),
                     })),
                     Err(error) => self.emit_lesson_event(serde_json::json!({
-                        "phase": "failed",
+                        "phase": crate::events::phase::FAILED,
                         "lesson_id": lesson_id.as_str(),
                         "title": lesson.title,
                         "error": error.to_string(),
@@ -1049,7 +1049,7 @@ impl LearningService {
                 {
                     Ok(output) => {
                         self.emit_lesson_event(serde_json::json!({
-                            "phase": "completed",
+                            "phase": crate::events::phase::COMPLETED,
                             "lesson_id": lesson_id.as_str(),
                             "title": lesson.title,
                             "activities": output.activities.len(),
@@ -1060,7 +1060,7 @@ impl LearningService {
                     }
                     Err(error) => {
                         self.emit_lesson_event(serde_json::json!({
-                            "phase": "failed",
+                            "phase": crate::events::phase::FAILED,
                             "lesson_id": lesson_id.as_str(),
                             "title": lesson.title,
                             "error": error,
@@ -1078,7 +1078,7 @@ impl LearningService {
         if !output.degraded_keys.is_empty() {
             // 降级兜底可见:哪些节以 visual=无 纯文字保底,便于事后重试。
             self.emit_lesson_event(serde_json::json!({
-                "phase": "degraded",
+                "phase": crate::events::phase::DEGRADED,
                 "lesson_id": lesson_id.as_str(),
                 "sections": output.degraded_keys,
             }));
@@ -1184,7 +1184,7 @@ impl LearningService {
         };
 
         self.emit_lesson_event(serde_json::json!({
-            "phase": "started",
+            "phase": crate::events::phase::STARTED,
             "lesson_id": lesson_id.as_str(),
             "title": context.lesson_title,
             "module": context.module_title,
@@ -1210,7 +1210,7 @@ impl LearningService {
             .await;
         match &result {
             Ok((output, _stats)) => self.emit_lesson_event(serde_json::json!({
-                "phase": "completed",
+                "phase": crate::events::phase::COMPLETED,
                 "lesson_id": lesson_id.as_str(),
                 "title": lesson_title,
                 "activities": output.activities.len(),
@@ -1218,7 +1218,7 @@ impl LearningService {
                 "visuals": crate::models::visual_distribution(&output.sections),
             })),
             Err(error) => self.emit_lesson_event(serde_json::json!({
-                "phase": "failed",
+                "phase": crate::events::phase::FAILED,
                 "lesson_id": lesson_id.as_str(),
                 "title": lesson_title,
                 "error": error.to_string(),
@@ -1825,7 +1825,7 @@ impl LearningService {
         if degraded {
             // 降级兜底可见:该节以 visual=无 纯文字保底,便于事后重试。
             self.emit_lesson_event(serde_json::json!({
-                "phase": "degraded",
+                "phase": crate::events::phase::DEGRADED,
                 "lesson_id": lesson_id.as_str(),
                 "sections": [section_key],
             }));

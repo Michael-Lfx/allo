@@ -4,6 +4,7 @@
  * 合与展示，业务决策都收在这里（避免决策逻辑埋在渲染体里无法测试）。
  */
 import type { ILearningCourseGenerationEvent, ILearningGenerationToolCall } from '@/common/adapter/ipcBridge';
+import { PHASE } from './phaseMeta';
 import type { Activity, LessonStatus, Section } from './types';
 import type { Translate } from './utils';
 
@@ -127,15 +128,15 @@ export function deriveStep(events: ILearningCourseGenerationEvent[]): {
   let repairRounds = 0;
   let sawDanger = false;
   for (const event of events) {
-    if (event.phase === 'round' && event.loop === 'repair') {
+    if (event.phase === PHASE.round && event.loop === PHASE.repair) {
       step = Math.max(step, 3) as GenStep;
       repairRounds += 1;
-    } else if (event.phase === 'audit') {
+    } else if (event.phase === PHASE.audit) {
       step = Math.max(step, 2) as GenStep;
       if ((event.danger ?? 0) > 0) sawDanger = true;
-    } else if (event.phase === 'round' && event.loop === 'generate') {
+    } else if (event.phase === PHASE.round && event.loop === PHASE.generate) {
       step = Math.max(step, 1) as GenStep;
-    } else if (event.phase === 'publishing' || event.phase === 'completed') {
+    } else if (event.phase === PHASE.publishing || event.phase === PHASE.completed) {
       step = Math.max(step, 4) as GenStep;
     }
   }
@@ -168,10 +169,10 @@ export function lessonProgressLine(
   event: ILearningCourseGenerationEvent,
   t: Translate
 ): string | null {
-  if (event.phase === 'round') {
+  if (event.phase === PHASE.round) {
     return `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`;
   }
-  if (event.phase === 'audit') {
+  if (event.phase === PHASE.audit) {
     return `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenAudit', {
       danger: event.danger ?? 0,
       warning: event.warning ?? 0,
@@ -187,11 +188,16 @@ export function lessonProgressLine(
  * Structure/Coverage Gauge 无关。 */
 export type ModernGenStep = 0 | 1 | 2 | 3 | 4;
 
-/** 事件流里是否观察到新管线的分诊阶段——决定步骤条用新标签还是旧
- * （描述流/旧客户端走旧五段，零回归）。 */
-export function isModernPipeline(events: ILearningCourseGenerationEvent[]): boolean {
+/** 事件流里是否观察到新管线的分诊阶段——声明字段优先（x11），无字段时
+ * 退回旧嗅探兜底（滚动部署期旧帧混入不炸）。 */
+export function isModernPipeline(
+  events: ILearningCourseGenerationEvent[],
+  declared?: 'sampling' | 'source_plan'
+): boolean {
+  if (declared === 'source_plan') return true;
+  if (declared === 'sampling') return false;
   return events.some(
-    (event) => event.phase === 'triage_started' || event.phase === 'triage_completed'
+    (event) => event.phase === PHASE.triageStarted || event.phase === PHASE.triageCompleted
   );
 }
 
@@ -200,16 +206,16 @@ export function isModernPipeline(events: ILearningCourseGenerationEvent[]): bool
 export function deriveModernStep(events: ILearningCourseGenerationEvent[]): ModernGenStep {
   let step: ModernGenStep = 0;
   for (const event of events) {
-    if (event.phase === 'triage_started' || event.phase === 'triage_completed') {
+    if (event.phase === PHASE.triageStarted || event.phase === PHASE.triageCompleted) {
       step = Math.max(step, 1) as ModernGenStep;
     } else if (
-      event.phase === 'source_plan_started' ||
-      event.phase === 'source_plan_ready'
+      event.phase === PHASE.sourcePlanStarted ||
+      event.phase === PHASE.sourcePlanReady
     ) {
       step = Math.max(step, 2) as ModernGenStep;
-    } else if (event.phase === 'coverage_ready' || event.phase === 'publishing') {
+    } else if (event.phase === PHASE.coverageReady || event.phase === PHASE.publishing) {
       step = Math.max(step, 3) as ModernGenStep;
-    } else if (event.phase === 'completed') {
+    } else if (event.phase === PHASE.completed) {
       step = Math.max(step, 4) as ModernGenStep;
     }
   }

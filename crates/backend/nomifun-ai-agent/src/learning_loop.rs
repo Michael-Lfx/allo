@@ -238,7 +238,7 @@ impl LoopChannel {
         let payload = match event {
             "agent_round" => {
                 let repair =
-                    fields.get("loop").and_then(serde_json::Value::as_str) != Some("generate");
+                    fields.get("loop").and_then(serde_json::Value::as_str) != Some(nomifun_learning::phase::GENERATE);
                 if let Some(gen_label) = self.wire.round_log_gen_label {
                     let tools_text = fields
                         .get("tool_calls")
@@ -287,7 +287,7 @@ impl LoopChannel {
                     }
                 }
                 let mut payload = serde_json::json!({
-                    "phase": "round",
+                    "phase": nomifun_learning::phase::ROUND,
                     "loop": fields.get("loop"),
                     "round": fields.get("round"),
                     "max_rounds": if repair { REPAIR_MAX_ROUNDS } else { self.generate_max_rounds },
@@ -303,7 +303,7 @@ impl LoopChannel {
                 // 损坏降级上 WS：否则用户会看到轮次凭空从 1 跳到 2，不知道
                 // 中间发生过一次传输损坏与自动恢复。复用 round 行渲染。
                 let mut payload = serde_json::json!({
-                    "phase": "round",
+                    "phase": nomifun_learning::phase::ROUND,
                     "loop": fields.get("loop"),
                     "round": fields.get("round"),
                     "tools": [],
@@ -428,7 +428,7 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         round_tokens,
         ThinkingConfig::Disabled,
         GENERATE_REASONING_EFFORT,
-        "generate",
+        nomifun_learning::phase::GENERATE,
         Some(ctx.as_ref()),
     )
     .await;
@@ -436,13 +436,13 @@ pub(crate) async fn run_loops<F: FlowCycle>(
     // 最后一轮（预算恰好在发布轮耗尽）。
     if flow.publish_before_error() {
         if let Some(output) = take_published::<F>(&ctx) {
-            return Ok(publish(flow, &ctx, output, "generate", None));
+            return Ok(publish(flow, &ctx, output, nomifun_learning::phase::GENERATE, None));
         }
     }
     let final_text = loop_result.map_err(|error| flow.map_loop_error(ctx.as_ref(), error))?;
     if !flow.publish_before_error() {
         if let Some(output) = take_published::<F>(&ctx) {
-            return Ok(publish(flow, &ctx, output, "generate", None));
+            return Ok(publish(flow, &ctx, output, nomifun_learning::phase::GENERATE, None));
         }
     }
     let draft_id = match F::draft_slot(&ctx).lock() {
@@ -480,7 +480,7 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         ctx.log("repair_loop_start", start);
         match flow.finish(ctx.as_ref(), &draft_id).await {
             Ok(output) => {
-                return Ok(publish(flow, &ctx, output, "repair", Some(round + 1)));
+                return Ok(publish(flow, &ctx, output, nomifun_learning::phase::REPAIR, Some(round + 1)));
             }
             Err(AppError::UnprocessableEntity(_)) => {
                 ctx.log("finish_blocked", serde_json::json!({
@@ -507,20 +507,20 @@ pub(crate) async fn run_loops<F: FlowCycle>(
             round_tokens,
             ThinkingConfig::Disabled,
             REPAIR_REASONING_EFFORT,
-            "repair",
+            nomifun_learning::phase::REPAIR,
             Some(ctx.as_ref()),
         )
         .await;
         // 发布优先于循环错误（同生成循环，按流的显式声明）。
         if flow.publish_before_error() {
             if let Some(output) = take_published::<F>(&ctx) {
-                return Ok(publish(flow, &ctx, output, "repair", Some(round + 1)));
+                return Ok(publish(flow, &ctx, output, nomifun_learning::phase::REPAIR, Some(round + 1)));
             }
         }
         let final_text = loop_result.map_err(|error| flow.map_loop_error(ctx.as_ref(), error))?;
         if !flow.publish_before_error() {
             if let Some(output) = take_published::<F>(&ctx) {
-                return Ok(publish(flow, &ctx, output, "repair", Some(round + 1)));
+                return Ok(publish(flow, &ctx, output, nomifun_learning::phase::REPAIR, Some(round + 1)));
             }
         }
         let revision_after = flow.revision(ctx.as_ref(), &draft_id)?;
@@ -824,7 +824,7 @@ mod tests {
             &service,
             "agent_round",
             &serde_json::json!({
-                "loop": "repair", "round": 2, "text": "x",
+                "loop": nomifun_learning::phase::REPAIR, "round": 2, "text": "x",
                 "tool_calls": [{ "name": "co_patch", "is_error": false }],
             }),
         );
@@ -832,14 +832,14 @@ mod tests {
             &service,
             "round_feedback",
             &serde_json::json!({
-                "loop": "repair", "round": 3, "feedbacks_used": 1, "error": "malformed",
+                "loop": nomifun_learning::phase::REPAIR, "round": 3, "feedbacks_used": 1, "error": "malformed",
             }),
         );
         // 带 phase 的事件原样上线（audit / session_end / publish_ok），不加 kind。
         channel.emit(
             &service,
             "audit",
-            &serde_json::json!({ "phase": "audit", "danger": 1 }),
+            &serde_json::json!({ "phase": nomifun_learning::phase::AUDIT, "danger": 1 }),
         );
         let frames = sink.frames("learning.course-generation");
         assert_eq!(frames.len(), 2, "round_feedback stays off the co wire: {frames:?}");
@@ -857,7 +857,7 @@ mod tests {
             &service,
             "agent_round",
             &serde_json::json!({
-                "loop": "generate", "round": 1, "text": "",
+                "loop": nomifun_learning::phase::GENERATE, "round": 1, "text": "",
                 "tool_calls": [{ "name": "ls_start", "is_error": false }],
             }),
         );

@@ -25,6 +25,7 @@ pub use switches::{
 pub use completer::{LearningCompleter, LlmUsageDelta, LlmUsageMeter};
 
 pub use events::LearningEventEmitter;
+pub use events::{EVENT_COURSE_GENERATION, EVENT_LESSON_GENERATION, phase};
 
 pub use course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
 

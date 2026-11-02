@@ -1942,6 +1942,11 @@ pub struct CourseSummary {
     /// 为 `None`——字段不出现;未知版本/坏形状 → `available=false` 降级,
     /// 不报错、不伪造。DTO 细化归 t5,这里只读计数。
     pub source_plan: Option<CourseSourcePlanView>,
+    /// 建课管线代际（x11）：graph 课程 `None`（步骤条不区分代际）；传统课程
+    /// 按 `course_source_plan_json` 列是否非空判定——非 NULL = source_plan，
+    /// 否则 sampling（老行 NULL 与今日嗅探结果一致）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<&'static str>,
 }
 
 /// 采样披露的对外视图（t2）：计数 + 低分未采样的少量示例。完整文件树只
