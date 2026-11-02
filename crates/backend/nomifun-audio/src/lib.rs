@@ -57,7 +57,7 @@ pub use earcon::{
     WAKE_WAV,
 };
 pub use vocal::{
-    DISMISS_EN_WAV, DISMISS_ZH_WAV, VocalPhrase, WAKE_EN_WAV, WAKE_ZH_WAV,
+    BARGE_EN_WAV, BARGE_ZH_WAV, DISMISS_EN_WAV, DISMISS_ZH_WAV, VocalPhrase, WAKE_EN_WAV, WAKE_ZH_WAV,
 };
 pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use events::spawn_meeting_event_bridge;

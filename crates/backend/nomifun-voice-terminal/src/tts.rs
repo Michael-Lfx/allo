@@ -176,6 +176,51 @@ impl TtsProvider for EdgeTtsProvider {
     }
 }
 
+pub(crate) fn build_edge_ssml(text: &str, voice: &str, default_voice: &str) -> String {
+    let (actual_voice, custom_speed) = if let Some((v, s)) = voice.split_once(";speed=") {
+        (v, s.parse::<f32>().ok())
+    } else {
+        (voice, None)
+    };
+    let voice_name = if actual_voice.is_empty() {
+        default_voice
+    } else {
+        actual_voice
+    };
+    let speed = custom_speed.unwrap_or(1.3);
+    let escaped = |value: &str| {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    };
+    let text = escaped(text);
+    let voice_name = escaped(voice_name);
+    let pct = ((speed - 1.0) * 100.0).round() as i32;
+    if pct == 0 {
+        format!(
+            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>\
+            <voice name='{voice_name}'>\
+                {text}\
+            </voice>\
+            </speak>"
+        )
+    } else {
+        let rate = format!("{pct:+}%");
+        format!(
+            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>\
+            <voice name='{voice_name}'>\
+                <prosody rate='{rate}'>\
+                    {text}\
+                </prosody>\
+            </voice>\
+            </speak>"
+        )
+    }
+}
+
 impl EdgeTtsProvider {
     async fn synthesize_with_budget(
         &self,
@@ -396,29 +441,7 @@ impl EdgeTtsProvider {
             .await
             .map_err(|e| TtsError::Network(format!("Failed to send config: {e}")))?;
 
-        let actual_voice = voice.split_once(";speed=").map(|(v, _)| v).unwrap_or(voice);
-        let voice_name = if actual_voice.is_empty() {
-            &self.default_voice
-        } else {
-            actual_voice
-        };
-        let escaped = |value: &str| {
-            value
-                .replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-                .replace('"', "&quot;")
-                .replace('\'', "&apos;")
-        };
-        let text = escaped(text);
-        let voice_name = escaped(voice_name);
-        let ssml = format!(
-            "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>\
-            <voice name='{voice_name}'>\
-                {text}\
-            </voice>\
-            </speak>"
-        );
+        let ssml = build_edge_ssml(text, voice, &self.default_voice);
         let ssml_message = format!(
             "X-RequestId:{req_id}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:{timestamp}Z\r\nPath:ssml\r\n\r\n{ssml}"
         );
@@ -772,6 +795,55 @@ mod transport_tests {
             rate
         );
     }
+
+    #[tokio::test]
+    #[ignore = "asset generator"]
+    async fn generate_barge_vocal_assets() {
+        use nomifun_audio::pcm_util::resample_mono;
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nomifun-audio/assets/vocal");
+
+        // 1. Chinese "你说"
+        let mut audio = EdgeTtsProvider::new()
+            .synthesize_stream("你说", "zh-CN-XiaoxiaoNeural;speed=1.3")
+            .await
+            .unwrap();
+        let wav = audio.recv().await.unwrap();
+        let (pcm_24k, rate) = nomifun_audio::parse_audio_frame_to_pcm(&wav);
+        assert_eq!(rate, 24000);
+        let pcm_16k = resample_mono(&pcm_24k, 24000, 16000);
+        let trimmed: Vec<f32> = pcm_16k.into_iter()
+            .skip_while(|s| s.abs() < 0.005)
+            .collect();
+        let mut rev: Vec<f32> = trimmed.into_iter().rev().skip_while(|s| s.abs() < 0.005).collect();
+        rev.reverse();
+        let mut final_pcm = vec![0.0f32; 480];
+        final_pcm.extend(rev);
+        final_pcm.extend(vec![0.0f32; 480]);
+        let wav_bytes = nomifun_audio::pcm_to_wav(&final_pcm, 16000);
+        std::fs::write(root.join("barge_zh.wav"), wav_bytes).unwrap();
+        println!("Generated barge_zh.wav: {} samples ({}ms)", final_pcm.len(), final_pcm.len() / 16);
+
+        // 2. English "Go ahead"
+        let mut audio_en = EdgeTtsProvider::new()
+            .synthesize_stream("Go ahead", "en-US-JennyNeural;speed=1.3")
+            .await
+            .unwrap();
+        let wav_en = audio_en.recv().await.unwrap();
+        let (pcm_24k_en, rate_en) = nomifun_audio::parse_audio_frame_to_pcm(&wav_en);
+        assert_eq!(rate_en, 24000);
+        let pcm_16k_en = resample_mono(&pcm_24k_en, 24000, 16000);
+        let trimmed_en: Vec<f32> = pcm_16k_en.into_iter()
+            .skip_while(|s| s.abs() < 0.005)
+            .collect();
+        let mut rev_en: Vec<f32> = trimmed_en.into_iter().rev().skip_while(|s| s.abs() < 0.005).collect();
+        rev_en.reverse();
+        let mut final_pcm_en = vec![0.0f32; 480];
+        final_pcm_en.extend(rev_en);
+        final_pcm_en.extend(vec![0.0f32; 480]);
+        let wav_bytes_en = nomifun_audio::pcm_to_wav(&final_pcm_en, 16000);
+        std::fs::write(root.join("barge_en.wav"), wav_bytes_en).unwrap();
+        println!("Generated barge_en.wav: {} samples ({}ms)", final_pcm_en.len(), final_pcm_en.len() / 16);
+    }
 }
 
 fn decode_audio_with_rate(audio_bytes: &[u8]) -> Result<(Vec<f32>, u32), String> {
@@ -930,7 +1002,7 @@ impl Default for SherpaOfflineTtsConfig {
             rule_fsts: None,
             rule_fars: None,
             num_threads: 2,
-            speed: 1.0,
+            speed: 1.3,
             sid: 0,
             noise_scale: 0.667,
             noise_scale_w: 0.8,
@@ -1012,7 +1084,7 @@ impl SherpaOfflineTtsConfig {
             rule_fsts,
             rule_fars,
             num_threads: 2,
-            speed: 1.0,
+            speed: 1.3,
             sid: 0,
             noise_scale: 0.667,
             noise_scale_w: 0.8,
@@ -1716,5 +1788,31 @@ mod fallback_and_sherpa_tests {
         assert_eq!(segs[0], LangSegment::Zh("正在使用".into()));
         assert_eq!(segs[1], LangSegment::En("Docker".into()));
         assert_eq!(segs[2], LangSegment::Zh("部署应用。".into()));
+    }
+
+    #[test]
+    fn test_edge_ssml_prosody_speed_rate_formatting() {
+        // Default speed is 1.3 (+30%)
+        let ssml_default = build_edge_ssml("你好", "", "zh-CN-XiaoxiaoNeural");
+        assert!(ssml_default.contains("<prosody rate='+30%'>"));
+        assert!(ssml_default.contains("<voice name='zh-CN-XiaoxiaoNeural'>"));
+
+        // 1.5x speed (+50%)
+        let ssml_1_5 = build_edge_ssml("hello", "en-US-JennyNeural;speed=1.5", "zh-CN-XiaoxiaoNeural");
+        assert!(ssml_1_5.contains("<prosody rate='+50%'>"));
+        assert!(ssml_1_5.contains("<voice name='en-US-JennyNeural'>"));
+
+        // 0.8x speed (-20%)
+        let ssml_0_8 = build_edge_ssml("慢点说", ";speed=0.8", "zh-CN-XiaoxiaoNeural");
+        assert!(ssml_0_8.contains("<prosody rate='-20%'>"));
+
+        // 1.0x speed (no prosody tag needed)
+        let ssml_1_0 = build_edge_ssml("原速", ";speed=1.0", "zh-CN-XiaoxiaoNeural");
+        assert!(!ssml_1_0.contains("<prosody"));
+        assert!(ssml_1_0.contains("原速"));
+
+        // XML escaping check
+        let ssml_escaped = build_edge_ssml("1 < 2 & 3 > 1", "", "zh-CN-XiaoxiaoNeural");
+        assert!(ssml_escaped.contains("1 &lt; 2 &amp; 3 &gt; 1"));
     }
 }

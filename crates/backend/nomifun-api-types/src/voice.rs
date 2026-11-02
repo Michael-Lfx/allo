@@ -47,7 +47,7 @@ impl Default for VoiceFeedbackConfig {
             dismiss_phrases: vec!["退下吧".into(), "结束通话".into(), "休息吧".into()],
             dismiss_reply: "好的，再见".into(),
             tts_backend: "local".into(),
-            tts_speed: 1.0,
+            tts_speed: 1.3,
             idle_timeout_secs: 30,
             input_device: None,
         }
@@ -1879,7 +1879,7 @@ fn default_wake_reply() -> String { "我在".into() }
 fn default_interject_keyword() -> String { "Flowy".into() }
 fn default_dismiss_phrases() -> Vec<String> { vec!["退下吧".into(), "结束通话".into(), "休息吧".into()] }
 fn default_dismiss_reply() -> String { "好的，再见".into() }
-fn default_tts_speed() -> f32 { 1.0 }
+fn default_tts_speed() -> f32 { 1.3 }
 fn default_tts_volume() -> u8 { 100 }
 fn default_idle_secs() -> u32 { 30 }
 
@@ -2150,7 +2150,7 @@ mod task_control_classifier_tests {
         let empty_json = "{}";
         let from_empty: VoiceUserPreferences = serde_json::from_str(empty_json).unwrap();
         assert_eq!(from_empty, prefs);
-        assert_eq!(from_empty.tts_speed, 1.0);
+        assert_eq!(from_empty.tts_speed, 1.3);
         assert_eq!(from_empty.tts_volume, 100);
         assert!(from_empty.wake_enabled);
         assert_eq!(from_empty.dismiss_phrases.len(), 3);

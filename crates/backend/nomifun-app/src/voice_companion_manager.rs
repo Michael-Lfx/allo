@@ -1340,6 +1340,7 @@ impl VoiceCompanionProcessManager {
         if let (Some(recorder), Some(request_id)) = (&self.dialogue_recorder, call_request_id) {
             recorder.take_call_reservation(request_id);
         }
+        self.set_candidate_conversation(None);
     }
 
     pub async fn target_settings(&self) -> VoiceTargetSettings {
@@ -2435,6 +2436,7 @@ impl VoiceCompanionProcessManager {
             }) { return Err("session_scope_changed".into()); }
         }
         self.task_feedback.lock().unwrap_or_else(|e| e.into_inner()).clear_pending();
+        self.set_candidate_conversation(None);
         if let Some(session_id) = &request.session_id {
             let mut revoked = self.revoked_sessions.write().unwrap_or_else(|error| error.into_inner());
             if !revoked.contains(session_id) {

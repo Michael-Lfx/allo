@@ -6,6 +6,8 @@
 
 pub const WAKE_ZH_WAV: &[u8] = include_bytes!("../assets/vocal/wake_zh.wav");
 pub const WAKE_EN_WAV: &[u8] = include_bytes!("../assets/vocal/wake_en.wav");
+pub const BARGE_ZH_WAV: &[u8] = include_bytes!("../assets/vocal/barge_zh.wav");
+pub const BARGE_EN_WAV: &[u8] = include_bytes!("../assets/vocal/barge_en.wav");
 pub const DISMISS_ZH_WAV: &[u8] = include_bytes!("../assets/vocal/dismiss_zh.wav");
 pub const DISMISS_EN_WAV: &[u8] = include_bytes!("../assets/vocal/dismiss_en.wav");
 
@@ -14,20 +16,24 @@ pub const DISMISS_EN_WAV: &[u8] = include_bytes!("../assets/vocal/dismiss_en.wav
 pub enum VocalPhrase {
     WakeZh,
     WakeEn,
+    BargeZh,
+    BargeEn,
     DismissZh,
     DismissEn,
 }
 
 impl VocalPhrase {
-    /// Array of all 4 vocal phrase kinds.
-    pub const ALL: [VocalPhrase; 4] = [
+    /// Array of all 6 vocal phrase kinds.
+    pub const ALL: [VocalPhrase; 6] = [
         VocalPhrase::WakeZh,
         VocalPhrase::WakeEn,
+        VocalPhrase::BargeZh,
+        VocalPhrase::BargeEn,
         VocalPhrase::DismissZh,
         VocalPhrase::DismissEn,
     ];
 
-    /// Slice of all 4 vocal phrases.
+    /// Slice of all 6 vocal phrases.
     pub const fn all() -> &'static [VocalPhrase] {
         &Self::ALL
     }
@@ -37,6 +43,8 @@ impl VocalPhrase {
         match self {
             Self::WakeZh => WAKE_ZH_WAV,
             Self::WakeEn => WAKE_EN_WAV,
+            Self::BargeZh => BARGE_ZH_WAV,
+            Self::BargeEn => BARGE_EN_WAV,
             Self::DismissZh => DISMISS_ZH_WAV,
             Self::DismissEn => DISMISS_EN_WAV,
         }
@@ -47,6 +55,8 @@ impl VocalPhrase {
         match self {
             Self::WakeZh => "wake_zh.wav",
             Self::WakeEn => "wake_en.wav",
+            Self::BargeZh => "barge_zh.wav",
+            Self::BargeEn => "barge_en.wav",
             Self::DismissZh => "dismiss_zh.wav",
             Self::DismissEn => "dismiss_en.wav",
         }
@@ -58,6 +68,15 @@ impl VocalPhrase {
             WAKE_EN_WAV
         } else {
             WAKE_ZH_WAV
+        }
+    }
+
+    /// Returns the pre-rendered barge-in prompt WAV bytes ("你说" / "Go ahead") for the given language mode.
+    pub const fn barge_bytes(is_english: bool) -> &'static [u8] {
+        if is_english {
+            BARGE_EN_WAV
+        } else {
+            BARGE_ZH_WAV
         }
     }
 
@@ -130,6 +149,8 @@ mod tests {
     fn vocal_locale_dispatch() {
         assert_eq!(VocalPhrase::wake_bytes(true), WAKE_EN_WAV);
         assert_eq!(VocalPhrase::wake_bytes(false), WAKE_ZH_WAV);
+        assert_eq!(VocalPhrase::barge_bytes(true), BARGE_EN_WAV);
+        assert_eq!(VocalPhrase::barge_bytes(false), BARGE_ZH_WAV);
         assert_eq!(VocalPhrase::dismiss_bytes(true), DISMISS_EN_WAV);
         assert_eq!(VocalPhrase::dismiss_bytes(false), DISMISS_ZH_WAV);
     }

@@ -1218,6 +1218,7 @@ async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     // On homepage, wake must create a brand NEW voice conversation!
     assert_ne!(binding_3.conversation_id, voice_conv_1.conversation_id, "Waking on homepage must NOT hijack to voice_conv_1!");
     assert_ne!(binding_3.conversation_id, voice_conv_2.conversation_id, "Waking on homepage must NOT hijack to voice_conv_2!");
+
 }
 
 #[tokio::test]

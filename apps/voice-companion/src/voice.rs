@@ -2168,7 +2168,19 @@ impl VoiceCompanionRuntime {
         let events = events.clone();
         let generation = playback.generation_id();
         tokio::spawn(async move {
-            voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            let feedback = events.feedback();
+            let is_en = nomifun_api_types::voice::is_english_locale(events.snapshot().locale.as_deref());
+            let custom_reply = feedback.wake_reply.trim();
+            let is_default_phrase = custom_reply.is_empty()
+                || custom_reply == "我在"
+                || custom_reply.eq_ignore_ascii_case("i'm here");
+
+            if feedback.speak_replies && is_default_phrase {
+                let vocal_bytes = nomifun_audio::vocal::VocalPhrase::wake_bytes(is_en);
+                let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, VoiceCueKind::Wake, generation).await;
+            } else {
+                voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            }
             let mut d = driver.lock().await;
             let idle_secs = effective_idle_timeout(&events);
             if playback.generation_id() == generation && d.begin_listening_window_with_secs(idle_secs) {
@@ -4846,8 +4858,14 @@ impl VoiceCompanionRuntime {
                                         let barge_gen = playback.generation_id();
                                         let barge_playback = playback.clone();
                                         let barge_events = event_tx.clone();
+                                        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
+                                        let barge_bytes = nomifun_audio::vocal::VocalPhrase::barge_bytes(is_en);
                                         tokio::spawn(async move {
-                                            voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                            if barge_events.feedback().speak_replies {
+                                                let _ = voice_feedback::play_vocal(&barge_playback, &barge_events, barge_bytes, VoiceCueKind::BargeIn, barge_gen).await;
+                                            } else {
+                                                voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                            }
                                         });
                                     } else {
                                         drop(d);
@@ -4943,8 +4961,14 @@ impl VoiceCompanionRuntime {
                                         let barge_gen = playback.generation_id();
                                         let barge_playback = playback.clone();
                                         let barge_events = event_tx.clone();
+                                        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
+                                        let barge_bytes = nomifun_audio::vocal::VocalPhrase::barge_bytes(is_en);
                                         tokio::spawn(async move {
-                                            voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                            if barge_events.feedback().speak_replies {
+                                                let _ = voice_feedback::play_vocal(&barge_playback, &barge_events, barge_bytes, VoiceCueKind::BargeIn, barge_gen).await;
+                                            } else {
+                                                voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                            }
                                         });
                                     } else {
                                         drop(d);

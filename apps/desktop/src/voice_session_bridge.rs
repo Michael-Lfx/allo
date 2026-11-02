@@ -26,6 +26,9 @@ pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Optio
             manager.set_candidate_conversation(None);
         }
     } else {
+        if candidate.is_none() {
+            manager.set_candidate_conversation(None);
+        }
         manager.report_window_context(VoiceWindowContext { conversation_id: candidate, workspace, sequence });
     }
     Ok(())
