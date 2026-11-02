@@ -1,24 +1,23 @@
 use nomifun_db::sqlx::{self, SqlitePool};
+use sqlx::migrate::Migrator;
 
-const BASELINE: &str = include_str!("../migrations/015_learning_engine.sql");
-const CUSTOM_QUESTIONS: &str = include_str!("../migrations/029_learning_custom_questions.sql");
-const FILL_IN_BLANK: &str = include_str!("../migrations/038_learning_fill_in_blank.sql");
-const ARCHIVE: &str = include_str!("../migrations/043_learning_archive.sql");
-const EDIT_PENDING: &str = include_str!("../migrations/044_learning_edit_pending.sql");
-const MIGRATION: &str = include_str!("../migrations/050_learning_sections_and_question_kinds.sql");
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
 
 const COURSE_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const LESSON_A: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
 const USER_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678906";
 const ENROLLMENT_ID: &str = "0190f5fe-7c00-7a00-8abc-012345678905";
 
-/// 015 建基线 → 038/043/044 演进到 050 前的 activities/custom_questions
-/// 形状 → 插旧 kind 行 → 打 050。
+/// 全链迁移到尖端（含 x21 折叠基线与 x05 去 CHECK）：本文件断言的是
+/// **终态 schema**，050 的中间态 CHECK 已由基线 §10 重建移除。
 async fn setup_with_legacy_rows() -> SqlitePool {
-    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-    for sql in [BASELINE, CUSTOM_QUESTIONS, FILL_IN_BLANK, ARCHIVE, EDIT_PENDING, MIGRATION] {
-        sqlx::query(sql).execute(&pool).await.unwrap();
-    }
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
     pool
 }
 
@@ -96,7 +95,7 @@ async fn sections_store_manifest_and_body() {
         "duplicate position must be rejected"
     );
 
-    // 未知节类型被拒（交互节暂缓）。
+    // 未知节类型可落库（ADR-0015：枚举集校验收口 Rust，DB 不再设 CHECK）。
     let bad_kind = sqlx::query(
         "INSERT INTO learning_lesson_sections \
          (section_key, lesson_id, kind, title, position, created_at, updated_at) \
@@ -105,7 +104,7 @@ async fn sections_store_manifest_and_body() {
     .bind(LESSON_A)
     .execute(&pool)
     .await;
-    assert!(bad_kind.is_err(), "unknown section kind must be rejected");
+    assert!(bad_kind.is_ok(), "DB no longer rejects unknown section kinds: {:?}", bad_kind.err());
 
     let ready_body: String = sqlx::query_scalar(
         "SELECT body_md FROM learning_lesson_sections WHERE lesson_id = ? AND section_key = 's1'",
@@ -158,7 +157,7 @@ async fn activity_kinds_widen_to_nine_and_carry_section_key() {
     .unwrap();
     assert_eq!(section_key.as_deref(), Some("s1"));
 
-    // 未知 kind 仍被拒。
+    // 未知 kind 可落库（ADR-0015：枚举集校验收口 Rust，DB 不再设 CHECK）。
     let invalid = sqlx::query(
         "INSERT INTO learning_activities (activity_id, lesson_id, kind, prompt, config_json, position) \
          VALUES ('0190f5fe-7c00-7a00-8abc-0123456789ff', ?, 'essay', 'x', '{}', 99)",
@@ -166,7 +165,7 @@ async fn activity_kinds_widen_to_nine_and_carry_section_key() {
     .bind(LESSON_A)
     .execute(&pool)
     .await;
-    assert!(invalid.is_err(), "unknown kind must be rejected");
+    assert!(invalid.is_ok(), "DB no longer rejects unknown activity kinds: {:?}", invalid.err());
 }
 
 #[tokio::test]
@@ -225,13 +224,14 @@ async fn teaching_style_defaults_and_validates() {
         .await
         .unwrap();
 
+    // 未知教学风格可落库（ADR-0015：枚举集校验收口 Rust，DB 不再设 CHECK）。
     let invalid = sqlx::query(
         "UPDATE learning_courses SET teaching_style = 'montessori' WHERE course_id = ?",
     )
     .bind(COURSE_ID)
     .execute(&pool)
     .await;
-    assert!(invalid.is_err(), "unknown teaching_style must be rejected");
+    assert!(invalid.is_ok(), "DB no longer rejects unknown teaching styles: {:?}", invalid.err());
 }
 
 #[tokio::test]

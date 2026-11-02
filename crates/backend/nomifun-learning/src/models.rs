@@ -258,10 +258,10 @@ impl GenerateCourseRequest {
 
 /// Course generation strategy. Only `on_demand` exists today: the outline is
 /// imported immediately and each lesson's body and activities are generated
-/// only when the learner opens it. The `mode` field and the
-/// `learning_course_jobs.generation_mode` column are kept as extension points
-/// for future generation strategies (e.g. a learning-graph-driven mode); any
-/// other value is rejected.
+/// only when the learner opens it. The `mode` field is kept as an extension
+/// point for future generation strategies (e.g. a learning-graph-driven mode);
+/// any other value is rejected. (The legacy `learning_course_jobs` table and
+/// its `generation_mode` column were retired with the table, x02.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CourseGenerationMode {

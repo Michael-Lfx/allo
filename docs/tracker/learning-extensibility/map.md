@@ -149,3 +149,7 @@
 - 2026-11-02：x21 关闭——未发布 069_retire…–088 折叠为净形基线
   `070_learning_domain_rebuild.sql`（旧 20 文件删除；一次性等价校验：428 个 schema
   对象 / 28 张学习表 / 差异 0，记图纸 §8）。此后迁移票只编辑该基线对应节。
+- 2026-11-02：x05/x02 关闭——基线 §10 保 id 重建七张已发布表去枚举集 CHECK（含
+  progress 跨列形态），§11 退役 course_jobs；两处死列（progress.extra_json /
+  courses.graph_meta_json）随重建消失；跨列规则移入 quiz/progress/settle 写路径校验
+  并有单测；表数 125→124；Q8 fixture 固化为永久测试。

@@ -66,6 +66,46 @@ use crate::models::{
 };
 use crate::settle::{Settlement, QUIZ_QUESTION_BUDGET, QUIZ_TRIGGER_SETTLEMENTS};
 
+/// 回合三态形态规则（原迁移 084 的三条表级 CHECK，ADR-0015 移到写路径）：
+/// - active：finished/answers/report/earned 全空；
+/// - completed：四者全在（走完结算）；
+/// - abandoned：finished 在，其余三空（放弃零结算零作答面）。
+/// 未知 status 同样拒绝（写严格，枚举集单源在 Rust）。
+fn validate_round_shape(
+    status: &str,
+    finished_at: Option<i64>,
+    answers_json: Option<&str>,
+    report_json: Option<&str>,
+    earned_xp: Option<i64>,
+) -> Result<(), AppError> {
+    let shaped = match status {
+        "active" => finished_at.is_none()
+            && answers_json.is_none()
+            && report_json.is_none()
+            && earned_xp.is_none(),
+        "completed" => {
+            finished_at.is_some()
+                && answers_json.is_some()
+                && report_json.is_some()
+                && earned_xp.is_some()
+        }
+        "abandoned" => {
+            finished_at.is_some()
+                && answers_json.is_none()
+                && report_json.is_none()
+                && earned_xp.is_none()
+        }
+        _ => false,
+    };
+    if shaped {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "quiz round shape is invalid for status '{status}'"
+        )))
+    }
+}
+
 /// 选题快照行（plan_json 元素；kind 是审计面快照，判分与定价都以题源现行
 /// 为准——单源）。`origin`/`variant` 为 q3 增量，serde default 容 q2 时代
 /// 旧档（缺省 = bank 题库旧题）。
@@ -338,6 +378,7 @@ impl LearningService {
 
         // supersede：既有 active 回合标 abandoned（重开 = 新回合；被取代
         // 回合的作答/结算零痕迹是合法态——learnhub「重启即弃」同义）。
+        validate_round_shape("abandoned", Some(now), None, None, None)?;
         sqlx::query(
             "UPDATE learning_quiz_rounds SET status = 'abandoned', finished_at = ? \
              WHERE user_id = ? AND course_id = ? AND status = 'active'",
@@ -351,6 +392,7 @@ impl LearningService {
         let round_id = generate_id();
         let plan_json = serde_json::to_string(&ordered_plan)
             .map_err(|error| AppError::Internal(format!("quiz plan: {error}")))?;
+        validate_round_shape("active", None, None, None, None)?;
         let inserted = sqlx::query(
             "INSERT INTO learning_quiz_rounds \
              (round_id, user_id, course_id, started_at, status, plan_json) \
@@ -551,6 +593,13 @@ impl LearningService {
             .map_err(|error| AppError::Internal(format!("quiz report: {error}")))?;
         let answers_json = serde_json::to_string(answers)
             .map_err(|error| AppError::Internal(format!("quiz answers: {error}")))?;
+        validate_round_shape(
+            "completed",
+            Some(now),
+            Some(&answers_json),
+            Some(&report_json),
+            Some(earned_total),
+        )?;
         let result = sqlx::query(
             "UPDATE learning_quiz_rounds SET status = 'completed', finished_at = ?, \
              answers_json = ?, report_json = ?, earned_xp = ? \
@@ -1007,4 +1056,28 @@ struct StoredRoundReport {
 struct StoredCalibrationPoint {
     correct: bool,
     predicted_r: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_round_shape;
+
+    /// 三条形态规则（原 084 表级 CHECK）逐条钉住：合法三态 + 非法三样。
+    #[test]
+    fn round_shape_rules_cover_three_terminal_states() {
+        assert!(validate_round_shape("active", None, None, None, None).is_ok());
+        assert!(
+            validate_round_shape("completed", Some(2), Some("{}"), Some("[]"), Some(3)).is_ok()
+        );
+        assert!(validate_round_shape("abandoned", Some(2), None, None, None).is_ok());
+
+        // completed 缺作答/对账 → 拒绝。
+        assert!(validate_round_shape("completed", Some(2), None, Some("[]"), Some(3)).is_err());
+        // abandoned 带结算 → 拒绝。
+        assert!(validate_round_shape("abandoned", Some(2), None, None, Some(3)).is_err());
+        // 未知 status → 拒绝（写严格）。
+        assert!(validate_round_shape("fetched", None, None, None, None).is_err());
+        // active 带结算面 → 拒绝。
+        assert!(validate_round_shape("active", None, None, None, Some(3)).is_err());
+    }
 }

@@ -2,7 +2,7 @@
 id: x02
 title: "孤儿表 learning_course_jobs 与死列清理——不把零引用的约束带进新版"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [x21]
 part_of: ../map.md
@@ -57,3 +57,21 @@ part_of: ../map.md
 
 - `course_kind=learning_graph` 不是死值（现役概念网课程仍用它），不动。
 - 枚举集 CHECK 治理（x05）。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **孤儿表退役**：基线 §11 `DROP TABLE learning_course_jobs`；`id_schema_contract.rs`
+  六处登记删除（PRODUCT_TABLES / UUIDV7 / NON_REFERENCE 两行 / text_ref 三行）；
+  `tests/id_schema_contract.rs` 表数 125→124。
+- **死列**：基线 §10 重建 `learning_lesson_progress` 时不再拷贝 `extra_json`，
+  重建 `learning_courses` 时不再拷贝 `graph_meta_json`（两列零引用，grep 复核）。
+- **测试**：`learning_course_jobs_migration.rs` 整文件改为退役断言（全链后
+  `sqlite_master` 无该表）；Q8 fixture 追加两条死列消失断言。
+- **文档**：`learning.zh.md` 的 `/api/learning/course-jobs*` 与
+  `CourseJobTable`/`useCourseJobs` 两处移除；`models.rs` 的
+  `generation_mode` 注释改记「随表退役」。
+- **验收**：`cargo test -p nomifun-db` 全绿（含 id_schema_contract 全表契约与 Q8
+  fixture）；`rg learning_course_jobs` 仅剩迁移历史、退役断言与契约删除注释。
+- 偏差：无（ADR-0011 双写不变量未动）。

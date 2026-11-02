@@ -146,3 +146,7 @@ fn validate_progress_shape(status: LessonStatus, started_at: Option<i64>,
 |---|---|---|---|---|
 | 2026-11-02 | 修订 | 2/4.2 | `generation_mode 'full'` 勘误：在 learning_course_jobs 上（040:19），非 learning_courses；随本图退役表消失，x20 记档口径同步 | 图 2 读码底稿 A7 事实修正 |
 | 2026-11-02 | 修订 | 4.4 | 测试翻面清单落实（5 文件 8 处断言翻面 + xp 规则单测搬家） | 读码底稿 E 节 |
+| 2026-11-02 | 施工记录 | 4.1 | §10 七表保 id 重建落地（列清单按运行期 `sqlite_master` 实码取，而非凭底稿手抄）：activities/sections/review_events/review_log/question_tags/progress/courses。courses 重建同时不带 `graph_meta_json`、progress 不带 `extra_json`（x02 死列顺带消失）；数值域/布尔/json_valid/UUID/UNIQUE 与索引逐字保留。§11 `DROP TABLE learning_course_jobs`。契约登记删 6 处、表数 125→124。 | 图 2 施工；底稿不可用时的等价替代 |
+| 2026-11-02 | 施工记录 | 4.3 | `quiz.rs` 新增 `validate_round_shape`（INSERT active / UPDATE abandoned / UPDATE completed 三调用点 + 单测合法 3 态/非法 4 样）；`progress.rs` 新增 `validate_progress_shape`（upsert 前调用 + 单测合法 5 态/非法 4 样）；`settle.rs` 既有 `validate_settlement` 单测已覆盖被删的 10 组违约（无需新增）。 | 4.3 接口契约 |
+| 2026-11-02 | 施工记录 | 4.4 | Q8 fixture 固化为永久测试 `tests/learning_domain_baseline_migration.rs`：v1.7.0 种子 → 基线 → 学习者行数守恒、图课程数据清除、九种 kind 存活、约束外取值可写、数值/JSON CHECK 仍拒、孤儿表与死列消失。 | 4.4 + 图 1 §4.2 复用 |
+| 2026-11-02 | 勘误 | 4.4 | `learning_concept_web_migration.rs` 的 role/tier/status 翻面受 `UNIQUE(lesson_id, concept_id, role)` 影响：未知 role 与未知 tier 必须各用未占用 role（`implies` / `assumes`），否则先撞唯一约束、测不到 CHECK 移除。 | 施工实测 |
