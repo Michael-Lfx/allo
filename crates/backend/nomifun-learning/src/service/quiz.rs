@@ -907,6 +907,17 @@ impl LearningService {
         .await
         {
             Ok(pack) => {
+                // w2 评审修复：变式数值契约机械执法（提示词只是约定）。
+                // 不合格 = 如实跳过，绝不把换题输出当变式落回合。
+                if let Some(bank_claim) = bank_config.claim.as_ref() {
+                    if let Some(reason) =
+                        numeric_variant_contract_error(&pack, bank_claim, bank_config)
+                    {
+                        tracing::warn!(target: "nomifun_learning", node = %node, error = %reason,
+                            "quiz numeric variant skipped: contract not met");
+                        return None;
+                    }
+                }
                 let config = StoredActivityConfig::from_activity(&pack, bank_difficulty);
                 let config_json = serde_json::to_string(&config).ok()?;
                 tracing::info!(target: "nomifun_learning", node = %node,
@@ -1074,6 +1085,54 @@ fn stalest_first(a: &Option<i64>, b: &Option<i64>) -> std::cmp::Ordering {
         (Some(_), None) => std::cmp::Ordering::Greater,
         (Some(x), Some(y)) => x.cmp(y),
     }
+}
+
+/// 变式数值契约的机械执法（w2 评审修复）：同模板换参是提示词约定，这里
+/// 把它变成可验证的门——表达式/单位/精度必须沿用 bank，参数必须真的换，
+/// 铸值答案必须真的变。返回 `Some(reason)` = 这不是合格变式：调用方如实
+/// 跳过（节点只出旧题），不把换了题的输出当变式落库。
+fn numeric_variant_contract_error(
+    pack: &crate::models::ActivityPack,
+    bank_claim: &crate::verify_math::NumericClaim,
+    bank: &StoredActivityConfig,
+) -> Option<String> {
+    let Some(variant_claim) = pack.claim.as_ref() else {
+        return Some("variant dropped the bank claim".into());
+    };
+    if variant_claim.expr != bank_claim.expr {
+        return Some(format!(
+            "variant claim expr \"{}\" differs from bank expr \"{}\"",
+            variant_claim.expr, bank_claim.expr
+        ));
+    }
+    if variant_claim.params == bank_claim.params {
+        return Some("variant params are identical to the bank params".into());
+    }
+    if pack.unit != bank.unit {
+        return Some(format!(
+            "variant unit {:?} differs from bank unit {:?}",
+            pack.unit, bank.unit
+        ));
+    }
+    if pack.precision != bank.precision {
+        return Some(format!(
+            "variant precision {:?} differs from bank precision {:?}",
+            pack.precision, bank.precision
+        ));
+    }
+    let (Some(bank_answer), Some(variant_answer)) = (bank.answer.as_f64(), pack.answer.as_f64())
+    else {
+        return Some(format!(
+            "variant answer {:?} / bank answer {:?} must both be numbers",
+            pack.answer, bank.answer
+        ));
+    };
+    if (variant_answer - bank_answer).abs() <= 1e-9 * bank_answer.abs().max(1.0) {
+        return Some(format!(
+            "variant answer {variant_answer} equals the bank answer {bank_answer} — change the parameter values"
+        ));
+    }
+    None
 }
 
 struct GeneratedVariant {

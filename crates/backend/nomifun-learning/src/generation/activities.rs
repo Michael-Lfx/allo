@@ -320,6 +320,7 @@ pub(crate) async fn generate_lesson_activity(
         summary,
         excerpt,
         existing_questions,
+        purpose,
     );
     let mut last_error = String::new();
     for attempt in 0..2 {
@@ -366,7 +367,9 @@ pub(crate) async fn generate_lesson_activity(
 
 /// Prompt for one additional activity: the finished lesson document in full,
 /// the cited excerpt, the learner's optional focus hint, and every existing
-/// question — with a hard novelty requirement.
+/// question. The novelty clause is purpose-aware (w2 评审修复)：课时加题要求
+/// 新题面/新情境；变式（q3）本来就是同模板换参，要求复用题包表达式、只换
+/// 参数，不能自相矛盾地禁止「同题换数」。
 fn build_lesson_activity_prompt(
     kind: ActivityKind,
     focus: &str,
@@ -376,6 +379,7 @@ fn build_lesson_activity_prompt(
     summary: &str,
     excerpt: &str,
     existing_questions: &[ExistingLessonQuestion],
+    purpose: GenerationPurpose,
 ) -> String {
     let mut prompt = format!(
         "Course: {}\nModule: {}\nLesson: {}\n",
@@ -411,12 +415,30 @@ fn build_lesson_activity_prompt(
                 question.explanation.trim()
             ));
         }
-        prompt.push_str(
-            "The new question must NOT repeat or closely resemble any of these — no same \
-             question with different numbers: change the numbers, change the scenario, or \
-             change the representation channel; if the evidence quote comes from the same \
-             sentence, keep it verbatim and ask about a different point of it.\n",
-        );
+    }
+    match purpose {
+        GenerationPurpose::Lesson => {
+            if !existing_questions.is_empty() {
+                prompt.push_str(
+                    "The new question must NOT repeat or closely resemble any of these — no same \
+                     question with different numbers: change the numbers, change the scenario, or \
+                     change the representation channel; if the evidence quote comes from the same \
+                     sentence, keep it verbatim and ask about a different point of it.\n",
+                );
+            }
+        }
+        GenerationPurpose::Variant => {
+            // 变式路（q3）：同模板换参是设计目的。题面要换个场景，但表达式
+            // 与显示设置必须沿用被变式的 bank 题（提示词 focus 与 claim 条款
+            // 指名该题），只许改参数值；不重复其它无关既有题。
+            prompt.push_str(
+                "This is a VARIANT of the existing question named in the focus hint: keep the \
+                 same claim expression and display settings when it is numeric, change only the \
+                 parameter values (restating them in the question) so the answer differs, and \
+                 give the question a fresh surface. Do not repeat or closely resemble the other \
+                 existing questions above.\n",
+            );
+        }
     }
     prompt.push_str(&format!(
         "Design ONE new {} activity as JSON now.",

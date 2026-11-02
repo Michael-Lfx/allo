@@ -584,9 +584,16 @@ unit: None,
                 "Never write \"answer\" or \"tol\"",
                 "casts the answer key",
                 "parameter values bound in \"params\"",
+                // 文法口径单源（w2 评审修复）：两处 EN 与 CN 宿主用同一
+                // 短语，任何一份提示词都不再自附函数清单。
+                "using the evaluator grammar (explicit *, ^, functions, pi/e)",
             ] {
                 assert!(system.contains(phrase), "prompt missing「{phrase}」");
             }
+            assert!(
+                !system.contains("sqrt/sin/cos/tan/ln/log/exp/abs"),
+                "function-list drift must be gone (grammar phrase is the single source)"
+            );
             assert!(
                 !system.contains("answer is a JSON number; \"tol\""),
                 "legacy numeric answer/tol clause must be gone"
@@ -1238,6 +1245,78 @@ unit: None,
         assert!(output.activities.iter().any(|activity| activity.kind == ActivityKind::Numeric));
     }
 
+    /// w2 评审修复：模型面 numeric 无 claim 也必须重试（Strict 不再放行
+    /// 自报 answer 的 numeric）。
+    #[tokio::test]
+    async fn numeric_without_claim_is_retried_on_the_model_path() {
+        let bad = activities_json().replace(
+            r#""claim": {"expr": "4.9*2", "params": {}}, "precision": 1, "unit": "raw""#,
+            r#""answer": 9.8, "tol": 0.1"#,
+        );
+        assert!(!bad.contains("\"claim\""), "fixture lost its claim");
+        let blueprint = lesson_test_blueprint();
+        let module = &blueprint.modules[0];
+        let lesson = &module.lessons[0];
+        let completer = ScriptedCompleter::new(vec![
+            outline_json(),
+            section_body("概念：向量"),
+            practice_body(),
+            bad,
+            activities_json(),
+        ]);
+        let output = generate_lesson(
+            &completer, None, &blueprint, module, lesson, 0, 0, 1, None, "# Real",
+            crate::models::TeachingStyle::Standard,
+        )
+        .await
+        .unwrap();
+        let calls = completer.calls();
+        assert!(
+            calls[4].1.contains("must provide \"claim\""),
+            "retry feedback must demand the claim track: {}",
+            calls[4].1
+        );
+        let numeric = output
+            .activities
+            .iter()
+            .find(|activity| activity.kind == ActivityKind::Numeric)
+            .expect("numeric cast");
+        assert_eq!(numeric.answer, json!(9.8));
+        assert_eq!(numeric.tol, Some(0.05));
+    }
+
+    /// w2 评审修复：claim 有未绑定参数 → 铸值错误进重试反馈，第二稿成功。
+    #[tokio::test]
+    async fn numeric_claim_with_unbound_param_is_retried_with_the_cast_error() {
+        let bad = activities_json().replace(
+            r#""claim": {"expr": "4.9*2", "params": {}}"#,
+            r#""claim": {"expr": "rate*years", "params": {"rate": 0.5}}"#,
+        );
+        let blueprint = lesson_test_blueprint();
+        let module = &blueprint.modules[0];
+        let lesson = &module.lessons[0];
+        let completer = ScriptedCompleter::new(vec![
+            outline_json(),
+            section_body("概念：向量"),
+            practice_body(),
+            bad,
+            activities_json(),
+        ]);
+        let output = generate_lesson(
+            &completer, None, &blueprint, module, lesson, 0, 0, 1, None, "# Real",
+            crate::models::TeachingStyle::Standard,
+        )
+        .await
+        .unwrap();
+        let calls = completer.calls();
+        assert!(
+            calls[4].1.contains("could not be cast") && calls[4].1.contains("未知变量「years」"),
+            "retry feedback must carry the cast error: {}",
+            calls[4].1
+        );
+        assert!(output.activities.iter().any(|activity| activity.kind == ActivityKind::Numeric));
+    }
+
     #[tokio::test]
     async fn single_activity_numeric_claim_casts_with_params() {
         // 单题加题：claim 换参 → 系统铸值；答案键与工具实算一致。
@@ -1344,6 +1423,71 @@ unit: None,
             error.contains("duplicates") || error.contains("closely resembles"),
             "{error}"
         );
+    }
+
+    /// w2 变式契约的提示词面（评审修复）：变式路必须给「同模板换参」指令，
+    /// 且不得再出现课时加题路的「不许换数」矛盾条款；课时路保持原新颖性
+    /// 措辞。
+    #[tokio::test]
+    async fn variant_purpose_prompt_asks_for_changed_params_not_novel_numbers() {
+        let existing = vec![ExistingLessonQuestion {
+            kind: ActivityKind::Numeric,
+            prompt: "年化 12.5%，单利 2 年的收益率（百分数）？".into(),
+            answer: json!(25.0),
+            explanation: "0.125×2=25.0%".into(),
+        }];
+        let reply = r#"{"kind":"numeric","prompt":"年化 15%，单利 2 年的收益率（百分数）？","options":[],"claim":{"expr":"rate*years","params":{"rate":0.15,"years":2}},"precision":1,"unit":"percent","explanation":"0.15×2=30.0%","evidence":"「单利」"}"#;
+        let completer = ScriptedCompleter::new(vec![reply.into()]);
+        let variant = generate_lesson_activity(
+            &completer,
+            None,
+            ActivityKind::Numeric,
+            "Quiz variant drill: same knowledge point",
+            "c",
+            "m",
+            "l",
+            "sum",
+            "",
+            &existing,
+            GenerationPurpose::Variant,
+        )
+        .await
+        .unwrap();
+        assert_eq!(variant.answer, json!(30.0));
+        let prompt = completer.calls()[0].1.clone();
+        assert!(
+            prompt.contains("same claim expression") && prompt.contains("parameter values"),
+            "variant prompt must ask for the same template with changed params: {prompt}"
+        );
+        assert!(
+            !prompt.contains("no same question with different numbers"),
+            "variant prompt must not contradict itself: {prompt}"
+        );
+
+        // 课时加题路保留原新颖性措辞（不同数字也要改情境）。
+        let lesson_reply = r#"{"kind":"numeric","prompt":"年化 9%，单利 3 年的收益率（百分数）？","options":[],"claim":{"expr":"rate*years","params":{"rate":0.09,"years":3}},"precision":1,"unit":"percent","explanation":"0.09×3=27.0%","evidence":"「单利」"}"#;
+        let completer = ScriptedCompleter::new(vec![lesson_reply.into()]);
+        generate_lesson_activity(
+            &completer,
+            None,
+            ActivityKind::Numeric,
+            "",
+            "c",
+            "m",
+            "l",
+            "sum",
+            "",
+            &existing,
+            GenerationPurpose::Lesson,
+        )
+        .await
+        .unwrap();
+        let prompt = completer.calls()[0].1.clone();
+        assert!(
+            prompt.contains("no same question with different numbers"),
+            "lesson prompt keeps the novelty wording: {prompt}"
+        );
+        assert!(!prompt.contains("same claim expression"), "{prompt}");
     }
 
     #[tokio::test]

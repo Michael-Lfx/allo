@@ -2750,8 +2750,11 @@ pub(super) fn validate_question_payload(
     };
     pack.validate_shape((2, 5), false)
         .map_err(AppError::BadRequest)?;
-    // fill_in_blank keeps its distractor rule through validate_shape; the
-    // numeric tol is learner-authored so it rides in the config as given.
+    // fill_in_blank keeps its distractor rule through validate_shape. Manual
+    // authoring never carries a claim (v0 legacy path): this payload's tol is
+    // the legacy hand-written value (always None here), not the claim-track
+    // system cast — claim-track answers/tol are preserved by the edit path in
+    // `review::update_question` before this constructor runs.
     // 手工编辑面没有 evidence 字段：保留原值（t2 证据回引不随编辑抹除）。
     let config = StoredActivityConfig::from_activity(&pack, None);
     Ok((prompt.to_string(), config))
