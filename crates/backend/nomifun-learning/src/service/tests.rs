@@ -1628,6 +1628,106 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert!(error.to_string().contains("AI-graded"));
     }
 
+    /// x01 互钉：`ActivityKind` 全变体（九种）都能落进 `learning_custom_questions`。
+    /// 表约束与已发布 050 的枚举集同集，重建迁移不得收窄——本测试是 x12
+    /// 互钉脚本的第一块。
+    #[tokio::test]
+    async fn every_activity_kind_persists_to_custom_questions() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        for kind in [
+            ActivityKind::SingleChoice,
+            ActivityKind::TrueFalse,
+            ActivityKind::Reflection,
+            ActivityKind::FillInBlank,
+            ActivityKind::MultiChoice,
+            ActivityKind::Numeric,
+            ActivityKind::Ordering,
+            ActivityKind::Matching,
+            ActivityKind::OpenQuestion,
+        ] {
+            let question_id = generate_id();
+            sqlx::query(
+                "INSERT INTO learning_custom_questions \
+                 (custom_question_id, user_id, kind, prompt, config_json, due_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, 'q', '{}', 2000, 1000, 1000)",
+            )
+            .bind(&question_id)
+            .bind(user_id.as_str())
+            .bind(kind.as_str())
+            .execute(database.pool())
+            .await
+            .unwrap_or_else(|error| panic!("{} must persist: {error}", kind.as_str()));
+        }
+        let persisted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_custom_questions")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(persisted, 9, "all nine kinds persist");
+    }
+
+    /// x01 验收（服务面等价于 HTTP POST）：050 之后放行的四种自建题都能
+    /// 创建成功并进复习队列，不再撞 069 收窄后的 kind CHECK。
+    #[tokio::test]
+    async fn regression_four_custom_question_kinds_create_and_join_the_queue() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let requests = [
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::MultiChoice,
+                prompt: "Which of these are primes?".into(),
+                options: vec!["2".into(), "4".into(), "5".into()],
+                answer: json!(["2", "5"]),
+                explanation: "2 and 5 have no divisors besides 1 and themselves.".into(),
+                distractors: Vec::new(),
+            },
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::Numeric,
+                prompt: "What is 2 + 2?".into(),
+                options: Vec::new(),
+                answer: json!(4),
+                explanation: "Two plus two is four.".into(),
+                distractors: Vec::new(),
+            },
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::Ordering,
+                prompt: "Order from largest to smallest.".into(),
+                options: vec!["1".into(), "2".into(), "3".into()],
+                answer: json!(["3", "2", "1"]),
+                explanation: "Three is the largest.".into(),
+                distractors: Vec::new(),
+            },
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::Matching,
+                prompt: "Match each letter to its position.".into(),
+                options: vec!["a".into(), "b".into()],
+                answer: json!(["1", "2"]),
+                explanation: "a is first and b is second.".into(),
+                distractors: Vec::new(),
+            },
+        ];
+        for request in requests {
+            let kind = request.kind;
+            service
+                .create_custom_question(&user_id, request)
+                .await
+                .unwrap_or_else(|error| panic!("{} must create: {error}", kind.as_str()));
+        }
+        make_all_due(&service, &user_id).await;
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, true, &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 4, "all four kinds join the review queue");
+    }
+
     async fn checkin_test_service() -> (LearningService, UserId) {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())

@@ -115,10 +115,12 @@ CREATE TABLE learning_custom_questions_new (
         AND user_id GLOB '????????-????-7???-[89ab]???-????????????'
         AND replace(user_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
-    -- kind CHECK 以 038 的宽口径为准（三种题型）：重建必须逐字保留既有的
-    -- 约束集合，收窄会让 038 之后落库的自建填空题在新表上必然 CHECK 失败。
+    -- kind CHECK 以已发布 050 的全集为准（ActivityKind 九种）：重建必须逐字
+    -- 保留既有约束集合，收窄会让 050 之后落库的多选/数值/排序/匹配自建题在
+    -- INSERT…SELECT 搬行时 CHECK 失败，升级随之中断（且永不收窄已发布枚举集）。
     kind                 TEXT NOT NULL CHECK (
-        kind IN ('single_choice', 'true_false', 'fill_in_blank')
+        kind IN ('single_choice', 'true_false', 'reflection', 'fill_in_blank',
+                 'multi_choice', 'numeric', 'ordering', 'matching', 'open_question')
     ),
     prompt               TEXT NOT NULL CHECK (trim(prompt) <> ''),
     config_json          TEXT NOT NULL DEFAULT '{}' CHECK (
