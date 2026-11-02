@@ -187,7 +187,7 @@ pub(crate) fn build_edge_ssml(text: &str, voice: &str, default_voice: &str) -> S
     } else {
         actual_voice
     };
-    let speed = custom_speed.unwrap_or(1.3);
+    let speed = custom_speed.unwrap_or(1.0);
     let escaped = |value: &str| {
         value
             .replace('&', "&amp;")
@@ -1792,10 +1792,15 @@ mod fallback_and_sherpa_tests {
 
     #[test]
     fn test_edge_ssml_prosody_speed_rate_formatting() {
-        // Default speed is 1.3 (+30%)
+        // Unadorned default voice is 1.0 (no prosody)
         let ssml_default = build_edge_ssml("你好", "", "zh-CN-XiaoxiaoNeural");
-        assert!(ssml_default.contains("<prosody rate='+30%'>"));
+        assert!(!ssml_default.contains("<prosody"));
         assert!(ssml_default.contains("<voice name='zh-CN-XiaoxiaoNeural'>"));
+
+        // 1.3x speed (+30%)
+        let ssml_1_3 = build_edge_ssml("你好", ";speed=1.3", "zh-CN-XiaoxiaoNeural");
+        assert!(ssml_1_3.contains("<prosody rate='+30%'>"));
+        assert!(ssml_1_3.contains("<voice name='zh-CN-XiaoxiaoNeural'>"));
 
         // 1.5x speed (+50%)
         let ssml_1_5 = build_edge_ssml("hello", "en-US-JennyNeural;speed=1.5", "zh-CN-XiaoxiaoNeural");
@@ -1806,13 +1811,13 @@ mod fallback_and_sherpa_tests {
         let ssml_0_8 = build_edge_ssml("慢点说", ";speed=0.8", "zh-CN-XiaoxiaoNeural");
         assert!(ssml_0_8.contains("<prosody rate='-20%'>"));
 
-        // 1.0x speed (no prosody tag needed)
+        // 1.0x explicit speed (no prosody tag needed)
         let ssml_1_0 = build_edge_ssml("原速", ";speed=1.0", "zh-CN-XiaoxiaoNeural");
         assert!(!ssml_1_0.contains("<prosody"));
         assert!(ssml_1_0.contains("原速"));
 
         // XML escaping check
-        let ssml_escaped = build_edge_ssml("1 < 2 & 3 > 1", "", "zh-CN-XiaoxiaoNeural");
+        let ssml_escaped = build_edge_ssml("1 < 2 & 3 > 1", ";speed=1.3", "zh-CN-XiaoxiaoNeural");
         assert!(ssml_escaped.contains("1 &lt; 2 &amp; 3 &gt; 1"));
     }
 }

@@ -250,16 +250,22 @@ async fn stop_during_prompt_does_not_restart_a_previous_live_session() {
         task:VoiceTaskReference{command_id:"command".into(),conversation_id:Some("conversation".into()),message_id:Some("message".into())},
         approval_id:"approval".into(),msg_id:"tool-message".into(),call_id:"call".into(),expires_at_ms:chrono::Utc::now().timestamp_millis()+30_000,text:"请确认删除。".into(),
     };
-    let job={let runtime=runtime.clone();tokio::spawn(async move{runtime.request_tool_confirmation(prompt).await})};
+    let mut job = {let runtime=runtime.clone();tokio::spawn(async move{runtime.request_tool_confirmation(prompt).await})};
     tokio::time::timeout(Duration::from_secs(2),async{while !sink.written.load(Ordering::SeqCst){tokio::time::sleep(Duration::from_millis(5)).await;}}).await.unwrap();
     let snapshot=runtime.snapshot();
     runtime.stop_session(&VoiceSessionControlRequest{instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id}).await.unwrap();
+    assert!(!tokio::time::timeout(Duration::from_secs(2), &mut job).await.unwrap().unwrap().unwrap().approved);
     if restart { runtime.handle_wake().await.unwrap(); }
     let new_session = runtime.snapshot().session_id;
-    assert!(!tokio::time::timeout(Duration::from_secs(2),job).await.unwrap().unwrap().unwrap().approved);
     let state=runtime.driver().lock().await.current_state();
     worker.abort();
     assert_eq!(state,if restart {nomifun_voice_terminal::contract::AcousticState::Listening} else {nomifun_voice_terminal::contract::AcousticState::Idle},"old confirmation cleanup must not resume or reset listening after explicit user stop/new wake");
     assert_eq!(runtime.snapshot().session_id, new_session);
     }
+}
+
+#[tokio::test]
+async fn listening_confirm_captures_approval_immediately_after_prompt_finishes_without_600ms_blind_window() {
+    let reply = scenario(Some("确认"), Duration::from_secs(10), false, Duration::ZERO).await;
+    assert!(reply.approved, "Approval spoken immediately within 50ms of prompt end must be captured and approved without residual blind window!");
 }

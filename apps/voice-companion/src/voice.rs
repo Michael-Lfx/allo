@@ -138,6 +138,13 @@ pub fn should_hold_microphone(
     wake_enabled && kws_ready
 }
 
+/// Formats a complete voice specification string combining base voice and user-configured speed rate.
+pub(crate) fn format_voice_spec(locale: Option<&str>, tts_speed: f32) -> String {
+    let is_en = nomifun_api_types::voice::is_english_locale(locale);
+    let base_voice = if is_en { "en-US-JennyNeural" } else { "" };
+    format!("{base_voice};speed={tts_speed:.2}")
+}
+
 /// Checks whether a detected keyword or its core tokens appear in the given assistant spoken text.
 pub(crate) fn keyword_is_in_text(keyword: &str, text: &str) -> bool {
     let clean_kw = keyword.trim().trim_start_matches('@').replace('_', " ").trim().to_lowercase();
@@ -2171,11 +2178,12 @@ impl VoiceCompanionRuntime {
             let feedback = events.feedback();
             let is_en = nomifun_api_types::voice::is_english_locale(events.snapshot().locale.as_deref());
             let custom_reply = feedback.wake_reply.trim();
-            let is_default_phrase = custom_reply.is_empty()
-                || custom_reply == "我在"
-                || custom_reply.eq_ignore_ascii_case("i'm here");
 
-            if feedback.speak_replies && is_default_phrase {
+            if !feedback.speak_replies || custom_reply.is_empty() {
+                // UI Contract: "留空则不发声" -> When empty or speak_replies=false, play earcon chime only
+                voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            } else if custom_reply == "我在" || custom_reply.eq_ignore_ascii_case("i'm here") {
+                // Default phrase uses zero-latency pre-rendered vocal asset
                 let vocal_bytes = nomifun_audio::vocal::VocalPhrase::wake_bytes(is_en);
                 let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, VoiceCueKind::Wake, generation).await;
             } else {
@@ -2219,10 +2227,9 @@ impl VoiceCompanionRuntime {
             text: reply_text.to_string(),
         }, scope);
         let started = std::time::Instant::now();
-        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
-        let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
+        let voice_name = format_voice_spec(event_tx.snapshot().locale.as_deref(), event_tx.feedback().tts_speed);
         let result = playback
-            .speak_text_for_generation(tts.as_ref(), reply_text, voice_name, generation, || {
+            .speak_text_for_generation(tts.as_ref(), reply_text, &voice_name, generation, || {
                 Self::report_tts_source(event_tx, tts.as_ref(), scope);
                 let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
@@ -2608,9 +2615,9 @@ impl VoiceCompanionRuntime {
                                 let tts_clone = tts.clone();
                                 let playback_clone = playback.clone();
                                 let reply = goodbye_text.to_string();
-                                let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                                let voice_spec = format_voice_spec(scope.locale.as_deref(), feedback.tts_speed);
                                 tokio::spawn(async move {
-                                    let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                    let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
                                 });
                             }
                         } else {
@@ -2709,14 +2716,7 @@ impl VoiceCompanionRuntime {
                 let speak_replies = event_tx.feedback().speak_replies;
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
                 let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
-                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let base_voice = if is_en { "en-US-JennyNeural" } else { "" };
-                let tts_speed = event_tx.feedback().tts_speed;
-                let voice_spec = if (tts_speed - 1.0).abs() > 0.01 {
-                    format!("{base_voice};speed={tts_speed}")
-                } else {
-                    base_voice.to_string()
-                };
+                let voice_spec = format_voice_spec(scope.locale.as_deref(), event_tx.feedback().tts_speed);
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
                     let tts = tts.clone();
@@ -3090,9 +3090,9 @@ impl VoiceCompanionRuntime {
                             let tts_clone = tts.clone();
                             let playback_clone = playback.clone();
                             let reply = goodbye_text.to_string();
-                            let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                            let voice_spec = format_voice_spec(scope.locale.as_deref(), event_tx.feedback().tts_speed);
                             tokio::spawn(async move {
-                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
                             });
                         }
                     } else {
@@ -3307,7 +3307,7 @@ impl VoiceCompanionRuntime {
                         return;
                     }
                     let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
-                    let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
+                    let voice_name = format_voice_spec(event_tx.snapshot().locale.as_deref(), event_tx.feedback().tts_speed);
                     let code = match result {
                         Ok(delivery) if delivery.task.command_id != command.command_id
                             || delivery.task.session_id != command.session_id
@@ -3319,7 +3319,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing {text:text.into()}, &control_scope);
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(),text,voice_name, generation, || {
+                                playback.speak_text_for_generation(tts.as_ref(),text,&voice_name, generation, || {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {text:text.into()}, &control_scope);
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
@@ -3330,7 +3330,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing { text: text.into() }, &control_scope);
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(), text, voice_name, generation, || {
+                                playback.speak_text_for_generation(tts.as_ref(), text, &voice_name, generation, || {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text: text.into() }, &control_scope);
                                 }).await.err().map(|error| match error {
                                     AudioSinkError::Synthesis(_) => "tts_failed",
@@ -4581,10 +4581,10 @@ impl VoiceCompanionRuntime {
                                                     if events.feedback().speak_replies {
                                                         let output_clone = output.clone();
                                                         let reply = goodbye_text.to_string();
-                                                        let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                                                        let voice_spec = format_voice_spec(current.locale.as_deref(), events.feedback().tts_speed);
                                                         let tts_prov = tts.clone();
                                                         tokio::spawn(async move {
-                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
                                                         });
                                                     }
                                                     voice_feedback::schedule(

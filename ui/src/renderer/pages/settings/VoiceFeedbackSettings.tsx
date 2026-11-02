@@ -30,7 +30,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
           ...value.requested,
           wake_enabled: value.requested.wake_enabled ?? true,
           wake_words: value.requested.wake_words ?? ['Hey Flowy'],
-          tts_speed: value.requested.tts_speed ?? 1.0,
+          tts_speed: value.requested.tts_speed ?? 1.3,
           idle_timeout_secs: value.requested.idle_timeout_secs ?? 30,
           input_device: value.requested.input_device,
         });
@@ -193,11 +193,11 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 min={0.5}
                 max={2.0}
                 step={0.1}
-                value={draft?.tts_speed ?? 1.0}
+                value={draft?.tts_speed ?? 1.3}
                 disabled={!draft || busy}
                 onChange={(speed) => setDraft((value) => value && { ...value, tts_speed: Number(speed) })}
               />
-              <span className='text-t-secondary tabular-nums'>{draft?.tts_speed ? `${draft.tts_speed.toFixed(1)}x` : '1.0x'}</span>
+              <span className='text-t-secondary tabular-nums'>{draft?.tts_speed ? `${draft.tts_speed.toFixed(1)}x` : '1.3x'}</span>
             </div>
           }
         />
