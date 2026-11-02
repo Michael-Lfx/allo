@@ -10,7 +10,7 @@ part_of: ../map.md
 
 # h1: verify_math 求值器预算硬化
 
-**What to build:** 给 allo 的 `verify_math` Pratt 求值器补两道上限——表达式原始字符数 `MAX_EXPR_LEN = 512`、嵌套深度 `MAX_DEPTH = 64`；超限返回可读 `ExprError`，不 panic、不爆栈。正常表达式零行为变化。本票是 w2 的输入防护前置：w2 的数值 claim 直接来自模型，长/深表达式会进同一求值器。
+**What to build:** 给 allo 的 `verify_math` Pratt 求值器补两道上限——表达式原始字符数 `MAX_EXPR_LEN = 2048`、嵌套深度 `MAX_DEPTH = 64`；超限返回可读 `ExprError`，不 panic、不爆栈。正常表达式零行为变化。本票是 w2 的输入防护前置：w2 的数值 claim 直接来自模型，长/深表达式会进同一求值器。
 
 ## allo 现状（2026-11-02 实码）
 
@@ -24,14 +24,14 @@ part_of: ../map.md
 
 ## learnhub 参考（`c14467e`，2026-11-02，P0 评审修复）
 
-- `src-tauri/src/domain/verify_math/expr.rs`：`MAX_EXPR_LEN = 512`（原始 chars，归一化前）；`MAX_DEPTH = 64`；`parse_bp` 入口 `if self.depth >= MAX_DEPTH → ExprError::Syntax{msg:"嵌套过深(上限 64 层)"}`；`eval.rs` 另有 `eval_depth` 双护（learnhub 建 AST，解析与求值分离；allo 解析即求值，parser 一道护即可）。
+- `src-tauri/src/domain/verify_math/expr.rs`：`MAX_EXPR_LEN = 512`（原始 chars，归一化前；learnhub 原值——allo h1 取 2048，长度不是爆栈向量、深度闸才是，见实施要点）；`MAX_DEPTH = 64`；`parse_bp` 入口 `if self.depth >= MAX_DEPTH → ExprError::Syntax{msg:"嵌套过深(上限 64 层)"}`；`eval.rs` 另有 `eval_depth` 双护（learnhub 建 AST，解析与求值分离；allo 解析即求值，parser 一道护即可）。
 - 测试：2000 层嵌套括号、2000 个一元负号、601 字符表达式、100 层嵌套（201 字符）全部报错不 abort；正常表达式不受影响。
 - 该修复与 `%`/Unicode 归一化、容差量纲、claims 剥离同批；本票**只取预算**，其余不吸收。
 
 ## 实施要点
 
-- [ ] `MAX_EXPR_LEN: usize = 512`、`MAX_DEPTH: usize = 64` 常量（`verify_math.rs` 顶部，带注释说明来源与「模型输入不是安全边界」）。
-- [ ] `eval_expr` 入口先查 `expr.chars().count() > MAX_EXPR_LEN`：返回 `ExprError`，`position` = 第 513 个字符的字节偏移（`char_indices().nth(MAX_EXPR_LEN)`），文案点名「表达式过长（上限 512 字符）——请拆分或化简」。
+- [ ] `MAX_EXPR_LEN: usize = 2048`、`MAX_DEPTH: usize = 64` 常量（`verify_math.rs` 顶部，带注释说明来源与「模型输入不是安全边界」；长度取 2048 = 用户评审后的 allo 口径——512 会误伤多点求和/长展开，而爆栈由深度闸负责）。
+- [ ] `eval_expr` 入口先查 `expr.chars().count() > MAX_EXPR_LEN`：返回 `ExprError`，`position` = 第 2049 个字符的字节偏移（`char_indices().nth(MAX_EXPR_LEN)`），文案点名「表达式过长（上限 2048 字符）——请拆分或化简」。
 - [ ] `Parser` 增 `depth: usize`；`parse_expr` 拆成薄包装 + `parse_expr_inner`：
       ```rust
       fn parse_expr(&mut self, min_bp: u8) -> Result<f64, ExprError> {
@@ -48,11 +48,11 @@ part_of: ../map.md
 - [ ] `peek_position()` 取当前 token 位置；表达式结束时用 `self.end`。错误文案与现有 `ExprError` 风格一致（中文、带位置）。
 - [ ] 不改工具 schema/description（避免第四处复述；错误文案本身就是模型可见反馈）；不改 `MathClaim`/`NumericClaim` 契约；不改容差。
 - [ ] 测试（`verify_math.rs` 的 `#[cfg(test)]`）：
-  - `deep_parens_report_instead_of_overflow`：`"(".repeat(2000) + "1" + &")".repeat(2000)` → Err，消息含「嵌套过深」。
-  - `deep_unary_reports`：2000 个 `-` + `1` → Err。
-  - `long_expression_reports`：601 个 `1+` 拼接 → Err，消息含「过长」。
+  - `deep_parens_report_instead_of_overflow`：`"(".repeat(2000) + "1" + &")".repeat(2000)`（4001 字符）→ Err 不崩（先撞长度闸，文案「过长」）；预算内深嵌套 `"(".repeat(1000) + "1" + &")".repeat(1000)`（2001 字符）→ Err，消息含「嵌套过深」。
+  - `deep_unary_reports`：2000 个 `-` + `1`（2001 字符，预算内）→ Err，消息含「嵌套过深」。
+  - `long_expression_reports`：2049 字符（`"1+".repeat(1024) + "1"`）→ Err，消息含「过长」；601 字符平铺表达式照常求值（列入 `normal_expressions_unchanged`）。
   - `depth_64_boundary`：64 层通过 / 65 层报错（按实现口径定，测试钉死）。
-  - `normal_expressions_unchanged`：现有用例不回归；`(1+2)*3`、`sqrt(2)`、`2^3^2` 等。
+  - `normal_expressions_unchanged`：现有用例不回归；`(1+2)*3`、`sqrt(2)`、`2^3^2`、601 字符平铺表达式等。
 - [ ] 保持 `verify_eval`/`verify_identity` 的 `Fail` 语义不变：预算错误仍是 `ClaimVerdict::Fail`（解析错 = Fail，不是工具 Err），模型可据此修正 claim。
 
 ## 验收
