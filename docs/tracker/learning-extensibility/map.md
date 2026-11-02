@@ -159,3 +159,7 @@
 - 2026-11-02：x08 关闭——structure 落库码统一（stage/domain_type/source_tier 三组 +
   EDGE_TIERS 的 use 合一为 apply）；模型仍可吐中文，`normalize_structure_vocab` 在
   生成/修补/视图三面机械归一；信封 version bump 2；提示词与金样、前后端夹具全量换码。
+- 2026-11-02：x09/x10 关闭——`envelope.rs` 扁平信封 helper 落地；优先 1 四列（quiz
+  行级 doc_version / aliases 行级 doc_version / repairs ops 对象信封 / attempts
+  response 对象信封）写读版本化，未知版本按列显式降级；FSRS 参数 `{algo,w}` 包装、
+  未知算法整体回退、review_log 加 `algo` 列（历史 NULL = fsrs6）。

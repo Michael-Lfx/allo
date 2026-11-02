@@ -228,7 +228,15 @@ impl LearningService {
         .bind(attempt_id.as_str())
         .bind(enrollment_id.as_str())
         .bind(activity_id.as_str())
-        .bind(serde_json::to_string(&response).map_err(internal)?)
+        .bind(
+            crate::envelope::write_envelope(
+                crate::envelope::ATTEMPT_RESPONSE_SCHEMA_VERSION,
+                &crate::envelope::ResponseDoc {
+                    response: response.clone(),
+                },
+            )
+            .map_err(internal)?,
+        )
         .bind(score)
         .bind(passed)
         .bind(&feedback)
@@ -704,8 +712,8 @@ pub(super) async fn ensure_review_item(
     sqlx::query(
         "INSERT INTO learning_review_log \
          (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
-          stability_before, difficulty_before, r_pred, review_day, created_at) \
-         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?)",
+          stability_before, difficulty_before, r_pred, review_day, created_at, algo) \
+         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?, NULL)",
     )
     .bind(generate_id())
     .bind(&user_id)

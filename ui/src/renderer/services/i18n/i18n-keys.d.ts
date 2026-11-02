@@ -3845,6 +3845,7 @@ export type I18nKey =
   | 'learning.settings.fsrsParameters'
   | 'learning.settings.fsrsParametersApply'
   | 'learning.settings.fsrsParametersHint'
+  | 'learning.settings.fsrsParametersUnsupportedAlgo'
   | 'learning.settings.maintenanceAutoEnabled'
   | 'learning.settings.maintenanceAutoEnabledHint'
   | 'learning.settings.maintenanceIntervalMinutes'

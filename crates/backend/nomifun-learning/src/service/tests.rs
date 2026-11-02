@@ -592,6 +592,38 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(recommend_next_lesson(&modules), Some(unsatisfied_id));
     }
 
+    /// x09：作答列写扁平信封（version + response 并列，不包 data 层）。
+    #[tokio::test]
+    async fn attempt_response_persists_a_flat_envelope() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        service
+            .submit_attempt(&activity_id, &user_id, json!({"choice": "a"}), None, None)
+            .await
+            .unwrap();
+        let stored: String = sqlx::query_scalar(
+            "SELECT response_json FROM learning_attempts ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored["version"], json!(1));
+        assert_eq!(stored["response"], json!({"choice": "a"}));
+        assert!(stored.get("data").is_none(), "envelope stays flat");
+    }
+
     #[tokio::test]
     async fn imports_enrolls_and_seeds_review_queue() {
         let database = nomifun_db::init_database_memory().await.unwrap();
@@ -8691,6 +8723,57 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(bins[0].count, 1);
         assert_eq!(bins[0].actual, Some(1.0), "该题答对 → 桶内实际正确率 1.0");
         assert!(bins[0].predicted > 0.0 && bins[0].predicted <= 1.0);
+    }
+
+    /// x09：未知 doc_version 的回合在统计面显式跳过（禁止猜形），已知版本照常。
+    #[tokio::test]
+    async fn quiz_calibration_skips_unsupported_doc_versions() {
+        let (service, user_id) = checkin_test_service().await;
+        let report = json!([{ "questions": [{ "correct": true, "predicted_r": 0.8 }] }]).to_string();
+        for (version, round_id) in [
+            (2_i64, LearningReviewItemId::new().into_string()),
+            (1_i64, LearningReviewItemId::new().into_string()),
+        ] {
+            sqlx::query(
+                "INSERT INTO learning_quiz_rounds \
+                 (round_id, user_id, course_id, started_at, finished_at, status, doc_version, \
+                  plan_json, answers_json, report_json, earned_xp) \
+                 VALUES (?, ?, ?, 1, 2, 'completed', ?, '[]', '{}', ?, 0)",
+            )
+            .bind(&round_id)
+            .bind(user_id.as_str())
+            .bind(LearningCourseId::new().into_string())
+            .bind(version)
+            .bind(&report)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        let bins = service.quiz_calibration(&user_id).await.unwrap();
+        assert_eq!(bins.len(), 1, "v2 回合被跳过，只有 v1 参与分桶");
+        assert_eq!(bins[0].count, 1);
+    }
+
+    /// x09：未知别名 doc_version → 别名池降级为空（不猜形）。
+    #[tokio::test]
+    async fn registry_entries_treat_unsupported_alias_docs_as_an_empty_pool() {
+        let (service, _user_id) = checkin_test_service().await;
+        let concept_id = LearningConceptId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, doc_version, created_at, updated_at) \
+             VALUES (?, '极限', '[{\"name\":\"Limits\",\"status\":\"active\"}]', 'd', 2, 1, 1)",
+        )
+        .bind(&concept_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let entries = service.registry_entries().await.unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.concept_id == concept_id)
+            .expect("registry entry present");
+        assert!(entry.active_aliases.is_empty(), "unsupported doc version degrades to empty");
     }
 
     // ── t4 持久化:来源计划快照列(course_source_plan_json)──────────────────

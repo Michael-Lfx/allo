@@ -991,7 +991,13 @@ impl LearningService {
             .bind(old_hash as i64)
             .bind(new_hash as i64)
             .bind(new_hash_version)
-            .bind(serde_json::to_string(&ops_log).map_err(internal)?.as_str())
+            .bind(
+                crate::envelope::write_envelope(
+                    crate::envelope::REPAIR_OPS_SCHEMA_VERSION,
+                    &crate::envelope::OpsLog { ops: ops_log },
+                )
+                .map_err(internal)?,
+            )
             .bind(cascade.join("；"))
             .execute(&self.pool)
             .await
@@ -3825,7 +3831,7 @@ impl LearningService {
         // 概念 × 本课程节点（教/假定 + 档位 + 学习者状态 + 投影名 ref_name）。
         // 已会声明概念（m2）无节点引用——单列锚行反查入表（declared 行）。
         let ref_rows = sqlx::query(
-            "SELECT reg.concept_id, reg.canonical, reg.aliases_json, reg.definition, \
+            "SELECT reg.concept_id, reg.canonical, reg.aliases_json, reg.doc_version, reg.definition, \
              reg.source AS reg_source, \
              lc.role, lc.tier, lc.ref_name, l.lesson_id, l.title, \
                      COALESCE(p.status, 'not_started') AS status              FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id              LEFT JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ?              LEFT JOIN learning_lesson_progress p                ON p.lesson_id = l.lesson_id AND p.enrollment_id = e.enrollment_id              WHERE m.course_id = ?              ORDER BY reg.canonical, l.position, l.lesson_id",
@@ -3881,11 +3887,24 @@ impl LearningService {
                         canonical: row.try_get("canonical").map_err(internal)?,
                         // 别名带定义与出处（j04 结构化记录；老形状双读）。
                         aliases: {
-                            let aliases_json: String =
-                                row.try_get("aliases_json").map_err(internal)?;
-                            crate::learning_graph::alias_records::parse_alias_records(
-                                &aliases_json,
-                            )
+                            let doc_version: i64 =
+                                row.try_get("doc_version").map_err(internal)?;
+                            if doc_version
+                                == crate::learning_graph::alias_records::ALIAS_DOC_VERSION
+                            {
+                                let aliases_json: String =
+                                    row.try_get("aliases_json").map_err(internal)?;
+                                crate::learning_graph::alias_records::parse_alias_records(
+                                    &aliases_json,
+                                )
+                            } else {
+                                tracing::warn!(
+                                    concept_id,
+                                    doc_version,
+                                    "alias doc version unsupported; treating the alias pool as empty"
+                                );
+                                Vec::new()
+                            }
                             .into_iter()
                             .filter(|record| {
                                 record.status
@@ -3998,7 +4017,7 @@ impl LearningService {
         let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
 
         let rows = sqlx::query(
-            "SELECT concept_id, canonical, aliases_json, definition \
+            "SELECT concept_id, canonical, aliases_json, doc_version, definition \
              FROM learning_concept_registry \
              WHERE deprecated = 0 ORDER BY canonical, concept_id",
         )
@@ -4015,6 +4034,15 @@ impl LearningService {
             let concept_id: String = row.try_get("concept_id").map_err(internal)?;
             let canonical: String = row.try_get("canonical").map_err(internal)?;
             known.push(canonical.clone());
+            let doc_version: i64 = row.try_get("doc_version").map_err(internal)?;
+            if doc_version != crate::learning_graph::alias_records::ALIAS_DOC_VERSION {
+                tracing::warn!(
+                    concept_id,
+                    doc_version,
+                    "alias doc version unsupported; treating the alias pool as empty"
+                );
+                continue;
+            }
             let aliases_json: String = row.try_get("aliases_json").map_err(internal)?;
             for record in
                 crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
@@ -4235,8 +4263,8 @@ impl LearningService {
     pub(super) async fn registry_entries(
         &self,
     ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-            "SELECT concept_id, canonical, definition, aliases_json \
+        let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT concept_id, canonical, definition, aliases_json, doc_version \
              FROM learning_concept_registry WHERE deprecated = 0",
         )
         .fetch_all(&self.pool)
@@ -4244,9 +4272,19 @@ impl LearningService {
         .map_err(internal)?;
         Ok(rows
             .into_iter()
-            .map(|(concept_id, canonical, definition, aliases_json)| {
-                let records =
-                    crate::learning_graph::alias_records::parse_alias_records(&aliases_json);
+            .map(|(concept_id, canonical, definition, aliases_json, doc_version)| {
+                let records = if doc_version
+                    == crate::learning_graph::alias_records::ALIAS_DOC_VERSION
+                {
+                    crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
+                } else {
+                    tracing::warn!(
+                        concept_id,
+                        doc_version,
+                        "alias doc version unsupported; treating the alias pool as empty"
+                    );
+                    Vec::new()
+                };
                 crate::learning_graph::defnear::RegistryEntry {
                     concept_id,
                     canonical,
@@ -4376,8 +4414,8 @@ impl LearningService {
 
     /// 登记表切片（canonical（别名）一行一个，截断到上限）。
     async fn render_registry_excerpt(&self) -> Result<String, AppError> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT canonical, aliases_json FROM learning_concept_registry \
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT canonical, aliases_json, doc_version FROM learning_concept_registry \
              WHERE deprecated = 0 ORDER BY canonical LIMIT ?",
         )
         .bind(REGISTRY_EXCERPT_LIMIT as i64)
@@ -4389,7 +4427,15 @@ impl LearningService {
         // （j07 R3 投影词表的数据源），超长截断。
         let mut lines = Vec::new();
         let mut pool_lines = Vec::new();
-        for (canonical, aliases_json) in rows {
+        for (canonical, aliases_json, doc_version) in rows {
+            if doc_version != crate::learning_graph::alias_records::ALIAS_DOC_VERSION {
+                tracing::warn!(
+                    canonical,
+                    doc_version,
+                    "alias doc version unsupported; treating the alias pool as empty"
+                );
+                continue;
+            }
             let records = crate::learning_graph::alias_records::parse_alias_records(&aliases_json);
             let active: Vec<&crate::learning_graph::alias_records::AliasRecord> = records
                 .iter()

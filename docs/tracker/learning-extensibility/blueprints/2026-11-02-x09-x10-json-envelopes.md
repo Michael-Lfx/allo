@@ -134,3 +134,7 @@ impl SchedulerSettings { pub fn decay_component(&self) -> f32
 |---|---|---|---|---|
 | 2026-11-02 | 修订 | 3/4.2 | basis 三列由「必补信封」改「豁免（纯字符串数组）」——与 source_paths/node_ids 同规则；x09 票面随后同步 | 读码底稿 B2（三列均 `Vec<String>` 无结构体）；成图走查发现「给字符串数组套信封」只有成本没有读者 |
 | 2026-11-02 | 修订 | 4.2 | quiz 信封载体从「列内扁平信封」改为「行级 doc_version」——plan_json 是数组，列 CHECK 钉 array | 读码底稿 B1 + 反模式自查（抉择点必须展开） |
+| 2026-11-02 | 施工记录 | 4.1 | 新增 `src/envelope.rs`：`FlatEnvelope<T>` / `EnvelopeRead{Bare,Current,Unsupported}` / `read_envelope` / `write_envelope` + `ResponseDoc` / `OpsLog` 载荷 + 三态单测。 | 图 5 施工 |
+| 2026-11-02 | 施工记录 | 4.2 | 基线：§7 quiz_rounds 加行级 `doc_version`（CHECK >=1）、§2 registry 加行级 `doc_version`、§6 repairs `ops_json` CHECK 改 object。写侧：quiz INSERT 绑 1；aliases UPDATE 写 `ALIAS_DOC_VERSION`（INSERT 走 DEFAULT 1）；repairs 写 `write_envelope(REPAIR_OPS_SCHEMA_VERSION, OpsLog)`；attempts 两写点（progress/review）写 `ResponseDoc` 信封。读侧：quiz 活动面未知版本 → Internal，calibration → warn+skip；别名五读点未知版本 → 空池 + warn。 | 图 5 施工 |
+| 2026-11-02 | 施工记录 | 4.3 | x10：`scheduler.rs` `FSRS_ALGO`/`FsrsParams`/`parse_fsrs_params`/`decay_component`（未知 algo 整体回退 + warn；`FSRS::new` 失败补 warn）；`checkin.rs` 改走解析器；基线 §12 `review_log.algo`；真实行写 `fsrs6`、合成行 NULL；前端 `configKeys` 联合类型、设置页旧数组/新信封双读与未知 algo 提示（双语新 key）、保存恒写 `{algo:'fsrs6',w}`。 | 图 5 施工 |
+| 2026-11-02 | 施工记录 | 验收 | 新增测试：envelope 三态、`attempt_response_persists_a_flat_envelope`、`quiz_calibration_skips_unsupported_doc_versions`、`registry_entries_treat_unsupported_alias_docs_as_an_empty_pool`、FSRS 旧数组/新信封/未知算法/decay 四组。 | 4.2/4.3 红绿样 |

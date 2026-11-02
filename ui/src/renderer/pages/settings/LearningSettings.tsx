@@ -41,9 +41,20 @@ const LearningSettings: React.FC = () => {
   const { wide: wideContent, setWide: setWideContent } = useWideContentLayout();
 
   const [parametersDraft, setParametersDraft] = useState('');
+  // FSRS 参数两形兼容：旧裸数组 / 新 { algo, w } 信封；未知算法 → 空输入 +
+  // 显式提示（后端已整体回退默认）。
+  const fsrsWeights = Array.isArray(fsrsParameters)
+    ? fsrsParameters
+    : (fsrsParameters?.w ?? []);
+  const unsupportedAlgo =
+    fsrsParameters !== undefined &&
+    !Array.isArray(fsrsParameters) &&
+    fsrsParameters.algo !== 'fsrs6'
+      ? fsrsParameters.algo
+      : null;
 
   useEffect(() => {
-    setParametersDraft((fsrsParameters ?? []).join(', '));
+    setParametersDraft(unsupportedAlgo ? '' : fsrsWeights.join(', '));
   }, [fsrsParameters]);
 
   const saveParameters = () => {
@@ -61,7 +72,8 @@ const LearningSettings: React.FC = () => {
       Message.error(t('learning.settings.parametersInvalid'));
       return;
     }
-    void setFsrsParameters(values);
+    // 写侧恒存算法标签（x10）。
+    void setFsrsParameters({ algo: 'fsrs6', w: values });
     Message.success(t('learning.settings.saved'));
   };
 
@@ -112,10 +124,17 @@ const LearningSettings: React.FC = () => {
               <div className='flex flex-col gap-8px w-full'>
                 <Input.TextArea
                   autoSize={{ minRows: 2, maxRows: 4 }}
-                  placeholder={(fsrsParameters ?? []).join(', ')}
+                  placeholder={unsupportedAlgo ? '' : fsrsWeights.join(', ')}
                   value={parametersDraft}
                   onChange={setParametersDraft}
                 />
+                {unsupportedAlgo && (
+                  <div className='text-12px text-[var(--color-danger)]'>
+                    {t('learning.settings.fsrsParametersUnsupportedAlgo', {
+                      algo: unsupportedAlgo,
+                    })}
+                  </div>
+                )}
                 <SettingsControlGroup>
                   <Button size='small' onClick={saveParameters}>
                     {t('learning.settings.fsrsParametersApply')}

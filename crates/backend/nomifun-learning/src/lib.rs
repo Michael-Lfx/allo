@@ -1,4 +1,5 @@
 mod completer;
+mod envelope;
 mod learning_graph;
 mod course_outline;
 mod events;
