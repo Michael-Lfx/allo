@@ -131,7 +131,7 @@
     "cascadeFallbackReady": "SenseVoice Cascade Ready",
     "wakeWords": "Primary Wake Word",
     "wakeWordsHint": "Hey Flowy is recommended across languages with high recognition accuracy. Supports custom input.",
-    "wakeWordsPlaceholder": "Hey Flowy",
+    "wakeWordsPlaceholder": "Default: Hey Flowy",
     "wakeReply": "Wake Reply",
     "wakeReplyHint": "Phrase spoken after wake (e.g. 'I\\'m here'). Empty means silence.",
     "wakeReplyPlaceholder": "I'm here",

@@ -49,3 +49,4 @@
 - [x] **T39**: 彻底还权用户，废除无条件硬编码：① 用户自定义唤醒词时（如“荷包蛋”），词表仅编译自定义词，严格不再额外强塞 Flowy；② 用户留空/删除唤醒词时，中英文均统一且仅默认回退至通用跨语言 "Hey Flowy"（HH EY1 F L OW1 IY0 @HEY_FLOWY 与 HH AY1 F L OW1 IY0 @HI_FLOWY），消灭因语言切换频繁重载 KWS 的冗余开销；③ 移除 interject_keyword 对用户 wake_words 的隐式篡改。通过全量双语与流式单测。
 - [x] **T40**: 修复自检与唤醒卡片体验重塑：① 修复自定义唤醒词下自检使用固定 "Hey Flowy" 音频导致唤醒引擎假失败（kws_inference_failed）的根本原因：引入 has_default_wake_words 判定，自定义词下校验模型初始化与负向抑制率；② 彻底重塑 VoiceFeedbackSettings 唤醒卡片：移除冗余双核提示微章，输入框融合至首行与开关并列，清楚提示留空默认 Hey Flowy（跨语言通用，支持自定义）；③ 通过全量前端 i18n/typecheck 与后端全量测试。
 - [x] **T41**: 极简 UI/UX 排版微雕与物理示能感重构：① 彻底消灭提示文案的多层嵌套括号，精炼为零括号纯净文案；② 输入框宽度收窄至 140px，增加 maxLength=12，赋予短名字物理视觉暗示；③ 占位符极简收敛为干净的 "Hey Flowy"，彻底消灭右侧溢出截断；④ 通过 check:i18n、check:theme 与 typecheck 全量前端门禁。
+- [x] **T42**: 占位提示直觉升级与双语国际化：① 输入框占位提示优化为“默认: Hey Flowy”（英文 "Default: Hey Flowy"），给初次使用或留空用户直观预期；② 输入框宽度微调至 160px 确保双语无溢出且视觉紧凑；③ 通过 check:i18n、check:theme 与 typecheck 全量前端门禁。

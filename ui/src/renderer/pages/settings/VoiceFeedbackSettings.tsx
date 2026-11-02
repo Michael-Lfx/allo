@@ -108,7 +108,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 }
                 allowClear
                 disabled={!draft || !(draft.wake_enabled ?? true) || busy}
-                className={`w-140px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
+                className={`w-160px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
                 onChange={(val) => {
                   const word = val.trim();
                   setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
