@@ -844,7 +844,8 @@ const VoiceSettings: React.FC = () => {
 
   const resolveStageStatus = useCallback((name: 'capture' | 'kws' | 'vad' | 'asr' | 'tts' | 'playback'): 'ready' | 'failed' | 'unknown' => {
     if (capabilities?.[name]?.status) {
-      return capabilities[name].status;
+      const s = capabilities[name].status;
+      return s === 'ready' || s === 'failed' ? s : 'unknown';
     }
     if (!voiceSnapshot || voiceSnapshot.connection !== 'connected') {
       return 'unknown';

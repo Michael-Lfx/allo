@@ -189,7 +189,10 @@ impl ConversationVoiceDialogueRecorder {
         explicit_workspace: Option<&str>,
         session_mode: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
-        if let Some(id) = candidate {
+        let now = nomifun_common::now_ms();
+        let (candidate_workspace, source_id) = if let Some(ws) = explicit_workspace {
+            (Some(ws.to_string()), None)
+        } else if let Some(id) = candidate {
             let row = self.conversation_service.conversation_repo().get(&id).await
                 .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
                 .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
@@ -201,56 +204,147 @@ impl ConversationVoiceDialogueRecorder {
                     || extra.get("voice_task_workspace").is_some()
                     || extra.get("session_mode").and_then(|v| v.as_str()) == Some("voice")
                     || extra.get("session_mode").and_then(|v| v.as_str()) == Some("companion")
-                    || row.name.starts_with("语音")
-                    || row.name.starts_with("Voice");
+                    || row.name == "Voice Call"
+                    || row.name.starts_with("语音");
                 if is_voice_conv {
                     // 🛡️ Rule 1: Waking inside an existing voice conversation must stay in it!
                     return Ok((id.clone(), Some(id)));
                 }
+                let is_temp_workspace = extra.get("temp_workspace_id").is_some();
+                let candidate_ws = extra.get("voice_task_workspace").and_then(|v| v.as_str())
+                    .or_else(|| {
+                        if !is_temp_workspace {
+                            extra.get("workspace").and_then(|v| v.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|s| s.to_string());
+                (candidate_ws, Some(id))
+            } else {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("unsupported_source_conversation".into()));
+            }
+        } else {
+            (None, None)
+        };
+
+        if let Some(ws) = candidate_workspace {
+            let canonical = nomifun_common::paths::canonicalize_simplified(Path::new(&ws))
+                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(format!("workspace_directory_invalid: {e}")))?;
+            if !canonical.is_dir() {
+                return Err(VoiceDialogueRecorderError::WriteFailed(format!("workspace_directory_invalid: {} is not a directory", canonical.display())));
+            }
+            let canonical_str = canonical.to_string_lossy().to_string();
+            let mut registry = self.read_workspace_sessions()?;
+            let default_companion = if let Some(comp) = &self.companion_service {
+                comp.default_companion_id().await
+            } else {
+                None
+            };
+            let title = format!("语音 - {}", canonical.file_name().and_then(|n| n.to_str()).unwrap_or("工作区"));
+            let mode = self.conversation_service.resolve_voice_session_mode(session_mode).await
+                .map_err(|error| VoiceDialogueRecorderError::BindingInvalid(error.to_string()))?;
+            let source = if let Some(id) = source_id.as_deref() {
+                Some(self.conversation_service.get(&self.user_id, id).await
+                    .map_err(|error| VoiceDialogueRecorderError::WriteFailed(error.to_string()))?)
+            } else { None };
+            let make_req = || nomifun_api_types::CreateConversationRequest {
+                name: Some(title.clone()),
+                r#type: nomifun_common::AgentType::Nomi,
+                source: Some(nomifun_common::ConversationSource::Nomifun),
+                extra: serde_json::json!({
+                    "voice": true,
+                    "is_default_voice": true,
+                    "memory_owner_companion_id": default_companion.clone(),
+                    "last_user_interaction_at": now,
+                    "session_mode": mode,
+                }),
+                model: source.as_ref().and_then(|conversation| conversation.model.clone()),
+                preset_id: source.as_ref().and_then(|conversation| conversation.preset_id.clone()),
+                preset_overrides: None,
+                delegation_policy: nomifun_common::DelegationPolicy::Disabled,
+                execution_model_pool: None,
+                decision_policy: nomifun_common::DecisionPolicy::default(),
+                execution_template_id: None,
+                channel_chat_id: None,
+            };
+
+            let existing_entry = registry.sessions.get(&canonical_str).cloned();
+            if let Some(mut entry) = existing_entry {
+                // If entry has a non-empty conversation_id, check if it still exists in DB
+                if !entry.conversation_id.is_empty() {
+                    let existing_row = self.conversation_service.conversation_repo().get(&entry.conversation_id).await.ok().flatten();
+                    if let Some(existing_row) = existing_row {
+                        let existing_extra:serde_json::Value = serde_json::from_str(&existing_row.extra)
+                            .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+                        let owner_matches = existing_extra.get("memory_owner_companion_id").and_then(|v|v.as_str()) == default_companion.as_deref();
+                        let is_voice_busy = self.conversation_service.is_conversation_busy(&self.user_id, &entry.conversation_id).await.unwrap_or(false);
+                        let idle_ms = now.saturating_sub(entry.last_user_interaction_at);
+                        if existing_extra["voice_lifecycle"] != "discarded" && ((owner_matches && idle_ms <= 30 * 60 * 1000) || is_voice_busy) {
+                            entry.last_user_interaction_at = now;
+                            registry.sessions.insert(canonical_str.clone(), entry.clone());
+                            self.save_workspace_sessions(&registry)?;
+                            return Ok((entry.conversation_id, source_id));
+                        }
+                    }
+                } else if !entry.creation_key.is_empty() {
+                    // Crash recovery case: entry has a creation_key but conversation_id was not backfilled!
+                    if let Ok(Some(existing_conv_id)) = self.conversation_service.voice_conversation_by_creation_key(&self.user_id, &entry.creation_key).await {
+                        entry.conversation_id = existing_conv_id.clone();
+                        entry.last_user_interaction_at = now;
+                        registry.sessions.insert(canonical_str.clone(), entry.clone());
+                        self.save_workspace_sessions(&registry)?;
+                        return Ok((existing_conv_id, source_id));
+                    }
+                    // Creation did not happen yet, replay with the EXACT same creation_key
+                    let created = self.conversation_service.create_voice_idempotent(&self.user_id, make_req(), &entry.creation_key, &canonical_str, None).await
+                        .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+                    entry.conversation_id = created.conversation_id.clone();
+                    entry.last_user_interaction_at = now;
+                    registry.sessions.insert(canonical_str.clone(), entry);
+                    self.save_workspace_sessions(&registry)?;
+                    return Ok((created.conversation_id, source_id));
+                }
+
+                // Window expired or conversation missing: create new rotation entry
+                let new_creation_key = format!("voice-create:workspace:{canonical_str}:{now}");
+                entry.creation_key = new_creation_key.clone();
+                entry.last_user_interaction_at = now;
+                entry.conversation_id.clear();
+                registry.sessions.insert(canonical_str.clone(), entry.clone());
+                // Hard gate: persist before side effect!
+                self.save_workspace_sessions(&registry)?;
+
+                let created = self.conversation_service.create_voice_idempotent(&self.user_id, make_req(), &new_creation_key, &canonical_str, None).await
+                    .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+                entry.conversation_id = created.conversation_id.clone();
+                registry.sessions.insert(canonical_str.clone(), entry);
+                self.save_workspace_sessions(&registry)?;
+                return Ok((created.conversation_id, source_id));
+            } else {
+                let creation_key = format!("voice-create:workspace:{canonical_str}:{now}");
+                let mut entry = WorkspaceVoiceSessionEntry {
+                    workspace: canonical_str.clone(),
+                    conversation_id: String::new(),
+                    creation_key: creation_key.clone(),
+                    last_user_interaction_at: now,
+                };
+                registry.sessions.insert(canonical_str.clone(), entry.clone());
+                // Hard gate: persist before side effect!
+                self.save_workspace_sessions(&registry)?;
+
+                let created = self.conversation_service.create_voice_idempotent(&self.user_id, make_req(), &creation_key, &canonical_str, None).await
+                    .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+                entry.conversation_id = created.conversation_id.clone();
+                registry.sessions.insert(canonical_str.clone(), entry);
+                self.save_workspace_sessions(&registry)?;
+                return Ok((created.conversation_id, source_id));
             }
         }
 
-        // 🛡️ Rule 2 & 3: Waking on Homepage (candidate == None) or in a normal text conversation
-        // must always create a brand new provisional voice conversation rather than hijacking to past calls!
-        let memory_owner = match &self.companion_service {
-            Some(companions) => companions.default_companion_id().await,
-            None => None,
-        };
-        let mode = self
-            .conversation_service
-            .resolve_voice_session_mode(session_mode)
-            .await
-            .map_err(|e| VoiceDialogueRecorderError::BindingInvalid(e.to_string()))?;
-        let req_id = format!("wake-call-{}", nomifun_common::generate_id());
-        let canonical_workspace = if let Some(ws) = explicit_workspace {
-            let canonical = nomifun_common::paths::canonicalize_simplified(Path::new(ws))
-                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(format!("workspace_directory_invalid: {e}")))?;
-            if !canonical.is_dir() {
-                return Err(VoiceDialogueRecorderError::WriteFailed(format!(
-                    "workspace_directory_invalid: {} is not a directory",
-                    canonical.display()
-                )));
-            }
-            Some(canonical.to_string_lossy().to_string())
-        } else {
-            None
-        };
-
-        let created = self
-            .conversation_service
-            .create_provisional_voice_conversation_with_locale(
-                &self.user_id,
-                memory_owner.as_deref(),
-                Some(&mode),
-                canonical_workspace.as_deref(),
-                &req_id,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
-        Ok((created.conversation_id, None))
+        let memory_owner = match &self.companion_service {Some(companions)=>companions.default_companion_id().await,None=>None};
+        let home = self.conversation_service.ensure_default_voice_conversation_with_mode(&self.user_id,memory_owner.as_deref(),session_mode).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        Ok((home, source_id))
     }
 }
 

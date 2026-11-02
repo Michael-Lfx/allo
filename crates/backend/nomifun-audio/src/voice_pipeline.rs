@@ -290,9 +290,7 @@ impl VoiceCapturePipeline {
                             mono
                         };
 
-                        // Apply soft pre-amp gain (boost quiet signals like remote desktops by 2.5x with soft clamp)
-                        let boosted: Vec<f32> = resampled.iter().map(|&s| (s * 2.5).clamp(-1.0, 1.0)).collect();
-                        accumulator.extend_from_slice(&boosted);
+                        accumulator.extend_from_slice(&resampled);
 
                         // Drain full chunks of chunk_size
                         while accumulator.len() >= config.chunk_size {

@@ -831,6 +831,8 @@ pub struct VoiceSessionSnapshot {
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub task_notification: Option<VoiceTaskNotification>,
     #[serde(default)]
+    pub self_check_active: bool,
+    #[serde(default)]
     pub confirmation:Option<VoiceToolConfirmation>,
     #[serde(default)]
     pub task: Option<VoiceTaskSnapshot>,

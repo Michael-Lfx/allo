@@ -343,6 +343,11 @@ impl Drop for SelfCheckFlight {
             return;
         };
         manager.self_check_active.store(false, Ordering::Release);
+        {
+            let mut s = manager.snapshot.write().unwrap_or_else(|e| e.into_inner());
+            s.self_check_active = false;
+            let _ = manager.events.send(s.clone());
+        }
         if self.finished {
             return;
         }
@@ -695,6 +700,11 @@ impl VoiceCompanionProcessManager {
                 return Err("voice_suite_in_use".into());
             }
             self.self_check_active.store(true, Ordering::Release);
+            {
+                let mut s = self.snapshot.write().unwrap_or_else(|e| e.into_inner());
+                s.self_check_active = true;
+                let _ = self.events.send(s.clone());
+            }
         }
         let attempt = self.self_check_attempt.fetch_add(1, Ordering::AcqRel) + 1;
         let checked_at_ms = nomifun_common::now_ms();
@@ -2073,6 +2083,7 @@ impl VoiceCompanionProcessManager {
         source_snapshot.seq = snapshot.seq + 1;
         source_snapshot.enabled = self.read_autostart_config();
         source_snapshot.connection = VoiceConnectionState::Connected;
+        source_snapshot.self_check_active = self.self_check_active.load(Ordering::Acquire);
         source_snapshot.task = snapshot.task.clone();
         source_snapshot.queue = snapshot.queue.clone();
         source_snapshot.binding = snapshot.binding.clone().filter(|binding|Some(&binding.session_id)==source_snapshot.session_id.as_ref());

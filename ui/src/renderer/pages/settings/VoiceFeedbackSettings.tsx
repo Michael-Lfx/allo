@@ -91,7 +91,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
       <SettingsList>
         <div className={`flex flex-col gap-3 p-4 rounded-8px border border-solid transition-all ${
           wakeEnabledDirty || wakeWordsDirty
-            ? 'border-warning-5/60 bg-warning-1/5 shadow-[0_0_0_1px_rgba(var(--warning-6),0.2)]'
+            ? 'border-warning-5 bg-warning-1 shadow-[0_0_0_1px_rgba(var(--warning-6),0.2)]'
             : 'border-[var(--border-base)] bg-fill-1'
         }`}>
           <div className='flex items-center justify-between'>
@@ -138,7 +138,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 }
                 allowClear
                 disabled={!draft || busy}
-                className={`transition-all ${wakeWordsDirty ? '!border-warning-5 !ring-2 !ring-warning-5/30 !bg-warning-1/10' : ''}`}
+                className={`transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
                 onChange={(val) => {
                   const word = val.trim();
                   setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
@@ -167,7 +167,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                   input_device: val === 'default' ? undefined : val,
                 });
               }}
-              className={`min-w-240px transition-all ${deviceDirty ? '!border-warning-5 !ring-2 !ring-warning-5/30' : ''}`}
+              className={`min-w-240px transition-all ${deviceDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)]' : ''}`}
             >
               <Select.Option value='default'>{t('voice.feedback.inputDeviceDefault')}</Select.Option>
               {devices.map((d) => (
@@ -239,7 +239,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
               value={draft?.idle_timeout_secs ?? 30}
               disabled={!draft || busy}
               onChange={(secs: number) => setDraft((value) => value && { ...value, idle_timeout_secs: Number(secs) })}
-              className={`min-w-160px transition-all ${timeoutDirty ? '!border-warning-5 !ring-2 !ring-warning-5/30' : ''}`}
+              className={`min-w-160px transition-all ${timeoutDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)]' : ''}`}
             >
               <Select.Option value={15}>{t('voice.feedback.idle15')}</Select.Option>
               <Select.Option value={30}>{t('voice.feedback.idle30')}</Select.Option>
@@ -281,7 +281,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 onClick={() => void save()}
                 className={
                   dirty
-                    ? '!bg-primary-6 !border-primary-6 text-white font-bold shadow-lg ring-4 ring-primary-3/50 hover:!bg-primary-7 animate-pulse motion-reduce:animate-none'
+                    ? '!bg-primary-6 !border-primary-6 text-white font-bold shadow-lg shadow-[0_0_0_3px_rgba(var(--primary-3),0.5)] hover:!bg-primary-7 animate-pulse motion-reduce:animate-none'
                     : ''
                 }
               >

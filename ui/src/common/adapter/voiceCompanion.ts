@@ -20,6 +20,7 @@ export interface VoiceSnapshot {
   task?: VoiceTaskSnapshot | null;
   task_ready?: boolean;
   task_error_code?: string | null;
+  self_check_active?: boolean;
   instance_id: string;
   seq: number;
   session_id: string | null;

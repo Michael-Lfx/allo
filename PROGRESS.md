@@ -43,3 +43,4 @@
 - [x] **T33**: `recorder.rs` 与 `Router.tsx` 落地三场景智能唤醒分流：首页/新建页新建语音通话，普通会话自动新建语音通话并跳转，已有语音通话原地接续。
 - [x] **T34**: 彻底根除会话劫持（当前会话原地接续、首页/文本会话自动新建独立通话）：在 `recorder.rs` 中实行“当前语音会话不可剥夺原则”，直接就地返回 `source_id`；首页与普通文本会话唤醒彻底废除 `retained_default_call` 历史单例查表，直接调用 `create_provisional_voice_conversation_with_locale` 创建全新独立语音通话；并在 `voice_session_bridge.rs` 中增加首页清空候选会话守卫，通过集成回归单测。
 - [x] **T35**: 闭环 opencode 审计重点项：① `recorder.rs` 语音会话识别全面覆盖 `extra["voice"]`/`is_default_voice` 与英文/改名场景；② `VoiceFeedbackSettings.tsx` 默认麦克风选择发送 `"default"` 哨兵，彻底解除设置脏状态卡死；③ `VoiceSettings.tsx` 就绪判断以 `capabilities` 为最高优先级；④ `voice.rs` 追问超时对齐 `effective_idle_timeout`。通过全套前端与后端单测。
+- [x] **T36**: 第一性原理全栈归正修复：① 重建 `recorder.rs` 三层决议，原地接听与项目工作区专属 C03 逻辑完美融合，清零 50 项集成与 13 项运行时单测；② 移除 `voice_pipeline.rs` 的 2.5x 硬增益，恢复标准 PCM 采样；③ 前后端补齐 `self_check_active` 字段并收敛 `resolveStageStatus` 类型，清零 voice typecheck 报错；④ 修复 `VoiceFeedbackSettings.tsx` 中的 dead CSS；⑤ 恢复任务结果播放后 180s 追问契约。全套测试全绿通过。
