@@ -453,6 +453,9 @@
                 section_key: None,
                 difficulty: None,
                 evidence: Some("「q1 的证据回引」".into()),
+                claim: None,
+                precision: None,
+                unit: None,
             },
             ActivityPack {
                 kind: ActivityKind::TrueFalse,
@@ -465,6 +468,9 @@
                 section_key: None,
                 difficulty: None,
                 evidence: Some("「q2 的证据回引」".into()),
+                claim: None,
+                precision: None,
+                unit: None,
             },
         ];
         let reflection = |prompt: &str| ActivityPack {
@@ -478,6 +484,9 @@
             section_key: None,
                 difficulty: None,
 evidence: None,
+claim: None,
+precision: None,
+unit: None,
 };
 
         // Up to three AI-graded questions pass (validate_shape gate each).
@@ -531,6 +540,9 @@ evidence: None,
             section_key: None,
             difficulty: None,
             evidence: None,
+            claim: None,
+            precision: None,
+            unit: None,
         };
         let reflection = ActivityPack {
             kind: ActivityKind::Reflection,
@@ -543,6 +555,9 @@ evidence: None,
             section_key: None,
             difficulty: None,
             evidence: None,
+            claim: None,
+            precision: None,
+            unit: None,
         };
         let mut set = vec![bare.clone(), bare.clone(), reflection];
         let missing = validate_lesson_activities(&set).unwrap_err();
@@ -555,6 +570,28 @@ evidence: None,
         set[0] = bare.clone();
         set[1] = bare;
         assert!(validate_lesson_activities(&set).is_ok());
+    }
+
+    #[test]
+    fn numeric_claim_clause_is_in_both_activity_prompts() {
+        // w2 条款覆盖（无 golden）：两条提示词都必须把 numeric 轨钉成
+        // claim + precision + unit、禁写 answer/tol，且题面参数与 params 同值。
+        for system in [LESSON_SYSTEM, LESSON_ACTIVITY_SYSTEM] {
+            for phrase in [
+                "\"claim\"",
+                "\"precision\"",
+                "\"unit\"",
+                "Never write \"answer\" or \"tol\"",
+                "casts the answer key",
+                "parameter values bound in \"params\"",
+            ] {
+                assert!(system.contains(phrase), "prompt missing「{phrase}」");
+            }
+            assert!(
+                !system.contains("answer is a JSON number; \"tol\""),
+                "legacy numeric answer/tol clause must be gone"
+            );
+        }
     }
 
     #[test]
@@ -576,6 +613,9 @@ evidence: None,
             section_key: None,
                 difficulty: None,
 evidence: None,
+claim: None,
+precision: None,
+unit: None,
 };
         assert!(base.validate_shape((3, 5), true).is_ok());
 
@@ -1064,7 +1104,7 @@ evidence: None,
           "est": 20,
           "activities": [
             {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "evidence": "「q1 的证据回引」", "section_key": "s1", "difficulty": 1},
-            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "evidence": "「q2 的证据回引」", "section_key": "s1", "difficulty": 2},
+            {"kind": "numeric", "prompt": "q2", "options": [], "claim": {"expr": "4.9*2", "params": {}}, "precision": 1, "unit": "raw", "explanation": "e", "evidence": "「q2 的证据回引」", "section_key": "s1", "difficulty": 2},
             {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "evidence": "「q3 的证据回引」", "section_key": "s1", "difficulty": 2},
             {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "评卷要点：复述复利机制并给出一个生活实例。", "section_key": "general", "difficulty": 3}
           ]
@@ -1105,6 +1145,12 @@ evidence: None,
         assert_eq!(output.estimated_minutes, 20);
         assert_eq!(output.activities.len(), 4);
         assert_eq!(output.activities[3].section_key.as_deref(), Some("general"));
+        // w2 claim 轨：答案键由系统铸值（4.9×2 = 9.8，precision=1 → tol 0.05）。
+        let numeric = &output.activities[1];
+        assert_eq!(numeric.kind, ActivityKind::Numeric);
+        assert_eq!(numeric.answer, json!(9.8));
+        assert_eq!(numeric.tol, Some(0.05));
+        assert_eq!(numeric.precision, Some(1));
 
         let calls = completer.calls();
         assert_eq!(calls.len(), 4, "outline + 2 sections + activities");
@@ -1117,6 +1163,186 @@ evidence: None,
         assert!(
             calls[3].1.contains("--- SECTION s1 [概念] 概念：向量 ---"),
             "activities prompt must embed the finished section bodies"
+        );
+    }
+
+    #[tokio::test]
+    async fn numeric_claim_track_rejects_model_supplied_answer_then_casts_on_retry() {
+        // w2：claim 轨模型写 answer/tol = 违约 → 第一次 activities 输出被
+        // 拒并带可读反馈；第二次 claim-only 输出由系统铸值。
+        let bad = activities_json().replace(
+            r#""claim": {"expr": "4.9*2", "params": {}}, "precision": 1, "unit": "raw""#,
+            r#""claim": {"expr": "4.9*2", "params": {}}, "precision": 1, "unit": "raw", "answer": 9.8, "tol": 0.1"#,
+        );
+        assert!(bad.contains("\"answer\": 9.8"), "fixture carries a forbidden answer");
+        let blueprint = lesson_test_blueprint();
+        let module = &blueprint.modules[0];
+        let lesson = &module.lessons[0];
+        let completer = ScriptedCompleter::new(vec![
+            outline_json(),
+            section_body("概念：向量"),
+            practice_body(),
+            bad,
+            activities_json(),
+        ]);
+        let output = generate_lesson(
+            &completer, None, &blueprint, module, lesson, 0, 0, 1, None, "# Real",
+            crate::models::TeachingStyle::Standard,
+        )
+        .await
+        .unwrap();
+        let calls = completer.calls();
+        assert_eq!(calls.len(), 5);
+        assert!(
+            calls[4].1.contains("do not write \"answer\" or \"tol\""),
+            "retry feedback must name the claim-track rule: {}",
+            calls[4].1
+        );
+        let numeric = output
+            .activities
+            .iter()
+            .find(|activity| activity.kind == ActivityKind::Numeric)
+            .expect("numeric cast");
+        assert_eq!(numeric.answer, json!(9.8));
+        assert_eq!(numeric.tol, Some(0.05));
+    }
+
+    #[tokio::test]
+    async fn numeric_claim_without_precision_is_retried() {
+        let bad = activities_json().replace(
+            r#""claim": {"expr": "4.9*2", "params": {}}, "precision": 1, "unit": "raw""#,
+            r#""claim": {"expr": "4.9*2", "params": {}}, "unit": "raw""#,
+        );
+        let blueprint = lesson_test_blueprint();
+        let module = &blueprint.modules[0];
+        let lesson = &module.lessons[0];
+        let completer = ScriptedCompleter::new(vec![
+            outline_json(),
+            section_body("概念：向量"),
+            practice_body(),
+            bad,
+            activities_json(),
+        ]);
+        let output = generate_lesson(
+            &completer, None, &blueprint, module, lesson, 0, 0, 1, None, "# Real",
+            crate::models::TeachingStyle::Standard,
+        )
+        .await
+        .unwrap();
+        let calls = completer.calls();
+        assert!(
+            calls[4].1.contains("missing \"precision\""),
+            "retry feedback must name precision: {}",
+            calls[4].1
+        );
+        assert!(output.activities.iter().any(|activity| activity.kind == ActivityKind::Numeric));
+    }
+
+    #[tokio::test]
+    async fn single_activity_numeric_claim_casts_with_params() {
+        // 单题加题：claim 换参 → 系统铸值；答案键与工具实算一致。
+        let completer = ScriptedCompleter::new(vec![
+            r#"{"kind":"numeric","prompt":"某资产年化 12.5%，单利 2 年的收益率（百分数）？","options":[],"claim":{"expr":"rate*years","params":{"rate":0.125,"years":2}},"precision":1,"unit":"percent","explanation":"0.125×2=0.25，即 25.0%","evidence":"「单利」","section_key":"s1"}"#.into(),
+        ]);
+        let activity = generate_lesson_activity(
+            &completer,
+            None,
+            ActivityKind::Numeric,
+            "",
+            "课程",
+            "模块",
+            "课时",
+            "正文",
+            "",
+            &[],
+            GenerationPurpose::Lesson,
+        )
+        .await
+        .unwrap();
+        assert_eq!(activity.answer, json!(25.0));
+        assert_eq!(activity.tol, Some(0.05));
+        assert_eq!(activity.precision, Some(1));
+        assert_eq!(activity.unit, Some(crate::verify_math::NumericUnit::Percent));
+    }
+
+    #[tokio::test]
+    async fn single_activity_numeric_claim_rejects_supplied_answer() {
+        let completer = ScriptedCompleter::new(vec![
+            r#"{"kind":"numeric","prompt":"q","options":[],"claim":{"expr":"1+1","params":{}},"precision":0,"answer":2,"explanation":"e","evidence":"「证据」"}"#.into(),
+            r#"{"kind":"numeric","prompt":"q","options":[],"claim":{"expr":"1+1","params":{}},"precision":0,"explanation":"e","evidence":"「证据」"}"#.into(),
+        ]);
+        let activity = generate_lesson_activity(
+            &completer,
+            None,
+            ActivityKind::Numeric,
+            "",
+            "课程",
+            "模块",
+            "课时",
+            "正文",
+            "",
+            &[],
+            GenerationPurpose::Lesson,
+        )
+        .await
+        .unwrap();
+        assert_eq!(activity.answer, json!(2.0));
+        assert_eq!(activity.tol, Some(0.0));
+        let calls = completer.calls();
+        assert!(
+            calls[1].1.contains("do not write \"answer\" or \"tol\""),
+            "{}",
+            calls[1].1
+        );
+    }
+
+    #[tokio::test]
+    async fn variant_purpose_skips_the_similarity_gate_only() {
+        // D5：变式路同题面换数不触发相似门；课时加题路仍被拒。
+        let existing = vec![ExistingLessonQuestion {
+            kind: ActivityKind::SingleChoice,
+            prompt: "Which property is unique?".into(),
+            answer: json!("A"),
+            explanation: "e".into(),
+        }];
+        let same = r#"{"kind":"single_choice","prompt":"Which property is unique?","options":["A","B"],"answer":"A","explanation":"e","evidence":"「证据」"}"#;
+        let completer = ScriptedCompleter::new(vec![same.into()]);
+        let variant = generate_lesson_activity(
+            &completer,
+            None,
+            ActivityKind::SingleChoice,
+            "",
+            "c",
+            "m",
+            "l",
+            "sum",
+            "",
+            &existing,
+            GenerationPurpose::Variant,
+        )
+        .await
+        .unwrap();
+        assert_eq!(variant.prompt, "Which property is unique?");
+
+        let completer = ScriptedCompleter::new(vec![same.into(), same.into()]);
+        let error = generate_lesson_activity(
+            &completer,
+            None,
+            ActivityKind::SingleChoice,
+            "",
+            "c",
+            "m",
+            "l",
+            "sum",
+            "",
+            &existing,
+            GenerationPurpose::Lesson,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("duplicates") || error.contains("closely resembles"),
+            "{error}"
         );
     }
 
@@ -1301,6 +1527,9 @@ fn activity_with_prompt(prompt: &str) -> ActivityPack {
         section_key: None,
         difficulty: None,
         evidence: Some("「证据回引」".into()),
+        claim: None,
+        precision: None,
+        unit: None,
     }
 }
 

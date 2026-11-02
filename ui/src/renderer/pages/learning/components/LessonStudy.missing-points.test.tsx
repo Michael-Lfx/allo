@@ -37,6 +37,8 @@ const activity: Activity = {
   prompt: '用你自己的话解释：为什么说复利的关键不在收益率高低？',
   options: [],
   matches: [],
+  precision: null,
+  unit: null,
   section_key: null,
   position: 0,
 };

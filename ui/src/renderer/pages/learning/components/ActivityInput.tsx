@@ -3,7 +3,7 @@ import { IconArrowDown, IconArrowUp } from '@arco-design/web-react/icon';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { InlineMarkdown } from '@renderer/components/Markdown';
-import type { ActivityKind } from '../types';
+import type { ActivityKind, NumericUnit } from '../types';
 
 /** 排序题：条目上下移动产出学习者的顺序（value = 条目数组） */
 function OrderingInput({
@@ -130,6 +130,7 @@ export function ActivityInput({
   disabled,
   onChange,
   placeholder,
+  unit = null,
   direction = 'vertical',
 }: {
   kind: ActivityKind;
@@ -140,6 +141,8 @@ export function ActivityInput({
   disabled?: boolean;
   onChange: (value: unknown) => void;
   placeholder?: string;
+  /** 数值题显示单位（w2）：percent 只加 "%" 后缀，不改判分值 */
+  unit?: NumericUnit | null;
   direction?: 'vertical' | 'horizontal';
 }) {
   const { t } = useTranslation();
@@ -208,6 +211,7 @@ export function ActivityInput({
         value={typeof value === 'number' ? value : undefined}
         placeholder={placeholder ?? t('learning.numericPlaceholder')}
         disabled={disabled}
+        suffix={unit === 'percent' ? '%' : undefined}
         onChange={(next) => onChange(typeof next === 'number' ? next : undefined)}
       />
     );

@@ -474,6 +474,8 @@ impl LearningService {
                 prompt: row.try_get("prompt").map_err(internal)?,
                 options: config.options,
                 matches: config.matches,
+                precision: config.precision,
+                unit: config.unit,
                 position: row.try_get("position").map_err(internal)?,
             });
         }

@@ -1459,6 +1459,17 @@ pub struct ActivityPack {
     /// ——flash 遵循是概率性的，不做硬门）。
     #[serde(default)]
     pub evidence: Option<String>,
+    /// 数值题参数化答案键（w2）：模型只给表达式与参数，答案键由系统
+    /// `cast_numeric_claim` 实算（claim 轨禁写 answer/tol）。只进生成面与
+    /// 服务端存储结构，学习者/管理面 DTO 永不携带。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<crate::verify_math::NumericClaim>,
+    /// 显示精度 0–10（claim 轨必填）：决定系统 tol（半个显示位）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<u8>,
+    /// 显示单位（claim 轨，缺省 Raw）：percent 时 answer 存显示单位（×100）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<crate::verify_math::NumericUnit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1516,7 +1527,79 @@ impl ActivityKind {
     }
 }
 
+/// 铸值接线模式（w2）：
+/// - [`NumericCastMode::Strict`]：模型面（整课生成 / 单题 / agent 草稿）——
+///   claim 在场时 answer/tol 必须缺席（系统铸值），写了就报可读错误重试。
+/// - [`NumericCastMode::Force`]：导入/落库/审计兜底——claim 在场时无条件重算
+///   并覆盖 answer/tol（幂等；旧行 claim 缺席时原样保留 legacy answer/tol）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NumericCastMode {
+    Strict,
+    Force,
+}
+
 impl ActivityPack {
+    /// w2 铸值：numeric claim 轨调用 [`crate::verify_math::cast_numeric_claim`]
+    /// 实算 answer（显示单位）与系统 tol。非 numeric 或 claim 缺席 = 无操作
+    /// （legacy 手写 answer/tol 路径不变）。
+    pub(crate) fn cast_numeric_claim(&mut self, mode: NumericCastMode) -> Result<(), String> {
+        if self.kind != ActivityKind::Numeric {
+            return Ok(());
+        }
+        let Some(claim) = self.claim.clone() else {
+            return Ok(());
+        };
+        if mode == NumericCastMode::Strict && (!self.answer.is_null() || self.tol.is_some()) {
+            return Err(format!(
+                "numeric \"{}\" uses a claim — do not write \"answer\" or \"tol\"; \
+                 the system casts the answer key from claim + precision + unit",
+                self.prompt.trim()
+            ));
+        }
+        let Some(precision) = self.precision else {
+            return Err(format!(
+                "numeric \"{}\" uses a claim but is missing \"precision\" (0-10)",
+                self.prompt.trim()
+            ));
+        };
+        let unit = self.unit.unwrap_or(crate::verify_math::NumericUnit::Raw);
+        let cast = crate::verify_math::cast_numeric_claim(&claim, precision, unit)
+            .map_err(|error| format!("numeric \"{}\" claim could not be cast: {error}", self.prompt.trim()))?;
+        // 落库 answer 保持 JSON number（显示单位；percent 已 ×100）；tol 恒由
+        // 系统给出（精确整数 + precision 0 = 0，判分臂的 1e-9 地板兜底）。
+        self.answer = serde_json::json!(cast.answer);
+        self.tol = Some(cast.tol);
+        Ok(())
+    }
+}
+
+impl ActivityPack {
+    /// Matching questions expose their right-column candidates to the UI (a
+    /// scrambled copy is rendered per client); every other kind stores none.
+    pub(crate) fn matching_candidates(&self) -> Vec<String> {
+        if self.kind != ActivityKind::Matching {
+            return Vec::new();
+        }
+        self.answer
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 去空白的出题证据回引（落库面）：空串视同缺席。
+    pub(crate) fn stored_evidence(&self) -> Option<String> {
+        self.evidence
+            .as_deref()
+            .map(str::trim)
+            .filter(|evidence| !evidence.is_empty())
+            .map(str::to_owned)
+    }
+
     /// Per-kind shape validation shared by every entry point (generation,
     /// single-addition, draft audit, manual authoring, course import). The
     /// only caller-specific rule is the options range for choice-like kinds:
@@ -1675,6 +1758,36 @@ impl ActivityPack {
                         self.prompt
                     ));
                 }
+                if self.claim.is_some() {
+                    // claim 轨（w2）：precision 必填 0–10，unit 缺省 Raw，
+                    // answer 已由系统铸值填入（None = 门漏），tol 只能是
+                    // 铸值结果（有限非负）。
+                    let Some(precision) = self.precision else {
+                        return Err(format!(
+                            "numeric \"{}\" with a claim must declare \"precision\" (0-10)",
+                            self.prompt
+                        ));
+                    };
+                    if precision > 10 {
+                        return Err(format!(
+                            "numeric \"{}\" precision must be 0-10, got {precision}",
+                            self.prompt
+                        ));
+                    }
+                    if let Some(claim) = &self.claim {
+                        if claim.expr.trim().is_empty() {
+                            return Err(format!(
+                                "numeric \"{}\" claim.expr must not be empty",
+                                self.prompt
+                            ));
+                        }
+                    }
+                } else if self.precision.is_some() || self.unit.is_some() {
+                    return Err(format!(
+                        "numeric \"{}\" precision/unit are only valid with a \"claim\"",
+                        self.prompt
+                    ));
+                }
                 if let Some(tol) = self.tol {
                     if !tol.is_finite() || tol < 0.0 {
                         return Err(format!(
@@ -1755,6 +1868,16 @@ impl ActivityPack {
         }
         if self.prompt.trim().is_empty() {
             return Err("activity prompt is empty".into());
+        }
+        // claim 轨字段只属于 numeric（w2）：其它题型带三键 = 输出契约违例。
+        if self.kind != ActivityKind::Numeric
+            && (self.claim.is_some() || self.precision.is_some() || self.unit.is_some())
+        {
+            return Err(format!(
+                "{} \"{}\" must not carry claim/precision/unit — those fields only exist on numeric questions",
+                self.kind.as_str(),
+                self.prompt
+            ));
         }
         // 难度分档 1-3（e5 消解案：输出契约已撤——模型不再声明 difficulty，
         // 值由装配面从节点 teaches 档位铸值注入；此处保留为注入后/存量
@@ -2593,6 +2716,12 @@ pub struct ActivityView {
     /// Matching questions only: scrambled right-column candidates.
     #[serde(default)]
     pub matches: Vec<String>,
+    /// 数值题显示精度（w2；claim 轨才有；学习者面永不携带 claim）。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    /// 数值题显示单位（w2；None = Raw）。
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
     pub position: i64,
 }
 
@@ -2712,6 +2841,11 @@ pub struct ReviewQuestion {
     /// Matching questions only: right-column candidates (order preserved).
     #[serde(default)]
     pub matches: Vec<String>,
+    /// 数值题显示精度/单位（w2；claim 永不出学习者面）。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2735,6 +2869,12 @@ pub struct ReviewAnswerResult {
     pub feedback: String,
     /// Correct answer, only populated when the response was wrong.
     pub correct_answer: Option<Value>,
+    /// 揭示格式元数据（w2）：数值题按 precision/unit 格式化 correct_answer
+    /// （percent 加 %）。claim 本身永不下发。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
     /// Present when the answer was wrong and the item was automatically
     /// rated `again`; otherwise the caller rates after a correct answer.
     pub rated: Option<ReviewResult>,
@@ -2861,6 +3001,11 @@ pub struct QuizRoundQuestionView {
     /// 容错，serde 缺省）。
     #[serde(default)]
     pub difficulty: Option<u8>,
+    /// 数值题显示精度/单位（w2；start 投影零 claim/tol，只带显示元数据）。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
 }
 
 /// quiz 回合视图（q2 start 出参：情境快照 + 脱敏题单）。
@@ -2893,6 +3038,11 @@ pub struct QuizGradeFeedback {
     /// 题干证据回引（t2 判底展示面；题源未提供则 None）。
     #[serde(default)]
     pub evidence: Option<String>,
+    /// 揭示格式元数据（w2）：数值题按 precision/unit 格式化答案。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
 }
 
 /// quiz 回合逐节点对账行（q2；q3 扩逐题校准点）。
@@ -3235,6 +3385,11 @@ pub struct QuestionEntry {
     /// Near-synonym traps for fill_in_blank blanks, surfaced for display.
     #[serde(default)]
     pub distractors: Vec<String>,
+    /// 数值题显示精度/单位（w2；管理面可见 answer，但 claim 仍不出场）。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
     pub explanation: Option<String>,
     pub due_at: Option<TimestampMs>,
     pub overdue: bool,
@@ -3330,6 +3485,11 @@ pub struct GeneratedLessonActivity {
     pub answer: Value,
     pub explanation: String,
     pub distractors: Vec<String>,
+    /// 数值题显示精度/单位（w2；draft 预览不暴露 claim）。
+    #[serde(default)]
+    pub precision: Option<u8>,
+    #[serde(default)]
+    pub unit: Option<crate::verify_math::NumericUnit>,
 }
 
 /// Replaces the tag set of a course or question. Unknown tag names are
@@ -3379,6 +3539,165 @@ pub(crate) struct StoredActivityConfig {
     /// 一小段。旧行缺列，读侧默认 None。
     #[serde(default)]
     pub evidence: Option<String>,
+    /// 数值题参数化答案键（w2）：只进服务端存储结构，学习者/管理面 DTO
+    /// 永不携带。旧行缺键，读侧默认 None（legacy 手写 answer/tol 不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<crate::verify_math::NumericClaim>,
+    /// 显示精度 0–10（w2，claim 轨）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<u8>,
+    /// 显示单位（w2，claim 轨；None = Raw）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<crate::verify_math::NumericUnit>,
+}
+
+impl StoredActivityConfig {
+    /// 落库配置的统一构造（w2）：从生成面 [`ActivityPack`] 派生——matching
+    /// 候选由 answer 派生、evidence 去空白、claim/precision/unit 原样携带；
+    /// `difficulty` 由装配面注入（传 `None` = 沿用题包自报值）。course
+    /// import / lesson persist / manual payload / quiz variant / smoke 共用。
+    pub(crate) fn from_activity(activity: &ActivityPack, difficulty: Option<u8>) -> Self {
+        Self {
+            options: activity.options.clone(),
+            answer: activity.answer.clone(),
+            explanation: activity.explanation.clone(),
+            distractors: activity.distractors.clone(),
+            tol: activity.tol,
+            matches: activity.matching_candidates(),
+            difficulty,
+            evidence: activity.stored_evidence(),
+            claim: activity.claim.clone(),
+            precision: activity.precision,
+            unit: activity.unit,
+        }
+    }
+}
+
+#[cfg(test)]
+mod numeric_claim_tests {
+    //! w2 claim 轨形状契约：ActivityPack 校验与 StoredActivityConfig 的
+    //! serde/构造器行为（零迁移：旧行缺三键仍可读）。
+
+    use super::*;
+    use crate::verify_math::{NumericClaim, NumericUnit};
+
+    fn pack(kind: ActivityKind) -> ActivityPack {
+        ActivityPack {
+            kind,
+            prompt: "q".into(),
+            options: Vec::new(),
+            answer: serde_json::json!(1.5),
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            tol: None,
+            section_key: None,
+            difficulty: None,
+            evidence: None,
+            claim: None,
+            precision: None,
+            unit: None,
+        }
+    }
+
+    #[test]
+    fn numeric_claim_track_requires_precision_and_number_answer() {
+        let mut claimed = pack(ActivityKind::Numeric);
+        claimed.claim = Some(NumericClaim {
+            expr: "1.5".into(),
+            params: Default::default(),
+        });
+        let missing = claimed.validate_shape((3, 5), true).unwrap_err();
+        assert!(missing.contains("precision"), "{missing}");
+
+        claimed.precision = Some(2);
+        assert!(claimed.validate_shape((3, 5), true).is_ok());
+
+        claimed.precision = Some(11);
+        let over = claimed.validate_shape((3, 5), true).unwrap_err();
+        assert!(over.contains("0-10"), "{over}");
+
+        claimed.precision = Some(0);
+        claimed.answer = serde_json::Value::Null;
+        let nulled = claimed.validate_shape((3, 5), true).unwrap_err();
+        assert!(nulled.contains("JSON number"), "{nulled}");
+    }
+
+    #[test]
+    fn precision_and_unit_without_claim_are_rejected() {
+        let mut numeric = pack(ActivityKind::Numeric);
+        numeric.precision = Some(1);
+        let error = numeric.validate_shape((3, 5), true).unwrap_err();
+        assert!(error.contains("only valid with"), "{error}");
+
+        let mut unit_only = pack(ActivityKind::Numeric);
+        unit_only.unit = Some(NumericUnit::Percent);
+        let error = unit_only.validate_shape((3, 5), true).unwrap_err();
+        assert!(error.contains("only valid with"), "{error}");
+    }
+
+    #[test]
+    fn claim_fields_on_non_numeric_kinds_are_rejected() {
+        let mut choice = pack(ActivityKind::SingleChoice);
+        choice.options = vec!["A".into(), "B".into(), "C".into()];
+        choice.answer = serde_json::json!("A");
+        choice.precision = Some(1);
+        let error = choice.validate_shape((3, 5), true).unwrap_err();
+        assert!(error.contains("only exist on numeric"), "{error}");
+    }
+
+    #[test]
+    fn stored_config_legacy_rows_default_the_claim_track_fields() {
+        let legacy: StoredActivityConfig =
+            serde_json::from_str(r#"{"options":[],"answer":1.5,"explanation":"e"}"#).unwrap();
+        assert!(legacy.claim.is_none());
+        assert!(legacy.precision.is_none());
+        assert!(legacy.unit.is_none());
+
+        let json = serde_json::to_value(&legacy).unwrap();
+        assert!(json.get("claim").is_none(), "None claim must be skipped");
+        assert!(json.get("precision").is_none());
+        assert!(json.get("unit").is_none());
+    }
+
+    #[test]
+    fn stored_config_constructor_carries_the_claim_track() {
+        let mut activity = pack(ActivityKind::Numeric);
+        activity.claim = Some(NumericClaim {
+            expr: "rate*years".into(),
+            params: [("rate".to_owned(), 0.125)].into(),
+        });
+        activity.precision = Some(1);
+        activity.unit = Some(NumericUnit::Percent);
+        activity.tol = Some(0.05);
+        let stored = StoredActivityConfig::from_activity(&activity, None);
+        assert_eq!(stored.claim, activity.claim);
+        assert_eq!(stored.precision, Some(1));
+        assert_eq!(stored.unit, Some(NumericUnit::Percent));
+        assert_eq!(stored.tol, Some(0.05));
+        let json = serde_json::to_value(&stored).unwrap();
+        assert_eq!(json["claim"]["expr"], "rate*years");
+        assert_eq!(json["precision"], 1);
+        assert_eq!(json["unit"], "percent");
+    }
+    #[test]
+    fn generated_lesson_activity_dto_exposes_display_metadata_only() {
+        // w2 泄露面：draft 预览带 precision/unit，claim/tol 永不出场。
+        let dto = GeneratedLessonActivity {
+            kind: ActivityKind::Numeric,
+            prompt: "q".into(),
+            options: Vec::new(),
+            answer: serde_json::json!(25.0),
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            precision: Some(1),
+            unit: Some(NumericUnit::Percent),
+        };
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"precision\":1"), "{json}");
+        assert!(json.contains("\"unit\":\"percent\""), "{json}");
+        assert!(!json.contains("claim"), "{json}");
+        assert!(!json.contains("tol"), "{json}");
+    }
 }
 
 #[cfg(test)]

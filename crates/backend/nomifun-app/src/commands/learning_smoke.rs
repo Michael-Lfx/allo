@@ -1891,7 +1891,9 @@ async fn run_quiz(
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
 
-    // 种子课程：K 节点（est 25），每节点一道单选（answer = "B"），报名 owner。
+    // 种子课程：K 节点（est 25）。节点 0 = numeric claim 轨（w2：答案键由
+    // 系统铸值，题面参数与 claim.params 同值），其余节点各一道单选
+    //（answer = "B"）。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let module_id = nomifun_common::LearningModuleId::new().into_string();
     let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
@@ -1913,10 +1915,11 @@ async fn run_quiz(
     .bind(&course_id)
     .execute(&wiring.pool)
     .await?;
-    let config =
-        r#"{"answer":"B","options":["A","B"],"explanation":"smoke","distractors":[],"matches":[]}"#;
     let mut lesson_ids = Vec::new();
     let mut activity_ids = Vec::new();
+    // 每道 bank 题的判分底（kind + config）：answer 不再硬编码 "B"。
+    let mut bank_configs: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+    let numeric_unit = nomifun_learning::NumericUnit::Percent;
     for index in 0..k {
         let lesson_id = nomifun_common::LearningLessonId::new().into_string();
         sqlx::query(
@@ -1931,17 +1934,61 @@ async fn run_quiz(
         .execute(&wiring.pool)
         .await?;
         let activity_id = nomifun_common::LearningActivityId::new().into_string();
+        let (kind, prompt, config_json) = if index == 0 {
+            // w2 numeric 种子：12.5% 单利 2 年 → 铸值 25.0（precision 1，
+            // tol 0.05）。答案键不手写，由 cast_numeric_claim 实算。
+            let claim = nomifun_learning::NumericClaim {
+                expr: "rate*years".into(),
+                params: [
+                    ("rate".to_owned(), 0.125),
+                    ("years".to_owned(), 2.0),
+                ]
+                .into(),
+            };
+            let cast =
+                nomifun_learning::cast_numeric_claim(&claim, 1, numeric_unit)
+                    .map_err(|error| anyhow::anyhow!("numeric seed cast: {error}"))?;
+            (
+                "numeric",
+                "年化 12.5%，单利 2 年的收益率（百分数）？".to_owned(),
+                serde_json::json!({
+                    "options": [],
+                    "answer": cast.answer,
+                    "explanation": "0.125 × 2 = 0.25，即 25.0%。",
+                    "distractors": [],
+                    "matches": [],
+                    "tol": cast.tol,
+                    "claim": claim,
+                    "precision": 1,
+                    "unit": "percent",
+                }),
+            )
+        } else {
+            (
+                "single_choice",
+                format!("What is {index} + {index}?"),
+                serde_json::json!({
+                    "answer": "B",
+                    "options": ["A", "B"],
+                    "explanation": "smoke",
+                    "distractors": [],
+                    "matches": [],
+                }),
+            )
+        };
         sqlx::query(
             "INSERT INTO learning_activities \
              (activity_id, lesson_id, kind, prompt, config_json, position) \
-             VALUES (?, ?, 'single_choice', ?, ?, 0)",
+             VALUES (?, ?, ?, ?, ?, 0)",
         )
         .bind(&activity_id)
         .bind(&lesson_id)
-        .bind(format!("What is {index} + {index}?"))
-        .bind(config)
+        .bind(kind)
+        .bind(&prompt)
+        .bind(serde_json::to_string(&config_json)?)
         .execute(&wiring.pool)
         .await?;
+        bank_configs.insert(activity_id.clone(), (kind.to_owned(), config_json));
         lesson_ids.push(lesson_id);
         activity_ids.push(activity_id);
     }
@@ -2035,21 +2082,182 @@ async fn run_quiz(
         qb.pool_checks, qb.sim_hits, qb.dropped, qb.retries
     );
     let variants_present = variant_count > 0;
-    // 每条计划项的判分底：bank 题 = 种子 config（answer "B"）；变式题 =
-    // payload.config_json 的 answer（判底随计划行内下发，不回库）。
-    let item_answer = |item: &serde_json::Value| -> serde_json::Value {
-        if is_variant(item) {
-            let config: serde_json::Value = serde_json::from_str(
+    // 每条计划项的判分底（kind + config）：bank 题 = 种子 config（按
+    // activity 取，numeric 不再假造 "B"）；变式题 = payload.config_json
+    //（判底随计划行内下发，不回库）。
+    let item_basis = |item: &serde_json::Value| -> (String, serde_json::Value) {
+        let kind = item
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .expect("plan item kind")
+            .to_owned();
+        let config: serde_json::Value = if is_variant(item) {
+            serde_json::from_str(
                 item.pointer("/variant/config_json")
                     .and_then(|v| v.as_str())
                     .expect("variant payload carries config_json"),
             )
-            .expect("variant config_json parses");
-            config.get("answer").cloned().expect("variant config carries answer")
+            .expect("variant config_json parses")
         } else {
-            serde_json::json!("B")
+            let activity = item
+                .get("activity")
+                .and_then(|v| v.as_str())
+                .expect("plan activity id");
+            bank_configs
+                .get(activity)
+                .map(|(_, config)| config.clone())
+                .expect("bank activity config present")
+        };
+        (kind, config)
+    };
+    let item_answer = |item: &serde_json::Value| -> serde_json::Value {
+        item_basis(item)
+            .1
+            .get("answer")
+            .cloned()
+            .expect("config carries answer")
+    };
+    // 错答构造：numeric 超出容差（answer + 2×tol），选择题换另一个选项。
+    let wrong_response = |item: &serde_json::Value| -> serde_json::Value {
+        let (kind, config) = item_basis(item);
+        if kind == "numeric" {
+            let answer = config
+                .get("answer")
+                .and_then(|value| value.as_f64())
+                .expect("numeric answer number");
+            let tol = config
+                .get("tol")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(1e-9);
+            return serde_json::json!(answer + 2.0 * tol.max(1e-9) + 1e-6);
+        }
+        if is_variant(item) {
+            item.pointer("/variant/options")
+                .and_then(|v| v.as_array())
+                .and_then(|options| {
+                    let correct = item_answer(item);
+                    options
+                        .iter()
+                        .map(|option| option.as_str().unwrap_or_default())
+                        .find(|option| serde_json::json!(*option) != correct)
+                        .map(|option| serde_json::json!(option))
+                })
+                .unwrap_or_else(|| serde_json::json!("__wrong__"))
+        } else {
+            serde_json::json!("A")
         }
     };
+
+    // w2 numeric bank 判据（始终在场，零 provider 也执行）：答案键与工具铸值
+    // 一致；精确/容差内判对、容差外判错；揭示带显示元数据且无 claim/tol。
+    let numeric_bank = plan_items
+        .iter()
+        .find(|item| {
+            !is_variant(item) && item.get("kind").and_then(|v| v.as_str()) == Some("numeric")
+        })
+        .expect("numeric seed bank question present");
+    let numeric_config = item_basis(numeric_bank).1;
+    let numeric_answer = numeric_config["answer"]
+        .as_f64()
+        .expect("numeric bank answer number");
+    let numeric_tol = numeric_config["tol"].as_f64().expect("numeric bank tol");
+    let numeric_claim: nomifun_learning::NumericClaim =
+        serde_json::from_value(numeric_config["claim"].clone())?;
+    let recast = nomifun_learning::cast_numeric_claim(
+        &numeric_claim,
+        numeric_config
+            .get("precision")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u8,
+        numeric_unit,
+    )
+    .map_err(|error| anyhow::anyhow!("numeric bank recast: {error}"))?;
+    anyhow::ensure!(
+        (numeric_answer - recast.answer).abs() < 1e-12 && numeric_tol == recast.tol,
+        "numeric bank answer key must equal the tool cast ({} vs {}, tol {} vs {})",
+        numeric_answer,
+        recast.answer,
+        numeric_tol,
+        recast.tol
+    );
+    let numeric_activity = numeric_bank
+        .get("activity")
+        .and_then(|v| v.as_str())
+        .expect("numeric activity id");
+    let graded_numeric = service
+        .quiz_grade(&owner, &course, &round.round_id, numeric_activity, &serde_json::json!(numeric_answer))
+        .await?;
+    anyhow::ensure!(
+        graded_numeric.correct && graded_numeric.answer == serde_json::json!(numeric_answer),
+        "numeric exact answer must grade correct and reveal the cast key"
+    );
+    anyhow::ensure!(
+        graded_numeric.precision == Some(1)
+            && graded_numeric.unit == Some(numeric_unit),
+        "numeric grade feedback must carry precision/unit for reveal"
+    );
+    let within = service
+        .quiz_grade(
+            &owner,
+            &course,
+            &round.round_id,
+            numeric_activity,
+            &serde_json::json!(numeric_answer + numeric_tol * 0.5),
+        )
+        .await?;
+    anyhow::ensure!(within.correct, "numeric answer within tol must grade correct");
+    let outside = service
+        .quiz_grade(
+            &owner,
+            &course,
+            &round.round_id,
+            numeric_activity,
+            &serde_json::json!(numeric_answer + numeric_tol * 2.0 + 1e-6),
+        )
+        .await?;
+    anyhow::ensure!(!outside.correct, "numeric answer outside tol must grade incorrect");
+    println!(
+        "[numeric] cast answer={numeric_answer} tol={numeric_tol} (exact/within/outside all correct)"
+    );
+    // 变式 numeric（provider 在场时）：换参后系统重铸，答案与 bank 不同且
+    // tol 不再 None；config 带 claim/precision/unit。
+    for item in plan_items
+        .iter()
+        .filter(|item| is_variant(item) && item.get("kind").and_then(|v| v.as_str()) == Some("numeric"))
+    {
+        let config = item_basis(item).1;
+        let claim: nomifun_learning::NumericClaim =
+            serde_json::from_value(config["claim"].clone())?;
+        let cast = nomifun_learning::cast_numeric_claim(
+            &claim,
+            config
+                .get("precision")
+                .and_then(|value| value.as_u64())
+                .expect("variant precision") as u8,
+            numeric_unit,
+        )
+        .map_err(|error| anyhow::anyhow!("variant recast: {error}"))?;
+        let variant_answer = config["answer"].as_f64().expect("variant answer number");
+        anyhow::ensure!(
+            (variant_answer - cast.answer).abs() < 1e-12,
+            "variant answer must equal its cast claim ({variant_answer} vs {})",
+            cast.answer
+        );
+        anyhow::ensure!(
+            config["tol"].as_f64() == Some(cast.tol),
+            "variant tol must be system-cast"
+        );
+        anyhow::ensure!(
+            (variant_answer - numeric_answer).abs() > 1e-9,
+            "variant parameter change must move the answer (bank {numeric_answer})"
+        );
+        anyhow::ensure!(
+            config.get("claim").is_some()
+                && config.get("precision").is_some()
+                && config.get("unit").is_some(),
+            "variant config must carry claim/precision/unit"
+        );
+    }
     if variants_present {
         let mut per_node: HashMap<&str, usize> = HashMap::new();
         for item in &plan_items {
@@ -2084,8 +2292,11 @@ async fn run_quiz(
     }
     let view_json = serde_json::to_string(&round)?;
     anyhow::ensure!(
-        !view_json.contains("explanation") && !view_json.contains("\"answer\""),
-        "start projection leaked judge fields"
+        !view_json.contains("explanation")
+            && !view_json.contains("\"answer\"")
+            && !view_json.contains("claim")
+            && !view_json.contains("\"tol\""),
+        "start projection leaked judge fields (answer/explanation/claim/tol)"
     );
     let graded = service
         .quiz_grade(
@@ -2131,9 +2342,9 @@ async fn run_quiz(
         }
     );
 
-    // ③ 全卷作答：弱节点与其前一节点的题答错（partial 0×2）、其余全对
-    //（full 3×4 = 12）。变式在场时答满全计划（bank + 变式都作答——quiz 必
-    // 作答是测量语义）；错误节点的变式答一个非正确项。断言按 node 定位
+    // ③ 全卷作答：弱节点与其前一节点的题答错（partial 0×2）、其余全对；
+    // 变式在场时答满全计划（bank + 变式都作答——quiz 必作答是测量语义）。
+    // 错答按题型构造：numeric 超容差、选择题换一个选项。断言按 node 定位
     //（计划序是弱先序）。
     let wrong_nodes: Vec<String> = vec![
         weak_lesson.clone(),
@@ -2151,38 +2362,36 @@ async fn run_quiz(
             .and_then(|v| v.as_str())
             .expect("plan activity id");
         let node = item.get("node").and_then(|v| v.as_str()).expect("plan node");
-        let correct_answer = item_answer(item);
         let response = if wrong_nodes.iter().any(|wrong| wrong == node) {
-            if is_variant(item) {
-                item.pointer("/variant/options")
-                    .and_then(|v| v.as_array())
-                    .and_then(|options| {
-                        options
-                            .iter()
-                            .map(|option| option.as_str().unwrap_or_default())
-                            .find(|option| serde_json::json!(*option) != correct_answer)
-                            .map(|option| serde_json::json!(option))
-                    })
-                    .unwrap_or_else(|| serde_json::json!("__wrong__"))
-            } else {
-                serde_json::json!("A")
-            }
+            wrong_response(item)
         } else {
-            correct_answer
+            item_answer(item)
         };
         answers.insert(activity.to_owned(), response);
     }
     let report = service
         .quiz_complete(&owner, &course, &round.round_id, &answers)
         .await?;
-    // 结算档位随答题量：full = 2 + 该节点题数（no-provider 每节点 1 题 =
-    // 3；变式在场 2 题 = 4），partial = 0。4 full + 2 partial。
-    let per_node_items = if variants_present { 2 } else { 1 };
-    let full_xp = 2 + per_node_items;
+    // 结算档位按题型当量求和：full = 2（全对奖励）+ Σ question_equivalent
+    //（numeric 权重 2、单选 1、变式按自身题型）；partial = 0。
+    let mut node_weight: HashMap<&str, i64> = HashMap::new();
+    for item in &plan_items {
+        let node = item.get("node").and_then(|v| v.as_str()).expect("plan node");
+        let kind = nomifun_learning::ActivityKind::try_from(
+            item.get("kind").and_then(|v| v.as_str()).expect("plan kind"),
+        )
+        .map_err(|error| anyhow::anyhow!("plan kind: {error}"))?;
+        *node_weight.entry(node).or_default() += nomifun_learning::question_equivalent(kind);
+    }
+    let node_full_xp = |node: &str| 2 + node_weight.get(node).copied().unwrap_or(0);
+    let full_xp_total: i64 = node_weight
+        .keys()
+        .filter(|node| !wrong_nodes.iter().any(|wrong| wrong.as_str() == **node))
+        .map(|node| node_full_xp(node))
+        .sum();
     anyhow::ensure!(
-        report.earned_xp == full_xp * 4,
-        "4 full + 2 partial must settle {}, got {}",
-        full_xp * 4,
+        report.earned_xp == full_xp_total,
+        "4 full + 2 partial must settle {full_xp_total}, got {}",
         report.earned_xp
     );
     anyhow::ensure!(
@@ -2190,15 +2399,15 @@ async fn run_quiz(
         "quiz settlements are never negative"
     );
     for entry in &report.covered {
-        let expected = if wrong_nodes.iter().any(|wrong| *wrong == entry.node_id.to_string()) {
+        let node = entry.node_id.to_string();
+        let expected = if wrong_nodes.iter().any(|wrong| *wrong == node) {
             Some(0)
         } else {
-            Some(full_xp)
+            Some(node_full_xp(&node))
         };
         anyhow::ensure!(
             entry.earned_xp == expected,
-            "tier check for node {}: expected {expected:?}, got {:?}",
-            entry.node_id,
+            "tier check for node {node}: expected {expected:?}, got {:?}",
             entry.earned_xp
         );
     }
@@ -2213,7 +2422,7 @@ async fn run_quiz(
     .fetch_one(&wiring.pool)
     .await?;
     anyhow::ensure!(
-        (events, ledger_total) == (k, full_xp * 4),
+        (events, ledger_total) == (k, full_xp_total),
         "ledger re-read must match the report ({events} events, {ledger_total} xp)"
     );
     let (status, row_earned): (String, i64) = sqlx::query_as(
@@ -2223,10 +2432,10 @@ async fn run_quiz(
     .fetch_one(&wiring.pool)
     .await?;
     anyhow::ensure!(
-        status == "completed" && row_earned == full_xp * 4,
-        "round row must be completed with earned {} (got {status}/{row_earned})", full_xp * 4
+        status == "completed" && row_earned == full_xp_total,
+        "round row must be completed with earned {} (got {status}/{row_earned})", full_xp_total
     );
-    println!("[3/6] settled per node: 4 full ({full_xp} xp each) + 2 partial (0 xp, never negative); ledger re-read matches");
+    println!("[3/6] settled per node: 4 full (Σ questions by kind + 2 bonus = {full_xp_total}) + 2 partial (0 xp, never negative); ledger re-read matches");
 
     // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
     // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。
@@ -2287,7 +2496,7 @@ async fn run_quiz(
     .fetch_one(&wiring.pool)
     .await?;
     anyhow::ensure!(
-        (events_after, total_after) == (k, full_xp * 4),
+        (events_after, total_after) == (k, full_xp_total),
         "folded round must not double-pay (got {events_after}/{total_after})"
     );
 

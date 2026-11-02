@@ -131,7 +131,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
-- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
+- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 严禁自算或写 answer/tol：给 "claim"（{{"expr": "ASCII 表达式", "params": {{参数: 数值}}}}，显式 *、^、sqrt 等函数）+ precision（0-10 显示小数位）+ unit（raw/percent，percent 时系统按 ×100 存显示值），答案键由系统实算；题面必须写清 params 绑定的参数值；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
@@ -161,7 +161,7 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 - activities_too_few / objective_activities_too_few：add_activity 补客观题。
 - reflections_too_many：remove_activity 删多余的反思题。
 - reflections_multiple（warning）：可保留——只有 danger 才阻断发布。
-- activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
+- activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/顺序与对应关系）；numeric 的形状由 claim（expr+params）+ precision（0-10）+ unit（raw/percent）承担——绝不写 answer/tol，表达式不可求值或参数未绑定时按反馈修正/换参，答案键由系统实算。
 - section_invalid（缺可视化）：按清单里该节的 visual 重写正文——用 $$公式$$ / ```svg / ```jsxgraph / ```mermaid / 表格承载核心讲解，文字作旁注。
 - viz_block_lint（mermaid 括号不平衡/引号不配平/节点未定义）：修复该围栏块语法，或改用表格/公式承载该节讲解（终检已系统剔除的 viz_block_lint_dropped 按降级声明保留，无需重画）。
 - math_verify_failed（warning 留痕）：本课生成期 verify_math 核验失败未必已全部修正——报告点名具体数值时按 R14 重算并用 verify_math 复核后改正文；无点名则无需动作（warning 不挡发布）。
@@ -1150,7 +1150,7 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
 fn ls_patch_activities(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_patch_activities".into(),
-        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。".into(),
+        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 严禁写 answer/tol：给 claim（{\"expr\": \"ASCII 表达式\", \"params\": {参数: 数值}}）+ precision（0-10）+ unit（raw/percent），答案键由系统实算（示例：{\"kind\": \"numeric\", \"prompt\": \"年化 12.5% 单利 2 年的收益率（百分数）？\", \"claim\": {\"expr\": \"rate*years\", \"params\": {\"rate\": 0.125, \"years\": 2}}, \"precision\": 1, \"unit\": \"percent\", \"explanation\": \"…\"}）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -1548,6 +1548,33 @@ mod tests {
     /// 工具）进图管线系统提示词（默认开；off 臂由 nomifun-learning 的开关
     /// 测试锁装配函数）。R12 为 #177 收窄版条款覆盖断言：逃生门只许记号与
     /// 读法，旧「正文先行引入」全量门必须消失。
+    /// w2 条款覆盖（CN 双宿，无 golden）：图线系统提示词 + 工具描述 + 修复
+    /// 对照表都必须把 numeric 钉成 claim + precision + unit、禁写 answer/tol。
+    #[tokio::test]
+    async fn numeric_claim_clause_is_pinned_across_the_cn_host_prompts() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "严禁自算或写 answer/tol",
+            "\"claim\"",
+            "precision（0-10",
+            "unit（raw/percent",
+            "答案键由系统实算",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        assert!(!system.contains("numeric 是数字（可带 tol 容差）"));
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(service);
+        let tool = ls_patch_activities(ctx);
+        assert!(tool.description.contains("\"claim\""), "{}", tool.description);
+        assert!(tool.description.contains("\"precision\""), "{}", tool.description);
+        assert!(tool.description.contains("\"unit\""), "{}", tool.description);
+        assert!(
+            REPAIR_LESSON_AGENT_SYSTEM.contains("numeric 的形状由 claim"),
+            "repair table must route claim-track shape failures to claim/precision/unit"
+        );
+    }
+
     #[test]
     fn lesson_agent_system_prompt_carries_content_discipline_v2() {
         let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();

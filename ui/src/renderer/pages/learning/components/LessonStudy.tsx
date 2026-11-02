@@ -84,6 +84,7 @@ export function ActivityBlock({
         kind={activity.kind}
         options={activity.options}
         matches={activity.matches}
+        unit={activity.unit}
         value={response}
         disabled={disabled}
         onChange={setResponse}

@@ -202,6 +202,22 @@ pub(super) async fn generate_lesson_activities(
         .map_err(|error| error.to_string())?;
         match parse_json_object::<ActivitiesOutput>(&raw) {
             Ok(mut output) => {
+                // w2 铸值（claim 轨）：parse 后、门禁前逐题实算答案键；
+                // 失败（带 answer/tol、缺 precision、表达式不可求值）进
+                // 重试反馈。
+                let mut cast_error: Option<String> = None;
+                for activity in &mut output.activities {
+                    if let Err(error) =
+                        activity.cast_numeric_claim(crate::models::NumericCastMode::Strict)
+                    {
+                        cast_error = Some(error);
+                        break;
+                    }
+                }
+                if let Some(error) = cast_error {
+                    last_error = error;
+                    continue;
+                }
                 // 题面防雷同（k04）：on 臂三口径相似门 + 题级丢弃留痕；
                 // off 臂走旧「精确/子串」整批判定（旧行为）。
                 let dropped = if enabled {
@@ -260,6 +276,22 @@ pub(crate) struct ExistingLessonQuestion {
 }
 
 
+/// 单题生成用途（w2 D5）：课时加题/重出保留题面相似门；quiz 变式是「同
+/// 考点换面」的刻意设计，跳过相似门（否则同模板换数会被误杀）。防复用池
+/// 的语义在变式路仍用于提示词列表，但不做拒绝判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenerationPurpose {
+    Lesson,
+    Variant,
+}
+
+impl GenerationPurpose {
+    /// 是否执行题面相似/重复门（变式路不执行）。
+    const fn enforces_novelty(self) -> bool {
+        matches!(self, Self::Lesson)
+    }
+}
+
 /// Generates ONE additional activity for an already-generated lesson. The
 /// lesson body is fixed, so unlike [`generate_lesson`] there is no document
 /// stage: a single call produces one activity of the learner-chosen kind,
@@ -277,6 +309,7 @@ pub(crate) async fn generate_lesson_activity(
     summary: &str,
     excerpt: &str,
     existing_questions: &[ExistingLessonQuestion],
+    purpose: GenerationPurpose,
 ) -> Result<ActivityPack, String> {
     let prompt = build_lesson_activity_prompt(
         kind,
@@ -311,8 +344,15 @@ pub(crate) async fn generate_lesson_activity(
         .await
         .map_err(|error| error.to_string())?;
         match parse_json_object::<ActivityPack>(&raw) {
-            Ok(activity) => {
-                match validate_generated_activity(&activity, kind, existing_questions) {
+            Ok(mut activity) => {
+                // w2 铸值（claim 轨）：validate 前实算答案键；失败进重试。
+                if let Err(error) =
+                    activity.cast_numeric_claim(crate::models::NumericCastMode::Strict)
+                {
+                    last_error = error;
+                    continue;
+                }
+                match validate_generated_activity(&activity, kind, existing_questions, purpose) {
                     Ok(()) => return Ok(activity),
                     Err(error) => last_error = error,
                 }
@@ -387,11 +427,13 @@ fn build_lesson_activity_prompt(
 
 
 /// Single-activity validation: the requested kind's exact shape plus a
-/// novelty check against the lesson's existing questions.
+/// novelty check against the lesson's existing questions (variants skip the
+/// novelty gate by design — see [`GenerationPurpose`]).
 fn validate_generated_activity(
     activity: &ActivityPack,
     kind: ActivityKind,
     existing_questions: &[ExistingLessonQuestion],
+    purpose: GenerationPurpose,
 ) -> Result<(), String> {
     if activity.kind != kind {
         return Err(format!(
@@ -407,6 +449,9 @@ fn validate_generated_activity(
     // manual-authoring option bounds (2-5) — narrower than the generation
     // stage, wider than a hand-authored single choice.
     activity.validate_shape((2, 5), true)?;
+    if !purpose.enforces_novelty() {
+        return Ok(());
+    }
     // 新颖性门（k04）：on 臂三口径相似度 ≥0.7 命中（含换数/换情境的雷同），
     // 消息带命中题面与分值；off 臂退回旧「规范化精确/子串」判定。
     if qb_similarity_enabled() {

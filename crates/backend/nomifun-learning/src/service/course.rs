@@ -20,9 +20,20 @@ impl LearningService {
 
     async fn import_course_with_context(
         &self,
-        pack: CoursePack,
+        mut pack: CoursePack,
         outline: Option<OutlineSnapshot>,
     ) -> Result<CourseDetail, AppError> {
+        // w2 导入铸值（force 模式）先于形状校验：claim 轨的 answer/tol 由
+        // 系统实算并覆盖（claim 缺席的 legacy 行原样保留）。
+        for module in &mut pack.modules {
+            for lesson in &mut module.lessons {
+                for activity in &mut lesson.activities {
+                    activity
+                        .cast_numeric_claim(crate::models::NumericCastMode::Force)
+                        .map_err(AppError::BadRequest)?;
+                }
+            }
+        }
         validate_pack(&pack)?;
         // 来源库列表（t4）：outline 快照带归一后的完整列表（首个 = 主来源），
         // 非 outline 的导入（教程播种/旧调用）回退单列的单元素视图。逐库核验
@@ -161,21 +172,8 @@ impl LearningService {
 
                 for (activity_position, activity) in lesson.activities.iter().enumerate() {
                     let activity_id = LearningActivityId::new();
-                    let config = StoredActivityConfig {
-                        options: activity.options.clone(),
-                        answer: activity.answer.clone(),
-                        explanation: activity.explanation.clone(),
-                        distractors: activity.distractors.clone(),
-                        tol: activity.tol,
-                        matches: super::lesson::matching_candidates(activity),
-                        difficulty: activity.difficulty,
-                        evidence: activity
-                            .evidence
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|evidence| !evidence.is_empty())
-                            .map(str::to_owned),
-                    };
+                    let config =
+                        StoredActivityConfig::from_activity(activity, activity.difficulty);
                     sqlx::query(
                         "INSERT INTO learning_activities \
                          (activity_id, lesson_id, kind, prompt, config_json, position) \
