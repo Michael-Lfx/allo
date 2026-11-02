@@ -104,9 +104,14 @@ IDMM Intervention。
 
 内嵌 SQL 定义的是全新、空数据库的 v3 baseline。baseline 之后的 schema
 演进通过 [`crates/backend/nomifun-db/migrations/`](../../crates/backend/nomifun-db/migrations/)
-下 45 个 append-only 编号迁移完成，由 `sqlx::migrate!()` 在每次启动时应用；
-迁移序列必须以 `001_v3_baseline.sql` 开头。`init_database` 可以记录并
-校验该 baseline，但绝不会把 pre-v3 产品行转换为 v3 行。
+下的 append-only 编号迁移完成（数量以目录为准），由 `sqlx::migrate!()` 在
+每次启动时应用；迁移序列必须以 `001_v3_baseline.sql` 开头。`init_database`
+可以记录并校验该 baseline，但绝不会把 pre-v3 产品行转换为 v3 行。
+
+迁移折叠纪律（发布前）：**未随正式版本发布的迁移段可以折叠为单一净形
+基线**（未发布表直接建终态、已发布表的数据变换逐字保留，折叠时以一次性
+schema/数据等价校验兜底）；**已发布段永不折叠、不改动**，其上的结构演进
+只能追加新迁移。
 
 打开 SQLite 之前，bootstrap 会检查数据集契约和 generation。不存在数据集时
 初始化 v3；检测到历史或不兼容数据集时整体退役并创建新的空 v3 数据集。

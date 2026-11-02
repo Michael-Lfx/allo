@@ -1,6 +1,6 @@
-//! 迁移 078（`learning_lessons.source_paths_json`）的契约：多引用（t4 评审
-//! 补齐）的课时来源列表是 `source_path`/`source_start`/`source_end` 三列的
-//! 伴随列（首个 = 主来源 = 三列的兼容位），老行由三列回填成单元素数组；
+//! 基线 070（`learning_lessons.source_paths_json`，原迁移 078）的契约：多引用
+//! （t4 评审补齐）的课时来源列表是 `source_path`/`source_start`/`source_end`
+//! 三列的伴随列（首个 = 主来源 = 三列的兼容位），老行由三列回填成单元素数组；
 //! 三列保留不动（读侧对空列表回退三列）。
 
 use sqlx::migrate::Migrator;
@@ -47,7 +47,7 @@ async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 77).await;
+    migrate_range(&pool, 0, 69).await;
     sqlx::query(
         "INSERT INTO learning_courses (course_id, title, description, domain, version, created_at, updated_at) \
          VALUES (?, '老课程', '', 'general', 1, 1000, 1000)",
@@ -86,7 +86,7 @@ async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
         position += 1;
     }
 
-    migrate_range(&pool, 77, i64::MAX).await;
+    migrate_range(&pool, 69, i64::MAX).await;
 
     let backfilled: String =
         sqlx::query_scalar("SELECT source_paths_json FROM learning_lessons WHERE lesson_id = ?")

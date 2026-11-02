@@ -31,7 +31,7 @@ sources: [docs/tracker/learning-kb-course-v2/map.md, docs/tracker/learning-kb-co
 ## 1 存储形状与 CHECK 约束
 
 ```sql
--- 069_learning_course_source_plan.sql
+-- 070_learning_domain_rebuild.sql §3（原 086_learning_course_source_plan）
 ALTER TABLE learning_courses ADD COLUMN course_source_plan_json TEXT CHECK (
     course_source_plan_json IS NULL OR (
         json_valid(course_source_plan_json)

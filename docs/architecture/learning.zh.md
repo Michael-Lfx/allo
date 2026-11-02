@@ -178,21 +178,17 @@ teaching_style）、`051_learning_section_visual.sql`（节 visual 承诺落库�
 `052_learning_review_log.sql`（逐次复习日志 `learning_review_log` +
 `learning_attempts.elapsed_ms`）、`053_learning_section_degraded.sql`
 （节降级兜底标记落库，ADR-0008）、
-`068_learning_domain_rebuild.sql`（**学习域合并基线**：原 068–084 十七段学习
-迁移按序合并为一个版本；分段链未随正式版本发布、没有真实用户库承载。含：
-旧 DAG 图课程数据与 per-course 概念体系五表退役，ADR-0009；概念登记表 /
-概念网边 `learning_lesson_concepts(role,tier)` / 生长批次与批行状态机；
-终点表 + 标记课时行 + `compass_md`/`compass_updated_at` 列退役、新增
-`learning_courses.structure_json` 结构快照列，ADR-0010；课程软删墓碑 /
+`070_learning_domain_rebuild.sql`（**学习域合并基线 v2**：折叠自
+`069_retire_graph_dag_and_concepts`–`088_learning_basis_declarations` 二十段
+未发布学习迁移；净形——未发布表直接建终态、已发布表的数据变换逐字保留。
+含：旧 DAG 图课程数据与 per-course 概念体系五表退役（ADR-0009）、自建题
+kind 恢复 050 九值全集；概念登记表 / 概念网边
+`learning_lesson_concepts(role,tier,ref_name)` / 生长批次与批行状态机；
+`learning_courses.structure_json` 结构快照（ADR-0010）；课程软删墓碑 /
 课时难度 / `samples_meta_json` / `source_kb_ids` / `source_paths_json` /
-`enabled` 等课程与课时列演进；别名结构化记录 + 概念网边 ref_name；
-XP 结算账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表，
-ADR-0012；quiz 回合记录表）、
-`069_learning_course_source_plan.sql`（t4：`learning_courses` 加
-`course_source_plan_json` TEXT 列，nullable + CHECK JSON object；承载来源
-计划 v1 信封 {version, inventory, triage, plan, coverage, warnings}——
-ADR-0014 脏库路径的落盘真相；旧行 NULL 不回填，读侧未知 version 降级
-available=false；契约见
+`enabled` / `course_source_plan_json` 等列演进；别名结构化记录；XP 结算
+账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表
+（ADR-0012）；quiz 回合记录表。来源计划信封的契约见
 [docs/contracts/learning-course-source-plan.md](../contracts/learning-course-source-plan.md)）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
