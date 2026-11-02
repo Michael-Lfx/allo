@@ -3072,3 +3072,18 @@
             None
         );
     }
+
+    #[test]
+    fn test_keyword_is_in_text_boundaries_and_anti_overmasking() {
+        // Positive self-speech masking
+        assert!(keyword_is_in_text("@HEY_FLOWY", "我是 Flowy，请问有什么可以帮你？"));
+        assert!(keyword_is_in_text("Hey Flowy", "Hey, what can I do?"));
+        assert!(keyword_is_in_text("荷包蛋", "做荷包蛋要热油"));
+        assert!(keyword_is_in_text("@你好_小白", "我是你好小白"));
+
+        // Anti-overmasking: English word boundary protection (they must NOT match hey)
+        assert!(!keyword_is_in_text("hey flowy", "They are working on the project"));
+        assert!(!keyword_is_in_text("hey flowy", "The whole flow is completed"));
+        assert!(!keyword_is_in_text("hey flowy", "No matching keyword here"));
+        assert!(!keyword_is_in_text("荷包蛋", "今天天气不错"));
+    }

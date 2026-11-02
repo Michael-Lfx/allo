@@ -257,3 +257,12 @@ jobs:
       # await, so that test is un-skipped and the crate is gated in full.
       - name: cargo test -p nomifun-conversation --lib
         run: cargo test -p nomifun-conversation --lib --locked
+
+      # `nomifun-audio` and `voice-companion` streaming suites are deterministic,
+      # run in memory without physical audio hardware, and gate the core acoustic
+      # barge-in and audio assets against regression.
+      - name: cargo test -p nomifun-audio --lib
+        run: cargo test -p nomifun-audio --lib --locked
+
+      - name: cargo test -p voice-companion --features voice-skeleton --test voice_streaming
+        run: cargo test -p voice-companion --features voice-skeleton --test voice_streaming --locked

@@ -105,6 +105,11 @@ x iao f u x ing @XIAO_FU_XING
     assert!(custom_only_buf.contains("h é b āo d àn") || custom_only_buf.contains("h e b ao d an"));
     assert!(!custom_only_buf.contains("FLOWY"), "must NOT inject Flowy when user defined custom keywords");
 
+    // Verify unsupported keywords (e.g. emoji or symbols) safely fallback to default Hey Flowy rules
+    let unsupported_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&["🚀".to_string(), "@@@".to_string()]);
+    assert!(unsupported_buf.contains("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY"), "must fallback to default Hey Flowy on unsupported keywords");
+    assert!(!unsupported_buf.trim().is_empty(), "keywords buffer must never be empty");
+
     // Test KwsEngine integration with custom keywords
     let mut kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
         model_dir: Some(kws_dir.clone()),

@@ -148,8 +148,17 @@ pub(crate) fn keyword_is_in_text(keyword: &str, text: &str) -> bool {
     if text_lower.contains(&clean_kw) {
         return true;
     }
+    // Extract discrete ASCII words to prevent substring over-masking (e.g. "they" matching "hey")
+    let ascii_words: Vec<&str> = text_lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
     for part in clean_kw.split_whitespace() {
-        if part.len() >= 3 && text_lower.contains(part) {
+        if part.chars().any(|c| !c.is_ascii()) {
+            if text_lower.contains(part) {
+                return true;
+            }
+        } else if part.len() >= 3 && ascii_words.iter().any(|&w| w == part) {
             return true;
         }
     }
@@ -2167,7 +2176,7 @@ impl VoiceCompanionRuntime {
 
             if feedback.speak_replies && is_default_phrase {
                 let vocal_bytes = nomifun_audio::vocal::VocalPhrase::wake_bytes(is_en);
-                let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, generation).await;
+                let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, VoiceCueKind::Wake, generation).await;
             } else {
                 voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
             }
@@ -2566,7 +2575,7 @@ impl VoiceCompanionRuntime {
                                 let playback_clone = playback.clone();
                                 let event_tx_clone = event_tx.clone();
                                 tokio::spawn(async move {
-                                    let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, sleep_gen).await;
+                                    let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
                                 });
                             } else {
                                 let tts_clone = tts.clone();
@@ -2607,19 +2616,6 @@ impl VoiceCompanionRuntime {
             let current = event_tx.snapshot();
             if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
             if clean_input.is_empty() {
-                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let custom_wake = feedback.wake_reply.trim();
-                let reply_phrase = if !custom_wake.is_empty() && (custom_wake != "我在" || !is_en) {
-                    custom_wake
-                } else if is_en {
-                    "I'm here"
-                } else {
-                    "我在"
-                };
-                let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
-                if event_tx.feedback().speak_replies {
-                    let _ = playback.speak_text_for_generation(tts.as_ref(), reply_phrase, voice_spec, generation, || {}).await;
-                }
                 Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 return;
             } else if let Some(action) = is_local_task_control {

@@ -171,6 +171,7 @@
       "stopped": "语音已停止",
       "listening_reminder": "倾听提醒",
       "wake": "可以说话",
+      "barge_in": "打断听取",
       "recognized": "识别完成",
       "processing": "正在处理",
       "follow_up": "可以追问",

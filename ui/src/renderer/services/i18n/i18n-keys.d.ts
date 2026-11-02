@@ -11257,6 +11257,7 @@ export type I18nKey =
   | 'voice.execution.workspaceHint'
   | 'voice.feedback.applied'
   | 'voice.feedback.cascadeFallbackReady'
+  | 'voice.feedback.cue.barge_in'
   | 'voice.feedback.cue.error'
   | 'voice.feedback.cue.follow_up'
   | 'voice.feedback.cue.listening_reminder'

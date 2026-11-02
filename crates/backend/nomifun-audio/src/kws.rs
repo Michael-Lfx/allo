@@ -247,6 +247,7 @@ impl KwsEngine {
                 let l = k.trim().to_ascii_lowercase();
                 l == "hey flowy" || l == "hi flowy"
             })
+            || build_bilingual_keywords_buf(&self.config.keywords).contains("@HEY_FLOWY")
     }
 
     /// Processes an audio chunk (~10-20ms @ 16kHz) and returns a detected keyword if spotted.
@@ -805,6 +806,14 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
                 }
             }
         }
+    }
+
+    // 🛡️ Safety fallback: If all custom keywords were unsupported (e.g. emoji or symbols),
+    // fall back safely to default "Hey Flowy" rules so KeywordSpotter never receives an empty rule buffer!
+    if lines.is_empty() {
+        tracing::warn!("No valid KWS rules could be compiled from custom keywords; falling back to default Hey Flowy rules");
+        lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
+        lines.push("HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY".to_string());
     }
 
     lines.join("\n") + "\n"
