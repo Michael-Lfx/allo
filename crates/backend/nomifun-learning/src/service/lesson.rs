@@ -242,7 +242,7 @@ impl LearningService {
         const MAX_CODE_CHARS: usize = 100_000;
         const MAX_ERROR_CHARS: usize = 2_000;
         let language = request.language.trim();
-        if language != "svg" && language != "jsxgraph" {
+        if language != "svg" && language != "jsxgraph" && language != "mermaid" {
             return Err(AppError::UnprocessableEntity(format!(
                 "unsupported figure language '{language}'"
             )));

@@ -66,7 +66,7 @@ pub(crate) const STRUCTURE_MAX_TOKENS: u32 = 65536;
 /// plus the runtime error it produced and returns only corrected code. The
 /// rules mirror the lesson standard so a repair slots back into the renderer
 /// unchanged.
-const FIGURE_REPAIR_SYSTEM: &str = r#"You fix one broken lesson figure. You receive the figure language (svg or jsxgraph),
+const FIGURE_REPAIR_SYSTEM: &str = r#"You fix one broken lesson figure. You receive the figure language (svg, jsxgraph or mermaid),
 its source code, and the error it produced at render time. Reply with ONLY the corrected
 figure body — no Markdown fences, no commentary. Keep the original intent and layout,
 fix the error, and follow the figure rules:
@@ -76,7 +76,10 @@ fix the error, and follow the figure rules:
   available too). Never call JXG.JSXGraph.initBoard. Element constructors take element
   parents, not raw numbers: board.create('line', [pointA, pointB]) needs two point
   elements or two [x, y] coordinate pairs; board.create('segment', ...) likewise; check
-  every parent type the error message lists as allowed."#;
+  every parent type the error message lists as allowed.
+- mermaid: a Mermaid diagram body without ``` fences. Keep the original diagram type
+  (flowchart, sequenceDiagram, classDiagram, ...), balance every bracket and quote in
+  node labels, and avoid directives the renderer does not support."#;
 
 
 /// Repair a figure that failed to render. Returns the corrected figure body
