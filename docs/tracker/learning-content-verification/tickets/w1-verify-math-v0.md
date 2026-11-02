@@ -2,8 +2,8 @@
 id: w1
 title: "verify_math 断言核验接口 v0——例题可算量经确定性工具实算"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
