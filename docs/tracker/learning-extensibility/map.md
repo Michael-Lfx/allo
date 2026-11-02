@@ -129,6 +129,7 @@
 
 ## 实施编排（裁决后）
 
+- **施工图**：`blueprints/` 六份（2026-11-02，草稿待确认）——图 1 `x21-fold-baseline`（先定稿，定节号）→ 图 2 `x02-x05-baseline-schema`、图 3 `x06-x07-anchor-rework`、图 4 `x08-structure-stable-codes`、图 5 `x09-x10-json-envelopes`（引图 1 节号，可并行）→ 图 6 `x11-phase-single-source`（随 x11 排期）。后置票开工前再画图 7–12（x12+x15 / x13 / x16 / x17 / x18 / x19；x14、x20 分别回写图 4/图 5 阶段二）。
 - x01–x04 短分支（基 learn0928 尖端）每票一提交，先并回 learn0928（x01 是升级中断级）。
 - **x21 折叠**（一次性等价校验记档）→ x02/x05/x06/x07/x08/x10/x16/x19 **串行**编辑基线
   文件对应节。
