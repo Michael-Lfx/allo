@@ -469,3 +469,60 @@ fn test_pre_llm_sanitizer_filter_rules() {
     assert!(is_semantic("K."));
     assert!(is_semantic("Go"));
 }
+
+#[tokio::test]
+async fn test_listening_state_captures_speech_immediately_after_cue_finishes_without_600ms_blind_window() {
+    let flow = StreamingWorker::with_barge_in(false, false).await;
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2), flow.sink.wrote.notified())
+        .await
+        .expect("playback must start");
+
+    // 1. Interrupt playback with 350Hz tone into Listening
+    let started = tokio::time::Instant::now();
+    for frame in 0..25 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| {
+                let sample_idx = (frame * 320 + i) as f32;
+                0.45 * (sample_idx * std::f32::consts::TAU * 350.0 / 16000.0).sin()
+            })
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(started + Duration::from_millis((frame as u64 + 1) * 20)).await;
+        if flow.sink.frames.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+
+    // Ensure playback has stopped and state is Listening
+    assert_eq!(flow.runtime.snapshot().phase, nomifun_api_types::voice::VoiceSessionPhase::Listening);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!flow.runtime.playback().is_speaking());
+
+    // 2. Immediately speak speech at t=50ms (< 600ms cooldown window).
+    // Under the old implementation with in_echo_cooldown in Listening, this speech would be cleared and lost!
+    // With T48 (!is_playback_active), speech is immediately captured.
+    let cmd = tokio::time::Instant::now();
+    for frame in 0..30 {
+        let pcm: Vec<f32> = (0..320)
+            .map(|i| 0.03 * (i as f32 * std::f32::consts::TAU * 200.0 / 16000.0).sin())
+            .collect();
+        flow.producer.push(&pcm);
+        tokio::time::sleep_until(cmd + Duration::from_millis((frame + 1) * 20)).await;
+    }
+
+    // Silence to finish utterance
+    let silence = tokio::time::Instant::now();
+    for frame in 0..50 {
+        flow.producer.push(&vec![0.0f32; 320]);
+        tokio::time::sleep_until(silence + Duration::from_millis((frame + 1) * 20)).await;
+        if flow.server.calls.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+    }
+
+    assert!(
+        flow.server.calls.load(Ordering::SeqCst) >= 2,
+        "Speech spoken within <600ms of cue end must reach model without residual blind window!"
+    );
+}

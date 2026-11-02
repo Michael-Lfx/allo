@@ -2725,7 +2725,6 @@ impl VoiceCompanionRuntime {
                                     session_id: control_scope.session_id.clone(), turn_id: control_scope.turn_id.clone(), diagnostic,
                                 }, &control_scope);
                             }
-                            let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text }, &control_scope);
                         }
                     };
                     let event_tx_sentence = event_tx.clone();
@@ -3049,8 +3048,10 @@ impl VoiceCompanionRuntime {
                 IntentType::Dismiss => {
                     let goodbye_text = dec.reply_tts.as_deref().unwrap_or("好的，您先忙。有需要随时叫我。");
                     info!(reply = %goodbye_text, "LLM decided Dismiss intent; speaking farewell and ending session");
+                    drop(d);
                     let _ = playback.interrupt().await;
                     let sleep_gen = playback.generation_id();
+                    let mut d = driver.lock().await;
                     d.reset();
                     pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     drop(d);
@@ -3082,6 +3083,13 @@ impl VoiceCompanionRuntime {
                                 let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
                             });
                         }
+                    } else {
+                        voice_feedback::schedule(
+                            playback.clone(),
+                            event_tx.clone(),
+                            VoiceCueKind::Sleep,
+                            sleep_gen,
+                        );
                     }
                     return;
                 }
