@@ -36,7 +36,19 @@ const TRAD_ACTIVITY: &str = "0190f5fe-7c00-7a00-8abc-012345678908";
 const ENROLLMENT: &str = "0190f5fe-7c00-7a00-8abc-012345678909";
 const USER_ID: &str = "0190f5fe-7c00-7a00-8abc-01234567890a";
 const CONCEPT: &str = "0190f5fe-7c00-7a00-8abc-01234567890b";
-const CUSTOM_QUESTION: &str = "0190f5fe-7c00-7a00-8abc-01234567890c";
+/// 050 已发布的 `ActivityKind` 全集。重建迁移必须原样保留这个约束集合，
+/// 九种 kind 各落一行作为升级搬行的回归样（x01）。
+const ACTIVITY_KINDS: [&str; 9] = [
+    "single_choice",
+    "true_false",
+    "reflection",
+    "fill_in_blank",
+    "multi_choice",
+    "numeric",
+    "ordering",
+    "matching",
+    "open_question",
+];
 const REVIEW_ITEM: &str = "0190f5fe-7c00-7a00-8abc-01234567890d";
 
 /// 建 015 + 048 的旧世界：一门图课程（含全套派生数据）与一门传统课程
@@ -184,17 +196,22 @@ async fn setup_legacy_world() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_custom_questions \
-         (custom_question_id, user_id, kind, prompt, due_at, created_at, updated_at, concept_id) \
-         VALUES (?, ?, 'single_choice', 'q', 2000, 1000, 1000, ?)",
-    )
-    .bind(CUSTOM_QUESTION)
-    .bind(USER_ID)
-    .bind(CONCEPT)
-    .execute(&pool)
-    .await
-    .unwrap();
+    // 050 形状的自建题：九种 kind 各一行。069 的 rebuild 若收窄 kind CHECK，
+    // 这里就会在 INSERT…SELECT 撞 CHECK，整个升级中断（x01 回归基线）。
+    for (index, kind) in ACTIVITY_KINDS.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO learning_custom_questions \
+             (custom_question_id, user_id, kind, prompt, due_at, created_at, updated_at, concept_id) \
+             VALUES (?, ?, ?, 'q', 2000, 1000, 1000, ?)",
+        )
+        .bind(format!("0190f5fe-7c00-7a00-8abc-0123456789{index:02x}"))
+        .bind(USER_ID)
+        .bind(kind)
+        .bind(CONCEPT)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
 
     pool
 }
@@ -264,20 +281,28 @@ async fn migration_069_removes_graph_world_and_concept_tables() {
         !columns.contains(&"concept_id".to_owned()),
         "concept_id column must be gone: {columns:?}"
     );
-    let prompts: Vec<String> =
-        sqlx::query_scalar("SELECT prompt FROM learning_custom_questions")
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM learning_custom_questions ORDER BY kind")
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(prompts, vec!["q".to_owned()], "custom question row survives");
-    // 重建后的 kind CHECK 保持 038 的三题型宽口径：填空自建题必须可落库。
-    let fill = sqlx::query(
-        "INSERT INTO learning_custom_questions          (custom_question_id, user_id, kind, prompt, due_at, created_at, updated_at)          VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', ?, 'fill_in_blank', 'q', 2000, 1000, 1000)",
-    )
-    .bind(USER_ID)
-    .execute(&pool)
-    .await;
-    assert!(fill.is_ok(), "fill_in_blank custom question must insert: {:?}", fill.err());
+    let mut expected: Vec<String> = ACTIVITY_KINDS.iter().map(|kind| (*kind).to_owned()).collect();
+    expected.sort();
+    assert_eq!(kinds, expected, "all nine released kinds must survive the rebuild");
+    // 重建后的 kind CHECK 与已发布 050 同集：九种 kind 都还能再落库（永不收窄）。
+    for (index, kind) in ACTIVITY_KINDS.iter().enumerate() {
+        let inserted = sqlx::query(
+            "INSERT INTO learning_custom_questions \
+             (custom_question_id, user_id, kind, prompt, due_at, created_at, updated_at) \
+             VALUES (?, ?, ?, 'q', 2000, 1000, 1000)",
+        )
+        .bind(format!("0190f5fe-7c00-7a00-8abc-012345678a{index:02x}"))
+        .bind(USER_ID)
+        .bind(kind)
+        .execute(&pool)
+        .await;
+        assert!(inserted.is_ok(), "{kind} custom question must insert after rebuild: {:?}", inserted.err());
+    }
 }
 
 #[tokio::test]

@@ -38,4 +38,17 @@ describe('Mermaid Shadow DOM toolbar', () => {
     expect(mermaidSource.includes("language='mermaid'")).toBe(true);
     expect(mermaidSource.includes('vs2015')).toBe(false);
   });
+
+  test('failed mermaid blocks expose the same AI repair entry as svg/jsxgraph', () => {
+    const repairSource = readFileSync(new URL('./figureRepair.ts', import.meta.url), 'utf8');
+    // 三种图族共用一条修复请求形状。
+    expect(repairSource.includes("language: 'svg' | 'jsxgraph' | 'mermaid'")).toBe(true);
+    expect(mermaidSource.includes("from './figureRepair'")).toBe(true);
+    expect(mermaidSource.includes("language: 'mermaid'")).toBe(true);
+    expect(mermaidSource.includes("data-testid='mermaid-repair'")).toBe(true);
+    expect(mermaidSource.includes('setRepairedSource(response.code)')).toBe(true);
+    // 失败后源码兜底仍可见，修复结果替换源码并重渲染。
+    expect(mermaidSource.includes('setRenderError(error instanceof Error ? error.message : String(error))')).toBe(true);
+    expect(mermaidSource.includes('const source = repairedSource ?? debouncedCode')).toBe(true);
+  });
 });
