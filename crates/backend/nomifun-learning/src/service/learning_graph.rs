@@ -197,7 +197,7 @@ impl LearningService {
             course_id,
             "structure_started",
             serde_json::json!({
-                "phase": "started",
+                "phase": crate::events::phase::STARTED,
                 "text": "正在生成知识结构与前置地形…",
             }),
         );
@@ -223,7 +223,7 @@ impl LearningService {
                         course_id,
                         "structure_cancelled",
                         serde_json::json!({
-                            "phase": "cancelled",
+                            "phase": crate::events::phase::CANCELLED,
                             "outcome": "cancelled",
                         }),
                     );
@@ -300,7 +300,7 @@ impl LearningService {
                     course_id,
                     "structure_completed",
                     serde_json::json!({
-                        "phase": "completed",
+                        "phase": crate::events::phase::COMPLETED,
                         "blocks": blocks,
                         "doors": doors,
                     }),
@@ -316,7 +316,7 @@ impl LearningService {
                         course_id,
                         "structure_cancelled",
                         serde_json::json!({
-                            "phase": "cancelled",
+                            "phase": crate::events::phase::CANCELLED,
                             "outcome": "cancelled",
                         }),
                     );
@@ -326,7 +326,7 @@ impl LearningService {
                         course_id,
                         "structure_failed",
                         serde_json::json!({
-                            "phase": "failed",
+                            "phase": crate::events::phase::FAILED,
                             "error": error.to_string(),
                         }),
                     );
@@ -426,7 +426,7 @@ impl LearningService {
         self.emit_graph_event(
             course_id,
             "structure_mount_started",
-            serde_json::json!({ "phase": "started" }),
+            serde_json::json!({ "phase": crate::events::phase::STARTED }),
         );
 
         // 结构快照与宪章（宪章三项 + 结构参考行的数据源）。无结构 = 冲突
@@ -533,7 +533,7 @@ impl LearningService {
             self.emit_graph_event(
                 course_id,
                 "structure_mount_completed",
-                serde_json::json!({ "phase": "completed", "outcome": "skipped" }),
+                serde_json::json!({ "phase": crate::events::phase::COMPLETED, "outcome": "skipped" }),
             );
             return Ok(crate::models::MountRoundSummary {
                 status: "skipped".into(),
@@ -596,14 +596,14 @@ impl LearningService {
                     self.emit_graph_event(
                         course_id,
                         "structure_mount_cancelled",
-                        serde_json::json!({ "phase": "cancelled" }),
+                        serde_json::json!({ "phase": crate::events::phase::CANCELLED }),
                     );
                 } else {
                     task.finish_failed(error.to_string());
                     self.emit_graph_event(
                         course_id,
                         "structure_mount_failed",
-                        serde_json::json!({ "phase": "failed", "error": error.to_string() }),
+                        serde_json::json!({ "phase": crate::events::phase::FAILED, "error": error.to_string() }),
                     );
                 }
                 return Err(error);
@@ -615,7 +615,7 @@ impl LearningService {
             self.emit_graph_event(
                 course_id,
                 "structure_mount_cancelled",
-                serde_json::json!({ "phase": "cancelled" }),
+                serde_json::json!({ "phase": crate::events::phase::CANCELLED }),
             );
             return Err(AppError::Conflict(
                 crate::service::CANCELLED_MESSAGE.to_owned(),
@@ -661,7 +661,7 @@ impl LearningService {
             course_id,
             "structure_mount_completed",
             serde_json::json!({
-                "phase": "completed",
+                "phase": crate::events::phase::COMPLETED,
                 "outcome": "mounted",
                 "mounted": mounted,
                 "pending": pending.len(),
@@ -704,7 +704,7 @@ impl LearningService {
         self.emit_graph_event(
             course_id,
             "structure_repair_started",
-            serde_json::json!({ "phase": "started" }),
+            serde_json::json!({ "phase": crate::events::phase::STARTED }),
         );
 
         // 结构快照 + 宪章。
@@ -834,7 +834,7 @@ impl LearningService {
             self.emit_graph_event(
                 course_id,
                 "structure_repair_completed",
-                serde_json::json!({ "phase": "completed", "outcome": "skipped" }),
+                serde_json::json!({ "phase": crate::events::phase::COMPLETED, "outcome": "skipped" }),
             );
             return Ok(crate::models::StructureRepairSummary {
                 status: "skipped".into(),
@@ -893,14 +893,14 @@ impl LearningService {
                     self.emit_graph_event(
                         course_id,
                         "structure_repair_cancelled",
-                        serde_json::json!({ "phase": "cancelled" }),
+                        serde_json::json!({ "phase": crate::events::phase::CANCELLED }),
                     );
                 } else {
                     task.finish_failed(error.to_string());
                     self.emit_graph_event(
                         course_id,
                         "structure_repair_failed",
-                        serde_json::json!({ "phase": "failed", "error": error.to_string() }),
+                        serde_json::json!({ "phase": crate::events::phase::FAILED, "error": error.to_string() }),
                     );
                 }
                 return Err(error);
@@ -911,7 +911,7 @@ impl LearningService {
             self.emit_graph_event(
                 course_id,
                 "structure_repair_cancelled",
-                serde_json::json!({ "phase": "cancelled" }),
+                serde_json::json!({ "phase": crate::events::phase::CANCELLED }),
             );
             return Err(AppError::Conflict(
                 crate::service::CANCELLED_MESSAGE.to_owned(),
@@ -1023,7 +1023,7 @@ impl LearningService {
             course_id,
             "structure_repair_completed",
             serde_json::json!({
-                "phase": "completed",
+                "phase": crate::events::phase::COMPLETED,
                 "outcome": if noop { "noop" } else { "applied" },
                 "applied": applied.len(),
             }),
@@ -1591,7 +1591,7 @@ impl LearningService {
             course_id,
             "growth_started",
             serde_json::json!({
-                "phase": "started",
+                "phase": crate::events::phase::STARTED,
                 "text": "教练正在阅读结构参考与花名册，起草本批节点…",
             }),
         );
@@ -1610,7 +1610,7 @@ impl LearningService {
                     course_id,
                     "growth_completed",
                     serde_json::json!({
-                        "phase": "completed",
+                        "phase": crate::events::phase::COMPLETED,
                         "outcome": if applied.idle { "idle" } else { "applied" },
                         "batch": applied.batch_id,
                         "nodes": applied.node_count,
@@ -1632,7 +1632,7 @@ impl LearningService {
                         course_id,
                         "growth_cancelled",
                         serde_json::json!({
-                            "phase": "cancelled",
+                            "phase": crate::events::phase::CANCELLED,
                             "outcome": "cancelled",
                         }),
                     );
@@ -1642,7 +1642,7 @@ impl LearningService {
                         course_id,
                         "growth_failed",
                         serde_json::json!({
-                            "phase": "failed",
+                            "phase": crate::events::phase::FAILED,
                             "error": error.to_string(),
                         }),
                     );
@@ -4995,7 +4995,7 @@ impl LearningService {
             course_id,
             "basis_declared",
             serde_json::json!({
-                "phase": "basis_declared",
+                "phase": crate::events::phase::BASIS_DECLARED,
                 "text": "已会声明完成：已按声明铸出概念（不生成节点、不排课、不计 XP）",
                 "doors": pending,
                 "blocks": block_slugs,
@@ -5122,7 +5122,7 @@ impl LearningService {
                 course_id,
                 "basis_revoked",
                 serde_json::json!({
-                    "phase": "basis_revoked",
+                    "phase": crate::events::phase::BASIS_REVOKED,
                     "text": "已会声明已撤销：本课已知投影收缩，铸出的概念保留",
                     "revoked": revoked,
                 }),

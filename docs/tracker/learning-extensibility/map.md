@@ -163,3 +163,6 @@
   行级 doc_version / aliases 行级 doc_version / repairs ops 对象信封 / attempts
   response 对象信封）写读版本化，未知版本按列显式降级；FSRS 参数 `{algo,w}` 包装、
   未知算法整体回退、review_log 加 `algo` 列（历史 NULL = fsrs6）。
+- 2026-11-02：x11 关闭——phase 取值收成 Rust 单源（20 值，manifest 导出给 x12）；
+  课程流帧与 `CourseSummary` 显式带 `pipeline: sampling|source_plan`；前端
+  `phaseMeta.ts` 单源 + 声明优先/嗅探兜底，`scope` 死值删除。

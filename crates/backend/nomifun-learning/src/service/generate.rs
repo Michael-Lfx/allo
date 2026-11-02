@@ -57,6 +57,16 @@ fn source_plan_pipeline_disabled() -> bool {
         .unwrap_or(false)
 }
 
+/// 建课管线代际（x11 单源）：门判定只此一处；帧与 DTO 都从这里取值，
+/// 禁止第二份。`source_plan` = 知识库流 + 大纲引擎 + kill switch 未关。
+pub(super) fn course_pipeline(brief: &OutlineBrief, outline_engine_present: bool) -> &'static str {
+    if brief.knowledge_base.is_some() && outline_engine_present && !source_plan_pipeline_disabled() {
+        "source_plan"
+    } else {
+        "sampling"
+    }
+}
+
 /// 展开批数估算（评审 S2:成本门按章估算,不再按文件数近似）——有 plan
 /// 时每章一批,单章锚点文件数超 [`EXPANSION_BATCH_MAX_FILES`] 才按文件数
 /// 拆批;无 plan（估算端不跑 LLM 结构发现）退保守上界 = 候选文件数（最坏
@@ -126,8 +136,11 @@ impl LearningService {
         // t5(评审 S5):started 前导任何 triage/结构发现阶段帧——后续任何
         // failed(分诊/展开/导入失败)都有 started 前缀,进度视图不会收到
         // 无源 failed。
+        // 管线代际单源：与下面的门判定同函数，帧与 DTO 都带它（x11）。
+        let pipeline = course_pipeline(&brief, self.course_outline_engine().is_some());
         self.emit_course_event(serde_json::json!({
-            "phase": "started",
+            "phase": crate::events::phase::STARTED,
+            "pipeline": pipeline,
             "kind": brief.kind(),
         }));
         // t2 结构发现 + t3 分批展开(仅 KB 流 + 引擎路径):t1 清点/分诊 →
@@ -148,12 +161,9 @@ impl LearningService {
             crate::generation::KbInventory,
             crate::generation::KbTriageReport,
         )> = None;
-        if brief.knowledge_base.is_some()
-            && self.course_outline_engine().is_some()
-            && !source_plan_pipeline_disabled()
-        {
+        if pipeline == "source_plan" {
             match self
-                .discover_kb_source_plan(&request, &brief, _task.token(), &_task)
+                .discover_kb_source_plan(&request, &brief, pipeline, _task.token(), &_task)
                 .await
             {
                 Ok((inventory, triage, plan)) => {
@@ -165,6 +175,7 @@ impl LearningService {
                                 &triage,
                                 &plan,
                                 &brief,
+                                pipeline,
                                 _task.token(),
                                 &_task,
                             )
@@ -182,7 +193,8 @@ impl LearningService {
                                         if message.contains(crate::service::CANCELLED_MESSAGE)
                                 ) {
                                     self.emit_course_event(serde_json::json!({
-                                        "phase": "failed",
+                                        "phase": crate::events::phase::FAILED,
+                                        "pipeline": pipeline,
                                         "kind": brief.kind(),
                                         "error": error.to_string(),
                                     }));
@@ -199,7 +211,8 @@ impl LearningService {
                 }
                 Err(error) => {
                     self.emit_course_event(serde_json::json!({
-                        "phase": "failed",
+                        "phase": crate::events::phase::FAILED,
+                        "pipeline": pipeline,
                         "kind": brief.kind(),
                         "error": error.to_string(),
                     }));
@@ -232,7 +245,8 @@ impl LearningService {
                 Ok(blueprint) => (blueprint, None),
                 Err(error) => {
                     self.emit_course_event(serde_json::json!({
-                        "phase": "failed",
+                        "phase": crate::events::phase::FAILED,
+                        "pipeline": pipeline,
                         "kind": brief.kind(),
                         "error": error.to_string(),
                     }));
@@ -262,7 +276,8 @@ impl LearningService {
             &source_kb_ids,
         );
         self.emit_course_event(serde_json::json!({
-            "phase": "publishing",
+            "phase": crate::events::phase::PUBLISHING,
+            "pipeline": pipeline,
             "kind": brief.kind(),
         }));
         let pack = assemble_outline_pack(&blueprint, &request);
@@ -321,7 +336,8 @@ impl LearningService {
         match &detail {
             Ok(detail) => {
                 self.emit_course_event(serde_json::json!({
-                    "phase": "completed",
+                    "phase": crate::events::phase::COMPLETED,
+                    "pipeline": pipeline,
                     "kind": brief.kind(),
                     "course_id": detail.course.id.as_str(),
                     "title": detail.course.title,
@@ -331,7 +347,8 @@ impl LearningService {
             }
             Err(error) => {
                 self.emit_course_event(serde_json::json!({
-                    "phase": "failed",
+                    "phase": crate::events::phase::FAILED,
+                    "pipeline": pipeline,
                     "kind": brief.kind(),
                     "error": error.to_string(),
                 }));
@@ -351,6 +368,7 @@ impl LearningService {
         &self,
         request: &GenerateCourseRequest,
         brief: &OutlineBrief,
+        pipeline: &'static str,
         token: tokio_util::sync::CancellationToken,
         task: &crate::service::GenerationTaskGuard,
     ) -> Result<
@@ -372,7 +390,8 @@ impl LearningService {
         let kind = brief.kind();
         task.set_step("triage", "正在清点与分诊来源文件…");
         self.emit_course_event(serde_json::json!({
-            "phase": "triage_started",
+            "phase": crate::events::phase::TRIAGE_STARTED,
+            "pipeline": pipeline,
             "kind": kind,
         }));
         let (inventory, triage) =
@@ -380,7 +399,8 @@ impl LearningService {
                 .await?;
         let counts = &triage.counts;
         self.emit_course_event(serde_json::json!({
-            "phase": "triage_completed",
+            "phase": crate::events::phase::TRIAGE_COMPLETED,
+            "pipeline": pipeline,
             "kind": kind,
             "counts": {
                 "total": counts.core + counts.prerequisite + counts.practice
@@ -418,7 +438,8 @@ impl LearningService {
         }));
         task.set_step("source_plan", "正在从证据规划章节骨架…");
         self.emit_course_event(serde_json::json!({
-            "phase": "source_plan_started",
+            "phase": crate::events::phase::SOURCE_PLAN_STARTED,
+            "pipeline": pipeline,
             "kind": kind,
         }));
         let plan = crate::generation::run_kb_structure(
@@ -440,7 +461,8 @@ impl LearningService {
                 );
                 if plan.is_usable() {
                     self.emit_course_event(serde_json::json!({
-                        "phase": "source_plan_ready",
+                        "phase": crate::events::phase::SOURCE_PLAN_READY,
+                        "pipeline": pipeline,
                         "kind": kind,
                         "chapters": plan.chapters.len(),
                         "concepts": plan.concept_graph.nodes.len(),
@@ -472,6 +494,7 @@ impl LearningService {
         triage: &crate::generation::KbTriageReport,
         plan: &crate::generation::SourcePlan,
         brief: &OutlineBrief,
+        pipeline: &'static str,
         token: tokio_util::sync::CancellationToken,
         task: &crate::service::GenerationTaskGuard,
     ) -> Result<Option<crate::generation::ExpansionOutcome>, AppError> {
@@ -495,7 +518,8 @@ impl LearningService {
         .await?;
         if let Some(outcome) = &outcome {
             self.emit_course_event(serde_json::json!({
-                "phase": "coverage_ready",
+                "phase": crate::events::phase::COVERAGE_READY,
+                "pipeline": pipeline,
                 "kind": brief.kind(),
                 "topics_covered": outcome
                     .coverage

@@ -31,6 +31,7 @@ import {
   stepActivities,
   stepLocked,
 } from '../model';
+import { PHASE } from '../phaseMeta';
 import type {
   Activity,
   AttemptRecord,
@@ -722,7 +723,7 @@ export function LessonBlock({
   useEffect(() => {
     return ipcBridge.learning.lessonGeneration.on((event) => {
       if (event.lesson_id && event.lesson_id !== lesson.id) return;
-      if (event.phase === 'grounding') {
+      if (event.phase === PHASE.grounding) {
         setGroundingDegraded(event.degraded === true);
       } else if (event.phase === 'started') {
         // 新一次生成从零开始：上一轮的降级状态不残留。

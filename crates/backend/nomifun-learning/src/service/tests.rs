@@ -2540,6 +2540,57 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert!(listed.iter().find(|c| c.id == course.course.id).unwrap().enabled);
     }
 
+    /// x11：CourseSummary 显式带 pipeline——传统课程按来源计划列判定
+    /// （NULL = sampling），学习图课程不标（None）。
+    #[tokio::test]
+    async fn course_summary_declares_pipeline_and_graph_courses_stay_unmarked() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == course.course.id)
+            .expect("course listed");
+        assert_eq!(summary.pipeline, Some("sampling"), "legacy row = sampling");
+
+        // 来源计划列非 NULL → source_plan。
+        sqlx::query("UPDATE learning_courses SET course_source_plan_json = '{}' WHERE course_id = ?")
+            .bind(course.course.id.as_str())
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == course.course.id)
+            .expect("course listed");
+        assert_eq!(summary.pipeline, Some("source_plan"));
+
+        // 学习图课程不标代际。
+        sqlx::query("UPDATE learning_courses SET course_kind = 'learning_graph' WHERE course_id = ?")
+            .bind(course.course.id.as_str())
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == course.course.id)
+            .expect("course listed");
+        assert_eq!(summary.pipeline, None);
+    }
+
     /// 改名（三轮 g3）：只动显示名；与现存课撞名 = 人面错误（409）；软删
     /// 墓碑不阻塞新名——删课 A 后，新课可以取回 A 的旧名。
     #[tokio::test]
@@ -9826,6 +9877,13 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         );
         assert!(source_plan_ready < coverage_ready, "覆盖读数在计划之后");
         assert!(started < publishing && publishing < completed);
+        // x11：kb 新管线每帧显式带 pipeline=source_plan（字段驱动替代嗅探）。
+        for (phase, payload) in phases.iter().zip(payloads.iter()) {
+            assert_eq!(
+                payload["pipeline"], "source_plan",
+                "frame {phase} must declare the source_plan pipeline"
+            );
+        }
 
         // 帧载荷:triage_completed 带七角色计数 + degraded;source_plan_ready
         // 带章/概念/gaps;coverage_ready 带 covered/skipped/fallback。
@@ -10178,6 +10236,16 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         );
         assert!(course_phases.iter().any(|phase| phase == "started"));
         assert!(course_phases.iter().any(|phase| phase == "completed"));
+        // x11：kill switch 回退流每帧声明 sampling（嗅探会误判的场景由字段兜住）。
+        for (name, payload) in captured
+            .iter()
+            .filter(|(name, _)| name == "learning.course-generation")
+        {
+            assert_eq!(
+                payload["pipeline"], "sampling",
+                "{name} frame must declare the sampling pipeline"
+            );
+        }
     }
 
     /// t4 事务性:导入中途失败(快照列违反 069 CHECK——非对象 JSON 在

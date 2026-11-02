@@ -1776,21 +1776,12 @@ export interface ILearningGenerationToolCall {
  * source_plan_ready（章/概念/gaps）、coverage_ready（topic 覆盖读数）。
  * 旧客户端忽略未知 phase；started/publishing/completed/failed 不变。 */
 export interface ILearningCourseGenerationEvent {
-  phase:
-    | 'started'
-    | 'scope'
-    | 'round'
-    | 'audit'
-    | 'publishing'
-    | 'completed'
-    | 'failed'
-    | 'triage_started'
-    | 'triage_completed'
-    | 'source_plan_started'
-    | 'source_plan_ready'
-    | 'coverage_ready';
+  /** WS phase 取值单源见 `pages/learning/phaseMeta.ts`（x11）。 */
+  phase: string;
   /** 生成来源：课程简报 / 知识库 / 学习图生长（learning_graph） */
   kind?: 'description' | 'knowledge_base' | 'learning_graph';
+  /** 建课管线代际（x11）：课程流帧显式携带；graph/课时流不带。 */
+  pipeline?: 'sampling' | 'source_plan';
   /** 学习图生长的细分事件名（growth_started/growth_redraft/growth_completed/...） */
   event?: string;
   /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
@@ -1844,7 +1835,8 @@ export interface ILearningCourseGenerationEvent {
  * 的装配读数（t3）：是否实时读库（primary_live）、命中数、扩读片段数、是否
  * 降级（源库不可达走快照兜底）。 */
 export interface ILearningLessonGenerationEvent {
-  phase: 'started' | 'grounding' | 'round' | 'audit' | 'completed' | 'failed';
+  /** WS phase 取值单源见 `pages/learning/phaseMeta.ts`（x11）。 */
+  phase: string;
   lesson_id?: string;
   title?: string;
   module?: string;

@@ -219,7 +219,11 @@ structure_mount_* / structure_repair_* 同通道；v2 脏库路径的知识库�
 `triage_started/triage_completed`（七角色计数 + degraded + 有界跳过/重复/
 uncertain 示例）、`source_plan_started/source_plan_ready`（章/概念/gaps）、
 `coverage_ready`（topic 覆盖/跳过/兜底），旧客户端忽略未知 phase，
-started/publishing/completed/failed 语义不变）。
+started/publishing/completed/failed 语义不变）。**phase 取值单源** =
+`nomifun_learning::events::phase` 常量（20 值，分组清单随 `cargo test` 导出到
+`target/learning-phase-manifest.json`）；课程流帧另带 `pipeline:
+sampling|source_plan`（门判定单源 `course_pipeline`），前端按声明字段选步骤条、
+无字段时退回 triage 嗅探（滚动部署兜底）。
 
 ## 前端
 

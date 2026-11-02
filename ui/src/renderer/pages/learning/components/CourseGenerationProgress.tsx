@@ -17,22 +17,9 @@ import {
   uncertainTooMany,
 } from '../model';
 import { CourseSamplingLine } from './CourseSamplingLine';
+import { LEGACY_VISIBLE_PHASES, MODERN_VISIBLE_PHASES, PHASE } from '../phaseMeta';
 
 const { Text, Title } = Typography;
-
-/** 新管线帧里算「可见活动」的 phase（triage/source_plan 阶段有读数行或
- * 至少推进步骤条——不能让等待提示把它们挤掉）。 */
-const MODERN_VISIBLE_PHASES = [
-  'started',
-  'triage_started',
-  'triage_completed',
-  'source_plan_started',
-  'source_plan_ready',
-  'coverage_ready',
-  'round',
-  'audit',
-  'publishing',
-] as const;
 
 
 
@@ -53,12 +40,15 @@ export function CourseGenerationProgress({
   onStartLearning,
   onRetry,
   onCancel,
+  pipeline,
 }: {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   result: CourseDetail | null;
   error: string | null;
   /** 多知识库（t4）：来源库名（「来源：库A、库B」；空 = 不展示） */
   sources?: string[];
+  /** 建课管线代际（x11）：课程摘要可用时显式传入；生成中从 WS 帧兜底读取。 */
+  pipeline?: 'sampling' | 'source_plan';
   onStartLearning: (courseId: string) => void;
   onRetry: () => void;
   onCancel: () => void;
@@ -82,8 +72,13 @@ export function CourseGenerationProgress({
     if (stream) stream.scrollTop = stream.scrollHeight;
   }, [events]);
 
-  // t5：新管线（triage 首帧出现）切换新步骤条，其余路径零变化。
-  const modern = useMemo(() => isModernPipeline(events), [events]);
+  // t5：声明字段优先（x11）——课程摘要或 WS 帧携带 pipeline；无字段时
+  // 退回 triage 首帧嗅探（滚动部署期旧帧混入不炸）。
+  const declaredPipeline = pipeline ?? events.find((event) => event.pipeline)?.pipeline;
+  const modern = useMemo(
+    () => isModernPipeline(events, declaredPipeline),
+    [events, declaredPipeline]
+  );
   const legacy = useMemo(() => deriveStep(events), [events]);
   const modernStep = useMemo(() => deriveModernStep(events), [events]);
   const running = status === 'running';
@@ -93,9 +88,7 @@ export function CourseGenerationProgress({
   // 「无可见事件」的判定不能是 events.length===0：循环开始等事件（如
   // started/generating）会被收进列表但渲染为空行，把等待提示挤掉。
   const visibleCount = events.filter((event) =>
-    (modern ? MODERN_VISIBLE_PHASES : ['round', 'audit', 'publishing', 'started']).includes(
-      event.phase as never
-    )
+    (modern ? MODERN_VISIBLE_PHASES : LEGACY_VISIBLE_PHASES).includes(event.phase as never)
   ).length;
   const steps = modern
     ? [
@@ -165,14 +158,14 @@ export function CourseGenerationProgress({
           </div>
         )}
         {events.map((event, index) => {
-          if (event.phase === 'started') {
+          if (event.phase === PHASE.started) {
             return (
               <div key={index} className='text-13px text-t-secondary'>
                 {event.text ?? t('learning.genWaitingEvents')}
               </div>
             );
           }
-          if (event.phase === 'round') {
+          if (event.phase === PHASE.round) {
             const repair = event.loop === 'repair';
             const roundLabel = repair
               ? t('learning.genRepairRoundLabel', {
@@ -193,7 +186,7 @@ export function CourseGenerationProgress({
               </div>
             );
           }
-          if (event.phase === 'audit') {
+          if (event.phase === PHASE.audit) {
             const danger = event.danger ?? 0;
             return (
               <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
@@ -227,7 +220,7 @@ export function CourseGenerationProgress({
               </div>
             );
           }
-          if (event.phase === 'triage_completed' && event.counts) {
+          if (event.phase === PHASE.triageCompleted && event.counts) {
             const counts = event.counts;
             return (
               <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
@@ -284,7 +277,7 @@ export function CourseGenerationProgress({
               </div>
             );
           }
-          if (event.phase === 'source_plan_ready') {
+          if (event.phase === PHASE.sourcePlanReady) {
             return (
               <div key={index} className='text-13px leading-20px'>
                 <span className='font-500 text-t-primary'>
@@ -301,7 +294,7 @@ export function CourseGenerationProgress({
               </div>
             );
           }
-          if (event.phase === 'coverage_ready') {
+          if (event.phase === PHASE.coverageReady) {
             return (
               <div key={index} className='text-13px leading-20px'>
                 <span className='font-500 text-t-primary'>
@@ -314,7 +307,7 @@ export function CourseGenerationProgress({
               </div>
             );
           }
-          if (event.phase === 'publishing') {
+          if (event.phase === PHASE.publishing) {
             return (
               <div key={index} className='text-13px text-t-secondary'>
                 {t('learning.genPublishing')}
