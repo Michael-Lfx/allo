@@ -157,3 +157,7 @@ world_new = 内存库：raw_sql 依次执行 015..068 + 070 基线
 |---|---|---|---|---|
 | 2026-11-02 | 修订 | 全图 | v1 成图：22 问 grilling 裁决 + 2026-11-02 六路读码底稿 | — |
 | 2026-11-02 | 修订 | 4.3 | 测试重指清单从「1 文件 6 处」扩为「7 文件」：course_enabled/lesson_source_paths/source_kb_ids/alias_records 四个测试把版本号 75/77/78/79/80 钉进了 migrate_range 边界 | 读码底稿 D 节；成图走查补上了这层耦合 |
+| 2026-11-02 | 施工记录 | 4.2 | **等价校验通过**：v1.7.0 形状种子（9 种 kind 自建题、双 source 复习行、四种进度状态、图课程全家桶、course_jobs 行、概念绑定）分别跑旧 20 段链与基线，输出 `fold equivalence: 428 schema objects, 28 learning tables, 0 differences`；行数：courses=1 modules=1 lessons=4 sections=2 activities=1 progress=4 attempts=1 review_items=1 review_log=1 review_events=2 checkins=1 custom_questions=9 tags=1 course_tags=1 question_tags=2 course_jobs=1 users=1，其余新表=0（未发布表在用户库中必为空）。规范化口径 = 去空白后的 `sqlite_master.sql` + `quote()` 逐行文本。 | 本票验收硬门；结果留档后临时测试删除（A4） |
+| 2026-11-02 | 勘误 | 3/4.1 | §2 净形实为 **3 张表**（registry / lesson_concepts / growth_batches）——070 的第四张 `learning_course_endpoints` 由 074 整体退役，净形下从未存在；§3 的 slug 清单漏写 074，但 074 的 `structure_json` 列按原序保留在 073 与 075 之间（等价校验的全局不变量兜住） | 施工时按实码核对；蓝图文字笔误，不改设计 |
+| 2026-11-02 | 勘误 | 4.3 | `learning_concept_alias_records_migration.rs` 的「字符串别名回填」用例作废：登记表在基线中出生即记录形，用户库不存在 080 中间态；改为钉记录形状契约（`{name,status}` 记录 + json_extract 读侧 + retired 可选出处的合法形状） | 净形折叠使中间态消失（先例同款处置） |
+| 2026-11-02 | 勘误 | 4.4 | dev 库注记落在既有位置：ADR-0016 §28 与 CONTRIBUTING.md:187 已写明折叠后 `bun run reset:dev`；CONTEXT.md 是领域词表（无开发注记节），不向其追加运维文本 | 施工时核对，避免污染词表 |

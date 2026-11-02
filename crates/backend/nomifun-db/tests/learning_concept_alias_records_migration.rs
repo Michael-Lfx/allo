@@ -1,11 +1,9 @@
-//! 迁移 068 学习域合并基线的别名段（概念别名结构化 + 概念网边 ref_name）的
-//! 契约（三轮 g2，j04）：`aliases_json` 承载 `{name, definition?, attestation?,
-//! status}` 记录（定义/出处缺席 = 与概念定义同义/出处未知），读侧按
-//! json_extract 路径取活跃别名；`learning_lesson_concepts.ref_name` 可空列
-//! 承载节点引用时的投影名（老行为 NULL）。
-//!
-//! 别名回填语句随合并基线落在一个版本里，新库的登记表在同一迁移内创建、
-//! 恒为空表，回填不再有可测的中间状态——这里改为钉住记录形状的读写契约。
+//! 基线 070（概念别名结构化 + 概念网边 ref_name，原迁移 080）的契约（三轮
+//! g2，j04）：`aliases_json` 的元素形状是 `{name, status:"active"}` 记录（定义/
+//! 出处缺席 = 与概念定义同义/出处未知）——原 080 的字符串回填随折叠消失
+//! （登记表在基线里出生即记录形，用户库不存在中间态），这里改钉记录形状
+//! 契约；`learning_lesson_concepts.ref_name` 可空列承载节点引用时的投影名
+//! （老行为 NULL）。
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -13,13 +11,16 @@ use sqlx::SqlitePool;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-async fn setup() -> SqlitePool {
+/// 记录形状契约：登记表接受 `{name, status}` 记录，读侧 json_extract 路径
+/// 按名字查活跃别名；可选 definition/attestation 与 retired 状态同样合法。
+#[tokio::test]
+async fn alias_records_pin_the_structured_shape() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 79).await;
+    MIGRATOR.run(&pool).await.unwrap();
     sqlx::query(
         "INSERT INTO learning_concept_registry \
          (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
@@ -30,7 +31,6 @@ async fn setup() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
-    migrate_range(&pool, 79, 80).await;
     let aliases_json: String =
         sqlx::query_scalar("SELECT aliases_json FROM learning_concept_registry WHERE canonical = '极限'")
             .fetch_one(&pool)
@@ -53,16 +53,22 @@ async fn setup() -> SqlitePool {
     .unwrap();
     assert_eq!(hit, 1);
 
-    // aliases_json 必须是 JSON 数组：对象/标量落库即被 CHECK 拒绝。
-    for bad in ["{\"name\":\"x\"}", "\"Limits\"", "42", "not json"] {
-        let result = sqlx::query(
-            "UPDATE learning_concept_registry SET aliases_json = ? WHERE canonical = '极限'",
-        )
-        .bind(bad)
-        .execute(&pool)
-        .await;
-        assert!(result.is_err(), "{bad} must be rejected by the CHECK");
-    }
+    // 可选出处的 retired 记录同样是合法形状（退役不占名池）。
+    sqlx::query(
+        "UPDATE learning_concept_registry SET aliases_json = ? WHERE canonical = '极限'",
+    )
+    .bind(r#"[{"name":"Limits","definition":"d","attestation":"a","status":"retired"}]"#)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let retired: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_concept_registry reg, json_each(reg.aliases_json) je \
+         WHERE json_extract(je.value, '$.status') = 'retired'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(retired, 1);
 }
 
 /// ref_name 可空列：新写带投影名，旧行为 NULL（读侧回退正名）。

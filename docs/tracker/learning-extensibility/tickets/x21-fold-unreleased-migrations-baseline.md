@@ -2,7 +2,7 @@
 id: x21
 title: "未发布学习迁移链折叠为单一净形基线——纯重构，零 schema 变化"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [x01]
 part_of: ../map.md
@@ -68,3 +68,33 @@ part_of: ../map.md
 ## 非目标
 
 - 任何 schema/行为变化（x-wave 各票做）；已发布段折叠或改动（永不）。
+
+## Resolution
+
+**已关（2026-11-02，本提交）**。
+
+- **基线**：`crates/backend/nomifun-db/migrations/070_learning_domain_rebuild.sql`
+  （§1–§7；号按 A3 = main 尖端 069_marketplace + 1）；旧 20 文件
+  （069_retire…–088_learning_basis_declarations）全部删除。
+- **等价校验（一次性，已删除测试）**：v1.7.0 形状种子（九种 kind 自建题、双
+  source 复习行、四种进度状态、图课程全家桶、course_jobs 行、概念绑定）分别
+  跑旧 20 段链与新基线，输出
+  `fold equivalence: 428 schema objects, 28 learning tables, 0 differences`；
+  学习表行数与种子一致（courses=1 modules=1 lessons=4 sections=2 activities=1
+  progress=4 attempts=1 review_items=1 review_log=1 review_events=2 checkins=1
+  custom_questions=9 tags=1 course_tags=1 question_tags=2 course_jobs=1 users=1，
+  其余未发布新表=0）。规范化口径 = 去空白 `sqlite_master.sql` + `quote()` 逐行
+  文本。结果同时记入图纸 §8。
+- **测试重指**：`learning_concept_web_migration.rs` 改为终态断言（含终点/罗盘
+  从未存在、growth_batches.status 随 CREATE 落地、九种 kind 存活）；
+  course_enabled / lesson_source_paths / source_kb_ids 的 `migrate_range` 边界
+  统一为 `(0,69)/(69,MAX)`；alias_records 的字符串回填用例改为钉记录形状契约。
+  其余 14 个全链 Migrator 测试零改动通过；`id_schema_contract` 表集合不变
+  （契约测试绿）。
+- **同步**：`id_schema_contract.rs` 注释迁移号改指基线节号；`learning.zh.md`
+  迁移族、`docs/contracts/learning-course-source-plan.md`、`data-and-storage.zh.md`
+  （迁移计数 + 折叠纪律）更新。ADR 历史文本不改；dev 库重置注记已在 ADR-0016 /
+  CONTRIBUTING 写明。
+- **验收**：`cargo test -p nomifun-db` 全绿（含契约与重指测试）；
+  `cargo test -p nomifun-learning` 738 绿；`cargo check --workspace` 绿。
+- 偏差：无（图 1 的两处文字笔误按实码修正，见图纸 §8 变更记录）。
