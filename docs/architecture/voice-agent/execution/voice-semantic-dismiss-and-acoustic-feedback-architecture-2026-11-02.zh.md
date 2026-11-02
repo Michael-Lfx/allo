@@ -82,6 +82,21 @@ flowchart TD
 2. **麦克风物理安全**：退出通话状态必须彻底释放麦克风句柄（OS 录音红点熄灭）；
 3. **声学防自激屏障**：播放“没听清”提示音或告别语期间，麦克风必须处于硬件静音态（`pause_listening_for_feedback`）。
 
+### 2.4 开源社区标杆范式借鉴 (Open-Source Prior Art)
+
+在深入方案落地前，本架构系统吸收了三大现代开源语音工程的权威实践：
+
+1. **[LiveKit Agents](https://docs.livekit.io/agents/prebuilt/tools/end-call-tool/) 的 `EndCallTool` 挂断范式**：
+   - 彻底摒弃单一死板的正则关键词退出；
+   - 在流式语音中将通话挂断赋予 LLM 工具/意图，LLM 输出带有告别语的挂断决议；
+   - 客户端在告别音频打上 `EOS (End-of-Stream)` 并在最后一帧播放完毕后断开通道，兼顾礼貌告别与彻底挂断。
+2. **[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/blob/110baa09/tools/voice_mode_transcript.py) 的实质内容密度净化（Hallucination Stripper）**：
+   - 解决端侧 ASR（Whisper/SenseVoice）在静音或风噪下自回归吐纯标点（`。`、`...`、`？`）的固有幻觉；
+   - 前置计算字母与 CJK 字符密度，低于阈值直接本地丢弃，不向云端 LLM 发包，100% 避免无谓扣费。
+3. **[Home Assistant Assist Pipeline](https://git.sudo.is/home-assistant/core/commit/e71eb8dfe294324712600944da133ac027939b13) 的阶梯容错与防死激熔断**：
+   - 未匹配意图时（`no_intent_matched`）不保持绝对死寂，而是播放轻微的疑问声学回执；
+   - 设立最大重试熔断器（连续 3 次未听懂强制静默），彻底粉碎外放扬声器被麦克风重新录入引起的自激回声死循环。
+
 ---
 
 ## 3. 核心设计与模块规范 (Subsystem Design)
@@ -239,6 +254,19 @@ sequenceDiagram
    `cargo test -p voice-companion --features voice-skeleton --test voice_streaming`
 4. 运行前端国际化键位对称性测试：
    `bun run check:i18n`
+
+---
+
+## 6. 实施任务拆解与执行计划 (Execution Plan)
+
+根据系统分层，实施分为四个有序阶段（严格遵循单向依赖与不变量）：
+
+| 阶段 | 模块 | 核心工作清单 | 验收证据 |
+| :--- | :--- | :--- | :--- |
+| **Phase 1** | `nomifun-api-types` | ① `VoiceIntentType` 新增 `Dismiss` 枚举与 Serde 反序列化测试；<br/>② `classify_voice_direct_control` 接入短句尾缀模糊命中与中英夹杂公共白名单。 | `c2_voice_dto_golden` 黄金用例通过，新增 10 条直接控制单测全绿。 |
+| **Phase 2** | `nomifun-voice-terminal` | ① 更新 `router.rs` 的双语 System Prompt 与 JSON Schema，赋予模型原生 `dismiss` 意图；<br/>② 编写中英双语 Prompt 解析与单句告别测试。 | `vt_0` 与 `router_tests` 意图测试全绿，`TC-DISMISS-EN-02` 验证通过。 |
+| **Phase 3** | `voice-companion` | ① `voice.rs: handle_dialogue` 前置植入纯标点/空白字符集过滤网；<br/>② `dec.intent_type` 挂接 `Dismiss`，播放告别语并在音频落毕后执行 `d.reset()` 退出通话；<br/>③ `discard_utterance` 挂接阶梯声学疑问回执与 3 次连续 Ignore 闭麦熔断器。 | `voice_streaming` 流式测试通过，纯标点 0 请求通过。 |
+| **Phase 4** | 门禁与审查 | ① 本地全量回归（`cargo test`、`check:i18n`、`typecheck`）；<br/>② 重新编译生产守护进程二进制；<br/>③ 提交后启动 Opencode CLI 多轮深度审计并闭环全部反馈。 | 生产二进制 SHA-256 就绪，Git working tree clean。 |
 
 ---
 
