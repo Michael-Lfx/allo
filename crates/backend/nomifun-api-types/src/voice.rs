@@ -1808,7 +1808,8 @@ pub fn classify_voice_direct_control(
     // 5. Match Dismiss Session
     const ZH_DISMISS_CORE: &[&str] = &[
         "退下吧", "退下", "退一下", "退一下吧", "退下啦", "退退退",
-        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧"
+        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧",
+        "再见", "拜拜", "拜拜了"
     ];
     const EN_DISMISS_CORE: &[&str] = &[
         "end the call", "hang up", "exit voice", "goodbye flowy", "dismiss",
@@ -1843,7 +1844,8 @@ pub fn classify_voice_direct_control(
     ];
     const ZH_SUFFIX_DISMISS_CORE: &[&str] = &[
         "退下吧", "退一下吧", "退一下", "退下啦", "退退退",
-        "结束通话", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧"
+        "结束通话", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧",
+        "再见", "拜拜", "拜拜了"
     ];
 
     let char_count = clean.chars().count();
@@ -2064,6 +2066,11 @@ mod task_control_classifier_tests {
             ("OK 退下吧", Some(DismissSession)),
             ("Bye 啦", Some(DismissSession)),
             ("谢了退下吧", Some(DismissSession)),
+            ("再见", Some(DismissSession)),
+            ("好的再见", Some(DismissSession)),
+            ("拜拜", Some(DismissSession)),
+            ("拜拜啦", Some(DismissSession)),
+            ("OK 拜拜", Some(DismissSession)),
         ];
         for (input, expected) in positives {
             assert_eq!(
@@ -2119,6 +2126,9 @@ mod task_control_classifier_tests {
             "just bye",
             "没有结束通话",
             "你说退下",
+            "不要再见",
+            "明天再见",
+            "请把再见翻译成英文",
         ];
         for input in negatives {
             assert_eq!(
