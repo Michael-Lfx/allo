@@ -1,7 +1,52 @@
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, rgb(var(--primary-6)) 55%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: rgb(var(--primary-6));
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trigger:hover,
+.trigger:focus-visible {
+  background: color-mix(in srgb, rgb(var(--primary-6)) 8%, transparent);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid rgb(var(--primary-6));
+  outline-offset: 2px;
+}
+
+.trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.switchCompact .trigger {
+  height: 28px;
+  padding: 0 10px;
+}
+
 .optionIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 0;
   flex: 0 0 auto;
+}
+
+.menuItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

@@ -5,9 +5,10 @@
  */
 
 import { Briefcase, Code } from '@icon-park/react';
-import React, { useCallback } from 'react';
+import { Dropdown, Menu } from '@arco-design/web-react';
+import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import GooeyNav from '@renderer/components/base/GooeyNav';
+import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
 import { useTaskProfileStore, normalizeTaskProfile, type TaskProfile } from '@/renderer/stores/taskProfileStore';
 import styles from './TaskProfileSelector.module.css';
 
@@ -17,10 +18,16 @@ export interface TaskProfileSelectorProps {
   /** Fired after a local selection (optional local listeners). */
   onProfileSelect?: (profile: TaskProfile) => void;
   disabled?: boolean;
+  /** Fits the composer toolbar instead of a page header. */
+  compact?: boolean;
   className?: string;
 }
 
 const PROFILES: readonly TaskProfile[] = ['office', 'coding'] as const;
+
+function isTaskProfile(value: string): value is TaskProfile {
+  return value === 'office' || value === 'coding';
+}
 
 function profileIcon(value: TaskProfile) {
   switch (value) {
@@ -41,10 +48,16 @@ function profileIcon(value: TaskProfile) {
  * between modules and app restarts; a conversation freezes its own value at
  * creation.
  */
-const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({ onProfileSelect, disabled = false, className }) => {
+const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
+  onProfileSelect,
+  disabled = false,
+  compact = false,
+  className,
+}) => {
   const { t } = useTranslation();
   const profile = useTaskProfileStore((state) => state.taskProfile);
   const setTaskProfile = useTaskProfileStore((state) => state.setTaskProfile);
+  const [open, setOpen] = useState(false);
 
   const label = t('conversation.taskProfile.label', { defaultValue: '工作模式' });
   const officeLabel = t('conversation.taskProfile.office', { defaultValue: '日常办公' });
@@ -62,22 +75,55 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({ onProfileSele
     [disabled, onProfileSelect, profile, setTaskProfile]
   );
 
+  const menu = (
+    <Menu
+      className={dropdownMenuStyles.configDropdownMenu}
+      selectedKeys={[profile]}
+      data-testid='task-profile-dropdown-menu'
+      onClickMenuItem={(key) => {
+        setOpen(false);
+        if (!isTaskProfile(key)) return;
+        handleSelect(key);
+      }}
+    >
+      {PROFILES.map((value) => (
+        <Menu.Item key={value}>
+          <span className={styles.menuItem} data-testid={`task-profile-option-${value}`}>
+            <span className={styles.optionIcon}>{profileIcon(value)}</span>
+            <span>{profileLabel(value)}</span>
+          </span>
+        </Menu.Item>
+      ))}
+    </Menu>
+  );
+
   return (
-    <GooeyNav
-      className={className}
-      testId='task-profile-selector'
-      ariaLabel={label}
-      selection='radio'
-      size='md'
-      disabled={disabled}
-      activeIndex={Math.max(0, PROFILES.indexOf(profile))}
-      items={PROFILES.map((value) => ({
-        label: profileLabel(value),
-        icon: <span className={styles.optionIcon}>{profileIcon(value)}</span>,
-        testId: `task-profile-option-${value}`,
-      }))}
-      onChange={(index) => handleSelect(PROFILES[index])}
-    />
+    <span className={[compact ? styles.switchCompact : '', className].filter(Boolean).join(' ')}>
+      <Dropdown
+        trigger='click'
+        position='tl'
+        disabled={disabled}
+        popupVisible={open}
+        onVisibleChange={(visible) => {
+          if (!disabled) setOpen(visible);
+        }}
+        droplist={menu}
+      >
+        <button
+          type='button'
+          className={styles.trigger}
+          data-button-shape='pill'
+          data-testid='task-profile-selector'
+          aria-label={label}
+          aria-haspopup='menu'
+          aria-expanded={open}
+          disabled={disabled}
+        >
+          <span className={styles.optionIcon}>{profileIcon(profile)}</span>
+          <span>{profileLabel(profile)}</span>
+        </button>
+      </Dropdown>
+    </span>
   );
 };
 

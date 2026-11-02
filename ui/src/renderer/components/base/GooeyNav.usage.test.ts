@@ -7,16 +7,13 @@ import GooeyNav from './GooeyNav';
 const read = (url: string) => readFileSync(new URL(url, import.meta.url), 'utf8');
 
 describe('GooeyNav call sites', () => {
-  test('session home, the resource rail, video tabs, and channel pills use it', () => {
-    const profile = read('../agent/TaskProfileSelector.tsx');
+  test('the resource rail, video tabs, and channel pills use it', () => {
     const sider = read('../layout/Sider/index.tsx');
     const videoHome = read('../../pages/videoGeneration/index.tsx');
     const filters = read('../../pages/videoGeneration/components/FilterPills.tsx');
     const tabs = read('./SegmentedTabs.tsx');
     const canvasCard = read('../../pages/workshop/generation/GeneratorCard.tsx');
 
-    expect(profile.includes('<GooeyNav')).toBe(true);
-    expect(profile.includes("selection='radio'")).toBe(true);
     expect(sider.includes("<GooeyNav")).toBe(true);
     expect(sider.includes('t(\'knowledge.title\')')).toBe(true);
     expect(sider.includes('t(\'learning.title\')')).toBe(true);

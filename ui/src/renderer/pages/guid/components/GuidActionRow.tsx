@@ -7,6 +7,7 @@ import { measureEntryFlyout, entryFlyoutAlignTop } from './GuidEntryFlyout';
 import React, { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { AvailableAgent } from '../types';
@@ -322,6 +323,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             modeLabelFormatter={getModeDisplayLabel}
           />
         )}
+        <TaskProfileSelector compact className={styles.composerTaskProfile} />
         {goalMode && onGoalModeChange && (
           <Button
             type='text'

@@ -5,15 +5,16 @@ const source = readFileSync(new URL('./TaskProfileSelector.tsx', import.meta.url
 const styles = readFileSync(new URL('./TaskProfileSelector.module.css', import.meta.url), 'utf8');
 
 describe('TaskProfileSelector segmented control', () => {
-  test('renders a radiogroup of work-mode pills instead of a dropdown', () => {
-    expect(source.includes('<GooeyNav')).toBe(true);
-    expect(source.includes("selection='radio'")).toBe(true);
-    expect(source.includes("testId='task-profile-selector'")).toBe(true);
+  test('opens the two work modes from a single dropdown chip', () => {
+    expect(source.includes('<Dropdown')).toBe(true);
+    expect(source.includes("data-testid='task-profile-selector'")).toBe(true);
+    expect(source.includes("data-button-shape='pill'")).toBe(true);
+    expect(source.includes("data-testid='task-profile-dropdown-menu'")).toBe(true);
     expect(source.includes('task-profile-option-${value}')).toBe(true);
     expect(source.includes("'office'")).toBe(true);
     expect(source.includes("'coding'")).toBe(true);
-    expect(source.includes('<Dropdown')).toBe(false);
-    expect(source.includes('task-profile-dropdown-menu')).toBe(false);
+    expect(source.includes("role='radiogroup'")).toBe(false);
+    expect(source.includes('<GooeyNav')).toBe(false);
     expect(source.includes('Briefcase')).toBe(true);
     expect(source.includes('Code')).toBe(true);
   });

@@ -30,6 +30,10 @@ import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
+import FeatureCards from './components/FeatureCards';
+import GuidHomeBrand from './components/GuidHomeBrand';
+import GuidVideoShortcut from './components/GuidVideoShortcut';
+import ShowcaseCards from './components/ShowcaseCards';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
@@ -40,7 +44,6 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
-import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
 import { useTaskProfileStore } from '@/renderer/stores/taskProfileStore';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
@@ -291,6 +294,15 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
+  const handleSelectShowcaseApp = useCallback(() => {
+    guidInput.setInput(t('guid.home.showcaseAppPrompt'));
+    useTaskProfileStore.getState().setTaskProfile('coding');
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, [guidInput.setInput, t]);
+  const handleSelectShowcaseImage = useCallback(() => {
+    guidInput.setInput(t('guid.home.showcaseImagePrompt'));
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, [guidInput.setInput, t]);
   useEffect(() => {
     const report = () => { void reportVoiceCandidate(null, guidInput.dir?.trim() || null).catch(() => {}); };
     report();
@@ -964,10 +976,6 @@ const GuidPage: React.FC = () => {
     agentSelection.selectedAgent,
   ]);
 
-  const showTaskProfile =
-    agentSelection.selectedAgent === 'nomi' ||
-    agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
-
   const readiness = useMemo(
     () =>
       resolveGuidReadiness({
@@ -1553,25 +1561,24 @@ const GuidPage: React.FC = () => {
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
       <div ref={guidContainerRef} className={styles.guidContainer}>
-        <div className={styles.guidPrimaryStage}>
-          <div className={styles.guidLayout}>
-            <div className={styles.heroHeader}>
-              <p className={styles.heroTitlePrimary}>
-                {t('conversation.welcome.title', { defaultValue: '告诉 Flowy 你要的结果' })}
-              </p>
-              <p className={styles.heroDescription}>
-                {t('conversation.welcome.description', {
-                  defaultValue: '描述成果即可。Flowy 会自行组织执行过程，只在需要时询问你。',
-                })}
-              </p>
-            </div>
-
-            {showTaskProfile ? (
-              <div className={styles.guidTaskProfile}>
-                <TaskProfileSelector />
+        <div className={styles.guidScrollArea}>
+          <div className={styles.guidPrimaryStage}>
+            <div className={styles.guidLayout}>
+              <div className={styles.homeMasthead}>
+                <GuidHomeBrand />
+                <GuidVideoShortcut />
               </div>
-            ) : null}
+              <FeatureCards onStartFromLocal={() => void handleLinkWorkspace()} />
 
+              <div className={styles.homeGallery}>
+                <ShowcaseCards onSelectApp={handleSelectShowcaseApp} onSelectImage={handleSelectShowcaseImage} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={styles.guidFixedInputArea}>
+          <div className={styles.guidLayout}>
             <GuidInputCard
               containerRef={guidInputCardRef}
               input={guidInput.input}
@@ -1628,6 +1635,7 @@ const GuidPage: React.FC = () => {
               workspaceDir={guidInput.dir}
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
+              onOpenLocalDialog={() => void handleLinkWorkspace()}
             />
 
             {/* Editor host (modals + fallback notice) */}
