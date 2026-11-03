@@ -126,7 +126,7 @@ const GuidHomeBrand: React.FC = () => {
         stiffness={160}
         damping={22}
         width={416}
-        height={220}
+        height={192}
         radius={24}
         background='transparent'
         color='#17171a'
