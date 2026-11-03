@@ -2571,7 +2571,9 @@
   overflow-x: hidden;
   overflow-y: auto;
   position: relative;
-  background: var(--color-bg-1);
+  /* 亮色首页比全局次级底再白一档；暗色仍跟 --color-bg-1 */
+  --guid-canvas: color-mix(in srgb, var(--color-bg-1) 38%, var(--bg-base, #fff));
+  background: var(--guid-canvas);
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--color-text-3) 55%, transparent) transparent;
 }
@@ -2620,7 +2622,11 @@
   margin-top: 0;
   padding: 36px 10px 20px;
   pointer-events: none;
-  background: linear-gradient(to bottom, transparent 0%, var(--color-bg-1) 40px);
+  background: linear-gradient(to bottom, transparent 0%, var(--guid-canvas, var(--color-bg-1)) 40px);
+}
+
+:global([data-theme='dark']) .guidContainer {
+  --guid-canvas: var(--color-bg-1);
 }
 
 .guidFixedInputArea .guidLayout {
