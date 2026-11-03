@@ -513,6 +513,7 @@
     "endBeforeDelete": "请先挂断通话再删除",
     "moreActions": "更多操作",
     "callConflictActive": "当前已有正在进行的语音通话，已为您切换",
+    "callConflictStarting": "上一通通话正在清理释放，请稍候重试",
     "suiteNotReady": "语音套件尚未通过本地能力检查，请先在语音设置完成检查或修复",
     "daemonNotRunning": "语音服务尚未启动，请先在语音设置启用",
     "prepareHint": "正在准备并检查语音套件；检查会通过已配置模型发送一条短请求，可能产生少量额度。"

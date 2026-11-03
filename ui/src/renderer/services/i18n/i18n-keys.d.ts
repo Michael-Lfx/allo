@@ -11207,6 +11207,7 @@ export type I18nKey =
   | 'voice.dock.waitingWake'
   | 'voice.entry.callActiveMarker'
   | 'voice.entry.callConflictActive'
+  | 'voice.entry.callConflictStarting'
   | 'voice.entry.cancelRecovered'
   | 'voice.entry.cancelUnknown'
   | 'voice.entry.checking'

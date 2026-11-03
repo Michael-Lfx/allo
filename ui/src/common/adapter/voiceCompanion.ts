@@ -511,9 +511,17 @@ function reconcilePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): v
     snapshot.phase !== 'idle' &&
     snapshot.binding?.conversation_id && snapshot.binding.session_id === snapshot.session_id
   );
+  const pendingActive = Boolean(
+    !stopConfirmed &&
+    pendingCallIntent &&
+    !pendingCallIntent.unknown &&
+    !pendingCallIntent.abandoned &&
+    !pendingCallIntent.retired &&
+    pendingCallIntent.inFlight
+  );
   const activeId = isCallActive
     ? (snapshot.binding?.conversation_id ?? null)
-    : (pendingCallIntent?.conversationId ?? null);
+    : (pendingActive ? (pendingCallIntent?.conversationId ?? null) : null);
   updateActiveVoiceCallConversationId(activeId);
 }
 export function voiceStartNeedsPrepare(error: unknown): boolean {

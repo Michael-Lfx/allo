@@ -474,6 +474,7 @@ const NomiSendBox: React.FC<{
   }, [reasoning_effort]);
 
   useEffect(() => {
+    if (isVoiceConversation) return;
     if (modelSelection.isModelCatalogLoading || !current_model?.use_model || !selectedChatModelOption) return;
     if (currentReasoningEffort === effectiveReasoningEffort) return;
     setCurrentReasoningEffort(effectiveReasoningEffort);

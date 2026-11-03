@@ -289,6 +289,9 @@ const NomiConversationPanel: React.FC<{
       collabs: TExecutionModelRef[],
       observedMutationVersion: number,
     ): Promise<boolean> => {
+      if (isVoiceConversation(conversation)) {
+        return false;
+      }
       const execution_model_pool = buildConversationModelPool(mainRef, collabs);
       if (!execution_model_pool) return false;
       return modelMutationCoordinator.enqueue(async () => {
@@ -431,6 +434,7 @@ const NomiConversationPanel: React.FC<{
   const { providers: healProviders, getAvailableModels: healGetAvailable } = healPool;
   useEffect(() => {
     if (runtimeAuthority !== 'idle') return;
+    if (isVoiceConversation(conversation)) return;
     if (!healProviders.length) return;
     if (modelMutationCoordinator.isExplicitSelectionInFlight()) return;
     const saved = configService.get('nomi.defaultModel');

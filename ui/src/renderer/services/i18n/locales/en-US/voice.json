@@ -516,6 +516,7 @@
     "endBeforeDelete": "End the call before deleting",
     "moreActions": "More actions",
     "callConflictActive": "Another voice call is already active; switched to active call",
+    "callConflictStarting": "The previous call is still settling. Please try again shortly.",
     "suiteNotReady": "The voice suite has not passed its local capability checks. Run the check or repair it in Voice settings.",
     "daemonNotRunning": "The voice service is not running. Enable it in Voice settings first.",
     "prepareHint": "Preparing and checking the voice suite. This may make one short request through your configured model and use a small amount of quota."

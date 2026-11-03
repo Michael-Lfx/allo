@@ -2153,6 +2153,9 @@ impl VoiceCompanionRuntime {
         play_feedback: bool,
     ) -> Result<(), VoiceWakeError> {
         let mut d = driver.lock().await;
+        if events.snapshot().ended_reason.is_some() && d.current_state() != AcousticState::Idle {
+            d.reset();
+        }
         let next = d
             .handle_event(AcousticEvent::WakeHit)
             .map_err(|_| VoiceWakeError::Busy)?;
@@ -2584,11 +2587,10 @@ impl VoiceCompanionRuntime {
                             },
                             &control_scope,
                         );
-                        let _ = event_tx.send_scoped(
+                        let _ = event_tx.send(
                             VoiceCompanionEvent::SessionEnded {
                                 reason: VoiceSessionEndReason::UserStop,
                             },
-                            &control_scope,
                         );
                         drop(d);
                         let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
@@ -3067,11 +3069,10 @@ impl VoiceCompanionRuntime {
                     d.reset();
                     pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     drop(d);
-                    let _ = event_tx.send_scoped(
+                    let _ = event_tx.send(
                         VoiceCompanionEvent::SessionEnded {
                             reason: VoiceSessionEndReason::UserStop,
                         },
-                        &control_scope,
                     );
                     let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
                     let is_default_dismiss = goodbye_text == "好的，再见"
@@ -4569,11 +4570,10 @@ impl VoiceCompanionRuntime {
                                                     pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).take();
                                                     let _ = output.interrupt().await;
                                                     let sleep_gen = output.generation_id();
-                                                    let _ = events.send_scoped(
+                                                    let _ = events.send(
                                                         VoiceCompanionEvent::SessionEnded {
                                                             reason: VoiceSessionEndReason::UserStop,
                                                         },
-                                                        &scope,
                                                     );
                                                     drop(d);
                                                     let is_en = nomifun_api_types::voice::is_english_locale(current.locale.as_deref());
