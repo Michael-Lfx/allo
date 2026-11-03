@@ -22,7 +22,7 @@ import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
 import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
-import { isInstalledPickerSkill, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
+import { installedPickerSkills, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
@@ -606,7 +606,7 @@ const GuidPage: React.FC = () => {
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
   const pickerSkills = useMemo(
-    () => catalogSkills.filter(isInstalledPickerSkill),
+    () => installedPickerSkills(catalogSkills),
     [catalogSkills],
   );
   const handleToggleHomeSkill = useCallback(
@@ -667,6 +667,7 @@ const GuidPage: React.FC = () => {
                 description: display.description,
                 source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
                 avatar: skill.avatar ?? undefined,
+                tags: [skill.name],
               };
             })
           : []),

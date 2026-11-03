@@ -42,16 +42,26 @@ function mapCatalogEntry(entry: {
 }
 
 /**
- * Composer pickers list skills installed into the Flowy library.
- * Shipped builtins stay available to the model, but they are not choices
- * until a copy is installed. Skills only discovered from `~/.agents/skills`
- * or a workspace checkout are not installed either.
+ * Composer and slash pickers list the Flowy skill library: skills the user
+ * installed, plus shipped builtins. A user copy of the same name replaces the
+ * builtin. Skills only discovered from `~/.agents/skills` or a workspace
+ * checkout are not library skills.
  */
 export function isInstalledPickerSkill(
   skill: Pick<SkillCatalogEntry, 'source' | 'sourceKey'>,
 ): boolean {
-  if (skill.source === 'extension' || skill.source === 'mcp') return true;
+  if (skill.source === 'builtin' || skill.source === 'extension' || skill.source === 'mcp') return true;
   return skill.source === 'user' && !skill.sourceKey;
+}
+
+export function installedPickerSkills<T extends Pick<SkillCatalogEntry, 'name' | 'source' | 'sourceKey'>>(
+  skills: readonly T[],
+): T[] {
+  const installed = skills.filter(isInstalledPickerSkill);
+  const copiedNames = new Set(
+    installed.filter((skill) => skill.source !== 'builtin').map((skill) => skill.name),
+  );
+  return installed.filter((skill) => skill.source !== 'builtin' || !copiedNames.has(skill.name));
 }
 
 export function useSkillCatalog(enabled = true) {

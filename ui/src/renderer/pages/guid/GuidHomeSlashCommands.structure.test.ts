@@ -8,7 +8,7 @@ describe('Guid homepage slash launcher', () => {
     const pageSource = readSource(new URL('./GuidPage.tsx', import.meta.url));
 
     expect(pageSource.includes("import { useSlashLauncherController }")).toBe(true);
-    expect(pageSource.includes("import { isInstalledPickerSkill, useSkillCatalog }")).toBe(true);
+    expect(pageSource.includes("import { installedPickerSkills, useSkillCatalog }")).toBe(true);
     expect(pageSource.includes('const homeLauncherItems = useMemo<SlashLauncherItem[]>')).toBe(true);
     expect(pageSource.includes("kind: 'system'")).toBe(true);
     expect(pageSource.includes("kind: 'skill'")).toBe(true);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { isInstalledPickerSkill, type SkillCatalogEntry } from './useSkillCatalog';
+import { installedPickerSkills, isInstalledPickerSkill, type SkillCatalogEntry } from './useSkillCatalog';
 
 const skill = (
   source: SkillCatalogEntry['source'],
@@ -7,16 +7,29 @@ const skill = (
 ): Pick<SkillCatalogEntry, 'source' | 'sourceKey'> => ({ source, sourceKey });
 
 describe('isInstalledPickerSkill', () => {
-  test('keeps skills installed into the Flowy library', () => {
+  test('keeps the Flowy library, including shipped builtins', () => {
     expect(isInstalledPickerSkill(skill('user'))).toBe(true);
+    expect(isInstalledPickerSkill(skill('builtin'))).toBe(true);
     expect(isInstalledPickerSkill(skill('extension', 'pack'))).toBe(true);
     expect(isInstalledPickerSkill(skill('mcp', 'server'))).toBe(true);
   });
 
-  test('hides shipped builtins and skills that were only discovered on disk', () => {
-    expect(isInstalledPickerSkill(skill('builtin'))).toBe(false);
+  test('hides skills that were only discovered on disk', () => {
     expect(isInstalledPickerSkill(skill('legacy'))).toBe(false);
     expect(isInstalledPickerSkill(skill('project', 'workspace'))).toBe(false);
     expect(isInstalledPickerSkill(skill('user', 'agents'))).toBe(false);
+  });
+
+  test('lets an installed copy replace the shipped skill of the same name', () => {
+    const catalog = [
+      { name: 'deep-research-pro', source: 'builtin' as const },
+      { name: 'guizang-ppt-skill', source: 'builtin' as const },
+      { name: 'deep-research-pro', source: 'user' as const },
+    ];
+
+    expect(installedPickerSkills(catalog).map((entry) => `${entry.source}:${entry.name}`)).toEqual([
+      'builtin:guizang-ppt-skill',
+      'user:deep-research-pro',
+    ]);
   });
 });

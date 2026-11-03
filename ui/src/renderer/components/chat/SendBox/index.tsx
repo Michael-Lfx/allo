@@ -15,7 +15,7 @@ import {
   useSlashLauncherController,
   type SlashLauncherSelectionContext,
 } from '@/renderer/hooks/chat/useSlashLauncherController';
-import { isInstalledPickerSkill, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
+import { installedPickerSkills, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
 import { useOptionalConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
@@ -979,7 +979,7 @@ const SendBox: React.FC<{
   const canPickSkills = !isVoiceConversation && Boolean(onSendWithSkills && onSkillChipsChange);
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(canPickSkills);
   const pickerSkills = useMemo(
-    () => catalogSkills.filter(isInstalledPickerSkill),
+    () => installedPickerSkills(catalogSkills),
     [catalogSkills],
   );
   const handleToggleCatalogSkill = useCallback(
@@ -1032,6 +1032,7 @@ const SendBox: React.FC<{
           description: display.description,
           source: getSkillSourceLabel(skill.source, t),
           avatar: skill.avatar ?? undefined,
+          tags: [skill.name],
         };
       }),
     ],
