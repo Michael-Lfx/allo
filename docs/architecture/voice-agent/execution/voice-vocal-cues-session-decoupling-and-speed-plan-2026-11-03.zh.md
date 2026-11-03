@@ -38,6 +38,27 @@
 
 ---
 
+### 1.4 痛点四：首页主动创建通话未新建仍跑回旧会话、退出后报错 `daemon_wake_unknown`、且点击语言会话被隐式置顶
+* **现场现象**：
+  1. 用户在首页主动点击通话（或唤醒），依然没有新建语音会话，而是被拉回曾经执行过的旧通话任务继续；
+  2. 退出通话后，侧边栏会话列表仍然显示绿色声波状态（未真正释放），再次点击开启时，界面红框报错 `(!) daemon_wake_unknown`；
+  3. 用户点击语言任务进入浏览历史时，该会话被隐式修改并强制置顶到侧边栏最开头，打乱了正常的时间线排序。
+* **第一性原理与根因剖析**：
+  1. **`daemon_wake_unknown` 与绿色声波残留**：
+     - 当退出通话后再次点击通话按钮时，宿主向伴侣 `/api/voice/wake` 发起 POST 请求；
+     - 守护进程在上一次退出过渡期间状态机若未完全退回 `Idle`，会返回 `VoiceWakeError::Busy`（HTTP 409 Conflict）；
+     - 宿主 `wake_rejection_precedes_session()` 过滤函数只认 403 和 503，遇到 409 Conflict 直接当成未知错误并抛出 503 `daemon_wake_unknown`；
+     - 前端收到 503 后将 `pendingCallIntent.unknown = true` 滞留在内存中未清除；由于 `activeId` 在未通话时回退到 `pendingCallIntent.conversationId`，导致侧边栏常驻绿色声波（`|||.`）；
+  2. **首页创建会话未真正新建**：
+     - 正因为前端内存中残留的 `pendingCallIntent` 仍绑死在旧会话，且宿主后端的 `active_window_candidate` 和 `retained_default_call` 存在单例查表与旧候选缓存，导致首页点击依然被旧凭证劫持；
+  3. **点击会话自动置顶**：
+     - 普通文本会话在前端创建时已有完整的 `execution_model_pool` 和 `reasoning_effort`，打开时纯只读；
+     - 而语言会话是由后端伴侣守护进程创建的，初始数据库记录中未包含 `execution_model_pool`；
+     - 当你在前端点击进入该语言会话时，`ChatConversation.tsx:299` 和 `NomiSendBox.tsx:480` 检测到缺少模型池，**自动触发了一次隐式的 `ipcBridge.conversation.update.invoke` 尝试补齐字段**！
+     - 这一更新操作立刻触发了 SQLite 的 `UPDATE conversations SET updated_at = now() ...`，将该会话的最后修改时间修改为了当前时间，从而被侧边栏重新排序冲到了最顶端！
+
+---
+
 ## 2. 方案全景架构与模块规范
 
 ```
@@ -96,6 +117,19 @@
 
 ---
 
+### 2.4 模块四：呼叫意图生命周期闭环与语言会话只读防置顶规范
+1. **呼叫意图（`pendingCallIntent`）彻底隔离与清理**：
+   - 在 `ui/src/common/adapter/voiceCompanion.ts` 的 `reconcilePendingCall` 中，**只有呼叫真正处于正在进行态（`!intent.unknown && !intent.abandoned && intent.inFlight`）时，才允许将未绑定的意图作为活跃会话**；
+   - 当收到 `daemon_wake_unknown`、通话明确结束、用户退出或出现网络异常时，**强制调用 `clearPendingCallIntent()` 清除滞留意图**；
+   - 彻底斩断侧边栏 `isCallActive` 误读旧会话 ID 造成的绿色声波（`|||.`）常驻死锁。
+2. **伴侣守护进程状态机自愈守卫**：
+   - 在 `apps/voice-companion/src/voice.rs` 的 `accept_wake` 中增加守卫：若 `events.snapshot().ended_reason.is_some()` 且状态机尚未归零为 `Idle`，**强制执行 `d.reset()` 立即重置到 Idle**，彻底消除退出通话后再次点击时的 409 Busy 报错。
+3. **语言会话只读浏览防置顶保护**：
+   - 在 `ChatConversation.tsx` 与 `NomiSendBox.tsx` 中，对语音类会话（`isVoiceConversation`）**严格禁止在挂载初始化阶段触发静默的 `ipcBridge.conversation.update` 写入 `execution_model_pool` 与 `reasoning_effort`**；
+   - 仅当用户在会话内真正发送消息或执行设置修改时，才允许更新 `updated_at`；打开和浏览历史记录永远保持 100% 只读，绝对不篡改时间戳与侧边栏排序。
+
+---
+
 ## 3. 对抗式红蓝军审查与边界排查 (Adversarial Grill)
 
 ### 攻击点 1：打断时播放“你说”，用户如果连着唤醒词一刻不停说话，会不会被吃字？
@@ -111,6 +145,15 @@
 * **蓝军抗辩**：
   微软 Speech Synthesis SSML 标准对 `<prosody rate="...">` 的官方支持范围是 `-50%` 至 `+200%`（即 0.5x 至 3.0x）。Flowy 的前端滑块限制在 0.5x 至 2.0x，完全处于微软云端标准支持的安全舒适区内，不会发生 400 Bad Request。
 
+### 攻击点 4：如果禁止语音会话只读挂载更新模型池，用户临时在输入框键盘打字发送会报错吗？
+* **蓝军抗辩**：
+  查阅 `NomiSendBox.tsx:334`，当用户在输入框真正敲回车或点击发送按钮时，`nomiSendDispatch.ts` 会在“发送动作”执行的瞬间为当前消息装配执行模型；
+  因此，浏览阶段保持纯只读，既完全不影响用户随时打字发送，又彻底保证了侧边栏历史时间戳和排序不被篡改乱跳。
+
+### 攻击点 5：通话结束瞬间以极快手速（<10ms）再次点击电话按钮，会不会产生状态抖动？
+* **蓝军抗辩**：
+  在伴侣端加上 `if events.snapshot().ended_reason.is_some() { d.reset(); }` 守卫后，只要上一个会话已标记结束，无论其处于哪个过渡状态，后一个唤醒请求都会将其原子归一到 `Idle` 并立即接纳，0 秒时滞，彻底消灭 409 Conflict 与 `daemon_wake_unknown` 报错。
+
 ---
 
 ## 4. 分阶段执行计划 (Phased Execution Plan)
@@ -121,6 +164,7 @@
 | **Phase 2** | **会话解耦与新建任务页智能分流** | `recorder.rs` 废除静态单例查表，为首页/新建页分配独立全新会话；前端路由增加切页候选注销；自动化测试验证首页唤醒必新建会话。 |
 | **Phase 3** | **打断/唤醒明晰人声回执落地** | 打断挂接预置人声“你说”（中文）/“Go ahead”（英文）；首次唤醒挂接“我在”；验证 `is_playback_active` 0ms 盲区与单测全绿。 |
 | **Phase 4** | **多轮独立代码审计与全量质量门禁** | 调用 Opencode CLI 进行深度复查，跑通全量单元与流式测试，重新构建生产二进制。 |
+| **Phase 5** | **真机实测缺陷终极闭环（针对本轮 4 个现象）** | 修复 `daemon_wake_unknown` 假死意图清除、伴侣端状态机自愈、阻止语音会话挂载静默更新模型池防置顶。 |
 
 ---
 
