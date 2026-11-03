@@ -215,6 +215,12 @@ describe('MessageText process action chrome', () => {
     expect(source.includes('content = stripMemCitations(content)')).toBe(true);
   });
 
+  test('strips MEDIA delivery paths from assistant text before rendering', () => {
+    expect(source.includes("from '@renderer/utils/chat/mediaDeliveryFilter'")).toBe(true);
+    expect(source.includes("message.position !== 'right' && hasMediaDeliveryTag(content)")).toBe(true);
+    expect(source.includes('content = stripMediaDeliveryTags(content)')).toBe(true);
+  });
+
   test('routes file marker parsing through the message-side trust boundary', () => {
     expect(source.includes("import { parseMessageFileMarker } from './messageFileMarker';")).toBe(true);
     expect(source.includes('parseMessageFileMarker(contentToRender, message.position)')).toBe(true);

@@ -219,13 +219,6 @@ impl ToolHandler for MediaWorkflowRunHandler {
 }
 
 fn serialize_run_result(record: &crate::workflows::store::WorkflowRunRecord) -> String {
-    let media_tags: Vec<String> = record
-        .artifacts
-        .iter()
-        .filter_map(|a| a.get("local_path").and_then(|p| p.as_str()))
-        .map(|p| format!("MEDIA:{p}"))
-        .collect();
-
     let prompt_payload = workflow_prompt_json(record);
     let user_prompt_block = prompt_payload
         .get("user_prompt_block")
@@ -235,13 +228,7 @@ fn serialize_run_result(record: &crate::workflows::store::WorkflowRunRecord) -> 
     let mut hint_parts = Vec::new();
     if let Some(block) = &user_prompt_block {
         hint_parts.push(format!(
-            "Include user_prompt_block in your reply so the user sees the final API prompts:\n{block}"
-        ));
-    }
-    if !media_tags.is_empty() {
-        hint_parts.push(format!(
-            "Include {} for native media delivery",
-            media_tags.join(" ")
+            "Include user_prompt_block in your reply so the user sees the final API prompts:\n{block}\nDo not paste MEDIA: paths; the app shows generated files."
         ));
     }
 
@@ -253,7 +240,6 @@ fn serialize_run_result(record: &crate::workflows::store::WorkflowRunRecord) -> 
         "error": record.error,
         "artifacts": record.artifacts,
         "step_outputs": record.step_outputs,
-        "media_tags": media_tags,
         "manifest_path": format!("~/.nomifun/media/workflows/{}/manifest.json", record.run_id),
         "hint": if hint_parts.is_empty() { Value::Null } else { json!(hint_parts.join("\n\n")) },
     });

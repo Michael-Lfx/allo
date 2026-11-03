@@ -12,7 +12,7 @@ pub fn gateway_media_system_hint(has_workflow_tools: bool) -> String {
     let mut lines = vec![
         "[SYSTEM] You can generate images with `image_generate`.".to_string(),
         "Write a rich scene prompt: subject, materials/textures, lighting, composition, mood — not a one-liner.".to_string(),
-        "Deliver files via MEDIA:/local_path from tool results. Include `user_prompt_block` in your reply.".to_string(),
+        "Include `user_prompt_block` in your reply. Do not paste MEDIA: paths; the app shows the generated file.".to_string(),
     ];
     if has_workflow_tools {
         lines.extend([

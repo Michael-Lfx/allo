@@ -12,6 +12,7 @@ import VoicePetInput from './VoicePetInput';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import type { ICompanionProfile, ICompanionSuggestion, IResponseMessage } from '@/common/adapter/ipcBridge';
 import { extractResponseTextChunk } from '@/common/chat/displayText';
+import { stripMediaDeliveryTags } from '@renderer/utils/chat/mediaDeliveryFilter';
 import MarkdownView from '@/renderer/components/Markdown';
 import LocalImageView from '@/renderer/components/media/LocalImageView';
 import { usePasteService } from '@/renderer/hooks/file/usePasteService';
@@ -2069,7 +2070,7 @@ const CompanionPage: React.FC = () => {
                   <i />
                 </span>
               ) : (
-                <MarkdownView hiddenCodeCopyButton>{bubble}</MarkdownView>
+                <MarkdownView hiddenCodeCopyButton>{stripMediaDeliveryTags(bubble)}</MarkdownView>
               )}
             </div>
           </div>
