@@ -437,6 +437,48 @@ AI 在执行任务并向扬声器播报确认语或任务进展时（如“好�
 
 ---
 
+### 2.22 陷阱 22：通话退出后状态假死残留导致绿色声波挂死、`daemon_wake_unknown` 与首页切换回旧会话死锁
+
+#### 现场现象
+1. 退出语音通话后，主面板已显示“未在通话”，但左侧会话列表中的该条语音任务依然常驻绿色跳动声波和绿点（`|||.`）；
+2. 此时在右下角再次点击电话通话按钮，界面直接弹出红色告警条：`(!) daemon_wake_unknown`；
+3. 用户回到首页点击电话通话按钮或通过唤醒词唤醒，系统未创建全新语音任务，而是弹出提示“当前已有正在进行的语音通话，已为您切换”并被强行拉回旧通话任务。
+
+#### 根因分析
+1. **前端呼叫意图假死滞留内存**：
+   - 伴侣守护进程在通话退出过渡期的几十毫秒内，状态机若未完全归位 `Idle`，收到新的唤醒请求会返回 409 Conflict (`VoiceWakeError::Busy`)；
+   - 宿主后端 `wake_rejection_precedes_session()` 过滤白名单遗漏了 409，当成未知结果返回了 503 `daemon_wake_unknown`；
+   - 前端接收到 503 后，将 `pendingCallIntent.unknown` 置为 true，但并未清除该意图；在 `reconcilePendingCall` 中，因为缺少呼叫进行中检查，只要未通话就将 `activeId` 回退为 `pendingCallIntent.conversationId`，导致侧边栏声波一直保持绿色；
+2. **首页呼叫与唤醒被旧活跃状态劫持**：
+   - 首页 `GuidPage.tsx` 点击电话按钮发起 `new_voice_conversation` 时，后端 `start_call` 检测到底层 `is_active` 依然为真（或存在冲突），返回 `voice_call_conflict` 错误；
+   - 前端 `GuidPage.tsx:506` 收到该错误后执行了回退逻辑：`await navigate('/conversation/' + errorObj.active_conversation_id)`，直接将用户导航回了旧会话；
+   - KWS 唤醒也是同理：守护进程认为还在旧会话中，派发事件给宿主，前端 Router 检测到活跃会话不一致强制执行页面切换，死锁达成闭环。
+
+#### 解决方案与防线
+- **呼叫意图即时清空**：前端 `reconcilePendingCall` 严格要求只有意图处于真正在途（`intent.inFlight && !intent.unknown && !intent.abandoned`）才允许作为备选 ID；在收到 `daemon_wake_unknown`、通话挂断或出错时，显式调用 `clearPendingCallIntent()`；
+- **守护进程状态机自愈守卫**：在守护进程 `accept_wake` 中增加守卫，若会话已标记结束（`ended_reason.is_some()`），不论停留在哪个过渡状态，一律原子 `d.reset()` 归一为 `Idle`，彻底消灭 409 Conflict；
+- **首页唤醒与呼叫分流**：彻底确保会话停止后后端与前端残留候选为 None，阻断 `voice_call_conflict` 误判。
+
+---
+
+### 2.23 陷阱 23：语言会话挂载隐式写库篡改 `updated_at` 导致侧边栏列表被强制置顶
+
+#### 现场现象
+用户在侧边栏点击某条历史语音会话进入查看，并未输入任何消息，也未点击任何设置，但该会话却突然被置顶到列表第一位，打乱了正常的时间线排序。
+
+#### 根因分析
+1. 侧边栏排序严格依赖数据库字段 `modified_at`（对应 SQLite 中的 `updated_at` 毫秒时间戳）倒序排列；
+2. 普通文本会话是在前端创建的，创建时前端已完整填入了 `execution_model_pool` 与 `reasoning_effort` 等前端专属模型配置；
+3. 而语言会话是由后端的守护进程在唤醒或语音呼叫时创建的，数据库初始化记录中未携带 `execution_model_pool` 字段；
+4. 当用户在前端点击进入该会话时，`ChatConversation.tsx:299` 与 `NomiSendBox.tsx:480` 在组件挂载时检测到会话缺少模型池，**自作主张地触发了一次自动更新**：`await ipcBridge.conversation.update.invoke({ conversation_id, updates: { execution_model_pool } })`；
+5. 这一更新触发了 SQLite 的 `UPDATE conversations SET updated_at = now()`，把修改时间直接刷新成了当前时间，导致会话被列表重新排序后推到了最前面。
+
+#### 解决方案与防线
+- **语言会话只读浏览防写保护**：在 `ChatConversation.tsx` 与 `NomiSendBox.tsx` 的挂载自动更新逻辑中，对语音会话（`isVoiceConversation`）**直接 return 跳过隐式写库**；
+- **动态装配保障**：如果用户在该语言会话中真正敲键盘发送消息，由发送动作（`nomiSendDispatch.ts`）在发送当刻动态装配模型，既保证发送完全正常，又彻底保住历史浏览时的只读性与时间戳稳定。
+
+---
+
 ## 3. 长效防线与研发 Check List
 
 在未来迭代或多 Agent 协作开发中，任何人及 Agent 均须按以下 Checklist 进行自检：
@@ -458,4 +500,6 @@ AI 在执行任务并向扬声器播报确认语或任务进展时（如“好�
 - [ ] **IconPark filled 图标着色契约**：使用 `theme='filled'` 时必须显式指定 `fill="currentColor"`；
 - [ ] **KWS 唤醒非单例原则**：首页或新建页唤醒严禁复用 `voice:default` 历史单例，必须生成动态时间戳创建全新独立会话；
 - [ ] **打断人声回执明晰原则**：打断声学回执严禁仅依赖不易察觉的超短机械音，必须提供“你说/我在”明确人声与 0ms 盲区释放；
-- [ ] **TTS 语速全链路透传**：任何语音合成提供商（无论云端 Edge 还是离线 Sherpa）必须完整支持语速相对调节，严禁丢弃 speed 参数。
+- [ ] **TTS 语速全链路透传**：任何语音合成提供商（无论云端 Edge 还是离线 Sherpa）必须完整支持语速相对调节，严禁丢弃 speed 参数；
+- [ ] **呼叫意图生命周期即时清空**：前端呼叫意图在退出通话、出错或网络断开时必须无条件清理，严禁使 `activeVoiceCallId` 假死滞留造成绿色声波常驻与旧会话劫持；
+- [ ] **只读会话浏览禁触发隐式写库**：历史会话挂载与浏览严禁隐式调用更新接口篡改 `updated_at`，保持时间线排序稳定。
