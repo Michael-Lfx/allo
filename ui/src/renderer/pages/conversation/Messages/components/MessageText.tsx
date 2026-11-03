@@ -448,6 +448,8 @@ const MessageText: React.FC<{
   useEffect(() => {
     if (isUserMessage || !conversationId || !turnCreditKey) return;
     if (conversation?.type !== 'nomi') return;
+    const extra = conversation?.extra as Record<string, unknown> | undefined;
+    if (extra?.voice === true || extra?.is_default_voice === true || extra?.session_mode === 'voice') return;
     if (turnStillRunning) return;
     if (turnCredits != null && (turnCredits.callCount > 0 || turnCredits.creditsConsumed > 0)) {
       return;
@@ -457,7 +459,7 @@ const MessageText: React.FC<{
       turn_id: turnCreditKey,
       delayMs: 400,
     });
-  }, [conversation?.type, conversationId, isUserMessage, turnCreditKey, turnCredits, turnStillRunning]);
+  }, [conversation?.extra, conversation?.type, conversationId, isUserMessage, turnCreditKey, turnCredits, turnStillRunning]);
   const { data: providerList } = useProvidersQuery({
     enabled: conversation?.type === 'nomi',
   });
