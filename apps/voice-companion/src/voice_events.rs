@@ -197,6 +197,7 @@ impl VoiceEventHub {
                     .clear();
                 state.ended_reason = Some(*reason);
                 state.phase = Phase::Idle;
+                state.active_speaking_sentence = None;
                 state.listening_deadline_ms = None;
                 state.follow_up_deadline_ms = None;
             }
@@ -277,6 +278,7 @@ impl VoiceEventHub {
                 if state.ended_reason.is_none() {
                     state.ended_reason = None;
                     state.listening_deadline_ms = None;
+                    state.active_speaking_sentence = None;
                     state.error = None;
                     state.phase = Phase::Transcribing;
                     state.turn_id = Some(nomifun_common::generate_id());
