@@ -316,3 +316,23 @@ updateActiveVoiceCallConversationId(activeId);
    - 现增加语音会话守卫，挂载阶段严禁触发更新，保持浏览 100% 纯只读，时间戳稳固不变。
 4. **端到端专项集成测试（`voice_dialogue_integration.rs:1232`）**：
    - 新增 `test_full_wake_routing_and_conversation_switch_resilience`：真实模拟 A 产生历史对话 -> B 唤醒留在 B -> 首页第 1 次唤醒新建 C -> C 产生对话 -> 首页第 2 次唤醒新建 D，且断言 A 的 `modified_at` 绝不被篡改。51 项集成测试全绿！
+
+---
+
+### 6.6 对话模型自动继承与会话内唤醒绝对就地接续（T59 终极闭环）
+
+根据真实用户实测与 Opencode 对抗审查终审，进一步完成以下闭环：
+
+1. **新建语音会话自动继承对话模型（`recorder.rs:360-376`）**：
+   - 首页唤醒新建 provisional 语音会话时，完整继承默认语音会话 `home` 中用户配置的 `model`；若 `home` 尚未配置模型，通过 `VoiceTaskRuntime::prepare_configuration` 兜底解析系统出厂默认模型，预设（`preset_id`）按设计保持为 `None`，彻底解决首句发言报 400 `Nomi conversation has no provider/model configured` 的致命缺陷。
+2. **物理删除多余模型操作按钮（`NomiSendBox.tsx:2220-2228`）**：
+   - 物理移除了模型不可用警告条中的“重试”与“前往模型设置”按钮，文案收敛为纯文本提示，消除冗余交互干扰。
+3. **会话内唤醒提升为第一绝对优先级（`recorder.rs:193-212`）**：
+   - 将 `if let Some(id) = candidate` 提升至 `explicit_workspace` 之前。若当前查看的会话是未废弃的语音会话（`is_voice_conv && !is_discarded`），100% 触发 Rule 1 原地返回该会话继续对话，绝不再被工作区分支旁路跳过；
+   - 移除名字字符串启发式，与前端严格持久化标记对齐。
+4. **消除通话挂断时抹除窗口候选的死穴（`voice_companion_manager.rs:1341/2437`）**：
+   - 彻底删除 `stop_session` 与 `mark_active_request_stopped` 处的 `self.set_candidate_conversation(None)`。用户在当前会话页面挂断后，窗口候选依然保留，再次喊唤醒词时 100% 原地接续，彻底杜绝“挂断后再次唤醒又建新会话”。
+5. **回归测试全量锁定（`tests/voice_dialogue_integration.rs` & `tests.rs`）**：
+   - 断言首页新建会话必有对话模型；
+   - 断言打开语音会话即使带工作区也必原地接续；
+   - 增加 manager 级单测 `stop_call_preserves_candidate_conversation_for_in_place_rewake`。全量测试全线绿灯！
