@@ -129,6 +129,30 @@ fn builtin_skill_display_metadata_matches_the_packaged_corpus() {
 }
 
 #[test]
+fn deep_research_pro_is_bundled_and_uses_host_web_tools() {
+    let skill = read_to_string(
+        builtin_skills_root()
+            .join("deep-research-pro")
+            .join("SKILL.md"),
+    );
+    assert!(skill.starts_with("---\n"), "must start with YAML frontmatter");
+    assert!(skill.contains("name: deep-research-pro"));
+    assert!(skill.contains("web_search"));
+    assert!(skill.contains("web_extract"));
+    assert!(
+        !skill.contains("/home/clawdbot") && !skill.contains("ddg-search"),
+        "bundled research must not depend on the Clawdbot search script"
+    );
+    assert!(
+        builtin_skills_root()
+            .join("deep-research-pro")
+            .join("assets/icon.png")
+            .is_file(),
+        "deep-research-pro must ship an icon"
+    );
+}
+
+#[test]
 fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
     let skill = read_to_string(
         builtin_skills_root()
