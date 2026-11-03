@@ -7412,6 +7412,20 @@ impl ConversationService {
             || execution_template_id_changed;
         let runtime_recycle_required = model_changed || workspace_changed || delegation_policy_changed;
 
+        let is_metadata_only = req.name.is_none()
+            && req.pinned.is_none()
+            && req.model.is_none()
+            && req.delegation_policy.is_none()
+            && req.decision_policy.is_none()
+            && req.execution_model_pool.is_none()
+            && execution_template_id.is_none()
+            && req.extra.as_ref().is_some_and(|val| {
+                val.as_object().is_some_and(|obj| {
+                    !obj.is_empty()
+                        && obj.keys().all(|k| k == "turn_credit_usage" || k == "last_token_usage")
+                })
+            });
+
         let merged_extra = if matches!(serde_json::from_str::<serde_json::Value>(&existing.extra).ok()
             .and_then(|v| v.get("voice_lifecycle").and_then(|s| s.as_str()).map(str::to_owned)).as_deref(), Some("provisional" | "ended_empty")) {
             let mut extra: serde_json::Value = serde_json::from_str(merged_extra.as_deref().unwrap_or(&existing.extra))
@@ -7436,7 +7450,7 @@ impl ConversationService {
             preset_id: None,
             preset_revision: None,
             preset_snapshot: None,
-            updated_at: Some(now),
+            updated_at: if is_metadata_only { None } else { Some(now) },
         };
 
         let configuration_guard = if runtime_configuration_changed {

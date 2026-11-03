@@ -9,7 +9,7 @@ path = "src/lib.rs"
 [features]
 default = []
 # Explicit replay fixtures; never enabled by the production binary's defaults.
-voice-skeleton = ["nomifun-voice-terminal/voice-skeleton"]
+voice-skeleton = ["nomifun-voice-terminal/voice-skeleton", "nomifun-audio/voice-skeleton"]
 native-fault-injection = ["dep:async-trait", "voice-skeleton"]
 
 [[bin]]

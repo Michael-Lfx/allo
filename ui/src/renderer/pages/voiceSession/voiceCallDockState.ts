@@ -512,7 +512,9 @@ export function resolveVoiceDockPresentation(input: VoiceDockInput): VoiceDockPr
   }
 
   const boundElsewhere = Boolean(
-    snapshot.binding?.conversation_id && snapshot.binding.conversation_id !== conversationId
+    !snapshot.ended_reason &&
+      snapshot.binding?.conversation_id &&
+      snapshot.binding.conversation_id !== conversationId
   );
   if (
     !boundElsewhere &&

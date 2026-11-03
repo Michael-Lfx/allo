@@ -47,7 +47,7 @@ impl Default for VoiceFeedbackConfig {
             dismiss_phrases: vec!["退下吧".into(), "结束通话".into(), "休息吧".into()],
             dismiss_reply: "好的，再见".into(),
             tts_backend: "local".into(),
-            tts_speed: 1.0,
+            tts_speed: 1.3,
             idle_timeout_secs: 30,
             input_device: None,
         }
@@ -373,7 +373,7 @@ pub struct VoiceDialogueSettings {
 /// Shared wire contract used by the daemon and the host's durable decision authority.
 #[derive(Debug,Clone,Copy,PartialEq,Eq,PartialOrd,Ord,Serialize,Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum VoiceIntentType {Ignore,Chat,AgentTask,TaskControl}
+pub enum VoiceIntentType {Ignore,Chat,AgentTask,TaskControl,Dismiss}
 
 #[derive(Debug,Clone,PartialEq,Eq,Serialize,Deserialize)]
 pub struct VoiceDecision {
@@ -403,7 +403,7 @@ pub fn parse_voice_decision(raw:&str)->Result<VoiceDecision,String> {
     if value.get("requires_confirmation").is_some_and(|v|!v.is_boolean()) {return Err("model_response_invalid".into());}
     let decision:VoiceDecision=serde_json::from_value(value).map_err(|_|"model_response_invalid")?;
     if decision.understood_request.as_deref()==Some("")
-        || (decision.intent_type==VoiceIntentType::Chat && decision.reply_tts.as_deref().is_none_or(|s|s.trim().is_empty())) {
+        || ((decision.intent_type==VoiceIntentType::Chat || decision.intent_type==VoiceIntentType::Dismiss) && decision.reply_tts.as_deref().is_none_or(|s|s.trim().is_empty())) {
         return Err("model_response_invalid".into());
     }
     Ok(decision)
@@ -698,6 +698,7 @@ pub struct VoiceSessionError {
 #[serde(rename_all = "snake_case")]
 pub enum VoiceCueKind {
     Wake,
+    BargeIn,
     Recognized,
     FollowUp,
     Sleep,
@@ -859,6 +860,8 @@ pub struct VoiceSessionSnapshot {
     #[serde(default)]
     pub understood_request: Option<String>,
     pub assistant_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_speaking_sentence: Option<String>,
     pub follow_up_deadline_ms: Option<i64>,
     #[serde(default)]
     pub listening_deadline_ms: Option<i64>,
@@ -1696,10 +1699,11 @@ fn is_exact_or_polite_wrapped(normalized: &str, core: &str) -> bool {
     }
     const PREFIXES: &[&str] = &[
         "请你", "请您", "麻烦你", "那你就", "ok please", "okay please",
-        "好的", "行了", "好了", "那你", "那就", "麻烦", "请", "please", "ok", "okay"
+        "好的", "行了", "好了", "那你", "那就", "麻烦", "请", "谢了", "谢谢",
+        "那先", "你先", "行吧", "成吧", "please", "ok", "okay", "alright", "then"
     ];
     const SUFFIXES: &[&str] = &[
-        "一下", "please", "吧", "了", "呀"
+        "一下", "please", "吧", "了", "呀", "啦", "呗", "哈", "先", "咯"
     ];
 
     for &p in PREFIXES {
@@ -1761,8 +1765,9 @@ pub fn classify_voice_direct_control(
     // 2. Reject explicit negation
     const NEGATORS: &[&str] = &[
         "不要", "千万别", "千万不要", "不用", "不能", "请勿", "无需", "不必", "不准", "绝不", "永不", "禁止", "勿",
-        "别退下", "别挂断", "别关", "别结束", "别停止", "别取消",
-        "don't", "dont", "never", "without", "no "
+        "别退下", "别挂断", "别关", "别结束", "别停止", "别取消", "不退下", "不挂断", "还没", "还没退下", "还没挂断",
+        "不想", "不愿", "不会", "不是", "不打算", "没有",
+        "don't", "dont", "never", "without", "no ", "not "
     ];
     for neg in NEGATORS {
         if lower.contains(neg) {
@@ -1779,10 +1784,11 @@ pub fn classify_voice_direct_control(
         }
     }
 
-    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals
+    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals, questions, 3rd-person
     const META_GUARDS: &[&str] = &[
-        "翻译", "translate", "英文", "english", "小说", "台词", "角色", "如果我说", "如果说", "假如", "会怎样", "做什么",
-        "什么意思", "meaning", "what does", "after", "之后", "然后再", "接着", "then"
+        "翻译", "translate", "英文", "english", "小说", "台词", "角色", "剧本", "如果我说", "如果说", "假如", "会怎样", "做什么",
+        "什么", "meaning", "what does", "what is", "after", "之后", "然后再", "接着", "then", "会议", "海阔天空",
+        "怎么", "如何", "怎样", "为什么", "能否", "可不可以", "可以不", "how", "why", "who", "他", "她", "它", "你说", "她说"
     ];
     for guard in META_GUARDS {
         if lower.contains(guard) {
@@ -1802,9 +1808,13 @@ pub fn classify_voice_direct_control(
     // 5. Match Dismiss Session
     const ZH_DISMISS_CORE: &[&str] = &[
         "退下吧", "退下", "退一下", "退一下吧", "退下啦", "退退退",
-        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了"
+        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧",
+        "再见", "拜拜", "拜拜了"
     ];
-    const EN_DISMISS_CORE: &[&str] = &["end the call", "hang up", "exit voice", "goodbye flowy", "dismiss"];
+    const EN_DISMISS_CORE: &[&str] = &[
+        "end the call", "hang up", "exit voice", "goodbye flowy", "dismiss",
+        "bye", "byebye", "goodbye"
+    ];
 
     for core in ZH_DISMISS_CORE.iter().chain(EN_DISMISS_CORE.iter()) {
         if is_exact_or_polite_wrapped(&lower, core) {
@@ -1819,6 +1829,47 @@ pub fn classify_voice_direct_control(
         }
     }
 
+    // 6. Short imperative dismissal fallback: for short utterances (<= 8 CJK chars or <= 4 words),
+    // if the utterance ends with an imperative dismissal particle (e.g. "退下吧", "挂断吧") AND its prefix
+    // is strictly an allowed polite filler ("谢解", "OK", "好的", "先"), match dismiss directly!
+    // Reject compound tasks (e.g. "帮我查天气退下吧") and non-control nouns ("潮水退下", "电话挂断").
+    const TASK_ACTION_GUARDS: &[&str] = &[
+        "查", "看", "搜", "帮我", "打开", "关闭", "关掉", "发", "做", "写", "订", "定", "导航", "播放", "运行", "建立",
+        "query", "search", "open", "close", "send", "turn on", "turn off", "play", "run", "create"
+    ];
+    const ALLOWED_DISMISS_PREFIXES: &[&str] = &[
+        "请", "请你", "请您", "麻烦", "麻烦你", "麻烦您", "好的", "行了", "好了", "那就", "那先", "你先",
+        "行吧", "成吧", "得嘞", "行", "那", "ok", "okay", "please", "alright", "then",
+        "谢解", "谢谢", "谢了", "多谢", "先"
+    ];
+    const ZH_SUFFIX_DISMISS_CORE: &[&str] = &[
+        "退下吧", "退一下吧", "退一下", "退下啦", "退退退",
+        "结束通话", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了", "撤吧",
+        "再见", "拜拜", "拜拜了"
+    ];
+
+    let char_count = clean.chars().count();
+    if char_count <= 8 && !TASK_ACTION_GUARDS.iter().any(|&verb| lower.contains(verb)) {
+        for core in ZH_SUFFIX_DISMISS_CORE {
+            if clean.ends_with(core) {
+                if let Some(prefix) = clean.strip_suffix(core) {
+                    let p = prefix.trim();
+                    if p.is_empty() || ALLOWED_DISMISS_PREFIXES.contains(&p) {
+                        return Some(VoiceDirectControlAction::DismissSession);
+                    }
+                }
+            }
+        }
+        let words: Vec<&str> = lower.split_whitespace().collect();
+        for core in EN_DISMISS_CORE {
+            if words.last() == Some(core) || lower == *core {
+                if words.len() <= 1 || (words.len() == 2 && ALLOWED_DISMISS_PREFIXES.contains(&words[0])) {
+                    return Some(VoiceDirectControlAction::DismissSession);
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -1828,7 +1879,7 @@ fn default_wake_reply() -> String { "我在".into() }
 fn default_interject_keyword() -> String { "Flowy".into() }
 fn default_dismiss_phrases() -> Vec<String> { vec!["退下吧".into(), "结束通话".into(), "休息吧".into()] }
 fn default_dismiss_reply() -> String { "好的，再见".into() }
-fn default_tts_speed() -> f32 { 1.0 }
+fn default_tts_speed() -> f32 { 1.3 }
 fn default_tts_volume() -> u8 { 100 }
 fn default_idle_secs() -> u32 { 30 }
 
@@ -2011,6 +2062,15 @@ mod task_control_classifier_tests {
             ("闭嘴", Some(StopSpeaking)),
             ("stop speaking", Some(StopSpeaking)),
             ("please stop speaking", Some(StopSpeaking)),
+            ("谢解退下吧。", Some(DismissSession)),
+            ("OK 退下吧", Some(DismissSession)),
+            ("Bye 啦", Some(DismissSession)),
+            ("谢了退下吧", Some(DismissSession)),
+            ("再见", Some(DismissSession)),
+            ("好的再见", Some(DismissSession)),
+            ("拜拜", Some(DismissSession)),
+            ("拜拜啦", Some(DismissSession)),
+            ("OK 拜拜", Some(DismissSession)),
         ];
         for (input, expected) in positives {
             assert_eq!(
@@ -2046,6 +2106,29 @@ mod task_control_classifier_tests {
             "“退下吧”",
             "“停止播报”",
             "他说“退下吧”",
+            "我不退下",
+            "还没挂断",
+            "怎么挂断",
+            "他退下",
+            "maybe",
+            "I said maybe",
+            "how do I hang up",
+            "I might say bye",
+            "帮我查天气退下吧",
+            "打开灯退下吧",
+            "把空调关掉退下吧",
+            "帮我订机票退下吧",
+            "导航回家退下吧",
+            "潮水退下",
+            "电话挂断",
+            "电话挂断吧",
+            "said bye",
+            "just bye",
+            "没有结束通话",
+            "你说退下",
+            "不要再见",
+            "明天再见",
+            "请把再见翻译成英文",
         ];
         for input in negatives {
             assert_eq!(
@@ -2067,9 +2150,21 @@ mod task_control_classifier_tests {
         let empty_json = "{}";
         let from_empty: VoiceUserPreferences = serde_json::from_str(empty_json).unwrap();
         assert_eq!(from_empty, prefs);
-        assert_eq!(from_empty.tts_speed, 1.0);
+        assert_eq!(from_empty.tts_speed, 1.3);
         assert_eq!(from_empty.tts_volume, 100);
         assert!(from_empty.wake_enabled);
         assert_eq!(from_empty.dismiss_phrases.len(), 3);
+    }
+
+    #[test]
+    fn test_dismiss_decision_parsing() {
+        let json = r#"{"intent_type": "dismiss", "understood_request": "用户请求退出通话", "reply_tts": "好的，您先忙。有需要随时叫我。"}"#;
+        let decision = parse_voice_decision(json).expect("parse dismiss decision");
+        assert_eq!(decision.intent_type, VoiceIntentType::Dismiss);
+        assert_eq!(decision.reply_tts.as_deref(), Some("好的，您先忙。有需要随时叫我。"));
+
+        // Missing reply_tts must fail validation for dismiss
+        let invalid_json = r#"{"intent_type": "dismiss", "understood_request": "用户请求退出通话"}"#;
+        assert!(parse_voice_decision(invalid_json).is_err());
     }
 }

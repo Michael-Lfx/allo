@@ -2722,6 +2722,42 @@ async fn update_extra_merge() {
 }
 
 #[tokio::test]
+async fn update_metadata_only_does_not_bump_updated_at() {
+    let (svc, _broadcaster, repo, runtime_registry) = make_service();
+    let conv = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+
+    let initial_updated_at = 1_000_000_i64;
+    repo.rows.lock().unwrap().iter_mut().find(|r| r.conversation_id == conv.conversation_id).unwrap().updated_at = initial_updated_at;
+
+    // 1. Update turn_credit_usage only -> updated_at MUST NOT change!
+    let update_credits: UpdateConversationRequest = serde_json::from_value(json!({
+        "extra": { "turn_credit_usage": { "turn-1": { "creditsConsumed": 100 } } }
+    })).unwrap();
+    svc.update(TEST_USER_1, &conv.conversation_id, update_credits, &runtime_registry).await.unwrap();
+
+    let after_credits = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+    assert_eq!(after_credits.updated_at, initial_updated_at, "Updating turn_credit_usage must NOT bump updated_at!");
+
+    // 2. Update last_token_usage only -> updated_at MUST NOT change!
+    let update_tokens: UpdateConversationRequest = serde_json::from_value(json!({
+        "extra": { "last_token_usage": { "total_tokens": 500 } }
+    })).unwrap();
+    svc.update(TEST_USER_1, &conv.conversation_id, update_tokens, &runtime_registry).await.unwrap();
+
+    let after_tokens = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+    assert_eq!(after_tokens.updated_at, initial_updated_at, "Updating last_token_usage must NOT bump updated_at!");
+
+    // 3. User updates title -> updated_at MUST bump!
+    let update_name: UpdateConversationRequest = serde_json::from_value(json!({
+        "name": "新标题"
+    })).unwrap();
+    svc.update(TEST_USER_1, &conv.conversation_id, update_name, &runtime_registry).await.unwrap();
+
+    let after_name = repo.get(&conv.conversation_id).await.unwrap().unwrap();
+    assert!(after_name.updated_at > initial_updated_at, "User updating name MUST bump updated_at!");
+}
+
+#[tokio::test]
 async fn update_rejects_acp_agent_identity_patch() {
     let (svc, _broadcaster, repo, runtime_registry) = make_service();
     let conversation = svc.create(TEST_USER_1, make_create_req()).await.unwrap();

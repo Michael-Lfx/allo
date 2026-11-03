@@ -474,6 +474,7 @@ const NomiSendBox: React.FC<{
   }, [reasoning_effort]);
 
   useEffect(() => {
+    if (isVoiceConversation) return;
     if (modelSelection.isModelCatalogLoading || !current_model?.use_model || !selectedChatModelOption) return;
     if (currentReasoningEffort === effectiveReasoningEffort) return;
     setCurrentReasoningEffort(effectiveReasoningEffort);
@@ -2223,12 +2224,6 @@ const NomiSendBox: React.FC<{
           content={
             <div className='flex flex-wrap items-center gap-8px'>
               <span>{t('conversation.chat.modelUnavailableHint')}</span>
-              <Button type='text' size='small' onClick={modelSelection.refreshModelCatalog}>
-                {t('common.retry')}
-              </Button>
-              <a className='text-primary-6 text-12px' href='#/models?section=models'>
-                {t('conversation.chat.openModelSettings')}
-              </a>
             </div>
           }
         />

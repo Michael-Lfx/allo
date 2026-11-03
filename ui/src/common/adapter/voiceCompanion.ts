@@ -31,13 +31,14 @@ export interface VoiceSnapshot {
   user_text: string | null;
   understood_request?: string | null;
   assistant_text: string | null;
+  active_speaking_sentence?: string | null;
   error: { stage: string; code: string } | null;
   ended_reason?: 'initial_silence' | 'follow_up_silence' | 'user_stop' | 'no_intent' | 'failed' | null;
   feedback?: {
     request_id: string;
     session_id: string | null;
     turn_id: string | null;
-    kind: 'wake' | 'recognized' | 'follow_up' | 'sleep' | 'stopped' | 'error' | 'processing' | 'listening_reminder';
+    kind: 'wake' | 'barge_in' | 'recognized' | 'follow_up' | 'sleep' | 'stopped' | 'error' | 'processing' | 'listening_reminder';
     status: 'pending' | 'started' | 'completed' | 'cancelled' | 'failed' | 'skipped';
     reason_code: string | null;
     at_ms: number;
@@ -471,8 +472,11 @@ async function cancelCallByRequestId(requestId: string): Promise<{ recovered: bo
 }
 
 function clearPendingCallIntent() {
-  pendingCallIntent=null;
-  callIntentListeners.forEach(listener=>listener());
+  pendingCallIntent = null;
+  if (!presenceSnapshot || presenceSnapshot.phase === 'idle' || Boolean(presenceSnapshot.ended_reason)) {
+    updateActiveVoiceCallConversationId(null);
+  }
+  callIntentListeners.forEach((listener) => listener());
 }
 function settlePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): void {
   if (snapshot.call_request_id && snapshot.call_request_id === latestCallRequestId
@@ -510,9 +514,17 @@ function reconcilePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): v
     snapshot.phase !== 'idle' &&
     snapshot.binding?.conversation_id && snapshot.binding.session_id === snapshot.session_id
   );
+  const pendingActive = Boolean(
+    !stopConfirmed &&
+    pendingCallIntent &&
+    !pendingCallIntent.unknown &&
+    !pendingCallIntent.abandoned &&
+    !pendingCallIntent.retired &&
+    pendingCallIntent.inFlight
+  );
   const activeId = isCallActive
     ? (snapshot.binding?.conversation_id ?? null)
-    : (pendingCallIntent?.conversationId ?? null);
+    : (pendingActive ? (pendingCallIntent?.conversationId ?? null) : null);
   updateActiveVoiceCallConversationId(activeId);
 }
 export function voiceStartNeedsPrepare(error: unknown): boolean {

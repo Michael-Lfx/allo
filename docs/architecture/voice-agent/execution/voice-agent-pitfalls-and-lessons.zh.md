@@ -367,6 +367,182 @@ AI 在执行任务并向扬声器播报确认语或任务进展时（如“好�
 
 ---
 
+### 2.17 陷阱 17：KWS 唤醒在新建任务页/首页无法创建新会话（单例查表与残留候选幽灵死锁）
+
+#### 现场现象
+无论在首页还是点击左上角“新建任务”，只要通过麦克风唤醒词唤醒，页面永远被强制跳转回某一条历史语音任务，无法开始全新通话。
+
+#### 根因分析
+1. 宿主后端维护的 `active_window_candidate` 在通话结束后，前端切页回到首页或新建页时未向后端发送清理通知，导致后端内存中残留着旧会话 ID；
+2. 即使候选为空，`resolve_target_conversation` 兜底调用 `ensure_default_voice_conversation`，使用固定静态创建键 `voice:default:{user_id}` 查库，永远返回历史上第一次创建的那条“语音助手”单例会话；
+3. 前端 `Router.tsx` 监听到了 `snapshot.binding.conversation_id`，发现与当前 URL 不一致，便强制执行 `navigate('/conversation/' + targetConvId)`，把用户硬生生拉回了那条旧会话页面。
+
+#### 解决方案与防线
+- **废除静态单例查表**：新建页与首页唤醒必须调用 `create_provisional_voice_conversation_with_locale` 并带动态时间戳凭证，每次生成全新的独立语音会话；
+- **前端切页主动注销候选**：用户离开会话页面时，前端主动触发窗口上下文注销，清除后端的候选幽灵 ID。
+
+---
+
+### 2.18 陷阱 18：打断回执仅使用 80ms 气泡机械音导致“打断后不自知”的用户盲区
+
+#### 现场现象
+正在播报时喊唤醒词打断，虽然物理打断成功，但用户听不到任何固定人声（如“我在”、“你说”），由于扬声器大声播报突然切断，80ms 轻微水滴音被环境/用户声音掩盖，用户不看屏幕无法确知 AI 是否在听。
+
+#### 根因分析
+先前因过度恐惧无 AEC 环境下人声回灌引发 1.2s 丢帧死锁，将人声全部降级为 200ms 和弦与 80ms 气泡音。但气泡音在扬声器下能量极其微弱，且脱离了人类对于语音助手“像真人一样打断回应‘你说/在呢’”的心智模型。
+
+#### 解决方案与防线
+- **高明晰短人声微短语回执**：打断时播放 250ms 清脆短人声（“你说”/“Go ahead”），首次唤醒播放 350ms 人声（“我在”/“I'm here”）；
+- **声学 0ms 直通守卫**：依托 T48 的 `is_playback_active` 门控，在“你说”发声的 250ms 内扬声器物理自静音，“你说”播毕瞬间（0ms）麦克风完全开放，绝不吞掉用户开口首字。
+
+---
+
+### 2.19 陷阱 19：云端 TTS 忽略速度参数导致语速滑块形同虚设（Edge TTS 漏 prosody 标签）
+
+#### 现场现象
+用户在设置面板将语速调整至 1.5x，播报体感依然极其缓慢拖沓。
+
+#### 根因分析
+伴侣端虽然拼接了 `;speed={tts_speed}`，但底层的 `EdgeTtsProvider` 在解析 `voice` 字符串时，通过 `split_once(";speed=")` 截断了音色名，却将解析出的 speed 抛弃，生成的微软 SSML 模板漏写了 `<prosody rate="...">` 标签，导致云端永远以 1.0x 原速合成。
+
+#### 解决方案与防线
+- **SSML 动态语速注入**：解析速度参数计算相对百分比（如 1.3x $\to$ `+30%`，1.5x $\to$ `+50%`）注入 `<prosody rate="...">`；
+- **出厂基准优化**：将出厂默认对话语速优化为更符合人类日常交流节奏的 1.25x~1.3x（约 280~320 字/分），告别 1.0x 的朗读课文感。
+
+---
+
+### 2.20 陷阱 20：语速默认值与透传省略逻辑冲突导致 1.0x 被静默替换为 1.3x
+
+#### 现场现象
+在设置面板中选择 1.0x 原始语速，播报依然被加速到 1.3x 播放。
+
+#### 根因分析
+前端与业务层先前为避免每次拼接冗余参数，在 `voice_spec` 中使用了 `if (tts_speed - 1.0).abs() > 0.01` 判断，仅当不为 1.0 时才拼接 `;speed=`；而当底层的合成器默认值改为 1.3x 时，缺省自动取 1.3x，造成 1.0x 设置被静默替换为 1.3x。
+
+#### 解决方案与防线
+- **显式透传原则**：`format_voice_spec` 始终显式拼装 `;speed={tts_speed:.2}`，覆盖 1.0、1.3、1.5 全量档位；合成器缺省回退恢复为 1.0x，彻底消灭歧义。
+
+---
+
+### 2.21 陷阱 21：工具高危二次确认态（ListeningConfirm）遗留 600ms 声学盲区
+
+#### 现场现象
+当工具触发高危确认（如“您确定要删除该文件吗？”）时，用户被打断或提示音落毕瞬间口头回答“确认”，口头答复被麦克风当成回声吞掉。
+
+#### 根因分析
+先前仅在 `Listening` 状态优化了 0ms 盲区，而遗漏了 `ListeningConfirm` 状态，其内部仍使用 `in_echo_cooldown`，在提示音播毕后产生 600ms 残留盲区。
+
+#### 解决方案与防线
+- **确认态盲区同步归零**：将 `AcousticState::ListeningConfirm` 丢帧条件同步升级为 `is_playback_active`，并在 `tests/voice_confirmation.rs` 补充专项回归测试。
+
+---
+
+### 2.22 陷阱 22：通话退出后状态假死残留导致绿色声波挂死、`daemon_wake_unknown` 与首页切换回旧会话死锁
+
+#### 现场现象
+1. 退出语音通话后，主面板已显示“未在通话”，但左侧会话列表中的该条语音任务依然常驻绿色跳动声波和绿点（`|||.`）；
+2. 此时在右下角再次点击电话通话按钮，界面直接弹出红色告警条：`(!) daemon_wake_unknown`；
+3. 用户回到首页点击电话通话按钮或通过唤醒词唤醒，系统未创建全新语音任务，而是弹出提示“当前已有正在进行的语音通话，已为您切换”并被强行拉回旧通话任务。
+
+#### 根因分析
+1. **前端呼叫意图假死滞留内存**：
+   - 伴侣守护进程在通话退出过渡期的几十毫秒内，状态机若未完全归位 `Idle`，收到新的唤醒请求会返回 409 Conflict (`VoiceWakeError::Busy`)；
+   - 宿主后端 `wake_rejection_precedes_session()` 过滤白名单遗漏了 409，当成未知结果返回了 503 `daemon_wake_unknown`；
+   - 前端接收到 503 后，将 `pendingCallIntent.unknown` 置为 true，但并未清除该意图；在 `reconcilePendingCall` 中，因为缺少呼叫进行中检查，只要未通话就将 `activeId` 回退为 `pendingCallIntent.conversationId`，导致侧边栏声波一直保持绿色；
+2. **首页呼叫与唤醒被旧活跃状态劫持**：
+   - 首页 `GuidPage.tsx` 点击电话按钮发起 `new_voice_conversation` 时，后端 `start_call` 检测到底层 `is_active` 依然为真（或存在冲突），返回 `voice_call_conflict` 错误；
+   - 前端 `GuidPage.tsx:506` 收到该错误后执行了回退逻辑：`await navigate('/conversation/' + errorObj.active_conversation_id)`，直接将用户导航回了旧会话；
+   - KWS 唤醒也是同理：守护进程认为还在旧会话中，派发事件给宿主，前端 Router 检测到活跃会话不一致强制执行页面切换，死锁达成闭环。
+
+#### 解决方案与防线
+- **呼叫意图即时清空**：前端 `reconcilePendingCall` 严格要求只有意图处于真正在途（`intent.inFlight && !intent.unknown && !intent.abandoned`）才允许作为备选 ID；在收到 `daemon_wake_unknown`、通话挂断或出错时，显式调用 `clearPendingCallIntent()`；
+- **守护进程状态机自愈守卫**：在守护进程 `accept_wake` 中增加守卫，若会话已标记结束（`ended_reason.is_some()`），不论停留在哪个过渡状态，一律原子 `d.reset()` 归一为 `Idle`，彻底消灭 409 Conflict；
+- **首页唤醒与呼叫分流**：彻底确保会话停止后后端与前端残留候选为 None，阻断 `voice_call_conflict` 误判。
+
+---
+
+### 2.23 陷阱 23：语言会话挂载隐式写库篡改 `updated_at` 导致侧边栏列表被强制置顶
+
+#### 现场现象
+用户在侧边栏点击某条历史语音会话进入查看，并未输入任何消息，也未点击任何设置，但该会话却突然被置顶到列表第一位，打乱了正常的时间线排序。
+
+#### 根因分析
+1. 侧边栏排序严格依赖数据库字段 `modified_at`（对应 SQLite 中的 `updated_at` 毫秒时间戳）倒序排列；
+2. 普通文本会话是在前端创建的，创建时前端已完整填入了 `execution_model_pool` 与 `reasoning_effort` 等前端专属模型配置；
+3. 而语言会话是由后端的守护进程在唤醒或语音呼叫时创建的，数据库初始化记录中未携带 `execution_model_pool` 字段；
+4. 当用户在前端点击进入该会话时，`ChatConversation.tsx:299` 与 `NomiSendBox.tsx:480` 在组件挂载时检测到会话缺少模型池，**自作主张地触发了一次自动更新**：`await ipcBridge.conversation.update.invoke({ conversation_id, updates: { execution_model_pool } })`；
+5. 这一更新触发了 SQLite 的 `UPDATE conversations SET updated_at = now()`，把修改时间直接刷新成了当前时间，导致会话被列表重新排序后推到了最前面。
+
+#### 解决方案与防线
+- **语言会话只读浏览防写保护**：在 `ChatConversation.tsx` 与 `NomiSendBox.tsx` 的挂载自动更新逻辑中，对语音会话（`isVoiceConversation`）**直接 return 跳过隐式写库**；
+- **动态装配保障**：如果用户在该语言会话中真正敲键盘发送消息，由发送动作（`nomiSendDispatch.ts`）在发送当刻动态装配模型，既保证发送完全正常，又彻底保住历史浏览时的只读性与时间戳稳定。
+
+---
+
+### 2.24 陷阱 24：WebView2 客户端 HashRouter 虚拟路由下比对 `window.url()` 导致会话切换上报被拒收
+
+#### 现场现象
+用户在侧边栏点击进入“语音通话 B”，对着麦克风喊唤醒词，页面没有在通话 B 中开启，反而被强行踢回到曾经的历史会话 A 中去继续通话。
+
+#### 根因分析
+1. 前端切换到会话 B 时，通过 `reportVoiceCandidate("B")` 调用 Tauri 桌面桥接 `voice_session_bridge.rs`；
+2. 桌面桥接原先写了一段防伪校验：`if url.fragment() != Some("/conversation/{id}") { return Err("voice_context_stale"); }`；
+3. **致命死穴**：在 Windows WebView2 架构下，SPA 单页应用的 Hash 虚拟路由跳转（`#/conversation/B`）**根本不会触发原生 WebView2 的底层的 Source URL 导航**！Rust 通过 `window.url()` 读到的永远是启动时的静态主文件 URL，其 `fragment()` 永远是 `None`；
+4. 桥接层误以为这是“过期的虚假报告”，直接把会话 B 的上报抛错拒收！前端 `.catch(() => {})` 吞掉报错，导致后端以为窗口还在空页面（`active_window_candidate == None`），唤醒时跌入默认分支，强行跳回历史会话 A！
+
+#### 解决方案与防线
+- **切除底层虚假 URL 校验**：WebView2 内部路由由 React Router 内存管理，原生层只要确认窗口处于前台且未最小化，直接确凿采信前端上报的 `conversation_id`，杜绝假阴性拒收。
+
+---
+
+### 2.25 陷阱 25：语音气泡缺少 billing 数据触发 `fetchAndPersistTurnCredits` 隐式写库篡改 `updated_at`
+
+#### 现场现象
+即便拦截了模型池的自动回填，用户只要点击打开历史语言会话，该会话在 400ms 后依然会被自动跳到侧边栏最顶端。
+
+#### 根因分析
+1. 语音会话的助手气泡是由后端守护进程通过离线管道直接写入数据库的，未经过云端实时 billing 流，气泡初始化时缺少 `turn_credit_usage` 数据；
+2. 打开该会话时，`MessageText.tsx:448` 挂载发现 `turnCredits == null`，自作聪明地在 400ms 后自动触发 `fetchAndPersistTurnCredits`；
+3. `fetchAndPersistTurnCredits` 查完积分后，调用 `ipcBridge.conversation.update` 试图写库，触发了 SQLite 的 `UPDATE conversations SET extra = ?, updated_at = now()`；
+4. 这导致该历史会话的时间戳瞬间变为当前最新时间，侧边栏重新排序将其置顶。
+
+#### 解决方案与防线
+- **语音气泡禁自动积分写库**：在 `MessageText.tsx` 中增加判断，对于语音会话（`isVoiceConversation`），挂载阶段严格跳过积分的自动持久化写库，保持浏览过程 100% 只读与时间戳稳定。
+
+---
+
+### 2.26 陷阱 26：通话挂断过度清理候选（`stop_session` 抹掉 `active_window_candidate`）导致原地唤醒被误判为离页新建
+
+#### 现场现象
+用户停留在语音会话 B 页面上，挂断上一通通话后，并未切页离开。再次开口喊唤醒词时，页面没有在当前会话 B 中继续，反而又自动新建了一个全新的语音会话 C。
+
+#### 根因分析
+1. `voice_companion_manager.rs` 在 `stop_session` 和 `mark_active_request_stopped` 中执行了 `self.set_candidate_conversation(None)`；
+2. 但用户并没有离开当前页面，浏览器依然停留在 `#/conversation/B`；
+3. 因路由未发生改变，前端 `useVoiceContext` 不会重新上报；
+4. 用户再次唤醒时，后端读取到的候选为 `None`，误以为用户处于首页，从而触发了新建会话逻辑。
+
+#### 解决方案与防线
+- **挂断绝不抹除窗口候选**：删除 stop 处的 `set_candidate_conversation(None)`，当前窗口正在查看的会话候选仅在用户真正切页（如切回首页）或窗口关闭时由前端/窗口事件清空；
+- **当前会话第一优先级**：在 `recorder.rs` 中，优先判定 `candidate` 是否为语音会话，一旦为真立即触发 Rule 1 原地接续，彻底杜绝被工作区分支旁路跳过。
+
+---
+
+### 2.27 陷阱 27：新建语音会话未继承模型导致首句即报 400 `Nomi conversation has no provider/model configured`
+
+#### 现场现象
+首页唤醒成功创建了全新的语音会话，但用户开口说话后系统弹窗报错 `Bad request: Nomi conversation has no provider/model configured`，输入框提示“当前会话未选择模型，无法发送消息”。
+
+#### 根因分析
+1. 调用 `create_provisional_voice_conversation_with_locale` 时，`model` 参数传了 `None`；
+2. 新生成的语音会话行在数据库中 `model` 为空；
+3. 执行时后端 `build_runtime_options` 检测到无模型配置，直接拒绝请求抛出 400。
+
+#### 解决方案与防线
+- **动态继承默认语音模型**：新建 provisional 会话时，从默认语音会话 `home` 读取用户配置的模型，并在为空时由 `VoiceTaskRuntime::prepare_configuration` 兜底解析默认模型，确保新会话 100% 具备有效模型配置。
+
+---
+
 ## 3. 长效防线与研发 Check List
 
 在未来迭代或多 Agent 协作开发中，任何人及 Agent 均须按以下 Checklist 进行自检：
@@ -385,4 +561,9 @@ AI 在执行任务并向扬声器播报确认语或任务进展时（如“好�
 - [ ] **拼音全覆盖原则**：禁止使用几十个字符的粗糙静态 match 假装支持“自定义唤醒词”，必须建立全量汉字声韵母转换体系，杜绝补丁泥潭；
 - [ ] **切片边界防御守卫**：切片前严禁仅靠 `saturating_sub` 控制循环，必须显式校验源长度 $n \ge window\_len$；
 - [ ] **三场景唤醒路由分流**：普通文本会话被唤醒必须自动新建语音通话，严禁污染既有文本工作流；
-- [ ] **IconPark filled 图标着色契约**：使用 `theme='filled'` 时必须显式指定 `fill="currentColor"`。
+- [ ] **IconPark filled 图标着色契约**：使用 `theme='filled'` 时必须显式指定 `fill="currentColor"`；
+- [ ] **KWS 唤醒非单例原则**：首页或新建页唤醒严禁复用 `voice:default` 历史单例，必须生成动态时间戳创建全新独立会话；
+- [ ] **打断人声回执明晰原则**：打断声学回执严禁仅依赖不易察觉的超短机械音，必须提供“你说/我在”明确人声与 0ms 盲区释放；
+- [ ] **TTS 语速全链路透传**：任何语音合成提供商（无论云端 Edge 还是离线 Sherpa）必须完整支持语速相对调节，严禁丢弃 speed 参数；
+- [ ] **呼叫意图生命周期即时清空**：前端呼叫意图在退出通话、出错或网络断开时必须无条件清理，严禁使 `activeVoiceCallId` 假死滞留造成绿色声波常驻与旧会话劫持；
+- [ ] **只读会话浏览禁触发隐式写库**：历史会话挂载与浏览严禁隐式调用更新接口篡改 `updated_at`，保持时间线排序稳定。

@@ -3427,6 +3427,20 @@
         assert!(matches!(receipts.get("new-request"),Some(HandledStartOutcome::Stopped {..})));
         assert!(matches!(receipts.get("old-request"),Some(HandledStartOutcome::Bound {..})));
     }
+
+    #[test]
+    fn stop_call_preserves_candidate_conversation_for_in_place_rewake() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path());
+        manager.set_candidate_conversation(Some("conv-viewed".into()));
+        assert_eq!(manager.active_window_candidate().read().unwrap().conversation_id.as_deref(), Some("conv-viewed"));
+        manager.mark_active_request_stopped(Some("session-1"), Some("req-1"));
+        assert_eq!(
+            manager.active_window_candidate().read().unwrap().conversation_id.as_deref(),
+            Some("conv-viewed"),
+            "stopping a call must NOT wipe the candidate conversation of the page the user is viewing"
+        );
+    }
     #[tokio::test]
     #[ignore = "requires feature-enabled daemon binary, read-only models, isolated port and env-set fault injection"]
     async fn supervised_native_stuck_exits_and_exhausts_restart_budget() {

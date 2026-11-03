@@ -18,7 +18,7 @@ pub const VOICE_DECISION_SCHEMA: &str = r#"{
   "properties": {
     "intent_type": {
       "type": "string",
-      "enum": ["ignore", "chat", "agent_task", "task_control"]
+      "enum": ["ignore", "chat", "agent_task", "task_control", "dismiss"]
     },
     "task_control_action": {
       "type": "string",
@@ -27,7 +27,7 @@ pub const VOICE_DECISION_SCHEMA: &str = r#"{
     },
     "reply_tts": {
       "type": "string",
-      "description": "当 intent_type 为 chat 时的直接口语回答 (≤60字)"
+      "description": "当 intent_type 为 chat 或 dismiss 时的直接口语回答 (≤60字)"
     },
     "understood_request": {
       "type": "string",
@@ -59,7 +59,7 @@ pub const VOICE_DECISION_SCHEMA_EN: &str = r#"{
   "properties": {
     "intent_type": {
       "type": "string",
-      "enum": ["ignore", "chat", "agent_task", "task_control"]
+      "enum": ["ignore", "chat", "agent_task", "task_control", "dismiss"]
     },
     "task_control_action": {
       "type": "string",
@@ -68,7 +68,7 @@ pub const VOICE_DECISION_SCHEMA_EN: &str = r#"{
     },
     "reply_tts": {
       "type": "string",
-      "description": "Direct spoken reply when intent_type is chat (<= 60 words)"
+      "description": "Direct spoken reply when intent_type is chat or dismiss (<= 60 words)"
     },
     "understood_request": {
       "type": "string",

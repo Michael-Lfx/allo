@@ -11,14 +11,6 @@ const UnsavedBadge: React.FC<{ text: string }> = ({ text }) => (
   </span>
 );
 
-const isKwsDirectSupported = (word?: string): boolean => {
-  if (!word || !word.trim()) return true;
-  const clean = word.trim().toLowerCase();
-  if (clean === 'hey flowy' || clean === 'flowy') return true;
-  // English letters and standard Chinese characters (6,700+ GB2312) are natively supported by Zipformer KWS
-  return /^[\u4e00-\u9fa5a-zA-Z\s,.'!?-]+$/.test(clean);
-};
-
 export default function VoiceFeedbackSettingsSection({ connected }: { connected: boolean }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<VoiceFeedbackSettings | null>(null);
@@ -38,7 +30,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
           ...value.requested,
           wake_enabled: value.requested.wake_enabled ?? true,
           wake_words: value.requested.wake_words ?? ['Hey Flowy'],
-          tts_speed: value.requested.tts_speed ?? 1.0,
+          tts_speed: value.requested.tts_speed ?? 1.3,
           idle_timeout_secs: value.requested.idle_timeout_secs ?? 30,
           input_device: value.requested.input_device,
         });
@@ -89,63 +81,47 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
   return (
     <SettingsSection title={t('voice.feedback.voicePreferencesTitle')} description={t('voice.feedback.voicePreferencesDesc')}>
       <SettingsList>
-        <div className={`flex flex-col gap-3 p-4 rounded-8px border border-solid transition-all ${
+        <div className={`p-4 rounded-8px border border-solid transition-all ${
           wakeEnabledDirty || wakeWordsDirty
             ? 'border-warning-5 bg-warning-1 shadow-[0_0_0_1px_rgba(var(--warning-6),0.2)]'
             : 'border-[var(--border-base)] bg-fill-1'
         }`}>
-          <div className='flex items-center justify-between'>
-            <div className='flex flex-col gap-0.5'>
+          <div className='flex items-center justify-between gap-4'>
+            <div className='flex flex-col gap-1 min-w-0 flex-1'>
               <div className='text-14px font-medium text-t-primary flex items-center gap-2'>
                 <span>{t('voice.feedback.wakeEnabled')}</span>
-                {wakeEnabledDirty && <UnsavedBadge text={t('voice.feedback.unsaved')} />}
+                {(wakeEnabledDirty || wakeWordsDirty) && <UnsavedBadge text={t('voice.feedback.unsaved')} />}
               </div>
-              <div className='text-12px text-t-secondary'>
+              <div className='text-12px text-t-secondary leading-relaxed'>
                 {t('voice.feedback.wakeEnabledHint')}
               </div>
             </div>
-            <Switch
-              aria-label={t('voice.feedback.wakeEnabled')}
-              checked={draft?.wake_enabled ?? true}
-              disabled={!draft || busy}
-              onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
-            />
-          </div>
-
-          {(draft?.wake_enabled ?? true) && (
-            <div className='flex flex-col gap-2 pt-3 border-t border-t-solid border-[var(--border-base)]'>
-              <div className='flex items-center justify-between'>
-                <div className='text-13px font-medium text-t-primary flex items-center gap-2'>
-                  <span>{t('voice.feedback.wakeWords')}</span>
-                  {wakeWordsDirty && <UnsavedBadge text={t('voice.feedback.unsaved')} />}
-                </div>
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-11px font-medium border border-solid ${
-                  isKwsDirectSupported(draft?.wake_words?.[0])
-                    ? 'text-success-6 border-success-3 bg-success-1'
-                    : 'text-primary-6 border-primary-3 bg-primary-1'
-                }`}>
-                  <span>{isKwsDirectSupported(draft?.wake_words?.[0]) ? '●' : '◈'}</span>
-                  <span>{isKwsDirectSupported(draft?.wake_words?.[0]) ? t('voice.feedback.kwsDirectReady') : t('voice.feedback.cascadeFallbackReady')}</span>
-                </span>
-              </div>
+            <div className='flex items-center gap-3 shrink-0'>
               <Input
                 aria-label={t('voice.feedback.wakeWords')}
                 placeholder={t('voice.feedback.wakeWordsPlaceholder')}
+                maxLength={12}
                 value={
                   !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === 'hey flowy'
                     ? ''
                     : draft.wake_words[0]
                 }
                 allowClear
-                disabled={!draft || busy}
-                className={`transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
+                disabled={!draft || !(draft.wake_enabled ?? true) || busy}
+                className={`w-160px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
                 onChange={(val) => {
                   const word = val.trim();
                   setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
                 }}
               />
+              <Switch
+                aria-label={t('voice.feedback.wakeEnabled')}
+                checked={draft?.wake_enabled ?? true}
+                disabled={!draft || busy}
+                onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
+              />
             </div>
-          )}
+          </div>
         </div>
 
         <SettingsRow
@@ -217,11 +193,11 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 min={0.5}
                 max={2.0}
                 step={0.1}
-                value={draft?.tts_speed ?? 1.0}
+                value={draft?.tts_speed ?? 1.3}
                 disabled={!draft || busy}
                 onChange={(speed) => setDraft((value) => value && { ...value, tts_speed: Number(speed) })}
               />
-              <span className='text-t-secondary tabular-nums'>{draft?.tts_speed ? `${draft.tts_speed.toFixed(1)}x` : '1.0x'}</span>
+              <span className='text-t-secondary tabular-nums'>{draft?.tts_speed ? `${draft.tts_speed.toFixed(1)}x` : '1.3x'}</span>
             </div>
           }
         />

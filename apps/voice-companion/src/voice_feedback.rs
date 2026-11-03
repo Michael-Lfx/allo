@@ -48,6 +48,7 @@ pub(crate) async fn play(
         VoiceCueKind::Wake | VoiceCueKind::FollowUp | VoiceCueKind::ListeningReminder => {
             EarconKind::Wake
         }
+        VoiceCueKind::BargeIn => EarconKind::BargeIn,
         VoiceCueKind::Recognized | VoiceCueKind::Processing => EarconKind::Guide,
         VoiceCueKind::Sleep | VoiceCueKind::Stopped => EarconKind::Sleep,
         VoiceCueKind::Error => EarconKind::Error,
@@ -82,6 +83,71 @@ pub(crate) async fn play(
     };
     tracing::info!(kind = ?kind, status = ?diagnostic.status, request_id = %diagnostic.request_id,
         "voice_feedback_finished");
+    publish(&diagnostic);
+    completed
+}
+
+pub(crate) async fn play_vocal(
+    playback: &Arc<PlaybackPipeline>,
+    events: &Arc<VoiceEventHub>,
+    wav_bytes: &[u8],
+    kind: VoiceCueKind,
+    generation: u64,
+) -> bool {
+    if playback.generation_id() != generation {
+        return false;
+    }
+    let scope = events.snapshot();
+    let mut diagnostic = VoiceFeedbackDiagnostic {
+        request_id: nomifun_common::generate_id(),
+        session_id: scope.session_id,
+        turn_id: scope.turn_id,
+        kind,
+        status: VoiceCueStatus::Pending,
+        reason_code: None,
+        at_ms: chrono::Utc::now().timestamp_millis(),
+    };
+    let publish = |diagnostic: &VoiceFeedbackDiagnostic| {
+        let current = events.snapshot();
+        if current.session_id == diagnostic.session_id && current.turn_id == diagnostic.turn_id {
+            let _ = events.send(VoiceCompanionEvent::Feedback {
+                diagnostic: diagnostic.clone(),
+            });
+        }
+    };
+    publish(&diagnostic);
+    let config = events.feedback();
+    if config.mode == VoiceFeedbackMode::Off || config.volume == 0 {
+        diagnostic.status = VoiceCueStatus::Skipped;
+        diagnostic.reason_code = Some("feedback_muted".into());
+        publish(&diagnostic);
+        return playback.generation_id() == generation;
+    }
+    let (mut pcm, rate) = nomifun_audio::parse_audio_frame_to_pcm(wav_bytes);
+    let gain = config.volume as f32 / 100.0;
+    for sample in &mut pcm {
+        *sample *= gain;
+    }
+    let frame = nomifun_audio::pcm_to_wav(&pcm, rate);
+    let result = playback
+        .play_cue_frame_with_started(frame, generation, || {
+            let mut started = diagnostic.clone();
+            started.status = VoiceCueStatus::Started;
+            started.at_ms = chrono::Utc::now().timestamp_millis();
+            publish(&started);
+        })
+        .await;
+    diagnostic.at_ms = chrono::Utc::now().timestamp_millis();
+    let completed = playback.generation_id() == generation && result.is_ok();
+    diagnostic.status = if playback.generation_id() != generation {
+        VoiceCueStatus::Cancelled
+    } else if result.is_ok() {
+        VoiceCueStatus::Completed
+    } else {
+        VoiceCueStatus::Failed
+    };
+    tracing::info!(kind = ?kind, status = ?diagnostic.status, request_id = %diagnostic.request_id,
+        "voice_vocal_feedback_finished");
     publish(&diagnostic);
     completed
 }
@@ -226,6 +292,7 @@ pub(crate) fn preview_frame(kind: VoiceCueKind, volume: u8) -> Vec<u8> {
         VoiceCueKind::Wake | VoiceCueKind::FollowUp | VoiceCueKind::ListeningReminder => {
             EarconKind::Wake
         }
+        VoiceCueKind::BargeIn => EarconKind::BargeIn,
         VoiceCueKind::Recognized | VoiceCueKind::Processing => EarconKind::Guide,
         VoiceCueKind::Sleep | VoiceCueKind::Stopped => EarconKind::Sleep,
         VoiceCueKind::Error => EarconKind::Error,

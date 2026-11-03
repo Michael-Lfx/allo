@@ -138,6 +138,41 @@ pub fn should_hold_microphone(
     wake_enabled && kws_ready
 }
 
+/// Formats a complete voice specification string combining base voice and user-configured speed rate.
+pub(crate) fn format_voice_spec(locale: Option<&str>, tts_speed: f32) -> String {
+    let is_en = nomifun_api_types::voice::is_english_locale(locale);
+    let base_voice = if is_en { "en-US-JennyNeural" } else { "" };
+    format!("{base_voice};speed={tts_speed:.2}")
+}
+
+/// Checks whether a detected keyword or its core tokens appear in the given assistant spoken text.
+pub(crate) fn keyword_is_in_text(keyword: &str, text: &str) -> bool {
+    let clean_kw = keyword.trim().trim_start_matches('@').replace('_', " ").trim().to_lowercase();
+    if clean_kw.is_empty() {
+        return false;
+    }
+    let text_lower = text.to_lowercase();
+    // Only check whole-string substring if keyword is multi-word or non-ASCII (CJK)
+    if (clean_kw.contains(' ') || clean_kw.chars().any(|c| !c.is_ascii())) && text_lower.contains(&clean_kw) {
+        return true;
+    }
+    // Extract discrete ASCII words to prevent substring over-masking (e.g. "they" matching "hey")
+    let ascii_words: Vec<&str> = text_lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    for part in clean_kw.split_whitespace() {
+        if part.chars().any(|c| !c.is_ascii()) {
+            if text_lower.contains(part) {
+                return true;
+            }
+        } else if part.len() >= 3 && ascii_words.iter().any(|&w| w == part) {
+            return true;
+        }
+    }
+    false
+}
+
 fn effective_idle_timeout(events: &VoiceEventHub) -> u32 {
     events.feedback().idle_timeout_secs
 }
@@ -727,6 +762,9 @@ trait KwsBackend: Send {
     fn process_pcm_chunk(&mut self, chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult>;
     fn reset(&mut self);
     fn is_initialized(&self) -> bool;
+    fn has_default_wake_words(&self) -> bool {
+        true
+    }
 }
 
 impl KwsBackend for KwsEngine {
@@ -741,6 +779,10 @@ impl KwsBackend for KwsEngine {
     fn is_initialized(&self) -> bool {
         KwsEngine::is_initialized(self)
     }
+
+    fn has_default_wake_words(&self) -> bool {
+        KwsEngine::has_default_wake_words(self)
+    }
 }
 
 struct NativeKws {
@@ -750,6 +792,9 @@ struct NativeKws {
 }
 
 impl NativeKws {
+    pub(super) fn has_default_wake_words(&self) -> bool {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).has_default_wake_words()
+    }
     fn new(kws: Box<dyn KwsBackend>, runner: NativeCallRunner) -> Self {
         let initialized = kws.is_initialized();
         Self {
@@ -1604,6 +1649,13 @@ impl VoiceCompanionRuntime {
         self
     }
 
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub fn publish_synthetic_assistant_text_for_test(&self, text: &str) {
+        let _ = self.event_tx.send(VoiceCompanionEvent::ResponseReady {
+            text: text.to_string(),
+        });
+    }
+
     pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<VoiceCompanionEvent> {
         self.event_tx.sender()
     }
@@ -2101,6 +2153,9 @@ impl VoiceCompanionRuntime {
         play_feedback: bool,
     ) -> Result<(), VoiceWakeError> {
         let mut d = driver.lock().await;
+        if events.snapshot().ended_reason.is_some() && d.current_state() != AcousticState::Idle {
+            d.reset();
+        }
         let next = d
             .handle_event(AcousticEvent::WakeHit)
             .map_err(|_| VoiceWakeError::Busy)?;
@@ -2123,7 +2178,20 @@ impl VoiceCompanionRuntime {
         let events = events.clone();
         let generation = playback.generation_id();
         tokio::spawn(async move {
-            voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            let feedback = events.feedback();
+            let is_en = nomifun_api_types::voice::is_english_locale(events.snapshot().locale.as_deref());
+            let custom_reply = feedback.wake_reply.trim();
+
+            if !feedback.speak_replies || custom_reply.is_empty() {
+                // UI Contract: "留空则不发声" -> When empty or speak_replies=false, play earcon chime only
+                voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            } else if custom_reply == "我在" || custom_reply.eq_ignore_ascii_case("i'm here") {
+                // Default phrase uses zero-latency pre-rendered vocal asset
+                let vocal_bytes = nomifun_audio::vocal::VocalPhrase::wake_bytes(is_en);
+                let _ = voice_feedback::play_vocal(&playback, &events, vocal_bytes, VoiceCueKind::Wake, generation).await;
+            } else {
+                voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
+            }
             let mut d = driver.lock().await;
             let idle_secs = effective_idle_timeout(&events);
             if playback.generation_id() == generation && d.begin_listening_window_with_secs(idle_secs) {
@@ -2162,10 +2230,9 @@ impl VoiceCompanionRuntime {
             text: reply_text.to_string(),
         }, scope);
         let started = std::time::Instant::now();
-        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
-        let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
+        let voice_name = format_voice_spec(event_tx.snapshot().locale.as_deref(), event_tx.feedback().tts_speed);
         let result = playback
-            .speak_text_for_generation(tts.as_ref(), reply_text, voice_name, generation, || {
+            .speak_text_for_generation(tts.as_ref(), reply_text, &voice_name, generation, || {
                 Self::report_tts_source(event_tx, tts.as_ref(), scope);
                 let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
@@ -2336,9 +2403,23 @@ impl VoiceCompanionRuntime {
         let current = events.snapshot();
         if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() { return; }
         if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
+            let idle_secs = effective_idle_timeout(events.as_ref());
+            let _ = d.begin_listening_window_with_secs(idle_secs);
             let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
-            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(events.as_ref()) }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, scope);
+            drop(d);
+            // Play light listening reminder earcon only when in Light feedback mode with volume > 0,
+            // respecting Essential mode (which keeps transition cues like Wake/Sleep but omits reminders).
+            let config = events.feedback();
+            if config.mode == nomifun_api_types::voice::VoiceFeedbackMode::Light && config.volume > 0 {
+                let pb = playback.clone();
+                let ev = events.clone();
+                let cue_gen = playback.generation_id();
+                tokio::spawn(async move {
+                    voice_feedback::play(&pb, &ev, VoiceCueKind::ListeningReminder, cue_gen).await;
+                });
+            }
         }
     }
 
@@ -2459,6 +2540,18 @@ impl VoiceCompanionRuntime {
                 break;
             }
         }
+
+        // Pre-LLM Sanitizer: if input contains purely punctuation or whitespace without any CJK or alphanumeric content,
+        // drop it locally immediately without wasting LLM tokens or credit quota.
+        let has_semantic_content = clean_input.chars().any(|c| {
+            c.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c)
+        });
+        if !has_semantic_content {
+            info!(raw = ?text_opt, "ASR produced only non-semantic punctuation or whitespace; dropping locally to save quota");
+            Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
+            return;
+        }
+
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
 
@@ -2481,11 +2574,14 @@ impl VoiceCompanionRuntime {
                     }
                     nomifun_api_types::voice::VoiceDirectControlAction::DismissSession => {
                         info!(action = "dismiss_session", "Voice direct control: dismiss session");
-                        let mut d = driver.lock().await;
-                        d.reset();
-                        pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                         let _ = playback.interrupt().await;
                         let sleep_gen = playback.generation_id();
+                        let mut d = driver.lock().await;
+                        if playback.generation_id() != sleep_gen || event_tx.snapshot().session_id != control_scope.session_id {
+                            return;
+                        }
+                        d.reset();
+                        pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                         let _ = event_tx.send_scoped(
                             VoiceCompanionEvent::IntentDecided {
                                 intent: "Ignore".into(),
@@ -2494,11 +2590,10 @@ impl VoiceCompanionRuntime {
                             },
                             &control_scope,
                         );
-                        let _ = event_tx.send_scoped(
+                        let _ = event_tx.send(
                             VoiceCompanionEvent::SessionEnded {
                                 reason: VoiceSessionEndReason::UserStop,
                             },
-                            &control_scope,
                         );
                         drop(d);
                         let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
@@ -2511,20 +2606,33 @@ impl VoiceCompanionRuntime {
                             "好的，再见"
                         };
                         if event_tx.feedback().speak_replies {
-                            let tts_clone = tts.clone();
-                            let playback_clone = playback.clone();
-                            let reply = goodbye_text.to_string();
-                            let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
-                            tokio::spawn(async move {
-                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
-                            });
+                            let is_default_dismiss = custom_dismiss.is_empty()
+                                || custom_dismiss == "好的，再见"
+                                || custom_dismiss.eq_ignore_ascii_case("goodbye");
+                            if is_default_dismiss {
+                                let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+                                let playback_clone = playback.clone();
+                                let event_tx_clone = event_tx.clone();
+                                tokio::spawn(async move {
+                                    let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
+                                });
+                            } else {
+                                let tts_clone = tts.clone();
+                                let playback_clone = playback.clone();
+                                let reply = goodbye_text.to_string();
+                                let voice_spec = format_voice_spec(scope.locale.as_deref(), feedback.tts_speed);
+                                tokio::spawn(async move {
+                                    let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
+                                });
+                            }
+                        } else {
+                            voice_feedback::schedule(
+                                playback.clone(),
+                                event_tx.clone(),
+                                VoiceCueKind::Sleep,
+                                sleep_gen,
+                            );
                         }
-                        voice_feedback::schedule(
-                            playback.clone(),
-                            event_tx.clone(),
-                            VoiceCueKind::Sleep,
-                            sleep_gen,
-                        );
                         return;
                     }
                 }
@@ -2548,19 +2656,6 @@ impl VoiceCompanionRuntime {
             let current = event_tx.snapshot();
             if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
             if clean_input.is_empty() {
-                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let custom_wake = feedback.wake_reply.trim();
-                let reply_phrase = if !custom_wake.is_empty() && (custom_wake != "我在" || !is_en) {
-                    custom_wake
-                } else if is_en {
-                    "I'm here"
-                } else {
-                    "我在"
-                };
-                let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
-                if event_tx.feedback().speak_replies {
-                    let _ = playback.speak_text_for_generation(tts.as_ref(), reply_phrase, voice_spec, generation, || {}).await;
-                }
                 Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 return;
             } else if let Some(action) = is_local_task_control {
@@ -2626,14 +2721,7 @@ impl VoiceCompanionRuntime {
                 let speak_replies = event_tx.feedback().speak_replies;
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
                 let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
-                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let base_voice = if is_en { "en-US-JennyNeural" } else { "" };
-                let tts_speed = event_tx.feedback().tts_speed;
-                let voice_spec = if (tts_speed - 1.0).abs() > 0.01 {
-                    format!("{base_voice};speed={tts_speed}")
-                } else {
-                    base_voice.to_string()
-                };
+                let voice_spec = format_voice_spec(scope.locale.as_deref(), event_tx.feedback().tts_speed);
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
                     let tts = tts.clone();
@@ -2654,11 +2742,19 @@ impl VoiceCompanionRuntime {
                                     session_id: control_scope.session_id.clone(), turn_id: control_scope.turn_id.clone(), diagnostic,
                                 }, &control_scope);
                             }
-                            let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text }, &control_scope);
                         }
                     };
+                    let event_tx_sentence = event_tx.clone();
+                    let control_scope_sentence = control_scope.clone();
+                    let on_sentence = move |sentence_text: &str| {
+                        let _ = event_tx_sentence.send_scoped(VoiceCompanionEvent::TtsSpeaking {
+                            text: sentence_text.to_string(),
+                        }, &control_scope_sentence);
+                    };
                     AbortOnDrop(Some(tokio::spawn(async move {
-                        playback.speak_sentence_stream_with_voice(tts.as_ref(), speech_rx, expected_generation, cancel_rx, &voice_spec, on_started).await
+                        playback.speak_sentence_stream_with_reporter(
+                            tts.as_ref(), speech_rx, expected_generation, cancel_rx, &voice_spec, on_started, on_sentence
+                        ).await
                     })))
                 } else {
                     AbortOnDrop(None)
@@ -2966,6 +3062,56 @@ impl VoiceCompanionRuntime {
                     drop(d);
                     Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 }
+                IntentType::Dismiss => {
+                    let goodbye_text = dec.reply_tts.as_deref().unwrap_or("好的，您先忙。有需要随时叫我。");
+                    info!(reply = %goodbye_text, "LLM decided Dismiss intent; speaking farewell and ending session");
+                    drop(d);
+                    let _ = playback.interrupt().await;
+                    let sleep_gen = playback.generation_id();
+                    let mut d = driver.lock().await;
+                    if playback.generation_id() != sleep_gen || event_tx.snapshot().session_id != control_scope.session_id {
+                        return;
+                    }
+                    d.reset();
+                    pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    drop(d);
+                    let _ = event_tx.send(
+                        VoiceCompanionEvent::SessionEnded {
+                            reason: VoiceSessionEndReason::UserStop,
+                        },
+                    );
+                    let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+                    let is_default_dismiss = goodbye_text == "好的，再见"
+                        || goodbye_text == "好的，您先忙。有需要随时叫我。"
+                        || goodbye_text.eq_ignore_ascii_case("goodbye");
+
+                    if event_tx.feedback().speak_replies {
+                        if is_default_dismiss {
+                            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+                            let playback_clone = playback.clone();
+                            let event_tx_clone = event_tx.clone();
+                            tokio::spawn(async move {
+                                let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
+                            });
+                        } else {
+                            let tts_clone = tts.clone();
+                            let playback_clone = playback.clone();
+                            let reply = goodbye_text.to_string();
+                            let voice_spec = format_voice_spec(scope.locale.as_deref(), event_tx.feedback().tts_speed);
+                            tokio::spawn(async move {
+                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
+                            });
+                        }
+                    } else {
+                        voice_feedback::schedule(
+                            playback.clone(),
+                            event_tx.clone(),
+                            VoiceCueKind::Sleep,
+                            sleep_gen,
+                        );
+                    }
+                    return;
+                }
                 IntentType::Chat => {
                     let _ = d.handle_event(AcousticEvent::IntentChat);
                     drop(d);
@@ -3168,7 +3314,7 @@ impl VoiceCompanionRuntime {
                         return;
                     }
                     let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
-                    let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
+                    let voice_name = format_voice_spec(event_tx.snapshot().locale.as_deref(), event_tx.feedback().tts_speed);
                     let code = match result {
                         Ok(delivery) if delivery.task.command_id != command.command_id
                             || delivery.task.session_id != command.session_id
@@ -3180,7 +3326,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing {text:text.into()}, &control_scope);
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(),text,voice_name, generation, || {
+                                playback.speak_text_for_generation(tts.as_ref(),text,&voice_name, generation, || {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {text:text.into()}, &control_scope);
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
@@ -3191,7 +3337,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing { text: text.into() }, &control_scope);
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(), text, voice_name, generation, || {
+                                playback.speak_text_for_generation(tts.as_ref(), text, &voice_name, generation, || {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text: text.into() }, &control_scope);
                                 }).await.err().map(|error| match error {
                                     AudioSinkError::Synthesis(_) => "tts_failed",
@@ -3579,16 +3725,12 @@ impl VoiceCompanionRuntime {
             );
             let kws = loop {
                 let dir = models.models_dir().to_path_buf();
-                let wake_words = event_tx.feedback().wake_words;
+                let keywords = event_tx.feedback().wake_words;
                 match native_runner
                     .load(std::time::Duration::from_secs(30), move || {
                         KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                             model_dir: Some(dir),
-                            keywords: if wake_words.is_empty() {
-                                vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
-                            } else {
-                                wake_words
-                            },
+                            keywords,
                             ..Default::default()
                         })
                     })
@@ -3696,6 +3838,7 @@ impl VoiceCompanionRuntime {
             let mut last_asr_load_warning: Option<std::time::Instant> = None;
             let mut processing_feedback: Option<(String, std::time::Instant, u8)> = None;
             let mut last_playback_busy: Option<std::time::Instant> = None;
+            let mut was_playback_active = false;
             let quiet_input = Arc::new(AtomicBool::new(false));
             let mut quiet_since: Option<std::time::Instant> = None;
             let mut reminded_session: Option<String> = None;
@@ -3812,16 +3955,12 @@ impl VoiceCompanionRuntime {
                 }
                 if kws_reload_needed.swap(false, Ordering::AcqRel) {
                     let dir = models.models_dir().to_path_buf();
-                    let wake_words = event_tx.feedback().wake_words;
+                    let keywords = event_tx.feedback().wake_words;
                     let loaded = native_runner
                         .load(std::time::Duration::from_secs(30), move || {
                             KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                                 model_dir: Some(dir),
-                                keywords: if wake_words.is_empty() {
-                                    vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
-                                } else {
-                                    wake_words
-                                },
+                                keywords,
                                 ..Default::default()
                             })
                         })
@@ -3853,16 +3992,12 @@ impl VoiceCompanionRuntime {
                     if models.get_status().await.state.is_ready() {
                         if !kws.is_initialized() {
                             let dir = models.models_dir().to_path_buf();
-                            let wake_words = event_tx.feedback().wake_words;
+                            let keywords = event_tx.feedback().wake_words;
                             let loaded = native_runner
                                 .load(std::time::Duration::from_secs(30), move || {
                                     KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                                         model_dir: Some(dir),
-                                        keywords: if wake_words.is_empty() {
-                                            vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
-                                        } else {
-                                            wake_words
-                                        },
+                                        keywords,
                                         ..Default::default()
                                     })
                                 })
@@ -4224,8 +4359,14 @@ impl VoiceCompanionRuntime {
 
                 let is_playback_active = playback.is_speaking();
                 if is_playback_active {
+                    if !was_playback_active {
+                        // 🛡️ Hard reset KWS and VAD on playback transition to prevent stale acoustic residue
+                        native_worker_call!("kws_reset", kws.reset().await, ());
+                        native_worker_call!("vad_reset", vad.reset().await, ());
+                    }
                     last_playback_busy = Some(std::time::Instant::now());
                 }
+                was_playback_active = is_playback_active;
                 let in_echo_cooldown = is_playback_active
                     || last_playback_busy.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(600));
 
@@ -4368,7 +4509,7 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::ListeningConfirm=>{
-                        if !barge_in_ready && in_echo_cooldown {
+                        if !barge_in_ready && is_playback_active {
                             utterance_pcm.clear();
                             speech_started = false;
                             native_worker_call!("vad_reset", vad.reset().await, ());
@@ -4435,11 +4576,10 @@ impl VoiceCompanionRuntime {
                                                     pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).take();
                                                     let _ = output.interrupt().await;
                                                     let sleep_gen = output.generation_id();
-                                                    let _ = events.send_scoped(
+                                                    let _ = events.send(
                                                         VoiceCompanionEvent::SessionEnded {
                                                             reason: VoiceSessionEndReason::UserStop,
                                                         },
-                                                        &scope,
                                                     );
                                                     drop(d);
                                                     let is_en = nomifun_api_types::voice::is_english_locale(current.locale.as_deref());
@@ -4447,10 +4587,10 @@ impl VoiceCompanionRuntime {
                                                     if events.feedback().speak_replies {
                                                         let output_clone = output.clone();
                                                         let reply = goodbye_text.to_string();
-                                                        let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                                                        let voice_spec = format_voice_spec(current.locale.as_deref(), events.feedback().tts_speed);
                                                         let tts_prov = tts.clone();
                                                         tokio::spawn(async move {
-                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
                                                         });
                                                     }
                                                     voice_feedback::schedule(
@@ -4474,7 +4614,7 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     AcousticState::Listening => {
-                        if !barge_in_ready && in_echo_cooldown {
+                        if !barge_in_ready && is_playback_active {
                             utterance_pcm.clear();
                             speech_started = false;
                             native_worker_call!("vad_reset", vad.reset().await, ());
@@ -4678,6 +4818,71 @@ impl VoiceCompanionRuntime {
                     AcousticState::SpeakingFast
                     | AcousticState::SpeakingControl
                     | AcousticState::SpeakingSummary => {
+                        // 1. KWS Barge-In: Always active and safe without AEC
+                        let kws_hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
+                        if let Some(kw) = kws_hit {
+                            let clean_kw = kw.trim().trim_start_matches('@').replace('_', " ").trim().to_string();
+                            let snap = event_tx.snapshot();
+                            let active_sentence = snap.active_speaking_sentence.as_deref().or(snap.assistant_text.as_deref());
+                            let is_self_speech = active_sentence.is_some_and(|text| {
+                                keyword_is_in_text(&clean_kw, text)
+                            });
+                            if is_self_speech {
+                                info!(
+                                    kw = %clean_kw,
+                                    spoken = ?active_sentence,
+                                    "KWS barge-in hit ignored: assistant is speaking text containing the keyword"
+                                );
+                            } else {
+                                info!(
+                                    state = ?current_state,
+                                    kw = %clean_kw,
+                                    "kws_barge_in_playback_interrupted"
+                                );
+                                let mut d = driver.lock().await;
+                                if d.current_state() == current_state {
+                                    if let Ok(AcousticState::Listening) = d.handle_event(AcousticEvent::BargeIn) {
+                                        input_generation.fetch_add(1, Ordering::SeqCst);
+                                        speech_started = false;
+                                        utterance_pcm.clear();
+                                        last_playback_busy = None;
+                                        let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                                        let deadline_armed = d.begin_listening_window_with_secs(idle_secs);
+                                        drop(d);
+                                        let _ = playback.interrupt().await;
+                                        native_worker_call!("kws_reset", kws.reset().await, ());
+                                        native_worker_call!("vad_reset", vad.reset().await, ());
+                                        let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
+                                        let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                                        if deadline_armed {
+                                            let _ = event_tx.send(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs });
+                                        }
+                                        let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
+                                            diagnostics: audio.clone(),
+                                        });
+                                        last_audio_publish = std::time::Instant::now();
+                                        let barge_gen = playback.generation_id();
+                                        let barge_playback = playback.clone();
+                                        let barge_events = event_tx.clone();
+                                        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
+                                        let barge_bytes = nomifun_audio::vocal::VocalPhrase::barge_bytes(is_en);
+                                        tokio::spawn(async move {
+                                            if barge_events.feedback().speak_replies {
+                                                let _ = voice_feedback::play_vocal(&barge_playback, &barge_events, barge_bytes, VoiceCueKind::BargeIn, barge_gen).await;
+                                            } else {
+                                                voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                            }
+                                        });
+                                    } else {
+                                        drop(d);
+                                        let _ = playback.interrupt().await;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // 2. VAD Barge-In: only active when full AEC is calibrated and ready
                         if !barge_in_ready || !playback.has_pending_audio() { continue; }
                         utterance_pcm.extend_from_slice(&chunk);
                         if !speech_started && utterance_pcm.len() > BARGE_IN_PREROLL_SAMPLES {
@@ -4707,6 +4912,7 @@ impl VoiceCompanionRuntime {
                                 input_generation.fetch_add(1, Ordering::SeqCst);
                                 d.mark_speech_started();
                                 speech_started = true;
+                                last_playback_busy = None;
                                 let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
                                 let _ = event_tx.send(VoiceCompanionEvent::Listening);
                                 let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
@@ -4718,6 +4924,68 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::AwaitingConfirmation => {
+                        // 1. KWS Barge-In for Confirmation prompt
+                        let kws_hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
+                        if let Some(kw) = kws_hit {
+                            let clean_kw = kw.trim().trim_start_matches('@').replace('_', " ").trim().to_string();
+                            let snap = event_tx.snapshot();
+                            let active_sentence = snap.active_speaking_sentence.as_deref().or(snap.assistant_text.as_deref());
+                            let is_self_speech = active_sentence.is_some_and(|text| {
+                                keyword_is_in_text(&clean_kw, text)
+                            });
+                            if is_self_speech {
+                                info!(
+                                    kw = %clean_kw,
+                                    spoken = ?active_sentence,
+                                    "KWS barge-in hit ignored in confirmation: assistant is speaking keyword"
+                                );
+                            } else {
+                                info!(
+                                    state = ?current_state,
+                                    kw = %clean_kw,
+                                    "kws_barge_in_confirmation_interrupted"
+                                );
+                                let mut d = driver.lock().await;
+                                if d.current_state() == current_state {
+                                    if let Ok(AcousticState::ListeningConfirm) = d.handle_event(AcousticEvent::BargeIn) {
+                                        if let Some(pending) = pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                                            pending.begin_listening();
+                                        }
+                                        input_generation.fetch_add(1, Ordering::SeqCst);
+                                        speech_started = false;
+                                        utterance_pcm.clear();
+                                        last_playback_busy = None;
+                                        drop(d);
+                                        let _ = playback.interrupt().await;
+                                        native_worker_call!("kws_reset", kws.reset().await, ());
+                                        native_worker_call!("vad_reset", vad.reset().await, ());
+                                        let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                                        let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
+                                            diagnostics: audio.clone(),
+                                        });
+                                        last_audio_publish = std::time::Instant::now();
+                                        let barge_gen = playback.generation_id();
+                                        let barge_playback = playback.clone();
+                                        let barge_events = event_tx.clone();
+                                        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
+                                        let barge_bytes = nomifun_audio::vocal::VocalPhrase::barge_bytes(is_en);
+                                        tokio::spawn(async move {
+                                            if barge_events.feedback().speak_replies {
+                                                let _ = voice_feedback::play_vocal(&barge_playback, &barge_events, barge_bytes, VoiceCueKind::BargeIn, barge_gen).await;
+                                            } else {
+                                                voice_feedback::play(&barge_playback, &barge_events, VoiceCueKind::BargeIn, barge_gen).await;
+                                            }
+                                        });
+                                    } else {
+                                        drop(d);
+                                        let _ = playback.interrupt().await;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // 2. VAD Barge-In for Confirmation
                         if !barge_in_ready || !playback.has_pending_audio() { continue; }
                         utterance_pcm.extend_from_slice(&chunk);
                         if !speech_started && utterance_pcm.len() > BARGE_IN_PREROLL_SAMPLES {
@@ -4748,6 +5016,7 @@ impl VoiceCompanionRuntime {
                                 }
                                 d.mark_speech_started();
                                 speech_started = true;
+                                last_playback_busy = None;
                                 let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
                                 let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
                                     diagnostics: audio.clone(),

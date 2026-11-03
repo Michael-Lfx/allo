@@ -337,7 +337,10 @@ impl VoiceCompanionRuntime {
                 }
             }
         }
-        let kws_ok = kws.is_initialized() && wake_hits > 0 && negative_hits == 0;
+        let expects_wake_hit = kws.has_default_wake_words();
+        let kws_ok = kws.is_initialized()
+            && (!expects_wake_hit || wake_hits > 0)
+            && negative_hits == 0;
 
         vad.reset_until(deadline, cancel, cancel_notify, false).await?;
         let silence = vec![0.0f32; 512];

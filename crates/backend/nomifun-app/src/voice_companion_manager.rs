@@ -2683,7 +2683,10 @@ impl VoiceCompanionProcessManager {
                 VoiceCallTarget::VoiceConversation { conversation_id } => Some(conversation_id.as_str()) == active_id,
                 VoiceCallTarget::Workspace { workspace } => snap.binding.as_ref().and_then(|binding| binding.workspace.as_deref())
                     .is_some_and(|active| nomifun_common::paths::paths_equivalent(Path::new(workspace), Path::new(active))),
-                VoiceCallTarget::CurrentSelection => active_id.is_some(),
+                VoiceCallTarget::CurrentSelection => {
+                    let candidate = self.active_window_candidate.read().unwrap_or_else(|e| e.into_inner());
+                    candidate.conversation_id.as_deref() == active_id
+                },
                 VoiceCallTarget::DefaultWorkspace => false,
                 VoiceCallTarget::NewVoiceConversation { .. } => false,
             };

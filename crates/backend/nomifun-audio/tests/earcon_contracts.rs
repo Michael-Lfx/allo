@@ -1,6 +1,7 @@
 use nomifun_audio::capture::CaptureReadResult;
 use nomifun_audio::earcon::{
-    ALERT_WAV, DONE_WAV, ERROR_WAV, Earcon, EarconKind, GUIDE_WAV, SLEEP_WAV, WAKE_WAV,
+    ALERT_WAV, BARGE_IN_WAV, DONE_WAV, ERROR_WAV, Earcon, EarconKind, GUIDE_WAV, SLEEP_WAV,
+    WAKE_WAV,
 };
 
 #[test]
@@ -24,13 +25,14 @@ fn test_capture_read_result_contract() {
 fn test_earcon_enum_and_constants_contract() {
     assert_eq!(Earcon::Guide.as_wav_bytes(), GUIDE_WAV);
     assert_eq!(Earcon::Wake.as_wav_bytes(), WAKE_WAV);
+    assert_eq!(Earcon::BargeIn.as_wav_bytes(), BARGE_IN_WAV);
     assert_eq!(Earcon::Alert.as_wav_bytes(), ALERT_WAV);
     assert_eq!(Earcon::Done.as_wav_bytes(), DONE_WAV);
     assert_eq!(Earcon::Sleep.as_wav_bytes(), SLEEP_WAV);
     assert_eq!(Earcon::Error.as_wav_bytes(), ERROR_WAV);
 
-    assert_eq!(Earcon::ALL.len(), 6);
-    assert_eq!(Earcon::all().len(), 6);
+    assert_eq!(Earcon::ALL.len(), 7);
+    assert_eq!(Earcon::all().len(), 7);
 
     // Verify EarconKind type alias
     let kind: EarconKind = Earcon::Wake;

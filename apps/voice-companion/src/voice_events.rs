@@ -197,6 +197,7 @@ impl VoiceEventHub {
                     .clear();
                 state.ended_reason = Some(*reason);
                 state.phase = Phase::Idle;
+                state.active_speaking_sentence = None;
                 state.listening_deadline_ms = None;
                 state.follow_up_deadline_ms = None;
             }
@@ -236,6 +237,7 @@ impl VoiceEventHub {
                 state.user_text = None;
                 state.understood_request = None;
                 state.assistant_text = None;
+                state.active_speaking_sentence = None;
                 state.error = None;
                 state.follow_up_deadline_ms = None;
                 state.listening_deadline_ms = None;
@@ -260,6 +262,7 @@ impl VoiceEventHub {
                 }
             }
             VoiceCompanionEvent::SpeechStarted => {
+                state.active_speaking_sentence = None;
                 if matches!(state.phase, Phase::Speaking | Phase::Synthesizing) {
                     state.phase = Phase::Listening;
                     if let Some(turn) = current_turn_mut(&mut state) {
@@ -275,6 +278,7 @@ impl VoiceEventHub {
                 if state.ended_reason.is_none() {
                     state.ended_reason = None;
                     state.listening_deadline_ms = None;
+                    state.active_speaking_sentence = None;
                     state.error = None;
                     state.phase = Phase::Transcribing;
                     state.turn_id = Some(nomifun_common::generate_id());
@@ -398,13 +402,12 @@ impl VoiceEventHub {
                 state.user_text=Some(text.clone());
                 if let Some(turn)=current_turn_mut(&mut state){turn.user_text=Some(text.clone());}
             }
-            VoiceCompanionEvent::TtsSynthesizing { .. }
-            | VoiceCompanionEvent::TtsSpeaking { .. } => {
-                state.phase = if matches!(event, VoiceCompanionEvent::TtsSynthesizing { .. }) {
-                    Phase::Synthesizing
-                } else {
-                    Phase::Speaking
-                };
+            VoiceCompanionEvent::TtsSynthesizing { .. } => {
+                state.phase = Phase::Synthesizing;
+            }
+            VoiceCompanionEvent::TtsSpeaking { text } => {
+                state.phase = Phase::Speaking;
+                state.active_speaking_sentence = Some(text.clone());
             }
             VoiceCompanionEvent::FollowUpWindow { timeout_secs } => {
                 state.phase = Phase::FollowUp;

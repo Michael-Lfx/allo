@@ -94,11 +94,110 @@ x iao f u x ing @XIAO_FU_XING
     assert!(dynamic_buf.contains("w ang c ai"), "must contain pinyin for 旺财");
     assert!(dynamic_buf.contains("n i h ao F L OW1 IY0"), "must contain mixed tokens for 你好 Flowy");
 
+    // Verify empty keywords defaults strictly to cross-lingual Hey Flowy / Hi Flowy
+    let empty_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&[]);
+    assert!(empty_buf.contains("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY"));
+    assert!(empty_buf.contains("HH AY1 F L OW1 IY0 :2.0 #0.15 @HI_FLOWY"));
+    assert!(!empty_buf.contains("荷包蛋"));
+
+    // Verify custom keyword only contains custom keyword, never silently injects Flowy
+    let custom_only_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&["荷包蛋".to_string()]);
+    assert!(custom_only_buf.contains("h é b āo d àn") || custom_only_buf.contains("h e b ao d an"));
+    assert!(!custom_only_buf.contains("FLOWY"), "must NOT inject Flowy when user defined custom keywords");
+
+    // Verify unsupported keywords (e.g. emoji or symbols) safely fallback to default Hey Flowy rules
+    let unsupported_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&["🚀".to_string(), "@@@".to_string()]);
+    assert!(unsupported_buf.contains("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY"), "must fallback to default Hey Flowy on unsupported keywords");
+    assert!(!unsupported_buf.trim().is_empty(), "keywords buffer must never be empty");
+
     // Test KwsEngine integration with custom keywords
-    let kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+    let mut kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
         model_dir: Some(kws_dir.clone()),
         keywords: custom_keywords,
         ..Default::default()
     }).expect("KwsEngine creation with custom bilingual keywords must succeed");
     assert!(kws_engine.is_initialized(), "KwsEngine must be initialized");
+
+    // =========================================================================
+    // Minimum Experiment Verification: Playback Echo Immunity & Wake Interruption
+    // =========================================================================
+    let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../docs/architecture/voice-agent/execution/audio-fixtures");
+    let non_wake_wav = fixtures_dir.join("non-wake-16k.wav");
+    let command_wav = fixtures_dir.join("command-16k.wav");
+    let wake_wav = fixtures_dir.join("wake-guy-16k.wav");
+
+    // Phase A: Feed non-wake speech (3.41s) into KWS to verify 0 false triggers
+    if non_wake_wav.exists() {
+        let bytes = std::fs::read(&non_wake_wav).expect("read non_wake_wav");
+        let (samples, sr) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(sr, 16000);
+        let mut false_alarms = 0;
+        for chunk in samples.chunks(320) {
+            if let Some(hit) = kws_engine.process_pcm_chunk(chunk) {
+                println!("UNEXPECTED FALSE ALARM on non-wake speech: {:?}", hit);
+                false_alarms += 1;
+            }
+        }
+        println!("Phase A (Non-wake speech echo immunity): {} samples, false_alarms = {}", samples.len(), false_alarms);
+        assert_eq!(false_alarms, 0, "KWS must have ZERO false triggers during non-wake speech playback!");
+    }
+
+    // Phase B: Feed command speech without wake word to verify 0 false triggers
+    if command_wav.exists() {
+        let bytes = std::fs::read(&command_wav).expect("read command_wav");
+        let (samples, sr) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(sr, 16000);
+        let mut false_alarms = 0;
+        for chunk in samples.chunks(320) {
+            if let Some(hit) = kws_engine.process_pcm_chunk(chunk) {
+                println!("UNEXPECTED FALSE ALARM on command speech: {:?}", hit);
+                false_alarms += 1;
+            }
+        }
+        println!("Phase B (Command speech echo immunity): {} samples, false_alarms = {}", samples.len(), false_alarms);
+        assert_eq!(false_alarms, 0, "KWS must have ZERO false triggers during command speech playback!");
+    }
+
+    // Phase C: Feed real spoken wake word to verify low-latency detection
+    let jenny_wav = fixtures_dir.join("wake-jenny-16k.wav");
+    if jenny_wav.exists() {
+        let mut default_kws = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+            model_dir: Some(kws_dir.clone()),
+            keywords: vec![],
+            ..Default::default()
+        }).expect("create default kws");
+        let bytes = std::fs::read(&jenny_wav).unwrap();
+        let (raw_pcm, _) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        let mut raw_hit = None;
+        for chunk in raw_pcm.chunks(320) {
+            if let Some(h) = default_kws.process_pcm_chunk(chunk) {
+                raw_hit = Some(h);
+                break;
+            }
+        }
+        println!("Default KWS tested with RAW wake-jenny (no trailing silence): hit = {:?}", raw_hit);
+    }
+
+    if wake_wav.exists() {
+        kws_engine.reset();
+        let bytes = std::fs::read(&wake_wav).expect("read wake_wav");
+        let (mut samples, sr) = nomifun_audio::speaker::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(sr, 16000);
+        // Trailing frames for lookahead chunking
+        samples.extend(vec![0.0f32; 16000]);
+        let mut detected_keyword = None;
+        let mut chunk_idx = 0;
+        for (i, chunk) in samples.chunks(320).enumerate() {
+            if let Some(hit) = kws_engine.process_pcm_chunk(chunk) {
+                detected_keyword = Some(hit.keyword);
+                chunk_idx = i;
+                break;
+            }
+        }
+        println!("Phase C (Wake word barge-in detection): hit = {:?}, chunk = {}, latency = {}ms",
+            detected_keyword, chunk_idx, chunk_idx * 20);
+        assert!(detected_keyword.is_some(), "KWS must detect wake word for barge-in!");
+        assert!(chunk_idx * 20 <= 2500, "Wake word must be detected promptly!");
+    }
 }

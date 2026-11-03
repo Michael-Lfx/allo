@@ -1178,7 +1178,7 @@ async fn review_standalone_binding_must_not_borrow_an_unselected_project() {
 #[tokio::test]
 async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     let dir = tempfile::tempdir().unwrap();
-    let service = fixture_service().await;
+    let service = fixture_service_with_models(&["test-model"]).await;
     let ws_path = dir.path().to_string_lossy().to_string();
 
     // 1. Create Voice Conversation 1
@@ -1211,6 +1211,17 @@ async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     let binding_2 = recorder.freeze_session("session-call-2", None).await.unwrap().unwrap();
     assert_eq!(binding_2.conversation_id, voice_conv_2.conversation_id, "Waking in voice_conv_2 must stay in voice_conv_2!");
 
+    // User configures a model on their default voice conversation:
+    let home_id = service.ensure_default_voice_conversation(USER_ID).await.unwrap();
+    service.conversation_repo().update(&home_id, &nomifun_db::ConversationRowUpdate {
+        model: Some(Some(serde_json::to_string(&nomifun_common::ProviderWithModel {
+            provider_id: USER_ID.into(),
+            model: "test-model".into(),
+            use_model: Some("test-model".into()),
+        }).unwrap())),
+        ..Default::default()
+    }).await.unwrap();
+
     // User navigates to homepage (conversation_id = None), and says wake word (session-call-3)
     candidate.write().unwrap().conversation_id = None;
     candidate.write().unwrap().workspace = None;
@@ -1218,6 +1229,97 @@ async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     // On homepage, wake must create a brand NEW voice conversation!
     assert_ne!(binding_3.conversation_id, voice_conv_1.conversation_id, "Waking on homepage must NOT hijack to voice_conv_1!");
     assert_ne!(binding_3.conversation_id, voice_conv_2.conversation_id, "Waking on homepage must NOT hijack to voice_conv_2!");
+
+    // Simulate dialogue occurring in call 3 (user spoke and message pair was recorded)
+    let input = VoiceDialogueRequest::scoped("session-call-3", "turn-1", "你好");
+    recorder.preflight(&input).await.unwrap();
+    recorder.record_pair(&binding_3.conversation_id, &input, r#"{"intent_type":"chat","reply_tts":"你好，我在。"}"#).await.unwrap();
+
+    // Call 4 on homepage: previous home conversation has messages, MUST create a NEW conversation!
+    let binding_4 = recorder.freeze_session("session-call-4", None).await.unwrap().unwrap();
+    assert_ne!(binding_4.conversation_id, binding_3.conversation_id, "Subsequent wake on homepage must NOT be locked into previous call's conversation!");
+    assert_ne!(binding_4.conversation_id, voice_conv_1.conversation_id, "Subsequent wake must not fall back to voice_conv_1!");
+    assert_ne!(binding_4.conversation_id, voice_conv_2.conversation_id, "Subsequent wake must not fall back to voice_conv_2!");
+
+    // Verify the newly created conversation on homepage has a dialogue model configured!
+    let conv_4 = service.get(USER_ID, &binding_4.conversation_id).await.unwrap();
+    assert!(conv_4.model.is_some(), "New provisional voice conversation created on homepage MUST have a dialogue model configured!");
+    assert_eq!(conv_4.model.as_ref().unwrap().model, "test-model", "New conversation must inherit dialogue model from default voice conversation!");
+
+    // User navigates back to voice_conv_1, AND candidate.workspace has a directory set:
+    candidate.write().unwrap().conversation_id = Some(voice_conv_1.conversation_id.clone());
+    candidate.write().unwrap().workspace = Some(ws_path.clone());
+    let binding_5 = recorder.freeze_session("session-call-5", None).await.unwrap().unwrap();
+    assert_eq!(binding_5.conversation_id, voice_conv_1.conversation_id, "Waking while viewing voice_conv_1 MUST stay in voice_conv_1 even if workspace is set!");
+}
+
+#[tokio::test]
+async fn test_full_wake_routing_and_conversation_switch_resilience() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let ws_path = dir.path().to_string_lossy().to_string();
+
+    // Conversation A: pre-existing historical voice conversation with messages
+    let conv_a = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "语音通话 A",
+        "extra": { "workspace": ws_path.clone(), "voice": true, "session_mode": "default" },
+    })).unwrap()).await.unwrap();
+
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext::default()));
+    let recorder = std::sync::Arc::new(
+        ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
+            .with_active_window_candidate(candidate.clone())
+    );
+
+    // Populate Conversation A with messages so it represents a finished historical session
+    candidate.write().unwrap().conversation_id = Some(conv_a.conversation_id.clone());
+    recorder.freeze_session("session-historical-a", None).await.unwrap();
+    let input_a = VoiceDialogueRequest::scoped("session-historical-a", "turn-1", "曾经的通话记录");
+    recorder.preflight(&input_a).await.unwrap();
+    recorder.record_pair(&conv_a.conversation_id, &input_a, r#"{"intent_type":"chat","reply_tts":"这是历史记录回复。"}"#).await.unwrap();
+
+    let conv_a_initial_modified = service.get(USER_ID, &conv_a.conversation_id).await.unwrap().modified_at;
+
+    // 1. User is on Voice Conversation B:
+    let conv_b = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "语音通话 B",
+        "extra": { "workspace": ws_path.clone(), "voice": true, "session_mode": "default" },
+    })).unwrap()).await.unwrap();
+
+    // User navigates to B (candidate updated to B)
+    candidate.write().unwrap().conversation_id = Some(conv_b.conversation_id.clone());
+    candidate.write().unwrap().workspace = None;
+
+    // Wake while in B -> MUST bind to B, NOT A!
+    let binding_b = recorder.freeze_session("session-in-b", None).await.unwrap().unwrap();
+    assert_eq!(binding_b.conversation_id, conv_b.conversation_id, "Waking while viewing B must stay in B!");
+    assert_ne!(binding_b.conversation_id, conv_a.conversation_id, "Must NOT jump to Conversation A!");
+
+    // 2. User navigates to Homepage (candidate = None)
+    candidate.write().unwrap().conversation_id = None;
+    candidate.write().unwrap().workspace = None;
+
+    // Wake while on Homepage -> MUST create a brand new conversation C, NOT A!
+    let binding_c = recorder.freeze_session("session-home-1", None).await.unwrap().unwrap();
+    assert_ne!(binding_c.conversation_id, conv_a.conversation_id, "Homepage wake must NOT hijack to Conversation A!");
+    assert_ne!(binding_c.conversation_id, conv_b.conversation_id, "Homepage wake must NOT hijack to Conversation B!");
+
+    // Simulate Conversation C receiving dialogue
+    let input_c = VoiceDialogueRequest::scoped("session-home-1", "turn-c-1", "新通话指令");
+    recorder.preflight(&input_c).await.unwrap();
+    recorder.record_pair(&binding_c.conversation_id, &input_c, r#"{"intent_type":"chat","reply_tts":"好的，新通话开始。"}"#).await.unwrap();
+
+    // 3. User navigates to Homepage again (candidate = None) and wakes again -> MUST create brand new conversation D!
+    let binding_d = recorder.freeze_session("session-home-2", None).await.unwrap().unwrap();
+    assert_ne!(binding_d.conversation_id, conv_a.conversation_id, "Second homepage wake must NOT return to Conversation A!");
+    assert_ne!(binding_d.conversation_id, conv_b.conversation_id, "Second homepage wake must NOT return to Conversation B!");
+    assert_ne!(binding_d.conversation_id, binding_c.conversation_id, "Second homepage wake must NOT return to Conversation C!");
+
+    // 4. Verify Conversation A's modified_at was NOT touched during all these wakes
+    let conv_a_after = service.get(USER_ID, &conv_a.conversation_id).await.unwrap();
+    assert_eq!(conv_a_after.modified_at, conv_a_initial_modified, "Conversation A must remain untouched and not be hoisted!");
 }
 
 #[tokio::test]
