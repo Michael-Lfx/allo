@@ -300,3 +300,19 @@ updateActiveVoiceCallConversationId(activeId);
    - 处于预留释放时提示“上一通通话正在清理释放，请稍候重试”；真实冲突时提示“当前已有正在进行的语音通话，请先挂断”，绝不自动导航。
 4. **M5 落地：意图清理同步归零活跃通话 ID（`voiceCompanion.ts`）**：
    - `clearPendingCallIntent` 同步执行 `updateActiveVoiceCallConversationId(null)`，挂断当刻侧边栏绿色声波 0ms 同步熄灭。
+
+---
+
+### 6.5 顽疾深层物理病灶彻底切除与专项集成测试（T58 终极闭环）
+
+针对用户实测中反复复发的“在首页/会话B唤醒依然跳回会话A”以及“点击语言会话被置顶”，实施了物理级根治：
+
+1. **切除桌面桥接假校验（`apps/desktop/src/voice_session_bridge.rs`）**：
+   - 彻底删除在 Windows WebView2 架构下对 `window.url().fragment()` 的比对校验。因客户端虚拟 Hash 路由（`#/conversation/B`）不会触发底层的 Source URL 刷新，原代码误判为 `voice_context_stale` 将会话 B 的上报拒收；切除后只要窗口处于可见焦点，直接采信前端报告，使 `active_window_candidate` 100% 更新为当前会话 B。
+2. **首页默认会话有历史消息时强制新建（`recorder.rs:346`）**：
+   - 检查默认会话 `home` 是否已有消息记录（`home_has_messages`）。若已存在聊天记录，首页唤醒绝对禁止再次复用该历史会话，强制动态分配全新 UUID 生成独立会话（会话 C、D…）。
+3. **彻底阻断气泡积分回填隐式写库（`MessageText.tsx:452`）**：
+   - 语音会话的气泡由离线管道直接写入，缺少云端 billing 积分。原先打开时 `MessageText.tsx` 会在 400ms 后自动触发 `fetchAndPersistTurnCredits` 并调用 `ipcBridge.conversation.update`，修改 SQLite `updated_at = now()` 导致列表被置顶。
+   - 现增加语音会话守卫，挂载阶段严禁触发更新，保持浏览 100% 纯只读，时间戳稳固不变。
+4. **端到端专项集成测试（`voice_dialogue_integration.rs:1232`）**：
+   - 新增 `test_full_wake_routing_and_conversation_switch_resilience`：真实模拟 A 产生历史对话 -> B 唤醒留在 B -> 首页第 1 次唤醒新建 C -> C 产生对话 -> 首页第 2 次唤醒新建 D，且断言 A 的 `modified_at` 绝不被篡改。51 项集成测试全绿！

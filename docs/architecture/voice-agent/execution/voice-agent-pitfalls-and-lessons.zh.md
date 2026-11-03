@@ -479,6 +479,38 @@ AI 在执行任务并向扬声器播报确认语或任务进展时（如“好�
 
 ---
 
+### 2.24 陷阱 24：WebView2 客户端 HashRouter 虚拟路由下比对 `window.url()` 导致会话切换上报被拒收
+
+#### 现场现象
+用户在侧边栏点击进入“语音通话 B”，对着麦克风喊唤醒词，页面没有在通话 B 中开启，反而被强行踢回到曾经的历史会话 A 中去继续通话。
+
+#### 根因分析
+1. 前端切换到会话 B 时，通过 `reportVoiceCandidate("B")` 调用 Tauri 桌面桥接 `voice_session_bridge.rs`；
+2. 桌面桥接原先写了一段防伪校验：`if url.fragment() != Some("/conversation/{id}") { return Err("voice_context_stale"); }`；
+3. **致命死穴**：在 Windows WebView2 架构下，SPA 单页应用的 Hash 虚拟路由跳转（`#/conversation/B`）**根本不会触发原生 WebView2 的底层的 Source URL 导航**！Rust 通过 `window.url()` 读到的永远是启动时的静态主文件 URL，其 `fragment()` 永远是 `None`；
+4. 桥接层误以为这是“过期的虚假报告”，直接把会话 B 的上报抛错拒收！前端 `.catch(() => {})` 吞掉报错，导致后端以为窗口还在空页面（`active_window_candidate == None`），唤醒时跌入默认分支，强行跳回历史会话 A！
+
+#### 解决方案与防线
+- **切除底层虚假 URL 校验**：WebView2 内部路由由 React Router 内存管理，原生层只要确认窗口处于前台且未最小化，直接确凿采信前端上报的 `conversation_id`，杜绝假阴性拒收。
+
+---
+
+### 2.25 陷阱 25：语音气泡缺少 billing 数据触发 `fetchAndPersistTurnCredits` 隐式写库篡改 `updated_at`
+
+#### 现场现象
+即便拦截了模型池的自动回填，用户只要点击打开历史语言会话，该会话在 400ms 后依然会被自动跳到侧边栏最顶端。
+
+#### 根因分析
+1. 语音会话的助手气泡是由后端守护进程通过离线管道直接写入数据库的，未经过云端实时 billing 流，气泡初始化时缺少 `turn_credit_usage` 数据；
+2. 打开该会话时，`MessageText.tsx:448` 挂载发现 `turnCredits == null`，自作聪明地在 400ms 后自动触发 `fetchAndPersistTurnCredits`；
+3. `fetchAndPersistTurnCredits` 查完积分后，调用 `ipcBridge.conversation.update` 试图写库，触发了 SQLite 的 `UPDATE conversations SET extra = ?, updated_at = now()`；
+4. 这导致该历史会话的时间戳瞬间变为当前最新时间，侧边栏重新排序将其置顶。
+
+#### 解决方案与防线
+- **语音气泡禁自动积分写库**：在 `MessageText.tsx` 中增加判断，对于语音会话（`isVoiceConversation`），挂载阶段严格跳过积分的自动持久化写库，保持浏览过程 100% 只读与时间戳稳定。
+
+---
+
 ## 3. 长效防线与研发 Check List
 
 在未来迭代或多 Agent 协作开发中，任何人及 Agent 均须按以下 Checklist 进行自检：
