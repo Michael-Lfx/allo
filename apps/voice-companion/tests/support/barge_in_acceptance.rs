@@ -78,7 +78,7 @@ async fn barge_in_user_speech_routes_continuation_turn_in_same_session() {
 
     // Send silence to complete the utterance (VAD speech end)
     let silence_started = tokio::time::Instant::now();
-    for frame in 0..40 {
+    for frame in 0..60 {
         let pcm = vec![0.0_f32; 320];
         assert_eq!(flow.producer.push(&pcm), pcm.len());
         tokio::time::sleep_until(silence_started + Duration::from_millis((frame + 1) * 20)).await;
@@ -89,6 +89,8 @@ async fn barge_in_user_speech_routes_continuation_turn_in_same_session() {
 
     tokio::time::timeout(Duration::from_secs(5), async {
         while flow.server.calls.load(Ordering::SeqCst) < 2 {
+            let pcm = vec![0.0_f32; 320];
+            flow.producer.push(&pcm);
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
