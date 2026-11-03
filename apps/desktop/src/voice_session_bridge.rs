@@ -6,10 +6,8 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Option<String>, workspace: Option<String>, sequence: u64, view_only: Option<bool>) -> Result<(), String> {
     if window.label() != "main" { return Err("voice_context_window_invalid".into()); }
     let manager = VoiceCompanionProcessManager::global().ok_or("voice_unavailable")?;
-    let focused = window.is_focused().map_err(|_| "voice_context_unavailable")?
-        && window.is_visible().map_err(|_| "voice_context_unavailable")?
-        && !window.is_minimized().map_err(|_| "voice_context_unavailable")?;
-    if !focused { return Ok(()); }
+    let not_minimized = !window.is_minimized().map_err(|_| "voice_context_unavailable")?;
+    if !not_minimized { return Ok(()); }
     if view_only == Some(true) {
         manager.report_voice_view(conversation_id, sequence);
     } else {

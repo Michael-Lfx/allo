@@ -657,7 +657,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             } else {
                 let candidate=self.active_window_candidate.read().unwrap_or_else(|e|e.into_inner()).clone();
                 let config=self.target_config.read().unwrap_or_else(|e|e.into_inner()).clone();
-                let (id, source) = self.resolve_target_conversation(candidate.conversation_id,config,candidate.workspace.as_deref(),None).await?;
+                let (id, source) = if candidate.conversation_id.is_none() {
+                    self.resolve_target_conversation(None, config, None, None).await?
+                } else {
+                    self.resolve_target_conversation(candidate.conversation_id, config, candidate.workspace.as_deref(), None).await?
+                };
                 (id, source, None)
             };
             let _source = source;
