@@ -13,6 +13,7 @@ import {
     canvasLinesBackgroundImage,
     canvasSpatialGridCssVars,
 } from "@oc/lib/canvas/canvas-spatial-grid";
+import { forwardWheelToScrollableAncestor } from "@oc/lib/canvas/canvas-wheel-scroll";
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import type { ViewportTransform } from "@oc/types/canvas";
 
@@ -32,6 +33,11 @@ type InfiniteCanvasProps = {
     onFileDragEnter?: (event: React.DragEvent<HTMLDivElement>) => void;
     onFileDragLeave?: (event: React.DragEvent<HTMLDivElement>) => void;
     onFileDragOver?: (event: React.DragEvent<HTMLDivElement>) => void;
+    /**
+     * When false, wheel events scroll the nearest page ancestor instead of zooming or panning.
+     * Ctrl/Meta pinch still zooms so the webview does not scale. Default keeps the full-screen canvas.
+     */
+    wheelGestures?: boolean;
     children: React.ReactNode;
     graphicsLayer?: React.ReactNode;
 };
@@ -51,7 +57,7 @@ type PinchState = {
     initialScale: number;
 };
 
-export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundMode = "lines", onViewportChange, onViewportPreviewChange, onCanvasMouseDown, boxSelectEnabled = false, onCanvasDoubleClick, onCanvasDeselect, onContextMenu, onDrop, onFileDragEnter, onFileDragLeave, onFileDragOver, graphicsLayer, children }: InfiniteCanvasProps) {
+export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundMode = "lines", onViewportChange, onViewportPreviewChange, onCanvasMouseDown, boxSelectEnabled = false, onCanvasDoubleClick, onCanvasDeselect, onContextMenu, onDrop, onFileDragEnter, onFileDragLeave, onFileDragOver, wheelGestures = true, graphicsLayer, children }: InfiniteCanvasProps) {
     const colorTheme = useCanvasColorTheme();
     const resolvedAppearance = resolveCanvasAppearance(appearance, colorTheme);
     const panState = useRef({
@@ -65,6 +71,8 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
     });
     const viewportRef = useRef(viewport);
     const scaleRef = useRef(viewport.k);
+    const wheelGesturesRef = useRef(wheelGestures);
+    wheelGesturesRef.current = wheelGestures;
     const containerRectRef = useRef<DOMRect | null>(null);
     const frameRef = useRef<number | null>(null);
     const nextViewportRef = useRef<ViewportTransform | null>(null);
@@ -159,6 +167,14 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
             const absX = Math.abs(deltaX);
             const absY = Math.abs(deltaY);
             const isPinchZoom = event.ctrlKey || event.metaKey;
+            // 未点击激活时，滚轮滚动外层页面，不缩放、不平移画布。
+            if (!wheelGesturesRef.current && !isPinchZoom) {
+                event.preventDefault();
+                event.stopPropagation();
+                const container = event.currentTarget instanceof HTMLElement ? event.currentTarget : containerRef.current;
+                forwardWheelToScrollableAncestor(container, deltaX, deltaY);
+                return;
+            }
             if (target?.closest(CANVAS_WHEEL_IGNORE_SELECTOR) && !isPinchZoom) {
                 // 内部区域保留纵向滚动，但横向手势不能泄漏为 macOS 浏览器前进/后退。
                 if (event.shiftKey || absX > absY) event.preventDefault();
