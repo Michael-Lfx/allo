@@ -26,6 +26,13 @@ pub struct ShowItemInFolderRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CopyFileRequest {
+    pub source_path: String,
+    pub destination_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenExternalRequest {
     pub url: String,
 }

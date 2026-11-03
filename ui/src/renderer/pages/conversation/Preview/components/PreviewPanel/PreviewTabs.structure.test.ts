@@ -106,6 +106,30 @@ describe('preview chrome breadcrumb', () => {
     expect(toolbar.includes("t('preview.pathLabel')")).toBe(true);
     expect(toolbar.includes('breadcrumbSegments')).toBe(true);
     expect(toolbar.includes("{'>'}")).toBe(true);
+    expect(toolbar.includes("const isImage = content_type === 'image'")).toBe(true);
+  });
+
+  test('keeps image filenames on the left and download plus reveal on the right', () => {
+    const toolbar = readFileSync(new URL('./PreviewToolbar.tsx', import.meta.url), 'utf8');
+    const panel = readFileSync(new URL('./PreviewPanel.tsx', import.meta.url), 'utf8');
+    expect(toolbar.includes('isImage ? (')).toBe(true);
+    expect(toolbar.includes("t('preview.openFileLocation')")).toBe(true);
+    expect(toolbar.includes('showRevealInFolder')).toBe(true);
+    expect(toolbar.includes("{'>'}")).toBe(true);
+    expect(panel.includes('ipcBridge.shell.showItemInFolder.invoke')).toBe(true);
+    expect(panel.includes("content_type === 'image' && Boolean(metadata?.file_path)")).toBe(true);
+  });
+});
+
+describe('preview tab width', () => {
+  test('caps every chip at a fixed width so artifact names cannot stretch it', () => {
+    expect(source.includes('preview-tabs__tab')).toBe(true);
+    expect(source.includes('title={tab.title}')).toBe(true);
+    expect(source.includes('preview-tabs__tab-title')).toBe(true);
+    expect(chromeCss.includes('.preview-tabs__tab {')).toBe(true);
+    expect(chromeCss.includes('width: 160px;')).toBe(true);
+    expect(chromeCss.includes('max-width: 160px;')).toBe(true);
+    expect(chromeCss.includes('text-overflow: ellipsis;')).toBe(true);
   });
 });
 

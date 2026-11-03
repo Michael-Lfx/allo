@@ -7,7 +7,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use nomifun_api_types::{
     ApiResponse, CheckToolInstalledRequest, CheckToolInstalledResponse, ClientPreferencesResponse,
-    OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest, ShowItemInFolderRequest,
+    CopyFileRequest, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest, ShowItemInFolderRequest,
     SpeechToTextConfig, SpeechToTextProvider, TtsApiRequest,
 };
 use nomifun_common::AppError;
@@ -25,6 +25,7 @@ pub fn shell_routes(state: ShellRouterState) -> Router {
     let shell = Router::new()
         .route("/api/shell/open-file", post(open_file))
         .route("/api/shell/show-item-in-folder", post(show_item_in_folder))
+        .route("/api/shell/copy-file", post(copy_file))
         .route("/api/shell/open-external", post(open_external))
         .route("/api/shell/check-tool-installed", post(check_tool_installed))
         .route("/api/shell/open-folder-with", post(open_folder_with))
@@ -44,6 +45,17 @@ async fn open_file(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     state.shell_service.open_file(&req.file_path).await?;
+    Ok(Json(ApiResponse::success()))
+}
+
+async fn copy_file(
+    State(state): State<ShellRouterState>,
+    body: Result<Json<CopyFileRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    state
+        .shell_service
+        .copy_file(&req.source_path, &req.destination_path)?;
     Ok(Json(ApiResponse::success()))
 }
 

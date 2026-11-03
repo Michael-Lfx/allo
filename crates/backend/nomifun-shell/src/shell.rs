@@ -22,6 +22,32 @@ impl ShellService {
         self.opener.open_detached(&path.to_string_lossy())
     }
 
+    /// Copy an existing file to a user-chosen path. The destination parent must
+    /// already exist; an existing file at the destination is replaced.
+    pub fn copy_file(&self, source: &str, destination: &str) -> Result<(), ShellError> {
+        let src = validate_file_exists(source)?;
+        let dest = std::path::PathBuf::from(destination.trim());
+        if dest.as_os_str().is_empty() || dest.file_name().is_none() {
+            return Err(ShellError::InvalidTarget("destination path is empty".to_owned()));
+        }
+        if dest.is_dir() {
+            return Err(ShellError::InvalidTarget("destination is a directory".to_owned()));
+        }
+        if let Some(parent) = dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                validate_directory_exists(&parent.to_string_lossy())?;
+            }
+        }
+        if dest.is_file() {
+            let dest_canonical = dest.canonicalize().map_err(ShellError::Io)?;
+            if dest_canonical == src {
+                return Ok(());
+            }
+        }
+        std::fs::copy(&src, &dest)?;
+        Ok(())
+    }
+
     pub async fn show_item_in_folder(&self, file_path: &str) -> Result<(), ShellError> {
         let path = validate_path_exists(file_path)?;
         if cfg!(target_os = "macos") {
@@ -488,6 +514,30 @@ mod tests {
     #[test]
     fn validate_file_exists_fails_for_missing_file() {
         let result = validate_file_exists("/nonexistent/file.txt");
+        assert!(matches!(result, Err(ShellError::FileNotFound(_))));
+    }
+
+    #[test]
+    fn copy_file_writes_source_bytes_to_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.jpg");
+        fs::write(&source, b"image-bytes").unwrap();
+        let destination = dir.path().join("saved.jpg");
+        let service = ShellService::new(Arc::new(NoopSystemOpener));
+        service
+            .copy_file(source.to_str().unwrap(), destination.to_str().unwrap())
+            .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"image-bytes");
+    }
+
+    #[test]
+    fn copy_file_rejects_a_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = ShellService::new(Arc::new(NoopSystemOpener));
+        let result = service.copy_file(
+            dir.path().join("missing.jpg").to_str().unwrap(),
+            dir.path().join("saved.jpg").to_str().unwrap(),
+        );
         assert!(matches!(result, Err(ShellError::FileNotFound(_))));
     }
 

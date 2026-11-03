@@ -312,6 +312,7 @@ export const shell = {
     file_path,
   })),
   showItemInFolder: httpPost<void, string>('/api/shell/show-item-in-folder', (file_path) => ({ file_path })),
+  copyFile: httpPost<void, { source_path: string; destination_path: string }>('/api/shell/copy-file'),
   openExternal: httpPost<void, string>('/api/shell/open-external', (url) => ({
     url,
   })),

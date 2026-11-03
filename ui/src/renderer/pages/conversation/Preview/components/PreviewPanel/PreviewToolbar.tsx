@@ -152,6 +152,18 @@ interface PreviewToolbarProps {
   onDownload: () => void;
 
   /**
+   * 是否显示「打开文件所在位置」（图片且有磁盘路径时）
+   * Whether to show "open file location" (images with a disk path)
+   */
+  showRevealInFolder?: boolean;
+
+  /**
+   * 在文件管理器中定位该文件
+   * Reveal the file in its folder
+   */
+  onRevealInFolder?: () => void;
+
+  /**
    * 关闭预览面板
    * Close preview panel
    */
@@ -201,12 +213,17 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
   onOpenInSystem,
   onDownload,
   onClose,
+  showRevealInFolder = false,
+  onRevealInFolder,
   leftExtra,
   rightExtra,
 }) => {
   const { t } = useTranslation();
   const isDiff = content_type === 'diff';
+  const isImage = content_type === 'image';
   const preferActionButtonsInFront = Boolean(leftExtra);
+  // Image actions stay on the right: filename left, download + reveal right.
+  const actionsInFront = preferActionButtonsInFront && !isImage;
 
   const toolbarBtn = PREVIEW_TOOLBAR_BTN_CLASS;
   const toolbarBtnActive = PREVIEW_TOOLBAR_BTN_ACTIVE_CLASS;
@@ -221,30 +238,47 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
     (content_type === 'code' ? isEditable && isEditMode : viewMode === 'source' || isSplitScreenEnabled);
 
   return (
-    <div className='flex items-center justify-between h-32px px-10px bg-2 flex-shrink-0 border-b border-b-solid border-arco-1 overflow-x-auto'>
-      <div className='flex items-center justify-between gap-8px w-full' style={{ minWidth: 'max-content' }}>
-        {/* 左侧：目录 > 文件面包屑，然后才是原文/预览。路径是主层级，不是次级文件名。 */}
-        <div className='flex items-center h-full gap-8px'>
-          {breadcrumbSegments.length > 0 && (
-            <nav
-              aria-label={t('preview.pathLabel')}
-              className='flex items-center min-w-0 text-11px leading-none'
-            >
-              {breadcrumbSegments.map((segment, index) => (
-                <span key={`${index}-${segment}`} className='flex items-center min-w-0'>
-                  {index > 0 && (
-                    <span className='px-4px text-t-tertiary' aria-hidden='true'>
-                      {'>'}
+    <div
+      className={`flex items-center justify-between h-32px px-10px bg-2 flex-shrink-0 border-b border-b-solid border-arco-1 ${isImage ? 'overflow-hidden' : 'overflow-x-auto'}`}
+    >
+      <div
+        className='flex items-center justify-between gap-8px w-full min-w-0'
+        style={isImage ? undefined : { minWidth: 'max-content' }}
+      >
+        {/* 左侧：目录 > 文件面包屑，然后才是原文/预览。路径是主层级，不是次级文件名。
+            图片只显示文件名，长名称在剩余宽度里省略。 */}
+        <div className={`flex items-center h-full gap-8px ${isImage ? 'preview-toolbar__file' : ''}`}>
+          {isImage ? (
+            file_name ? (
+              <span
+                className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-12px text-t-primary'
+                title={file_name}
+              >
+                {file_name}
+              </span>
+            ) : null
+          ) : (
+            breadcrumbSegments.length > 0 && (
+              <nav
+                aria-label={t('preview.pathLabel')}
+                className='flex items-center min-w-0 text-11px leading-none'
+              >
+                {breadcrumbSegments.map((segment, index) => (
+                  <span key={`${index}-${segment}`} className='flex items-center min-w-0'>
+                    {index > 0 && (
+                      <span className='px-4px text-t-tertiary' aria-hidden='true'>
+                        {'>'}
+                      </span>
+                    )}
+                    <span
+                      className={`whitespace-nowrap ${index === breadcrumbSegments.length - 1 ? 'text-t-primary' : 'text-t-secondary'}`}
+                    >
+                      {segment}
                     </span>
-                  )}
-                  <span
-                    className={`whitespace-nowrap ${index === breadcrumbSegments.length - 1 ? 'text-t-primary' : 'text-t-secondary'}`}
-                  >
-                    {segment}
                   </span>
-                </span>
-              ))}
-            </nav>
+                ))}
+              </nav>
+            )
           )}
           {(isMarkdown || isHTML || isDiff) && (
             <>
@@ -355,7 +389,7 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
             </div>
           )}
 
-          {preferActionButtonsInFront && showOpenInSystemButton && (
+          {actionsInFront && showOpenInSystemButton && (
             <div className={toolbarBtn} onClick={onOpenInSystem} title={t('preview.openInSystemApp')}>
               <svg
                 width={toolbarIconSize}
@@ -373,7 +407,7 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
               <span>{t('preview.openInSystemApp')}</span>
             </div>
           )}
-          {preferActionButtonsInFront && (
+          {actionsInFront && (
             <div className={toolbarBtn} onClick={() => void onDownload()} title={t('preview.downloadFile')}>
               <svg
                 width={toolbarIconSize}
@@ -394,7 +428,7 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
           {leftExtra}
         </div>
 
-        <div className='flex items-center gap-4px flex-shrink-0'>
+        <div className='preview-toolbar__actions flex items-center gap-4px flex-shrink-0'>
           {rightExtra}
 
           {snapshotButtonsVisible && (
@@ -466,7 +500,7 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
             </>
           )}
 
-          {!preferActionButtonsInFront && showOpenInSystemButton && (
+          {!isImage && !actionsInFront && showOpenInSystemButton && (
             <div className={toolbarBtn} onClick={onOpenInSystem} title={t('preview.openInSystemApp')}>
               <svg
                 width={toolbarIconSize}
@@ -485,8 +519,19 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
             </div>
           )}
 
-          {!preferActionButtonsInFront && (
-            <div className={toolbarBtn} onClick={() => void onDownload()} title={t('preview.downloadFile')}>
+          {isImage ? (
+            <button
+              type='button'
+              className='preview-toolbar__icon-btn text-t-secondary hover:text-t-primary'
+              aria-label={t('common.download')}
+              title={t('preview.downloadFile')}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void onDownload();
+              }}
+            >
               <svg
                 width={toolbarIconSize}
                 height={toolbarIconSize}
@@ -494,14 +539,58 @@ const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
                 fill='none'
                 stroke='currentColor'
                 strokeWidth='2'
-                className='text-t-secondary'
+                aria-hidden='true'
               >
                 <path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' />
                 <polyline points='7 10 12 15 17 10' />
                 <line x1='12' y1='15' x2='12' y2='3' />
               </svg>
-              <span>{t('common.download')}</span>
-            </div>
+            </button>
+          ) : (
+            !actionsInFront && (
+              <div className={toolbarBtn} onClick={() => void onDownload()} title={t('preview.downloadFile')}>
+                <svg
+                  width={toolbarIconSize}
+                  height={toolbarIconSize}
+                  viewBox='0 0 24 24'
+                  fill='none'
+                  stroke='currentColor'
+                  strokeWidth='2'
+                  className='text-t-secondary'
+                >
+                  <path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' />
+                  <polyline points='7 10 12 15 17 10' />
+                  <line x1='12' y1='15' x2='12' y2='3' />
+                </svg>
+                <span>{t('common.download')}</span>
+              </div>
+            )
+          )}
+          {isImage && showRevealInFolder && (
+            <button
+              type='button'
+              className='preview-toolbar__icon-btn text-t-secondary hover:text-t-primary'
+              aria-label={t('preview.openFileLocation')}
+              title={t('preview.openFileLocation')}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void onRevealInFolder?.();
+              }}
+            >
+              <svg
+                width={toolbarIconSize}
+                height={toolbarIconSize}
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                aria-hidden='true'
+              >
+                <path d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z' />
+              </svg>
+            </button>
           )}
         </div>
       </div>

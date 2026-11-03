@@ -363,7 +363,8 @@ pub use secret::{RegisterSecretRequest, SecretListItem};
 pub use shell::{
     CheckToolInstalledRequest, CheckToolInstalledResponse, DeepgramSpeechToTextConfig,
     OpenAISpeechToTextConfig, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest,
-    ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult,
+    CopyFileRequest, ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider,
+    SpeechToTextResult,
     TEXT_TO_SPEECH_PREFERENCE_KEY, TextToSpeechConfig, ToolType, TtsApiRequest,
 };
 pub use session_observation::{
