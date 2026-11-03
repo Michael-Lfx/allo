@@ -41,6 +41,15 @@
   padding: 0;
 }
 
+/* Windows/Linux: WebView2 does not treat a child box as part of the titlebar
+   drag region. The side columns used to be 1fr tracks filled by the menu and
+   toolbar, so only the center brand (pointer-events: none, max 360px) could
+   be dragged. Size those columns to their buttons and give every remaining
+   blank pixel to the center track, which already falls through to the titlebar. */
+.app-titlebar--wide.app-titlebar--desktop:not(.app-titlebar--mac) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
 .app-titlebar--mobile {
   height: 48px;
   min-height: 48px;
@@ -154,6 +163,11 @@
   padding-left: 16px;
 }
 
+.app-titlebar--wide.app-titlebar--desktop:not(.app-titlebar--mac) .app-titlebar__menu,
+.app-titlebar--wide.app-titlebar--desktop:not(.app-titlebar--mac) .app-titlebar__toolbar {
+  min-width: max-content;
+}
+
 .app-titlebar--mac .app-titlebar__menu {
   padding-left: 0;
 }
@@ -213,8 +227,9 @@
 /* Windows/Linux desktop: keep the right toolbar outside WebView2's native drag
    plane. WebView2 does not inherit -webkit-app-region from parents, so button-
    level no-drag is not enough once the titlebar root is a drag surface — clicks
-   on min/max/close are swallowed as window drags instead of reaching React. The
-   left menu column and center brand blanks stay draggable via the titlebar root. */
+   on min/max/close are swallowed as window drags instead of reaching React.
+   The toolbar stays shrink-wrapped to those controls; blank space lives in the
+   center track and drags with the titlebar. */
 .app-titlebar--desktop:not(.app-titlebar--mac) .app-titlebar__toolbar {
   -webkit-app-region: no-drag;
 }
