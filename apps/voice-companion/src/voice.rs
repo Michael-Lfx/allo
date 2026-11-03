@@ -2577,6 +2577,9 @@ impl VoiceCompanionRuntime {
                         let _ = playback.interrupt().await;
                         let sleep_gen = playback.generation_id();
                         let mut d = driver.lock().await;
+                        if playback.generation_id() != sleep_gen || event_tx.snapshot().session_id != control_scope.session_id {
+                            return;
+                        }
                         d.reset();
                         pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                         let _ = event_tx.send_scoped(
@@ -3066,6 +3069,9 @@ impl VoiceCompanionRuntime {
                     let _ = playback.interrupt().await;
                     let sleep_gen = playback.generation_id();
                     let mut d = driver.lock().await;
+                    if playback.generation_id() != sleep_gen || event_tx.snapshot().session_id != control_scope.session_id {
+                        return;
+                    }
                     d.reset();
                     pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     drop(d);

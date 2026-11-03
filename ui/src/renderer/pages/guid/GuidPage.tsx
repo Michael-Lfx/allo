@@ -503,8 +503,11 @@ const GuidPage: React.FC = () => {
         return;
       }
       const needsPrepare = voiceStartNeedsPrepare(errorObj);
-      if (errorObj?.code === 'voice_call_conflict') {
+      if (errorObj?.code === 'voice_call_starting') {
         Message.warning(t('voice.entry.callConflictStarting', { defaultValue: '上一通通话正在清理释放，请稍候重试' }));
+        return;
+      } else if (errorObj?.code === 'voice_call_conflict') {
+        Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，请先挂断' }));
         return;
       } else if (needsPrepare) {
         try {

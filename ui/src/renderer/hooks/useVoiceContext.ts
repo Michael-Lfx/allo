@@ -10,7 +10,7 @@ export function useVoiceContext() {
     // View presence controls empty-draft cleanup; it must not erase the last task workspace.
     const report=()=>{
       if(route?.kind==='conversation')void reportVoiceCandidate(route.id).catch(()=>{});
-      else void reportVoiceCandidate(null,null,false).catch(()=>{});
+      else if(pathname!=='/guid')void reportVoiceCandidate(null,null,true).catch(()=>{});
     };
     report();
     window.addEventListener('focus',report);

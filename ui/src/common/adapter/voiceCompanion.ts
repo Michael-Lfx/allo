@@ -472,8 +472,11 @@ async function cancelCallByRequestId(requestId: string): Promise<{ recovered: bo
 }
 
 function clearPendingCallIntent() {
-  pendingCallIntent=null;
-  callIntentListeners.forEach(listener=>listener());
+  pendingCallIntent = null;
+  if (!presenceSnapshot || presenceSnapshot.phase === 'idle' || Boolean(presenceSnapshot.ended_reason)) {
+    updateActiveVoiceCallConversationId(null);
+  }
+  callIntentListeners.forEach((listener) => listener());
 }
 function settlePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): void {
   if (snapshot.call_request_id && snapshot.call_request_id === latestCallRequestId

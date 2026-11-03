@@ -283,3 +283,20 @@ updateActiveVoiceCallConversationId(activeId);
 3. **绿色声波熄灭单测**：验证 `reconcilePendingCall` 在收到 503 或未在通话时 `activeVoiceCallId` 必为 `null`；
 4. **既有集成测试回归**：确保 `bv_03`、`review_standalone_binding`、`voice_streaming` 100% 绿灯；
 5. **只读挂载防置顶单测**：断言打开语音会话后 `updated_at` 不变，`voice_lifecycle` 不被翻为 `retained`。
+
+---
+
+### 6.4 对抗式终审裁决与时序加固落地 (H1/H2/M1/M5 闭环)
+
+在全量代码实施后，调用 Opencode CLI 进行了针对实际落地的对抗式代码审查，深度闭环了以下 4 项边缘隐患：
+
+1. **H1 落地：保护首页工作区候选（`useVoiceContext.ts`）**：
+   - 保留 `else if (pathname !== '/guid')`，使 `/guid` 首页候选由 `GuidPage.tsx` 独占上报，避免父组件全局 hook 在 `focus`/`visibilitychange` 时将用户选中的项目目录覆盖为 null。
+2. **H2 落地：消除全局 SessionEnded 跨 await 误杀新会话（`voice.rs`）**：
+   - 在直控 Dismiss（第 2580 行）与 LLM Dismiss（第 3068 行）中，重新获取 driver 锁后增加代际与会话防线：
+     `if playback.generation_id() != sleep_gen || event_tx.snapshot().session_id != control_scope.session_id { return; }`
+     若在 `interrupt().await` 期间已有新的唤醒或呼叫接管，旧会话终止逻辑立即放弃，彻底消除新会话被误杀的竞态。
+3. **M1 落地：细分 `voice_call_starting` 与 `voice_call_conflict`（`GuidPage.tsx`）**：
+   - 处于预留释放时提示“上一通通话正在清理释放，请稍候重试”；真实冲突时提示“当前已有正在进行的语音通话，请先挂断”，绝不自动导航。
+4. **M5 落地：意图清理同步归零活跃通话 ID（`voiceCompanion.ts`）**：
+   - `clearPendingCallIntent` 同步执行 `updateActiveVoiceCallConversationId(null)`，挂断当刻侧边栏绿色声波 0ms 同步熄灭。
