@@ -143,12 +143,6 @@ async function publishTurnCredits(params: {
       .map((id) => (id == null ? '' : String(id).trim()))
       .filter((id) => id.length > 0 && id !== String(turn_id) && id !== usage.turnId);
 
-    const baseConversation = current ?? conversation;
-    const baseExtra = baseConversation?.extra as Record<string, unknown> | undefined;
-    if (baseExtra?.voice === true || baseExtra?.is_default_voice === true || baseExtra?.session_mode === 'voice') {
-      return;
-    }
-
     const wireId = String(turn_id);
     const mergeUsage = (base: Record<string, TurnCreditUsageData>) => {
       const keyed = { ...base };
