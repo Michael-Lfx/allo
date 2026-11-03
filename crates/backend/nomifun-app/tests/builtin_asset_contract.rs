@@ -129,6 +129,30 @@ fn builtin_skill_display_metadata_matches_the_packaged_corpus() {
 }
 
 #[test]
+fn guizang_ppt_skill_is_bundled_with_templates_and_license() {
+    let root = builtin_skills_root().join("guizang-ppt-skill");
+    let skill = read_to_string(root.join("SKILL.md"));
+    assert!(
+        skill.trim_start().starts_with("---"),
+        "must start with YAML frontmatter"
+    );
+    assert!(skill.contains("name: guizang-ppt-skill"));
+    assert!(skill.contains("assets/template.html"));
+    assert!(skill.contains("assets/template-swiss.html"));
+    assert!(
+        !skill.contains("git -C \"<SKILL_ROOT>\" fetch"),
+        "bundled copy must not require an upstream git fetch before use"
+    );
+    assert!(root.join("assets/template.html").is_file());
+    assert!(root.join("assets/template-swiss.html").is_file());
+    assert!(root.join("assets/motion.min.js").is_file());
+    assert!(root.join("LICENSE").is_file());
+    let license = read_to_string(root.join("LICENSE"));
+    assert!(license.contains("GNU AFFERO GENERAL PUBLIC LICENSE"));
+    assert!(root.join("assets/icon.png").is_file());
+}
+
+#[test]
 fn deep_research_pro_is_bundled_and_uses_host_web_tools() {
     let skill = read_to_string(
         builtin_skills_root()

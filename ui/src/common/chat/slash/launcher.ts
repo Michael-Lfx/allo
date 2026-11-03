@@ -20,7 +20,12 @@ export interface SlashLauncherGroup {
 }
 
 const GROUP_ORDER: SlashLauncherItemKind[] = ['system', 'skill', 'agent'];
-const SLASH_TOKEN_CHAR_RE = /[a-zA-Z0-9_-]/;
+const SLASH_TOKEN_ASCII_RE = /[a-zA-Z0-9_-]/;
+const SLASH_TOKEN_LETTER_RE = /\p{L}|\p{N}/u;
+
+function isSlashQueryChar(char: string): boolean {
+  return SLASH_TOKEN_ASCII_RE.test(char) || SLASH_TOKEN_LETTER_RE.test(char);
+}
 
 export interface ActiveSlashTokenRange {
   start: number;
@@ -42,7 +47,7 @@ function isSlashBoundary(input: string, slashIndex: number): boolean {
 export function getActiveSlashTokenRange(input: string, caret = input.length): ActiveSlashTokenRange | null {
   const clampedCaret = Math.max(0, Math.min(caret, input.length));
   let queryStart = clampedCaret;
-  while (queryStart > 0 && SLASH_TOKEN_CHAR_RE.test(input[queryStart - 1])) {
+  while (queryStart > 0 && isSlashQueryChar(input[queryStart - 1])) {
     queryStart -= 1;
   }
 
@@ -52,7 +57,7 @@ export function getActiveSlashTokenRange(input: string, caret = input.length): A
   }
 
   let end = clampedCaret;
-  while (end < input.length && SLASH_TOKEN_CHAR_RE.test(input[end])) {
+  while (end < input.length && isSlashQueryChar(input[end])) {
     end += 1;
   }
 

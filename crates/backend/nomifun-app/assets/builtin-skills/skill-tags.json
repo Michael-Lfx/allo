@@ -128,6 +128,15 @@
       "scenario_tags": ["setup"]
     },
     {
+      "name": "guizang-ppt-skill",
+      "name_i18n": { "zh-CN": "归藏网页演示" },
+      "description_i18n": {
+        "zh-CN": "生成单文件横向翻页网页演示，支持电子杂志风和瑞士国际主义风，含演讲者视图与模板。已随客户端内置，无需再从技能市场下载。"
+      },
+      "audience_tags": ["designer", "office"],
+      "scenario_tags": ["presentation"]
+    },
+    {
       "name": "deep-research-pro",
       "name_i18n": { "zh-CN": "深度研究" },
       "description_i18n": {

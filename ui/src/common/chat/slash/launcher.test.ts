@@ -88,6 +88,27 @@ describe('slash launcher', () => {
     expect(replaceActiveSlashToken('你好/office 后续', '', 9)).toBe('你好 后续');
   });
 
+  test('keeps a Chinese skill name inside the slash query', () => {
+    expect(getActiveSlashTokenRange('/归藏网页演示', 7)).toEqual({
+      start: 0,
+      end: 7,
+      query: '归藏网页演示',
+    });
+    expect(getActiveSlashTokenRange('请用/归藏 做一页', 5)).toEqual({
+      start: 2,
+      end: 5,
+      query: '归藏',
+    });
+    expect(filterSlashLauncherItems(
+      [{ id: 'builtin:guizang-ppt-skill', kind: 'skill', name: '归藏网页演示', description: '网页 PPT', tags: ['guizang-ppt-skill'] }],
+      '归藏',
+    ).map((item) => item.id)).toEqual(['builtin:guizang-ppt-skill']);
+    expect(filterSlashLauncherItems(
+      [{ id: 'builtin:guizang-ppt-skill', kind: 'skill', name: '归藏网页演示', description: '网页 PPT', tags: ['guizang-ppt-skill'] }],
+      'ppt',
+    ).map((item) => item.id)).toEqual(['builtin:guizang-ppt-skill']);
+  });
+
   test('does not mistake URLs and paths for a slash command at the caret', () => {
     expect(getActiveSlashTokenRange('https://example.com', 19)).toBeNull();
     expect(getActiveSlashTokenRange('C:/work/project', 15)).toBeNull();

@@ -22,10 +22,10 @@ describe('Guid Skill launcher integration', () => {
 
     expect(source.includes('selectedPresetRecord.included_skills')).toBe(false);
     expect(source.includes('selectedPresetRecord.excluded_auto_skills')).toBe(false);
-    expect(source.includes('catalogSkills.filter(isInstalledPickerSkill)')).toBe(true);
+    expect(source.includes('installedPickerSkills(catalogSkills)')).toBe(true);
     expect(source.includes('pickerSkills.map')).toBe(true);
     expect(source.includes('skills={supportsHomeSkillLoading ? pickerSkills : []}')).toBe(true);
-    expect(sendBox.includes('catalogSkills.filter(isInstalledPickerSkill)')).toBe(true);
+    expect(sendBox.includes('installedPickerSkills(catalogSkills)')).toBe(true);
     expect(sendBox.includes('pickerSkills.map')).toBe(true);
     expect(sendBox.includes('skills={pickerSkills}')).toBe(true);
   });
