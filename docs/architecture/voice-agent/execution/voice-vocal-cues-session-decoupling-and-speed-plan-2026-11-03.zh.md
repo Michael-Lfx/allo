@@ -209,59 +209,45 @@
 
 ### 6.2 彻底根除的五大协同闭环方案 (The 5-Point Systemic Fix)
 
-#### 1. 后端目标仲裁：精准双轨分流（彻底隔离 BV-03 与首页新建）
-在 `crates/backend/nomifun-app/src/voice_companion_manager/recorder.rs` 的 `resolve_target_conversation` 中：
-```rust
-// 区分两类场景，严禁一刀切：
-let memory_owner = match &self.companion_service {
-    Some(companions) => companions.default_companion_id().await,
-    None => None,
-};
+#### 1. 前端引导页：掐断 conflict 时的自动切回旧会话死循环（P0-1）
+在 `ui/src/renderer/pages/guid/GuidPage.tsx` 与 `ui/src/common/adapter/voiceCompanion.ts` 中：
+```typescript
+// 现有问题代码：
+// if (errorObj?.code === 'voice_call_conflict' && errorObj?.active_conversation_id) {
+//   await navigate(`/conversation/${encodeURIComponent(errorObj.active_conversation_id)}`);
+// }
 
-let conv_id = if source_id.is_some() {
-    // 轨 A (BV-03 合约)：用户身处某个普通文本会话，唤醒需降级到默认单例 "语音助手"，满足既有测试与契约
-    self.conversation_service
-        .ensure_default_voice_conversation_with_mode(&self.user_id, memory_owner.as_deref(), session_mode)
-        .await
-        .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
-} else {
-    // 轨 B (首页/新建页全新通话)：candidate 与 source_id 均为 None！
-    // 绝对禁止查 voice:default 单例，强制生成唯一时间戳凭证动态创建全新独立会话！
-    let req_id = format!("voice-auto-{now}");
-    let created = self.conversation_service
-        .create_provisional_voice_conversation_with_locale(
-            &self.user_id,
-            memory_owner.as_deref(),
-            session_mode,
-            None,
-            &req_id,
-            None,
-            None,
-            None,
-        )
-        .await
-        .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
-    created.conversation_id
-};
-Ok((conv_id, source_id))
-```
-
-#### 2. 宿主快照投射：通话结束立即注销 `binding`
-在 `crates/backend/nomifun-app/src/voice_companion_manager.rs` 的 `apply_host_projection` 中：
-```rust
-// 当会话已结束（ended_reason.is_some()），该会话与外部的通话绑定即刻宣告死亡！
-if source_snapshot.ended_reason.is_some() {
-    source_snapshot.binding = None;
-} else {
-    source_snapshot.binding = snapshot.binding.clone().filter(|binding| Some(&binding.session_id) == source_snapshot.session_id.as_ref());
+// 修复策略：
+// 当用户的明确目标是 NewVoiceConversation 时，遇到 conflict 说明上一个通话尚未完全在后台沉降，
+// 绝对禁止强行将用户 navigate 回旧通话页面！
+// 应展示轻量非侵入提示，或由用户重试发起全新会话：
+if (errorObj?.code === 'voice_call_conflict') {
+  Message.warning(t('voice.entry.callConflictStarting', { defaultValue: '上一通通话正在清理释放，请稍候重试' }));
+  return;
 }
 ```
-*效果*：会话一旦结束，宿主快照中的 `binding` 立即归零为 `None`，彻底解除前端 `boundElsewhere` 误判，底部药丸立即恢复“待唤醒”呼吸态！
+*效果*：彻底掐断首页点击电话图标却被前端强行抓回旧任务的死循环通道！
 
-#### 3. 前端呼叫意图：严禁未知意图作为活跃 ID 兜底
+#### 2. 守护进程退出：`SessionEnded` 必须无条件全局广播，严禁被局部轮次丢弃（P0-2）
+在 `apps/voice-companion/src/voice.rs` 中，在所有会话终止分支（LLM Dismiss、直接退出、挂断）：
+```rust
+// 现有隐患代码：
+// let _ = event_tx.send_scoped(VoiceCompanionEvent::SessionEnded { reason: UserStop }, &control_scope);
+// 当 turn_id 发生轮次交替时，send_scoped 检查 !scope.matches(&state) 直接丢弃事件，导致守护进程从未进入 ended_reason！
+
+// 修复策略：
+// 会话终止是整个 Session 级别的终态事件，严禁受限于单一轮次的 turn_id！
+// 统一改为无条件全局广播：
+let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
+    reason: VoiceSessionEndReason::UserStop,
+});
+```
+*效果*：保证守护进程的 `ended_reason` 100% 写入并必达宿主与前端，彻底消灭僵尸会话！同时在 `accept_wake` 中，若上一会话已结束但状态机处于过渡态，原子 `d.reset()` 归一为 `Idle`。
+
+#### 3. 前端呼叫意图：绿色声波精准熄灭，且保留 503 幂等重试凭证（P0-3）
 在 `ui/src/common/adapter/voiceCompanion.ts` 的 `reconcilePendingCall` 中：
 ```typescript
-// 只有当呼叫意图真正处于发起中且未失败时，才允许暂时代替活跃 ID：
+// 只有当呼叫意图真正处于发起在途中（inFlight && !unknown && !abandoned）时，才允许暂时代替活跃 ID：
 const pendingActive = Boolean(
   pendingCallIntent &&
   !pendingCallIntent.unknown &&
@@ -273,32 +259,27 @@ const activeId = isCallActive
   : (pendingActive ? (pendingCallIntent?.conversationId ?? null) : null);
 updateActiveVoiceCallConversationId(activeId);
 ```
-并在 `stopVoiceSession`、`reconcilePendingCall(..., stopConfirmed=true)` 以及收到 503 `daemon_wake_unknown` 时，显式调用 `clearPendingCallIntent()` 清理意图，**确保通话挂断后，侧边栏绿色声波 100% 立即熄灭！**
+*关键边界防线*：**严禁在收到 503 时无脑调用 `clearPendingCallIntent()`**！保持 `pendingCallIntent` 的 `request_id` 以满足网络断线与幂等重试契约（`callIntent.test.ts:192`）；而通过收紧 `pendingActive`，`activeId` 立即归为 `null`，侧边栏绿色声波即刻熄灭！
 
-#### 4. 守护进程状态机：结束会话自愈重置
-在 `apps/voice-companion/src/voice.rs` 的 `accept_wake` 中：
-```rust
-let mut d = driver.lock().await;
-if events.snapshot().ended_reason.is_some() && d.current_state() != AcousticState::Idle {
-    // 上一个会话已明确宣告结束，但状态机尚未归位 Idle：原子归一为 Idle！
-    d.reset();
-}
-```
-彻底消除退出通话后再次点击通话按钮时因状态机时滞引发的 409 Conflict 与 503 `daemon_wake_unknown` 报错！
+#### 4. 宿主快照投射与双轨目标仲裁（P0-4）
+- **宿主快照展示解绑**：在 `voice_companion_manager.rs` 的 `apply_host_projection` 中，当 `source_snapshot.ended_reason.is_some()` 时，将快照的对外展示 `binding` 置为 `None`，彻底消除前端 `boundElsewhere` 误判，让药丸立即恢复“待唤醒”；
+- **目标仲裁精准分流**：在 `recorder.rs` 的 `resolve_target_conversation` 中精细区分：
+  - 若 `source_id.is_some()`（从既有普通文本会话唤醒）：维持 `ensure_default_voice_conversation_with_mode`，保护 `bv_03`、`review_standalone_binding` 等既有测试用例；
+  - 若 `source_id.is_none()` 且 `candidate.is_none()`（首页/新建页无既有会话）：强制调用 `create_provisional_voice_conversation_with_locale`，采用 `nomifun_common::generate_id()` 动态分配全新会话并传入正确 `locale`；
+  - 并在会话结束无有效发言时，由 `reconcile_empty_placeholders` 进行清理，防止磁盘和数据库残留。
 
-#### 5. 语言会话只读保护：严禁挂载触发隐式更新导致置顶
+#### 5. 语言会话只读保护：精确拦截 3 个静默更新 Effect（P0-5）
 在 `ui/src/renderer/pages/conversation/components/ChatConversation.tsx` 与 `NomiSendBox.tsx` 中：
-```typescript
-// 语音类会话（isVoiceConversation）在只读挂载阶段严禁触发自动补齐写入
-if (isVoiceConversation(conversation)) {
-  return false;
-}
-```
-点击浏览历史语言会话保持纯只读，绝不篡改 SQLite `updated_at`，**会话在列表中纹丝不动，彻底消灭乱跳置顶问题！**
+- 拦截 1：协作模型池自动回填（`ChatConversation.tsx:290-315`）；
+- 拦截 2：模型缺失自动修复（`ChatConversation.tsx:432-494`）；
+- 拦截 3：推理深度自动归一化（`NomiSendBox.tsx:476-497`）；
+对于 `isVoiceConversation` 会话，只读挂载阶段直接 return 跳过更新写入，绝不篡改 SQLite `updated_at`，**会话在列表中纹丝不动，彻底消灭乱跳置顶问题！**
 
 ---
 
 ### 6.3 自动化测试验证防线
-1. 新增集成测试：验证在 `candidate = None` 时多次执行 `recorder.freeze_session("session-1", None)` 与 `recorder.freeze_session("session-2", None)`，两次产生的 `conversation_id` 必须不相等且均为新建会话；
-2. 回归现有测试：确保 `bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conversation` 依然 100% 稳定绿灯；
-3. 快照断言：验证 `ended_reason.is_some()` 时，宿主快照 `binding` 必为 `None`。
+1. **防回跳单测**：验证 `GuidPage` 在遇到 `voice_call_conflict` 时绝不导航回旧会话；
+2. **退出事件必达单测**：验证 `voice.rs` 退出通话时 `SessionEnded` 必被触发，`ended_reason` 必不为 None；
+3. **绿色声波熄灭单测**：验证 `reconcilePendingCall` 在收到 503 或未在通话时 `activeVoiceCallId` 必为 `null`；
+4. **既有集成测试回归**：确保 `bv_03`、`review_standalone_binding`、`voice_streaming` 100% 绿灯；
+5. **只读挂载防置顶单测**：断言打开语音会话后 `updated_at` 不变，`voice_lifecycle` 不被翻为 `retained`。
