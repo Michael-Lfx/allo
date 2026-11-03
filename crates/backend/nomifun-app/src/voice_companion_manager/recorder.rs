@@ -190,9 +190,7 @@ impl ConversationVoiceDialogueRecorder {
         session_mode: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         let now = nomifun_common::now_ms();
-        let (candidate_workspace, source_id) = if let Some(ws) = explicit_workspace {
-            (Some(ws.to_string()), None)
-        } else if let Some(id) = candidate {
+        let (candidate_workspace, source_id) = if let Some(id) = candidate {
             let row = self.conversation_service.conversation_repo().get(&id).await
                 .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
                 .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
@@ -203,27 +201,32 @@ impl ConversationVoiceDialogueRecorder {
                     || extra.get("is_voice_conversation").and_then(|v| v.as_bool()) == Some(true)
                     || extra.get("voice_task_workspace").is_some()
                     || extra.get("session_mode").and_then(|v| v.as_str()) == Some("voice")
-                    || extra.get("session_mode").and_then(|v| v.as_str()) == Some("companion")
-                    || row.name == "Voice Call"
-                    || row.name.starts_with("语音");
-                if is_voice_conv {
-                    // 🛡️ Rule 1: Waking inside an existing voice conversation must stay in it!
+                    || extra.get("session_mode").and_then(|v| v.as_str()) == Some("companion");
+                let is_discarded = extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded")
+                    || extra.pointer("/voice_creation_request/ended").and_then(|v| v.as_bool()) == Some(true);
+                if is_voice_conv && !is_discarded {
+                    // 🛡️ Rule 1: Waking inside an existing active voice conversation must stay in it!
                     return Ok((id.clone(), Some(id)));
                 }
                 let is_temp_workspace = extra.get("temp_workspace_id").is_some();
-                let candidate_ws = extra.get("voice_task_workspace").and_then(|v| v.as_str())
+                let candidate_ws = explicit_workspace.map(|ws| ws.to_string())
                     .or_else(|| {
-                        if !is_temp_workspace {
-                            extra.get("workspace").and_then(|v| v.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .map(|s| s.to_string());
+                        extra.get("voice_task_workspace").and_then(|v| v.as_str())
+                            .or_else(|| {
+                                if !is_temp_workspace {
+                                    extra.get("workspace").and_then(|v| v.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .map(|s| s.to_string())
+                    });
                 (candidate_ws, Some(id))
             } else {
                 return Err(VoiceDialogueRecorderError::BindingInvalid("unsupported_source_conversation".into()));
             }
+        } else if let Some(ws) = explicit_workspace {
+            (Some(ws.to_string()), None)
         } else {
             (None, None)
         };
@@ -354,13 +357,33 @@ impl ConversationVoiceDialogueRecorder {
             home
         } else {
             let req_id = format!("voice-auto-{}", nomifun_common::generate_id());
+            let home_conv = self.conversation_service.get(&self.user_id, &home).await.ok();
+            let mut model_ref = home_conv.as_ref().and_then(|c| {
+                c.model.as_ref().map(|m| nomifun_api_types::voice::VoiceModelRef {
+                    provider_id: m.provider_id.clone(),
+                    model: m.model.clone(),
+                })
+            });
+            if model_ref.is_none() {
+                if let Some(runtime) = &self.execution_runtime {
+                    let dummy = nomifun_api_types::voice::VoiceExecutionConfig {
+                        workspace: std::env::temp_dir().to_string_lossy().into(),
+                        model: None,
+                        preset_id: None,
+                        session_mode: None,
+                    };
+                    if let Ok((prepared, _)) = runtime.prepare_configuration(&dummy).await {
+                        model_ref = prepared.model;
+                    }
+                }
+            }
             let created = self.conversation_service.create_provisional_voice_conversation_with_locale(
                 &self.user_id,
                 memory_owner.as_deref(),
                 session_mode,
                 None,
                 &req_id,
-                None,
+                model_ref.as_ref(),
                 None,
                 None,
             ).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;

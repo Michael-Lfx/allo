@@ -511,6 +511,38 @@ AI 在执行任务并向扬声器播报确认语或任务进展时（如“好�
 
 ---
 
+### 2.26 陷阱 26：通话挂断过度清理候选（`stop_session` 抹掉 `active_window_candidate`）导致原地唤醒被误判为离页新建
+
+#### 现场现象
+用户停留在语音会话 B 页面上，挂断上一通通话后，并未切页离开。再次开口喊唤醒词时，页面没有在当前会话 B 中继续，反而又自动新建了一个全新的语音会话 C。
+
+#### 根因分析
+1. `voice_companion_manager.rs` 在 `stop_session` 和 `mark_active_request_stopped` 中执行了 `self.set_candidate_conversation(None)`；
+2. 但用户并没有离开当前页面，浏览器依然停留在 `#/conversation/B`；
+3. 因路由未发生改变，前端 `useVoiceContext` 不会重新上报；
+4. 用户再次唤醒时，后端读取到的候选为 `None`，误以为用户处于首页，从而触发了新建会话逻辑。
+
+#### 解决方案与防线
+- **挂断绝不抹除窗口候选**：删除 stop 处的 `set_candidate_conversation(None)`，当前窗口正在查看的会话候选仅在用户真正切页（如切回首页）或窗口关闭时由前端/窗口事件清空；
+- **当前会话第一优先级**：在 `recorder.rs` 中，优先判定 `candidate` 是否为语音会话，一旦为真立即触发 Rule 1 原地接续，彻底杜绝被工作区分支旁路跳过。
+
+---
+
+### 2.27 陷阱 27：新建语音会话未继承模型导致首句即报 400 `Nomi conversation has no provider/model configured`
+
+#### 现场现象
+首页唤醒成功创建了全新的语音会话，但用户开口说话后系统弹窗报错 `Bad request: Nomi conversation has no provider/model configured`，输入框提示“当前会话未选择模型，无法发送消息”。
+
+#### 根因分析
+1. 调用 `create_provisional_voice_conversation_with_locale` 时，`model` 参数传了 `None`；
+2. 新生成的语音会话行在数据库中 `model` 为空；
+3. 执行时后端 `build_runtime_options` 检测到无模型配置，直接拒绝请求抛出 400。
+
+#### 解决方案与防线
+- **动态继承默认语音模型**：新建 provisional 会话时，从默认语音会话 `home` 读取用户配置的模型，并在为空时由 `VoiceTaskRuntime::prepare_configuration` 兜底解析默认模型，确保新会话 100% 具备有效模型配置。
+
+---
+
 ## 3. 长效防线与研发 Check List
 
 在未来迭代或多 Agent 协作开发中，任何人及 Agent 均须按以下 Checklist 进行自检：

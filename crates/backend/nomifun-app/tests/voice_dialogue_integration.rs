@@ -1178,7 +1178,7 @@ async fn review_standalone_binding_must_not_borrow_an_unselected_project() {
 #[tokio::test]
 async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     let dir = tempfile::tempdir().unwrap();
-    let service = fixture_service().await;
+    let service = fixture_service_with_models(&["test-model"]).await;
     let ws_path = dir.path().to_string_lossy().to_string();
 
     // 1. Create Voice Conversation 1
@@ -1211,6 +1211,17 @@ async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     let binding_2 = recorder.freeze_session("session-call-2", None).await.unwrap().unwrap();
     assert_eq!(binding_2.conversation_id, voice_conv_2.conversation_id, "Waking in voice_conv_2 must stay in voice_conv_2!");
 
+    // User configures a model on their default voice conversation:
+    let home_id = service.ensure_default_voice_conversation(USER_ID).await.unwrap();
+    service.conversation_repo().update(&home_id, &nomifun_db::ConversationRowUpdate {
+        model: Some(Some(serde_json::to_string(&nomifun_common::ProviderWithModel {
+            provider_id: USER_ID.into(),
+            model: "test-model".into(),
+            use_model: Some("test-model".into()),
+        }).unwrap())),
+        ..Default::default()
+    }).await.unwrap();
+
     // User navigates to homepage (conversation_id = None), and says wake word (session-call-3)
     candidate.write().unwrap().conversation_id = None;
     candidate.write().unwrap().workspace = None;
@@ -1229,6 +1240,17 @@ async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     assert_ne!(binding_4.conversation_id, binding_3.conversation_id, "Subsequent wake on homepage must NOT be locked into previous call's conversation!");
     assert_ne!(binding_4.conversation_id, voice_conv_1.conversation_id, "Subsequent wake must not fall back to voice_conv_1!");
     assert_ne!(binding_4.conversation_id, voice_conv_2.conversation_id, "Subsequent wake must not fall back to voice_conv_2!");
+
+    // Verify the newly created conversation on homepage has a dialogue model configured!
+    let conv_4 = service.get(USER_ID, &binding_4.conversation_id).await.unwrap();
+    assert!(conv_4.model.is_some(), "New provisional voice conversation created on homepage MUST have a dialogue model configured!");
+    assert_eq!(conv_4.model.as_ref().unwrap().model, "test-model", "New conversation must inherit dialogue model from default voice conversation!");
+
+    // User navigates back to voice_conv_1, AND candidate.workspace has a directory set:
+    candidate.write().unwrap().conversation_id = Some(voice_conv_1.conversation_id.clone());
+    candidate.write().unwrap().workspace = Some(ws_path.clone());
+    let binding_5 = recorder.freeze_session("session-call-5", None).await.unwrap().unwrap();
+    assert_eq!(binding_5.conversation_id, voice_conv_1.conversation_id, "Waking while viewing voice_conv_1 MUST stay in voice_conv_1 even if workspace is set!");
 }
 
 #[tokio::test]
