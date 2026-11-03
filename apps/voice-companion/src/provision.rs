@@ -74,6 +74,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auto_download_when_already_ready() {
+        unsafe {
+            std::env::set_var("NOMIFUN_TEST_MODE", "1");
+        }
         let temp_dir = tempdir().unwrap();
         let mut config = Config::default();
         config.models.models_dir = temp_dir.path().to_path_buf();

@@ -77,7 +77,11 @@ pub fn is_strict_mode() -> bool {
     if let Ok(exe) = std::env::current_exe() {
         let exe_str = exe.to_string_lossy().to_lowercase();
         if exe_str.contains("deps")
-            && (exe_str.contains("vt_") || exe_str.contains("test") || exe_str.contains("c1_"))
+            && (exe_str.contains("vt_")
+                || exe_str.contains("test")
+                || exe_str.contains("c1_")
+                || exe_str.contains("voice_companion")
+                || exe_str.contains("nomifun"))
         {
             return false;
         }
