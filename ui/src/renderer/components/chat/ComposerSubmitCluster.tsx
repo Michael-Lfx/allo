@@ -63,7 +63,7 @@ export const ComposerStopButton: React.FC<ComposerStopButtonProps> = ({
   <Button
     shape='circle'
     type='secondary'
-    className='send-button-custom sendbox-stop-button'
+    className='send-button-custom sendbox-stop-button flowy-button-icon'
     icon={<div className='sendbox-stop-icon' aria-hidden='true' />}
     onClick={(event) => onStop(readClickDetail(event))}
     disabled={pending}
@@ -174,7 +174,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
             shape='circle'
             type='primary'
             disabled={sendDisabled}
-            className='send-button-custom sendbox-steer-button'
+            className='send-button-custom sendbox-steer-button flowy-button-icon'
             title={t('conversation.steer.button')}
             aria-label={t('conversation.steer.button')}
             icon={<FlowyIcon name='lightning' size={14} weight='fill' />}
@@ -190,7 +190,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               type='primary'
               loading={loading}
               disabled={autoWorkDisabled}
-              className='send-button-custom'
+              className='send-button-custom flowy-button-icon'
               icon={<FlowyIcon name='robot' size={14} weight='fill' />}
               onClick={onSend}
               data-testid='composer-autowork-btn'
@@ -204,7 +204,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
             type='primary'
             loading={loading}
             disabled={sendDisabled}
-            className='send-button-custom'
+            className='send-button-custom flowy-button-icon'
             icon={<FlowyIcon name='arrowUp' size={14} weight='fill' />}
             onClick={onSend}
             data-testid={sendTestId}
@@ -234,7 +234,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               loading={isVoiceConnecting}
               status='danger'
               disabled={isVoiceConnecting}
-              className='send-button-custom sendbox-phone-hangup-button'
+              className='send-button-custom sendbox-phone-hangup-button flowy-button-icon'
               icon={<FlowyIcon name='phoneOff' size={14} weight='fill' />}
               onClick={onStopVoiceCall}
               data-testid={phoneCallTestId}
@@ -247,7 +247,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               shape='circle'
               type='primary'
               loading={isVoiceConnecting}
-              className='send-button-custom sendbox-phone-call-button'
+              className='send-button-custom sendbox-phone-call-button flowy-button-icon'
               disabled={isVoiceConnecting}
               icon={<FlowyIcon name='phone' size={14} weight='fill' />}
               onClick={onStartVoiceCall}
