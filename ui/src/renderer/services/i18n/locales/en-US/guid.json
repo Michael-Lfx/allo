@@ -177,6 +177,14 @@
     "showcaseImagePrompt": "An athlete sprints at full effort down a rainy night street, in a dynamic side medium shot that clearly shows the head, ear, upper body, and running posture. A pair of pearl-white wireless sport earbuds sits naturally on the ear, with a translucent silicone wing fitted to the ear; the product is clearly visible at a true-to-life size. The athlete's foot strikes standing water and throws up a splash, and the wet pavement reflects electric lime and cool cyan neon. Deep indigo night, cold cinematic light, a few lime-colored motes of dust, with the energy of a premium sports-technology advertisement.",
     "showcaseImageBadge": "Image",
     "videoShortcutTitle": "Create your video",
-    "videoShortcutSubtitle": "Turn an idea into reality"
+    "videoShortcutSubtitle": "Turn an idea into reality",
+    "cardWordmark": "Flowy:",
+    "cardGuest": "Guest",
+    "cardSeal": "TODAY IS YOUR DAY",
+    "cardQuoteCool": "A private assistant who really knows you,",
+    "cardQuoteWarm": "and acts before you say a word.",
+    "cardSignInHint": "Sign in to see your profile and plan",
+    "cardCredits": "{{amount}} credits",
+    "cardFlip": "Flip the card to see your account and plan"
   }
 }

@@ -1570,7 +1570,9 @@ const GuidPage: React.FC = () => {
             <div className={styles.guidLayout}>
               <div className={styles.homeMasthead}>
                 <GuidHomeBrand />
-                <GuidVideoShortcut />
+                <div className={styles.homeVideo} data-testid='guid-home-video'>
+                  <GuidVideoShortcut />
+                </div>
               </div>
               <FeatureCards onStartFromLocal={() => void handleLinkWorkspace()} />
 
