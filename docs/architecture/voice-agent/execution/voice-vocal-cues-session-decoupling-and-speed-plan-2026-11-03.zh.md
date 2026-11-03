@@ -182,3 +182,123 @@
    - 彻底修复 P2-1：`accept_wake` 严格尊崇 UI 契约——`wake_reply` 留空则静音只播和弦，默认短语走预固化人声，自定义短语走 TTS；
    - 补齐 `ListeningConfirm` 盲区消除回归单测（`tests/voice_confirmation.rs` 7 项全过）；
    - 重新构建生产二进制（SHA-256: `422626f2...`，61,198,336 字节），全量 997 项测试全绿。
+
+---
+
+## 6. 终极根治：“首页创建/唤醒语音通话依旧复用旧会话”的多重死锁拆解与确定性方案
+
+用户实测反馈指出了最关键的矛盾：**“首页创建语音通话依旧没有新建，而是跑到旧会话”这个问题修了好几遍，为何依然发生？**
+
+必须从系统全链路第一性原理彻底复盘之前修补的盲点，并拿出不可推翻的确定性系统级闭环解法：
+
+### 6.1 历史修补为何屡次复发？（三大隐蔽盲点复盘）
+1. **盲点一（局部修改被测试逼退回滚）**：
+   - 先前在 `recorder.rs:346` 尝试将 `ensure_default_voice_conversation` 替换为 `create_provisional_voice_conversation`；
+   - 但因为既有测试 `bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conversation` 明确要求“普通文本会话被唤醒时降级到默认‘语音助手’”，无差别替换导致 `bv_03` 失败断言红灯；
+   - 先前为了保住测试，直接把代码粗暴回滚，导致首页/新建页唤醒重新退回到了 `ensure_default_voice_conversation_with_mode` 静态单例查表（`voice:default:{user_id}`）的深坑中！
+2. **盲点二（只看创建逻辑，忽略了“旧通话根本没死透”）**：
+   - 以为问题只在“创建时找了谁”，却忽略了**上一次通话退出时，旧会话的状态依然在前端和后端游荡**；
+   - 守护进程发了 `SessionEnded`，但宿主在 `apply_host_projection` 里依然将旧的 `binding` 拷给了新快照；
+   - 前端只要认为旧会话还在通话中，就会触发各种互斥保护与跳回逻辑！
+3. **盲点三（前端引导页自带“自动切回”副作用）**：
+   - 用户在首页点击电话图标，前端 `GuidPage.tsx` 发送呼叫；
+   - 后端因为旧会话未死透判定 `is_active = true` 报出 `voice_call_conflict`；
+   - `GuidPage.tsx:506` 收到该错误后，**代码里赫然写着：`await navigate('/conversation/' + errorObj.active_conversation_id)`**，把用户强行拉回了旧通话页面！
+
+---
+
+### 6.2 彻底根除的五大协同闭环方案 (The 5-Point Systemic Fix)
+
+#### 1. 后端目标仲裁：精准双轨分流（彻底隔离 BV-03 与首页新建）
+在 `crates/backend/nomifun-app/src/voice_companion_manager/recorder.rs` 的 `resolve_target_conversation` 中：
+```rust
+// 区分两类场景，严禁一刀切：
+let memory_owner = match &self.companion_service {
+    Some(companions) => companions.default_companion_id().await,
+    None => None,
+};
+
+let conv_id = if source_id.is_some() {
+    // 轨 A (BV-03 合约)：用户身处某个普通文本会话，唤醒需降级到默认单例 "语音助手"，满足既有测试与契约
+    self.conversation_service
+        .ensure_default_voice_conversation_with_mode(&self.user_id, memory_owner.as_deref(), session_mode)
+        .await
+        .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
+} else {
+    // 轨 B (首页/新建页全新通话)：candidate 与 source_id 均为 None！
+    // 绝对禁止查 voice:default 单例，强制生成唯一时间戳凭证动态创建全新独立会话！
+    let req_id = format!("voice-auto-{now}");
+    let created = self.conversation_service
+        .create_provisional_voice_conversation_with_locale(
+            &self.user_id,
+            memory_owner.as_deref(),
+            session_mode,
+            None,
+            &req_id,
+            None,
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+    created.conversation_id
+};
+Ok((conv_id, source_id))
+```
+
+#### 2. 宿主快照投射：通话结束立即注销 `binding`
+在 `crates/backend/nomifun-app/src/voice_companion_manager.rs` 的 `apply_host_projection` 中：
+```rust
+// 当会话已结束（ended_reason.is_some()），该会话与外部的通话绑定即刻宣告死亡！
+if source_snapshot.ended_reason.is_some() {
+    source_snapshot.binding = None;
+} else {
+    source_snapshot.binding = snapshot.binding.clone().filter(|binding| Some(&binding.session_id) == source_snapshot.session_id.as_ref());
+}
+```
+*效果*：会话一旦结束，宿主快照中的 `binding` 立即归零为 `None`，彻底解除前端 `boundElsewhere` 误判，底部药丸立即恢复“待唤醒”呼吸态！
+
+#### 3. 前端呼叫意图：严禁未知意图作为活跃 ID 兜底
+在 `ui/src/common/adapter/voiceCompanion.ts` 的 `reconcilePendingCall` 中：
+```typescript
+// 只有当呼叫意图真正处于发起中且未失败时，才允许暂时代替活跃 ID：
+const pendingActive = Boolean(
+  pendingCallIntent &&
+  !pendingCallIntent.unknown &&
+  !pendingCallIntent.abandoned &&
+  pendingCallIntent.inFlight
+);
+const activeId = isCallActive
+  ? (snapshot.binding?.conversation_id ?? null)
+  : (pendingActive ? (pendingCallIntent?.conversationId ?? null) : null);
+updateActiveVoiceCallConversationId(activeId);
+```
+并在 `stopVoiceSession`、`reconcilePendingCall(..., stopConfirmed=true)` 以及收到 503 `daemon_wake_unknown` 时，显式调用 `clearPendingCallIntent()` 清理意图，**确保通话挂断后，侧边栏绿色声波 100% 立即熄灭！**
+
+#### 4. 守护进程状态机：结束会话自愈重置
+在 `apps/voice-companion/src/voice.rs` 的 `accept_wake` 中：
+```rust
+let mut d = driver.lock().await;
+if events.snapshot().ended_reason.is_some() && d.current_state() != AcousticState::Idle {
+    // 上一个会话已明确宣告结束，但状态机尚未归位 Idle：原子归一为 Idle！
+    d.reset();
+}
+```
+彻底消除退出通话后再次点击通话按钮时因状态机时滞引发的 409 Conflict 与 503 `daemon_wake_unknown` 报错！
+
+#### 5. 语言会话只读保护：严禁挂载触发隐式更新导致置顶
+在 `ui/src/renderer/pages/conversation/components/ChatConversation.tsx` 与 `NomiSendBox.tsx` 中：
+```typescript
+// 语音类会话（isVoiceConversation）在只读挂载阶段严禁触发自动补齐写入
+if (isVoiceConversation(conversation)) {
+  return false;
+}
+```
+点击浏览历史语言会话保持纯只读，绝不篡改 SQLite `updated_at`，**会话在列表中纹丝不动，彻底消灭乱跳置顶问题！**
+
+---
+
+### 6.3 自动化测试验证防线
+1. 新增集成测试：验证在 `candidate = None` 时多次执行 `recorder.freeze_session("session-1", None)` 与 `recorder.freeze_session("session-2", None)`，两次产生的 `conversation_id` 必须不相等且均为新建会话；
+2. 回归现有测试：确保 `bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conversation` 依然 100% 稳定绿灯；
+3. 快照断言：验证 `ended_reason.is_some()` 时，宿主快照 `binding` 必为 `None`。
