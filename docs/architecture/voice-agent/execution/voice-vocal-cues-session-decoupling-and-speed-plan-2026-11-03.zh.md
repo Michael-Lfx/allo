@@ -87,13 +87,14 @@
 ---
 
 ### 2.2 模块二：会话动态新建与分流解耦（`nomifun-app` & `Router.tsx`）
-1. **后端 `resolve_target_conversation` 逻辑修正**（`recorder.rs`）：
-   - 废除无条件 fallback 到静态单例 `voice:default:{user_id}`；
-   - 当 `candidate` 为空或当前前台窗口处于首页/新建页时：
-     生成带有唯一纳秒时间戳的创建键 `voice-create:auto:{now}`，调用 `create_provisional_voice_conversation_with_locale` 创建全新独立语音会话；
-   - 仅当用户明确处于有效且合法的既有语音会话页中时，才就地返回该会话继续对话（原地接续原则）。
-2. **前端切页注销候选**：
-   - 在前端路由守卫中，当路由跳转至 `/`、`/guid` 或非会话页面时，向后端广播 `report_window_context`（`conversation_id: None`），彻底清除后端内存中的旧会话残留。
+1. **后端 `resolve_target_conversation` 精准双轨分流**（`recorder.rs`）：
+   - **普通文本会话降级轨（BV-03 合约）**：当 `source_id.is_some()`（即用户身处某个无工作区的普通文本对话，被唤醒需降级到默认语音对话）时，维持调用 `ensure_default_voice_conversation_with_mode`，保护既有测试用例与“语音助手”单例契约；
+   - **首页/新建任务页全新动态轨（用户诉求核心）**：当 `candidate.is_none()` 且 `source_id.is_none()`（用户在首页或点击新建任务，无既有会话上下文）时，**强制生成唯一时间戳凭据 `voice-auto-{now}` 并调用 `create_provisional_voice_conversation_with_locale` 创建全新独立语音会话**，彻底斩断静态单例绑架！
+2. **通话终止即注销绑定（清除幽灵 Session）**：
+   - 在 `voice_companion_manager.rs` 的 `apply_host_projection` 中：若 `source_snapshot.ended_reason.is_some()`，**强制将 `source_snapshot.binding` 置为 `None`**；
+   - 彻底解除旧会话绑定的残留，使底部 Dock 能立即恢复为“待唤醒”吸附态（`waiting-wake`），并防止下次唤醒被旧绑定拉回。
+3. **前端切页注销候选**：
+   - 在前端路由守卫中，当路由跳转至 `/`、`/guid` 或非会话页面时，向后端广播 `report_window_context`（`conversation_id: None`），彻底清除后端内存中的旧候选残留。
 
 ---
 
