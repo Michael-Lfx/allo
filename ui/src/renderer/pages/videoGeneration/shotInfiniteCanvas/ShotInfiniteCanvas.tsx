@@ -42,6 +42,7 @@ import { VIDEO_NODE_ID, clampScale, fitViewport } from '../shotMiniCanvas/layout
 import { parseShotNodeId } from './packetToCanvas';
 import { shotBoundMentionReferences } from './shotMentions';
 import { useShotNodeDrag } from './useShotNodeDrag';
+import { nextShotCanvasWheelArmed, shotCanvasPointerHit } from './shotCanvasWheel';
 import styles from '../index.module.css';
 
 const NOOP = () => undefined;
@@ -154,6 +155,9 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   const theme = canvasThemes[colorTheme] ?? canvasThemes.light;
   const innerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? innerRef;
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const wasExpandedRef = useRef(expanded);
+  const [wheelArmed, setWheelArmed] = useState(false);
   const viewportRef = useRef(viewport);
   const nodesRef = useRef(nodes);
   const layoutLockedRef = useRef(layoutLocked);
@@ -183,6 +187,19 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   useEffect(() => {
     void syncOcConfigFromAlloMediaModels().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      setWheelArmed((armed) => nextShotCanvasWheelArmed(shotCanvasPointerHit(surfaceRef.current, event.target), armed));
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, []);
+
+  useEffect(() => {
+    if (wasExpandedRef.current && !expanded) setWheelArmed(false);
+    wasExpandedRef.current = expanded;
+  }, [expanded]);
 
   useLayoutEffect(() => {
     if (!expanded) {
@@ -428,9 +445,11 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   return (
     <CanvasColorThemeScope theme={colorTheme}>
     <div
+      ref={surfaceRef}
       className={`${styles.shotInfiniteCanvas} oc-root oc-canvas${colorTheme === 'dark' ? ' dark' : ''}`}
       data-testid='shot-infinite-canvas'
       data-canvas-theme={colorTheme}
+      data-wheel-armed={expanded || wheelArmed ? 'true' : 'false'}
       data-expanded={expanded ? 'true' : undefined}
       style={
         expanded && fillBox
@@ -476,6 +495,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
                   });
                 }}
                 onDrop={onDrop}
+                wheelGestures={expanded || wheelArmed}
               >
                 <svg
                   className='absolute overflow-visible'
