@@ -10,20 +10,10 @@ pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Optio
         && window.is_visible().map_err(|_| "voice_context_unavailable")?
         && !window.is_minimized().map_err(|_| "voice_context_unavailable")?;
     if !focused { return Ok(()); }
-    let candidate = {
-        let url = window.url().map_err(|_| "voice_context_unavailable")?;
-        let route = url.fragment().and_then(|hash| hash.split('?').next()).unwrap_or("");
-        if workspace.is_some() && route != "/guid" { return Err("voice_context_stale".into()); }
-        if conversation_id.is_none() && url.fragment().is_some_and(|hash| hash.starts_with("/conversation/")) { return Ok(()); }
-        if let Some(id) = &conversation_id {
-            if url.fragment().and_then(|hash| hash.split('?').next()) != Some(format!("/conversation/{id}").as_str()) { return Err("voice_context_stale".into()); }
-        }
-        conversation_id
-    };
     if view_only == Some(true) {
-        manager.report_voice_view(candidate.clone(), sequence);
+        manager.report_voice_view(conversation_id, sequence);
     } else {
-        manager.report_window_context(VoiceWindowContext { conversation_id: candidate, workspace, sequence });
+        manager.report_window_context(VoiceWindowContext { conversation_id, workspace, sequence });
     }
     Ok(())
 }

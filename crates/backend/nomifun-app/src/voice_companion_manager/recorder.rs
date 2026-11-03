@@ -344,7 +344,29 @@ impl ConversationVoiceDialogueRecorder {
 
         let memory_owner = match &self.companion_service {Some(companions)=>companions.default_companion_id().await,None=>None};
         let home = self.conversation_service.ensure_default_voice_conversation_with_mode(&self.user_id,memory_owner.as_deref(),session_mode).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
-        Ok((home, source_id))
+        let home_has_messages = self.conversation_service
+            .list_messages(&self.user_id, &home, Default::default())
+            .await
+            .map(|msgs| !msgs.items.is_empty())
+            .unwrap_or(false);
+
+        let conv_id = if source_id.is_some() || !home_has_messages {
+            home
+        } else {
+            let req_id = format!("voice-auto-{}", nomifun_common::generate_id());
+            let created = self.conversation_service.create_provisional_voice_conversation_with_locale(
+                &self.user_id,
+                memory_owner.as_deref(),
+                session_mode,
+                None,
+                &req_id,
+                None,
+                None,
+                None,
+            ).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+            created.conversation_id
+        };
+        Ok((conv_id, source_id))
     }
 }
 

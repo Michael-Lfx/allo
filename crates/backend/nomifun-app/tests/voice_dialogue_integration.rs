@@ -1219,6 +1219,14 @@ async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
     assert_ne!(binding_3.conversation_id, voice_conv_1.conversation_id, "Waking on homepage must NOT hijack to voice_conv_1!");
     assert_ne!(binding_3.conversation_id, voice_conv_2.conversation_id, "Waking on homepage must NOT hijack to voice_conv_2!");
 
+    // Simulate dialogue occurring in call 3 (user spoke and message pair was recorded)
+    let input = VoiceDialogueRequest::scoped("session-call-3", "turn-1", "你好");
+    recorder.preflight(&input).await.unwrap();
+    recorder.record_pair(&binding_3.conversation_id, &input, r#"{"intent_type":"chat","reply_tts":"你好，我在。"}"#).await.unwrap();
+
+    // Call 4 on homepage: previous home conversation has messages, MUST create a NEW conversation!
+    let binding_4 = recorder.freeze_session("session-call-4", None).await.unwrap().unwrap();
+    assert_ne!(binding_4.conversation_id, binding_3.conversation_id, "Subsequent wake on homepage must NOT be locked into previous call's conversation!");
 }
 
 #[tokio::test]
