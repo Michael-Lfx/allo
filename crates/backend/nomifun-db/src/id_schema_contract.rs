@@ -182,7 +182,6 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
-    ("learning_lesson_capacity_feedback", "feedback_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     ("learning_quiz_rounds", "round_id"),
@@ -299,7 +298,6 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
-    ("learning_lesson_capacity_feedback", "feedback_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     // quiz 回合的身份列（基线 070 §7，原 migration 084）：回合行的业务主
