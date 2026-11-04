@@ -108,6 +108,8 @@ Agent Store 独立宿主将后端 API 与 Web UI（`web/dist`）打包为单二�
 | `NOMIFUN_COMPANION_TOKEN` | `nomicore call` | 访问 `/v1` Remote capability 路由的 companion access token。 |
 | `SENTRY_DSN` | `nomicore` / 宿主 | 后端 panic 与 tracing 错误的可选 Sentry DSN。未设置则关闭 Rust 崩溃上报。不上报对话正文。 |
 | `NOMI_LOG_LEVEL` | 宿主应用 | 宿主日志级别的环境变量覆盖通道（尤其适用于被 SDK 拉起、无法传 CLI 参数的子进程）。 |
+| `VOICE_COMPANION_BIN` | 桌面语音宿主 | 语音伴侣守护进程的显式路径；仅当指向文件时生效。未设置时依次查打包资源 `bin/`、可执行文件同目录、源码检出的构建与暂存目录。 |
+| `NOMIFUN_SKIP_VOICE_COMPANION` | `bun run dev` | 仅开发用。设为 `1` 跳过开发前置里的语音守护进程自动构建；在守护进程构建出来之前语音保持不可用。 |
 
 ## 前端构建变量
 

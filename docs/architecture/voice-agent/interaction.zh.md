@@ -47,16 +47,16 @@ Flowy / NomiFun 是一套生产级本地优先自动化与 AI Agent 协作平台
    - **严谨科学边界声明**：AI SSD 不能等同于物理 RAM，不作“彻底杜绝 OOM”的过度承诺；由于核心意图路由在云端极速模型，MVP 阶段不涉及本地 LLM 的 KV Cache 磁盘卸载。系统的真实并发稳定性严格以 Phase 1 阶段真实硬件上的 RSS 与 Swap 压力测试为准。
 3. **开箱即用与跨平台三端打包**：
    - **Linux（首发主力系统）**：基于定制 Linux 发行版，以 `systemd` 系统守护进程运行，通电自启、配合 `sd_notify` 硬件看门狗与非 root 权限沙箱；
-   - **Windows / macOS 统一部署**：通过跨平台 Rust 宿主 `apps/ai-mate`，同时打包为 Windows Service / 托盘静默伴侣与 macOS `launchd` LaunchDaemon。
+   - **Windows / macOS 统一部署**：通过跨平台 Rust 宿主 `apps/voice-companion`，同时打包为 Windows Service / 托盘静默伴侣与 macOS `launchd` LaunchDaemon。
 4. **无屏 OOBE 语音配对码安全机制 (防局域网劫持)**：
-   - 设备首次开机若未检测到配置文件 `/etc/ai-mate/config.toml`，启动临时局域网 mDNS (`ai-mate.local`) 受信 Web 配对服务；
+   - 设备首次开机若未检测到配置文件 `/etc/voice-companion/config.toml`，启动临时局域网 mDNS (`voice-companion.local`) 受信 Web 配对服务；
    - **安全防劫持设计**：由于无屏幕显示，AI Mate 开机自检完成后，**通过扬声器主动语音播报一次性 6 位动态配对码**（例如：“*AI Mate 已就绪，配对码为：8-3-9-2-0-1*”）；
    - 用户在手机/电脑浏览器打开配对页面，必须输入该 6 位配对码验证通过后，方可配置 Wi-Fi 凭据与云端 API Key；
 28:    - 配对码有效期为 10 分钟，连续输错 5 次强制锁定 15 分钟；配对完成后凭据加密存入系统 Keychain / 安全存储，严禁在日志中明文打印；
    - **入网旁路**：纯 Wi-Fi 设备未入网时 mDNS 不可达，支持 U 盘根目录导入 `setup.toml` 预置凭据入网（详见 §3.1 入网前置）。
 29: 5. **模型资产分发交付的场景分化：桌面客户端防膨胀 vs 无屏硬件开箱自愈**：
 30:    - **桌面端 (Flowy React 19 SPA)**：桌面用户主要使用代码、浏览器、文档等核心自动化能力，语音交互属于增量可选特性。若将 ~249MB 的声学模型硬编入安装包，将导致桌面客户端安装包体积从 ~100MB 飙升至 ~350MB+，造成沉重的下载网络门槛与非必要磁盘浪费。因此桌面端采用“核心轻量交付 + 设置/设备页面按需一键下载与可视化进度管理（支持实时百分比、速度、阶段显示与释放删除）”；
-31:    - **无屏伴侣硬件 (AI Mate Appliance)**：无屏无键鼠设备无法依赖人类用鼠标点击 UI 按钮，必须提供“零触控开箱通电即用”体验。系统支持代码/配置声明式开机自启（`/etc/ai-mate/config.toml` 中配置 `auto_download = true`），首次通电自检无模型时自动触发后台下载，并通过 mDNS 配对网页 (`ai-mate.local:8080`) 实时投影下载进度条，同时辅以柔和事件音效与完工语音播报；
+31:    - **无屏伴侣硬件 (AI Mate Appliance)**：无屏无键鼠设备无法依赖人类用鼠标点击 UI 按钮，必须提供“零触控开箱通电即用”体验。系统支持代码/配置声明式开机自启（`/etc/voice-companion/config.toml` 中配置 `auto_download = true`），首次通电自检无模型时自动触发后台下载，并通过 mDNS 配对网页 (`voice-companion.local:8080`) 实时投影下载进度条，同时辅以柔和事件音效与完工语音播报；
 32:    - **底层同一性与离线兼容**：无论桌面端按需下载还是无屏端配置自启，均驱动同一个底层 `ModelManager` 状态机，统一落地于规范目录，并在加载前强制执行 SHA256 密码学校验，全面兼容内网/离线手动 `cp -r` 零网直接部署。
 33: 
 34: ### 1.2 现状痛点剖析与三大历史矛盾清算
@@ -134,7 +134,7 @@ flowchart TD
         Router -->|"4. intent == agent_task"| DispatchTask["分发至任务调度队列"]
     end
 
-    subgraph HostExec["4. 宿主服务、执行底座与播放流 (apps/ai-mate & backend)"]
+    subgraph HostExec["4. 宿主服务、执行底座与播放流 (apps/voice-companion & backend)"]
         FastExec --> PlaybackSub["播放流水线 (PlaybackPipeline)<br/>TtsProvider (Edge-TTS) -> Symphonia MP3 解码 -> 100ms Jitter Buffer"]
         PlaybackSub --> Speaker["系统物理扬声器输出"]
         
@@ -162,7 +162,7 @@ flowchart TD
 | **`crates/backend/nomifun-voice-terminal`**<br/>*(新建核心 crate)* | 声学交互状态机（Acoustic FSM，含追问窗与确认窗）、Task FSM 消息桥接、单次原子路由客户端、`TtsProvider` 抽象接口、MP3 解码与扬声器播放流水线（`PlaybackPipeline`）、本地启发式预筛器。 | 严禁直接依赖平台特有 GUI API（如 Tauri 窗口句柄）；保持 100% Headless 纯异步库。 |
 | **`crates/backend/nomifun-voice-models`**<br/>*(新建模型管理 crate)* | `ModelManager` 生命周期状态机、双源探针与断点续传下载器、SHA256 校验器、统一目录落盘，并向桌面端 / 无屏端宿主暴露 `/api/voice/models/*` REST 与 SSE 契约。 | 严禁触碰音频采集与推理运行时；对下游只交付"已校验就绪"的模型目录路径与状态流。 |
 | **`crates/backend/nomifun-ai-agent`** | Agent 运行时任务队列、多步 Tool 执行、**工具调度层结构化策略硬引擎（Tool Policy Engine）**、沙箱路径隔离。 | 严禁在此处直接读取麦克风或直接驱动扬声器发声。 |
-| **`apps/ai-mate`**<br/>*(新宿主二进制)* | 跨平台宿主守护进程编排（Linux `systemd` + `sd_notify`、Windows Service、macOS `launchd`）、无屏 OOBE 语音配对码播报与 Web 配对服务、全局配置加载。 | 仅做启动装配与宿主胶水代码，核心算法与状态机一律调用上述三个底层 crate。 |
+| **`apps/voice-companion`**<br/>*(新宿主二进制)* | 跨平台宿主守护进程编排（Linux `systemd` + `sd_notify`、Windows Service、macOS `launchd`）、无屏 OOBE 语音配对码播报与 Web 配对服务、全局配置加载。 | 仅做启动装配与宿主胶水代码，核心算法与状态机一律调用上述三个底层 crate。 |
 
 ### 2.3 隐私与数据安全边界 (Privacy & Data Boundaries)
 1. **永不离机数据 (Strictly Local)**：
@@ -183,7 +183,7 @@ flowchart TD
 
 | 核心目标 (What We Do) | 明确的非目标 (Explicit Non-Goals) |
 | :--- | :--- |
-| 交付面向 Linux/Win/Mac 的纯远场语音伴侣主机 `apps/ai-mate` | ❌ **AI Mate 主机本身坚决不做任何屏幕 UI、Tauri 前台窗口或 Web 复杂控制台**（桌面客户端内的模型管理设置行属既有桌面应用的设置页扩展，不在此列，见 §3.10） |
+| 交付面向 Linux/Win/Mac 的纯远场语音伴侣主机 `apps/voice-companion` | ❌ **AI Mate 主机本身坚决不做任何屏幕 UI、Tauri 前台窗口或 Web 复杂控制台**（桌面客户端内的模型管理设置行属既有桌面应用的设置页扩展，不在此列，见 §3.10） |
 | 修复 CPAL 实时音频回调，构建基于 `ringbuf` 的无锁声学管线 | ❌ **坚决不做舵机云台、避障雷达等玩具机器人机构** |
 | 规范 Sherpa-ONNX KWS 生成语法，落实精准单词 `Hey Flowy` | ❌ **坚决不在未测试前硬编码启用一堆拼音/谐音别名** |
 | 实现 `qwen3.5-flash` 单次原子结构化四路分流与快慢双轨 | ❌ **MVP 坚决不引入本地 Piper/VITS 等重型离线 TTS 模型** |
@@ -201,11 +201,11 @@ flowchart TD
 
 ## 3. 核心设计与模块规范 (Subsystem Design)
 
-### 3.1 跨平台三端打包与宿主架构 (`apps/ai-mate`)
-新建独立的跨平台守护进程 `apps/ai-mate`，统一编排声学链路与 Agent 交互：
+### 3.1 跨平台三端打包与宿主架构 (`apps/voice-companion`)
+新建独立的跨平台守护进程 `apps/voice-companion`，统一编排声学链路与 Agent 交互：
 - **Linux 部署基准 (开箱即用首发)**：
-  - 作为 `systemd` 系统服务开机常驻：`/etc/systemd/system/ai-mate.service`；
-  - 运行于专用非特权用户 `aimate`，工作目录固定于 `/var/lib/ai-mate/`；
+  - 作为 `systemd` 系统服务开机常驻：`/etc/systemd/system/voice-companion.service`；
+  - 运行于专用非特权用户 `voice-companion`，工作目录固定于 `/var/lib/voice-companion/`；
   - 接入 `systemd` 看门狗机制：每隔 15 秒通过 `libsystemd` / `sd_notify` 发送 `WATCHDOG=1` 心跳（心跳周期须显著小于 `WatchdogSec`，取约 1/2 安全水位，防止调度抖动误杀），主循环死锁或线程崩塌由系统级看门狗自动杀掉并重启恢复：
     ```ini
     [Unit]
@@ -216,8 +216,8 @@ flowchart TD
     Type=notify
     User=aimate
     Group=aimate
-    WorkingDirectory=/var/lib/ai-mate
-    ExecStart=/usr/local/bin/ai-mate --config /etc/ai-mate/config.toml
+    WorkingDirectory=/var/lib/voice-companion
+    ExecStart=/usr/local/bin/voice-companion --config /etc/voice-companion/config.toml
     Restart=always
     RestartSec=5s
     WatchdogSec=30s
@@ -229,17 +229,17 @@ flowchart TD
   - Windows：支持编译为 Windows Service（通过 `windows-service` crate 注册），或普通用户登录启动的无窗口托盘伴侣；
   - macOS：注册为 `launchd` LaunchDaemon（`/Library/LaunchDaemons/com.flowy.aimate.plist`），在 Mac mini 等设备上无显示器静默常驻；
 - **守护进程升级策略**：
-  - **MVP 阶段**：采用**脚本化二进制热替换**机制。替换二进制文件后，向进程发送 `SIGHUP` 或通过 `systemctl restart ai-mate` 平滑重启；
+  - **MVP 阶段**：采用**脚本化二进制热替换**机制。替换二进制文件后，向进程发送 `SIGHUP` 或通过 `systemctl restart voice-companion` 平滑重启；
   - **未来演进**：带签名校验的 A/B 双分区 OTA 升级方案明确留待 Post-MVP (Phase 5) 实现，不阻塞当前发布；
 - **AI SSD 存储层与虚拟内存协同**：
   - 模型权重文件（Sherpa-ONNX、Silero-VAD、SenseVoice 等）直接放置于 AI SSD 高速分区，以只读内存映射（`mmap`）方式加载，零堆内存拷贝占用；
   - 配合 Linux 的 `zram` / `zswap`、Windows 快速 Pagefile，系统只将冷数据置换到 AI SSD，确保物理 2GB~4GB RAM 伴侣设备稳定运行；
 - **无屏幕首次开机配对 (OOBE 详细流程)**：
   - **入网前置（鸡生蛋防线）**：mDNS 配对的前提是设备已接入局域网。MVP 提供两条零触控入网通道：**有线优先**（检测到 Ethernet 插入即 DHCP 自动入网）与 **U 盘预置**（开机检测 U 盘根目录 `setup.toml`，含 Wi-Fi 凭据与可选 API Key，导入后立即写入系统安全存储并删除明文副本）；纯 Wi-Fi 无屏配网（AP 热点自广播模式）明确列为 Post-MVP 演进，MVP 不承诺；
-  1. 设备通电启动，若未读取到有效的网络与凭据配置，自动广播 mDNS (`ai-mate.local`) 并启动局域网 HTTP 配对服务；
+  1. 设备通电启动，若未读取到有效的网络与凭据配置，自动广播 mDNS (`voice-companion.local`) 并启动局域网 HTTP 配对服务；
   2. 随机生成 6 位数字动态配对码（例如 `839201`，有效期 10 分钟）；
   3. 扬声器自动播报：“*AI Mate 已开机，请在局域网网页输入配对码：8-3-9-2-0-1*”；若用户在旁未听清，再次对着设备说“*配对码*”，系统重新播报一次；
-  4. 用户在同一局域网下访问 `http://ai-mate.local:8080`，页面要求输入配对码，校验通过后进入配置页面提交 Wi-Fi 与 API Key；
+  4. 用户在同一局域网下访问 `http://voice-companion.local:8080`，页面要求输入配对码，校验通过后进入配置页面提交 Wi-Fi 与 API Key；
   5. 防爆破机制：连续 5 次输错配对码锁定 15 分钟。
 
 ### 3.2 麦克风采集与声学驱动无锁流水线 (`nomifun-audio`)
@@ -303,7 +303,7 @@ pub enum CaptureReadResult {
 1. **统一布局与免提权选径**：全平台模型资产必须且只能存放于统一 `models_dir` 拓扑（`kws/`、`vad/`、`asr/`、`checksums.sha256`）；桌面 GUI 一律落用户态目录，严禁为写模型文件请求 UAC / sudo 提权，系统级目录仅供服务身份宿主；
 2. **状态机唯一事实源**：新建 crate `nomifun-voice-models` 的 `ModelManager` 以 `ModelInstallState`（`NotInstalled / ProbingSource / Downloading / VerifyingSha256 / Ready / Failed / Removing`）统一驱动桌面 GUI 按需下载、无屏主机 `auto_download = true` 开箱自愈与离线 `cp -r` 直接拷贝三场景；
 3. **强校验唯一权威**：Rust 二进制内嵌只读基准清单为发布锚定的唯一权威基准；7 个下载分发产物计入 `checksums.sha256` 与下载进度分母，`keywords.txt` 由 `text2token` 本机编译、仅做存在性检查；自检通过后绝不发起任何网络探测，支持纯内网脱网运行；
-4. **多源降级与接口契约**：ModelScope（国内极速）→ GitHub Releases / HuggingFace（海外原生）→ 官方冗余 CDN 的探针降级链（并发 HEAD 1500ms 超时、首包 $< 800\text{ms}$、HTTP Range 断点续传）；对外暴露 `GET /api/voice/models/status`、`POST /api/voice/models/install`、`GET /api/voice/models/progress`（SSE）、`DELETE /api/voice/models` 与 `/etc/ai-mate/config.toml` 的 `[models]` 声明式配置。
+4. **多源降级与接口契约**：ModelScope（国内极速）→ GitHub Releases / HuggingFace（海外原生）→ 官方冗余 CDN 的探针降级链（并发 HEAD 1500ms 超时、首包 $< 800\text{ms}$、HTTP Range 断点续传）；对外暴露 `GET /api/voice/models/status`、`POST /api/voice/models/install`、`GET /api/voice/models/progress`（SSE）、`DELETE /api/voice/models` 与 `/etc/voice-companion/config.toml` 的 `[models]` 声明式配置。
 
 ### 3.5 极速单次决策路由与四路结构化契约 (Single-Pass Quad-Route)
 麦克风切出 ASR 文本后，直接向 `qwen3.5-flash` 发起单次请求，输出严格遵循的 JSON Schema 契约：
@@ -414,7 +414,7 @@ flowchart TD
     ToolCall --> Layer2{"第二层: 工具调度层结构化策略硬引擎<br/>(Tool Policy Engine @ nomifun-ai-agent)"}
     
     Layer2 -->|"命中黑名单指令 (rm / reboot / kill / drop)"| Block["强行拦截并挂起工具执行"]
-    Layer2 -->|"路径越界 (逃逸出 /var/lib/ai-mate/sandbox/)"| Block
+    Layer2 -->|"路径越界 (逃逸出 /var/lib/voice-companion/sandbox/)"| Block
     Layer2 -->|"白名单安全操作"| Allow["允许执行工具"]
 
     Block --> GenToken["生成一次性 confirmation_token (TTL=8s)"]
@@ -428,7 +428,7 @@ flowchart TD
    - 检查工具类型与参数（如 `bash_run` 的命令、`file_delete` 的路径）；
    - **硬性禁止与强管控策略**：
      - 命令包含系统重启关机 (`reboot`, `shutdown`)、磁盘格式化 (`mkfs`)、数据库级销毁 (`drop database`, `truncate`)、系统文件级删除 (`rm -rf`)；
-     - 目标路径超出沙箱工作目录（`/var/lib/ai-mate/sandbox/`）；
+     - 目标路径超出沙箱工作目录（`/var/lib/voice-companion/sandbox/`）；
    - **无论 LLM 返回的布尔值为何**，一旦触发规则，工具派发立即挂起，生成带 8 秒 TTL 的单次 `confirmation_token` 并向上冒泡，由声学 FSM 驱动口头确认；
 3. **声纹防御 (Post-MVP 演进预留)**：利用 `nomifun-audio` 既有的声纹识别能力，可在高危确认阶段校验发音人声纹是否匹配设备注册主人，防止房间内其他人代喊“确认”。
 
@@ -556,7 +556,7 @@ $$T_{\text{Speaker_Output}} = T_{\text{VAD_Silence}} + T_{\text{SenseVoice}} + T
 | **TC-AM-012** | 三端服务常驻 | Linux `systemd`、Windows Service、macOS `launchd` | 开机自启，待机内存常驻 RSS $< 250\text{MB}$，CPU 待机占用 $< 1.5\%$ |
 | **TC-AM-013** | 完工播报与追问 | 后台任务执行完毕，声学端处于 IDLE | 自动播放 `done.wav` 并播报 `vocal_summary`，随后开启 4 秒追问窗，追问无需重喊唤醒词 |
 | **TC-AM-014** | 桌面端可视化模型管理 | 打开设置/伴侣设备页面，点击“下载并启用”，监听 SSE 进度流，下载完成后点击删除释放空间 | SSE 实时返回百分比、实时下载速度与阶段提示；下载完成后 SHA256 校验 100% 通过，状态自动切换为 Ready 并显示绿灯；删除后安全清理模型文件并重置为 NotInstalled |
-| **TC-AM-015** | 无屏主机配置自启与投影 | 在 `/etc/ai-mate/config.toml` 配置 `auto_download = true`，开机启动 | 检测无模型后自动启动后台下载，Web 配对页 (`http://ai-mate.local:8080`) 实时投影进度条；下载完成校验通过播放 `done.wav` 并主动语音播报就绪；下载失败播放 `error.wav` 并口头告警 |
+| **TC-AM-015** | 无屏主机配置自启与投影 | 在 `/etc/voice-companion/config.toml` 配置 `auto_download = true`，开机启动 | 检测无模型后自动启动后台下载，Web 配对页 (`http://voice-companion.local:8080`) 实时投影进度条；下载完成校验通过播放 `done.wav` 并主动语音播报就绪；下载失败播放 `error.wav` 并口头告警 |
 | **TC-AM-016** | 模型多源与离线脱网直接拷贝 | 离线手动拷贝统一模型目录至设备，或在线轻量包开机自动探测双源下载 | 手动拷贝后脱网开机校验 100% 通过且 0 字节网络请求；在线轻量包开机根据网络测速自动选源 (ModelScope/GitHub)，下载后 SHA256 强校验通过方可交付声学引擎 |
 | **TC-AM-017** | 设置面板状态可视化与动效降级 | 桌面端遍历 `NotInstalled → Probing → Downloading → Verifying → Ready → Removing` 全状态流转 | 行高恒定无布局抖动；进度条 `transform` 驱动且 60fps；状态切换 180ms 交叉淡化；开启系统 `prefers-reduced-motion` 后全部转为即时切换且语义完整；`check:theme` 与 `check:i18n` 通过，明暗双主题人工核查通过 |
 | **TC-AM-018** | 配对页移动端闭环 | 360px 手机浏览器访问配对页，完成输码并观察下载投影直至就绪 | 6 位码输满自动校验；错误局部提示不抖动布局；连续 5 次失败锁定并显示倒计时；下载进度实时投影且页面服务持续至 `Ready` 终态；设备就绪语音播报与页面完成态同步出现 |
@@ -615,7 +615,7 @@ flowchart LR
 
 #### Phase 4: 三端打包与生产级可靠性加固 (Cross-Platform Packaging & Hardening)
 * **核心动作**：
-  1. 实现新宿主 `apps/ai-mate`：
+  1. 实现新宿主 `apps/voice-companion`：
      - Linux 打包：编写 `systemd` 配置文件，集成 `sd_notify` 看门狗与专用用户隔离；
      - Windows / macOS 打包：集成 Windows Service 与 macOS `launchd` 服务描述符；
   2. 实现 OOBE 入网前置（Ethernet 直连检测 + U 盘 `setup.toml` 预置导入）、语音播报 6 位配对码与局域网 Web 配对服务（配对页前端遵循 §3.10 移动优先与动效规范，Web 服务生命周期持续至 `ModelManager` 终态）；

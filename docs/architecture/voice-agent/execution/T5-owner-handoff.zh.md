@@ -16,7 +16,7 @@
 
 联合构建、最终哈希、默认程序更新和运行探针结果将在本页“最终产物”中追加；未追加前不据此启动验收。没有自动提交、推送或发布。
 
-打包钩子通过 `prepare-voice-companion.mjs` 构建无 skeleton 的 `ai-mate`，使用 Cargo 实际报告的可执行文件，收集到既有 `resources/bin` 资源映射。宿主优先使用桌面已有 `NOMIFUN_BUNDLED_BIN_DIR`，其次使用相邻可执行文件，再使用开发目录。显式 `AI_MATE_BIN` 仍优先。
+打包钩子通过 `prepare-voice-companion.mjs` 构建无 skeleton 的 `voice-companion`（旧名 `ai-mate`，已退役），使用 Cargo 实际报告的可执行文件，收集到既有 `resources/bin` 资源映射。宿主解析顺序：显式 `VOICE_COMPANION_BIN` → `NOMIFUN_BUNDLED_BIN_DIR` 与相邻可执行文件 → 源码检出构建/暂存目录（含 `<target>/<triple>/<profile>`），并按 mtime 取最新；旧的 `AI_MATE_BIN` 覆盖已移除。
 
 目标架构与 debug/release 取自 [Tauri 官方钩子契约](https://v2.tauri.app/reference/config/#buildconfig)，复用现有目标解析。打包附带项目与已有 Apache-2.0 sherpa-onnx 的 LICENSE；本轮没有引入新第三方包、模型或新的授权体系。Windows 是本次交付平台，Mac/Linux 代码路径兼容不等于实机通过。
 

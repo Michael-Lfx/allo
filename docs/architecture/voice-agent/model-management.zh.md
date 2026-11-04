@@ -2,7 +2,7 @@
 
 > **状态**：📦 子规范 · 实施契约级
 > **上游基线**：本文档是架构基线 [interaction.zh.md](interaction.zh.md) §3.4 的完整展开；与其余子系统共享同一状态机定义与 Phase 验收门禁，冲突时以基线文档为准。
-> **适用范围**：新建 crate `nomifun-voice-models`（`ModelManager` 状态机、双源下载器、SHA256 校验器、`/api/voice/models/*` REST + SSE 接口）、`apps/ai-mate` 宿主、桌面端设置页与无屏配对页的模型下载/校验/卸载全生命周期；界面视觉与动效细则见 [ui-motion.zh.md](ui-motion.zh.md)。
+> **适用范围**：新建 crate `nomifun-voice-models`（`ModelManager` 状态机、双源下载器、SHA256 校验器、`/api/voice/models/*` REST + SSE 接口）、`apps/voice-companion` 宿主、桌面端设置页与无屏配对页的模型下载/校验/卸载全生命周期；界面视觉与动效细则见 [ui-motion.zh.md](ui-motion.zh.md)。
 
 ---
 
@@ -10,9 +10,9 @@
 
 ## 1. 全平台统一目录拓扑规范 (Unified Storage Layout)
 无论是出厂镜像预刷、现场运维通过 U 盘直接拷贝（`cp -r` / 拖放），还是轻量在线包启动下载，所有本地模型资产**必须且只能存放于统一规范的根目录下**：
-- **Linux 伴侣主机 / 系统级服务基准**：`/var/lib/ai-mate/models/`（可在 `/etc/ai-mate/config.toml` 中配置 `models_dir`）；
-- **Windows 系统服务**：`%ProgramData%\Flowy\ai-mate\models\`（安装期提权创建并授权服务账户）；**Windows 桌面用户态**：`%LOCALAPPDATA%\Flowy\models\`（免提权）；
-- **macOS LaunchDaemon（系统级）**：`/Library/Application Support/Flowy/ai-mate/models/`；**macOS 桌面用户态**：`~/Library/Application Support/Flowy/models/`；
+- **Linux 伴侣主机 / 系统级服务基准**：`/var/lib/voice-companion/models/`（可在 `/etc/voice-companion/config.toml` 中配置 `models_dir`）；
+- **Windows 系统服务**：`%ProgramData%\Flowy\voice-companion\models\`（安装期提权创建并授权服务账户）；**Windows 桌面用户态**：`%LOCALAPPDATA%\Flowy\models\`（免提权）；
+- **macOS LaunchDaemon（系统级）**：`/Library/Application Support/Flowy/voice-companion/models/`；**macOS 桌面用户态**：`~/Library/Application Support/Flowy/models/`；
 - **桌面端选径规则**：场景 A（桌面 GUI 用户态按需下载）一律落用户态目录，严禁为写模型文件请求 UAC / sudo 提权；系统级目录仅供以服务身份运行的宿主使用；
 - **开发与便携式覆盖**：通过环境变量 `AI_MATE_MODEL_DIR` 或项目根目录 `./assets/models/` 覆盖。
 
@@ -46,7 +46,7 @@
    - 若任一文件哈希不匹配或损坏，标记为 `Status: Corrupted`，严禁盲目调用底层 ONNX Runtime（防止 C++ 层 Segmentation Fault 崩溃引发看门狗重启循环），触发自愈下载或错误报警。
 
 ## 3. 海内外双源智能探针与平滑降级链 (Dual-Source Smart Probing & Failover)
-在轻量在线包模式或检测到本地文件损坏时，`apps/ai-mate` 启动轻量自愈下载模块：
+在轻量在线包模式或检测到本地文件损坏时，`apps/voice-companion` 启动轻量自愈下载模块：
 - **多源加速资源池**：
   - **国内极速源 (Primary Domestic)**：ModelScope (魔搭社区) 官方资产镜像，千兆高速 CDN，免翻墙，带宽充裕；
   - **海外原生源 (Primary Global)**：GitHub Releases (`k2-fsa/sherpa-onnx`) 与 HuggingFace 官方仓库；
@@ -132,17 +132,17 @@ pub enum ModelInstallState {
 ### 场景 B：无屏伴侣主机开箱自动触发与 Web/听觉双重投影 (Headless Auto-Provisioning & Dual Projection)
 - **设计背景与体验考量**：AI Mate 硬件盒子无显示屏、无鼠标键盘，无法由人类通过点击 UI 按钮来触发安装。系统必须具备“零触控开箱通电即用”的开箱全自动履约能力。
 - **代码/配置声明式驱动**：
-  - 在伴侣主机系统配置文件 `/etc/ai-mate/config.toml` 中支持声明式选项：
+  - 在伴侣主机系统配置文件 `/etc/voice-companion/config.toml` 中支持声明式选项：
     ```toml
     [models]
-    models_dir = "/var/lib/ai-mate/models"
+    models_dir = "/var/lib/voice-companion/models"
     auto_download = true           # 首次开机检测无模型时自动触发后台下载
     probe_timeout_ms = 1500        # 多源探测超时时间
     prefer_mirror = "auto"         # "auto" | "modelscope" | "github"
     ```
-  - 宿主服务 `apps/ai-mate` 开机自检：若本地模型缺失或损坏，且 `auto_download = true`，系统自动切入 `ProbingSource` 并进入下载流，无需任何人工干预。
+  - 宿主服务 `apps/voice-companion` 开机自检：若本地模型缺失或损坏，且 `auto_download = true`，系统自动切入 `ProbingSource` 并进入下载流，无需任何人工干预。
 - **双重感知投影通道 (Web 投影 + 听觉反馈)**：
-  - **通道 1：Web 配对页面投影**：在首次开机 OOBE 局域网配对页面 (`http://ai-mate.local:8080`) 上挂载实时进度挂件。用户在手机浏览器输入 6 位配对码配网时，配对页面通过同一组 SSE 接口无缝投影显示模型下载与校验进度条；
+  - **通道 1：Web 配对页面投影**：在首次开机 OOBE 局域网配对页面 (`http://voice-companion.local:8080`) 上挂载实时进度挂件。用户在手机浏览器输入 6 位配对码配网时，配对页面通过同一组 SSE 接口无缝投影显示模型下载与校验进度条；
   - **通道 2：事件驱动听觉反馈**：
     - 开机开始下载时：扬声器播放一次短促温和的引导音（`guide.wav`）；
     - 下载完成并通过 SHA256 校验时：扬声器播放 `done.wav`，紧接着**主动语音播报**：“*AI Mate 语音引擎准备就绪，请说 Hey Flowy 唤醒*”；

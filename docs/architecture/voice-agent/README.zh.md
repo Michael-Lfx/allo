@@ -54,6 +54,9 @@
 
 AI Mate 无头伴侣主机语音交互方案的权威文档集。两层结构：**一份架构基线 + 两份子规范**，外加一份历史底稿归档。
 
+> **命名说明（2026-11-04）**：宿主守护进程的二进制与目录现名 **`voice-companion`**（`apps/voice-companion`，产物 `voice-companion.exe`）。旧称 `ai-mate` 已退役：解析器不再读取该名称，开发构建使用 `bun run ensure:voice-companion` 或 `bun run dev` 自动构建。代码中仍保留 `AI_MATE_MODEL_DIR` 环境变量作为模型目录覆盖的兼容名。历史底稿（`interaction.archive.zh.md`）保留旧称，不构成执行依据。
+
+
 | 文档 | 定位 |
 | :--- | :--- |
 | [interaction.zh.md](interaction.zh.md) | **架构基线（唯一生效标准）**：背景与痛点、五模块边界、无锁声学管线、双状态机、单次四路路由契约、工具策略安全红线、ADR 矩阵与 Phase 0-4 验收门禁 |
