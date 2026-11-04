@@ -167,6 +167,41 @@ Rules:
 - Output JSON only, without Markdown fences or commentary."#;
 
 
+/// 干扰项五型菜单（y06，learnhub #201 的域中立移植）：选择题的诱惑项是
+/// 「负例语法」而不是噪声——近邻负例只破一个条件 / 部分条件满足 / 判联错配
+/// / 表述转换陷阱 / 集合关系检查，每型带适用与不适用对，总闸是「适用时优先
+/// 自然负例、无自然负例不得硬造」。只在 `content_discipline_v2_enabled()`
+/// 时由 activities 装配面追加到 `LESSON_SYSTEM` / `LESSON_ACTIVITY_SYSTEM`
+/// 之后（常量本身不改写：off 臂逐字回退旧提示词）。
+/// 适用域写明：fill_in_blank 既有的近义陷阱与必填 distractors 规则不动；
+/// ordering / matching / numeric 不适用。`pub`：ai-agent 的跨宿互钉测试
+/// 需要同时看到传统线（本块）与图线（`DISTRACTOR_MENU_CN`）两宿。
+pub const DISTRACTOR_MENU_BLOCK: &str = r#"
+Distractor menu (R21, choice questions only — a temptation is a negative example, not noise):
+- Near-miss: an option that matches everything except exactly one stated condition.
+  Applies when the body states several conditions on one idea; not applicable when one condition is all there is (the miss would be trivially wrong).
+- Partial satisfaction: an option that meets some required conditions and stops, worded as if it met them all.
+  Applies when a definition or rule lists several requirements; not applicable to open descriptions with no requirement list.
+- Criterion linkage mismatch: a true statement attached to the wrong object, or a valid judgement attached to the wrong relation.
+  Applies when the body relates two things; not applicable when the question concerns one isolated object.
+- Wording transformation trap: a paraphrase that keeps the surface wording but flips the quantifier, direction or scope.
+  Applies when the body's claim has a quantifier, direction or scope worth guarding; not applicable to bare name recall.
+- Set relation check: an option that confuses subset, superset, overlap or disjointness.
+  Applies when the body compares categories or ranges; not applicable when no two sets are in play.
+Prefer a natural negative example whenever one exists; never fabricate a distractor from outside the taught material.
+Scope: the temptation options of single_choice, multi_choice and true_false. fill_in_blank keeps its existing near-synonym trap and mandatory "distractors" rule unchanged. ordering, matching and numeric take no distractor menu.
+"#;
+
+
+/// 完备性三面的题库取向（y06，learnhub #202）：认一认（名称+边界）与
+/// 推一推（结论+成立条件）两个考向都要有份量——是取向不是题量配额（allo
+/// 已有 9 种题型 + 强制多样性 + reflection/open 配额，绝不再加数）。
+/// 只在 V2 开关 on 时由 activities 装配面追加到整课活动提示词之后。
+pub const QUESTION_COVERAGE_BLOCK: &str = r#"
+- Coverage of both study directions (R20, question-bank face): give both "recognise it" questions (the name and its boundary) and "derive it" questions (the conclusion and the conditions under which it holds) real weight in the set. This is an orientation, not a question-count quota — never add questions to even the count.
+"#;
+
+
 /// Floor enforced by validation (below the 1000-char target so borderline
 /// model output is not rejected outright). `pub(crate)`: the lesson draft
 /// audit reuses the same floor.
