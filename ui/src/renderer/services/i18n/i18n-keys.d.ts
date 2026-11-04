@@ -3774,6 +3774,8 @@ export type I18nKey =
   | 'learning.lessonGenSourceDegraded'
   | 'learning.lessonGenTaskCancelled'
   | 'learning.lessonGenTaskFailed'
+  | 'learning.lessonIntentLine'
+  | 'learning.lessonScopeLine'
   | 'learning.lessons'
   | 'learning.listSeparator'
   | 'learning.loadBasesFailed'

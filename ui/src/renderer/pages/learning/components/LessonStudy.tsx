@@ -791,6 +791,18 @@ export function LessonBlock({
         {lesson.purpose && (
           <Paragraph className='!mb-0 text-t-secondary'>{lesson.purpose}</Paragraph>
         )}
+        {/* 声明面两行（absorb-8 z01）：出生即声明的 intent/scope，缺席（空串
+            = 旧档）整行不渲染——purpose 条件渲染同款。 */}
+        {lesson.intent && (
+          <Paragraph className='!mb-0 text-t-secondary'>
+            {t('learning.lessonIntentLine', { text: lesson.intent })}
+          </Paragraph>
+        )}
+        {lesson.scope && (
+          <Paragraph className='!mb-0 text-t-secondary'>
+            {t('learning.lessonScopeLine', { text: lesson.scope })}
+          </Paragraph>
+        )}
         <div className='flex flex-wrap items-center gap-8px'>
           <Tag color={lessonStatusTagColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
           <Button

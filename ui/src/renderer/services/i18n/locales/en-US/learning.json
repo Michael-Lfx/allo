@@ -20,6 +20,8 @@
   "generateFromDescription": "Generate from description",
   "generateHint": "AI designs a course blueprint first, then writes each lesson as a long-form study document (about 1000-1500 characters) with practice activities. Generation runs multiple model calls and takes a while; please wait.",
   "generateLessonContent": "Generate lesson content",
+  "lessonIntentLine": "Creation intent: {{text}}",
+  "lessonScopeLine": "Teaching scope: {{text}}",
   "generateDescriptionHint": "AI designs the outline directly from your course brief and writes each lesson, no knowledge base involved. Generation takes a while with live progress; closing the dialog aborts it.",
   "genClose": "Close",
   "genStepPrepare": "Prepare",

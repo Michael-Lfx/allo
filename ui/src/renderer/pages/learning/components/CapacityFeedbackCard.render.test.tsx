@@ -36,6 +36,8 @@ const lesson = (overrides: Partial<Lesson> = {}): Lesson => ({
   title: '课时',
   summary: '',
   purpose: '',
+  intent: '',
+  scope: '',
   position: 0,
   generated: true,
   est: 25,

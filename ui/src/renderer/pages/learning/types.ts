@@ -313,6 +313,10 @@ export interface Lesson {
   title: string;
   summary: string;
   purpose: string;
+  /** 节点意图（absorb-8 z01）：为何有这个学习点、课里承担什么角色，一句话；空串 = 旧档不渲染 */
+  intent: string;
+  /** 教学范围（absorb-8 z01）：教什么/教到哪/明确不碰什么，一两句；空串 = 旧档不渲染 */
+  scope: string;
   position: number;
   generated: boolean;
   /** est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注；后端 DB 列保留旧名 estimated_minutes） */
