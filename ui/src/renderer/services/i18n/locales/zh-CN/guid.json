@@ -136,7 +136,7 @@
   },
   "drawer": {
     "modeLabel": "选择类型",
-    "presetTab": "设定",
+    "presetTab": "专家",
     "skillsTab": "Skills",
     "searchPreset": "搜索设定名称或描述…",
     "searchSkill": "搜索 Skill…",

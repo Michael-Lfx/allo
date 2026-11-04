@@ -142,7 +142,7 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
                   className={[styles.drawerSegment, mode === 'preset' ? styles.drawerSegmentActive : ''].filter(Boolean).join(' ')}
                   onClick={() => onModeChange('preset')}
                 >
-                  {t('guid.drawer.presetTab', { defaultValue: 'Presets' })}
+                  {t('guid.drawer.presetTab', { defaultValue: 'Experts' })}
                 </button>
                 <button
                   type='button'

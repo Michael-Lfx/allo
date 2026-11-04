@@ -24,6 +24,7 @@ import CollapsibleContent from '@renderer/components/chat/CollapsibleContent';
 import FilePreview from '@renderer/components/media/FilePreview';
 import HorizontalFileList from '@renderer/components/media/HorizontalFileList';
 import MarkdownView from '@renderer/components/Markdown';
+import { renderIdeographTrackedText } from '@renderer/components/Markdown/ideographTracking';
 import CodeBlock from '@renderer/components/beautifulUi/codeBlock/CodeBlock';
 import StreamingText from '@renderer/components/beautifulUi/streamingText/StreamingText';
 import { stripThinkTags, hasThinkTags } from '@renderer/utils/chat/thinkTagFilter';
@@ -962,7 +963,7 @@ const MessageText: React.FC<{
               {/* JSON 内容使用折叠组件 Use CollapsibleContent for JSON content */}
               {shouldRenderPlainText ? (
                 <div className={MESSAGE_BODY_CLASS_NAME}>
-                  {text}
+                  {renderIdeographTrackedText(text)}
                 </div>
               ) : json ? (
                 <CollapsibleContent maxHeight={200} defaultCollapsed={true}>
@@ -970,6 +971,7 @@ const MessageText: React.FC<{
                     codeStyle={CODE_STYLE}
                     fontSize={MESSAGE_BODY_FONT_SIZE}
                     lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                    trackIdeographs
                     allowUnverifiedImages={isUserMessage}
                     collapsibleBlockquotes={false}
                   >{`\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``}</MarkdownView>
@@ -981,6 +983,7 @@ const MessageText: React.FC<{
                       codeStyle={CODE_STYLE}
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                      trackIdeographs
                       allowUnverifiedImages={isUserMessage}
                       collapsibleBlockquotes={false}
                     >
@@ -998,6 +1001,7 @@ const MessageText: React.FC<{
                       codeStyle={CODE_STYLE}
                       fontSize={MESSAGE_BODY_FONT_SIZE}
                       lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                      trackIdeographs
                       allowUnverifiedImages={isUserMessage}
                       collapsibleBlockquotes={false}
                     >
@@ -1005,7 +1009,7 @@ const MessageText: React.FC<{
                     </MarkdownView>
                   ) : null}
                   <div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>
-                    {streamingParts.tail}
+                    {renderIdeographTrackedText(streamingParts.tail)}
                   </div>
                 </>
               ) : (
@@ -1013,6 +1017,7 @@ const MessageText: React.FC<{
                   codeStyle={CODE_STYLE}
                   fontSize={MESSAGE_BODY_FONT_SIZE}
                   lineHeight={MESSAGE_BODY_LINE_HEIGHT}
+                  trackIdeographs
                   allowUnverifiedImages={isUserMessage}
                   collapsibleBlockquotes={!isUserMessage && !isStreaming}
                 >

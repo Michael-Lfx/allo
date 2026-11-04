@@ -46,6 +46,7 @@ const createInitStyle = (
   .markdown-code-content * {
     font-size: 12.5px;
     line-height: 21px;
+    letter-spacing: 0;
   }
   .markdown-code-content .lineNo {
     font-size: 10.5px;
@@ -58,6 +59,9 @@ const createInitStyle = (
     color: var(--text-primary);
     max-width: 100%;
   }
+  .message-cjk {
+    letter-spacing: var(--conversation-message-letter-spacing, 0);
+  }
   .markdown-shadow-body>p:first-child,
   .markdown-shadow-body>h1:first-child,
   .markdown-shadow-body>h2:first-child,
@@ -68,6 +72,7 @@ const createInitStyle = (
   h1,h2,h3,h4,h5,h6{
     margin-block-start:0px;
     margin-block-end:0px;
+    letter-spacing: 0;
   }
   .markdown-shadow-body p {
     margin-block-start: ${usesExplicitTypography ? '10px' : '16px'};
@@ -174,6 +179,7 @@ const createInitStyle = (
     border: 0;
     border-radius: 4px;
     font-size: 0.94em;
+    letter-spacing: 0;
     font-family: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   }
   blockquote {
@@ -245,6 +251,7 @@ const createInitStyle = (
     // overflow-x: auto;
     margin-block-start: 8px;
     margin-block-end: 8px;
+    letter-spacing: 0;
   }
   /* Code block horizontal scrollbar — blends with bg-2 */
   pre,
@@ -614,7 +621,7 @@ const createInitStyle = (
     margin: 12px 0;
     border: 1px solid var(--color-border-2, var(--bg-3));
     border-radius: 12px;
-    background: var(--color-bg-1, var(--bg-1));
+    background: var(--markdown-table-bg, var(--color-bg-1, var(--bg-1)));
     scrollbar-width: thin;
     scrollbar-color: ${currentTheme === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.1)'} transparent;
   }
@@ -647,7 +654,7 @@ const createInitStyle = (
     vertical-align: top;
   }
   .markdown-table-wrap th {
-    background: var(--color-fill-1, var(--bg-1));
+    background: var(--markdown-table-head-bg, var(--color-fill-1, var(--bg-1)));
     color: var(--color-text-3, var(--text-secondary));
     font-size: 0.85em;
     font-weight: 600;
@@ -667,17 +674,17 @@ const createInitStyle = (
     left: 0;
     z-index: 1;
     font-weight: 600;
-    background: var(--color-bg-1, var(--bg-1));
+    background: var(--markdown-table-sticky-bg, var(--color-bg-1, var(--bg-1)));
     box-shadow: 1px 0 0 var(--color-border-2, var(--bg-3));
   }
   .markdown-table-wrap thead th:first-child {
     z-index: 2;
-    background: var(--color-fill-1, var(--bg-1));
+    background: var(--markdown-table-head-bg, var(--color-fill-1, var(--bg-1)));
   }
   @media (hover: hover) and (pointer: fine) {
     .markdown-table-wrap tbody tr:hover td,
     .markdown-table-wrap tbody tr:hover td:first-child {
-      background: var(--color-fill-1, var(--bg-2));
+      background: var(--markdown-table-hover-bg, var(--color-fill-1, var(--bg-2)));
       transition: background 0.12s ease;
     }
   }

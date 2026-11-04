@@ -126,7 +126,7 @@ describe('MessageText process action chrome', () => {
     expect(streamingBlock.includes("streamingParts.tailKind === 'code'")).toBe(true);
     expect(streamingBlock.includes("className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}")).toBe(true);
     expect(streamingBlock.includes('{streamingParts.stablePrefix}')).toBe(true);
-    expect(streamingBlock.includes('{streamingParts.tail}')).toBe(true);
+    expect(streamingBlock.includes('renderIdeographTrackedText(streamingParts.tail)')).toBe(true);
     expect(proseBranch.includes('{data}')).toBe(false);
     expect(proseBranch.includes('isStreaming={isStreaming}')).toBe(false);
     expect(proseBranch.includes("<div className={`${MESSAGE_BODY_CLASS_NAME} message-streaming-body`}>")).toBe(true);
@@ -172,6 +172,11 @@ describe('MessageText process action chrome', () => {
     expect(source.includes('className={MESSAGE_BODY_CLASS_NAME}')).toBe(true);
     expect(source.includes('fontSize={MESSAGE_BODY_FONT_SIZE}')).toBe(true);
     expect(source.includes('lineHeight={MESSAGE_BODY_LINE_HEIGHT}')).toBe(true);
+    expect(source.includes('renderIdeographTrackedText')).toBe(true);
+    expect(source.includes('trackIdeographs')).toBe(true);
+    expect(messagesCss.includes('--conversation-message-letter-spacing: 0.1em')).toBe(true);
+    expect(messagesCss.includes('.message-cjk')).toBe(true);
+    expect(messagesCss.includes("[data-testid='message-text-content']")).toBe(false);
   });
 
   test('keeps the knowledge writeback icon optically centered with the status text', () => {

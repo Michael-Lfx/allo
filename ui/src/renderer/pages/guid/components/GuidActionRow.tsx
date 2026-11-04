@@ -13,6 +13,7 @@ import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { AvailableAgent } from '../types';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
+import SelectedExpertChip from './SelectedExpertChip';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
 import type { DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
@@ -167,6 +168,13 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
 
   const activeMcpCount = selectedMcpServerIds.length;
   const mcpTriggerLabel = `${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`;
+  const selectedExpert = is_presetAgent
+    ? presets.find((item) => item.preset_id === selectedAgentInfo?.preset_id)
+    : undefined;
+  const expertName =
+    selectedExpert?.name_i18n?.[localeKey] || selectedExpert?.name || selectedAgentInfo?.name || '';
+  const expertAvatarValue = selectedExpert?.avatar || selectedAgentInfo?.avatar;
+  const showSelectedExpert = Boolean(is_presetAgent && selectedAgentInfo && expertName);
 
   React.useEffect(() => {
     if (!addMenuOpen) setMcpFlyoutOpen(false);
@@ -202,6 +210,14 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               data-testid='file-upload-btn'
               aria-label={t('common.add')}
             />
+            {showSelectedExpert ? (
+              <SelectedExpertChip
+                name={expertName}
+                avatar={expertAvatarValue}
+                onClear={onClosePresetTag}
+                testId='guid-selected-expert'
+              />
+            ) : null}
           </span>
           <WorkspacePickerPopover
             className={styles.addMenuPopover}

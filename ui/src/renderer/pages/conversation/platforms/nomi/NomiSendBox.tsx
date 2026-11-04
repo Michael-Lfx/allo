@@ -35,6 +35,7 @@ import MobileActionSheet, {
 import SendBox from '@/renderer/components/chat/SendBox';
 import ModelBrandIcon from '@/renderer/components/model/ModelBrandIcon';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
+import { ConversationExpertChip } from '@/renderer/pages/guid/components/SelectedExpertChip';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -102,6 +103,10 @@ import {
   warmupConversation,
   warmupConversationForPassiveMount,
 } from '@/renderer/pages/conversation/utils/warmupConversation';
+import {
+  initialMessageMustWaitForModelCatalog,
+  readNomiInitialHandoff,
+} from '@/renderer/pages/conversation/platforms/nomi/initialUserPreview';
 import { preconnectConversation } from '@/renderer/pages/conversation/utils/preconnectConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
@@ -1017,14 +1022,17 @@ const NomiSendBox: React.FC<{
 
     const storageKey = sessionStorageKey('initial-message-nomi', target);
     const processedKey = sessionStorageKey('initial-message-processed-nomi', target);
-    // The handoff may contain image attachments. Do not claim it until the
-    // catalog has identified the active model family; otherwise an Auto model
-    // can win the race against catalog hydration and receive the files.
-    if (
-      sessionStorage.getItem(storageKey) &&
-      (modelSelection.isModelCatalogLoading || !selectedChatModelOption)
-    ) {
-      return;
+    // Image attachments must wait until the catalog identifies the model
+    // family. A text handoff already has its model from the home page and
+    // sends immediately, instead of sitting blank while the catalog loads.
+    if (sessionStorage.getItem(storageKey)) {
+      const handoff = readNomiInitialHandoff(sessionStorage, conversation_id);
+      if (
+        initialMessageMustWaitForModelCatalog(handoff?.files) &&
+        (modelSelection.isModelCatalogLoading || !selectedChatModelOption)
+      ) {
+        return;
+      }
     }
 
     const processInitialMessage = async () => {
@@ -2294,6 +2302,7 @@ const NomiSendBox: React.FC<{
               onLocalFilesAdded={handleNomiFilesAdded}
               loadedMcpStatuses={loadedMcpStatuses}
             />}
+            {!isVoiceConversation && <ConversationExpertChip />}
             {!hideModeSelector && (
               <AgentModeSelector
                 backend='nomi'

@@ -32,5 +32,8 @@ describe('SendBox add menu', () => {
     expect(source.includes('onGoalModeChange?.(true)')).toBe(true);
     expect(source.includes('submitGoalObjective(input)')).toBe(true);
     expect(source.includes("setInput('/goal ')")).toBe(false);
+    expect(source.includes('onSelectPreset={() => undefined}')).toBe(false);
+    expect(source.includes('setExpertChoice(id)')).toBe(true);
+    expect(source.includes('SelectedExpertProvider')).toBe(true);
   });
 });

@@ -150,7 +150,12 @@ const GuidEntryFlyout = React.forwardRef<HTMLDivElement, GuidEntryFlyoutProps>(f
             className={styles.entryFlyoutRow}
             aria-pressed={selected}
             data-testid={`guid-entry-flyout-preset-${preset.preset_id}`}
-            onClick={() => onSelectPreset(preset.preset_id)}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onSelectPreset(preset.preset_id);
+            }}
           >
             <span className={styles.entryFlyoutIcon}>
               <PresetAvatar preset={preset} size={28} avatarImageMap={{}} />
@@ -243,10 +248,11 @@ const GuidEntryFlyout = React.forwardRef<HTMLDivElement, GuidEntryFlyoutProps>(f
       role='dialog'
       aria-label={
         mode === 'preset'
-          ? t('guid.drawer.presetTab', { defaultValue: '设定' })
+          ? t('guid.drawer.presetTab', { defaultValue: '专家' })
           : t('guid.drawer.skillsTab', { defaultValue: 'Skills' })
       }
       style={entryFlyoutPositionStyle(box)}
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <button
         type='button'

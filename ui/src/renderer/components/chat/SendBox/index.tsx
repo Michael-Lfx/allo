@@ -67,6 +67,11 @@ import ComposerSurface from '@/renderer/components/chat/ComposerSurface';
 import WorkspacePickerPopover from '@/renderer/components/workspace/WorkspacePickerPopover';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import GuidEntryFlyout, { GuidAnchoredFlyout } from '@/renderer/pages/guid/components/GuidEntryFlyout';
+import {
+  ConversationExpertChip,
+  SelectedExpertProvider,
+} from '@/renderer/pages/guid/components/SelectedExpertChip';
+import type { PresetReference } from '@/common/types/agent/presetTypes';
 import { entryFlyoutPositionStyle, useEntryFlyoutBox } from '@/renderer/pages/guid/components/entryFlyoutPlacement';
 import KnowledgeControl from '@/renderer/pages/conversation/components/KnowledgeControl';
 import guidStyles from '@/renderer/pages/guid/index.module.css';
@@ -422,9 +427,29 @@ const SendBox: React.FC<{
     conversationContext ? PRESET_CATALOG_SWR_KEY : null,
     fetchPresetCatalog,
   );
-  const selectedPresetId = history?.conversations.find(
+  const conversationPresetId = history?.conversations.find(
     (conversation) => conversation.id === conversationContext?.conversation_id,
   )?.preset_id;
+  const [expertChoice, setExpertChoice] = useState<PresetReference | null | undefined>(undefined);
+  useEffect(() => {
+    setExpertChoice(undefined);
+  }, [conversationContext?.conversation_id]);
+  const selectedPresetId = expertChoice === undefined ? conversationPresetId : expertChoice ?? undefined;
+  const selectedExpert = presetCatalog.find((preset) => preset.preset_id === selectedPresetId);
+  const expertLocale = i18n.language || 'en-US';
+  const selectedExpertName = selectedExpert
+    ? selectedExpert.name_i18n?.[expertLocale] || selectedExpert.name_i18n?.['en-US'] || selectedExpert.name
+    : '';
+  const clearSelectedExpert = useCallback(() => {
+    setExpertChoice(null);
+  }, []);
+  const selectedExpertValue = selectedExpertName
+    ? {
+        name: selectedExpertName,
+        avatar: selectedExpert?.avatar,
+        onClear: clearSelectedExpert,
+      }
+    : null;
   const bindAddMenuTools = useCallback((node: HTMLDivElement | null) => {
     if (!node) return;
     addMenuTriggerRef.current = node.querySelector<HTMLElement>('.sendbox-composer-plus-btn');
@@ -2459,7 +2484,18 @@ const SendBox: React.FC<{
 
   // On mobile compact mode, the parent supplies the action sheet — collapse
   // tools/rightTools into the `+` launcher and skip the inline speech button.
-  const renderedTools = isMobileCompact ? mobilePlusButton : tools;
+  const renderedTools = (
+    <SelectedExpertProvider value={selectedExpertValue}>
+      {isMobileCompact ? (
+        <span className='inline-flex items-center gap-4px'>
+          {mobilePlusButton}
+          <ConversationExpertChip />
+        </span>
+      ) : (
+        tools
+      )}
+    </SelectedExpertProvider>
+  );
   const renderedRightTools = isMobileCompact ? null : rightTools;
 
   return (
@@ -2894,8 +2930,18 @@ const SendBox: React.FC<{
             onToggleSkill={handleToggleCatalogSkill}
             skillsLoading={catalogSkillsLoading}
             skillsError={catalogSkillsError}
-            onSelectPreset={() => undefined}
-            onFree={() => undefined}
+            onSelectPreset={(id) => {
+              setExpertChoice(id);
+              setAddFlyout(null);
+              addFlyoutSuppressedRef.current = null;
+              setIsAddMenuOpen(false);
+            }}
+            onFree={() => {
+              setExpertChoice(null);
+              setAddFlyout(null);
+              addFlyoutSuppressedRef.current = null;
+              setIsAddMenuOpen(false);
+            }}
             onManage={() => {
               const target = addFlyout === 'skills' ? '/skills' : '/settings/presets';
               setAddFlyout(null);

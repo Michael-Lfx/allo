@@ -27,8 +27,10 @@ import NomiSendBox from './NomiSendBox';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import {mergeVoiceTranscript, createLiveVoiceHistory, reconcileLiveVoiceHistory} from '@renderer/pages/voiceSession/liveVoiceTurn';
 import { mergeWithCapabilities, type AgentModeOption } from '@/renderer/utils/model/agentModes';
+import { emitter } from '@/renderer/utils/emitter';
 import { useNomiMessage } from './useNomiMessage';
 import type { NomiModelSelection } from './useNomiModelSelection';
+import { readNomiInitialHandoff, nomiInitialUserPreview } from './initialUserPreview';
 
 const NomiChat: React.FC<{
   conversation_id: ConversationId;
@@ -74,6 +76,21 @@ const NomiChat: React.FC<{
   const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
   const {snapshot:voiceSnapshot} = useVoiceSnapshot(isVoiceConversation);
   const persistedMessages = useMessageList();
+  const initialHandoff = useMemo(() => {
+    if (isVoiceConversation || readOnly || persistedMessages.length > 0) return null;
+    return readNomiInitialHandoff(sessionStorage, conversation_id);
+  }, [conversation_id, isVoiceConversation, persistedMessages.length, readOnly]);
+  const initialUserPreview = useMemo(
+    () => (initialHandoff ? nomiInitialUserPreview(sessionStorage, conversation_id) : null),
+    [conversation_id, initialHandoff],
+  );
+  const revealedInitialEntryRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!initialHandoff) return;
+    if (revealedInitialEntryRef.current === conversation_id) return;
+    revealedInitialEntryRef.current = conversation_id;
+    emitter.emit('conversation.transition.reveal', { conversation_id });
+  }, [conversation_id, initialHandoff]);
   const liveHistory = useRef(createLiveVoiceHistory());
   const attemptedRefresh = useRef('');
   const [voiceSyncFailure, setVoiceSyncFailure] = useState('');
@@ -115,7 +132,7 @@ const NomiChat: React.FC<{
   useEffect(() => {
     updateLocalImage({ root: workspace });
   }, [workspace]);
-  const resolvedEmptySlot = pending
+  const resolvedEmptySlot = pending || initialHandoff
     ? undefined
     : (emptySlot ?? <ConversationEmptyPrompt workspace={workspace} />);
   const resolvedIsProcessing = turnActivity.hasHydratedRunningState
@@ -160,7 +177,7 @@ const NomiChat: React.FC<{
         <div className={CHAT_CONTENT_COLUMN_CLASSES}>
           <FlexFullContainer>
             <MessageList
-              messages={voiceMessages}
+              messages={voiceMessages ?? (initialUserPreview ? [initialUserPreview] : undefined)}
               className='flex-1'
               emptySlot={resolvedEmptySlot}
               onLoadOlder={historyPaging.loadOlder}

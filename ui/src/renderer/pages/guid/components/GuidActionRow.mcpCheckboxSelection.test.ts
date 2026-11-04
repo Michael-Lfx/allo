@@ -47,6 +47,24 @@ describe('GuidActionRow MCP checkbox selection treatment', () => {
     expect(stableSlotCss.includes('position: absolute !important')).toBe(true);
 });
 
+  test('shows the selected expert beside the add button and swaps its avatar for a dismiss mark on hover', () => {
+    const plusIndex = actionRowSource.indexOf("data-testid='file-upload-btn'");
+    const expertIndex = actionRowSource.indexOf("testId='guid-selected-expert'");
+    const modeIndex = actionRowSource.indexOf('<AgentModeSelector');
+
+    expect(plusIndex).toBeGreaterThan(-1);
+    expect(expertIndex).toBeGreaterThan(plusIndex);
+    expect(modeIndex).toBeGreaterThan(expertIndex);
+    const chipSource = readFileSync(new URL('./SelectedExpertChip.tsx', import.meta.url), 'utf8');
+    expect(actionRowSource.includes('onClosePresetTag')).toBe(true);
+    expect(actionRowSource.includes("testId='guid-selected-expert'")).toBe(true);
+    expect(chipSource.includes('styles.actionExpertAvatar')).toBe(true);
+    expect(chipSource.includes('styles.actionExpertDismiss')).toBe(true);
+    expect(guidCss.includes('.actionExpertButton:global(.arco-btn:hover) .actionExpertAvatar')).toBe(true);
+    expect(guidCss.includes('.actionExpertButton:global(.arco-btn:hover) .actionExpertDismiss')).toBe(true);
+    expect(actionRowSource.includes('专家芯片')).toBe(false);
+  });
+
   test('places the mode selector immediately after the add button', () => {
     const addButtonIndex = actionRowSource.indexOf("data-testid='file-upload-btn'");
     const modeSelectorIndex = actionRowSource.indexOf('<AgentModeSelector');
