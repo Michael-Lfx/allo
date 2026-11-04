@@ -2899,7 +2899,7 @@ impl VoiceCompanionProcessManager {
 
     /// Directories of a source checkout that may contain a development build.
     /// Pure so tests can assert the layout contract without touching the disk.
-    pub fn voice_companion_candidate_dirs(root: &Path) -> Vec<PathBuf> {
+    fn voice_companion_candidate_dirs(root: &Path) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         for base in ["target", "build.noindex"] {
             for profile in ["debug", "release"] {
