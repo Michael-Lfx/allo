@@ -1,9 +1,9 @@
 .row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 20px;
   width: 100%;
-  margin-top: 12px;
+  margin-top: 24px;
 }
 
 .card {

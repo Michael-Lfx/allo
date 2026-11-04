@@ -2736,7 +2736,9 @@
 }
 
 .guidFixedInputArea .guidLayout {
-  width: 100%;
+  width: min(100%, 1080px);
+  max-width: 1080px;
+  margin-inline: auto;
   pointer-events: auto;
 }
 
@@ -2753,8 +2755,10 @@
 .guidPrimaryStage .guidLayout {
   display: flex;
   flex-direction: column;
-  width: 100%;
+  width: min(100%, 1080px);
+  max-width: 1080px;
   margin-top: 0;
+  margin-inline: auto;
   padding-top: 0;
   padding-bottom: 0;
 }
@@ -2762,7 +2766,7 @@
 .homeMasthead {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.78fr);
-  column-gap: 12px;
+  column-gap: 20px;
   align-items: end;
   width: 100%;
   margin: 0 0 16px;
