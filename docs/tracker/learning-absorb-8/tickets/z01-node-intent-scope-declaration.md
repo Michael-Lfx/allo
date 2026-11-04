@@ -2,7 +2,7 @@
 id: z01
 title: "节点声明面两字段——契约门、生长提示词、落库、DTO、UI"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -149,3 +149,11 @@ part_of: ../map.md
 2. `bun run typecheck` = 55 存量（学习 0）；i18n/theme/dead-css 绿。
 3. 真机 grow 臂 EXIT=0：判据①②③在场。
 4. 旧档课程（存量开发库）课时详情零渲染两行、零报错（旧档容忍）。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`8b36edc04`（契约门+提示词+列+DTO）→ `f21137a5b`（UI 两行+smoke grow 判据）→ `1b9715272`（列序钉），经 `1ce098fd1` 并回集成分支。
+- **验证**：`cargo test -p nomifun-learning` 835→合成树 855 全绿；`nomifun-db` 单线程绿（新迁移测试 3：列形状/列序/旧档容忍+回写/v3 不动面）；typecheck 学习面 0 新增；i18n（11582 键）/theme 绿；dead-css 败=父分支存量（stash 复核）。
+- **真机 grow 臂 EXIT=0**：`[brief: rows=5 intent_avg=40 scope_avg=42]`——首批 5 节点 intent/scope 全落库非空，判据①②③在场。
+- **偏差三处（实现报告记录）**：①growth_contract 无条款表——按「同构位」在模块 doc 头部加 `ng.node.brief` 段；②LessonPack 导入 INSERT 同步补两 bind（防导入静默丢数据，学习面行为零变化）；③真机与旧档目检归波次串行槽（本次已行使，见上）。
+- 默认裁决「purpose 保留另加 intent/scope」未被复议，随关票固化。
