@@ -622,6 +622,13 @@ const NomiSendBox: React.FC<{
   useEffect(() => {
     if (!conversation_id) return;
     setAgentWarmed(false);
+    // Wait for classification: a voice call must not build a chat runtime on
+    // mount (that build holds the preparation gate and blocks the projection).
+    if (conversationVoiceKind === 'unknown') return;
+    if (conversationVoiceKind === 'voice') {
+      setAgentWarmed(true);
+      return;
+    }
     void warmupConversationForPassiveMount(conversation_id)
       .then(() => {
         setAgentWarmed(true);
@@ -629,7 +636,7 @@ const NomiSendBox: React.FC<{
       .catch((error) => {
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
       });
-  }, [conversation_id, t]);
+  }, [conversation_id, conversationVoiceKind, t]);
 
   const slash_commands = useSlashCommands(conversation_id, {
     conversation_type: 'nomi',

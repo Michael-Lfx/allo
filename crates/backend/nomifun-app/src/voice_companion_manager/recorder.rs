@@ -631,6 +631,15 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         self.turn_errors.read().unwrap_or_else(|e| e.into_inner())
             .get(&(session_id.into(), conversation_id.into(), turn_id.into())).cloned()
     }
+    fn note_record_failure(&self, conversation_id: &str, request: &VoiceDialogueRequest, error: &VoiceDialogueRecorderError) {
+        if let (Some(session), Some(turn)) = (&request.session_id, &request.turn_id) {
+            let code = crate::voice_dialogue::record_error_code(error);
+            self.turn_errors.write().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(
+                (session.clone(), conversation_id.to_owned(), turn.clone()),
+                VoiceSessionError { stage: "history".into(), code: code.into() },
+            );
+        }
+    }
     async fn keyboard_configuration(&self, conversation_id:&str) -> Result<crate::voice_dialogue::FrozenVoiceExecution,String> {
         let conv = self.conversation_service.get(&self.user_id, conversation_id).await.map_err(|_|"binding_invalid")?;
         if conv.extra.get("voice").and_then(|v|v.as_bool()) != Some(true) {return Err("binding_invalid".into());}

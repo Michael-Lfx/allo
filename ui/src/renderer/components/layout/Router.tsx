@@ -1,8 +1,9 @@
-import React, { Suspense, useEffect, useLayoutEffect } from 'react';
+import React, { Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import {AppMessage as Message} from '@renderer/components/notifications';
+import {isVoiceSessionInactive, shouldFollowVoiceSession} from '@renderer/components/layout/voiceWakeNavigation';
 import {useTranslation} from 'react-i18next';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
@@ -316,6 +317,10 @@ const MeetingOpenListener: React.FC = () => {
 const GlobalVoiceWakeListener: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  // Tracks the call session we already followed. A different conversation must
+  // stay where the user put it while the call is still active; only a new
+  // call activation (wake / incoming call) may take the route.
+  const followedSessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined' || window.location.hash.startsWith('#/companion')) return;
@@ -328,24 +333,14 @@ const GlobalVoiceWakeListener: React.FC = () => {
       if (disposed) return;
       void subscribeVoiceSession((snapshot) => {
         if (disposed) return;
-        if (snapshot.self_check_active) return;
-
-        const isVoiceActive = Boolean(
-          snapshot.enabled &&
-          snapshot.connection === 'connected' &&
-          snapshot.phase &&
-          snapshot.phase !== 'idle' &&
-          snapshot.phase !== 'error'
-        );
-
-        if (isVoiceActive) {
-          const targetConvId = snapshot.binding?.conversation_id;
-          if (targetConvId) {
-            const isTargetActive = location.pathname === `/conversation/${encodeURIComponent(targetConvId)}`;
-            if (!isTargetActive) {
-              void navigate(`/conversation/${encodeURIComponent(targetConvId)}`);
-            }
-          }
+        if (isVoiceSessionInactive(snapshot)) {
+          followedSessionRef.current = null;
+          return;
+        }
+        const target = shouldFollowVoiceSession(followedSessionRef.current, snapshot);
+        followedSessionRef.current = snapshot.session_id ?? null;
+        if (target && location.pathname !== target) {
+          void navigate(target);
         }
       }).then((unsub) => {
         if (disposed) unsub();

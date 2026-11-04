@@ -23,6 +23,7 @@ import { ensureBackendMcpCatalog, isMcpServerSelectable } from '@/renderer/hooks
 import { fetchPresetCatalog, PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { warmupConversation } from '@/renderer/pages/conversation/utils/warmupConversation';
+import { shouldWarmComposerOnFocus } from '../sendBoxWarmup';
 import { buildAtFileInsertion, getActiveAtFileQuery, getAllAtFileQueries } from '@/renderer/utils/chat/atFileQuery';
 import { getLastAssistantText } from '@/renderer/utils/chat/getLastAssistantText';
 import { emitter, type ReplyQuote, useAddEventListener } from '@/renderer/utils/emitter';
@@ -1781,14 +1782,20 @@ const SendBox: React.FC<{
     // (Idempotent: single-flight in warmupConversation + warmedConversationRef +
     // the backend's per-conversation OnceCell, so a redundant call is a no-op.)
     const cid = conversationContext?.conversation_id;
-    if (cid && warmedConversationRef.current !== cid) {
+    if (
+      shouldWarmComposerOnFocus({
+        isVoiceConversation,
+        conversationId: cid,
+        warmedConversationId: warmedConversationRef.current,
+      })
+    ) {
       if (warmupTimerRef.current) clearTimeout(warmupTimerRef.current);
       warmupTimerRef.current = setTimeout(() => {
-        warmedConversationRef.current = cid;
-        warmupConversation(cid).catch(() => {});
+        warmedConversationRef.current = cid!;
+        warmupConversation(cid!).catch(() => {});
       }, 300);
     }
-  }, [handlePasteFocus, isMobile, conversationContext?.conversation_id]);
+  }, [handlePasteFocus, isMobile, isVoiceConversation, conversationContext?.conversation_id]);
   const handleInputBlur = useCallback(() => {
     if (warmupTimerRef.current) {
       clearTimeout(warmupTimerRef.current);

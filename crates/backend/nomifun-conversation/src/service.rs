@@ -11634,8 +11634,10 @@ impl ConversationService {
         user_message_id: Option<&str>,
     ) -> Result<ConversationPairProjection, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
-        let token=CancellationToken::new();
-        let _guard=self.runtime_state.acquire_preparation_gate(conversation_id,&token).await?;
+        // Voice projection is bookkeeping, not a runtime mutation. Never wait
+        // behind a long preparation (chat warmup, runtime build, stop/reset):
+        // a busy gate falls through to the caller's idempotent append fallback.
+        let _guard=self.runtime_state.try_acquire_preparation_gate(conversation_id)?;
         if self.is_conversation_busy(user_id,conversation_id).await? {
             return Err(AppError::Conflict("Voice target is busy".into()));
         }

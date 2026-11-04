@@ -67,3 +67,81 @@
 - [x] **T57**: 闭环 Opencode 对抗审查最终裁决与时序加固（H1/H2/M1/M5）：① 修复 H1: 在 `useVoiceContext.ts` 中保留 `if (pathname !== '/guid')`，使 `/guid` 首页工作区候选由 `GuidPage.tsx` 独占上报，防止 focus/visibilitychange 覆盖用户选中的工作区；② 修复 H2: 在直控与 LLM Dismiss 重新拿锁后校验 `playback.generation_id() == sleep_gen && session_id == control_scope.session_id`，防止跨 `interrupt().await` 误杀新生会话；③ 修复 M1: `GuidPage.tsx` 精确细分 `voice_call_starting`（释放中）与 `voice_call_conflict`（已在通话），并阻止强制切回旧会话；④ 修复 M5: `clearPendingCallIntent` 同步执行 `updateActiveVoiceCallConversationId(null)`，挂断当刻侧边栏绿色声波 0ms 瞬间熄灭；⑤ 通过全量测试并更新生产二进制。
 - [x] **T58**: 彻底斩断首页与会话 B 唤醒劫持、点击语言会话自动置顶两大顽疾根因：① 切除 `voice_session_bridge.rs` 中在 WebView2 HashRouter 下必定误判导致会话 B 上报被拒收的客户端 URL 校验；② `recorder.rs` 增加 `home_has_messages` 判断，默认会话有历史对话时首页唤醒强制动态分配全新 UUID 会话；③ `MessageText.tsx` 对语音会话跳过 `fetchAndPersistTurnCredits`，封死组件挂载触发的 SQLite `updated_at = now()` 自动置顶；④ 对齐 `isVoiceConversation.ts` 类型标记；⑤ 编写并跑通 `test_full_wake_routing_and_conversation_switch_resilience` 端到端集成测试，全量 51 项测试全部通过。
 - [x] **T59**: 闭环对话模型继承、删除多余模型按钮与已有语言会话原地接续（通过 Opencode CLI 对抗终审）：① 在 `recorder.rs` 中使首页新建会话完整继承 default voice 的 `model`，当 home 为空时自动调用 `VoiceTaskRuntime::prepare_configuration` 兜底解析默认模型，preset 保持 None（可选），彻底解决 400 Bad request 报错；② 在 `NomiSendBox.tsx` 中物理删除模型不可用提示条里的“重试”与“前往模型设置”按钮，并精炼中英双语文案；③ 在 `recorder.rs` 中将 `candidate` 识别提升至最高优先级，身处语音会话立即原地接续（Rule 1），并移除名字脆弱启发式同时校验 `!is_discarded`；④ 在 `voice_companion_manager.rs` 移除 `stop_session` 与 `mark_active_request_stopped` 中错误的 `set_candidate_conversation(None)`，并在 `tests.rs` 增加挂断保留候选测试；⑤ 全量 51 项集成测试全部通过，重新编译生产二进制（SHA-256: 43785b8a...）。
+
+
+---
+
+# 2026-11-04 语音性能/路由/流式收官任务 (voice TTS latency plan)
+
+Goal: one task book, branch `fix/voice-missing-service-component`, local commits only (no push).
+
+## Task 0 — 基线（已核对）
+
+- 起始 `git status --porcelain` 干净，HEAD `13c37a35a`。
+- `cargo test -p nomifun-voice-terminal`: 43 passed + 8 + 6, 3 ignored, 0 failed。
+- `cargo test -p voice-companion`: 103 passed, 2 ignored, 0 failed。
+- `cargo test -p nomifun-app voice_dialogue`: 结果见下方更新。
+- TTS 模型目录 `$LOCALAPPDATA/Flowy/models/tts` 存在（两个 Matcha + vocos）。
+
+## Task 1 — 基准工具（完成）
+
+新增 `crates/backend/nomifun-voice-terminal/examples/tts_bench.rs`：真实加载本地模型、先 warm_up，再测 20 条不同的 15–20 字句子（避免固定短句缓存美化中位数）。
+
+优化前基线（16 核本机，同文本族）：2 线程 393–498ms；4 线程 286–356ms；6 线程 794ms；8 线程 1634ms。
+
+优化后（4 线程 + 渐进首块 + 预热）：warm 合成中位 **159.65ms**；首块中位 **142.61ms**；预热后冷首句 **226.13ms**；引擎加载 4949.57ms（被预热隐藏）。
+
+## Task 2 — 流式先 Complete 后落库（完成）
+
+- `voice_dialogue.rs` 的 `stream_response` 先发 `Complete`，再把落库任务放进按会话 FIFO 的 `RecordingQueue`；失败经新增 `note_record_failure` 写入 `turn_errors`（stage=`history`）。
+- `service.rs` 的语音投影门禁改为 `try_acquire_preparation_gate`，拿不到走既有幂等 busy-append fallback（不再等 26s）。
+- 新增 2 个测试：慢 recorder 下 Complete <100ms；两轮写入顺序正确。
+
+## Task 3 — daemon 看门狗 + 语音会话不再 warmup（完成）
+
+- `voice.rs` 流式循环加 2s 看门狗日志 `voice_host_stream_stalled`。
+- `SendBox` 聚焦 warmup 读 `isVoiceConversation` 并跳过（新增 `sendBoxWarmup.ts` + 3 测试）。
+- `NomiSendBox` 被动挂载 warmup 在识别为 voice 后跳过（白名单外，见 BLOCKED.md）。
+
+## Task 4 — 线程数与预热（完成）
+
+- `default_tts_threads()` = min(available_parallelism, 4)。
+- `TtsProvider::warm_up` 默认 no-op；Sherpa 在阻塞线程加载两个 Matcha + Vocos；Fallback 两侧都预热；daemon `start_worker` 与唤醒路径后台预热。失败只打日志。
+
+## Task 5 — 渐进首块 + 短句缓存（完成）
+
+- Sherpa 回调按累积 samples 只发新增尾部（WAV 帧），不必等整句合成完；只回调一次的引擎仍回退整段发送。
+- 有界 16 条 WAV 缓存，key = voice 规格（含 locale/speed）+ 文本；单测覆盖换速度/换 locale 失效与淘汰。
+- 固定文本渐进流 vs 缓存 WAV 的 PCM 时长/采样点需一致（≤5%）。
+
+## Task 6 — 唤醒导航不再抢路由（完成）
+
+- 新增 `voiceWakeNavigation.ts` + 5 测试；`Router.tsx` 只在新的通话 session 激活时导航，inactive/self_check 重置。
+- 同 session 激活、用户已切走时不再拉回；self_check 永不导航。
+
+## 待办
+
+- `cargo test -p nomifun-app voice_dialogue`、`cargo check -p nomifun-app -p nomifun-conversation` 结果回填。
+- `bun run typecheck`、既有 VoiceSettings 结构测试、`bun run check:i18n`。
+- 全量回归后按任务书只本地 commit，不 push。
+
+## 验收证据（2026-11-04 本机）
+
+- 基准命令：`cargo run -p nomifun-voice-terminal --example tts_bench --features local-tts -- --model-dir "$LOCALAPPDATA/Flowy/models/tts"`；证据文件 `build.noindex/evidence/tts-bench-final.json`。
+- 4 线程（生产默认 min(cores,4)）：warm 合成中位 136.59ms（目标 ≤210ms）、首块中位 121.94ms（目标 ≤200ms）、预热后冷首句 183.42ms（目标 ≤500ms）、引擎加载 7584.17ms（被预热隐藏）、PCM 一致性 true（cold 45883 / replay 45883）。
+- 2 线程对照：warm 259.23ms、首块 229.89ms（证明 4 线程必要）。
+- 反向验证：关闭渐进（`NOMIFUN_TTS_PROGRESSIVE=0`）首块 158.28ms ≈ 整句 163.41ms；去掉预热后冷首句 5294.18ms。
+- 缓存反向验证：临时让 cache key 忽略 voice → `cache_key_carries_voice_locale_and_speed` 红灯（见 `build.noindex/evidence/task5-red.log`）；恢复后 2 项缓存测试绿。
+- 问题2 反向验证：临时把 Complete 移到 record_pair 之后 → `streaming_terminal_frame_does_not_wait_for_recording` 红灯 `terminal frame waited for bookkeeping: 306.0693ms`；恢复后 14 passed / 2 ignored 绿（`build.noindex/evidence/task2-red.log`）。
+- 问题1 / 3 反向验证：临时删掉 voice 跳过 / same-session 判断 → 对应 bun 测试红灯；恢复后 8 pass（`task3-red.log`、`task6-red.log`）。
+- `cargo test -p nomifun-voice-terminal`：43 passed / 3 ignored（与基线一致）；`--features local-tts`：46 passed / 3 ignored。
+- `cargo test -p voice-companion`：103 passed / 2 ignored（与基线一致）。
+- `cargo test -p nomifun-app --lib voice_dialogue`：14 passed / 2 ignored；`cargo check -p nomifun-app -p nomifun-conversation` 通过。
+- `bun test`：新增 8 pass；`VoiceSettings.structure` 20 pass；SendBox focus 4 pass；`bun run check:i18n` 通过（11992 keys）。
+- `bun run typecheck`：改动文件无报错；仓库仍有既有历史错误（jointTraceReplay.test、vite.config 等），非本任务引入。
+- 既有 `NomiSendBoxLayout.structure` 有一处历史断言失败（`total_tokens` 字符串），未触及该文件逻辑，非本次引入。
+
+## 未由自动化覆盖 / 留给领导抽查
+
+- 问题2 的端到端 `provider_complete→playback_done ≤3s` 需要真实通话日志；单测已锁死「Complete 不等待落库」，生产录音器实测 26s 的等待路径已移除。
+- 问题1 与 TTS 音质需要真机一次听感/切页抽查（自动测试覆盖纯逻辑与 PCM 等长）。

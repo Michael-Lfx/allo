@@ -2140,6 +2140,11 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::ModelsUnavailable);
         }
 
+        // A call can start before the startup prewarm has finished (fresh boot,
+        // model reinstall, first run after idle); make the wake path ensure it.
+        let tts_prewarm = Arc::clone(&self.tts);
+        tokio::spawn(async move { tts_prewarm.warm_up().await; });
+
         Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id, locale, true).await
     }
 
@@ -2764,6 +2769,12 @@ impl VoiceCompanionRuntime {
                 let mut raw_text = None;
                 let mut chat_streamed = false;
                 let mut sentence_rx_closed = false;
+                // The host may withhold the stream terminal frame while it finishes
+                // conversation bookkeeping; make that observable instead of leaving
+                // the dock silently stuck on the last playback state.
+                let mut stall_warned = false;
+                let mut stall_tick = tokio::time::sleep(std::time::Duration::from_secs(2));
+                tokio::pin!(stall_tick);
 
                 loop {
                     tokio::select! {
@@ -2771,6 +2782,16 @@ impl VoiceCompanionRuntime {
                         _ = playback.interrupted(generation) => {
                             let _ = cancel_tx.send(true);
                             return;
+                        }
+                        _ = &mut stall_tick, if !stall_warned => {
+                            warn!(
+                                session_id=?control_scope.session_id,
+                                turn_id=?control_scope.turn_id,
+                                after_sentence_window_ms=2000u64,
+                                "voice_host_stream_stalled"
+                            );
+                            stall_warned = true;
+                            stall_tick.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
                         }
                         sentence_opt = sentence_rx.recv(), if !sentence_rx_closed => {
                             match sentence_opt {
@@ -2798,6 +2819,8 @@ impl VoiceCompanionRuntime {
                                             }
                                         }
                                     }
+                                    stall_warned = false;
+                                    stall_tick.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::ReplySentence {
                                         text: sentence.text.clone(),
                                         understood_request: sentence.understood_request.clone(),
@@ -3654,6 +3677,10 @@ impl VoiceCompanionRuntime {
         let mut capture = Arc::clone(&self.capture_pipeline);
         let playback = Arc::clone(&self.playback);
         let tts = Arc::clone(&self.tts);
+        // Hide the lazy ONNX engine load (multiple seconds) behind daemon
+        // startup instead of the user's first reply.
+        let tts_prewarm = Arc::clone(&tts);
+        tokio::spawn(async move { tts_prewarm.warm_up().await; });
         let router = Arc::clone(&self.router);
         let task_client = self.task_client.clone();
         let pending_confirmation=self.pending_confirmation.clone();
