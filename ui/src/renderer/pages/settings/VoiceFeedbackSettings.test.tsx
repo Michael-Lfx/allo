@@ -14,10 +14,24 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
     const i18n = createInstance();
     await i18n.init({ lng:locale, resources:{[locale]:{translation:{voice:dictionary}}}, initImmediate:false });
     const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceFeedbackSettings connected={false} /></I18nextProvider>);
-    for (const key of ['title','mode','volume','speakReplies','previewHint','loading','save'] as const) expect(html).toContain(dictionary.feedback[key]);
+    // The page is now the consolidated "voice preferences" panel; assert the
+    // current labels instead of the retired feedback-dashboard headings.
+    for (const key of [
+      'voicePreferencesTitle',
+      'voicePreferencesDesc',
+      'wakeEnabled',
+      'wakeWords',
+      'inputDevice',
+      'volume',
+      'ttsSpeed',
+      'savePreferences',
+    ] as const) {
+      expect(html).toContain(dictionary.feedback[key]);
+    }
     expect(html).not.toContain('voice.feedback.');
     expect(html).toContain('disabled');
     expect(html).not.toContain(dictionary.feedback.applied);
+    expect(html).not.toContain(dictionary.feedback.unsaved);
   });
   test(`${locale}: cue receipt distinguishes skipped, failed and consumed output`, async () => {
     const i18n = createInstance();
