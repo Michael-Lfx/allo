@@ -158,17 +158,17 @@ test('install/delete render the backend receipt instead of a bare 2xx success', 
   // The old unconditional 2xx rewrite must stay gone.
   expect(source).not.toMatch(/response\.ok\s*\|\|\s*response\.status === 202/);
 });
-test('full-call readiness exposes an explicit check and repair reason', () => {
+test('full-call readiness exposes an explicit check and repair path', () => {
   const source = readFileSync(componentUrl, 'utf8');
+  // The readiness row keeps one explicit "check & prepare" action and a repair
+  // entry; the old text-answer fallback that took over user dictation is gone.
   expect(source).toContain('runVoiceSelfCheck');
-  expect(source).toContain("voice.capabilities.title");
+  expect(source).toContain('handleSelfCheck');
   expect(source).toContain("voice.capabilities.textOnly");
-  expect(source).toContain("handleSelfCheck");
-  expect(source).toContain("useTextReply");
-  expect(source).toContain("requestDictationIntent('/')");
-  expect(source).not.toContain("activateExistingDictation");
+  expect(source).toContain("voice.actions.repair");
+  expect(source).toContain("voice.actions.retry");
+  expect(source).not.toContain('activateExistingDictation');
   expect(source).not.toMatch(/setTimeout\([\s\S]{0,120}activateExistingDictation/);
-  expect(source).not.toContain("onClick={handleUseTextReply}>\\n");
 });
 test('first-call failure exposes an explicit prepare action', () => {
   const source = readFileSync(componentUrl, 'utf8');
@@ -177,11 +177,32 @@ test('first-call failure exposes an explicit prepare action', () => {
   expect(guid).not.toContain('voice.entry.prepareHint');
 });
 
-test('voice settings keep model identifiers inside advanced diagnostics and remove wake overclaims',()=>{
- const source=readFileSync(componentUrl,'utf8');
- expect(source.indexOf('<VoiceDialogueStatusSection')).toBeGreaterThan(source.indexOf("voice.diagnostics.advancedTitle"));
- expect(source).not.toContain('voice.dashboard.tipContent');
- expect(source).not.toContain('voice.dashboard.activeKeywordsList');
+test('voice diagnostics stay behind the advanced section and wake overclaims stay gone', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  // Advanced acoustic diagnostics remain a collapsed details section rendered
+  // after the readiness/self-check controls, not an always-visible dashboard.
+  expect(source).toContain("voice.diagnostics.advancedTitle");
+  expect(source).toContain("voice.diagnostics.sectionTitle");
+  expect(source).toContain('<details');
+  expect(source.indexOf("voice.diagnostics.advancedTitle")).toBeGreaterThan(
+    source.indexOf("voice.capabilities.run")
+  );
+  expect(source).not.toContain('voice.dashboard.tipContent');
+  expect(source).not.toContain('voice.dashboard.activeKeywordsList');
+});
+
+test('finished self-checks refresh the stored report without a page remount', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  // Host snapshot active -> idle transition triggers a capability refetch, so a
+  // background/finished check updates the chain in place.
+  expect(source).toContain('selfCheckActiveRef');
+  expect(source).toMatch(/wasActive && !active[\s\S]{0,120}fetchCapabilities\(\)/);
+  // A concurrent check rejection polls the stored report instead of leaving the
+  // stale evidence on screen until the user switches tabs.
+  expect(source).toContain('waitForFreshCapabilities');
+  expect(source).toMatch(/self_check_in_progress[\s\S]{0,200}waitForFreshCapabilities/);
+  // Pills show a neutral "checking" state while a check is in flight.
+  expect(source).toContain("const status = selfCheckInFlight ? 'checking' : resolveStageStatus(name);");
 });
 
 test('verifying state shows the progress ratio once under a phase title and a real hint', () => {
@@ -194,17 +215,17 @@ test('verifying state shows the progress ratio once under a phase title and a re
   expect(source).not.toMatch(/rowDescription\s*=\s*t\('voice\.phases\.verifyingSha256'/);
 });
 
-test('readiness chain wraps without orphan connectors or horizontal overflow', () => {
+test('readiness chain is one scrollable line without orphan connectors', () => {
   const source = readFileSync(componentUrl, 'utf8');
-  // Connector and pill share one flexible unit, so a wrapped row cannot leave a
-  // dangling arrow at the end of the previous line.
-  expect(source).toMatch(/<span key=\{name\} className='inline-flex min-w-0 items-center gap-2'>/);
+  // The pipeline is a single horizontal row that scrolls on narrow cards; it
+  // must not wrap one pill onto a second row with a large empty gap.
+  expect(source).toMatch(/voice-stage-chain[^']*overflow-x-auto/);
+  expect(source).not.toMatch(/voice-stage-chain[^']*flex-wrap/);
+  // Connector and pill stay one non-shrinking unit, so an arrow can never be
+  // stranded at a line end and labels never wrap inside a pill.
+  expect(source).toMatch(/<span key=\{name\} className='inline-flex shrink-0 items-center gap-1\.5'>/);
   expect(source).toMatch(/aria-hidden='true'[^>]*>→<\/span>/);
-  // Pills may shrink and wrap their label instead of pushing past the card edge.
-  expect(source).toContain('min-w-0 break-words');
   expect(source).toContain('whitespace-nowrap');
-  // Page-local fixed-width action wrappers stranded stacked controls mid-card
-  // instead of following the shared SettingsRow container-query behaviour.
   expect(source).not.toContain('w-240px shrink-0');
 });
 

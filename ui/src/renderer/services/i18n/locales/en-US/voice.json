@@ -182,16 +182,6 @@
       "error": "Request failed"
     }
   },
-  "dialogue": {
-    "title": "Quick reply model",
-    "description": "Automatically selects an available quick reply model. Tasks use the bound conversation's workspace, model and preset.",
-    "model": "Effective model",
-    "default": "Automatically use a Flowy Cloud chat model",
-    "selected": "{{provider}} / {{model}}",
-    "unavailable": "No dialogue model is available. Check provider configuration, enabled models and Flowy login.",
-    "failed": "Could not read the quick reply model. Reopen settings to retry.",
-    "stale": "Unavailable model: {{model}}"
-  },
   "audio": {
     "halfDuplex": "Half duplex: local echo cancellation is not ready; automatic interruption during playback is disabled.",
     "bargeInTest": "Interruption control test: echo-free test audio only.",
@@ -311,7 +301,7 @@
     "replyIncomplete": "Answer incomplete. Text received so far has been preserved."
   },
   "title": "Voice Companion",
-  "description": "Voice Interaction Suite (~249MB)",
+  "description": "Voice Interaction Suite (~453MB)",
   "status": {
     "notInstalled": "Not Installed",
     "probingSource": "Selecting Source",
@@ -328,7 +318,7 @@
     "offline": "Offline"
   },
   "phases": {
-    "notInstalled": "Voice Interaction Suite (~249MB)",
+    "notInstalled": "Voice Interaction Suite (~453MB)",
     "notInstalledDesc": "Supports far-field voice wake-up and offline speech recognition",
     "probingSource": "Selecting optimal mirror source",
     "downloading": "Downloading voice models ({{current}}/{{total}})",
@@ -346,7 +336,7 @@
     "percent": "{{percent}}%",
     "ratio": "{{current}}/{{total}}",
     "bytesRatio": "{{downloaded}} / {{total}}",
-    "approxSize": "Approx. 249MB",
+    "chainAria": "Voice capability check stages; scroll horizontally to see every status",
     "waiting": "Waiting for new execution progress.",
     "thinking": "The executor is analyzing the task.",
     "answering": "The executor is producing a text result.",
@@ -366,7 +356,7 @@
     "retry": "Retry",
     "uninstall": "Uninstall voice suite",
     "uninstallConfirmTitle": "Uninstall voice suite?",
-    "uninstallConfirmContent": "This deletes the downloaded voice models and frees about 249 MB. Voice features become unavailable until you download them again.",
+    "uninstallConfirmContent": "This deletes the downloaded voice models and frees about 453 MB. Voice features become unavailable until you download them again.",
     "uninstallConfirmOk": "Uninstall",
     "uninstalling": "Uninstalling voice suite...",
     "cancel": "Cancel",

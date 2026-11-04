@@ -298,6 +298,9 @@ const VoiceSettings: React.FC = () => {
 
   const lastProgressUpdateRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Tracks the host-side self-check flag so the page can refresh the stored
+  // capability report the moment any check (user or automatic) finishes.
+  const selfCheckActiveRef = useRef(false);
 
   // Listen for prefers-reduced-motion OS changes
   useEffect(() => {
@@ -572,7 +575,7 @@ const VoiceSettings: React.FC = () => {
     }
   }, [applyStateUpdate, operationErrorText, t]);
 
-  // Uninstalling the voice suite removes ~250MB of local models, so the
+  // Uninstalling the voice suite removes ~450MB of local models, so the
   // destructive action always goes through the shared confirmation dialog
   // instead of an inline two-step menu that disappears after the first click.
   const fetchCapabilities = useCallback(async () => {
@@ -580,6 +583,28 @@ const VoiceSettings: React.FC = () => {
       setCapabilities(await getVoiceCapabilities());
     } catch {
       setCapabilities(null);
+    }
+  }, []);
+
+  // A second check request is rejected with `self_check_in_progress` while the
+  // host still runs one (for example the silent check started right after a
+  // download finished). Poll the stored report until it is newer than the one we
+  // already show, so the pill chain updates on the spot instead of only after a
+  // tab switch remounts the page.
+  const waitForFreshCapabilities = useCallback(async (previousCheckedAtMs: number | null | undefined) => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      try {
+        const report = await getVoiceCapabilities();
+        if (!report) continue;
+        const checkedAt = typeof report.checked_at_ms === 'number' ? report.checked_at_ms : 0;
+        if (checkedAt > (previousCheckedAtMs ?? 0)) {
+          setCapabilities(report);
+          return;
+        }
+      } catch {
+        // Transient status failures keep the previous report; retry until budget.
+      }
     }
   }, []);
 
@@ -598,15 +623,16 @@ const VoiceSettings: React.FC = () => {
       }
     } catch (e: any) {
       if (e?.code === 'self_check_in_progress') {
-        // Another check is already running in background; silently re-fetch capabilities after delay
-        setTimeout(() => { void fetchCapabilities(); }, 1500);
+        // Another check is already running in background: wait for its stored
+        // report instead of leaving the chain on the stale evidence.
+        void waitForFreshCapabilities(capabilities?.checked_at_ms);
         return;
       }
       Message.error(e instanceof Error ? e.message : t('voice.capabilities.checkFailed'));
     } finally {
       setCheckingCapabilities(false);
     }
-  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, fetchCapabilities]);
+  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, capabilities?.checked_at_ms, waitForFreshCapabilities]);
 
   useEffect(() => {
     if (modelStatus === 'Ready') {
@@ -619,6 +645,19 @@ const VoiceSettings: React.FC = () => {
       }
     }
   }, [modelStatus, fetchCapabilities]);
+
+  // The host emits `self_check_active: true -> false` on the snapshot stream
+  // exactly when the final report has been stored. Refresh then, so a check
+  // that finished in the background (or whose HTTP response was rejected as
+  // already-running) still turns the chain green without a page remount.
+  useEffect(() => {
+    const active = Boolean(voiceSnapshot?.self_check_active);
+    const wasActive = selfCheckActiveRef.current;
+    selfCheckActiveRef.current = active;
+    if (wasActive && !active) {
+      void fetchCapabilities();
+    }
+  }, [voiceSnapshot?.self_check_active, fetchCapabilities]);
 
   const handleUninstallClick = useCallback(() => {
     Modal.confirm({
@@ -860,6 +899,9 @@ const VoiceSettings: React.FC = () => {
   const allStagesReady = (['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).every(
     (name) => resolveStageStatus(name) === 'ready'
   );
+  // While a check runs, show neutral "checking" pills instead of the previous
+  // report's evidence: the stale report must not look like the current verdict.
+  const selfCheckInFlight = checkingCapabilities || Boolean(voiceSnapshot?.self_check_active);
 
   let rowLabel = t('voice.phases.notInstalled');
   let rowDescription: React.ReactNode = t('voice.phases.notInstalledDesc');
@@ -1100,9 +1142,14 @@ const VoiceSettings: React.FC = () => {
             <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
 
             {modelStatus === 'Ready' && (
-              <div className='flex flex-wrap items-center gap-2 px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px' role='status'>
+              <div
+                className='voice-stage-chain flex items-center gap-x-1.5 overflow-x-auto px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px'
+                role='status'
+                tabIndex={0}
+                aria-label={t('voice.capabilities.chainAria')}
+              >
                 {(['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).map((name, idx) => {
-                  const status = resolveStageStatus(name);
+                  const status = selfCheckInFlight ? 'checking' : resolveStageStatus(name);
                   const isReady = status === 'ready';
                   const isFailed = status === 'failed';
                   const statusColor = isReady
@@ -1113,16 +1160,16 @@ const VoiceSettings: React.FC = () => {
                   const icon = isReady ? '●' : isFailed ? '✕' : '○';
 
                   return (
-                    // Connector and pill form one flexible unit: a wrapped row can
-                    // never leave an orphan arrow at the end of the previous line,
-                    // and the unit shrinks instead of overflowing the card.
-                    <span key={name} className='inline-flex min-w-0 items-center gap-2'>
+                    // Connector and pill stay one non-shrinking unit inside a
+                    // single scrollable line: no wrapped row, no orphan arrow,
+                    // no stretched pill that shrinks its own label.
+                    <span key={name} className='inline-flex shrink-0 items-center gap-1.5'>
                       {idx > 0 && (
                         <span aria-hidden='true' className='text-t-tertiary font-mono select-none'>→</span>
                       )}
-                      <span className={`inline-flex min-w-0 items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
+                      <span className={`inline-flex shrink-0 items-center gap-1 px-2 py-0.5 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
                         <span aria-hidden='true' className='shrink-0'>{icon}</span>
-                        <span className='min-w-0 break-words'>{t(`voice.capabilities.item.${name}`)}</span>
+                        <span className='whitespace-nowrap'>{t(`voice.capabilities.item.${name}`)}</span>
                         <span className='shrink-0 whitespace-nowrap'>{t(`voice.capabilities.status.${status}`)}</span>
                       </span>
                     </span>

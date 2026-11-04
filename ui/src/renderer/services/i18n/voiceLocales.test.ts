@@ -71,7 +71,6 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
       'progress.percent',
       'progress.ratio',
       'progress.bytesRatio',
-      'progress.approxSize',
     ];
     for (const key of progressKeys) {
       expect(typeof getLocaleValue(enVoice, key)).toBe('string');

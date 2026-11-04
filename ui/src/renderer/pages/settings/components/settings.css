@@ -172,6 +172,27 @@
   flex: 0 0 auto;
 }
 
+/* Single-line capability chain: scrolling replaces wrapping so the pipeline
+   never leaves one pill alone on a second row with a large empty gap. */
+.voice-stage-chain {
+  scrollbar-width: thin;
+  scrollbar-color: var(--flowy-border-subtle) transparent;
+  overscroll-behavior-x: contain;
+}
+
+.voice-stage-chain::-webkit-scrollbar {
+  height: 4px;
+}
+
+.voice-stage-chain::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--flowy-border-subtle);
+}
+
+.voice-stage-chain::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .flowy-settings-row__status {
   margin-top: 6px;
 }

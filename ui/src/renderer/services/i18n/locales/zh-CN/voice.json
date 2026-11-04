@@ -179,16 +179,6 @@
       "error": "请求失败"
     }
   },
-  "dialogue": {
-    "title": "快速回复模型",
-    "description": "自动选择可用的快速对话模型。执行任务使用绑定会话的工作区、模型和预设。",
-    "model": "当前生效模型",
-    "default": "自动使用 Flowy Cloud 对话模型",
-    "selected": "{{provider}} / {{model}}",
-    "unavailable": "没有可用的对话模型。请检查供应商配置、模型启用状态及 Flowy 登录。",
-    "failed": "无法读取快速回复模型，请重新打开设置重试。",
-    "stale": "不可用的模型：{{model}}"
-  },
   "audio": {
     "halfDuplex": "半双工：本地回声消除尚未就绪，播报时自动插话已关闭。",
     "bargeInTest": "插话控制测试：仅用于无回声测试音频。",
@@ -308,7 +298,7 @@
     "replyIncomplete": "回答未完成，已收到的文字已保留。"
   },
   "title": "语音伴侣",
-  "description": "语音交互套件（约 249MB）",
+  "description": "语音交互套件（约 453MB）",
   "status": {
     "notInstalled": "未安装",
     "probingSource": "正在选择加速源",
@@ -325,7 +315,7 @@
     "offline": "离线"
   },
   "phases": {
-    "notInstalled": "语音交互套件（约 249MB）",
+    "notInstalled": "语音交互套件（约 453MB）",
     "notInstalledDesc": "支持远场语音唤醒与离线语音识别",
     "probingSource": "正在选择加速源",
     "downloading": "正在下载语音模型 ({{current}}/{{total}})",
@@ -343,7 +333,7 @@
     "percent": "{{percent}}%",
     "ratio": "{{current}}/{{total}}",
     "bytesRatio": "{{downloaded}} / {{total}}",
-    "approxSize": "约 249MB",
+    "chainAria": "语音能力检查阶段，可横向滚动查看全部状态",
     "waiting": "等待执行侧产生新进展。",
     "thinking": "执行侧正在分析任务。",
     "answering": "执行侧正在生成文字结果。",
@@ -363,7 +353,7 @@
     "retry": "重试",
     "uninstall": "卸载语音套件",
     "uninstallConfirmTitle": "卸载语音套件？",
-    "uninstallConfirmContent": "将删除本机已下载的语音模型并释放约 249MB 磁盘空间。卸载后语音功能不可用，可随时重新下载。",
+    "uninstallConfirmContent": "将删除本机已下载的语音模型并释放约 453MB 磁盘空间。卸载后语音功能不可用，可随时重新下载。",
     "uninstallConfirmOk": "卸载",
     "uninstalling": "正在卸载语音套件…",
     "cancel": "取消",

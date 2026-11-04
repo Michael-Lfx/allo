@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVoiceSession, getVoiceDialogueSettings, voiceServiceAvailability, type VoiceSnapshot } from './voiceCompanion';
+import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVoiceSession, voiceServiceAvailability, type VoiceSnapshot } from './voiceCompanion';
 import { getVoiceFeedbackSettings, saveVoiceFeedback, previewVoiceFeedback } from './voiceCompanion';
 import * as voice from './voiceCompanion';
 
@@ -218,8 +218,7 @@ test('all voice requests use same-origin cookies compatible with desktop wildcar
     off = await subscribeVoiceSession(() => {}, false);
     await stopVoiceSession(scope);
     await wakeVoiceSession();
-    await getVoiceDialogueSettings();
-    expect(modes).toEqual(Array(5).fill('same-origin'));
+    expect(modes).toEqual(Array(4).fill('same-origin'));
   } finally { off?.(); globalThis.fetch = original; }
 });
 

@@ -177,13 +177,6 @@ async function feedbackRequest(suffix: string, body?: unknown) {
 export function getVoiceFeedbackSettings(): Promise<VoiceFeedbackSettings> { return feedbackRequest(''); }
 export function saveVoiceFeedback(patch: Partial<VoiceFeedbackConfig>): Promise<VoiceFeedbackSettings> { return feedbackRequest('', patch); }
 export async function previewVoiceFeedback(kind: VoicePreviewKind): Promise<void> { await feedbackRequest('/preview', {kind}); }
-export interface VoiceDialogueSettings { dialogue_model: VoiceModelRef | null; effective_model: VoiceModelRef | null; available: boolean }
-export async function getVoiceDialogueSettings(): Promise<VoiceDialogueSettings> {
-  const response = await fetch(`${getBaseUrl()}/api/voice/companion/config`,{headers:buildBackendAuthHeaders('GET'),credentials:'same-origin',signal:AbortSignal.timeout(5000)});
-  if (!response.ok) throw new Error('voice_model_configuration_failed');
-  return response.json() as Promise<VoiceDialogueSettings>;
-}
-
 /** Fence late fetches/events across both host restarts and sequence races. */
 export function createSnapshotConsumer(onSnapshot: (snapshot: VoiceSnapshot) => void) {
   let current: VoiceSnapshot | null = null;
