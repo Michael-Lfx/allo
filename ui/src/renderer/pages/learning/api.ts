@@ -3,6 +3,8 @@ import type {
   AttemptResult,
   BasisView,
   CalendarStats,
+  CapacityFeedbackChoice,
+  CapacityFeedbackView,
   CheckinStatus,
   ConceptAuditReport,
   CourseDetail,
@@ -184,6 +186,14 @@ export const learningApi = {
     httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
+  // y07 容量反馈：latest-wins 留痕，响应 saved view；回显随 lesson detail
+  // 读回（不另设 GET）。零结算零置位——只记账，不触发重生成/拆节。
+  recordCapacityFeedback: (lessonId: string, choice: CapacityFeedbackChoice) =>
+    httpRequest<CapacityFeedbackView>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(lessonId)}/capacity-feedback`,
+      { choice }
+    ),
   // 按需生成课时内容（e4 双模化默认异步）：返回 202 面（任务键 + 轮询
   // 提示），生成在后台任务执行——断开连接不中断；调用方以 generationTasks
   // 轮询终态（或听 learning.lesson-generation WS 流）后拉课时详情。

@@ -493,7 +493,12 @@ impl LearningService {
         .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
         let course_id = parse_id::<LearningCourseId>(course_id)?;
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
-        self.lesson_view(lesson_id, enrollment.as_ref()).await
+        let mut view = self.lesson_view(lesson_id, enrollment.as_ref()).await?;
+        // 容量反馈回显只属于当前用户（per-user 留痕；其他视图恒 None）。
+        view.capacity_feedback = self
+            .capacity_feedback_for(user_id, lesson_id)
+            .await?;
+        Ok(view)
     }
 
     /// 课时生成目标行：调度守卫过闸后的最小投影（[`Self::load_lesson_generation_target`]
@@ -2092,6 +2097,11 @@ impl LearningService {
             );
         }
         let now = now_ms();
+        // y07：超容自报升级为内容元数据落库（同事务）。归一规则与草稿侧
+        // 一致（trim 后为空 = 缺席）——缺席写 NULL 清旧值，重生成永远反映
+        // 最近一次发布；`over_capacity` tracing 保留（观测面不删）。
+        let capacity_note =
+            crate::lesson_draft::normalize_capacity_note(output.capacity_note.as_deref());
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         // 分节输出：节清单整体替换（幂等重生成语义），summary 存拼装文本
         // （双读回退）。单篇文档输出（agent 旧契约）不动节表。
@@ -2128,10 +2138,12 @@ impl LearningService {
             }
         }
         sqlx::query(
-            "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1 WHERE lesson_id = ?",
+            "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1, \
+             capacity_note = ? WHERE lesson_id = ?",
         )
         .bind(output.summary.trim())
         .bind(output.estimated_minutes)
+        .bind(capacity_note)
         .bind(lesson_id.as_str())
         .execute(&mut *transaction)
         .await

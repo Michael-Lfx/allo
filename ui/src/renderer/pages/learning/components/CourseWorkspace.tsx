@@ -38,6 +38,7 @@ import { LessonBlock } from './LessonStudy';
 import { CourseSamplingLine } from './CourseSamplingLine';
 import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
 import { errorMessage, statusLabel } from '../utils';
+import { overloadedBadgeCount } from '../capacityFeedback';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -186,6 +187,17 @@ export function CourseWorkspace({
           <Tag color={detail.due_review_count > 0 ? 'orange' : 'green'}>
             {t('learning.reviews')}: {detail.due_review_count}
           </Tag>
+          {/* 容量聚合（y07）：课程内自报超容的课时数；0 = 零版面（内容级
+              纯读计数，不暴露任何用户的选择） */}
+          {overloadedBadgeCount(detail.overloaded_lessons) !== null && (
+            <Tooltip content={t('learning.capacityOverloadedHint')}>
+              <Tag color='orange'>
+                {t('learning.capacityOverloadedCount', {
+                  count: detail.overloaded_lessons,
+                })}
+              </Tag>
+            </Tooltip>
+          )}
           {course.source_kb_id && (
             <Button size='small' onClick={() => navigate(`/knowledge/${course.source_kb_id}`)}>
               {t('learning.source')}

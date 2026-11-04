@@ -1071,3 +1071,51 @@ CREATE INDEX idx_learning_system_actions_course
 -- 逻辑引用（actor_user_id → users）的具名索引（v3 契约对账要求）。
 CREATE INDEX idx_learning_system_actions_actor
     ON learning_system_actions (actor_user_id);
+
+-- ==== §14 节点容量反馈信号（y07）====
+-- 一、课时内容元数据：发布尾把生成期的超容自报（k03 `capacity_note`）从
+-- 「只打 over_capacity 日志」升级为落库。可空、无默认：NULL = 无自报/旧行；
+-- 重生成时缺席写 NULL 以清旧值。**内容级共享资产**（learning_lessons 无
+-- user_id），不是个人预算；est 是内容尺寸 + XP 基数 + 水位的双角色硬红线，
+-- 本列不参与任何结算。
+ALTER TABLE learning_lessons ADD COLUMN capacity_note TEXT;
+
+-- 二、per-user / per-lesson 三选一反馈（accept | extend | split，Rust 单源
+-- `CapacityFeedbackChoice`）。latest-wins：应用层 UPSERT on
+-- (user_id, lesson_id)，DB 以 UNIQUE 兜底；`feedback_id` 首写生成、覆盖不改。
+-- 枚举无 DB CHECK（ADR-0015）：写侧严格、读侧宽容未知值。
+-- 零结算零置位：本表是纯留痕，不写 attempts/review/xp/progress/FSRS，不改
+-- status、不发 WS、不注入共享课时生成；聚合只按内容级计数（不泄露他人选择）。
+CREATE TABLE learning_lesson_capacity_feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id TEXT NOT NULL UNIQUE CHECK (
+        length(feedback_id) = 36
+        AND lower(feedback_id) = feedback_id
+        AND feedback_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(feedback_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    user_id     TEXT NOT NULL CHECK (
+        length(user_id) = 36
+        AND lower(user_id) = user_id
+        AND user_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(user_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    lesson_id   TEXT NOT NULL CHECK (
+        length(lesson_id) = 36
+        AND lower(lesson_id) = lesson_id
+        AND lesson_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(lesson_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    choice      TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE (user_id, lesson_id)
+);
+
+-- 读侧索引：按课时聚合/回读（课程聚合走 lesson 连接）。
+CREATE INDEX idx_learning_lesson_capacity_feedback_lesson
+    ON learning_lesson_capacity_feedback (lesson_id);
+-- 逻辑引用（user_id → users）的具名索引（v3 契约对账要求）。
+CREATE INDEX idx_learning_lesson_capacity_feedback_user
+    ON learning_lesson_capacity_feedback (user_id);
