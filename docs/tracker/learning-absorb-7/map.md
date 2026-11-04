@@ -117,3 +117,8 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   且无红条时一次性批量中立裁决（`name_adjudication.rs`：输入只给名字 + 被点
   字符、同名运行内 memo、裁决器失败降级为提示）；`求和公式` 类术语本字不再
   误杀（e79d82b8e）。
+- 2026-11-04：y03 关闭——内容面新增只读 `search_concepts` 工具（仅图线 ∧
+  teaches 非空节点挂载）：四通道 exact/alias/nearname/fulltext 按 concept_id
+  去重取最高级截 top-5、零命中 `not_found: true` 不抛错，detail 按 id 取全
+  定义 + 全部活跃别名；服务只发 SELECT（无新表/写入口），近名机械全复用
+  `defnear`（cf020c022）。
