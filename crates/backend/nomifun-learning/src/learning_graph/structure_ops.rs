@@ -696,7 +696,6 @@ pub(crate) async fn run_repair_round(
     };
     let mut feedback = "(无:首次)".to_owned();
     let mut last = String::from("(未执行)");
-    let mut last_was_llm = false;
     let mut prev_fingerprint: Option<String> = None;
     let max_attempts = super::structure_gen::MAX_ATTEMPTS;
     for attempt in 1..=max_attempts {
@@ -730,22 +729,40 @@ pub(crate) async fn run_repair_round(
         let raw = match raw {
             Ok(raw) => raw,
             Err(error) => {
-                last = error.to_string();
-                last_was_llm = true;
-                tracing::warn!(attempt, "repair round LLM call failed");
-                continue;
+                // 传输失败（模型没收到）与取消：原错误立即上抛——不写反馈、
+                // 不占契约轮次（y02 不变量）。
+                tracing::warn!(
+                    failure_kind = "transport",
+                    attempt,
+                    stage = "repair",
+                    error = %error,
+                    "repair round LLM call failed — aborting without retry feedback"
+                );
+                return Err(error);
             }
         };
-        last_was_llm = false;
         let mut artifact = match crate::generation::parse_json_object::<Value>(&raw) {
             Ok(value) if value.is_object() => value,
             Ok(_) => {
                 last = "修补产物必须是单个 JSON 对象".to_owned();
+                tracing::warn!(
+                    failure_kind = "parse",
+                    attempt,
+                    stage = "repair",
+                    "repair round reply rejected — retrying with clause feedback"
+                );
                 feedback = format!("上一轮产物违反契约,逐条修正后重新生成:\n{last}");
                 continue;
             }
             Err(error) => {
                 last = format!("修补产物解析失败（非合法 JSON 对象）：{error}");
+                tracing::warn!(
+                    failure_kind = "parse",
+                    attempt,
+                    stage = "repair",
+                    report_head = %last.chars().take(400).collect::<String>(),
+                    "repair round reply rejected — retrying with clause feedback"
+                );
                 feedback = format!("上一轮产物违反契约,逐条修正后重新生成:\n{last}");
                 continue;
             }
@@ -765,6 +782,13 @@ pub(crate) async fn run_repair_round(
         }
         let owned: Vec<ContractViolation> = red.into_iter().cloned().collect();
         last = structure_contract::format_violations(&owned);
+        tracing::warn!(
+            failure_kind = "parse",
+            attempt,
+            stage = "repair",
+            report_head = %last.chars().take(400).collect::<String>(),
+            "repair round rejected by the clause gate — retrying with clause feedback"
+        );
         let fingerprint = super::growth_retry::normalize_report(&last);
         if attempt > 1 && prev_fingerprint.as_deref() == Some(fingerprint.as_str()) {
             tracing::warn!(
@@ -775,11 +799,6 @@ pub(crate) async fn run_repair_round(
         }
         prev_fingerprint = Some(fingerprint);
         feedback = format!("上一轮产物违反契约,逐条修正后重新生成:\n{last}");
-    }
-    if last_was_llm {
-        return Err(AppError::Conflict(format!(
-            "修补回合未执行（生成通道不可用，结构与审计均未改动）：{last}"
-        )));
     }
     Err(AppError::UnprocessableEntity(format!(
         "修补回合未通过条款门（逐条款报告见下）；结构与审计均未改动，可重试：\n{last}"
@@ -1054,5 +1073,57 @@ mod tests {
         ] {
             assert!(doc.contains(code), "contract doc missing {code}");
         }
+    }
+
+    /// y02 红绿样（传输失败）：修补回合的 LLM 调用 Err → 原错误立即上抛、
+    /// 恰 1 次调用——不再 `continue` 占满 3 轮，也不伪装成条款耗尽。
+    #[tokio::test]
+    async fn llm_transport_failure_propagates_after_a_single_call() {
+        struct Failing(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl crate::completer::LearningCompleter for Failing {
+            async fn complete(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+            ) -> Result<String, AppError> {
+                unreachable!("repair round only uses the json seam")
+            }
+            async fn complete_json_with_thinking(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Option<f32>,
+            ) -> Result<String, AppError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(AppError::Timeout("json coach call exceeded 480s".into()))
+            }
+        }
+        let completer = Failing(std::sync::atomic::AtomicUsize::new(0));
+        let input = RepairRoundInput {
+            goal: "g",
+            proficiency_statement: "p",
+            learner_basis: "b",
+            structure_snapshot: "{}",
+            findings: "（无）",
+            mount_observations: "（无）",
+        };
+        let error = run_repair_round(&completer, None, &input, &sample_structure(), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, AppError::Timeout(_)), "{error:?}");
+        assert_eq!(
+            completer.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "传输失败立即上抛，不占契约轮次"
+        );
+        assert!(
+            !error.to_string().contains("未通过条款门"),
+            "不得伪装成条款耗尽：{error}"
+        );
     }
 }

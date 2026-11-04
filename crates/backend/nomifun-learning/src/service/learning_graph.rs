@@ -1824,15 +1824,22 @@ impl LearningService {
                             &prior_review,
                         )
                         .await
-                        .map_err(|error| {
+                        .map_err(|error| match crate::generation::AttemptFailure::from_app_error(error) {
+                            // 传输失败（模型没收到）：原错误随失败携带，本轮
+                            // 直接终止——不写反馈、不进早停指纹（y02）。
+                            crate::generation::AttemptFailure::Transport(error) => {
+                                AttemptFail::transport(error)
+                            }
                             // 输出违约上抛（m5 #175C 契约命中路）：前轮评审
                             // 意见随失败携带，经 into_feedback 作独立段回灌
                             // ——重排不只剩 ng.* 固定文案。
-                            let fail = AttemptFail::generation(error.to_string());
-                            if review_state && !review_history.is_empty() {
-                                fail.with_review_history(Some(review_history.join("\n")))
-                            } else {
-                                fail
+                            crate::generation::AttemptFailure::Rejected(report) => {
+                                let fail = AttemptFail::generation(report);
+                                if review_state && !review_history.is_empty() {
+                                    fail.with_review_history(Some(review_history.join("\n")))
+                                } else {
+                                    fail
+                                }
                             }
                         })
                     }
@@ -1843,7 +1850,14 @@ impl LearningService {
                         &feedback,
                     )
                     .await
-                    .map_err(|error| AttemptFail::generation(error.to_string())),
+                    .map_err(|error| match crate::generation::AttemptFailure::from_app_error(error) {
+                        crate::generation::AttemptFailure::Transport(error) => {
+                            AttemptFail::transport(error)
+                        }
+                        crate::generation::AttemptFailure::Rejected(report) => {
+                            AttemptFail::generation(report)
+                        }
+                    }),
                 };
                 let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
                     match drafted {
@@ -1896,7 +1910,11 @@ impl LearningService {
                         Err(mut fail) => {
                             // 容量守卫（重裁出口）：ng.batch.size 整批违规改判
                             // 定向重装指令（专用条款码），起草轮执法单源不变。
-                            if previous.is_some() && is_batch_size_violation(&fail.report) {
+                            // 传输失败不是契约形状问题：不重写报告。
+                            if !fail.is_transport()
+                                && previous.is_some()
+                                && is_batch_size_violation(&fail.report)
+                            {
                                 fail.report = redraft_capacity_report(
                                     previous.as_ref().expect("redraft has previous"),
                                 );
@@ -1906,7 +1924,27 @@ impl LearningService {
                     };
                 let candidate = match outcome {
                     Ok(candidate) => candidate,
-                    Err(fail) => {
+                    Err(mut fail) => {
+                        // 传输失败（y02）：原错误立即上抛——不写 feedback、
+                        // 不进 should_stop_early、不占契约轮次。取消仍走既
+                        // 有停止面（stats 留痕 + 中性终态），不混进传输日志。
+                        if let Some(error) = fail.transport.take() {
+                            if error
+                                .to_string()
+                                .contains(crate::service::CANCELLED_MESSAGE)
+                            {
+                                stop_reason = "cancelled";
+                                break 'budget;
+                            }
+                            tracing::warn!(
+                                failure_kind = "transport",
+                                attempt,
+                                stage = if previous.is_some() { "redraft" } else { "draft" },
+                                error = %error,
+                                "coach call transport failure — aborting growth without retry feedback"
+                            );
+                            return Err(error);
+                        }
                         // 本 attempt 失败收口：早停判据 + 报告回灌。指纹只取
                         // `report`——前轮评审意见（#175C）走独立段，逐轮漂移
                         // 不得击穿同指纹早停。
@@ -1934,6 +1972,8 @@ impl LearningService {
                         tracing::warn!(
                             course = course_id.as_str(),
                             attempt,
+                            failure_kind = "parse",
+                            stage = if previous.is_some() { "redraft" } else { "draft" },
                             report = %feedback,
                             "coach draft failed — regenerating with feedback"
                         );

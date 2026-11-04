@@ -36,7 +36,7 @@ use serde::Deserialize;
 
 use super::{ActivityKind, ProviderId};
 use crate::completer::LearningCompleter;
-use crate::generation::parse_json_object;
+use crate::generation::{AttemptFailure, parse_json_object};
 use nomifun_common::AppError;
 
 /// 评审判分重试预算：首次 + 2 次重试（重试环 N=2，带原因回灌）。
@@ -199,16 +199,18 @@ async fn judge_open_with_timeout(
             retry_feedback.as_deref(),
         );
         let started = std::time::Instant::now();
-        let outcome = if thinking_degraded {
+        let outcome: Result<OpenJudgeVerdict, AttemptFailure> = if thinking_degraded {
             // 一次定臂（评审裁定）：通道不可用一经判定，后续尝试直走普通
             // json 通道，不再重复探测 thinking 通道。
-            call_plain_json(completer, model_override, system, &user, timeout)
-                .await
-                .map_err(|json_error| format!("degraded json channel failed ({json_error})"))
-                .and_then(|raw| validate_judge_json(&raw, input.kind))
+            match call_plain_json(completer, model_override, system, &user, timeout).await {
+                Ok(raw) => validate_judge_json(&raw, input.kind)
+                    .map_err(AttemptFailure::Rejected),
+                Err(json_error) => Err(AttemptFailure::from_app_error(json_error)),
+            }
         } else {
             match call_with_thinking(completer, model_override, system, &user, timeout).await {
-                Ok(raw) => validate_judge_json(&raw, input.kind),
+                Ok(raw) => validate_judge_json(&raw, input.kind)
+                    .map_err(AttemptFailure::Rejected),
                 // n4 D7 降级收窄（评审裁定）：只对「通道/能力不可用」类错误
                 // 降级普通 json 通道 + 观测标记（不是静默换道——warn 留痕 +
                 // outcome.thinking_degraded 置位）。超时是判分自己的 90s 预
@@ -224,15 +226,22 @@ async fn judge_open_with_timeout(
                     );
                     thinking_degraded = true;
                     match call_plain_json(completer, model_override, system, &user, timeout).await {
-                        Ok(raw) => validate_judge_json(&raw, input.kind),
-                        Err(json_error) => Err(format!(
-                            "thinking channel failed ({thinking_error}) and the degraded json channel failed too ({json_error})"
-                        )),
+                        Ok(raw) => validate_judge_json(&raw, input.kind)
+                            .map_err(AttemptFailure::Rejected),
+                        Err(json_error) => {
+                            tracing::warn!(
+                                attempt,
+                                thinking_error = %thinking_error,
+                                json_error = %json_error,
+                                "open judge: degraded json channel failed too"
+                            );
+                            Err(AttemptFailure::from_app_error(json_error))
+                        }
                     }
                 }
-                // 不可降级失败（超时/provider 瞬时错误等）与校验失败同一重
-                // 试面：原因回灌，通道不变。
-                Err(thinking_error) => Err(format!("thinking channel failed: {thinking_error}")),
+                // 不可降级失败（超时/provider 瞬时错误等）：类型化失败留在
+                // thinking 通道重试，原因按传输/解析分桶——传输类不写反馈。
+                Err(thinking_error) => Err(AttemptFailure::from_app_error(thinking_error)),
             }
         };
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -252,17 +261,26 @@ async fn judge_open_with_timeout(
                     thinking_degraded,
                 });
             }
-            Err(reason) => {
+            Err(failure) => {
+                let transport = failure.is_transport();
+                let reason = failure.reason();
                 tracing::warn!(
                     attempt,
                     elapsed_ms,
                     kind = input.kind.as_str(),
+                    failure_kind = if transport { "transport" } else { "parse" },
+                    stage = "judge",
                     reason = %reason,
-                    "open judge: reply rejected — retrying with the reason fed back"
+                    "open judge: reply rejected — retrying"
                 );
-                retry_feedback = Some(format!(
-                    "上一轮输出未过校验：{reason}。请只输出符合输出契约的 JSON 对象。"
-                ));
+                // y02 不变量：传输失败永不进重试反馈槽（模型对网络错误无
+                // 能为力）——槽保持上一轮值（无则 None）；只有 parse/契约
+                // 失败写回灌，且 parse 错误已带 line/column 窗口。
+                if !transport {
+                    retry_feedback = Some(format!(
+                        "上一轮输出未过校验：{reason}。请只输出符合输出契约的 JSON 对象。"
+                    ));
+                }
                 last_error = reason;
             }
         }
@@ -675,6 +693,65 @@ mod tests {
             "耗尽时携带最后一次原因：{}",
             err.last
         );
+    }
+
+    /// y02 红绿样（判分传输失败）：3 次尝试预算不变，但 `retry_feedback`
+    /// 槽保持上一轮的 parse 反馈——传输错误串不得注入下一轮 prompt。
+    #[tokio::test]
+    async fn transport_failure_does_not_write_the_retry_feedback_slot() {
+        let canned = Canned::thinking(vec![
+            Ok("不是 json".into()), // parse 失败 → 槽写入
+            Err(AppError::BadGateway(
+                "LLM provider error: API error 502: bad gateway".into(),
+            )), // transport → 槽保持
+            Ok(verdict_json("7.0", &[])),
+        ]);
+        let outcome = judge(&canned, &open_input("判底")).await.unwrap();
+        assert_eq!(outcome.verdict.score, 7.0);
+        let users = canned.users("thinking");
+        assert_eq!(users.len(), 3, "3 次尝试预算不变（传输也尝试满）");
+        assert!(
+            users[2].contains("上一轮输出未过校验"),
+            "上一轮 parse 反馈必须保持：{}",
+            users[2]
+        );
+        assert!(
+            !users[2].contains("Bad gateway") && !users[2].contains("API error 502"),
+            "传输错误不得进反馈槽：{}",
+            users[2]
+        );
+    }
+
+    /// 纯传输失败：三次尝试照发生，但任何一轮都不得出现回灌槽。
+    #[tokio::test]
+    async fn transport_only_exhausts_the_budget_without_any_feedback() {
+        let canned = Canned::thinking(vec![
+            Err(AppError::Timeout("open judge call exceeded 90s".into())),
+            Err(AppError::Timeout("open judge call exceeded 90s".into())),
+            Err(AppError::Timeout("open judge call exceeded 90s".into())),
+        ]);
+        let err = judge(&canned, &open_input("判底")).await.unwrap_err();
+        assert_eq!(err.attempts, OPEN_JUDGE_ATTEMPTS);
+        assert!(err.last.contains("exceeded"), "{}", err.last);
+        let users = canned.users("thinking");
+        assert_eq!(users.len(), 3, "传输失败仍尝试满 3 次");
+        assert!(
+            users.iter().all(|user| !user.contains("上一轮输出未过校验")),
+            "传输失败不得写反馈槽：{users:?}"
+        );
+    }
+
+    /// parse 失败（非法 JSON）→ 回灌槽带 line/column 与 ±120 字符窗口。
+    #[tokio::test]
+    async fn parse_failure_feeds_the_line_column_window() {
+        let canned = Canned::thinking(vec![
+            Ok(r#"{"score": 7.5 "feedback": "点评", "missing_points": []}"#.into()),
+            Ok(verdict_json("7.5", &[])),
+        ]);
+        judge(&canned, &open_input("判底")).await.unwrap();
+        let users = canned.users("thinking");
+        assert!(users[1].contains("window:"), "{}", users[1]);
+        assert!(users[1].contains("line 1 column"), "{}", users[1]);
     }
 
     #[tokio::test]
