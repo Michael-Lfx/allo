@@ -377,7 +377,7 @@ mod tests {
     }
 
     /// 带声明面两字段的节点（范围外核的对照域）。
-    fn node3(title: &str, intent: &str, scope: &str) -> ProposedNode {
+    fn node_with_brief(title: &str, intent: &str, scope: &str) -> ProposedNode {
         ProposedNode {
             title: title.to_owned(),
             purpose: String::new(),
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn derivation_collects_four_sources_with_source_tags() {
         let batch = ProposedBatch {
-            nodes: vec![node3(
+            nodes: vec![node_with_brief(
                 "把相同因数的连乘写成幂并指出底数与指数",
                 "把连乘经验升格为记号，承接乘法",
                 "只立记号与读法；不引入方程",
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn same_term_across_sources_keeps_multiple_rows() {
         let batch = ProposedBatch {
-            nodes: vec![node3("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn out_of_scope_multi_source_term_accepts_any_boundary_citation() {
         let batch = ProposedBatch {
-            nodes: vec![node3("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn title_fragment_claiming_scope_out_of_scope_is_rejected() {
         let batch = ProposedBatch {
-            nodes: vec![node3("指出底数与指数", "把乘方记号接到连乘经验上", "不教底数与指数的推广")],
+            nodes: vec![node_with_brief("指出底数与指数", "把乘方记号接到连乘经验上", "不教底数与指数的推广")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn out_of_scope_term_not_verbatim_in_field_text_is_rejected() {
         let batch = ProposedBatch {
-            nodes: vec![node3("学代数式", "为后续方程建模备料", "不做展开与化简")],
+            nodes: vec![node_with_brief("学代数式", "为后续方程建模备料", "不做展开与化简")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn out_of_scope_non_boundary_citation_is_rejected() {
         let batch = ProposedBatch {
-            nodes: vec![node3("列出数量关系式", "为后续方程建模备料", "不引入方程")],
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不引入方程")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn out_of_scope_row_without_source_is_rejected() {
         let batch = ProposedBatch {
-            nodes: vec![node3("列出数量关系式", "为后续方程建模备料", "不引入方程")],
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不引入方程")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),

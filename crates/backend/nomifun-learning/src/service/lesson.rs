@@ -237,6 +237,24 @@ async fn read_lesson_supplements(
     Ok((supplements, hit_count))
 }
 
+/// 单节重写臂的课时名相行（`rewrite_lesson_section` 专用投影）：课时四字段
+/// + 所属课程标题。评审修复：原裸 `(String, String, String, String, String)`
+/// 五元组按下标取用，列序即语义易错——捆成具名结构后构造与取用同源，查询
+/// 列序不变（`c.title` 起别名供 FromRow 按列名映射）。
+#[derive(sqlx::FromRow)]
+struct NodeRowBrief {
+    /// 课时标题（l.title）。
+    title: String,
+    /// 课时教学意图（l.purpose）。
+    purpose: String,
+    /// 声明面：本节点 intent（l.intent，absorb-8 z03 骨架行声明源）。
+    intent: String,
+    /// 声明面：本节点 scope（l.scope，absorb-8 z03 骨架行声明源）。
+    scope: String,
+    /// 所属课程标题（c.title）。
+    course_title: String,
+}
+
 impl LearningService {
 
     /// Repair a lesson figure that failed to render: the broken source and
@@ -1758,8 +1776,9 @@ impl LearningService {
         // 名相口径，j07）。节点声明面两行（absorb-8 z03）先行取出：重写臂
         // 不复用 generate_graph_lesson_content 的装配（各自 SELECT——本票
         // 核对结论），声明在图臂 context_text 里对齐骨架行标签补投。
-        let lesson_row: (String, String, String, String, String) = sqlx::query_as(
-            "SELECT l.title, l.purpose, l.intent, l.scope, c.title FROM learning_lessons l \
+        let lesson_row: NodeRowBrief = sqlx::query_as(
+            "SELECT l.title, l.purpose, l.intent, l.scope, c.title AS course_title \
+             FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
              JOIN learning_courses c ON c.course_id = m.course_id \
              WHERE l.lesson_id = ?",
@@ -1768,8 +1787,8 @@ impl LearningService {
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
-        let lesson_title = lesson_row.0.clone();
-        let lesson_purpose = lesson_row.1.clone();
+        let lesson_title = lesson_row.title.clone();
+        let lesson_purpose = lesson_row.purpose.clone();
         let (grounding, forbidden): (Option<(String, String)>, String) =
             if course_kind == CourseKind::LearningGraph.as_str() {
                 let topology = self.graph_node_topology(&course_id, lesson_id).await?;
@@ -1792,8 +1811,8 @@ impl LearningService {
                 // 声明面两行（absorb-8 z03）：缺席（旧档空串）整段省略
                 // （渲染函数内折叠——与整卡生成骨架行同标签同措辞）。
                 if let Some(declarations) = crate::render_intent_scope_lines(
-                    Some(lesson_row.2.as_str()),
-                    Some(lesson_row.3.as_str()),
+                    Some(lesson_row.intent.as_str()),
+                    Some(lesson_row.scope.as_str()),
                 ) {
                     context_text.push('\n');
                     context_text.push_str(&declarations);
@@ -1846,7 +1865,7 @@ impl LearningService {
             completer.as_ref(),
             request.provider_id.as_ref().zip(request.model.as_deref()),
             teaching_style,
-            &lesson_row.4,
+            &lesson_row.course_title,
             &lesson_title,
             &lesson_purpose,
             &planned,

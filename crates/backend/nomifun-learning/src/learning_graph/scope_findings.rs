@@ -117,9 +117,19 @@ pub fn excluded_terms(scope: &str) -> Vec<String> {
 /// 出现且非否定性提及 → 逐条一条 findings。文案指名来源字段（教学范围）
 /// 与命中位置（节 N 标题/正文）。空 scope = 零扫描（旧档零开销）。
 pub fn scan_section(scope: &str, section_key: &str, title: &str, body: &str) -> Vec<String> {
-    let terms = excluded_terms(scope);
+    scan_section_with_terms(&excluded_terms(scope), section_key, title, body)
+}
+
+/// 同 [`scan_section`]，排除词串由调用方预计算传入——lesson_draft 审计
+/// 循环逐节复用同一份词表（每课时一次 [`excluded_terms`]，不再每节重算）。
+pub fn scan_section_with_terms(
+    terms: &[String],
+    section_key: &str,
+    title: &str,
+    body: &str,
+) -> Vec<String> {
     let mut findings: Vec<String> = Vec::new();
-    for term in &terms {
+    for term in terms {
         if has_unexempted_mention(title, term) {
             findings.push(format!(
                 "范围声明排除「{term}」（来源：教学范围），但节 {section_key} 标题「{title}」出现该词"
@@ -127,7 +137,7 @@ pub fn scan_section(scope: &str, section_key: &str, title: &str, body: &str) -> 
         }
     }
     for line in body.lines() {
-        for term in &terms {
+        for term in terms {
             if has_unexempted_mention(line, term) {
                 findings.push(format!(
                     "范围声明排除「{term}」（来源：教学范围），但节 {section_key} 正文出现该词"
@@ -189,7 +199,7 @@ fn has_unexempted_mention(line: &str, term: &str) -> bool {
             .char_indices()
             .rev()
             .find(|(_, c)| CLAUSE_DELIMS.contains(c))
-            .map(|(i, _)| i + c_len(line, i))
+            .map(|(i, _)| i + char_len_at(line, i))
             .unwrap_or(0);
         let clause_end = line[hit..]
             .find(|c| CLAUSE_DELIMS.contains(&c))
@@ -204,7 +214,7 @@ fn has_unexempted_mention(line: &str, term: &str) -> bool {
 }
 
 /// `char_indices` 闭包内的字符字节长（行内按字节回退定位用）。
-fn c_len(line: &str, byte_at: usize) -> usize {
+fn char_len_at(line: &str, byte_at: usize) -> usize {
     line[byte_at..].chars().next().map_or(1, |c| c.len_utf8())
 }
 
