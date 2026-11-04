@@ -554,12 +554,21 @@ mod open_judge;
 mod progress;
 mod quiz;
 mod review;
+mod system_actions;
 mod tags;
 mod xp;
 
 pub use lesson::{LessonGenerationAccepted, LessonRunStats};
 
 pub use xp::CompanionXpSink;
+
+pub(crate) use system_actions::{
+    NewSystemAction, SYSTEM_ACTION_DEFAULT_LIMIT, SYSTEM_ACTION_MAX_LIMIT, system_action_limit,
+};
+
+pub(crate) use crate::learning_graph::system_action::{
+    SystemActionKind, SystemActionResult, SystemActionTrigger,
+};
 
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档把判底/作答原文注册进
 /// `ArchivingCompleter` 时引用同一常量——占位文本单源。

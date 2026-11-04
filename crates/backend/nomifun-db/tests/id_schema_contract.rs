@@ -136,12 +136,13 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     // +learning_growth_batches；终点锚从未存在；XP 结算账本 +learning_xp_events；
     // 挂载事实层 +learning_structure_mounts/+learning_structure_findings；修补
     // 审计 +learning_structure_repairs；quiz 回合 +learning_quiz_rounds；学习维护
-    // 水位 +learning_maintenance_state；已会声明锚 +learning_basis_declarations。
+    // 水位 +learning_maintenance_state；已会声明锚 +learning_basis_declarations；
+    // y04 系统动作簿 +learning_system_actions。
     // x02：学习任务孤儿表 learning_course_jobs 退役 -1。主分支 068
     // linked_devices:+1。Agent Store 侧:`058` / `059` / `061` 共 4 张；主分支
     // 066/067 的 Skill 选择与固定三表：+conversation_skill_pins/
     // +skill_invocation_overrides/+skill_selection_event。
-    assert_eq!(tables.len(), 124);
+    assert_eq!(tables.len(), 125);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
