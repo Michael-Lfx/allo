@@ -1613,20 +1613,48 @@ async fn batch_brief_readout(
     if node_ids.is_empty() {
         return Ok(None);
     }
+    let briefs = fetch_node_briefs(pool, &node_ids).await?;
     let mut intent_total = 0usize;
     let mut scope_total = 0usize;
     for lesson_id in &node_ids {
-        let (intent, scope): (String, String) = sqlx::query_as(
-            "SELECT intent, scope FROM learning_lessons WHERE lesson_id = ?",
-        )
-        .bind(lesson_id)
-        .fetch_one(pool)
-        .await?;
+        let (intent, scope) = briefs
+            .get(lesson_id.as_str())
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
         intent_total += intent.trim().chars().count();
         scope_total += scope.trim().chars().count();
     }
     let rows = node_ids.len();
     Ok(Some((rows, intent_total / rows, scope_total / rows)))
+}
+
+/// 全批节点声明行一次取回（逐节点 `SELECT intent, scope … WHERE lesson_id = ?`
+/// N+1 的批量化）：IN 占位符按批规模展开，一条查询取回
+/// (lesson_id, intent, scope)，内存装配成按 lesson_id 的映射。缺行不静默——
+/// 调用方按原 fetch_one 语义以 RowNotFound 如实报错。
+async fn fetch_node_briefs(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    node_ids: &[String],
+) -> Result<std::collections::HashMap<String, (String, String)>> {
+    let mut sql = String::from(
+        "SELECT lesson_id, intent, scope FROM learning_lessons WHERE lesson_id IN (",
+    );
+    for index in 0..node_ids.len() {
+        if index > 0 {
+            sql.push(',');
+        }
+        sql.push('?');
+    }
+    sql.push(')');
+    let mut query = sqlx::query_as::<_, (String, String, String)>(&sql);
+    for lesson_id in node_ids {
+        query = query.bind(lesson_id);
+    }
+    Ok(query
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(lesson_id, intent, scope)| (lesson_id, (intent, scope)))
+        .collect())
 }
 
 /// 批次机械判据审计（s1）：首批 assumes 地板（空账全空/非空账验覆盖） + 就绪即发布（既往供给覆盖）
@@ -1651,13 +1679,12 @@ async fn audit_batch(
     // （门拒 = 批不落 = wait_applied_batches 超时退出——判据「首批契约门过、
     // 无 ng.node.brief 违约读数」的机械面），落库行 intent/scope 必须 trim 后
     // 非空；空 = 门与落库断链（契约/落库漂移缺陷），如实违约。
+    // 全批声明行一次取回（fetch_node_briefs，N+1 批量化）。
+    let briefs = fetch_node_briefs(pool, &node_ids).await?;
     for lesson_id in &node_ids {
-        let (intent, scope): (String, String) = sqlx::query_as(
-            "SELECT intent, scope FROM learning_lessons WHERE lesson_id = ?",
-        )
-        .bind(lesson_id)
-        .fetch_one(pool)
-        .await?;
+        let (intent, scope) = briefs
+            .get(lesson_id.as_str())
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
         if intent.trim().is_empty() || scope.trim().is_empty() {
             violations.push(format!(
                 "节点声明面判据破坏：{lesson_id} 的 intent/scope 落库为空（ng.node.brief 门应已拦）"
