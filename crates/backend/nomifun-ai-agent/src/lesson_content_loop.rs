@@ -55,12 +55,13 @@ pub(crate) const WIRE: WireConfig = WireConfig {
     lesson_stream: true,
 };
 
-/// 写作成色 V2（k05，learnhub ldata1 的 R10–R13 + w1 追 R14；域中立措辞，
-/// 零新机械门）：抽象对象首讲具象替身 / 例子情境取受众生活域 / 正式表述的
-/// 记号术语在已知集内 / 断言-例子数字一致 / 可算量必须实算（绑 verify_math
-/// 工具）。与 nomifun-learning 的 `CONTENT_DISCIPLINE_V2_BLOCK` 非对称孪生
-/// （两处手写各随其提示词风格；本面有工具循环 → R14 绑 verify_math，传统
-/// 线 EN 版是纯纪律——蓝图 A4），开关
+/// 写作成色 V2（k05，learnhub ldata1 的 R10–R13 + w1 追 R14；y06 追
+/// R15–R20；域中立措辞，零新机械门）：抽象对象首讲具象替身 / 例子情境取
+/// 受众生活域 / 正式表述的记号术语在已知集内 / 断言-例子数字一致 / 可算量
+/// 必须实算（绑 verify_math 工具）；y06 的 R15–R19 材料学与 R20 完备性
+/// 写作面同块装配。与 nomifun-learning 的 `CONTENT_DISCIPLINE_V2_BLOCK`
+/// 非对称孪生（两处手写各随其提示词风格；本面有工具循环 → R14 绑
+/// verify_math，传统线 EN 版是纯纪律——蓝图 A4），开关
 /// `NOMI_LEARNING_CONTENT_DISCIPLINE_V2=off` 时整块不装配（R14 同命，工具
 /// op 仍在但不被条款点名）。R12 为 #177 收窄版：「先引入再用」逃生门仅限
 /// 记号与读法，领域概念不适用。
@@ -70,7 +71,32 @@ const CONTENT_DISCIPLINE_V2_CN: &str = "
 - 表述工具在场（R12）：规则的正式表述所用记号与术语，须在已知集内（本节点 teaches ∪ assumes；用户消息带「课程已知概念」名单时该名单同在已知集内）——不在已知集的不即兴使用，换自然语言表述。「正文内先正式引入再用」只适用于**记号与读法**（本节点教学必需的表述工具，如新符号怎么写怎么读）；承载知识功能的领域概念不适用——名单外的概念是后续节点的事，不得在正文立名引入，需要该意思时用日常词（范围、找不满足的例子、至少有一个）。
 - 断言-例子一致（R13）：为后果类断言配的例子里，数字必须能实际推出该断言（漏数例报数应少于总数、重复例应多于总数）；操作型演示每一步的中间结果逐一验算，只核对终态不算验算。
 - 可算量必须实算（R14）：凡能从本节已印数据直接推算的量（和、均值、单位换算、计数、日期差），先调 verify_math 实算再写入正文，并展示可复核的中间步骤；对照列与精确列同等展开，禁止从均值直接跳到和；「≈」只许用在最后开方/极限步。
+- 例子四件齐（R15，材料）：成例交代对象、条件、结果与连接三者的过程，不写只有标签没有过程的结论式例子；操作型示范写「行动 + 可观察反馈 + 调整依据」，不套四件。
+- 符号—对象—条件落点（R16，材料）：公式或定义首现时逐项说明每个符号指代什么对象、受什么条件约束；本条不新增术语，只映射 R12 已放行的记号，名单外术语仍然不立名、不借本条放行。
+- 类比带边界（R17，材料）：每个类比明说对应什么、不对应什么，学习者不会把映射带过断点；费曼风格原有的边界句保留为该风格内的加码。
+- 分段例组（R18，材料）：分界或切换的两侧各配一例，再配一个压线例与切换条件；线性关系不硬凑分段；与既有 3-6 例题密度并置，本条只塑形既有例题、不新增例题。
+- 关系句可还原（R19，材料）：陈述关系的句子保留方向与条件，学习者能逐字还原；相关不写成因果，性质不升级为充要。
+- 完备面不缩水（R20，写作面）：节清单分配的三个面在正文里一个不少——认得出什么（名称与边界）、推得出什么（结论与成立条件）、怎么推出来（中间步骤）；只在已教边界内补覆盖缺口，不扩到前提与前置节之外。
 ";
+
+/// 完备性三面的规划面（y06，learnhub #202）：节点规划时过三面并查覆盖缺口
+/// ——这是已教边界内的覆盖下限，不是超纲许可；「只教本节任务点 / 只考正文
+/// 教过的」上限条款照旧（显式并置防互相加码）。
+const COMPLETENESS_PLANNING_CN: &str = "\n- 完备性三面（R20，规划面）：每个节点规划时过三面——认得出什么（名称 + 边界）、推得出什么（结论 + 成立条件）、怎么推出来（中间步骤）；在已教边界内查覆盖缺口，缺哪个补哪个，不虚构前提之外的内容。这是边界内的覆盖下限，不是超纲许可：「只教本节任务点」「只考正文教过的」上限条款照旧。";
+
+/// 分段例组的规划半（y06，learnhub #203）：分界/切换关系在规划时就排成
+/// 两侧例 + 压线例 + 切换条件；线性关系不硬凑分段，例题总数照既有密度与
+/// 「规划即雄心」，不借本条加量。
+const SEGMENTED_EXAMPLES_PLANNING_CN: &str = "\n- 分段例组（R18，规划面）：遇分界或切换关系，在分界两侧各排一例、再排一个压线例与切换条件；线性关系不硬凑分段，例题总数照既有密度与「规划即雄心」，不借本条加量。";
+
+/// 干扰项五型菜单的图线孪生（y06，learnhub #201；CN 版进活动契约，长菜单
+/// 不进工具描述）：每型只在正文材料足以支撑自然负例时使用；fill_in_blank
+/// 既有近义干扰与必填 distractors 不动，ordering / matching / numeric 不适用。
+const DISTRACTOR_MENU_CN: &str = "\n- 干扰项五型（R21，选择题面）：single_choice / multi_choice / true_false 的诱惑项按五型设计——近邻负例（只破一个条件）、部分条件满足（满足部分条件却写成全部满足）、判联错配（结论对但对象或关系错）、表述转换陷阱（量词/方向/范围被同义改写悄悄翻转）、集合关系检查（子集/超集/相交/相离混淆）。每型只在正文材料足以支撑一个自然负例时使用，正文没有该对照就不写。fill_in_blank 的近义干扰与必填 distractors 规则不变；ordering / matching / numeric 不适用。适用时优先自然负例，无自然负例不得硬造。";
+
+/// 题库两考向（y06，learnhub #202）：认一认与推一推都要有份量——取向不是
+/// 题量配额（9 种题型 + 多样性 + reflection/open 配额已定，绝不加数）。
+const QUESTION_COVERAGE_CN: &str = "\n- 两个考向都要有份量（R20，题库面）：认一认（名称与边界）与推一推（结论与成立条件）两类问题在题组里都要有份量；这是取向不是题量配额，不为凑数加题。";
 
 /// 时长预算面（k03，开关 `NOMI_LEARNING_EST_BUDGET` 的语义臂，learnhub
 /// #178 换血版）：预算行照读之外，意图画像四角（预算 × teaches 档位 ×
@@ -93,8 +119,31 @@ const EST_LEGACY_CLAUSE_CN: &str = "- 时长预算：用户消息里有「时长
 /// 函数从 owner 表格生成（ADR-0002 追加决策：唯一事实源，禁止手写字面量）。
 static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     let section_ranges = section_range_rules();
-    let discipline_v2 = if nomifun_learning::content_discipline_v2_enabled() {
+    let content_discipline_v2 = nomifun_learning::content_discipline_v2_enabled();
+    let discipline_v2 = if content_discipline_v2 {
         CONTENT_DISCIPLINE_V2_CN
+    } else {
+        ""
+    };
+    // y06（#201/#202/#203）：条款批与写作成色块同命——开关 off 时整块摘除
+    // （规划三面 / 分段例组规划半 / 选择题面五型 / 题库两考向）。
+    let completeness_planning = if content_discipline_v2 {
+        COMPLETENESS_PLANNING_CN
+    } else {
+        ""
+    };
+    let segmented_examples_planning = if content_discipline_v2 {
+        SEGMENTED_EXAMPLES_PLANNING_CN
+    } else {
+        ""
+    };
+    let distractor_menu = if content_discipline_v2 {
+        DISTRACTOR_MENU_CN
+    } else {
+        ""
+    };
+    let question_coverage = if content_discipline_v2 {
+        QUESTION_COVERAGE_CN
     } else {
         ""
     };
@@ -117,7 +166,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 篇幅：{prose_budgets}；演示节由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注同预算；summary 是要点清单；practice 只写能力目标与作答引导（≤{PRACTICE_BODY_TARGET_CHARS} 字，不写题）。
 {budget_clause}- 构件词边界：节标题、要点、例题与练习只把 用户消息「课程已知概念」名单 ∪ 本节点 teaches 的概念当工作词；名单外的领域名词不立名——不进节标题、不进要点、不作讲解构件（那是后续节点的内容，不预教），需要该意思时用日常词表述（范围、找不满足的例子、至少有一个）。本节点 teaches 的概念与教学必需的记号读法除外。
 - 练习形态按档位：照示范复制本节点行为的练习（照例题格式改写、套格式、判断对错）各档都合法；练习引入本节点未教的方法论或推理链（归纳原理、多步推理证明一类）即越档——teaches 标「知道」的节点尤其如此：练习止于辨认与复制，方法论归「会用/能教」档。节清单定稿后逐节核对：每道练习考的是「示范过的行为」还是「没教过的方法」。
-- 取材池（考察的概念域）：例题与练习考察的概念优先取自「课程已知概念」名单——用已教/已声明的概念出题，兼旧概念复习；情境载体另跟受众条款走，两不相扰。名单内多样轮换：不在单一概念上连出多题，不同题目轮换概念域与情境载体，避免同模子例句连排。
+- 取材池（考察的概念域）：例题与练习考察的概念优先取自「课程已知概念」名单——用已教/已声明的概念出题，兼旧概念复习；情境载体另跟受众条款走，两不相扰。名单内多样轮换：不在单一概念上连出多题，不同题目轮换概念域与情境载体，避免同模子例句连排。{completeness_planning}{segmented_examples_planning}
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
 - 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
@@ -131,7 +180,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
-- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
+- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
@@ -1147,10 +1196,22 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
+/// `ls_patch_activities` 的基础描述（y06 前原文：off 臂逐字回退旧文本）。
+const PATCH_ACTIVITIES_DESCRIPTION: &str = "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。";
+
+/// y06（learnhub #201）：工具面只补一句负例总闸——长菜单进系统提示词的
+/// 活动契约，不塞工具描述（避免工具面注意力被五型菜单挤占）。
+const PATCH_ACTIVITIES_DISTRACTOR_NOTE_CN: &str = "\n\n负例优先自然，无自然负例不硬造：选择题的诱惑项先找正文里现成的错误对照，正文没有该对照就不强行塑造。";
+
 fn ls_patch_activities(ctx: Arc<LoopContext>) -> OneShotTool {
+    let description = if nomifun_learning::content_discipline_v2_enabled() {
+        format!("{PATCH_ACTIVITIES_DESCRIPTION}{PATCH_ACTIVITIES_DISTRACTOR_NOTE_CN}")
+    } else {
+        PATCH_ACTIVITIES_DESCRIPTION.to_owned()
+    };
     OneShotTool {
         name: "ls_patch_activities".into(),
-        description: "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。".into(),
+        description,
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -1588,6 +1649,73 @@ mod tests {
             nomifun_learning::CONTENT_DISCIPLINE_V2_BLOCK.contains("R14"),
             "EN 块（传统线宿主）缺 R14 标记——单侧漏改"
         );
+        // y06（#201/#202/#203）：R15–R20 在两侧纪律块同批落位，R21 在两侧
+        // 题库面菜单同批落位——任一宿删条目/换编号即红。
+        for marker in ["R15", "R16", "R17", "R18", "R19", "R20"] {
+            assert!(
+                CONTENT_DISCIPLINE_V2_CN.contains(marker),
+                "中文块（图线宿主）缺 {marker} 标记——单侧漏改"
+            );
+            assert!(
+                nomifun_learning::CONTENT_DISCIPLINE_V2_BLOCK.contains(marker),
+                "EN 块（传统线宿主）缺 {marker} 标记——单侧漏改"
+            );
+        }
+        assert!(
+            DISTRACTOR_MENU_CN.contains("R21"),
+            "中文五型菜单缺 R21 标记"
+        );
+        assert!(
+            nomifun_learning::DISTRACTOR_MENU_BLOCK.contains("R21"),
+            "EN 五型菜单缺 R21 标记"
+        );
+    }
+
+    /// y06（learnhub #201/#202/#203）：条款批的图线孪生——材料学五条 +
+    /// 完备性写作面进 CN 纪律块；规划三面 + 分段例组进规划段；选择题面五型
+    /// + 题库两考向进活动契约。两宿形状互钉由上面的标记测试承担。
+    #[test]
+    fn lesson_agent_system_prompt_carries_the_y06_clauses() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "例子四件齐（R15",
+            "符号—对象—条件落点（R16",
+            "类比带边界（R17",
+            "分段例组（R18",
+            "关系句可还原（R19",
+            "完备面不缩水（R20，写作面）",
+            "完备性三面（R20，规划面）",
+            "分段例组（R18，规划面）",
+            "干扰项五型（R21",
+            "两个考向都要有份量（R20，题库面）",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        // 并置条款：不新增术语 / 无自然负例不硬造 / 只在已教边界内补缺口。
+        assert!(system.contains("不新增术语"), "{system}");
+        assert!(system.contains("无自然负例不得硬造"), "{system}");
+        assert!(system.contains("只教本节任务点"), "{system}");
+        assert!(system.contains("不是超纲许可"), "{system}");
+    }
+
+    /// y06 off 臂形状：新条款由 V2 开关整块摘除；`ls_patch_activities`
+    /// 描述只在 on 臂追加总闸句（off 臂 = 原描述逐字，不长菜单塞工具面）。
+    #[test]
+    fn y06_clause_arms_swap_wholesale() {
+        for marker in ["R15", "R16", "R17", "R18", "R19", "R20"] {
+            assert!(
+                CONTENT_DISCIPLINE_V2_CN.contains(marker),
+                "中文纪律块缺 {marker}"
+            );
+        }
+        assert!(COMPLETENESS_PLANNING_CN.contains("完备性三面（R20，规划面）"));
+        assert!(SEGMENTED_EXAMPLES_PLANNING_CN.contains("分段例组（R18，规划面）"));
+        assert!(DISTRACTOR_MENU_CN.contains("干扰项五型（R21"));
+        assert!(QUESTION_COVERAGE_CN.contains("两个考向都要有份量（R20，题库面）"));
+        assert!(
+            PATCH_ACTIVITIES_DISTRACTOR_NOTE_CN.contains("负例优先自然，无自然负例不硬造")
+        );
+        assert!(!PATCH_ACTIVITIES_DESCRIPTION.contains("无自然负例不得硬造"));
     }
 
     /// n3（#177/#178 条款移植）：规划面四条款（构件词边界 / 练习形态按
