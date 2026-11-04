@@ -28,6 +28,7 @@
 pub mod advice_alias;
 pub mod alias_records;
 pub mod basis_declaration;
+pub mod concept_search;
 pub mod definition_audit;
 pub mod defnear;
 pub mod fragment_verdict;
