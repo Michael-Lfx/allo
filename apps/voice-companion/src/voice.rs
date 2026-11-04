@@ -1475,8 +1475,8 @@ impl VoiceCompanionRuntime {
             dispatch_queue_gate: None,
             pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
             announced_tasks: Mutex::new(std::collections::VecDeque::new()),
-            task_client: std::env::var("AI_MATE_TASK_ENDPOINT").ok().and_then(|endpoint| {
-                nomifun_voice_terminal::task_client::HostTaskClient::new(endpoint, std::env::var("AI_MATE_CONTROL_TOKEN").unwrap_or_default())
+            task_client: std::env::var("VOICE_COMPANION_TASK_ENDPOINT").ok().and_then(|endpoint| {
+                nomifun_voice_terminal::task_client::HostTaskClient::new(endpoint, std::env::var("VOICE_COMPANION_CONTROL_TOKEN").unwrap_or_default())
                     .map(|client| Arc::new(client) as Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>).ok()
             }),
             model_manager: model_manager.clone(),

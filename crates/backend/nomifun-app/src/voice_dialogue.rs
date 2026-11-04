@@ -453,7 +453,7 @@ async fn complete(
     Json(request): Json<VoiceDialogueRequest>,
 ) -> Response {
     if headers
-        .get("x-ai-mate-control-token")
+        .get("x-voice-companion-control-token")
         .and_then(|v| v.to_str().ok())
         != Some(state.credential.as_str())
     {
@@ -771,7 +771,7 @@ mod tests {
             let dropped=Arc::new(AtomicUsize::new(0));
             let bridge=VoiceDialogueBridge::start_internal(Arc::new(PendingStream{dropped:dropped.clone(),emit}),Arc::new(RwLock::new(None)),"stream-boundary".into(),Router::new(),None,std::time::Duration::from_millis(if disconnect{1000}else{50})).await.unwrap();
             let mut req=VoiceDialogueRequest::scoped("timeout-session","timeout-turn","固定测试");req.stream=true;req.prompt="固定测试".into();
-            let response=reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-ai-mate-control-token","stream-boundary").json(&req).send().await.unwrap();
+            let response=reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-voice-companion-control-token","stream-boundary").json(&req).send().await.unwrap();
             if disconnect {
                 let mut chunks=response.bytes_stream();assert!(chunks.next().await.unwrap().unwrap().len()>0);drop(chunks);
             }else{let body=response.text().await.unwrap();assert!(body.contains("model_timeout"));assert!(!body.contains("\"type\":\"complete\""));}
@@ -834,7 +834,7 @@ mod tests {
             });
             let reply = client
                 .post(&bridge.endpoint)
-                .header("x-ai-mate-control-token", "private-fixture")
+                .header("x-voice-companion-control-token", "private-fixture")
                 .json(&request)
                 .send()
                 .await
@@ -907,7 +907,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let resp = client
             .post(&bridge.endpoint)
-            .header("x-ai-mate-control-token", "locale-token")
+            .header("x-voice-companion-control-token", "locale-token")
             .json(&req)
             .send()
             .await
@@ -919,7 +919,7 @@ mod tests {
         req.stream = true;
         let resp_stream = client
             .post(&bridge.endpoint)
-            .header("x-ai-mate-control-token", "locale-token")
+            .header("x-voice-companion-control-token", "locale-token")
             .json(&req)
             .send()
             .await
@@ -1034,7 +1034,7 @@ mod tests {
             .build()
             .unwrap()
             .post(&bridge.endpoint)
-            .header("x-ai-mate-control-token", "private-fixture")
+            .header("x-voice-companion-control-token", "private-fixture")
             .json(&VoiceDialogueRequest::new("请返回语音决策 JSON"))
             .send()
             .await
@@ -1046,7 +1046,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         streaming.store(true,Ordering::SeqCst);
         let mut response=tokio::time::timeout(std::time::Duration::from_secs(2),reqwest::Client::builder().no_proxy().build().unwrap()
-            .post(&bridge.endpoint).header("x-ai-mate-control-token","private-fixture")
+            .post(&bridge.endpoint).header("x-voice-companion-control-token","private-fixture")
             .json(&serde_json::json!({"prompt":"请返回语音决策 JSON","stream":true})).send()).await
             .expect("stream headers must not wait for the whole model answer").unwrap();
         assert_eq!(response.status(),StatusCode::OK);
@@ -1167,7 +1167,7 @@ mod tests {
             recorder: None,
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "test-token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "test-token".parse().unwrap());
         let request = VoiceDialogueRequest::new("hello");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1231,7 +1231,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1263,7 +1263,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1293,7 +1293,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1323,7 +1323,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1354,7 +1354,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1387,7 +1387,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1421,7 +1421,7 @@ mod tests {
             recorder: Some(recorder),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("hello assistant");
 
         let response = complete(State(state), headers, Json(request)).await;

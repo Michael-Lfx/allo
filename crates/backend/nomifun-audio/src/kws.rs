@@ -197,7 +197,7 @@ impl KwsEngine {
         if let Some(registered) = crate::stt::active_model_dir() {
             candidates.push(registered);
         }
-        if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(std::path::PathBuf::from) {
+        if let Some(ai_mate) = std::env::var_os("VOICE_COMPANION_MODEL_DIR").map(std::path::PathBuf::from) {
             candidates.push(ai_mate);
         }
         if let Some(local_app_data) = dirs::data_local_dir() {

@@ -21,8 +21,6 @@ if (Test-Path ".\target\release\voice-companion.exe") {
     Copy-Item -Force ".\target\release\voice-companion.exe" $BinaryPath
 } elseif (Test-Path ".\voice-companion.exe") {
     Copy-Item -Force ".\voice-companion.exe" $BinaryPath
-} elseif (Test-Path ".\target\release\ai-mate.exe") {
-    Copy-Item -Force ".\target\release\ai-mate.exe" $BinaryPath
 }
 
 # 3. Register or Update Service

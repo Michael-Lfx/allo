@@ -11,20 +11,16 @@
  * Spec: docs/architecture/voice-agent/execution/dev-voice-companion-provisioning-fix-2026-11-04.zh.md
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { posix, win32 } from 'node:path';
-import { dirname, join } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SKIP_ENV = 'NOMIFUN_SKIP_VOICE_COMPANION';
 const SOURCE_ANCHORS = ['apps/voice-companion/src/main.rs', 'apps/voice-companion/Cargo.toml'];
 
-/** The only accepted daemon names; the legacy `ai-mate` name is retired. */
+/** The only accepted daemon names. */
 export const COMPANION_NAMES = ['voice-companion', 'voice-companion.exe'];
-
-/** Legacy artifacts removed from build output directories during provisioning. */
-const LEGACY_NAMES = ['ai-mate', 'ai-mate.exe'];
 
 const HOST_TRIPLES = {
   win32: ['x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc'],
@@ -42,26 +38,26 @@ function joiner(platform) {
 }
 
 function fileNames(platform) {
-  return platform === 'win32' ? ['voice-companion.exe'] : ['voice-companion'];
+  return platform === 'win32' ? [COMPANION_NAMES[1]] : [COMPANION_NAMES[0]];
 }
 
 /** Directories of a source checkout that may contain a development build. */
 export function candidateRoots({ root, platform = process.platform }) {
-  const join = joiner(platform);
+  const joinPath = joiner(platform);
   const roots = [];
   for (const base of ['target', 'build.noindex']) {
-    for (const profile of ['debug', 'release']) roots.push(join(root, base, profile));
+    for (const profile of ['debug', 'release']) roots.push(joinPath(root, base, profile));
   }
   for (const triple of HOST_TRIPLES[platform] ?? HOST_TRIPLES.linux) {
     for (const base of ['target', 'build.noindex']) {
-      for (const profile of ['debug', 'release']) roots.push(join(root, base, triple, profile));
+      for (const profile of ['debug', 'release']) roots.push(joinPath(root, base, triple, profile));
     }
   }
-  roots.push(join(root, 'apps', 'desktop', 'resources', 'bin'));
+  roots.push(joinPath(root, 'apps', 'desktop', 'resources', 'bin'));
   return roots;
 }
 
-/** First existing daemon in the candidate layout (never the legacy name). */
+/** First existing daemon in the candidate layout. */
 export function resolveCompanion({ root, platform = process.platform, exists = existsSync }) {
   for (const dir of candidateRoots({ root, platform })) {
     for (const name of fileNames(platform)) {
@@ -78,11 +74,11 @@ export function isStale({ binaryMtimeMs, sourceMtimeMs }) {
 }
 
 function sourceMtimeMs({ root, platform, mtimeMs }) {
-  const join = joiner(platform);
+  const joinPath = joiner(platform);
   let newest = 0;
   for (const anchor of SOURCE_ANCHORS) {
     try {
-      newest = Math.max(newest, Number(mtimeMs(join(root, anchor)) ?? 0));
+      newest = Math.max(newest, Number(mtimeMs(joinPath(root, anchor)) ?? 0));
     } catch {
       // A missing anchor simply does not contribute to the staleness check.
     }
@@ -90,26 +86,9 @@ function sourceMtimeMs({ root, platform, mtimeMs }) {
   return newest;
 }
 
-/** Build target path for the current platform (plain profile, no --target). */
-export function builtCompanionPath({ root, platform = process.platform }) {
+/** Build output path for the current platform (plain profile, no --target). */
+function builtCompanionPath({ root, platform = process.platform }) {
   return joiner(platform)(root, 'target', 'debug', fileNames(platform)[0]);
-}
-
-function removeLegacyArtifacts({ root, log, platform }) {
-  const join = joiner(platform);
-  for (const dir of candidateRoots({ root, platform })) {
-    for (const legacy of LEGACY_NAMES) {
-      const candidate = join(dir, legacy);
-      try {
-        if (existsSync(candidate)) {
-          rmSync(candidate, { force: true });
-          log(`[voice-companion] removed legacy artifact ${candidate}`);
-        }
-      } catch {
-        // Best effort: a locked legacy file must not block dev.
-      }
-    }
-  }
 }
 
 /**
@@ -138,10 +117,6 @@ export function ensureVoiceCompanion({
   const sources = sourceMtimeMs({ root, platform, mtimeMs });
   const stale = resolved ? isStale({ binaryMtimeMs: mtimeMs(resolved), sourceMtimeMs: sources }) : true;
 
-  // Retired name cleanup runs even when the daemon is ready, so stale artifacts
-  // cannot be picked up by older tooling or a future resolver rollback.
-  if (!check) removeLegacyArtifacts({ root, log, platform });
-
   if (!stale) {
     log(`[voice-companion] ready: ${resolved}`);
     return { ok: true, built: false, skipped: false };
@@ -152,7 +127,6 @@ export function ensureVoiceCompanion({
     return { ok: false, built: false, skipped: false };
   }
 
-  removeLegacyArtifacts({ root, log, platform });
   log(`[voice-companion] building ${resolved ? 'stale daemon' : 'missing daemon'}...`);
   let status = null;
   try {

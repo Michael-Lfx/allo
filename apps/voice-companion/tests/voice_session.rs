@@ -43,7 +43,7 @@ async fn an_async_task_result_waits_for_actual_input_silence_before_playing(){
     let request=||{
         let snapshot=runtime.snapshot();
         let body=VoiceTaskResultAnnouncement {scope:VoiceSessionControlRequest {instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id},command_id:"actual-result".into(),notification_id:None,attempt_id:None,goal:None,text:"任务的真实结果。".into()};
-        axum::http::Request::builder().method("POST").uri("/api/voice/task-result").header("content-type","application/json").header("x-ai-mate-control-token","result-fixture")
+        axum::http::Request::builder().method("POST").uri("/api/voice/task-result").header("content-type","application/json").header("x-voice-companion-control-token","result-fixture")
             .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap())).unwrap()
     };
     assert_eq!(runtime.snapshot().phase,nomifun_api_types::voice::VoiceSessionPhase::Idle);
@@ -87,7 +87,7 @@ async fn feedback_controls_use_the_supervisor_credential_and_preserve_session_st
             .uri("/api/voice/feedback")
             .header("content-type", "application/json");
         if let Some(token) = token {
-            builder = builder.header("x-ai-mate-control-token", token);
+            builder = builder.header("x-voice-companion-control-token", token);
         }
         builder.body(axum::body::Body::from(body)).unwrap()
     };
@@ -221,7 +221,7 @@ async fn real_model_message_survives_tts_failure_as_a_text_reply() {
                     async move {
                         if through_host {
                             assert_eq!(
-                                headers.get("x-ai-mate-control-token").unwrap(),
+                                headers.get("x-voice-companion-control-token").unwrap(),
                                 "fixture-control"
                             );
                             assert!(body["prompt"].as_str().unwrap().contains("今天的天气如何"));
@@ -394,7 +394,7 @@ async fn supervisor_credential_is_required_and_never_published() {
         .oneshot(
             http::Request::builder()
                 .uri("/api/voice/snapshot")
-                .header("x-ai-mate-control-token", "fixture-private-credential")
+                .header("x-voice-companion-control-token", "fixture-private-credential")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -497,7 +497,7 @@ async fn task_results_require_current_scope_preserve_text_on_tts_failure_and_do_
     let body = VoiceTaskResultAnnouncement {scope:scope(&runtime.snapshot()),command_id:"actual-command".into(),notification_id:None,attempt_id:None,goal:None,text:"真实任务的文件读取结果。".into()};
     let request = |body:&VoiceTaskResultAnnouncement, token:bool| {
         let mut builder = http::Request::builder().method("POST").uri("/api/voice/task-result").header("content-type","application/json");
-        if token {builder=builder.header("x-ai-mate-control-token","host-owned-fixture");}
+        if token {builder=builder.header("x-voice-companion-control-token","host-owned-fixture");}
         builder.body(axum::body::Body::from(serde_json::to_vec(body).unwrap())).unwrap()
     };
     assert_eq!(app.clone().oneshot(request(&body,false)).await.unwrap().status(),http::StatusCode::FORBIDDEN);
@@ -509,7 +509,7 @@ async fn task_results_require_current_scope_preserve_text_on_tts_failure_and_do_
     let receipt:nomifun_api_types::voice::VoicePlaybackReceipt=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),4096).await.unwrap()).unwrap();
     assert_eq!(receipt.status,"failed","task success cannot imply audio playback success");
     assert_eq!(receipt.reason_code.as_deref(),Some("tts_failed"));
-    let query=app.clone().oneshot(http::Request::builder().uri("/api/voice/notifications/actual-command").header("x-ai-mate-control-token","host-owned-fixture").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+    let query=app.clone().oneshot(http::Request::builder().uri("/api/voice/notifications/actual-command").header("x-voice-companion-control-token","host-owned-fixture").body(axum::body::Body::empty()).unwrap()).await.unwrap();
     let queried:nomifun_api_types::voice::VoicePlaybackReceipt=serde_json::from_slice(&axum::body::to_bytes(query.into_body(),4096).await.unwrap()).unwrap();
     assert_eq!(queried,receipt);
     let snapshot = runtime.snapshot();
@@ -742,10 +742,10 @@ async fn notification_is_not_played_until_the_sink_drains_and_an_exact_retry_onl
     runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
     let app=voice_companion::server::build_router_full(&voice_companion::config::Config{control_token:Some("playback-proof".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
     let snapshot=runtime.snapshot();let payload=VoiceTaskResultAnnouncement{scope:VoiceSessionControlRequest{instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id},command_id:"result".into(),notification_id:Some("notification".into()),attempt_id:Some("attempt".into()),goal:Some("读取文件".into()),text:"文件读取的真实结果。".into()};
-    let request=|payload:&VoiceTaskResultAnnouncement|http::Request::builder().method("POST").uri("/api/voice/task-result").header("content-type","application/json").header("x-ai-mate-control-token","playback-proof").body(axum::body::Body::from(serde_json::to_vec(payload).unwrap())).unwrap();
+    let request=|payload:&VoiceTaskResultAnnouncement|http::Request::builder().method("POST").uri("/api/voice/task-result").header("content-type","application/json").header("x-voice-companion-control-token","playback-proof").body(axum::body::Body::from(serde_json::to_vec(payload).unwrap())).unwrap();
     let owned=app.clone();let req=request(&payload);let posting=tokio::spawn(async move{owned.oneshot(req).await.unwrap()});
     tokio::time::timeout(Duration::from_secs(2),sink.entered.notified()).await.unwrap();
-    let response=app.clone().oneshot(http::Request::builder().uri("/api/voice/notifications/attempt").header("x-ai-mate-control-token","playback-proof").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+    let response=app.clone().oneshot(http::Request::builder().uri("/api/voice/notifications/attempt").header("x-voice-companion-control-token","playback-proof").body(axum::body::Body::empty()).unwrap()).await.unwrap();
     let pending:VoicePlaybackReceipt=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),4096).await.unwrap()).unwrap();
     assert_eq!(pending.status,"started");assert!(runtime.snapshot().follow_up_deadline_ms.is_none());
     sink.release.notify_one();let response=posting.await.unwrap();

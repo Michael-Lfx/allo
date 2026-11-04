@@ -1,8 +1,8 @@
-//! Voice Companion Child-Process Supervisor (`ai-mate`)
+//! Voice Companion Child-Process Supervisor (`voice-companion`)
 //!
 //! Authoritative baseline: docs/architecture/voice-agent/interaction.zh.md
 //!
-//! Supervises the independent `ai-mate` daemon process alongside the Flowy
+//! Supervises the independent `voice-companion` daemon process alongside the Flowy
 //! desktop application:
 //! - Hidden console window, completely headless with zero extraneous tray icons;
 //! - Strict whole-tree lifecycle authority via `nomi_process_runtime::ChildProcessBuilder`;
@@ -384,7 +384,7 @@ impl Drop for SelfCheckFlight {
                 .post(format!(
                     "{origin}/api/voice/diagnostics/tts-self-check/cancel"
                 ))
-                .header("x-ai-mate-control-token", token)
+                .header("x-voice-companion-control-token", token)
                 .json(&serde_json::json!({ "check_id": check_id }))
                 .send()
                 .await
@@ -529,7 +529,7 @@ impl VoiceCompanionProcessManager {
         };
         if let Err(error) = client
             .post(format!("{}/api/voice/admission", self.daemon_origin))
-            .header("x-ai-mate-control-token", &self.control_token)
+            .header("x-voice-companion-control-token", &self.control_token)
             .json(&serde_json::json!({
                 "scope": scope,
                 "allowed": allowed,
@@ -777,7 +777,7 @@ impl VoiceCompanionProcessManager {
                     "{}/api/voice/diagnostics/engine-self-check?request_id={}&timeout_ms=45000",
                     self.daemon_origin, engine_request_id
                 ))
-                .header("x-ai-mate-control-token", &self.control_token)
+                .header("x-voice-companion-control-token", &self.control_token)
                 .header("x-voice-check-request", &engine_request_id)
                 .header("x-voice-check-instance", &snapshot.instance_id)
                 .header("x-voice-check-model-revision", &model_revision)
@@ -891,7 +891,7 @@ impl VoiceCompanionProcessManager {
                     "{}/api/voice/diagnostics/tts-self-check",
                     self.daemon_origin
                 ))
-                .header("x-ai-mate-control-token", &self.control_token)
+                .header("x-voice-companion-control-token", &self.control_token)
                 .json(&serde_json::json!({ "check_id": flight.check_id, "locale": locale, "stage": stage }))
                 .send()
                 .await
@@ -1471,7 +1471,7 @@ impl VoiceCompanionProcessManager {
                     "instance_id": daemon_instance_id,
                     "seq": sync_seq,
                 });
-                let _ = c.post(format!("{daemon_origin}/api/voice/task-status")).header("x-ai-mate-control-token", token).json(&payload).send().await;
+                let _ = c.post(format!("{daemon_origin}/api/voice/task-status")).header("x-voice-companion-control-token", token).json(&payload).send().await;
             }
         });
     }
@@ -1611,7 +1611,7 @@ impl VoiceCompanionProcessManager {
             attempt_id:Some(format!("voice-progress:{}:{now_ms}",task.command_id)),goal:None,text:text.into(),
         };
         let response=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"daemon_unavailable")?
-            .post(format!("{}/api/voice/task-progress",self.daemon_origin)).header("x-ai-mate-control-token",&self.control_token)
+            .post(format!("{}/api/voice/task-progress",self.daemon_origin)).header("x-voice-companion-control-token",&self.control_token)
             .json(&request).timeout(std::time::Duration::from_secs(45)).send().await;
         if let Ok(response)=response && response.status().is_success() {
             self.task_feedback.lock().unwrap_or_else(|e|e.into_inner()).record_dispatched(now_ms);
@@ -1648,7 +1648,7 @@ impl VoiceCompanionProcessManager {
         };
         let response = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "task_announcement_failed")?
             .post(format!("{}/api/voice/task-result",self.daemon_origin))
-            .header("x-ai-mate-control-token",&self.control_token).json(&request)
+            .header("x-voice-companion-control-token",&self.control_token).json(&request)
             .timeout(std::time::Duration::from_secs(45)).send().await;
         match response {
             Ok(response) if response.status().is_success() => {
@@ -1684,7 +1684,7 @@ impl VoiceCompanionProcessManager {
         for (command,attempt) in tasks.unresolved_announcements()? {
             let mut url=reqwest::Url::parse(&format!("{}/api/voice/notifications/",self.daemon_origin)).map_err(|_|"daemon_unavailable")?;
             url.path_segments_mut().map_err(|_|"daemon_unavailable")?.pop_if_empty().push(&attempt);
-            let response=client.get(url).header("x-ai-mate-control-token",&self.control_token).timeout(std::time::Duration::from_millis(250)).send().await;
+            let response=client.get(url).header("x-voice-companion-control-token",&self.control_token).timeout(std::time::Duration::from_millis(250)).send().await;
             if let Ok(response)=response && response.status().is_success() {
                 let receipt=response.json::<nomifun_api_types::voice::VoicePlaybackReceipt>().await.map_err(|_|"task_announcement_failed")?;
                 if receipt.attempt_id==attempt {tasks.finish_announcement(&command,&attempt,&receipt.status).await?;}
@@ -1741,7 +1741,7 @@ impl VoiceCompanionProcessManager {
         }
         let remaining=std::time::Duration::from_millis(confirmation.expires_at_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
         let response=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"task_approval_failed")?
-            .post(format!("{}/api/voice/confirmation",self.daemon_origin)).header("x-ai-mate-control-token",&self.control_token)
+            .post(format!("{}/api/voice/confirmation",self.daemon_origin)).header("x-voice-companion-control-token",&self.control_token)
             .json(&request).timeout(remaining).send().await;
         let approved=match response {
             Ok(response) if response.status().is_success()=>response.json::<VoiceToolConfirmationReply>().await.ok()
@@ -1931,7 +1931,7 @@ impl VoiceCompanionProcessManager {
         let response = reqwest::Client::builder().no_proxy()
             .redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "daemon_unavailable")?
             .get(format!("{}/api/voice/snapshot", self.daemon_origin))
-            .header("x-ai-mate-control-token", &self.control_token)
+            .header("x-voice-companion-control-token", &self.control_token)
             .timeout(std::time::Duration::from_secs(3)).send().await.map_err(|_| "daemon_unavailable")?;
         if !response.status().is_success() {return Err("daemon_unavailable".into());}
         let source: VoiceSessionSnapshot = response.json().await.map_err(|_| "daemon_unavailable")?;
@@ -2000,7 +2000,7 @@ impl VoiceCompanionProcessManager {
                 method,
                 format!("{}/api/voice/feedback{suffix}",self.daemon_origin),
             )
-            .header("x-ai-mate-control-token", &self.control_token)
+            .header("x-voice-companion-control-token", &self.control_token)
             .timeout(std::time::Duration::from_secs(3));
         if let Some(body) = body {
             request = request.json(&body);
@@ -2375,7 +2375,7 @@ impl VoiceCompanionProcessManager {
                 let generation = manager.generation.load(Ordering::Acquire);
                 let response = client
                     .get(format!("{}/api/voice/events",manager.daemon_origin))
-                    .header("x-ai-mate-control-token", &manager.control_token)
+                    .header("x-voice-companion-control-token", &manager.control_token)
                     .send()
                     .await;
                 if let Ok(response) = response
@@ -2474,7 +2474,7 @@ impl VoiceCompanionProcessManager {
             .build()
             .map_err(|_| "daemon_unavailable".to_owned())?
             .post(format!("{}/api/voice/stop", self.daemon_origin))
-            .header("x-ai-mate-control-token", &self.control_token)
+            .header("x-voice-companion-control-token", &self.control_token)
             .json(&request)
             .timeout(std::time::Duration::from_secs(3))
             .send()
@@ -2801,7 +2801,7 @@ impl VoiceCompanionProcessManager {
 
         let wake_result = client
             .post(format!("{}/api/voice/wake", self.daemon_origin))
-            .header("x-ai-mate-control-token", &self.control_token)
+            .header("x-voice-companion-control-token", &self.control_token)
             .timeout(std::time::Duration::from_secs(3))
             .json(&{
                 let mut body = serde_json::json!({ "request_id": request.request_id });
@@ -2872,7 +2872,7 @@ impl VoiceCompanionProcessManager {
         })
     }
 
-    /// Current daemon file name. The legacy `ai-mate` name is no longer accepted.
+    /// Current daemon file name. Only this name is resolved at runtime.
     fn voice_companion_file_name() -> &'static str {
         if cfg!(windows) {
             "voice-companion.exe"
@@ -3134,7 +3134,7 @@ impl VoiceCompanionProcessManager {
         }
     }
 
-    /// Launches the `ai-mate` companion daemon under whole-tree supervision.
+    /// Launches the `voice-companion` daemon under whole-tree supervision.
     pub async fn start(self: &Arc<Self>) -> Result<(), String> {
         self.shutdown_requested.store(false, Ordering::Release);
         self.reset_restart_budget();
@@ -3189,16 +3189,13 @@ impl VoiceCompanionProcessManager {
         let host = "127.0.0.1:18080".to_string();
         builder.arg("--host").arg(host);
         builder.env("VOICE_COMPANION_MODEL_DIR", self.models_manager.models_dir());
-        builder.env("AI_MATE_MODEL_DIR", self.models_manager.models_dir());
         builder.env("VOICE_COMPANION_SUPERVISED", "1");
         #[cfg(test)]
         for key in ["NOMIFUN_VOICE_FAULT_BLOCK_ASR", "NOMIFUN_VOICE_FAULT_HEADLESS", "VOICE_COMPANION_NATIVE_STUCK_GRACE_MS", "NOMIFUN_VOICE_NATIVE_LEASE_GRACE_MS", "NOMIFUN_VOICE_SELF_CHECK_AUDIO_DIR"] {
             if let Some(value) = std::env::var_os(key) { builder.env(key, value); }
         }
         builder.env("VOICE_COMPANION_CONTROL_TOKEN", &self.control_token);
-        builder.env("AI_MATE_CONTROL_TOKEN", &self.control_token);
         builder.env("VOICE_COMPANION_FEEDBACK_CONFIG", &feedback_config);
-        builder.env("AI_MATE_FEEDBACK_CONFIG", feedback_config);
         if self.dialogue_completer.is_some() {
             let mut bridge = self.dialogue_bridge.lock().await;
             if bridge.is_none() {
@@ -3208,10 +3205,10 @@ impl VoiceCompanionProcessManager {
                 );
             }
             builder.env(
-                "AI_MATE_DIALOGUE_ENDPOINT",
+                "VOICE_COMPANION_DIALOGUE_ENDPOINT",
                 &bridge.as_ref().unwrap().endpoint,
             );
-            builder.env("AI_MATE_TASK_ENDPOINT", bridge.as_ref().unwrap().endpoint.replace("/complete", "/tasks"));
+            builder.env("VOICE_COMPANION_TASK_ENDPOINT", bridge.as_ref().unwrap().endpoint.replace("/complete", "/tasks"));
         }
         // Daemon tracing writes stdout. Keep it in the actual host log root
         // rather than discarding the diagnostics needed for microphone/ASR triage.
@@ -3227,7 +3224,7 @@ impl VoiceCompanionProcessManager {
         let log_dir = log_root.join("voice");
         std::fs::create_dir_all(&log_dir)
             .map_err(|err| format!("Cannot create voice log directory: {err}"))?;
-        let log_path = log_dir.join(format!("ai-mate-{}.log", nomifun_common::now_ms()));
+        let log_path = log_dir.join(format!("voice-companion-{}.log", nomifun_common::now_ms()));
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -3245,12 +3242,12 @@ impl VoiceCompanionProcessManager {
         }
         let managed = builder
             .spawn_managed()
-            .map_err(|e| format!("Failed to spawn ai-mate process: {e}"))?;
+            .map_err(|e| format!("Failed to spawn voice-companion process: {e}"))?;
 
         let pid = managed.id();
         #[cfg(test)]
         self.test_child_pid.store(pid.unwrap_or(0), Ordering::Release);
-        info!(?pid, "AI Mate voice companion daemon successfully started");
+        info!(?pid, "voice-companion daemon successfully started");
 
         *lock = Some(managed);
         drop(lock);
@@ -3312,12 +3309,12 @@ impl VoiceCompanionProcessManager {
         if let Some(mut child) = lock.take() {
             info!(
                 pid = child.id(),
-                "Stopping AI Mate voice companion daemon..."
+                "Stopping voice-companion daemon..."
             );
             if let Err(e) = child.shutdown().await {
-                warn!(error = %e, "Error shutting down ai-mate process tree");
+                warn!(error = %e, "Error shutting down voice-companion process tree");
             } else {
-                info!("AI Mate voice companion daemon stopped cleanly");
+                info!("voice-companion daemon stopped cleanly");
             }
         }
         self.disconnected();
@@ -3344,9 +3341,9 @@ impl VoiceCompanionProcessManager {
         if !self.shutdown_requested.load(Ordering::Acquire) && self.read_autostart_config() {
             let models_ready = self.models_manager.get_status().await.state.is_ready();
             if models_ready {
-                info!("Auto-starting AI Mate voice companion on application boot...");
+                info!("Auto-starting voice-companion on application boot...");
                 if let Err(err) = self.start_child(false).await {
-                    warn!(error = %err, "Failed to auto-start AI Mate companion on boot");
+                    warn!(error = %err, "Failed to auto-start voice-companion on boot");
                 }
             } else {
                 info!(
@@ -3365,7 +3362,7 @@ async fn private_task_submit(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let Some(manager) = weak.upgrade() else { return task_api_error("runtime_unavailable".into()); };
-    if headers.get("x-ai-mate-control-token").and_then(|value| value.to_str().ok()) != Some(manager.control_token.as_str()) {
+    if headers.get("x-voice-companion-control-token").and_then(|value| value.to_str().ok()) != Some(manager.control_token.as_str()) {
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     }
     // Read the current daemon state before admitting a command. SSE delivery may
@@ -3385,7 +3382,7 @@ async fn private_current_task(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let Some(manager)=weak.upgrade() else {return task_api_error("runtime_unavailable".into());};
-    if headers.get("x-ai-mate-control-token").and_then(|value|value.to_str().ok())!=Some(manager.control_token.as_str()) {return axum::http::StatusCode::UNAUTHORIZED.into_response();}
+    if headers.get("x-voice-companion-control-token").and_then(|value|value.to_str().ok())!=Some(manager.control_token.as_str()) {return axum::http::StatusCode::UNAUTHORIZED.into_response();}
     match manager.tasks.as_ref().map(|tasks|tasks.current_task()).transpose() {
         Ok(task) => {
             let task=task.flatten().map(|mut task|{task.result_text=None;task});
@@ -3402,7 +3399,7 @@ async fn private_task_control(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let Some(manager)=weak.upgrade() else {return task_api_error("runtime_unavailable".into());};
-    if headers.get("x-ai-mate-control-token").and_then(|value|value.to_str().ok())!=Some(manager.control_token.as_str()) {return axum::http::StatusCode::UNAUTHORIZED.into_response();}
+    if headers.get("x-voice-companion-control-token").and_then(|value|value.to_str().ok())!=Some(manager.control_token.as_str()) {return axum::http::StatusCode::UNAUTHORIZED.into_response();}
     if let Err(code)=manager.private_voice_scope(&request.scope).await {return task_api_error(code);}
     let raw_user_text = request.raw_user_text.as_deref().map(str::trim).filter(|value| !value.is_empty());
     // An older daemon may query without the new provenance field. Reads remain
@@ -4471,7 +4468,7 @@ async fn companion_wake_handler(
     };
     match client
         .post(format!("{}/api/voice/wake",manager.daemon_origin))
-        .header("x-ai-mate-control-token", &manager.control_token)
+        .header("x-voice-companion-control-token", &manager.control_token)
         .timeout(std::time::Duration::from_secs(3))
         .json(&payload)
         .send()

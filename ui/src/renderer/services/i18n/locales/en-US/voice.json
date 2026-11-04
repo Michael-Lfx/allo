@@ -311,7 +311,7 @@
     "replyIncomplete": "Answer incomplete. Text received so far has been preserved."
   },
   "title": "Voice Companion",
-  "description": "AI Mate Voice Interaction Suite (~249MB)",
+  "description": "Voice Interaction Suite (~249MB)",
   "status": {
     "notInstalled": "Not Installed",
     "probingSource": "Selecting Source",
@@ -328,7 +328,7 @@
     "offline": "Offline"
   },
   "phases": {
-    "notInstalled": "AI Mate Voice Interaction Suite (~249MB)",
+    "notInstalled": "Voice Interaction Suite (~249MB)",
     "notInstalledDesc": "Supports far-field voice wake-up and offline speech recognition",
     "probingSource": "Selecting optimal mirror source",
     "downloading": "Downloading voice models ({{current}}/{{total}})",
@@ -387,7 +387,7 @@
     "deleteIncomplete": "Delete did not complete; some files are still present: {{reason}}"
   },
   "pairing": {
-    "title": "AI Mate Device Pairing",
+    "title": "Voice Device Pairing",
     "subtitle": "Enter the 6-digit code spoken by the device",
     "deviceStatus": "Device Status",
     "codePlaceholder": "Enter 6-digit code",
@@ -396,7 +396,7 @@
     "modelReadiness": "Model Readiness",
     "readyNotice": "Voice engine ready. Say \"Hey Flowy\" to wake up",
     "successTitle": "Pairing Successful",
-    "successDesc": "AI Mate Voice Companion is connected and ready"
+    "successDesc": "Voice companion is connected and ready"
   },
   "settings": {
     "nav": "Voice Companion",

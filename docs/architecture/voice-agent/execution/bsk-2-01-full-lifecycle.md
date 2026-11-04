@@ -30,7 +30,7 @@
 
 | 步序 | 操作 | 预期现象 |
 | :--- | :--- | :--- |
-| 1 | 访问 `http://localhost:5173/#/settings/voice` | 渲染 `NotInstalled` 态：文案“AI Mate 语音交互套件（约 249MB）”，右侧展示【下载并启用】主按钮 |
+| 1 | 访问 `http://localhost:5173/#/settings/voice` | 渲染 `NotInstalled` 态：文案“语音交互套件（约 249MB）”，右侧展示【下载并启用】主按钮 |
 | 2 | 点击【下载并启用】按钮 | 触发 `POST /api/voice/models/install`，状态转为 `ProbingSource`，文案变为“正在选择加速源”，按钮原地加载态，发丝轨道 180ms 淡入 |
 | 3 | 后端推送 `Downloading` SSE 事件 | 状态转入 `Downloading`，文案更新为“正在下载语音模型 (n/7)”，控制槽展示百分比与实时下载速率，发丝轨道 `scaleX` 推进 |
 | 4 | 后端推送 `VerifyingSha256` SSE 事件 | 状态转入 `VerifyingSha256`，文案更新为“正在校验完整性 (n/7)”，发丝轨道维持完整可见 |

@@ -1645,7 +1645,7 @@
         assert!(settings.config.dialogue_model.is_none());
         assert_eq!(settings.effective_model.unwrap().model,"flash");
         let bridge = manager.start_dialogue_bridge().await.unwrap();
-        let response = reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-ai-mate-control-token", &manager.control_token)
+        let response = reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-voice-companion-control-token", &manager.control_token)
             .json(&VoiceDialogueRequest::new("hello")).send().await.unwrap();
         assert!(response.status().is_success(), "actual private completion route must use automatic selection");
         assert!(response.text().await.unwrap().contains("hello"));
@@ -3484,11 +3484,11 @@
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     }
                     assert!(healthy, "round {round}: daemon did not become healthy");
-                    let hardware: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    let hardware: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     assert_eq!(hardware["mic_attempts"], serde_json::json!(0));
                     assert_eq!(hardware["speaker_attempts"], serde_json::json!(0));
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let response = client.get(format!("{origins}/api/voice/diagnostics/engine-self-check?request_id=r16-{round}&timeout_ms=500")).header("x-ai-mate-control-token", &token).send().await;
+                    let response = client.get(format!("{origins}/api/voice/diagnostics/engine-self-check?request_id=r16-{round}&timeout_ms=500")).header("x-voice-companion-control-token", &token).send().await;
                     let status = response.as_ref().ok().map(|response| response.status());
                     let body: serde_json::Value = match response { Ok(response) => response.json().await.unwrap_or_default(), Err(_) => serde_json::Value::Null };
                     assert_eq!(status, Some(reqwest::StatusCode::OK), "round {round}: bounded engine check must return a failure body");
@@ -3503,7 +3503,7 @@
                     }
                     assert_eq!(reason, Some("engine_check_timeout"));
                     assert_ne!(body.get("asr_ok").and_then(|value| value.as_bool()), Some(true));
-                    let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     assert!(after["fault_asr_entered"].as_u64().unwrap_or(0) > 0, "round {round}: blocking ASR must actually be entered");
                     let observation = &after["fault_observation"];
                     assert_eq!(observation["native_busy"], serde_json::json!(true), "round {round}: blocking job must still be owned");
@@ -3560,11 +3560,11 @@
                 let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
                 let first_pid = manager.status().await.pid.expect("first daemon pid");
                 let first_instance = manager.snapshot().instance_id.clone();
-                let first = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let first = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-a")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(first.status(), reqwest::StatusCode::OK);
                 let mut observation = serde_json::Value::Null;
                 for _ in 0..40 {
-                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("ordinary-a")
                         && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true)
                     {
@@ -3577,9 +3577,9 @@
                 assert_eq!(observation["fault_observation"]["job"]["pid"], serde_json::json!(first_pid));
                 assert_eq!(observation["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
 
-                let second = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-b")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let second = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-b")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(second.status(), reqwest::StatusCode::OK);
-                let after_cancel: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                let after_cancel: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                 assert_eq!(after_cancel["fault_observation"]["native_busy"], serde_json::json!(true));
                 assert_eq!(after_cancel["fault_observation"]["job"]["request_id"], serde_json::json!("ordinary-a"));
                 assert_eq!(after_cancel["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
@@ -3604,7 +3604,7 @@
                         restarted = true;
                         let mut new_instance = String::new();
                         for _ in 0..40 {
-                            if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-ai-mate-control-token", &token).send().await
+                            if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-voice-companion-control-token", &token).send().await
                                 && let Ok(snapshot) = response.json::<serde_json::Value>().await
                                 && let Some(instance) = snapshot["instance_id"].as_str()
                                 && instance != first_instance
@@ -3646,12 +3646,12 @@
         run_headless_case(manager.clone(), port, std::time::Duration::from_secs(20), std::time::Duration::from_secs(60), |manager, origins, token| async move {
             let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
             for request_id in ["health-a", "health-b"] {
-                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id={request_id}")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id={request_id}")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(response.status(), reqwest::StatusCode::OK);
                 let payload: serde_json::Value = response.json().await.unwrap();
                 assert_eq!(payload["started"], serde_json::json!(true));
                 for _ in 0..40 {
-                    let observation: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    let observation: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     if observation["fault_observation"]["native_busy"] == serde_json::json!(false) { break; }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
@@ -3682,18 +3682,18 @@
         run_headless_case(manager.clone(), port, std::time::Duration::from_secs(20), std::time::Duration::from_secs(120), |manager, origins, token| async move {
             let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
             let first_pid = manager.status().await.pid.expect("cancel child pid");
-            let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=cancel-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+            let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=cancel-a")).header("x-voice-companion-control-token", &token).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::OK);
             let mut observation = serde_json::Value::Null;
             for _ in 0..40 {
-                observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                 if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("cancel-a") && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true) { break; }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             assert_eq!(observation["fault_observation"]["native_busy"], serde_json::json!(true));
-            let cancelled = client.post(format!("{origins}/api/voice/diagnostics/test-cancel")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+            let cancelled = client.post(format!("{origins}/api/voice/diagnostics/test-cancel")).header("x-voice-companion-control-token", &token).send().await.unwrap();
             assert_eq!(cancelled.status(), reqwest::StatusCode::OK);
-            let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+            let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
             assert_eq!(after["fault_observation"]["native_busy"], serde_json::json!(true));
             assert_eq!(after["fault_observation"]["job"]["request_id"], serde_json::json!("cancel-a"));
             assert_eq!(after["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
@@ -3734,11 +3734,11 @@
                 let first_pid = manager.status().await.pid.expect("single child pid");
                 assert!(!manager.snapshot().instance_id.is_empty());
                 let first_instance = manager.snapshot().instance_id.clone();
-                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=single-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=single-a")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(response.status(), reqwest::StatusCode::OK);
                 let mut observation = serde_json::Value::Null;
                 for _ in 0..40 {
-                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("single-a")
                         && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true)
                     { break; }
@@ -3764,7 +3764,7 @@
                     let status = manager.status().await;
                     if status.running && status.pid != Some(first_pid) {
                         new_pid = status.pid;
-                        if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-ai-mate-control-token", &token).send().await
+                        if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-voice-companion-control-token", &token).send().await
                             && let Ok(snapshot) = response.json::<serde_json::Value>().await
                             && let Some(instance) = snapshot["instance_id"].as_str()
                             && !instance.is_empty()
@@ -3875,7 +3875,7 @@
     }
 
     #[test]
-    fn legacy_ai_mate_name_is_no_longer_accepted() {
+    fn retired_daemon_name_is_not_resolved() {
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();

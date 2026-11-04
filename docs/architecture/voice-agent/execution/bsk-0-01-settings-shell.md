@@ -32,7 +32,7 @@
 | 2 | 在左侧导航栏定位【能力与扩展】分组中的【语音伴侣】选项 | 展示 `Voice` 麦克风图标与“语音伴侣”标签 |
 | 3 | 点击【语音伴侣】导航项 | 路由切换至 `#/settings/voice`，激活项滑动指示器平滑对齐 |
 | 4 | 观察主内容区域渲染 | 页面标题展示“语音伴侣”，描述文案展示“管理本地声学模型与语音交互功能” |
-| 5 | 检查“语音能力”Section 下的“模型管理”设置行 | 行左侧展示“AI Mate 语音交互套件（约 249MB）”与功能说明；右侧展示【下载并启用】按钮 |
+| 5 | 检查“语音能力”Section 下的“模型管理”设置行 | 行左侧展示“语音交互套件（约 249MB）”与功能说明；右侧展示【下载并启用】按钮 |
 | 6 | 检查按钮交互态与样式 | 按钮为 Arco primary 风格，处于不可点击禁用态 (`disabled`) |
 | 7 | 检查行底发丝轨道 | 底部常驻渲染 2px 发丝轨道，当前处于 `opacity: 0` 与 `scaleX(0)` 状态 |
 
@@ -46,7 +46,7 @@
    - 负向断言：页面 DOM 中 `document.querySelectorAll('.arco-card, [role="dialog"], .arco-modal').length === 0`。
 2. **文案 i18n 完整度**：
    - 标题元素文本严格等于 `t('voice.title')` / `t('voice.settings.sectionTitle')`；
-   - 行标题文本严格等于 `t('voice.phases.notInstalled')`（zh-CN: "AI Mate 语音交互套件（约 249MB）"；en-US: "AI Mate Voice Interaction Suite (~249MB)"）；
+   - 行标题文本严格等于 `t('voice.phases.notInstalled')`（zh-CN: "语音交互套件（约 249MB）"；en-US: "Voice Interaction Suite (~249MB)"）；
    - 主按钮文本严格等于 `t('voice.actions.downloadAndEnable')`（zh-CN: "下载并启用"；en-US: "Download & Enable"）。
 3. **控制槽与发丝轨道**：
    - 控制槽容器宽度在 220px ~ 280px 区间（实测 240px）；

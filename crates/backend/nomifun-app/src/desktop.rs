@@ -1230,7 +1230,7 @@ impl DesktopServer {
             robot.shutdown();
         }
 
-        // Stop the voice companion daemon (ai-mate) if running under Flowy whole-tree supervision
+        // Stop the voice companion daemon if running under Flowy whole-tree supervision
         if let Some(companion) = crate::voice_companion_manager::VoiceCompanionProcessManager::global() {
             let companion_result = tokio::time::timeout(
                 std::time::Duration::from_secs(3),

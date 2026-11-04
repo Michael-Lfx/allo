@@ -47,7 +47,7 @@ async fn scenario(heard:Option<&str>,ttl:Duration,stop_during_prompt:bool,prompt
     };
     let authority_deadline=prompt.expires_at_ms;
     let request=tokio::spawn(async move {app.oneshot(axum::http::Request::builder().method("POST").uri("/api/voice/confirmation")
-        .header("content-type","application/json").header("x-ai-mate-control-token","approval-fixture")
+        .header("content-type","application/json").header("x-voice-companion-control-token","approval-fixture")
         .body(axum::body::Body::from(serde_json::to_vec(&prompt).unwrap())).unwrap()).await.unwrap()});
     tokio::time::timeout(Duration::from_secs(3),async{
         while !sink.written.load(Ordering::SeqCst){
@@ -171,7 +171,7 @@ async fn barge_in_during_prompt_stops_prompt_and_authorizes_tool() {
                 .method("POST")
                 .uri("/api/voice/confirmation")
                 .header("content-type", "application/json")
-                .header("x-ai-mate-control-token", "approval-fixture")
+                .header("x-voice-companion-control-token", "approval-fixture")
                 .body(axum::body::Body::from(serde_json::to_vec(&prompt).unwrap()))
                 .unwrap(),
         )

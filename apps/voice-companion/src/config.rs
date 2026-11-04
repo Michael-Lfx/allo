@@ -1,17 +1,17 @@
-//! AI Mate Voice Companion Configuration (Wave 0 C7 Schema)
+//! Voice Companion Configuration (Wave 0 C7 Schema)
 //!
 //! Provides the `[models]` section schema and configuration loading logic
-//! according to the AI Mate architecture baseline and model-management specification:
+//! according to the voice companion architecture baseline and model-management specification:
 //!
 //! ```toml
 //! [models]
-//! models_dir = "/var/lib/ai-mate/models"
+//! models_dir = "/var/lib/voice-companion/models"
 //! auto_download = true           # Auto-trigger download on initial boot when models are missing
 //! probe_timeout_ms = 1500        # Multi-source probe timeout in milliseconds
 //! prefer_mirror = "auto"         # "auto" | "modelscope" | "github"
 //! ```
 //!
-//! Also supports runtime override via the `AI_MATE_MODEL_DIR` environment variable.
+//! Also supports runtime override via the `VOICE_COMPANION_MODEL_DIR` environment variable.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -21,9 +21,6 @@ use serde::{Deserialize, Serialize};
 
 /// Primary environment variable used to override the models directory path.
 pub const ENV_VOICE_COMPANION_MODEL_DIR: &str = "VOICE_COMPANION_MODEL_DIR";
-
-/// Backwards-compatible legacy environment variable used to override the models directory path.
-pub const ENV_AI_MATE_MODEL_DIR: &str = "AI_MATE_MODEL_DIR";
 
 /// Default system models directory for Linux companion host / system service.
 pub const DEFAULT_MODELS_DIR: &str = "/var/lib/voice-companion/models";
@@ -215,9 +212,9 @@ pub struct CloudConfig {
     pub model: Option<String>,
 }
 
-/// Top-level AI Mate companion configuration schema.
+/// Top-level voice companion configuration schema.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AiMateConfig {
+pub struct VoiceCompanionConfig {
     /// Supervisor-only credential; never persisted in the public TOML schema.
     #[serde(skip)]
     pub control_token: Option<String>,
@@ -229,9 +226,9 @@ pub struct AiMateConfig {
     pub cloud: CloudConfig,
 }
 
-impl fmt::Debug for AiMateConfig {
+impl fmt::Debug for VoiceCompanionConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AiMateConfig")
+        f.debug_struct("VoiceCompanionConfig")
             .field("models", &self.models)
             .field("cloud_endpoint", &self.cloud.endpoint)
             .field("cloud_model", &self.cloud.model)
@@ -242,8 +239,7 @@ impl fmt::Debug for AiMateConfig {
 }
 
 /// Type aliases for convenient usage.
-pub type Config = AiMateConfig;
-pub type VoiceCompanionConfig = AiMateConfig;
+pub type Config = VoiceCompanionConfig;
 
 /// Configuration errors.
 #[derive(Debug, thiserror::Error)]
@@ -265,7 +261,7 @@ pub enum ConfigError {
     InvalidPreferMirror(String),
 }
 
-impl AiMateConfig {
+impl VoiceCompanionConfig {
     /// Parse configuration from a TOML string without applying environment overrides.
     pub fn parse_toml(toml_str: &str) -> Result<Self, ConfigError> {
         let config: Self = toml::from_str(toml_str)?;
@@ -290,9 +286,8 @@ impl AiMateConfig {
         F: Fn(&str) -> Option<String>,
     {
         self.control_token = get_env("VOICE_COMPANION_CONTROL_TOKEN")
-            .or_else(|| get_env("AI_MATE_CONTROL_TOKEN"))
             .filter(|value| !value.is_empty());
-        if let Some(val) = get_env(ENV_VOICE_COMPANION_MODEL_DIR).or_else(|| get_env(ENV_AI_MATE_MODEL_DIR)) {
+        if let Some(val) = get_env(ENV_VOICE_COMPANION_MODEL_DIR) {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.models.models_dir = PathBuf::from(trimmed);
@@ -311,7 +306,7 @@ impl AiMateConfig {
                 self.cloud.endpoint = Some(trimmed.to_string());
             }
         }
-        if let Some(val) = get_env("VOICE_COMPANION_LLM_MODEL").or_else(|| get_env("AI_MATE_LLM_MODEL")) {
+        if let Some(val) = get_env("VOICE_COMPANION_LLM_MODEL") {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.cloud.model = Some(trimmed.to_string());
@@ -383,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_env_override_empty_ignored() {
-        let mut config = AiMateConfig::default();
+        let mut config = VoiceCompanionConfig::default();
         config.apply_env_overrides_from(|_| Some("   ".to_string()));
         assert_eq!(config.models.models_dir, default_models_dir());
     }

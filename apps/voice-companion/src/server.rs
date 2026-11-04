@@ -1,7 +1,7 @@
 //! AI Mate Voice Companion HTTP Server (Wave 0 T0-15, Wave 1 T1-08, Wave 4 T4-04)
 //!
 //! Provides the Axum HTTP service listening on port 8080:
-//! - `GET /healthz`: Liveness probe returning `{"status": "ok", "app": "ai-mate"}`
+//! - `GET /healthz`: Liveness probe returning `{"status": "ok", "app": "voice-companion"}`
 //! - `GET /`: Serves the mobile-first OOBE pairing page static shell adhering to `ui-motion.zh.md` §4
 //! - `/api/voice/models/*`: Voice model REST & SSE management endpoints
 //! - `/api/oobe/*`: OOBE 6-digit dynamic code verification & rate limiting
@@ -130,7 +130,7 @@ async fn pairing_guard_middleware(
         let header_token = req
             .headers()
             .get("x-voice-companion-control-token")
-            .or_else(|| req.headers().get("x-ai-mate-control-token"))
+            .or_else(|| req.headers().get("x-voice-companion-control-token"))
             .and_then(|value| value.to_str().ok());
         if header_token != Some(token.as_str())
         {

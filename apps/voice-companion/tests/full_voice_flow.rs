@@ -189,7 +189,7 @@ mod flow {
             let captured_prompts = prompts.clone();
             let app = axum::Router::new().route("/", axum::routing::post(move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<serde_json::Value>| {
                 let counted = counted.clone(); let captured_prompts = captured_prompts.clone(); async move {
-                    assert_eq!(headers.get("x-ai-mate-control-token").unwrap(), "fixture-control");
+                    assert_eq!(headers.get("x-voice-companion-control-token").unwrap(), "fixture-control");
                     assert!(body["prompt"].as_str().unwrap().contains("你好"));
                     let index = counted.fetch_add(1, Ordering::SeqCst);
                     captured_prompts.lock().unwrap().push(body["prompt"].as_str().unwrap().to_owned());

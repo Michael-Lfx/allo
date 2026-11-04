@@ -1,6 +1,6 @@
 //! Built-in event-driven earcon sound assets.
 //!
-//! Defined by AI Mate interaction contract C5 (Wave 0 M0):
+//! Defined by the voice companion interaction contract C5 (Wave 0 M0):
 //! - `guide.wav`: Self-check passed / onboarding & download guide
 //! - `wake.wav`: Far-field wake-up success
 //! - `alert.wav`: High-risk confirmation required

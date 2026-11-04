@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Initialize voice model manager & OOBE manager
     let model_manager = Arc::new(ModelManager::new(&config.models.models_dir));
 
-    let env_pairing = std::env::var("AI_MATE_REQUIRE_PAIRING").ok();
+    let env_pairing = std::env::var("VOICE_COMPANION_REQUIRE_PAIRING").ok();
     let require_pairing = if cli.bypass_pairing {
         false
     } else if let Some(v) = env_pairing {
@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(vocal = %vocal_announcement, require_pairing, "OOBE status initialized");
 
     // 5. Assemble and start end-to-end Voice Companion Pipeline (Capture + Playback + FSM Driver + Router)
-    let feedback = std::env::var("AI_MATE_FEEDBACK_CONFIG")
+    let feedback = std::env::var("VOICE_COMPANION_FEEDBACK_CONFIG")
         .ok()
         .map(|raw| serde_json::from_str::<nomifun_api_types::voice::VoiceFeedbackConfig>(&raw))
         .transpose()?;

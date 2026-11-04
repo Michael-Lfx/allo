@@ -901,7 +901,7 @@ async fn voice_fast_model_billing_uses_durable_user_turn_for_http_and_spawned_st
         for _ in 0..2 {
             let response = client
                 .post(&bridge.endpoint)
-                .header("x-ai-mate-control-token", "billing-test")
+                .header("x-voice-companion-control-token", "billing-test")
                 .json(&request)
                 .send()
                 .await

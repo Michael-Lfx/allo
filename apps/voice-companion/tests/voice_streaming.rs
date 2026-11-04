@@ -42,7 +42,7 @@ impl ModelStream {
             let gate=gate.clone();let done=done.clone();let count=count.clone();
             let first_text = first_text.clone();
             async move {
-                assert_eq!(headers.get("x-ai-mate-control-token").unwrap(),"stream-fixture");
+                assert_eq!(headers.get("x-voice-companion-control-token").unwrap(),"stream-fixture");
                 assert_eq!(body["stream"],true,"the production worker must request incremental completion");
                 count.fetch_add(1,Ordering::SeqCst);
                 let (tx,rx)=tokio::sync::mpsc::channel(4);
@@ -69,7 +69,7 @@ impl ModelStream {
         let app=axum::Router::new().route("/complete",axum::routing::post(move |headers:axum::http::HeaderMap,axum::Json(body):axum::Json<serde_json::Value>| {
             let gate=gate.clone();let done=done.clone();let count=count.clone();
             async move {
-                assert_eq!(headers.get("x-ai-mate-control-token").unwrap(),"stream-fixture");
+                assert_eq!(headers.get("x-voice-companion-control-token").unwrap(),"stream-fixture");
                 assert_eq!(body["stream"],true,"the production worker must request incremental completion");
                 count.fetch_add(1,Ordering::SeqCst);
                 let (tx,rx)=tokio::sync::mpsc::channel(4);
