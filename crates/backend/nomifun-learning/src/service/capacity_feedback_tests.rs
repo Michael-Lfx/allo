@@ -14,6 +14,8 @@ fn capacity_pack() -> CoursePack {
         title: title.into(),
         summary: String::new(),
         purpose: format!("{title}的目标"),
+        intent: String::new(),
+        scope: String::new(),
         est: 10,
         source: None,
         sources: Vec::new(),

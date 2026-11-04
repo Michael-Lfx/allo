@@ -3484,14 +3484,17 @@ impl LearningService {
             let est = node.est.unwrap_or(10).max(1) as i64;
             sqlx::query(
                 "INSERT INTO learning_lessons \
-                 (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-                  difficulty, content_generated) \
-                 VALUES (?, ?, ?, '', ?, ?, ?, ?, 0)",
+                 (lesson_id, module_id, title, summary, purpose, intent, scope, position, \
+                  estimated_minutes, difficulty, content_generated) \
+                 VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, 0)",
             )
             .bind(lesson_id.as_str())
             .bind(&module_id)
             .bind(node.title.trim())
             .bind(node.purpose.trim())
+            // 声明面两列（absorb-8 z01）：契约门已保证 trim 后非空，落库照抄。
+            .bind(node.intent.trim())
+            .bind(node.scope.trim())
             .bind(next_position + offset as i64)
             .bind(est)
             .bind(i64::from(node.difficulty.unwrap_or(2)))

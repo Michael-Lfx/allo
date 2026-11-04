@@ -169,6 +169,17 @@ pub struct ProposedNode {
     pub title: String,
     #[serde(default)]
     pub purpose: String,
+    /// 节点意图（absorb-8 z01，learnhub #205 同构）：为何有这个学习点、它在
+    /// 课里承担什么角色，一句话；出生即声明（`ng.node.brief` 门执法非空、各
+    /// ≤200 字符——[`super::growth_contract`]）。`#[serde(default)]` 空串容旧
+    /// （门在 contract 层拦截，进本结构的路径已过门；导入包/旧档空串 = 缺席），
+    /// 与 learnhub 的 `Option<String>` 不同形但语义同。
+    #[serde(default)]
+    pub intent: String,
+    /// 教学范围（absorb-8 z01）：本点教什么/教到哪/明确不碰什么（「不教 X」是
+    /// 边界声明不是内容），一两句；空串 = 缺席，同 [`ProposedNode::intent`]。
+    #[serde(default)]
+    pub scope: String,
     /// est：专注工作量尺寸锚（量纲宣言：1 est 分钟 = 1 分钟专注学习）；
     /// 常规 5–30，极困难最多 60（门放行 1–60）。DB 列保留旧名
     /// `learning_lessons.estimated_minutes`（列名无用户面，语义 = est）。
@@ -486,6 +497,8 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
     {
       "title": "节点标题（动作句：解/求/证明/推导/构造/比较/应用/辨析…）",
       "purpose": "练什么 + 从哪段课程外日常经验切入（座位表定位/给物品分类/分食物看温度一类生活场景）；找不到日常经验切口的节点不合格",
+      "intent": "一句话：为什么有这个学习点、它在课里承担什么角色（衔接哪条线/补哪个缺口）",
+      "scope": "一两句：教什么、教到哪、明确不碰什么；「不教 X」是边界声明，照实写",
       "est": 20,
       "difficulty": 2,
       "teaches": [ { "name": "概念名", "tier": "apply" } ],
@@ -512,6 +525,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 【节点纪律】
 - 节点是单次学习会话（动作句），est（专注工作量，1 est 分钟 = 1 分钟专注）常规 5-30，极困难最多 60。est 也是后续内容生成的容量预算锚——内容管线按它规划节与题量：按节点行为数与对象域宽度估，估大了内容会铺开，估小了会被迫砍雄心。
 - 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。
+- 声明面（intent/scope，每个节点出生即必带）：intent 一句话写**为什么有这个学习点**、它在课里承担什么角色（衔接哪条线、补哪个缺口）；scope 一两句写**教什么、教到哪、明确不碰什么**——「不教 X」「X 留待后续」类否定性提及是边界声明，照实写，不是缺陷。两处都写实质内容，不写「教好这个概念」一类空话；各不超过 200 字。拆分或修订被点名的条目时，两字段必须按各自那一半的实际内容**逐半重写**，禁止照抄原条目。
 - 道位配平：道（本质理解）与术（可执行）是一对标尺——一条线如果只有「怎么做」的操作台阶，要在合适的节点补一个「为什么成立」的台阶（说理、推导或辨析），让学习者不但能做，还能讲出它为什么可靠。
 - 悬空技巧不合格：每批装箱前先问「学习者此刻真正缺什么」——技巧依赖的更一般技能先立地基；只有操作没有理解的地方补「为什么成立」的台阶；学习目标点名而还没开线的能力，尽早开线。
 - 难度标尺（difficulty 1-5，如实申报）：1=生活经验直接上手；2=单概念入门（认读、模仿、单步操作）；3=单概念应用（多步计算、变式练习）；4=多概念综合/形式化引入（记号体系、复合结构）；5=严格证明与抽象推理。形式化/证明类内容不得压档。
@@ -546,8 +560,9 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 5. 每个节点的起点假设都在基线或已教账内——没有把「教材第一章」当零基础入口，也没有为了覆盖目标方向长出基线够不着的节点；
 6. 每个节点的 purpose 都有日常经验切口，且教的是还需要教的学科概念——纯生活动作（成人已会的）和写不出切口的中层内容，都换掉。
 7. 每个节点的 difficulty 都按标尺如实申报（形式化/证明类不得压档）。
+8. 每个节点的 intent/scope 都按声明面纪律写实质内容——一句话意图/一两句范围（各 ≤200 字）；拆分或修订被点名的条目时两字段逐半重写，不照抄原条目。
 【输出】
-- 只输出 JSON，不要 Markdown 代码块，不要任何解释。note 与 purpose 用中文。"#;
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。note、purpose、intent 与 scope 用中文。"#;
 
 /// [`COACH_SYSTEM`] 的装配面（t7）：数量契约段的 `{READY_TARGET}`/
 /// `{MAX_BATCH_NODES}` 占位符以常量单源注入——改批容量只改常量，提示词
@@ -721,6 +736,9 @@ pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
     for node in &mut batch.nodes {
         node.title = node.title.trim().to_owned();
         node.purpose = node.purpose.trim().to_owned();
+        // 声明面两字段（absorb-8 z01）同款 trim。
+        node.intent = node.intent.trim().to_owned();
+        node.scope = node.scope.trim().to_owned();
         for reference in node.teaches.iter_mut().chain(node.assumes.iter_mut()) {
             reference.name = reference.name.trim().to_owned();
         }
@@ -2032,13 +2050,23 @@ pub fn render_coverage_gauge(reading: &CoverageReading) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn reference(name: &str, tier: ConceptTier) -> ConceptRefInput {
         ConceptRefInput { name: name.to_owned(), tier }
     }
 
     fn node(title: &str, teaches: Vec<ConceptRefInput>, assumes: Vec<ConceptRefInput>) -> ProposedNode {
-        ProposedNode { title: title.to_owned(), purpose: String::new(), est: Some(20), difficulty: None, teaches, assumes }
+        ProposedNode {
+            title: title.to_owned(),
+            purpose: String::new(),
+            intent: String::new(),
+            scope: String::new(),
+            est: Some(20),
+            difficulty: None,
+            teaches,
+            assumes,
+        }
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
@@ -3646,7 +3674,8 @@ mod tests {
     fn parse_coach_reply_normalizes_chinese_tiers_and_string_est() {
         let raw = r#"{
             "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "est": "15",
+                { "title": "用配方法解方程", "purpose": "p",
+                  "intent": "i", "scope": "s", "est": "15",
                   "teaches": [{"name": "配方法", "tier": "会用"}],
                   "assumes": [{"name": "一元二次方程", "tier": "知道"}] }
             ],
@@ -3708,6 +3737,8 @@ mod tests {
         let raw = r#"{
             "nodes": [
                 { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
+                  "intent": " 为后续公式法补操作底座 ",
+                  "scope": " 教配方三步；不碰判别式 ",
                   "est": 15, "difficulty": 3,
                   "teaches": [{"name": " 配方法 ", "tier": "apply"}],
                   "assumes": [{"name": "一元二次方程", "tier": "know"}] }
@@ -3719,11 +3750,44 @@ mod tests {
         assert_eq!(batch.nodes.len(), 1);
         assert_eq!(batch.nodes[0].title, "用配方法解方程");
         assert_eq!(batch.nodes[0].est, Some(15));
+        // 声明面两字段（absorb-8 z01）：装填 + trim 归一。
+        assert_eq!(batch.nodes[0].intent, "为后续公式法补操作底座");
+        assert_eq!(batch.nodes[0].scope, "教配方三步；不碰判别式");
         assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
         assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
         assert_eq!(batch.mints[0].canonical, "配方法");
         assert_eq!(batch.mints[0].aliases, vec!["配方"]);
         assert_eq!(batch.note, "n");
+    }
+
+    /// serde 面容旧（absorb-8 z01）：缺两键的节点 JSON 照常反序列化为空串
+    /// （导入包/旧档语义缺席）——门在 contract 层拦生长 LLM 输出，不在
+    /// serde 层拒绝。
+    #[test]
+    fn proposed_node_deserializes_without_brief_fields_as_empty_strings() {
+        let node: ProposedNode = serde_json::from_value(json!({ "title": "旧档节点" })).unwrap();
+        assert_eq!(node.intent, "", "缺 intent = 空串（缺席语义）");
+        assert_eq!(node.scope, "", "缺 scope = 空串（缺席语义）");
+    }
+
+    /// 条款覆盖断言（absorb-8 z01，j08 三闸的单测substring 臂）：COACH_SYSTEM
+    /// 声明面条款与 JSON 形状示例的关键短语——删条款 = 本测试红。
+    #[test]
+    fn coach_system_carries_the_node_declaration_clause() {
+        let system = crate::learning_graph::coach_system();
+        for phrase in [
+            r#""intent": "一句话：为什么有这个学习点"#,
+            r#""scope": "一两句：教什么、教到哪、明确不碰什么"#,
+            "声明面（intent/scope，每个节点出生即必带）",
+            "为什么有这个学习点",
+            "教什么、教到哪、明确不碰什么",
+            "「不教 X」「X 留待后续」类否定性提及是边界声明",
+            "各不超过 200 字",
+            "逐半重写",
+            "note、purpose、intent 与 scope 用中文",
+        ] {
+            assert!(system.contains(phrase), "COACH_SYSTEM 缺「{phrase}」");
+        }
     }
 
     #[test]

@@ -313,6 +313,8 @@ mod tests {
             nodes: vec![ProposedNode {
                 title: "判读借用".into(),
                 purpose: "p".into(),
+                intent: String::new(),
+                scope: String::new(),
                 est: Some(20),
                 difficulty: None,
                 teaches: vec![ConceptRefInput { name: "所有权".into(), tier: ConceptTier::Know }],

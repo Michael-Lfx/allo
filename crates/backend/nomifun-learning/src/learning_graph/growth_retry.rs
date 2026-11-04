@@ -144,7 +144,7 @@ pub(crate) fn should_stop_early(
 
 /// 「未点名被改」机械守卫：重裁输出与上一稿逐节点 diff——未出现在打回
 /// 报告点名清单中的既有节点必须逐字段相等（title/purpose/est/difficulty/
-/// teaches/assumes），被移除同理算改动；**新增节点合法**（点修允许补铺垫
+/// teaches/assumes/intent/scope），被移除同理算改动；**新增节点合法**（点修允许补铺垫
 /// 节点），被点名的节点不核对。违者返回固定文案（guard 失败）。
 ///
 /// 点名判定（#175A 两面同源）：`point_names` 在场（评审问题清单的 node
@@ -244,6 +244,8 @@ mod tests {
         ProposedNode {
             title: title.to_owned(),
             purpose: purpose.to_owned(),
+            intent: String::new(),
+            scope: String::new(),
             est: Some(15),
             difficulty: Some(2),
             teaches: vec![ConceptRefInput {
@@ -312,6 +314,32 @@ mod tests {
             note: String::new(),
         };
         assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None).is_none());
+    }
+
+    /// 声明面两字段自动进守卫（absorb-8 z01）：derived PartialEq 逐字段比对
+    /// 把 intent/scope 一并纳保——未点名节点只改 scope 也触发（learnhub
+    /// 「未点名条目整对象机械比对自动含两字段」同效）。
+    #[test]
+    fn guard_covers_declaration_fields_via_derived_equality() {
+        let previous = ProposedBatch {
+            nodes: vec![node("甲", "p1")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let mut redrafted = node("甲", "p1");
+        redrafted.scope = "偷改的教学范围".into();
+        let candidate = ProposedBatch {
+            nodes: vec![redrafted],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let violation = redraft_guard_violation(&previous, &candidate, "", None);
+        assert!(
+            violation.as_ref().is_some_and(|text| text.contains("甲")),
+            "未点名只改 scope 也须触发守卫：{violation:?}"
+        );
     }
 
     /// 未点名守卫全量收集（m5 #175B，learnhub 同名测试移植）：多违约逐条
