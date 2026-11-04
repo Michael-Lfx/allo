@@ -196,7 +196,8 @@ part_of: ../map.md
 生成/评审抽样时人工核对四类反模式：①全正例（例组没有负例或压线例）；
 ②无关对比物（对比项与考察维度无关）；③一例代表全部分支（只覆盖一个分支
 却当作全集）；④背景冒充辨认特征（用情境背景当判别依据）。本清单落在评审
-说明与票面 Resolution，不新增 validator。
+说明与票面 Resolution，不新增 validator。独立施工图（含走查问句与使用方式）
+见 [blueprints/2026-11-04-content-clause-review-checklist.md](../../learning-quality-fixes/blueprints/2026-11-04-content-clause-review-checklist.md)。
 
 **偏差**
 

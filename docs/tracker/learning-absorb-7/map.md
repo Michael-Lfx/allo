@@ -135,3 +135,7 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   课时页反馈卡（无自报不呈卡、重载回显）；零结算零置位（不写
   attempts/review/xp/progress/FSRS、不改 status/est、不注入共享生成）；
   表数 125→126（58f1e4ef5）。
+- 2026-11-04：集成分支 `feat/learning-absorb-7` **保留** implement-spec 产生的
+  merge commits（本波次内不重写历史）；合并回 `feat/learn0928` / 开 PR 前，按
+  [docs/contributing/git-workflow.md](../../contributing/git-workflow.md)
+  执行 `git fetch origin && git rebase origin/main` 线性化——历史届时统一整理。
