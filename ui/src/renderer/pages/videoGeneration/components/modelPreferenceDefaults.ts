@@ -1,8 +1,6 @@
 import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
-
-/** Preferred default video model when present in the Flowy catalog. */
-const PREFERRED_VIDEO_MODEL_NEEDLE = 'doubao-seedance-2-0-fast';
+import { isWan3VideoModel } from '@renderer/services/videoModelCapabilities';
 
 /** Preferred planning LLM catalog name (match id or display label). */
 const PREFERRED_LLM_MODEL_NAME = 'Deepseek-v4-pro';
@@ -17,15 +15,12 @@ function normalizeModelKey(id: string): string {
   return id.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** Pick Seedance 2.0 Fast when listed; otherwise the first catalog entry. */
+/** Pick Wan 3.0 when listed; otherwise the first catalog entry. Prime is the Wan fallback. */
 export function pickDefaultVideoModel(videoModels: IMediaModelOption[]): string | undefined {
   if (!videoModels.length) return undefined;
-  const preferredKey = normalizeModelKey(PREFERRED_VIDEO_MODEL_NEEDLE);
-  const preferred = videoModels.find((m) => {
-    const blob = normalizeModelKey(`${m.name} ${m.id}`);
-    return blob.includes(preferredKey);
-  });
-  return preferred?.id ?? videoModels[0]?.id;
+  const wan = videoModels.filter((m) => isWan3VideoModel(`${m.name} ${m.id}`));
+  const standard = wan.find((m) => !normalizeModelKey(`${m.name} ${m.id}`).includes('prime'));
+  return (standard ?? wan[0] ?? videoModels[0])?.id;
 }
 
 /** Prefer Deepseek-v4-pro by catalog name/id; otherwise the first chat model. */

@@ -13,6 +13,7 @@ import { cn } from "@oc/lib/utils";
 import { modelDisplayName, modelIconUrl, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
+import { VideoModelOptionLabel, videoModelTagKind } from "@renderer/components/model/VideoModelOptionLabel";
 import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/utils/model/modelLogos";
 
 type ModelPickerProps = {
@@ -179,7 +180,13 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
                         <ModelIcon config={config} model={current} />
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{current ? modelDisplayName(config, current) : resolvedPlaceholder}</span>
+                    {videoModelTagKind(current) ? (
+                        <span className="min-w-0 flex-1 overflow-hidden">
+                            <VideoModelOptionLabel name={modelDisplayName(config, current)} model={current} />
+                        </span>
+                    ) : (
+                        <span className="min-w-0 flex-1 truncate">{current ? modelDisplayName(config, current) : resolvedPlaceholder}</span>
+                    )}
                     {showSelectedPrice && creditsEnabled ? <ModelPrice compact price={currentPrice} /> : null}
                 </span>
                 <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
@@ -231,7 +238,15 @@ function ModelLabel({
                 <ModelIcon config={config} model={model} />
             </span>
             <span className="min-w-0 flex-1 overflow-hidden">
-                <span className="block min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">{modelDisplayName(config, model)}</span>
+                {videoModelTagKind(model) ? (
+                    <VideoModelOptionLabel
+                        className="text-[var(--fs-label)] font-medium leading-none"
+                        name={modelDisplayName(config, model)}
+                        model={model}
+                    />
+                ) : (
+                    <span className="block min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">{modelDisplayName(config, model)}</span>
+                )}
                 <span className="mt-1 block truncate text-[var(--fs-tiny)]" style={{ color: theme.node.muted }} title={capabilitySummary}>
                     {capabilitySummary}
                 </span>

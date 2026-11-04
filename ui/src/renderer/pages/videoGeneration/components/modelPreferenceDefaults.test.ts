@@ -6,12 +6,25 @@ import {
 } from './modelPreferenceDefaults';
 
 describe('modelPreferenceDefaults', () => {
-  test('prefers Seedance 2.0 Fast when present', () => {
+  test('prefers Wan 3.0 over other video models, and the non-prime id when both exist', () => {
+    expect(
+      pickDefaultVideoModel([
+        { id: 'AIPC-doubao-seedance-2-0-fast', name: 'Doubao-Seedance-2.0-Fast' },
+        { id: 'AIPC-wan3.0-video-prime', name: 'Wan 3.0 Prime' },
+        { id: 'flowy/wan3.0-video', name: 'Wan 3.0' },
+      ])
+    ).toBe('flowy/wan3.0-video');
+  });
+
+  test('falls back to Wan 3.0 prime, then the first catalog model', () => {
     expect(
       pickDefaultVideoModel([
         { id: 'other', name: 'Other' },
-        { id: 'AIPC-doubao-seedance-2-0-fast', name: 'Doubao-Seedance-2.0-Fast' },
+        { id: 'AIPC-wan3.0-video-prime', name: 'Wan 3.0 Prime' },
       ])
+    ).toBe('AIPC-wan3.0-video-prime');
+    expect(
+      pickDefaultVideoModel([{ id: 'AIPC-doubao-seedance-2-0-fast', name: 'Seedance' }])
     ).toBe('AIPC-doubao-seedance-2-0-fast');
   });
 

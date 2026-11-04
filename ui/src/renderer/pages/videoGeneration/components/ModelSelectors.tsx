@@ -12,6 +12,11 @@ import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import {
+  VideoModelOptionLabel,
+  videoModelSelectClassName,
+  videoModelSelectFilter,
+} from '@/renderer/components/model/VideoModelOptionLabel';
+import {
   filterAllowedImageModels,
   pickDefaultLlmModel,
   pickDefaultVideoModel,
@@ -92,6 +97,16 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
       label: mediaModelLabel(m),
     }));
   }, [videoModels]);
+
+  const videoSelectOptions = useMemo(
+    () =>
+      videoOptions.map((option) => ({
+        value: option.value,
+        extra: option.label,
+        label: <VideoModelOptionLabel name={option.label} model={option.value} />,
+      })),
+    [videoOptions]
+  );
 
   // Prefer first available model when session has none yet.
   useEffect(() => {
@@ -214,7 +229,9 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
             <Spin size={16} />
           ) : (
             <Select
+              className={videoModelSelectClassName}
               showSearch
+              filterOption={videoModelSelectFilter}
               allowClear
               disabled={disabled}
               placeholder={t('videoGeneration.workspace.models.videoPlaceholder', {
@@ -224,7 +241,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
               onChange={(v) =>
                 onChange({ ...value, video_model: (v as string) || '' })
               }
-              options={videoOptions}
+              options={videoSelectOptions}
               notFoundContent={t('videoGeneration.workspace.models.empty', {
                 defaultValue: '暂无可用模型',
               })}
