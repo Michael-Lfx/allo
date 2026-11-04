@@ -195,10 +195,26 @@ impl ModelManager {
     pub async fn get_status(&self) -> VoiceModelStatusResponse {
         let _operation = self.install_task.lock().await;
         let (disk_state, mut files, mut total_size_bytes) = inspect_model_files(&self.models_dir);
-        let (_, tts_files, tts_size) = crate::layout::inspect_tts_files(&self.models_dir);
+        let (tts_ready, tts_files, tts_size) = crate::layout::inspect_tts_files(&self.models_dir);
         files.extend(tts_files);
         total_size_bytes = total_size_bytes.saturating_add(tts_size);
-        let state = self.refresh_integrity(disk_state).await;
+        // Only enforce TTS completeness when the configured manifest actually
+        // pins TTS assets (the production manifest does; reduced/custom suites
+        // may not). ASR/KWS/VAD files alone cannot run a pinned voice suite, so
+        // a partial TTS install (for example an older download without the
+        // espeak voice definitions) must surface as repairable instead of
+        // pretending the suite is usable.
+        let tts_suite_is_pinned = self
+            .verifier
+            .baseline_manifest()
+            .keys()
+            .any(|path| path.starts_with("tts/"));
+        let state = if disk_state.is_ready() && tts_suite_is_pinned && !tts_ready {
+            self.set_state(ModelInstallState::NotInstalled).await;
+            ModelInstallState::NotInstalled
+        } else {
+            self.refresh_integrity(disk_state).await
+        };
 
         VoiceModelStatusResponse {
             state,
@@ -721,3 +737,52 @@ mod write_lease_tests {
         assert_ne!(m_ne1.identity_revision(), m_ne2.identity_revision());
     }
 }
+
+#[cfg(test)]
+mod tts_completeness_tests {
+    use super::*;
+    use crate::layout::{EXPECTED_FILES, EXPECTED_TTS_FILES};
+
+    fn write_stub(root: &Path, rel: &str) {
+        let full = root.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full, vec![0u8; 16]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn base_models_without_the_tts_suite_report_not_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        for rel in EXPECTED_FILES {
+            write_stub(dir.path(), rel);
+        }
+        for rel in EXPECTED_TTS_FILES {
+            write_stub(dir.path(), rel);
+        }
+        // Remove only the espeak voice definitions that the stale downloader
+        // used to omit; the suite must no longer look installable.
+        for rel in [
+            "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+            "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
+        ] {
+            std::fs::remove_file(dir.path().join(rel)).unwrap();
+        }
+
+        let manager = ModelManager::new(dir.path());
+        let status = manager.get_status().await;
+        assert_eq!(
+            status.state,
+            ModelInstallState::NotInstalled,
+            "a partial TTS suite must be reported as not installed, got {:?}",
+            status.state
+        );
+        let missing = status
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("espeak-ng-data/lang/gmw/en"))
+            .expect("voice definition detail present");
+        assert!(!missing.exists);
+    }
+}
+

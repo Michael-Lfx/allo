@@ -95,6 +95,17 @@ pub trait TtsProvider: Send + Sync {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError>;
+    /// Provider that should synthesize the self-check audio fixtures.
+    ///
+    /// The KWS model is an English acoustic model trained on real speech; the
+    /// bundled offline Matcha voices are not reliably detected for the wake
+    /// phrase, while the fixed fixtures validated against the model were
+    /// produced by the Edge `en-US-JennyNeural` voice. When an online voice is
+    /// available, fixture synthesis prefers it; the daemon falls back to the
+    /// regular provider chain (and therefore offline voices) when it is not.
+    fn self_check_audio_provider(&self) -> Option<std::sync::Arc<dyn TtsProvider>> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -1216,6 +1227,18 @@ struct ActiveTtsEngines {
     english: Option<sherpa_onnx::OfflineTts>,
 }
 
+/// Matcha English is phonemized by the vendored piper frontend through
+/// `espeak_SetVoiceByName("en-us")`. That call throws a C++ `runtime_error`
+/// when the bundled `espeak-ng-data` lacks the language/voice definitions, and
+/// the sherpa C API does not catch vendor exceptions, so the whole daemon would
+/// abort. Require the two definition files before the English engine is even
+/// created: an incomplete data directory then degrades to "English TTS
+/// unavailable" instead of killing the process.
+fn espeak_english_voice_available(data_dir: &std::path::Path) -> bool {
+    data_dir.join("lang").join("gmw").join("en").is_file()
+        && data_dir.join("lang").join("gmw").join("en-US").is_file()
+}
+
 #[cfg(feature = "local-tts")]
 #[derive(Clone)]
 pub struct SherpaOfflineTtsProvider {
@@ -1298,7 +1321,17 @@ impl SherpaOfflineTtsProvider {
             })?;
 
             let english = if let (Some(en_m), Some(en_t)) = (&config.en_model_path, &config.en_tokens_path) {
-                if en_m.exists() && en_t.exists() {
+                let espeak_voice_present = config
+                    .en_data_dir
+                    .as_deref()
+                    .is_some_and(espeak_english_voice_available);
+                if !espeak_voice_present {
+                    tracing::warn!(
+                        data_dir = ?config.en_data_dir,
+                        "English Matcha TTS skipped: espeak-ng-data/lang/gmw/en and en-US are missing (repair the voice model suite); continuing with Chinese-only TTS instead of letting the vendor phonemizer abort the daemon"
+                    );
+                }
+                if en_m.exists() && en_t.exists() && espeak_voice_present {
                     let en_data_str = config.en_data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
                     let en_config = sherpa_onnx::OfflineTtsConfig {
                         model: sherpa_onnx::OfflineTtsModelConfig {
@@ -1588,6 +1621,13 @@ impl FallbackTtsProvider {
     pub fn fallback(&self) -> &std::sync::Arc<dyn TtsProvider> {
         &self.fallback
     }
+
+    fn online_provider(&self) -> Option<std::sync::Arc<dyn TtsProvider>> {
+        self.fallback
+            .diagnostic("")
+            .is_some_and(|diagnostic| diagnostic.online)
+            .then(|| self.fallback.clone())
+    }
 }
 
 #[async_trait]
@@ -1597,6 +1637,9 @@ impl TtsProvider for FallbackTtsProvider {
     }
     fn is_available(&self) -> bool {
         self.primary.is_available() || self.fallback.is_available()
+    }
+    fn self_check_audio_provider(&self) -> Option<std::sync::Arc<dyn TtsProvider>> {
+        self.online_provider()
     }
     async fn synthesize_stream(
         &self,
@@ -1821,3 +1864,111 @@ mod fallback_and_sherpa_tests {
         assert!(ssml_escaped.contains("1 &lt; 2 &amp; 3 &gt; 1"));
     }
 }
+
+#[cfg(test)]
+mod espeak_voice_guard_tests {
+    use super::espeak_english_voice_available;
+
+    #[test]
+    fn english_voice_requires_lang_definition_files() {
+        let dir = std::env::temp_dir().join(format!("flowy-espeak-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lang").join("gmw")).expect("create lang dir");
+
+        assert!(!espeak_english_voice_available(&dir), "empty data dir must be rejected");
+
+        std::fs::write(dir.join("lang").join("gmw").join("en"), "language en").expect("write en");
+        assert!(
+            !espeak_english_voice_available(&dir),
+            "language definition alone is not enough; the en-US voice file is required"
+        );
+
+        std::fs::write(dir.join("lang").join("gmw").join("en-US"), "voice en-us")
+            .expect("write en-US");
+        assert!(espeak_english_voice_available(&dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod self_check_fixture_provider_tests {
+    use super::*;
+    use nomifun_api_types::voice::VoiceTtsDiagnostic;
+
+    struct OnlineMock;
+
+    #[async_trait]
+    impl TtsProvider for OnlineMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "edge".into(),
+                voice: None,
+                online: true,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+    }
+
+    struct OfflineMock;
+
+    #[async_trait]
+    impl TtsProvider for OfflineMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "sherpa".into(),
+                voice: None,
+                online: false,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+    }
+
+    #[test]
+    fn online_fallback_is_used_for_self_check_fixtures() {
+        let chain = FallbackTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            std::sync::Arc::new(OnlineMock),
+        );
+        let provider = chain
+            .self_check_audio_provider()
+            .expect("online fallback must be offered for fixture synthesis");
+        assert!(
+            provider
+                .diagnostic("")
+                .is_some_and(|diagnostic| diagnostic.online),
+            "fixture provider must be the online voice"
+        );
+    }
+
+    #[test]
+    fn offline_only_chain_keeps_using_the_regular_provider() {
+        let chain = FallbackTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            std::sync::Arc::new(OfflineMock),
+        );
+        assert!(
+            chain.self_check_audio_provider().is_none(),
+            "offline chains must keep generating fixtures through the normal path"
+        );
+    }
+}
+

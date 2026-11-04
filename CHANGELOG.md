@@ -18,6 +18,7 @@ at a high level rather than a complete commit log.
 - Hardened Windows process tree lifecycle management in test runners using native `CREATE_SUSPENDED` and Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), eliminating pre-assignment descendant escape windows and ensuring clean subtree termination.
 
 - Renamed the voice companion end to end: the daemon, its environment variables, control header, log files and the voice capability row in settings now use `voice-companion` only. The retired `ai-mate` names, environment fallbacks and packaging lookups were removed, and the settings row no longer borrows the old product name.
+- Fixed the voice self-check crash after reinstalling the voice suite: the English Matcha TTS download now includes the required espeak-ng voice definitions, an incomplete suite is detected as repairable instead of crashing the daemon, and self-check fixtures prefer the online voice that the English wake-word model was validated against. The voice settings page no longer repeats the verification title/count and its capability chain wraps without orphan arrows or overflow.
 ## v1.7.0 - 2026-10-30
 
 - Windows installers include the voice companion daemon and app-local VC++ runtime. Hey Flowy wake aliases are expanded; a command spoken with a wake phrase follows the normal conversation route without a second transcription.

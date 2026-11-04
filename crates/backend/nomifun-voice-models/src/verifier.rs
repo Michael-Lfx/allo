@@ -36,6 +36,8 @@ pub const DOWNLOAD_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
     "tts/vocos-22khz-univ.onnx",
 ];
 
@@ -70,6 +72,8 @@ pub fn default_tts_manifest() -> HashMap<String, String> {
     manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex".to_string(), "3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4".to_string());
     manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata".to_string(), "4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3".to_string());
     manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations".to_string(), "3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en".to_string(), "4605d5330801de3641c6e366d15f129ea1f5ffbce8722642aba01ace07ab9c83".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US".to_string(), "41534c2a22df5dd4f1052ff9e1a33a3ea7bff5a26b5c02bdad5ba8ddb7524704".to_string());
     manifest.insert("tts/vocos-22khz-univ.onnx".to_string(), "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081".to_string());
     manifest
 }

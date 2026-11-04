@@ -35,6 +35,13 @@ pub const EXPECTED_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
+    // espeak-ng language/voice definitions. Matcha English is phonemized by the
+    // vendored piper frontend with `espeak_SetVoiceByName("en-us")`; without the
+    // language data that call fails and the sherpa C API lets the vendor C++
+    // exception escape, which aborts the daemon. Keep these in the required set
+    // so installs and repairs always fetch them.
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
     "tts/vocos-22khz-univ.onnx",
 ];
 
