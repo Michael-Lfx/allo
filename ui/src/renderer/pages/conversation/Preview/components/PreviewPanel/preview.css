@@ -123,6 +123,17 @@ html[data-wallpaper='on'] .preview-panel-shell {
    drag region unless the button itself is marked no-drag. */
 /* Hairline between the markdown title bar and the body, with a faint
    shadow on both sides so the split reads without a heavy border. */
+/* Sampled from the reference link blue (RGB 0, 129, 242). */
+.markdown-preview-body a {
+  color: #0081f2;
+  text-decoration: none;
+}
+
+.markdown-preview-body a:hover {
+  color: #0068c9;
+  text-decoration: none;
+}
+
 .preview-toolbar--md {
   position: relative;
   z-index: 1;
