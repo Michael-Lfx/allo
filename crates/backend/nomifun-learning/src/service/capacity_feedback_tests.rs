@@ -173,8 +173,8 @@ async fn publish_persists_capacity_note_and_absent_note_clears_it() {
     assert_eq!(stored, None, "列上必须是 NULL，不是空串");
 }
 
-/// latest-wins：同用户同课时覆盖写、`feedback_id` 首写生成后不变；不同
-/// 用户互不可见（读回只给当前用户自己那一行）。
+/// latest-wins：同用户同课时覆盖写（首写时刻保留、updated_at 刷新）；
+/// 不同用户互不可见（读回只给当前用户自己那一行）。
 #[tokio::test]
 async fn capacity_feedback_is_per_user_latest_wins_and_not_shared() {
     let (service, pool, user_a, detail) = capacity_test_service().await;
