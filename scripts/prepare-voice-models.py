@@ -81,7 +81,7 @@ MODELS_MANIFEST = [
 
 
 def get_default_models_dir() -> Path:
-    env_dir = os.environ.get("VOICE_COMPANION_MODEL_DIR") or os.environ.get("AI_MATE_MODEL_DIR")
+    env_dir = os.environ.get("VOICE_COMPANION_MODEL_DIR")
     if env_dir and env_dir.strip():
         return Path(env_dir.strip())
 
@@ -358,7 +358,7 @@ def main():
                 desktop_models_dir.parent.mkdir(parents=True, exist_ok=True)
                 print(f"\nTip: Desktop app default models path is {desktop_models_dir}.")
                 print(f"To use these models in Desktop UI, set environment variable:")
-                print(f"  setx AI_MATE_MODEL_DIR \"{models_dir.resolve()}\"")
+                print(f"  setx VOICE_COMPANION_MODEL_DIR \"{models_dir.resolve()}\"")
             except Exception:
                 pass
 
