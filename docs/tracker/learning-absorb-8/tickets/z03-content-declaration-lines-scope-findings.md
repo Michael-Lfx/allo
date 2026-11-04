@@ -156,3 +156,12 @@ part_of: ../map.md
 3. 旧档课程（存量开发库）内容生成零两行、零 scope findings、行为与
    基线一致（旧档零变化）。
 4. report-only 断言测试在场（有 findings 仍发布成功）。
+
+## 勘误（双轴评审修复轮注记）
+
+- 票面写 `MENTION_NEGATIONS` 21 词——learnhub 实码为 12 + 10 = 22 词
+  （`BOUNDARY_MARKERS` 12 + 否定性补充措辞 10），实现照实码 22。
+- `CLAUSE_DELIMS` 全角补全（，！？）为 upstream 缺陷修正：learnhub
+  源文件只剩半角逗/叹/问号的重复条目（全角形丢失的痕迹），allo 正文
+  与 scope 是全角中文标点，不补全角形则排除段过滚——已在
+  `scope_findings.rs` 模块 doc 注明。

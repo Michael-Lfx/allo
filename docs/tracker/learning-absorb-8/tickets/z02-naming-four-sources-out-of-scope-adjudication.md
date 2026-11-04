@@ -155,3 +155,11 @@ part_of: ../map.md
    total/rows/unhandled/degraded 口径不变，degraded=false）。
 3. 开关 off 臂回归：行为与基线逐字节一致（零派生）。
 4. 并行约束：与 z03 无文件交集（map §文件冲突面），merger 串行并回。
+
+## Resolution（双轴评审修复轮注记）
+
+「词表外裁决」的 allo 形态与 learnhub `20f1dcf` 的 String 词表逐行
+「视同未处置」**结构性不同**：allo 走 serde 枚举解析面拒绝（整结论
+作废 → 死因重试恰一次 → Degraded），不存在「词表外词静默放行」面。
+基线两值时代 allo 即解析拒（「照旧」语义），本次移植行为零变化，
+**不采纳** learnhub 的 String 词表逐行「视同未处置」形态。
