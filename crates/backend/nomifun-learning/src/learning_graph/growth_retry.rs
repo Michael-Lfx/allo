@@ -27,27 +27,57 @@
 
 use std::collections::{HashMap, HashSet};
 
+use nomifun_common::AppError;
+
 use super::{MAX_BATCH_NODES, ProposedBatch, ProposedNode, ReviewProblem};
 
 /// 一次 attempt 的失败面：`report` 进重试反馈与耗尽消息；`guard` = 机械
 /// 比对守卫失败（豁免早停 + 原地重试）；`review_history` = 前轮语义评审
-/// 意见（#175C，独立字段不进 `report`——理由见模块头注）。
-#[derive(Debug, Clone)]
+/// 意见（#175C，独立字段不进 `report`——理由见模块头注）；`transport` =
+/// 模型没收到（y02：原错误立即上抛，不写反馈、不进早停、不占轮次）。
+#[derive(Debug)]
 pub(crate) struct AttemptFail {
     pub report: String,
     pub guard: bool,
     pub review_history: Option<String>,
+    pub transport: Option<AppError>,
 }
 
 impl AttemptFail {
     /// 生成面失败（解析/形状/语义门/评审/LLM 错误——携带输出细节，早停适用）。
     pub fn generation(report: impl Into<String>) -> Self {
-        Self { report: report.into(), guard: false, review_history: None }
+        Self {
+            report: report.into(),
+            guard: false,
+            review_history: None,
+            transport: None,
+        }
     }
 
     /// 机械守卫失败（固定文案，豁免早停）。
     pub fn guard(report: impl Into<String>) -> Self {
-        Self { report: report.into(), guard: true, review_history: None }
+        Self {
+            report: report.into(),
+            guard: true,
+            review_history: None,
+            transport: None,
+        }
+    }
+
+    /// 传输失败（y02）：原 `AppError` 立即上抛——不写反馈、不进早停、不占
+    /// 契约轮次；模型对网络错误无能为力。
+    pub fn transport(error: AppError) -> Self {
+        Self {
+            report: error.to_string(),
+            guard: false,
+            review_history: None,
+            transport: Some(error),
+        }
+    }
+
+    /// 是否为传输失败（[`Self::transport`] 构造）。
+    pub fn is_transport(&self) -> bool {
+        self.transport.is_some()
     }
 
     /// 附前轮评审意见（#175C；None/空 = 无意见，反馈零附加段）。
@@ -407,6 +437,20 @@ mod tests {
         let plain = AttemptFail::generation("契约报告").with_review_history(Some("  ".into()));
         assert!(plain.review_history.is_none());
         assert!(!plain.into_feedback().contains("前轮评审意见"));
+    }
+
+    /// y02：传输失败标记与生成面失败互斥——重试环据此立即上抛原错误。
+    #[test]
+    fn transport_failure_carries_the_original_error() {
+        let fail = AttemptFail::transport(AppError::Timeout(
+            "json coach call exceeded 480s".into(),
+        ));
+        assert!(fail.is_transport());
+        assert!(!fail.guard);
+        assert!(fail.review_history.is_none());
+        assert_eq!(fail.report, "Request timeout: json coach call exceeded 480s");
+        assert!(matches!(fail.transport, Some(AppError::Timeout(_))));
+        assert!(!AttemptFail::generation("契约报告").is_transport());
     }
 
     #[test]

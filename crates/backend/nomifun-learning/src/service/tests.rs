@@ -3763,6 +3763,64 @@ async fn growth_stops_early_when_the_gate_report_repeats() {
     assert_eq!(stats.attempts_used, 2);
 }
 
+/// y02 红绿样（生长环传输失败）：教练调用返回 Timeout → 立即终止（恰 1 次
+/// 调用、零重试反馈、零早停指纹），pending 批如实转 failed。
+#[tokio::test]
+async fn growth_transport_failure_stops_after_a_single_call() {
+    struct TransportFailCompleter {
+        calls: AtomicUsize,
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+    #[async_trait::async_trait]
+    impl crate::completer::LearningCompleter for TransportFailCompleter {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, AppError> {
+            unreachable!("growth pipeline only uses the json seam")
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.prompts.lock().unwrap().push(user.to_owned());
+            Err(AppError::Timeout("json coach call exceeded 480s".into()))
+        }
+    }
+
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = Arc::new(TransportFailCompleter {
+        calls: AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    });
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "transport failure must fail the pending batch"
+    );
+    assert_eq!(
+        completer.calls.load(AtomicOrdering::SeqCst),
+        1,
+        "传输失败立即上抛：不占契约轮次（3 轮预算零消耗）"
+    );
+    assert_eq!(
+        completer.prompts.lock().unwrap().len(),
+        1,
+        "零重试反馈：第二次起草不发生"
+    );
+}
+
 /// 异错烧满预算：每轮违约不同（指纹互异）→ 3 轮全烧，exhausted。
 #[tokio::test]
 async fn growth_burns_the_full_budget_when_violations_differ() {
@@ -10468,7 +10526,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(!needs.eligible);
     }
 
-    /// 失败回合不推水位：completer 报错 → 留痕仍是下次输入。
+    /// 失败回合不推水位：completer 报错 → 留痕仍是下次输入（y02 起 LLM
+    /// 错误原样上抛，不再包成「生成通道不可用」的 Conflict）。
     #[tokio::test]
     #[serial_test::serial]
     async fn failed_repair_round_does_not_advance_the_watermark() {
@@ -10478,7 +10537,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .run_structure_repair(&user_id, &course, None)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("生成通道不可用"), "{error}");
+        assert!(error.to_string().contains("model unavailable"), "{error}");
         assert_eq!(maintenance_watermark(&service, &course).await, None);
         let needs = service.maintenance_needs(&course).await.unwrap();
         assert_eq!(needs.unconsumed_findings, 2, "失败回合的留痕仍是输入");

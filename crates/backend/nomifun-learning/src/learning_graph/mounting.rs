@@ -509,7 +509,6 @@ pub(crate) async fn run_mount_round(
     };
     let mut feedback = "(无:首次)".to_owned();
     let mut last = String::from("(未执行)");
-    let mut last_was_llm = false;
     let mut prev_fingerprint: Option<String> = None;
     for attempt in 1..=structure_gen_max_attempts() {
         if cancel.is_some_and(|token| token.is_cancelled()) {
@@ -542,15 +541,18 @@ pub(crate) async fn run_mount_round(
         let raw = match raw {
             Ok(raw) => raw,
             Err(error) => {
-                // LLM 错误（无凭据/网络）不与条款违约混报：如实上抛最后
-                // 一次的错误——配置问题不会因重试收敛。
-                last = error.to_string();
-                last_was_llm = true;
-                tracing::warn!(attempt, "mount round LLM call failed");
-                continue;
+                // 传输失败（模型没收到）与取消：原错误立即上抛——不写反馈、
+                // 不占契约轮次（y02 不变量；模型对网络错误无能为力）。
+                tracing::warn!(
+                    failure_kind = "transport",
+                    attempt,
+                    stage = "mount",
+                    error = %error,
+                    "mount round LLM call failed — aborting without retry feedback"
+                );
+                return Err(error);
             }
         };
-        last_was_llm = false;
         let artifact = crate::generation::parse_json_object::<Value>(&raw)
             .map_err(|error| format!("挂载产物解析失败（非合法 JSON 对象）：{error}"))
             .and_then(|value| {
@@ -563,6 +565,13 @@ pub(crate) async fn run_mount_round(
         let artifact = match artifact {
             Ok(artifact) => artifact,
             Err(report) => {
+                tracing::warn!(
+                    failure_kind = "parse",
+                    attempt,
+                    stage = "mount",
+                    report_head = %report.chars().take(400).collect::<String>(),
+                    "mount round reply rejected — retrying with clause feedback"
+                );
                 last = report;
                 feedback = format!("上一轮产物违反契约,逐条修正后重新生成:\n{last}");
                 continue;
@@ -576,6 +585,13 @@ pub(crate) async fn run_mount_round(
         }
         let owned: Vec<ContractViolation> = red.into_iter().cloned().collect();
         last = structure_contract::format_violations(&owned);
+        tracing::warn!(
+            failure_kind = "parse",
+            attempt,
+            stage = "mount",
+            report_head = %last.chars().take(400).collect::<String>(),
+            "mount round rejected by the clause gate — retrying with clause feedback"
+        );
         // 同指纹早停（j03 骨架）：连败两轮同一份逐条款报告 → 反馈回灌已
         // 无法改变结果，立即耗尽。
         let fingerprint = super::growth_retry::normalize_report(&last);
@@ -585,11 +601,6 @@ pub(crate) async fn run_mount_round(
         }
         prev_fingerprint = Some(fingerprint);
         feedback = format!("上一轮产物违反契约,逐条修正后重新生成:\n{last}");
-    }
-    if last_was_llm {
-        return Err(AppError::Conflict(format!(
-            "挂载回合未执行（生成通道不可用，挂载表未改动）：{last}"
-        )));
     }
     Err(AppError::UnprocessableEntity(format!(
         "挂载回合未通过契约门（逐条款报告见下）；挂载表未改动，可重试：\n{last}"
@@ -839,5 +850,66 @@ mod tests {
         ] {
             assert!(doc.contains(code), "contract doc missing {code}");
         }
+    }
+
+    /// y02 红绿样（传输失败）：LLM 调用 Err → 原错误立即上抛、恰 1 次调用
+    /// ——不再 `continue` 占满 3 轮，也不伪装成契约耗尽。
+    #[tokio::test]
+    async fn llm_transport_failure_propagates_after_a_single_call() {
+        struct Failing(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl LearningCompleter for Failing {
+            async fn complete(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+            ) -> Result<String, AppError> {
+                unreachable!("mount round only uses the json seam")
+            }
+            async fn complete_json_with_thinking(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Option<f32>,
+            ) -> Result<String, AppError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(AppError::BadGateway(
+                    "LLM provider error: API error 502: bad gateway".into(),
+                ))
+            }
+        }
+        let completer = Failing(std::sync::atomic::AtomicUsize::new(0));
+        let input = MountRoundInput {
+            goal: "g",
+            proficiency_statement: "p",
+            learner_basis: "b",
+            structure_blocks: "- 块A",
+            pending_nodes: "- 节点一",
+            existing_mounts: "（无）",
+        };
+        let error = run_mount_round(
+            &completer,
+            None,
+            &input,
+            &slugs(&["block-01"]),
+            &titles(&["节点一"]),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(&error, AppError::BadGateway(_)), "{error:?}");
+        assert_eq!(
+            completer.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "传输失败立即上抛，不占契约轮次"
+        );
+        assert!(
+            !error.to_string().contains("未通过契约门"),
+            "不得伪装成契约耗尽：{error}"
+        );
     }
 }
