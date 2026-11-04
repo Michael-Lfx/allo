@@ -135,12 +135,25 @@ pub static STRUCTURE_REPAIR: PromptSpec = PromptSpec {
     fence_words: FENCE_DEV_FACE,
 };
 
+/// 名字捆绑批量裁决 prompt 资产（y01，learnhub #199 名字裁决域中立移植）：
+/// 温度 0.0、无 thinking（机械裁决档，走无思考的 json 接缝）；输入只给
+/// 「名字 + 被点字符」，不告知位置/产物面/机械门结论（免锚定）。
+pub static NAME_BUNDLE: PromptSpec = PromptSpec {
+    id: "name-bundle",
+    template: include_str!("../../prompts/structure/name-bundle.md"),
+    placeholders: &["name_list"],
+    task: "name-bundle",
+    temperature: 0.0,
+    fence_words: FENCE_DEV_FACE,
+};
+
 /// 全部已注册 prompt 资产（完备性与互锁测试的迭代面）。
 pub static REGISTRY: &[&PromptSpec] = &[
     &GOAL_DECOMPOSITION,
     &PREREQUISITE_TERRAIN,
     &STRUCTURE_MOUNT,
     &STRUCTURE_REPAIR,
+    &NAME_BUNDLE,
 ];
 
 /// 装配失败（模板/注册表/值三方不一致；互锁测试之外的时刻性漂移）。
@@ -506,6 +519,18 @@ mod tests {
         ] {
             assert!(repair_body.contains(phrase), "repair prompt missing「{phrase}」");
         }
+        // 名字捆绑裁决（y01，第五资产）：中立输入面 + 逐名字结论的可执行措辞。
+        let (_, name_body) = split_template(NAME_BUNDLE.template).unwrap();
+        for phrase in [
+            "捆绑",
+            "单一主题术语",
+            "被点出的字或符号",
+            "恰好一条输出",
+            "bundle",
+            "reason",
+        ] {
+            assert!(name_body.contains(phrase), "name-bundle prompt missing「{phrase}」");
+        }
     }
 
     /// 装配面无重复段落：同一资产的模型面正文里，非平凡的行（>20 字符）不得
@@ -568,11 +593,19 @@ mod tests {
             ("mount_observations", "（无观察）"),
             ("retry_feedback", "(无:首次)"),
         ];
+        // y01 第五资产：名字捆绑批量裁决（输入只给名字 + 被点字符）。
+        let name_bundle_values: &[(&'static str, &str)] = &[
+            (
+                "name_list",
+                "- 名字:「求和公式」\n  被点字符:「和」\n- 名字:「双进程与窗口」\n  被点字符:「与」",
+            ),
+        ];
         for (spec, values, golden_name) in [
             (&GOAL_DECOMPOSITION, goal_values, "goal-decomposition.md"),
             (&PREREQUISITE_TERRAIN, terrain_values, "prerequisite-terrain.md"),
             (&STRUCTURE_MOUNT, mount_values, "structure-mount.md"),
             (&STRUCTURE_REPAIR, repair_values, "structure-repair.md"),
+            (&NAME_BUNDLE, name_bundle_values, "name-bundle.md"),
         ] {
             let assembled = assemble(spec, values).expect("golden values assemble").text;
             let golden_path = Path::new(env!("CARGO_MANIFEST_DIR"))

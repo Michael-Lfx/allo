@@ -1,9 +1,9 @@
 ---
 contract: learning-structure-artifacts
-version: "1.8"
-date: 2026-10-30
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）。v1.7（e2，E2E 修复波）：§6 生成轮次随实码同步——时序反转为「① 前置地形 ② 知识结构」（e2 判定输入通道：门口清单经 `door_list_markdown` 装配注入结构装配，`prerequisite_doors` 逐字全收、块级 door_refs 判定源同此）+ 同指纹早停注记；零机械条款改动。v1.8（f2，结构生成模型面打磨）：§2.2 gd.blocks.count 三档化——硬下限 40→**25**、新增 25–39「低于 40 参考档」警告档（小目标课如实精简、密度抽验兜底；不拒收、不进重试反馈），警告级汇总并入两 warn、smoke structure/repair 档 OK 读数行追加 `warnings={n}`；§6 `prerequisite_doors` 行文随提示词同步（只写编号本身——door_list 注入行「逐字全收」被模型误读为整行照抄，f2 票面法证）；§7 增 learnhub 块数量级档差异记档
-sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/tracker/learning-absorb-5/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.14]
+version: "1.9"
+date: 2026-11-04
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）。v1.7（e2，E2E 修复波）：§6 生成轮次随实码同步——时序反转为「① 前置地形 ② 知识结构」（e2 判定输入通道：门口清单经 `door_list_markdown` 装配注入结构装配，`prerequisite_doors` 逐字全收、块级 door_refs 判定源同此）+ 同指纹早停注记；零机械条款改动。v1.8（f2，结构生成模型面打磨）：§2.2 gd.blocks.count 三档化——硬下限 40→**25**、新增 25–39「低于 40 参考档」警告档（小目标课如实精简、密度抽验兜底；不拒收、不进重试反馈），警告级汇总并入两 warn、smoke structure/repair 档 OK 读数行追加 `warnings={n}`；§6 `prerequisite_doors` 行文随提示词同步（只写编号本身——door_list 注入行「逐字全收」被模型误读为整行照抄，f2 票面法证）；§7 增 learnhub 块数量级档差异记档。v1.9（y01，名字形态三层）：§2.2 gd.blocks.one_name 收缩为 L0 纯标点硬门（`、`/`，`），新增 gd.blocks.name_hint 警告级（`与/和/及/,//`，取消词边 `和` 豁免）与 §2.3 名字形态三层表 + 新增 name-bundle 裁决资产（结构生成 L2 批量中立裁决，失败降级）；生长侧 `ng.mints.name_hint` 只提示不阻断（v1 不接 L2）；§7 增与 learnhub 的差异记档
+sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/tracker/learning-absorb-5/map.md, docs/tracker/learning-absorb-7/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.14]
 ---
 
 # 学习结构产物契约 v1.0
@@ -101,9 +101,11 @@ v2.14 门位标签）——定义/操作/实例/易错/source 等其余判据形
 （编号逐字取自 `domain.prerequisite_doors`，一块可引多条），**宁缺勿滥**——
 错标比漏标严重；advanced/expert（正式内容段）不标；旧快照无键合法（键可选）。消费
 面 = 过门自检读侧（TerrainView 覆盖统计 + 结构 Tab 门口→覆盖块映射 + 块详情
-door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一名**：名字禁并列连词
-与并列分隔符（官方术语自身含并列形的以「」包裹豁免；「和」在词首/词尾位是名词
-不是连词，词中位才计并列——learnhub #53 留痕的机械读法放宽）。薄干声明随主干给
+door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一名**：名字的并列
+形态分三层执法（v1.9，y01）——L0 纯标点 `、`/`，` 命中即红；L1 歧义字/半角
+标点 `与/和/及/,//` 只提示、不单独阻断；L2 批量中立裁决仅在 L1 是唯一阻断时
+触发（详见 §2.3）。官方术语自身含并列形的以「」包裹整段豁免（L0/L1 同门；
+段内豁免不掩护段外）。薄干声明随主干给
 （`thin_spine: true` + 非空 `reason` 豁免每干配额）。
 
 **边方向语义**（learnhub #42 定案）：`assumes` 的**源 = 需求方、目标 = 前置**，
@@ -127,7 +129,8 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 | gd.blocks.count | 条数 < 25 红、25 ≤ n < 40 记「低于 40 参考档」**警告**（不拒收）、> 100 红；80 < n ≤ 100 记「越档」警告 |
 | gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note} + 唯一可选 door_refs（其余判据形字段 = 红）；stage ∈ {basic, advanced, expert}；note 非空 |
 | gd.blocks.door_refs | `door_refs` 逐条形态 `G<数字>` 且块内不重复；跨产物解析（引用 ⊆ 地形门口产出 **且** ⊆ 本课声明课程门）归 §4 对账面（悬挂/越出 = 红，learnhub `check_door_references` 同款） |
-| gd.blocks.one_name | 块名不含并列标记（与/和/及/、/,/，/斜杠），「…」段内豁免、词边「和」豁免 |
+| gd.blocks.one_name | **L0 硬门**：块名不含纯标点并列符 `、`/`，`；「…」段内豁免。多主题须拆条（出路文案同前） |
+| gd.blocks.name_hint | **L1 提示**（警告级，不拒收）：块名含歧义字/半角标点 `与/和/及/,//`；「…」段内豁免；`和` 无词首/词尾豁免 |
 | gd.blocks.slug | slug 匹配 `^[a-z0-9-]+$`；name 唯一、slug 唯一 |
 | gd.blocks.spine_ref | 每块 spine ∈ spines 名集 |
 | gd.blocks.quota | 每主干块数 ≥5；不足者该主干须 `thin_spine: true` + 非空 reason，否则红 |
@@ -139,7 +142,20 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 | gd.quality | ≥5 条；status ∈ {met, unmet}；unmet 必带非空 reason |
 | gd.no_schedule | 全文无排期语词（机械代理词表：排期/日程/时间表/进度/计划/小时/每天/每周/每月/个月/半天/整周；裸「天/周/月」误报高，不扫）。**quality 清单与 disclaimer 豁免**（元声明面——自检理由合法地谈论红线本身） |
 
-警告级（不拒收、随报告透出、不进重试反馈）：`gd.blocks.count` 低于 40 参考档（25 ≤ n < 40，小目标课如实精简——密度抽验兜底）与越档（80 < n ≤ 100）。smoke structure/repair 档 OK 读数行以 `warnings={n}` 透出计数（f2/A2，warn 可见性走读数不走打回）。
+警告级（不拒收、随报告透出、不进重试反馈）：`gd.blocks.count` 低于 40 参考档（25 ≤ n < 40，小目标课如实精简——密度抽验兜底）与越档（80 < n ≤ 100），以及 `gd.blocks.name_hint` 名字并列形态提示（v1.9，y01；L2 裁决维持捆绑时才升红条）。smoke structure/repair 档 OK 读数行以 `warnings={n}` 透出计数（f2/A2，warn 可见性走读数不走打回）。
+
+### 2.3 名字形态三层（v1.9，y01）
+
+结构侧块名与生长侧提名共用同一判据源（`structure_contract::hard_name_mark` /
+`soft_name_marks`），三层分工：
+
+| 层 | 触发面 | 命中行为 | 成本 | 备注 |
+|---|---|---|---|---|
+| L0 硬门 | 名字含纯标点 `、`/`，`（「」段内除外） | 红条 `gd.blocks.one_name`，整批重试 | 免费 | 纯标点无词形生命，出现即必然捆绑 |
+| L1 点名 | 名字含 `与/和/及/,//`（「」段内除外；`和` 无词边豁免） | 结构：warn `gd.blocks.name_hint`；生长：warn `ng.mints.name_hint` | 免费 | 词表/位置启发式不可先验封闭（「求和公式」vs「双进程与窗口」双向反例） |
+| L2 批量裁决 | 结构生成中「全部红条为空 ∧ L1 点名非空」 | 一次小调用逐名字裁 `bundle`：true → 红条 `gd.blocks.one_name`（带理由）进重试；false → 放行；裁决器不可用/输出违约 → `Degraded` 放行 | 付费、稀疏 | 输入只给「名字 + 被点字符」（不带位置/产物面/机械门结论）；同名运行内 memo；裁决理由不单独进重试反馈 |
+
+与 learnhub 的差异（同 y01 裁决）：①生长侧 v1 **只提示、不接 L2 付费裁决**（真机出现捆绑铸名且 hint 无改善再立票）；②**取消词边 `和` 豁免**——词首/词尾的 `和` 同样是筛查面，是否构成捆绑交 L2 裁决（learnhub 契约文档仍写「仅词中位」，与其自身代码矛盾，不抄）；③维护/修补路径只放行留痕（与 learnhub 维护面一致），L0 仍硬拒；④裁决资产住 `prompts/structure/name-bundle.md`（第五资产），输出契约 `{"verdicts":[{name,bundle,reason}]}`，机械校验「每名恰一条/无未知名/无重复/理由非空」。
 
 ## 3 产物二：前置地形（terrain）
 
@@ -233,6 +249,14 @@ structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors �
 生成按钮），**课程保留、快照保持 NULL、无半成品落列**（建课接口不等待生成，
 失败不回收课程——可重试重跑）。
 
+**L2 名字裁决位（v1.9，y01）**：每轮结构产物过完 L0 红条后，若 L1 点名清单
+非空才触发一次批量中立裁决（§2.3）——`bundle=true` 的名字追加
+`gd.blocks.one_name` 红条（带裁决理由）并按上述整批重试机制回灌；`false` 直
+接放行；裁决器不可用/输出违约 = `Degraded` 放行 + hint 日志。裁决输入只给
+「名字 + 被点字符」，裁决理由不单独进重试反馈；同名运行内 memo 跨轮复用
+（同名字不重复付费）。观测日志带 `name_suspects={n}`、`name_hints={n}`、
+`adjudication=ok|degraded`，不新增 WS phase。
+
 ## 7 与 learnhub 的差异清单（全部有裁决依据，不得"补齐"回旧形态）
 
 | learnhub v2.4 | allo v1.0 | 依据 |
@@ -243,6 +267,7 @@ structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors �
 | 落盘 YAML（wire-only 转换） | JSON 直存快照列 | 单字段快照语义，无第二真相形态 |
 | gd.edges.audit 参考质量告警 | 未引入（v1 观测面后置） | 契约 = validator 1:1，不纸上设条款 |
 | 块数量级档 40–80（learnhub validator「低于量级档下限」即红） | gd.blocks.count 三档：< 25 红、25–39「低于 40 参考档」警告（不拒收、不进重试反馈）、80 < n ≤ 100 越档警告、> 100 红 | E2E 两轮对照 31 条与 51 条的课程内容密度无差，硬凑 40 产出「底数与指数」类边缘块（f2 票面法证）；learnhub 40–80 按其大课设计；警告级先例同构 |
+| 名字三层 L0/L1/L2 + 批量裁决（learnhub #199） | 同构移植（§2.3）：L0 `、`/`，` 红、L1 `与/和/及/,//` 提示、L2 仅「红条为空 ∧ 点名非空」触发；生长侧只接 L1 提示（`ng.mints.name_hint`），不接 L2 | y01 裁决：先修结构侧真实误杀（「求和公式」不再被硬门杀），生长侧 v1 只提示控成本；**取消词边 `和` 豁免**（learnhub 契约文档旧句与其代码矛盾，不抄） |
 
 ## 8 契约文本随批注记（v1.1，j01）
 

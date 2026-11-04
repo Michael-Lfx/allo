@@ -60,6 +60,9 @@ pub(crate) const CONCEPT_REVIEW_MAX_TOKENS: u32 = 16384;
 /// reasoning share applies here, and this is the pipeline's largest reply,
 /// so the budget sits at 2× the coach turn.
 pub(crate) const STRUCTURE_MAX_TOKENS: u32 = 65536;
+/// Name-bundle adjudication (y01): one tiny verdict row per suspect name,
+/// no thinking — a small budget covers the whole batch.
+pub(crate) const NAME_ADJUDICATION_MAX_TOKENS: u32 = 2048;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code

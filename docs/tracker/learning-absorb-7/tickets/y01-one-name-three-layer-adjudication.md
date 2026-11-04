@@ -2,7 +2,7 @@
 id: y01
 title: "one_name 三层分工——L0 硬门 / L1 点名提示 / L2 批量中立裁决"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [y02]
 part_of: ../map.md
@@ -142,3 +142,68 @@ L0 纯标点（`、`/`，`）仍是硬门；L1 连词/分隔符（`与/和/及/,
 - L1 升 warn 后，若有其他消费方把 warnings 当阻断（当前只 info 日志/
   smoke 读数），需逐个核对；`format_violations` 只格式化传入切片。
 - 契约 v1.9 与金样五资产列表是强耦合点，改 `REGISTRY` 必须同步金样测试。
+
+## Resolution（2026-11-04）
+
+**实现点**（分支 `feat/absorb7-y01`，基于 9092c7d9a + 合并集成尖端）：
+
+- `learning_graph/structure_contract.rs`：`HARD_NAME_MARKS`（`、`/`，`）与
+  `SUSPECT_NAME_MARKS`（`与/和/及/,//`）分表；`hard_name_mark` /
+  `soft_name_marks`（「」段内豁免；**取消词边 `和` 豁免**）；新增
+  `pub struct NameSuspect{name,mark,location}` 与 `pub fn
+  collect_name_suspects`（L0 不进清单、同名去重保首条）。`validate_structure`
+  只对 L0 出红条 `gd.blocks.one_name`，L1 出 `gd.blocks.name_hint` warn。
+- 新模块 `learning_graph/name_adjudication.rs`：`NameAdjudicator` 持
+  completer/model_override + 运行内 `memo: HashMap<String, NameVerdict>`；
+  `adjudicate(&mut self, suspects)` 批量调用（输入只渲染「名字 + 被点字符」，
+  不带位置/产物面/机械门结论）；输出契约
+  `{"verdicts":[{name,bundle,reason}]}`，机械校验「每个提交名恰一条 / 无未知
+  名 / 无重复 / 理由非空」，任一不满足 → `Degraded`；传输/解析失败同样
+  `Degraded` + `tracing::warn!`（错误不进重试反馈）。
+- 提示词资产：`prompts/structure/name-bundle.md` +
+  `prompts/structure/golden/name-bundle.md`；`structure_prompts::NAME_BUNDLE`
+  （temperature 0.0、无 thinking、`FENCE_DEV_FACE`）；`REGISTRY` 与金样测试
+  列表扩到五资产；`generation::NAME_ADJUDICATION_MAX_TOKENS = 2048`。
+- `learning_graph/structure_gen.rs`：`generate_structure_artifacts` 创建一个
+  `NameAdjudicator` 跨 attempt 复用（memo 生效），`attempt_once` 接收
+  `&mut`；位置在「全部红条为空」之后、`Ok(StructureArtifacts)` 之前——仅
+  `collect_name_suspects` 非空才调用。`bundle=true` → 追加红条
+  `gd.blocks.one_name`（带裁决理由）走既有重试/同指纹早停；`false` → 放行；
+  `Degraded` → 放行 + warn。日志带 `name_suspects={n}`、`name_hints={n}`、
+  `adjudication=ok|degraded`，无新 WS phase。
+- 修补路径 `service/learning_graph.rs`：复核后 L1 只 `tracing::info!
+  (name_hints = n)`，现有 `!warning` 过滤保证 L0 仍硬拒（其余消费方逐一核对：
+  structure_gen / 修补 / smoke 两档均只取 `!warning`）。
+- 生长侧 `learning_graph/mod.rs::validate_batch`：扫描节点标题、
+  `mints.canonical/aliases`、`new_aliases.name` 的 L1 形态，新增 warn
+  `ng.mints.name_hint`（不阻断、不触发重裁、不拼进 `feedback`）；读数经
+  `GateOutcome.name_hints` → `GrowthRunStats.name_hints` → smoke 生长读数行
+  `[names: name_hints=n]` 与 OK 行 `name_hints={n}`。
+- 契约 `docs/contracts/learning-structure-artifacts.md` v1.8→v1.9：§2.1/§2.2
+  条款拆分、新增 §2.3 名字形态三层表（含与 learnhub 差异：growth v1 只提示、
+  取消词边豁免、修补只留痕）、§6 L2 裁决位、§7 差异清单新增一行。
+- f2 的提示词交卷自检句保留；机械门误杀由本票收口（f2 blueprint 留档未改）。
+
+**测试命令与结果**：
+
+- `CARGO_TARGET_DIR=C:/Users/test/Desktop/work/cargo-target-absorb7-y01
+  cargo test -p nomifun-learning` → **792 passed, 0 failed**（含新增：L0/L1
+  契约、`collect_name_suspects`、name-bundle 五资产注册/围栏/金样、裁决器
+  8 例（批量/中立输入/memo/重复名/传输/解析/形状）、structure_gen 5 例
+  （`求和公式` 放行、`百分数与利率的对应` 红条+理由重试、L0 不付费、
+  Degraded 五档放行、memo 跨 attempt）、生长 hint 一例）。
+- 新 golden 用 `LEARNING_UPDATE_GOLDEN=1` 生成后 `git status` 仅新增
+  `golden/name-bundle.md`（其余四份零漂移），再以普通模式跑金样测试通过。
+- `cargo fmt -p nomifun-learning -- --check` 与 `cargo fmt -p nomifun-app --
+  --check` 通过；`cargo check -p nomifun-app` 通过。
+
+**偏差**：
+
+- 裁决调用直接走 `LearningCompleter::complete_json`（无 thinking）而非
+  `complete_json_coach`（后者强制 thinking ON）——按票面「无 thinking」；
+  `max_tokens` 常量住 `generation::completer`（资产参数不进 PromptSpec）。
+- 修补路径未加端到端 service 测试（既有维护夹具结构未过全量 gd.*）：红/提示
+  分工由契约单测锁定，service 只加读数日志。
+- 真机未跑：无可用 provider/凭据，用 Scripted completer 覆盖票面红绿样；
+  **真机待波次验收**（structure 档含「求和公式」正例 +「双进程与窗口」反例、
+  smoke `EXIT=0`、growth 一次捆绑名 hint 可见）。

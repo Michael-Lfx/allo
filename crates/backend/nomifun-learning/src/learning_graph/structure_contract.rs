@@ -33,7 +33,7 @@ pub struct ContractViolation {
 }
 
 impl ContractViolation {
-    fn red(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn red(code: &'static str, message: impl Into<String>) -> Self {
         Self { code, message: message.into(), warning: false }
     }
 
@@ -256,26 +256,87 @@ pub const SPINE_BLOCK_QUOTA: usize = 5;
 pub const MIN_GAPS: usize = 3;
 pub const MIN_QUALITY: usize = 5;
 
-/// 并列连词与并列分隔符：块名一物一名的禁入字符；「」官方术语段内豁免。
-/// 机械读法放宽（learnhub #53 留痕）：「和」在词首/词尾位是名词不是连词
-/// （「等差前n项和」之「和」= sum），只在词中位计为并列标记；与/及无实词
-/// 用法，仍在任意位计数。
-const NAME_COMPOUND_MARKS: [char; 7] = ['与', '和', '及', '、', '/', ',', '，'];
+/// L0 硬门字符：纯标点并列符——无词形生命、无记号生命，名字里出现即必然
+/// 捆绑（`、`/`，`）。命中 = 红条 `gd.blocks.one_name`（y01 三层分工的
+/// 无条件面）。
+pub const HARD_NAME_MARKS: [char; 2] = ['、', '，'];
 
-fn compound_name_mark(name: &str) -> Option<char> {
-    let chars: Vec<char> = name.chars().collect();
+/// L1 点名字符：歧义字与半角标点（`与/和/及/,//`）。命中只记
+/// `gd.blocks.name_hint` 警告、不终审——「求和公式」「调和级数」与
+/// 「双进程与窗口」双向反例下，任何词表/位置启发式都不可先验封闭；
+/// **`和` 不设词首/词尾豁免**（词边未必是名词，是否捆绑交 L2 裁决）。
+pub const SUSPECT_NAME_MARKS: [char; 5] = ['与', '和', '及', ',', '/'];
+
+/// 「」官方术语段内豁免的扫描：`visit` 只看段外字符。
+fn scan_name_marks(name: &str, mut visit: impl FnMut(char)) {
     let mut quoted = false;
-    for (i, c) in chars.iter().copied().enumerate() {
+    for c in name.chars() {
         match c {
             '「' => quoted = true,
             '」' => quoted = false,
             _ if quoted => {}
-            '和' if i == 0 || i + 1 == chars.len() => {}
-            _ if NAME_COMPOUND_MARKS.contains(&c) => return Some(c),
-            _ => {}
+            _ => visit(c),
         }
     }
-    None
+}
+
+/// L0 硬门标记（首个命中；「」段内豁免）。
+pub fn hard_name_mark(name: &str) -> Option<char> {
+    let mut hit = None;
+    scan_name_marks(name, |c| {
+        if hit.is_none() && HARD_NAME_MARKS.contains(&c) {
+            hit = Some(c);
+        }
+    });
+    hit
+}
+
+/// L1 点名标记（去重保序；「」段内豁免；`和` 无词边豁免）。
+pub fn soft_name_marks(name: &str) -> Vec<char> {
+    let mut marks: Vec<char> = Vec::new();
+    scan_name_marks(name, |c| {
+        if SUSPECT_NAME_MARKS.contains(&c) && !marks.contains(&c) {
+            marks.push(c);
+        }
+    });
+    marks
+}
+
+/// L1 点名事实（y01）：L2 批量裁决的输入行——名字 + 首个被点字符 +
+/// 产物内位置。位置只用于报告回灌，不进裁决输入（中立面）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameSuspect {
+    pub name: String,
+    pub mark: char,
+    /// `blocks[<下标>]`（报告面用；裁决输入不带位置）。
+    pub location: String,
+}
+
+/// 点名清单派生（纯函数）：逐块扫描 L1 形态。L0 命中归红条、不进清单；
+/// 「」段内不进；同名只留第一条（L2 输出契约按名字去重）。
+pub fn collect_name_suspects(structure: &Value) -> Vec<NameSuspect> {
+    let mut suspects: Vec<NameSuspect> = Vec::new();
+    let Some(blocks) = structure.get("blocks").and_then(Value::as_array) else {
+        return suspects;
+    };
+    for (index, block) in blocks.iter().enumerate() {
+        let name = block.get("name").and_then(Value::as_str).unwrap_or_default().trim();
+        if name.is_empty() || hard_name_mark(name).is_some() {
+            continue;
+        }
+        let Some(mark) = soft_name_marks(name).into_iter().next() else {
+            continue;
+        };
+        if suspects.iter().any(|seen| seen.name == name) {
+            continue;
+        }
+        suspects.push(NameSuspect {
+            name: name.to_owned(),
+            mark,
+            location: format!("blocks[{index}]"),
+        });
+    }
+    suspects
 }
 
 fn slug_valid(slug: &str) -> bool {
@@ -533,13 +594,24 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
             violations.push(ContractViolation::red("gd.blocks.slug", format!("{at} 的 name 为空")));
             continue;
         }
-        if let Some(mark) = compound_name_mark(name) {
+        if let Some(mark) = hard_name_mark(name) {
             violations.push(ContractViolation::red(
                 "gd.blocks.one_name",
                 // f2（A3）：出路指引补「改用无并列的规范名」半句（learnhub 同
                 // 款先例）——报全逻辑不动，打地鼠走提示词交卷自检句压制。
+                // y01：硬门只认纯标点（L0）——歧义字/半角标点降 L1 提示。
                 format!(
                     "块名「{name}」含并列标记「{mark}」——一条 = 一个独立教学主题，多个主题须拆条；官方术语本身含并列形的以「」包裹，或改用无并列的规范名"
+                ),
+            ));
+        } else if let Some(mark) = soft_name_marks(name).into_iter().next() {
+            // y01 L1：歧义标记只点名提示（不单独阻断）——「求和公式」类术
+            // 语本字不再被机械门误杀；是否构成捆绑交 L2 批量裁决。warn 不
+            // 进 format_violations 的生成反馈（调用方只取 !warning）。
+            violations.push(ContractViolation::warn(
+                "gd.blocks.name_hint",
+                format!(
+                    "块名「{name}」含并列字/分隔符「{mark}」——若是多个主题须拆成多条，或改用无并列的规范名；术语本字含该字可保留（提示，不阻断）"
                 ),
             ));
         }
@@ -1674,15 +1746,16 @@ mod tests {
         );
     }
 
-    /// f2（② 打地鼠防回归，A3）：多个块名同含并列标记时校验器**一次报全**
-    /// ——报告逐块一行、各提一名（被点名的与别处新冒的同在这一份报告里，
-    /// 模型无需逐轮试探）；违约消息带出路指引（拆条 / 「」包裹 / 改规范名）。
+    /// f2（② 打地鼠防回归，A3）：多个块名同含**纯标点**并列标记时校验器
+    /// **一次报全**——报告逐块一行、各提一名（被点名的与别处新冒的同在这
+    /// 一份报告里，模型无需逐轮试探）；违约消息带出路指引（拆条 / 「」包
+    /// 裹 / 改规范名）。y01：硬门只认 `、`/`，`（L0）。
     #[test]
-    fn gd_blocks_one_name_reports_all_offenders_with_guidance_in_one_pass() {
+    fn gd_blocks_one_name_hard_marks_report_all_offenders_with_guidance_in_one_pass() {
         let mut value = golden_structure();
         // 边端点不引用块02/块05——改名不牵动 gd.edges.endpoints，判据不混。
-        value["blocks"][2]["name"] = json!("百分数与利率的对应");
-        value["blocks"][5]["name"] = json!("底数与指数");
+        value["blocks"][2]["name"] = json!("百分数、利率的对应");
+        value["blocks"][5]["name"] = json!("底数，指数");
         let violations = validate_structure(&value);
         let one_name: Vec<&ContractViolation> = violations
             .iter()
@@ -1690,12 +1763,13 @@ mod tests {
             .collect();
         assert_eq!(one_name.len(), 2, "一次报全: {violations:?}");
         assert!(
-            one_name.iter().any(|violation| violation.message.contains("百分数与利率的对应"))
-                && one_name.iter().any(|violation| violation.message.contains("底数与指数")),
+            one_name.iter().any(|violation| violation.message.contains("百分数、利率的对应"))
+                && one_name.iter().any(|violation| violation.message.contains("底数，指数")),
             "每行各提一名: {:?}",
             one_name
         );
         for violation in &one_name {
+            assert!(!violation.warning, "L0 硬门是红条");
             assert!(
                 violation.message.contains("多个主题须拆条")
                     && violation.message.contains("或改用无并列的规范名"),
@@ -1703,27 +1777,107 @@ mod tests {
                 violation.message
             );
         }
+        // L0 命中不重复发 hint（红条已点名，不再提示同名）。
+        assert!(
+            !violations.iter().any(|violation| violation.code == "gd.blocks.name_hint"),
+            "L0 命中不进 L1 提示: {violations:?}"
+        );
     }
 
+    /// y01 L0/L1 分工：`与/和/及/,//` 只出 `gd.blocks.name_hint` warn，
+    /// 不单独阻断；「」段内整段豁免；词边 `和` 豁免取消（词首/词尾同样是
+    /// 筛查面，是否捆绑交 L2 裁决）——提示词承诺的「求和公式」不再被误杀。
     #[test]
-    fn gd_blocks_one_name_exempts_quoted_terms_and_word_edge_he() {
-        // 改名块[2]（边不引用它——边端点解析是另一条款，不混入本判据）。
-        let mut value = golden_structure();
-        value["blocks"][2]["name"] = json!("等差前n项和与求和公式");
-        let violations = validate_structure(&value);
-        assert!(codes(&violations).contains(&"gd.blocks.one_name"), "{violations:?}");
+    fn gd_blocks_name_hint_flags_soft_marks_without_rejecting() {
+        let cases = [
+            ("求和公式", '和'),
+            ("等差前n项和", '和'),
+            ("和差角公式", '和'),
+            ("双进程与窗口", '与'),
+            ("甲,乙", ','),
+            ("甲/乙", '/'),
+            ("加法及减法", '及'),
+        ];
+        for (name, mark) in cases {
+            // 改名块[2]（边不引用它——边端点解析是另一条款，不混入本判据）。
+            let mut value = golden_structure();
+            value["blocks"][2]["name"] = json!(name);
+            let violations = validate_structure(&value);
+            assert!(
+                !codes(&violations).contains(&"gd.blocks.one_name"),
+                "「{name}」不得被 L0 硬门误杀: {violations:?}"
+            );
+            assert!(
+                violations.iter().all(|violation| violation.warning),
+                "「{name}」不得产生任何红条: {violations:?}"
+            );
+            let hint = violations
+                .iter()
+                .find(|violation| violation.code == "gd.blocks.name_hint")
+                .unwrap_or_else(|| panic!("「{name}」应有 name_hint: {violations:?}"));
+            assert!(hint.warning, "hint 是警告级");
+            assert!(
+                hint.message.contains(name) && hint.message.contains(&mark.to_string()),
+                "hint 点名名字与被点字符: {}",
+                hint.message
+            );
+        }
 
+        // 「」段内整段豁免（L0/L1 同门）：无红、无 hint。
         let mut quoted = golden_structure();
         quoted["blocks"][2]["name"] = json!("「广义表与树」的辨析");
+        let violations = validate_structure(&quoted);
+        assert!(!codes(&violations).contains(&"gd.blocks.one_name"), "{violations:?}");
         assert!(
-            !codes(&validate_structure(&quoted)).contains(&"gd.blocks.one_name"),
-            "「」段内并列豁免: {:?}",
-            validate_structure(&quoted)
+            !violations.iter().any(|violation| violation.code == "gd.blocks.name_hint"),
+            "「」段内不进点名: {violations:?}"
         );
+        // 段内豁免不掩护段外：`「甲、乙」与丙` 的硬标点在段内、`与` 在段外。
+        let mut mixed = golden_structure();
+        mixed["blocks"][2]["name"] = json!("「甲、乙」与丙");
+        let violations = validate_structure(&mixed);
+        assert!(!codes(&violations).contains(&"gd.blocks.one_name"), "{violations:?}");
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.code == "gd.blocks.name_hint"
+                    && violation.message.contains('与')),
+            "段外「与」仍点名: {violations:?}"
+        );
+    }
 
-        let mut word_edge = golden_structure();
-        word_edge["blocks"][2]["name"] = json!("等差数列前n项和");
-        assert!(validate_structure(&word_edge).is_empty(), "词尾「和」是名词: {:?}", validate_structure(&word_edge));
+    /// y01 `collect_name_suspects`：L2 裁决的输入清单——只收 L1 形态
+    /// （名字 + 首个被点字符 + 产物内位置），L0 命中与「」段内不进清单；
+    /// 同名只留一条（输出契约按名字去重）。
+    #[test]
+    fn collect_name_suspects_reports_soft_marks_only() {
+        let mut value = golden_structure();
+        value["blocks"][2]["name"] = json!("求和公式");
+        value["blocks"][5]["name"] = json!("双进程与窗口");
+        value["blocks"][7]["name"] = json!("百分数、利率");
+        value["blocks"][9]["name"] = json!("「广义表与树」的辨析");
+        let suspects = collect_name_suspects(&value);
+        assert_eq!(suspects.len(), 2, "{suspects:?}");
+        assert_eq!(suspects[0].name, "求和公式");
+        assert_eq!(suspects[0].mark, '和');
+        assert_eq!(suspects[0].location, "blocks[2]");
+        assert_eq!(suspects[1].name, "双进程与窗口");
+        assert_eq!(suspects[1].mark, '与');
+        assert_eq!(suspects[1].location, "blocks[5]");
+
+        // 同名（异常产物也会重复）只留第一条。
+        let duplicated = json!({
+            "blocks": [
+                { "name": "求和公式" },
+                { "name": "求和公式" }
+            ]
+        });
+        let suspects = collect_name_suspects(&duplicated);
+        assert_eq!(suspects.len(), 1, "{suspects:?}");
+        assert_eq!(suspects[0].location, "blocks[0]");
+
+        assert!(collect_name_suspects(&golden_structure()).is_empty());
+        assert!(collect_name_suspects(&json!({})).is_empty());
     }
 
     #[test]
