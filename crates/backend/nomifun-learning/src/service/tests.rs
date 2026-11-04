@@ -131,6 +131,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     title: "Vectors".into(),
                     summary: String::new(),
                     purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
                     est: 10,
                     source: None,
                     sources: Vec::new(),
@@ -201,6 +203,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let service = LearningService::new(database.pool().clone());
 
         let lesson = |title: &str, purpose: &str, source: Option<SourceSpan>| LessonPack {
+            intent: String::new(),
+            scope: String::new(),
             title: title.into(),
             summary: String::new(),
             purpose: purpose.into(),
@@ -356,6 +360,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
             title: title.into(),
             summary: String::new(),
             purpose: "目标".into(),
+            intent: String::new(),
+            scope: String::new(),
             est: 10,
             source: None,
             sources: Vec::new(),
@@ -550,6 +556,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
             title: String::new(),
             summary: String::new(),
             purpose: String::new(),
+            intent: String::new(),
+            scope: String::new(),
             position: 0,
             est: 10,
             generated: true,
@@ -624,6 +632,33 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(stored["version"], json!(1));
         assert_eq!(stored["response"], json!({"choice": "a"}));
         assert!(stored.get("data").is_none(), "envelope stays flat");
+    }
+
+    /// 声明面两键（absorb-8 z01）：导入包缺 intent/scope = serde 容缺空串
+    /// （旧包语义缺席，落库透写空列）；带键导入原样落库并经 LessonView 读出。
+    #[tokio::test]
+    async fn import_pack_tolerates_absent_brief_fields_and_roundtrips_them() {
+        // serde 面容缺（HTTP Json<CoursePack> 的旧包路径）。
+        let lesson: LessonPack = serde_json::from_value(json!({ "title": "旧包课时" })).unwrap();
+        assert_eq!(lesson.intent, "", "旧包缺 intent = 空串（缺席语义）");
+        assert_eq!(lesson.scope, "", "旧包缺 scope = 空串（缺席语义）");
+
+        // 带键包：DB 列透写后经 LessonView 原样读出。
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        let lesson_id = course.modules[0].lessons[0].id.clone();
+        sqlx::query("UPDATE learning_lessons SET intent = ?, scope = ? WHERE lesson_id = ?")
+            .bind("为向量语言铺几何底座")
+            .bind("教向量加减法；不碰叉积")
+            .bind(lesson_id.as_str())
+            .execute(database.pool())
+            .await
+            .unwrap();
+        let detail = service.course_detail(&course.course.id, None).await.unwrap();
+        let lesson = &detail.modules[0].lessons[0];
+        assert_eq!(lesson.intent, "为向量语言铺几何底座");
+        assert_eq!(lesson.scope, "教向量加减法；不碰叉积");
     }
 
     #[tokio::test]
@@ -749,6 +784,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         title: "Lesson A".into(),
                         summary: String::new(),
                         purpose: String::new(),
+                        intent: String::new(),
+                        scope: String::new(),
                         est: 10,
                         source: None,
                         sources: Vec::new(),
@@ -763,6 +800,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         title: "Lesson B".into(),
                         summary: String::new(),
                         purpose: String::new(),
+                        intent: String::new(),
+                        scope: String::new(),
                         est: 10,
                         source: None,
                         sources: Vec::new(),
@@ -844,6 +883,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     title: "Vectors".into(),
                     summary: String::new(),
                     purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
                     est: 10,
                     source: None,
                     sources: Vec::new(),
@@ -1280,6 +1321,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     title: "Vectors".into(),
                     summary: String::new(),
                     purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
                     est: 10,
                     source: None,
                     sources: Vec::new(),
@@ -1431,6 +1474,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     title: "Vectors".into(),
                     summary: String::new(),
                     purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
                     est: 10,
                     source: None,
                     sources: Vec::new(),
@@ -2464,6 +2509,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     title: "Vectors".into(),
                     summary: String::new(),
                     purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
                     est: 10,
                     source: None,
                     sources: Vec::new(),
@@ -2617,6 +2664,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     title: "L".into(),
                     summary: String::new(),
                     purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
                     est: 10,
                     source: None,
                     sources: Vec::new(),
@@ -2769,6 +2818,8 @@ fn review_log_test_pack() -> CoursePack {
                 title: "Lesson".into(),
                 summary: String::new(),
                 purpose: String::new(),
+                intent: String::new(),
+                scope: String::new(),
                 est: 10,
                 source: None,
                 sources: Vec::new(),
@@ -3617,9 +3668,9 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     // problems 缺省为空即通过。
     let batch_json = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+            {"title": "用定义计算极限", "purpose": "首批基节点", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 20,
+            {"title": "用极限法则求切线", "purpose": "衔接节点", "intent": "i", "scope": "s", "est": 20,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
              "assumes": [{"name": "向量基础", "tier": "know"}]}
         ],
@@ -3694,7 +3745,7 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
 /// 纹早停的脚本）。
 const GHOST_REF_BATCH: &str = r#"{
     "nodes": [
-        {"title": "幽灵节点", "purpose": "引用未铸名概念", "est": 10,
+        {"title": "幽灵节点", "purpose": "引用未铸名概念", "intent": "i", "scope": "s", "est": 10,
          "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []}
     ],
     "mints": [],
@@ -3704,9 +3755,9 @@ const GHOST_REF_BATCH: &str = r#"{
 /// 合法过门批（与 growth_applies 同款；末项重复供评审回包）。
 const VALID_BATCH: &str = r#"{
     "nodes": [
-        {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+        {"title": "用定义计算极限", "purpose": "首批基节点", "intent": "i", "scope": "s", "est": 15,
          "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-        {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 20,
+        {"title": "用极限法则求切线", "purpose": "衔接节点", "intent": "i", "scope": "s", "est": 20,
          "teaches": [{"name": "求导法则", "tier": "apply"}],
          "assumes": [{"name": "向量基础", "tier": "know"}]}
     ],
@@ -3831,11 +3882,11 @@ async fn growth_burns_the_full_budget_when_violations_differ() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     // 三种互异违约：未解析引用 / purpose 缺失 / 中文档位。
     let empty_purpose = r#"{
-        "nodes": [{"title": "缺用途节点", "purpose": "", "est": 10, "teaches": [], "assumes": []}],
+        "nodes": [{"title": "缺用途节点", "purpose": "", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}],
         "mints": [], "note": "n"
     }"#;
     let bad_tier = r#"{
-        "nodes": [{"title": "档位节点", "purpose": "p", "est": 10,
+        "nodes": [{"title": "档位节点", "purpose": "p", "intent": "i", "scope": "s", "est": 10,
                    "teaches": [{"name": "极限", "tier": "精通"}], "assumes": []}],
         "mints": [{"canonical": "极限", "definition": "d"}], "note": "n"
     }"#;
@@ -4022,7 +4073,7 @@ async fn over_capacity_redraft_gets_the_directed_instruction() {
         let mut nodes = Vec::new();
         for index in 0..8 {
             nodes.push(format!(
-                r#"{{"title": "超容节点{index}", "purpose": "p", "est": 10,
+                r#"{{"title": "超容节点{index}", "purpose": "p", "intent": "i", "scope": "s", "est": 10,
                     "teaches": [{{"name": "概念{index}", "tier": "know"}}], "assumes": []}}"#
             ));
         }
@@ -4071,20 +4122,20 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     // 违约稿：甲引用幽灵（门报告点名甲），乙丙干净（未点名）。
     let draft = r#"{
         "nodes": [
-            {"title": "甲节点", "purpose": "引用未铸名概念", "est": 10,
+            {"title": "甲节点", "purpose": "引用未铸名概念", "intent": "i", "scope": "s", "est": 10,
              "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []},
-            {"title": "乙节点", "purpose": "乙的原用途", "est": 10, "teaches": [], "assumes": []},
-            {"title": "丙节点", "purpose": "丙的原用途", "est": 10, "teaches": [], "assumes": []}
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
         ],
         "mints": [], "note": "违约稿"
     }"#;
     // 重裁#1：甲修复、乙被偷偷改动（未点名）→ guard，原地重试。
     let redraft_editing_unnamed = r#"{
         "nodes": [
-            {"title": "甲节点", "purpose": "修复后", "est": 10,
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "乙节点", "purpose": "被偷改的用途", "est": 10, "teaches": [], "assumes": []},
-            {"title": "丙节点", "purpose": "丙的原用途", "est": 10, "teaches": [], "assumes": []}
+            {"title": "乙节点", "purpose": "被偷改的用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
         ],
         "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿"
     }"#;
@@ -4092,10 +4143,10 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     // 未点名）→ 二次越权，计轮。
     let redraft_editing_unnamed_again = r#"{
         "nodes": [
-            {"title": "甲节点", "purpose": "修复后", "est": 10,
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "乙节点", "purpose": "乙的原用途", "est": 10, "teaches": [], "assumes": []},
-            {"title": "丙节点", "purpose": "被偷改的用途（第二次）", "est": 10, "teaches": [], "assumes": []}
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "被偷改的用途（第二次）", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
         ],
         "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿二"
     }"#;
@@ -4289,9 +4340,9 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
     // 越权稿一：乙（未点名）est 被改。
     let q1 = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+            {"title": "用定义计算极限", "purpose": "首批基节点", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 25,
+            {"title": "用极限法则求切线", "purpose": "衔接节点", "intent": "i", "scope": "s", "est": 25,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
              "assumes": [{"name": "向量基础", "tier": "know"}]}
         ],
@@ -4304,9 +4355,9 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
     // 越权稿二：乙另一处（purpose）再被改 → 二次越权计轮。
     let q2 = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+            {"title": "用定义计算极限", "purpose": "首批基节点", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "用极限法则求切线", "purpose": "被偷改的衔接用途", "est": 25,
+            {"title": "用极限法则求切线", "purpose": "被偷改的衔接用途", "intent": "i", "scope": "s", "est": 25,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
              "assumes": [{"name": "向量基础", "tier": "know"}]}
         ],
@@ -4733,7 +4784,7 @@ async fn growth_auto_triggers_on_lesson_completion() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "后续节点", "est": 15,
+            {"title": "用定义计算极限", "purpose": "后续节点", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []}
         ],
         "mints": [ { "canonical": "极限", "aliases": [], "definition": "" } ],
@@ -5267,6 +5318,8 @@ async fn lesson_context_carries_the_course_goal() {
         title: title.into(),
         summary: String::new(),
         purpose: "目标一".into(),
+        intent: String::new(),
+        scope: String::new(),
         est: 10,
         source: None,
         sources: Vec::new(),
@@ -5452,6 +5505,8 @@ async fn import_kb_lesson_course_with_sources(
                 title: "期权入门".into(),
                 summary: String::new(),
                 purpose: "理解期权的定义与权利义务".into(),
+                intent: String::new(),
+                scope: String::new(),
                 est: 10,
                 source: sources.first().cloned(),
                 sources: sources.clone(),
@@ -6336,6 +6391,8 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
                 title: "期权入门".into(),
                 summary: String::new(),
                 purpose: "理解期权".into(),
+                intent: String::new(),
+                scope: String::new(),
                 est: 10,
                 source: source.clone(),
                 sources: Vec::new(),
@@ -6483,6 +6540,8 @@ async fn lesson_grounding_never_reads_a_deleted_base_path_from_the_surviving_bas
                 title: "期权入门".into(),
                 summary: String::new(),
                 purpose: "理解期权".into(),
+                intent: String::new(),
+                scope: String::new(),
                 est: 10,
                 source: source.clone(),
                 sources: Vec::new(),
@@ -6595,7 +6654,7 @@ async fn reuse_ruling_pools_the_name_instead_of_minting() {
     .await
     .unwrap();
     let batch_json = format!(
-        r#"{{"nodes": [{{"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15, "teaches": [{{"name": "向量代数", "tier": "know"}}], "assumes": []}}], "mints": [{{"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}}], "new_aliases": [], "note": "复用稿"}}"#
+        r#"{{"nodes": [{{"title": "用向量视角重看排布", "purpose": "从座位调换切入", "intent": "i", "scope": "s", "est": 15, "teaches": [{{"name": "向量代数", "tier": "know"}}], "assumes": []}}], "mints": [{{"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}}], "new_aliases": [], "note": "复用稿"}}"#
     );
     let review_json = format!(
         r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}],"term_provenance":[{{"concept":"向量代数","term":"向量语言","source":"常识"}}]}}"#
@@ -6677,7 +6736,7 @@ async fn reuse_ruling_accepts_registry_host_outside_the_candidate_set() {
     }
     let batch_json = r#"{
         "nodes": [
-            {"title": "用向量语言重看组合", "purpose": "从座位调换切入", "est": 15,
+            {"title": "用向量语言重看组合", "purpose": "从座位调换切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -6753,7 +6812,7 @@ async fn review_advice_mechanically_converts_to_reuse() {
     .unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15,
+            {"title": "用向量视角重看排布", "purpose": "从座位调换切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -6811,7 +6870,7 @@ async fn unparseable_advice_stays_a_rejection() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15,
+            {"title": "用向量视角重看排布", "purpose": "从座位调换切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -6867,7 +6926,7 @@ async fn fragment_misses_land_report_only_findings_and_do_not_block() {
     // 教）——机械点名必报；评审回包不带 fragments（旧形态）= 全部未处置。
     let batch_json = r#"{
         "nodes": [
-            {"title": "认识三角形", "purpose": "从图形切入", "est": 15,
+            {"title": "认识三角形", "purpose": "从图形切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "三角形", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -6942,7 +7001,7 @@ async fn fragments_face_off_leaves_no_trace() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "认识三角形", "purpose": "从图形切入", "est": 15,
+            {"title": "认识三角形", "purpose": "从图形切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "三角形", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -6999,7 +7058,7 @@ async fn mint_colliding_with_registry_name_is_mechanically_reused() {
     .unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "重新走一遍向量基础", "purpose": "从零起步切入", "est": 15,
+            {"title": "重新走一遍向量基础", "purpose": "从零起步切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "向量基础", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -7057,7 +7116,7 @@ async fn mint_source_attestation_lands_on_the_registry_row() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用位权解释低位加法竖式", "purpose": "从数位对齐切入", "est": 15,
+            {"title": "用位权解释低位加法竖式", "purpose": "从数位对齐切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "位权进位解释", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -7105,9 +7164,9 @@ async fn review_removal_advice_drops_the_node_instead_of_redrafting() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用位权展开读出二进制数", "purpose": "从数位对齐切入", "est": 15,
+            {"title": "用位权展开读出二进制数", "purpose": "从数位对齐切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "位权读数", "tier": "know"}], "assumes": []},
-            {"title": "验证两种展开的同一数值", "purpose": "从对照切入", "est": 15,
+            {"title": "验证两种展开的同一数值", "purpose": "从对照切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "展开对照", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -7167,7 +7226,7 @@ async fn removal_advice_without_exact_match_stays_a_rejection() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用位权展开读出二进制数", "purpose": "从数位对齐切入", "est": 15,
+            {"title": "用位权展开读出二进制数", "purpose": "从数位对齐切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "位权读数", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -7225,7 +7284,7 @@ async fn new_alias_with_exact_definition_binds_directly() {
         .unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "换名重述向量", "purpose": "从不同叫法切入", "est": 15,
+            {"title": "换名重述向量", "purpose": "从不同叫法切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "向量算术", "tier": "know"}], "assumes": []}
         ],
         "mints": [],
@@ -7264,7 +7323,7 @@ async fn new_alias_without_reuse_ruling_returns_the_batch_with_pointer() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "无宿主提名", "purpose": "p", "est": 15,
+            {"title": "无宿主提名", "purpose": "p", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "新名", "tier": "know"}], "assumes": []}
         ],
         "mints": [],
@@ -7341,7 +7400,7 @@ async fn retired_names_do_not_block_minting() {
     .unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用向量代数重排", "purpose": "p", "est": 15,
+            {"title": "用向量代数重排", "purpose": "p", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
         ],
         "mints": [
@@ -9030,6 +9089,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             title: title.into(),
             summary: String::new(),
             purpose: "目标".into(),
+            intent: String::new(),
+            scope: String::new(),
             est: 10,
             source: None,
             sources: Vec::new(),
@@ -9247,6 +9308,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             title: "第一课".into(),
             summary: String::new(),
             purpose: "目标".into(),
+            intent: String::new(),
+            scope: String::new(),
             est: 10,
             source: None,
             sources: Vec::new(),
@@ -9674,6 +9737,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             title: "第一课".into(),
             summary: String::new(),
             purpose: "目标".into(),
+            intent: String::new(),
+            scope: String::new(),
             est: 10,
             source: None,
             sources: Vec::new(),
@@ -10345,6 +10410,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             title: "第一课".into(),
             summary: String::new(),
             purpose: "目标".into(),
+            intent: String::new(),
+            scope: String::new(),
             est: 10,
             source: None,
             sources: Vec::new(),
@@ -11428,7 +11495,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         service.set_mint_search_provider(search.clone());
         let batch_json = r#"{
             "nodes": [
-                {"title": "认向量语言基础", "purpose": "p", "est": 15,
+                {"title": "认向量语言基础", "purpose": "p", "intent": "i", "scope": "s", "est": 15,
                  "teaches": [{"name": "向量语言基础", "tier": "know"}], "assumes": []}
             ],
             "mints": [
@@ -11494,7 +11561,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         }
         let batch_json = r#"{
             "nodes": [
-                {"title": "认向量语言基础", "purpose": "p", "est": 15,
+                {"title": "认向量语言基础", "purpose": "p", "intent": "i", "scope": "s", "est": 15,
                  "teaches": [{"name": "向量语言基础", "tier": "know"}], "assumes": []}
             ],
             "mints": [

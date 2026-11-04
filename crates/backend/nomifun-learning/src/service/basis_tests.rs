@@ -721,7 +721,7 @@ async fn growth_review_reusing_declared_concept_passes_provenance_without_degrad
     // 评审 reuse 裁决同宿主（核验锚）；挂号行 concept 锚定声明概念正名。
     let batch_json = r#"{
         "nodes": [
-            {"title": "用判读进阶重看门口", "purpose": "从声明判据切入", "est": 15,
+            {"title": "用判读进阶重看门口", "purpose": "从声明判据切入", "intent": "i", "scope": "s", "est": 15,
              "teaches": [{"name": "判读进阶", "tier": "know"}], "assumes": []}
         ],
         "mints": [

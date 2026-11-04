@@ -20,6 +20,8 @@
   "generateFromDescription": "描述生成",
   "generateHint": "AI 将先设计课程蓝图，再逐课时撰写深度学习文档（每课时约 1000-1500 字）与练习，分多轮生成，需要一些时间，请耐心等待。",
   "generateLessonContent": "生成课时内容",
+  "lessonIntentLine": "创建意图：{{text}}",
+  "lessonScopeLine": "教学范围：{{text}}",
   "generateDescriptionHint": "AI 会直接根据课程简报设计大纲并逐课时撰写内容，全程无需知识库；生成需要一些时间，过程实时展示，关闭对话框即中止。",
   "genClose": "关闭",
   "genStepPrepare": "准备",

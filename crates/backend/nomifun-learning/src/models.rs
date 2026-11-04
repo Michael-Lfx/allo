@@ -350,6 +350,13 @@ pub struct LessonPack {
     pub summary: String,
     #[serde(default)]
     pub purpose: String,
+    /// 节点意图（absorb-8 z01）：导入包键名即 intent（不做别名）；缺省空串 =
+    /// 旧包容缺，落库透写（与生长批同列）。
+    #[serde(default)]
+    pub intent: String,
+    /// 教学范围（absorb-8 z01）：缺省空串 = 旧包容缺，落库透写。
+    #[serde(default)]
+    pub scope: String,
     /// est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注）。键名统一 est
     /// （j01）；`estimated_minutes` 是导入旧包的兼容别名（双读），DB 列
     /// 保留旧名 `learning_lessons.estimated_minutes`。
@@ -2655,6 +2662,13 @@ pub struct LessonView {
     pub title: String,
     pub summary: String,
     pub purpose: String,
+    /// 节点意图（absorb-8 z01）：为何有这个学习点、课里承担什么角色，一句话。
+    /// 空串 = 旧档未声明（前端整行不渲染）；非空与 ≤200 字符约束在生成侧
+    /// （`ng.node.brief` 契约门），读侧不重验。
+    pub intent: String,
+    /// 教学范围（absorb-8 z01）：教什么/教到哪/明确不碰什么（「不教 X」是
+    /// 边界声明），一两句；空串 = 旧档未声明，同 [`LessonView::intent`]。
+    pub scope: String,
     pub position: i64,
     /// est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注）。键名统一 est
     /// （j01）；DB 列保留旧名 `estimated_minutes`。
