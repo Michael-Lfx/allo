@@ -2095,7 +2095,7 @@ mod tests {
     }
 
     /// 带声明面两字段的节点（范围外端到端测试的对照域）。
-    fn node3(title: &str, intent: &str, scope: &str) -> ProposedNode {
+    fn node_with_brief(title: &str, intent: &str, scope: &str) -> ProposedNode {
         ProposedNode {
             title: title.to_owned(),
             purpose: String::new(),
@@ -3233,7 +3233,7 @@ mod tests {
             Vec::new(),
         )));
         let batch = ProposedBatch {
-            nodes: vec![node3("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),
@@ -3290,7 +3290,7 @@ mod tests {
             Vec::new(),
         )));
         let batch = ProposedBatch {
-            nodes: vec![node3("列出数量关系式", "为后续方程建模备料", "不引入方程")],
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不引入方程")],
             mints: Vec::new(),
             new_aliases: Vec::new(),
             note: String::new(),

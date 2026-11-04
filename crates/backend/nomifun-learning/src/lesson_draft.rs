@@ -1396,13 +1396,16 @@ fn audit_findings(
             .as_ref()
             .and_then(|graph| graph.scope.as_deref())
         {
+            // 排除词串每课时提取一次，逐节复用（scope None = 不提取零开销）。
+            let excluded_terms =
+                crate::learning_graph::scope_findings::excluded_terms(scope);
             for section in section_manifest.into_iter().flatten() {
                 let body = section_bodies
                     .get(&section.section_key)
                     .map(|(body, _)| body.as_str())
                     .unwrap_or("");
-                for message in crate::learning_graph::scope_findings::scan_section(
-                    scope,
+                for message in crate::learning_graph::scope_findings::scan_section_with_terms(
+                    &excluded_terms,
                     &section.section_key,
                     &section.title,
                     body,
