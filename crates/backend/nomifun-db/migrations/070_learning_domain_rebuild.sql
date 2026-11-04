@@ -242,8 +242,9 @@ CREATE TABLE learning_growth_batches (
     ),
     note          TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
-    -- 071 的状态机（pending 出生即落，成功 applied，失败 failed）；枚举集
-    -- 校验在 Rust（ADR-0015）。
+    -- 071 的状态机（pending 出生即落，成功 applied，失败 failed，用户取消
+    -- cancelled——y04 起取消是中性终态，不再记 failed）；枚举集校验在
+    -- Rust（ADR-0015）。
     status TEXT NOT NULL DEFAULT 'applied',
     UNIQUE (course_id, seq)
 );
@@ -529,11 +530,12 @@ CREATE INDEX idx_learning_structure_mounts_course
 -- ==== 原 083_learning_structure_repairs（v3 contract: 无物理外键、无触发器）====
 -- 结构修补审计表（j09，三轮 g1「结构转活文档·下」）。
 --
--- learning_structure_repairs：一次修补回合一行（applied / noop 两种结论；
--- skipped 零 LLM 不落行）。ops_json = 逐 op 数组（含 type 与字段、reason、
--- 级联注记），结构 hash 迁移（old→new）与「应用后 gd.* 全量重过零放宽」的
--- 结论都在行内——learnhub 修补档案（文件 + Git 出处）的 DB 等价物。三重
--- 护栏 = 全量 validator 门 + 观测审计 + 出处，不建受理门机器。
+-- learning_structure_repairs：一次**应用了 op** 的修补回合一行（result 恒
+-- applied）；noop（评估过、无 op）与 skipped（零 LLM）都不落行——没发生的
+-- 事不造档案。ops_json = 逐 op 数组（含 type 与字段、reason、级联注记），
+-- 结构 hash 迁移（old→new）与「应用后 gd.* 全量重过零放宽」的结论都在行
+-- 内——learnhub 修补档案（文件 + Git 出处）的 DB 等价物。三重护栏 = 全量
+-- validator 门 + 观测审计 + 出处，不建受理门机器。
 
 CREATE TABLE learning_structure_repairs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1011,3 +1013,61 @@ DROP TABLE learning_course_jobs;
 -- learning_review_log（052 已发布 → 基线承载）：记录推进时的算法代际。
 -- NULL = 历史行（按 fsrs6 口径）；新真实行写 'fsrs6'，合成种卡行写 NULL。
 ALTER TABLE learning_review_log ADD COLUMN algo TEXT;
+
+-- ==== §13 学习系统动作簿（y04）====
+-- learning_system_actions：学习图课程的自主/后台动作**终态**留痕（一轮吸收
+-- learnhub `ActionRecord`，main@22d016d）。一次动作一行终态（done|failed）：
+-- 进行中状态看 generation task 注册表（内存），终态看本表——同一动作不会
+-- 同时有两行（开始不落账，取消/忙拒零行）。
+--
+-- kind：maintenance_repair | maintenance_mount | growth（Rust 单源
+-- `learning_graph::system_action::SystemActionKind`）。
+-- trigger_source：timer | manual | settlement | auto_refill
+--（`SystemActionTrigger`；列名避开 TRIGGER 保留字——v3 契约禁止物理触发器
+-- 令牌，读侧视图字段仍叫 `trigger`）。
+-- result：done | failed（`SystemActionResult`）。枚举集不设 DB CHECK
+-- （ADR-0015）：写侧严格、读侧宽容。
+-- basis：触发时的一句判据读数（unconsumed=2 pending_mount=1 stale=0 一类，
+-- 写侧截断 ≤200 字）；reason：failed 原因（done 为空）；ref_id：关联对象
+-- 的**引用不复制载荷**（growth = batch_id / repair = 修补审计行 id /
+-- mount = 挂载行 id）；actor_user_id：仅手动动作的操作者（自动动作 NULL）。
+-- 读侧按课程倒序（course_id, at）+ limit，见
+-- GET /api/learning/courses/{id}/system-actions。
+CREATE TABLE learning_system_actions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_id     TEXT NOT NULL UNIQUE CHECK (
+        length(action_id) = 36
+        AND lower(action_id) = action_id
+        AND action_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(action_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    course_id     TEXT NOT NULL CHECK (
+        length(course_id) = 36
+        AND lower(course_id) = course_id
+        AND course_id GLOB '????????-????-7???-[89ab]???-????????????'
+        AND replace(course_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+    ),
+    kind          TEXT NOT NULL,
+    trigger_source TEXT NOT NULL,
+    basis         TEXT NOT NULL DEFAULT '',
+    result        TEXT NOT NULL,
+    reason        TEXT NOT NULL DEFAULT '',
+    -- 引用不复制载荷：批次/审计行/挂载行的业务或行标识；多态，不做逻辑引用。
+    ref_id        TEXT NOT NULL DEFAULT '',
+    actor_user_id TEXT CHECK (
+        actor_user_id IS NULL OR (
+            length(actor_user_id) = 36
+            AND lower(actor_user_id) = actor_user_id
+            AND actor_user_id GLOB '????????-????-7???-[89ab]???-????????????'
+            AND replace(actor_user_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    at            INTEGER NOT NULL
+);
+
+-- 读侧索引：按课程 + 时间倒序截断（同毫秒行以 id 倒序稳定）。
+CREATE INDEX idx_learning_system_actions_course
+    ON learning_system_actions (course_id, at);
+-- 逻辑引用（actor_user_id → users）的具名索引（v3 契约对账要求）。
+CREATE INDEX idx_learning_system_actions_actor
+    ON learning_system_actions (actor_user_id);

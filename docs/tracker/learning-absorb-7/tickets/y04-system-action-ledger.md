@@ -2,7 +2,7 @@
 id: y04
 title: "系统动作簿——自主动作终态留痕 + 课程详情折叠节"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -148,3 +148,60 @@ part_of: ../map.md
   （避免他人维护动作不可见）。若产品要求按用户隔离，另立票。
 - `cancelled` 是新状态值：所有 match `status` 的前端/后端必须穷举（Rust
   enum/字符串比较），用测试钉住。
+
+## Resolution（2026-11-04）
+
+**实现点**
+
+- Schema（编辑 `070_learning_domain_rebuild.sql` §13，未新增迁移文件）：
+  `learning_system_actions`（`action_id` UUIDv7 唯一业务身份、`course_id`
+  逻辑引用 Cascade、`actor_user_id` → users KeepHistory、`ref_id` 多态不复制
+  载荷）+ 读侧索引 `(course_id, at)` + actor 索引。枚举三组（kind/trigger/
+  result）Rust 单源在 `learning_graph::system_action`，DB 无 CHECK。
+  列名用 `trigger_source` 避开 v3 契约禁止的 `TRIGGER` 物理令牌（视图字段
+  仍叫 `trigger`）。`learning_growth_batches.status` 增加 `cancelled`
+  （Rust 单源，无 DB CHECK）。
+- `id_schema_contract.rs`：`PRODUCT_TABLES` + identity
+  `(learning_system_actions, action_id)` + `ref_id` 非引用列 + 两条逻辑引用；
+  全库契约校验通过。
+- 写侧：`service/system_actions.rs` 的 `record_system_action`（fail-open，
+  写失败只 warn；basis 截断 ≤200 字；`NewSystemAction` builder）。写点：
+  维护 tick 修补/挂载（timer）、手动修补/挂载（manual）、生长
+  applied/failed（manual/settlement/auto_refill）。noop/skipped/idle/忙拒/
+  取消零行；生长取消把批行写 `cancelled`（不再写 failed）。
+- 读侧：`GET /api/learning/courses/{id}/system-actions?limit=`（缺省 50、
+  上限 200、按 `at DESC, id DESC`），课程不存在/软删 404；结构化 info 日志
+  `course/limit/returned`；POST grow 新增可选 `?trigger=auto_refill`（缺省
+  manual，仅改标签不改裁决）。
+- 前端：学习记录顶部可折叠「系统动作」节（NomiCollapse；失败红 + role=alert
+  + reason，空态「暂无系统动作」）；批行 `cancelled` 中性灰 tag；自动补批
+  hook 传 `trigger=auto_refill`；纯投影函数在 `systemActions.ts` 并单测。
+- 文档：`docs/architecture/learning.zh.md` 新增「学习系统动作簿（y04）」节
+  （数据形状/写点清单/fail-open/与任务注册表与批行状态机的边界），并修正
+  漂移注释：修补审计行只在 applied 时落行（noop/skipped 不落）、
+  failed=真失败而 cancelled 是中性终态、learning-tasks.jsonl 仅 begin/
+  finish 两型且无读 API/无前端消费。
+
+**测试命令与结果**
+
+- `CARGO_TARGET_DIR=… cargo test -p nomifun-learning`：790 passed, 0 failed。
+- `CARGO_TARGET_DIR=… cargo test -p nomifun-db`：全部 suites passed（新增
+  `learning_system_actions_migration` 4 tests；`id_schema_contract` 更新表数
+  契约为 125）。
+- `cargo fmt -p nomifun-learning -p nomifun-db -p nomifun-common -- --check`：
+  clean。
+- `bun run typecheck`：55 条存量错误，学习模块 0 条、无新增。
+- `cd ui && bun test src/renderer/pages/learning`：93 passed, 0 failed
+  （含新增 `systemActions.test.ts` 8 项）。
+- `bun run gen:i18n && bun run check:i18n`：up to date（11574 keys）。
+
+**偏差**
+
+- 表列名 `trigger` → `trigger_source`：v3 schema 契约禁止物理 `TRIGGER`
+  令牌（`id_schema_contract` 运行期扫描），DTO/前端字段仍为 `trigger`。
+- 票面文档路径 `docs/architecture.md` 实为 `docs/architecture/learning.zh.md`
+  （仓库无根级 architecture.md），已写在该域文档。
+- 真机 smoke（EXIT=0）未在本 worktree 执行——需要真实 provider 凭据与串行
+  环境，留给集成验证轮。
+- 取消/忙拒状态下"零账本行"由测试钉住；旧版本已写下的 failed 取消行不回填
+  （票面明示如实记档）。

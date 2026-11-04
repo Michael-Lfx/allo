@@ -854,14 +854,30 @@ export interface GraphHistoryView {
 }
 
 /** 一个生长批次的出生档案：序号/状态/批注/时刻 + 节点行（含学习者进度）。
- * status 批行状态机：pending 生长进行中（或中断）、applied 已落库、failed 失败 */
+ * status 批行状态机：pending 生长进行中（或中断）、applied 已落库、failed 失败、
+ * cancelled 用户取消（中性终态——取消不是失败；历史 failed 行不回填） */
 export interface GraphBatchView {
   batch_id: string;
   seq: number;
-  status: 'pending' | 'applied' | 'failed';
+  status: 'pending' | 'applied' | 'failed' | 'cancelled';
   note: string;
   created_at: number;
   nodes: GraphNodeHistoryView[];
+}
+
+/** 系统动作簿的一行（y04，GET /courses/{id}/system-actions）：自主/后台动作的
+ * 终态留痕。kind/trigger/result 是机器名（后端 Rust 枚举单源），人面文案走
+ * i18n；reason 只在 failed 时非空；actor_user_id 只对手动动作有值。 */
+export interface SystemActionView {
+  action_id: string;
+  kind: string;
+  trigger: string;
+  basis: string;
+  result: string;
+  reason: string;
+  ref_id: string;
+  actor_user_id: string | null;
+  at: number;
 }
 
 export interface GraphNodeHistoryView {
