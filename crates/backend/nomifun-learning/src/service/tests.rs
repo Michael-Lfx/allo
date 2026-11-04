@@ -10795,6 +10795,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
 
     #[derive(Debug)]
     struct SystemActionRow {
+        action_id: String,
         kind: String,
         trigger: String,
         basis: String,
@@ -10802,7 +10803,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         reason: String,
         ref_id: String,
         actor_user_id: Option<String>,
-        at: i64,
     }
 
     async fn system_action_rows(
@@ -10810,7 +10810,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         course: &LearningCourseId,
     ) -> Vec<SystemActionRow> {
         let rows = sqlx::query(
-            "SELECT kind, trigger_source, basis, result, reason, ref_id, actor_user_id, at \
+            "SELECT action_id, kind, trigger_source, basis, result, reason, ref_id, \
+                    actor_user_id \
              FROM learning_system_actions WHERE course_id = ? ORDER BY at DESC, id DESC",
         )
         .bind(course.as_str())
@@ -10819,6 +10820,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         .unwrap();
         rows.iter()
             .map(|row| SystemActionRow {
+                action_id: row.try_get("action_id").unwrap(),
                 kind: row.try_get("kind").unwrap(),
                 trigger: row.try_get("trigger_source").unwrap(),
                 basis: row.try_get("basis").unwrap(),
@@ -10826,7 +10828,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 reason: row.try_get("reason").unwrap(),
                 ref_id: row.try_get("ref_id").unwrap(),
                 actor_user_id: row.try_get("actor_user_id").unwrap(),
-                at: row.try_get("at").unwrap(),
             })
             .collect()
     }
@@ -11153,23 +11154,31 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     async fn system_actions_read_orders_desc_limits_and_404s() {
         let (service, _user, course) =
             seed_maintenance_course(0, 1, ScriptedCompleter::new("{}", false)).await;
-        for at in [1000_i64, 2000, 3000] {
+        let oldest = "0190f5fe-7c00-7a00-8abc-000000000001";
+        let middle = "0190f5fe-7c00-7a00-8abc-000000000002";
+        let newest = "0190f5fe-7c00-7a00-8abc-000000000003";
+        for (action_id, at) in [(oldest, 1000_i64), (middle, 2000), (newest, 3000)] {
             sqlx::query(
                 "INSERT INTO learning_system_actions \
                  (action_id, course_id, kind, trigger_source, basis, result, at) \
                  VALUES (?, ?, 'growth', 'manual', '', 'done', ?)",
             )
-            .bind(generate_id())
+            .bind(action_id)
             .bind(course.as_str())
             .bind(at)
             .execute(service.pool_for_tests())
             .await
             .unwrap();
         }
-        let rows = service.system_actions(&course, 2).await.unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].at, 3000);
-        assert_eq!(rows[1].at, 2000);
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].action_id, newest);
+        assert_eq!(rows[1].action_id, middle);
+        assert_eq!(rows[2].action_id, oldest);
+        let limited = service.system_actions(&course, 2).await.unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].action_id, newest);
+        assert_eq!(limited[1].action_id, middle);
         assert_eq!(
             service.system_actions(&course, 500).await.unwrap().len(),
             3,
