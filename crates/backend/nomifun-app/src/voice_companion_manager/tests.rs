@@ -1801,11 +1801,11 @@
     }
 
     #[test]
-    fn test_resolve_ai_mate_binary_candidate_search() {
+    fn test_resolve_voice_companion_binary_candidate_search() {
         let resolved = VoiceCompanionProcessManager::resolve_voice_companion_binary();
         if let Some(path) = resolved {
             assert!(path.is_file());
-            assert!(path.to_string_lossy().contains("voice-companion") || path.to_string_lossy().contains("ai-mate"));
+            assert!(path.to_string_lossy().contains("voice-companion"));
         }
     }
 
@@ -1814,17 +1814,13 @@
         let root=tempfile::tempdir().unwrap();
         let bin=root.path().join("Resources/bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let old_name=if cfg!(windows){"ai-mate.exe"}else{"ai-mate"};
-        let daemon=bin.join(old_name);std::fs::write(&daemon,b"test-only executable fixture").unwrap();
+        let name=if cfg!(windows){"voice-companion.exe"}else{"voice-companion"};
+        let daemon=bin.join(name);std::fs::write(&daemon,b"test-only executable fixture").unwrap();
         let host=root.path().join("MacOS/Flowy");
-        assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(Some(&bin),Some(&host)),Some(daemon.clone()));
-        assert!(VoiceCompanionProcessManager::installed_ai_mate_binary(None,Some(&host)).is_none());
-        let neighboring=root.path().join(old_name);std::fs::write(&neighboring,b"test-only colocated fixture").unwrap();
-        assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(None,Some(&root.path().join("Flowy.exe"))),Some(neighboring));
-        // The packaged name wins over the legacy ai-mate name.
-        let current=bin.join(if cfg!(windows){"voice-companion.exe"}else{"voice-companion"});
-        std::fs::write(&current,b"test-only current fixture").unwrap();
-        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin),Some(&host)),Some(current));
+        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin),Some(&host)),Some(daemon.clone()));
+        assert!(VoiceCompanionProcessManager::installed_voice_companion_binary(None,Some(&host)).is_none());
+        let neighboring=root.path().join(name);std::fs::write(&neighboring,b"test-only colocated fixture").unwrap();
+        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(None,Some(&root.path().join("Flowy.exe"))),Some(neighboring));
     }
 
     #[tokio::test]
@@ -1840,7 +1836,9 @@
         let snapshot = events.try_recv().unwrap();
         assert_eq!(snapshot.phase, VoiceSessionPhase::Error);
         assert_eq!(snapshot.connection, VoiceConnectionState::Offline);
-        assert_eq!(snapshot.error.unwrap().code, VOICE_COMPANION_MISSING);
+        // cfg(test) is a debug build, so the developer-facing code is expected.
+        assert_eq!(snapshot.error.unwrap().code, voice_companion_missing_code());
+        assert_eq!(voice_companion_missing_code(), VOICE_COMPANION_MISSING_DEV);
         assert!(manager.snapshot().enabled);
         manager.note_missing_voice_binary();
         assert!(events.try_recv().is_err());
@@ -3860,4 +3858,53 @@
         };
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("native_fault_feature_requires_valid_headless"));
+    }
+
+    // ── Dev provisioning contract (2026-11-04) ───────────────────────────────
+    // Written before the resolver fix: these must fail on the pre-fix code.
+    // See docs/architecture/voice-agent/execution/dev-voice-companion-provisioning-fix-2026-11-04.zh.md
+
+    fn set_mtime(path: &std::path::Path, offset_secs: u64) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let base = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + offset_secs);
+        file.set_modified(base).unwrap();
+    }
+
+    fn companion_name() -> &'static str {
+        if cfg!(windows) { "voice-companion.exe" } else { "voice-companion" }
+    }
+
+    #[test]
+    fn legacy_ai_mate_name_is_no_longer_accepted() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let legacy = bin.join(if cfg!(windows) { "ai-mate.exe" } else { "ai-mate" });
+        std::fs::write(&legacy, b"legacy daemon fixture").unwrap();
+        assert_eq!(
+            VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin), None),
+            None,
+            "the resolver must only accept the current voice-companion name"
+        );
+    }
+
+    #[test]
+    fn newest_candidate_wins_over_a_stale_bundled_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let bundled = root.path().join("Resources/bin");
+        let exe_dir = root.path().join("MacOS");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let stale = bundled.join(companion_name());
+        let fresh = exe_dir.join(companion_name());
+        std::fs::write(&stale, b"stale daemon fixture").unwrap();
+        std::fs::write(&fresh, b"fresh daemon fixture").unwrap();
+        set_mtime(&stale, 0);
+        set_mtime(&fresh, 100);
+        let host = exe_dir.join("Flowy");
+        assert_eq!(
+            VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bundled), Some(&host)),
+            Some(fresh),
+            "a stale bundled copy must not shadow a newer colocated build"
+        );
     }

@@ -17,6 +17,23 @@
 断句结束、最终 ASR 匹配和宿主就绪拒绝。包门禁不证明这些运行阶段已通过，
 扩大转写别名也不等于已经提高声学召回率。
 
+## 源码检出提示缺少语音服务组件
+
+源码检出里的这条提示属于**构建缺口**，不是安装包问题：`bun run dev` 只构建
+Flowy 本体，而 `voice-companion` 是 dev-dependency（仅 library），默认不会产出
+守护进程。用下面命令构建或检查：
+
+```bash
+bun run ensure:voice-companion          # 缺失或过期时自动构建
+bun run ensure:voice-companion --check  # 只检查，未就绪时 exit 1
+```
+
+`bun run dev` 会自动执行该步骤；可用 `NOMIFUN_SKIP_VOICE_COMPANION=1` 跳过。
+守护进程默认产物在 `target/debug`，解析器还会查 `build.noindex/**`、
+`<target>/<triple>/<profile>` 与 `apps/desktop/resources/bin`。只认当前
+`voice-companion` 名称，旧检出里的 `ai-mate` 残留请删除。开发构建会上报
+`voice_companion_missing_dev`，直接提示构建命令；正式安装包仍保留重装提示。
+
 ## 后端端口 / 连接问题
 
 ### `nomifun-web: invalid --host '<value>'`

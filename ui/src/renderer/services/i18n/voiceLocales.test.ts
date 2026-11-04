@@ -154,3 +154,24 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
     }
   });
 });
+
+/**
+ * Dev provisioning: a source checkout that has no voice-companion binary must
+ * point developers at the build command, not at reinstalling an installer.
+ * Key is added together with the resolver/ensure fix (direction test, red first).
+ */
+describe('voice companion dev provisioning hint', () => {
+  test('exposes componentMissingDev in both locales', () => {
+    for (const locale of [enVoice, zhVoice]) {
+      const value = getLocaleValue(locale, 'errors.componentMissingDev');
+      expect(typeof value).toBe('string');
+      expect(String(value).length).toBeGreaterThan(0);
+    }
+  });
+
+  test('existing installer hint stays intact for packaged builds', () => {
+    for (const locale of [enVoice, zhVoice]) {
+      expect(typeof getLocaleValue(locale, 'errors.componentMissing')).toBe('string');
+    }
+  });
+});

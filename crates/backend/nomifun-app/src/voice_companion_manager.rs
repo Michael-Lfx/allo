@@ -45,6 +45,19 @@ use tracing::{info, warn};
 
 /// Stable error code returned when the packaged voice daemon is absent.
 pub const VOICE_COMPANION_MISSING: &str = "voice_companion_missing";
+/// Development-channel variant: a source checkout must build the daemon instead
+/// of reinstalling an installer that does not exist for developers.
+pub const VOICE_COMPANION_MISSING_DEV: &str = "voice_companion_missing_dev";
+
+/// Missing-component code for this build channel. Source checkouts get the
+/// developer-facing variant; packaged builds keep the installer guidance.
+pub fn voice_companion_missing_code() -> &'static str {
+    if cfg!(debug_assertions) {
+        VOICE_COMPANION_MISSING_DEV
+    } else {
+        VOICE_COMPANION_MISSING
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceCompanionStatus {
@@ -2260,11 +2273,12 @@ impl VoiceCompanionProcessManager {
     /// Surface a missing packaged component as its own state instead of a
     /// generic daemon connection failure. Repeats are coalesced.
     fn note_missing_voice_binary(&self) {
+        let missing_code = voice_companion_missing_code();
         let mut snapshot = self.snapshot.write().unwrap_or_else(|err| err.into_inner());
         if snapshot
             .error
             .as_ref()
-            .is_some_and(|error| error.code == VOICE_COMPANION_MISSING)
+            .is_some_and(|error| error.code == VOICE_COMPANION_MISSING || error.code == VOICE_COMPANION_MISSING_DEV)
         {
             return;
         }
@@ -2273,7 +2287,7 @@ impl VoiceCompanionProcessManager {
         snapshot.phase = VoiceSessionPhase::Error;
         snapshot.error = Some(VoiceSessionError {
             stage: "connection".into(),
-            code: VOICE_COMPANION_MISSING.into(),
+            code: missing_code.into(),
         });
         snapshot.acoustic_ready = false;
         snapshot.dialogue_ready = false;
@@ -2858,92 +2872,165 @@ impl VoiceCompanionProcessManager {
         })
     }
 
-    /// Resolves the compiled `voice-companion` executable path on disk (with fallback to `ai-mate`).
-    pub fn resolve_voice_companion_binary() -> Option<PathBuf> {
-        let exe_names = if cfg!(windows) {
-            ["voice-companion.exe", "ai-mate.exe"]
+    /// Current daemon file name. The legacy `ai-mate` name is no longer accepted.
+    fn voice_companion_file_name() -> &'static str {
+        if cfg!(windows) {
+            "voice-companion.exe"
         } else {
-            ["voice-companion", "ai-mate"]
-        };
+            "voice-companion"
+        }
+    }
 
-        // 1. Explicit environment variable override
-        if let Some(env_path) = std::env::var_os("VOICE_COMPANION_BIN")
-            .or_else(|| std::env::var_os("AI_MATE_BIN"))
-            .map(PathBuf::from)
-        {
+    /// Build triples whose `<target>/<triple>/<profile>` layout can hold a daemon.
+    fn voice_companion_host_triples() -> &'static [&'static str] {
+        if cfg!(windows) {
+            &["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+        } else if cfg!(target_os = "macos") {
+            &["aarch64-apple-darwin", "x86_64-apple-darwin"]
+        } else {
+            &[
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+                "x86_64-unknown-linux-musl",
+                "aarch64-unknown-linux-musl",
+            ]
+        }
+    }
+
+    /// Directories of a source checkout that may contain a development build.
+    /// Pure so tests can assert the layout contract without touching the disk.
+    pub fn voice_companion_candidate_dirs(root: &Path) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        for base in ["target", "build.noindex"] {
+            for profile in ["debug", "release"] {
+                dirs.push(root.join(base).join(profile));
+            }
+        }
+        for triple in Self::voice_companion_host_triples() {
+            for base in ["target", "build.noindex"] {
+                for profile in ["debug", "release"] {
+                    dirs.push(root.join(base).join(triple).join(profile));
+                }
+            }
+        }
+        dirs.push(
+            root.join("apps")
+                .join("desktop")
+                .join("resources")
+                .join("bin"),
+        );
+        dirs
+    }
+
+    /// Walks up to the Cargo workspace root. Needed when the process was not
+    /// started through `cargo run` (IDE launch / double-clicked dev binary).
+    fn voice_companion_workspace_root() -> Option<PathBuf> {
+        let mut seeds: Vec<PathBuf> = Vec::new();
+        if let Ok(cwd) = std::env::current_dir() {
+            seeds.push(cwd);
+        }
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            seeds.push(PathBuf::from(manifest_dir));
+        }
+        if let Ok(current_exe) = std::env::current_exe() {
+            for ancestor in current_exe.ancestors().skip(1) {
+                seeds.push(ancestor.to_path_buf());
+            }
+        }
+        for seed in seeds {
+            for ancestor in seed.ancestors() {
+                if ancestor
+                    .join("apps")
+                    .join("voice-companion")
+                    .join("Cargo.toml")
+                    .is_file()
+                {
+                    return Some(ancestor.to_path_buf());
+                }
+            }
+        }
+        None
+    }
+
+    /// Newest existing file wins, so a stale bundled copy cannot shadow a fresh
+    /// development build.
+    fn select_newest_voice_companion(
+        candidates: impl IntoIterator<Item = PathBuf>,
+    ) -> Option<PathBuf> {
+        let mut existing: Vec<(std::time::SystemTime, PathBuf)> = candidates
+            .into_iter()
+            .filter(|candidate| candidate.is_file())
+            .map(|candidate| {
+                let modified = std::fs::metadata(&candidate)
+                    .and_then(|meta| meta.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                (modified, candidate)
+            })
+            .collect();
+        existing.sort_by(|left, right| left.0.cmp(&right.0));
+        existing.pop().map(|(_, path)| path)
+    }
+
+    /// Resolves the compiled `voice-companion` executable path on disk.
+    pub fn resolve_voice_companion_binary() -> Option<PathBuf> {
+        // 1. Explicit environment variable override.
+        if let Some(env_path) = std::env::var_os("VOICE_COMPANION_BIN").map(PathBuf::from) {
             if env_path.is_file() {
                 return Some(env_path);
             }
         }
 
-        // 2. Tauri's resource bin is authoritative across Windows/macOS/Linux.
-        let bundled_bin=std::env::var_os("NOMIFUN_BUNDLED_BIN_DIR").map(PathBuf::from);
-        let current_exe=std::env::current_exe().ok();
-        if let Some(binary)=Self::installed_voice_companion_binary(bundled_bin.as_deref(),current_exe.as_deref()) {return Some(binary);}
+        let name = Self::voice_companion_file_name();
+        let mut candidates: Vec<PathBuf> = Vec::new();
 
-        // 3. Known development build target directories (prefer newest binary)
-        for exe_name in exe_names {
-            let mut candidates = vec![
-                Path::new("target/debug").join(exe_name),
-                Path::new("target/release").join(exe_name),
-                Path::new("build.noindex/debug").join(exe_name),
-                Path::new("build.noindex/release").join(exe_name),
-            ];
-
-            // 4. Resolve relative to workspace root if cwd is a sub-crate
-            if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-                if let Some(r) = Path::new(&manifest_dir).ancestors().nth(2) {
-                    for dir in [
-                        "target/debug",
-                        "target/release",
-                        "build.noindex/debug",
-                        "build.noindex/release",
-                    ] {
-                        candidates.push(r.join(dir).join(exe_name));
-                    }
-                }
-            }
-
-            let mut existing: Vec<PathBuf> = candidates.into_iter().filter(|c| c.is_file()).collect();
-            existing.sort_by_key(|p| {
-                std::fs::metadata(p)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            });
-            if let Some(newest) = existing.pop() {
-                let resolved = std::fs::canonicalize(&newest).unwrap_or(newest);
-                return Some(resolved);
+        // 2. Tauri's resource bin plus the executable directory (packaged app).
+        if let Some(bundled_bin) = std::env::var_os("NOMIFUN_BUNDLED_BIN_DIR").map(PathBuf::from) {
+            candidates.push(bundled_bin.join(name));
+        }
+        if let Ok(current_exe) = std::env::current_exe() {
+            if let Some(parent) = current_exe.parent() {
+                candidates.push(parent.join(name));
             }
         }
 
-        None
-    }
-
-    /// Backwards-compatible alias for resolving the companion binary.
-    #[inline]
-    pub fn resolve_ai_mate_binary() -> Option<PathBuf> {
-        Self::resolve_voice_companion_binary()
-    }
-
-    fn installed_voice_companion_binary(bundled_bin:Option<&Path>,current_exe:Option<&Path>)->Option<PathBuf> {
-        let names = if cfg!(windows) {
-            ["voice-companion.exe", "ai-mate.exe"]
-        } else {
-            ["voice-companion", "ai-mate"]
-        };
-        for name in names {
-            if let Some(candidate) = bundled_bin.into_iter().chain(current_exe.and_then(Path::parent))
-                .map(|directory| directory.join(name)).find(|candidate| candidate.is_file()) {
-                return Some(candidate);
+        // 3. Source-checkout development layouts (plain, triple, staged resources).
+        if let Some(root) = Self::voice_companion_workspace_root() {
+            for dir in Self::voice_companion_candidate_dirs(&root) {
+                candidates.push(dir.join(name));
             }
         }
-        None
+
+        // 4. cwd-relative fallback for launches that expose no workspace root.
+        for dir in [
+            "target/debug",
+            "target/release",
+            "build.noindex/debug",
+            "build.noindex/release",
+        ] {
+            candidates.push(Path::new(dir).join(name));
+        }
+
+        Self::select_newest_voice_companion(candidates)
     }
 
-    #[inline]
+    /// Compatibility helper for packaged layouts: newest of the bundled `bin/`
+    /// directory and the directory next to the host executable.
     #[cfg(test)]
-    fn installed_ai_mate_binary(bundled_bin:Option<&Path>,current_exe:Option<&Path>)->Option<PathBuf> {
-        Self::installed_voice_companion_binary(bundled_bin, current_exe)
+    fn installed_voice_companion_binary(
+        bundled_bin: Option<&Path>,
+        current_exe: Option<&Path>,
+    ) -> Option<PathBuf> {
+        let name = Self::voice_companion_file_name();
+        Self::select_newest_voice_companion(
+            bundled_bin
+                .iter()
+                .map(|directory| directory.join(name))
+                .chain(
+                    current_exe
+                        .and_then(Path::parent)
+                        .map(|directory| directory.join(name)),
+                ),
+        )
     }
 
     fn read_autostart_config(&self) -> bool {
@@ -3085,7 +3172,7 @@ impl VoiceCompanionProcessManager {
                     current_exe = ?std::env::current_exe().ok(),
                     "voice_companion_binary_missing; the installation is missing the voice companion component"
                 );
-                return Err(VOICE_COMPANION_MISSING.into());
+                return Err(voice_companion_missing_code().into());
             }
         };
 
