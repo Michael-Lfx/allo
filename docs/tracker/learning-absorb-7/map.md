@@ -127,3 +127,11 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   `trigger_source` 规避 TRIGGER 令牌，API 字段仍 `trigger`），growth 批行新增
   `cancelled` 中性态；读端点按课程倒序 + limit，课程详情「系统动作」折叠节；
   表数 124→125（d37d1f049）。
+- 2026-11-04：y07 关闭——发布尾把生成期 `capacity_note` 落库
+  （`learning_lessons.capacity_note`，缺席/空白写 NULL 清旧值），新增
+  per-user/per-lesson `learning_lesson_capacity_feedback` 三选一留痕
+  （`UNIQUE(user_id, lesson_id)` latest-wins UPSERT、`feedback_id` 首写生成、
+  两条逻辑引用 Cascade），`CourseDetail.overloaded_lessons` 内容级计数 +
+  课时页反馈卡（无自报不呈卡、重载回显）；零结算零置位（不写
+  attempts/review/xp/progress/FSRS、不改 status/est、不注入共享生成）；
+  表数 125→126（58f1e4ef5）。
