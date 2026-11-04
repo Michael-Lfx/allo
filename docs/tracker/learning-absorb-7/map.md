@@ -112,3 +112,8 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   parse 失败带 serde 行列 + ±120 字符窗口，传输失败在 structure_gen、
   mounting/structure_ops、生长环与 open_judge 一次即上抛、不写重试反馈槽、
   不占契约轮次，仅 `Rejected` 才回灌重试（e784367fc）。
+- 2026-11-04：y01 关闭——`one_name` 拆成三层：L0 `、`/`，` 标点硬门，
+  L1 `与/和/及/,//` 只出 `gd.blocks.name_hint` 提示不阻断，L2 仅在 L1 非空
+  且无红条时一次性批量中立裁决（`name_adjudication.rs`：输入只给名字 + 被点
+  字符、同名运行内 memo、裁决器失败降级为提示）；`求和公式` 类术语本字不再
+  误杀（e79d82b8e）。
