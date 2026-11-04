@@ -120,6 +120,17 @@ part_of: ../map.md
 
 ## Resolution（2026-11-04）
 
+**评审修复（2026-11-04）**
+
+- search 取行改为有界查询 `registry_entries_bounded(limit)`（`ORDER BY
+  canonical LIMIT ?`，硬上限 500；命中上限 `tracing::warn!` 留痕但读侧不
+  报错）。共享 `registry_entries()` 保持原无界语义（渲染/扩邻需要全集）。
+- detail 改为 `registry_entry_by_id`（`WHERE concept_id = ?`）精确查，不受
+  search 上限影响——截断之外的登记行仍可按 id 取回。
+- 新增 DB 测试 `search_read_is_bounded_while_detail_stays_exact`：小上限
+  验证 canonical 序截断、截断行集内的 concept_id 去重，以及 detail 取回
+  截断外行。
+
 **实现点**
 
 - 学习侧 DTO（`models.rs`）：`ConceptSearchHit { concept_id, canonical,
