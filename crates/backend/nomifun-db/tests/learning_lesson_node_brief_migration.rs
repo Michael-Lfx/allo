@@ -60,12 +60,13 @@ async fn seed_lesson(pool: &SqlitePool) {
 }
 
 /// 列形状：两列在场、`NOT NULL DEFAULT ''`（缺省空串 = 旧档未声明）——
-/// pragma 逐列钉住 notnull/dflt_value，列序随追加位（difficulty 区之后）。
+/// pragma 逐列钉住 notnull/dflt_value 与列序（cid：difficulty 区同区追加，
+/// intent 紧随 difficulty、scope 紧随 intent）。
 #[tokio::test]
 async fn brief_columns_are_not_null_with_empty_default() {
     let pool = setup().await;
-    let columns: Vec<(String, i64, Option<String>)> = sqlx::query(
-        "SELECT name, \"notnull\", dflt_value FROM pragma_table_info('learning_lessons')",
+    let columns: Vec<(String, i64, i64, Option<String>)> = sqlx::query(
+        "SELECT name, cid, \"notnull\", dflt_value FROM pragma_table_info('learning_lessons')",
     )
     .fetch_all(&pool)
     .await
@@ -74,16 +75,27 @@ async fn brief_columns_are_not_null_with_empty_default() {
     .map(|row| {
         (
             row.get::<String, _>("name"),
+            row.get::<i64, _>("cid"),
             row.get::<i64, _>("notnull"),
             row.get::<Option<String>, _>("dflt_value"),
         )
     })
     .collect();
-    for (name, default_sql) in [("intent", "''"), ("scope", "''")] {
-        let (_, notnull, dflt) = columns
+    let difficulty_cid = columns
+        .iter()
+        .find(|(column, _, _, _)| column == "difficulty")
+        .expect("difficulty 列在场（原 073 节）")
+        .1;
+    for (offset, (name, default_sql)) in [(1, ("intent", "''")), (2, ("scope", "''"))] {
+        let (_, cid, notnull, dflt) = columns
             .iter()
-            .find(|(column, _, _)| column == name)
+            .find(|(column, _, _, _)| column == name)
             .unwrap_or_else(|| panic!("{name} 列必须在场：{columns:?}"));
+        assert_eq!(
+            *cid,
+            difficulty_cid + offset,
+            "{name} 列序紧随 difficulty 同区追加"
+        );
         assert_eq!(*notnull, 1, "{name} 必须 NOT NULL（空串 = 旧档语义）");
         assert_eq!(
             dflt.as_deref(),
