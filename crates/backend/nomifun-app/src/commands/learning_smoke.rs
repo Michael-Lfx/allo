@@ -1385,6 +1385,9 @@ async fn run_grow(
         }
     }
 
+    // y01 读数面：最近一轮生长的 L1 名字提示数（跨轮不聚合——OK 行透出
+    // 最后一轮的读数，与 batches/nodes 同口径）。
+    let mut name_hints_last = 0usize;
     for round in 1..=batches {
         // 自动补批判定读数（m10，读数面非门禁）：裁决结果 + ready 数——
         // 双臂对照卡数据源（on 臂 due + 批后 ready 上升；off 臂 disabled
@@ -1433,12 +1436,14 @@ async fn run_grow(
         // 锚定 registry 概念的可观察信号。
         // 碎片裁决读数行（m9 补接）：total/rows/unhandled/degraded——同款观测面。
         let stats = wiring.service.growth_run_stats();
+        name_hints_last = stats.as_ref().map(|stats| stats.name_hints).unwrap_or(0);
         match stats {
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
                  [retry: attempts_used={}, stop_reason={}]  \
                  [provenance: rows={} invalid={} retried={} degraded={} external_hits={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
+                 [names: name_hints={}]  \
                  [review_state: {} injections={}]",
                 stats.attempts_used,
                 stats.stop_reason,
@@ -1451,6 +1456,7 @@ async fn run_grow(
                 stats.review_fragments_rows,
                 stats.review_fragments_unhandled,
                 stats.review_fragments_degraded,
+                stats.name_hints,
                 if stats.review_state { "on" } else { "off" },
                 stats.review_state_injections
             ),
@@ -1495,7 +1501,7 @@ async fn run_grow(
     .fetch_one(&wiring.pool)
     .await?;
     println!(
-        "OK  course={}  batches={batches}  nodes={total}  ({} mode)",
+        "OK  course={}  batches={batches}  nodes={total}  name_hints={name_hints_last}  ({} mode)",
         course_id.as_str(),
         if with_structure { "loop" } else { "grow" }
     );

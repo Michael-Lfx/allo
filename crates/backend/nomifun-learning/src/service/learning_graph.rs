@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::learning_graph::concept_search;
+use crate::models::{ConceptSearchMode, ConceptSearchResults};
+
 /// The single implicit module every learning-graph course hangs its node
 /// lessons under (`learning_lessons.module_id` is NOT NULL). The graph UI
 /// never renders modules; this row only satisfies the relational shape.
@@ -1043,12 +1046,25 @@ impl LearningService {
                     return Err(AppError::UnprocessableEntity(message));
                 }
             };
-            // st.ops.apply：gd.* 全量重过零放宽——任一违规拒整回合。
+            // st.ops.apply：gd.* 全量重过零放宽——任一**红条**拒整回合。
+            // y01：L1 名字形态只出 `gd.blocks.name_hint` 警告（不阻断），与
+            // learnhub 维护面同款——这里只留读数，L0 纯标点仍硬拒。
             let mut violations = crate::learning_graph::structure_contract::validate_structure(&candidate);
             violations.extend(crate::learning_graph::structure_contract::reconcile_doors(
                 &candidate,
                 &terrain,
             ));
+            let name_hints = violations
+                .iter()
+                .filter(|item| item.code == "gd.blocks.name_hint")
+                .count();
+            if name_hints > 0 {
+                tracing::info!(
+                    course = course_id.as_str(),
+                    name_hints,
+                    "structure repair name hints (non-blocking)"
+                );
+            }
             let red: Vec<_> = violations.iter().filter(|item| !item.warning).collect();
             if !red.is_empty() {
                 let owned: Vec<crate::learning_graph::structure_contract::ContractViolation> =
@@ -1983,6 +1999,9 @@ impl LearningService {
         // 碎片裁决机械读数（m9 补接 smoke total/rows/unhandled/degraded）：
         // 同款跨轮累加（读数面非门禁）。
         let mut fragment_readout = crate::learning_graph::fragment_verdict::FragmentReadout::default();
+        // L1 名字提示读数（y01）：跨预算轮累加，smoke 生长 OK 读数行透出
+        // （读数面非门禁；提示不阻断）。
+        let mut name_hints_readout = 0usize;
         // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
         // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
         // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
@@ -2211,6 +2230,7 @@ impl LearningService {
                 "coach proposed growth batch"
             );
             let mut outcome = self.gate_batch(course_id, &mut candidate).await?;
+            name_hints_readout += outcome.name_hints;
             if !outcome.errors.is_empty() {
                 let report = crate::learning_graph::format_gate_report(&outcome.errors);
                 tracing::warn!(
@@ -2559,6 +2579,7 @@ impl LearningService {
             stop_reason,
             provenance_readout,
             fragment_readout,
+            name_hints_readout,
             review_state,
             review_state_injections,
         );
@@ -2666,6 +2687,7 @@ impl LearningService {
         stop_reason: &str,
         provenance: crate::learning_graph::provenance::ProvenanceReadout,
         fragments: crate::learning_graph::fragment_verdict::FragmentReadout,
+        name_hints: usize,
         review_state: bool,
         review_state_injections: usize,
     ) {
@@ -2682,6 +2704,7 @@ impl LearningService {
                 review_fragments_rows: fragments.rows,
                 review_fragments_unhandled: fragments.unhandled,
                 review_fragments_degraded: fragments.degraded,
+                name_hints,
                 review_state,
                 review_state_injections,
             });
@@ -3091,6 +3114,10 @@ impl LearningService {
             &name_owner,
             &existing_titles,
         );
+        let name_hints = nearform_warns
+            .iter()
+            .filter(|warn| warn.kind == "ng.mints.name_hint")
+            .count();
         for warn in &nearform_warns {
             tracing::warn!(
                 course = course_id.as_str(),
@@ -3283,6 +3310,7 @@ impl LearningService {
             auto_reusals,
             provenance_known,
             external_anchors_mech,
+            name_hints,
         })
     }
 
@@ -4725,6 +4753,60 @@ impl LearningService {
             text.push_str(&pool_lines.join("\n"));
         }
         Ok(text)
+    }
+
+    /// 概念登记表只读检索（y03，内容面 `search_concepts` 工具的服务单源）：
+    /// 四通道 exact / alias / nearname / fulltext（近名机械单源在
+    /// [`crate::learning_graph::defnear`]），按 concept_id 去重取最高等级、
+    /// 截 top-5；零命中返回 `not_found: true` 不抛错。`detail` 按 concept_id
+    /// 取全定义 + 全部活跃别名（不受 top-5 限制），查无 = 404、缺 id = 400。
+    ///
+    /// **只读**：本方法只发 SELECT，登记表（及其 mtime 语义的 `updated_at`）
+    /// 零写侧——自查赋权不是新门，也不是写入口。
+    pub async fn search_concepts(
+        &self,
+        query: &str,
+        mode: ConceptSearchMode,
+        concept_id: Option<&str>,
+    ) -> Result<ConceptSearchResults, AppError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(AppError::BadRequest(
+                "search_concepts: query must not be empty".into(),
+            ));
+        }
+        match mode {
+            ConceptSearchMode::Search => {
+                let registry = self.registry_entries().await?;
+                Ok(concept_search::search_hits(&registry, query))
+            }
+            ConceptSearchMode::Detail => {
+                let concept_id = concept_id
+                    .map(str::trim)
+                    .filter(|concept_id| !concept_id.is_empty())
+                    .ok_or_else(|| {
+                        AppError::BadRequest(
+                            "search_concepts: detail mode requires concept_id".into(),
+                        )
+                    })?;
+                // 取行单源 = 既有的 `registry_entries`（deprecated=0、别名池按
+                // 行级 doc_version 解码——与 render_registry_excerpt 同口径）。
+                let entry = self
+                    .registry_entries()
+                    .await?
+                    .into_iter()
+                    .find(|entry| entry.concept_id == concept_id)
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "concept {concept_id} is absent from the registry"
+                        ))
+                    })?;
+                Ok(ConceptSearchResults {
+                    hits: vec![concept_search::detail_hit(&entry)],
+                    not_found: false,
+                })
+            }
+        }
     }
 
     // ── 已会声明（Declared Known，m2 / ADR-0032 移植）───────────────────────
