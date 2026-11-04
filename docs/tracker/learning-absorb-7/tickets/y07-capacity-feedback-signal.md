@@ -2,7 +2,7 @@
 id: y07
 title: "节点容量反馈信号——capacity_note 落库 + 三选一留痕（零结算零置位）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [y04]
 part_of: ../map.md
@@ -150,3 +150,75 @@ part_of: ../map.md
   旧内容——UI 不据此自动改选，只回显「你上次的选择」。
 - `est` 双角色（内容尺寸 + XP 基数 + 水位）是硬红线，任何「预算加长」
   落地都必须走独立字段并明确不进 settle。
+
+## Resolution（2026-11-04）
+
+**实现点**
+
+- Schema（编辑 `070_learning_domain_rebuild.sql` §14，未新增迁移文件）：
+  `learning_lessons.capacity_note`（TEXT 可空，旧行 NULL）+
+  `learning_lesson_capacity_feedback`（`feedback_id` UUIDv7 唯一业务身份、
+  `user_id` → users Cascade、`lesson_id` → learning_lessons Cascade、
+  `UNIQUE(user_id, lesson_id)` latest-wins、`note` 默认空串、枚举无 DB
+  CHECK）+ `idx_..._lesson` / `idx_..._user` 两条具名索引。
+  `id_schema_contract.rs`：`PRODUCT_TABLES` + `feedback_id` 身份（UUIDv7 +
+  UNIQUE）与 `NON_REFERENCE_ID_COLUMNS` + 两条逻辑引用；表数契约
+  125 → 126；新增迁移测试 4 项（列可空/旧行 NULL、行默认值、身份与唯一键、
+  索引与全库契约）。
+- 写侧：`persist_lesson_output` 同一事务写 `capacity_note`（`normalize_capacity_note`
+  trim；缺席/空白写 NULL 清旧值），`over_capacity` tracing 原样保留。
+- DTO/服务/路由：`CapacityFeedbackChoice`（serde kebab
+  `accept|extend|split`，写侧严格、读侧宽容未知值）+
+  `CapacityFeedbackView {choice, at}` + `LessonView.capacity_note` /
+  `capacity_feedback`（后者仅 lesson detail 填本人那一行）+
+  `record_capacity_feedback`（choice 空/未知 400；课时不存在/未选课 404；
+  `ON CONFLICT(user_id, lesson_id) DO UPDATE`，`feedback_id` 首写生成覆盖
+  不改）+ `POST /api/learning/lessons/{id}/capacity-feedback`（body
+  `{choice}`；不新增 GET）。
+- 读侧聚合：`CourseDetail.overloaded_lessons` = 课程内
+  `capacity_note IS NOT NULL AND trim(capacity_note) <> ''` 的课时数（纯读、
+  内容级计数，不泄露他人选择）。
+- 前端：`capacityFeedback.ts` 纯投影（有自报才呈卡 / 回显旧选择 / 聚合 0
+  零版面 / 三选项 i18n 键）+ `CapacityFeedbackCard`（三选一、成功后回显、
+  失败行内 `role=alert` 可重按、语义色 token）+ `LessonBlock` 内嵌 +
+  课程详情顶部「N 节超载」（0 不占版面）；`api.recordCapacityFeedback`；
+  zh-CN/en-US 双写 10 键，`gen:i18n` 后 11584 keys。
+- 文档：`docs/architecture/learning.zh.md` 新增「节点容量反馈信号（y07）」
+  节（数据形状/边界/零结算零置位/HTTP 面）并补迁移与路由清单。
+
+**零结算零置位**
+
+`capacity_feedback_tests.rs` 钉住：一次反馈调用前后 `learning_attempts` /
+`learning_review_events` / `learning_review_log` / `learning_xp_events` /
+`learning_lesson_progress` / `learning_review_items`（含 FSRS 列合计）计数
+不变、课时 status 与 est 不变、任务注册表零新增、WS 零 phase。反馈也不注入
+共享课时生成（`generate_*` 不读该表；上下文类型无反馈槽）。
+
+**测试命令与结果**
+
+- `CARGO_TARGET_DIR=… cargo test -p nomifun-learning -p nomifun-db`：
+  learning 825 passed / 0 failed（含新增 5 项），db 全部 suites passed
+  （含新增 `learning_lesson_capacity_feedback_migration` 4 项）。
+- `cargo fmt -p nomifun-learning -p nomifun-db -- --check`：clean。
+- `cd ui && bun test src/renderer/pages/learning`：105 passed / 0 failed
+  （含新增 `capacityFeedback.test.ts` 8 项 +
+  `CapacityFeedbackCard.render.test.tsx` 4 项）。
+- `bun run typecheck`：55 条存量错误，学习模块 0 条、无新增。
+- `bun run gen:i18n && bun run check:i18n`：up to date（11584 keys）。
+- `bun run check:theme`：passed。
+
+**偏差**
+
+- 服务入参 `choice: &str`（而非直接反序列化枚举）：空/未知值要走服务端
+  400 口径，而不是 axum `Json` 的 422 反序列化拒绝；枚举仍是 Rust 单源，
+  响应/回显经 `CapacityFeedbackChoice` 序列化。
+- 聚合口径「活跃课时」= 现存课程下全部课时（课程 `deleted_at` 由详情入口
+  过滤；课时无墓碑列）。
+- `note` 列按票面建表保留，但当前 API 不写（恒空串）——本票只有三选一，
+  自由文本留作未来扩展。
+- 真机 smoke（生成带 `capacity_note` → 课时页呈卡 → 重进回显 → 聚合 +1，
+  `EXIT=0`）未在本 worktree 执行（需真实 provider 凭据与串行环境）——
+  **留波次真机验收**。
+- `bun run check:dead-css` / `check:button-layout` 在集成分支尖端已红
+  （失败文件均为本票之外的历史文件；`check:button-layout` 另因 Windows
+  临时目录 EBUSY），本票文件零新增告警。

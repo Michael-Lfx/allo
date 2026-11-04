@@ -287,7 +287,12 @@ impl LearningService {
                      JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
                      WHERE e.user_id = ? AND e.course_id = c.course_id \
                        AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
-                       AND r.due_at <= ?) AS due_today \
+                       AND r.due_at <= ?) AS due_today, \
+                    (SELECT COUNT(*) FROM learning_lessons l \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE m.course_id = c.course_id \
+                       AND l.capacity_note IS NOT NULL \
+                       AND trim(l.capacity_note) <> '') AS overloaded_lessons \
              FROM learning_courses c \
              WHERE c.course_id = ? AND c.deleted_at IS NULL",
         )
@@ -340,6 +345,7 @@ impl LearningService {
             let lesson_rows = sqlx::query(
                 "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, \
                         l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
+                        l.capacity_note, \
                         COALESCE(p.status, 'not_started') AS status \
                  FROM learning_lessons l \
                  LEFT JOIN learning_lesson_progress p \
@@ -390,6 +396,9 @@ impl LearningService {
                     // 目录视图不加载节正文（体积大）；分节经课时详情接口
                     // 获取，目录双读 summary。
                     sections: Vec::new(),
+                    capacity_note: lesson_row.try_get("capacity_note").map_err(internal)?,
+                    // 反馈是 per-user 回显，只随 lesson detail 返回。
+                    capacity_feedback: None,
                 });
             }
             modules.push(ModuleView {
@@ -447,6 +456,8 @@ impl LearningService {
             modules,
             next_lesson_id,
             due_review_count,
+            overloaded_lessons: row.try_get::<i64, _>("overloaded_lessons").map_err(internal)?
+                as usize,
             graph,
             source_plan_detail,
         })
@@ -479,6 +490,7 @@ impl LearningService {
         let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
         let row = sqlx::query(
             "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
+                    l.capacity_note, \
                     c.source_kb_id AS course_source_kb_id, c.source_kb_ids AS course_source_kb_ids, c.samples_meta_json AS course_samples_meta_json, \
                     COALESCE(p.status, 'not_started') AS status \
              FROM learning_lessons l \
@@ -527,6 +539,8 @@ impl LearningService {
             status,
             activities,
             sections,
+            capacity_note: row.try_get("capacity_note").map_err(internal)?,
+            capacity_feedback: None,
         })
     }
 

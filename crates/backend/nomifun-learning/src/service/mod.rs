@@ -545,6 +545,7 @@ pub use learning_graph::{
     MAINTENANCE_INTERVAL_MINUTES,
     is_findings_watermark_disabled_value,
 };
+mod capacity_feedback;
 mod course;
 mod course_outline;
 mod diagnostic;
@@ -609,6 +610,8 @@ async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
 
 #[cfg(test)]
 mod basis_tests;
+#[cfg(test)]
+mod capacity_feedback_tests;
 #[cfg(test)]
 mod concept_search_tests;
 #[cfg(test)]

@@ -32,6 +32,14 @@ export type LessonStatus = 'not_started' | 'in_progress' | 'completed' | 'skippe
 export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
 export type ReviewSource = 'course' | 'custom';
 export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archived';
+/** 节点容量反馈三选一（y07）：接受现状 / 预算加长 / 拆成两节。
+ * 只留痕——不自动重生成、不拆节、不改 est。 */
+export type CapacityFeedbackChoice = 'accept' | 'extend' | 'split';
+/** 当前用户对某课时的最新容量反馈（latest-wins；只在课时详情回显）。 */
+export interface CapacityFeedbackView {
+  choice: CapacityFeedbackChoice;
+  at: number;
+}
 /** 课程类型：传统课程（大纲驱动）与学习图（beta，前置网络驱动） */
 export type CourseKind = 'traditional' | 'learning_graph';
 
@@ -319,6 +327,10 @@ export interface Lesson {
   activities: Activity[];
   /** 分节正文；空 = 旧课时的单篇 summary（双读回退） */
   sections: Section[];
+  /** 生成期超容自报（k03）：内容级元数据；缺席/null = 无自报（不呈卡）。 */
+  capacity_note?: string | null;
+  /** 当前用户的容量反馈回显（仅课时详情返回；目录视图缺席）。 */
+  capacity_feedback?: CapacityFeedbackView | null;
 }
 
 export interface LearningModule {
@@ -335,6 +347,8 @@ export interface CourseDetail {
   modules: LearningModule[];
   next_lesson_id: string | null;
   due_review_count: number;
+  /** 课程内自报超容的课时数（内容级纯读聚合，不泄露他人选择）；0 = 零版面。 */
+  overloaded_lessons: number;
   /** 仅 learning_graph 课程携带：终点锚 + 罗盘 + 就绪集（ADR-0009） */
   graph: LearningGraphView | null;
   /** 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）；只挂详情
