@@ -10992,6 +10992,90 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(system_action_rows(&service, &course).await.len(), 2);
     }
 
+    /// y01 修补路径：修补后全量复核里 L1 名字（含 `与`/`和`）只出
+    /// `gd.blocks.name_hint` 提示、不拒回合；L0 纯标点（`、`/`，`）仍硬拒，
+    /// 结构与审计零改动。与生成线的同一分工在 service 层再钉一次。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn repair_recheck_hints_l1_names_but_still_rejects_l0_marks() {
+        let l1_ops = r#"{"ops":[{"op":"rename_block","from":"块00","to":"双进程与窗口","reason":"依据留痕"}]}"#;
+        let (service, user_id, course) = seed_maintenance_course_with_structure(
+            1,
+            1,
+            ScriptedCompleter::new(l1_ops, false),
+            ledger_valid_structure(),
+        )
+        .await;
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "applied", "L1 名字只提示，不得拒回合");
+        let structure_raw: String =
+            sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+                .bind(course.as_str())
+                .fetch_one(service.pool_for_tests())
+                .await
+                .unwrap();
+        assert!(
+            structure_raw.contains("双进程与窗口"),
+            "L1 名字必须原样落库：{structure_raw}"
+        );
+        assert_eq!(
+            system_action_rows(&service, &course).await.len(),
+            1,
+            "applied 回合落一条 Done 账本行"
+        );
+
+        for (label, name) in [("顿号", "双进程、窗口"), ("逗号", "双进程，窗口")] {
+            let l0_ops = format!(
+                r#"{{"ops":[{{"op":"rename_block","from":"块00","to":"{name}","reason":"依据留痕"}}]}}"#
+            );
+            let (service, user_id, course) = seed_maintenance_course_with_structure(
+                1,
+                1,
+                ScriptedCompleter::new(l0_ops, false),
+                ledger_valid_structure(),
+            )
+            .await;
+            let before: String = sqlx::query_scalar(
+                "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            let error = service
+                .run_structure_repair(&user_id, &course, None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, AppError::UnprocessableEntity(_)),
+                "{label}（L0）必须拒回合，got {error:?}"
+            );
+            assert!(
+                error.to_string().contains("gd.blocks.one_name"),
+                "{label} 的拒因必须点名 one_name：{error}"
+            );
+            let after: String = sqlx::query_scalar(
+                "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            assert_eq!(before, after, "{label}：被拒回合不得改结构");
+            let audits: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_structure_repairs WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            assert_eq!(audits, 0, "{label}：被拒回合不落审计行");
+        }
+    }
+
     /// noop（评估过、无 op）与 skipped（零 LLM）都是零工作：零账本行。
     #[tokio::test]
     #[serial_test::serial]
