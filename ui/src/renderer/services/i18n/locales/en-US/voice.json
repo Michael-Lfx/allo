@@ -319,7 +319,7 @@
     "verifyingSha256": "Verifying Integrity",
     "ready": "Ready",
     "failed": "Installation Failed",
-    "removing": "Releasing Space",
+    "removing": "Uninstalling voice suite",
     "idle": "Idle",
     "listening": "Listening",
     "thinking": "Processing",
@@ -338,7 +338,7 @@
     "ready": "Ready",
     "readyDesc": "Models are installed and integrity-verified. Wake availability is shown by the service status below.",
     "standbyDesc": "Voice engine ready. Turn on switch to start listening in background",
-    "removing": "Releasing disk space",
+    "removing": "Uninstalling voice suite",
     "failed": "Installation or verification encountered an issue"
   },
   "progress": {
@@ -364,12 +364,14 @@
     "more": "More Options",
     "download": "Download",
     "retry": "Retry",
-    "releaseSpace": "Release Space",
-    "confirmRelease": "Confirm Release?",
+    "uninstall": "Uninstall voice suite",
+    "uninstallConfirmTitle": "Uninstall voice suite?",
+    "uninstallConfirmContent": "This deletes the downloaded voice models and frees about 249 MB. Voice features become unavailable until you download them again.",
+    "uninstallConfirmOk": "Uninstall",
+    "uninstalling": "Uninstalling voice suite...",
     "cancel": "Cancel",
     "enableVoice": "Enable Voice Companion",
-    "disableVoice": "Disable Voice Companion",
-    "releasing": "Releasing..."
+    "disableVoice": "Disable Voice Companion"
   },
   "errors": {
     "downloadFailed": "Voice model download failed. Please check network connection",

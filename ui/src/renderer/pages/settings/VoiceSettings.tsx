@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Menu, Message, Switch } from '@arco-design/web-react';
+import { Button, Dropdown, Menu, Message, Modal, Switch } from '@arco-design/web-react';
 import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
@@ -296,10 +296,6 @@ const VoiceSettings: React.FC = () => {
   const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
   const [readyIconScaled, setReadyIconScaled] = useState(false);
 
-  // Inline two-step release confirmation state per ui-motion.zh.md §3
-  const [isConfirmingRelease, setIsConfirmingRelease] = useState(false);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const lastProgressUpdateRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -332,9 +328,6 @@ const VoiceSettings: React.FC = () => {
   // Clean up timers and audio streams on unmount
   useEffect(() => {
     return () => {
-      if (confirmTimerRef.current) {
-        clearTimeout(confirmTimerRef.current);
-      }
       if (asrTimerRef.current) {
         clearTimeout(asrTimerRef.current);
       }
@@ -579,9 +572,9 @@ const VoiceSettings: React.FC = () => {
     }
   }, [applyStateUpdate, operationErrorText, t]);
 
-  // Inline two-step confirmation per ui-motion.zh.md §3:
-  // First click shows "确认释放？" with a 3-second auto-revert timer.
-  // Second click within 3 seconds confirms deletion and calls DELETE.
+  // Uninstalling the voice suite removes ~250MB of local models, so the
+  // destructive action always goes through the shared confirmation dialog
+  // instead of an inline two-step menu that disappears after the first click.
   const fetchCapabilities = useCallback(async () => {
     try {
       setCapabilities(await getVoiceCapabilities());
@@ -627,25 +620,16 @@ const VoiceSettings: React.FC = () => {
     }
   }, [modelStatus, fetchCapabilities]);
 
-  const handleReleaseClick = useCallback(() => {
-    if (!isConfirmingRelease) {
-      setIsConfirmingRelease(true);
-      if (confirmTimerRef.current) {
-        clearTimeout(confirmTimerRef.current);
-      }
-      confirmTimerRef.current = setTimeout(() => {
-        setIsConfirmingRelease(false);
-        confirmTimerRef.current = null;
-      }, 3000);
-    } else {
-      if (confirmTimerRef.current) {
-        clearTimeout(confirmTimerRef.current);
-        confirmTimerRef.current = null;
-      }
-      setIsConfirmingRelease(false);
-      void handleDelete();
-    }
-  }, [isConfirmingRelease, handleDelete]);
+  const handleUninstallClick = useCallback(() => {
+    Modal.confirm({
+      title: t('voice.actions.uninstallConfirmTitle'),
+      content: t('voice.actions.uninstallConfirmContent'),
+      okText: t('voice.actions.uninstallConfirmOk'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => handleDelete(),
+    });
+  }, [handleDelete, t]);
 
   const handleToggleVoiceEnabled = useCallback(async (checked: boolean) => {
     setIsTogglingCompanion(true);
@@ -918,7 +902,7 @@ const VoiceSettings: React.FC = () => {
     );
   } else if (modelStatus === 'Removing') {
     rowLabel = t('voice.phases.removing');
-    rowDescription = t('voice.actions.releasing');
+    rowDescription = t('voice.actions.uninstalling');
   }
 
   return (
@@ -1050,10 +1034,8 @@ const VoiceSettings: React.FC = () => {
                                 <Menu.Item key='repair' onClick={() => handleInstall(true)}>
                                   {t('voice.actions.repair')}
                                 </Menu.Item>
-                                <Menu.Item key='release' onClick={handleReleaseClick} className='text-danger-6'>
-                                  {isConfirmingRelease
-                                    ? t('voice.actions.confirmRelease')
-                                    : t('voice.actions.releaseSpace')}
+                                <Menu.Item key='uninstall' onClick={handleUninstallClick} className='text-danger-6'>
+                                  {t('voice.actions.uninstall')}
                                 </Menu.Item>
                               </Menu>
                             }
@@ -1083,7 +1065,7 @@ const VoiceSettings: React.FC = () => {
 
                       {modelStatus === 'Removing' && (
                         <Button loading disabled size='small'>
-                          {t('voice.actions.releaseSpace')}
+                          {t('voice.actions.uninstall')}
                         </Button>
                       )}
                     </div>

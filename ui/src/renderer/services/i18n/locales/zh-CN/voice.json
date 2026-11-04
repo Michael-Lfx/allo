@@ -316,7 +316,7 @@
     "verifyingSha256": "正在校验完整性",
     "ready": "已就绪",
     "failed": "安装失败",
-    "removing": "正在释放空间",
+    "removing": "正在卸载语音套件",
     "idle": "待机",
     "listening": "倾听中",
     "thinking": "处理中",
@@ -335,7 +335,7 @@
     "ready": "已就绪",
     "readyDesc": "模型已安装并通过完整性校验；唤醒可用性以下方服务状态为准",
     "standbyDesc": "语音引擎已就绪，打开开关即可在后台呼叫唤醒",
-    "removing": "正在释放磁盘空间",
+    "removing": "正在卸载语音套件",
     "failed": "下载或校验遇到问题"
   },
   "progress": {
@@ -361,12 +361,14 @@
     "more": "更多操作",
     "download": "下载",
     "retry": "重试",
-    "releaseSpace": "释放空间",
-    "confirmRelease": "确认释放？",
+    "uninstall": "卸载语音套件",
+    "uninstallConfirmTitle": "卸载语音套件？",
+    "uninstallConfirmContent": "将删除本机已下载的语音模型并释放约 249MB 磁盘空间。卸载后语音功能不可用，可随时重新下载。",
+    "uninstallConfirmOk": "卸载",
+    "uninstalling": "正在卸载语音套件…",
     "cancel": "取消",
     "enableVoice": "启用语音伴侣",
-    "disableVoice": "停用语音伴侣",
-    "releasing": "正在释放..."
+    "disableVoice": "停用语音伴侣"
   },
   "errors": {
     "downloadFailed": "语音模型下载失败，请检查网络连接",

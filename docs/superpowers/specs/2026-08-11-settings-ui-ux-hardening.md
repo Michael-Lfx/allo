@@ -12,7 +12,7 @@ i18n 泄漏、右侧控制槽挤压、多按钮换行与能力中心卡片密度
 - `common.yes` 与 `common.no` 是正式本地化文字；普通开关不重复显示布尔状态。
 - `SettingsRow` 的控制槽为 `compact`、`field`、`actions`、`compound` 四类。
 - 文案列不超过约 70ch；操作组整体换行，按钮内部永不拆开图标和标签。
-- 行容器在 760px 与 640px 发生结构性堆叠，不依赖单一视口断点。
+- 行容器只在 760px（compound）与 640px（actions/field）由容器查询发生结构性堆叠，不再用视口 media query 强制整行堆叠（高 DPI 桌面上视口 CSS 宽度会小于内容宽度，旧规则会把桌面误判成移动端）；堆叠后的 actions 保持右对齐，不拉伸成左对齐空白。
 - POI 的基础、提取、自动处理分组保持稳定 DOM，依赖控件在关闭时 Disabled。
 - MoA 使用 Header、Section、List、Row，并以空状态代替伪输入框。
 - Skills、Presets、MCP 使用最小 270px 的响应式网格、最多三个标签和不换行操作。

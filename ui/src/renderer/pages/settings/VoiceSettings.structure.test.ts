@@ -105,29 +105,37 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(source).toMatch(/throttle|200/);
   });
 
-  test('T2-07: Ready state micro-motion adheres to 240ms duration and cubic-bezier(0.16, 1, 0.3, 1)', () => {
-    const source = readFileSync(componentUrl, 'utf8');
-
-    // 240ms motion token per ui-motion.zh.md §2 & §3
-    expect(source).toMatch(/240/);
-    expect(source).toMatch(/cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
-    // Ready scale 0.9 -> 1
-    expect(source).toMatch(/0\.9/);
-    expect(source).toMatch(/scale\(1\)|scale-100/);
+  test('settings rows stack by container width, never by a viewport media query', () => {
+    const settingsCss = readFileSync(
+      new URL('./components/settings.css', import.meta.url),
+      'utf8'
+    );
+    // High-DPI desktop windows can be narrower than the 960px content column in
+    // CSS pixels; a `@media (max-width: 767px)` row override stacked every row
+    // on those windows even though the card had room. Row structure is owned by
+    // the container queries (760/640) only.
+    expect(settingsCss).not.toMatch(
+      /@media\s*\(max-width:\s*767px\)[\s\S]*?\.flowy-settings-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/
+    );
+    expect(settingsCss).toContain('@container (max-width: 760px)');
+    expect(settingsCss).toContain('@container (max-width: 640px)');
   });
 
-  test('T2-07: Inline two-step release confirmation with 3-second auto-revert timer and DELETE call', () => {
+  test('T2-07: Uninstall asks for confirmation in the shared dialog, then calls DELETE', () => {
     const source = readFileSync(componentUrl, 'utf8');
 
-    // Inline confirmation state & 3s timer
-    expect(source).toContain('confirmRelease');
-    expect(source).toMatch(/3000/);
-    // Triggers DELETE /api/voice/models with DELETE auth headers
+    // Destructive uninstall goes through the shared Modal.confirm pattern; the
+    // dropdown closes on the first click, so the old inline two-step menu (and
+    // its 3s revert timer) must stay gone.
+    expect(source).toContain('Modal.confirm');
+    expect(source).toContain("t('voice.actions.uninstall')");
+    expect(source).toContain("t('voice.actions.uninstallConfirmTitle')");
+    expect(source).toContain("t('voice.actions.uninstallConfirmContent')");
+    expect(source).not.toContain('confirmRelease');
+    expect(source).not.toContain('isConfirmingRelease');
+    // Confirming still triggers DELETE /api/voice/models with DELETE auth headers
     expect(source).toContain('/api/voice/models');
     expect(source).toMatch(/DELETE/);
-    // Strictly NO Modal dialog
-    expect(source).not.toContain('<Modal');
-    expect(source).not.toContain('arco-modal');
   });
 
   test('T2-08: prefers-reduced-motion disables transitions and scales instantaneously', () => {

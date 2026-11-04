@@ -202,8 +202,11 @@
   color: var(--flowy-selected-fg);
 }
 
+/* Action groups are compact by nature (switch, icon button, one or two short
+   verbs), so they keep the row's right-hand column down to 640px; only wide
+   compound editors stack earlier. A stacked action group keeps its right edge
+   alignment instead of stretching left into dead space. */
 @container (max-width: 760px) {
-  .flowy-settings-row__control--actions,
   .flowy-settings-row__control--compound {
     grid-column: 1 / -1;
     width: 100%;
@@ -212,10 +215,18 @@
 }
 
 @container (max-width: 640px) {
+  .flowy-settings-row__control--actions,
   .flowy-settings-row__control--field {
     grid-column: 1 / -1;
     width: 100%;
     justify-self: stretch;
+  }
+
+  .flowy-settings-row__control--actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
   }
 }
 
@@ -393,18 +404,6 @@
   .settings-mobile-top-nav__label {
     white-space: nowrap;
     font-weight: 500;
-  }
-
-  .flowy-settings-row {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .flowy-settings-row__control {
-    grid-column: 1 / -1;
-    width: 100%;
-    justify-self: stretch;
   }
 
   .flowy-settings-action-bar {

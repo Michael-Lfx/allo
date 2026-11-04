@@ -83,8 +83,11 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
     const actionKeys = [
       'actions.downloadAndEnable',
       'actions.retry',
-      'actions.releaseSpace',
-      'actions.confirmRelease',
+      'actions.uninstall',
+      'actions.uninstallConfirmTitle',
+      'actions.uninstallConfirmContent',
+      'actions.uninstallConfirmOk',
+      'actions.uninstalling',
       'actions.cancel',
       'actions.enableVoice',
       'actions.disableVoice',
