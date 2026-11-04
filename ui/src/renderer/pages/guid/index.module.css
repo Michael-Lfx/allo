@@ -1972,6 +1972,112 @@
   text-overflow: ellipsis;
 }
 
+.actionExpertButton:global(.arco-btn) {
+  flex: 0 1 auto;
+  box-sizing: border-box;
+  max-width: 220px;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 10px 0 4px !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: transparent !important;
+  border-radius: 999px !important;
+  color: var(--color-text-2) !important;
+  background: transparent !important;
+  transform: translateY(0);
+  vertical-align: middle;
+}
+
+.actionExpertButton:global(.arco-btn:hover),
+.actionExpertButton:global(.arco-btn:focus-visible) {
+  color: var(--color-text-2) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  transform: translateY(0);
+}
+
+.actionExpertButtonContent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  line-height: 1;
+}
+
+.actionExpertMark {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.actionExpertAvatar,
+.actionExpertDismiss {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 120ms ease;
+}
+
+.actionExpertAvatar {
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--color-text-3);
+  background: var(--color-fill-2);
+  opacity: 1;
+}
+
+.actionExpertAvatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.actionExpertEmoji {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.actionExpertDismiss {
+  color: var(--color-text-2);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.actionExpertButton:global(.arco-btn:hover) .actionExpertAvatar,
+.actionExpertButton:global(.arco-btn:focus-visible) .actionExpertAvatar {
+  opacity: 0;
+}
+
+.actionExpertButton:global(.arco-btn:hover) .actionExpertDismiss,
+.actionExpertButton:global(.arco-btn:focus-visible) .actionExpertDismiss {
+  opacity: 1;
+}
+
+.actionExpertDismiss :global(svg) {
+  display: block;
+}
+
+.actionExpertLabel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 方案E：模型 + 权限各自独立 tb-btn，中间有竖线分隔 */
 .actionConfigGroup {
   display: inline-flex;
@@ -2571,7 +2677,9 @@
   overflow-x: hidden;
   overflow-y: auto;
   position: relative;
-  background: var(--color-bg-1);
+  /* 亮色首页比全局次级底再白一档；暗色仍跟 --color-bg-1 */
+  --guid-canvas: color-mix(in srgb, var(--color-bg-1) 38%, var(--bg-base, #fff));
+  background: var(--guid-canvas);
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--color-text-3) 55%, transparent) transparent;
 }
@@ -2620,7 +2728,11 @@
   margin-top: 0;
   padding: 36px 10px 20px;
   pointer-events: none;
-  background: linear-gradient(to bottom, transparent 0%, var(--color-bg-1) 40px);
+  background: linear-gradient(to bottom, transparent 0%, var(--guid-canvas, var(--color-bg-1)) 40px);
+}
+
+:global([data-theme='dark']) .guidContainer {
+  --guid-canvas: var(--color-bg-1);
 }
 
 .guidFixedInputArea .guidLayout {

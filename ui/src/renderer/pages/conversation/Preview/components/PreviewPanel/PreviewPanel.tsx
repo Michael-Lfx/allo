@@ -1,7 +1,8 @@
 
 
 import { ipcBridge } from '@/common';
-import { downloadFileFromPath, downloadTextContent } from '@/renderer/utils/file/download';
+import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { downloadBlob, downloadDataUrl, downloadFileFromPath, downloadTextContent } from '@/renderer/utils/file/download';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { PreviewToolbarExtrasProvider, type PreviewToolbarExtras } from '../../context/PreviewToolbarExtrasContext';
 import { usePreviewContext } from '../../context/PreviewContext';
@@ -454,6 +455,30 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
     try {
       const rawFileName = metadata?.file_name || `${content_type}-${Date.now()}`;
 
+      // Desktop WebView2 drops a scripted blob download. Ask for a save path
+      // in this click, then copy the file that is already on disk.
+      if (content_type === 'image' && metadata?.file_path && isTauriRuntime()) {
+        const ext = rawFileName.includes('.') ? rawFileName.split('.').pop() || 'png' : 'png';
+        const destination = await ipcBridge.dialog.showSave.invoke({
+          defaultPath: rawFileName,
+          filters: [{ name: 'Image', extensions: [ext] }],
+        });
+        if (!destination) return;
+        await ipcBridge.shell.copyFile.invoke({
+          source_path: metadata.file_path,
+          destination_path: destination,
+        });
+        return;
+      }
+
+      // The preview tab already holds the image bytes. Saving them here stays
+      // inside the click, instead of waiting on another disk read that lets
+      // the browser drop the download.
+      if (content_type === 'image' && content.startsWith('data:')) {
+        downloadDataUrl(content, rawFileName);
+        return;
+      }
+
       if (metadata?.file_path) {
         // All files with a disk path (binary, image, zip, etc.) — unified path
         await downloadFileFromPath(metadata.file_path, rawFileName, metadata.workspace);
@@ -473,14 +498,7 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
         const normalizedExt = ext.toLowerCase();
         const hasSameExt = rawFileName.toLowerCase().endsWith(`.${normalizedExt}`);
         const file_name = hasSameExt ? rawFileName : `${rawFileName}.${ext}`;
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = file_name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        downloadBlob(blob, file_name);
         return;
       }
 
@@ -547,6 +565,19 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
       }
     }
   }, [metadata?.file_path, messageApi, t]);
+
+  const handleRevealInFolder = useCallback(async () => {
+    if (!metadata?.file_path) return;
+    try {
+      await ipcBridge.shell.showItemInFolder.invoke(metadata.file_path);
+    } catch {
+      try {
+        messageApi.error(t('preview.openFileLocationFailed'));
+      } catch {
+        // Context holder may be unmounted after async operation
+      }
+    }
+  }, [messageApi, metadata?.file_path, t]);
 
   // 渲染历史下拉菜单 / Render history dropdown
   const renderHistoryDropdown = () => {
@@ -894,6 +925,8 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
             renderHistoryDropdown={renderHistoryDropdown}
             onOpenInSystem={handleOpenInSystem}
             onDownload={handleDownload}
+            showRevealInFolder={content_type === 'image' && Boolean(metadata?.file_path)}
+            onRevealInFolder={() => void handleRevealInFolder()}
             onClose={closePreview}
             leftExtra={toolbarExtras?.left}
             rightExtra={toolbarExtras?.right}

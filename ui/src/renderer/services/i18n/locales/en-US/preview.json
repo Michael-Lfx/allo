@@ -47,6 +47,8 @@
   "openInSystemApp": "Open in system app",
   "openInSystemSuccess": "Opened in system default app",
   "openInSystemFailed": "Failed to open with system app",
+  "openFileLocation": "Open file location",
+  "openFileLocationFailed": "Failed to open file location",
   "closeLeft": "Close Left",
   "closeRight": "Close Right",
   "closeOthers": "Close Others",

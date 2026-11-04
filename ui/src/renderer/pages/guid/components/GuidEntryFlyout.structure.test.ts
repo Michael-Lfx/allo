@@ -14,6 +14,8 @@ describe('homepage entry flyout', () => {
     expect(flyout.includes('SkillAvatar')).toBe(true);
     expect(flyout.includes('FlowySearch')).toBe(true);
     expect(flyout.includes('guid.drawer.keepFree')).toBe(true);
+    expect(flyout.includes('onPointerDown={(event) => {')).toBe(true);
+    expect(flyout.includes('onSelectPreset(preset.preset_id)')).toBe(true);
     expect(flyout.includes('guid.flyout.managePreset')).toBe(true);
     expect(flyout.includes('guid.flyout.manageSkills')).toBe(true);
     expect(flyout.includes('PresetTagFilterBar')).toBe(false);

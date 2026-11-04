@@ -78,6 +78,7 @@ describe('Titlebar instant icon tooltips', () => {
     expect(titlebarSource.includes("navigate('/guid', { state: { resetPreset: true } })")).toBe(true);
     expect(titlebarSource.includes('useTitlebarContextTitle(location.pathname)')).toBe(true);
     expect(titlebarStyles.includes('grid-template-columns: minmax(0, 1fr) minmax(0, 360px) minmax(0, 1fr)')).toBe(true);
+    expect(titlebarStyles.includes('grid-template-columns: auto minmax(0, 1fr) auto')).toBe(true);
     expect(titlebarStyles.includes('@media (max-width: 720px)')).toBe(true);
   });
 

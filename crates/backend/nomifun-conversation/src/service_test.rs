@@ -19517,6 +19517,76 @@ async fn app_server_expert_chat_freezes_the_snapshot_and_keeps_the_auto_inject_f
     let _ = std::fs::remove_dir_all(&workspace);
 }
 
+/// A Guid preset launch omits `selected_mcp_server_ids` so the frozen snapshot
+/// is the fence. An absent key otherwise means every enabled host server, and
+/// connecting those processes blocks the first token.
+#[tokio::test]
+async fn preset_without_client_mcp_selection_uses_snapshot_not_every_host_server() {
+    let bound = "0190f5fe-7c00-7a00-8000-000000000223";
+    let other = "0190f5fe-7c00-7a00-8000-000000000224";
+    let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
+    svc.with_mcp_server_repo(Arc::new(MockMcpServerRepo {
+        rows: vec![
+            mcp_row(bound, "snapshot-server", false),
+            mcp_row(other, "host-server", false),
+        ],
+    }));
+
+    let snapshot = |mcp_server_ids: Vec<String>| ResolvedPresetSnapshot {
+        preset_id: "0190f5fe-7c00-7a00-8000-000000000221".to_owned(),
+        preset_revision: 1,
+        preset_name: "万方数据".to_owned(),
+        target: PresetTarget::Conversation,
+        routing_description: None,
+        instructions: "Answer from the expert brief.".to_owned(),
+        resolved_agent_id: None,
+        resolved_agent_type: Some("nomi".to_owned()),
+        resolved_agent_backend: None,
+        resolved_model: None,
+        reasoning_effort: None,
+        included_skills: Vec::new(),
+        excluded_auto_skills: Vec::new(),
+        knowledge_policy: PresetKnowledgePolicy::default(),
+        knowledge_base_ids: Vec::new(),
+        mcp_server_ids,
+        warnings: Vec::new(),
+    };
+
+    let unbound = svc
+        .create_from_preset_snapshot(TEST_USER_1, make_nomi_create_req("preset-mcp-empty"), snapshot(Vec::new()))
+        .await
+        .expect("empty snapshot fence");
+    assert_eq!(
+        unbound.extra["mcp_server_ids"],
+        json!([]),
+        "an expert with no connectors must not inherit every host MCP server"
+    );
+    assert_eq!(unbound.extra["mcp_servers"], json!([]));
+
+    let fenced = svc
+        .create_from_preset_snapshot(
+            TEST_USER_1,
+            make_nomi_create_req("preset-mcp-one"),
+            snapshot(vec![bound.to_owned()]),
+        )
+        .await
+        .expect("snapshot connector fence");
+    assert_eq!(fenced.extra["mcp_server_ids"], json!([bound]));
+    assert_eq!(fenced.extra["mcp_servers"], json!(["snapshot-server"]));
+
+    let mut override_req = make_nomi_create_req("preset-mcp-override");
+    override_req.extra["selected_mcp_server_ids"] = json!([other]);
+    let overridden = svc
+        .create_from_preset_snapshot(TEST_USER_1, override_req, snapshot(vec![bound.to_owned()]))
+        .await
+        .expect("explicit client selection");
+    assert_eq!(
+        overridden.extra["mcp_server_ids"],
+        json!([other]),
+        "an explicit client selection still wins over the snapshot"
+    );
+}
+
 /// The Team tier of the same seam (`16` §7 决策 3): identical fences, plus the
 /// binding that makes a Leader Conversation a Leader.
 ///

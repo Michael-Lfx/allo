@@ -97,6 +97,63 @@ html[data-wallpaper='on'] .preview-panel-shell {
   height: 0;
 }
 
+/* Chip width stays fixed so a long artifact name cannot stretch the tab. */
+.preview-tabs__tab {
+  box-sizing: border-box;
+  width: 160px;
+  min-width: 160px;
+  max-width: 160px;
+  overflow: hidden;
+}
+
+.preview-tabs__tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The filename must not paint over the icon buttons, or the click lands on
+   the text instead of the control. WebView2 also ignores clicks inside a
+   drag region unless the button itself is marked no-drag. */
+.preview-toolbar__file {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.preview-toolbar__actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.preview-toolbar__icon-btn {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.preview-toolbar__icon-btn:hover {
+  background: var(--bg-3);
+}
+
 .preview-tabs__add {
   display: flex;
   flex-shrink: 0;

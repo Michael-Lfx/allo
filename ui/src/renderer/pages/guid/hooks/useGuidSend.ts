@@ -26,6 +26,7 @@ import type { NavigateFunction } from 'react-router-dom';
 import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { registerConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
+import { warmupConversation } from '@/renderer/pages/conversation/utils/warmupConversation';
 import type {
   PendingConversation,
   PendingConversationStage,
@@ -522,6 +523,9 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
         }
 
         seedConversationCache(conversation);
+        // Overlap runtime preparation with the route change so the first
+        // text turn is not waiting on a cold build after the page appears.
+        void warmupConversation(conversation.id);
         advancePending?.('opening');
         await navigate(`/conversation/${conversation.id}`);
         guidTransitionMark('navigateDispatched');

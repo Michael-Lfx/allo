@@ -766,7 +766,7 @@ const GuidPage: React.FC = () => {
       },
       {
         key: 'preset',
-        label: t('guid.drawer.presetTab', { defaultValue: '设定' }),
+        label: t('guid.drawer.presetTab', { defaultValue: '专家' }),
         icon: <FlowyIcon name='graduationCap' size={16} />,
         trailing: <FlowyIcon name='right' size={14} />,
       },

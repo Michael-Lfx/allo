@@ -223,7 +223,8 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
                     role='tab'
                     tabIndex={0}
                     aria-selected={isActive}
-                    className={`group flex items-center gap-4px px-7px h-24px rd-6px cursor-pointer transition-colors flex-shrink-0 border-1px border-solid ${
+                    title={tab.title}
+                    className={`preview-tabs__tab group flex items-center gap-4px px-7px h-24px rd-6px cursor-pointer transition-colors flex-shrink-0 border-1px border-solid ${
                       isActive
                         ? 'bg-1 text-t-primary font-medium border-[var(--color-border-2)]'
                         : 'text-t-secondary border-transparent hover:bg-3 hover:text-t-primary'
@@ -238,11 +239,11 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
                     }}
                   >
                     <span
-                      className={`flex items-center ${isActive ? 'text-t-primary' : 'text-t-tertiary group-hover:text-t-primary'}`}
+                      className={`flex flex-shrink-0 items-center ${isActive ? 'text-t-primary' : 'text-t-tertiary group-hover:text-t-primary'}`}
                     >
                       <TabKindIcon tab={tab} />
                     </span>
-                    <span className='text-12px whitespace-nowrap leading-none'>{tab.title}</span>
+                    <span className='preview-tabs__tab-title text-12px leading-none'>{tab.title}</span>
                     <span className='relative flex items-center justify-center w-12px h-12px flex-shrink-0'>
                       {tab.isDirty && (
                         <span

@@ -80,6 +80,14 @@ import {
   type TurnGateInfo,
 } from './turnDeliverablesModel';
 import TurnDeliverablesCard from './components/TurnDeliverablesCard';
+import StreamImageBlock from './components/StreamImageBlock';
+import {
+  collectPinnedStreamImages,
+  committedImageArtifactsFromTools,
+  omitPinnedStreamImageDeliverables,
+  placePinnedStreamImages,
+  type PinnedStreamImage,
+} from './streamImagePlacement';
 import type { MessageId } from '@/common/types/ids';
 import {
   buildProcessedMessageList,
@@ -176,6 +184,14 @@ type ITurnLiveStepVO = {
   sourceMessageIds: SourceMessageId[];
   created_at: number;
 };
+type IStreamImageVO = {
+  type: 'stream_image';
+  id: string;
+  turn_id?: MessageId;
+  image: PinnedStreamImage;
+  sourceMessageIds: SourceMessageId[];
+  created_at: number;
+};
 type IProcessedItem =
   | IRenderableItem
   | ITurnProcessDisclosureVO
@@ -183,7 +199,8 @@ type IProcessedItem =
   | IProcessGroupVO
   | ITurnDeliverablesVO
   | ITurnActionsVO
-  | ITurnLiveStepVO;
+  | ITurnLiveStepVO
+  | IStreamImageVO;
 
 const isTurnLiveStepItem = (item: IProcessedItem): item is ITurnLiveStepVO =>
   'type' in item && item.type === 'turn_live_step';
@@ -218,7 +235,8 @@ const getProcessedItemSourceMessageIds = (item: IProcessedItem): SourceMessageId
       item.type === 'process_group' ||
       item.type === 'turn_deliverables' ||
       item.type === 'turn_actions' ||
-      item.type === 'turn_live_step')
+      item.type === 'turn_live_step' ||
+      item.type === 'stream_image')
   ) {
     return item.sourceMessageIds;
   }
@@ -258,6 +276,7 @@ const getProcessedItemCreatedAt = (item: IProcessedItem): number => {
       'turn_deliverables',
       'turn_actions',
       'turn_live_step',
+      'stream_image',
     ].includes(item.type)
   ) {
     // `includes` doesn't narrow the union, so `created_at` is still typed
@@ -297,6 +316,15 @@ const getProcessedItemMsgId = (item: IRenderableItem): MessageId | undefined => 
 const getProcessedItemTurnId = (item: IRenderableItem): MessageId | undefined => {
   if ('type' in item && item.type === 'artifact') return undefined;
   return item.turn_id;
+};
+
+const toolMessagesForStreamImage = (
+  item: IRenderableItem | undefined
+): Array<IMessageToolCall | IMessageAcpToolCall | IMessageToolGroup> => {
+  if (!item || !('type' in item)) return [];
+  if (item.type === 'tool_summary') return item.messages;
+  if (item.type === 'tool_call' || item.type === 'acp_tool_call' || item.type === 'tool_group') return [item];
+  return [];
 };
 
 const getProcessedItemRole = (item: IRenderableItem): TurnDisclosureInputItem['role'] => {
@@ -1145,6 +1173,61 @@ const MessageList: React.FC<{
       })
       .filter((item): item is IProcessedItem => Boolean(item));
 
+    // Pinned after disclosure coalescing. The process header stays one row.
+    // Images follow that turn's reply text instead of sitting in front of it.
+    const transcriptIndexById = new Map(modelInput.map((entry, index) => [entry.id, index]));
+    const pinnedStreamImages = collectPinnedStreamImages(
+      modelInput.flatMap((entry, transcriptIndex) => {
+        const artifacts = committedImageArtifactsFromTools(toolMessagesForStreamImage(itemById.get(entry.id)));
+        if (!artifacts.length) return [];
+        return [
+          {
+            transcriptIndex,
+            ...(entry.turnId ? { turnId: entry.turnId } : {}),
+            sourceMessageIds: entry.sourceMessageIds ?? [],
+            createdAt: entry.createdAt,
+            artifacts,
+          },
+        ];
+      })
+    );
+    const transcriptIndexOfDisplayItem = (entry: IProcessedItem): number | undefined => {
+      if ('type' in entry && entry.type === 'process_receipt') {
+        return transcriptIndexById.get(getProcessedItemAnchorId(entry.item));
+      }
+      if (!('type' in entry) || entry.type === 'turn_process_disclosure' || entry.type === 'process_group') {
+        return undefined;
+      }
+      return transcriptIndexById.get(getProcessedItemAnchorId(entry));
+    };
+    const streamImageAnchor = (entry: IProcessedItem): 'after-text' | 'turn-boundary' | undefined => {
+      if (!('type' in entry) || entry.type !== 'text') return undefined;
+      if (entry.position === 'left') return 'after-text';
+      if (entry.position === 'right') return 'turn-boundary';
+      return undefined;
+    };
+    const timelineItems = placePinnedStreamImages(
+      disclosureItems.map((entry) => ({
+        id: getProcessedItemAnchorId(entry),
+        entry,
+        transcriptIndex: transcriptIndexOfDisplayItem(entry),
+        imageAnchor: streamImageAnchor(entry),
+      })),
+      pinnedStreamImages,
+      (image): { id: string; entry: IStreamImageVO; transcriptIndex: number } => ({
+        id: image.id,
+        transcriptIndex: image.transcriptIndex,
+        entry: {
+          type: 'stream_image',
+          id: image.id,
+          ...(image.turnId ? { turn_id: image.turnId } : {}),
+          image,
+          sourceMessageIds: image.sourceMessageIds,
+          created_at: image.createdAt,
+        },
+      })
+    ).map((row) => row.entry);
+
     // ── Live current-step strip: while the tail turn is still producing
     // output, append one synthetic row after the newest content so the user
     // can tell the task is running (the header reads "processed" throughout
@@ -1285,7 +1368,7 @@ const MessageList: React.FC<{
     const liveStepForDisclosures = buildTurnLiveStep(disclosureItems);
     if (deliverablesByTurn.size === 0) {
       return cacheDisplayList(
-        liveStepForDisclosures ? [...disclosureItems, liveStepForDisclosures] : disclosureItems
+        liveStepForDisclosures ? [...timelineItems, liveStepForDisclosures] : timelineItems
       );
     }
 
@@ -1305,32 +1388,39 @@ const MessageList: React.FC<{
       if ('type' in entry && entry.type === 'process_group') return undefined;
       if ('type' in entry && entry.type === 'turn_deliverables') return entry.turn_id;
       if ('type' in entry && entry.type === 'turn_actions') return entry.turn_id;
+      if ('type' in entry && entry.type === 'stream_image') return entry.turn_id;
       return turnIdByAnchorId.get(getProcessedItemAnchorId(entry));
     };
 
     const lastIndexByTurn = new Map<MessageId, number>();
-    disclosureItems.forEach((entry, index) => {
+    timelineItems.forEach((entry, index) => {
       const turnId = getDisplayItemTurnId(entry);
       if (turnId && deliverablesByTurn.has(turnId)) lastIndexByTurn.set(turnId, index);
     });
 
     const withDeliverables: IProcessedItem[] = [];
-    disclosureItems.forEach((entry, index) => {
+    timelineItems.forEach((entry, index) => {
       withDeliverables.push(entry);
       const turnId = getDisplayItemTurnId(entry);
       if (!turnId || lastIndexByTurn.get(turnId) !== index) return;
       const items = deliverablesByTurn.get(turnId);
       if (!items) return;
-      withDeliverables.push({
-        type: 'turn_deliverables',
-        id: `turn-deliverables-${turnId}`,
-        turn_id: turnId,
+      const visibleItems = omitPinnedStreamImageDeliverables(
         items,
-        sourceMessageIds: Array.from(
-          new Set(items.flatMap((item) => item.sources.flatMap((source) => source.sourceMessageIds)))
-        ),
-        created_at: getProcessedItemCreatedAt(entry),
-      });
+        pinnedStreamImages.filter((image) => image.turnId === turnId)
+      );
+      if (visibleItems.length > 0) {
+        withDeliverables.push({
+          type: 'turn_deliverables',
+          id: `turn-deliverables-${turnId}`,
+          turn_id: turnId,
+          items: visibleItems,
+          sourceMessageIds: Array.from(
+            new Set(visibleItems.flatMap((item) => item.sources.flatMap((source) => source.sourceMessageIds)))
+          ),
+          created_at: getProcessedItemCreatedAt(entry),
+        });
+      }
       const actionMessage = finalAssistantTextByTurn.get(turnId);
       const actionMessageId = actionMessage ? getMessageBusinessIdentity(actionMessage) : undefined;
       if (actionMessage) {
@@ -1365,7 +1455,7 @@ const MessageList: React.FC<{
       displayList.findLastIndex(
         (item) =>
           !('type' in item &&
-            ['turn_process_disclosure', 'process_receipt', 'process_group', 'artifact', 'turn_live_step'].includes(item.type)) &&
+            ['turn_process_disclosure', 'process_receipt', 'process_group', 'artifact', 'turn_live_step', 'stream_image'].includes(item.type)) &&
           isVisibleUserTextMessage(item as TMessage)
       ),
     [displayList]
@@ -1814,6 +1904,20 @@ const MessageList: React.FC<{
           ) : (
             <MessageSkillSuggest artifact={item.artifact} />
           )}
+        </div>
+      );
+    }
+    if ('type' in item && item.type === 'stream_image') {
+      return (
+        <div
+          key={item.id}
+          id={`message-${item.id}`}
+          data-testid='stream-image'
+          data-stream-image-path={item.image.relativePath}
+          className='min-w-0 message-item px-8px m-t-10px max-w-full md:max-w-780px mx-auto stream_image'
+          style={highlighted ? highlightStyle : undefined}
+        >
+          <StreamImageBlock image={item.image} />
         </div>
       );
     }

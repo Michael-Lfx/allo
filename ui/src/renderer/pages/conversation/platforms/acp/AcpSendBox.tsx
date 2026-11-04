@@ -14,6 +14,7 @@ import MobileActionSheet, {
 } from '@/renderer/components/chat/MobileActionSheet';
 import SendBox from '@/renderer/components/chat/SendBox';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
+import { ConversationExpertChip } from '@/renderer/pages/guid/components/SelectedExpertChip';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
 import { useAcpModelInfo } from '@/renderer/hooks/agent/useAcpModelInfo';
@@ -725,6 +726,7 @@ Please check your local CLI tool authentication status`,
               onLocalFilesAdded={handleFilesAdded}
               loadedMcpStatuses={loadedMcpStatuses}
             />
+            <ConversationExpertChip />
             {showModeSelector && (
               <AgentModeSelector
                 backend={backend}

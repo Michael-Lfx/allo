@@ -6569,10 +6569,20 @@ impl ConversationService {
         // Parsing lives in `parse_selected_mcp_server_ids`. The selection is no
         // longer persisted to `extra` — it lands in the `conversation_mcp_servers`
         // junction after the row exists so the logical parent is already addressable.
-        let selected_mcp_server_ids: Option<Vec<String>> = match extra.as_object_mut() {
+        //
+        // An absent key means "every enabled host server". A preset launch omits
+        // the key on purpose so the frozen snapshot is the fence, including an
+        // empty list. Leaving that as absent connects every host MCP process
+        // during agent build, before the first token.
+        let mut selected_mcp_server_ids: Option<Vec<String>> = match extra.as_object_mut() {
             Some(obj) => parse_selected_mcp_server_ids(obj)?,
             None => None,
         };
+        if selected_mcp_server_ids.is_none()
+            && let Some(snapshot) = resolved_preset_snapshot.as_ref()
+        {
+            selected_mcp_server_ids = Some(snapshot.mcp_server_ids.clone());
+        }
         let selected_session_mcp_servers = match extra.as_object_mut() {
             Some(obj) => match obj.remove("selected_session_mcp_servers") {
                 Some(value) => Some(

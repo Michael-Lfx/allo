@@ -113,7 +113,7 @@ pub fn flowy_video_generate_schema() -> ToolSchema {
 
     tool_schema(
         "video_generate",
-        "Generate a video via Flowy Seedance. Duration >10s automatically splits into chained clips and concat (long video). Returns standardized assets with MEDIA: local path when save_locally is enabled. Response includes user_prompt_block with the exact API prompt — quote it in your reply.",
+        "Generate a video via Flowy Seedance. Duration >10s automatically splits into chained clips and concat (long video). Response includes user_prompt_block with the exact API prompt — quote it in your reply. Do not paste MEDIA: paths; the app shows the video.",
         JsonSchema::object(props, vec!["prompt".into()]),
     )
 }
@@ -145,7 +145,7 @@ pub fn flowy_image_generate_schema() -> ToolSchema {
 
     tool_schema(
         "image_generate",
-        "Generate an image via Flowy cloud API. Write a rich scene prompt (subject, materials, lighting, composition, mood) — never a vague one-liner. Returns standardized assets with MEDIA: local path when save_locally is enabled. Response includes user_prompt_block with the exact API prompt — quote it in your reply.",
+        "Generate an image via Flowy cloud API. Write a rich scene prompt (subject, materials, lighting, composition, mood) — never a vague one-liner. Response includes user_prompt_block with the exact API prompt — quote it in your reply. Do not paste MEDIA: paths; the app shows the image.",
         JsonSchema::object(props, vec!["prompt".into()]),
     )
 }
