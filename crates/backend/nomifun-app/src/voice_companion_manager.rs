@@ -2278,7 +2278,7 @@ impl VoiceCompanionProcessManager {
         if snapshot
             .error
             .as_ref()
-            .is_some_and(|error| error.code == VOICE_COMPANION_MISSING || error.code == VOICE_COMPANION_MISSING_DEV)
+            .is_some_and(|error| error.code == voice_companion_missing_code())
         {
             return;
         }
