@@ -691,14 +691,7 @@ impl LearningService {
         .map_err(internal)?;
         let mounted = evaluated.iter().filter(|entry| !entry.blocks.is_empty()).count();
         let outside = evaluated.iter().filter(|entry| entry.blocks.is_empty()).count();
-        // y04：mounted = 终态 Done 行；ref_id 关联挂载行（引用不复制载荷）。
-        let mount_row_id: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM learning_structure_mounts WHERE course_id = ?")
-                .bind(course_id.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .ok()
-                .flatten();
+        // y04：mounted = 终态 Done 行。
         self.record_system_action(
             ledger_action(
                 course_id,
@@ -707,8 +700,7 @@ impl LearningService {
                 SystemActionResult::Done,
                 user_id,
             )
-            .basis(&ledger_basis)
-            .ref_id(mount_row_id.map(|id| id.to_string()).unwrap_or_default()),
+            .basis(&ledger_basis),
         )
         .await;
         task.finish_done(format!(
@@ -1122,7 +1114,7 @@ impl LearningService {
                     })
                 })
                 .collect();
-            let repair_row = sqlx::query(
+            let _ = sqlx::query(
                 "INSERT INTO learning_structure_repairs \
                  (ts, course_id, old_hash, new_hash, hash_version, result, ops_json, note) \
                  VALUES (?, ?, ?, ?, ?, 'applied', ?, ?)",
@@ -1143,7 +1135,7 @@ impl LearningService {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-            // y04：applied = 终态 Done 行；ref_id 关联本回合修补审计行。
+            // y04：applied = 终态 Done 行。
             self.record_system_action(
                 ledger_action(
                     course_id,
@@ -1152,8 +1144,7 @@ impl LearningService {
                     SystemActionResult::Done,
                     user_id,
                 )
-                .basis(&ledger_basis)
-                .ref_id(repair_row.last_insert_rowid().to_string()),
+                .basis(&ledger_basis),
             )
             .await;
         }
@@ -1814,8 +1805,7 @@ impl LearningService {
                             SystemActionResult::Done,
                             &engine.user_id,
                         )
-                        .basis(&ledger_basis)
-                        .ref_id(&applied.batch_id),
+                        .basis(&ledger_basis),
                     )
                     .await;
                 }
@@ -1856,7 +1846,7 @@ impl LearningService {
                         }),
                     );
                 } else {
-                    // y04：真失败 = Failed 终态行（ref_id = 失败批行）。
+                    // y04：真失败 = Failed 终态行。
                     self.record_system_action(
                         ledger_action(
                             course_id,
@@ -1866,8 +1856,7 @@ impl LearningService {
                             &engine.user_id,
                         )
                         .basis(&ledger_basis)
-                        .reason(error.to_string())
-                        .ref_id(&pending.batch_id),
+                        .reason(error.to_string()),
                     )
                     .await;
                     task.finish_failed(error.to_string());

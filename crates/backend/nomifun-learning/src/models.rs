@@ -2415,8 +2415,8 @@ pub struct GraphBatchView {
 /// 系统动作簿的一行（y04，`GET /courses/{id}/system-actions`）：自主/后台
 /// 动作的**终态**留痕。kind/trigger/result 是机器名（Rust 枚举单源），
 /// 人面文案由前端 i18n 承担；`basis` 是触发时的一句判据读数，`reason` 只在
-/// failed 时非空；`ref_id` 关联批次/审计行/挂载行（引用不复制载荷）。
-/// 读侧宽容：未知 kind/trigger/result 原样透出，不报错。
+/// failed 时非空。动作对象（批次/审计行/挂载行）的技术 id 不跨表复制，
+/// 故无 ref 列。读侧宽容：未知 kind/trigger/result 原样透出，不报错。
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemActionView {
     pub action_id: String,
@@ -2425,7 +2425,6 @@ pub struct SystemActionView {
     pub basis: String,
     pub result: String,
     pub reason: String,
-    pub ref_id: String,
     /// 手动动作的操作者；自动动作（timer/settlement/auto_refill）为 NULL。
     pub actor_user_id: Option<String>,
     pub at: i64,

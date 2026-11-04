@@ -205,3 +205,9 @@ part_of: ../map.md
   环境，留给集成验证轮。
 - 取消/忙拒状态下"零账本行"由测试钉住；旧版本已写下的 failed 取消行不回填
   （票面明示如实记档）。
+- **评审修复（2026-11-04）**：删除 `ref_id` 列及其 DTO/写读/契约/前端字段。
+  原票面把它设计成"引用不复制载荷"的多态列，但它实际复制的是 mounts /
+  repairs 行的技术行 id（growth 侧还混用 batch 业务 id），违反
+  data-and-identifier-standards §1「不得把一个表的 technical id 复制到另一
+  张表」，且以 NON_REFERENCE 登记绕开逻辑引用对账。动作簿读面无需该字段；
+  v1 直接删除，未以其他多态列替代。
