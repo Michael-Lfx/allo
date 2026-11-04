@@ -163,3 +163,12 @@ part_of: ../map.md
 作废 → 死因重试恰一次 → Degraded），不存在「词表外词静默放行」面。
 基线两值时代 allo 即解析拒（「照旧」语义），本次移植行为零变化，
 **不采纳** learnhub 的 String 词表逐行「视同未处置」形态。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`3afc01628`（单提交），经 `69c3f2d98` 并回集成分支。
+- **验证**：`cargo test -p nomifun-learning` 847 全绿（新测 12：fragment_verdict 9 + mod.rs 端到端 2 + 判据①框定 1 + 拆步断言 2）；`cargo check --workspace` 净；off 臂回归（行为与基线一致）。
+- **病历形态测试双层在场**：同词双源（intent+scope）裁决报 scope=过（端到端+纯函数）；词仅 title 谎报 scope=拒；term 未逐字命中=拒；行报非边界来源=拒；缺 source=拒。`20f1dcf` 最终语义（按词跨源多行合法）逐条对照移植，单行硬比未回流。
+- **真机 grow 臂 EXIT=0**：`[fragments: total=127 rows=127 unhandled=0 degraded=false]`——四源点名 127 片段全处置（含 intent/scope 源），跨源语义实战零核伪零 Degraded。
+- **结构注记**（双轴评审修复轮已注记于票尾）：「词表外裁决」在 allo 走 serde 枚举解析面拒绝（基线两值时代即如此），与 learnhub String 词表的逐行「视同未处置」结构性不同——行为零变化，不采纳 learnhub 形态。
+- 拆步软条款与 z01 生长侧逐半句差异化落位（redraft 修订纪律 + 判据 4 拆分建议），substring 断言在场。

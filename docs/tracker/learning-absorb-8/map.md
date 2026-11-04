@@ -1,11 +1,16 @@
 # Map: 第八轮吸收波——learnhub #205 节点意图与教学范围（z01–z03）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-11-05）。来源 = learnhub main@20f1dcf 相对上次参照点
-      22d016d 的 12 个提交复核（全部为 #205 一个特性波 + 随批收口）。
-      用户指示（2026-11-05）：检查影响面，然后立票。
-      影响面盘点见本 map §影响面；两处开放裁决按「推荐项默认裁决」落票，
-      票面标注可复议。 -->
+<!-- 状态：**已到达目的地（2026-11-05 关波）**。z01–z03 全关（Resolution 在票尾），
+      集成分支 feat/learning-absorb-8 尖端 495b3ce60（z01 三提交 1ce098fd1 并回 +
+      z02 69c3f2d98 + z03 c58b23262 + 双轴评审修复轮 495b3ce60，全推 origin）；
+      合成树 learning 855 / ai-agent 1168 / nomifun-app 465 全绿；真机两臂串行
+      EXIT=0：grow `[brief: rows=5 intent_avg=40 scope_avg=42]` +
+      `[fragments: total=127 rows=127 unhandled=0 degraded=false]`，content
+      判据全过（scope_findings first_pass_hits=0 + legacy 负样本 0/0）。
+      并回 feat/learn0928 等用户通知（推送铁律）。真机凭据链：absorb8-smoke/
+      工作目录（data/encryption_key ← Nomi-dev，provider 行 ← absorb-7
+      quality.db，bun:sqlite 搬运）。 -->
 <!-- 基线：feat/learn0928 尖端 939443a1d（本波立票提交，已推 origin）。 -->
 <!-- 参照点：learnhub main 20f1dcf（2026-11-04 18:12 +0800）。 -->
 
