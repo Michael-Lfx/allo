@@ -145,3 +145,8 @@ Goal: one task book, branch `fix/voice-missing-service-component`, local commits
 
 - 问题2 的端到端 `provider_complete→playback_done ≤3s` 需要真实通话日志；单测已锁死「Complete 不等待落库」，生产录音器实测 26s 的等待路径已移除。
 - 问题1 与 TTS 音质需要真机一次听感/切页抽查（自动测试覆盖纯逻辑与 PCM 等长）。
+
+## 完整验收命令的环境限制
+
+- 任务书原文 `cargo test -p nomifun-app voice_dialogue` 会连带编译该 crate 的全部集成测试目标；当前 rustc（1.9.0-stable / 2026-07-14）在无关的 `tests/common/mod.rs` 导入 `nomifun_app` 时触发 `internal compiler error: no resolution for an import`（`build.noindex/evidence/nomifun-app-full.log`），该文件不属于本任务改动，且 lib 目标本身编译通过。
+- 因此目标函数的实测命令使用 `cargo test -p nomifun-app --lib voice_dialogue`（14 passed / 2 ignored）与 `cargo check -p nomifun-app -p nomifun-conversation`（通过）；不把该环境崩溃伪装成通过。
