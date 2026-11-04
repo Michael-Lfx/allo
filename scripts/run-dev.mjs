@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { warnOnLowIntegrityLabel } from './run-dev-integrity.mjs';
 import {
   createRestartControlDirectory,
   createRestartSignal,
@@ -67,6 +68,9 @@ function ensureCmakeOnPath(env) {
 }
 
 const env = ensureCmakeOnPath({ ...process.env, NOMI_CHANNEL: 'dev' });
+// Warning-only: a Low integrity label on the checkout makes the whole dev loop
+// fail with permission errors. Never blocks, never changes the exit code.
+warnOnLowIntegrityLabel({ root: ROOT });
 const devSessionLock = createDevSessionLock({
   buildDir: join(ROOT, 'build.noindex'),
   workspaceRoot: ROOT,
