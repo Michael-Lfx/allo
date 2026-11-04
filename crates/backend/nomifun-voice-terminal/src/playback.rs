@@ -26,6 +26,12 @@ pub enum AudioSinkError {
     Flush(String),
 }
 
+/// A malformed/stuck provider stream must not hold playback forever.
+#[cfg(not(test))]
+const TTS_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const TTS_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
 #[async_trait]
 pub trait AudioSink: Send + Sync {
     /// True only while frames remain queued for this sink's output.
@@ -455,7 +461,10 @@ impl PlaybackPipeline {
         let _intent = self.request_output();
         let _output = self.output.lock().await;
 
-        while let Some(chunk) = stream.recv().await {
+        while let Some(chunk) = tokio::time::timeout(TTS_STREAM_IDLE_TIMEOUT, stream.recv())
+            .await
+            .map_err(|_| AudioSinkError::Write("tts_stream_timeout".into()))?
+        {
             if self.generation_id() != expected_gen {
                 break;
             }
@@ -612,7 +621,12 @@ impl PlaybackPipeline {
         // Synthesis may wait on the network while short status cues use the output.
         let _output = self.output.lock().await;
 
-        while let Some(chunk) = stream.recv().await {
+        loop {
+            let chunk = match tokio::time::timeout(TTS_STREAM_IDLE_TIMEOUT, stream.recv()).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => return Err(AudioSinkError::Write("tts_stream_timeout".into())),
+            };
             if self.generation_id() != expected_gen {
                 // interrupt() already flushed the cancelled generation. A late
                 // synthesis result must not flush a newer reply's audio.
@@ -741,6 +755,39 @@ mod tests {
         assert!(result.is_err(), "cancelled playback must not report sink_consumed");
     }
     use super::*;
+
+    struct SilentTts {
+        _sender: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>,
+    }
+    #[async_trait::async_trait]
+    impl crate::tts::TtsProvider for SilentTts {
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, crate::tts::TtsError> {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            *self._sender.lock().unwrap() = Some(tx);
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_times_out_a_provider_stream_that_never_emits() {
+        let sink = Arc::new(CountingSink::default());
+        let pipeline = PlaybackPipeline::new(sink);
+        let tts = SilentTts {
+            _sender: std::sync::Mutex::new(None),
+        };
+        let error = pipeline
+            .speak_text_for_generation(&tts, "测试", "", 0, || {})
+            .await
+            .expect_err("a silent stream must not hold playback forever");
+        assert!(
+            matches!(error, AudioSinkError::Write(ref reason) if reason == "tts_stream_timeout"),
+            "unexpected timeout error: {error}"
+        );
+    }
     use crate::tts::NullTts;
 
     #[tokio::test]

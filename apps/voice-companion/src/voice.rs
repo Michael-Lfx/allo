@@ -1423,6 +1423,18 @@ fn admission_valid_for(until: &Arc<AtomicU64>) -> bool {
     let now = nomifun_common::now_ms().max(0) as u64;
     now < until.load(Ordering::Acquire)
 }
+/// A host-stream stall is only actionable after the first sentence was spoken
+/// and playback has fully drained; the first-token window is normal model latency.
+fn host_stream_stall_due(saw_sentence: bool, playback_busy: bool, already_warned: bool) -> bool {
+    saw_sentence && !playback_busy && !already_warned
+}
+
+/// A stream that never produces a first sentence is a different failure mode:
+/// warn once after a generous first-token deadline instead of silently waiting.
+fn first_sentence_stall_due(saw_sentence: bool, already_warned: bool) -> bool {
+    !saw_sentence && !already_warned
+}
+
 impl VoiceCompanionRuntime {
     fn report_tts_source(events: &VoiceEventHub, tts: &dyn TtsProvider, scope: &VoiceSessionControlRequest) {
         if let Some(diagnostic) = tts.diagnostic("") {
@@ -2772,7 +2784,11 @@ impl VoiceCompanionRuntime {
                 // The host may withhold the stream terminal frame while it finishes
                 // conversation bookkeeping; make that observable instead of leaving
                 // the dock silently stuck on the last playback state.
+                let mut saw_sentence = false;
                 let mut stall_warned = false;
+                let mut first_sentence_warned = false;
+                let mut first_sentence_tick = tokio::time::sleep(std::time::Duration::from_secs(10));
+                tokio::pin!(first_sentence_tick);
                 let mut stall_tick = tokio::time::sleep(std::time::Duration::from_secs(2));
                 tokio::pin!(stall_tick);
 
@@ -2783,15 +2799,33 @@ impl VoiceCompanionRuntime {
                             let _ = cancel_tx.send(true);
                             return;
                         }
-                        _ = &mut stall_tick, if !stall_warned => {
+                        _ = &mut first_sentence_tick, if first_sentence_stall_due(saw_sentence, first_sentence_warned) => {
                             warn!(
                                 session_id=?control_scope.session_id,
                                 turn_id=?control_scope.turn_id,
-                                after_sentence_window_ms=2000u64,
-                                "voice_host_stream_stalled"
+                                after_first_sentence_window_ms=10000u64,
+                                "voice_host_first_sentence_stalled"
                             );
-                            stall_warned = true;
-                            stall_tick.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
+                            first_sentence_warned = true;
+                        }
+                        _ = &mut stall_tick, if !stall_warned => {
+                            // Only a drained playback path after at least one
+                            // spoken sentence is a host stall: a long sentence or
+                            // a slow first token is healthy even when the next
+                            // sentence has not arrived yet.
+                            let playback_busy = playback.is_speaking() || playback.has_pending_audio();
+                            if !host_stream_stall_due(saw_sentence, playback_busy, stall_warned) {
+                                stall_tick.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
+                            } else {
+                                warn!(
+                                    session_id=?control_scope.session_id,
+                                    turn_id=?control_scope.turn_id,
+                                    after_sentence_window_ms=2000u64,
+                                    "voice_host_stream_stalled"
+                                );
+                                stall_warned = true;
+                                stall_tick.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
+                            }
                         }
                         sentence_opt = sentence_rx.recv(), if !sentence_rx_closed => {
                             match sentence_opt {
@@ -2819,6 +2853,8 @@ impl VoiceCompanionRuntime {
                                             }
                                         }
                                     }
+                                    saw_sentence = true;
+                                    first_sentence_warned = true;
                                     stall_warned = false;
                                     stall_tick.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::ReplySentence {
@@ -5184,3 +5220,28 @@ mod tests;
 
 #[cfg(any(test, feature = "voice-skeleton"))]
 pub static PARENT_DISPATCH_QUEUE_GATE: std::sync::OnceLock<std::sync::Arc<SpeechEndTestGate>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+mod stall_guard_tests {
+    use super::host_stream_stall_due;
+
+    #[test]
+    fn first_token_window_is_not_a_stall() {
+        assert!(!host_stream_stall_due(false, false, false));
+    }
+
+    #[test]
+    fn drained_playback_after_a_sentence_is_a_stall() {
+        assert!(host_stream_stall_due(true, false, false));
+        assert!(!host_stream_stall_due(true, true, false));
+        assert!(!host_stream_stall_due(true, false, true));
+    }
+
+    #[test]
+    fn a_missing_first_sentence_gets_its_own_deadline() {
+        use super::first_sentence_stall_due;
+        assert!(first_sentence_stall_due(false, false));
+        assert!(!first_sentence_stall_due(true, false));
+        assert!(!first_sentence_stall_due(false, true));
+    }
+}

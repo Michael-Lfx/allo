@@ -1292,8 +1292,26 @@ impl WavCache {
         self.entries.insert(key, wav);
     }
 
-    fn key(voice: &str, text: &str) -> String {
-        format!("{voice}\u{0}{text}")
+    fn key(voice: &str, text: &str, model_identity: &str) -> String {
+        format!("{voice}\u{0}{model_identity}\u{0}{text}")
+    }
+}
+
+/// A hung ONNX load must become a TtsError (and fall back) instead of
+/// blocking the stream before FallbackTtsProvider can observe it.
+const TTS_ENGINE_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn await_engine_init(
+    load: tokio::task::JoinHandle<Result<(), TtsError>>,
+    timeout: std::time::Duration,
+) -> Result<(), TtsError> {
+    match tokio::time::timeout(timeout, load).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(error),
+        Ok(Err(join_error)) => Err(TtsError::Synthesis(format!(
+            "tts_task_panicked: {join_error}"
+        ))),
+        Err(_) => Err(TtsError::Synthesis("tts_engine_init_timeout".into())),
     }
 }
 
@@ -1315,24 +1333,54 @@ impl SherpaOfflineTtsProvider {
         }
     }
 
+    fn cache_identity(&self) -> String {
+        format!(
+            "sid={};speed={:.3};noise={:.3};length={:.3};model={:?};vocoder={:?};en_model={:?}",
+            self.config.sid,
+            self.config.speed,
+            self.config.noise_scale,
+            self.config.length_scale,
+            self.config.model_path,
+            self.config.vocoder_path,
+            self.config.en_model_path
+        )
+    }
+
+    /// Initialize the engines before handing a receiver back to the caller so
+    /// configuration/load failures stay synchronous and the fallback provider
+    /// can actually take over.
+    async fn ensure_engines(&self) -> Result<(), TtsError> {
+        if self.engines.lock().await.is_some() {
+            return Ok(());
+        }
+        let engines = self.engines.clone();
+        let config = self.config.clone();
+        let load = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
+            let mut lock = engines.blocking_lock();
+            if lock.is_none() {
+                *lock = Some(Self::init_engines_sync(&config)?);
+            }
+            Ok(())
+        });
+        await_engine_init(load, TTS_ENGINE_INIT_TIMEOUT).await
+    }
+
     /// Load both acoustic models and the vocoder without synthesizing anything.
     /// Used by the daemon at startup / call start so the first reply never pays
     /// the multi-second lazy engine load.
     pub async fn warm_up(&self) {
         let engines = self.engines.clone();
         let config = self.config.clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
+        let load = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
             let mut lock = engines.blocking_lock();
             if lock.is_none() {
                 *lock = Some(Self::init_engines_sync(&config)?);
             }
             Ok(())
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => tracing::info!("sherpa_offline_tts_warmed_up"),
-            Ok(Err(error)) => tracing::warn!(error=%error, "sherpa_offline_tts_warm_up_failed"),
-            Err(join_error) => tracing::warn!(error=%join_error, "sherpa_offline_tts_warm_up_panicked"),
+        });
+        match await_engine_init(load, TTS_ENGINE_INIT_TIMEOUT).await {
+            Ok(()) => tracing::info!("sherpa_offline_tts_warmed_up"),
+            Err(error) => tracing::warn!(error=%error, "sherpa_offline_tts_warm_up_failed"),
         }
     }
 
@@ -1535,8 +1583,13 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             actual_voice.parse::<i32>().unwrap_or(self.config.sid)
         };
 
+        let default_locale = if actual_voice.starts_with("en") || actual_voice.contains("en_") || actual_voice.contains("en-") {
+            Some("en-US".to_string())
+        } else {
+            None
+        };
         let speed = custom_speed.unwrap_or(self.config.speed);
-        let cache_key = WavCache::key(voice, text_clean);
+        let cache_key = WavCache::key(voice, text_clean, &self.cache_identity());
         let cached = {
             self.wav_cache
                 .lock()
@@ -1549,24 +1602,38 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             return Ok(rx);
         }
 
+        // Surface init and unsupported-language failures before returning the
+        // stream: FallbackTtsProvider can only observe a synchronous Err, and
+        // the daemon otherwise plays silence instead of trying Edge.
+        self.ensure_engines().await?;
+        let segments_for_validation = segment_languages_with_locale(text_clean, default_locale.as_deref());
+        if segments_for_validation.is_empty() {
+            return Err(TtsError::Synthesis("empty_text".into()));
+        }
+        if self.config.is_matcha()
+            && segments_for_validation
+                .iter()
+                .any(|segment| matches!(segment, LangSegment::En(_)))
+        {
+            let has_english = self
+                .engines
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|engines| engines.english.is_some());
+            if !has_english {
+                return Err(TtsError::Synthesis("english_tts_engine_unavailable".into()));
+            }
+        }
+
         let engines_arc = self.engines.clone();
         let wav_cache = self.wav_cache.clone();
         let config = self.config.clone();
         let text_owned = text_clean.to_string();
-        let default_locale = if actual_voice.starts_with("en") || actual_voice.contains("en_") || actual_voice.contains("en-") {
-            Some("en-US".to_string())
-        } else {
-            None
-        };
 
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled_worker = cancelled.clone();
         let (tx, rx) = mpsc::channel::<Vec<u8>>(8);
-        // Keep the old whole-sentence behavior available for rollback and for
-        // the reverse check ("disable progressive, first chunk must get slower").
-        let progressive = std::env::var("NOMIFUN_TTS_PROGRESSIVE")
-            .map(|value| value != "0")
-            .unwrap_or(true);
 
         let blocking_task = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
             let mut lock = engines_arc.blocking_lock();
@@ -1608,33 +1675,9 @@ impl TtsProvider for SherpaOfflineTtsProvider {
                     }
                 };
 
-                // The sherpa callback reports all samples generated so far, so
-                // forward only the new tail: the speaker can start while the rest
-                // of the sentence is still being synthesized.
                 let cancel_cb = cancelled_worker.clone();
-                let tx_chunk = tx.clone();
-                let sent_len = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                let sent_len_cb = sent_len.clone();
-                let mut local_sent_len = 0usize;
-                let callback_sample_rate = sample_rate as u32;
-                let progressive_segment = progressive && sample_rate > 0;
-                let callback = move |samples: &[f32], _progress: f32| -> bool {
-                    if cancel_cb.load(std::sync::atomic::Ordering::Relaxed) {
-                        return false;
-                    }
-                    if !progressive_segment {
-                        return true;
-                    }
-                    if samples.len() > local_sent_len {
-                        let tail = &samples[local_sent_len..];
-                        local_sent_len = samples.len();
-                        sent_len_cb.store(local_sent_len, std::sync::atomic::Ordering::Relaxed);
-                        let wav = nomifun_audio::pcm_to_wav(tail, callback_sample_rate);
-                        if tx_chunk.blocking_send(wav).is_err() {
-                            return false;
-                        }
-                    }
-                    true
+                let callback = move |_samples: &[f32], _progress: f32| -> bool {
+                    !cancel_cb.load(std::sync::atomic::Ordering::Relaxed)
                 };
 
                 let audio = target_engine
@@ -1655,22 +1698,6 @@ impl TtsProvider for SherpaOfflineTtsProvider {
                 if i > 0 && !all_samples.is_empty() {
                     let gap = vec![0.0f32; (sample_rate as f32 * 0.08) as usize];
                     all_samples.extend_from_slice(&gap);
-                    let gap_wav = nomifun_audio::pcm_to_wav(&gap, sample_rate as u32);
-                    if tx.blocking_send(gap_wav).is_err() {
-                        return Err(TtsError::Cancelled);
-                    }
-                }
-
-                // The callback may stop before the vocoder's final samples (or not
-                // fire at all); always forward whatever it did not cover so no tail
-                // of the sentence is lost.
-                let already_sent = sent_len.load(std::sync::atomic::Ordering::Relaxed);
-                if already_sent < samples.len() {
-                    let tail = &samples[already_sent..];
-                    let tail_wav = nomifun_audio::pcm_to_wav(tail, seg_sr as u32);
-                    if tx.blocking_send(tail_wav).is_err() {
-                        return Err(TtsError::Cancelled);
-                    }
                 }
                 all_samples.extend_from_slice(samples);
             }
@@ -1683,6 +1710,9 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             }
 
             let wav = nomifun_audio::pcm_to_wav(&all_samples, sample_rate as u32);
+            if tx.blocking_send(wav.clone()).is_err() {
+                return Err(TtsError::Cancelled);
+            }
             wav_cache
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -1760,14 +1790,31 @@ pub struct FallbackTtsProvider {
     primary: std::sync::Arc<dyn TtsProvider>,
     fallback: std::sync::Arc<dyn TtsProvider>,
     selected: std::sync::Arc<std::sync::Mutex<Option<nomifun_api_types::voice::VoiceTtsDiagnostic>>>,
+    first_audio_timeout: std::time::Duration,
 }
+
+const DEFAULT_FIRST_AUDIO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl FallbackTtsProvider {
     pub fn new(
         primary: std::sync::Arc<dyn TtsProvider>,
         fallback: std::sync::Arc<dyn TtsProvider>,
     ) -> Self {
-        Self { primary, fallback, selected: Default::default() }
+        Self {
+            primary,
+            fallback,
+            selected: Default::default(),
+            first_audio_timeout: DEFAULT_FIRST_AUDIO_TIMEOUT,
+        }
+    }
+
+    /// A provider may report a valid configuration and still fail after the
+    /// receiver is handed back (engine init, language support, generation).
+    /// Wait for the first real audio chunk; if none arrives, use the fallback
+    /// instead of playing silence.
+    pub fn with_first_audio_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.first_audio_timeout = timeout;
+        self
     }
 
     pub fn primary(&self) -> &std::sync::Arc<dyn TtsProvider> {
@@ -1811,9 +1858,65 @@ impl TtsProvider for FallbackTtsProvider {
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
         match self.primary.synthesize_stream(text, voice).await {
-            Ok(rx) => {
-                *self.selected.lock().unwrap_or_else(|e|e.into_inner()) = self.primary.diagnostic(voice);
-                Ok(rx)
+            Ok(primary_rx) => {
+                let selected = self.selected.clone();
+                let primary = self.primary.clone();
+                let fallback = self.fallback.clone();
+                let first_audio_timeout = self.first_audio_timeout;
+                let text = text.to_owned();
+                let voice = voice.to_owned();
+                *selected.lock().unwrap_or_else(|e|e.into_inner()) = primary.diagnostic(&voice);
+                // With no healthy fallback, wrapping would only be able to cut
+                // the primary stream off when its first chunk is slow. Leave it
+                // untouched (the playback idle deadline remains the backstop).
+                if !fallback.is_available() {
+                    return Ok(primary_rx);
+                }
+                let (out_tx, out_rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let mut primary_rx = primary_rx;
+                    match tokio::time::timeout(first_audio_timeout, primary_rx.recv()).await {
+                        Ok(Some(chunk)) => {
+                            if out_tx.send(chunk).await.is_err() {
+                                return;
+                            }
+                            while let Some(chunk) = primary_rx.recv().await {
+                                if out_tx.send(chunk).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        first => {
+                            let reason = match first {
+                                Ok(None) => "primary_stream_closed_before_audio",
+                                _ => "primary_first_audio_timeout",
+                            };
+                            tracing::warn!(reason, "primary_tts_no_audio_attempting_fallback");
+                            if !fallback.is_available() {
+                                return;
+                            }
+                            match fallback.synthesize_stream(&text, &voice).await {
+                                Ok(mut fallback_rx) => {
+                                    let mut diagnostic = fallback.diagnostic(&voice);
+                                    if let Some(diagnostic) = diagnostic.as_mut() {
+                                        diagnostic.fallback_reason = Some(reason.into());
+                                    }
+                                    *selected.lock().unwrap_or_else(|e|e.into_inner()) = diagnostic;
+                                    while let Some(chunk) = fallback_rx.recv().await {
+                                        if out_tx.send(chunk).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(error=%error, "fallback_tts_failed_after_primary_no_audio");
+                                    *selected.lock().unwrap_or_else(|e|e.into_inner()) = primary.diagnostic(&voice);
+                                }
+                            }
+                        }
+                    }
+                });
+                Ok(out_rx)
             },
             Err(primary_err) => {
                 if !self.fallback.is_available() {
@@ -1845,13 +1948,48 @@ mod tts_cache_tests {
     use super::WavCache;
 
     #[test]
-    fn cache_key_carries_voice_locale_and_speed() {
-        let zh = WavCache::key("0", "你好");
-        let sped = WavCache::key("0;speed=1.3", "你好");
-        let en = WavCache::key("en-US-JennyNeural", "你好");
+    fn cache_key_carries_voice_locale_speed_and_model_identity() {
+        let zh = WavCache::key("0", "你好", "sid=0;model=a");
+        let sped = WavCache::key("0;speed=1.3", "你好", "sid=0;model=a");
+        let en = WavCache::key("en-US-JennyNeural", "你好", "sid=0;model=a");
+        let sid = WavCache::key("0", "你好", "sid=1;model=a");
+        let model = WavCache::key("0", "你好", "sid=0;model=b");
         assert_ne!(zh, sped, "changing speed must invalidate the cached voice");
         assert_ne!(zh, en, "changing locale/voice must invalidate the cached voice");
-        assert_eq!(zh, WavCache::key("0", "你好"));
+        assert_ne!(zh, sid, "changing speaker id must invalidate the cached voice");
+        assert_ne!(zh, model, "changing the model must invalidate the cached voice");
+        assert_eq!(zh, WavCache::key("0", "你好", "sid=0;model=a"));
+    }
+
+    #[cfg(feature = "local-tts")]
+    #[tokio::test]
+    async fn sherpa_english_unavailable_is_reported_synchronously() {
+        let Some(dir) = std::env::var_os("VOICE_TTS_MODEL_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("LOCALAPPDATA")
+                    .map(|base| std::path::PathBuf::from(base).join("Flowy").join("models").join("tts"))
+            })
+        else {
+            return;
+        };
+        if !dir.join("matcha-icefall-zh-baker").is_dir() {
+            return;
+        }
+        let mut config = super::SherpaOfflineTtsConfig::from_dir(&dir);
+        config.en_model_path = None;
+        config.en_tokens_path = None;
+        config.en_data_dir = None;
+        use super::TtsProvider;
+        let provider = super::SherpaOfflineTtsProvider::new(config);
+        let error = provider
+            .synthesize_stream("Hello there", "en-US-JennyNeural")
+            .await
+            .expect_err("missing English engine must not become a silent stream");
+        assert!(
+            error.to_string().contains("english_tts_engine_unavailable"),
+            "unexpected error: {error}"
+        );
     }
 
     #[cfg(feature = "local-tts")]
@@ -1878,15 +2016,37 @@ mod tts_cache_tests {
         );
     }
 
+    #[tokio::test]
+    async fn engine_init_timeout_is_surfaced_as_tts_error() {
+        let hanging = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok::<(), super::TtsError>(())
+        });
+        let error = super::await_engine_init(hanging, std::time::Duration::from_millis(20))
+            .await
+            .expect_err("a hung engine load must time out");
+        assert!(error.to_string().contains("tts_engine_init_timeout"));
+    }
+
+    #[cfg(feature = "local-tts")]
+    #[test]
+    fn cache_identity_changes_with_speed_and_noise() {
+        let fast = super::SherpaOfflineTtsProvider::new(super::SherpaOfflineTtsConfig::default());
+        let mut slow_config = super::SherpaOfflineTtsConfig::default();
+        slow_config.speed = 1.0;
+        let slow = super::SherpaOfflineTtsProvider::new(slow_config);
+        assert_ne!(fast.cache_identity(), slow.cache_identity());
+    }
+
     #[test]
     fn cache_is_bounded_and_evicts_oldest() {
         let mut cache = WavCache::new(2);
-        cache.put(WavCache::key("0", "first"), vec![1, 2, 3]);
-        cache.put(WavCache::key("0", "second"), vec![4, 5, 6]);
-        cache.put(WavCache::key("0", "third"), vec![7, 8, 9]);
-        assert!(cache.get(&WavCache::key("0", "first")).is_none());
-        assert_eq!(cache.get(&WavCache::key("0", "second")), Some(vec![4, 5, 6]));
-        assert_eq!(cache.get(&WavCache::key("0", "third")), Some(vec![7, 8, 9]));
+        cache.put(WavCache::key("0", "first", "id"), vec![1, 2, 3]);
+        cache.put(WavCache::key("0", "second", "id"), vec![4, 5, 6]);
+        cache.put(WavCache::key("0", "third", "id"), vec![7, 8, 9]);
+        assert!(cache.get(&WavCache::key("0", "first", "id")).is_none());
+        assert_eq!(cache.get(&WavCache::key("0", "second", "id")), Some(vec![4, 5, 6]));
+        assert_eq!(cache.get(&WavCache::key("0", "third", "id")), Some(vec![7, 8, 9]));
     }
 }
 
@@ -1934,6 +2094,73 @@ mod fallback_and_sherpa_tests {
             .expect("must succeed via primary");
         let data = rx.recv().await.expect("must receive frame");
         assert_eq!(data, vec![9, 9, 9]);
+    }
+
+    struct ClosedSilentTts;
+    #[async_trait]
+    impl TtsProvider for ClosedSilentTts {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (tx, rx) = mpsc::channel(1);
+            drop(tx);
+            Ok(rx)
+        }
+    }
+
+    struct HangingTts {
+        keep_alive: std::sync::Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    }
+    #[async_trait]
+    impl TtsProvider for HangingTts {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (tx, rx) = mpsc::channel(1);
+            *self.keep_alive.lock().unwrap() = Some(tx);
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_uses_fallback_when_primary_closes_without_audio() {
+        let primary = std::sync::Arc::new(ClosedSilentTts);
+        let fallback = std::sync::Arc::new(MockSuccessTts(vec![7, 7, 7]));
+        let provider = FallbackTtsProvider::new(primary, fallback)
+            .with_first_audio_timeout(std::time::Duration::from_millis(50));
+
+        let mut rx = provider
+            .synthesize_stream("hello world", "")
+            .await
+            .expect("must return a receiver");
+        let data = rx.recv().await.expect("must receive fallback frame");
+        assert_eq!(data, vec![7, 7, 7], "empty primary stream must trigger fallback");
+    }
+
+    #[tokio::test]
+    async fn fallback_uses_fallback_when_primary_hangs_before_first_audio() {
+        let primary = std::sync::Arc::new(HangingTts {
+            keep_alive: std::sync::Mutex::new(None),
+        });
+        let fallback = std::sync::Arc::new(MockSuccessTts(vec![8, 8, 8]));
+        let provider = FallbackTtsProvider::new(primary, fallback)
+            .with_first_audio_timeout(std::time::Duration::from_millis(50));
+
+        let started = std::time::Instant::now();
+        let mut rx = provider
+            .synthesize_stream("hello world", "")
+            .await
+            .expect("must return a receiver");
+        let data = rx.recv().await.expect("must receive fallback frame");
+        assert_eq!(data, vec![8, 8, 8], "hung primary must trigger fallback");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(40),
+            "fallback must wait for the first-audio timeout"
+        );
     }
 
     #[tokio::test]

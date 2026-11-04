@@ -81,10 +81,16 @@ async fn main() {
         }
         let engine_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
         let cold = synthesize(&provider, &options.text).await;
-        // Cache-hit replay must match the progressive stream's PCM sample count:
+        // Cache-hit replay must match the streamed WAV's PCM sample count:
         // this catches a dropped tail or a duplicated gap frame.
         let replay = synthesize(&provider, &options.text).await;
-        let pcm_consistent = replay.pcm_samples == cold.pcm_samples;
+        let first_pcm_diff = cold
+            .pcm
+            .iter()
+            .zip(replay.pcm.iter())
+            .position(|(left, right)| left != right);
+        let pcm_consistent = replay.pcm_samples == cold.pcm_samples
+            && replay.pcm_hash == cold.pcm_hash;
         let mut warm_full_ms = Vec::new();
         let mut warm_first_ms = Vec::new();
         let mut audio_ms = 0.0_f64;
@@ -116,6 +122,9 @@ async fn main() {
             "audio_ms": round2(audio_ms),
             "cold_pcm_samples": cold.pcm_samples,
             "replay_pcm_samples": replay.pcm_samples,
+            "cold_pcm_hash": cold.pcm_hash,
+            "replay_pcm_hash": replay.pcm_hash,
+            "pcm_first_diff_byte": first_pcm_diff,
             "pcm_consistent": pcm_consistent,
         }));
     }
@@ -143,7 +152,9 @@ fn main() {
 #[cfg(feature = "local-tts")]
 struct Sample {
     bytes: usize,
+    pcm: Vec<u8>,
     pcm_samples: usize,
+    pcm_hash: u64,
     first_chunk_ms: f64,
     full_ms: f64,
     audio_ms: f64,
@@ -158,21 +169,29 @@ async fn synthesize(provider: &SherpaOfflineTtsProvider, text: &str) -> Sample {
         .expect("synthesis failed");
     let mut first_chunk_ms = None;
     let mut bytes = 0_usize;
-    let mut frames = 0_usize;
+    let mut pcm_bits = Vec::new();
     while let Some(chunk) = stream.recv().await {
         if !chunk.is_empty() {
             first_chunk_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1_000.0);
             bytes += chunk.len();
-            frames += 1;
+            let (samples, _sample_rate) = nomifun_audio::parse_audio_frame_to_pcm(&chunk);
+            for sample in samples {
+                pcm_bits.extend_from_slice(&sample.to_bits().to_le_bytes());
+            }
         }
     }
     let full_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let first_chunk_ms = first_chunk_ms.unwrap_or(full_ms);
-    let pcm_samples = (bytes.saturating_sub(frames * 44)) / 2;
+    let pcm_samples = pcm_bits.len() / 4;
     let audio_ms = wav_duration_ms(pcm_samples) as f64;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pcm_bits.hash(&mut hasher);
     Sample {
         bytes,
+        pcm: pcm_bits,
         pcm_samples,
+        pcm_hash: hasher.finish(),
         first_chunk_ms,
         full_ms,
         audio_ms,

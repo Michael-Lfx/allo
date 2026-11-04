@@ -318,6 +318,8 @@ const SendBox: React.FC<{
   /** Conversation-only: render the compact plan strip inside the input panel status row. */
   showPinnedPlan?: boolean;
   isVoiceConversation?: boolean;
+  /** Tri-state conversation classifier; `unknown` defers warmup until resolution. */
+  voiceConversationKind?: 'voice' | 'ordinary' | 'unknown';
   isVoiceActive?: boolean;
   isVoiceActiveElsewhere?: boolean;
   isVoiceConnecting?: boolean;
@@ -373,6 +375,7 @@ const SendBox: React.FC<{
   footer,
   showPinnedPlan = false,
   isVoiceConversation = false,
+  voiceConversationKind,
   isVoiceActive = false,
   isVoiceActiveElsewhere = false,
   isVoiceConnecting = false,
@@ -1785,6 +1788,7 @@ const SendBox: React.FC<{
     if (
       shouldWarmComposerOnFocus({
         isVoiceConversation,
+        voiceConversationKind,
         conversationId: cid,
         warmedConversationId: warmedConversationRef.current,
       })
@@ -1795,7 +1799,7 @@ const SendBox: React.FC<{
         warmupConversation(cid!).catch(() => {});
       }, 300);
     }
-  }, [handlePasteFocus, isMobile, isVoiceConversation, conversationContext?.conversation_id]);
+  }, [handlePasteFocus, isMobile, isVoiceConversation, voiceConversationKind, conversationContext?.conversation_id]);
   const handleInputBlur = useCallback(() => {
     if (warmupTimerRef.current) {
       clearTimeout(warmupTimerRef.current);

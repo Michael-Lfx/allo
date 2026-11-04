@@ -594,23 +594,34 @@ const NomiSendBox: React.FC<{
       return;
     }
     setVoiceConversation({ id: conversation_id, kind: 'unknown' });
-    void resolveVoiceConversationKind({
-      targetId: conversation_id,
-      fetchConversation: getConversationOrNull,
-      getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
-    })
-      .then(({ kind, workspace }) => {
-        if (disposed) return;
-        setVoiceConversation({ id: conversation_id, kind });
-        if (workspace) setWorkspacePath(workspace);
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const loadKind = (): void => {
+      void resolveVoiceConversationKind({
+        targetId: conversation_id,
+        fetchConversation: getConversationOrNull,
+        getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
       })
-      .catch(() => {
-        if (!disposed) {
+        .then(({ kind, workspace }) => {
+          if (disposed) return;
+          setVoiceConversation({ id: conversation_id, kind });
+          if (workspace) setWorkspacePath(workspace);
+        })
+        .catch(() => {
+          if (disposed) return;
           setVoiceConversation({ id: conversation_id, kind: 'unknown' });
-        }
-      });
+          // A transient classifier failure must not defer ordinary composer
+          // warmup forever; retry a bounded number of times.
+          attempts += 1;
+          if (attempts < 3) {
+            retryTimer = setTimeout(loadKind, 1_000);
+          }
+        });
+    };
+    loadKind();
     return () => {
       disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [conversation_id, cache, voiceKind]);
 
@@ -2268,6 +2279,7 @@ const NomiSendBox: React.FC<{
         key={conversation_id}
         data-testid='nomi-sendbox'
         isVoiceConversation={isVoiceConversation}
+        voiceConversationKind={conversationVoiceKind}
         isVoiceActive={isVoiceActive}
         isVoiceActiveElsewhere={isVoiceActiveElsewhere}
         isVoiceConnecting={isVoiceConnecting}
