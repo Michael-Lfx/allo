@@ -207,3 +207,4 @@ Read the source. Every route handler is in the `routes.rs` (or `routes/`) file o
 - [Configuration Reference](./configuration.md) — every flag and env var.
 - [API Overview](./api-overview.md) — orientation to routes, auth, and the WebSocket model.
 - [FAQ](./faq.md) — short answers to the most common "is X true?" questions.
+- [Windows dev loop: cannot write outside the repo](../contributing/windows-low-integrity-dev-loop.md) — `LNK1104`, a `PermissionDenied` log-file panic, or a WebView2 `0x8000FFFF` / `0x800700AA` window failure caused by a leftover Low integrity label on the checkout.

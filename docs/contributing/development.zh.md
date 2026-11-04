@@ -237,3 +237,6 @@ NOMIFUN_LOG_LEVEL='info,nomifun_mcp=trace' bun run serve:web
 - [`../architecture/frontend.md`](../architecture/frontend.md)
 - [`../architecture/agent-observability-and-eval.zh.md`](../architecture/agent-observability-and-eval.zh.md)（会话日志与 Agent Eval）
 - [`building-and-packaging.zh.md`](building-and-packaging.zh.md)
+- 在 Windows 上 `bun run dev` 报 `LNK1104`、日志文件 `PermissionDenied` panic，或
+  WebView2 `0x8000FFFF` / `0x800700AA` 窗口失败时，看
+  [`windows-low-integrity-dev-loop.zh.md`](windows-low-integrity-dev-loop.zh.md)。
