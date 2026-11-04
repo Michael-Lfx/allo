@@ -1,6 +1,12 @@
 //! 生长批产物契约（`ng.*`，g4 裁决：教练批全迁新基建，与 structure_contract
 //! 同族）——schema 单源 + 条款化形状 validator + 评审输出契约。
 //!
+//! 条款表（learnhub validator.rs 头部条款表同构位）：
+//! - `ng.node.brief`（absorb-8 z01，learnhub #205 v1.20 同构）——intent/scope
+//!   非空字符串、各 ≤200 字符；intent 一句话创建意图（为何有这个学习点、课里
+//!   承担什么角色），scope 一两句教学范围（教什么/教到哪/明确不碰什么，「不教
+//!   X」是边界声明）；两字段文本进评审机械点名扫描（扫描面随 z02 落地）。
+//!
 //! 分工（learnhub 同款）：provider 的 json_object 保证**合法 JSON**（ng.parse
 //! 是读侧条款）；本模块执法**形状**（键白名单/词表/量级/批内唯一）；DB 语义门
 //! （登记表撞名、引用可解析、就绪即发布、课程内标题唯一）留
@@ -17,13 +23,17 @@ pub const TIERS: &[&str] = &["know", "apply", "teach"];
 /// 节点批次顶层键白名单。
 pub const BATCH_KEYS: &[&str] = &["nodes", "mints", "new_aliases", "note"];
 /// 节点键白名单（缺省可选键见各条款）。
-pub const NODE_KEYS: &[&str] = &["title", "purpose", "est", "difficulty", "teaches", "assumes"];
+pub const NODE_KEYS: &[&str] =
+    &["title", "purpose", "intent", "scope", "est", "difficulty", "teaches", "assumes"];
 /// 铸名键白名单。
 pub const MINT_KEYS: &[&str] = &["canonical", "aliases", "definition", "source"];
 /// new_aliases 提名键白名单（三轮 g2：三字段全必填）。
 pub const NEW_ALIAS_KEYS: &[&str] = &["name", "definition", "source"];
 /// 节点标题长度上限（字符）。
 pub const TITLE_MAX_CHARS: usize = 80;
+/// 节点意图/教学范围字符上限（absorb-8 z01，learnhub `NODE_BRIEF_MAX_CHARS`
+/// 同构）：intent/scope 各 ≤200 字符。
+pub const NODE_BRIEF_MAX_CHARS: usize = 200;
 /// est 区间（门放行 1–60）。est = 专注工作量尺寸锚（1 est 分钟 = 1 分钟
 /// 专注学习）；键名统一 est（j01），DB 列保留旧名 `estimated_minutes`。
 pub const EST_RANGE: (u64, u64) = (1, 60);
@@ -174,6 +184,37 @@ pub fn validate_proposal(value: &Value) -> Vec<ContractViolation> {
                 "ng.nodes.required",
                 format!("{at}（{title}）的 purpose 缺失或为空——每个节点必须带日常经验切口"),
             ));
+        }
+        // ng.node.brief（absorb-8 z01）：intent/scope 节点诞生即声明——必填
+        // 非空（trim 后）、各 ≤200 字符；三态（缺席/空白/超限）各带写法指引。
+        // 违约进重试反馈；文本进评审机械点名扫描（扫描面随 z02 扩面）。
+        for field in ["intent", "scope"] {
+            match node_map.get(field).and_then(Value::as_str) {
+                None => violations.push(red(
+                    "ng.node.brief",
+                    format!(
+                        "{at}（{title}）的 {field} 缺失或不是字符串——节点诞生即声明：\
+                         intent 一句话写为何有这个点、课里承担什么角色，\
+                         scope 一两句写教什么/教到哪/明确不碰什么"
+                    ),
+                )),
+                Some(text) if text.trim().is_empty() => violations.push(red(
+                    "ng.node.brief",
+                    format!(
+                        "{at}（{title}）的 {field} 为空——写实质内容（一句话意图/一两句范围），\
+                         不写「教好这个概念」一类空话"
+                    ),
+                )),
+                Some(text) if text.chars().count() > NODE_BRIEF_MAX_CHARS => violations.push(red(
+                    "ng.node.brief",
+                    format!(
+                        "{at}（{title}）的 {field} 长 {} 字符，越出上限 {NODE_BRIEF_MAX_CHARS}\
+                         ——一句话意图/一两句范围，超限请压缩",
+                        text.chars().count()
+                    ),
+                )),
+                Some(_) => {}
+            }
         }
         if let Some(est) = node_map.get("est") {
             let valid = est
@@ -487,10 +528,20 @@ pub fn proposal_schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["title", "purpose"],
+                    "required": ["title", "purpose", "intent", "scope"],
                     "properties": {
                         "title": { "type": "string", "minLength": 1, "maxLength": TITLE_MAX_CHARS },
                         "purpose": { "type": "string", "minLength": 1 },
+                        "intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": NODE_BRIEF_MAX_CHARS,
+                        },
+                        "scope": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": NODE_BRIEF_MAX_CHARS,
+                        },
                         "est": {
                             "type": "integer",
                             "minimum": EST_RANGE.0,
@@ -602,9 +653,13 @@ mod tests {
         json!({
             "nodes": [
                 { "title": "用定义计算极限", "purpose": "从数格子接近某数的经验切入",
+                  "intent": "为极限法则的引入提供直观底座",
+                  "scope": "教极限的定义式读法；不涉及 ε-δ 证明",
                   "est": 15, "difficulty": 2,
                   "teaches": [{ "name": "极限", "tier": "know" }], "assumes": [] },
                 { "title": "用极限法则求切线", "purpose": "从坡道倾斜度的日常经验切入",
+                  "intent": "把极限接到几何斜率上，补应用线第一格",
+                  "scope": "教切线斜率的极限求法；不碰导数一般理论",
                   "est": 20, "difficulty": 3,
                   "teaches": [{ "name": "求导法则", "tier": "apply" }],
                   "assumes": [{ "name": "极限", "tier": "know" }] }
@@ -803,7 +858,17 @@ mod tests {
     fn schema_is_pinned_to_validator_constants() {
         let schema = proposal_schema();
         let node_items = &schema["properties"]["nodes"]["items"];
-        assert_eq!(node_items["required"], json!(["title", "purpose"]));
+        assert_eq!(node_items["required"], json!(["title", "purpose", "intent", "scope"]));
+        // 声明面（absorb-8 z01）：intent/scope schema 侧约束最大化（非空 +
+        // ≤200 字），与 ng.node.brief 三态检查互钉。
+        assert_eq!(
+            node_items["properties"]["intent"]["maxLength"],
+            json!(NODE_BRIEF_MAX_CHARS)
+        );
+        assert_eq!(
+            node_items["properties"]["scope"]["maxLength"],
+            json!(NODE_BRIEF_MAX_CHARS)
+        );
         assert_eq!(node_items["properties"]["est"]["maximum"], json!(EST_RANGE.1));
         assert_eq!(node_items["properties"]["difficulty"]["maximum"], json!(DIFFICULTY_RANGE.1));
         assert_eq!(schema["properties"]["nodes"]["maxItems"], json!(MAX_BATCH_NODES));
@@ -851,5 +916,69 @@ mod tests {
                 assert!(node_keys.contains(&key.as_str()), "node key「{key}」not in schema");
             }
         }
+    }
+
+    // ── ng.node.brief（absorb-8 z01）：intent/scope 节点诞生即声明面 ────────
+
+    /// 缺席态：两键整键缺失 = 各一条违约，消息带写法指引（learnhub validator.rs
+    /// 同构——缺席/空白/超限三态）。
+    #[test]
+    fn node_brief_missing_is_a_violation() {
+        let mut value = golden_batch();
+        let node = value["nodes"][0].as_object_mut().unwrap();
+        node.remove("intent");
+        node.remove("scope");
+        let violations = validate_proposal(&value);
+        let brief: Vec<_> = violations.iter().filter(|v| v.code == "ng.node.brief").collect();
+        assert_eq!(brief.len(), 2, "缺席两键各一条违约：{violations:?}");
+        assert!(
+            brief.iter().all(|v| v.message.contains("节点诞生即声明")),
+            "缺席消息带写法指引：{brief:?}"
+        );
+    }
+
+    /// 空白态：trim 后为空按缺席裁（learnhub `s.trim().is_empty()` 同判据）。
+    #[test]
+    fn node_brief_blank_is_a_violation() {
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!("   ");
+        value["nodes"][0]["scope"] = json!("\n\t");
+        let violations = validate_proposal(&value);
+        let brief: Vec<_> = violations.iter().filter(|v| v.code == "ng.node.brief").collect();
+        assert_eq!(brief.len(), 2, "空白串各一条违约：{violations:?}");
+    }
+
+    /// 超限态：恰好 200 字符放行、201 拒（`chars().count()` 计——中文一字一符）。
+    #[test]
+    fn node_brief_at_limit_passes_and_over_limit_is_rejected() {
+        let at_limit = "界".repeat(NODE_BRIEF_MAX_CHARS);
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!(at_limit);
+        value["nodes"][0]["scope"] = json!("教栈的推入弹出；不涉及泛型实现");
+        assert!(
+            validate_proposal(&value).is_empty(),
+            "恰好 200 字过：{:?}",
+            validate_proposal(&value)
+        );
+
+        let over_limit = "越".repeat(NODE_BRIEF_MAX_CHARS + 1);
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!(over_limit);
+        value["nodes"][0]["scope"] = json!("s");
+        let violations = validate_proposal(&value);
+        assert!(
+            violations.iter().any(|v| v.code == "ng.node.brief" && v.message.contains("越出上限")),
+            "201 字拒且消息带上限：{violations:?}"
+        );
+    }
+
+    /// 齐备态：两键各一句话/一两句实质内容 = 零违约（对 scope 里「不教 X」
+    /// 类边界句零反应——边界声明合法，点名扫描归 z02）。
+    #[test]
+    fn node_brief_both_keys_pass() {
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!("为何有这个点：补齐入口层的分类经验");
+        value["nodes"][0]["scope"] = json!("教什么：分类判读；不碰：排序算法");
+        assert!(validate_proposal(&value).is_empty(), "{:?}", validate_proposal(&value));
     }
 }

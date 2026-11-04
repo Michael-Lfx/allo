@@ -24,6 +24,10 @@ pub(crate) fn assemble_outline_pack(
                     // No content yet: use the default study-time estimate.
                     est: 10,
                     purpose: lesson.purpose.clone(),
+                    // 声明面两键（absorb-8 z01）：传统蓝图无边声明，空串落库
+                    // （= 旧档语义，UI 不渲染）。
+                    intent: String::new(),
+                    scope: String::new(),
                     // 引用清单（t4 评审补齐）：列表原样携带（首个 = 兼容位），
                     // 落库时列表进 `source_paths_json`、首个进三列。
                     source: lesson.source.clone(),

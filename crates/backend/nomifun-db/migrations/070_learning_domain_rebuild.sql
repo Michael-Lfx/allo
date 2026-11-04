@@ -273,6 +273,14 @@ ALTER TABLE learning_courses ADD COLUMN deleted_at INTEGER;
 -- 已落库批次数 + 2，形式化/证明类内容（4-5）必须等台阶铺满低档后再长。
 ALTER TABLE learning_lessons ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 2;
 
+-- 节点声明面两列（absorb-8 z01，learnhub #205 同构）：`intent` = 创建意图
+-- （为何有这个学习点、课里承担什么角色，一句话），`scope` = 教学范围
+-- （教什么/教到哪/明确不碰什么，「不教 X」是边界声明，一两句）。非空约束
+-- 与字符上限（各 ≤200 字符）由生长契约门 ng.node.brief 在写侧执法，DB 不
+-- 重验；列上空串 = 旧档未声明（跟随 purpose/difficulty 先例，零回填零破坏）。
+ALTER TABLE learning_lessons ADD COLUMN intent TEXT NOT NULL DEFAULT '';
+ALTER TABLE learning_lessons ADD COLUMN scope TEXT NOT NULL DEFAULT '';
+
 -- ==== 原 074_retire_endpoints_compass_structure_snapshot（仅保留 structure_json 落地）====
 -- 终点锚体系与罗盘已随本基线净形消失（070 从未建端点/罗盘）；此处只保留
 -- 知识结构 + 前置地形两产物的单字段 JSON 快照列。存量课程为 NULL = 结构未
