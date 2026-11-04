@@ -2502,6 +2502,39 @@ pub struct ConceptAuditCycle {
     pub b_name: String,
 }
 
+/// 概念登记表检索命中（y03 只读自查通道）：一条 = 一个概念的当前视野。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ConceptSearchHit {
+    pub concept_id: String,
+    /// 登记表正名（canonical）。
+    pub canonical: String,
+    /// 活跃别名（退役名不占池）；detail 模式返回全部活跃别名。
+    pub aliases: Vec<String>,
+    /// 完整定义（search 与 detail 同一口径，不截断）。
+    pub definition: String,
+    /// 命中通道：exact | alias | nearname | fulltext（等级由高到低）。
+    /// detail 模式按 concept_id 精确取行，记为 exact。
+    pub matched_by: String,
+    /// 通道内相似度（exact/alias = 1.0；nearname = 名字相似分；
+    /// fulltext = query 在定义中的包含度，封顶 1）。
+    pub score: f64,
+}
+
+/// 概念检索结果（`not_found` 为 true 时 `hits` 恒空——零命中不抛错）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptSearchResults {
+    pub hits: Vec<ConceptSearchHit>,
+    pub not_found: bool,
+}
+
+/// 检索模式（工具入参 mode 的枚举面；serde kebab：search / detail）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConceptSearchMode {
+    Search,
+    Detail,
+}
+
 /// 定义审计报告（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
 /// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）的机械读数。
 #[derive(Debug, Clone, Serialize)]

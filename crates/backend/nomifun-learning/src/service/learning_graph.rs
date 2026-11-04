@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::learning_graph::concept_search;
+use crate::models::{ConceptSearchMode, ConceptSearchResults};
+
 /// The single implicit module every learning-graph course hangs its node
 /// lessons under (`learning_lessons.module_id` is NOT NULL). The graph UI
 /// never renders modules; this row only satisfies the relational shape.
@@ -4505,6 +4508,60 @@ impl LearningService {
             text.push_str(&pool_lines.join("\n"));
         }
         Ok(text)
+    }
+
+    /// 概念登记表只读检索（y03，内容面 `search_concepts` 工具的服务单源）：
+    /// 四通道 exact / alias / nearname / fulltext（近名机械单源在
+    /// [`crate::learning_graph::defnear`]），按 concept_id 去重取最高等级、
+    /// 截 top-5；零命中返回 `not_found: true` 不抛错。`detail` 按 concept_id
+    /// 取全定义 + 全部活跃别名（不受 top-5 限制），查无 = 404、缺 id = 400。
+    ///
+    /// **只读**：本方法只发 SELECT，登记表（及其 mtime 语义的 `updated_at`）
+    /// 零写侧——自查赋权不是新门，也不是写入口。
+    pub async fn search_concepts(
+        &self,
+        query: &str,
+        mode: ConceptSearchMode,
+        concept_id: Option<&str>,
+    ) -> Result<ConceptSearchResults, AppError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(AppError::BadRequest(
+                "search_concepts: query must not be empty".into(),
+            ));
+        }
+        match mode {
+            ConceptSearchMode::Search => {
+                let registry = self.registry_entries().await?;
+                Ok(concept_search::search_hits(&registry, query))
+            }
+            ConceptSearchMode::Detail => {
+                let concept_id = concept_id
+                    .map(str::trim)
+                    .filter(|concept_id| !concept_id.is_empty())
+                    .ok_or_else(|| {
+                        AppError::BadRequest(
+                            "search_concepts: detail mode requires concept_id".into(),
+                        )
+                    })?;
+                // 取行单源 = 既有的 `registry_entries`（deprecated=0、别名池按
+                // 行级 doc_version 解码——与 render_registry_excerpt 同口径）。
+                let entry = self
+                    .registry_entries()
+                    .await?
+                    .into_iter()
+                    .find(|entry| entry.concept_id == concept_id)
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "concept {concept_id} is absent from the registry"
+                        ))
+                    })?;
+                Ok(ConceptSearchResults {
+                    hits: vec![concept_search::detail_hit(&entry)],
+                    not_found: false,
+                })
+            }
+        }
     }
 
     // ── 已会声明（Declared Known，m2 / ADR-0032 移植）───────────────────────

@@ -598,6 +598,8 @@ async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
 #[cfg(test)]
 mod basis_tests;
 #[cfg(test)]
+mod concept_search_tests;
+#[cfg(test)]
 mod tests;
 
 use self::course::CourseKbSources;
