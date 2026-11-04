@@ -139,3 +139,7 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   merge commits（本波次内不重写历史）；合并回 `feat/learn0928` / 开 PR 前，按
   [docs/contributing/git-workflow.md](../../contributing/git-workflow.md)
   执行 `git fetch origin && git rebase origin/main` 线性化——历史届时统一整理。
+- 2026-11-04：code-review 修复合入——删 `learning_system_actions.ref_id` 与容量
+  反馈的 `feedback_id`/空 note 列、lesson→course 查询收成共享单份、清死成本门
+  i18n、`search_concepts` 注册表读加界、学习图工作区补超载徽标、y01 修补
+  service 测试、y06 评审清单落档（2c9e61e45）。
