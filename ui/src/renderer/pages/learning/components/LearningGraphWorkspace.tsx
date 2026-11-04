@@ -23,6 +23,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
 import { lessonStatusTagColors } from '../model';
 import { batchStatusMeta, buildSystemActionRows } from '../systemActions';
+import { overloadedBadgeCount } from '../capacityFeedback';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
@@ -359,6 +360,17 @@ const LearningGraphWorkspace: React.FC<{
               {t('learning.learningGraphBeta')}
             </Tag>
             {!detail.course.enabled && <CourseArchivedBadge />}
+            {/* 容量聚合（y07）：图课程同样可见「N 节超载」；0 = 零版面
+                （内容级纯读计数，不暴露任何用户的选择） */}
+            {overloadedBadgeCount(detail.overloaded_lessons) !== null && (
+              <Tooltip content={t('learning.capacityOverloadedHint')}>
+                <Tag color='orange' className='!mx-0 shrink-0'>
+                  {t('learning.capacityOverloadedCount', {
+                    count: detail.overloaded_lessons,
+                  })}
+                </Tag>
+              </Tooltip>
+            )}
           </div>
           {graph.goal.trim() !== '' && (
             <Paragraph className='!mb-0 !mt-4px text-t-secondary'>{graph.goal}</Paragraph>
