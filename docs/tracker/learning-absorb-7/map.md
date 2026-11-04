@@ -122,3 +122,8 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   去重取最高级截 top-5、零命中 `not_found: true` 不抛错，detail 按 id 取全
   定义 + 全部活跃别名；服务只发 SELECT（无新表/写入口），近名机械全复用
   `defnear`（cf020c022）。
+- 2026-11-04：y04 关闭——新增 `learning_system_actions` 窄表（写侧 fail-open，
+  维护 tick/手动修补挂载/生长终态各一行，忙拒/取消/零工作不写；物理列名
+  `trigger_source` 规避 TRIGGER 令牌，API 字段仍 `trigger`），growth 批行新增
+  `cancelled` 中性态；读端点按课程倒序 + limit，课程详情「系统动作」折叠节；
+  表数 124→125（d37d1f049）。
