@@ -217,7 +217,8 @@ provider 错误映射；分类只用学习侧已能看到的 `AppError` 变体�
     （KB 草稿恰 1 次、回退采样）。
 - 命令：`CARGO_TARGET_DIR=C:/Users/test/Desktop/work/cargo-target-absorb7-y02
   cargo test -p nomifun-learning`（600s 预算内完成）。
-  结果：**774 passed; 0 failed**（含既有回归）；doc-tests 0。
+  结果：**774 passed; 0 failed**（含既有回归）；doc-tests 0。合并集成分支
+  尖端 `6d7a23ac5`（y06 提示词批）后复跑：**777 passed; 0 failed**。
 - `cargo fmt -p nomifun-learning -- --check` 通过。
 
 **偏差 / 未做项**
@@ -237,6 +238,7 @@ provider 错误映射；分类只用学习侧已能看到的 `AppError` 变体�
   `stop_reason=cancelled`。
 - 未改 `nomifun-common` / `nomifun-ai-agent` / provider 错误映射；
   `git diff --stat` 仅 `crates/backend/nomifun-learning/**` 与票面文档。
-- 全量套件曾出现过一次与本票无关的既有抖动：
+- 全量套件偶发与本票无关的既有并行抖动（各一次）：
   `generation::triage::tests::triage_inventories_every_markdown_file_and_degrades_to_core_without_a_completer`
-  （文件系统清点并行抖动；单跑 3/3 绿，随后全量 774 绿）。
+  与 `service::tests::removal_advice_without_exact_match_stays_a_rejection`
+  ——单跑均绿（triage 单跑 3/3），随后全量复跑 774/777 全绿。
