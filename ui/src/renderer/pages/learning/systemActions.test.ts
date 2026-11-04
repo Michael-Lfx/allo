@@ -17,7 +17,6 @@ const action = (overrides: Partial<SystemActionView> = {}): SystemActionView => 
   basis: 'unconsumed=2 observations=0',
   result: 'done',
   reason: '',
-  ref_id: '7',
   actor_user_id: null,
   at: 2000,
   ...overrides,

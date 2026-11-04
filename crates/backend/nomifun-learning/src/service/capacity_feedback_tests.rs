@@ -173,8 +173,8 @@ async fn publish_persists_capacity_note_and_absent_note_clears_it() {
     assert_eq!(stored, None, "列上必须是 NULL，不是空串");
 }
 
-/// latest-wins：同用户同课时覆盖写、`feedback_id` 首写生成后不变；不同
-/// 用户互不可见（读回只给当前用户自己那一行）。
+/// latest-wins：同用户同课时覆盖写（首写时刻保留、updated_at 刷新）；
+/// 不同用户互不可见（读回只给当前用户自己那一行）。
 #[tokio::test]
 async fn capacity_feedback_is_per_user_latest_wins_and_not_shared() {
     let (service, pool, user_a, detail) = capacity_test_service().await;
@@ -196,11 +196,15 @@ async fn capacity_feedback_is_per_user_latest_wins_and_not_shared() {
         .await
         .unwrap();
     assert_eq!(first.choice, CapacityFeedbackChoice::Accept);
-    let first_id: String =
-        sqlx::query_scalar("SELECT feedback_id FROM learning_lesson_capacity_feedback")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let first_created: i64 = sqlx::query_scalar(
+        "SELECT created_at FROM learning_lesson_capacity_feedback \
+         WHERE user_id = ? AND lesson_id = ?",
+    )
+    .bind(user_a.as_str())
+    .bind(lesson_id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let second = service
         .record_capacity_feedback(&user_a, &lesson_id, "split")
@@ -213,12 +217,17 @@ async fn capacity_feedback_is_per_user_latest_wins_and_not_shared() {
             .await
             .unwrap();
     assert_eq!(rows, 1, "latest-wins：同键只留一行");
-    let same_id: String =
-        sqlx::query_scalar("SELECT feedback_id FROM learning_lesson_capacity_feedback")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(same_id, first_id, "覆盖不改首写身份");
+    let (same_created, updated_at): (i64, i64) = sqlx::query_as(
+        "SELECT created_at, updated_at FROM learning_lesson_capacity_feedback \
+         WHERE user_id = ? AND lesson_id = ?",
+    )
+    .bind(user_a.as_str())
+    .bind(lesson_id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(same_created, first_created, "覆盖不改首写时刻");
+    assert_eq!(updated_at, second.at, "覆盖刷新 updated_at");
     let view = service.lesson_detail(&user_a, &lesson_id).await.unwrap();
     assert_eq!(
         view.capacity_feedback.map(|feedback| feedback.choice),

@@ -1028,9 +1028,10 @@ ALTER TABLE learning_review_log ADD COLUMN algo TEXT;
 -- result：done | failed（`SystemActionResult`）。枚举集不设 DB CHECK
 -- （ADR-0015）：写侧严格、读侧宽容。
 -- basis：触发时的一句判据读数（unconsumed=2 pending_mount=1 stale=0 一类，
--- 写侧截断 ≤200 字）；reason：failed 原因（done 为空）；ref_id：关联对象
--- 的**引用不复制载荷**（growth = batch_id / repair = 修补审计行 id /
--- mount = 挂载行 id）；actor_user_id：仅手动动作的操作者（自动动作 NULL）。
+-- 写侧截断 ≤200 字）；reason：failed 原因（done 为空）；actor_user_id：仅
+-- 手动动作的操作者（自动动作 NULL）。**不设多态 ref 列**：动作簿只需要
+-- 「何时/哪门课/什么动作/成没成/为什么」，批次、审计行、挂载行的技术 id 不
+-- 跨表复制（data-and-identifier-standards §1；引用由各自主表的行自述）。
 -- 读侧按课程倒序（course_id, at）+ limit，见
 -- GET /api/learning/courses/{id}/system-actions。
 CREATE TABLE learning_system_actions (
@@ -1052,8 +1053,6 @@ CREATE TABLE learning_system_actions (
     basis         TEXT NOT NULL DEFAULT '',
     result        TEXT NOT NULL,
     reason        TEXT NOT NULL DEFAULT '',
-    -- 引用不复制载荷：批次/审计行/挂载行的业务或行标识；多态，不做逻辑引用。
-    ref_id        TEXT NOT NULL DEFAULT '',
     actor_user_id TEXT CHECK (
         actor_user_id IS NULL OR (
             length(actor_user_id) = 36
@@ -1082,18 +1081,13 @@ ALTER TABLE learning_lessons ADD COLUMN capacity_note TEXT;
 
 -- 二、per-user / per-lesson 三选一反馈（accept | extend | split，Rust 单源
 -- `CapacityFeedbackChoice`）。latest-wins：应用层 UPSERT on
--- (user_id, lesson_id)，DB 以 UNIQUE 兜底；`feedback_id` 首写生成、覆盖不改。
+-- (user_id, lesson_id)，DB 以 UNIQUE 兜底。**不设代理 id**（无外部引用方，
+-- 唯一键即业务身份），也不设自由文本列（v1 API 不写，恒空串属投机泛化）。
 -- 枚举无 DB CHECK（ADR-0015）：写侧严格、读侧宽容未知值。
 -- 零结算零置位：本表是纯留痕，不写 attempts/review/xp/progress/FSRS，不改
 -- status、不发 WS、不注入共享课时生成；聚合只按内容级计数（不泄露他人选择）。
 CREATE TABLE learning_lesson_capacity_feedback (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    feedback_id TEXT NOT NULL UNIQUE CHECK (
-        length(feedback_id) = 36
-        AND lower(feedback_id) = feedback_id
-        AND feedback_id GLOB '????????-????-7???-[89ab]???-????????????'
-        AND replace(feedback_id, '-', '') NOT GLOB '*[^0-9a-f]*'
-    ),
     user_id     TEXT NOT NULL CHECK (
         length(user_id) = 36
         AND lower(user_id) = user_id
@@ -1107,7 +1101,6 @@ CREATE TABLE learning_lesson_capacity_feedback (
         AND replace(lesson_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
     choice      TEXT NOT NULL,
-    note        TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
     UNIQUE (user_id, lesson_id)

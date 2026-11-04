@@ -10803,7 +10803,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         basis: String,
         result: String,
         reason: String,
-        ref_id: String,
         actor_user_id: Option<String>,
     }
 
@@ -10812,7 +10811,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         course: &LearningCourseId,
     ) -> Vec<SystemActionRow> {
         let rows = sqlx::query(
-            "SELECT action_id, kind, trigger_source, basis, result, reason, ref_id, \
+            "SELECT action_id, kind, trigger_source, basis, result, reason, \
                     actor_user_id \
              FROM learning_system_actions WHERE course_id = ? ORDER BY at DESC, id DESC",
         )
@@ -10828,7 +10827,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 basis: row.try_get("basis").unwrap(),
                 result: row.try_get("result").unwrap(),
                 reason: row.try_get("reason").unwrap(),
-                ref_id: row.try_get("ref_id").unwrap(),
                 actor_user_id: row.try_get("actor_user_id").unwrap(),
             })
             .collect()
@@ -10975,7 +10973,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             "basis 带回合判据读数：{}",
             repair.basis
         );
-        assert!(!repair.ref_id.is_empty(), "ref_id 关联修补审计行");
         let mount = rows
             .iter()
             .find(|row| row.kind == "maintenance_mount")
@@ -10988,12 +10985,95 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             "basis 带待挂读数：{}",
             mount.basis
         );
-        assert!(!mount.ref_id.is_empty(), "ref_id 关联挂载行");
 
         // 二回合零工作：不新增账本行。
         let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
         assert_eq!(report.idle, 1);
         assert_eq!(system_action_rows(&service, &course).await.len(), 2);
+    }
+
+    /// y01 修补路径：修补后全量复核里 L1 名字（含 `与`/`和`）只出
+    /// `gd.blocks.name_hint` 提示、不拒回合；L0 纯标点（`、`/`，`）仍硬拒，
+    /// 结构与审计零改动。与生成线的同一分工在 service 层再钉一次。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn repair_recheck_hints_l1_names_but_still_rejects_l0_marks() {
+        let l1_ops = r#"{"ops":[{"op":"rename_block","from":"块00","to":"双进程与窗口","reason":"依据留痕"}]}"#;
+        let (service, user_id, course) = seed_maintenance_course_with_structure(
+            1,
+            1,
+            ScriptedCompleter::new(l1_ops, false),
+            ledger_valid_structure(),
+        )
+        .await;
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "applied", "L1 名字只提示，不得拒回合");
+        let structure_raw: String =
+            sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+                .bind(course.as_str())
+                .fetch_one(service.pool_for_tests())
+                .await
+                .unwrap();
+        assert!(
+            structure_raw.contains("双进程与窗口"),
+            "L1 名字必须原样落库：{structure_raw}"
+        );
+        assert_eq!(
+            system_action_rows(&service, &course).await.len(),
+            1,
+            "applied 回合落一条 Done 账本行"
+        );
+
+        for (label, name) in [("顿号", "双进程、窗口"), ("逗号", "双进程，窗口")] {
+            let l0_ops = format!(
+                r#"{{"ops":[{{"op":"rename_block","from":"块00","to":"{name}","reason":"依据留痕"}}]}}"#
+            );
+            let (service, user_id, course) = seed_maintenance_course_with_structure(
+                1,
+                1,
+                ScriptedCompleter::new(l0_ops, false),
+                ledger_valid_structure(),
+            )
+            .await;
+            let before: String = sqlx::query_scalar(
+                "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            let error = service
+                .run_structure_repair(&user_id, &course, None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, AppError::UnprocessableEntity(_)),
+                "{label}（L0）必须拒回合，got {error:?}"
+            );
+            assert!(
+                error.to_string().contains("gd.blocks.one_name"),
+                "{label} 的拒因必须点名 one_name：{error}"
+            );
+            let after: String = sqlx::query_scalar(
+                "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            assert_eq!(before, after, "{label}：被拒回合不得改结构");
+            let audits: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_structure_repairs WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            assert_eq!(audits, 0, "{label}：被拒回合不落审计行");
+        }
     }
 
     /// noop（评估过、无 op）与 skipped（零 LLM）都是零工作：零账本行。
@@ -11080,7 +11160,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(system_action_rows(&service, &course).await.is_empty());
     }
 
-    /// 生长终态：applied → Done（ref_id = batch_id、basis 带就绪读数）；
+    /// 生长终态：applied → Done（basis 带就绪读数）；
     /// 真失败 → Failed（reason 如实）。取消在 mid-call 用例里钉住零行。
     #[tokio::test]
     async fn growth_ledger_records_done_and_failed_terminals() {
@@ -11100,15 +11180,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(rows[0].result, "done");
         assert!(rows[0].basis.contains("ready="), "{}", rows[0].basis);
         assert!(rows[0].reason.is_empty());
-        let batch_id: String = sqlx::query_scalar(
-            "SELECT batch_id FROM learning_growth_batches \
-             WHERE course_id = ? AND status = 'applied'",
-        )
-        .bind(&course_id)
-        .fetch_one(service.pool_for_tests())
-        .await
-        .unwrap();
-        assert_eq!(rows[0].ref_id, batch_id);
 
         // 真失败（结构门连拒耗尽预算）：Failed + reason。
         let (service, _knowledge, owner) = job_test_service().await;
@@ -11124,7 +11195,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].result, "failed");
         assert!(!rows[0].reason.is_empty(), "失败原因如实落账");
-        assert!(!rows[0].ref_id.is_empty(), "ref_id 关联失败批行");
     }
 
     /// 结算触发的生长（自动臂）落 trigger=settlement、无操作者。

@@ -24,7 +24,6 @@ pub(crate) struct NewSystemAction {
     pub basis: String,
     pub result: SystemActionResult,
     pub reason: String,
-    pub ref_id: String,
     pub actor_user_id: Option<UserId>,
 }
 
@@ -42,7 +41,6 @@ impl NewSystemAction {
             basis: String::new(),
             result,
             reason: String::new(),
-            ref_id: String::new(),
             actor_user_id: None,
         }
     }
@@ -56,12 +54,6 @@ impl NewSystemAction {
     /// failed 原因（done 保持空串）。
     pub(crate) fn reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = reason.into();
-        self
-    }
-
-    /// 关联对象引用（引用不复制载荷：batch_id / 审计行 id / 挂载行 id）。
-    pub(crate) fn ref_id(mut self, ref_id: impl Into<String>) -> Self {
-        self.ref_id = ref_id.into();
         self
     }
 
@@ -80,9 +72,9 @@ impl LearningService {
         let basis = truncate_action_text(&action.basis, 200);
         let inserted = sqlx::query(
             "INSERT INTO learning_system_actions \
-             (action_id, course_id, kind, trigger_source, basis, result, reason, ref_id, \
+             (action_id, course_id, kind, trigger_source, basis, result, reason, \
               actor_user_id, at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&action_id)
         .bind(action.course_id.as_str())
@@ -91,7 +83,6 @@ impl LearningService {
         .bind(&basis)
         .bind(action.result.as_str())
         .bind(&action.reason)
-        .bind(&action.ref_id)
         .bind(action.actor_user_id.as_ref().map(UserId::as_str))
         .bind(now_ms())
         .execute(&self.pool)
@@ -128,7 +119,7 @@ impl LearningService {
         }
         let limit = system_action_limit(Some(limit));
         let rows = sqlx::query(
-            "SELECT action_id, kind, trigger_source, basis, result, reason, ref_id, \
+            "SELECT action_id, kind, trigger_source, basis, result, reason, \
                     actor_user_id, at \
              FROM learning_system_actions WHERE course_id = ? \
              ORDER BY at DESC, id DESC LIMIT ?",
@@ -148,7 +139,6 @@ impl LearningService {
                     basis: row.try_get("basis").map_err(internal)?,
                     result: row.try_get("result").map_err(internal)?,
                     reason: row.try_get("reason").map_err(internal)?,
-                    ref_id: row.try_get("ref_id").map_err(internal)?,
                     actor_user_id: row.try_get("actor_user_id").map_err(internal)?,
                     at: row.try_get("at").map_err(internal)?,
                 })

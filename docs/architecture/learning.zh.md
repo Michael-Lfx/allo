@@ -241,7 +241,7 @@ sampling|source_plan`（门判定单源 `course_pipeline`），前端按声明�
 
 **数据形状**（`learning_system_actions`，基线 070 §13）：`action_id`（36 位
 UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_source` +
-`basis` + `result` + `reason` + `ref_id` + `actor_user_id` + `at`。
+`basis` + `result` + `reason` + `actor_user_id` + `at`。
 
 - `kind` ∈ `maintenance_repair | maintenance_mount | growth`；
   `trigger_source` ∈ `timer | manual | settlement | auto_refill`；
@@ -249,8 +249,9 @@ UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_sourc
   （`learning_graph::system_action`），DB 无 CHECK（ADR-0015），读侧宽容。
 - `basis` 是触发时的一句判据读数（如 `unconsumed=2 observations=0`、
   `pending_mount=1 stale=true`、`ready=0`），写侧截断 ≤200 字。
-- `reason` 只在 failed 时非空；`ref_id` 关联批次/审计行/挂载行——**引用
-  不复制载荷**（note/status 只有一处权威）。
+- `reason` 只在 failed 时非空。**不设 `ref_id` 一类的多态关联列**：动作簿
+  的读面只需"何时、哪门课、什么动作、成没成、为什么"，批次/审计行/挂载行
+  的技术 id 不跨表复制（data-and-identifier-standards §1）。
 - `actor_user_id` 只记手动动作的操作者；timer/settlement/auto_refill 为
   NULL（课程共享，账本不按用户过滤——他人的维护动作同样可见）。
 
@@ -261,7 +262,7 @@ UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_sourc
 2. `run_structure_repair` / `run_structure_mount`（手动包装 = manual，tick =
    timer）：成功 applied/mounted → Done；真失败 → Failed + reason；**
   同键忙拒（Conflict）与用户取消零行**。
-3. `kick_growth`：成功落库 → Done（ref_id = batch_id、basis = `ready=N`）；
+3. `kick_growth`：成功落库 → Done（basis = `ready=N`）；
    真失败 → Failed；取消零行；空手批（idle）零行。trigger 由调用方给：
    结算钩子 = settlement，POST grow 缺省 manual、前端自动补批
    `?trigger=auto_refill`。
@@ -294,12 +295,11 @@ UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_sourc
 
 - `learning_lessons.capacity_note`（TEXT，可空）：发布尾把生成期超容自报
   落库（trim 后为空 = 缺席 → 写 NULL 清旧值）；内容级共享元数据，旧行 NULL。
-- `learning_lesson_capacity_feedback`：`feedback_id`（36 位 UUIDv7 业务
-  身份）+ `user_id`（随用户 Cascade）+ `lesson_id`（随课时 Cascade）+
-  `choice`（`accept | extend | split`，Rust 单源
-  `CapacityFeedbackChoice`，DB 无 CHECK，写侧严格/读侧宽容）+ `note` +
-  时间戳；`UNIQUE(user_id, lesson_id)` = latest-wins（`feedback_id` 首写
-  生成、覆盖不改）。
+- `learning_lesson_capacity_feedback`：`user_id`（随用户 Cascade）+
+  `lesson_id`（随课时 Cascade）+ `choice`（`accept | extend | split`，Rust
+  单源 `CapacityFeedbackChoice`，DB 无 CHECK，写侧严格/读侧宽容）+ 时间戳；
+  `UNIQUE(user_id, lesson_id)` 既是 latest-wins 的键，也是本表的业务身份
+  ——不另设 `feedback_id`（无外部引用方，代理 id 属冗余）。
 
 **边界**：反馈是 per-user 留痕，课程内容是共享资产——不注入课时生成
 （多用户串味）；聚合只做内容级计数 `CourseDetail.overloaded_lessons`

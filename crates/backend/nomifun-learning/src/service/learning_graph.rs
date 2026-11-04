@@ -41,6 +41,11 @@ pub const MAINTENANCE_INTERVAL_MINUTES: std::ops::RangeInclusive<i64> = 30..=100
 /// `NOMI_LEARNING_AUTO_REFILL` 兜底（off = verdict 恒 Disabled）。
 pub const DEFAULT_AUTO_REFILL_ENABLED: bool = true;
 
+/// `search_concepts` 取行的硬上限（y03 评审）：登记表异常膨胀时保护单次工具
+/// 调用的成本与延迟；命中上限即截断并 warn。共享 `registry_entries()` 保持
+/// 无界（渲染/扩邻需要全集），detail 走 concept_id 精确查不受限。
+const SEARCH_REGISTRY_LIMIT: i64 = 500;
+
 /// 布尔偏好的宽容解析（bool / "true"|"1"|"yes" / 1|0 / 其它回退缺省）：
 /// maintenance 与 autoRefill 两个开关同式（k02 读侧纪律，坏值不报错）。
 fn parse_bool_pref(parsed: &serde_json::Value, default: bool) -> bool {
@@ -691,14 +696,7 @@ impl LearningService {
         .map_err(internal)?;
         let mounted = evaluated.iter().filter(|entry| !entry.blocks.is_empty()).count();
         let outside = evaluated.iter().filter(|entry| entry.blocks.is_empty()).count();
-        // y04：mounted = 终态 Done 行；ref_id 关联挂载行（引用不复制载荷）。
-        let mount_row_id: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM learning_structure_mounts WHERE course_id = ?")
-                .bind(course_id.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .ok()
-                .flatten();
+        // y04：mounted = 终态 Done 行。
         self.record_system_action(
             ledger_action(
                 course_id,
@@ -707,8 +705,7 @@ impl LearningService {
                 SystemActionResult::Done,
                 user_id,
             )
-            .basis(&ledger_basis)
-            .ref_id(mount_row_id.map(|id| id.to_string()).unwrap_or_default()),
+            .basis(&ledger_basis),
         )
         .await;
         task.finish_done(format!(
@@ -1122,7 +1119,7 @@ impl LearningService {
                     })
                 })
                 .collect();
-            let repair_row = sqlx::query(
+            let _ = sqlx::query(
                 "INSERT INTO learning_structure_repairs \
                  (ts, course_id, old_hash, new_hash, hash_version, result, ops_json, note) \
                  VALUES (?, ?, ?, ?, ?, 'applied', ?, ?)",
@@ -1143,7 +1140,7 @@ impl LearningService {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-            // y04：applied = 终态 Done 行；ref_id 关联本回合修补审计行。
+            // y04：applied = 终态 Done 行。
             self.record_system_action(
                 ledger_action(
                     course_id,
@@ -1152,8 +1149,7 @@ impl LearningService {
                     SystemActionResult::Done,
                     user_id,
                 )
-                .basis(&ledger_basis)
-                .ref_id(repair_row.last_insert_rowid().to_string()),
+                .basis(&ledger_basis),
             )
             .await;
         }
@@ -1814,8 +1810,7 @@ impl LearningService {
                             SystemActionResult::Done,
                             &engine.user_id,
                         )
-                        .basis(&ledger_basis)
-                        .ref_id(&applied.batch_id),
+                        .basis(&ledger_basis),
                     )
                     .await;
                 }
@@ -1856,7 +1851,7 @@ impl LearningService {
                         }),
                     );
                 } else {
-                    // y04：真失败 = Failed 终态行（ref_id = 失败批行）。
+                    // y04：真失败 = Failed 终态行。
                     self.record_system_action(
                         ledger_action(
                             course_id,
@@ -1866,8 +1861,7 @@ impl LearningService {
                             &engine.user_id,
                         )
                         .basis(&ledger_basis)
-                        .reason(error.to_string())
-                        .ref_id(&pending.batch_id),
+                        .reason(error.to_string()),
                     )
                     .await;
                     task.finish_failed(error.to_string());
@@ -4548,6 +4542,9 @@ impl LearningService {
     /// 登记表活跃条目（j04 复用通道的装配面）：canonical + 定义 + 活跃别名
     /// （退役不占）。deprecated = 0 单源口径。pub(super) 供服务侧投影测试
     /// （m11：deprecated 排除是扩邻匹配域的前置机械保证）。
+    ///
+    /// **无界**：渲染/扩邻需要全集，语义不动。检索工具有自己的有界取行
+    /// （[`Self::registry_entries_bounded`]）。
     pub(super) async fn registry_entries(
         &self,
     ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
@@ -4560,33 +4557,90 @@ impl LearningService {
         .map_err(internal)?;
         Ok(rows
             .into_iter()
-            .map(|(concept_id, canonical, definition, aliases_json, doc_version)| {
-                let records = if doc_version
-                    == crate::learning_graph::alias_records::ALIAS_DOC_VERSION
-                {
-                    crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
-                } else {
-                    tracing::warn!(
-                        concept_id,
-                        doc_version,
-                        "alias doc version unsupported; treating the alias pool as empty"
-                    );
-                    Vec::new()
-                };
-                crate::learning_graph::defnear::RegistryEntry {
-                    concept_id,
-                    canonical,
-                    definition,
-                    active_aliases: records
-                        .into_iter()
-                        .filter(|record| {
-                            record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
-                        })
-                        .map(|record| record.name)
-                        .collect(),
-                }
-            })
+            .map(Self::decode_registry_entry)
             .collect())
+    }
+
+    /// 检索专用的有界取行（y03 评审）：`ORDER BY canonical LIMIT ?`，上限
+    /// [`SEARCH_REGISTRY_LIMIT`]。命中上限即截断（`warn!` 留痕），读侧不报错
+    /// ——工具的 top-5 输出本就只需要有界候选；detail 走 concept_id 精确查，
+    /// 不受本上限影响。
+    pub(super) async fn registry_entries_bounded(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
+        let limit = limit.clamp(1, SEARCH_REGISTRY_LIMIT);
+        let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT concept_id, canonical, definition, aliases_json, doc_version \
+             FROM learning_concept_registry WHERE deprecated = 0 \
+             ORDER BY canonical LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        if rows.len() as i64 >= limit {
+            tracing::warn!(
+                limit,
+                "concept registry search read hit the row cap; candidate set may be truncated"
+            );
+        }
+        Ok(rows
+            .into_iter()
+            .map(Self::decode_registry_entry)
+            .collect())
+    }
+
+    /// 按 concept_id 精确取一行（deprecated = 0；detail 模式专用，不受检索
+    /// 上限影响）。
+    async fn registry_entry_by_id(
+        &self,
+        concept_id: &str,
+    ) -> Result<Option<crate::learning_graph::defnear::RegistryEntry>, AppError> {
+        let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT concept_id, canonical, definition, aliases_json, doc_version \
+             FROM learning_concept_registry WHERE deprecated = 0 AND concept_id = ?",
+        )
+        .bind(concept_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(Self::decode_registry_entry))
+    }
+
+    /// 登记表行 → 活跃条目（别名池按行级 `doc_version` 解码；未知代际降级
+    /// 为空池 + warn——render_registry_excerpt / 检索同口径）。
+    fn decode_registry_entry(
+        (concept_id, canonical, definition, aliases_json, doc_version): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ),
+    ) -> crate::learning_graph::defnear::RegistryEntry {
+        let records = if doc_version == crate::learning_graph::alias_records::ALIAS_DOC_VERSION {
+            crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
+        } else {
+            tracing::warn!(
+                concept_id,
+                doc_version,
+                "alias doc version unsupported; treating the alias pool as empty"
+            );
+            Vec::new()
+        };
+        crate::learning_graph::defnear::RegistryEntry {
+            concept_id,
+            canonical,
+            definition,
+            active_aliases: records
+                .into_iter()
+                .filter(|record| {
+                    record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
+                })
+                .map(|record| record.name)
+                .collect(),
+        }
     }
 
     /// 花名册：每节点一行的紧凑文本（状态 | 标题 | teaches | assumes）。
@@ -4777,7 +4831,7 @@ impl LearningService {
         }
         match mode {
             ConceptSearchMode::Search => {
-                let registry = self.registry_entries().await?;
+                let registry = self.registry_entries_bounded(SEARCH_REGISTRY_LIMIT).await?;
                 Ok(concept_search::search_hits(&registry, query))
             }
             ConceptSearchMode::Detail => {
@@ -4789,13 +4843,11 @@ impl LearningService {
                             "search_concepts: detail mode requires concept_id".into(),
                         )
                     })?;
-                // 取行单源 = 既有的 `registry_entries`（deprecated=0、别名池按
-                // 行级 doc_version 解码——与 render_registry_excerpt 同口径）。
+                // detail 按 concept_id 精确取行（deprecated=0、别名池按行级
+                // doc_version 解码）——不受 search 取行上限影响。
                 let entry = self
-                    .registry_entries()
+                    .registry_entry_by_id(concept_id)
                     .await?
-                    .into_iter()
-                    .find(|entry| entry.concept_id == concept_id)
                     .ok_or_else(|| {
                         AppError::NotFound(format!(
                             "concept {concept_id} is absent from the registry"

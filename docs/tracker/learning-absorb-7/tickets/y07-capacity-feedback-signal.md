@@ -216,6 +216,15 @@ part_of: ../map.md
   过滤；课时无墓碑列）。
 - `note` 列按票面建表保留，但当前 API 不写（恒空串）——本票只有三选一，
   自由文本留作未来扩展。
+- **评审修复（2026-11-04）**：删除 `feedback_id` 与 `note` 两列。本表无外部
+  引用方，`UNIQUE(user_id, lesson_id)` 已是业务身份，代理 UUID 列冗余；
+  `note` 恒写空串属 Speculative Generality。表本身保留，表数仍 126；契约
+  注册（identity / NON_REFERENCE）与迁移测试同步收缩。
+- **评审修复（2026-11-04，可见性）**：`CourseDetail.overloaded_lessons` 聚合
+  此前只在传统课程工作区呈「N 节超载」徽标；学习图课程走
+  `LearningGraphWorkspace`，同一聚合不可见。该组件已持有 `CourseDetail`，
+  直接在标题行复用 `overloadedBadgeCount` 与既有 i18n 键（0 = 零版面），
+  不新增查询、不新增死键。
 - 真机 smoke（生成带 `capacity_note` → 课时页呈卡 → 重进回显 → 聚合 +1，
   `EXIT=0`）未在本 worktree 执行（需真实 provider 凭据与串行环境）——
   **留波次真机验收**。

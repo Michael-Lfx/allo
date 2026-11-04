@@ -55,7 +55,7 @@ async fn system_actions_row_defaults_and_result_set() {
     insert_action(&pool, ACTION_ID, "done").await.unwrap();
 
     let row = sqlx::query(
-        "SELECT basis, reason, ref_id, actor_user_id, at FROM learning_system_actions \
+        "SELECT basis, reason, actor_user_id, at FROM learning_system_actions \
          WHERE action_id = ?",
     )
     .bind(ACTION_ID)
@@ -64,7 +64,6 @@ async fn system_actions_row_defaults_and_result_set() {
     .unwrap();
     assert_eq!(row.get::<String, _>("basis"), "");
     assert_eq!(row.get::<String, _>("reason"), "");
-    assert_eq!(row.get::<String, _>("ref_id"), "");
     assert_eq!(row.get::<Option<String>, _>("actor_user_id"), None);
     assert_eq!(row.get::<i64, _>("at"), 2000);
 
@@ -111,12 +110,15 @@ async fn system_actions_course_index_is_the_read_side_index() {
         "basis",
         "result",
         "reason",
-        "ref_id",
         "actor_user_id",
         "at",
     ] {
         assert!(names.contains(&expected), "missing column {expected}: {names:?}");
     }
+    assert!(
+        !names.contains(&"ref_id"),
+        "ref_id 是对挂载/修补/批次行的技术 id 复制（data-and-identifier-standards §1）——不得回填：{names:?}"
+    );
 
     // 读侧按课程倒序：索引前两列 = (course_id, at)。
     let indexed: Vec<String> = sqlx::query_scalar(

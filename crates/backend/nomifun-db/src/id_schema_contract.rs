@@ -182,7 +182,6 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
-    ("learning_lesson_capacity_feedback", "feedback_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     ("learning_quiz_rounds", "round_id"),
@@ -299,7 +298,6 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
-    ("learning_lesson_capacity_feedback", "feedback_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     // quiz 回合的身份列（基线 070 §7，原 migration 084）：回合行的业务主
@@ -320,10 +318,9 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     // identifiers: the XP ledger is append-only truth and never chases the
     // lifetime of the node it settled.
     ("learning_xp_events", "event_id"),
-    // 系统动作簿（基线 070 §13，y04）：本行业务身份 + 多态关联引用
-    //（growth=batch_id / repair=审计行 id / mount=挂载行 id，引用不复制载荷）。
+    // 系统动作簿（基线 070 §13，y04）：action_id 是本行业务身份；动作对象
+    //（批次/审计行/挂载行）的技术 id 不跨表复制，故无多态引用列。
     ("learning_system_actions", "action_id"),
-    ("learning_system_actions", "ref_id"),
     ("linked_devices", "linked_device_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),

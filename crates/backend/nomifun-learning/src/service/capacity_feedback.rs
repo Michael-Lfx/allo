@@ -37,7 +37,8 @@ impl LearningService {
     ///
     /// 校验顺序：choice 写侧严格（空/未知 → 400）→ 课时存在 + 用户已选课
     /// （与课时生成入口同一 404 口径）。**不**按需创建 enrollment——反馈是
-    /// 旁路留痕，不得顺带写进度/选课面。`feedback_id` 首写生成，覆盖不改。
+    /// 旁路留痕，不得顺带写进度/选课面。身份 = `(user_id, lesson_id)`；
+    /// 覆盖只改 choice/updated_at。
     pub async fn record_capacity_feedback(
         &self,
         user_id: &UserId,
@@ -47,24 +48,8 @@ impl LearningService {
         let choice = CapacityFeedbackChoice::try_from_str(choice.trim()).ok_or_else(|| {
             AppError::BadRequest("choice must be accept, extend or split".into())
         })?;
-        let course_id: String = sqlx::query_scalar(
-            "SELECT m.course_id FROM learning_modules m \
-             JOIN learning_lessons l ON l.module_id = m.module_id \
-             WHERE l.lesson_id = ?",
-        )
-        .bind(lesson_id.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
-        let enrolled: Option<String> = sqlx::query_scalar(
-            "SELECT enrollment_id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
-        )
-        .bind(user_id.as_str())
-        .bind(&course_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?;
+        let course_id = self.course_id_for_lesson(lesson_id).await?;
+        let enrolled = self.enrollment_id_for(user_id, &course_id).await?;
         if enrolled.is_none() {
             return Err(AppError::NotFound(format!("learning lesson {lesson_id}")));
         }
@@ -72,12 +57,11 @@ impl LearningService {
         let now = now_ms();
         sqlx::query(
             "INSERT INTO learning_lesson_capacity_feedback \
-             (feedback_id, user_id, lesson_id, choice, note, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, '', ?, ?) \
+             (user_id, lesson_id, choice, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?) \
              ON CONFLICT(user_id, lesson_id) DO UPDATE SET \
                choice = excluded.choice, updated_at = excluded.updated_at",
         )
-        .bind(generate_id())
         .bind(user_id.as_str())
         .bind(lesson_id.as_str())
         .bind(choice.as_str())

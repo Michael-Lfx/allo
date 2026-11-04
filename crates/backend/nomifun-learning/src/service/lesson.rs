@@ -472,15 +472,13 @@ impl LearningService {
         grounding
     }
 
-    /// Full lesson view for one lesson, including the sectioned body. The
-    /// course-detail catalog deliberately omits section bodies (a 200-node
-    /// graph course would carry hundreds of kilobytes), so the frontend
-    /// fetches them here when the learner actually opens a lesson.
-    pub async fn lesson_detail(
+    /// 课时所属课程（module 归属的单源查询）。课时不存在 → 404
+    /// `learning lesson {id}`；课时详情的选课校验与容量反馈的课时校验共用
+    /// 这一口径，避免同一 JOIN 查询散落多处。
+    pub(super) async fn course_id_for_lesson(
         &self,
-        user_id: &UserId,
         lesson_id: &LearningLessonId,
-    ) -> Result<LessonView, AppError> {
+    ) -> Result<LearningCourseId, AppError> {
         let course_id: String = sqlx::query_scalar(
             "SELECT m.course_id FROM learning_modules m \
              JOIN learning_lessons l ON l.module_id = m.module_id \
@@ -491,7 +489,19 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
-        let course_id = parse_id::<LearningCourseId>(course_id)?;
+        parse_id(course_id)
+    }
+
+    /// Full lesson view for one lesson, including the sectioned body. The
+    /// course-detail catalog deliberately omits section bodies (a 200-node
+    /// graph course would carry hundreds of kilobytes), so the frontend
+    /// fetches them here when the learner actually opens a lesson.
+    pub async fn lesson_detail(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+    ) -> Result<LessonView, AppError> {
+        let course_id = self.course_id_for_lesson(lesson_id).await?;
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         let mut view = self.lesson_view(lesson_id, enrollment.as_ref()).await?;
         // 容量反馈回显只属于当前用户（per-user 留痕；其他视图恒 None）。
