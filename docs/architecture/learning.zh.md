@@ -117,8 +117,10 @@ assumes 概念 + 跨课程教师节点摘要 + 下游禁止清单（概念网口
 （中断 = 断 HTTP，批事务原子落库 = 零落库；结构快照写前检查 = 零快照）；
 大纲 agent 循环经 `CancellableProvider`（token 化）逐请求边界与流中生效；
 课时内容循环未接 token（ADR-0004 显式差异：断开请求即中断，远程取消如实
-拒绝）。begin/finish 观测旁路 JSONL 落 `observation/learning-tasks.jsonl`
-（写失败降级）。生长循环的重试机制（二轮 t1）：同指纹早停（连败两次即停、
+拒绝）。begin/finish **两型**观测旁路 JSONL 落
+`observation/learning-tasks.jsonl`（纯调试面：无读 API、无前端消费、写失败
+降级——终态留痕看「学习系统动作簿」，不是本文件）。生长循环的重试机制
+（二轮 t1）：同指纹早停（连败两次即停、
 调用数 2 非 3）+「未点名被改」机械守卫（豁免早停 + 原地重试恰一次不占轮
 预算）+ 重裁出口容量定向打回（`ng.batch.redraft_capacity`）；smoke 增
 `attempts_used`/`stop_reason` 读数。
@@ -188,13 +190,18 @@ kind 恢复 050 九值全集；概念登记表 / 概念网边
 课时难度 / `samples_meta_json` / `source_kb_ids` / `source_paths_json` /
 `enabled` / `course_source_plan_json` 等列演进；别名结构化记录；XP 结算
 账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表
-（ADR-0012）；quiz 回合记录表。来源计划信封的契约见
+（ADR-0012）；quiz 回合记录表；系统动作簿 `learning_system_actions`
+（y04，§13）；节点容量反馈 `learning_lessons.capacity_note` +
+`learning_lesson_capacity_feedback`（y07，§14）。来源计划信封的契约见
 [docs/contracts/learning-course-source-plan.md](../contracts/learning-course-source-plan.md)）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/状态/取消/删除/标签/注册/诊断）、
 `/api/learning/courses/{id}/graph/grow|history|concepts`
-（生长/学习记录/概念表）、
+（生长/学习记录/概念表；grow 可选 `?trigger=auto_refill`，只影响动作簿
+触发源标签，缺省 manual）、
+`/api/learning/courses/{id}/system-actions?limit=`（系统动作簿读侧：按课程
+倒序，缺省 50、上限 200；课程不存在/软删 404，归档课仍可读，y04）、
 `/api/learning/courses/{id}/graph/structure`（结构读侧投影：200 恒答、
 `structure: null` = 未生成；软删/不存在 404；含挂载三态投影 `mounts`）与
 `.../graph/structure/regenerate|mount|repair`（重跑生成 / 挂载回合 /
@@ -205,7 +212,9 @@ j05）、
 growth/structure/structure_mount/structure_repair/outline/lesson；旧
 `course-jobs*` 端点随 `learning_course_jobs` 表退役，x02）、
 `/api/learning/lessons/{id}`（详情按需加载）、
-`/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
+`/api/learning/lessons/{id}/progress|generate|activities*`、
+`/api/learning/lessons/{id}/capacity-feedback`（容量反馈 latest-wins 留痕，
+y07）、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`（j05 起按 XP 口径
 锁定）、
 `/api/learning/stats/calendar`、`/api/learning/stats/memory`（记忆健康
@@ -225,6 +234,84 @@ started/publishing/completed/failed 语义不变）。**phase 取值单源** =
 sampling|source_plan`（门判定单源 `course_pipeline`），前端按声明字段选步骤条、
 无字段时退回 triage 嗅探（滚动部署兜底）。
 
+## 学习系统动作簿（y04）
+
+吸收 learnhub `ActionRecord`（main@22d016d）的**语义**，不搬 JSONL 单文件
+账本/全档扫描：学习图课程上的自主/后台动作各留一条**终态**行。
+
+**数据形状**（`learning_system_actions`，基线 070 §13）：`action_id`（36 位
+UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_source` +
+`basis` + `result` + `reason` + `actor_user_id` + `at`。
+
+- `kind` ∈ `maintenance_repair | maintenance_mount | growth`；
+  `trigger_source` ∈ `timer | manual | settlement | auto_refill`；
+  `result` ∈ `done | failed`。三组枚举是 Rust 单源
+  （`learning_graph::system_action`），DB 无 CHECK（ADR-0015），读侧宽容。
+- `basis` 是触发时的一句判据读数（如 `unconsumed=2 observations=0`、
+  `pending_mount=1 stale=true`、`ready=0`），写侧截断 ≤200 字。
+- `reason` 只在 failed 时非空。**不设 `ref_id` 一类的多态关联列**：动作簿
+  的读面只需"何时、哪门课、什么动作、成没成、为什么"，批次/审计行/挂载行
+  的技术 id 不跨表复制（data-and-identifier-standards §1）。
+- `actor_user_id` 只记手动动作的操作者；timer/settlement/auto_refill 为
+  NULL（课程共享，账本不按用户过滤——他人的维护动作同样可见）。
+
+**写点清单**（全部 fail-open：写失败只 `tracing::warn!`，永不阻断动作）：
+
+1. `run_maintenance_tick`：每课每次修补/挂载终态一行（trigger=timer）；
+   桩数据为 `unconsumed/observations` 与 `pending_mount/stale` 读数。
+2. `run_structure_repair` / `run_structure_mount`（手动包装 = manual，tick =
+   timer）：成功 applied/mounted → Done；真失败 → Failed + reason；**
+  同键忙拒（Conflict）与用户取消零行**。
+3. `kick_growth`：成功落库 → Done（basis = `ready=N`）；
+   真失败 → Failed；取消零行；空手批（idle）零行。trigger 由调用方给：
+   结算钩子 = settlement，POST grow 缺省 manual、前端自动补批
+   `?trigger=auto_refill`。
+
+**零工作不造档案**：修补 noop/skipped、挂载 skipped、生长 idle 都不落账本
+（评估过但没发生的动作不是终态）。**与相邻状态机的边界**：
+
+- 进行中看 generation task 注册表/任务 pill（内存：`running/queued`）；
+  终态看动作簿。`learning-tasks.jsonl` 仍是**只有 begin/finish 两型**的
+  调试观测旁路（无读 API、无前端消费），与账本无读写关系。
+- `learning_growth_batches.status` 是批行状态机：`pending | applied |
+  failed | cancelled`。**取消是中性终态**——y04 起取消写 `cancelled` 且
+  零账本行，真失败才写 `failed`；历史取消行（旧版本写下的 failed）不回填，
+  如实记档。
+- `learning_structure_repairs` 审计行只在**应用了 op** 的回合落一行
+  （applied）；noop/skipped 不落行——与动作簿的 Done 行一一对应，
+  Failed 行没有审计行（结构未改动）。
+
+读侧 `GET /api/learning/courses/{id}/system-actions?limit=`：按 `at DESC`
+（同毫秒按行 id 倒序）截断，缺省 50 / 上限 200；课程不存在/软删 404，归档
+课仍可读；结构化 info 日志带 `course_id/limit/returned`。
+
+## 节点容量反馈信号（y07）
+
+吸收 learnhub `EstFeedbackChoice` 的**语义**（main@22d016d #194），不吸收
+`extend→重生成` / `split→拆节` 的自动执行（allo 的 est 同时是内容尺寸、XP
+基数与水位，反馈不得改 est）。
+
+**数据形状**（基线 070 §14）：
+
+- `learning_lessons.capacity_note`（TEXT，可空）：发布尾把生成期超容自报
+  落库（trim 后为空 = 缺席 → 写 NULL 清旧值）；内容级共享元数据，旧行 NULL。
+- `learning_lesson_capacity_feedback`：`user_id`（随用户 Cascade）+
+  `lesson_id`（随课时 Cascade）+ `choice`（`accept | extend | split`，Rust
+  单源 `CapacityFeedbackChoice`，DB 无 CHECK，写侧严格/读侧宽容）+ 时间戳；
+  `UNIQUE(user_id, lesson_id)` 既是 latest-wins 的键，也是本表的业务身份
+  ——不另设 `feedback_id`（无外部引用方，代理 id 属冗余）。
+
+**边界**：反馈是 per-user 留痕，课程内容是共享资产——不注入课时生成
+（多用户串味）；聚合只做内容级计数 `CourseDetail.overloaded_lessons`
+（`capacity_note` trim 后非空的活跃课时数），个人选择只随 lesson detail
+返回本人那一行。**零结算零置位**：不写 attempts/review/xp/progress/FSRS、
+不改课时 status、不发 WS、不登记任务。
+
+HTTP 面：`POST /api/learning/lessons/{id}/capacity-feedback`（body
+`{choice}`，响应 saved view；空/未知 choice 400，课时不存在/未选课 404；
+不新增 GET——回显随 `GET /api/learning/lessons/{id}` 的
+`capacity_feedback` 读回）。
+
 ## 前端
 
 `ui/src/renderer/pages/learning/`：CourseWorkspace（分节 stepper、按需拉取
@@ -235,7 +322,10 @@ LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
 四视图：学习 / 学习记录批次时间线 / 概念表 / **结构图**——思维导图、关系
 图谱（dagre 分层、assumes=门方向反转）、学习路线（主干子图 + 传递闭包自动
 补前导）、矩阵；j08/j09 起结构图带挂载三态段（三态计数/stale 显影/已挂清
-单/观察标签）与挂载/修补双入口；投影非权威标注收敛在详情层与页脚）、
+单/观察标签）与挂载/修补双入口；y04 起学习记录顶部带可折叠「系统动作」节
+（时间+类型+触发源+basis+结果徽标，失败红色 `role=alert` 带 reason，空态
+「暂无系统动作」），批行 `cancelled` 用中性灰 tag、`failed` 仍是红色失败；
+投影非权威标注收敛在详情层与页脚）、
 CreateCourseDialog（学习图单步向导：目标 + 可选程度/基础声明）、
 ReviewSession、XpPanel（今日 XP 卡 + 进度尺 + 84 格 XP 日
 历，j06 打卡退役接管）、MemoryHealthPanel（复习横幅下的记忆健康折叠条）、

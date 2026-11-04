@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::learning_graph::concept_search;
+use crate::models::{ConceptSearchMode, ConceptSearchResults};
+
 /// The single implicit module every learning-graph course hangs its node
 /// lessons under (`learning_lessons.module_id` is NOT NULL). The graph UI
 /// never renders modules; this row only satisfies the relational shape.
@@ -37,6 +40,11 @@ pub const MAINTENANCE_INTERVAL_MINUTES: std::ops::RangeInclusive<i64> = 30..=100
 /// 自动补批设置缺省（m10）：`learning.autoRefillEnabled` 缺省开——环境闸
 /// `NOMI_LEARNING_AUTO_REFILL` 兜底（off = verdict 恒 Disabled）。
 pub const DEFAULT_AUTO_REFILL_ENABLED: bool = true;
+
+/// `search_concepts` 取行的硬上限（y03 评审）：登记表异常膨胀时保护单次工具
+/// 调用的成本与延迟；命中上限即截断并 warn。共享 `registry_entries()` 保持
+/// 无界（渲染/扩邻需要全集），detail 走 concept_id 精确查不受限。
+const SEARCH_REGISTRY_LIMIT: i64 = 500;
 
 /// 布尔偏好的宽容解析（bool / "true"|"1"|"yes" / 1|0 / 其它回退缺省）：
 /// maintenance 与 autoRefill 两个开关同式（k02 读侧纪律，坏值不报错）。
@@ -405,11 +413,33 @@ impl LearningService {
     /// 挂到结构块（导航事实）。显式命令触发、单课串行（slot 锁）、可取消；
     /// 待挂集空 = skipped（零 LLM 零写）；落盘 = 挂载行单行原子覆盖
     /// （merge upsert：本轮替换、未评估保留、孤儿清出）。
+    ///
+    /// y04：默认 manual 触发包装（路由/显式命令）；维护 tick 走
+    /// [`Self::run_structure_mount_with_trigger`] 传 `timer`。
     pub async fn run_structure_mount(
         &self,
         user_id: &UserId,
         course_id: &LearningCourseId,
         model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<crate::models::MountRoundSummary, AppError> {
+        self.run_structure_mount_with_trigger(
+            user_id,
+            course_id,
+            model_override,
+            SystemActionTrigger::Manual,
+        )
+        .await
+    }
+
+    /// 结构挂载回合（trigger 显式版）：终态写一条系统动作账——mounted = Done，
+    /// 真失败 = Failed；skipped（零工作）、同键忙拒/任务键在途（Conflict）与
+    /// 用户取消都零行。账本 fail-open，写失败不阻断回合。
+    pub async fn run_structure_mount_with_trigger(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        model_override: Option<(&ProviderId, &str)>,
+        trigger: SystemActionTrigger,
     ) -> Result<crate::models::MountRoundSummary, AppError> {
         use crate::learning_graph::mounting;
         self.require_live_graph_course(course_id).await?;
@@ -528,6 +558,8 @@ impl LearningService {
         } else {
             mounting::pending_nodes(&node_titles, &existing, &block_slugs)
         };
+        // y04 账本判据读数（终态行 only；skipped 不落账）。
+        let ledger_basis = format!("pending_mount={} stale={stale}", pending.len());
         if pending.is_empty() {
             task.finish_done("挂载跳过：无待挂节点");
             self.emit_graph_event(
@@ -599,6 +631,19 @@ impl LearningService {
                         serde_json::json!({ "phase": crate::events::phase::CANCELLED }),
                     );
                 } else {
+                    // y04：真失败 = Failed 终态行（取消零行）。
+                    self.record_system_action(
+                        ledger_action(
+                            course_id,
+                            SystemActionKind::MaintenanceMount,
+                            trigger,
+                            SystemActionResult::Failed,
+                            user_id,
+                        )
+                        .basis(&ledger_basis)
+                        .reason(error.to_string()),
+                    )
+                    .await;
                     task.finish_failed(error.to_string());
                     self.emit_graph_event(
                         course_id,
@@ -651,6 +696,18 @@ impl LearningService {
         .map_err(internal)?;
         let mounted = evaluated.iter().filter(|entry| !entry.blocks.is_empty()).count();
         let outside = evaluated.iter().filter(|entry| entry.blocks.is_empty()).count();
+        // y04：mounted = 终态 Done 行。
+        self.record_system_action(
+            ledger_action(
+                course_id,
+                SystemActionKind::MaintenanceMount,
+                trigger,
+                SystemActionResult::Done,
+                user_id,
+            )
+            .basis(&ledger_basis),
+        )
+        .await;
         task.finish_done(format!(
             "挂载完成：{}/{} 挂入块，{} 结构外",
             mounted,
@@ -683,11 +740,33 @@ impl LearningService {
     /// 不写盘）；ops 应用后 gd.* 全量重过零放宽 → 结构快照原子写 → 修补审
     /// 计行落表。**级联口径（ADR-0017）**：本回合不动挂载——hash 变即既有
     /// 挂载待重评估（mounts_stale），下回合全量重挂，不建逐 op 跟迁。
+    ///
+    /// y04：默认 manual 触发包装（路由/显式命令）；维护 tick 走
+    /// [`Self::run_structure_repair_with_trigger`] 传 `timer`。
     pub async fn run_structure_repair(
         &self,
         user_id: &UserId,
         course_id: &LearningCourseId,
         model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<crate::models::StructureRepairSummary, AppError> {
+        self.run_structure_repair_with_trigger(
+            user_id,
+            course_id,
+            model_override,
+            SystemActionTrigger::Manual,
+        )
+        .await
+    }
+
+    /// 结构修补回合（trigger 显式版）：终态写一条系统动作账——applied =
+    /// Done，真失败 = Failed；noop/skipped（零工作）、同键忙拒/任务键在途
+    /// （Conflict）与用户取消都零行。账本 fail-open，写失败不阻断回合。
+    pub async fn run_structure_repair_with_trigger(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        model_override: Option<(&ProviderId, &str)>,
+        trigger: SystemActionTrigger,
     ) -> Result<crate::models::StructureRepairSummary, AppError> {
         use crate::learning_graph::structure_ops;
         self.require_live_graph_course(course_id).await?;
@@ -828,6 +907,13 @@ impl LearningService {
                 .join("\n")
         };
 
+        // y04 账本判据读数（终态行 only；skipped/noop 不落账）。
+        let ledger_basis = format!(
+            "unconsumed={} observations={}",
+            finding_rows.len(),
+            observations.len()
+        );
+
         // 触发门槛：皆空 = skipped（零 LLM 零写）。
         if finding_rows.is_empty() && observations.is_empty() {
             task.finish_done("修补跳过：无留痕与观察");
@@ -896,6 +982,19 @@ impl LearningService {
                         serde_json::json!({ "phase": crate::events::phase::CANCELLED }),
                     );
                 } else {
+                    // y04：真失败 = Failed 终态行（取消零行）。
+                    self.record_system_action(
+                        ledger_action(
+                            course_id,
+                            SystemActionKind::MaintenanceRepair,
+                            trigger,
+                            SystemActionResult::Failed,
+                            user_id,
+                        )
+                        .basis(&ledger_basis)
+                        .reason(error.to_string()),
+                    )
+                    .await;
                     task.finish_failed(error.to_string());
                     self.emit_graph_event(
                         course_id,
@@ -927,25 +1026,64 @@ impl LearningService {
                 Ok(cascade) => cascade,
                 Err(error) => {
                     let message = format!("修补意图无法应用（结构与审计均未改动）：{error}");
+                    // y04：真失败（LLM 已跑、意图应用不了）= Failed 终态行。
+                    self.record_system_action(
+                        ledger_action(
+                            course_id,
+                            SystemActionKind::MaintenanceRepair,
+                            trigger,
+                            SystemActionResult::Failed,
+                            user_id,
+                        )
+                        .basis(&ledger_basis)
+                        .reason(&message),
+                    )
+                    .await;
                     task.finish_failed(message.clone());
                     return Err(AppError::UnprocessableEntity(message));
                 }
             };
-            // st.ops.apply：gd.* 全量重过零放宽——任一违规拒整回合。
+            // st.ops.apply：gd.* 全量重过零放宽——任一**红条**拒整回合。
+            // y01：L1 名字形态只出 `gd.blocks.name_hint` 警告（不阻断），与
+            // learnhub 维护面同款——这里只留读数，L0 纯标点仍硬拒。
             let mut violations = crate::learning_graph::structure_contract::validate_structure(&candidate);
             violations.extend(crate::learning_graph::structure_contract::reconcile_doors(
                 &candidate,
                 &terrain,
             ));
+            let name_hints = violations
+                .iter()
+                .filter(|item| item.code == "gd.blocks.name_hint")
+                .count();
+            if name_hints > 0 {
+                tracing::info!(
+                    course = course_id.as_str(),
+                    name_hints,
+                    "structure repair name hints (non-blocking)"
+                );
+            }
             let red: Vec<_> = violations.iter().filter(|item| !item.warning).collect();
             if !red.is_empty() {
                 let owned: Vec<crate::learning_graph::structure_contract::ContractViolation> =
                     red.into_iter().cloned().collect();
                 let report = crate::learning_graph::structure_contract::format_violations(&owned);
-                task.finish_failed(report.clone());
-                return Err(AppError::UnprocessableEntity(format!(
+                let message = format!(
                     "修补后的结构未通过全量复核（结构与审计均未改动）：\n{report}"
-                )));
+                );
+                self.record_system_action(
+                    ledger_action(
+                        course_id,
+                        SystemActionKind::MaintenanceRepair,
+                        trigger,
+                        SystemActionResult::Failed,
+                        user_id,
+                    )
+                    .basis(&ledger_basis)
+                    .reason(&message),
+                )
+                .await;
+                task.finish_failed(report.clone());
+                return Err(AppError::UnprocessableEntity(message));
             }
             (candidate, cascade)
         };
@@ -981,7 +1119,7 @@ impl LearningService {
                     })
                 })
                 .collect();
-            sqlx::query(
+            let _ = sqlx::query(
                 "INSERT INTO learning_structure_repairs \
                  (ts, course_id, old_hash, new_hash, hash_version, result, ops_json, note) \
                  VALUES (?, ?, ?, ?, ?, 'applied', ?, ?)",
@@ -1002,6 +1140,18 @@ impl LearningService {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
+            // y04：applied = 终态 Done 行。
+            self.record_system_action(
+                ledger_action(
+                    course_id,
+                    SystemActionKind::MaintenanceRepair,
+                    trigger,
+                    SystemActionResult::Done,
+                    user_id,
+                )
+                .basis(&ledger_basis),
+            )
+            .await;
         }
         // noop 不落审计行（learnhub 同款「无修补动作不留档案」——评估过、
         // 无修补动作是合法结论，但没发生的事不造档案）。
@@ -1406,7 +1556,12 @@ impl LearningService {
             // 先修补：失败/在途 = 跳过该课含挂载（不掩错）。
             if needs.needs_repair {
                 match self
-                    .run_structure_repair(user_id, &course_id, model_override)
+                    .run_structure_repair_with_trigger(
+                        user_id,
+                        &course_id,
+                        model_override,
+                        SystemActionTrigger::Timer,
+                    )
                     .await
                 {
                     Ok(summary) => outcome.repair = Some(summary.status),
@@ -1423,7 +1578,12 @@ impl LearningService {
             let after = outcome.recheck.as_ref().unwrap_or(&needs);
             if after.needs_mount {
                 match self
-                    .run_structure_mount(user_id, &course_id, model_override)
+                    .run_structure_mount_with_trigger(
+                        user_id,
+                        &course_id,
+                        model_override,
+                        SystemActionTrigger::Timer,
+                    )
                     .await
                 {
                     Ok(summary) => outcome.mount = Some(summary.status),
@@ -1471,12 +1631,36 @@ impl LearningService {
     /// 触发一次生长。`force = false` 时（节点完成自动触发）就绪存量不低于
     /// [`READY_TRIGGER`] 就什么都不做；`force = true`（手动显式触发）总是
     /// 补到 [`READY_TARGET`]。返回是否真的启动了后台生长。
+    ///
+    /// y04：默认 manual 触发包装（显式命令）；结算钩子走
+    /// [`Self::kick_growth_with_trigger`] 传 `settlement`，自动补批端点传
+    /// `auto_refill`。
     pub async fn kick_growth(
         &self,
         user_id: &UserId,
         course_id: &LearningCourseId,
         force: bool,
         model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<bool, AppError> {
+        self.kick_growth_with_trigger(
+            user_id,
+            course_id,
+            force,
+            model_override,
+            SystemActionTrigger::Manual,
+        )
+        .await
+    }
+
+    /// 触发一次生长（trigger 显式版）：trigger 只进动作簿（终态 done/failed
+    /// 一行），不改变任何裁决/门/槽行为。
+    pub async fn kick_growth_with_trigger(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        force: bool,
+        model_override: Option<(&ProviderId, &str)>,
+        trigger: SystemActionTrigger,
     ) -> Result<bool, AppError> {
         // 安排面守卫（三轮 g3）：生长只服务现存且启用的学习图课程——归档课
         // 的手动/自动触发都给人面错误（可恢复），不再烧教练预算。
@@ -1511,6 +1695,8 @@ impl LearningService {
             user_id: user_id.clone(),
             model_override: model_override
                 .map(|(provider, model)| (provider.to_owned(), model.to_owned())),
+            trigger,
+            ready_count,
         };
         let service = self.clone();
         tokio::spawn(async move {
@@ -1545,7 +1731,15 @@ impl LearningService {
         if kind != Some(CourseKind::LearningGraph) {
             return;
         }
-        let _ = self.kick_growth(user_id, &course_id, false, None).await;
+        let _ = self
+            .kick_growth_with_trigger(
+                user_id,
+                &course_id,
+                false,
+                None,
+                SystemActionTrigger::Settlement,
+            )
+            .await;
     }
 
     /// 停摆臂（ADR-0010 裁决：只留空图一臂）：课程还没有任何学习节点时
@@ -1601,9 +1795,25 @@ impl LearningService {
         // 相位耗时读数（e1）：用量句柄随批体下传（计数包在取消包内层）。
         let usage = task.usage();
         let result = self.growth_body(engine, &pending, token.clone(), &usage).await;
+        // y04 账本判据读数：触发时就绪存量（kick 时刻的裁决输入原样回显）。
+        let ledger_basis = format!("ready={}", engine.ready_count);
         match &result {
             Ok(applied) => {
                 task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
+                // 空手批（idle）= 零工作：不落账本。落库批 = Done 终态行。
+                if !applied.idle {
+                    self.record_system_action(
+                        ledger_action(
+                            course_id,
+                            SystemActionKind::Growth,
+                            engine.trigger,
+                            SystemActionResult::Done,
+                            &engine.user_id,
+                        )
+                        .basis(&ledger_basis),
+                    )
+                    .await;
+                }
                 // 空手批的 pending 行已在 growth_body 内自清；WS 以
                 // outcome=idle 收尾——前端刷新就绪读数即可，无历史噪音。
                 self.emit_graph_event(
@@ -1620,12 +1830,16 @@ impl LearningService {
                 );
             }
             Err(error) => {
-                // 失败留痕：pending 行转 failed，历史时间线可见可重试。
-                // 取消 = 中性终态（growth_cancelled，phase=cancelled），不
-                // 报错误——中断的本批零落库（事务原子），批行如实转 failed。
+                // 失败留痕：pending 行转终态——真失败 failed、取消 cancelled
+                // （中性：不是失败，也不落账本行）。取消的本批零落库（事务
+                // 原子）。
                 let cancelled = token.is_cancelled()
                     || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
-                self.fail_pending_batch(&pending.batch_id).await;
+                self.finish_pending_batch(
+                    &pending.batch_id,
+                    if cancelled { "cancelled" } else { "failed" },
+                )
+                .await;
                 if cancelled {
                     task.finish_cancelled();
                     self.emit_graph_event(
@@ -1637,6 +1851,19 @@ impl LearningService {
                         }),
                     );
                 } else {
+                    // y04：真失败 = Failed 终态行。
+                    self.record_system_action(
+                        ledger_action(
+                            course_id,
+                            SystemActionKind::Growth,
+                            engine.trigger,
+                            SystemActionResult::Failed,
+                            &engine.user_id,
+                        )
+                        .basis(&ledger_basis)
+                        .reason(error.to_string()),
+                    )
+                    .await;
                     task.finish_failed(error.to_string());
                     self.emit_graph_event(
                         course_id,
@@ -1689,10 +1916,13 @@ impl LearningService {
         Ok(PendingBatch { batch_id })
     }
 
-    async fn fail_pending_batch(&self, batch_id: &str) {
+    /// pending 批行收尾（y04）：真失败 `failed`、用户取消 `cancelled`（中性
+    /// 终态，不再把取消记成失败）。状态串是 Rust 单源机器名（无 DB CHECK）。
+    async fn finish_pending_batch(&self, batch_id: &str, status: &str) {
         let _ = sqlx::query(
-            "UPDATE learning_growth_batches SET status = 'failed' WHERE batch_id = ?",
+            "UPDATE learning_growth_batches SET status = ? WHERE batch_id = ?",
         )
+        .bind(status)
         .bind(batch_id)
         .execute(&self.pool)
         .await;
@@ -1763,6 +1993,9 @@ impl LearningService {
         // 碎片裁决机械读数（m9 补接 smoke total/rows/unhandled/degraded）：
         // 同款跨轮累加（读数面非门禁）。
         let mut fragment_readout = crate::learning_graph::fragment_verdict::FragmentReadout::default();
+        // L1 名字提示读数（y01）：跨预算轮累加，smoke 生长 OK 读数行透出
+        // （读数面非门禁；提示不阻断）。
+        let mut name_hints_readout = 0usize;
         // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
         // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
         // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
@@ -1824,15 +2057,22 @@ impl LearningService {
                             &prior_review,
                         )
                         .await
-                        .map_err(|error| {
+                        .map_err(|error| match crate::generation::AttemptFailure::from_app_error(error) {
+                            // 传输失败（模型没收到）：原错误随失败携带，本轮
+                            // 直接终止——不写反馈、不进早停指纹（y02）。
+                            crate::generation::AttemptFailure::Transport(error) => {
+                                AttemptFail::transport(error)
+                            }
                             // 输出违约上抛（m5 #175C 契约命中路）：前轮评审
                             // 意见随失败携带，经 into_feedback 作独立段回灌
                             // ——重排不只剩 ng.* 固定文案。
-                            let fail = AttemptFail::generation(error.to_string());
-                            if review_state && !review_history.is_empty() {
-                                fail.with_review_history(Some(review_history.join("\n")))
-                            } else {
-                                fail
+                            crate::generation::AttemptFailure::Rejected(report) => {
+                                let fail = AttemptFail::generation(report);
+                                if review_state && !review_history.is_empty() {
+                                    fail.with_review_history(Some(review_history.join("\n")))
+                                } else {
+                                    fail
+                                }
                             }
                         })
                     }
@@ -1843,7 +2083,14 @@ impl LearningService {
                         &feedback,
                     )
                     .await
-                    .map_err(|error| AttemptFail::generation(error.to_string())),
+                    .map_err(|error| match crate::generation::AttemptFailure::from_app_error(error) {
+                        crate::generation::AttemptFailure::Transport(error) => {
+                            AttemptFail::transport(error)
+                        }
+                        crate::generation::AttemptFailure::Rejected(report) => {
+                            AttemptFail::generation(report)
+                        }
+                    }),
                 };
                 let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
                     match drafted {
@@ -1896,7 +2143,11 @@ impl LearningService {
                         Err(mut fail) => {
                             // 容量守卫（重裁出口）：ng.batch.size 整批违规改判
                             // 定向重装指令（专用条款码），起草轮执法单源不变。
-                            if previous.is_some() && is_batch_size_violation(&fail.report) {
+                            // 传输失败不是契约形状问题：不重写报告。
+                            if !fail.is_transport()
+                                && previous.is_some()
+                                && is_batch_size_violation(&fail.report)
+                            {
                                 fail.report = redraft_capacity_report(
                                     previous.as_ref().expect("redraft has previous"),
                                 );
@@ -1906,7 +2157,27 @@ impl LearningService {
                     };
                 let candidate = match outcome {
                     Ok(candidate) => candidate,
-                    Err(fail) => {
+                    Err(mut fail) => {
+                        // 传输失败（y02）：原错误立即上抛——不写 feedback、
+                        // 不进 should_stop_early、不占契约轮次。取消仍走既
+                        // 有停止面（stats 留痕 + 中性终态），不混进传输日志。
+                        if let Some(error) = fail.transport.take() {
+                            if error
+                                .to_string()
+                                .contains(crate::service::CANCELLED_MESSAGE)
+                            {
+                                stop_reason = "cancelled";
+                                break 'budget;
+                            }
+                            tracing::warn!(
+                                failure_kind = "transport",
+                                attempt,
+                                stage = if previous.is_some() { "redraft" } else { "draft" },
+                                error = %error,
+                                "coach call transport failure — aborting growth without retry feedback"
+                            );
+                            return Err(error);
+                        }
                         // 本 attempt 失败收口：早停判据 + 报告回灌。指纹只取
                         // `report`——前轮评审意见（#175C）走独立段，逐轮漂移
                         // 不得击穿同指纹早停。
@@ -1934,6 +2205,8 @@ impl LearningService {
                         tracing::warn!(
                             course = course_id.as_str(),
                             attempt,
+                            failure_kind = "parse",
+                            stage = if previous.is_some() { "redraft" } else { "draft" },
                             report = %feedback,
                             "coach draft failed — regenerating with feedback"
                         );
@@ -1951,6 +2224,7 @@ impl LearningService {
                 "coach proposed growth batch"
             );
             let mut outcome = self.gate_batch(course_id, &mut candidate).await?;
+            name_hints_readout += outcome.name_hints;
             if !outcome.errors.is_empty() {
                 let report = crate::learning_graph::format_gate_report(&outcome.errors);
                 tracing::warn!(
@@ -2299,6 +2573,7 @@ impl LearningService {
             stop_reason,
             provenance_readout,
             fragment_readout,
+            name_hints_readout,
             review_state,
             review_state_injections,
         );
@@ -2406,6 +2681,7 @@ impl LearningService {
         stop_reason: &str,
         provenance: crate::learning_graph::provenance::ProvenanceReadout,
         fragments: crate::learning_graph::fragment_verdict::FragmentReadout,
+        name_hints: usize,
         review_state: bool,
         review_state_injections: usize,
     ) {
@@ -2422,6 +2698,7 @@ impl LearningService {
                 review_fragments_rows: fragments.rows,
                 review_fragments_unhandled: fragments.unhandled,
                 review_fragments_degraded: fragments.degraded,
+                name_hints,
                 review_state,
                 review_state_injections,
             });
@@ -2831,6 +3108,10 @@ impl LearningService {
             &name_owner,
             &existing_titles,
         );
+        let name_hints = nearform_warns
+            .iter()
+            .filter(|warn| warn.kind == "ng.mints.name_hint")
+            .count();
         for warn in &nearform_warns {
             tracing::warn!(
                 course = course_id.as_str(),
@@ -3023,6 +3304,7 @@ impl LearningService {
             auto_reusals,
             provenance_known,
             external_anchors_mech,
+            name_hints,
         })
     }
 
@@ -4260,6 +4542,9 @@ impl LearningService {
     /// 登记表活跃条目（j04 复用通道的装配面）：canonical + 定义 + 活跃别名
     /// （退役不占）。deprecated = 0 单源口径。pub(super) 供服务侧投影测试
     /// （m11：deprecated 排除是扩邻匹配域的前置机械保证）。
+    ///
+    /// **无界**：渲染/扩邻需要全集，语义不动。检索工具有自己的有界取行
+    /// （[`Self::registry_entries_bounded`]）。
     pub(super) async fn registry_entries(
         &self,
     ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
@@ -4272,33 +4557,90 @@ impl LearningService {
         .map_err(internal)?;
         Ok(rows
             .into_iter()
-            .map(|(concept_id, canonical, definition, aliases_json, doc_version)| {
-                let records = if doc_version
-                    == crate::learning_graph::alias_records::ALIAS_DOC_VERSION
-                {
-                    crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
-                } else {
-                    tracing::warn!(
-                        concept_id,
-                        doc_version,
-                        "alias doc version unsupported; treating the alias pool as empty"
-                    );
-                    Vec::new()
-                };
-                crate::learning_graph::defnear::RegistryEntry {
-                    concept_id,
-                    canonical,
-                    definition,
-                    active_aliases: records
-                        .into_iter()
-                        .filter(|record| {
-                            record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
-                        })
-                        .map(|record| record.name)
-                        .collect(),
-                }
-            })
+            .map(Self::decode_registry_entry)
             .collect())
+    }
+
+    /// 检索专用的有界取行（y03 评审）：`ORDER BY canonical LIMIT ?`，上限
+    /// [`SEARCH_REGISTRY_LIMIT`]。命中上限即截断（`warn!` 留痕），读侧不报错
+    /// ——工具的 top-5 输出本就只需要有界候选；detail 走 concept_id 精确查，
+    /// 不受本上限影响。
+    pub(super) async fn registry_entries_bounded(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
+        let limit = limit.clamp(1, SEARCH_REGISTRY_LIMIT);
+        let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT concept_id, canonical, definition, aliases_json, doc_version \
+             FROM learning_concept_registry WHERE deprecated = 0 \
+             ORDER BY canonical LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        if rows.len() as i64 >= limit {
+            tracing::warn!(
+                limit,
+                "concept registry search read hit the row cap; candidate set may be truncated"
+            );
+        }
+        Ok(rows
+            .into_iter()
+            .map(Self::decode_registry_entry)
+            .collect())
+    }
+
+    /// 按 concept_id 精确取一行（deprecated = 0；detail 模式专用，不受检索
+    /// 上限影响）。
+    async fn registry_entry_by_id(
+        &self,
+        concept_id: &str,
+    ) -> Result<Option<crate::learning_graph::defnear::RegistryEntry>, AppError> {
+        let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT concept_id, canonical, definition, aliases_json, doc_version \
+             FROM learning_concept_registry WHERE deprecated = 0 AND concept_id = ?",
+        )
+        .bind(concept_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row.map(Self::decode_registry_entry))
+    }
+
+    /// 登记表行 → 活跃条目（别名池按行级 `doc_version` 解码；未知代际降级
+    /// 为空池 + warn——render_registry_excerpt / 检索同口径）。
+    fn decode_registry_entry(
+        (concept_id, canonical, definition, aliases_json, doc_version): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ),
+    ) -> crate::learning_graph::defnear::RegistryEntry {
+        let records = if doc_version == crate::learning_graph::alias_records::ALIAS_DOC_VERSION {
+            crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
+        } else {
+            tracing::warn!(
+                concept_id,
+                doc_version,
+                "alias doc version unsupported; treating the alias pool as empty"
+            );
+            Vec::new()
+        };
+        crate::learning_graph::defnear::RegistryEntry {
+            concept_id,
+            canonical,
+            definition,
+            active_aliases: records
+                .into_iter()
+                .filter(|record| {
+                    record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
+                })
+                .map(|record| record.name)
+                .collect(),
+        }
     }
 
     /// 花名册：每节点一行的紧凑文本（状态 | 标题 | teaches | assumes）。
@@ -4465,6 +4807,58 @@ impl LearningService {
             text.push_str(&pool_lines.join("\n"));
         }
         Ok(text)
+    }
+
+    /// 概念登记表只读检索（y03，内容面 `search_concepts` 工具的服务单源）：
+    /// 四通道 exact / alias / nearname / fulltext（近名机械单源在
+    /// [`crate::learning_graph::defnear`]），按 concept_id 去重取最高等级、
+    /// 截 top-5；零命中返回 `not_found: true` 不抛错。`detail` 按 concept_id
+    /// 取全定义 + 全部活跃别名（不受 top-5 限制），查无 = 404、缺 id = 400。
+    ///
+    /// **只读**：本方法只发 SELECT，登记表（及其 mtime 语义的 `updated_at`）
+    /// 零写侧——自查赋权不是新门，也不是写入口。
+    pub async fn search_concepts(
+        &self,
+        query: &str,
+        mode: ConceptSearchMode,
+        concept_id: Option<&str>,
+    ) -> Result<ConceptSearchResults, AppError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(AppError::BadRequest(
+                "search_concepts: query must not be empty".into(),
+            ));
+        }
+        match mode {
+            ConceptSearchMode::Search => {
+                let registry = self.registry_entries_bounded(SEARCH_REGISTRY_LIMIT).await?;
+                Ok(concept_search::search_hits(&registry, query))
+            }
+            ConceptSearchMode::Detail => {
+                let concept_id = concept_id
+                    .map(str::trim)
+                    .filter(|concept_id| !concept_id.is_empty())
+                    .ok_or_else(|| {
+                        AppError::BadRequest(
+                            "search_concepts: detail mode requires concept_id".into(),
+                        )
+                    })?;
+                // detail 按 concept_id 精确取行（deprecated=0、别名池按行级
+                // doc_version 解码）——不受 search 取行上限影响。
+                let entry = self
+                    .registry_entry_by_id(concept_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "concept {concept_id} is absent from the registry"
+                        ))
+                    })?;
+                Ok(ConceptSearchResults {
+                    hits: vec![concept_search::detail_hit(&entry)],
+                    not_found: false,
+                })
+            }
+        }
     }
 
     // ── 已会声明（Declared Known，m2 / ADR-0032 移植）───────────────────────
@@ -5129,6 +5523,23 @@ impl LearningService {
             );
         }
         Ok(revoked)
+    }
+}
+
+/// 系统动作账本输入（y04）：trigger 决定是否记操作者——只有手动动作记
+/// `actor_user_id`；timer/settlement/auto_refill 一列为 NULL。
+fn ledger_action(
+    course_id: &LearningCourseId,
+    kind: SystemActionKind,
+    trigger: SystemActionTrigger,
+    result: SystemActionResult,
+    user_id: &UserId,
+) -> NewSystemAction {
+    let action = NewSystemAction::new(course_id.clone(), kind, trigger, result);
+    if trigger.records_actor() {
+        action.actor(user_id)
+    } else {
+        action
     }
 }
 

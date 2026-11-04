@@ -1062,6 +1062,8 @@ where
     route: F,
     calls: std::sync::atomic::AtomicUsize,
     stage_counts: std::sync::Mutex<Vec<String>>,
+    /// 指定阶段改吐传输错误（y02：传输失败不占契约轮次、不写反馈）。
+    transport_stage: Option<&'static str>,
 }
 
 impl<F> PipelineCompleter<F>
@@ -1073,7 +1075,13 @@ where
             route,
             calls: std::sync::atomic::AtomicUsize::new(0),
             stage_counts: std::sync::Mutex::new(Vec::new()),
+            transport_stage: None,
         }
+    }
+
+    fn with_transport_stage(mut self, stage: &'static str) -> Self {
+        self.transport_stage = Some(stage);
+        self
     }
 
     fn stage_count(&self, needle: &str) -> usize {
@@ -1130,7 +1138,13 @@ where
         _temperature: Option<f32>,
     ) -> Result<String, AppError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.stage_counts.lock().unwrap().push(stage_name(system, user).to_owned());
+        let stage = stage_name(system, user);
+        self.stage_counts.lock().unwrap().push(stage.to_owned());
+        if self.transport_stage == Some(stage) {
+            return Err(AppError::BadGateway(
+                "LLM provider error: API error 502: bad gateway".into(),
+            ));
+        }
         (self.route)(system, user).map_err(|message| AppError::Internal(message))
     }
 }
@@ -1390,6 +1404,48 @@ async fn draft_failures_fall_back_to_none_with_bounded_calls() {
     assert!(plan.is_none(), "草稿连续失败 → 回退(调用方走现行采样路径)");
     // 同指纹早停:两次失败即停,不烧第三次。
     assert_eq!(completer.stage_count("draft"), 2);
+}
+
+/// y02 红绿样（结构发现草稿传输失败）：BadGateway → 立即停止重试（draft
+/// 恰 1 次、不写契约反馈），按既有失败口径回退 `Ok(None)`（不硬失败）。
+#[tokio::test]
+async fn draft_transport_failure_stops_without_contract_retries() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "网关坏库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            "queries" => Ok(r#"{"queries": ["排序 概念", "排序 实现"]}"#.into()),
+            "evidence" => Ok(
+                r#"{"summary": "排序证据。", "gaps": [], "concepts": ["排序"], "notes": []}"#.into(),
+            ),
+            _ => Err("unexpected".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route).with_transport_stage("draft"));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "学会排序", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(plan.is_none(), "传输失败回退既有采样路径（结构发现不硬失败）");
+    assert_eq!(
+        completer.stage_count("draft"),
+        1,
+        "传输失败不占契约轮次（不写反馈、不再试）"
+    );
+    assert_eq!(completer.stage_count("critique"), 0, "无草稿不做评审");
 }
 
 #[tokio::test]

@@ -558,6 +558,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
             status,
             activities: Vec::new(),
             sections: Vec::new(),
+            capacity_note: None,
+            capacity_feedback: None,
         };
         let done_id = LearningLessonId::new();
         let in_progress_id = LearningLessonId::new();
@@ -3763,6 +3765,64 @@ async fn growth_stops_early_when_the_gate_report_repeats() {
     assert_eq!(stats.attempts_used, 2);
 }
 
+/// y02 红绿样（生长环传输失败）：教练调用返回 Timeout → 立即终止（恰 1 次
+/// 调用、零重试反馈、零早停指纹），pending 批如实转 failed。
+#[tokio::test]
+async fn growth_transport_failure_stops_after_a_single_call() {
+    struct TransportFailCompleter {
+        calls: AtomicUsize,
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+    #[async_trait::async_trait]
+    impl crate::completer::LearningCompleter for TransportFailCompleter {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, AppError> {
+            unreachable!("growth pipeline only uses the json seam")
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.prompts.lock().unwrap().push(user.to_owned());
+            Err(AppError::Timeout("json coach call exceeded 480s".into()))
+        }
+    }
+
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = Arc::new(TransportFailCompleter {
+        calls: AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    });
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "transport failure must fail the pending batch"
+    );
+    assert_eq!(
+        completer.calls.load(AtomicOrdering::SeqCst),
+        1,
+        "传输失败立即上抛：不占契约轮次（3 轮预算零消耗）"
+    );
+    assert_eq!(
+        completer.prompts.lock().unwrap().len(),
+        1,
+        "零重试反馈：第二次起草不发生"
+    );
+}
+
 /// 异错烧满预算：每轮违约不同（指纹互异）→ 3 轮全烧，exhausted。
 #[tokio::test]
 async fn growth_burns_the_full_budget_when_violations_differ() {
@@ -4303,7 +4363,8 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
 }
 
 /// mid-call 取消（三轮 t2 真中断）：取消在 LLM 调用内触发 → wrapper 丢弃
-/// 回包 → 本批零落库、批行转 failed、任务终态 cancelled、内层恰被调一次。
+/// 回包 → 本批零落库、批行转中性 cancelled（y04：取消不是失败）、任务终态
+/// cancelled、账本零行、内层恰被调一次。
 #[tokio::test]
 async fn mid_call_cancellation_discards_the_result_and_persists_nothing() {
     let (service, _knowledge, owner) = job_test_service().await;
@@ -4317,9 +4378,35 @@ async fn mid_call_cancellation_discards_the_result_and_persists_nothing() {
     *service.course_completer.write().unwrap() = Some(completer.clone());
     service.kick_growth(&owner, &course, true, None).await.unwrap();
     assert!(
-        wait_for_batch_status(&service, &course_id, "failed").await,
-        "the cancelled growth fails with its pending batch marked"
+        wait_for_batch_status(&service, &course_id, "cancelled").await,
+        "the cancelled growth marks its pending batch cancelled (neutral terminal)"
     );
+    let cancelled_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'cancelled'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(cancelled_rows, 1, "取消批行中性终态");
+    let failed_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'failed'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(failed_rows, 0, "取消不再误记为失败");
+    let ledger: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_system_actions WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(ledger, 0, "取消零账本行（不是失败）");
     // 零落库：种子 2 节点，无新增。
     let lessons: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM learning_lessons l \
@@ -10319,6 +10406,25 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         enabled: i64,
         completer: Arc<dyn LearningCompleter>,
     ) -> (LearningService, UserId, LearningCourseId) {
+        let minimal_structure = json!({
+            "goal": "g",
+            "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+            "blocks": [
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" }
+            ],
+            "edges": []
+        });
+        seed_maintenance_course_with_structure(findings, enabled, completer, minimal_structure).await
+    }
+
+    /// 同 [`seed_maintenance_course`]，结构快照由调用方给（y04 账本测试需要
+    /// 一份能过 gd.* 全量复核的结构——修补 applied 分支才会走到账本 Done）。
+    async fn seed_maintenance_course_with_structure(
+        findings: usize,
+        enabled: i64,
+        completer: Arc<dyn LearningCompleter>,
+        structure: serde_json::Value,
+    ) -> (LearningService, UserId, LearningCourseId) {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
             .await
@@ -10344,15 +10450,12 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         let envelope = json!({
             "version": 1,
             "generated_at": now,
-            "structure": {
-                "goal": "g",
-                "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
-                "blocks": [
-                    { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "n" }
-                ],
-                "edges": []
+            "structure": structure,
+            "terrain": {
+                "doors": [
+                    { "id": "G1", "criterion": "能用配方法解形如 x²=p 的方程", "kind": "hard" }
+                ]
             },
-            "terrain": { "doors": [] },
         });
         sqlx::query(
             "INSERT INTO learning_courses \
@@ -10468,7 +10571,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(!needs.eligible);
     }
 
-    /// 失败回合不推水位：completer 报错 → 留痕仍是下次输入。
+    /// 失败回合不推水位：completer 报错 → 留痕仍是下次输入（y02 起 LLM
+    /// 错误原样上抛，不再包成「生成通道不可用」的 Conflict）。
     #[tokio::test]
     #[serial_test::serial]
     async fn failed_repair_round_does_not_advance_the_watermark() {
@@ -10478,7 +10582,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .run_structure_repair(&user_id, &course, None)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("生成通道不可用"), "{error}");
+        assert!(error.to_string().contains("model unavailable"), "{error}");
         assert_eq!(maintenance_watermark(&service, &course).await, None);
         let needs = service.maintenance_needs(&course).await.unwrap();
         assert_eq!(needs.unconsumed_findings, 2, "失败回合的留痕仍是输入");
@@ -10687,6 +10791,492 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
         assert_eq!(report.courses.len(), 1);
         assert!(!report.courses[0].skipped_busy);
+    }
+
+    // ── y04：学习系统动作簿 ──
+
+    #[derive(Debug)]
+    struct SystemActionRow {
+        action_id: String,
+        kind: String,
+        trigger: String,
+        basis: String,
+        result: String,
+        reason: String,
+        actor_user_id: Option<String>,
+    }
+
+    async fn system_action_rows(
+        service: &LearningService,
+        course: &LearningCourseId,
+    ) -> Vec<SystemActionRow> {
+        let rows = sqlx::query(
+            "SELECT action_id, kind, trigger_source, basis, result, reason, \
+                    actor_user_id \
+             FROM learning_system_actions WHERE course_id = ? ORDER BY at DESC, id DESC",
+        )
+        .bind(course.as_str())
+        .fetch_all(service.pool_for_tests())
+        .await
+        .unwrap();
+        rows.iter()
+            .map(|row| SystemActionRow {
+                action_id: row.try_get("action_id").unwrap(),
+                kind: row.try_get("kind").unwrap(),
+                trigger: row.try_get("trigger_source").unwrap(),
+                basis: row.try_get("basis").unwrap(),
+                result: row.try_get("result").unwrap(),
+                reason: row.try_get("reason").unwrap(),
+                actor_user_id: row.try_get("actor_user_id").unwrap(),
+            })
+            .collect()
+    }
+
+    async fn wait_for_system_action_count(
+        service: &LearningService,
+        course: &LearningCourseId,
+        expected: usize,
+    ) -> bool {
+        for _ in 0..500 {
+            let rows = system_action_rows(service, course).await;
+            if rows.len() >= expected {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    fn rename_block_ops() -> String {
+        r#"{"ops":[{"op":"rename_block","from":"块00","to":"块00新","reason":"依据留痕"}]}"#
+            .to_owned()
+    }
+
+    /// 一份能过 gd.* 全量复核的结构（6 主干 × 7 块，与 structure_gen golden
+    /// 同款）：修补 applied 才会进入账本 Done 分支。
+    fn ledger_valid_structure() -> serde_json::Value {
+        let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+        let mut blocks = Vec::new();
+        for (spine_index, spine) in spine_names.iter().enumerate() {
+            for block_index in 0..7 {
+                let ordinal = spine_index * 7 + block_index;
+                let stage = ["basic", "advanced", "expert"][ordinal % 3];
+                blocks.push(json!({
+                    "name": format!("块{ordinal:02}"),
+                    "slug": format!("block-{ordinal:02}"),
+                    "spine": spine,
+                    "stage": stage,
+                    "note": format!("第 {ordinal} 个主题的一句话描述"),
+                }));
+            }
+        }
+        json!({
+            "goal": "能独立完成一元二次方程的求解与检验",
+            "goal_type": "capability",
+            "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
+            "domain_type": "theory",
+            "form_reference": "Flowy 学习结构模板 v1",
+            "source_tier": "catalog",
+            "generated_by": "test-model",
+            "disclaimer": "快照为生成时点参考地图，可能存在盲区",
+            "domain": {
+                "core_definition": "一元二次方程的代数求解体系",
+                "includes": ["方程变形", "求根公式", "判别式"],
+                "excludes": ["三次方程", "复数域", "数值分析"],
+                "prerequisite_doors": ["G1"],
+                "audience": "零基础成年学习者",
+                "scenarios": ["解题应用", "讲解他人"],
+                "granularity": "每块一个可独立教学的解题动作"
+            },
+            "spines": spine_names.iter().map(|spine| json!({
+                "name": spine,
+                "definition": format!("{spine}的一句话定义"),
+                "key_points": ["要点一"],
+                "instance": format!("达标{spine}时能独立完成一次求解"),
+            })).collect::<Vec<_>>(),
+            "blocks": blocks,
+            "edges": [
+                { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" }
+            ],
+            "gaps": [
+                { "item": "应用题情境覆盖不足", "direction": "补行程类情境" },
+                { "item": "图像法未展开", "direction": "补抛物线图像判读" },
+                { "item": "近似解法缺位", "direction": "补估算策略" }
+            ],
+            "quality": [
+                { "check": "主干数在 6–12 档", "status": "met" },
+                { "check": "块名一物一名", "status": "met" },
+                { "check": "边端点全部可解析", "status": "met" },
+                { "check": "无顺序承诺", "status": "met" },
+                { "check": "盲区已标注", "status": "unmet", "reason": "应用情境块待补" }
+            ]
+        })
+    }
+
+    /// 账本 fail-open：表坏掉（写失败）只降级 warn，回合照常 mounted——
+    /// 账本是旁路，不阻断维护/生长。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn system_action_ledger_is_fail_open_when_the_write_fails() {
+        let mount_artifact = json!({
+            "mounts": [
+                { "node": "节点一", "blocks": ["block-01"], "reason": "同主题" }
+            ],
+            "note": "n"
+        })
+        .to_string();
+        let (service, user_id, course) =
+            seed_maintenance_course(0, 1, ScriptedCompleter::new(mount_artifact, false)).await;
+        sqlx::query("DROP TABLE learning_system_actions")
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let summary = service
+            .run_structure_mount(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "mounted", "账本写失败不阻断挂载");
+    }
+
+    /// 维护 tick：每课每次修补/挂载终态一行（trigger=timer、无操作者、
+    /// basis 带回合判据读数）；零工作（二回合 idle）零行。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn maintenance_tick_writes_one_terminal_row_per_action_and_skips_idle() {
+        let mount_artifact = json!({
+            "mounts": [
+                { "node": "节点一", "blocks": ["block-00"], "reason": "同主题" }
+            ],
+            "note": "n"
+        })
+        .to_string();
+        let completer = SequencedCompleter::new(vec![rename_block_ops(), mount_artifact]);
+        let (service, user_id, course) =
+            seed_maintenance_course_with_structure(1, 1, completer, ledger_valid_structure())
+                .await;
+
+        let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+        assert_eq!(report.courses[0].repair.as_deref(), Some("applied"));
+        assert_eq!(report.courses[0].mount.as_deref(), Some("mounted"));
+
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let repair = rows
+            .iter()
+            .find(|row| row.kind == "maintenance_repair")
+            .expect("repair row");
+        assert_eq!(repair.trigger, "timer");
+        assert_eq!(repair.result, "done");
+        assert_eq!(repair.actor_user_id, None);
+        assert!(
+            repair.basis.contains("unconsumed=1"),
+            "basis 带回合判据读数：{}",
+            repair.basis
+        );
+        let mount = rows
+            .iter()
+            .find(|row| row.kind == "maintenance_mount")
+            .expect("mount row");
+        assert_eq!(mount.trigger, "timer");
+        assert_eq!(mount.result, "done");
+        assert_eq!(mount.actor_user_id, None);
+        assert!(
+            mount.basis.contains("pending_mount=1"),
+            "basis 带待挂读数：{}",
+            mount.basis
+        );
+
+        // 二回合零工作：不新增账本行。
+        let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+        assert_eq!(report.idle, 1);
+        assert_eq!(system_action_rows(&service, &course).await.len(), 2);
+    }
+
+    /// y01 修补路径：修补后全量复核里 L1 名字（含 `与`/`和`）只出
+    /// `gd.blocks.name_hint` 提示、不拒回合；L0 纯标点（`、`/`，`）仍硬拒，
+    /// 结构与审计零改动。与生成线的同一分工在 service 层再钉一次。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn repair_recheck_hints_l1_names_but_still_rejects_l0_marks() {
+        let l1_ops = r#"{"ops":[{"op":"rename_block","from":"块00","to":"双进程与窗口","reason":"依据留痕"}]}"#;
+        let (service, user_id, course) = seed_maintenance_course_with_structure(
+            1,
+            1,
+            ScriptedCompleter::new(l1_ops, false),
+            ledger_valid_structure(),
+        )
+        .await;
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "applied", "L1 名字只提示，不得拒回合");
+        let structure_raw: String =
+            sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+                .bind(course.as_str())
+                .fetch_one(service.pool_for_tests())
+                .await
+                .unwrap();
+        assert!(
+            structure_raw.contains("双进程与窗口"),
+            "L1 名字必须原样落库：{structure_raw}"
+        );
+        assert_eq!(
+            system_action_rows(&service, &course).await.len(),
+            1,
+            "applied 回合落一条 Done 账本行"
+        );
+
+        for (label, name) in [("顿号", "双进程、窗口"), ("逗号", "双进程，窗口")] {
+            let l0_ops = format!(
+                r#"{{"ops":[{{"op":"rename_block","from":"块00","to":"{name}","reason":"依据留痕"}}]}}"#
+            );
+            let (service, user_id, course) = seed_maintenance_course_with_structure(
+                1,
+                1,
+                ScriptedCompleter::new(l0_ops, false),
+                ledger_valid_structure(),
+            )
+            .await;
+            let before: String = sqlx::query_scalar(
+                "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            let error = service
+                .run_structure_repair(&user_id, &course, None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, AppError::UnprocessableEntity(_)),
+                "{label}（L0）必须拒回合，got {error:?}"
+            );
+            assert!(
+                error.to_string().contains("gd.blocks.one_name"),
+                "{label} 的拒因必须点名 one_name：{error}"
+            );
+            let after: String = sqlx::query_scalar(
+                "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            assert_eq!(before, after, "{label}：被拒回合不得改结构");
+            let audits: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_structure_repairs WHERE course_id = ?",
+            )
+            .bind(course.as_str())
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+            assert_eq!(audits, 0, "{label}：被拒回合不落审计行");
+        }
+    }
+
+    /// noop（评估过、无 op）与 skipped（零 LLM）都是零工作：零账本行。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn noop_and_skipped_rounds_leave_no_ledger_rows() {
+        let (service, user_id, course) =
+            seed_maintenance_course(1, 1, ScriptedCompleter::new(r#"{"ops":[]}"#, false)).await;
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "noop");
+        assert!(system_action_rows(&service, &course).await.is_empty());
+
+        let (service, user_id, course) =
+            seed_maintenance_course(0, 1, ScriptedCompleter::new("{}", false)).await;
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "skipped");
+        assert!(system_action_rows(&service, &course).await.is_empty());
+    }
+
+    /// 手动回合：成功 Done + 操作者落 actor_user_id；同键忙拒零行。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn manual_repair_ledger_records_actor_and_busy_conflicts_write_nothing() {
+        let (service, user_id, course) =
+            seed_maintenance_course_with_structure(
+                1,
+                1,
+                ScriptedCompleter::new(rename_block_ops(), false),
+                ledger_valid_structure(),
+            )
+            .await;
+        let slot = service
+            .acquire_generation_slot(
+                &user_id,
+                format!("learning-repair-{}", course.as_str()),
+            )
+            .expect("slot acquired");
+        let error = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)), "{error:?}");
+        assert!(
+            system_action_rows(&service, &course).await.is_empty(),
+            "同键忙拒不写账本"
+        );
+        drop(slot);
+
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "applied");
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].trigger, "manual");
+        assert_eq!(rows[0].result, "done");
+        assert_eq!(rows[0].actor_user_id.as_deref(), Some(user_id.as_str()));
+        assert!(rows[0].reason.is_empty(), "done 原因为空");
+    }
+
+    /// 取消（中性终态）零账本行——取消不是失败。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn cancelled_manual_repair_writes_no_ledger_row() {
+        let (service, user_id, course) =
+            seed_maintenance_course(1, 1, ScriptedCompleter::new("{}", false)).await;
+        *service.course_completer.write().unwrap() = Some(Arc::new(CancelMidCallCompleter {
+            service: service.clone(),
+            calls: AtomicUsize::new(0),
+            reply: "{}".into(),
+        }));
+        let error = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(CANCELLED_MESSAGE), "{error}");
+        assert!(system_action_rows(&service, &course).await.is_empty());
+    }
+
+    /// 生长终态：applied → Done（basis 带就绪读数）；
+    /// 真失败 → Failed（reason 如实）。取消在 mid-call 用例里钉住零行。
+    #[tokio::test]
+    async fn growth_ledger_records_done_and_failed_terminals() {
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _a, _b) = seed_graph_course(&service).await;
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        *service.course_completer.write().unwrap() = Some(ScriptedCompleter::new(VALID_BATCH, false));
+        service.kick_growth(&owner, &course, true, None).await.unwrap();
+        assert!(
+            wait_for_system_action_count(&service, &course, 1).await,
+            "applied growth must leave a terminal ledger row"
+        );
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, "growth");
+        assert_eq!(rows[0].trigger, "manual");
+        assert_eq!(rows[0].result, "done");
+        assert!(rows[0].basis.contains("ready="), "{}", rows[0].basis);
+        assert!(rows[0].reason.is_empty());
+
+        // 真失败（结构门连拒耗尽预算）：Failed + reason。
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _a, _b) = seed_graph_course(&service).await;
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        *service.course_completer.write().unwrap() = Some(ScriptedCompleter::new(GHOST_REF_BATCH, false));
+        service.kick_growth(&owner, &course, true, None).await.unwrap();
+        assert!(
+            wait_for_system_action_count(&service, &course, 1).await,
+            "failed growth must leave a terminal ledger row"
+        );
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].result, "failed");
+        assert!(!rows[0].reason.is_empty(), "失败原因如实落账");
+    }
+
+    /// 结算触发的生长（自动臂）落 trigger=settlement、无操作者。
+    #[tokio::test]
+    async fn settlement_growth_ledger_has_no_actor() {
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _a, _b) = seed_graph_course(&service).await;
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        *service.course_completer.write().unwrap() = Some(ScriptedCompleter::new(VALID_BATCH, false));
+        service
+            .kick_growth_with_trigger(
+                &owner,
+                &course,
+                true,
+                None,
+                SystemActionTrigger::Settlement,
+            )
+            .await
+            .unwrap();
+        assert!(wait_for_system_action_count(&service, &course, 1).await);
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows[0].trigger, "settlement");
+        assert_eq!(rows[0].result, "done");
+        assert_eq!(rows[0].actor_user_id, None);
+    }
+
+    /// 读侧：按课程倒序、limit 截断（上限 200）、不存在/软删 404。
+    #[tokio::test]
+    async fn system_actions_read_orders_desc_limits_and_404s() {
+        let (service, _user, course) =
+            seed_maintenance_course(0, 1, ScriptedCompleter::new("{}", false)).await;
+        let oldest = "0190f5fe-7c00-7a00-8abc-000000000001";
+        let middle = "0190f5fe-7c00-7a00-8abc-000000000002";
+        let newest = "0190f5fe-7c00-7a00-8abc-000000000003";
+        for (action_id, at) in [(oldest, 1000_i64), (middle, 2000), (newest, 3000)] {
+            sqlx::query(
+                "INSERT INTO learning_system_actions \
+                 (action_id, course_id, kind, trigger_source, basis, result, at) \
+                 VALUES (?, ?, 'growth', 'manual', '', 'done', ?)",
+            )
+            .bind(action_id)
+            .bind(course.as_str())
+            .bind(at)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        let rows = system_action_rows(&service, &course).await;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].action_id, newest);
+        assert_eq!(rows[1].action_id, middle);
+        assert_eq!(rows[2].action_id, oldest);
+        let limited = service.system_actions(&course, 2).await.unwrap();
+        assert_eq!(limited.len(), 2);
+        assert_eq!(limited[0].action_id, newest);
+        assert_eq!(limited[1].action_id, middle);
+        assert_eq!(
+            service.system_actions(&course, 500).await.unwrap().len(),
+            3,
+            "limit 上限 200 仍覆盖本课全部行"
+        );
+
+        sqlx::query("UPDATE learning_courses SET deleted_at = 1 WHERE course_id = ?")
+            .bind(course.as_str())
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let error = service.system_actions(&course, 50).await.unwrap_err();
+        assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+
+        let missing = LearningCourseId::new();
+        let error = service.system_actions(&missing, 50).await.unwrap_err();
+        assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+    }
+
+    #[test]
+    fn system_action_limit_defaults_and_caps() {
+        assert_eq!(system_action_limit(None), 50);
+        assert_eq!(system_action_limit(Some(0)), 1);
+        assert_eq!(system_action_limit(Some(17)), 17);
+        assert_eq!(system_action_limit(Some(500)), 200);
+        assert_eq!(system_action_limit(Some(-3)), 1);
     }
 
     /// 设置读侧：缺省开/360；写入生效；越界/坏值回退缺省（写侧拒绝在

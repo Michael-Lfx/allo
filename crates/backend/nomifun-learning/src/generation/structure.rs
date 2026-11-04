@@ -937,6 +937,8 @@ pub(crate) fn draft_plan_from_reply(
 }
 
 /// 草稿/修订调用(同 schema;`feedback` 携带评审 findings 时为修订轮)。
+/// 失败分桶（y02）：LLM 调用/超时/网关 = [`AttemptFailure::Transport`]，
+/// 解析/形状 = [`AttemptFailure::Rejected`]——只有 Rejected 进契约重试反馈。
 pub(crate) async fn draft_plan(
     completer: &dyn LearningCompleter,
     goal: &str,
@@ -944,7 +946,7 @@ pub(crate) async fn draft_plan(
     chunks: &[EvidenceChunk],
     inventory: &KbInventory,
     feedback: Option<&str>,
-) -> Result<PlanDraft, String> {
+) -> Result<PlanDraft, AttemptFailure> {
     let mut prompt = String::new();
     let goal = goal.trim();
     if goal.is_empty() {
@@ -986,8 +988,8 @@ pub(crate) async fn draft_plan(
     let raw = completer
         .complete_json(None, PLAN_SYSTEM, &prompt, 8192, Some(0.3))
         .await
-        .map_err(|error| error.to_string())?;
-    draft_plan_from_reply(&raw, inventory)
+        .map_err(AttemptFailure::from_app_error)?;
+    draft_plan_from_reply(&raw, inventory).map_err(AttemptFailure::Rejected)
 }
 
 /// 一条结构评审发现(类别已收口为固定七值)。
@@ -1355,18 +1357,39 @@ pub async fn run_kb_structure(
                 draft = Some(candidate);
                 break;
             }
-            Err(error) => {
-                if let Some(cancelled) = as_cancel(&error) {
+            Err(failure) => {
+                let reason = failure.reason();
+                if let Some(cancelled) = as_cancel(&reason) {
                     return Err(cancelled);
                 }
-                let fingerprint = normalize_report(&error);
+                // y02：传输失败（模型没收到）不写契约反馈、不占轮次——
+                // 立即停止重试，按既有口径回退采样路径（不硬失败）。
+                if failure.is_transport() {
+                    tracing::warn!(
+                        failure_kind = "transport",
+                        attempt,
+                        stage = "draft",
+                        error = %reason,
+                        "kb structure draft transport failure — falling back to sampling without retry feedback"
+                    );
+                    warnings.push(format!("章节骨架草稿传输失败({reason}),跳过结构发现"));
+                    break;
+                }
+                tracing::warn!(
+                    failure_kind = "parse",
+                    attempt,
+                    stage = "draft",
+                    report_head = %reason.chars().take(400).collect::<String>(),
+                    "kb structure draft rejected — retrying with contract feedback"
+                );
+                let fingerprint = normalize_report(&reason);
                 if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
                     warnings.push("章节骨架草稿连续两轮同指纹失败,停止重试".to_owned());
                     break;
                 }
                 prev_fingerprint = Some(fingerprint);
                 feedback = Some(format!(
-                    "上一轮输出违反契约:\n{error}\n逐条修正后重新输出完整骨架。"
+                    "上一轮输出违反契约:\n{reason}\n逐条修正后重新输出完整骨架。"
                 ));
             }
         }
@@ -1465,11 +1488,27 @@ pub async fn run_kb_structure(
                 }
                 draft = revised;
             }
-            Err(error) => {
-                if let Some(cancelled) = as_cancel(&error) {
+            Err(failure) => {
+                let reason = failure.reason();
+                if let Some(cancelled) = as_cancel(&reason) {
                     return Err(cancelled);
                 }
-                warnings.push(format!("修订失败({error}),保留草稿"));
+                if failure.is_transport() {
+                    tracing::warn!(
+                        failure_kind = "transport",
+                        stage = "revise",
+                        error = %reason,
+                        "kb structure revision transport failure — keeping the first draft"
+                    );
+                } else {
+                    tracing::warn!(
+                        failure_kind = "parse",
+                        stage = "revise",
+                        report_head = %reason.chars().take(400).collect::<String>(),
+                        "kb structure revision rejected — keeping the first draft"
+                    );
+                }
+                warnings.push(format!("修订失败({reason}),保留草稿"));
             }
         }
     }

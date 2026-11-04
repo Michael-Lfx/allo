@@ -10,8 +10,10 @@ use serde_json::Value;
 
 use nomifun_common::AppError;
 
+use super::name_adjudication::{Adjudication, NameAdjudicator};
 use super::{structure_contract, structure_prompts};
 use crate::completer::LearningCompleter;
+use crate::generation::AttemptFailure;
 
 /// 整批重试预算（g2 裁决：learnhub MAX_ATTEMPTS 同款）。
 pub(crate) const MAX_ATTEMPTS: usize = 3;
@@ -78,6 +80,9 @@ pub(crate) async fn generate_structure_artifacts(
     let mut feedback = "(无:首次)".to_owned();
     let mut last = String::from("(未执行)");
     let mut prev_fingerprint: Option<String> = None;
+    // L2 批量裁决器（y01）：跨 attempt 复用——同名同标在 memo 内，重试环不
+    // 重复付费（成本杠杆的另一半是「红条为空且 L1 非空才调用」）。
+    let mut adjudicator = NameAdjudicator::new(completer, model_override);
     // 提前停战轮次（e1 D2）：消息面如实区分「预算耗尽」与「同指纹早停」——
     // 早停后仍报满预算轮数是撒谎，读数与排障都依赖真实轮数。
     let mut early_stop: Option<usize> = None;
@@ -87,11 +92,28 @@ pub(crate) async fn generate_structure_artifacts(
                 crate::service::CANCELLED_MESSAGE.to_owned(),
             ));
         }
-        match attempt_once(completer, model_override, input, &feedback).await {
+        match attempt_once(
+            completer,
+            model_override,
+            input,
+            &feedback,
+            attempt,
+            &mut adjudicator,
+        )
+        .await
+        {
             Ok(artifacts) => return Ok(artifacts),
-            Err(report) => {
+            // 传输失败（模型没收到）与取消：立即上抛原错误——不写反馈、
+            // 不占契约轮次、不进同指纹早停（y02 分流不变量）。调用点已按
+            // terrain/structure 精确 stage 记失败日志，此处不再重复。
+            Err(AttemptFailure::Transport(error)) => {
+                return Err(error);
+            }
+            Err(AttemptFailure::Rejected(report)) => {
                 tracing::warn!(
+                    failure_kind = "parse",
                     attempt,
+                    stage = "structure",
                     report_head = %report.chars().take(400).collect::<String>(),
                     "structure generation rejected — regenerating both artifacts with clause feedback"
                 );
@@ -191,13 +213,17 @@ pub fn count_door_labeled_blocks(structure: &Value) -> usize {
 
 /// 单次尝试：地形 → 结构 串行（e2 判定输入通道：结构生成必须看见门口清单
 /// ——编号+判据是 door_refs 门位标签与课程门逐字全收的判定源，learnhub #161
-/// 同构），双契约门 + 门口对账，全成才算过。
+/// 同构），双契约门 + 门口对账，全成才算过。失败分桶（y02）：LLM 调用/
+/// 超时/网关 = [`AttemptFailure::Transport`]，解析/形状/契约 =
+/// [`AttemptFailure::Rejected`]。
 async fn attempt_once(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     input: &StructureInput,
     feedback: &str,
-) -> Result<StructureArtifacts, String> {
+    attempt: usize,
+    adjudicator: &mut NameAdjudicator<'_>,
+) -> Result<StructureArtifacts, AttemptFailure> {
     let basis = match input.learner_basis.as_deref().map(str::trim) {
         Some(text) if !text.is_empty() => text.to_owned(),
         _ => "（未提供——按纯零基础处理）".to_owned(),
@@ -210,8 +236,8 @@ async fn attempt_once(
             ("retry_feedback", feedback),
         ],
     )
-    .map_err(|error| error.to_string())?;
-    let terrain_raw = crate::generation::complete_json_coach(
+    .map_err(|error| AttemptFailure::Rejected(error.to_string()))?;
+    let terrain_raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
         STRUCTURE_SYSTEM,
@@ -220,7 +246,14 @@ async fn attempt_once(
         Some(structure_prompts::PREREQUISITE_TERRAIN.temperature),
     )
     .await
-    .map_err(|error| error.to_string())?;
+    {
+        Ok(raw) => raw,
+        Err(error) => {
+            let failure = AttemptFailure::from_app_error(error);
+            failure.log(attempt, "terrain");
+            return Err(failure);
+        }
+    };
     let terrain = parse_artifact(&terrain_raw, "前置地形")?;
 
     let proficiency = match input.proficiency_statement.as_deref().map(str::trim) {
@@ -237,8 +270,8 @@ async fn attempt_once(
             ("retry_feedback", feedback),
         ],
     )
-    .map_err(|error| error.to_string())?;
-    let structure_raw = crate::generation::complete_json_coach(
+    .map_err(|error| AttemptFailure::Rejected(error.to_string()))?;
+    let structure_raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
         STRUCTURE_SYSTEM,
@@ -247,7 +280,14 @@ async fn attempt_once(
         Some(structure_prompts::GOAL_DECOMPOSITION.temperature),
     )
     .await
-    .map_err(|error| error.to_string())?;
+    {
+        Ok(raw) => raw,
+        Err(error) => {
+            let failure = AttemptFailure::from_app_error(error);
+            failure.log(attempt, "structure");
+            return Err(failure);
+        }
+    };
     let mut structure = parse_artifact(&structure_raw, "知识结构")?;
     // 机械归一（x08）：模型仍可吐中文/旧词，契约门前收编为落库码。
     let vocab_rewrites = structure_contract::normalize_structure_vocab(&mut structure);
@@ -265,27 +305,100 @@ async fn attempt_once(
         .filter(|violation| violation.warning)
         .map(|violation| format!("[{}] {}", violation.code, violation.message))
         .collect();
+    let name_hints = violations
+        .iter()
+        .filter(|violation| violation.code == "gd.blocks.name_hint")
+        .count();
     if !warnings.is_empty() {
-        tracing::info!(warnings = ?warnings, "structure generation warnings (non-rejecting)");
+        tracing::info!(
+            warnings = ?warnings,
+            name_hints,
+            "structure generation warnings (non-rejecting)"
+        );
+    }
+    // L1 点名清单（y01）：L2 裁决的输入面——L0 命中已归红条、不进清单；
+    // 「」段内豁免。这里只派生不调用：红条非空时裁决永不触发（成本杠杆）。
+    let suspects = structure_contract::collect_name_suspects(&structure);
+    if !suspects.is_empty() {
+        tracing::info!(
+            attempt,
+            name_suspects = suspects.len(),
+            name_hints,
+            "structure name suspects detected (L1)"
+        );
     }
     let red: Vec<&structure_contract::ContractViolation> =
         violations.iter().filter(|violation| !violation.warning).collect();
     if !red.is_empty() {
         let owned: Vec<structure_contract::ContractViolation> =
             red.into_iter().cloned().collect();
-        return Err(structure_contract::format_violations(&owned));
+        return Err(AttemptFailure::Rejected(
+            structure_contract::format_violations(&owned),
+        ));
+    }
+    // L2 批量中立裁决（y01，learnhub #199）：唯一阻断面只剩 L1 形态时才付
+    // 费——一次小调用批量裁全部命中。bundle=true → 红条（带理由）进既有重
+    // 试机制；false → 放行；Degraded → 放行 + hint 日志（裁决器错误不进重
+    // 试反馈，绝不因裁决器死亡杀运行）。
+    if !suspects.is_empty() {
+        match adjudicator.adjudicate(&suspects).await {
+            Adjudication::Resolved(verdicts) => {
+                let bundles: Vec<&super::name_adjudication::NameVerdict> = verdicts
+                    .iter()
+                    .filter(|verdict| verdict.bundle)
+                    .collect();
+                tracing::info!(
+                    attempt,
+                    name_suspects = suspects.len(),
+                    name_hints,
+                    bundles = bundles.len(),
+                    adjudication = "ok",
+                    "name adjudication completed"
+                );
+                if !bundles.is_empty() {
+                    let red_rows: Vec<structure_contract::ContractViolation> = bundles
+                        .iter()
+                        .map(|verdict| {
+                            structure_contract::ContractViolation::red(
+                                "gd.blocks.one_name",
+                                format!(
+                                    "块名「{}」被裁为多个主题捆绑：{}——拆成多条，或改用无并列的规范名",
+                                    verdict.name, verdict.reason
+                                ),
+                            )
+                        })
+                        .collect();
+                    return Err(AttemptFailure::Rejected(
+                        structure_contract::format_violations(&red_rows),
+                    ));
+                }
+            }
+            Adjudication::Degraded(reason) => {
+                tracing::warn!(
+                    attempt,
+                    name_suspects = suspects.len(),
+                    name_hints,
+                    adjudication = "degraded",
+                    reason = %reason,
+                    "name adjudicator unavailable — suspects released as hints (no retry feedback)"
+                );
+            }
+        }
     }
     Ok(StructureArtifacts { structure, terrain })
 }
 
 /// 解析一份模型回包为 JSON 对象（json 模式保证合法性；这里再兜一层剥围栏
-/// 解析，防御忽略 response_format 的怪癖 provider）。
-fn parse_artifact(raw: &str, label: &str) -> Result<Value, String> {
+/// 解析，防御忽略 response_format 的怪癖 provider）。解析/形状失败 =
+/// 收到但不可用（[`AttemptFailure::Rejected`]）。
+fn parse_artifact(raw: &str, label: &str) -> Result<Value, AttemptFailure> {
     let value = crate::generation::parse_json_object::<Value>(raw)
-        .map_err(|error| format!("{label}解析失败（非合法 JSON 对象）：{error}"))?;
+        .map_err(|error| AttemptFailure::Rejected(format!("{label}解析失败（非合法 JSON 对象）：{error}")))?;
     if !value.is_object() {
         let head: String = raw.trim().chars().take(200).collect();
-        return Err(format!("{label}必须是单个 JSON 对象，得到：{head}"));
+        return Err(AttemptFailure::Rejected(format!(
+            "{label}必须是单个 JSON 对象，得到：{head}"
+        )));
     }
     Ok(value)
 }
@@ -384,9 +497,20 @@ mod tests {
     /// 脚本 completer：按序吐回包并留存每次收到的 prompt 全文（e2 判定输入
     /// 通道的断言面），只走 json 接缝；脚本耗尽即报错。留存的 prompt 数
     /// （= json 接缝调用次数）供早停红绿样断言「剩余预算没烧」。
-    struct Scripted(std::sync::Mutex<Vec<String>>, std::sync::Mutex<Vec<String>>);
+    /// 步骤可携带 `Err(AppError)`（y02 传输失败分流红绿样）。
+    struct Scripted(
+        std::sync::Mutex<Vec<Result<String, nomifun_common::AppError>>>,
+        std::sync::Mutex<Vec<String>>,
+    );
 
     impl Scripted {
+        fn new(steps: Vec<Result<String, nomifun_common::AppError>>) -> Self {
+            Self(
+                std::sync::Mutex::new(steps),
+                std::sync::Mutex::new(Vec::new()),
+            )
+        }
+
         fn calls(&self) -> usize {
             self.1.lock().unwrap().len()
         }
@@ -403,7 +527,7 @@ mod tests {
         ) -> Result<String, nomifun_common::AppError> {
             unreachable!("structure pipeline only uses the json seam")
         }
-        async fn complete_json_with_thinking(
+        async fn complete_json(
             &self,
             _: Option<(&str, &str)>,
             _: &str,
@@ -418,19 +542,16 @@ mod tests {
             if replies.is_empty() {
                 return Err(nomifun_common::AppError::Internal("script exhausted".into()));
             }
-            Ok(replies.remove(0))
+            replies.remove(0)
         }
     }
 
     fn scripted(replies: Vec<Value>) -> Scripted {
-        Scripted(
-            std::sync::Mutex::new(
-                replies
-                    .into_iter()
-                    .map(|value| serde_json::to_string(&value).unwrap())
-                    .collect(),
-            ),
-            std::sync::Mutex::new(Vec::new()),
+        Scripted::new(
+            replies
+                .into_iter()
+                .map(|value| Ok(serde_json::to_string(&value).unwrap()))
+                .collect(),
         )
     }
 
@@ -617,6 +738,121 @@ mod tests {
         );
     }
 
+    /// y02 红绿样（传输失败）：Timeout / BadGateway → 生成调用**恰 1 次**、
+    /// 不写重试反馈、原样返回传入的 `AppError`（不是「3 轮均未通过」的
+    /// `UnprocessableEntity`）。
+    #[tokio::test]
+    async fn transport_failure_propagates_after_a_single_call() {
+        let cases: Vec<(nomifun_common::AppError, fn(&nomifun_common::AppError) -> bool)> = vec![
+            (
+                nomifun_common::AppError::Timeout("json coach call exceeded 480s".into()),
+                |error| matches!(error, nomifun_common::AppError::Timeout(_)),
+            ),
+            (
+                nomifun_common::AppError::BadGateway(
+                    "LLM provider error: API error 502: bad gateway".into(),
+                ),
+                |error| matches!(error, nomifun_common::AppError::BadGateway(_)),
+            ),
+        ];
+        for (error, is_case) in cases {
+            let completer = Scripted::new(vec![Err(error)]);
+            let error = generate_structure_artifacts(
+                &completer,
+                None,
+                &StructureInput {
+                    goal: "目标".into(),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(is_case(&error), "必须原样返回传入的 AppError：{error:?}");
+            assert_eq!(
+                completer.calls(),
+                1,
+                "传输失败立即上抛，不占契约轮次（零重试反馈）"
+            );
+            assert!(
+                !error.to_string().contains("3 轮"),
+                "不得伪装成预算耗尽：{error}"
+            );
+        }
+    }
+
+    /// y02 红绿样（取消）：调用面自行返回 `Conflict(CANCELLED_MESSAGE)`
+    /// 时原样上抛——不误报传输失败、不变成契约耗尽。
+    #[tokio::test]
+    async fn cancellation_is_propagated_unchanged() {
+        let completer = Scripted::new(vec![Err(nomifun_common::AppError::Conflict(
+            crate::service::CANCELLED_MESSAGE.to_owned(),
+        ))]);
+        let error = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                nomifun_common::AppError::Conflict(message)
+                    if message.contains(crate::service::CANCELLED_MESSAGE)
+            ),
+            "取消必须原样返回：{error:?}"
+        );
+        assert_eq!(completer.calls(), 1);
+    }
+
+    /// y02 红绿样（parse 失败）：非法 JSON 仍占契约轮次并回灌——首轮地形
+    /// 坏对象 → 第二轮地形+结构成功；重试反馈携带 line/column 与出错窗口。
+    #[tokio::test]
+    async fn invalid_json_still_retries_and_feeds_the_failure_window() {
+        let broken_terrain = r#"{"doors": [{"id": "G1" "criterion": "能用配方法解形如 x²=p 的方程", "kind": "hard"}]}"#;
+        let completer = Scripted::new(vec![
+            Ok(broken_terrain.to_owned()),
+            Ok(serde_json::to_string(&golden_terrain()).unwrap()),
+            Ok(serde_json::to_string(&golden_structure()).unwrap()),
+        ]);
+        let artifacts = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .expect("second attempt passes");
+        assert_eq!(artifacts.terrain["doors"][0]["id"], json!("G1"));
+        let prompts = completer.1.lock().unwrap();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "parse 失败占轮：首轮地形失败，次轮地形+结构"
+        );
+        assert!(
+            prompts[1].contains("window:"),
+            "重试反馈必须带出错窗口：{:#}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("line 1 column"),
+            "重试反馈必须带行列出错位置：{:#}",
+            prompts[1]
+        );
+    }
+
     /// 门位标签读数（e2 单源）：只计带非空 door_refs 的块——空数组、缺键、
     /// 非 door_refs 键一律不计；无 blocks 键 = 0（与快照 info/warn 与 smoke
     /// OK 行共用的同一读数口径）。
@@ -626,8 +862,8 @@ mod tests {
             "blocks": [
                 { "name": "块A", "slug": "block-a", "spine": "s", "stage": "basic", "note": "n", "door_refs": ["G1"] },
                 { "name": "块B", "slug": "block-b", "spine": "s", "stage": "basic", "note": "n", "door_refs": ["G1", "G2"] },
-                { "name": "块C", "slug": "block-c", "spine": "s", "stage": "advanced", "note": "n", "door_refs": [] },
-                { "name": "块D", "slug": "block-d", "spine": "s", "stage": "expert", "note": "n" }
+                { "name": "块C", "slug": "block-c", "spine": "s", "stage": "basic", "note": "n", "door_refs": [] },
+                { "name": "块D", "slug": "block-d", "spine": "s", "stage": "basic", "note": "n" }
             ]
         });
         assert_eq!(count_door_labeled_blocks(&structure), 2);
@@ -644,5 +880,233 @@ mod tests {
         assert_eq!(envelope["generated_at"], json!(1000));
         assert!(envelope["structure"].is_object());
         assert!(envelope["terrain"].is_object());
+    }
+
+    // ── y01：名字三层分工（L0 硬门 / L1 提示 / L2 批量裁决）───────────────
+
+    fn adjudication_reply(rows: &[(&str, bool, &str)]) -> String {
+        serde_json::json!({
+            "verdicts": rows
+                .iter()
+                .map(|(name, bundle, reason)| serde_json::json!({
+                    "name": name,
+                    "bundle": bundle,
+                    "reason": reason,
+                }))
+                .collect::<Vec<_>>()
+        })
+        .to_string()
+    }
+
+    fn structure_with_name(name: &str) -> Value {
+        // 改名块[2]（边不引用它——边端点解析是另一条款，不判据混）。
+        let mut structure = golden_structure();
+        structure["blocks"][2]["name"] = json!(name);
+        structure
+    }
+
+    /// y01 验收：`求和公式` → L0 无红、L1 有 hint、L2 裁 `bundle=false`
+    /// → 生成一次通过（恰 1 次裁决调用，输入只含名字+被点字符）。
+    #[tokio::test]
+    async fn soft_suspect_adjudicated_single_term_passes_in_one_attempt() {
+        let completer = scripted(vec![
+            golden_terrain(),
+            structure_with_name("求和公式"),
+            json!({ "verdicts": [{ "name": "求和公式", "bundle": false, "reason": "固定术语" }] }),
+        ]);
+        let artifacts = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .expect("single-topic term is released by L2");
+        assert_eq!(artifacts.structure["blocks"][2]["name"], json!("求和公式"));
+        assert_eq!(completer.calls(), 3, "地形 + 结构 + 裁决各一次");
+        let prompts = completer.1.lock().unwrap();
+        assert!(
+            prompts[2].contains("求和公式") && prompts[2].contains("「和」"),
+            "裁决输入只给名字 + 被点字符: {:#}",
+            prompts[2]
+        );
+        assert!(
+            !prompts[2].contains("blocks[2]") && !prompts[2].contains("gd.blocks.one_name"),
+            "位置与机械门结论不进裁决输入: {:#}",
+            prompts[2]
+        );
+    }
+
+    /// y01 验收：`百分数与利率的对应` → L2 `bundle=true` → 红条进重试反馈
+    /// （带裁决理由）→ 下一轮改名过门。
+    #[tokio::test]
+    async fn bundled_name_is_rejected_with_the_verdict_reason_and_retried() {
+        let completer = scripted(vec![
+            golden_terrain(),
+            structure_with_name("百分数与利率的对应"),
+            json!({
+                "verdicts": [{
+                    "name": "百分数与利率的对应",
+                    "bundle": true,
+                    "reason": "百分数与利率是两个可独立成条的主题"
+                }]
+            }),
+            golden_terrain(),
+            structure_with_name("百分数的意义"),
+        ]);
+        let artifacts = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .expect("second attempt renames the bundled block");
+        assert_eq!(artifacts.structure["blocks"][2]["name"], json!("百分数的意义"));
+        let prompts = completer.1.lock().unwrap();
+        assert_eq!(prompts.len(), 5, "2 轮 × 2 次生成 + 1 次裁决");
+        assert!(
+            prompts[4].contains("gd.blocks.one_name")
+                && prompts[4].contains("百分数与利率是两个可独立成条的主题"),
+            "重试反馈必须带红条与裁决理由: {:#}",
+            prompts[4]
+        );
+    }
+
+    /// y01 验收：`、`/`，` 是 L0 硬门——不触发 L2（不付费）；同名硬标点连
+    /// 败两轮走同指纹早停（证明裁决从未被调用）。
+    #[tokio::test]
+    async fn hard_mark_names_never_pay_for_adjudication() {
+        let hard = structure_with_name("百分数、利率");
+        let completer = scripted(vec![
+            golden_terrain(),
+            hard.clone(),
+            golden_terrain(),
+            hard,
+        ]);
+        let error = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("gd.blocks.one_name"), "{error}");
+        assert_eq!(completer.calls(), 4, "只有两轮地形+结构，无裁决调用");
+        let prompts = completer.1.lock().unwrap();
+        assert!(
+            prompts.iter().all(|prompt| !prompt.contains("术语判定员")),
+            "L0 红条不得触发 L2 裁决"
+        );
+    }
+
+    /// y01 验收：L2 输出缺名/未知/重复/空理由/传输失败 → Degraded，生成
+    /// 照常通过（命中降为提示）。
+    #[tokio::test]
+    async fn degraded_adjudication_releases_the_generation() {
+        let suspects = ["求和公式", "双进程与窗口"];
+        let cases: Vec<(&str, Result<String, nomifun_common::AppError>)> = vec![
+            ("空表", Ok(serde_json::json!({ "verdicts": [] }).to_string())),
+            (
+                "未提交名",
+                Ok(adjudication_reply(&[("别的名字", false, "x")])),
+            ),
+            (
+                "重复",
+                Ok(adjudication_reply(&[
+                    ("求和公式", false, "a"),
+                    ("求和公式", true, "b"),
+                    ("双进程与窗口", false, "c"),
+                ])),
+            ),
+            (
+                "空理由",
+                Ok(adjudication_reply(&[
+                    ("求和公式", false, " "),
+                    ("双进程与窗口", false, "c"),
+                ])),
+            ),
+            (
+                "传输失败",
+                Err(nomifun_common::AppError::BadGateway(
+                    "LLM provider error: API error 502".into(),
+                )),
+            ),
+        ];
+        for (label, reply) in cases {
+            let mut structure = golden_structure();
+            structure["blocks"][2]["name"] = json!(suspects[0]);
+            structure["blocks"][5]["name"] = json!(suspects[1]);
+            let completer = Scripted::new(vec![
+                Ok(serde_json::to_string(&golden_terrain()).unwrap()),
+                Ok(serde_json::to_string(&structure).unwrap()),
+                reply,
+            ]);
+            let artifacts = generate_structure_artifacts(
+                &completer,
+                None,
+                &StructureInput {
+                    goal: "目标".into(),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                },
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label}: 降级必须放行: {error}"));
+            assert_eq!(artifacts.structure["blocks"][2]["name"], json!(suspects[0]), "{label}");
+            assert_eq!(completer.calls(), 3, "{label}: 一次裁决失败后不再重试同轮");
+        }
+    }
+
+    /// y01 验收（memo + 成本杠杆）：同一捆绑名跨 attempt 只裁一次——第二轮
+    /// 走 memo 直接维持红条，2 轮同指纹早停（5 次调用 = 2×2 生成 + 1 裁决）。
+    #[tokio::test]
+    async fn adjudication_memo_spans_attempts() {
+        let bundled = structure_with_name("双进程与窗口");
+        let completer = scripted(vec![
+            golden_terrain(),
+            bundled.clone(),
+            json!({
+                "verdicts": [{
+                    "name": "双进程与窗口",
+                    "bundle": true,
+                    "reason": "两个可独立成条的主题"
+                }]
+            }),
+            golden_terrain(),
+            bundled,
+        ]);
+        let error = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("提前停止"), "{error}");
+        assert_eq!(
+            completer.calls(),
+            5,
+            "同名跨 attempt 只裁一次（memo），第二轮不重复付费"
+        );
     }
 }

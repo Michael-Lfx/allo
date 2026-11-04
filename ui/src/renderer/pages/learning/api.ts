@@ -3,6 +3,8 @@ import type {
   AttemptResult,
   BasisView,
   CalendarStats,
+  CapacityFeedbackChoice,
+  CapacityFeedbackView,
   CheckinStatus,
   ConceptAuditReport,
   CourseDetail,
@@ -35,6 +37,7 @@ import type {
   UpdateSectionBodyRequest,
   MountRoundSummary,
   StructureRepairSummary,
+  SystemActionView,
   XpCalendar,
   XpReading,
 } from './types';
@@ -73,11 +76,14 @@ export const learningApi = {
       `${BASE}/courses/generate/cancel`,
       {}
     ),
-  // 手动触发一次生长（就绪补到 7；已在生长中报 409）
-  growGraph: (courseId: string) =>
+  // 手动触发一次生长（就绪补到 7；已在生长中报 409）。可选 trigger 只影响
+  // 动作簿的触发源标签（缺省 manual；自动补批传 auto_refill），不改变裁决。
+  growGraph: (courseId: string, trigger?: 'manual' | 'auto_refill') =>
     httpRequest<{ kicked: boolean }>(
       'POST',
-      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow`,
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow${
+        trigger ? `?trigger=${encodeURIComponent(trigger)}` : ''
+      }`,
       {}
     ),
   // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
@@ -92,6 +98,13 @@ export const learningApi = {
     httpRequest<GraphHistoryView>(
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/history`
+    ),
+  // 系统动作簿（y04）：自主/后台动作的终态留痕，按课程倒序（limit 缺省 50、
+  // 上限 200，由后端归一）
+  systemActions: (courseId: string, limit = 50) =>
+    httpRequest<SystemActionView[]>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/system-actions?limit=${limit}`
     ),
   // 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源
   graphConcepts: (courseId: string) =>
@@ -173,6 +186,14 @@ export const learningApi = {
     httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
+  // y07 容量反馈：latest-wins 留痕，响应 saved view；回显随 lesson detail
+  // 读回（不另设 GET）。零结算零置位——只记账，不触发重生成/拆节。
+  recordCapacityFeedback: (lessonId: string, choice: CapacityFeedbackChoice) =>
+    httpRequest<CapacityFeedbackView>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(lessonId)}/capacity-feedback`,
+      { choice }
+    ),
   // 按需生成课时内容（e4 双模化默认异步）：返回 202 面（任务键 + 轮询
   // 提示），生成在后台任务执行——断开连接不中断；调用方以 generationTasks
   // 轮询终态（或听 learning.lesson-generation WS 流）后拉课时详情。

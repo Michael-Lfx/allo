@@ -170,6 +170,27 @@ pub(crate) fn legacy_duplicate_hit<'a>(
 }
 
 
+/// 整课题库面系统提示词（y06，learnhub #201）：V2 开关 on 时在旧常量后追加
+/// 干扰项五型菜单；off 臂逐字返回旧常量（旧行为臂）。
+pub(super) fn lesson_system_prompt() -> String {
+    let mut system = LESSON_SYSTEM.to_owned();
+    if content_discipline_v2_enabled() {
+        system.push_str(QUESTION_COVERAGE_BLOCK);
+        system.push_str(DISTRACTOR_MENU_BLOCK);
+    }
+    system
+}
+
+/// 单题/变式题库面系统提示词：与整课同源（变式站复用
+/// `LESSON_ACTIVITY_SYSTEM`，不另写第二份菜单），开关 on 才追加五型。
+pub(super) fn lesson_activity_system_prompt() -> String {
+    let mut system = LESSON_ACTIVITY_SYSTEM.to_owned();
+    if content_discipline_v2_enabled() {
+        system.push_str(DISTRACTOR_MENU_BLOCK);
+    }
+    system
+}
+
 /// Stage 2 of one lesson: produce `est` + activities as a
 /// small JSON object, grounded in the finished document.
 pub(super) async fn generate_lesson_activities(
@@ -178,6 +199,7 @@ pub(super) async fn generate_lesson_activities(
     prompt: &str,
 ) -> Result<ActivitiesOutput, String> {
     let enabled = qb_similarity_enabled();
+    let system = lesson_system_prompt();
     let mut last_error = String::new();
     for attempt in 0..2 {
         if attempt > 0 {
@@ -194,7 +216,7 @@ pub(super) async fn generate_lesson_activities(
         let raw = complete(
             completer,
             model_override,
-            LESSON_SYSTEM,
+            &system,
             &user,
             ACTIVITIES_MAX_TOKENS,
         )
@@ -288,6 +310,7 @@ pub(crate) async fn generate_lesson_activity(
         excerpt,
         existing_questions,
     );
+    let system = lesson_activity_system_prompt();
     let mut last_error = String::new();
     for attempt in 0..2 {
         if attempt > 0 {
@@ -304,7 +327,7 @@ pub(crate) async fn generate_lesson_activity(
         let raw = complete(
             completer,
             model_override,
-            LESSON_ACTIVITY_SYSTEM,
+            &system,
             &user,
             SINGLE_ACTIVITY_MAX_TOKENS,
         )

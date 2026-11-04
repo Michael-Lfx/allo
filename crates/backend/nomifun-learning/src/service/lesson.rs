@@ -472,15 +472,13 @@ impl LearningService {
         grounding
     }
 
-    /// Full lesson view for one lesson, including the sectioned body. The
-    /// course-detail catalog deliberately omits section bodies (a 200-node
-    /// graph course would carry hundreds of kilobytes), so the frontend
-    /// fetches them here when the learner actually opens a lesson.
-    pub async fn lesson_detail(
+    /// 课时所属课程（module 归属的单源查询）。课时不存在 → 404
+    /// `learning lesson {id}`；课时详情的选课校验与容量反馈的课时校验共用
+    /// 这一口径，避免同一 JOIN 查询散落多处。
+    pub(super) async fn course_id_for_lesson(
         &self,
-        user_id: &UserId,
         lesson_id: &LearningLessonId,
-    ) -> Result<LessonView, AppError> {
+    ) -> Result<LearningCourseId, AppError> {
         let course_id: String = sqlx::query_scalar(
             "SELECT m.course_id FROM learning_modules m \
              JOIN learning_lessons l ON l.module_id = m.module_id \
@@ -491,9 +489,26 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
-        let course_id = parse_id::<LearningCourseId>(course_id)?;
+        parse_id(course_id)
+    }
+
+    /// Full lesson view for one lesson, including the sectioned body. The
+    /// course-detail catalog deliberately omits section bodies (a 200-node
+    /// graph course would carry hundreds of kilobytes), so the frontend
+    /// fetches them here when the learner actually opens a lesson.
+    pub async fn lesson_detail(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+    ) -> Result<LessonView, AppError> {
+        let course_id = self.course_id_for_lesson(lesson_id).await?;
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
-        self.lesson_view(lesson_id, enrollment.as_ref()).await
+        let mut view = self.lesson_view(lesson_id, enrollment.as_ref()).await?;
+        // 容量反馈回显只属于当前用户（per-user 留痕；其他视图恒 None）。
+        view.capacity_feedback = self
+            .capacity_feedback_for(user_id, lesson_id)
+            .await?;
+        Ok(view)
     }
 
     /// 课时生成目标行：调度守卫过闸后的最小投影（[`Self::load_lesson_generation_target`]
@@ -2092,6 +2107,11 @@ impl LearningService {
             );
         }
         let now = now_ms();
+        // y07：超容自报升级为内容元数据落库（同事务）。归一规则与草稿侧
+        // 一致（trim 后为空 = 缺席）——缺席写 NULL 清旧值，重生成永远反映
+        // 最近一次发布；`over_capacity` tracing 保留（观测面不删）。
+        let capacity_note =
+            crate::lesson_draft::normalize_capacity_note(output.capacity_note.as_deref());
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         // 分节输出：节清单整体替换（幂等重生成语义），summary 存拼装文本
         // （双读回退）。单篇文档输出（agent 旧契约）不动节表。
@@ -2128,10 +2148,12 @@ impl LearningService {
             }
         }
         sqlx::query(
-            "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1 WHERE lesson_id = ?",
+            "UPDATE learning_lessons SET summary = ?, estimated_minutes = ?, content_generated = 1, \
+             capacity_note = ? WHERE lesson_id = ?",
         )
         .bind(output.summary.trim())
         .bind(output.estimated_minutes)
+        .bind(capacity_note)
         .bind(lesson_id.as_str())
         .execute(&mut *transaction)
         .await

@@ -101,3 +101,45 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
 - 2026-11-04：开图立票；范围 = 第一 + 第二优先级七票；y02 锁定学习模块
   内闭环；y01 与 y02 顺序按 `structure_gen` 冲突面排定；ambition/摘要、
   novelty、回放夹具不占本轮。
+- 2026-11-04：y05 关闭——建课三入口（知识库/描述/学习图）校验后先进入对话框
+  内计划态，回显四槽 + 确定性读数，唯一发起点为「开始生成」，返回修改/关闭
+  零请求；t5 成本门并入计划卡、独立 Modal 删除（5777dbaca）。
+- 2026-11-04：y06 关闭——干扰项五型（R21）、完备性三面（R20，规划/写作/题库）
+  与材料学五条 + 写作面（R15–R19）落 EN 常量与 CN 孪生块，全挂
+  `NOMI_LEARNING_CONTENT_DISCIPLINE_V2` on/off 双臂，off 臂逐字回退旧文本
+  （6d7a23ac5）。
+- 2026-11-04：y02 关闭——学习侧新增 `AttemptFailure{Transport,Rejected}` 分流：
+  parse 失败带 serde 行列 + ±120 字符窗口，传输失败在 structure_gen、
+  mounting/structure_ops、生长环与 open_judge 一次即上抛、不写重试反馈槽、
+  不占契约轮次，仅 `Rejected` 才回灌重试（e784367fc）。
+- 2026-11-04：y01 关闭——`one_name` 拆成三层：L0 `、`/`，` 标点硬门，
+  L1 `与/和/及/,//` 只出 `gd.blocks.name_hint` 提示不阻断，L2 仅在 L1 非空
+  且无红条时一次性批量中立裁决（`name_adjudication.rs`：输入只给名字 + 被点
+  字符、同名运行内 memo、裁决器失败降级为提示）；`求和公式` 类术语本字不再
+  误杀（e79d82b8e）。
+- 2026-11-04：y03 关闭——内容面新增只读 `search_concepts` 工具（仅图线 ∧
+  teaches 非空节点挂载）：四通道 exact/alias/nearname/fulltext 按 concept_id
+  去重取最高级截 top-5、零命中 `not_found: true` 不抛错，detail 按 id 取全
+  定义 + 全部活跃别名；服务只发 SELECT（无新表/写入口），近名机械全复用
+  `defnear`（cf020c022）。
+- 2026-11-04：y04 关闭——新增 `learning_system_actions` 窄表（写侧 fail-open，
+  维护 tick/手动修补挂载/生长终态各一行，忙拒/取消/零工作不写；物理列名
+  `trigger_source` 规避 TRIGGER 令牌，API 字段仍 `trigger`），growth 批行新增
+  `cancelled` 中性态；读端点按课程倒序 + limit，课程详情「系统动作」折叠节；
+  表数 124→125（d37d1f049）。
+- 2026-11-04：y07 关闭——发布尾把生成期 `capacity_note` 落库
+  （`learning_lessons.capacity_note`，缺席/空白写 NULL 清旧值），新增
+  per-user/per-lesson `learning_lesson_capacity_feedback` 三选一留痕
+  （`UNIQUE(user_id, lesson_id)` latest-wins UPSERT、`feedback_id` 首写生成、
+  两条逻辑引用 Cascade），`CourseDetail.overloaded_lessons` 内容级计数 +
+  课时页反馈卡（无自报不呈卡、重载回显）；零结算零置位（不写
+  attempts/review/xp/progress/FSRS、不改 status/est、不注入共享生成）；
+  表数 125→126（58f1e4ef5）。
+- 2026-11-04：集成分支 `feat/learning-absorb-7` **保留** implement-spec 产生的
+  merge commits（本波次内不重写历史）；合并回 `feat/learn0928` / 开 PR 前，按
+  [docs/contributing/git-workflow.md](../../contributing/git-workflow.md)
+  执行 `git fetch origin && git rebase origin/main` 线性化——历史届时统一整理。
+- 2026-11-04：code-review 修复合入——删 `learning_system_actions.ref_id` 与容量
+  反馈的 `feedback_id`/空 note 列、lesson→course 查询收成共享单份、清死成本门
+  i18n、`search_concepts` 注册表读加界、学习图工作区补超载徽标、y01 修补
+  service 测试、y06 评审清单落档（2c9e61e45）。

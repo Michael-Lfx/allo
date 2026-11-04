@@ -58,6 +58,12 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/graph/history",
             get(graph_history),
         )
+        // 系统动作簿（y04）：自主/后台动作的终态留痕，按课程倒序 + limit
+        // （缺省 50、上限 200）；课程不存在/软删 404，归档课仍可读。
+        .route(
+            "/api/learning/courses/{id}/system-actions",
+            get(list_system_actions),
+        )
         .route(
             "/api/learning/courses/{id}/graph/concepts",
             get(graph_concepts),
@@ -101,6 +107,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(diagnostic_plan),
         )
         .route("/api/learning/lessons/{id}", get(lesson_detail))
+        .route(
+            "/api/learning/lessons/{id}/capacity-feedback",
+            post(record_lesson_capacity_feedback),
+        )
         .route(
             "/api/learning/lessons/{id}/progress",
             post(update_lesson_progress),
@@ -298,17 +308,56 @@ async fn cancel_learning_graph_generation(
 
 /// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。e3 起也是
 /// 零节点课程的首批触发面：学习窗口「开始学习」调这里（force 恒过停摆臂）。
+/// y04：可选 `?trigger=auto_refill`（缺省 manual）——只改动作簿触发源标签，
+/// 不改变任何裁决；settlement/timer 不接受外部注入。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
+    Query(query): Query<GrowGraphQuery>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
+    let trigger = match query.trigger.as_deref() {
+        None => crate::service::SystemActionTrigger::Manual,
+        Some(value) => crate::service::SystemActionTrigger::from_grow_query(value).ok_or_else(
+            || AppError::BadRequest(format!("unknown growth trigger: {value}")),
+        )?,
+    };
     let kicked = state
         .service
-        .kick_growth(&user.id, &course_id, true, None)
+        .kick_growth_with_trigger(&user.id, &course_id, true, None, trigger)
         .await?;
     Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GrowGraphQuery {
+    #[serde(default)]
+    trigger: Option<String>,
+}
+
+/// 系统动作读侧（y04）：终态动作按课程倒序 + limit（缺省 50、上限 200）。
+/// 结构化 info 日志在 service 读侧（course/limit/returned 三字段）；本层只
+/// 解析参数与透传。
+async fn list_system_actions(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<SystemActionsQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::models::SystemActionView>>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let limit = query
+        .limit
+        .unwrap_or(crate::service::SYSTEM_ACTION_DEFAULT_LIMIT);
+    Ok(Json(ApiResponse::ok(
+        state.service.system_actions(&course_id, limit).await?,
+    )))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SystemActionsQuery {
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 /// 自动补批判定（m10 触发②）：纯读裁决——就绪存量 × 开关合力 →
@@ -586,6 +635,24 @@ async fn lesson_detail(
     let id = parse_id::<LearningLessonId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.lesson_detail(&user.id, &id).await?,
+    )))
+}
+
+/// `POST /api/learning/lessons/{id}/capacity-feedback`（y07）：三选一留痕，
+/// latest-wins；响应 saved view，回显随 lesson detail 读回（不另设 GET）。
+/// 零结算零置位：只写反馈表（choice 空/未知 400；未选课/课时不存在 404）。
+async fn record_lesson_capacity_feedback(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::RecordCapacityFeedbackRequest>,
+) -> Result<Json<ApiResponse<crate::models::CapacityFeedbackView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .record_capacity_feedback(&user.id, &id, &request.choice)
+            .await?,
     )))
 }
 

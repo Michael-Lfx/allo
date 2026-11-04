@@ -1871,6 +1871,58 @@ impl LessonStatus {
     }
 }
 
+/// 节点容量反馈三选一（y07；learnhub `EstFeedbackChoice` 吸收）：
+/// 接受现状 / 预算加长 / 拆成两节。**只是留痕**——不自动重生成、不拆节、
+/// 不改 est（est 同时是内容尺寸、XP 基数与水位）。
+///
+/// serde kebab（`accept` | `extend` | `split`）：写侧严格（未知值 400）、
+/// 读侧宽容（未知值按无回显处理）。枚举单源在 Rust，DB 无 CHECK（ADR-0015）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapacityFeedbackChoice {
+    Accept,
+    Extend,
+    Split,
+}
+
+impl CapacityFeedbackChoice {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Extend => "extend",
+            Self::Split => "split",
+        }
+    }
+
+    /// 读侧宽容解析：未知值返回 `None`（旧/未来版本写入的值不炸读路径）。
+    pub fn try_from_str(value: &str) -> Option<Self> {
+        match value {
+            "accept" => Some(Self::Accept),
+            "extend" => Some(Self::Extend),
+            "split" => Some(Self::Split),
+            _ => None,
+        }
+    }
+}
+
+/// 当前用户对某课时留下的容量反馈（latest-wins；只随 lesson detail 返回
+/// 本人那一行——聚合是内容级计数，不泄露他人选择）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CapacityFeedbackView {
+    pub choice: CapacityFeedbackChoice,
+    /// 最近一次选择的时间（毫秒）。
+    pub at: i64,
+}
+
+/// `POST /api/learning/lessons/{id}/capacity-feedback` 请求体。
+/// `choice` 收原始字符串（而不是直接反序列化成枚举）：空/未知值要走
+/// 服务端 400 口径，而不是 axum 的 422 反序列化拒绝。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordCapacityFeedbackRequest {
+    #[serde(default)]
+    pub choice: String,
+}
+
 /// 课程目录类型。`traditional` 为模块/课时大纲课程；`learning_graph`
 /// （beta）从学习目标出发：先生成知识结构快照（参考地图），再按批次生长，
 /// 依赖由概念网表达（ADR-0009/0010），
@@ -2347,7 +2399,9 @@ pub struct GraphHistoryView {
 
 /// 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度）。
 /// status 是批行状态机：pending=生长进行中（或中断，见 failed）、
-/// applied=已落库、failed=生长失败（ADR-0009 Amendment 1）。
+/// applied=已落库、failed=生长失败（ADR-0009 Amendment 1）、
+/// cancelled=用户取消（y04 起的中性终态——取消不是失败，历史 failed 行不
+/// 回填）。
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphBatchView {
     pub batch_id: String,
@@ -2356,6 +2410,24 @@ pub struct GraphBatchView {
     pub note: String,
     pub created_at: i64,
     pub nodes: Vec<GraphNodeHistoryView>,
+}
+
+/// 系统动作簿的一行（y04，`GET /courses/{id}/system-actions`）：自主/后台
+/// 动作的**终态**留痕。kind/trigger/result 是机器名（Rust 枚举单源），
+/// 人面文案由前端 i18n 承担；`basis` 是触发时的一句判据读数，`reason` 只在
+/// failed 时非空。动作对象（批次/审计行/挂载行）的技术 id 不跨表复制，
+/// 故无 ref 列。读侧宽容：未知 kind/trigger/result 原样透出，不报错。
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemActionView {
+    pub action_id: String,
+    pub kind: String,
+    pub trigger: String,
+    pub basis: String,
+    pub result: String,
+    pub reason: String,
+    /// 手动动作的操作者；自动动作（timer/settlement/auto_refill）为 NULL。
+    pub actor_user_id: Option<String>,
+    pub at: i64,
 }
 
 /// 批次内的一个节点行。
@@ -2502,6 +2574,39 @@ pub struct ConceptAuditCycle {
     pub b_name: String,
 }
 
+/// 概念登记表检索命中（y03 只读自查通道）：一条 = 一个概念的当前视野。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ConceptSearchHit {
+    pub concept_id: String,
+    /// 登记表正名（canonical）。
+    pub canonical: String,
+    /// 活跃别名（退役名不占池）；detail 模式返回全部活跃别名。
+    pub aliases: Vec<String>,
+    /// 完整定义（search 与 detail 同一口径，不截断）。
+    pub definition: String,
+    /// 命中通道：exact | alias | nearname | fulltext（等级由高到低）。
+    /// detail 模式按 concept_id 精确取行，记为 exact。
+    pub matched_by: String,
+    /// 通道内相似度（exact/alias = 1.0；nearname = 名字相似分；
+    /// fulltext = query 在定义中的包含度，封顶 1）。
+    pub score: f64,
+}
+
+/// 概念检索结果（`not_found` 为 true 时 `hits` 恒空——零命中不抛错）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptSearchResults {
+    pub hits: Vec<ConceptSearchHit>,
+    pub not_found: bool,
+}
+
+/// 检索模式（工具入参 mode 的枚举面；serde kebab：search / detail）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConceptSearchMode {
+    Search,
+    Detail,
+}
+
 /// 定义审计报告（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
 /// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）的机械读数。
 #[derive(Debug, Clone, Serialize)]
@@ -2523,6 +2628,9 @@ pub struct CourseDetail {
     pub modules: Vec<ModuleView>,
     pub next_lesson_id: Option<LearningLessonId>,
     pub due_review_count: i64,
+    /// 课程内活跃课时中自报超容（`capacity_note` trim 后非空）的计数。
+    /// 纯读聚合、内容级口径（不泄露他人反馈）；0 = 零版面。
+    pub overloaded_lessons: usize,
     /// 仅 `learning_graph` 课程携带：就绪集推荐与水位读数（结构投影走独立接口）。
     pub graph: Option<LearningGraphView>,
     /// 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）。只挂在
@@ -2562,6 +2670,13 @@ pub struct LessonView {
     pub activities: Vec<ActivityView>,
     /// 分节正文（ADR-0002）。空 = 旧课时的单篇 summary（双读回退）。
     pub sections: Vec<SectionView>,
+    /// 生成期超容自报（k03）：NULL = 无自报/旧课时。内容级共享元数据，
+    /// 不是个人预算；不参与 est/XP/水位。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_note: Option<String>,
+    /// 当前用户对本课的容量反馈（仅 lesson detail 填；其他视图为 None）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_feedback: Option<CapacityFeedbackView>,
 }
 
 /// API 视角的一个节段：清单字段 + 正文与生成状态。

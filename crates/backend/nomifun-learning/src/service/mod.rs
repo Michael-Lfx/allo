@@ -158,6 +158,9 @@ pub struct GrowthRunStats {
     pub review_fragments_rows: usize,
     pub review_fragments_unhandled: usize,
     pub review_fragments_degraded: bool,
+    /// L1 名字形态提示读数（y01 生长侧）：`ng.mints.name_hint` 行数——
+    /// 只提示不阻断（smoke 生长 OK 读数行 `name_hints={n}`）。
+    pub name_hints: usize,
     /// 有状态复审臂（m5）：`NOMI_LEARNING_REVIEW_STATE` 开关状态。
     pub review_state: bool,
     /// 前轮评审意见回灌重排的次数（0 = 本轮无回灌；off 臂恒 0）。
@@ -542,6 +545,7 @@ pub use learning_graph::{
     MAINTENANCE_INTERVAL_MINUTES,
     is_findings_watermark_disabled_value,
 };
+mod capacity_feedback;
 mod course;
 mod course_outline;
 mod diagnostic;
@@ -554,12 +558,21 @@ mod open_judge;
 mod progress;
 mod quiz;
 mod review;
+mod system_actions;
 mod tags;
 mod xp;
 
 pub use lesson::{LessonGenerationAccepted, LessonRunStats};
 
 pub use xp::CompanionXpSink;
+
+pub(crate) use system_actions::{
+    NewSystemAction, SYSTEM_ACTION_DEFAULT_LIMIT, SYSTEM_ACTION_MAX_LIMIT, system_action_limit,
+};
+
+pub(crate) use crate::learning_graph::system_action::{
+    SystemActionKind, SystemActionResult, SystemActionTrigger,
+};
 
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档把判底/作答原文注册进
 /// `ArchivingCompleter` 时引用同一常量——占位文本单源。
@@ -597,6 +610,10 @@ async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
 
 #[cfg(test)]
 mod basis_tests;
+#[cfg(test)]
+mod capacity_feedback_tests;
+#[cfg(test)]
+mod concept_search_tests;
 #[cfg(test)]
 mod tests;
 

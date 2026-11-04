@@ -36,7 +36,7 @@ export function useAutoRefill(courseId: string, onFired: () => void) {
           setAutoPreparing(false);
           return undefined;
         }
-        return learningApi.growGraph(courseId).then(
+        return learningApi.growGraph(courseId, 'auto_refill').then(
           (result) => {
             if (cancelled) return; // POST 已发出：保留标记，后端锁兜底。
             setAutoPreparing(false);

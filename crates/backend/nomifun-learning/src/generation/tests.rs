@@ -70,6 +70,47 @@
         assert!(LESSON_SYSTEM.contains("walk EVERY option"));
         assert!(LESSON_ACTIVITY_SYSTEM.contains("\"evidence\""));
         assert!(LESSON_ACTIVITY_SYSTEM.contains("verbatim quote"));
+        // y06（learnhub #201）：干扰项五型菜单的五型、适用/不适用对与总闸
+        // 都在常量里（装配开关由串行测试锁死）。
+        assert!(DISTRACTOR_MENU_BLOCK.contains("Distractor menu (R21"));
+        for phrase in [
+            "Near-miss:",
+            "Partial satisfaction:",
+            "Criterion linkage mismatch:",
+            "Wording transformation trap:",
+            "Set relation check:",
+            "Prefer a natural negative example",
+            "never fabricate",
+            "fill_in_blank keeps its existing near-synonym trap",
+            "ordering, matching and numeric take no distractor menu",
+        ] {
+            assert!(
+                DISTRACTOR_MENU_BLOCK.contains(phrase),
+                "distractor menu missing「{phrase}」"
+            );
+        }
+        // y06（learnhub #202）：完备性三面在规划面、写作面、题库面各一条
+        // （装配开关由串行测试锁死）。
+        assert!(
+            super::lesson::COMPLETENESS_PLANNING_CLAUSE
+                .contains("Completeness across the three faces (R20")
+        );
+        assert!(QUESTION_COVERAGE_BLOCK.contains("Coverage of both study directions (R20"));
+        assert!(CONTENT_DISCIPLINE_V2_BLOCK.contains("Completeness faces do not shrink (R20"));
+        // y06（learnhub #203）：材料学五条各配唯一锚点（第六条例组反模式自查
+        // 不进运行时提示词，落到票面 Resolution 的评审清单）。
+        for phrase in [
+            "Examples carry four pieces (R15",
+            "Symbol-object-condition mapping (R16",
+            "An analogy carries its boundary (R17",
+            "Segmented example groups (R18",
+            "Relation sentences stay restorable (R19",
+        ] {
+            assert!(
+                CONTENT_DISCIPLINE_V2_BLOCK.contains(phrase),
+                "material clause missing「{phrase}」"
+            );
+        }
         let standard = section_body_system(crate::models::TeachingStyle::Standard);
         assert!(
             standard.contains("THE BUDGET IS THE FLOOR OF A FULLY-WORKED SECTION, NOT A CEILING"),
@@ -1542,4 +1583,199 @@ fn content_discipline_v2_switch_adds_and_removes_the_four_clauses() {
     for value in ["on", "1", "true", "", "disable"] {
         assert!(!super::lesson::is_content_discipline_v2_disabled_value(value));
     }
+}
+
+/// 内容纪律 V2 开关的环境守卫（串行测试内使用，离开作用域即还原）。
+struct DisciplineSwitchRestore(Option<String>);
+
+impl DisciplineSwitchRestore {
+    fn capture() -> Self {
+        Self(std::env::var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV).ok())
+    }
+}
+
+impl Drop for DisciplineSwitchRestore {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => unsafe {
+                std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, value)
+            },
+            None => unsafe {
+                std::env::remove_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV)
+            },
+        }
+    }
+}
+
+/// y06（learnhub #201）：干扰项五型菜单挂 `NOMI_LEARNING_CONTENT_DISCIPLINE_V2`
+/// ——on 臂在整课题库与单题/变式（共用 `LESSON_ACTIVITY_SYSTEM`）两处装配，
+/// off 臂逐字回退旧常量（同二进制双臂的 off 臂 = 旧世界）。
+#[test]
+#[serial_test::serial]
+fn content_discipline_v2_switch_gates_the_distractor_menu() {
+    let _restore = DisciplineSwitchRestore::capture();
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "on") };
+    let lesson_system = super::activities::lesson_system_prompt();
+    let activity_system = super::activities::lesson_activity_system_prompt();
+    for phrase in [
+        "Distractor menu (R21",
+        "Near-miss:",
+        "Partial satisfaction:",
+        "Criterion linkage mismatch:",
+        "Wording transformation trap:",
+        "Set relation check:",
+        "Prefer a natural negative example",
+        "never fabricate",
+        "fill_in_blank keeps its existing near-synonym trap",
+        "ordering, matching and numeric take no distractor menu",
+    ] {
+        assert!(
+            lesson_system.contains(phrase),
+            "整课题库提示词缺「{phrase}」"
+        );
+        assert!(
+            activity_system.contains(phrase),
+            "单题提示词缺「{phrase}」"
+        );
+    }
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "off") };
+    assert_eq!(
+        super::activities::lesson_system_prompt(),
+        LESSON_SYSTEM,
+        "off 臂整课题库提示词必须逐字回退旧常量"
+    );
+    assert_eq!(
+        super::activities::lesson_activity_system_prompt(),
+        LESSON_ACTIVITY_SYSTEM,
+        "off 臂单题提示词必须逐字回退旧常量"
+    );
+    assert!(
+        !super::activities::lesson_system_prompt().contains("R21"),
+        "off 臂不得残留五型菜单"
+    );
+}
+
+/// y06（learnhub #202）：完备性三面挂 V2 开关——规划面进节大纲 Rules，写作
+/// 面进 V2 纪律块，题库面进整课活动提示词；off 臂三条全部不装，旧上限条款
+/// （只教本节任务点 / 只考正文教过的）原样保留。
+#[test]
+#[serial_test::serial]
+fn content_discipline_v2_switch_adds_the_completeness_faces() {
+    let _restore = DisciplineSwitchRestore::capture();
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "on") };
+    let outline = super::lesson::section_outline_system();
+    assert!(
+        outline.contains("Completeness across the three faces (R20"),
+        "规划面缺完备性三面条款"
+    );
+    assert!(
+        outline.contains("inside the lesson's existing teaching boundary"),
+        "规划面条款必须与既有教学边界并置"
+    );
+    assert!(
+        outline.contains("caps stay in force"),
+        "规划面条款必须声明上限条款照旧"
+    );
+    let block = super::lesson::content_discipline_block();
+    assert!(
+        block.contains("Completeness faces do not shrink (R20"),
+        "写作面缺完备性三面条款"
+    );
+    assert!(
+        block.contains("inside what the lesson already teaches"),
+        "写作面条款不得越出已教边界"
+    );
+    let lesson_system = super::activities::lesson_system_prompt();
+    assert!(
+        lesson_system.contains("Coverage of both study directions (R20"),
+        "题库面缺两考向覆盖取向"
+    );
+    assert!(
+        lesson_system.contains("not a question-count quota"),
+        "覆盖取向不得退化成题量配额"
+    );
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "off") };
+    let legacy_outline = super::lesson::section_outline_system();
+    assert!(
+        !legacy_outline.contains("Completeness across the three faces (R20"),
+        "off 臂规划面不得装三面条款"
+    );
+    assert!(
+        legacy_outline.contains("Practice boundary (planning half)"),
+        "off 臂规划面保留既有上限条款"
+    );
+    let legacy_block = super::lesson::content_discipline_block();
+    assert!(
+        !legacy_block.contains("Completeness faces do not shrink (R20"),
+        "off 臂写作面不得装三面条款"
+    );
+    assert!(
+        legacy_block.contains("Derive before drilling"),
+        "off 臂写作面保留 j07 基线条款"
+    );
+    assert_eq!(
+        super::activities::lesson_system_prompt(),
+        LESSON_SYSTEM,
+        "off 臂题库面逐字回退旧常量"
+    );
+}
+
+/// y06（learnhub #203）：材料学五条挂 V2 开关——on 臂进写作纪律块（节正文
+/// 两 stage 共用），off 臂逐条不装。每条与既有上限条款显式并置（R16 不新增
+/// 术语、R18 不加例题、R19 不升级相关为因果/充要），防互相加码。
+#[test]
+#[serial_test::serial]
+fn content_discipline_v2_switch_adds_the_material_clauses() {
+    let _restore = DisciplineSwitchRestore::capture();
+
+    let phrases = [
+        "Examples carry four pieces (R15",
+        "Symbol-object-condition mapping (R16",
+        "An analogy carries its boundary (R17",
+        "Segmented example groups (R18",
+        "Relation sentences stay restorable (R19",
+    ];
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "on") };
+    let block = super::lesson::content_discipline_block();
+    for phrase in phrases {
+        assert!(block.contains(phrase), "on 臂写作纪律块缺「{phrase}」");
+        assert!(
+            super::lesson::section_body_standard().contains(phrase),
+            "写作面装配缺「{phrase}」"
+        );
+    }
+    assert!(
+        block.contains("not forced into those four pieces"),
+        "操作示范不套四件"
+    );
+    assert!(block.contains("adds no new terminology"), "R16 不得放宽 R12");
+    assert!(block.contains("admitted by R12"), "R16 只映射已放行符号");
+    assert!(
+        block.contains("existing never-pad and 3-6 density rules"),
+        "R18 必须与密度条款并置（不加量）"
+    );
+    assert!(
+        block.contains("A correlation is never written as causation"),
+        "R19 相关不得写成因果"
+    );
+    assert!(
+        block.contains("necessary-and-sufficient"),
+        "R19 性质不得升级为充要"
+    );
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "off") };
+    let legacy = super::lesson::content_discipline_block();
+    for phrase in phrases {
+        assert!(!legacy.contains(phrase), "off 臂仍出现「{phrase}」");
+    }
+    assert!(legacy.contains("Derive before drilling"), "j07 基线条款保留");
+    assert!(
+        !super::lesson::section_body_standard().contains("Examples carry four pieces (R15"),
+        "off 臂写作面不装材料学条款"
+    );
 }

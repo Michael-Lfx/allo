@@ -20,7 +20,10 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
 import { AppMessage as Message } from '@/renderer/components/notifications';
+import NomiCollapse from '@/renderer/components/base/NomiCollapse';
 import { lessonStatusTagColors } from '../model';
+import { batchStatusMeta, buildSystemActionRows } from '../systemActions';
+import { overloadedBadgeCount } from '../capacityFeedback';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
@@ -38,6 +41,7 @@ import type {
   LearningStructureView,
   Lesson,
   LessonStatus,
+  SystemActionView,
 } from '../types';
 import { LessonBlock } from './LessonStudy';
 import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
@@ -356,6 +360,17 @@ const LearningGraphWorkspace: React.FC<{
               {t('learning.learningGraphBeta')}
             </Tag>
             {!detail.course.enabled && <CourseArchivedBadge />}
+            {/* 容量聚合（y07）：图课程同样可见「N 节超载」；0 = 零版面
+                （内容级纯读计数，不暴露任何用户的选择） */}
+            {overloadedBadgeCount(detail.overloaded_lessons) !== null && (
+              <Tooltip content={t('learning.capacityOverloadedHint')}>
+                <Tag color='orange' className='!mx-0 shrink-0'>
+                  {t('learning.capacityOverloadedCount', {
+                    count: detail.overloaded_lessons,
+                  })}
+                </Tag>
+              </Tooltip>
+            )}
           </div>
           {graph.goal.trim() !== '' && (
             <Paragraph className='!mb-0 !mt-4px text-t-secondary'>{graph.goal}</Paragraph>
@@ -644,7 +659,8 @@ const LearningGraphWorkspace: React.FC<{
   );
 };
 
-/** 学习记录：批次时间线（倒序）——生长史即课程史。 */
+/** 学习记录：批次时间线（倒序）——生长史即课程史；顶部「系统动作」折叠节
+ * 是自主/后台动作的终态留痕（y04：进行中看任务 pill，终态看账本）。 */
 const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }> = ({
   courseId,
 }) => {
@@ -686,67 +702,147 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
       </div>
     );
   }
-  if (batches.length === 0) {
-    return <Empty description={t('learning.learningGraphHistoryEmpty')} />;
-  }
   return (
     <div className='flex flex-col gap-12px overflow-y-auto pb-16px'>
-      {batches.map((batch) => (
-        <div
-          key={batch.batch_id}
-          className='rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px'
-        >
-          <div className='flex flex-wrap items-baseline gap-8px'>
-            <Text bold className='text-13px'>
-              {t('learning.learningGraphBatchLabel', { seq: batch.seq })}
-            </Text>
-            {batch.status === 'pending' && (
-              <Tag size='small' color='processing' className='!mx-0'>
-                {t('learning.learningGraphBatchPending')}
-              </Tag>
-            )}
-            {batch.status === 'failed' && (
-              <Tag size='small' color='red' className='!mx-0'>
-                {t('learning.learningGraphBatchFailed')}
-              </Tag>
-            )}
-            <Text type='secondary' className='text-11px'>
-              {new Date(batch.created_at).toLocaleString()}
-            </Text>
-            {batch.note.trim() !== '' && (
-              <Text type='secondary' className='text-12px'>
-                {batch.note}
-              </Text>
-            )}
-          </div>
-          <div className='mt-8px flex flex-col'>
-            {batch.nodes.map((node) => (
-              <div
-                key={node.lesson_id}
-                className='flex items-center justify-between gap-8px rd-6px px-6px py-6px hover:bg-[var(--color-fill-1)]'
-              >
-                <span className='min-w-0 truncate text-13px text-[var(--color-text-1)]'>
-                  {node.title}
-                </span>
-                <span className='flex shrink-0 items-center gap-8px text-11px text-t-tertiary'>
-                  <span>{t('learning.learningGraphNodeMinutes', { min: node.est })}</span>
-                  <Tag
-                    size='small'
-                    color={lessonStatusTagColors[node.status]}
-                    className='!mx-0'
-                  >
-                    {statusLabel(node.status, t)}
+      <SystemActionsSection courseId={courseId} />
+      {batches.length === 0 ? (
+        <Empty description={t('learning.learningGraphHistoryEmpty')} />
+      ) : (
+        batches.map((batch) => {
+          const statusMeta = batchStatusMeta(batch.status);
+          return (
+            <div
+              key={batch.batch_id}
+              className='rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px'
+            >
+              <div className='flex flex-wrap items-baseline gap-8px'>
+                <Text bold className='text-13px'>
+                  {t('learning.learningGraphBatchLabel', { seq: batch.seq })}
+                </Text>
+                {statusMeta && (
+                  <Tag size='small' color={statusMeta.color} className='!mx-0'>
+                    {t(statusMeta.labelKey)}
                   </Tag>
-                  {node.completed_at ? (
-                    <span>{new Date(node.completed_at).toLocaleDateString()}</span>
-                  ) : null}
-                </span>
+                )}
+                <Text type='secondary' className='text-11px'>
+                  {new Date(batch.created_at).toLocaleString()}
+                </Text>
+                {batch.note.trim() !== '' && (
+                  <Text type='secondary' className='text-12px'>
+                    {batch.note}
+                  </Text>
+                )}
+              </div>
+              <div className='mt-8px flex flex-col'>
+                {batch.nodes.map((node) => (
+                  <div
+                    key={node.lesson_id}
+                    className='flex items-center justify-between gap-8px rd-6px px-6px py-6px hover:bg-[var(--color-fill-1)]'
+                  >
+                    <span className='min-w-0 truncate text-13px text-[var(--color-text-1)]'>
+                      {node.title}
+                    </span>
+                    <span className='flex shrink-0 items-center gap-8px text-11px text-t-tertiary'>
+                      <span>{t('learning.learningGraphNodeMinutes', { min: node.est })}</span>
+                      <Tag
+                        size='small'
+                        color={lessonStatusTagColors[node.status]}
+                        className='!mx-0'
+                      >
+                        {statusLabel(node.status, t)}
+                      </Tag>
+                      {node.completed_at ? (
+                        <span>{new Date(node.completed_at).toLocaleDateString()}</span>
+                      ) : null}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+};
+
+/** 系统动作（y04）：折叠节的读侧。行 = 时间 + 类型 + 触发源 + basis + 结果
+ * 徽标；失败红色 role=alert 带 reason；空态「暂无系统动作」。 */
+const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
+  const { t } = useTranslation();
+  const [actions, setActions] = useState<SystemActionView[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      learningApi
+        .systemActions(courseId)
+        .then((view) => {
+          if (!cancelled) setActions(view);
+        })
+        .catch((loadError) => {
+          if (!cancelled)
+            setError(loadError instanceof Error ? loadError.message : String(loadError));
+        });
+    };
+    load();
+    // 批行/维护动作的终态帧同通道：生长与结构回合结束都可能添行。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id === courseId) load();
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [courseId]);
+
+  const model = actions ? buildSystemActionRows(actions) : null;
+  return (
+    <NomiCollapse bordered={false}>
+      <NomiCollapse.Item
+        name='system-actions'
+        header={<span className='text-12px'>{t('learning.learningGraphSystemActions')}</span>}
+      >
+        {error ? (
+          <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />
+        ) : !model ? (
+          <div className='flex justify-center py-16px'>
+            <Spin />
+          </div>
+        ) : model.empty ? (
+          <Empty description={t('learning.learningGraphSystemActionsEmpty')} />
+        ) : (
+          <div className='flex flex-col'>
+            {model.rows.map((row) => (
+              <div
+                key={row.key}
+                role={row.resultRole}
+                className='flex flex-wrap items-baseline gap-8px border-b border-b-solid border-b-[var(--color-border-1)] px-4px py-6px last:border-b-0'
+              >
+                <span className='text-11px text-t-tertiary'>{new Date(row.at).toLocaleString()}</span>
+                <Tag size='small' className='!mx-0'>
+                  {t(row.kindKey)}
+                </Tag>
+                <span className='text-11px text-t-tertiary'>{t(row.triggerKey)}</span>
+                {row.basis.trim() !== '' && (
+                  <span className='text-11px text-t-tertiary'>{row.basis}</span>
+                )}
+                <span className='flex-1' />
+                <Tag size='small' color={row.resultColor} className='!mx-0'>
+                  {t(row.resultKey)}
+                </Tag>
+                {row.reason.trim() !== '' && (
+                  <Text type='error' className='min-w-0 basis-full truncate text-11px'>
+                    {row.reason}
+                  </Text>
+                )}
               </div>
             ))}
           </div>
-        </div>
-      ))}
-    </div>
+        )}
+      </NomiCollapse.Item>
+    </NomiCollapse>
   );
 };
 

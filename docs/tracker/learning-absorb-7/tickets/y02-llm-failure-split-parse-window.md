@@ -2,7 +2,7 @@
 id: y02
 title: "LLM 失败分流——parse 失败窗口 + 传输失败不占重试预算（学习模块内）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -145,3 +145,100 @@ provider 错误映射；分类只用学习侧已能看到的 `AppError` 变体�
 2. `infra/llm.rs:27-76,199,295`（kind/原文/超时转 Transport）
 3. `engine/questions/judge.rs:167-184`（判分反馈槽）
 4. `engine/contentgen/facade.rs:648,778`（引擎环分流）
+
+## Resolution（2026-11-04）
+
+**实施点**
+
+- **A. parse 窗口**（`generation/parser.rs`）：
+  - `parse_candidate` 改为 `(Result<T>, Option<serde_json::Error>)`，保留
+    **首次**（未修复原文）serde 错误的 `line/column`；修复链只在成功时
+    使用结果，失败消息与窗口定位统一用首次错误。
+  - 新增纯函数 `parse_failure_window(raw, slice_start, line, column)`：
+    切片内行首字节 + 列减一 → 退 UTF-8 字符边界 → 加 `slice_start` 得
+    绝对偏移 → 左右各 120 **字符**；截口永不破字符/越界。
+  - `parse_json_object` 失败串形如 `invalid JSON: … at line L column C;
+    window: line L column C: …snippet…; reply is … head: …`（现有长度/
+    括号/头 120 字符诊断保留）；截断自救成功、无对象兜底均不误报窗口。
+    所有直连 `parse_json_object` 的调用点（含课时/判分/KB 结构）自动受益。
+- **B. 学习侧分桶**（新增 `generation/attempt.rs`，`pub(crate)`）：
+  - `AttemptFailure::{Transport(AppError), Rejected(String)}` +
+    `from_app_error` / `from_call` / `is_transport` / `is_cancelled` /
+    `reason` / `into_app_error` / `log`。不新增/不修改公共错误类型。
+  - Transport 集合 = Timeout / BadGateway / RateLimited /
+    ProviderUnavailable / Conflict（取消也走该变体只为原样携带错误；
+    `is_cancelled()` 识别，`into_app_error()` 原样返回
+    `Conflict(CANCELLED_MESSAGE)`）。
+- **结构生成**（`learning_graph/structure_gen.rs`）：`attempt_once` 返回
+  `AttemptFailure`；两处 LLM 调用 Err → Transport（原 `AppError`，按
+  terrain/structure 精确 stage 记 `failure_kind=transport`），解析/形状/
+  契约 → Rejected。外层环 Transport 立即 `return Err`（不写 feedback、
+  不进同指纹早停、不占轮次）；Rejected 行为不变（3 轮 + 反馈 + 早停）。
+- **挂载/修补**（`mounting.rs`、`structure_ops.rs`）：LLM Err 立即上抛原
+  错误、恰 1 次调用；删除失去用途的 `last_was_llm` 与「回合未执行」包壳；
+  parse/契约仍回灌重试 + 同指纹早停。
+- **生长环**（`service/learning_graph.rs` + `growth_retry.rs`）：
+  `AttemptFail` 增 `transport: Option<AppError>`（`transport()` /
+  `is_transport()`）；起草/重裁 Err 按同一 `AttemptFailure` 分桶，
+  Transport 立即上抛（不写反馈/不进早停/不占轮），取消仍走
+  `stop_reason=cancelled` 既有停止面（stats 留痕 + 中性终态）。
+  评审/铸名门 Rejected 行为不变。
+- **判分**（`service/open_judge.rs`）：保留 3×90s 重试预算；Transport
+  不写 `retry_feedback`（槽保持上一轮值或 None），Parse 写窗口；耗尽
+  原因仍取最后一次；`thinking_degraded` 降级判定与一次定臂不变。
+- **KB 结构发现**（`generation/structure.rs`）：`draft_plan` 返回
+  `AttemptFailure`；首轮草稿 Transport 立即停重试（不写反馈、不占轮），
+  按既有 ``Ok(None)`` 失败口径回退采样；Rejected 仍 3 轮反馈 + 早停；
+  修订轮 Transport/Parse 均只留 warning（原本就不进重试反馈）。
+- **课时**（`service/lesson.rs`）：零改动（两桶分类与 3 次瞬断预算保留，
+  仅继承 parse 窗口）。
+- **观测**：各环失败日志带 `failure_kind=transport|parse`、`attempt`、
+  `stage`（terrain/structure/mount/repair/draft/redraft/revise/judge）；
+  未新增 WS phase/事件。推翻条件写在 `generation/attempt.rs` 模块头注。
+
+**测试**
+
+- 红→绿样（均先红后绿）：
+  - `generation::parser::tests::parse_failure_window_*`（中文缺逗号按字节
+    列定位、散文字段偏移、截断/无对象不误报窗口）。
+  - `generation::attempt::tests`（5：分桶、取消原样、reason/into_app_error、
+    from_call）。
+  - `learning_graph::structure_gen::tests::{transport_failure_propagates_after_a_single_call,
+    cancellation_is_propagated_unchanged,
+    invalid_json_still_retries_and_feeds_the_failure_window}`。
+  - `learning_graph::mounting::tests::llm_transport_failure_propagates_after_a_single_call`、
+    `learning_graph::structure_ops::tests::llm_transport_failure_propagates_after_a_single_call`。
+  - `service::open_judge::tests::{transport_failure_does_not_write_the_retry_feedback_slot,
+    transport_only_exhausts_the_budget_without_any_feedback,
+    parse_failure_feeds_the_line_column_window}`。
+  - `service::tests::growth_transport_failure_stops_after_a_single_call`
+    （生长环恰 1 次调用、零反馈）。
+  - `generation::structure::tests::draft_transport_failure_stops_without_contract_retries`
+    （KB 草稿恰 1 次、回退采样）。
+- 命令：`CARGO_TARGET_DIR=C:/Users/test/Desktop/work/cargo-target-absorb7-y02
+  cargo test -p nomifun-learning`（600s 预算内完成）。
+  结果：**774 passed; 0 failed**（含既有回归）；doc-tests 0。合并集成分支
+  尖端 `6d7a23ac5`（y06 提示词批）后复跑：**777 passed; 0 failed**。
+- `cargo fmt -p nomifun-learning -- --check` 通过。
+
+**偏差 / 未做项**
+
+- 真机臂（structure 一轮 + lesson 一轮、`failure_kind` 读数、smoke
+  `EXIT=0`）未在本票执行：本地无 provider 凭据，留给 merger 的串行真机
+  验收。
+- `mounting.rs` / `structure_ops.rs` 按票面「LLM Err → 立即上抛」处理
+  **任意** LLM 错误（不只 Transport 变体）——原先的「回合未执行」包壳随
+  `last_was_llm` 一并删除；对应既有测试
+  `failed_repair_round_does_not_advance_the_watermark` 的断言由
+  「生成通道不可用」改为原错误文本（`model unavailable`），水位/留痕
+  语义未变。
+- `AttemptFail` 去掉了 `Clone`（`AppError` 无 `Clone`，且无调用点依赖）。
+- 取消在 `AttemptFailure` 里搭乘 `Transport` 变体（枚举按票面保持两桶），
+  由 `is_cancelled()` 区分；生长环取消仍先于传输路径回到既有
+  `stop_reason=cancelled`。
+- 未改 `nomifun-common` / `nomifun-ai-agent` / provider 错误映射；
+  `git diff --stat` 仅 `crates/backend/nomifun-learning/**` 与票面文档。
+- 全量套件偶发与本票无关的既有并行抖动（各一次）：
+  `generation::triage::tests::triage_inventories_every_markdown_file_and_degrades_to_core_without_a_completer`
+  与 `service::tests::removal_advice_without_exact_match_stays_a_rejection`
+  ——单跑均绿（triage 单跑 3/3），随后全量复跑 774/777 全绿。
