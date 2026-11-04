@@ -19,6 +19,10 @@ import {
   filterAllowedImageModels,
   pickDefaultVideoModel,
 } from '../components/modelPreferenceDefaults';
+import {
+  VideoModelOptionLabel,
+  videoModelSelectClassName,
+} from '@/renderer/components/model/VideoModelOptionLabel';
 import { normalizeVideoFps,
 normalizeVideoResolution,
 videoModelCapabilities, } from '@renderer/services/videoModelCapabilities'
@@ -259,6 +263,16 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
         label: model.name.trim() || formatCloudModelLabel(model.id),
       })),
     [videoModels]
+  );
+
+  const videoSelectOptions = useMemo(
+    () =>
+      videoOptions.map((option) => ({
+        value: option.value,
+        extra: option.label,
+        label: <VideoModelOptionLabel name={option.label} model={option.value} />,
+      })),
+    [videoOptions]
   );
 
   const resolutionOptions = useMemo(
@@ -659,13 +673,14 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
                 ) : (
                   <>
                     <Select
+                      className={videoModelSelectClassName}
                       allowClear={false}
                       disabled={disabled || (!isAction && value.automatic) || mediaLoading}
                       placeholder={t('videoGeneration.workspace.models.videoPlaceholder', {
                         defaultValue: '选择视频模型',
                       })}
                       value={safeVideoValue}
-                      options={videoOptions}
+                      options={videoSelectOptions}
                       loading={mediaLoading}
                       notFoundContent={
                         mediaLoading

@@ -1,0 +1,88 @@
+.trail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trail .name {
+  flex: 1 1 auto;
+}
+
+.tag {
+  --vg-model-tag: #9a3412;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--vg-model-tag) 14%, transparent);
+  color: var(--vg-model-tag);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.tagPass {
+  --vg-model-tag: #0f766e;
+}
+
+:global([data-theme='dark']) .tag,
+:global(body[arco-theme='dark']) .tag,
+:global(.oc-canvas.dark) .tag {
+  --vg-model-tag: #f6c177;
+}
+
+:global([data-theme='dark']) .tagPass,
+:global(body[arco-theme='dark']) .tagPass,
+:global(.oc-canvas.dark) .tagPass {
+  --vg-model-tag: #5eead4;
+}
+
+/* Canvas menus follow the canvas shell, which can disagree with the app theme. */
+:global(.oc-canvas:not(.dark)) .tag {
+  --vg-model-tag: #9a3412;
+}
+
+:global(.oc-canvas:not(.dark)) .tagPass {
+  --vg-model-tag: #0f766e;
+}
+
+/* The closed select ellipsizes its value as one text run, which clips the tag. */
+.select:global(.arco-select-single) :global(.arco-select-view-value) {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.select:global(.arco-select-single) :global(.arco-select-view-value)::after {
+  content: none;
+}
+
+.select:global(.arco-select-single) :global(.arco-select-view-value) > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Option rows are nowrap + ellipsis. Flex them so the name truncates and the tag stays. */
+:global(.arco-select-popup .arco-select-option:has([data-video-model-option])) {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  line-height: 1.4;
+  white-space: normal;
+  text-overflow: clip;
+}

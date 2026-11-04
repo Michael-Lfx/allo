@@ -10858,6 +10858,8 @@ export type I18nKey =
   | 'videoGeneration.workspace.models.llmRequired'
   | 'videoGeneration.workspace.models.mediaRequired'
   | 'videoGeneration.workspace.models.noProviders'
+  | 'videoGeneration.workspace.models.tags.passRate'
+  | 'videoGeneration.workspace.models.tags.value'
   | 'videoGeneration.workspace.models.title'
   | 'videoGeneration.workspace.models.video'
   | 'videoGeneration.workspace.models.videoPlaceholder'
