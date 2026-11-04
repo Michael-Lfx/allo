@@ -2,7 +2,7 @@
 id: y03
 title: "生成面只读检索工具 search_concepts——概念登记表自查通道"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -117,3 +117,82 @@ part_of: ../map.md
 - 工具增加会改变生成分布与调用轮数；用工具描述与一句装配行控制，不额外
   加硬门。
 - 近名阈值必须复用 `defnear` 单源，不得新写第二套相似度。
+
+## Resolution（2026-11-04）
+
+**实现点**
+
+- 学习侧 DTO（`models.rs`）：`ConceptSearchHit { concept_id, canonical,
+  aliases, definition, matched_by, score }`、`ConceptSearchResults { hits,
+  not_found }`、`ConceptSearchMode { Search, Detail }`（serde kebab）；经
+  `lib.rs` crate 根再导出（ai-agent 工具面直接引用 `ConceptSearchMode`）。
+- 纯函数面（新增 `learning_graph/concept_search.rs`）：四通道
+  `search_hits(registry, query)`——canonical 大小写不敏感精确 → 活跃别名
+  精确 → 近名（`defnear::name_near_form` ∪ `stem_similarity >=
+  STEM_SIMILARITY_THRESHOLD`，名字池 = canonical ∪ 活跃别名）→ definition
+  包含 query；按 concept_id 去重取最高等级（同级取最高 score），等级 →
+  score 降序 → concept_id 升序，截 `SEARCH_TOP_K = 5`；零命中
+  `not_found: true`。`detail_hit(entry)` 返回完整定义 + 全部活跃别名。
+  零新相似度实现，近名机械全部来自 `defnear`。
+- 服务面（`service/learning_graph.rs`）：`pub async fn search_concepts(
+  query, mode, concept_id)`——空 query → `BadRequest`；search 走纯函数；
+  detail 缺/空 concept_id → `BadRequest`、查无 → `NotFound`、命中 → 单个
+  full hit（`matched_by = "exact"`、score 1.0）。取行复用既有
+  `registry_entries()` 单源（`deprecated = 0`、别名池按行级 `doc_version`
+  解码、未知代际降级为空池 + warn，与 `render_registry_excerpt` 同口径）；
+  DB 只取行，排序/去重全在纯函数。
+- ai-agent（`lesson_content_loop.rs`）：新增 `search_concepts_tool(ctx)`——
+  description 明示「只读自查，不改登记表（不铸名/改别名/建边）」；schema
+  `query`（required）、`mode`（enum search/detail，default search）、
+  `concept_id`；handler 解析入参 → `service.search_concepts(...)` →
+  `json_compact`，零命中 `Ok(not_found: true)`，入参/登记表错误转
+  `to_string()` 文本 Err。挂载条件 `graph_teaches_concepts` = 图线 ∧
+  `teaches_tiers` 非空；`lesson_content_tools` 对生成/修复两面同一装配点
+  挂载（`tools()` 本就是把两面委托给它的唯一入口）。`lesson_user_text` 同
+  一条件在已知概念/档位段之后追加一句
+  「可用 `search_concepts` 自查概念是否在册、别名与近名；只读，不改登记
+  表。」（常量 `SEARCH_CONCEPTS_HINT`，只出现一次；传统线与零 teaches
+  节点不出现）。
+- 严格只读：服务只发 SELECT；无 HTTP 路由、无新表/WS 事件、无写侧工具。
+
+**测试**
+
+- 新增纯函数测试 11 条（`concept_search.rs::tests`）：四通道（大小写不
+  敏感）、跨概念等级排序（exact > alias）、近名两条分支
+  （name_near_form / stem_similarity 阈值）、同级 score 降序、同概念去重
+  取最高级、top-5 截断、零命中 `not_found`、detail 全定义 + 全别名。
+- 新增服务级 DB 测试 4 条（`service/concept_search_tests.rs`）：
+  deprecated 排除（search + detail 404）、退役别名不占池、未知
+  `doc_version` 别名池降空 + warn 口径、detail 六别名不受 top-5 限制、
+  空 query/缺 concept_id → 400、查无 id → 404、search 截 top-5、只读自证
+  （search/detail 前后登记表行数、内容与 `updated_at` 逐字不变）。
+- 新增 ai-agent 测试 4 条（`lesson_content_loop.rs::tests`）：挂载只在
+  「图线 ∧ teaches 非空」（生成/修复两面都挂；零 teaches 与传统线都不
+  挂）、schema 枚举/required/concept_id、handler 命中（canonical/
+  matched_by）/别名命中/零命中 Ok/detail 六别名/缺参缺 id 非法 mode 的
+  可读 Err、工具调用前后登记表快照逐字不变。
+- 命令（独占 target）：
+  `CARGO_TARGET_DIR=C:/Users/test/Desktop/work/cargo-target-absorb7-y03
+  cargo test -p nomifun-learning -p nomifun-ai-agent` → **EXIT=0**；
+  `nomifun-learning` lib 792 passed / 0 failed；`nomifun-ai-agent` lib
+  1132 passed / 0 failed / 3 ignored，全部集成测试二进制 ok。
+- `cargo fmt -p nomifun-learning -p nomifun-ai-agent -- --check` 通过。
+
+**偏差 / 未做项**
+
+- `tools()` 在当前实码是 `lesson_content_tools(ctx, repair_face)` 的一行
+  委托（无第二份白名单），故工具只在 `lesson_content_tools` 单点加入即
+  覆盖生成/修复两面——满足票面「两面都备」，未额外造第二个列表。
+- 取行未新写查询：既有 `registry_entries()` 已是「deprecated=0 + 别名
+  doc_version 解码」的单源，直接复用（票面「DB 只负责取行」不变）。
+- `matched_by` 的取值域仍按 DTO 注释四种：detail 按 concept_id 精确取行
+  记 `exact`（score 1.0），未新增第五种枚举值。
+- search 命中返回完整 `definition`（DTO 只有 `definition` 字段，无摘要
+  字段）；detail 与 search 的差别在「按 id 取行、不受 top-5 限制」。
+- 真机 content 档冒烟（模型至少一次调用 + 不存在名 `not_found` + smoke
+  `EXIT=0`）未在本票执行：本 worktree 无 provider 凭据，留给 merger 的
+  串行真机验收（与 y02 同处理）。
+- 全量套件并行时偶发两条与本票无关的既有抖动各一次
+  （`agent_trace::hub::tests::drop_conversation_observations_deletes_jsonl`、
+  `manager::openclaw::connection::tests::dropping_connect_future_closes_socket`）
+  ——单跑均绿，要求的合并命令复跑 EXIT=0。

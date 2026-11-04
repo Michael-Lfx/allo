@@ -23,9 +23,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use nomi_providers::{LlmProvider, create_provider};
 use nomifun_common::{AppError, ProviderId, UserId};
 use nomifun_learning::{
-    ClaimVerdict, LessonContentAgentEngine, LessonGenerationContext, LessonOp, LessonOutput,
-    LearningService, MathClaim, PRACTICE_BODY_TARGET_CHARS, VISUAL_OPTIONS, prose_budget_rules,
-    section_range_rules, verify_claim, visual_menu_text,
+    ClaimVerdict, ConceptSearchMode, LessonContentAgentEngine, LessonGenerationContext,
+    LessonOp, LessonOutput, LearningService, MathClaim, PRACTICE_BODY_TARGET_CHARS,
+    VISUAL_OPTIONS, prose_budget_rules, section_range_rules, verify_claim, visual_menu_text,
 };
 
 use crate::factory::provider_config::resolve_provider_config;
@@ -747,6 +747,21 @@ fn graph_budget_line(enabled: bool, est_minutes: Option<i64>) -> Option<String> 
     est_minutes.map(nomifun_learning::render_est_budget_line)
 }
 
+/// 图线是否挂 teach 概念（y03 的 `search_concepts` 挂载条件）：传统线
+/// （graph = None）与零 teaches 节点都是 false——无概念体系就没有自查对象，
+/// 不挂幽灵工具、也不出提示句。
+fn graph_teaches_concepts(context: &LessonGenerationContext) -> bool {
+    context
+        .graph
+        .as_ref()
+        .is_some_and(|graph| !graph.teaches_tiers.is_empty())
+}
+
+/// 登记表自查提示（y03）：与工具挂载同一条件、同一句只出现一次；只读
+/// 声明明示零写侧，避免模型把它当铸名/改别名入口。
+const SEARCH_CONCEPTS_HINT: &str =
+    "可用 `search_concepts` 自查概念是否在册、别名与近名；只读，不改登记表。\n";
+
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
     text.push_str(&format!("课程：{}\n", context.course_title.trim()));
@@ -822,6 +837,11 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
             // + 活跃别名池 + 概念登场纪律（R2/R5 条款只落此处）。
             if let Some(faces) = &graph.concept_faces {
                 text.push_str(&format!("\n{}\n", faces.render_text()));
+            }
+            // 登记表自查提示（y03）：已知概念/档位行之后补一句——工具挂载
+            // 条件的同一判定，传统线与零 teaches 节点不出现。
+            if graph_teaches_concepts(context) {
+                text.push_str(SEARCH_CONCEPTS_HINT);
             }
         }
         None => {
@@ -930,7 +950,7 @@ fn compose_resume_user_text(
 /// to fresh runs is a zero-visualization escape hatch (ADR-0008). An
 /// unlisted tool name fails closed at the loop level.
 fn lesson_content_tools(ctx: Arc<LoopContext>, repair_face: bool) -> Vec<OneShotTool> {
-    let mut tools = Vec::with_capacity(9);
+    let mut tools = Vec::with_capacity(10);
     if !repair_face {
         tools.push(ls_start(Arc::clone(&ctx)));
     } else {
@@ -945,6 +965,12 @@ fn lesson_content_tools(ctx: Arc<LoopContext>, repair_face: bool) -> Vec<OneShot
     // verify_math（w1）：两面同备的无草稿只读 op——生成与修复轮都可以把
     // 正文数学翻译成 claim 实算核验；不触库、不占草稿（A3/A5）。
     tools.push(verify_math_tool(Arc::clone(&ctx)));
+    // search_concepts（y03）：登记表只读自查——仅图线 ∧ 本节点 teaches
+    // 非空时挂（传统线与零 teaches 节点无概念体系，不挂幽灵工具）；生成
+    // 面与修复面同备，模型在撞名门失败前就能自己核对在册/别名/近名。
+    if graph_teaches_concepts(&ctx.context) {
+        tools.push(search_concepts_tool(Arc::clone(&ctx)));
+    }
     tools
 }
 
@@ -1336,6 +1362,66 @@ fn verify_math_tool(ctx: Arc<LoopContext>) -> OneShotTool {
                 let verdict = verify_claim(&claim);
                 ctx.math_verify.record(&verdict);
                 Ok(crate::loop_core::json_compact(&verdict))
+            }
+        }),
+    }
+}
+
+/// search_concepts 工具 op（y03）：概念登记表的只读自查通道——模型可按需
+/// 核对某个名词/说法是否在册、有哪些活跃别名、有没有近名，不必等铸名门
+/// 失败后才看到反馈。查询域 = 全局登记表（既有 ADR-0010 边界不变），
+/// 四通道 exact / alias / nearname / fulltext 与排序去重单源在
+/// `nomifun_learning` 服务层（本工具只解析入参并回包）。
+///
+/// 失败语义：零命中是正常结论（`Ok`，`not_found: true`）不是工具故障；
+/// 入参错误（缺 query / detail 缺 concept_id / 非法 mode）与登记表错误转
+/// 模型可读 Err 文本。**零写侧**：handler 只读，不铸名、不改别名、不建边。
+fn search_concepts_tool(ctx: Arc<LoopContext>) -> OneShotTool {
+    OneShotTool {
+        name: "search_concepts".into(),
+        description: "概念登记表的只读自查：查某个名词/说法是否在册、有哪些活跃别名、有没有近名，或按 concept_id 取完整定义与全部别名。只读，不改登记表（不铸名、不改别名、不建边）。册内未见不代表学科中不存在。".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "检索词（名词或说法）" },
+                "mode": { "type": "string", "enum": ["search", "detail"], "default": "search", "description": "search=按查询词检索（默认）；detail=按 concept_id 取完整定义与全部活跃别名" },
+                "concept_id": { "type": "string", "description": "detail 模式必填：取 search 命中条目里的 concept_id" }
+            },
+            "required": ["query"]
+        }),
+        handler: one_shot_handler(move |input| {
+            let ctx = Arc::clone(&ctx);
+            async move {
+                let query = input
+                    .get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|query| !query.is_empty())
+                    .ok_or_else(|| "search_concepts: query 必填且非空".to_owned())?;
+                let mode = match input
+                    .get("mode")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                {
+                    None | Some("") | Some("search") => ConceptSearchMode::Search,
+                    Some("detail") => ConceptSearchMode::Detail,
+                    Some(other) => {
+                        return Err(format!(
+                            "search_concepts: mode 只支持 search|detail，得到「{other}」"
+                        ));
+                    }
+                };
+                let concept_id = input
+                    .get("concept_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|concept_id| !concept_id.is_empty());
+                let results = ctx
+                    .service
+                    .search_concepts(query, mode, concept_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(json_compact(&results))
             }
         }),
     }
@@ -1830,17 +1916,91 @@ mod tests {
         Arc<Mutex<Option<String>>>,
         Arc<Mutex<Option<LessonOutput>>>,
     ) {
+        context_with(service, lesson_context())
+    }
+
+    fn context_with(
+        service: Arc<LearningService>,
+        context: LessonGenerationContext,
+    ) -> (
+        Arc<LoopContext>,
+        Arc<Mutex<Option<String>>>,
+        Arc<Mutex<Option<LessonOutput>>>,
+    ) {
         let draft_slot = Arc::new(Mutex::new(None));
         let published_slot = Arc::new(Mutex::new(None));
         let ctx = Arc::new(LoopContext {
             service,
-            context: lesson_context(),
+            context,
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
         });
         (ctx, draft_slot, published_slot)
+    }
+
+    /// 学习图节点的生成上下文（teaches 档位可配）；传统线 = `lesson_context`。
+    fn graph_context(teaches_tiers: Vec<(String, String)>) -> LessonGenerationContext {
+        let mut context = lesson_context();
+        context.clear_grounding();
+        context.graph = Some(GraphLessonContext {
+            goal: "通盘认识极限".into(),
+            degree_statement: "能独立判断极限是否存在".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers,
+            precedents: Vec::new(),
+        });
+        context
+    }
+
+    fn graph_teaches_context() -> LessonGenerationContext {
+        graph_context(vec![("极限".to_owned(), "会用".to_owned())])
+    }
+
+    const REGISTRY_CONCEPT: &str = "0190f5fe-7c00-7a00-8abc-111111111111";
+
+    /// 带登记表种子的服务（六条活跃别名：detail 全别名与 top-5 无关的
+    /// 证据面）。返回 pool 句柄供只读自证快照。
+    async fn registry_service() -> (Arc<LearningService>, sqlx::SqlitePool) {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let pool = database.pool().clone();
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, deprecated, doc_version, created_at, updated_at) \
+             VALUES (?, '极限', ?, '无限逼近的值：函数值趋近于某个定值', 0, 1, 1, 1)",
+        )
+        .bind(REGISTRY_CONCEPT)
+        .bind(
+            r#"[{"name":"Limits","status":"active"},{"name":"别名2"},{"name":"别名3"},{"name":"别名4"},{"name":"别名5"},{"name":"别名6"}]"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        (Arc::new(LearningService::new(pool.clone())), pool)
+    }
+
+    async fn registry_snapshot(
+        pool: &sqlx::SqlitePool,
+    ) -> Vec<(String, String, String, String, i64, i64)> {
+        sqlx::query_as(
+            "SELECT concept_id, canonical, aliases_json, definition, deprecated, updated_at \
+             FROM learning_concept_registry ORDER BY concept_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    fn mounted_search_tool(ctx: &Arc<LoopContext>, repair_face: bool) -> OneShotTool {
+        lesson_content_tools(Arc::clone(ctx), repair_face)
+            .into_iter()
+            .find(|tool| tool.name == "search_concepts")
+            .expect("search_concepts must be mounted for a teaches-bearing graph node")
     }
 
     /// 安全不变量：发给模型的工具注册面恰等于构造的工具集——每一轮都如此；
@@ -2687,5 +2847,198 @@ mod tests {
         assert_eq!(frame["visuals"]["表格"], 1);
         assert_eq!(frame["visuals"]["无"], 2);
         assert_eq!(frame["viz_lint_events"], 3, "viz lint 事件计数随帧披露");
+    }
+
+    // ── search_concepts（y03）────────────────────────────────────────────
+
+    /// 挂载条件：图线 ∧ 本节点 teaches 非空 → 生成面与修复面同备；teaches
+    /// 空的图节点与传统线（graph = None）都不挂（防幽灵工具）。
+    #[tokio::test]
+    async fn search_concepts_is_mounted_only_for_teaches_bearing_graph_nodes() {
+        let (service, _dir) = test_service().await;
+
+        let (teaches_ctx, ..) = context_with(Arc::clone(&service), graph_teaches_context());
+        for repair_face in [false, true] {
+            let names: Vec<String> = lesson_content_tools(Arc::clone(&teaches_ctx), repair_face)
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect();
+            assert!(
+                names.contains(&"search_concepts".to_owned()),
+                "repair_face={repair_face} 也备只读检索工具：{names:?}"
+            );
+        }
+
+        let (empty_ctx, ..) = context_with(Arc::clone(&service), graph_context(Vec::new()));
+        for repair_face in [false, true] {
+            let names: Vec<String> = lesson_content_tools(Arc::clone(&empty_ctx), repair_face)
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect();
+            assert!(
+                !names.contains(&"search_concepts".to_owned()),
+                "零 teaches 节点不挂：{names:?}"
+            );
+        }
+
+        let (plain_ctx, ..) = context(service);
+        let names: Vec<String> = lesson_content_tools(Arc::clone(&plain_ctx), false)
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+        assert!(
+            !names.contains(&"search_concepts".to_owned()),
+            "传统线不挂：{names:?}"
+        );
+    }
+
+    /// 图线 user 文本补一句自查提示（只读声明），同一句只出现一次且位于
+    /// 档位/已知概念行之后；teaches 空与传统线不出现。
+    #[test]
+    fn lesson_user_text_appends_the_search_concepts_hint_only_for_teaches_nodes() {
+        let teaches = lesson_user_text(&graph_teaches_context());
+        assert_eq!(
+            teaches.matches("search_concepts").count(),
+            1,
+            "同一句只出现一次：{teaches}"
+        );
+        assert!(teaches.contains("只读，不改登记表"), "{teaches}");
+        assert!(
+            teaches.find("节点档位").unwrap() < teaches.find("search_concepts").unwrap(),
+            "提示位于档位行之后：{teaches}"
+        );
+
+        let empty_teaches = lesson_user_text(&graph_context(Vec::new()));
+        assert!(
+            !empty_teaches.contains("search_concepts"),
+            "零 teaches 不出现：{empty_teaches}"
+        );
+
+        let traditional = lesson_user_text(&lesson_context());
+        assert!(
+            !traditional.contains("search_concepts"),
+            "传统线不出现：{traditional}"
+        );
+    }
+
+    /// 工具 schema（query 必填、mode 枚举 search/detail、concept_id）与
+    /// handler 回包：命中带 canonical/matched_by、零命中 not_found 不抛错、
+    /// detail 全别名、入参错误转模型可读 Err。
+    #[tokio::test]
+    async fn search_concepts_tool_schema_and_handlers() {
+        let (service, _pool) = registry_service().await;
+        let (ctx, ..) = context_with(service, graph_teaches_context());
+        let tool = mounted_search_tool(&ctx, false);
+
+        assert_eq!(
+            tool.input_schema["properties"]["mode"]["enum"],
+            serde_json::json!(["search", "detail"])
+        );
+        assert_eq!(
+            tool.input_schema["required"],
+            serde_json::json!(["query"])
+        );
+        assert!(
+            tool.input_schema["properties"].get("concept_id").is_some(),
+            "detail 用的 concept_id 字段应在 schema 面：{}",
+            tool.input_schema
+        );
+        assert!(
+            tool.description.contains("只读") && tool.description.contains("不改"),
+            "描述说明只读自查：{}",
+            tool.description
+        );
+
+        let hit: serde_json::Value = serde_json::from_str(
+            &(tool.handler)(serde_json::json!({ "query": "极限" }))
+                .await
+                .expect("命中应 Ok"),
+        )
+        .unwrap();
+        assert_eq!(hit["not_found"], false);
+        assert_eq!(hit["hits"][0]["concept_id"], REGISTRY_CONCEPT);
+        assert_eq!(hit["hits"][0]["canonical"], "极限");
+        assert_eq!(hit["hits"][0]["matched_by"], "exact");
+
+        // 别名通道。
+        let alias: serde_json::Value = serde_json::from_str(
+            &(tool.handler)(serde_json::json!({ "query": "limits" }))
+                .await
+                .expect("别名命中应 Ok"),
+        )
+        .unwrap();
+        assert_eq!(alias["hits"][0]["matched_by"], "alias");
+        assert_eq!(alias["hits"][0]["canonical"], "极限");
+
+        // 零命中：Ok + not_found=true（不抛错、不中断循环）。
+        let miss: serde_json::Value = serde_json::from_str(
+            &(tool.handler)(serde_json::json!({ "query": "量子纠缠" }))
+                .await
+                .expect("零命中应 Ok"),
+        )
+        .unwrap();
+        assert_eq!(miss["not_found"], true);
+        assert!(miss["hits"].as_array().unwrap().is_empty());
+
+        // detail：全定义 + 全部活跃别名（不受 top-5 限制）。
+        let detail: serde_json::Value = serde_json::from_str(
+            &(tool.handler)(serde_json::json!({
+                "query": "极限", "mode": "detail", "concept_id": REGISTRY_CONCEPT
+            }))
+            .await
+            .expect("detail 命中应 Ok"),
+        )
+        .unwrap();
+        assert_eq!(detail["hits"][0]["definition"], "无限逼近的值：函数值趋近于某个定值");
+        assert_eq!(detail["hits"][0]["aliases"].as_array().unwrap().len(), 6);
+
+        // 入参错误转模型可读 Err。
+        let missing_query = (tool.handler)(serde_json::json!({}))
+            .await
+            .expect_err("缺 query 应 Err");
+        assert!(missing_query.contains("query"), "{missing_query}");
+        let blank_query = (tool.handler)(serde_json::json!({ "query": "   " }))
+            .await
+            .expect_err("空白 query 应 Err");
+        assert!(blank_query.contains("query"), "{blank_query}");
+        let missing_id = (tool.handler)(serde_json::json!({ "query": "极限", "mode": "detail" }))
+            .await
+            .expect_err("detail 缺 concept_id 应 Err");
+        assert!(missing_id.contains("concept_id"), "{missing_id}");
+        let unknown_id = (tool.handler)(serde_json::json!({
+            "query": "极限", "mode": "detail", "concept_id": "0190f5fe-7c00-7a00-8abc-999999999999"
+        }))
+        .await
+        .expect_err("detail 查无应 Err");
+        assert!(unknown_id.contains("absent from the registry"), "{unknown_id}");
+        let bad_mode = (tool.handler)(serde_json::json!({ "query": "极限", "mode": "frobnicate" }))
+            .await
+            .expect_err("非法 mode 应 Err");
+        assert!(bad_mode.contains("mode 只支持"), "{bad_mode}");
+    }
+
+    /// 只读自证：search / 零命中 / detail 三种调用前后，登记表行数、内容
+    /// 与 `updated_at` 逐字不变（零写侧）。
+    #[tokio::test]
+    async fn search_concepts_handler_leaves_the_registry_untouched() {
+        let (service, pool) = registry_service().await;
+        let before = registry_snapshot(&pool).await;
+        let (ctx, ..) = context_with(service, graph_teaches_context());
+        let tool = mounted_search_tool(&ctx, true);
+
+        (tool.handler)(serde_json::json!({ "query": "极限" }))
+            .await
+            .expect("search 命中");
+        (tool.handler)(serde_json::json!({ "query": "量子纠缠" }))
+            .await
+            .expect("search 零命中");
+        (tool.handler)(serde_json::json!({
+            "query": "极限", "mode": "detail", "concept_id": REGISTRY_CONCEPT
+        }))
+        .await
+        .expect("detail");
+
+        let after = registry_snapshot(&pool).await;
+        assert_eq!(before, after, "search_concepts 只读：登记表行与内容零变化");
     }
 }
