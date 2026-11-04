@@ -140,8 +140,16 @@ pub(crate) fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, Str
     while let Some((start, end)) = find_json_object_bounds(raw, scan_from) {
         let slice = &raw[start..=end];
         match parse_candidate::<T>(slice) {
-            Ok(value) => return Ok(value),
-            Err(error) => last_error = format!("invalid JSON: {error}"),
+            (Ok(value), _) => return Ok(value),
+            (Err(last), first) => {
+                // 窗口定位用**首次**未修复解析的 line/column：修复链会重排
+                // 字节（转义/尾逗号），后续错误的位置不再对应原文。
+                let first = first.unwrap_or(last);
+                last_error = format!(
+                    "invalid JSON: {first}; window: {}",
+                    parse_failure_window(raw, start, first.line(), first.column())
+                );
+            }
         }
         scan_from = end + 1;
     }
@@ -150,7 +158,7 @@ pub(crate) fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, Str
     // dangling array/object — a partial graph that passes the audit gate is
     // still a usable graph, and far better than a hard failure.
     if let Some(candidate) = recover_truncated_object(raw) {
-        if let Ok(value) = parse_candidate::<T>(&candidate) {
+        if let (Ok(value), _) = parse_candidate::<T>(&candidate) {
             return Ok(value);
         }
     }
@@ -158,16 +166,105 @@ pub(crate) fn parse_json_object<T: DeserializeOwned>(raw: &str) -> Result<T, Str
 }
 
 
-/// Parse one candidate slice with the standard repair chain (escape repair,
-/// then trailing commas). Returns the deserialization error when every
-/// repair fails.
-fn parse_candidate<T: DeserializeOwned>(slice: &str) -> Result<T, serde_json::Error> {
-    serde_json::from_str::<T>(slice)
-        .or_else(|_| serde_json::from_str::<T>(&repair_json_escapes(slice)))
+/// 解析失败窗口半径（字符；±120，learnhub `FEEDBACK_WINDOW_RADIUS` 同值）：
+/// 中文正文一字符三字节，窗口必须按**字符**收口，截口永不落在字符中间。
+const PARSE_FAILURE_WINDOW_RADIUS: usize = 120;
+
+
+/// 解析失败的外围窗口：末次候选对象在原文中的绝对偏移 ±120 **字符**，
+/// 带 `line/column` 标注。`line`/`column` 是 serde 相对候选切片的 1 基
+/// 行号与**字节**列；换算顺序 = 切片内行首字节 + 列减一 → 退到 UTF-8 字符
+/// 边界 → 加切片起点得到绝对偏移。越界一律钳到文末，绝不 panic。
+pub(crate) fn parse_failure_window(
+    raw: &str,
+    slice_start: usize,
+    line: usize,
+    column: usize,
+) -> String {
+    let slice_start = slice_start.min(raw.len());
+    let offset = (slice_start + offset_of_line_col(&raw[slice_start..], line, column))
+        .min(raw.len());
+    let start = step_back_chars(raw, offset, PARSE_FAILURE_WINDOW_RADIUS);
+    let end = step_forward_chars(raw, offset, PARSE_FAILURE_WINDOW_RADIUS);
+    format!("line {line} column {column}: …{}…", &raw[start..end])
+}
+
+
+/// 1 基 `line/column`（serde 语义：列按**行内字节**）→ 文本内字节偏移；
+/// 越界取所在行末/文末，偏移退到 UTF-8 字符边界。
+fn offset_of_line_col(text: &str, line: usize, column: usize) -> usize {
+    let mut current_line = 1usize;
+    let mut line_start = 0usize;
+    for (index, ch) in text.char_indices() {
+        if current_line == line {
+            break;
+        }
+        if ch == '\n' {
+            current_line += 1;
+            line_start = index + 1;
+        }
+    }
+    if current_line != line {
+        return text.len();
+    }
+    let line_end = text[line_start..]
+        .find('\n')
+        .map_or(text.len(), |position| line_start + position);
+    let mut offset = (line_start + column.saturating_sub(1)).min(line_end);
+    while offset > line_start && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+
+/// 从字节偏移向前退 `count` 个字符（不越文首，永不破字符）。
+fn step_back_chars(text: &str, from: usize, count: usize) -> usize {
+    let mut at = from.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    for _ in 0..count {
+        match text[..at].char_indices().next_back() {
+            Some((index, _)) => at = index,
+            None => break,
+        }
+    }
+    at
+}
+
+
+/// 从字节偏移向后进 `count` 个字符（不越文末，永不破字符）。
+fn step_forward_chars(text: &str, from: usize, count: usize) -> usize {
+    let mut at = from.min(text.len());
+    while at < text.len() && !text.is_char_boundary(at) {
+        at += 1;
+    }
+    for _ in 0..count {
+        match text[at..].chars().next() {
+            Some(ch) => at += ch.len_utf8(),
+            None => break,
+        }
+    }
+    at
+}
+
+
+/// 解析一份候选切片：返回 `(最终结果, 首次 serde 错误)`。首次错误（未修复
+/// 原文）是窗口定位的唯一可信位置源——修复链的转义/尾逗号重写会移动字节。
+fn parse_candidate<T: DeserializeOwned>(
+    slice: &str,
+) -> (Result<T, serde_json::Error>, Option<serde_json::Error>) {
+    let first_error = match serde_json::from_str::<T>(slice) {
+        Ok(value) => return (Ok(value), None),
+        Err(error) => error,
+    };
+    let outcome = serde_json::from_str::<T>(&repair_json_escapes(slice))
         .or_else(|_| serde_json::from_str::<T>(&repair_json_trailing_commas(slice)))
         .or_else(|_| {
             serde_json::from_str::<T>(&repair_json_trailing_commas(&repair_json_escapes(slice)))
-        })
+        });
+    (outcome, Some(first_error))
 }
 
 
@@ -183,7 +280,7 @@ fn recover_truncated_object(raw: &str) -> Option<String> {
     let tail = raw[start..].trim_end();
     for closer in ["]}]}", "]}", "}", "}}"] {
         let candidate = format!("{tail}{closer}");
-        if parse_candidate::<serde_json::Value>(&candidate).is_ok() {
+        if parse_candidate::<serde_json::Value>(&candidate).0.is_ok() {
             return Some(candidate);
         }
     }
@@ -191,7 +288,7 @@ fn recover_truncated_object(raw: &str) -> Option<String> {
         let trimmed = tail[..=last_brace].trim_end();
         for closer in ["]}", "}"] {
             let candidate = format!("{trimmed}{closer}");
-            if parse_candidate::<serde_json::Value>(&candidate).is_ok() {
+            if parse_candidate::<serde_json::Value>(&candidate).0.is_ok() {
                 return Some(candidate);
             }
         }
@@ -421,6 +518,66 @@ mod tests {
         let err = parse_json_object::<serde_json::Value>(raw).unwrap_err();
         assert!(err.contains("no complete JSON object found"), "{err}");
         assert!(err.contains("head:"), "{err}");
+        assert!(
+            !err.contains("window:"),
+            "截断无可定位对象时走通用兜底，不误报窗口：{err}"
+        );
+    }
+
+    /// parse 失败窗口（y02 红绿样）：中文字段之间缺逗号——serde 的
+    /// `column` 是行内**字节**偏移，按字符解释会落到 1/3 处；窗口必须覆盖
+    /// 真正的出错点（紧跟值之后的 `"next"`），且截口不破 UTF-8（切片越界
+    /// 或落在字符中间会直接 panic）。
+    #[test]
+    fn parse_failure_window_locates_the_error_inside_bytes_heavy_chinese() {
+        let long_chinese = "先把常数项移到等号右边，再把两边同时加上一次项系数一半的平方，".repeat(100);
+        let raw = format!(
+            r#"{{"name": "{long_chinese}", "min": 10 "next": "尾"}}"#
+        );
+        let err = parse_json_object::<serde_json::Value>(&raw).unwrap_err();
+        assert!(err.starts_with("invalid JSON"), "{err}");
+        assert!(err.contains("line 1 column"), "{err}");
+        assert!(err.contains("window:"), "错误串必须带出错窗口：{err}");
+        assert!(
+            err.contains("\"next\""),
+            "窗口必须覆盖真正的出错点（缺逗号后的 next 键）：{err}"
+        );
+        assert!(
+            err.contains("一次项系数一半的平方"),
+            "窗口必须带出错点前后的中文正文：{err}"
+        );
+        let window = err.split("window: ").nth(1).expect("window present");
+        let snippet = window.split('…').nth(1).expect("window is delimited");
+        assert!(
+            snippet.chars().count() <= 2 * 120,
+            "窗口是 ±120 字符，不得退化成全文：{} chars",
+            snippet.chars().count()
+        );
+    }
+
+    /// 围栏/散文包裹的坏对象：窗口按候选切片的**绝对偏移**定位——散文前缀
+    /// 超过窗口半径时，忽略 `slice_start` 会把窗口钉在散文开头而不是出错点。
+    #[test]
+    fn parse_failure_window_uses_the_candidate_slice_offset() {
+        let prose = format!(
+            "起始标记X{}",
+            "这是一段很长的解释性散文，本不该出现在回包里。".repeat(20)
+        );
+        let raw = format!(
+            "{prose}\n```json\n{{\"concepts\": [{{\"name\": \"甲\", \"min\": 10 \"next\": 1}}]}}\n```\n"
+        );
+        let err = parse_json_object::<serde_json::Value>(&raw).unwrap_err();
+        assert!(err.contains("window:"), "{err}");
+        let window = err.split("window: ").nth(1).expect("window present");
+        let window = window.split("; reply is").next().expect("window is bounded");
+        assert!(
+            window.contains("\"next\""),
+            "窗口必须落在对象内的出错点：{err}"
+        );
+        assert!(
+            !window.contains("起始标记X"),
+            "窗口不得被散文前缀拉走（slice_start 必须计入绝对偏移）：{err}"
+        );
     }
 
     #[test]
@@ -433,6 +590,10 @@ mod tests {
         assert!(err.contains("reply is"), "{err}");
         assert!(err.contains("0 '{' / 0 '}'"), "{err}");
         assert!(err.contains("head:"), "{err}");
+        assert!(
+            !err.contains("window:"),
+            "没有对象就没有定位窗口（通用兜底）：{err}"
+        );
     }
 
     #[test]

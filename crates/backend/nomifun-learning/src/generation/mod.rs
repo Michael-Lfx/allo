@@ -16,6 +16,7 @@ pub(super) use crate::models::{
 
 mod activities;
 mod assemble;
+mod attempt;
 mod blueprint;
 mod completer;
 mod expand;
@@ -396,6 +397,7 @@ pub use self::lesson::{
     is_content_discipline_v2_disabled_value,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
+pub(crate) use self::attempt::AttemptFailure;
 // 多知识库采样（t4）：单库逐字旧路径，多库按库分摊 + 路径命名空间。
 pub(crate) use self::sample::sample_bases;
 // 采样路径的库归属解析（t4）：蓝图来源标注、课时读库去前缀、视图解析共用。
