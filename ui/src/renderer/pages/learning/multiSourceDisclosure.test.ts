@@ -13,6 +13,7 @@ import { knowledgeBaseNames } from './utils';
 const readSource = (url: URL): string => readFileSync(url, 'utf8');
 
 const hookSource = readSource(new URL('./hooks/useCourseCreation.ts', import.meta.url));
+const planSource = readSource(new URL('./coursePlan.ts', import.meta.url));
 const dialogSource = readSource(new URL('./components/CreateCourseDialog.tsx', import.meta.url));
 const pillSource = readSource(new URL('./components/CourseGenerationPill.tsx', import.meta.url));
 const progressSource = readSource(
@@ -26,7 +27,8 @@ const lessonSource = readSource(new URL('./components/LessonStudy.tsx', import.m
 describe('learning multi-source disclosure', () => {
   test('never silently truncates the source list at the cap', () => {
     expect(hookSource.includes('.slice(0, MAX_COURSE_KNOWLEDGE_BASES)')).toBe(false);
-    expect(hookSource.includes('kbSelectionTooMany')).toBe(true);
+    // y05：请求构造（含上限校验）收进纯计划模块，错误仍是可见的提示。
+    expect(planSource.includes('kbSelectionTooMany')).toBe(true);
     expect(dialogSource.includes('kbSelectionTooMany')).toBe(true);
     // 选择端拒绝超限的这次选择（保留上一次的合法选择），不是截断提交。
     expect(dialogSource.includes('onSelectedBaseChange(next)')).toBe(true);
