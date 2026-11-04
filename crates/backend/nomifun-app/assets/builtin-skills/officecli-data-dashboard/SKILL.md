@@ -1,6 +1,7 @@
 ---
 name: officecli-data-dashboard
 description: "Use this skill to build a multi-element Excel dashboard — Dashboard sheet on open, multiple formula-driven KPI cards, multiple charts, sparklines, and conditional formatting — from CSV or tabular input. Trigger on: 'dashboard', 'KPI dashboard', 'analytics dashboard', 'executive dashboard', 'metrics dashboard', 'CSV to dashboard', 'data visualization'. Output is a single .xlsx. Scene-layer on officecli-xlsx: inherits every xlsx hard rule. DO NOT invoke for: a single budget tracker / one-sheet CSV-with-formatting (use xlsx), a 3-statement / DCF / LBO financial model (use financial-model), a weekly report with ≤ 1 chart and < 10 rows (use xlsx)."
+when-to-use: "用户要把数据做成带多张图表的 Excel 仪表板时使用。单张简单表不用。Use for a multi-chart Excel dashboard."
 ---
 
 # Data Dashboard (scene-layer on officecli-xlsx)

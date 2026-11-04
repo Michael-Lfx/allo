@@ -1,6 +1,7 @@
 ---
 name: officecli-xlsx
 description: "Use this skill any time a .xlsx file is involved -- as input, output, or both. This includes: creating spreadsheets, financial models, dashboards, or trackers; reading, parsing, or extracting data from any .xlsx file; editing, modifying, or updating existing workbooks; working with formulas, charts, pivot tables, or templates; importing CSV/TSV data into Excel format. Trigger whenever the user mentions 'spreadsheet', 'workbook', 'Excel', 'financial model', 'tracker', 'dashboard', or references a .xlsx/.csv filename."
+when-to-use: "涉及 Excel 或表格（.xlsx/.csv）时使用：新建、读取、公式、图表。Use whenever a spreadsheet is involved."
 paths: "**/*.xlsx,**/*.csv"
 ---
 

@@ -274,7 +274,9 @@ pub fn build_system_prompt_with(
                 format!(
                     "<system-reminder>\nThe following skills are available for use with the Skill tool. \
 When a listed skill matches the current task, call Skill with its catalog id (or unique name) \
-and follow the returned SKILL.md before acting. Do not skip a matching skill.\n\n{listing}\n</system-reminder>"
+and follow the returned SKILL.md before acting. Do not skip a matching skill. \
+Match the task, not the polite wording: 帮我, 请, 麻烦, and please do not change the decision. \
+The same task with or without those words takes the same skill.\n\n{listing}\n</system-reminder>"
                 )
             }
         });
@@ -433,6 +435,10 @@ mod tests {
         assert!(
             result.contains("The following skills are available for use with the Skill tool."),
             "result should contain skills header"
+        );
+        assert!(
+            result.contains("帮我, 请, 麻烦, and please do not change the decision"),
+            "polite wrappers must not change the skill decision"
         );
         assert!(
             result.contains("</system-reminder>"),

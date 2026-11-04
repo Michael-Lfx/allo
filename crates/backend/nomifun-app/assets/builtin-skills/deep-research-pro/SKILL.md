@@ -1,6 +1,7 @@
 ---
 name: deep-research-pro
 description: "Multi-source deep research. Use when the user wants a cited report, a deep dive, or a decision brief from public web sources. Search with web_search, read key pages with web_extract, and deliver a sourced report. Do not use for a single quick fact that one search already answers."
+when-to-use: "用户要调研、深入研究、多来源对比或带引用的报告时使用。单个事实、一次查询就能回答的问题不用。Use for research, a cited brief, or a comparison; skip a single lookup."
 ---
 
 # Deep Research Pro

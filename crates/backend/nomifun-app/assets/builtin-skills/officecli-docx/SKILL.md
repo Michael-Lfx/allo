@@ -1,6 +1,7 @@
 ---
 name: officecli-docx
 description: "Use this skill any time a .docx file is involved -- as input, output, or both. This includes: creating Word documents, reports, letters, memos, or proposals; reading, parsing, or extracting text from any .docx file; editing, modifying, or updating existing documents; working with templates, tracked changes, comments, headers/footers, or tables of contents. Trigger whenever the user mentions 'Word doc', 'document', 'report', 'letter', 'memo', or references a .docx filename."
+when-to-use: "涉及 Word 文档（.docx）时使用：新建、阅读、修改、模板或批注。Use whenever a .docx file is involved."
 paths: "**/*.docx"
 ---
 

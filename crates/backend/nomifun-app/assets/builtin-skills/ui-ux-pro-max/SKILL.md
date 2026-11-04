@@ -1,6 +1,7 @@
 ---
 name: ui-ux-pro-max
 description: Professional UI/UX design research skill with a bundled searchable database for product patterns, visual styles, color palettes, typography, landing-page structure, dashboard charts, UX practices, and stack guidance. Use when designing, building, reviewing, or improving interfaces.
+when-to-use: "用户要设计、审查或改进界面、配色、字体或落地页时使用。Use when designing or reviewing a UI."
 ---
 
 # UI/UX Pro Max

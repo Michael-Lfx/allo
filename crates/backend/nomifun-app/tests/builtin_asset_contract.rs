@@ -161,6 +161,10 @@ fn deep_research_pro_is_bundled_and_uses_host_web_tools() {
     );
     assert!(skill.starts_with("---\n"), "must start with YAML frontmatter");
     assert!(skill.contains("name: deep-research-pro"));
+    assert!(
+        skill.contains("用户要调研、深入研究、多来源对比或带引用的报告时使用"),
+        "L1 routing clause must name 调研 so polite paraphrases stay on the same side"
+    );
     assert!(skill.contains("web_search"));
     assert!(skill.contains("web_extract"));
     assert!(
