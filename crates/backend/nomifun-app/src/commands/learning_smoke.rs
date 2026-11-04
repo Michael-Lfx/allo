@@ -1430,6 +1430,13 @@ async fn run_grow(
             return Ok(ExitCode::from(2));
         }
         let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
+        // 声明面读数行（absorb-8 z01，读数面非门禁）：本批 intent/scope 字符
+        // 均值——两字段写实质内容的观察面。
+        if let Some((rows, intent_avg, scope_avg)) =
+            batch_brief_readout(&wiring.pool, &course_id, seq).await?
+        {
+            println!("  [brief: rows={rows} intent_avg={intent_avg} scope_avg={scope_avg}]");
+        }
         // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
         // 挂号表读数行（m3）：rows/invalid/retried/degraded——机械校验观测面。
         // external_hits（f1 A5）：行 concept 命中本批复用锚的行数——挂号行
@@ -1587,6 +1594,41 @@ async fn batch_summary(
     Ok((node_ids.len(), seq))
 }
 
+/// 声明面读数（absorb-8 z01，读数面非门禁）：本批节点 intent/scope 的 trim 后
+/// 字符均值（`[brief: rows=N intent_avg=X scope_avg=Y]`）。批未落 = None。
+async fn batch_brief_readout(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<Option<(usize, usize, usize)>> {
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+    if node_ids.is_empty() {
+        return Ok(None);
+    }
+    let mut intent_total = 0usize;
+    let mut scope_total = 0usize;
+    for lesson_id in &node_ids {
+        let (intent, scope): (String, String) = sqlx::query_as(
+            "SELECT intent, scope FROM learning_lessons WHERE lesson_id = ?",
+        )
+        .bind(lesson_id)
+        .fetch_one(pool)
+        .await?;
+        intent_total += intent.trim().chars().count();
+        scope_total += scope.trim().chars().count();
+    }
+    let rows = node_ids.len();
+    Ok(Some((rows, intent_total / rows, scope_total / rows)))
+}
+
 /// 批次机械判据审计（s1）：首批 assumes 地板（空账全空/非空账验覆盖） + 就绪即发布（既往供给覆盖）
 /// + 铸名全局唯一。
 async fn audit_batch(
@@ -1604,6 +1646,24 @@ async fn audit_batch(
     .fetch_one(pool)
     .await?;
     let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+
+    // 声明面判据（absorb-8 z01）：ng.node.brief 契约门放行的批才会 applied
+    // （门拒 = 批不落 = wait_applied_batches 超时退出——判据「首批契约门过、
+    // 无 ng.node.brief 违约读数」的机械面），落库行 intent/scope 必须 trim 后
+    // 非空；空 = 门与落库断链（契约/落库漂移缺陷），如实违约。
+    for lesson_id in &node_ids {
+        let (intent, scope): (String, String) = sqlx::query_as(
+            "SELECT intent, scope FROM learning_lessons WHERE lesson_id = ?",
+        )
+        .bind(lesson_id)
+        .fetch_one(pool)
+        .await?;
+        if intent.trim().is_empty() || scope.trim().is_empty() {
+            violations.push(format!(
+                "节点声明面判据破坏：{lesson_id} 的 intent/scope 落库为空（ng.node.brief 门应已拦）"
+            ));
+        }
+    }
 
     // 批内节点的 assumes。
     let mut batch_assumes: Vec<(String, String, String)> = Vec::new(); // (lesson, concept, tier)
