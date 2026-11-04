@@ -20,7 +20,7 @@ pub const EXPECTED_FILES: &[&str] = &[
     "checksums.sha256",
 ];
 
-/// Authoritative list of expected files in local offline TTS models distribution (~197MB Matcha + Vocos suite).
+/// Authoritative list of expected files in local offline TTS models distribution (~206MB Matcha + Vocos suite).
 pub const EXPECTED_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
     "tts/matcha-icefall-zh-baker/tokens.txt",

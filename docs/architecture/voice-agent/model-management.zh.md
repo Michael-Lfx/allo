@@ -117,14 +117,14 @@ pub enum ModelInstallState {
 ```
 
 ### 场景 A：桌面端 GUI 可视化管理面板 (Desktop Settings / Device Page)
-- **设计背景与体验考量**：Flowy 桌面用户大多使用代码、浏览器与文档等核心自动化功能，语音交互属于增量高级特性。为避免让所有桌面用户强制背负 ~249MB 的模型网络流量与磁盘包袱，桌面端安装包保持轻量（~100MB）。
+- **设计背景与体验考量**：Flowy 桌面用户大多使用代码、浏览器与文档等核心自动化功能，语音交互属于增量高级特性。为避免让所有桌面用户强制背负 ~453MB 的模型网络流量与磁盘包袱，桌面端安装包保持轻量（~100MB）。
 - **REST API 契约**：
   - `GET /api/voice/models/status`：获取当前状态（返回 `ModelInstallState`、各模型文件明细与磁盘总占用）；
   - `POST /api/voice/models/install`：触发按需下载任务（异步启动并幂等防重）；
   - `GET /api/voice/models/progress`：基于 Server-Sent Events (SSE) 的长连接进度流，向前端实时推送 `ModelInstallState::Downloading` / `VerifyingSha256` 细粒度 DTO（含当前文件名、已下载字节数、百分比 `progress_percent`、实时速度 `speed_bytes_per_sec`）；
   - `DELETE /api/voice/models`：卸载模型文件并释放磁盘空间（安全删除并重置为 `NotInstalled`）。
 - **前端 Arco / React 19 交互闭环**（视觉与动效细则见 [ui-motion.zh.md](ui-motion.zh.md)）：
-  - 落位于“设置 → 能力与扩展组 → 语音伴侣”详情页（`form` 型，内容上限 960px），遵循设置壳 `Page Header → Section → List → Row` 契约：未安装时以标准设置行呈现“语音交互套件（约 249MB）”，右侧 220~280px 控制槽放置主操作按钮【下载并启用】，严禁独立卡片容器；
+  - 落位于“设置 → 能力与扩展组 → 语音伴侣”详情页（`form` 型，内容上限 960px），遵循设置壳 `Page Header → Section → List → Row` 契约：未安装时以标准设置行呈现“语音交互套件（约 453MB）”，右侧 220~280px 控制槽放置主操作按钮【下载并启用】，严禁独立卡片容器；
   - 用户点击后，按钮原地进入加载态，行底部 2px 进度发丝线淡入并以 `transform: scaleX()` 推进，控制槽同步显示百分比、实时速度（如 `4.8 MB/s`，以 tabular-nums 防数字抖动）与阶段提示文案（如“正在下载 ASR 声学模型 3/7”、“正在校验完整性”）；
   - 安装就绪后，控制槽切换为“已就绪”（图标 + 文案 + 语义成功色三要素，不靠颜色单通道）、“语音伴侣启用开关”与【释放空间】文本按钮（行内两步确认，不用 Modal）；
   - 若突发断网中断，行内展示重试按钮与本地化错误说明，杜绝用户在黑盒中盲目等待。
