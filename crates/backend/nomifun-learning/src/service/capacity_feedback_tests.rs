@@ -119,6 +119,7 @@ impl LessonContentAgentEngine for CapacityEngine {
             degraded_keys: Vec::new(),
             capacity_note: self.note.lock().unwrap().clone(),
             viz_lint_events: 0,
+            scope_findings: 0,
         })
     }
 

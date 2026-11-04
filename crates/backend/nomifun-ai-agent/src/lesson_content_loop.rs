@@ -167,6 +167,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 {budget_clause}- 构件词边界：节标题、要点、例题与练习只把 用户消息「课程已知概念」名单 ∪ 本节点 teaches 的概念当工作词；名单外的领域名词不立名——不进节标题、不进要点、不作讲解构件（那是后续节点的内容，不预教），需要该意思时用日常词表述（范围、找不满足的例子、至少有一个）。本节点 teaches 的概念与教学必需的记号读法除外。
 - 练习形态按档位：照示范复制本节点行为的练习（照例题格式改写、套格式、判断对错）各档都合法；练习引入本节点未教的方法论或推理链（归纳原理、多步推理证明一类）即越档——teaches 标「知道」的节点尤其如此：练习止于辨认与复制，方法论归「会用/能教」档。节清单定稿后逐节核对：每道练习考的是「示范过的行为」还是「没教过的方法」。
 - 取材池（考察的概念域）：例题与练习考察的概念优先取自「课程已知概念」名单——用已教/已声明的概念出题，兼旧概念复习；情境载体另跟受众条款走，两不相扰。名单内多样轮换：不在单一概念上连出多题，不同题目轮换概念域与情境载体，避免同模子例句连排。{completeness_planning}{segmented_examples_planning}
+- 声明优先（创建意图/教学范围）：用户消息带「创建意图：」「教学范围：」两行时，这两行是本节点意图与边界的**第一真相**——节安排不越出声明的教学范围，与意图画像冲突处照声明（「节点档位」行与开头「程度声明」照旧管档位与深度，分工不替代）；范围内讲透、范围外不无痕展开——范围外名词不立名、不展开、不作讲解构件；在小结或引入处点名边界（「本节点不教 X」一类）是对边界的诚实说明，不构成对 X 的引用，更不构成引入豁免。两行缺席（旧档节点）= 无声明面，照既有纪律走。
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
 - 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
@@ -230,7 +231,8 @@ pub struct LiveLessonContentAgentEngine {
     pub round_logs: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// 可选首轮观测钩子（冒烟存档面，k03/k05 读数）：每次生成先落一轮
     /// `{method:"lesson_agent_turn", system, user}`，发布成功再落
-    /// `{method:"lesson_agent_publish", capacity_note, estimated_minutes}`。
+    /// `{method:"lesson_agent_publish", capacity_note, estimated_minutes,`
+    /// viz_lint_events, scope_findings, math_verify}`。
     /// 生产接线恒 None（引擎自带 provider，不经 ArchivingCompleter）。
     pub prompt_observer: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     /// 可选 provider 装饰钩子（e4 冒烟瞬断注入面）：引擎解析出真实 provider
@@ -689,6 +691,9 @@ fn lesson_publish_observation_frame(
         "capacity_note": output.capacity_note,
         "estimated_minutes": output.estimated_minutes,
         "viz_lint_events": output.viz_lint_events,
+        // scope 边界词面 findings 计数（absorb-8 z03，报告-only）：smoke
+        // `scope_findings read-out` 的数据源；0 = 零命中或旧档零扫描。
+        "scope_findings": output.scope_findings,
         "math_verify": math_verify.snapshot_json(),
     })
 }
@@ -798,6 +803,16 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 context.lesson_title.trim(),
                 context.purpose.trim()
             ));
+            // 声明面骨架行（absorb-8 z03，learnhub #205 契约 v2.17）：节点
+            // 定位行后插「创建意图/教学范围」两行——声明优先条款的输入面；
+            // 任一字段缺席（旧档）省该行、两字段皆缺席整段省略（旧行为零
+            // 变化）。行格式逐字固定（真机冒烟机械 grep 面）。
+            if let Some(line) = nomifun_learning::render_intent_scope_lines(
+                graph.intent.as_deref(),
+                graph.scope.as_deref(),
+            ) {
+                text.push_str(&line);
+            }
             // teaches 档位行（D4，意图画像深度角）：此前写作纪律「档位决定
             // 内容形态」引用模型读不到的值——本行补上输入面；空 teaches 整行
             // 省略。
@@ -1529,6 +1544,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("学习图节点"));
@@ -1556,6 +1573,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("从零讲起"));
@@ -1583,6 +1602,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("概念面"));
@@ -1620,6 +1641,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("时长预算：20 分钟"), "{text}");
@@ -1650,6 +1673,8 @@ mod tests {
                 node_name: "收益率与对数收益率".into(),
                 sections: vec!["概念：对数收益".into(), "例题：两日收益换算".into()],
             }],
+            intent: None,
+            scope: None,
         });
         let text = lesson_user_text(&context);
         // Known Names 行：名单 + 边界措辞（冒烟判据①机械 grep 面）。
@@ -1677,6 +1702,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let bare_text = lesson_user_text(&bare);
         assert!(!bare_text.contains("课程已知概念"), "{bare_text}");
@@ -1688,6 +1715,84 @@ mod tests {
         assert!(!plain.contains("课程已知概念"), "{plain}");
         assert!(!plain.contains("节点档位"), "{plain}");
         assert!(!plain.contains("已建立先例"), "{plain}");
+    }
+
+    /// 声明面骨架行（absorb-8 z03，learnhub #205 契约 v2.17）：图臂节点
+    /// 定位行后插「创建意图/教学范围」两行——两字段齐两行在场；单缺席只
+    /// 出在场行；全缺席（旧档）与传统路径零两行（旧行为零变化）。
+    #[test]
+    fn lesson_user_text_renders_declaration_lines_for_declared_graph_nodes() {
+        let graph_ctx = |intent: Option<&str>, scope: Option<&str>| {
+            let mut context = lesson_context();
+            context.clear_grounding();
+            context.graph = Some(GraphLessonContext {
+                goal: "g".into(),
+                degree_statement: "d".into(),
+                prerequisite_path: String::new(),
+                upcoming_nodes: String::new(),
+                concept_faces: None,
+                est_minutes: Some(20),
+                known_names: None,
+                teaches_tiers: Vec::new(),
+                precedents: Vec::new(),
+                intent: intent.map(str::to_owned),
+                scope: scope.map(str::to_owned),
+            });
+            context
+        };
+        // 两字段齐：两行在场，且插在节点定位行之后（骨架行现有风格）。
+        let text = lesson_user_text(&graph_ctx(
+            Some("在收益率之后解释波动率，承接换算例题"),
+            Some("教波动率的直观刻画；不引入 GARCH 模型"),
+        ));
+        assert!(text.contains("创建意图：在收益率之后解释波动率，承接换算例题\n"), "{text}");
+        assert!(
+            text.contains(
+                "教学范围：教波动率的直观刻画；不引入 GARCH 模型（范围外内容不教，越界点名不构成引用）\n"
+            ),
+            "{text}"
+        );
+        let node_position = text.find("节点定位：").expect("节点定位行在场");
+        let intent_line = text.find("创建意图：").expect("意图行在场");
+        assert!(
+            intent_line > node_position,
+            "声明两行插在节点定位行之后：{text}"
+        );
+        // 单缺席：只出在场行。
+        let scope_only = lesson_user_text(&graph_ctx(None, Some("教基本运算；不展开对数")));
+        assert!(scope_only.contains("教学范围：教基本运算；不展开对数"), "{scope_only}");
+        assert!(!scope_only.contains("创建意图"), "{scope_only}");
+        // 全缺席（旧档）= 零两行；空白串同折叠。
+        let legacy = lesson_user_text(&graph_ctx(None, None));
+        assert!(!legacy.contains("创建意图"), "{legacy}");
+        assert!(!legacy.contains("教学范围"), "{legacy}");
+        let blank = lesson_user_text(&graph_ctx(Some("  "), Some("")));
+        assert!(!blank.contains("创建意图"), "{blank}");
+        assert!(!blank.contains("教学范围"), "{blank}");
+        // 传统路径：恒零两行。
+        let plain = lesson_user_text(&lesson_context());
+        assert!(!plain.contains("创建意图"), "{plain}");
+        assert!(!plain.contains("教学范围"), "{plain}");
+    }
+
+    /// 声明优先条款（absorb-8 z03，learnhub content-plan「声明优先于推断」
+    /// + content-write「以教学范围声明为界」对偶句的 allo 合成）：系统提示
+    /// 词进图臂写作纪律区——两字段在场为意图/边界第一真相；档位/深度照旧
+    /// 归档位行与程度声明；点名边界不构成引用不构成引入豁免。
+    #[test]
+    fn lesson_agent_system_prompt_carries_the_declaration_first_clause() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "声明优先（创建意图/教学范围）",
+            "**第一真相**",
+            "节安排不越出声明的教学范围",
+            "照旧管档位与深度",
+            "点名边界",
+            "不构成对 X 的引用，更不构成引入豁免",
+            "两行缺席（旧档节点）= 无声明面",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
     }
 
     /// k05：写作成色四条新纪律（R10 具象替身 / R11 受众语域 / R12 表述工具
@@ -1954,6 +2059,8 @@ mod tests {
             known_names: None,
             teaches_tiers,
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         context
     }
@@ -2293,7 +2400,8 @@ mod tests {
     /// 发布观测帧（calls.jsonl 的 `lesson_agent_publish` 行）必须带
     /// viz_lint_events（此前只进 WS publish_ok 帧——smoke 读数结构性恒 0 的
     /// 缺陷）、math_verify 累计计数（读数面）与未复核修正数（finish
-    /// findings 口径，smoke 判据⑧硬门的取数面）。
+    /// findings 口径，smoke 判据⑧硬门的取数面）。absorb-8 z03 追加
+    /// scope_findings 计数（报告-only 读数源）。
     #[test]
     fn lesson_publish_observation_frame_carries_viz_lint_and_math_verify() {
         let output = LessonOutput {
@@ -2304,6 +2412,7 @@ mod tests {
             degraded_keys: Vec::new(),
             capacity_note: None,
             viz_lint_events: 3,
+            scope_findings: 1,
         };
         let counters = MathVerifyCounters::default();
         counters.record(&ClaimVerdict::Pass { value: Some(2.0) });
@@ -2317,6 +2426,10 @@ mod tests {
         assert_eq!(
             frame["viz_lint_events"], 3,
             "f3：viz lint 事件计数随观测帧披露（calls.jsonl 读数源）"
+        );
+        assert_eq!(
+            frame["scope_findings"], 1,
+            "z03：scope 边界词面 findings 计数随观测帧披露（报告-only 读数源）"
         );
         assert_eq!(frame["math_verify"]["calls"], 2);
         assert_eq!(frame["math_verify"]["passed"], 1);
@@ -2836,6 +2949,7 @@ mod tests {
             degraded_keys: Vec::new(),
             capacity_note: None,
             viz_lint_events: 3,
+            scope_findings: 0,
         };
         let frame = <LiveLessonContentAgentEngine as FlowCycle>::publish_frame(
             &output,

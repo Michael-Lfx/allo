@@ -38,6 +38,7 @@ pub mod mint_evidence;
 pub mod mounting;
 pub mod name_adjudication;
 pub mod provenance;
+pub mod scope_findings;
 pub mod structure_contract;
 pub mod structure_gen;
 pub mod structure_ops;

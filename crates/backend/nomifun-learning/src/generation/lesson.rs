@@ -368,8 +368,10 @@ pub(crate) async fn generate_lesson(
         // 传统管线无 capacity_note 契约（机械预算已足够，k03 范围注记）。
         capacity_note: None,
         // 传统线的 lint 打回走 attempts 循环（validate_body 并入），无事件
-        // 计数面（f3 计数属于图线草稿/publish 帧口径）。
+        // 计数面（f3 计数属于图线草稿/publish 帧口径）；无 scope 声明面
+        // （z03 词面核对是图路径限域）。
         viz_lint_events: 0,
+        scope_findings: 0,
     })
 }
 

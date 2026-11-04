@@ -39,7 +39,8 @@ pub use lesson_draft::{
     LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
     LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, est_budget_enabled,
     is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
-    render_known_names_line, render_precedent_block, render_teaches_tier_line,
+    render_intent_scope_lines, render_known_names_line, render_precedent_block,
+    render_teaches_tier_line,
 };
 
 pub use generation::{

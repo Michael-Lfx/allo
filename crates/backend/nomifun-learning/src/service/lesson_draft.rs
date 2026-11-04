@@ -447,4 +447,68 @@ mod tests {
             "failed=0 必须零痕迹: {blocked}"
         );
     }
+
+    /// scope 边界词面核对 report-only 断言（absorb-8 z03，j07 观察条同律）：
+    /// 有 `scope_boundary_hit` findings 的草稿仍发布成功（warning 通道不进
+    /// 门禁不进重试）——「不该无痕地生成」由人判读 findings，不由机械打回。
+    #[tokio::test]
+    async fn finish_publishes_with_scope_boundary_findings() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let mut ctx = context();
+        ctx.graph = Some(crate::lesson_draft::GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
+            intent: None,
+            scope: Some("教四则运算；不引入方程".into()),
+        });
+        let view = service.create_lesson_draft(ctx).unwrap();
+        let body = "这是一个足够长的正文段落，用于通过课时级文档契约的长度下限要求。".repeat(12);
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    LessonOp::SetDocument {
+                        document: format!(
+                            "## 描述\n{body}\n## 例子·方程的初步认识\n{body}\n## 验证\n{body}\n"
+                        ),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("single_choice", serde_json::json!({
+                            "options": ["权利", "义务", "债务"], "answer": "权利"
+                        })),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("true_false", serde_json::json!({ "answer": true })),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("reflection", serde_json::json!({ "answer": null })),
+                    },
+                ],
+            )
+            .unwrap();
+        // 命中在案（观察面可见）：warning 级 scope_boundary_hit。
+        let findings = service
+            .inspect_lesson_draft(&view.draft_id)
+            .unwrap()
+            .findings;
+        let hits: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == "scope_boundary_hit")
+            .collect();
+        assert_eq!(hits.len(), 1, "越界命中在案：{findings:?}");
+        assert_eq!(hits[0].severity, crate::course_outline::SEV_WARNING);
+        // report-only：有 findings 仍发布成功（finish 门只认 danger）。
+        let output = service
+            .finish_lesson_draft(&view.draft_id, 0)
+            .expect("scope findings 是观察条，不挡发布");
+        assert_eq!(output.activities.len(), 3, "发布成功（管线照常走完）");
+    }
 }

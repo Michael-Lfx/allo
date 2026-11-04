@@ -319,6 +319,12 @@ pub struct LessonOutput {
     /// lint 打回走 attempts 循环，无事件计数面）。
     #[serde(default)]
     pub viz_lint_events: usize,
+    /// scope 边界词面 findings 计数（absorb-8 z03，报告-only 零拦截）——
+    /// finish 门审计 findings 里 `scope_boundary_hit` 的条数，随发布帧披露
+    /// （smoke `scope_findings` 读数行，非门禁）。传统管线恒 0（无声明面，
+    /// 旧序列化档缺字段按 0 读回）。
+    #[serde(default)]
+    pub scope_findings: usize,
 }
 
 impl LessonOutput {
