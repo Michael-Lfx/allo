@@ -240,3 +240,6 @@ or pass `--log-level` to `nomicore` / `nomifun-web` directly. The value is a
 - [`../architecture/frontend.md`](../architecture/frontend.md) for routes and host adapters.
 - [`../architecture/agent-observability-and-eval.zh.md`](../architecture/agent-observability-and-eval.zh.md) for Session Logs and Agent Eval.
 - [`building-and-packaging.md`](building-and-packaging.md) for release artifacts.
+- [`windows-low-integrity-dev-loop.md`](windows-low-integrity-dev-loop.md) when
+  `bun run dev` fails on Windows with `LNK1104`, a `PermissionDenied` log-file
+  panic, or a WebView2 `0x8000FFFF` / `0x800700AA` window failure.

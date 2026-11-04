@@ -364,3 +364,4 @@ Dockerfile 已为 apt 与 Cargo 启用重试，并使用更小的 Rust slim 基�
 - [配置参考](./configuration.zh.md) —— 每个参数与环境变量。
 - [API 概览](./api-overview.zh.md) —— 路由、鉴权与 WebSocket 模型导览。
 - [常见问题](./faq.zh.md) —— 那些最常见的"X 是这样吗？"的简短回答。
+- [Windows 开发循环无法写入仓库外](../contributing/windows-low-integrity-dev-loop.zh.md) —— `LNK1104`、日志文件 `PermissionDenied` panic，或 WebView2 `0x8000FFFF` / `0x800700AA` 窗口失败，原因是检出目录残留了 Low 完整性标签。
