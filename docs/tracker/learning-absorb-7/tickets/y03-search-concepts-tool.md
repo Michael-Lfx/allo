@@ -177,6 +177,9 @@ part_of: ../map.md
   `nomifun-learning` lib 792 passed / 0 failed；`nomifun-ai-agent` lib
   1132 passed / 0 failed / 3 ignored，全部集成测试二进制 ok。
 - `cargo fmt -p nomifun-learning -p nomifun-ai-agent -- --check` 通过。
+- 集成分支尖端仍为 `9092c7d9a`（本票期间无新提交），
+  `git merge feat/learning-absorb-7` 为 no-op；合并尝试后复跑同一命令
+  **EXIT=0**（learning 792 / ai-agent 1132 + 3 ignored）。
 
 **偏差 / 未做项**
 
