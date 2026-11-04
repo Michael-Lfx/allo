@@ -278,18 +278,21 @@ export function uncertainTooMany(counts: TriageCountsLike): boolean {
   return counts.uncertain >= 10 || (counts.core > 0 && counts.uncertain > counts.core);
 }
 
-/** 成本门确认弹窗的读数行：文件数 / 批数 / 调用数 / 预计耗时（分钟为
- * 粗估值，后端按调用数 × 经验常数折算）。 */
+/** 成本门/计划卡的读数行：文件数 / 批数 / 调用数 / 预计耗时。耗时默认按
+ * 分钟（成本门旧口径）；计划卡可要求按秒显示（`estimated_seconds` 原值）。 */
 export function estimateLines(
   estimate: import('./types').CourseGenerationEstimateView,
-  t: Translate
+  t: Translate,
+  options: { duration?: 'minutes' | 'seconds' } = {}
 ): string[] {
   const minutes = Math.max(1, Math.round(estimate.estimated_seconds / 60));
   return [
     t('learning.costGateFiles', { count: estimate.total_files }),
     t('learning.costGateBatches', { count: estimate.estimated_batches }),
     t('learning.costGateCalls', { count: estimate.estimated_llm_calls }),
-    t('learning.costGateDuration', { minutes }),
+    options.duration === 'seconds'
+      ? t('learning.planEstimateSeconds', { seconds: estimate.estimated_seconds })
+      : t('learning.costGateDuration', { minutes }),
   ];
 }
 

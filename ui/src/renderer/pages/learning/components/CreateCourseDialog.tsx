@@ -1,20 +1,22 @@
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Message, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
-import type { CourseGenerationEstimateView, TeachingStyle } from '../types';
+import type { TeachingStyle } from '../types';
+import type { CoursePlan, CreationPhase, PlanEstimateView } from '../coursePlan';
 import { MAX_COURSE_KNOWLEDGE_BASES, type CourseGenerationState } from '../hooks/useCourseCreation';
 import { knowledgeBaseNames } from '../utils';
 import LearningModelSelector, {
   type LearningModelChoice,
 } from './LearningModelSelector';
 import { CourseGenerationProgress } from './CourseGenerationProgress';
-import { CourseCostGateModal } from './CourseCostGateModal';
+import { CoursePlanCard } from './CoursePlanCard';
 
 const { Text, Paragraph } = Typography;
 
 /** 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
  * 方式三（学习图 beta：目标 + 可选程度/基础声明 → 建课；知识结构生成与首生长
- * 在后台启动）。提交后就地切换为生成/进度视图：结构与生长在后台继续（工作区
+ * 在后台启动）。提交后先就地切换为**计划态**（四槽回显 + 确定性读数，零生成
+ * 调用）；「开始生成」后才进入生成/进度视图（结构与生长在后台继续，工作区
  * 顶条与悬浮指示条可回看）。 */
 export function CreateCourseDialog({
   visible,
@@ -32,6 +34,9 @@ export function CreateCourseDialog({
   teachingStyle,
   onTeachingStyleChange,
   generation,
+  creationPhase,
+  plan,
+  planEstimate,
   onClose,
   onOk,
   onSelectedBaseChange,
@@ -46,8 +51,8 @@ export function CreateCourseDialog({
   onRetry,
   onCancel,
   onStartLearning,
-  costGate,
-  onDismissCostGate,
+  onPlanBack,
+  onPlanConfirm,
 }: {
   visible: boolean;
   busy: boolean;
@@ -68,6 +73,11 @@ export function CreateCourseDialog({
   teachingStyle: TeachingStyle;
   onTeachingStyleChange: (style: TeachingStyle) => void;
   generation: CourseGenerationState | null;
+  /** 对话框阶段：form → plan → generating（生成视图含终态） */
+  creationPhase: CreationPhase;
+  /** 计划态：四槽请求 + 估算读数（generation 优先，plan 仅在 form 后出现） */
+  plan: CoursePlan | null;
+  planEstimate: PlanEstimateView;
   onClose: () => void;
   onOk: () => void;
   onSelectedBaseChange: (values: string[]) => void;
@@ -82,15 +92,15 @@ export function CreateCourseDialog({
   onRetry: () => void;
   onCancel: () => void;
   onStartLearning: (courseId: string) => void;
-  /** t5 成本门：超阈值（>40 文件或 >20 次预估调用）时挂起的估算 + 放行
-   * 回调；null = 低于阈值/未触发，不打扰。 */
-  costGate: { estimate: CourseGenerationEstimateView; proceed: () => void } | null;
-  /** t5 成本门：取消确认（丢弃挂起的请求，回到表单）。 */
-  onDismissCostGate: () => void;
+  /** 计划态：返回修改（回表单，原值保留，零请求） */
+  onPlanBack: () => void;
+  /** 计划态：开始生成（唯一生成触发点，恰一次） */
+  onPlanConfirm: () => void;
 }) {
   const { t } = useTranslation();
-  const generating = generation !== null;
-  const graphWizard = creationTab === 'graph' && !generating;
+  const generating = creationPhase === 'generating';
+  const planning = creationPhase === 'plan' && plan !== null;
+  const graphWizard = creationTab === 'graph' && !generating && !planning;
 
   // 主按钮语义按 tab 分流：学习图单步向导不走 onOk（默认提交）。
   const handleOk = () => {
@@ -118,9 +128,10 @@ export function CreateCourseDialog({
       onCancel={onClose}
       cancelText={t('learning.genClose')}
       onOk={handleOk}
-      // 生成视图：隐藏主按钮，只保留关闭（结构与生长在后台继续）
+      // 生成视图与计划态：隐藏默认主按钮，只保留关闭（生成在后台继续；
+      // 计划态关闭是零请求，重新打开回到计划）。
       footer={
-        generating ? (
+        generating || planning ? (
           <Button onClick={onClose}>{t('learning.genClose')}</Button>
         ) : (
           undefined
@@ -128,7 +139,7 @@ export function CreateCourseDialog({
       }
       style={{ width: 560 }}
     >
-      {generating ? (
+      {generating && generation ? (
         <CourseGenerationProgress
           status={generation.status}
           result={generation.result}
@@ -138,6 +149,19 @@ export function CreateCourseDialog({
           onRetry={onRetry}
           onCancel={onCancel}
         />
+      ) : planning && plan ? (
+        // 计划态（y05）：对话框内就地切换，四槽回显 + 确定性读数；确认
+        // 之前零生成调用，成本门并入本卡（needs_confirm 时卡内提示）。
+        <div className='max-h-[calc(100vh-190px)] overflow-y-auto'>
+          <CoursePlanCard
+            plan={plan}
+            sources={knowledgeBaseNames(plan.request.knowledge_base_ids ?? [], knowledgeBases)}
+            estimate={planEstimate}
+            busy={busy}
+            onBack={onPlanBack}
+            onConfirm={onPlanConfirm}
+          />
+        </div>
       ) : (
         <div className='max-h-[calc(100vh-190px)] overflow-y-auto'>
           <Tabs activeTab={creationTab} onChange={(key) => onTabChange(key as 'base' | 'description' | 'graph')}>
@@ -289,15 +313,6 @@ export function CreateCourseDialog({
             </div>
           </div>
         </div>
-      )}
-      {/* t5 成本门确认弹窗：估算 + 规则分诊读数，「继续」放行原请求、
-          「取消」丢弃。独立于生成进度视图（提交前确认，不是生成中）。 */}
-      {costGate && (
-        <CourseCostGateModal
-          estimate={costGate.estimate}
-          onConfirm={costGate.proceed}
-          onCancel={onDismissCostGate}
-        />
       )}
     </Modal>
   );

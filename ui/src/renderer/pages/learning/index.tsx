@@ -431,6 +431,9 @@ const LearningPage: React.FC = () => {
             teachingStyle={creation.teachingStyle}
             onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
+            creationPhase={creation.creationPhase}
+            plan={creation.plan}
+            planEstimate={creation.planEstimate}
             onClose={creation.closeGenerator}
             onOk={() => void creation.submitGeneration()}
             onSelectedBaseChange={creation.setSelectedKnowledgeBaseIds}
@@ -445,8 +448,8 @@ const LearningPage: React.FC = () => {
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
-            costGate={creation.costGate}
-            onDismissCostGate={creation.dismissCostGate}
+            onPlanBack={creation.backToPlanForm}
+            onPlanConfirm={creation.confirmPlan}
           />
         </Suspense>
 

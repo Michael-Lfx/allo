@@ -1,12 +1,21 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
+import {
+  buildPlanRequest,
+  INITIAL_PLAN_STATE,
+  planEstimateView,
+  reducePlan,
+  type CoursePlanState,
+  type CreationPhase,
+  type CreationTab,
+  type PlanAction,
+} from '../coursePlan';
 import type {
   CourseDetail,
-  CourseGenerationEstimateView,
   GenerateCourseRequest,
   TeachingStyle,
 } from '../types';
@@ -61,12 +70,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
   // 而非失败。取消动作与终态判定在同一 hook 内闭合，不依赖后端错误码。
   const cancelRequestedRef = useRef(false);
-  // t5 成本门：后端判定 needs_confirm（>40 文件或 >20 次预估调用）时挂起
-  // 提交，展示估算 + 规则分诊读数；「继续」放行原请求，「取消」丢弃。
-  const [costGate, setCostGate] = useState<{
-    estimate: CourseGenerationEstimateView;
-    proceed: () => void;
-  } | null>(null);
+  // 计划态（y05）：提交只构造请求并进入计划；计划卡回显四槽 + 确定性读数
+  // （KB 预取一次零 LLM 估算，图/描述不发估算），「开始生成」才发生成请求。
+  // 返回修改/关闭都是零请求，估算按请求键缓存（重进同一计划不重复预取）。
+  const [planState, setPlanState] = useState<CoursePlanState>(INITIAL_PLAN_STATE);
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -126,109 +133,107 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [t, setBusyId]
   );
 
-  // 学习图建课（单步向导）：目标 + 可选程度/基础声明 → 建课；知识结构生成
-  // 与首生长在后台启动（结构进度走工作区 WS structure_* 事件）。
-  const confirmGraphCreation = useCallback(async () => {
-    const description = creationDescription.trim();
-    if (!description) {
-      Message.warning(t('learning.describeRequired'));
-      return;
-    }
-    await generateCourse({
-      course_kind: 'learning_graph',
-      description,
-      proficiency_statement: graphProficiency.trim() || undefined,
-      learner_basis: graphBasis.trim() || undefined,
-      teaching_style: teachingStyle,
-      provider_id: modelChoice?.provider_id,
-      model: modelChoice?.model,
-    });
-  }, [
-    creationDescription,
-    generateCourse,
-    graphBasis,
-    graphProficiency,
-    modelChoice,
-    teachingStyle,
-    t,
-  ]);
+  // 计划态状态机：dispatch 跑纯转移，只执行转移返回的 effects——estimate
+  // （KB 流一次，零 LLM）与 generate（「开始生成」恰一次）。
+  const planStateRef = useRef(planState);
+  const dispatchPlanRef = useRef<(action: PlanAction) => void>(() => {});
 
-  // 提交当前 tab 的生成请求：base tab 要求已选知识库且填写了学习目标；
-  // description tab 要求已填写课程简报。校验失败时提示并停留在表单。
-  const submitGeneration = useCallback(async () => {
-    if (!modelChoice) {
-      Message.warning(t('learning.form.modelPending'));
-      return;
-    }
-    const modelFields = {
-      provider_id: modelChoice.provider_id,
-      model: modelChoice.model,
-    };
-    if (creationTab === 'base') {
-      if (selectedKnowledgeBaseIds.length === 0) {
-        Message.warning(t('learning.selectKnowledgeBase'));
-        return;
-      }
-      // 目标必填（UI 侧）：后端对旧客户端宽容（缺省回退库名），新表单不
-      // 允许空目标——目标即课程名与采样主索引，空目标等于放弃这两者。
-      const goal = creationGoal.trim();
-      if (!goal) {
-        Message.warning(t('learning.goalRequired'));
-        return;
-      }
-      // 多知识库（t4）：列表整体提交（首个 = 主来源）；上限与服务端同口径
-      // （MAX_COURSE_KNOWLEDGE_BASES）——超限是**可见的错误**并阻止提交，
-      // 绝不静默截断（第 6 个选择被悄悄丢掉比报错更坏）；服务端 400 仍是
-      // 权威，这里只是让它在出发前就看得见。
-      if (selectedKnowledgeBaseIds.length > MAX_COURSE_KNOWLEDGE_BASES) {
-        Message.warning(
-          t('learning.kbSelectionTooMany', { count: MAX_COURSE_KNOWLEDGE_BASES })
-        );
-        return;
-      }
-      const request: GenerateCourseRequest = {
-        knowledge_base_ids: selectedKnowledgeBaseIds,
-        goal,
-        domain: generationDomain.trim() || undefined,
-        teaching_style: teachingStyle,
-        ...modelFields,
-      };
-      // t5 成本门：低于阈值直接跑（不打扰）；超阈值先确认。估算接口失败
-      // （后端不可达等）不拦生成——fail-open，生成本身是用户主动发起的。
-      try {
-        const estimate = await learningApi.estimateGeneration(request);
-        if (estimate.needs_confirm) {
-          setCostGate({
-            estimate,
-            proceed: () => {
-              setCostGate(null);
-              void generateCourse(request);
-            },
-          });
-          return;
+  const dispatchPlan = useCallback(
+    (action: PlanAction) => {
+      const transition = reducePlan(planStateRef.current, action);
+      planStateRef.current = transition.state;
+      setPlanState(transition.state);
+      for (const effect of transition.effects) {
+        if (effect.type === 'generate') {
+          void generateCourse(effect.request);
+          continue;
         }
-      } catch {
-        // 估算不可得：照旧直接生成。
+        // 估算失败不拦确认（fail-open）：计划卡显示「估算不可得，仍可继续」。
+        void learningApi.estimateGeneration(effect.request).then(
+          (estimate) =>
+            dispatchPlanRef.current({
+              type: 'estimate-loaded',
+              key: effect.key,
+              estimate,
+            }),
+          () => dispatchPlanRef.current({ type: 'estimate-failed', key: effect.key })
+        );
       }
-      await generateCourse(request);
-      return;
-    }
-    const description = creationDescription.trim();
-    if (!description) {
-      Message.warning(t('learning.describeRequired'));
-      return;
-    }
-    await generateCourse({ description, teaching_style: teachingStyle, ...modelFields });
-  }, [
-    creationDescription,
-    creationGoal,
-    creationTab,
-    generationDomain,
-    generateCourse,
-    modelChoice,
-    selectedKnowledgeBaseIds,
-    t,
-  ]);
+    },
+    [generateCourse]
+  );
+
+  useEffect(() => {
+    dispatchPlanRef.current = dispatchPlan;
+  }, [dispatchPlan]);
+
+  // 三入口统一：校验通过只构造请求并进入计划（零生成调用）。
+  const enterPlan = useCallback(
+    (tab: CreationTab, request: GenerateCourseRequest) => {
+      dispatchPlan({ type: 'submit', tab, request });
+    },
+    [dispatchPlan]
+  );
+
+  // 表单校验 + 请求构造（纯函数），校验失败提示并停留表单。
+  const submitPlan = useCallback(
+    (tab: CreationTab) => {
+      const result = buildPlanRequest(
+        {
+          tab,
+          goal: creationGoal,
+          description: creationDescription,
+          knowledgeBaseIds: selectedKnowledgeBaseIds,
+          domain: generationDomain,
+          teachingStyle,
+          providerId: modelChoice?.provider_id,
+          model: modelChoice?.model,
+          graphProficiency,
+          graphBasis,
+        },
+        MAX_COURSE_KNOWLEDGE_BASES
+      );
+      if (result.kind === 'invalid') {
+        Message.warning(t(result.messageKey, result.messageVars));
+        return;
+      }
+      enterPlan(tab, result.request);
+    },
+    [
+      creationDescription,
+      creationGoal,
+      enterPlan,
+      generationDomain,
+      graphBasis,
+      graphProficiency,
+      modelChoice,
+      selectedKnowledgeBaseIds,
+      t,
+      teachingStyle,
+    ]
+  );
+
+  // 学习图建课：目标 + 可选程度/基础声明 → 先进入计划确认；确认后才建课
+  // （知识结构生成与首生长在后台启动，结构进度走工作区 WS structure_* 事件）。
+  const confirmGraphCreation = useCallback(() => {
+    submitPlan('graph');
+  }, [submitPlan]);
+
+  // 提交当前 tab：base 要求已选知识库且填写学习目标，description 要求简报。
+  // 校验失败提示并停留表单；校验通过一律进计划态，不直接生成。
+  const submitGeneration = useCallback(() => {
+    submitPlan(creationTab);
+  }, [creationTab, submitPlan]);
+
+  // 「开始生成」：计划态唯一的生成触发点（reducePlan 消费计划，恰一次）。
+  const confirmPlan = useCallback(() => {
+    dispatchPlan({ type: 'confirm' });
+  }, [dispatchPlan]);
+
+  // 「返回修改」：回表单，原值保留，零请求。
+  const backToPlanForm = useCallback(() => {
+    dispatchPlan({ type: 'back' });
+  }, [dispatchPlan]);
 
   // 重试失败的生成：直接按原请求重新发起（生长是幂等的小批次操作，
   // 失败不残留半成品）。
@@ -292,6 +297,11 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [navigate]
   );
 
+  // 对话框阶段（y05）：生成视图优先（含终态）→ 计划态 → 表单。
+  const plan = planState.plan;
+  const creationPhase: CreationPhase = generation ? 'generating' : plan ? 'plan' : 'form';
+  const planEstimate = planEstimateView(planState, plan);
+
   return {
     generateVisible,
     setGenerateVisible,
@@ -316,8 +326,11 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     graphBasis,
     setGraphBasis,
     generation,
-    costGate,
-    dismissCostGate: useCallback(() => setCostGate(null), []),
+    creationPhase,
+    plan,
+    planEstimate,
+    confirmPlan,
+    backToPlanForm,
     openGenerator,
     openCreateForm,
     submitGeneration,

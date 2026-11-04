@@ -2,7 +2,7 @@
 id: y05
 title: "建课计划态轻确认——填写→计划（四槽回显+确定性读数）→确认才生成"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -114,3 +114,48 @@ part_of: ../map.md
   工作量。
 - 成本门从独立 Modal 并入计划卡，需确认没有其他入口依赖旧弹窗。
 - 估算有文件 I/O（KB 规则分诊），计划态需 loading/失败降级，避免卡住确认。
+
+## Resolution（2026-11-04）
+
+**速览**：纯前端 y05 全项落地，无后端/API/队列改动。
+
+- **状态机（`ui/src/renderer/pages/learning/coursePlan.ts`，新增）**：
+  `buildPlanRequest` 三入口共用校验 + 请求构造（校验失败只回 i18n 键）；
+  `reducePlan` 纯转移 `submit / estimate-loaded / estimate-failed / confirm /
+  back`，effects 是唯一网络出口——submit 仅 KB 流预取一次估算（描述/图零
+  估算、零生成），confirm 消费计划并恰发一次 generate（重复确认零 effect），
+  back 零请求且保留估算缓存（`planEstimateKey` = 来源库顺序 + 目标）。
+  `planEstimateView / planSlotLines / planReadout` 产出计划卡读数：KB 四个
+  确定性数字 + 分诊/跳过摘要；图/描述恒为空数字行，只给「按声明/简报酌定」
+  与声明在场情况。
+- **Hook（`hooks/useCourseCreation.ts`）**：新增 `creationPhase: form | plan |
+  generating`、`plan`、`planEstimate`、`confirmPlan`、`backToPlanForm`；
+  `submitGeneration` / `confirmGraphCreation` 只走 `submitPlan → enterPlan`，
+  `generateCourse` 仅由 plan 的 generate effect 与失败重试调用；估算失败
+  静默缓存为 failed（fail-open，确认按钮始终可用）；`costGate` 状态删除。
+- **UI（`components/CreateCourseDialog.tsx` + 新增 `components/CoursePlanCard.tsx`）**：
+  计划态在对话框内就地切换（不新开 Modal），四槽回显（空值「未指定」）、
+  读数卡、`needs_confirm` 卡内 `Alert` 醒目提示、`返回修改 / 开始生成` 与
+  单「关闭」footer；关闭是隐藏语义（零请求），重开回到计划。旧
+  `CourseCostGateModal.tsx` 删除（无其他入口引用），成本门并入计划卡。
+  `index.tsx` 接线更新。
+- **i18n**：zh-CN / en-US 对称新增 18 键（计划标题/四槽/读数/酌定/估算
+  不可得/超阈值/返回/开始），`gen:i18n` 已重新生成 `i18n-keys.d.ts`。
+- **测试**：
+  - `cd ui && bun test src/renderer/pages/learning/` → **85 pass / 0 fail**
+    （12 文件）；新增 `coursePlan.test.ts`（构建/零生成/恰一次/返回缓存/
+    估算失败/needs_confirm/图描述零数字/hook 接线纪律）与
+    `components/CoursePlanCard.render.test.tsx`（双语四槽与读数、成本门
+    内联、fail-open、无虚构区间）。
+  - `bun run gen:i18n && bun run check:i18n` → 11559 keys up to date。
+  - `bun run check:theme` → 通过（新视图只用语义 token）。
+  - `bun run typecheck` → 本仓分支尖端既有 55 条无关错误（videoCanvas 等），
+    学习模块 0 条；与集成分支 296c39f 基线计数一致，无新增。
+- **偏差**：
+  - `multiSourceDisclosure.test.ts` 的 `kbSelectionTooMany` 结构断言改指向
+    `coursePlan.ts`（上限校验随请求构造迁移，错误仍可见、不截断）。
+  - `model.ts::estimateLines` 增加可选 `duration: 'minutes' | 'seconds'`
+    （默认分钟，旧测试不回归），计划卡按 `estimated_seconds` 原值展示。
+  - 票面手动 DevTools 走查（零生成请求 / 学习图确认前无课程行）未在本环境
+    执行；自动测试以 state-machine effect 计数覆盖同一不变量，真机走查留待
+    集成后验收。
