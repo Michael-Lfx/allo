@@ -1081,18 +1081,13 @@ ALTER TABLE learning_lessons ADD COLUMN capacity_note TEXT;
 
 -- 二、per-user / per-lesson 三选一反馈（accept | extend | split，Rust 单源
 -- `CapacityFeedbackChoice`）。latest-wins：应用层 UPSERT on
--- (user_id, lesson_id)，DB 以 UNIQUE 兜底；`feedback_id` 首写生成、覆盖不改。
+-- (user_id, lesson_id)，DB 以 UNIQUE 兜底。**不设代理 id**（无外部引用方，
+-- 唯一键即业务身份），也不设自由文本列（v1 API 不写，恒空串属投机泛化）。
 -- 枚举无 DB CHECK（ADR-0015）：写侧严格、读侧宽容未知值。
 -- 零结算零置位：本表是纯留痕，不写 attempts/review/xp/progress/FSRS，不改
 -- status、不发 WS、不注入共享课时生成；聚合只按内容级计数（不泄露他人选择）。
 CREATE TABLE learning_lesson_capacity_feedback (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    feedback_id TEXT NOT NULL UNIQUE CHECK (
-        length(feedback_id) = 36
-        AND lower(feedback_id) = feedback_id
-        AND feedback_id GLOB '????????-????-7???-[89ab]???-????????????'
-        AND replace(feedback_id, '-', '') NOT GLOB '*[^0-9a-f]*'
-    ),
     user_id     TEXT NOT NULL CHECK (
         length(user_id) = 36
         AND lower(user_id) = user_id
@@ -1106,7 +1101,6 @@ CREATE TABLE learning_lesson_capacity_feedback (
         AND replace(lesson_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
     choice      TEXT NOT NULL,
-    note        TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
     UNIQUE (user_id, lesson_id)
