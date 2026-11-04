@@ -44,12 +44,16 @@
 .preview-tabs {
   position: relative;
   flex-shrink: 0;
-  height: 32px;
-  min-height: 32px;
+  height: 40px;
+  min-height: 40px;
   overflow: hidden;
   box-sizing: border-box;
-  background: var(--bg-2);
+  background: var(--flowy-canvas, var(--bg-base));
   border-bottom: 1px solid var(--border-base);
+}
+
+.preview-panel-shell {
+  background: var(--flowy-canvas, var(--bg-base));
 }
 
 html[data-wallpaper='on'] .preview-tabs,
@@ -117,6 +121,16 @@ html[data-wallpaper='on'] .preview-panel-shell {
 /* The filename must not paint over the icon buttons, or the click lands on
    the text instead of the control. WebView2 also ignores clicks inside a
    drag region unless the button itself is marked no-drag. */
+/* Hairline between the markdown title bar and the body, with a faint
+   shadow on both sides so the split reads without a heavy border. */
+.preview-toolbar--md {
+  position: relative;
+  z-index: 1;
+  box-shadow:
+    0 -1px 3px rgba(0, 0, 0, 0.07),
+    0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
 .preview-toolbar__file {
   min-width: 0;
   flex: 1 1 auto;
@@ -179,7 +193,7 @@ html[data-wallpaper='on'] .preview-panel-shell {
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  background: var(--bg-2);
+  background: transparent;
 }
 
 .preview-tabs__collapse-btn:hover {

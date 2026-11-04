@@ -49,7 +49,6 @@ import {
   useThemeDetection,
 } from '../../hooks';
 import { inferPreviewTabKind, type WorkspacePreviewTabDefinition } from '../../previewTabKind';
-import { previewPathSegments } from '../../previewPathBreadcrumb';
 import type { PreviewContentType } from '@/common/types/office/preview';
 import { useTranslation } from 'react-i18next';
 import './preview.css';
@@ -431,12 +430,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   ) : null;
 
   const { content, content_type, metadata } = resolvedActiveTab;
-  const pathSegments = (() => {
-    const fromPath = previewPathSegments(metadata?.file_path, metadata?.workspace ?? workspacePath);
-    if (fromPath.length > 0) return fromPath;
-    const fallback = metadata?.file_name || resolvedActiveTab.title;
-    return fallback ? [fallback] : [];
-  })();
   const isMarkdown = content_type === 'markdown';
   const isHTML = content_type === 'html';
   const isEditable = metadata?.editable !== false; // 默认可编辑 / Default editable
@@ -852,14 +845,14 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   if (!isOpen || !activeTab) {
     return (
       <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-        <div className='preview-panel-shell h-full flex flex-col bg-1'>{workspaceHost}</div>
+        <div className='preview-panel-shell h-full flex flex-col'>{workspaceHost}</div>
       </PreviewToolbarExtrasProvider>
     );
   }
 
   return (
     <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-      <div className='preview-panel-shell h-full flex flex-col bg-1'>
+      <div className='preview-panel-shell h-full flex flex-col'>
         {messageContextHolder}
 
         {/* 确认对话框 / Confirmation modals */}
@@ -903,7 +896,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
             viewMode={viewMode}
             isSplitScreenEnabled={isSplitScreenEnabled}
             file_name={metadata?.file_name || activeTab.title}
-            pathSegments={pathSegments}
             showOpenInSystemButton={showOpenInSystemButton}
             historyTarget={historyTarget}
             snapshotSaving={snapshotSaving}
