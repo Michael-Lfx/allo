@@ -1,6 +1,7 @@
 ---
 name: planning-with-files
 description: Maintain durable task plans, findings, and progress logs in workspace files for long-running or research-heavy work. Use when a task spans many steps or sessions, needs an auditable evidence trail, or risks losing important decisions to context limits. Do not use for short tasks that fit comfortably in the active conversation.
+when-to-use: "任务跨很多步或多次会话、需要可核对的计划时使用。短任务不用。Use for long multi-step work; skip a short task."
 ---
 
 # Planning with Files

@@ -1,6 +1,7 @@
 ---
 name: star-office-helper
 description: Install, start, connect, and troubleshoot visualization companion projects for Nomi/OpenClaw, with Star-Office-UI as the default recommendation. Use when users ask for Star Office setup, URL/port connection, Unauthorized page diagnosis, Python venv/pip issues (PEP 668), preview panel wiring, real-time monitor wake-up checks, or similar open-source visualizer alternatives.
+when-to-use: "用户要安装、连接或排查 Star Office 可视化伴侣时使用。Use for Star Office setup and connection issues."
 ---
 
 # Star Office Helper

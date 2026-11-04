@@ -1,6 +1,7 @@
 ---
 name: news-briefing
 description: "Use when the user wants a morning briefing, news recap, or spoken news video. Never invent today's news with web_search. Call briefing_create / briefing_status instead."
+when-to-use: "用户要早报、新闻回顾或口播新闻时使用。不要用网页搜索现编今日新闻。Use for a briefing or spoken news; do not invent today's news."
 ---
 
 # News briefing
