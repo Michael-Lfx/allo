@@ -11401,6 +11401,7 @@ export type I18nKey =
   | 'voice.phases.removing'
   | 'voice.phases.standbyDesc'
   | 'voice.phases.verifyingSha256'
+  | 'voice.phases.verifyingSha256Desc'
   | 'voice.presentation.inputPlaceholder'
   | 'voice.presentation.inputTarget'
   | 'voice.presentation.local'

@@ -891,10 +891,10 @@ const VoiceSettings: React.FC = () => {
       ? t('voice.phases.downloadingFile', { file: downloadDetail.current_file, current: cur, total })
       : t('voice.phases.downloading', { current: cur, total });
   } else if (modelStatus === 'VerifyingSha256') {
-    const cur = verifyDetail?.verified_files ?? 0;
-    const total = verifyDetail?.total_files ?? 7;
-    rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
-    rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
+    // The ratio lives in the control slot; the title carries the phase name and
+    // the description explains what is happening, so no line repeats the count.
+    rowLabel = t('voice.status.verifyingSha256');
+    rowDescription = t('voice.phases.verifyingSha256Desc');
   } else if (modelStatus === 'Ready') {
     const isReady = capabilities ? capabilities.can_start_full_call : allStagesReady;
     if (isReady) {
@@ -924,10 +924,9 @@ const VoiceSettings: React.FC = () => {
   return (
     <SettingsPageWrapper layout='form'>
       <div className='flex flex-col gap-24px'>
-        <SettingsPageHeader
-          title={t('voice.title')}
-          description={t('voice.settings.sectionDesc')}
-        />
+        {/* The section below owns the description; repeating it in the page
+            header rendered the same sentence twice. */}
+        <SettingsPageHeader title={t('voice.title')} />
 
         <SettingsSection
           title={t('voice.settings.sectionTitle')}
@@ -985,10 +984,10 @@ const VoiceSettings: React.FC = () => {
                       <span>{rowLabel}</span>
                     </div>
                   }
-                  description={rowDescription}
+                  description={<span className='break-words'>{rowDescription}</span>}
                   controlLayout='actions'
                   control={
-                    <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
+                    <div className='flex flex-wrap items-center gap-3 font-variant-numeric tabular-nums'>
                       {modelStatus === 'NotInstalled' && (
                         <Button
                           type='primary'
@@ -1028,7 +1027,7 @@ const VoiceSettings: React.FC = () => {
                       )}
 
                       {modelStatus === 'Ready' && (
-                        <div className='flex items-center gap-12px'>
+                        <>
                           <Button
                             type='primary'
                             size='small'
@@ -1068,7 +1067,7 @@ const VoiceSettings: React.FC = () => {
                               aria-label={t('voice.actions.more')}
                             />
                           </Dropdown>
-                        </div>
+                        </>
                       )}
 
                       {modelStatus === 'Failed' && (
@@ -1091,8 +1090,6 @@ const VoiceSettings: React.FC = () => {
                   }
                 />
               </div>
-
-              <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
 
               {/*
                 ui-motion.zh.md ��3 contract:
@@ -1118,6 +1115,8 @@ const VoiceSettings: React.FC = () => {
               </div>
             </div>
 
+            <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
+
             {modelStatus === 'Ready' && (
               <div className='flex flex-wrap items-center gap-2 px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px' role='status'>
                 {(['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).map((name, idx) => {
@@ -1132,14 +1131,19 @@ const VoiceSettings: React.FC = () => {
                   const icon = isReady ? '●' : isFailed ? '✕' : '○';
 
                   return (
-                    <React.Fragment key={name}>
-                      {idx > 0 && <span className='text-t-tertiary font-mono select-none'>→</span>}
-                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
-                        <span>{icon}</span>
-                        <span>{t(`voice.capabilities.item.${name}`)}</span>
-                        <span>{t(`voice.capabilities.status.${status}`)}</span>
+                    // Connector and pill form one flexible unit: a wrapped row can
+                    // never leave an orphan arrow at the end of the previous line,
+                    // and the unit shrinks instead of overflowing the card.
+                    <span key={name} className='inline-flex min-w-0 items-center gap-2'>
+                      {idx > 0 && (
+                        <span aria-hidden='true' className='text-t-tertiary font-mono select-none'>→</span>
+                      )}
+                      <span className={`inline-flex min-w-0 items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
+                        <span aria-hidden='true' className='shrink-0'>{icon}</span>
+                        <span className='min-w-0 break-words'>{t(`voice.capabilities.item.${name}`)}</span>
+                        <span className='shrink-0 whitespace-nowrap'>{t(`voice.capabilities.status.${status}`)}</span>
                       </span>
-                    </React.Fragment>
+                    </span>
                   );
                 })}
               </div>
@@ -1174,73 +1178,65 @@ const VoiceSettings: React.FC = () => {
 
               <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
                 <SettingsList>
-                  <div className='min-h-68px flex items-center'>
-                    <div className='w-full'>
-                      <SettingsRow
-                        label={t('voice.diagnostics.micDevice')}
-                        description={
-                          micChecking
-                            ? t('voice.diagnostics.micDeviceChecking')
-                            : micStatus?.mic_available
-                              ? t('voice.diagnostics.micDetected', {
-                                  name: micStatus.device_name || 'Default Input',
-                                  rate: micStatus.sample_rate || 16000,
-                                  channels: micStatus.channels || 1,
-                                })
-                              : micStatus?.error || t('voice.diagnostics.micNotFound')
-                        }
-                        controlLayout='actions'
-                        control={
-                          <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
-                            <Button
-                              size='small'
-                              loading={micChecking}
-                              onClick={fetchDeviceStatus}
-                            >
-                              {t('voice.diagnostics.micDeviceProbe')}
-                            </Button>
-                          </div>
-                        }
-                      />
-                    </div>
-                  </div>
+                  <SettingsRow
+                    label={t('voice.diagnostics.micDevice')}
+                    description={
+                      <span className='break-words'>
+                        {micChecking
+                          ? t('voice.diagnostics.micDeviceChecking')
+                          : micStatus?.mic_available
+                            ? t('voice.diagnostics.micDetected', {
+                                name: micStatus.device_name || 'Default Input',
+                                rate: micStatus.sample_rate || 16000,
+                                channels: micStatus.channels || 1,
+                              })
+                            : micStatus?.error || t('voice.diagnostics.micNotFound')}
+                      </span>
+                    }
+                    controlLayout='actions'
+                    control={
+                      <Button
+                        size='small'
+                        loading={micChecking}
+                        onClick={fetchDeviceStatus}
+                      >
+                        {t('voice.diagnostics.micDeviceProbe')}
+                      </Button>
+                    }
+                  />
 
-                  <div className='min-h-68px flex items-center'>
-                    <div className='w-full'>
-                      <SettingsRow
-                        label={t('voice.diagnostics.asrTest')}
-                        description={
-                          asrRunning
-                            ? (asrRecording
-                                ? t('voice.diagnostics.asrTestRecording')
-                                : t('voice.diagnostics.asrTestTranscribing'))
-                            : asrResult
-                              ? (asrResult.success
-                                  ? t('voice.diagnostics.asrTestSuccess', {
-                                      text: asrResult.text,
-                                      duration: asrResult.duration_ms,
-                                    })
-                                  : t('voice.diagnostics.asrTestFailed', {
-                                      reason: asrResult.error || t('voice.errors.unknownError'),
-                                    }))
-                              : t('voice.diagnostics.asrTestIdleDesc')
-                        }
-                        controlLayout='actions'
-                        control={
-                          <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
-                            <Button
-                              type='primary'
-                              size='small'
-                              loading={asrRunning}
-                              onClick={handleStartAsrTest}
-                            >
-                              {t('voice.diagnostics.asrTestBtn')}
-                            </Button>
-                          </div>
-                        }
-                      />
-                    </div>
-                  </div>
+                  <SettingsRow
+                    label={t('voice.diagnostics.asrTest')}
+                    description={
+                      <span className='break-words'>
+                        {asrRunning
+                          ? (asrRecording
+                              ? t('voice.diagnostics.asrTestRecording')
+                              : t('voice.diagnostics.asrTestTranscribing'))
+                          : asrResult
+                            ? (asrResult.success
+                                ? t('voice.diagnostics.asrTestSuccess', {
+                                    text: asrResult.text,
+                                    duration: asrResult.duration_ms,
+                                  })
+                                : t('voice.diagnostics.asrTestFailed', {
+                                    reason: asrResult.error || t('voice.errors.unknownError'),
+                                  }))
+                            : t('voice.diagnostics.asrTestIdleDesc')}
+                      </span>
+                    }
+                    controlLayout='actions'
+                    control={
+                      <Button
+                        type='primary'
+                        size='small'
+                        loading={asrRunning}
+                        onClick={handleStartAsrTest}
+                      >
+                        {t('voice.diagnostics.asrTestBtn')}
+                      </Button>
+                    }
+                  />
                 </SettingsList>
 
                 {voiceEnabled && (

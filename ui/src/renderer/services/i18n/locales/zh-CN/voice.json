@@ -331,6 +331,7 @@
     "downloading": "正在下载语音模型 ({{current}}/{{total}})",
     "downloadingFile": "正在下载 {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "正在校验完整性 ({{current}}/{{total}})",
+    "verifyingSha256Desc": "正在逐个校验已下载模型文件的完整性，请保持应用开启。",
     "ready": "已就绪",
     "readyDesc": "模型已安装并通过完整性校验；唤醒可用性以下方服务状态为准",
     "standbyDesc": "语音引擎已就绪，打开开关即可在后台呼叫唤醒",

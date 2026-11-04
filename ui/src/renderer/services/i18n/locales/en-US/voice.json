@@ -334,6 +334,7 @@
     "downloading": "Downloading voice models ({{current}}/{{total}})",
     "downloadingFile": "Downloading {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "Verifying integrity ({{current}}/{{total}})",
+    "verifyingSha256Desc": "Verifying the integrity of each downloaded model file. Keep the app open.",
     "ready": "Ready",
     "readyDesc": "Models are installed and integrity-verified. Wake availability is shown by the service status below.",
     "standbyDesc": "Voice engine ready. Turn on switch to start listening in background",

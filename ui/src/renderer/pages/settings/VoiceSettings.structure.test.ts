@@ -176,3 +176,27 @@ test('voice settings keep model identifiers inside advanced diagnostics and remo
  expect(source).not.toContain('voice.dashboard.activeKeywordsList');
 });
 
+test('verifying state shows the progress ratio once under a phase title and a real hint', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  // Title carries the phase name; the count is rendered once in the control slot.
+  expect(source).toContain("t('voice.status.verifyingSha256')");
+  expect(source).toContain("t('voice.phases.verifyingSha256Desc')");
+  // The count-bearing phase string must never be reused as label *and* description.
+  expect(source).not.toMatch(/rowLabel\s*=\s*t\('voice\.phases\.verifyingSha256'/);
+  expect(source).not.toMatch(/rowDescription\s*=\s*t\('voice\.phases\.verifyingSha256'/);
+});
+
+test('readiness chain wraps without orphan connectors or horizontal overflow', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  // Connector and pill share one flexible unit, so a wrapped row cannot leave a
+  // dangling arrow at the end of the previous line.
+  expect(source).toMatch(/<span key=\{name\} className='inline-flex min-w-0 items-center gap-2'>/);
+  expect(source).toMatch(/aria-hidden='true'[^>]*>→<\/span>/);
+  // Pills may shrink and wrap their label instead of pushing past the card edge.
+  expect(source).toContain('min-w-0 break-words');
+  expect(source).toContain('whitespace-nowrap');
+  // Page-local fixed-width action wrappers stranded stacked controls mid-card
+  // instead of following the shared SettingsRow container-query behaviour.
+  expect(source).not.toContain('w-240px shrink-0');
+});
+
