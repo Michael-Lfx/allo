@@ -33,11 +33,7 @@ const SOURCE_PLAN_KEYS = [
   // source_plan_ready / coverage_ready 帧
   'genSourcePlanReady',
   'genCoverageReady',
-  // 成本门确认弹窗
-  'costGateTitle',
-  'costGateConfirm',
-  'costGateCancel',
-  'costGateHint',
+  // 成本门确认弹窗（y05 起并入计划卡；只余确定性读数行）
   'costGateFiles',
   'costGateBatches',
   'costGateCalls',
