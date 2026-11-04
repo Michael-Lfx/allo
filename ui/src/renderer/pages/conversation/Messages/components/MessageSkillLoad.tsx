@@ -49,7 +49,7 @@ const MessageSkillLoad: React.FC<MessageSkillLoadProps> = ({ message }) => {
         <span className='shrink-0 text-t-tertiary'>{sourceLabel}</span>
         {autoLoaded && (
           <span
-            className='shrink-0 rounded-[8px] bg-[rgba(var(--success-6),0.12)] px-5px py-0 text-10px text-[rgb(var(--success-6))]'
+            className='shrink-0 rounded-[8px] bg-[rgba(var(--success-6),0.12)] px-5px py-0 text-10px text-success-6'
             data-testid='message-skill-load-auto'
           >
             {t('messages.skillLoad.auto', { defaultValue: 'Auto' })}

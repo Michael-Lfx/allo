@@ -74,7 +74,7 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
         </span>
         {isCompleted ? (
           <span className='ml-auto inline-flex items-center gap-6px text-t-tertiary'>
-            <span className='h-6px w-6px rounded-full bg-[rgb(var(--success-6))]' />
+            <span className='h-6px w-6px rounded-full bg-success-6' />
             {completedLabel ?? actionLabel}
           </span>
         ) : item.skillHub ? (

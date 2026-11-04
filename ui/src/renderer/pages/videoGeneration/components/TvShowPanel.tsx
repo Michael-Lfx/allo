@@ -433,7 +433,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
           <div className='flex flex-wrap items-center gap-8px'>
             <button
               type='button'
-              className='m-0 flex h-32px w-32px cursor-pointer items-center justify-center border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] rd-10px p-0 text-[var(--color-text-2)] hover:border-[rgb(var(--primary-5))]'
+              className='m-0 flex h-32px w-32px cursor-pointer items-center justify-center border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] rd-10px p-0 text-[var(--color-text-2)] hover:border-primary-5'
               title={
                 listView === 'sphere'
                   ? t('videoGeneration.tvShow.view.thumbnails', { defaultValue: '切换缩略图' })
