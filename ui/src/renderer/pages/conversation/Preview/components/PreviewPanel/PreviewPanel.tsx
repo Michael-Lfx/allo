@@ -450,11 +450,11 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
       // Desktop WebView2 drops a scripted blob download. Ask for a save path
       // in this click, then copy the file that is already on disk.
-      if (content_type === 'image' && metadata?.file_path && isTauriRuntime()) {
-        const ext = rawFileName.includes('.') ? rawFileName.split('.').pop() || 'png' : 'png';
+      if (metadata?.file_path && isTauriRuntime()) {
+        const ext = rawFileName.includes('.') ? rawFileName.split('.').pop() || 'bin' : 'bin';
         const destination = await ipcBridge.dialog.showSave.invoke({
           defaultPath: rawFileName,
-          filters: [{ name: 'Image', extensions: [ext] }],
+          filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
         });
         if (!destination) return;
         await ipcBridge.shell.copyFile.invoke({
