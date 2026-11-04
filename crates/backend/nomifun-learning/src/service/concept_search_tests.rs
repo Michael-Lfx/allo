@@ -276,3 +276,49 @@ async fn search_truncates_to_top5_and_zero_hit_is_not_an_error() {
     assert!(miss.not_found);
     assert!(miss.hits.is_empty());
 }
+
+/// search 取行有界（y03 评审）：小上限按 canonical 序截断，去重仍在被取到的
+/// 行集内按 concept_id 进行；detail 走 concept_id 精确查，落在截断之外的行
+/// 依然可取。共享 `registry_entries()` 的无界语义不动（渲染/扩邻仍要全集）。
+#[tokio::test]
+async fn search_read_is_bounded_while_detail_stays_exact() {
+    let service = search_service().await;
+    let beta = "0190f5fe-7c00-7a00-8abc-555555555555";
+    let matrix = "0190f5fe-7c00-7a00-8abc-666666666666";
+    let zeta = "0190f5fe-7c00-7a00-8abc-777777777777";
+    for (concept_id, canonical) in [(beta, "Beta"), (matrix, "矩阵"), (zeta, "矩阵学")] {
+        insert_concept(
+            &service,
+            concept_id,
+            canonical,
+            "矩阵是线性代数的核心对象",
+            "[]",
+            crate::learning_graph::alias_records::ALIAS_DOC_VERSION,
+            0,
+        )
+        .await;
+    }
+
+    // 上限 2：canonical 升序（ASCII 先于汉字；同前缀短名在前）→ Beta、矩阵；
+    // 矩阵学被截掉。
+    let bounded = service.registry_entries_bounded(2).await.unwrap();
+    assert_eq!(bounded.len(), 2, "{bounded:?}");
+    assert_eq!(bounded[0].canonical, "Beta");
+    assert_eq!(bounded[1].canonical, "矩阵");
+
+    // 截断后的行集内去重仍按 concept_id：矩阵同时 exact + fulltext 只出一条。
+    let results = crate::learning_graph::concept_search::search_hits(&bounded, "矩阵");
+    assert_eq!(results.hits.len(), 2, "{results:?}");
+    assert_eq!(results.hits[0].canonical, "矩阵");
+    assert_eq!(results.hits[0].matched_by, "exact");
+    assert_eq!(results.hits[1].canonical, "Beta");
+    assert_eq!(results.hits[1].matched_by, "fulltext");
+
+    // detail 精确查：截断之外的矩阵学仍可取（search 上限不影响 detail）。
+    let detail = service
+        .search_concepts("矩阵", ConceptSearchMode::Detail, Some(zeta))
+        .await
+        .unwrap();
+    assert_eq!(detail.hits.len(), 1);
+    assert_eq!(detail.hits[0].canonical, "矩阵学");
+}
