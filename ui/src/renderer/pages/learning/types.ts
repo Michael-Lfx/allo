@@ -889,7 +889,6 @@ export interface SystemActionView {
   basis: string;
   result: string;
   reason: string;
-  ref_id: string;
   actor_user_id: string | null;
   at: number;
 }

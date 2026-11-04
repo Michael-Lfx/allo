@@ -1028,9 +1028,10 @@ ALTER TABLE learning_review_log ADD COLUMN algo TEXT;
 -- result：done | failed（`SystemActionResult`）。枚举集不设 DB CHECK
 -- （ADR-0015）：写侧严格、读侧宽容。
 -- basis：触发时的一句判据读数（unconsumed=2 pending_mount=1 stale=0 一类，
--- 写侧截断 ≤200 字）；reason：failed 原因（done 为空）；ref_id：关联对象
--- 的**引用不复制载荷**（growth = batch_id / repair = 修补审计行 id /
--- mount = 挂载行 id）；actor_user_id：仅手动动作的操作者（自动动作 NULL）。
+-- 写侧截断 ≤200 字）；reason：failed 原因（done 为空）；actor_user_id：仅
+-- 手动动作的操作者（自动动作 NULL）。**不设多态 ref 列**：动作簿只需要
+-- 「何时/哪门课/什么动作/成没成/为什么」，批次、审计行、挂载行的技术 id 不
+-- 跨表复制（data-and-identifier-standards §1；引用由各自主表的行自述）。
 -- 读侧按课程倒序（course_id, at）+ limit，见
 -- GET /api/learning/courses/{id}/system-actions。
 CREATE TABLE learning_system_actions (
@@ -1052,8 +1053,6 @@ CREATE TABLE learning_system_actions (
     basis         TEXT NOT NULL DEFAULT '',
     result        TEXT NOT NULL,
     reason        TEXT NOT NULL DEFAULT '',
-    -- 引用不复制载荷：批次/审计行/挂载行的业务或行标识；多态，不做逻辑引用。
-    ref_id        TEXT NOT NULL DEFAULT '',
     actor_user_id TEXT CHECK (
         actor_user_id IS NULL OR (
             length(actor_user_id) = 36

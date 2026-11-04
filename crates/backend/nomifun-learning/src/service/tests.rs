@@ -10803,7 +10803,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         basis: String,
         result: String,
         reason: String,
-        ref_id: String,
         actor_user_id: Option<String>,
     }
 
@@ -10812,7 +10811,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         course: &LearningCourseId,
     ) -> Vec<SystemActionRow> {
         let rows = sqlx::query(
-            "SELECT action_id, kind, trigger_source, basis, result, reason, ref_id, \
+            "SELECT action_id, kind, trigger_source, basis, result, reason, \
                     actor_user_id \
              FROM learning_system_actions WHERE course_id = ? ORDER BY at DESC, id DESC",
         )
@@ -10828,7 +10827,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 basis: row.try_get("basis").unwrap(),
                 result: row.try_get("result").unwrap(),
                 reason: row.try_get("reason").unwrap(),
-                ref_id: row.try_get("ref_id").unwrap(),
                 actor_user_id: row.try_get("actor_user_id").unwrap(),
             })
             .collect()
@@ -10975,7 +10973,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             "basis 带回合判据读数：{}",
             repair.basis
         );
-        assert!(!repair.ref_id.is_empty(), "ref_id 关联修补审计行");
         let mount = rows
             .iter()
             .find(|row| row.kind == "maintenance_mount")
@@ -10988,7 +10985,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             "basis 带待挂读数：{}",
             mount.basis
         );
-        assert!(!mount.ref_id.is_empty(), "ref_id 关联挂载行");
 
         // 二回合零工作：不新增账本行。
         let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
@@ -11080,7 +11076,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(system_action_rows(&service, &course).await.is_empty());
     }
 
-    /// 生长终态：applied → Done（ref_id = batch_id、basis 带就绪读数）；
+    /// 生长终态：applied → Done（basis 带就绪读数）；
     /// 真失败 → Failed（reason 如实）。取消在 mid-call 用例里钉住零行。
     #[tokio::test]
     async fn growth_ledger_records_done_and_failed_terminals() {
@@ -11100,15 +11096,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(rows[0].result, "done");
         assert!(rows[0].basis.contains("ready="), "{}", rows[0].basis);
         assert!(rows[0].reason.is_empty());
-        let batch_id: String = sqlx::query_scalar(
-            "SELECT batch_id FROM learning_growth_batches \
-             WHERE course_id = ? AND status = 'applied'",
-        )
-        .bind(&course_id)
-        .fetch_one(service.pool_for_tests())
-        .await
-        .unwrap();
-        assert_eq!(rows[0].ref_id, batch_id);
 
         // 真失败（结构门连拒耗尽预算）：Failed + reason。
         let (service, _knowledge, owner) = job_test_service().await;
@@ -11124,7 +11111,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].result, "failed");
         assert!(!rows[0].reason.is_empty(), "失败原因如实落账");
-        assert!(!rows[0].ref_id.is_empty(), "ref_id 关联失败批行");
     }
 
     /// 结算触发的生长（自动臂）落 trigger=settlement、无操作者。
