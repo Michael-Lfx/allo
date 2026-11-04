@@ -17,6 +17,7 @@ at a high level rather than a complete commit log.
 - Added automated end-to-end joint trace pipeline (`bun run test:voice-joint-trace`) with built-in sanitized fixtures and cryptographic SHA-256 verification.
 - Hardened Windows process tree lifecycle management in test runners using native `CREATE_SUSPENDED` and Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), eliminating pre-assignment descendant escape windows and ensuring clean subtree termination.
 
+- Renamed the voice companion end to end: the daemon, its environment variables, control header, log files and the voice capability row in settings now use `voice-companion` only. The retired `ai-mate` names, environment fallbacks and packaging lookups were removed, and the settings row no longer borrows the old product name.
 ## v1.7.0 - 2026-10-30
 
 - Windows installers include the voice companion daemon and app-local VC++ runtime. Hey Flowy wake aliases are expanded; a command spoken with a wake phrase follows the normal conversation route without a second transcription.
