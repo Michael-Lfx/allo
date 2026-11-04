@@ -108,3 +108,7 @@ learnhub `b6a8c4e..22d016d` 共 16 个提交，按机制归组：
   与材料学五条 + 写作面（R15–R19）落 EN 常量与 CN 孪生块，全挂
   `NOMI_LEARNING_CONTENT_DISCIPLINE_V2` on/off 双臂，off 臂逐字回退旧文本
   （6d7a23ac5）。
+- 2026-11-04：y02 关闭——学习侧新增 `AttemptFailure{Transport,Rejected}` 分流：
+  parse 失败带 serde 行列 + ±120 字符窗口，传输失败在 structure_gen、
+  mounting/structure_ops、生长环与 open_judge 一次即上抛、不写重试反馈槽、
+  不占契约轮次，仅 `Rejected` 才回灌重试（e784367fc）。
