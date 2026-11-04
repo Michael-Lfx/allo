@@ -108,6 +108,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/lessons/{id}", get(lesson_detail))
         .route(
+            "/api/learning/lessons/{id}/capacity-feedback",
+            post(record_lesson_capacity_feedback),
+        )
+        .route(
             "/api/learning/lessons/{id}/progress",
             post(update_lesson_progress),
         )
@@ -631,6 +635,24 @@ async fn lesson_detail(
     let id = parse_id::<LearningLessonId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.lesson_detail(&user.id, &id).await?,
+    )))
+}
+
+/// `POST /api/learning/lessons/{id}/capacity-feedback`（y07）：三选一留痕，
+/// latest-wins；响应 saved view，回显随 lesson detail 读回（不另设 GET）。
+/// 零结算零置位：只写反馈表（choice 空/未知 400；未选课/课时不存在 404）。
+async fn record_lesson_capacity_feedback(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::RecordCapacityFeedbackRequest>,
+) -> Result<Json<ApiResponse<crate::models::CapacityFeedbackView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .record_capacity_feedback(&user.id, &id, &request.choice)
+            .await?,
     )))
 }
 

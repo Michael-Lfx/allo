@@ -1871,6 +1871,58 @@ impl LessonStatus {
     }
 }
 
+/// 节点容量反馈三选一（y07；learnhub `EstFeedbackChoice` 吸收）：
+/// 接受现状 / 预算加长 / 拆成两节。**只是留痕**——不自动重生成、不拆节、
+/// 不改 est（est 同时是内容尺寸、XP 基数与水位）。
+///
+/// serde kebab（`accept` | `extend` | `split`）：写侧严格（未知值 400）、
+/// 读侧宽容（未知值按无回显处理）。枚举单源在 Rust，DB 无 CHECK（ADR-0015）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapacityFeedbackChoice {
+    Accept,
+    Extend,
+    Split,
+}
+
+impl CapacityFeedbackChoice {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Extend => "extend",
+            Self::Split => "split",
+        }
+    }
+
+    /// 读侧宽容解析：未知值返回 `None`（旧/未来版本写入的值不炸读路径）。
+    pub fn try_from_str(value: &str) -> Option<Self> {
+        match value {
+            "accept" => Some(Self::Accept),
+            "extend" => Some(Self::Extend),
+            "split" => Some(Self::Split),
+            _ => None,
+        }
+    }
+}
+
+/// 当前用户对某课时留下的容量反馈（latest-wins；只随 lesson detail 返回
+/// 本人那一行——聚合是内容级计数，不泄露他人选择）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CapacityFeedbackView {
+    pub choice: CapacityFeedbackChoice,
+    /// 最近一次选择的时间（毫秒）。
+    pub at: i64,
+}
+
+/// `POST /api/learning/lessons/{id}/capacity-feedback` 请求体。
+/// `choice` 收原始字符串（而不是直接反序列化成枚举）：空/未知值要走
+/// 服务端 400 口径，而不是 axum 的 422 反序列化拒绝。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordCapacityFeedbackRequest {
+    #[serde(default)]
+    pub choice: String,
+}
+
 /// 课程目录类型。`traditional` 为模块/课时大纲课程；`learning_graph`
 /// （beta）从学习目标出发：先生成知识结构快照（参考地图），再按批次生长，
 /// 依赖由概念网表达（ADR-0009/0010），
@@ -2577,6 +2629,9 @@ pub struct CourseDetail {
     pub modules: Vec<ModuleView>,
     pub next_lesson_id: Option<LearningLessonId>,
     pub due_review_count: i64,
+    /// 课程内活跃课时中自报超容（`capacity_note` trim 后非空）的计数。
+    /// 纯读聚合、内容级口径（不泄露他人反馈）；0 = 零版面。
+    pub overloaded_lessons: usize,
     /// 仅 `learning_graph` 课程携带：就绪集推荐与水位读数（结构投影走独立接口）。
     pub graph: Option<LearningGraphView>,
     /// 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）。只挂在
@@ -2616,6 +2671,13 @@ pub struct LessonView {
     pub activities: Vec<ActivityView>,
     /// 分节正文（ADR-0002）。空 = 旧课时的单篇 summary（双读回退）。
     pub sections: Vec<SectionView>,
+    /// 生成期超容自报（k03）：NULL = 无自报/旧课时。内容级共享元数据，
+    /// 不是个人预算；不参与 est/XP/水位。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_note: Option<String>,
+    /// 当前用户对本课的容量反馈（仅 lesson detail 填；其他视图为 None）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_feedback: Option<CapacityFeedbackView>,
 }
 
 /// API 视角的一个节段：清单字段 + 正文与生成状态。

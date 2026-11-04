@@ -23,6 +23,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import MarkdownEditor from '@renderer/pages/conversation/Preview/components/editors/MarkdownEditor';
 import Markdown, { InlineMarkdown } from '@renderer/components/Markdown';
 import { learningApi } from '../api';
+import { CapacityFeedbackCard } from './CapacityFeedbackCard';
 import {
   buildSteps,
   canGoToStep,
@@ -817,6 +818,8 @@ export function LessonBlock({
           {current.est} {t('learning.minutes')}
         </Text>
       </div>
+      {/* 容量反馈卡（y07）：仅生成期自报超容时呈现；选择只留痕、不结算 */}
+      <CapacityFeedbackCard lesson={current} />
       {current.source && (
         <LessonSourcePanel
           knowledgeBaseId={sourceKbId}

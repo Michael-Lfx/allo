@@ -96,7 +96,8 @@ pub use learning_graph::structure_gen::StructureInput;
 pub use learning_graph::structure_gen::count_door_labeled_blocks;
 
 pub use models::{
-    ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView, ConceptAuditCycle,
+    ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView,
+    CapacityFeedbackChoice, CapacityFeedbackView, ConceptAuditCycle,
     ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, ConceptSearchHit,
     ConceptSearchMode, ConceptSearchResults, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DeclareBasisRequest,

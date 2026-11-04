@@ -558,6 +558,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
             status,
             activities: Vec::new(),
             sections: Vec::new(),
+            capacity_note: None,
+            capacity_feedback: None,
         };
         let done_id = LearningLessonId::new();
         let in_progress_id = LearningLessonId::new();

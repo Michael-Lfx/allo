@@ -75,6 +75,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_enrollments",
     "learning_growth_batches",
     "learning_question_tags",
+    "learning_lesson_capacity_feedback",
     "learning_lesson_concepts",
     "learning_lesson_progress",
     "learning_lesson_sections",
@@ -181,6 +182,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
+    ("learning_lesson_capacity_feedback", "feedback_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     ("learning_quiz_rounds", "round_id"),
@@ -297,6 +299,7 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
     ("learning_growth_batches", "batch_id"),
+    ("learning_lesson_capacity_feedback", "feedback_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     // quiz 回合的身份列（基线 070 §7，原 migration 084）：回合行的业务主
@@ -923,6 +926,11 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // a non-reference id column.
     text_ref!("learning_review_log", "user_id" => "users", "user_id", false, "idx_learning_review_log_user_day", Cascade),
     text_ref!("learning_custom_questions", "user_id" => "users", "user_id", false, "idx_learning_custom_questions_user_id", Cascade),
+    // 容量反馈（基线 070 §14，y07）：per-user / per-lesson 留痕——用户或课时
+    // 删除时反馈随之退场（Cascade；纯留痕，无历史保全义务）。聚合只按内容级
+    // 计数，个人选择只随 lesson detail 返回当前用户自己的行。
+    text_ref!("learning_lesson_capacity_feedback", "user_id" => "users", "user_id", false, "idx_learning_lesson_capacity_feedback_user", Cascade),
+    text_ref!("learning_lesson_capacity_feedback", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_capacity_feedback_lesson", Cascade),
     text_ref!("learning_course_tags", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_tags_course_id", Cascade),
     text_ref!("learning_course_tags", "tag_id" => "learning_tags", "tag_id", false, "idx_learning_course_tags_tag_id", Cascade),
     // XP 结算账本（基线 070 §5，原 migration 081）：追加只增的回放真相——

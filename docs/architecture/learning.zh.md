@@ -191,7 +191,8 @@ kind 恢复 050 九值全集；概念登记表 / 概念网边
 `enabled` / `course_source_plan_json` 等列演进；别名结构化记录；XP 结算
 账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表
 （ADR-0012）；quiz 回合记录表；系统动作簿 `learning_system_actions`
-（y04，§13）。来源计划信封的契约见
+（y04，§13）；节点容量反馈 `learning_lessons.capacity_note` +
+`learning_lesson_capacity_feedback`（y07，§14）。来源计划信封的契约见
 [docs/contracts/learning-course-source-plan.md](../contracts/learning-course-source-plan.md)）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
@@ -211,7 +212,9 @@ j05）、
 growth/structure/structure_mount/structure_repair/outline/lesson；旧
 `course-jobs*` 端点随 `learning_course_jobs` 表退役，x02）、
 `/api/learning/lessons/{id}`（详情按需加载）、
-`/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
+`/api/learning/lessons/{id}/progress|generate|activities*`、
+`/api/learning/lessons/{id}/capacity-feedback`（容量反馈 latest-wins 留痕，
+y07）、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`（j05 起按 XP 口径
 锁定）、
 `/api/learning/stats/calendar`、`/api/learning/stats/memory`（记忆健康
@@ -280,6 +283,34 @@ UUIDv7 业务身份）+ `course_id`（随课 Cascade）+ `kind` + `trigger_sourc
 读侧 `GET /api/learning/courses/{id}/system-actions?limit=`：按 `at DESC`
 （同毫秒按行 id 倒序）截断，缺省 50 / 上限 200；课程不存在/软删 404，归档
 课仍可读；结构化 info 日志带 `course_id/limit/returned`。
+
+## 节点容量反馈信号（y07）
+
+吸收 learnhub `EstFeedbackChoice` 的**语义**（main@22d016d #194），不吸收
+`extend→重生成` / `split→拆节` 的自动执行（allo 的 est 同时是内容尺寸、XP
+基数与水位，反馈不得改 est）。
+
+**数据形状**（基线 070 §14）：
+
+- `learning_lessons.capacity_note`（TEXT，可空）：发布尾把生成期超容自报
+  落库（trim 后为空 = 缺席 → 写 NULL 清旧值）；内容级共享元数据，旧行 NULL。
+- `learning_lesson_capacity_feedback`：`feedback_id`（36 位 UUIDv7 业务
+  身份）+ `user_id`（随用户 Cascade）+ `lesson_id`（随课时 Cascade）+
+  `choice`（`accept | extend | split`，Rust 单源
+  `CapacityFeedbackChoice`，DB 无 CHECK，写侧严格/读侧宽容）+ `note` +
+  时间戳；`UNIQUE(user_id, lesson_id)` = latest-wins（`feedback_id` 首写
+  生成、覆盖不改）。
+
+**边界**：反馈是 per-user 留痕，课程内容是共享资产——不注入课时生成
+（多用户串味）；聚合只做内容级计数 `CourseDetail.overloaded_lessons`
+（`capacity_note` trim 后非空的活跃课时数），个人选择只随 lesson detail
+返回本人那一行。**零结算零置位**：不写 attempts/review/xp/progress/FSRS、
+不改课时 status、不发 WS、不登记任务。
+
+HTTP 面：`POST /api/learning/lessons/{id}/capacity-feedback`（body
+`{choice}`，响应 saved view；空/未知 choice 400，课时不存在/未选课 404；
+不新增 GET——回显随 `GET /api/learning/lessons/{id}` 的
+`capacity_feedback` 读回）。
 
 ## 前端
 
