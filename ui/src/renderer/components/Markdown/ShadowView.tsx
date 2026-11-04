@@ -83,9 +83,8 @@ const createInitStyle = (
     margin-block-end: ${usesExplicitTypography ? '4px' : '6px'};
   }
   a{
-    color: var(--color-link, ${theme.Color.PrimaryColor});
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    color: #0081F2;
+    text-decoration: none;
     cursor: pointer;
     word-break: break-all;
     overflow-wrap: anywhere;
@@ -863,10 +862,8 @@ const ShadowView = ({
         '--color-text-3': computedStyle.getPropertyValue('--color-text-3'),
         '--text-primary': computedStyle.getPropertyValue('--text-primary'),
         '--text-secondary': computedStyle.getPropertyValue('--text-secondary'),
-        '--color-link':
-          computedStyle.getPropertyValue('--color-primary-6').trim() || theme.Color.PrimaryColor,
-        '--color-link-hover':
-          computedStyle.getPropertyValue('--color-primary-7').trim() || theme.Color.PrimaryColor,
+        '--color-link': '#0081F2',
+        '--color-link-hover': '#0068C9',
         '--code-font': computedStyle.getPropertyValue('--code-font'),
         '--code-token-text': computedStyle.getPropertyValue('--code-token-text'),
         '--code-token-keyword': computedStyle.getPropertyValue('--code-token-keyword'),

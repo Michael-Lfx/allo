@@ -22,4 +22,14 @@ describe('blob download lifetime', () => {
     expect(diskRead).toBeGreaterThan(dataUrl);
     expect(panel).toContain('downloadDataUrl(content, rawFileName)');
   });
+
+  test('desktop save dialog copies any on-disk preview, not only images', () => {
+    const panel = readFileSync(
+      new URL('../../pages/conversation/Preview/components/PreviewPanel/PreviewPanel.tsx', import.meta.url),
+      'utf8'
+    );
+    expect(panel).toContain('metadata?.file_path && isTauriRuntime()');
+    expect(panel).not.toContain("content_type === 'image' && metadata?.file_path && isTauriRuntime()");
+    expect(panel).toContain('ipcBridge.shell.copyFile.invoke');
+  });
 });

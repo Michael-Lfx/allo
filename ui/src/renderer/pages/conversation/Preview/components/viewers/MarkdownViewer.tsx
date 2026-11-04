@@ -9,7 +9,7 @@ import { iconColors } from '@/renderer/styles/colors';
 import { Close } from '@icon-park/react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
@@ -20,6 +20,8 @@ import ReactMarkdown from 'react-markdown';
 import remend from 'remend';
 import MarkdownEditor from '../editors/MarkdownEditor';
 import SelectionToolbar from '../renderers/SelectionToolbar';
+import MarkdownSectionRail from './MarkdownSectionRail';
+import { sectionRailItems, type MarkdownHeading } from './markdownHeadings';
 import { useContainerScroll, useContainerScrollTarget } from '../../hooks/useScrollSyncHelpers';
 import { convertLatexDelimiters } from '@/renderer/utils/chat/latexDelimiters';
 import MermaidBlock from '@/renderer/components/Markdown/MermaidBlock';
@@ -231,6 +233,9 @@ const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
     speed: 50, // 50 字符/秒 / 50 characters per second
   });
   const renderedMarkdown = useMemo(() => remend(displayedContent), [displayedContent]);
+  const [sectionHeadings, setSectionHeadings] = useState<MarkdownHeading[]>([]);
+  const headingScope = `mdsec${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
+  const sectionRail = useMemo(() => sectionRailItems(sectionHeadings), [sectionHeadings]);
 
   // 🎯 使用智能自动滚动 Hook / Use auto-scroll Hook
   useAutoScroll({
@@ -349,11 +354,45 @@ const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
     };
   }, [baseDir, containerRef, viewMode, displayedContent, workspace]);
 
+  useLayoutEffect(() => {
+    if (viewMode !== 'preview') {
+      setSectionHeadings((current) => (current.length === 0 ? current : []));
+      return;
+    }
+    const container = containerRef.current;
+    const root = container?.querySelector('.markdown-preview-body');
+    if (!root) return;
+
+    const next: MarkdownHeading[] = [];
+    Array.from(root.querySelectorAll('h1, h2, h3')).forEach((node) => {
+      if (node.closest('pre, code')) return;
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text) return;
+      const level = Number(node.tagName.slice(1));
+      if (level !== 1 && level !== 2 && level !== 3) return;
+      const id = `${headingScope}-${next.length}`;
+      node.id = id;
+      node.setAttribute('data-md-section', id);
+      node.classList.add('scroll-mt-16px');
+      next.push({ id, text, level });
+    });
+
+    setSectionHeadings((current) => {
+      if (
+        current.length === next.length &&
+        current.every((item, index) => item.text === next[index]?.text && item.level === next[index]?.level)
+      ) {
+        return current;
+      }
+      return next;
+    });
+  }, [containerRef, headingScope, viewMode, displayedContent]);
+
   return (
     <div className='flex flex-col w-full h-full overflow-hidden'>
       {/* 工具栏：Tabs 切换 + 下载按钮 / Toolbar: Tabs toggle + Download button */}
       {!hideToolbar && (
-        <div className='flex items-center justify-between h-40px px-12px bg-2 flex-shrink-0 border-b border-b-solid border-arco-1 overflow-x-auto'>
+        <div className='flex items-center justify-between h-40px px-12px flex-shrink-0 border-b border-b-solid border-arco-1 overflow-x-auto'>
           <div className='flex items-center justify-between gap-12px w-full' style={{ minWidth: 'max-content' }}>
             {/* 左侧：原文/预览 Tabs / Left: Source/Preview Tabs */}
             {/* 选中下划线用 border-b-2px：`border-b-2` 是「下边框颜色 = --bg-2」而不是 2px，
@@ -411,9 +450,10 @@ const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
       )}
 
       {/* 内容区域 / Content area */}
+      <div className='relative min-h-0 flex-1'>
       <div
         ref={containerRef}
-        className={`flex-1 ${viewMode === 'source' ? 'overflow-hidden' : 'overflow-auto p-32px text-t-primary'}`}
+        className={`h-full ${viewMode === 'source' ? 'overflow-hidden' : 'overflow-auto p-32px pr-44px text-t-primary'}`}
         style={{ minWidth: 0 }}
       >
         {viewMode === 'source' ? (
@@ -422,6 +462,7 @@ const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
         ) : (
           // 预览模式：渲染 Markdown / Preview mode: Render Markdown
           <div
+            className='markdown-preview-body'
             style={{
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
@@ -510,6 +551,14 @@ const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({
             </ReactMarkdown>
           </div>
         )}
+      </div>
+      {viewMode === 'preview' && sectionRail.items.length >= 2 && (
+        <MarkdownSectionRail
+          containerRef={containerRef}
+          title={sectionRail.title}
+          items={sectionRail.items}
+        />
+      )}
       </div>
 
       {/* 文本选择浮动工具栏 / Text selection floating toolbar */}

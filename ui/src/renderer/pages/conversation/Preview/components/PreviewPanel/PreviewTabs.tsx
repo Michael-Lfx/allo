@@ -224,10 +224,10 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
                     tabIndex={0}
                     aria-selected={isActive}
                     title={tab.title}
-                    className={`preview-tabs__tab group flex items-center gap-4px px-7px h-24px rd-6px cursor-pointer transition-colors flex-shrink-0 border-1px border-solid ${
+                    className={`preview-tabs__tab group flex items-center gap-4px px-7px h-28px rd-6px cursor-pointer transition-colors flex-shrink-0 border-1px border-solid border-transparent ${
                       isActive
-                        ? 'bg-1 text-t-primary font-medium border-[var(--color-border-2)]'
-                        : 'text-t-secondary border-transparent hover:bg-3 hover:text-t-primary'
+                        ? 'bg-[#ececeb] text-t-primary font-medium'
+                        : 'text-t-secondary hover:bg-3 hover:text-t-primary'
                     }`}
                     onClick={() => onSwitchTab(tab.id)}
                     onContextMenu={(e) => onContextMenu(e, tab.id)}
@@ -243,7 +243,7 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
                     >
                       <TabKindIcon tab={tab} />
                     </span>
-                    <span className='preview-tabs__tab-title text-12px leading-none'>{tab.title}</span>
+                    <span className='preview-tabs__tab-title text-13px leading-none'>{tab.title}</span>
                     <span className='relative flex items-center justify-center w-12px h-12px flex-shrink-0'>
                       {tab.isDirty && (
                         <span
@@ -277,7 +277,7 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
             <div
               className='pointer-events-none absolute left-0 top-0 bottom-0 w-24px'
               style={{
-                background: 'linear-gradient(90deg, var(--bg-2) 0%, transparent 100%)',
+                background: 'linear-gradient(90deg, var(--flowy-canvas, var(--bg-base)) 0%, transparent 100%)',
               }}
             />
           )}
@@ -285,7 +285,7 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
             <div
               className='pointer-events-none absolute right-0 top-0 bottom-0 w-24px'
               style={{
-                background: 'linear-gradient(270deg, var(--bg-2) 0%, transparent 100%)',
+                background: 'linear-gradient(270deg, var(--flowy-canvas, var(--bg-base)) 0%, transparent 100%)',
               }}
             />
           )}

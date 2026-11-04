@@ -7,6 +7,7 @@
 import { ipcBridge } from '@/common';
 import { joinPath } from '@/common/chat/chatLib';
 import { usePreviewLauncher } from '@/renderer/hooks/file/usePreviewLauncher';
+import { getWorkspaceFileIconKind, type WorkspaceFileIconKind } from '@/renderer/pages/conversation/Workspace/components/WorkspaceFileIcon';
 import { isPreviewSupportedExt } from '@/renderer/pages/conversation/Workspace/utils/filePreview';
 import { diffColors, iconColors } from '@/renderer/styles/colors';
 import { formatBytes } from '@/renderer/utils/file/formatBytes';
@@ -14,15 +15,17 @@ import { getFileTypeInfo } from '@/renderer/utils/file/fileType';
 import { splitFileDisplayPath } from '@/renderer/utils/file/pathDisplay';
 import { isDesktopShell } from '@/renderer/utils/platform';
 import {
-  Code,
-  DocDetail,
   Down,
-  Excel,
   Export,
-  FileText,
+  FileCode,
+  FileExcel,
+  FileMusic,
+  FilePdf,
+  FilePpt,
+  FileTxt,
+  FileWord,
   FileZip,
   FolderOpen,
-  Headset,
   Pic,
   PreviewOpen,
   Shield,
@@ -33,40 +36,62 @@ import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TurnDeliverableItem } from '../turnDeliverablesModel';
+import styles from './TurnDeliverablesCard.module.css';
 
 const DEFAULT_VISIBLE_COUNT = 3;
 const DELIVERABLE_SETTLE_MS = 180;
-const DIRECTORY_PATH_COLOR = 'color-mix(in srgb, var(--text-secondary) 82%, var(--bg-base))';
 
-const ARCHIVE_EXTENSIONS = new Set(['zip', '7z', 'rar', 'tar', 'gz', 'bz2', 'xz', 'tgz']);
+const GLYPH_BY_KIND: Record<Exclude<WorkspaceFileIconKind, 'markdown'>, typeof FileZip> = {
+  archive: FileZip,
+  audio: FileMusic,
+  code: FileCode,
+  excel: FileExcel,
+  html: WebPage,
+  image: Pic,
+  pdf: FilePdf,
+  presentation: FilePpt,
+  text: FileTxt,
+  video: VideoTwo,
+  word: FileWord,
+};
 
-const DeliverableIcon: React.FC<{ fileName: string }> = ({ fileName }) => {
-  const iconProps = { theme: 'outline', size: '16', fill: iconColors.secondary } as const;
-  const ext = fileName.toLowerCase().split('.').pop() || '';
-  if (ARCHIVE_EXTENSIONS.has(ext)) return <FileZip {...iconProps} />;
+const MarkdownGlyph: React.FC = () => (
+  <svg className={styles.markdownGlyph} width='28' height='28' viewBox='0 0 24 24' fill='none'>
+    <path
+      fill='currentColor'
+      d='M6.15 3.35h7.55c.32 0 .63.13.85.35l4.75 4.75c.22.22.35.53.35.85v10.35c0 1.19-.96 2.15-2.15 2.15H6.15c-1.19 0-2.15-.96-2.15-2.15V5.5c0-1.19.96-2.15 2.15-2.15Z'
+    />
+    <path fill='#fff' fillOpacity='0.42' d='M13.55 3.55v4.55c0 .36.29.65.65.65h4.55L13.55 3.55Z' />
+    <path
+      stroke='#fff'
+      strokeWidth='1.6'
+      strokeLinecap='round'
+      d='M7.4 12.05h9.2M7.4 15.15h9.2M7.4 18.25h5.6'
+    />
+  </svg>
+);
 
-  switch (getFileTypeInfo(fileName).contentType) {
-    case 'image':
-      return <Pic {...iconProps} />;
-    case 'html':
-      return <WebPage {...iconProps} />;
-    case 'markdown':
-      return <FileText {...iconProps} />;
-    case 'pdf':
-    case 'word':
-    case 'ppt':
-      return <DocDetail {...iconProps} />;
-    case 'excel':
-      return <Excel {...iconProps} />;
-    default:
-      if (ext === 'mp3' || ext === 'wav' || ext === 'flac' || ext === 'ogg' || ext === 'm4a') {
-        return <Headset {...iconProps} />;
-      }
-      if (ext === 'mp4' || ext === 'mov' || ext === 'webm' || ext === 'avi' || ext === 'mkv') {
-        return <VideoTwo {...iconProps} />;
-      }
-      return <Code {...iconProps} />;
+const fileTitle = (fileName: string): string => {
+  const dot = fileName.lastIndexOf('.');
+  if (dot <= 0) return fileName;
+  return fileName.slice(0, dot);
+};
+
+const DeliverableGlyph: React.FC<{ fileName: string }> = ({ fileName }) => {
+  const kind = getWorkspaceFileIconKind(fileName);
+  if (kind === 'markdown') {
+    return (
+      <span className={classNames(styles.glyph, styles.glyphMarkdown)} aria-hidden='true'>
+        <MarkdownGlyph />
+      </span>
+    );
   }
+  const Icon = GLYPH_BY_KIND[kind];
+  return (
+    <span className={styles.glyph} aria-hidden='true'>
+      <Icon theme='filled' size={28} fill='currentColor' />
+    </span>
+  );
 };
 
 type ResolvedDeliverable = TurnDeliverableItem & { statPath?: string };
@@ -154,7 +179,25 @@ export const useTurnDeliverableAvailability = (
   return { pending: false, available: state.available };
 };
 
-const DeliverableRow: React.FC<{
+const KIND_FALLBACK: Record<WorkspaceFileIconKind, string> = {
+  archive: 'Archive',
+  audio: 'Audio',
+  code: 'Code',
+  excel: 'Excel',
+  html: 'HTML',
+  image: 'Image',
+  markdown: 'Markdown',
+  pdf: 'PDF',
+  presentation: 'PowerPoint',
+  text: 'Text',
+  video: 'Video',
+  word: 'Word',
+};
+
+const kindLabelKey = (kind: WorkspaceFileIconKind): `messages.turnDeliverables.kind.${WorkspaceFileIconKind}` =>
+  `messages.turnDeliverables.kind.${kind}`;
+
+const DeliverableCard: React.FC<{
   item: ResolvedDeliverable;
 }> = ({ item }) => {
   const { t } = useTranslation();
@@ -162,6 +205,25 @@ const DeliverableRow: React.FC<{
   const showShellActions = isDesktopShell() && Boolean(item.statPath);
   const displayPath = splitFileDisplayPath(item.relativePath, item.fileName);
   const previewSupported = canPreview && isPreviewSupportedExt(item.fileName);
+  const kind = getWorkspaceFileIconKind(item.fileName);
+  const sizeLabel = item.sizeBytes !== undefined && item.sizeBytes > 0 ? formatBytes(item.sizeBytes) : '';
+  const kindLabel = t(kindLabelKey(kind), { defaultValue: KIND_FALLBACK[kind] });
+  const meta = sizeLabel
+    ? t('messages.turnDeliverables.meta', {
+        kind: kindLabel,
+        size: sizeLabel,
+        defaultValue: '{{kind}} · {{size}}',
+      })
+    : kindLabel;
+  const verifiedLabel = t('messages.turnDeliverables.verified', {
+    defaultValue: 'Integrity verified (SHA-256)',
+  });
+  const title = fileTitle(displayPath.fileName);
+  const insertions = item.insertions ?? 0;
+  const deletions = item.deletions ?? 0;
+  const hasEdits = insertions > 0 || deletions > 0;
+  const interactive = previewSupported || showShellActions;
+  const showActions = hasEdits || previewSupported || showShellActions;
 
   const handlePreview = () => {
     const { contentType, editable, language } = getFileTypeInfo(item.fileName);
@@ -187,94 +249,104 @@ const DeliverableRow: React.FC<{
     });
   };
 
-  return (
-    <div
-      data-deliverable-path={item.relativePath}
-      className='group flex w-full min-w-0 box-border items-center gap-8px px-8px py-6px hover:bg-3 transition-colors'
-    >
-      <span className='flex w-20px shrink-0 items-center justify-center' style={{ lineHeight: 0 }}>
-        <DeliverableIcon fileName={item.fileName} />
-      </span>
-      <div className='flex min-w-0 flex-1 items-center gap-6px'>
-        <span
-          className='block w-520px min-w-0 shrink truncate text-14px leading-20px'
-          title={displayPath.fullPath}
-        >
-          {displayPath.directoryPath && (
-            <span style={{ color: DIRECTORY_PATH_COLOR }}>{displayPath.directoryPath}</span>
-          )}
-          <span className='text-t-primary'>{displayPath.fileName}</span>
-        </span>
-        <span
-          className='flex w-16px shrink-0 items-center justify-center'
-          style={{ lineHeight: 0 }}
-          title={
-            item.tier === 'receipt'
-              ? t('messages.turnDeliverables.verified', { defaultValue: 'Integrity verified (SHA-256)' })
-              : undefined
-          }
-        >
-          {item.tier === 'receipt' && <Shield theme='outline' size='13' fill={diffColors.addition} />}
-        </span>
-        <div className='ml-auto flex shrink-0 items-center gap-2px'>
-          <span className='mr-10px w-3.5rem shrink-0 text-right text-12px text-t-secondary tabular-nums'>
-            {item.sizeBytes !== undefined && item.sizeBytes > 0 ? formatBytes(item.sizeBytes) : null}
-          </span>
-          {((item.insertions ?? 0) > 0 || (item.deletions ?? 0) > 0) && (
-            <span
-              className={classNames(
-                'flex items-center gap-4px rd-4px px-4px py-2px',
-                item.diff && 'cursor-pointer hover:bg-4 transition-colors'
-              )}
-              title={item.diff ? t('messages.turnDeliverables.viewDiff', { defaultValue: 'View changes' }) : undefined}
-              onClick={item.diff ? handleDiffPreview : undefined}
-            >
-              {(item.insertions ?? 0) > 0 && (
-                <span className='text-13px font-medium' style={{ color: diffColors.addition }}>
-                  +{item.insertions}
-                </span>
-              )}
-              {(item.deletions ?? 0) > 0 && (
-                <span className='text-13px font-medium' style={{ color: diffColors.deletion }}>
-                  -{item.deletions}
-                </span>
-              )}
+  const handleActivate = () => {
+    if (previewSupported) {
+      handlePreview();
+      return;
+    }
+    if (showShellActions && item.statPath) {
+      void ipcBridge.shell.openFile.invoke(item.statPath);
+    }
+  };
+
+  const body = (
+    <>
+      <DeliverableGlyph fileName={item.fileName} />
+      <span className={styles.copy}>
+        <span className={styles.name}>{title}</span>
+        <span className={styles.meta}>
+          <span className={styles.metaText}>{meta}</span>
+          {item.tier === 'receipt' && (
+            <span className={styles.verified} title={verifiedLabel}>
+              <Shield theme='outline' size='13' fill='currentColor' />
             </span>
           )}
-          <div className='flex shrink-0 items-center gap-6px'>
-            {previewSupported && (
-              <span
-                className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
-                style={{ lineHeight: 0 }}
-                title={t('preview.preview')}
-                onClick={handlePreview}
-              >
-                <PreviewOpen theme='outline' size='14' fill={iconColors.secondary} />
-              </span>
-            )}
-            {showShellActions && (
-              <>
-                <span
-                  className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
-                  style={{ lineHeight: 0 }}
-                  title={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
-                  onClick={() => void ipcBridge.shell.openFile.invoke(item.statPath!)}
-                >
-                  <Export theme='outline' size='14' fill={iconColors.secondary} />
-                </span>
-                <span
-                  className='flex items-center cursor-pointer rd-4px p-1px hover:bg-4'
-                  style={{ lineHeight: 0 }}
-                  title={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
-                  onClick={() => void ipcBridge.shell.showItemInFolder.invoke(item.statPath!)}
-                >
-                  <FolderOpen theme='outline' size='14' fill={iconColors.secondary} />
-                </span>
-              </>
-            )}
-          </div>
+        </span>
+      </span>
+    </>
+  );
+
+  return (
+    <div className={styles.card} data-deliverable-path={item.relativePath}>
+      {interactive ? (
+        <button
+          type='button'
+          className={styles.main}
+          title={displayPath.fullPath}
+          aria-label={item.tier === 'receipt' ? `${title}. ${meta}. ${verifiedLabel}` : `${title}. ${meta}`}
+          onClick={handleActivate}
+        >
+          {body}
+        </button>
+      ) : (
+        <div className={classNames(styles.main, styles.mainStatic)} title={displayPath.fullPath}>
+          {body}
         </div>
+      )}
+      {showActions && (
+      <div className={styles.actions}>
+        {hasEdits &&
+          (item.diff ? (
+            <button
+              type='button'
+              className={classNames(styles.action, styles.actionDiff)}
+              title={t('messages.turnDeliverables.viewDiff', { defaultValue: 'View changes' })}
+              onClick={handleDiffPreview}
+            >
+              {insertions > 0 && <span style={{ color: diffColors.addition }}>+{insertions}</span>}
+              {deletions > 0 && <span style={{ color: diffColors.deletion }}>-{deletions}</span>}
+            </button>
+          ) : (
+            <span className={classNames(styles.action, styles.actionDiff)}>
+              {insertions > 0 && <span style={{ color: diffColors.addition }}>+{insertions}</span>}
+              {deletions > 0 && <span style={{ color: diffColors.deletion }}>-{deletions}</span>}
+            </span>
+          ))}
+        {previewSupported && (
+          <button
+            type='button'
+            className={styles.action}
+            title={t('preview.preview')}
+            aria-label={t('preview.preview')}
+            onClick={handlePreview}
+          >
+            <PreviewOpen theme='outline' size='14' fill={iconColors.secondary} />
+          </button>
+        )}
+        {showShellActions && (
+          <>
+            <button
+              type='button'
+              className={styles.action}
+              title={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
+              aria-label={t('messages.turnDeliverables.open', { defaultValue: 'Open' })}
+              onClick={() => void ipcBridge.shell.openFile.invoke(item.statPath!)}
+            >
+              <Export theme='outline' size='14' fill={iconColors.secondary} />
+            </button>
+            <button
+              type='button'
+              className={styles.action}
+              title={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
+              aria-label={t('messages.turnDeliverables.reveal', { defaultValue: 'Reveal in folder' })}
+              onClick={() => void ipcBridge.shell.showItemInFolder.invoke(item.statPath!)}
+            >
+              <FolderOpen theme='outline' size='14' fill={iconColors.secondary} />
+            </button>
+          </>
+        )}
       </div>
+      )}
     </div>
   );
 };
@@ -298,14 +370,42 @@ const TurnDeliverablesCard: React.FC<{
   const visible = showAll ? available : available.slice(0, DEFAULT_VISIBLE_COUNT);
   const hiddenCount = available.length - visible.length;
 
+  const revealControl =
+    hiddenCount > 0 || showAll ? (
+      <button
+        type='button'
+        aria-expanded={showAll}
+        className={showAll ? styles.collapse : styles.more}
+        onClick={() => setShowAll(!showAll)}
+      >
+        {showAll ? (
+          <Down
+            theme='outline'
+            size='14'
+            fill={iconColors.secondary}
+            className={classNames(styles.collapseIcon, styles.collapseIconOpen)}
+          />
+        ) : (
+          <span className={styles.moreIcon}>
+            <FolderOpen theme='outline' size='16' fill={iconColors.secondary} />
+          </span>
+        )}
+        <span className={showAll ? undefined : styles.moreLabel}>
+          {showAll
+            ? t('messages.turnDeliverables.showLess', { defaultValue: 'Show less' })
+            : t('messages.turnDeliverables.showMore', {
+                count: hiddenCount,
+                defaultValue: 'Show {{count}} more files',
+              })}
+        </span>
+      </button>
+    ) : null;
+
   return (
-    <div
-      data-testid='turn-deliverables-card'
-      className='w-full box-border rounded-8px overflow-hidden border border-solid border-[var(--aou-2)]'
-    >
-      <div className='flex items-center gap-8px px-12px py-8px select-none'>
-        <span className='w-8px h-8px rounded-full shrink-0' style={{ backgroundColor: diffColors.addition }}></span>
-        <span className='text-14px text-t-primary font-medium'>
+    <div data-testid='turn-deliverables-card' className={styles.root}>
+      <div className={styles.header}>
+        <span className={styles.statusDot} />
+        <span className={styles.headerTitle}>
           {t('messages.turnDeliverables.title', {
             count: available.length,
             defaultValue: 'Generated {{count}} files',
@@ -313,32 +413,13 @@ const TurnDeliverablesCard: React.FC<{
         </span>
       </div>
 
-      <div className='w-full bg-2'>
+      <div className={styles.grid} data-testid='turn-deliverables-grid'>
         {visible.map((item) => (
-          <DeliverableRow key={item.absolutePath ?? item.relativePath} item={item} />
+          <DeliverableCard key={item.absolutePath ?? item.relativePath} item={item} />
         ))}
-        {(hiddenCount > 0 || showAll) && (
-          <button
-            type='button'
-            aria-expanded={showAll}
-            className='w-full box-border flex items-center gap-8px px-12px py-6px text-13px text-t-secondary cursor-pointer bg-transparent border-none hover:bg-3 transition-colors'
-            onClick={() => setShowAll(!showAll)}
-          >
-            <Down
-              theme='outline'
-              size='14'
-              fill={iconColors.secondary}
-              className={classNames('transition-transform duration-200', showAll && 'rotate-180')}
-            />
-            {showAll
-              ? t('messages.turnDeliverables.showLess', { defaultValue: 'Show less' })
-              : t('messages.turnDeliverables.showMore', {
-                  count: hiddenCount,
-                  defaultValue: 'Show {{count}} more files',
-                })}
-          </button>
-        )}
+        {!showAll && revealControl}
       </div>
+      {showAll && revealControl}
     </div>
   );
 };

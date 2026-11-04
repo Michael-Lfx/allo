@@ -101,7 +101,22 @@
     "verified": "Integrity verified (SHA-256)",
     "open": "Open",
     "reveal": "Reveal in folder",
-    "viewDiff": "View changes"
+    "viewDiff": "View changes",
+    "meta": "{{kind}} · {{size}}",
+    "kind": {
+      "archive": "Archive",
+      "audio": "Audio",
+      "code": "Code",
+      "excel": "Excel",
+      "html": "HTML",
+      "image": "Image",
+      "markdown": "Markdown",
+      "pdf": "PDF",
+      "presentation": "PowerPoint",
+      "text": "Text",
+      "video": "Video",
+      "word": "Word"
+    }
   },
   "conversationInProgress": "A conversation is currently in progress...",
   "confirm": "Confirm",

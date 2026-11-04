@@ -101,7 +101,22 @@
     "verified": "完整性已校验(SHA-256)",
     "open": "打开",
     "reveal": "在文件夹中显示",
-    "viewDiff": "查看改动"
+    "viewDiff": "查看改动",
+    "meta": "{{kind}} · {{size}}",
+    "kind": {
+      "archive": "压缩包",
+      "audio": "音频",
+      "code": "代码",
+      "excel": "Excel",
+      "html": "HTML",
+      "image": "图片",
+      "markdown": "Markdown",
+      "pdf": "PDF",
+      "presentation": "PPT",
+      "text": "文本",
+      "video": "视频",
+      "word": "Word"
+    }
   },
   "conversationInProgress": "当前正在进行对话中...",
   "confirm": "确认",
