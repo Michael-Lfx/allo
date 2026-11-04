@@ -36,6 +36,7 @@ pub mod growth_retry;
 pub mod lexicon;
 pub mod mint_evidence;
 pub mod mounting;
+pub mod name_adjudication;
 pub mod provenance;
 pub mod structure_contract;
 pub mod structure_gen;
@@ -422,7 +423,47 @@ pub fn validate_batch(
         }
     }
 
+    // L1 名字形态点名（y01 生长侧提示面）：节点标题、铸名 canonical/别名、
+    // 别名提名名——只出 warn（`ng.mints.name_hint`），不阻断、不触发重裁；
+    // 「」段内豁免与结构侧同一判据（[`structure_contract::soft_name_marks`]）。
+    // 点名不拼进重试反馈（调用方只消费红条；v1 不接生长 L2 裁决）。
+    for node in &batch.nodes {
+        let title = node.title.trim();
+        if let Some(mark) = structure_contract::soft_name_marks(title).into_iter().next() {
+            warns.push(name_hint("节点标题", title, mark));
+        }
+    }
+    for mint in &batch.mints {
+        let canonical = mint.canonical.trim();
+        if let Some(mark) = structure_contract::soft_name_marks(canonical).into_iter().next() {
+            warns.push(name_hint("铸名", canonical, mark));
+        }
+        for alias in &mint.aliases {
+            let alias = alias.trim();
+            if let Some(mark) = structure_contract::soft_name_marks(alias).into_iter().next() {
+                warns.push(name_hint("铸名别名", alias, mark));
+            }
+        }
+    }
+    for nomination in &batch.new_aliases {
+        let name = nomination.name.trim();
+        if let Some(mark) = structure_contract::soft_name_marks(name).into_iter().next() {
+            warns.push(name_hint("别名提名", name, mark));
+        }
+    }
+
     (errors, warns)
+}
+
+/// 生长侧名字提示行（y01）：warn 通道，不得阻断整批；出路 = 拆多条提名 /
+/// 改用无并列的规范名。
+fn name_hint(field: &str, name: &str, mark: char) -> GateError {
+    GateError {
+        kind: "ng.mints.name_hint",
+        message: format!(
+            "{field}「{name}」含并列字/分隔符「{mark}」——多个主题拆成多条提名，或改用无并列的规范名（提示，不阻断）"
+        ),
+    }
 }
 /// 档位的中文显示名（提示词与门消息共用这一份，i18n 另有对应键）。
 pub fn tier_zh(tier: ConceptTier) -> &'static str {
@@ -1077,6 +1118,9 @@ pub struct GateOutcome {
     /// 挂号表行 concept 的批外放行域——评审输入的【本批复用命中】块与
     /// 校验放行域同源装配。
     pub external_anchors_mech: Vec<ExternalAnchor>,
+    /// L1 名字形态提示数（y01 生长侧读数面；`ng.mints.name_hint` 行数）：
+    /// 只提示不阻断，smoke 生长 OK 读数行透出（读数面非门禁）。
+    pub name_hints: usize,
 }
 
 /// 锚来源三值（f1；A1 放行域三源）：撞名机械绑定 / 定义直定复用 /
@@ -2276,6 +2320,57 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(warns.len(), 1);
         assert_eq!(batch.nodes[0].teaches[0].name, "二的幂");
+    }
+
+    /// y01 生长侧提示面：节点标题、铸名 canonical/别名、别名提名名的 L1
+    /// 形态只出 `ng.mints.name_hint` warn——批次照常落库（红条为空、不触发
+    /// 重裁）；「」段内整段豁免。
+    #[test]
+    fn validate_batch_emits_name_hints_without_blocking() {
+        let mut batch = ProposedBatch {
+            new_aliases: vec![ConceptNewAlias {
+                name: "力和运动".into(),
+                definition: "力学与运动学的合称。".into(),
+                source: "s".into(),
+            }],
+            nodes: vec![
+                node("和差角公式的推导", vec![], vec![]),
+                node("「广义表与树」的辨析", vec![], vec![]),
+            ],
+            mints: vec![ConceptMint {
+                canonical: "双进程与窗口".into(),
+                aliases: vec!["进程与线程".into()],
+                definition: String::new(),
+                source: None,
+            }],
+            note: String::new(),
+        };
+        let (errors, warns) = validate_batch(
+            &mut batch,
+            &ConceptCoverage::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert!(errors.is_empty(), "提示不阻断: {errors:?}");
+        let hints: Vec<&GateError> = warns
+            .iter()
+            .filter(|warn| warn.kind == "ng.mints.name_hint")
+            .collect();
+        assert_eq!(hints.len(), 4, "标题/铸名/铸名别名/别名提名各一条: {warns:?}");
+        for name in ["和差角公式的推导", "双进程与窗口", "进程与线程", "力和运动"] {
+            assert!(
+                hints.iter().any(|hint| hint.message.contains(name)),
+                "点名「{name}」: {warns:?}"
+            );
+        }
+        assert!(
+            !warns.iter().any(|warn| warn.message.contains("广义表与树")),
+            "「」段内豁免: {warns:?}"
+        );
+        assert_eq!(batch.nodes.len(), 2, "批次照常保留");
+        assert_eq!(batch.mints.len(), 1);
+        assert_eq!(batch.new_aliases.len(), 1);
     }
 
     #[test]
