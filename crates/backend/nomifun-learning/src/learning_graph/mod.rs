@@ -44,6 +44,7 @@ pub mod structure_gen;
 pub mod structure_ops;
 pub mod structure_view;
 pub mod structure_prompts;
+pub mod system_action;
 
 use std::collections::{HashMap, HashSet};
 
@@ -1642,12 +1643,15 @@ pub fn format_review_problems(problems: &[ReviewProblem]) -> String {
 
 // ── Ready-set (pure) ───────────────────────────────────────────────────────
 
-/// 生长任务的后台输入包：课程、触发者与可选模型偏好。
+/// 生长任务的后台输入包：课程、触发者、可选模型偏好，以及动作簿判据读数
+/// （y04：触发源 + 触发时就绪存量；只服务终态留痕，不改变任何裁决）。
 #[derive(Debug, Clone)]
 pub struct GrowthRunner {
     pub course_id: nomifun_common::LearningCourseId,
     pub user_id: nomifun_common::UserId,
     pub model_override: Option<(nomifun_common::ProviderId, String)>,
+    pub trigger: system_action::SystemActionTrigger,
+    pub ready_count: usize,
 }
 
 impl GrowthRunner {

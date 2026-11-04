@@ -2347,7 +2347,9 @@ pub struct GraphHistoryView {
 
 /// 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度）。
 /// status 是批行状态机：pending=生长进行中（或中断，见 failed）、
-/// applied=已落库、failed=生长失败（ADR-0009 Amendment 1）。
+/// applied=已落库、failed=生长失败（ADR-0009 Amendment 1）、
+/// cancelled=用户取消（y04 起的中性终态——取消不是失败，历史 failed 行不
+/// 回填）。
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphBatchView {
     pub batch_id: String,
@@ -2356,6 +2358,25 @@ pub struct GraphBatchView {
     pub note: String,
     pub created_at: i64,
     pub nodes: Vec<GraphNodeHistoryView>,
+}
+
+/// 系统动作簿的一行（y04，`GET /courses/{id}/system-actions`）：自主/后台
+/// 动作的**终态**留痕。kind/trigger/result 是机器名（Rust 枚举单源），
+/// 人面文案由前端 i18n 承担；`basis` 是触发时的一句判据读数，`reason` 只在
+/// failed 时非空；`ref_id` 关联批次/审计行/挂载行（引用不复制载荷）。
+/// 读侧宽容：未知 kind/trigger/result 原样透出，不报错。
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemActionView {
+    pub action_id: String,
+    pub kind: String,
+    pub trigger: String,
+    pub basis: String,
+    pub result: String,
+    pub reason: String,
+    pub ref_id: String,
+    /// 手动动作的操作者；自动动作（timer/settlement/auto_refill）为 NULL。
+    pub actor_user_id: Option<String>,
+    pub at: i64,
 }
 
 /// 批次内的一个节点行。

@@ -90,6 +90,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_structure_mounts",
     "learning_structure_repairs",
     "learning_maintenance_state",
+    "learning_system_actions",
     "linked_devices",
     "mcp_servers",
     "meeting_segments",
@@ -188,6 +189,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_review_log", "log_id"),
     ("learning_tags", "tag_id"),
     ("learning_xp_events", "event_id"),
+    ("learning_system_actions", "action_id"),
     ("linked_devices", "linked_device_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
@@ -315,6 +317,10 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     // identifiers: the XP ledger is append-only truth and never chases the
     // lifetime of the node it settled.
     ("learning_xp_events", "event_id"),
+    // 系统动作簿（基线 070 §13，y04）：本行业务身份 + 多态关联引用
+    //（growth=batch_id / repair=审计行 id / mount=挂载行 id，引用不复制载荷）。
+    ("learning_system_actions", "action_id"),
+    ("learning_system_actions", "ref_id"),
     ("linked_devices", "linked_device_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
@@ -936,6 +942,12 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // 维护水位（基线 070 §6，原 migration 087）：findings 消费记账是派生面
     // ——随课删（Cascade；留痕本身仍 KeepHistory 保留）。
     historical_text_ref!("learning_maintenance_state", "course_id" => "learning_courses", "course_id", false, "idx_learning_maintenance_state_course", Cascade),
+    // 系统动作簿（基线 070 §13，y04）：课程删除后动作终态随课退场（Cascade，
+    // 读侧只服务现存课程）——与生长批同一归属口径。actor_user_id 是手动
+    // 动作的操作者（自动动作 NULL）：用户删除后动作行保留（KeepHistory，
+    // 历史不追删），仅失去操作者解析。
+    text_ref!("learning_system_actions", "course_id" => "learning_courses", "course_id", false, "idx_learning_system_actions_course", Cascade),
+    historical_text_ref!("learning_system_actions", "actor_user_id" => "users", "user_id", true, "idx_learning_system_actions_actor", KeepHistory),
     // 已会声明锚（基线 070 §6，原 migration 088）：一行一次声明，声明是本课
     // 事实——随课删（Cascade）；锚行里铸出/复用的 concept_id 只作出处留痕
     // （KeepHistory，概念留池「声明可撤、概念不灭」——撤销只删锚行，登记表不动）。

@@ -316,6 +316,10 @@ define_entity_id!(
     LearningGrowthBatchId
 );
 define_entity_id!(
+    /// Globally unique learning system-action ledger identifier.
+    LearningSystemActionId
+);
+define_entity_id!(
     /// Globally unique learner enrollment identifier.
     LearningEnrollmentId
 );
