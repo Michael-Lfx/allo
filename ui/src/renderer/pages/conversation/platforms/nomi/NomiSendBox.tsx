@@ -129,6 +129,7 @@ import {
   type AutoTier,
 } from '@/renderer/utils/model/chatModelPicker';
 import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import {
   clearEditingMessageByOperation,
@@ -1815,10 +1816,12 @@ const NomiSendBox: React.FC<{
       const creditRate = formatCreditRateMultiplier(option.creditRate);
       const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
       const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
-      const planBadge = planLocked
-        ? option.requiredPlanName?.trim() || t('conversation.modelPicker.member', { defaultValue: 'Member' })
-        : undefined;
-      const upgradeHint = planBadge
+      const planBadge = requiredPlanBadgeLabel(
+        option.minTierLevel,
+        option.requiredPlanName,
+        t('conversation.modelPicker.member', { defaultValue: '会员' }),
+      );
+      const upgradeHint = planLocked && planBadge
         ? t('conversation.modelPicker.planRequired', {
             plan: planBadge,
             defaultValue: 'Available after upgrading to {{plan}}',

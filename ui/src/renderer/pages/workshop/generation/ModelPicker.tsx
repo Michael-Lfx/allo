@@ -20,7 +20,7 @@ import { useGeneratorModels } from './useGeneratorModels';
 import Floating from './Floating';
 import type { ProviderId } from '@/common/types/ids';
 import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked } from '@/renderer/utils/model/planGate';
+import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 
 export interface ModelPickerProps {
   mode: GenMode;
@@ -164,9 +164,11 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
                     {g.models.map((m) => {
                       const active = selected?.providerId === m.providerId && selected?.model === m.model;
                       const locked = isPlanLocked(m.minTierLevel ?? 0, effectiveModelTier);
-                      const planName =
-                        m.requiredPlanName?.trim() ||
-                        t('conversation.modelPicker.member', { defaultValue: 'Member' });
+                      const planName = requiredPlanBadgeLabel(
+                        m.minTierLevel,
+                        m.requiredPlanName,
+                        t('conversation.modelPicker.member', { defaultValue: '会员' }),
+                      );
                       return (
                         <div
                           key={`${m.providerId}:${m.model}`}
@@ -174,7 +176,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
                           tabIndex={locked ? -1 : 0}
                           aria-disabled={locked}
                           title={
-                            locked
+                            locked && planName
                               ? t('conversation.modelPicker.planRequired', {
                                   plan: planName,
                                   defaultValue: 'Available after upgrading to {{plan}}',
@@ -194,7 +196,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
                           ].join(' ')}
                         >
                           <span className='min-w-0 truncate text-12px font-500'>{m.model}</span>
-                          {locked && <span className='chat-model-plan-badge shrink-0'>{planName}</span>}
+                          {planName ? <span className='chat-model-plan-badge shrink-0'>{planName}</span> : null}
                           {active && !locked && (
                             <span className='ml-auto h-6px w-6px shrink-0 rounded-full bg-[rgb(var(--primary-6))]' />
                           )}

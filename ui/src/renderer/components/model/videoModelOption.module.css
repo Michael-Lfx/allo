@@ -18,48 +18,7 @@
   flex: 1 1 auto;
 }
 
-.tag {
-  --vg-model-tag: #9a3412;
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  height: 18px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--vg-model-tag) 14%, transparent);
-  color: var(--vg-model-tag);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.tagPass {
-  --vg-model-tag: #0f766e;
-}
-
-:global([data-theme='dark']) .tag,
-:global(body[arco-theme='dark']) .tag,
-:global(.oc-canvas.dark) .tag {
-  --vg-model-tag: #f6c177;
-}
-
-:global([data-theme='dark']) .tagPass,
-:global(body[arco-theme='dark']) .tagPass,
-:global(.oc-canvas.dark) .tagPass {
-  --vg-model-tag: #5eead4;
-}
-
-/* Canvas menus follow the canvas shell, which can disagree with the app theme. */
-:global(.oc-canvas:not(.dark)) .tag {
-  --vg-model-tag: #9a3412;
-}
-
-:global(.oc-canvas:not(.dark)) .tagPass {
-  --vg-model-tag: #0f766e;
-}
-
-/* The closed select ellipsizes its value as one text run, which clips the tag. */
+/* The closed select ellipsizes its value as one text run, which clips the plan chip. */
 .select:global(.arco-select-single) :global(.arco-select-view-value) {
   display: flex;
   align-items: center;

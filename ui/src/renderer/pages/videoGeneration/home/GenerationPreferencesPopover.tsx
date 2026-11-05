@@ -8,6 +8,8 @@ import { canvasOverlayStyle } from '@oc/lib/canvas/canvas-overlay';
 import { useQuietChromeTheme } from '../quietChrome';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { fetchMediaModels, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { SEEDANCE_ASPECT_RATIOS, type SeedanceAspectRatio } from '../aspectRatios';
 import DurationTimelineBar from '../components/DurationTimelineBar';
 import {
@@ -181,9 +183,11 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
   // Defer catalog network until the panel opens — closed summary only needs
   // already-persisted preference ids / labels. Planning LLM catalog lives in a
   // nested chunk so video-generate first open does not parse the model hub.
-  const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels({
+  const profileTier = useEffectiveModelTier();
+  const { imageModels, videoModels, effectiveModelTier: mediaTier, isLoading: mediaLoading } = useMediaModels({
     enabled: open,
   });
+  const effectiveTier = Math.max(profileTier, mediaTier ?? 0);
   const mediaKind = videoOnlyMode ? 'video' : value.mediaKind;
   const duration = clipDurationBoundsForModel(value.models.video_model);
 
@@ -247,31 +251,53 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
             : shortModelLabel(value.models.image_model, noModelLabel)
         }`;
 
-  const imageOptions = useMemo(
-    () =>
-      filterAllowedImageModels(imageModels).map((model) => ({
+  const memberLabel = t('conversation.modelPicker.member', { defaultValue: '会员' });
+  const imageOptions = useMemo(() => {
+    const opts = filterAllowedImageModels(imageModels).map((model) => {
+      const locked = isPlanLocked(model.min_tier_level ?? 0, effectiveTier);
+      const name = model.name.trim() || formatCloudModelLabel(model.id);
+      const plan = requiredPlanBadgeLabel(model.min_tier_level, model.required_plan_name, memberLabel);
+      return {
         value: model.id,
-        label: model.name.trim() || formatCloudModelLabel(model.id),
-      })),
-    [imageModels]
-  );
+        disabled: locked,
+        locked,
+        label: (
+          <span className='flex min-w-0 items-center gap-6px'>
+            <span className='min-w-0 truncate'>{name}</span>
+            {plan ? <span className='chat-model-plan-badge shrink-0'>{plan}</span> : null}
+          </span>
+        ),
+      };
+    });
+    return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
+  }, [effectiveTier, imageModels, memberLabel]);
 
   const videoOptions = useMemo(
     () =>
       videoModels.map((model) => ({
         value: model.id,
         label: model.name.trim() || formatCloudModelLabel(model.id),
+        locked: isPlanLocked(model.min_tier_level ?? 0, effectiveTier),
+        plan: requiredPlanBadgeLabel(model.min_tier_level, model.required_plan_name, memberLabel),
       })),
-    [videoModels]
+    [effectiveTier, memberLabel, videoModels]
   );
 
   const videoSelectOptions = useMemo(
     () =>
-      videoOptions.map((option) => ({
-        value: option.value,
-        extra: option.label,
-        label: <VideoModelOptionLabel name={option.label} model={option.value} />,
-      })),
+      [...videoOptions.filter((option) => !option.locked), ...videoOptions.filter((option) => option.locked)].map(
+        (option) => ({
+          value: option.value,
+          disabled: option.locked,
+          extra: option.label,
+          label: (
+            <span className='flex min-w-0 items-center gap-6px'>
+              <VideoModelOptionLabel name={option.label} model={option.value} />
+              {option.plan ? <span className='chat-model-plan-badge shrink-0'>{option.plan}</span> : null}
+            </span>
+          ),
+        })
+      ),
     [videoOptions]
   );
 
@@ -428,17 +454,19 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
 
     const current = valueRef.current;
     const patch: Partial<GenerationPreferences['models']> = {};
-    if (!videoOnlyMode && !current.models.image_model && imageOptions[0]) {
-      patch.image_model = imageOptions[0].value;
+    const openImage = imageOptions.filter((option) => !option.locked);
+    if (!videoOnlyMode && !current.models.image_model && openImage[0]) {
+      patch.image_model = openImage[0].value;
     } else if (
       !videoOnlyMode &&
       current.models.image_model &&
       imageOptions.length > 0 &&
       !imageOptions.some((option) => option.value === current.models.image_model)
     ) {
-      patch.image_model = imageOptions[0].value;
+      if (openImage[0]) patch.image_model = openImage[0].value;
     }
-    const preferredVideo = pickDefaultVideoModel(videoModels);
+    const openVideo = videoModels.filter((model) => !isPlanLocked(model.min_tier_level ?? 0, effectiveTier));
+    const preferredVideo = pickDefaultVideoModel(openVideo);
     if (!current.models.video_model) {
       if (preferredVideo) patch.video_model = preferredVideo;
     } else if (
@@ -456,6 +484,7 @@ const GenerationPreferencesPopover: React.FC<GenerationPreferencesPopoverProps> 
     imageOptions,
     videoOptions,
     videoModels,
+    effectiveTier,
     value.models.image_model,
     value.models.video_model,
     isAction,
