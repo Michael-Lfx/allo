@@ -847,6 +847,56 @@ mod tests {
         );
     }
 
+    /// 叠加收缩形状钉（p01 票 B 末条「92→60 级收缩形状断言」；真机
+    /// run-1793828585963 机制等价物：127 行清单 → 合并后 60 行）：合成
+    /// batch 同时含跨源同词多源 + 声明面单字碎片 + definition 单字，断言
+    /// derive+合并渲染后的行数 = unique terms 数（声明面单字剔除后）——
+    /// 「单字过滤（raw 层收缩）+ 同词合并（渲染层收缩）」两刀叠加的钉。
+    #[test]
+    fn derived_list_merged_row_count_equals_unique_terms() {
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("波动率蜡算", "蜡算、熵", "蜡算、")],
+            mints: vec![
+                ConceptMint {
+                    canonical: "蜡算".into(),
+                    aliases: Vec::new(),
+                    definition: "蜡算是波动率的换算".into(),
+                    source: None,
+                },
+                ConceptMint {
+                    canonical: "熵".into(),
+                    aliases: Vec::new(),
+                    definition: "熵：波动率".into(),
+                    source: None,
+                },
+            ],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let known: Vec<String> = ["波动率".to_owned()].into_iter().collect();
+        let naming = derive_naming_list(&batch, &known, &CourseLexicon::default());
+        // raw 行（跨源同词多行保留 + definition 单字照收）= 6：
+        //   蜡算×{definition,node_title,intent,scope} + 换算×definition
+        //   + 熵×definition。声明面单字（intent 的「熵」）已剔除——无 p01
+        //   单字过滤时这里该是 7 行；「熵」只剩 definition 一行（宁滥勿缺
+        //   单字照收的半边）。
+        assert_eq!(naming.len(), 6, "raw 行 = 跨源多行 + definition 单字：{naming:?}");
+        let unique_terms: std::collections::BTreeSet<&str> =
+            naming.iter().map(|f| f.term.as_str()).collect();
+        assert_eq!(unique_terms.len(), 3, "unique terms = 蜡算/换算/熵：{naming:?}");
+        // 合并渲染行数 == unique terms 数（读数口径 = 模型实际裁决负担；
+        // 真机 92 unique/60 行的收缩在同机制下复现）。
+        assert_eq!(
+            merged_row_count(&naming),
+            unique_terms.len(),
+            "合并后行数 = unique terms 数（92→60 级收缩的合成钉）：{naming:?}"
+        );
+        // 渲染面同形：清单正文恰 3 行编号行。
+        let block = naming_list_block(&naming);
+        assert!(block.contains("1. "), "{block}");
+        assert!(!block.contains("4. "), "清单正文恰 3 行：{block}");
+    }
+
     // ── 「范围外」三件机械核（learnhub 20f1dcf 最终语义移植） ────────────
 
     /// 病历形态钉（learnhub `out_of_scope_multi_source_term_accepts_any_

@@ -1787,11 +1787,11 @@ impl LearningService {
                     course.try_get("structure_json").map_err(internal)?,
                 );
                 // 头两行（p02 C 空值行省略）：与整卡生成同款——goal/degree
-                // 空白各自省行（旧档空串不再渲出「程度声明：」空行）。
-                let mut context_text = crate::render_graph_goal_degree_lines(
-                    goal.trim(),
-                    degree_statement.trim(),
-                );
+                // 空白各自省行（旧档空串不再渲出「程度声明：」空行）。trim
+                // 单点收敛在渲染函数内（lesson_content_loop 调用点传原值同
+                // 款），本调用点不再重复。
+                let mut context_text =
+                    crate::render_graph_goal_degree_lines(&goal, &degree_statement);
                 // 声明面两行（absorb-8 z03）：缺席（旧档空串）整段省略
                 // （渲染函数内折叠——与整卡生成骨架行同标签同措辞）。
                 if let Some(declarations) = crate::render_intent_scope_lines(
