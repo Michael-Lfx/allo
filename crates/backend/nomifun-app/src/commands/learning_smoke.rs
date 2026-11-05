@@ -1085,6 +1085,86 @@ mod course_report_tests {
     }
 }
 
+/// 超纲专名抽查词表（overshoot 读数面，软，人工判读）：正文工作词应取自
+/// 名单，词表专名未声明地出现在正文 = 读数红，回 #177/#178 续裁。
+const OVERSHOOT_TERMS: [&str; 4] = ["布朗运动", "伊藤引理", "GARCH", "维纳过程"];
+
+/// scope 感知 overshoot 计数（p03）：命中词若出现在本节点 intent/scope 声明
+/// 原文（装配 user 帧的「创建意图：」「教学范围：」两行）= 声明过的词正文
+/// 提及属边界诚实（与 scope_findings 的 MENTION_NEGATIONS 同律），不计 hit；
+/// 未声明的命中照计——判据面非门禁不变。
+fn scope_aware_overshoot_hits(declaration_text: &str, body_text: &str) -> usize {
+    OVERSHOOT_TERMS
+        .iter()
+        .filter(|term| body_text.contains(**term) && !declaration_text.contains(**term))
+        .count()
+}
+
+/// 从装配 user 帧提取声明行原文（「创建意图：」「教学范围：」行——判据9 的
+/// 行格式逐字固定，p03 overshoot 豁免的扫描源）。
+fn declaration_lines_from_user_frames<'a>(user_texts: &[&'a str]) -> Vec<&'a str> {
+    user_texts
+        .iter()
+        .flat_map(|user| user.lines())
+        .filter(|line| line.starts_with("创建意图：") || line.starts_with("教学范围："))
+        .collect()
+}
+
+#[cfg(test)]
+mod overshoot_readout_tests {
+    use super::{declaration_lines_from_user_frames, scope_aware_overshoot_hits};
+
+    /// 两臂形状·豁免臂（p03 票面验收）：真机 run-1793829277050 病历——
+    /// scope 声明「不引入 GARCH」+ 正文按声明优先条款写诚实边界句，旧读数
+    /// hit=1 与 scope_findings=0 并存（误报）；声明过的词正文提及 = 边界
+    /// 诚实，不计 hit。
+    #[test]
+    fn declared_scope_term_mentioned_in_body_is_exempt() {
+        // 声明行原文形状 = 真机档案 content-turn1-user.txt L8-9（行格式逐字
+        // 固定，判据9 同款）。
+        let declaration = "创建意图：在收益率之后刻画波动率，承接两日换算例题\n\
+                           教学范围：教波动率的直观动机与离散度量；不引入 GARCH 模型（范围外内容不教，越界点名不构成引用）";
+        let body =
+            "波动率可以先用直观的方式刻画；按教学范围声明，这里不引入 GARCH 模型，留待后续。";
+        assert_eq!(
+            scope_aware_overshoot_hits(declaration, body),
+            0,
+            "声明过的词正文提及 = 边界诚实，不是超纲（scope-aware 豁免）"
+        );
+    }
+
+    /// 两臂形状·未豁免臂：正文无豁免地出现超纲专名照计 hit=1（判据面不放宽）。
+    #[test]
+    fn undeclared_proper_noun_still_counts_as_hit() {
+        let declaration = "教学范围：教波动率的直观动机与离散度量";
+        let body = "更精细的建模要用布朗运动刻画价格路径。";
+        assert_eq!(
+            scope_aware_overshoot_hits(declaration, body),
+            1,
+            "未声明的超纲专名照计 hit（豁免只认声明原文）"
+        );
+    }
+
+    /// 声明行提取：user 帧里「创建意图：」「教学范围：」两行进豁免扫描源；
+    /// 其余行不进。
+    #[test]
+    fn declaration_lines_extracted_from_user_frames() {
+        let user = "课程：内容成色冒烟\n学习目标：理解衍生品的基础计量工具\n\
+                    创建意图：在收益率之后刻画波动率\n\
+                    教学范围：教波动率的直观动机；不引入 GARCH 模型\n\
+                    正文：……GARCH……";
+        let lines = declaration_lines_from_user_frames(&[user]);
+        assert_eq!(
+            lines,
+            vec![
+                "创建意图：在收益率之后刻画波动率",
+                "教学范围：教波动率的直观动机；不引入 GARCH 模型",
+            ],
+            "声明两行逐行提取（行格式逐字固定）"
+        );
+    }
+}
+
 /// `learning-smoke structure`：从零（或 --db）立一门最小学习图课程，跑结构
 /// 生成管线，机械判据自检。
 #[allow(clippy::too_many_arguments)]
@@ -2989,14 +3069,16 @@ async fn run_content(
             "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
         );
         // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
-        // 历史波动率/贝塔系数），超纲专名（如 布朗运动/伊藤引理/GARCH/维纳
-        // 过程）出现 = 读数红，回 #177/#178 续裁（对照卡人读清单）。
-        let overshoot = ["布朗运动", "伊藤引理", "GARCH", "维纳过程"]
-            .iter()
-            .filter(|term| joined.contains(**term))
-            .count();
+        // 历史波动率/贝塔系数），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
+        // 未声明地出现 = 读数红，回 #177/#178 续裁（对照卡人读清单）。scope
+        // 感知豁免（p03）：命中词已在本节点 intent/scope 声明原文（user 帧的
+        // 「创建意图：」「教学范围：」两行）= 声明过的词正文提及属边界诚实，
+        // 不计 hit——真机 run-1793829277050 病历（scope「不引入 GARCH」+
+        // 诚实边界句被误计 hit=1 与 scope_findings=0 并存）不再复发。
+        let declaration_text = declaration_lines_from_user_frames(&user_texts).join("\n");
+        let overshoot = scope_aware_overshoot_hits(&declaration_text, &joined);
         println!(
-            "overshoot read-out: known-domain words only; out-of-bounds proper nouns hit={overshoot} (human card)"
+            "overshoot read-out: known-domain words only; out-of-bounds proper nouns hit={overshoot} (scope-aware; human card)"
         );
     }
     println!(
