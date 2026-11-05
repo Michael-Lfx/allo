@@ -19,6 +19,8 @@ import type { GenMode, ModelOption } from './genTypes';
 import { useGeneratorModels } from './useGeneratorModels';
 import Floating from './Floating';
 import type { ProviderId } from '@/common/types/ids';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isPlanLocked } from '@/renderer/utils/model/planGate';
 
 export interface ModelPickerProps {
   mode: GenMode;
@@ -31,6 +33,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { groups, flat, hasProviders } = useGeneratorModels(mode);
+  const effectiveModelTier = useEffectiveModelTier();
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -61,6 +64,7 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
   };
 
   const pick = (opt: ModelOption): void => {
+    if (isPlanLocked(opt.minTierLevel ?? 0, effectiveModelTier)) return;
     onChange(opt);
     setOpen(false);
   };
@@ -159,22 +163,39 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ mode, providerId, model, onCh
                     </div>
                     {g.models.map((m) => {
                       const active = selected?.providerId === m.providerId && selected?.model === m.model;
+                      const locked = isPlanLocked(m.minTierLevel ?? 0, effectiveModelTier);
+                      const planName =
+                        m.requiredPlanName?.trim() ||
+                        t('conversation.modelPicker.member', { defaultValue: 'Member' });
                       return (
                         <div
                           key={`${m.providerId}:${m.model}`}
                           role='button'
-                          tabIndex={0}
+                          tabIndex={locked ? -1 : 0}
+                          aria-disabled={locked}
+                          title={
+                            locked
+                              ? t('conversation.modelPicker.planRequired', {
+                                  plan: planName,
+                                  defaultValue: 'Available after upgrading to {{plan}}',
+                                })
+                              : undefined
+                          }
                           onClick={() => pick(m)}
                           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && pick(m)}
                           className={[
-                            'mx-4px flex items-center gap-8px rounded-7px px-8px py-6px cursor-pointer transition-colors',
-                            active
+                            'mx-4px flex items-center gap-8px rounded-7px px-8px py-6px transition-colors',
+                            locked ? 'cursor-not-allowed text-[var(--color-text-3)]' : 'cursor-pointer',
+                            !locked && active
                               ? 'bg-[rgba(var(--primary-6),0.12)] text-[rgb(var(--primary-6))]'
-                              : 'text-[var(--color-text-1)] hover:bg-[var(--color-fill-2)]',
+                              : !locked
+                                ? 'text-[var(--color-text-1)] hover:bg-[var(--color-fill-2)]'
+                                : '',
                           ].join(' ')}
                         >
-                          <span className='truncate text-12px font-500'>{m.model}</span>
-                          {active && (
+                          <span className='min-w-0 truncate text-12px font-500'>{m.model}</span>
+                          {locked && <span className='chat-model-plan-badge shrink-0'>{planName}</span>}
+                          {active && !locked && (
                             <span className='ml-auto h-6px w-6px shrink-0 rounded-full bg-[rgb(var(--primary-6))]' />
                           )}
                         </div>

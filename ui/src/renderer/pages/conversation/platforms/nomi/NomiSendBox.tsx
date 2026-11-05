@@ -125,8 +125,10 @@ import {
   allChatModelOptions,
   defaultAutoOption,
   findChatModelOption,
+  isChatModelPlanLocked,
   type AutoTier,
 } from '@/renderer/utils/model/chatModelPicker';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import {
   clearEditingMessageByOperation,
@@ -260,6 +262,7 @@ const NomiSendBox: React.FC<{
   voiceKind,
 }) => {
   const navigate = useNavigate();
+  const effectiveModelTier = useEffectiveModelTier();
   const [workspacePath, setWorkspacePath] = useState('');
   const [voiceConversation, setVoiceConversation] = useState<{
     id: string;
@@ -1743,7 +1746,7 @@ const NomiSendBox: React.FC<{
         value === 'flowy-auto-family'
           ? defaultAutoOption(modelSelection.modelPicker.autoModels, findChatModelOption(modelSelection.modelPicker, modelSelection.current_model?.id, modelSelection.current_model?.use_model))
           : catalogOptions.find((option) => option.key === value);
-      if (!selected) {
+      if (!selected || isChatModelPlanLocked(selected, effectiveModelTier)) {
         if (value === 'flowy-auto-family') Message.warning(t('billing.autoEconomyUnavailable'));
         return;
       }
@@ -1755,6 +1758,7 @@ const NomiSendBox: React.FC<{
       modelSelection.handleSelectModel,
       modelSelection.modelPicker,
       modelSelectionDisabled,
+      effectiveModelTier,
       t,
     ]
   );
@@ -1810,20 +1814,32 @@ const NomiSendBox: React.FC<{
       const providerName = providerLabel(option.provider);
       const creditRate = formatCreditRateMultiplier(option.creditRate);
       const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
+      const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
+      const planBadge = planLocked
+        ? option.requiredPlanName?.trim() || t('conversation.modelPicker.member', { defaultValue: 'Member' })
+        : undefined;
+      const upgradeHint = planBadge
+        ? t('conversation.modelPicker.planRequired', {
+            plan: planBadge,
+            defaultValue: 'Available after upgrading to {{plan}}',
+          })
+        : undefined;
       return {
         key: option.key,
+        disabled: planLocked,
         icon: option.showcase.icon ? <ModelBrandIcon src={option.showcase.icon} /> : undefined,
-        label: option.showcase.recommended ? (
+        label: (
           <span className='flex min-w-0 items-center gap-6px'>
             <span className='min-w-0 truncate'>{option.label}</span>
-            <span className='chat-model-recommended-badge shrink-0'>
-              {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
-            </span>
+            {option.showcase.recommended && (
+              <span className='chat-model-recommended-badge shrink-0'>
+                {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
+              </span>
+            )}
+            {planBadge && <span className='chat-model-plan-badge shrink-0'>{planBadge}</span>}
           </span>
-        ) : (
-          option.label
         ),
-        description: [tagline ?? providerName, creditRate].filter(Boolean).join(' · '),
+        description: upgradeHint ?? [tagline ?? providerName, creditRate].filter(Boolean).join(' · '),
         active:
           modelSelection.current_model?.id === option.provider.id &&
           modelSelection.current_model?.use_model === option.model,
@@ -2014,6 +2030,7 @@ const NomiSendBox: React.FC<{
     modelSelection,
     reasoningEffortLevels,
     effectiveReasoningEffort,
+    effectiveModelTier,
     providerLabel,
     setContent,
     t,
@@ -2231,7 +2248,16 @@ const NomiSendBox: React.FC<{
           type='warning'
           content={
             <div className='flex flex-wrap items-center gap-8px'>
-              <span>{t('conversation.chat.modelUnavailableHint')}</span>
+              <span>
+                {modelSelection.currentModelPlanLabel !== undefined
+                  ? t('conversation.chat.modelPlanRequiredHint', {
+                      plan:
+                        modelSelection.currentModelPlanLabel ||
+                        t('conversation.modelPicker.member', { defaultValue: 'Member' }),
+                      defaultValue: 'Upgrade to {{plan}} to use the current model.',
+                    })
+                  : t('conversation.chat.modelUnavailableHint')}
+              </span>
             </div>
           }
         />

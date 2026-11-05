@@ -23,6 +23,28 @@ pub const FLOWY_CATALOG_FAMILY_PARAM: &str = "_flowy_catalog_family";
 /// Reserved `provider_models.params` key for the Flowy Auto tier.
 pub const FLOWY_CATALOG_AUTO_TIER_PARAM: &str = "_flowy_catalog_auto_tier";
 
+/// Reserved `provider_models.params` key for the catalog minimum plan tier.
+/// `0` or absent means the model is available to every signed-in user.
+pub const FLOWY_CATALOG_MIN_TIER_PARAM: &str = "_flowy_catalog_min_tier";
+
+/// Reserved display name for the plan that unlocks a gated catalog model.
+pub const FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM: &str = "_flowy_catalog_required_plan_name";
+
+/// Reserved plan code for the plan that unlocks a gated catalog model.
+pub const FLOWY_CATALOG_REQUIRED_PLAN_CODE_PARAM: &str = "_flowy_catalog_required_plan_code";
+
+/// Catalog-owned plan gate copied from `availableListClaw`.
+///
+/// The client compares `min_tier_level` with the user's current effective tier.
+/// The lock itself is not stored, so a plan upgrade does not wait for another
+/// catalog sync before the row becomes selectable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogPlanGate {
+    pub min_tier_level: i32,
+    pub required_plan_name: String,
+    pub required_plan_code: String,
+}
+
 /// Inferred capability data for a catalog model.
 ///
 /// Cloud catalog reconciliation uses this small owned value so the provider
@@ -50,6 +72,8 @@ pub struct ProviderModelProfileSeed {
     pub catalog_family: Option<String>,
     /// Canonical Auto tier (`intelligence`, `balance`, or `cost`).
     pub catalog_auto_tier: Option<String>,
+    /// Minimum plan tier advertised by the catalog. `None` clears the gate.
+    pub catalog_plan_gate: Option<CatalogPlanGate>,
 }
 
 pub(crate) fn initial_catalog_params(
@@ -58,6 +82,7 @@ pub(crate) fn initial_catalog_params(
     credit_rate: Option<f64>,
     family: Option<&str>,
     auto_tier: Option<&str>,
+    plan_gate: Option<&CatalogPlanGate>,
 ) -> String {
     let mut object = serde_json::Map::new();
     if let Some(max_tokens) = max_tokens {
@@ -90,6 +115,26 @@ pub(crate) fn initial_catalog_params(
             serde_json::json!(auto_tier),
         );
     }
+    if let Some(gate) = plan_gate.filter(|gate| gate.min_tier_level > 0) {
+        object.insert(
+            FLOWY_CATALOG_MIN_TIER_PARAM.to_string(),
+            serde_json::json!(gate.min_tier_level),
+        );
+        let name = gate.required_plan_name.trim();
+        if !name.is_empty() {
+            object.insert(
+                FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM.to_string(),
+                serde_json::json!(name),
+            );
+        }
+        let code = gate.required_plan_code.trim();
+        if !code.is_empty() {
+            object.insert(
+                FLOWY_CATALOG_REQUIRED_PLAN_CODE_PARAM.to_string(),
+                serde_json::json!(code),
+            );
+        }
+    }
     serde_json::Value::Object(object).to_string()
 }
 
@@ -97,6 +142,62 @@ fn catalog_credit_rate_matches(existing: Option<&serde_json::Value>, rate: f64) 
     existing
         .and_then(serde_json::Value::as_f64)
         .is_some_and(|current| (current - rate).abs() <= f64::EPSILON)
+}
+
+fn apply_plan_gate(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    plan_gate: Option<&CatalogPlanGate>,
+) -> bool {
+    let mut changed = false;
+    let active = plan_gate.filter(|gate| gate.min_tier_level > 0);
+    match active {
+        Some(gate) => {
+            let tier = serde_json::json!(gate.min_tier_level);
+            if object.get(FLOWY_CATALOG_MIN_TIER_PARAM) != Some(&tier) {
+                object.insert(FLOWY_CATALOG_MIN_TIER_PARAM.to_string(), tier);
+                changed = true;
+            }
+            changed |= set_or_clear_catalog_string(
+                object,
+                FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM,
+                &gate.required_plan_name,
+            );
+            changed |= set_or_clear_catalog_string(
+                object,
+                FLOWY_CATALOG_REQUIRED_PLAN_CODE_PARAM,
+                &gate.required_plan_code,
+            );
+        }
+        None => {
+            for key in [
+                FLOWY_CATALOG_MIN_TIER_PARAM,
+                FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM,
+                FLOWY_CATALOG_REQUIRED_PLAN_CODE_PARAM,
+            ] {
+                if object.remove(key).is_some() {
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+fn set_or_clear_catalog_string(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: &str,
+) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return object.remove(key).is_some();
+    }
+    let next = serde_json::json!(trimmed);
+    if object.get(key) == Some(&next) {
+        return false;
+    }
+    object.insert(key.to_string(), next);
+    true
 }
 
 /// Merge catalog-owned metadata into an existing user-extensible parameter
@@ -111,6 +212,7 @@ pub(crate) fn merge_catalog_params(
     credit_rate: Option<f64>,
     family: Option<&str>,
     auto_tier: Option<&str>,
+    plan_gate: Option<&CatalogPlanGate>,
 ) -> Option<String> {
     let mut value: serde_json::Value = serde_json::from_str(params).ok()?;
     let object = value.as_object_mut()?;
@@ -202,6 +304,10 @@ pub(crate) fn merge_catalog_params(
         }
     }
 
+    if apply_plan_gate(object, plan_gate) {
+        changed = true;
+    }
+
     if !changed {
         return None;
     }
@@ -245,6 +351,7 @@ mod catalog_param_tests {
             None,
             Some("auto"),
             Some("intelligence"),
+            None,
         )
         .expect("family metadata should change");
         let updated_value: serde_json::Value = serde_json::from_str(&updated).unwrap();
@@ -255,7 +362,7 @@ mod catalog_param_tests {
             .get(FLOWY_CATALOG_REASONING_EFFORT_PARAM)
             .is_none());
 
-        let cleared = merge_catalog_params(&updated, None, None, None, None, None)
+        let cleared = merge_catalog_params(&updated, None, None, None, None, None, None)
             .expect("stale catalog metadata should be removed");
         let cleared_value: serde_json::Value = serde_json::from_str(&cleared).unwrap();
         assert_eq!(cleared_value["temperature"], serde_json::json!(0.2));
@@ -263,6 +370,35 @@ mod catalog_param_tests {
         assert!(cleared_value.get(FLOWY_CATALOG_AUTO_TIER_PARAM).is_none());
         assert!(cleared_value
             .get(FLOWY_CATALOG_REASONING_EFFORT_PARAM)
+            .is_none());
+    }
+
+    #[test]
+    fn catalog_plan_gate_round_trips_and_clears() {
+        let existing = serde_json::json!({ "temperature": 0.2 }).to_string();
+        let gate = CatalogPlanGate {
+            min_tier_level: 2,
+            required_plan_name: "Pro".into(),
+            required_plan_code: "pro-month".into(),
+        };
+        let updated = merge_catalog_params(&existing, None, None, None, None, None, Some(&gate))
+            .expect("plan gate should be written");
+        let updated_value: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated_value["temperature"], serde_json::json!(0.2));
+        assert_eq!(updated_value[FLOWY_CATALOG_MIN_TIER_PARAM], 2);
+        assert_eq!(updated_value[FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM], "Pro");
+        assert_eq!(
+            updated_value[FLOWY_CATALOG_REQUIRED_PLAN_CODE_PARAM],
+            "pro-month"
+        );
+
+        let cleared = merge_catalog_params(&updated, None, None, None, None, None, None)
+            .expect("cleared plan gate should be removed");
+        let cleared_value: serde_json::Value = serde_json::from_str(&cleared).unwrap();
+        assert_eq!(cleared_value["temperature"], serde_json::json!(0.2));
+        assert!(cleared_value.get(FLOWY_CATALOG_MIN_TIER_PARAM).is_none());
+        assert!(cleared_value
+            .get(FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM)
             .is_none());
     }
 }
@@ -297,6 +433,7 @@ async fn reconcile_inferred_model_profiles(
             seed.catalog_credit_rate,
             seed.catalog_family.as_deref(),
             seed.catalog_auto_tier.as_deref(),
+            seed.catalog_plan_gate.as_ref(),
         );
         let inserted = model_repo
             .insert_if_absent(
@@ -339,6 +476,7 @@ async fn reconcile_inferred_model_profiles(
             seed.catalog_credit_rate,
             seed.catalog_family.as_deref(),
             seed.catalog_auto_tier.as_deref(),
+            seed.catalog_plan_gate.as_ref(),
         );
         let promote_catalog_source = seed.catalog_vision.is_some() && row.source == "inferred";
         let traits = seed

@@ -84,6 +84,9 @@ pub struct CloudWhoamiResponse {
     /// Cloud nickname from `/user/me` when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+    /// Highest unexpired personal or team-seat tier. `0` means no paid model tier.
+    #[serde(default)]
+    pub effective_model_tier: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

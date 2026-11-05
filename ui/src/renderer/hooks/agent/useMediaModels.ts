@@ -51,6 +51,7 @@ export type UseMediaModelsResult = {
   imageModels: IMediaModelOption[];
   videoModels: IMediaModelOption[];
   audioModels: IMediaModelOption[];
+  effectiveModelTier?: number;
   isLoading: boolean;
   error: string | null;
   revalidate: () => Promise<IMediaModelList | undefined>;
@@ -91,6 +92,7 @@ export function useMediaModels(options?: UseMediaModelsOptions): UseMediaModelsR
     imageModels: data?.image_models ?? [],
     videoModels: data?.video_models ?? [],
     audioModels: data?.audio_models ?? [],
+    effectiveModelTier: data?.effective_model_tier,
     isLoading,
     error,
     revalidate,

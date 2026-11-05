@@ -19,6 +19,7 @@
 
 import { useMemo } from 'react';
 import { modelNamesOf } from '@/common/utils/providerModels';
+import { parseCatalogPlanGate } from '@/renderer/utils/model/planGate';
 import { useProvidersQuery } from '@renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask, type TaskModelGroup } from '@renderer/hooks/agent/useModelsForTask';
 import { filterCreationModels, useCreationModels } from '@renderer/pages/modelHub/creationModels';
@@ -52,7 +53,16 @@ function flattenTaskGroups(
   const flat: ModelOption[] = [];
   for (const { provider, models } of taskGroups) {
     for (const model of models) {
-      flat.push({ providerId: provider.id, providerName: providerLabel(provider), platform: provider.platform, model });
+      const detail = provider.models_detail?.find((row) => row.model === model);
+      const gate = parseCatalogPlanGate(detail?.params);
+      flat.push({
+        providerId: provider.id,
+        providerName: providerLabel(provider),
+        platform: provider.platform,
+        model,
+        minTierLevel: gate.minTierLevel,
+        requiredPlanName: gate.requiredPlanName,
+      });
     }
   }
   return flat;
@@ -90,12 +100,19 @@ export function useGeneratorModels(
     }
 
     const cap = mode === 'video' ? 'video_generation' : 'image_generation';
-    const flat: ModelOption[] = filterCreationModels(creationEntries, cap).map((e) => ({
-      providerId: e.providerId,
-      providerName: e.providerName,
-      platform: e.platform,
-      model: e.model,
-    }));
+    const flat: ModelOption[] = filterCreationModels(creationEntries, cap).map((e) => {
+      const provider = (rawProviders ?? []).find((row) => row.id === e.providerId);
+      const detail = provider?.models_detail?.find((row) => row.model === e.model);
+      const gate = parseCatalogPlanGate(detail?.params);
+      return {
+        providerId: e.providerId,
+        providerName: e.providerName,
+        platform: e.platform,
+        model: e.model,
+        minTierLevel: gate.minTierLevel,
+        requiredPlanName: gate.requiredPlanName,
+      };
+    });
     return { groups: group(flat), flat, hasProviders };
   }, [enabled, mode, rawProviders, chatGroups, ttsGroups, creationEntries, providerLabel]);
 }
