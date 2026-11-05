@@ -2071,6 +2071,7 @@ const NomiSendBox: React.FC<{
       if(snapshot.task.status==='accepted')setVoiceStopTarget({command:snapshot.task.command_id,instance:snapshot.instance_id,seq:snapshot.seq});
       try {
         const result=await stopDisplayedVoiceTask(conversation_id,snapshot);
+        if(mountedRef.current && lifecycleGenerationRef.current===generation)emitter.emit('voice.keyboard.wait.clear',conversation_id);
         if(mountedRef.current && lifecycleGenerationRef.current===generation && (result.status==='completed'||result.status==='failed'))setVoiceStopTarget(null);
       } catch {
         if(mountedRef.current && lifecycleGenerationRef.current===generation){setVoiceStopTarget(null);Message.error(t('voice.task.controlUnknown'));}

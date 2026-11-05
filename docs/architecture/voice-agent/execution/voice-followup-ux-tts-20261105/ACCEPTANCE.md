@@ -9,7 +9,7 @@
 
 | 需求 | 状态 | 结论 |
 | --- | --- | --- |
-| A 语音会话页打字后左侧立即等待 | 🟡 计时/reset/自动刷新/英文页面回归已完成；stop/主题/真机待验 | 提交时先发布本地等待行，按 command 轮询真实任务，结果出现后接管；见 §2 |
+| A 语音会话页打字后左侧立即等待 | 🟡 计时/reset/stop/自动刷新/英文页面回归已完成；主题视觉/真机待验 | 提交时先发布本地等待行，按 command 轮询真实任务，结果出现后接管；见 §2 |
 | B 首页声学唤醒跳到本次新建会话 | 🟢 代码/状态序列测试完成 | 无 binding 的 active 快照不再消费激活；后续同 session binding 只导航一次；见 §3 |
 | C TTS 默认 1.1x + 六段本地 WAV | 🟡 默认速度完成；WAV 已生成但受发行许可阻断 | 未替换仓库六段资产；见 §4、`TTS-GENERATION.md`、`BLOCKED.md` |
 | D 本轮证据 + 上轮真实 TC12 | 🔴 真实设备项未完成 | 代码/单测/构建已记录；真实麦克风、扬声器、TC12 两轮天气缺证；见 §5 |
@@ -31,9 +31,9 @@
 
 - `voiceKeyboardWait.test.ts`：右侧用户预览、权威 user 行去重、真实左侧文本接管、任务阶段映射（含 cancelling）、投递错误分类、Completed 先于消息、absolute 108s 上界、foreign command 忽略：8 pass。
 - `nomiSendBoxDispatch.test.ts`：等待回调严格先于 host await、回执带同 command、失败仍先报同 command：8 pass。
-- 定向 6 文件（含页面/Router 集成）：31 pass / 0 fail / 155 expect。
+- 定向 6 文件（含页面/Router 集成）：31 pass / 0 fail / 158 expect。
 
-已补：`NomiChat.wait.integration.test.tsx` 挂载实际 composer+list，经 suggestion→Enter→延迟 host 回执→56s 虚拟时钟→完成先于消息→**不手动 emit，自动刷新持久化历史**，断言独立等待行存在且**不在** `process_group`/`turn_process_disclosure` 内、56s 显示 56、57s 显示 57、真实回执阶段、同步中保留、最终回复只出现一次；第二个页面用例覆盖 reset 立即清理和 en-US/dark 上下文，IME composing Enter 已覆盖。根因修复见 PROGRESS 的“计时冻结修复”。仍缺 stop、浅深主题视觉页面断言，真机页面待验。
+已补：`NomiChat.wait.integration.test.tsx` 挂载实际 composer+list，经 suggestion→Enter→延迟 host 回执→56s 虚拟时钟→完成先于消息→**不手动 emit，自动刷新持久化历史**，断言独立等待行存在且**不在** `process_group`/`turn_process_disclosure` 内、56s 显示 56、57s 显示 57、真实回执阶段、同步中保留、最终回复只出现一次；第二个页面用例覆盖 reset 立即清理和 en-US/dark 上下文，IME composing Enter 已覆盖。根因修复见 PROGRESS 的“计时冻结修复”。stop 已由 clear 事件覆盖；仍缺浅深主题视觉人工验收，真机页面待验。
 
 ## 3. B · 声学唤醒导航
 

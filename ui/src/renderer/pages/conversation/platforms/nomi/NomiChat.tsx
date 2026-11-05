@@ -151,6 +151,14 @@ const NomiChat: React.FC<{
     [conversation_id]
   );
 
+  useEffect(
+    () =>
+      addEventListener('voice.keyboard.wait.clear', targetConversationId => {
+        if (targetConversationId === conversation_id) setKeyboardWait(null);
+      }),
+    [conversation_id]
+  );
+
   const handleVoiceKeyboardWait = useCallback(
     (info: { conversationId: ConversationId; commandId: string; text: string }) => {
       if (!isVoiceConversation || info.conversationId !== conversation_id) return;

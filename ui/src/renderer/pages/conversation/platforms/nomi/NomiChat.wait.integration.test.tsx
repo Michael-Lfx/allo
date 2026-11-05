@@ -10,6 +10,7 @@ import { createRoot } from 'react-dom/client';
 import { createInstance } from 'i18next';
 import { I18nextProvider } from 'react-i18next';
 import { MemoryRouter } from 'react-router-dom';
+import { parseConversationId } from '@/common/types/ids';
 import { PreviewProvider } from '@renderer/pages/conversation/Preview/context';
 import { CloudAuthContext } from '@renderer/hooks/context/CloudAuthContext';
 import { CreditsContext } from '@renderer/hooks/context/CreditsContext';
@@ -33,7 +34,7 @@ mock.module('@renderer/pages/voiceSession/useVoiceSnapshot', () => ({
   usePendingVoiceCallConversationId: () => null,
 }));
 
-const CONVERSATION_ID = '019b0000-0000-7000-8000-000000000001';
+const CONVERSATION_ID = parseConversationId('019b0000-0000-7000-8000-000000000001');
 let taskStatus: 'accepted' | 'completed' = 'accepted';
 let historyItems: unknown[] = [];
 let resolveSend: ((value: unknown) => void) | null = null;
@@ -228,7 +229,7 @@ afterAll(() => dom.window.close());
   }
 }, 30000);
 
-pageTest('a conversation reset clears the local keyboard wait row immediately', async () => {
+pageTest('a stop or reset clears the local keyboard wait row immediately', async () => {
   sendStarted = false;
   resolveSend = null;
   resolveTaskGate = null;
@@ -284,6 +285,26 @@ pageTest('a conversation reset clears the local keyboard wait row immediately', 
     expect(container.textContent).toContain('Sending');
 
     const { emitter } = await import('@renderer/utils/emitter');
+    await act(async () => {
+      emitter.emit('voice.keyboard.wait.clear', CONVERSATION_ID);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeNull();
+
+    // Start a second wait and clear it through the reset refresh channel.
+    sendStarted = false;
+    const secondSuggestion = container.querySelector('button');
+    expect(secondSuggestion).toBeTruthy();
+    await act(async () => {
+      (secondSuggestion as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    const secondComposer = container.querySelector('[data-testid="sendbox-input"]') as HTMLElement | null;
+    await act(async () => {
+      secondComposer!.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeTruthy();
     await act(async () => {
       emitter.emit('conversation.messages.refresh', {
         conversationId: CONVERSATION_ID,
