@@ -69,11 +69,6 @@ function BuildSketch() {
   return (
     <svg className={styles.sketch} viewBox="0 0 240 150" aria-hidden="true">
       <g className={styles.sketchFloat}>
-        <g fill="none" stroke="#d7dbe2" strokeWidth="1">
-          <path d="M36 118 H206" />
-          <path d="M58 108 L176 49" />
-          <path d="M92 124 L198 71" />
-        </g>
         <g className={styles.slabSides}>
           <path d="M86 74 L142 102 V124 L86 96 Z" fill="#f4f6f8" stroke="#c5cbd3" strokeWidth="1.15" strokeLinejoin="round" />
           <path d="M142 102 L214 66 V88 L142 124 Z" fill="#e7ebf0" stroke="#c5cbd3" strokeWidth="1.15" strokeLinejoin="round" />
