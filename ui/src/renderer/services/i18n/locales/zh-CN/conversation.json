@@ -474,6 +474,7 @@
   "chat": {
     "noModelSelected": "当前会话未选择模型，无法发送消息",
     "modelUnavailableHint": "当前模型不可用，请重新选择模型。",
+    "modelPlanRequiredHint": "升级到 {{plan}} 后可使用当前模型。",
     "openModelSettings": "前往模型设置",
     "defaultModelUnavailable": "原默认模型不可用，请重新选择模型",
     "modelHealedToDefault": "已回退到默认模型 {{model}}",
@@ -1166,6 +1167,8 @@
       "unknown": "自动"
     },
     "recommended": "推荐",
+    "member": "会员",
+    "planRequired": "升级到 {{plan}} 后可用",
     "tagline": {
       "auto-intelligence": "强力推理 · 复杂任务",
       "auto-balance": "日常首选 · 均衡省心",

@@ -12,6 +12,7 @@ import { configService } from '@/common/config/configService';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { iconColors } from '@/renderer/styles/colors';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import type { ProviderId } from '@/common/types/ids';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import ChatModelPickerMenu from '@/renderer/components/model/ChatModelPickerMenu';
@@ -42,7 +43,11 @@ export function useKnowledgeAutogenModel() {
   const [stored] = useConfig(STORAGE_KEY);
   const { groups, isLoading, error, refresh } = useModelsForTask('chat');
 
-  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
+  const effectiveModelTier = useEffectiveModelTier();
+  const modelPicker = useMemo(
+    () => buildChatModelPickerViewModel(groups, effectiveModelTier),
+    [groups, effectiveModelTier]
+  );
 
   // `isLoading` also covers the failed state (SWR clears data on error), so an
   // error keeps the catalog unresolved and the persisted choice stays trusted.
@@ -84,7 +89,11 @@ const KnowledgeModelSelector: React.FC<KnowledgeModelSelectorProps> = ({
   const { t } = useTranslation();
   const { groups, isLoading, error: catalogError, refresh: refreshCatalog } = useModelsForTask('chat');
   const providerLabel = useModelSelectorProviderLabel();
-  const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
+  const effectiveModelTier = useEffectiveModelTier();
+  const modelPicker = useMemo(
+    () => buildChatModelPickerViewModel(groups, effectiveModelTier),
+    [groups, effectiveModelTier]
+  );
 
   const selectedOption = useMemo(() => {
     if (!choice) return undefined;

@@ -75,6 +75,9 @@ pub struct UserMe {
     pub app_flowymes: Option<i32>,
     #[serde(default)]
     pub current_plan: Option<UserCurrentPlan>,
+    /// Highest unexpired personal or team-seat plan tier. `0` means no paid tier.
+    #[serde(default)]
+    pub effective_model_tier: i32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -486,6 +489,9 @@ pub struct AvailableModelsClaw {
     pub auto: Vec<ClawModelEntry>,
     #[serde(default)]
     pub cloud: Vec<ClawModelEntry>,
+    /// Caller's effective plan tier, used by the client to lock rows locally.
+    #[serde(default, rename = "effectiveModelTier")]
+    pub effective_model_tier: i32,
 }
 
 impl AvailableModelsClaw {
@@ -530,6 +536,15 @@ pub struct ClawModelEntry {
     /// Canonical Auto tier derived from the upstream Auto entry ID.
     #[serde(skip)]
     pub catalog_auto_tier: Option<String>,
+    /// Minimum plan tier required to call this model. `0` is unrestricted.
+    #[serde(default, rename = "minTierLevel")]
+    pub min_tier_level: i32,
+    /// Shortest published plan name at `min_tier_level`, when the catalog has one.
+    #[serde(default, rename = "requiredPlanName")]
+    pub required_plan_name: String,
+    /// Plan code paired with [`Self::required_plan_name`].
+    #[serde(default, rename = "requiredPlanCode")]
+    pub required_plan_code: String,
 }
 
 /// Capability payload inside `ClawModelEntry.extra` (JSON string from model_dev).

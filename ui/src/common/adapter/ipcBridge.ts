@@ -7831,6 +7831,12 @@ export interface IMediaModelOption {
   name: string;
   /** Optional catalog icon URL from Flowy (`icon` field). */
   icon?: string;
+  /** Minimum plan tier required to call this model. `0` or absent is unrestricted. */
+  min_tier_level?: number;
+  /** Published plan name at `min_tier_level`, when the catalog has one. */
+  required_plan_name?: string;
+  /** Plan code paired with `required_plan_name`. */
+  required_plan_code?: string;
 }
 
 export interface IMediaModelList {
@@ -7838,6 +7844,8 @@ export interface IMediaModelList {
   video_models: IMediaModelOption[];
   /** TTS models from Flowy `availableListClaw?category=8`. */
   audio_models?: IMediaModelOption[];
+  /** Caller's effective plan tier from the same catalog request. */
+  effective_model_tier?: number;
 }
 
 export interface IMediaWorkflowHistoryItem {
@@ -7898,6 +7906,8 @@ export interface ICloudWhoami {
   planCode?: string;
   /** Cloud nickname from `/user/me` when set. */
   nickname?: string;
+  /** Highest unexpired personal or team-seat plan tier. `0` means no paid tier. */
+  effectiveModelTier?: number;
 }
 
 export interface ICloudDeviceActivationStatus {

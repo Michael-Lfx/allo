@@ -260,6 +260,15 @@ pub struct MediaModelOption {
     /// Optional catalog icon URL from Flowy (`icon` field).
     #[serde(default)]
     pub icon: String,
+    /// Minimum plan tier required to call this model. `0` is unrestricted.
+    #[serde(default)]
+    pub min_tier_level: i32,
+    /// Published plan name at `min_tier_level`, when the catalog has one.
+    #[serde(default)]
+    pub required_plan_name: String,
+    /// Plan code paired with [`Self::required_plan_name`].
+    #[serde(default)]
+    pub required_plan_code: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +278,9 @@ pub struct MediaModelListResponse {
     /// TTS models from `availableListClaw?category=8`. Omitted by older servers.
     #[serde(default)]
     pub audio_models: Vec<MediaModelOption>,
+    /// Caller's effective plan tier from the same catalog request.
+    #[serde(default)]
+    pub effective_model_tier: i32,
 }
 
 #[cfg(test)]
@@ -291,7 +303,11 @@ mod tests {
                 id: "AIPC-qwen3-tts".into(),
                 name: "qwen3-tts".into(),
                 icon: String::new(),
+                min_tier_level: 0,
+                required_plan_name: String::new(),
+                required_plan_code: String::new(),
             }],
+            effective_model_tier: 0,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["audio_models"][0]["id"], "AIPC-qwen3-tts");

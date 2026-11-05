@@ -154,6 +154,7 @@ const chatProbeOption = (
   label: model,
   family,
   reasoningLevels: [],
+  minTierLevel: 0,
   supportsVision: false,
   supportsTools: true,
   showcase: resolveModelShowcase(model),

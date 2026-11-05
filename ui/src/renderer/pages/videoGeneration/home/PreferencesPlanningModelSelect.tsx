@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { Select } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isPlanLocked } from '@/renderer/utils/model/planGate';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import { pickDefaultLlmModel } from '../components/modelPreferenceDefaults';
 import type { GenerationPreferences } from './types';
@@ -24,23 +26,34 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
   onChange,
 }) => {
   const { t } = useTranslation();
+  const effectiveModelTier = useEffectiveModelTier();
   const llmModels = useGeneratorModels('text', { enabled: true });
   const valueRef = useRef(value);
   valueRef.current = value;
 
   const llmOptions = useMemo(() => {
     const seen = new Set<string>();
-    const opts: { label: string; value: string }[] = [];
+    const opts: { label: React.ReactNode; value: string; disabled?: boolean; locked?: boolean }[] = [];
+    const memberLabel = t('conversation.modelPicker.member', { defaultValue: 'Member' });
     for (const model of llmModels.flat) {
       if (seen.has(model.model)) continue;
       seen.add(model.model);
+      const locked = isPlanLocked(model.minTierLevel ?? 0, effectiveModelTier);
+      const planName = model.requiredPlanName?.trim() || memberLabel;
       opts.push({
         value: model.model,
-        label: `${formatCloudModelLabel(model.model)} · ${model.providerName}`,
+        disabled: locked,
+        locked,
+        label: (
+          <span className='flex min-w-0 items-center gap-6px'>
+            <span className='min-w-0 truncate'>{`${formatCloudModelLabel(model.model)} · ${model.providerName}`}</span>
+            {locked ? <span className='chat-model-plan-badge shrink-0'>{planName}</span> : null}
+          </span>
+        ),
       });
     }
-    return opts;
-  }, [llmModels.flat]);
+    return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
+  }, [effectiveModelTier, llmModels.flat, t]);
 
   const safeLlmValue = llmOptions.some((option) => option.value === value.models.llm_model)
     ? value.models.llm_model
@@ -49,11 +62,12 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
   useEffect(() => {
     if (llmOptions.length === 0) return;
     const current = valueRef.current;
+    const openOptions = llmOptions.filter((option) => !option.locked);
+    const currentListed = llmOptions.some((option) => option.value === current.models.llm_model);
     const next =
-      !current.models.llm_model ||
-      !llmOptions.some((option) => option.value === current.models.llm_model)
-        ? pickDefaultLlmModel(llmOptions.map((option) => option.value)) ?? llmOptions[0].value
-        : null;
+      current.models.llm_model && currentListed
+        ? null
+        : pickDefaultLlmModel(openOptions.map((option) => option.value)) ?? openOptions[0]?.value;
     if (!next || next === current.models.llm_model) return;
     onChange({ ...current, models: { ...current.models, llm_model: next } });
   }, [llmOptions, onChange, value.models.llm_model]);

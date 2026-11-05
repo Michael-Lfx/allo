@@ -261,6 +261,7 @@ impl CloudService {
                     plan: None,
                     plan_code: None,
                     nickname: None,
+                    effective_model_tier: 0,
                 });
             }
             Err(e) => return Err(AppError::Internal(e.to_string())),
@@ -298,6 +299,10 @@ impl CloudService {
                     .filter(|s| !s.is_empty())
                     .map(ToOwned::to_owned)
             }),
+            effective_model_tier: profile
+                .as_ref()
+                .map(|p| p.effective_model_tier)
+                .unwrap_or(0),
         })
     }
 

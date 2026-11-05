@@ -11,6 +11,7 @@ import { compositeKey } from '@/common/utils/compositeKey';
 import { modelHealthOf } from '@/common/utils/providerModels';
 import type { TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import { catalogCreditRateForModel } from './creditRate';
+import { isPlanLocked, parseCatalogPlanGate } from './planGate';
 import { formatModelLabelForProvider } from './cloudModelLabel';
 import { catalogReasoningEffortForModel } from './reasoningEffort';
 import { resolveModelShowcase, warnMissingShowcaseEntry, type ModelShowcase } from './modelShowcase';
@@ -38,6 +39,10 @@ export interface ChatModelOption {
   autoTier?: AutoTier;
   reasoningLevels: string[];
   creditRate?: number;
+  /** Catalog minimum plan tier. `0` means every signed-in user can call it. */
+  minTierLevel: number;
+  requiredPlanName?: string;
+  requiredPlanCode?: string;
   supportsVision: boolean;
   supportsTools: boolean;
   health?: ModelHealthStatus;
@@ -119,6 +124,7 @@ const modelOption = (provider: IProvider, model: string): ChatModelOption => {
   const traits = detail?.traits ?? [];
   const supportsVision = traits.some((trait) => isModelTrait(trait, 'vision_input'));
   const supportsTools = traits.some((trait) => isModelTrait(trait, 'function_calling'));
+  const planGate = parseCatalogPlanGate(detail?.params);
 
   return {
     key: compositeKey(provider.id, model),
@@ -132,6 +138,9 @@ const modelOption = (provider: IProvider, model: string): ChatModelOption => {
     // metadata is being cleared by the next provider sync.
     reasoningLevels: family === 'auto' ? [] : catalogReasoningEffortForModel(provider, model),
     creditRate: catalogCreditRateForModel(provider, model),
+    minTierLevel: planGate.minTierLevel,
+    requiredPlanName: planGate.requiredPlanName,
+    requiredPlanCode: planGate.requiredPlanCode,
     supportsVision,
     supportsTools,
     health: modelHealthOf(provider, model),
@@ -139,8 +148,26 @@ const modelOption = (provider: IProvider, model: string): ChatModelOption => {
   };
 };
 
+export function isChatModelPlanLocked(option: Pick<ChatModelOption, 'minTierLevel'>, effectiveTier: number): boolean {
+  return isPlanLocked(option.minTierLevel, effectiveTier);
+}
+
+/** Usable models stay in catalog order, with recommended ones first. Locked rows sink to the bottom. */
+export function orderCloudModelsForPlan(
+  cloudModels: readonly ChatModelOption[],
+  effectiveTier: number
+): ChatModelOption[] {
+  const usable = cloudModels.filter((option) => !isChatModelPlanLocked(option, effectiveTier));
+  const locked = cloudModels.filter((option) => isChatModelPlanLocked(option, effectiveTier));
+  const recommended = usable.filter((option) => option.showcase.recommended);
+  const rest = usable.filter((option) => !option.showcase.recommended);
+  const orderedUsable = recommended.length > 0 ? [...recommended, ...rest] : usable;
+  return [...orderedUsable, ...locked];
+}
+
 export const buildChatModelPickerViewModel = (
-  groups: readonly TaskModelGroup[]
+  groups: readonly TaskModelGroup[],
+  effectiveTier = Number.POSITIVE_INFINITY
 ): ChatModelPickerViewModel => {
   const autoModels: ChatModelOption[] = [];
   const cloudModels: ChatModelOption[] = [];
@@ -169,15 +196,7 @@ export const buildChatModelPickerViewModel = (
     return leftIndex - rightIndex || left.label.localeCompare(right.label);
   });
 
-  // The recommended catalog model leads the Cloud group. When the catalog does
-  // not offer it (the prod and dev catalogs drift), the order stays as synced.
-  const recommendedCloudModels = cloudModels.filter((option) => option.showcase.recommended);
-  const orderedCloudModels =
-    recommendedCloudModels.length > 0
-      ? [...recommendedCloudModels, ...cloudModels.filter((option) => !option.showcase.recommended)]
-      : cloudModels;
-
-  return { autoModels, cloudModels: orderedCloudModels, otherProviderGroups };
+  return { autoModels, cloudModels: orderCloudModelsForPlan(cloudModels, effectiveTier), otherProviderGroups };
 };
 
 export const allChatModelOptions = (

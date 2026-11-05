@@ -12,9 +12,12 @@ import { autoTierTaglineKey } from '@/renderer/utils/model/modelShowcase';
 import { useTranslation } from 'react-i18next';
 import { Menu } from '@arco-design/web-react';
 import React, { type CSSProperties } from 'react';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import {
   allChatModelOptions,
   defaultAutoOption,
+  isChatModelPlanLocked,
+  orderCloudModelsForPlan,
   AUTO_TIER_LABEL_FALLBACK,
   type AutoTier,
   type ChatModelOption,
@@ -64,10 +67,14 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   providerLabel,
 }) => {
   const { t } = useTranslation();
+  const effectiveModelTier = useEffectiveModelTier();
   const options = allChatModelOptions(viewModel);
   const optionsByKey = new Map(options.map((option) => [option.key, option]));
   const autoOptions = options.filter((option) => option.family === 'auto');
-  const cloudOptions = options.filter((option) => option.family === 'cloud');
+  const cloudOptions = orderCloudModelsForPlan(
+    options.filter((option) => option.family === 'cloud'),
+    effectiveModelTier,
+  );
   const hasModels = options.length > 0;
   const currentAutoOption = defaultAutoOption(autoOptions, selectedOption);
   const autoTierForDisplay =
@@ -79,7 +86,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   const handleMenuItemClick = (key: string) => {
     const option =
       key === FLOWY_AUTO_FAMILY_MENU_KEY ? currentAutoOption : optionsByKey.get(key);
-    if (!option) return;
+    if (!option || isChatModelPlanLocked(option, effectiveModelTier)) return;
     onSelect(option);
   };
 
@@ -89,11 +96,22 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
     const recommendedLabel = option.showcase.recommended
       ? t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })
       : undefined;
+    const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
+    const planBadge = planLocked
+      ? option.requiredPlanName?.trim() || t('conversation.modelPicker.member', { defaultValue: 'Member' })
+      : undefined;
+    const upgradeHint = planBadge
+      ? t('conversation.modelPicker.planRequired', {
+          plan: planBadge,
+          defaultValue: 'Available after upgrading to {{plan}}',
+        })
+      : undefined;
     // The row's aria-label overrides its visible content, so the recommendation
     // has to be part of the label for assistive tech to announce it.
     const fullLabel = [
       option.label === option.model ? option.model : `${option.label} (${option.model})`,
       recommendedLabel,
+      planBadge,
     ]
       .filter(Boolean)
       .join(' · ');
@@ -102,10 +120,12 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
       <Menu.Item
         key={option.key}
         data-testid={testId}
+        disabled={planLocked}
         className={`chat-model-picker-menu-item ${isSelected ? '!bg-2' : ''}`.trim()}
         aria-selected={isSelected}
+        aria-disabled={planLocked}
         aria-label={fullLabel}
-        title={option.model}
+        title={upgradeHint ?? option.model}
       >
         <div className='flex min-w-0 w-full items-center justify-between gap-8px'>
           <div className='flex min-w-0 items-center gap-10px'>
@@ -138,6 +158,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
                 {recommendedLabel && (
                   <span className='chat-model-recommended-badge shrink-0'>{recommendedLabel}</span>
                 )}
+                {planBadge && <span className='chat-model-plan-badge shrink-0'>{planBadge}</span>}
               </div>
               {tagline && (
                 <div className='chat-model-picker-menu-tagline truncate text-11px leading-15px text-t-secondary'>
