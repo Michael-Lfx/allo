@@ -2,7 +2,7 @@
 id: p03
 title: "smoke 读数与教练知情——overshoot scope 感知豁免、候选集空省略、四源知情条款"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -94,3 +94,10 @@ system_chars/user_chars/response_chars/system/user/response——**无节点标�
 「无任何候选行」，但文案由「登记表为空——首批无候选」改为与提示词侧同款
 的「登记表无近邻——候选缺席，全部按新铸处置」——登记表非空但全部提名无
 近邻时旧文案与事实不符（本票 B 项实施时未覆盖的情形②，评审双轴裁决补齐）。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`ba598bba9`，经 `b026034a8` 并回；评审修复轮候选注记措辞对齐（项3）`ba742fff9`。
+- **验证**：nomifun-app 434 + learning 869 全绿（overshoot 两臂形状纯函数/候选渲染空省略/条款断言）。
+- **真机 content 臂（run-1793861260083）**：`overshoot read-out: hit=0 (scope-aware; human card)`——scope 感知豁免真机生效（absorb-8 基线同夹具 hit=1 误报消失）；候选集首批无空块；教练四源知情条款在场。
+- **豁免粒度留痕**（双轴评审项 2，已核实不可行收窄）：归档帧无节点标识、LearningCompleter trait 无元数据通道——按节点收窄需跨 crate trait 改造，超本批面。doc 注释 + 本 Resolution 双留痕：单节点跑（content 臂现状）无差；多节点跑误报豁免面扩大（读数偏松非偏紧，非门禁）。

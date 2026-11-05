@@ -2,7 +2,7 @@
 id: p01
 title: "评审碎片面——第四出口条款、清单瘦身（合并渲染/单字过滤）、自证显性化"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -112,3 +112,10 @@ definition 源单字碎片过滤 + prompt 一行覆盖多源条款——机械�
    （话术合法化后 note 应写出处而非伪装切词残留）。
 4. 真机响应里无「自教 ref=concept 自身」行（显性化生效的观察项，一次跑
    不构成证明，连续两波留观）。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`8e370fc80`（+`413749c6c` 并集成分支），经 `f3987d126` 并回；评审修复轮补形状钉 `ba742fff9`，经 `44b9fec2a` 并回。
+- **验证**：nomifun-learning 859→863→869 全绿（新测：单字过滤三源三态/合并渲染一行多标签/一行覆盖多源 validate 断言/自证同形拒绝与反馈文案/92→60 机制等价形状钉 6 raw→3 unique→3 渲染行）；`validate_fragments`/`check_out_of_scope_row` 字节级零改动（Standards 轴复核确认）。
+- **真机（grow run-1793859632428）**：合并多源标签渲染真机在场（`1. 发酵 [definition][node_title][scope]`）、三值裁决分布 噪声103/名词11/范围外7——第四出口与瘦身机制实弹。**fragments total 读数未取得有效值：评审回包撞 r01 存量契约矛盾（validate_review 空节点）被静默降级 PASS**——本票读数验收受 r01 阻塞，以单测+渲染实证为准；r01 关票后补跑 grow 臂读数（后续票）。
+- 偏差 1 条（合理）：挂号表关系条款独立成 FRAGMENT_PROVENANCE_RELATION_CLAUSE 仅双面同开时织入（off 臂防泄漏，既有断言当场抓红后条件化）。

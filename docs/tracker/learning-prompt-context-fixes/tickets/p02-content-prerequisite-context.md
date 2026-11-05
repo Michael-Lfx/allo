@@ -2,7 +2,7 @@
 id: p02
 title: "内容前置上下文——双传收敛、双头合并、空值行省略、旧叫法措辞"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -94,3 +94,11 @@ content user prompt 全文，提取件 absorb8-forensics/content-turn1-user.txt�
    前置段单头、先例块无节清单重复、无空程度声明行、旧叫法新措辞在场。
 3. 传统线（graph=None）渲染零变化（本票全部图臂限域——`render_precedent_block`
    与 `lesson_user_text` 图臂分支内）。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`f0c90a307`，经 `759738588` 并回；评审修复轮 trim 收敛（项6）`ba742fff9`。
+- **验证**：learning+ai-agent 合成树 2037 全绿（新测 5 + 改写断言 3）。
+- **真机 content 臂（干净库 run-1793861260083）EXIT=0 判据全过**，档案 user prompt 逐项核验：本节练什么 ×1（单载体成立）、无空程度声明行、前置契约独立头退场/合并头在场、旧叫法新措辞（「本课现用名（…旧称：贝塔系数）」）、先例块映射形、尾注动态拼装；负样本 0/0。
+- 偏差 4 条（实现报告记录，均合理）：smoke 判据零同步需要（三字样仍由前置路径承载）；单节重写臂同款收敛；构造点瘦身（sections 字段删除）；goal 行纳入三态省略。
+- **复用库留观**：累积夹具库上本节练什么/旧称各 ×2（跨课程教师摘要+registry 同 canonical 多行——夹具播种未去重 canonical），干净库零症状；smoke 夹具卫生归后续观察项。
