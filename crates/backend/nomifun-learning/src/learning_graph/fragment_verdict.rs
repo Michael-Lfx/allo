@@ -121,7 +121,8 @@ pub(crate) enum FragmentRuling {
 /// 行的数据源；读数面非门禁）。跨评审调用累加：[`FragmentReadout::merge`]。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct FragmentReadout {
-    /// 点名清单片段数（机械派生，评审输入）。
+    /// 机械派生待裁决词数 = 点名清单合并渲染后行数（p01 清单瘦身：同词跨源
+    /// 一行；核验面仍核跨源全行，此处只改读数口径——smoke `total` 随之）。
     pub(crate) fragments: usize,
     /// 被接受的结论携带的裁决行数。
     pub(crate) rows: usize,
@@ -294,20 +295,52 @@ pub(crate) fn unhandled_problems(unhandled: &[NameFragment]) -> Vec<ReviewProble
 }
 
 /// 点名清单的模型面渲染：空 = 明示「全部有着落」，非空 = 逐行编号并标注
-/// 来源（absorb-8 z02，learnhub `naming_text` 扩面同款）；评审行报 `source`
-/// 照清单标注原样填。核验面保留跨源全行（渲染不折叠同词——同词多源各行
-/// 并列，评审可见来源全貌）。
+/// 来源（absorb-8 z02，learnhub `naming_text` 扩面同款）；p01 清单瘦身：
+/// 同词跨源合并为一行多标签（[`merged_naming_rows`]，保序按首现行）——
+/// 评审输出每词一行、term 相同的一行裁决覆盖它的全部来源行（prompt 配套
+/// 条款同语义）。核验面（[`validate_fragments`]）保留跨源全行不动：合并
+/// 只发生在渲染与读数口径，机械核零改动。
 pub(crate) fn naming_list_block(naming: &[NameFragment]) -> String {
     if naming.is_empty() {
         return "\n\n【机械点名清单（缺口碎片；逐条裁决，输出硬约束）】\n(无:本批全部有着落)".into();
     }
-    let list = naming
+    let list = merged_naming_rows(naming)
         .iter()
         .enumerate()
-        .map(|(i, f)| format!("{}. {} [{}]", i + 1, f.term, f.source.as_str()))
+        .map(|(i, (term, sources))| {
+            let tags = sources
+                .iter()
+                .map(|source| format!("[{}]", source.as_str()))
+                .collect::<String>();
+            format!("{}. {} {tags}", i + 1, term)
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!("\n\n【机械点名清单（缺口碎片；逐条裁决，输出硬约束）】\n{list}")
+}
+
+/// 合并渲染的一行：同 term 的跨源行折叠为「词 + 来源标签列」（标签按首现
+/// 行序；同源重复不存在——派生面已同源同词去重）。纯展示形状，核验面
+/// 不消费。
+fn merged_naming_rows(naming: &[NameFragment]) -> Vec<(&str, Vec<FragmentSource>)> {
+    let mut merged: Vec<(&str, Vec<FragmentSource>)> = Vec::new();
+    for frag in naming {
+        match merged.iter_mut().find(|(term, _)| *term == frag.term) {
+            Some((_, sources)) => {
+                if !sources.contains(&frag.source) {
+                    sources.push(frag.source);
+                }
+            }
+            None => merged.push((frag.term.as_str(), vec![frag.source])),
+        }
+    }
+    merged
+}
+
+/// 读数口径（p01）：合并渲染后行数 = 机械派生待裁决词数（真机病历：127
+/// 行清单对 92 unique terms——合并行数才是模型的实际裁决负担）。
+pub(crate) fn merged_row_count(naming: &[NameFragment]) -> usize {
+    merged_naming_rows(naming).len()
 }
 
 /// 点名清单派生（纯函数；absorb-8 z02 四源扩面，learnhub #205
@@ -315,9 +348,12 @@ pub(crate) fn naming_list_block(naming: &[NameFragment]) -> String {
 /// new_aliases）∪ 各节点显示名 ∪ 节点 intent ∪ 节点 scope，逐条
 /// [`definition_audit::grounding_runs`]（known 掩码 + 宁滥勿缺语义不变）。
 /// 同源同词去重保序；**跨源同词保留多行**（范围外核的跨源数据基础）。
+/// p01 清单瘦身：**非 definition 源的单字碎片不进清单**——声明面
+/// （node_title/intent/scope）的单字几乎全是切词残渣（真机 run-1793828585963
+/// 127 行清单 38 行单字）；definition 源保持宁滥勿缺不动（单字照收）。
 /// 课程豁免 [`lexicon::apply_ignores`] 照旧对全源生效（按词过滤——同词多行
-/// 同滤）。`known` = 已知面（已教账 ∪ 登记表 ∪ 本批 ∪ base ∪ 课程增词，
-/// 调用方拼装；小写折叠与 CJK 片段互不干扰）。
+/// 同滤；位置不动）。`known` = 已知面（已教账 ∪ 登记表 ∪ 本批 ∪ base ∪
+/// 课程增词，调用方拼装；小写折叠与 CJK 片段互不干扰）。
 pub(crate) fn derive_naming_list(
     batch: &ProposedBatch,
     known: &[String],
@@ -326,6 +362,9 @@ pub(crate) fn derive_naming_list(
     let mut naming: Vec<NameFragment> = Vec::new();
     let mut collect = |text: &str, source: FragmentSource, naming: &mut Vec<NameFragment>| {
         for frag in super::definition_audit::grounding_runs(text, known) {
+            if source != FragmentSource::Definition && frag.chars().count() == 1 {
+                continue;
+            }
             if !naming.iter().any(|f| f.source == source && f.term == frag) {
                 naming.push(NameFragment { term: frag, source });
             }
@@ -726,6 +765,86 @@ mod tests {
         assert!(block.contains("【机械点名清单"), "{block}");
         assert!(block.contains("1. 方程 [scope]"), "{block}");
         assert!(block.contains("2. 线段 [node_title]"), "{block}");
+    }
+
+    // ── p01 清单瘦身（单字过滤/合并渲染/一行覆盖多源） ────────────────────
+
+    /// 单字过滤三源 × 三态（p01 清单瘦身；真机 run-1793828585963：127 行
+    /// 清单 38 行单字占 30%，全部出自声明面切片）：非 definition 源
+    /// （node_title/intent/scope）的单字碎片不进清单——声明面单字几乎全是
+    /// 切词残渣；definition 源保持宁滥勿缺不动（单字照收）。课程豁免
+    /// （apply_ignores）位置不动，另有既有测试钉。
+    #[test]
+    fn single_char_fragments_filtered_from_declaration_sources_only() {
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("途", "萃", "教")],
+            mints: vec![ConceptMint {
+                canonical: "研磨粗细".into(),
+                aliases: Vec::new(),
+                definition: "粗".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let naming = derive_naming_list(&batch, &[], &CourseLexicon::default());
+        assert!(
+            naming.iter().any(|f| f.source == FragmentSource::Definition && f.term == "粗"),
+            "definition 源单字照收（宁滥勿缺不动）：{naming:?}"
+        );
+        for (term, source) in [
+            ("途", FragmentSource::NodeTitle),
+            ("萃", FragmentSource::Intent),
+            ("教", FragmentSource::Scope),
+        ] {
+            assert!(
+                !naming.iter().any(|f| f.source == source && f.term == term),
+                "声明面源单字不进清单（{}）：{naming:?}",
+                source.as_str()
+            );
+        }
+    }
+
+    /// 合并渲染一行多标签（p01 清单瘦身；真机病历：滤纸×3/温度计×3/途×3
+    /// ——跨源重复 35 行）：同 term 跨源合并为一行、来源标签按首现行序并
+    /// 列；清单行数 = unique 词数（读数 fragments 口径同步改合并后行数）。
+    #[test]
+    fn naming_list_block_merges_cross_source_rows_into_one_tagged_line() {
+        let naming = vec![
+            frag("滤纸", FragmentSource::Definition),
+            frag("滤杯", FragmentSource::Definition),
+            frag("滤纸", FragmentSource::Intent),
+            frag("滤纸", FragmentSource::Scope),
+        ];
+        let block = naming_list_block(&naming);
+        assert!(block.contains("1. 滤纸 [definition][intent][scope]"), "{block}");
+        assert!(block.contains("2. 滤杯 [definition]"), "{block}");
+        assert_eq!(block.matches("滤纸").count(), 1, "同词只渲染一行：{block}");
+        assert_eq!(merged_row_count(&naming), 2, "合并后行数 = unique 词数");
+    }
+
+    /// 一行覆盖多源（p01 清单瘦身；真机：127 行响应对 92 unique terms 全过
+    /// 核——`relates` 多对一匹配本就合法）：核验面保留跨源全行不动，同词
+    /// 一条裁决行覆盖它的全部来源行——零 unhandled。
+    /// `validate_fragments` / `check_out_of_scope_row` 零改动即得此语义。
+    #[test]
+    fn one_noise_verdict_row_covers_all_cross_source_rows() {
+        let naming = vec![
+            frag("滤纸", FragmentSource::Definition),
+            frag("滤纸", FragmentSource::Intent),
+            frag("滤纸", FragmentSource::Scope),
+            frag("温度计", FragmentSource::NodeTitle),
+            frag("温度计", FragmentSource::Scope),
+        ];
+        let verdicts = vec![
+            verdict("滤纸", "噪声", "本节点 teaches 手冲器具功能覆盖"),
+            verdict("温度计", "噪声", "本节点 teaches 水温测量覆盖"),
+        ];
+        assert_eq!(
+            validate_fragments(&verdicts, true, &[], &naming, &ProposedBatch::default()),
+            Ok(vec![]),
+            "同词一行裁决覆盖全部来源行"
+        );
     }
 
     // ── 「范围外」三件机械核（learnhub 20f1dcf 最终语义移植） ────────────
