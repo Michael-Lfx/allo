@@ -75,3 +75,22 @@ part_of: ../map.md
    真机 grow 臂候选段无空块（首批）。
 3. 复用裁决零回归：非首批场景（有登记表）候选集照常渲染（真机 grow
    第二批若触发，读数可见）。
+
+## Resolution（评审修复波留痕，2026-11-05）
+
+**A 项豁免粒度：按节点归属收窄不可行，留痕留观（不改 status）。**
+复核结论：归档帧（calls.jsonl 行）结构化字段只有 ts/method/ok/elapsed_ms/
+system_chars/user_chars/response_chars/system/user/response——**无节点标识**；
+`LearningCompleter` 接口（complete/complete_json 四臂）无元数据通道，按节点
+归属收窄需跨 crate 改 trait 签名 + 全部实现者 + ArchivingCompleter 落盘面，
+超出本票面。内容面归属（按帧内声明行/标题配对分组）为启发式，多轮调用
+（plan/write/retry/feedback）同帧共享声明行，脆。现状 = 全帧声明行拼接统一
+豁免，即**跨节点豁免粒度**：content 臂冒烟单节点生成跑无差；多节点跑误报
+豁免面扩大（读数偏松非偏紧，非门禁）。留痕落点：`learning_smoke.rs`
+`scope_aware_overshoot_hits` doc 注释（同批评审修复）；节点归属收窄待观测
+通道扩展票。
+
+**候选集空注记（B 项）对齐补刀（同批评审修复）**：注记触发条件保持
+「无任何候选行」，但文案由「登记表为空——首批无候选」改为与提示词侧同款
+的「登记表无近邻——候选缺席，全部按新铸处置」——登记表非空但全部提名无
+近邻时旧文案与事实不符（本票 B 项实施时未覆盖的情形②，评审双轴裁决补齐）。
