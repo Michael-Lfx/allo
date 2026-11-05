@@ -5,7 +5,7 @@ import { conversationTarget, type ConversationId, type MessageId } from '@/commo
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession, voiceStartNeedsPrepare } from '@common/adapter/voiceCompanion';
+import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession, voiceStartNeedsPrepare, type VoiceTaskSnapshot } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
 import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
@@ -248,6 +248,17 @@ const NomiSendBox: React.FC<{
   voiceHistoryFailed?: boolean;
   onRetryVoiceHistory?: () => Promise<void>;
   voiceKind?: ConversationVoiceKind;
+  onVoiceKeyboardWait?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    text: string;
+  }) => void;
+  onVoiceKeyboardResult?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    task?: VoiceTaskSnapshot;
+    error?: unknown;
+  }) => void;
 }> = ({
   conversation_id,
   modelSelection,
@@ -261,6 +272,8 @@ const NomiSendBox: React.FC<{
   voiceHistoryFailed = false,
   onRetryVoiceHistory,
   voiceKind,
+  onVoiceKeyboardWait,
+  onVoiceKeyboardResult,
 }) => {
   const navigate = useNavigate();
   const effectiveModelTier = useEffectiveModelTier();
@@ -598,23 +611,34 @@ const NomiSendBox: React.FC<{
       return;
     }
     setVoiceConversation({ id: conversation_id, kind: 'unknown' });
-    void resolveVoiceConversationKind({
-      targetId: conversation_id,
-      fetchConversation: getConversationOrNull,
-      getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
-    })
-      .then(({ kind, workspace }) => {
-        if (disposed) return;
-        setVoiceConversation({ id: conversation_id, kind });
-        if (workspace) setWorkspacePath(workspace);
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const loadKind = (): void => {
+      void resolveVoiceConversationKind({
+        targetId: conversation_id,
+        fetchConversation: getConversationOrNull,
+        getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
       })
-      .catch(() => {
-        if (!disposed) {
+        .then(({ kind, workspace }) => {
+          if (disposed) return;
+          setVoiceConversation({ id: conversation_id, kind });
+          if (workspace) setWorkspacePath(workspace);
+        })
+        .catch(() => {
+          if (disposed) return;
           setVoiceConversation({ id: conversation_id, kind: 'unknown' });
-        }
-      });
+          // A transient classifier failure must not defer ordinary composer
+          // warmup forever; retry a bounded number of times.
+          attempts += 1;
+          if (attempts < 3) {
+            retryTimer = setTimeout(loadKind, 1_000);
+          }
+        });
+    };
+    loadKind();
     return () => {
       disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [conversation_id, cache, voiceKind]);
 
@@ -626,6 +650,13 @@ const NomiSendBox: React.FC<{
   useEffect(() => {
     if (!conversation_id) return;
     setAgentWarmed(false);
+    // Wait for classification: a voice call must not build a chat runtime on
+    // mount (that build holds the preparation gate and blocks the projection).
+    if (conversationVoiceKind === 'unknown') return;
+    if (conversationVoiceKind === 'voice') {
+      setAgentWarmed(true);
+      return;
+    }
     void warmupConversationForPassiveMount(conversation_id)
       .then(() => {
         setAgentWarmed(true);
@@ -633,7 +664,7 @@ const NomiSendBox: React.FC<{
       .catch((error) => {
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
       });
-  }, [conversation_id, t]);
+  }, [conversation_id, conversationVoiceKind, t]);
 
   const slash_commands = useSlashCommands(conversation_id, {
     conversation_type: 'nomi',
@@ -1140,6 +1171,8 @@ const NomiSendBox: React.FC<{
       voiceSendAttempts: voiceSendAttempts.current,
       resolveConversationKind,
       sendVoiceKeyboardMessage,
+      onVoiceCommand: onVoiceKeyboardWait,
+      onVoiceCommandResult: onVoiceKeyboardResult,
       enqueue: safeEnqueue,
       clearFiles,
       emitFileClear: () => emitter.emit('nomi.selected.file.clear'),
@@ -2058,6 +2091,7 @@ const NomiSendBox: React.FC<{
       if(snapshot.task.status==='accepted')setVoiceStopTarget({command:snapshot.task.command_id,instance:snapshot.instance_id,seq:snapshot.seq});
       try {
         const result=await stopDisplayedVoiceTask(conversation_id,snapshot);
+        if(mountedRef.current && lifecycleGenerationRef.current===generation)emitter.emit('voice.keyboard.wait.clear',conversation_id);
         if(mountedRef.current && lifecycleGenerationRef.current===generation && (result.status==='completed'||result.status==='failed'))setVoiceStopTarget(null);
       } catch {
         if(mountedRef.current && lifecycleGenerationRef.current===generation){setVoiceStopTarget(null);Message.error(t('voice.task.controlUnknown'));}
@@ -2290,6 +2324,7 @@ const NomiSendBox: React.FC<{
         key={conversation_id}
         data-testid='nomi-sendbox'
         isVoiceConversation={isVoiceConversation}
+        voiceConversationKind={conversationVoiceKind}
         isVoiceActive={isVoiceActive}
         isVoiceActiveElsewhere={isVoiceActiveElsewhere}
         isVoiceConnecting={isVoiceConnecting}

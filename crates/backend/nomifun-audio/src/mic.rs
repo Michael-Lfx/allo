@@ -1,6 +1,6 @@
 //! Microphone capture via `cpal` (default input device).
 //!
-//! Refactored in Wave 1 for AI Mate voice agent:
+//! Refactored in Wave 1 for the voice companion agent:
 //! - Stage 1 (Producer): Zero-lock, zero-allocation SPSC push in real-time CPAL callback.
 //! - Stage 2 (Worker): Background worker thread performs channel downmixing and resampling.
 //! - Stage 3 (Consumer): Exposes `CaptureReadResult` eliminating `try_recv()` ambiguity.

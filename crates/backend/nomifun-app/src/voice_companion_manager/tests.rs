@@ -1,5 +1,146 @@
     use super::*;
 
+    #[tokio::test]
+    async fn submit_scope_guard_rejects_stopped_revoked_or_moved_turns() {
+        use nomifun_api_types::voice::{
+            VoiceConnectionState, VoiceSessionPhase, VoiceTaskCommand,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        {
+            let mut snapshot = manager
+                .snapshot
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            snapshot.instance_id = "guard-host".into();
+            snapshot.session_id = Some("guard-session".into());
+            snapshot.turn_id = Some("guard-turn".into());
+            snapshot.phase = VoiceSessionPhase::Dispatching;
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+        }
+        let command = VoiceTaskCommand {
+            command_id: "guard-command".into(),
+            session_id: "guard-session".into(),
+            turn_id: "guard-turn".into(),
+            goal: "读取文件".into(),
+            record_id: None,
+            binding_id: None,
+        };
+        assert!(manager.submit_instance_guard("guard-host").is_ok());
+        assert!(manager.submit_session_guard(&command).is_ok());
+        manager
+            .revoked_sessions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .push_back(command.session_id.clone());
+        assert_eq!(
+            manager.submit_session_guard(&command).unwrap_err(),
+            "task_scope_changed"
+        );
+        manager
+            .revoked_sessions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        manager.resource_write_active.store(true, Ordering::Release);
+        assert_eq!(
+            manager.submit_instance_guard("guard-host").unwrap_err(),
+            "voice_resource_write_in_progress"
+        );
+        manager.resource_write_active.store(false, Ordering::Release);
+        manager.shutdown_requested.store(true, Ordering::Release);
+        assert_eq!(
+            manager.submit_instance_guard("guard-host").unwrap_err(),
+            "task_scope_changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_task_replays_after_the_live_turn_has_moved_on() {
+        struct ReplayRuntime;
+        #[async_trait::async_trait]
+        impl VoiceTaskRuntime for ReplayRuntime {
+            async fn resolve_configuration(&self, config: &VoiceExecutionConfig) -> Result<VoiceExecutionConfig, String> { Ok(config.clone()) }
+            async fn prepare_configuration(&self, config: &VoiceExecutionConfig) -> Result<(VoiceExecutionConfig, Option<nomifun_api_types::ResolvedPresetSnapshot>), String> { Ok((config.clone(), None)) }
+            async fn create(&self, _: &str, _: &VoiceExecutionConfig, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>, _: &str) -> Result<String, crate::voice_tasks::TaskMutationError> { Ok("replay-conversation".into()) }
+            async fn create_bound(&self, _: &str, _: &VoiceExecutionConfig, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>, _: &str, target: Option<&str>) -> Result<String, crate::voice_tasks::TaskMutationError> { Ok(target.unwrap_or("replay-conversation").into()) }
+            async fn find_created(&self, _: &str, _: &str) -> Result<Option<String>, String> { Ok(Some("replay-conversation".into())) }
+            async fn append(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<(), crate::voice_tasks::TaskMutationError> { Ok(()) }
+            async fn send_bound(&self, _: &str, _: &str, _: &str, message_id: &str, _: &str, _: &str, _: &str, _: Option<&str>, _: Option<&VoiceExecutionConfig>, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
+                Ok(crate::voice_tasks::TaskReceipt { message_id: message_id.into(), runtime_turn_id: Some("runtime-turn".into()), replayed: false, completed: false, result_ok: None, result_text: None, error_code: None })
+            }
+            async fn send(&self, _: &str, _: &str, _: &str, message_id: &str) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
+                Ok(crate::voice_tasks::TaskReceipt { message_id: message_id.into(), runtime_turn_id: Some("runtime-turn".into()), replayed: false, completed: false, result_ok: None, result_text: None, error_code: None })
+            }
+            async fn observe(&self, _: &str, _: &str, _: &str) -> Result<Option<crate::voice_tasks::TaskReceipt>, String> { Ok(None) }
+            async fn cancel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<(), String> { Ok(()) }
+            async fn confirmations(&self, _: &str, _: &str, _: &str, _: &str) -> Result<Vec<VoiceToolConfirmation>, String> { Ok(Vec::new()) }
+            async fn confirm(&self, _: &str, _: &str, _: &str, _: &str, _: &VoiceToolConfirmation, _: bool) -> Result<(), String> { Ok(()) }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+                dir.path(),
+            )
+            .with_tasks("replay-owner".into(), Arc::new(ReplayRuntime)),
+        );
+        {
+            let mut snapshot = manager.snapshot.write().unwrap_or_else(|error| error.into_inner());
+            snapshot.instance_id = "replay-instance".into();
+            snapshot.session_id = Some("replay-session".into());
+            snapshot.turn_id = Some("replay-turn".into());
+            snapshot.phase = VoiceSessionPhase::Deciding;
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+        }
+        let command = nomifun_api_types::voice::VoiceTaskCommand {
+            command_id: "replay-command".into(),
+            session_id: "replay-session".into(),
+            turn_id: "replay-turn".into(),
+            goal: "读取文件".into(),
+            record_id: None,
+            binding_id: None,
+        };
+        let config = VoiceExecutionConfig {
+            workspace: dir.path().to_string_lossy().into_owned(),
+            model: Some(VoiceModelRef { provider_id: "test-provider".into(), model: "test-model".into() }),
+            preset_id: None,
+            session_mode: None,
+        };
+        let first = manager
+            .tasks
+            .as_ref()
+            .expect("task service")
+            .submit(command.clone(), config)
+            .await
+            .expect("accepted task");
+        assert!(first.freshly_accepted);
+
+        // The live turn has moved on; a retry of the accepted command must
+        // still return its original delivery rather than a fake scope conflict.
+        {
+            let mut snapshot = manager.snapshot.write().unwrap_or_else(|error| error.into_inner());
+            snapshot.phase = VoiceSessionPhase::Idle;
+            snapshot.turn_id = None;
+            snapshot.session_id = None;
+        }
+        let replay = manager
+            .submit_task(nomifun_api_types::voice::VoiceTaskSubmitRequest {
+                instance_id: "replay-instance".into(),
+                command,
+            })
+            .await
+            .expect("replay must not be blocked by the moved-on live turn");
+        assert!(!replay.freshly_accepted);
+        assert_eq!(replay.task.command_id, "replay-command");
+    }
+
     fn verify_feature_headless_binary() {
         let binary = std::env::var_os("VOICE_COMPANION_BIN")
             .map(std::path::PathBuf::from)
@@ -1645,7 +1786,7 @@
         assert!(settings.config.dialogue_model.is_none());
         assert_eq!(settings.effective_model.unwrap().model,"flash");
         let bridge = manager.start_dialogue_bridge().await.unwrap();
-        let response = reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-ai-mate-control-token", &manager.control_token)
+        let response = reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-voice-companion-control-token", &manager.control_token)
             .json(&VoiceDialogueRequest::new("hello")).send().await.unwrap();
         assert!(response.status().is_success(), "actual private completion route must use automatic selection");
         assert!(response.text().await.unwrap().contains("hello"));
@@ -1801,11 +1942,11 @@
     }
 
     #[test]
-    fn test_resolve_ai_mate_binary_candidate_search() {
+    fn test_resolve_voice_companion_binary_candidate_search() {
         let resolved = VoiceCompanionProcessManager::resolve_voice_companion_binary();
         if let Some(path) = resolved {
             assert!(path.is_file());
-            assert!(path.to_string_lossy().contains("voice-companion") || path.to_string_lossy().contains("ai-mate"));
+            assert!(path.to_string_lossy().contains("voice-companion"));
         }
     }
 
@@ -1814,17 +1955,13 @@
         let root=tempfile::tempdir().unwrap();
         let bin=root.path().join("Resources/bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let old_name=if cfg!(windows){"ai-mate.exe"}else{"ai-mate"};
-        let daemon=bin.join(old_name);std::fs::write(&daemon,b"test-only executable fixture").unwrap();
+        let name=if cfg!(windows){"voice-companion.exe"}else{"voice-companion"};
+        let daemon=bin.join(name);std::fs::write(&daemon,b"test-only executable fixture").unwrap();
         let host=root.path().join("MacOS/Flowy");
-        assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(Some(&bin),Some(&host)),Some(daemon.clone()));
-        assert!(VoiceCompanionProcessManager::installed_ai_mate_binary(None,Some(&host)).is_none());
-        let neighboring=root.path().join(old_name);std::fs::write(&neighboring,b"test-only colocated fixture").unwrap();
-        assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(None,Some(&root.path().join("Flowy.exe"))),Some(neighboring));
-        // The packaged name wins over the legacy ai-mate name.
-        let current=bin.join(if cfg!(windows){"voice-companion.exe"}else{"voice-companion"});
-        std::fs::write(&current,b"test-only current fixture").unwrap();
-        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin),Some(&host)),Some(current));
+        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin),Some(&host)),Some(daemon.clone()));
+        assert!(VoiceCompanionProcessManager::installed_voice_companion_binary(None,Some(&host)).is_none());
+        let neighboring=root.path().join(name);std::fs::write(&neighboring,b"test-only colocated fixture").unwrap();
+        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(None,Some(&root.path().join("Flowy.exe"))),Some(neighboring));
     }
 
     #[tokio::test]
@@ -1840,7 +1977,9 @@
         let snapshot = events.try_recv().unwrap();
         assert_eq!(snapshot.phase, VoiceSessionPhase::Error);
         assert_eq!(snapshot.connection, VoiceConnectionState::Offline);
-        assert_eq!(snapshot.error.unwrap().code, VOICE_COMPANION_MISSING);
+        // cfg(test) is a debug build, so the developer-facing code is expected.
+        assert_eq!(snapshot.error.unwrap().code, voice_companion_missing_code());
+        assert_eq!(voice_companion_missing_code(), VOICE_COMPANION_MISSING_DEV);
         assert!(manager.snapshot().enabled);
         manager.note_missing_voice_binary();
         assert!(events.try_recv().is_err());
@@ -3486,11 +3625,11 @@
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     }
                     assert!(healthy, "round {round}: daemon did not become healthy");
-                    let hardware: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    let hardware: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     assert_eq!(hardware["mic_attempts"], serde_json::json!(0));
                     assert_eq!(hardware["speaker_attempts"], serde_json::json!(0));
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let response = client.get(format!("{origins}/api/voice/diagnostics/engine-self-check?request_id=r16-{round}&timeout_ms=500")).header("x-ai-mate-control-token", &token).send().await;
+                    let response = client.get(format!("{origins}/api/voice/diagnostics/engine-self-check?request_id=r16-{round}&timeout_ms=500")).header("x-voice-companion-control-token", &token).send().await;
                     let status = response.as_ref().ok().map(|response| response.status());
                     let body: serde_json::Value = match response { Ok(response) => response.json().await.unwrap_or_default(), Err(_) => serde_json::Value::Null };
                     assert_eq!(status, Some(reqwest::StatusCode::OK), "round {round}: bounded engine check must return a failure body");
@@ -3505,7 +3644,7 @@
                     }
                     assert_eq!(reason, Some("engine_check_timeout"));
                     assert_ne!(body.get("asr_ok").and_then(|value| value.as_bool()), Some(true));
-                    let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     assert!(after["fault_asr_entered"].as_u64().unwrap_or(0) > 0, "round {round}: blocking ASR must actually be entered");
                     let observation = &after["fault_observation"];
                     assert_eq!(observation["native_busy"], serde_json::json!(true), "round {round}: blocking job must still be owned");
@@ -3562,11 +3701,11 @@
                 let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
                 let first_pid = manager.status().await.pid.expect("first daemon pid");
                 let first_instance = manager.snapshot().instance_id.clone();
-                let first = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let first = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-a")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(first.status(), reqwest::StatusCode::OK);
                 let mut observation = serde_json::Value::Null;
                 for _ in 0..40 {
-                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("ordinary-a")
                         && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true)
                     {
@@ -3579,9 +3718,9 @@
                 assert_eq!(observation["fault_observation"]["job"]["pid"], serde_json::json!(first_pid));
                 assert_eq!(observation["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
 
-                let second = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-b")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let second = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-b")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(second.status(), reqwest::StatusCode::OK);
-                let after_cancel: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                let after_cancel: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                 assert_eq!(after_cancel["fault_observation"]["native_busy"], serde_json::json!(true));
                 assert_eq!(after_cancel["fault_observation"]["job"]["request_id"], serde_json::json!("ordinary-a"));
                 assert_eq!(after_cancel["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
@@ -3606,7 +3745,7 @@
                         restarted = true;
                         let mut new_instance = String::new();
                         for _ in 0..40 {
-                            if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-ai-mate-control-token", &token).send().await
+                            if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-voice-companion-control-token", &token).send().await
                                 && let Ok(snapshot) = response.json::<serde_json::Value>().await
                                 && let Some(instance) = snapshot["instance_id"].as_str()
                                 && instance != first_instance
@@ -3648,12 +3787,12 @@
         run_headless_case(manager.clone(), port, std::time::Duration::from_secs(20), std::time::Duration::from_secs(60), |manager, origins, token| async move {
             let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
             for request_id in ["health-a", "health-b"] {
-                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id={request_id}")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id={request_id}")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(response.status(), reqwest::StatusCode::OK);
                 let payload: serde_json::Value = response.json().await.unwrap();
                 assert_eq!(payload["started"], serde_json::json!(true));
                 for _ in 0..40 {
-                    let observation: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    let observation: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     if observation["fault_observation"]["native_busy"] == serde_json::json!(false) { break; }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
@@ -3684,18 +3823,18 @@
         run_headless_case(manager.clone(), port, std::time::Duration::from_secs(20), std::time::Duration::from_secs(120), |manager, origins, token| async move {
             let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
             let first_pid = manager.status().await.pid.expect("cancel child pid");
-            let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=cancel-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+            let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=cancel-a")).header("x-voice-companion-control-token", &token).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::OK);
             let mut observation = serde_json::Value::Null;
             for _ in 0..40 {
-                observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                 if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("cancel-a") && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true) { break; }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             assert_eq!(observation["fault_observation"]["native_busy"], serde_json::json!(true));
-            let cancelled = client.post(format!("{origins}/api/voice/diagnostics/test-cancel")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+            let cancelled = client.post(format!("{origins}/api/voice/diagnostics/test-cancel")).header("x-voice-companion-control-token", &token).send().await.unwrap();
             assert_eq!(cancelled.status(), reqwest::StatusCode::OK);
-            let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+            let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
             assert_eq!(after["fault_observation"]["native_busy"], serde_json::json!(true));
             assert_eq!(after["fault_observation"]["job"]["request_id"], serde_json::json!("cancel-a"));
             assert_eq!(after["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
@@ -3736,11 +3875,11 @@
                 let first_pid = manager.status().await.pid.expect("single child pid");
                 assert!(!manager.snapshot().instance_id.is_empty());
                 let first_instance = manager.snapshot().instance_id.clone();
-                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=single-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=single-a")).header("x-voice-companion-control-token", &token).send().await.unwrap();
                 assert_eq!(response.status(), reqwest::StatusCode::OK);
                 let mut observation = serde_json::Value::Null;
                 for _ in 0..40 {
-                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-voice-companion-control-token", &token).send().await.unwrap().json().await.unwrap();
                     if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("single-a")
                         && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true)
                     { break; }
@@ -3766,7 +3905,7 @@
                     let status = manager.status().await;
                     if status.running && status.pid != Some(first_pid) {
                         new_pid = status.pid;
-                        if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-ai-mate-control-token", &token).send().await
+                        if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-voice-companion-control-token", &token).send().await
                             && let Ok(snapshot) = response.json::<serde_json::Value>().await
                             && let Some(instance) = snapshot["instance_id"].as_str()
                             && !instance.is_empty()
@@ -3860,4 +3999,53 @@
         };
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("native_fault_feature_requires_valid_headless"));
+    }
+
+    // ── Dev provisioning contract (2026-11-04) ───────────────────────────────
+    // Written before the resolver fix: these must fail on the pre-fix code.
+    // See docs/architecture/voice-agent/execution/dev-voice-companion-provisioning-fix-2026-11-04.zh.md
+
+    fn set_mtime(path: &std::path::Path, offset_secs: u64) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        let base = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + offset_secs);
+        file.set_modified(base).unwrap();
+    }
+
+    fn companion_name() -> &'static str {
+        if cfg!(windows) { "voice-companion.exe" } else { "voice-companion" }
+    }
+
+    #[test]
+    fn retired_daemon_name_is_not_resolved() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let legacy = bin.join(if cfg!(windows) { "ai-mate.exe" } else { "ai-mate" });
+        std::fs::write(&legacy, b"legacy daemon fixture").unwrap();
+        assert_eq!(
+            VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin), None),
+            None,
+            "the resolver must only accept the current voice-companion name"
+        );
+    }
+
+    #[test]
+    fn newest_candidate_wins_over_a_stale_bundled_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let bundled = root.path().join("Resources/bin");
+        let exe_dir = root.path().join("MacOS");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let stale = bundled.join(companion_name());
+        let fresh = exe_dir.join(companion_name());
+        std::fs::write(&stale, b"stale daemon fixture").unwrap();
+        std::fs::write(&fresh, b"fresh daemon fixture").unwrap();
+        set_mtime(&stale, 0);
+        set_mtime(&fresh, 100);
+        let host = exe_dir.join("Flowy");
+        assert_eq!(
+            VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bundled), Some(&host)),
+            Some(fresh),
+            "a stale bundled copy must not shadow a newer colocated build"
+        );
     }

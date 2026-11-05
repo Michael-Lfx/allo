@@ -95,6 +95,20 @@ pub trait TtsProvider: Send + Sync {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError>;
+    /// Load model resources ahead of the first utterance. Best-effort: callers
+    /// treat a failure as "no warm start", never as a call failure.
+    async fn warm_up(&self) {}
+    /// Provider that should synthesize the self-check audio fixtures.
+    ///
+    /// The KWS model is an English acoustic model trained on real speech; the
+    /// bundled offline Matcha voices are not reliably detected for the wake
+    /// phrase, while the fixed fixtures validated against the model were
+    /// produced by the Edge `en-US-JennyNeural` voice. When an online voice is
+    /// available, fixture synthesis prefers it; the daemon falls back to the
+    /// regular provider chain (and therefore offline voices) when it is not.
+    fn self_check_audio_provider(&self) -> Option<std::sync::Arc<dyn TtsProvider>> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -991,6 +1005,16 @@ pub struct SherpaOfflineTtsConfig {
     pub en_data_dir: Option<std::path::PathBuf>,
 }
 
+/// ONNX Runtime intra-op threads for the offline voice. Two threads leave the
+/// 20ms inference budget on the table; beyond four the CPU contention costs
+/// more than the extra parallelism buys (measured on a 16-core laptop).
+fn default_tts_threads() -> i32 {
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().min(4) as i32)
+        .unwrap_or(2)
+        .max(1)
+}
+
 impl Default for SherpaOfflineTtsConfig {
     fn default() -> Self {
         Self {
@@ -1001,8 +1025,9 @@ impl Default for SherpaOfflineTtsConfig {
             dict_dir: None,
             rule_fsts: None,
             rule_fars: None,
-            num_threads: 2,
-            speed: 1.3,
+            num_threads: default_tts_threads(),
+            // Keep in sync with nomifun-api-types' product default.
+            speed: 1.1,
             sid: 0,
             noise_scale: 0.667,
             noise_scale_w: 0.8,
@@ -1083,8 +1108,9 @@ impl SherpaOfflineTtsConfig {
             dict_dir,
             rule_fsts,
             rule_fars,
-            num_threads: 2,
-            speed: 1.3,
+            num_threads: default_tts_threads(),
+            // Keep in sync with nomifun-api-types' product default.
+            speed: 1.1,
             sid: 0,
             noise_scale: 0.667,
             noise_scale_w: 0.8,
@@ -1216,11 +1242,87 @@ struct ActiveTtsEngines {
     english: Option<sherpa_onnx::OfflineTts>,
 }
 
+/// Matcha English is phonemized by the vendored piper frontend through
+/// `espeak_SetVoiceByName("en-us")`. That call throws a C++ `runtime_error`
+/// when the bundled `espeak-ng-data` lacks the language/voice definitions, and
+/// the sherpa C API does not catch vendor exceptions, so the whole daemon would
+/// abort. Require the two definition files before the English engine is even
+/// created: an incomplete data directory then degrades to "English TTS
+/// unavailable" instead of killing the process.
+fn espeak_english_voice_available(data_dir: &std::path::Path) -> bool {
+    data_dir.join("lang").join("gmw").join("en").is_file()
+        && data_dir.join("lang").join("gmw").join("en-US").is_file()
+}
+
+/// Small bounded cache for repeated fixed phrases (wake acknowledgement, dismiss,
+/// question prompt). The key carries the locale/speed voice spec, so changing
+/// either invalidates the entry instead of replaying a stale voice.
+#[cfg(feature = "local-tts")]
+struct WavCache {
+    capacity: usize,
+    order: std::collections::VecDeque<String>,
+    entries: std::collections::HashMap<String, Vec<u8>>,
+}
+
+#[cfg(feature = "local-tts")]
+impl WavCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: std::collections::VecDeque::new(),
+            entries: std::collections::HashMap::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<Vec<u8>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn put(&mut self, key: String, wav: Vec<u8>) {
+        if self.capacity == 0 || wav.is_empty() {
+            return;
+        }
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        while self.order.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, wav);
+    }
+
+    fn key(voice: &str, text: &str, model_identity: &str) -> String {
+        format!("{voice}\u{0}{model_identity}\u{0}{text}")
+    }
+}
+
+/// A hung ONNX load must become a TtsError (and fall back) instead of
+/// blocking the stream before FallbackTtsProvider can observe it.
+const TTS_ENGINE_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn await_engine_init(
+    load: tokio::task::JoinHandle<Result<(), TtsError>>,
+    timeout: std::time::Duration,
+) -> Result<(), TtsError> {
+    match tokio::time::timeout(timeout, load).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(error),
+        Ok(Err(join_error)) => Err(TtsError::Synthesis(format!(
+            "tts_task_panicked: {join_error}"
+        ))),
+        Err(_) => Err(TtsError::Synthesis("tts_engine_init_timeout".into())),
+    }
+}
+
 #[cfg(feature = "local-tts")]
 #[derive(Clone)]
 pub struct SherpaOfflineTtsProvider {
     config: SherpaOfflineTtsConfig,
     engines: std::sync::Arc<tokio::sync::Mutex<Option<ActiveTtsEngines>>>,
+    wav_cache: std::sync::Arc<std::sync::Mutex<WavCache>>,
 }
 
 #[cfg(feature = "local-tts")]
@@ -1229,6 +1331,58 @@ impl SherpaOfflineTtsProvider {
         Self {
             config,
             engines: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            wav_cache: std::sync::Arc::new(std::sync::Mutex::new(WavCache::new(16))),
+        }
+    }
+
+    fn cache_identity(&self) -> String {
+        format!(
+            "sid={};speed={:.3};noise={:.3};length={:.3};model={:?};vocoder={:?};en_model={:?}",
+            self.config.sid,
+            self.config.speed,
+            self.config.noise_scale,
+            self.config.length_scale,
+            self.config.model_path,
+            self.config.vocoder_path,
+            self.config.en_model_path
+        )
+    }
+
+    /// Initialize the engines before handing a receiver back to the caller so
+    /// configuration/load failures stay synchronous and the fallback provider
+    /// can actually take over.
+    async fn ensure_engines(&self) -> Result<(), TtsError> {
+        if self.engines.lock().await.is_some() {
+            return Ok(());
+        }
+        let engines = self.engines.clone();
+        let config = self.config.clone();
+        let load = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
+            let mut lock = engines.blocking_lock();
+            if lock.is_none() {
+                *lock = Some(Self::init_engines_sync(&config)?);
+            }
+            Ok(())
+        });
+        await_engine_init(load, TTS_ENGINE_INIT_TIMEOUT).await
+    }
+
+    /// Load both acoustic models and the vocoder without synthesizing anything.
+    /// Used by the daemon at startup / call start so the first reply never pays
+    /// the multi-second lazy engine load.
+    pub async fn warm_up(&self) {
+        let engines = self.engines.clone();
+        let config = self.config.clone();
+        let load = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
+            let mut lock = engines.blocking_lock();
+            if lock.is_none() {
+                *lock = Some(Self::init_engines_sync(&config)?);
+            }
+            Ok(())
+        });
+        match await_engine_init(load, TTS_ENGINE_INIT_TIMEOUT).await {
+            Ok(()) => tracing::info!("sherpa_offline_tts_warmed_up"),
+            Err(error) => tracing::warn!(error=%error, "sherpa_offline_tts_warm_up_failed"),
         }
     }
 
@@ -1298,7 +1452,17 @@ impl SherpaOfflineTtsProvider {
             })?;
 
             let english = if let (Some(en_m), Some(en_t)) = (&config.en_model_path, &config.en_tokens_path) {
-                if en_m.exists() && en_t.exists() {
+                let espeak_voice_present = config
+                    .en_data_dir
+                    .as_deref()
+                    .is_some_and(espeak_english_voice_available);
+                if !espeak_voice_present {
+                    tracing::warn!(
+                        data_dir = ?config.en_data_dir,
+                        "English Matcha TTS skipped: espeak-ng-data/lang/gmw/en and en-US are missing (repair the voice model suite); continuing with Chinese-only TTS instead of letting the vendor phonemizer abort the daemon"
+                    );
+                }
+                if en_m.exists() && en_t.exists() && espeak_voice_present {
                     let en_data_str = config.en_data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
                     let en_config = sherpa_onnx::OfflineTtsConfig {
                         model: sherpa_onnx::OfflineTtsModelConfig {
@@ -1379,6 +1543,11 @@ impl TtsProvider for SherpaOfflineTtsProvider {
     fn is_available(&self) -> bool {
         self.config.is_valid()
     }
+    async fn warm_up(&self) {
+        // Dynamic dispatch (`Arc<dyn TtsProvider>`) must reach the real loader,
+        // not the trait's no-op default.
+        SherpaOfflineTtsProvider::warm_up(self).await;
+    }
     fn diagnostic(&self, voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
         Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
             provider: "sherpa".into(), voice: Some(if voice.is_empty() { self.config.sid.to_string() } else { voice.into() }),
@@ -1398,6 +1567,12 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             return Err(TtsError::Synthesis("null_byte_detected".into()));
         }
 
+        if !self.config.is_valid() {
+            return Err(TtsError::Synthesis(
+                "offline_tts_resources_missing: required model, lexicon or tokens file not found".into(),
+            ));
+        }
+
         let (actual_voice, custom_speed) = if let Some((v, s)) = voice.split_once(";speed=") {
             (v, s.parse::<f32>().ok())
         } else {
@@ -1410,21 +1585,59 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             actual_voice.parse::<i32>().unwrap_or(self.config.sid)
         };
 
-        let speed = custom_speed.unwrap_or(self.config.speed);
-
-        let engines_arc = self.engines.clone();
-        let config = self.config.clone();
-        let text_owned = text_clean.to_string();
         let default_locale = if actual_voice.starts_with("en") || actual_voice.contains("en_") || actual_voice.contains("en-") {
             Some("en-US".to_string())
         } else {
             None
         };
+        let speed = custom_speed.unwrap_or(self.config.speed);
+        let cache_key = WavCache::key(voice, text_clean, &self.cache_identity());
+        let cached = {
+            self.wav_cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&cache_key)
+        };
+        if let Some(wav) = cached {
+            let (tx, rx) = mpsc::channel(1);
+            let _ = tx.send(wav).await;
+            return Ok(rx);
+        }
+
+        // Surface init and unsupported-language failures before returning the
+        // stream: FallbackTtsProvider can only observe a synchronous Err, and
+        // the daemon otherwise plays silence instead of trying Edge.
+        self.ensure_engines().await?;
+        let segments_for_validation = segment_languages_with_locale(text_clean, default_locale.as_deref());
+        if segments_for_validation.is_empty() {
+            return Err(TtsError::Synthesis("empty_text".into()));
+        }
+        if self.config.is_matcha()
+            && segments_for_validation
+                .iter()
+                .any(|segment| matches!(segment, LangSegment::En(_)))
+        {
+            let has_english = self
+                .engines
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|engines| engines.english.is_some());
+            if !has_english {
+                return Err(TtsError::Synthesis("english_tts_engine_unavailable".into()));
+            }
+        }
+
+        let engines_arc = self.engines.clone();
+        let wav_cache = self.wav_cache.clone();
+        let config = self.config.clone();
+        let text_owned = text_clean.to_string();
 
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled_worker = cancelled.clone();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(8);
 
-        let blocking_task = tokio::task::spawn_blocking(move || {
+        let blocking_task = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
             let mut lock = engines_arc.blocking_lock();
             if lock.is_none() {
                 let eng = Self::init_engines_sync(&config)?;
@@ -1494,35 +1707,43 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             if all_samples.is_empty() {
                 return Err(TtsError::Synthesis("sherpa_offline_tts_empty_samples".into()));
             }
-
-            // Verify samples are finite
             if !all_samples.iter().all(|s| s.is_finite()) {
                 return Err(TtsError::Synthesis("tts_non_finite_samples".into()));
             }
 
             let wav = nomifun_audio::pcm_to_wav(&all_samples, sample_rate as u32);
+            if tx.blocking_send(wav.clone()).is_err() {
+                return Err(TtsError::Cancelled);
+            }
+            wav_cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .put(cache_key, wav);
             tracing::info!(
                 text_len = text_owned.len(),
                 sample_count = all_samples.len(),
                 sample_rate,
-                wav_bytes = wav.len(),
                 "sherpa_offline_tts_synthesized"
             );
-            Ok(wav)
+            Ok(())
         });
 
-        let wav = match tokio::time::timeout(std::time::Duration::from_secs(30), blocking_task).await {
-            Ok(res) => res.map_err(|join_err| TtsError::Synthesis(format!("tts_task_panicked: {join_err}")))??,
-            Err(_) => {
-                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                return Err(TtsError::Synthesis("tts_generation_timeout".into()));
+        let cancelled_monitor = cancelled.clone();
+        tokio::spawn(async move {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), blocking_task).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => {
+                    tracing::warn!(error=%error, "sherpa_offline_tts_stream_failed")
+                }
+                Ok(Err(join_error)) => {
+                    tracing::warn!(error=%join_error, "sherpa_offline_tts_stream_panicked")
+                }
+                Err(_) => {
+                    cancelled_monitor.store(true, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!("sherpa_offline_tts_stream_timeout");
+                }
             }
-        };
-
-        let (tx, rx) = mpsc::channel(1);
-        tx.send(wav)
-            .await
-            .map_err(|err| TtsError::Synthesis(err.to_string()))?;
+        });
         Ok(rx)
     }
 }
@@ -1571,14 +1792,31 @@ pub struct FallbackTtsProvider {
     primary: std::sync::Arc<dyn TtsProvider>,
     fallback: std::sync::Arc<dyn TtsProvider>,
     selected: std::sync::Arc<std::sync::Mutex<Option<nomifun_api_types::voice::VoiceTtsDiagnostic>>>,
+    first_audio_timeout: std::time::Duration,
 }
+
+const DEFAULT_FIRST_AUDIO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl FallbackTtsProvider {
     pub fn new(
         primary: std::sync::Arc<dyn TtsProvider>,
         fallback: std::sync::Arc<dyn TtsProvider>,
     ) -> Self {
-        Self { primary, fallback, selected: Default::default() }
+        Self {
+            primary,
+            fallback,
+            selected: Default::default(),
+            first_audio_timeout: DEFAULT_FIRST_AUDIO_TIMEOUT,
+        }
+    }
+
+    /// A provider may report a valid configuration and still fail after the
+    /// receiver is handed back (engine init, language support, generation).
+    /// Wait for the first real audio chunk; if none arrives, use the fallback
+    /// instead of playing silence.
+    pub fn with_first_audio_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.first_audio_timeout = timeout;
+        self
     }
 
     pub fn primary(&self) -> &std::sync::Arc<dyn TtsProvider> {
@@ -1587,6 +1825,13 @@ impl FallbackTtsProvider {
 
     pub fn fallback(&self) -> &std::sync::Arc<dyn TtsProvider> {
         &self.fallback
+    }
+
+    fn online_provider(&self) -> Option<std::sync::Arc<dyn TtsProvider>> {
+        self.fallback
+            .diagnostic("")
+            .is_some_and(|diagnostic| diagnostic.online)
+            .then(|| self.fallback.clone())
     }
 }
 
@@ -1598,15 +1843,82 @@ impl TtsProvider for FallbackTtsProvider {
     fn is_available(&self) -> bool {
         self.primary.is_available() || self.fallback.is_available()
     }
+    async fn warm_up(&self) {
+        if self.primary.is_available() {
+            self.primary.warm_up().await;
+        }
+        if self.fallback.is_available() {
+            self.fallback.warm_up().await;
+        }
+    }
+    fn self_check_audio_provider(&self) -> Option<std::sync::Arc<dyn TtsProvider>> {
+        self.online_provider()
+    }
     async fn synthesize_stream(
         &self,
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
         match self.primary.synthesize_stream(text, voice).await {
-            Ok(rx) => {
-                *self.selected.lock().unwrap_or_else(|e|e.into_inner()) = self.primary.diagnostic(voice);
-                Ok(rx)
+            Ok(primary_rx) => {
+                let selected = self.selected.clone();
+                let primary = self.primary.clone();
+                let fallback = self.fallback.clone();
+                let first_audio_timeout = self.first_audio_timeout;
+                let text = text.to_owned();
+                let voice = voice.to_owned();
+                *selected.lock().unwrap_or_else(|e|e.into_inner()) = primary.diagnostic(&voice);
+                // With no healthy fallback, wrapping would only be able to cut
+                // the primary stream off when its first chunk is slow. Leave it
+                // untouched (the playback idle deadline remains the backstop).
+                if !fallback.is_available() {
+                    return Ok(primary_rx);
+                }
+                let (out_tx, out_rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let mut primary_rx = primary_rx;
+                    match tokio::time::timeout(first_audio_timeout, primary_rx.recv()).await {
+                        Ok(Some(chunk)) => {
+                            if out_tx.send(chunk).await.is_err() {
+                                return;
+                            }
+                            while let Some(chunk) = primary_rx.recv().await {
+                                if out_tx.send(chunk).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        first => {
+                            let reason = match first {
+                                Ok(None) => "primary_stream_closed_before_audio",
+                                _ => "primary_first_audio_timeout",
+                            };
+                            tracing::warn!(reason, "primary_tts_no_audio_attempting_fallback");
+                            if !fallback.is_available() {
+                                return;
+                            }
+                            match fallback.synthesize_stream(&text, &voice).await {
+                                Ok(mut fallback_rx) => {
+                                    let mut diagnostic = fallback.diagnostic(&voice);
+                                    if let Some(diagnostic) = diagnostic.as_mut() {
+                                        diagnostic.fallback_reason = Some(reason.into());
+                                    }
+                                    *selected.lock().unwrap_or_else(|e|e.into_inner()) = diagnostic;
+                                    while let Some(chunk) = fallback_rx.recv().await {
+                                        if out_tx.send(chunk).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(error=%error, "fallback_tts_failed_after_primary_no_audio");
+                                    *selected.lock().unwrap_or_else(|e|e.into_inner()) = primary.diagnostic(&voice);
+                                }
+                            }
+                        }
+                    }
+                });
+                Ok(out_rx)
             },
             Err(primary_err) => {
                 if !self.fallback.is_available() {
@@ -1629,6 +1941,119 @@ impl TtsProvider for FallbackTtsProvider {
                 result
             }
         }
+    }
+}
+
+
+#[cfg(all(test, feature = "local-tts"))]
+mod tts_cache_tests {
+    use super::WavCache;
+
+    #[test]
+    fn default_local_tts_speed_is_one_point_one() {
+        assert_eq!(super::SherpaOfflineTtsConfig::default().speed, 1.1);
+    }
+
+    #[test]
+    fn cache_key_carries_voice_locale_speed_and_model_identity() {
+        let zh = WavCache::key("0", "你好", "sid=0;model=a");
+        let sped = WavCache::key("0;speed=1.3", "你好", "sid=0;model=a");
+        let en = WavCache::key("en-US-JennyNeural", "你好", "sid=0;model=a");
+        let sid = WavCache::key("0", "你好", "sid=1;model=a");
+        let model = WavCache::key("0", "你好", "sid=0;model=b");
+        assert_ne!(zh, sped, "changing speed must invalidate the cached voice");
+        assert_ne!(zh, en, "changing locale/voice must invalidate the cached voice");
+        assert_ne!(zh, sid, "changing speaker id must invalidate the cached voice");
+        assert_ne!(zh, model, "changing the model must invalidate the cached voice");
+        assert_eq!(zh, WavCache::key("0", "你好", "sid=0;model=a"));
+    }
+
+    #[cfg(feature = "local-tts")]
+    #[tokio::test]
+    async fn sherpa_english_unavailable_is_reported_synchronously() {
+        let Some(dir) = std::env::var_os("VOICE_TTS_MODEL_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("LOCALAPPDATA")
+                    .map(|base| std::path::PathBuf::from(base).join("Flowy").join("models").join("tts"))
+            })
+        else {
+            return;
+        };
+        if !dir.join("matcha-icefall-zh-baker").is_dir() {
+            return;
+        }
+        let mut config = super::SherpaOfflineTtsConfig::from_dir(&dir);
+        config.en_model_path = None;
+        config.en_tokens_path = None;
+        config.en_data_dir = None;
+        use super::TtsProvider;
+        let provider = super::SherpaOfflineTtsProvider::new(config);
+        let error = provider
+            .synthesize_stream("Hello there", "en-US-JennyNeural")
+            .await
+            .expect_err("missing English engine must not become a silent stream");
+        assert!(
+            error.to_string().contains("english_tts_engine_unavailable"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(feature = "local-tts")]
+    #[tokio::test]
+    async fn trait_warm_up_reaches_the_engine_loader() {
+        let Some(dir) = std::env::var_os("VOICE_TTS_MODEL_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("LOCALAPPDATA")
+                    .map(|base| std::path::PathBuf::from(base).join("Flowy").join("models").join("tts"))
+            })
+        else {
+            return;
+        };
+        if !dir.join("matcha-icefall-zh-baker").is_dir() {
+            return;
+        }
+        let provider = std::sync::Arc::new(super::SherpaOfflineTtsProvider::from_dir(&dir));
+        let dynamic: std::sync::Arc<dyn super::TtsProvider> = provider.clone();
+        dynamic.warm_up().await;
+        assert!(
+            provider.engines.lock().await.is_some(),
+            "trait warm_up must load the engines behind Arc<dyn TtsProvider>"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_init_timeout_is_surfaced_as_tts_error() {
+        let hanging = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok::<(), super::TtsError>(())
+        });
+        let error = super::await_engine_init(hanging, std::time::Duration::from_millis(20))
+            .await
+            .expect_err("a hung engine load must time out");
+        assert!(error.to_string().contains("tts_engine_init_timeout"));
+    }
+
+    #[cfg(feature = "local-tts")]
+    #[test]
+    fn cache_identity_changes_with_speed_and_noise() {
+        let fast = super::SherpaOfflineTtsProvider::new(super::SherpaOfflineTtsConfig::default());
+        let mut slow_config = super::SherpaOfflineTtsConfig::default();
+        slow_config.speed = 1.0;
+        let slow = super::SherpaOfflineTtsProvider::new(slow_config);
+        assert_ne!(fast.cache_identity(), slow.cache_identity());
+    }
+
+    #[test]
+    fn cache_is_bounded_and_evicts_oldest() {
+        let mut cache = WavCache::new(2);
+        cache.put(WavCache::key("0", "first", "id"), vec![1, 2, 3]);
+        cache.put(WavCache::key("0", "second", "id"), vec![4, 5, 6]);
+        cache.put(WavCache::key("0", "third", "id"), vec![7, 8, 9]);
+        assert!(cache.get(&WavCache::key("0", "first", "id")).is_none());
+        assert_eq!(cache.get(&WavCache::key("0", "second", "id")), Some(vec![4, 5, 6]));
+        assert_eq!(cache.get(&WavCache::key("0", "third", "id")), Some(vec![7, 8, 9]));
     }
 }
 
@@ -1676,6 +2101,73 @@ mod fallback_and_sherpa_tests {
             .expect("must succeed via primary");
         let data = rx.recv().await.expect("must receive frame");
         assert_eq!(data, vec![9, 9, 9]);
+    }
+
+    struct ClosedSilentTts;
+    #[async_trait]
+    impl TtsProvider for ClosedSilentTts {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (tx, rx) = mpsc::channel(1);
+            drop(tx);
+            Ok(rx)
+        }
+    }
+
+    struct HangingTts {
+        keep_alive: std::sync::Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    }
+    #[async_trait]
+    impl TtsProvider for HangingTts {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (tx, rx) = mpsc::channel(1);
+            *self.keep_alive.lock().unwrap() = Some(tx);
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_uses_fallback_when_primary_closes_without_audio() {
+        let primary = std::sync::Arc::new(ClosedSilentTts);
+        let fallback = std::sync::Arc::new(MockSuccessTts(vec![7, 7, 7]));
+        let provider = FallbackTtsProvider::new(primary, fallback)
+            .with_first_audio_timeout(std::time::Duration::from_millis(50));
+
+        let mut rx = provider
+            .synthesize_stream("hello world", "")
+            .await
+            .expect("must return a receiver");
+        let data = rx.recv().await.expect("must receive fallback frame");
+        assert_eq!(data, vec![7, 7, 7], "empty primary stream must trigger fallback");
+    }
+
+    #[tokio::test]
+    async fn fallback_uses_fallback_when_primary_hangs_before_first_audio() {
+        let primary = std::sync::Arc::new(HangingTts {
+            keep_alive: std::sync::Mutex::new(None),
+        });
+        let fallback = std::sync::Arc::new(MockSuccessTts(vec![8, 8, 8]));
+        let provider = FallbackTtsProvider::new(primary, fallback)
+            .with_first_audio_timeout(std::time::Duration::from_millis(50));
+
+        let started = std::time::Instant::now();
+        let mut rx = provider
+            .synthesize_stream("hello world", "")
+            .await
+            .expect("must return a receiver");
+        let data = rx.recv().await.expect("must receive fallback frame");
+        assert_eq!(data, vec![8, 8, 8], "hung primary must trigger fallback");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(40),
+            "fallback must wait for the first-audio timeout"
+        );
     }
 
     #[tokio::test]
@@ -1821,3 +2313,111 @@ mod fallback_and_sherpa_tests {
         assert!(ssml_escaped.contains("1 &lt; 2 &amp; 3 &gt; 1"));
     }
 }
+
+#[cfg(test)]
+mod espeak_voice_guard_tests {
+    use super::espeak_english_voice_available;
+
+    #[test]
+    fn english_voice_requires_lang_definition_files() {
+        let dir = std::env::temp_dir().join(format!("flowy-espeak-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lang").join("gmw")).expect("create lang dir");
+
+        assert!(!espeak_english_voice_available(&dir), "empty data dir must be rejected");
+
+        std::fs::write(dir.join("lang").join("gmw").join("en"), "language en").expect("write en");
+        assert!(
+            !espeak_english_voice_available(&dir),
+            "language definition alone is not enough; the en-US voice file is required"
+        );
+
+        std::fs::write(dir.join("lang").join("gmw").join("en-US"), "voice en-us")
+            .expect("write en-US");
+        assert!(espeak_english_voice_available(&dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod self_check_fixture_provider_tests {
+    use super::*;
+    use nomifun_api_types::voice::VoiceTtsDiagnostic;
+
+    struct OnlineMock;
+
+    #[async_trait]
+    impl TtsProvider for OnlineMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "edge".into(),
+                voice: None,
+                online: true,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+    }
+
+    struct OfflineMock;
+
+    #[async_trait]
+    impl TtsProvider for OfflineMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "sherpa".into(),
+                voice: None,
+                online: false,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(rx)
+        }
+    }
+
+    #[test]
+    fn online_fallback_is_used_for_self_check_fixtures() {
+        let chain = FallbackTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            std::sync::Arc::new(OnlineMock),
+        );
+        let provider = chain
+            .self_check_audio_provider()
+            .expect("online fallback must be offered for fixture synthesis");
+        assert!(
+            provider
+                .diagnostic("")
+                .is_some_and(|diagnostic| diagnostic.online),
+            "fixture provider must be the online voice"
+        );
+    }
+
+    #[test]
+    fn offline_only_chain_keeps_using_the_regular_provider() {
+        let chain = FallbackTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            std::sync::Arc::new(OfflineMock),
+        );
+        assert!(
+            chain.self_check_audio_provider().is_none(),
+            "offline chains must keep generating fixtures through the normal path"
+        );
+    }
+}
+

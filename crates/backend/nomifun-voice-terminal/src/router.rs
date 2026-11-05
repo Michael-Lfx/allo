@@ -201,7 +201,7 @@ impl OpenAiCompatibleVoiceRouter {
 
     pub fn with_default_model(default_model: impl Into<String>) -> Self {
         let mut router = Self::from_env();
-        if std::env::var("AI_MATE_LLM_MODEL").is_err()
+        if std::env::var("VOICE_COMPANION_LLM_MODEL").is_err()
             && std::env::var("DASHSCOPE_MODEL").is_err()
             && std::env::var("FLOWY_LLM_MODEL").is_err()
         {
@@ -274,11 +274,11 @@ impl OpenAiCompatibleVoiceRouter {
     /// 1. Flowy Cloud token: `NOMIFUN_SERVER_TOKEN` or `FLOWY_SERVER_TOKEN`
     /// 2. DashScope API key: `DASHSCOPE_API_KEY`
     /// 3. OpenAI API key: `OPENAI_API_KEY`
-    /// 4. Generic completions endpoint: `AI_MATE_LLM_ENDPOINT`
+    /// 4. Generic completions endpoint: `VOICE_COMPANION_LLM_ENDPOINT`
     /// 5. Offline fallback
     pub fn from_env() -> Self {
-        if let Ok(endpoint) = std::env::var("AI_MATE_DIALOGUE_ENDPOINT") {
-            let credential = std::env::var("AI_MATE_CONTROL_TOKEN").unwrap_or_default();
+        if let Ok(endpoint) = std::env::var("VOICE_COMPANION_DIALOGUE_ENDPOINT") {
+            let credential = std::env::var("VOICE_COMPANION_CONTROL_TOKEN").unwrap_or_default();
             if let Ok(client) = crate::completion::HostDialogueClient::new(endpoint, credential) {
                 return Self::with_completion(std::sync::Arc::new(client));
             }
@@ -295,7 +295,7 @@ impl OpenAiCompatibleVoiceRouter {
                 fallback: None,
             };
         }
-        let model = std::env::var("AI_MATE_LLM_MODEL")
+        let model = std::env::var("VOICE_COMPANION_LLM_MODEL")
             .or_else(|_| std::env::var("DASHSCOPE_MODEL"))
             .or_else(|_| std::env::var("FLOWY_LLM_MODEL"))
             .unwrap_or_else(|_| "qwen3.8-flash".to_string());
@@ -306,7 +306,7 @@ impl OpenAiCompatibleVoiceRouter {
         {
             if !token.trim().is_empty() {
                 let endpoint = std::env::var("FLOWY_COMPLETIONS_URL")
-                    .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                    .or_else(|_| std::env::var("VOICE_COMPANION_LLM_ENDPOINT"))
                     .unwrap_or_else(|_| {
                         "https://server.flowyaipc.com/claw/v1/chat/completions".to_string()
                     });
@@ -318,7 +318,7 @@ impl OpenAiCompatibleVoiceRouter {
         if let Ok(key) = std::env::var("DASHSCOPE_API_KEY") {
             if !key.trim().is_empty() {
                 let endpoint = std::env::var("DASHSCOPE_COMPLETIONS_URL")
-                    .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                    .or_else(|_| std::env::var("VOICE_COMPANION_LLM_ENDPOINT"))
                     .unwrap_or_else(|_| {
                         "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
                             .to_string()
@@ -332,16 +332,16 @@ impl OpenAiCompatibleVoiceRouter {
             if !key.trim().is_empty() {
                 let endpoint = std::env::var("OPENAI_BASE_URL")
                     .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
-                    .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                    .or_else(|_| std::env::var("VOICE_COMPANION_LLM_ENDPOINT"))
                     .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
                 return Self::from_custom_endpoint(endpoint, key, model);
             }
         }
 
-        // 4. Priority 4: Generic AI_MATE_LLM_ENDPOINT (e.g. local Ollama / vLLM without key)
-        if let Ok(endpoint) = std::env::var("AI_MATE_LLM_ENDPOINT") {
+        // 4. Priority 4: Generic VOICE_COMPANION_LLM_ENDPOINT (e.g. local Ollama / vLLM without key)
+        if let Ok(endpoint) = std::env::var("VOICE_COMPANION_LLM_ENDPOINT") {
             if !endpoint.trim().is_empty() {
-                let key = std::env::var("AI_MATE_LLM_KEY").unwrap_or_default();
+                let key = std::env::var("VOICE_COMPANION_LLM_KEY").unwrap_or_default();
                 return Self::from_custom_endpoint(endpoint, key, model);
             }
         }
@@ -350,7 +350,7 @@ impl OpenAiCompatibleVoiceRouter {
         #[cfg(not(test))]
         if let Some(token) = try_detect_local_flowy_token() {
             let endpoint = std::env::var("FLOWY_COMPLETIONS_URL")
-                .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                .or_else(|_| std::env::var("VOICE_COMPANION_LLM_ENDPOINT"))
                 .unwrap_or_else(|_| {
                     "https://server.flowyaipc.com/claw/v1/chat/completions".to_string()
                 });

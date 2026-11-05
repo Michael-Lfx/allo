@@ -48,6 +48,11 @@ export interface LiveVoiceOptions {
   retiredIds?: ReadonlySet<string>;
   blockedTurns?: ReadonlySet<string>;
   waitingTurns?: ReadonlySet<string>;
+  /**
+   * First-seen wall clock per turn for the current live scope. Temporary rows
+   * must inherit this instead of inventing a timestamp on every snapshot.
+   */
+  observedAt?: ReadonlyMap<string, number>;
 }
 export interface LiveVoiceHistory {
   scope: string;
@@ -56,11 +61,13 @@ export interface LiveVoiceHistory {
   retiredIds: Set<string>;
   blockedTurns: Set<string>;
   receipts: Map<string, number>;
+  /** First-seen wall clock per turn inside the current scope (never rewritten). */
+  observedAt: Map<string, number>;
   observedTurns: Set<string>;
   waitingTurns: Set<string>;
 }
 export const createLiveVoiceHistory = (): LiveVoiceHistory => ({
-  scope: '', instanceId: '', epoch: 0, retiredIds: new Set(), blockedTurns: new Set(), receipts: new Map(), observedTurns: new Set(), waitingTurns: new Set(),
+  scope: '', instanceId: '', epoch: 0, retiredIds: new Set(), blockedTurns: new Set(), receipts: new Map(), observedAt: new Map(), observedTurns: new Set(), waitingTurns: new Set(),
 });
 
 /** Retirement remains view-local; successful resets also consult the bounded call fence. */
@@ -68,8 +75,10 @@ export function reconcileLiveVoiceHistory(previous: LiveVoiceHistory, args: {
   snapshot: VoiceSnapshot | null; conversationId: string; epoch: number;
   visibleIds: ReadonlySet<string>; currentSequence: number;
   latestPage: {conversationId: string; epoch: number; sequence: number} | null;
+  /** Injectable clock; defaults to Date.now(). First sighting wins per turn. */
+  now?: number;
 }): {state: LiveVoiceHistory; refreshKey: string} {
-  const {snapshot, conversationId, epoch, visibleIds, currentSequence, latestPage} = args;
+  const {snapshot, conversationId, epoch, visibleIds, currentSequence, latestPage, now = Date.now()} = args;
   const scope = `${conversationId}:${snapshot?.instance_id ?? ''}:${snapshot?.session_id ?? ''}`;
   const sameScope = previous.scope === scope;
   const turns = snapshot?.binding?.conversation_id === conversationId
@@ -81,8 +90,12 @@ export function reconcileLiveVoiceHistory(previous: LiveVoiceHistory, args: {
     [...previous.observedTurns, ...previous.waitingTurns].forEach(turn => blockedTurns.add(turn));
   }
   const activeIds = new Set(turns.flatMap(turn => [turn.user_message_id, turn.assistant_message_id].filter((id): id is string => Boolean(id))));
+  // A turn's first sighting is recorded once. Volume jitter, same-turn updates
+  // and unchanged snapshots never move it; a scope or epoch change restarts it.
+  const observedAt = new Map(sameScope && previous.epoch === epoch ? [...previous.observedAt].filter(([turnId]) => turns.some(turn => turn.turn_id === turnId)) : []);
+  for (const turn of turns) if (!observedAt.has(turn.turn_id)) observedAt.set(turn.turn_id, now);
   const state: LiveVoiceHistory = {
-    scope, instanceId: snapshot?.instance_id ?? '', epoch, blockedTurns,
+    scope, instanceId: snapshot?.instance_id ?? '', epoch, blockedTurns, observedAt,
     retiredIds: new Set(sameScope && previous.epoch === epoch ? [...previous.retiredIds].filter(id => activeIds.has(id)) : []),
     receipts: new Map(sameScope && previous.epoch === epoch ? [...previous.receipts].filter(([id]) => activeIds.has(id)) : []),
     observedTurns: new Set(sameScope && previous.epoch === epoch ? [...previous.observedTurns].filter(id=>turns.some(turn=>turn.turn_id===id)) : []),
@@ -141,12 +154,16 @@ export function buildVoiceLiveMessages(snapshot: VoiceSnapshot | null, conversat
   persisted: readonly TMessage[], options?: LiveVoiceOptions): TMessage[] {
   const ids = new Set(persisted.flatMap(message => [message.message_id, message.msg_id].filter((id): id is NonNullable<typeof id> => Boolean(id))));
   const live = liveVoiceTurn(snapshot, conversationId, ids, options);
-  const baseTime = Math.max(0, ...persisted.map(message => message.created_at ?? 0));
+  // Durable rows own the timeline anchor; without one, temporary rows carry the
+  // turn's first-seen clock (or the current clock) so they never claim 1970.
+  const dbAnchor = Math.max(0, ...persisted.map(message => message.created_at ?? 0));
+  const fallbackClock = Date.now();
   return (live?.conversation ?? []).flatMap((turn, index): TMessage[] => {
+    const anchor = dbAnchor > 0 ? dbAnchor : (options?.observedAt?.get(turn.turn_id) ?? fallbackClock);
     const make = (content: string, position: 'left' | 'right'): TMessage => ({
       id: `voice-live:${conversationId}:${snapshot?.session_id ?? ''}:${turn.turn_id}:${position}`,
       conversation_id: conversationId, type: 'text', content: {content}, position, status: 'pending',
-      created_at: baseTime + index * 2 + (position === 'right' ? 1 : 2),
+      created_at: anchor + index * 2 + (position === 'right' ? 1 : 2),
     });
     return [...(turn.user_text ? [make(turn.user_text, 'right')] : []), ...(turn.assistant_text ? [make(turn.assistant_text, 'left')] : [])];
   });

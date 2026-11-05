@@ -12,8 +12,6 @@ if [ -f "./target/release/voice-companion" ]; then
     install -m 755 ./target/release/voice-companion /usr/local/bin/voice-companion
 elif [ -f "./voice-companion" ]; then
     install -m 755 ./voice-companion /usr/local/bin/voice-companion
-elif [ -f "./target/release/ai-mate" ]; then
-    install -m 755 ./target/release/ai-mate /usr/local/bin/voice-companion
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -295,6 +295,16 @@ pub trait VoiceDialogueRecorder: Send + Sync {
         assistant_content: &str,
     ) -> Result<(), VoiceDialogueRecorderError>;
 
+    /// Persist a detached projection failure so the next snapshot can surface it
+    /// as a history error. Best-effort: recording diagnostics never fail a turn.
+    fn note_record_failure(
+        &self,
+        _conversation_id: &str,
+        _request: &VoiceDialogueRequest,
+        _error: &VoiceDialogueRecorderError,
+    ) {
+    }
+
     /// Resolves the Conversation frozen for an acoustic session/turn. The host
     /// uses it to keep task control and result persistence inside that owner.
     async fn task_scope_conversation(
@@ -357,6 +367,255 @@ pub const DEFAULT_VOICE_DIALOGUE_TIMEOUT: std::time::Duration = std::time::Durat
 pub const VOICE_FIRST_RESPONSE_TIMEOUT: std::time::Duration = DEFAULT_VOICE_DIALOGUE_TIMEOUT;
 pub const VOICE_STREAM_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Serializes conversation bookkeeping per conversation, off the stream's path.
+///
+/// The terminal `Complete` frame must reach the daemon as soon as the model
+/// response is final: playback and follow-up listening must never wait for the
+/// conversation projection (which can sit behind the preparation gate while a
+/// chat warmup builds the agent runtime).
+struct RecordingJob {
+    recorder: Arc<dyn VoiceDialogueRecorder>,
+    conversation_id: String,
+    request: VoiceDialogueRequest,
+    content: String,
+    /// Lets the HTTP handler return a fast record error in the Complete frame,
+    /// while slow records keep running in the background.
+    completion: Option<tokio::sync::oneshot::Sender<Result<(), VoiceDialogueRecorderError>>>,
+}
+
+const RECORDING_QUEUE_CAPACITY: usize = 16;
+/// Short grace for surfacing a fast projection error in the Complete frame.
+/// Slow records stay in the background; keep this small so the terminal frame
+/// does not inherit a fixed per-turn latency.
+const RECORD_COMPLETION_GRACE_MS: u64 = 20;
+const RECORDING_JOB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Transient projection contention is retried a bounded number of times.
+/// The model output is already durable in the journal, so a retry replays only
+/// storage work and never re-calls the model or creates a new command.
+const RECORDING_JOB_MAX_ATTEMPTS: usize = 3;
+const RECORDING_JOB_RETRY_BASE: std::time::Duration = std::time::Duration::from_millis(100);
+const RECORDING_WORKER_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn is_transient_recording_error(error: &VoiceDialogueRecorderError) -> bool {
+    match error {
+        VoiceDialogueRecorderError::BindingBusy(_) => true,
+        VoiceDialogueRecorderError::WriteFailed(message) => {
+            message.contains("timeout")
+                || message.contains("busy")
+                || message.contains("gate")
+                || message.contains("temporarily")
+        }
+        _ => false,
+    }
+}
+
+fn note_recording_failure(
+    recorder: &dyn VoiceDialogueRecorder,
+    conversation_id: &str,
+    request: &VoiceDialogueRequest,
+    error: &VoiceDialogueRecorderError,
+) {
+    recorder.note_record_failure(conversation_id, request, error);
+    tracing::warn!(
+        conversation_id = %conversation_id,
+        code = record_error_code(error),
+        "voice_dialogue_record_failed"
+    );
+}
+
+struct RecordingQueue {
+    senders: std::sync::Mutex<
+        std::collections::HashMap<
+            String,
+            (u64, tokio::sync::mpsc::Sender<RecordingJob>),
+        >,
+    >,
+    capacity: usize,
+    job_timeout: std::time::Duration,
+    idle_timeout: std::time::Duration,
+    next_worker_id: std::sync::atomic::AtomicU64,
+}
+
+impl Default for RecordingQueue {
+    fn default() -> Self {
+        Self::with_limits(
+            RECORDING_QUEUE_CAPACITY,
+            RECORDING_JOB_TIMEOUT,
+            RECORDING_WORKER_IDLE,
+        )
+    }
+}
+
+impl RecordingQueue {
+    fn with_limits(
+        capacity: usize,
+        job_timeout: std::time::Duration,
+        idle_timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            senders: std::sync::Mutex::new(std::collections::HashMap::new()),
+            capacity: capacity.max(1),
+            job_timeout,
+            idle_timeout,
+            next_worker_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Enqueue one projection job; jobs for the same conversation run in order.
+    /// A bounded queue protects the bridge from unbounded memory growth when a
+    /// conversation keeps producing turns faster than history can be written.
+    fn enqueue(self: &std::sync::Arc<Self>, job: RecordingJob) {
+        let conversation_id = job.conversation_id.clone();
+        let mut senders = self.senders.lock().unwrap_or_else(|error| error.into_inner());
+        let job = if let Some((_, existing)) = senders.get(&conversation_id) {
+            let existing = existing.clone();
+            match existing.try_send(job) {
+                Ok(()) => return,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(mut job)) => {
+                    let error = VoiceDialogueRecorderError::WriteFailed("recording_queue_full".into());
+                    if let Some(completion) = job.completion.take() {
+                        let _ = completion.send(Err(error.clone()));
+                    }
+                    note_recording_failure(
+                        job.recorder.as_ref(),
+                        &conversation_id,
+                        &job.request,
+                        &error,
+                    );
+                    return;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(job)) => {
+                    senders.remove(&conversation_id);
+                    job
+                }
+            }
+        } else {
+            job
+        };
+
+        let worker_id = self
+            .next_worker_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (sender, receiver) = tokio::sync::mpsc::channel(self.capacity);
+        let queue = self.clone();
+        let worker_conversation = conversation_id.clone();
+        tokio::spawn(async move {
+            Self::run_worker(queue, worker_id, worker_conversation, receiver).await;
+        });
+        senders.insert(conversation_id.clone(), (worker_id, sender.clone()));
+        if let Err(error) = sender.try_send(job) {
+            let job = error.into_inner();
+            note_recording_failure(
+                job.recorder.as_ref(),
+                &job.conversation_id,
+                &job.request,
+                &VoiceDialogueRecorderError::WriteFailed("recording_queue_unavailable".into()),
+            );
+        }
+    }
+
+    async fn run_worker(
+        queue: std::sync::Arc<Self>,
+        worker_id: u64,
+        conversation_id: String,
+        mut receiver: tokio::sync::mpsc::Receiver<RecordingJob>,
+    ) {
+        loop {
+            let mut job = match tokio::time::timeout(queue.idle_timeout, receiver.recv()).await {
+                Ok(Some(job)) => job,
+                Ok(None) => break,
+                Err(_) => {
+                    // Do not exit on the timeout alone: an enqueue can race this
+                    // exact boundary and send a job into a channel we would then
+                    // drop. Under the senders lock, drain once; only remove our
+                    // own entry (and exit) when no job slipped in.
+                    let mut senders = match queue.senders.lock() {
+                        Ok(senders) => senders,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    let job = receiver.try_recv();
+                    let should_exit = match &job {
+                        Ok(_) => false,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => true,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => true,
+                    };
+                    if should_exit
+                        && senders
+                            .get(&conversation_id)
+                            .is_some_and(|(id, _)| *id == worker_id)
+                    {
+                        senders.remove(&conversation_id);
+                    }
+                    drop(senders);
+                    match job {
+                        Ok(job) => job,
+                        Err(_) => break,
+                    }
+                }
+            };
+            let mut attempt = 1usize;
+            let result = loop {
+                let timed = tokio::time::timeout(
+                    queue.job_timeout,
+                    job.recorder
+                        .record_pair(&job.conversation_id, &job.request, &job.content),
+                )
+                .await;
+                let transient_error = match &timed {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) if is_transient_recording_error(error) => Some(error.clone()),
+                    Ok(Err(_)) => None,
+                    Err(_) => Some(VoiceDialogueRecorderError::WriteFailed(
+                        "record_job_timeout".into(),
+                    )),
+                };
+                let transient = transient_error.is_some();
+                if transient && attempt < RECORDING_JOB_MAX_ATTEMPTS {
+                    // Surface the first fast failure to the Complete frame's
+                    // short grace, then keep retrying the durable journal work
+                    // in the background without another model call.
+                    if let Some(completion) = job.completion.take() {
+                        let _ = completion.send(Err(transient_error.clone().unwrap_or(
+                            VoiceDialogueRecorderError::WriteFailed("record_retry".into()),
+                        )));
+                    }
+                }
+                if !transient || attempt >= RECORDING_JOB_MAX_ATTEMPTS {
+                    break match timed {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(VoiceDialogueRecorderError::WriteFailed(
+                            "record_job_timeout".into(),
+                        )),
+                    };
+                }
+                tokio::time::sleep(RECORDING_JOB_RETRY_BASE * attempt as u32).await;
+                attempt += 1;
+            };
+            if let Err(error) = &result {
+                note_recording_failure(
+                    job.recorder.as_ref(),
+                    &job.conversation_id,
+                    &job.request,
+                    error,
+                );
+            }
+            if let Some(completion) = job.completion.take() {
+                let _ = completion.send(result);
+            }
+        }
+        if let Ok(mut senders) = queue.senders.lock() {
+            if senders
+                .get(&conversation_id)
+                .is_some_and(|(id, _)| *id == worker_id)
+            {
+                senders.remove(&conversation_id);
+            }
+        }
+    }
+}
+
+
 #[derive(Clone)]
 struct DialogueState {
     completer: Arc<dyn VoiceDialogueCompleter>,
@@ -364,6 +623,7 @@ struct DialogueState {
     credential: String,
     timeout: std::time::Duration,
     recorder: Option<Arc<dyn VoiceDialogueRecorder>>,
+    recording: Arc<RecordingQueue>,
 }
 
 pub struct VoiceDialogueBridge {
@@ -432,6 +692,7 @@ impl VoiceDialogueBridge {
                 credential,
                 timeout,
                 recorder,
+                recording: Arc::new(RecordingQueue::default()),
             })
             .merge(task_routes)
             .layer(axum::extract::DefaultBodyLimit::max(64 * 1024));
@@ -453,7 +714,7 @@ async fn complete(
     Json(request): Json<VoiceDialogueRequest>,
 ) -> Response {
     if headers
-        .get("x-ai-mate-control-token")
+        .get("x-voice-companion-control-token")
         .and_then(|v| v.to_str().ok())
         != Some(state.credential.as_str())
     {
@@ -606,10 +867,31 @@ fn stream_response(state:DialogueState,request:VoiceDialogueRequest,choice:Optio
             };
             let terminal=match result {
                 Ok(content) if !content.trim().is_empty()=>{
-                    let record_error=if let (Some(recorder),Some(id))=(&state.recorder,conversation_id.as_ref()) {
-                        recorder.record_pair(id,&request,&content).await.err().map(|error|record_error_code(&error).to_owned())
-                    }else{None};
-                    VoiceDialogueFrame::Complete{response:VoiceDialogueResponse{content,record_error}}
+                    // Enqueue bookkeeping before the terminal frame so a fast
+                    // projection error can still ride the Complete frame; a slow
+                    // one keeps running in the background and surfaces through
+                    // the snapshot turn error.
+                    let mut record_error = None;
+                    if let (Some(recorder),Some(conversation_id))=(&state.recorder,conversation_id) {
+                        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+                        state.recording.enqueue(RecordingJob{
+                            recorder:recorder.clone(),
+                            conversation_id,
+                            request:request.clone(),
+                            content:content.clone(),
+                            completion:Some(completion_tx),
+                        });
+                        if let Ok(Ok(Err(error))) = tokio::time::timeout(
+                            tokio::time::Duration::from_millis(RECORD_COMPLETION_GRACE_MS),
+                            completion_rx,
+                        ).await {
+                            record_error = Some(record_error_code(&error).to_owned());
+                        }
+                    }
+                    let _=tx.send(VoiceDialogueFrame::Complete{
+                        response:VoiceDialogueResponse{content,record_error},
+                    }).await;
+                    return;
                 },
                 Ok(_)=>VoiceDialogueFrame::Error{code:"model_response_invalid".into()},
                 Err(code)=>VoiceDialogueFrame::Error{code},
@@ -771,7 +1053,7 @@ mod tests {
             let dropped=Arc::new(AtomicUsize::new(0));
             let bridge=VoiceDialogueBridge::start_internal(Arc::new(PendingStream{dropped:dropped.clone(),emit}),Arc::new(RwLock::new(None)),"stream-boundary".into(),Router::new(),None,std::time::Duration::from_millis(if disconnect{1000}else{50})).await.unwrap();
             let mut req=VoiceDialogueRequest::scoped("timeout-session","timeout-turn","固定测试");req.stream=true;req.prompt="固定测试".into();
-            let response=reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-ai-mate-control-token","stream-boundary").json(&req).send().await.unwrap();
+            let response=reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-voice-companion-control-token","stream-boundary").json(&req).send().await.unwrap();
             if disconnect {
                 let mut chunks=response.bytes_stream();assert!(chunks.next().await.unwrap().unwrap().len()>0);drop(chunks);
             }else{let body=response.text().await.unwrap();assert!(body.contains("model_timeout"));assert!(!body.contains("\"type\":\"complete\""));}
@@ -834,7 +1116,7 @@ mod tests {
             });
             let reply = client
                 .post(&bridge.endpoint)
-                .header("x-ai-mate-control-token", "private-fixture")
+                .header("x-voice-companion-control-token", "private-fixture")
                 .json(&request)
                 .send()
                 .await
@@ -907,7 +1189,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let resp = client
             .post(&bridge.endpoint)
-            .header("x-ai-mate-control-token", "locale-token")
+            .header("x-voice-companion-control-token", "locale-token")
             .json(&req)
             .send()
             .await
@@ -919,7 +1201,7 @@ mod tests {
         req.stream = true;
         let resp_stream = client
             .post(&bridge.endpoint)
-            .header("x-ai-mate-control-token", "locale-token")
+            .header("x-voice-companion-control-token", "locale-token")
             .json(&req)
             .send()
             .await
@@ -1034,7 +1316,7 @@ mod tests {
             .build()
             .unwrap()
             .post(&bridge.endpoint)
-            .header("x-ai-mate-control-token", "private-fixture")
+            .header("x-voice-companion-control-token", "private-fixture")
             .json(&VoiceDialogueRequest::new("请返回语音决策 JSON"))
             .send()
             .await
@@ -1046,7 +1328,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         streaming.store(true,Ordering::SeqCst);
         let mut response=tokio::time::timeout(std::time::Duration::from_secs(2),reqwest::Client::builder().no_proxy().build().unwrap()
-            .post(&bridge.endpoint).header("x-ai-mate-control-token","private-fixture")
+            .post(&bridge.endpoint).header("x-voice-companion-control-token","private-fixture")
             .json(&serde_json::json!({"prompt":"请返回语音决策 JSON","stream":true})).send()).await
             .expect("stream headers must not wait for the whole model answer").unwrap();
         assert_eq!(response.status(),StatusCode::OK);
@@ -1165,9 +1447,10 @@ mod tests {
             credential: "test-token".into(),
             timeout: std::time::Duration::from_millis(30),
             recorder: None,
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "test-token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "test-token".parse().unwrap());
         let request = VoiceDialogueRequest::new("hello");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1229,9 +1512,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1261,9 +1545,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1291,9 +1576,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1321,9 +1607,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1352,9 +1639,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1385,9 +1673,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("test prompt");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1419,9 +1708,10 @@ mod tests {
             credential: "token".into(),
             timeout: std::time::Duration::from_secs(1),
             recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
         };
         let mut headers = HeaderMap::new();
-        headers.insert("x-ai-mate-control-token", "token".parse().unwrap());
+        headers.insert("x-voice-companion-control-token", "token".parse().unwrap());
         let request = VoiceDialogueRequest::new("hello assistant");
 
         let response = complete(State(state), headers, Json(request)).await;
@@ -1436,5 +1726,475 @@ mod tests {
         assert_eq!(saved[0].0, "voice-conv-1");
         assert_eq!(saved[0].1, "hello assistant");
         assert_eq!(saved[0].2, "mod:hello assistant");
+    }
+
+    struct OrderedRecorder {
+        delays: &'static [(&'static str, u64)],
+        finished: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl VoiceDialogueRecorder for OrderedRecorder {
+        async fn preflight(
+            &self,
+            _request: &VoiceDialogueRequest,
+        ) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+            Ok(VoiceDialoguePreflight::Ready {
+                conversation_id: "voice-conv-ordered".into(),
+            })
+        }
+
+        async fn record_pair(
+            &self,
+            _conversation_id: &str,
+            request: &VoiceDialogueRequest,
+            assistant_content: &str,
+        ) -> Result<(), VoiceDialogueRecorderError> {
+            let delay = self
+                .delays
+                .iter()
+                .find(|(prompt, _)| *prompt == request.prompt)
+                .map(|(_, delay)| *delay)
+                .unwrap_or(0);
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            self.finished
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(request.prompt.clone());
+            let _ = assistant_content;
+            Ok(())
+        }
+    }
+
+    fn streaming_state(
+        recorder: Arc<dyn VoiceDialogueRecorder>,
+    ) -> DialogueState {
+        DialogueState {
+            completer: Arc::new(FixtureCompleter(AtomicUsize::new(0))),
+            selection: Arc::new(RwLock::new(Some(VoiceModelRef {
+                provider_id: "fixture-provider".into(),
+                model: "fixture-model".into(),
+            }))),
+            credential: "stream-token".into(),
+            timeout: std::time::Duration::from_secs(1),
+            recorder: Some(recorder),
+            recording: Arc::new(RecordingQueue::default()),
+        }
+    }
+
+    fn streaming_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-voice-companion-control-token",
+            "stream-token".parse().unwrap(),
+        );
+        headers
+    }
+
+    async fn read_stream_body(response: Response) -> (String, std::time::Duration) {
+        assert_eq!(response.status(), StatusCode::OK);
+        let started = std::time::Instant::now();
+        let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        (String::from_utf8(bytes.to_vec()).unwrap(), elapsed)
+    }
+
+    struct TimeoutRecorder {
+        failures: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl VoiceDialogueRecorder for TimeoutRecorder {
+        async fn preflight(
+            &self,
+            _request: &VoiceDialogueRequest,
+        ) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+            Ok(VoiceDialoguePreflight::Ready {
+                conversation_id: "voice-conv-queue".into(),
+            })
+        }
+
+        async fn record_pair(
+            &self,
+            _conversation_id: &str,
+            _request: &VoiceDialogueRequest,
+            _assistant_content: &str,
+        ) -> Result<(), VoiceDialogueRecorderError> {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            Ok(())
+        }
+
+        fn note_record_failure(
+            &self,
+            _conversation_id: &str,
+            _request: &VoiceDialogueRequest,
+            error: &VoiceDialogueRecorderError,
+        ) {
+            self.failures
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(format!("{error:?}"));
+        }
+    }
+
+    struct FailureRecorder {
+        failures: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl VoiceDialogueRecorder for FailureRecorder {
+        async fn preflight(
+            &self,
+            _request: &VoiceDialogueRequest,
+        ) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+            Ok(VoiceDialoguePreflight::Ready {
+                conversation_id: "voice-conv-failure".into(),
+            })
+        }
+
+        async fn record_pair(
+            &self,
+            _conversation_id: &str,
+            _request: &VoiceDialogueRequest,
+            _assistant_content: &str,
+        ) -> Result<(), VoiceDialogueRecorderError> {
+            Err(VoiceDialogueRecorderError::BindingBusy("busy".into()))
+        }
+
+        fn note_record_failure(
+            &self,
+            _conversation_id: &str,
+            _request: &VoiceDialogueRequest,
+            error: &VoiceDialogueRecorderError,
+        ) {
+            self.failures
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(record_error_code(error).to_owned());
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_record_failure_is_kept_for_the_snapshot_turn_error() {
+        let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::new(FailureRecorder {
+            failures: failures.clone(),
+        });
+        let state = streaming_state(recorder);
+        let mut request = VoiceDialogueRequest::new("failure prompt");
+        request.stream = true;
+        let response = complete(State(state), streaming_headers(), Json(request)).await;
+        let (body, _elapsed) = read_stream_body(response).await;
+        assert!(body.contains("\"type\":\"complete\""));
+        assert!(
+            body.contains("\"record_error\":\"binding_busy\""),
+            "fast record failure must ride the Complete frame: {body}"
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while failures.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("failure must reach the recorder's turn-error channel");
+        assert_eq!(*failures.lock().unwrap(), vec!["binding_busy".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn recording_queue_times_out_jobs_and_cleans_its_worker() {
+        let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::new(TimeoutRecorder {
+            failures: failures.clone(),
+        });
+        let queue = Arc::new(RecordingQueue::with_limits(
+            2,
+            std::time::Duration::from_millis(20),
+            std::time::Duration::from_millis(50),
+        ));
+        let mut request = VoiceDialogueRequest::new("slow prompt");
+        request.session_id = Some("session-queue".into());
+        request.turn_id = Some("turn-queue".into());
+        queue.enqueue(RecordingJob {
+            recorder: recorder.clone(),
+            conversation_id: "voice-conv-queue".into(),
+            request,
+            content: "reply".into(),
+            completion: None,
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while failures.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed-out record job must surface a turn error");
+        assert!(
+            failures
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|failure| failure.contains("record_job_timeout")),
+            "expected record_job_timeout, got {:?}",
+            failures.lock().unwrap()
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let empty = queue
+                    .senders
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_empty();
+                if empty {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("idle worker must remove its sender entry");
+    }
+
+    #[tokio::test]
+    async fn recording_queue_retries_transient_busy_without_a_second_job() {
+        struct RetryRecorder {
+            attempts: Arc<std::sync::atomic::AtomicUsize>,
+            succeeded: Arc<std::sync::atomic::AtomicBool>,
+        }
+        #[async_trait]
+        impl VoiceDialogueRecorder for RetryRecorder {
+            async fn preflight(
+                &self,
+                _request: &VoiceDialogueRequest,
+            ) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+                unreachable!()
+            }
+            async fn record_pair(
+                &self,
+                _conversation_id: &str,
+                _request: &VoiceDialogueRequest,
+                _assistant_content: &str,
+            ) -> Result<(), VoiceDialogueRecorderError> {
+                if self
+                    .attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 0
+                {
+                    Err(VoiceDialogueRecorderError::BindingBusy(
+                        "preparation_gate_busy".into(),
+                    ))
+                } else {
+                    self.succeeded
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        }
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let succeeded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let queue = Arc::new(RecordingQueue::with_limits(
+            2,
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(50),
+        ));
+        let (completion, completed) = tokio::sync::oneshot::channel();
+        let mut request = VoiceDialogueRequest::new("retry prompt");
+        request.session_id = Some("session-retry".into());
+        request.turn_id = Some("turn-retry".into());
+        queue.enqueue(RecordingJob {
+            recorder: Arc::new(RetryRecorder {
+                attempts: attempts.clone(),
+                succeeded: succeeded.clone(),
+            }),
+            conversation_id: "voice-conv-retry".into(),
+            request,
+            content: "retry reply".into(),
+            completion: Some(completion),
+        });
+        // The short Complete-frame grace intentionally sees the first fast
+        // transient failure; the bounded retry continues in the background.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), completed)
+            .await
+            .expect("first completion must arrive")
+            .expect("completion channel must stay open");
+        assert!(matches!(
+            first,
+            Err(VoiceDialogueRecorderError::BindingBusy(ref reason))
+                if reason == "preparation_gate_busy"
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !succeeded.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("transient busy must recover without a second job");
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one failed projection plus one bounded retry; no second job"
+        );
+    }
+
+    #[tokio::test]
+    async fn recording_queue_idle_exit_cleans_up_and_accepts_new_jobs() {
+        let finished = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::new(OrderedRecorder {
+            delays: &[],
+            finished: finished.clone(),
+        });
+        // Zero idle timeout forces the worker to traverse the idle-exit path
+        // immediately after every completed job.
+        let queue = Arc::new(RecordingQueue::with_limits(
+            2,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+        ));
+        let make_job = |prompt: &str| {
+            let mut request = VoiceDialogueRequest::new(prompt);
+            request.session_id = Some("session-idle".into());
+            request.turn_id = Some(format!("turn-{prompt}"));
+            RecordingJob {
+                recorder: recorder.clone(),
+                conversation_id: "voice-conv-idle".into(),
+                request,
+                content: "reply".into(),
+                completion: None,
+            }
+        };
+        queue.enqueue(make_job("first"));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while finished.lock().unwrap().len() < 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("first job must be recorded");
+        // The worker is now at its idle boundary; a second enqueue must not be
+        // lost whether it lands in the old worker or a freshly created one.
+        queue.enqueue(make_job("second"));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while finished.lock().unwrap().len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("job enqueued at the idle boundary must not be lost");
+        assert_eq!(
+            *finished.lock().unwrap(),
+            vec!["first".to_string(), "second".to_string()]
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !queue.senders.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("idle worker must remove its sender entry");
+    }
+
+    #[tokio::test]
+    async fn streaming_fast_record_keeps_the_terminal_frame_quick() {
+        let finished = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::new(OrderedRecorder {
+            delays: &[],
+            finished: finished.clone(),
+        });
+        let state = streaming_state(recorder);
+        let mut request = VoiceDialogueRequest::new("fast prompt");
+        request.stream = true;
+        let started = std::time::Instant::now();
+        let response = complete(State(state), streaming_headers(), Json(request)).await;
+        let (body, _read_elapsed) = read_stream_body(response).await;
+        assert!(body.contains("\"type\":\"complete\""));
+        assert!(
+            started.elapsed()
+                < std::time::Duration::from_millis(RECORD_COMPLETION_GRACE_MS + 25),
+            "fast successful bookkeeping must not add a fixed grace wait: {:?}",
+            started.elapsed()
+        );
+        assert!(!body.contains("\"record_error\""), "unexpected record_error: {body}");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while finished.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("fast record must complete");
+    }
+
+    #[tokio::test]
+    async fn streaming_terminal_frame_does_not_wait_for_recording() {
+        let finished = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::new(OrderedRecorder {
+            delays: &[("slow prompt", 300)],
+            finished: finished.clone(),
+        });
+        let state = streaming_state(recorder);
+
+        let mut request = VoiceDialogueRequest::new("slow prompt");
+        request.stream = true;
+        let response = complete(State(state), streaming_headers(), Json(request)).await;
+        let (body, elapsed) = read_stream_body(response).await;
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "terminal frame waited for bookkeeping: {elapsed:?}"
+        );
+        assert!(body.contains("\"type\":\"complete\""), "missing complete frame: {body}");
+        assert!(
+            finished.lock().unwrap().is_empty(),
+            "recording must still be pending when the terminal frame is delivered"
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while finished.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background recording must finish");
+        assert_eq!(*finished.lock().unwrap(), vec!["slow prompt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn streaming_recordings_keep_turn_order() {
+        let finished = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::new(OrderedRecorder {
+            delays: &[("first turn", 150), ("second turn", 10)],
+            finished: finished.clone(),
+        });
+
+        // One bridge state owns one recording queue; both turns must enqueue into it.
+        let state = streaming_state(recorder.clone());
+        for prompt in ["first turn", "second turn"] {
+            let mut request = VoiceDialogueRequest::new(prompt);
+            request.stream = true;
+            let response = complete(
+                State(state.clone()),
+                streaming_headers(),
+                Json(request),
+            )
+            .await;
+            let (_body, elapsed) = read_stream_body(response).await;
+            assert!(elapsed < std::time::Duration::from_millis(100));
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while finished.lock().unwrap().len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both background recordings must finish");
+        assert_eq!(
+            *finished.lock().unwrap(),
+            vec!["first turn".to_string(), "second turn".to_string()],
+            "bookkeeping must stay in turn order even when the first write is slower"
+        );
     }
 }

@@ -155,7 +155,7 @@ flowchart LR
 | C4 | Acoustic FSM 状态/事件枚举 + 合法迁移表 | `nomifun-voice-terminal` | 声明式表 + 迁移合法性单测 |
 | C5 | Earcon 清单（guide/wake/alert/done/sleep/error 六件） | `nomifun-audio` 资产常量 | `include_bytes!` 编译期锚定 |
 | C6 | i18n 键命名空间 `voice.*` | `ui/` 双字典 | `check:i18n` 对称校验 |
-| C7 | 配置 schema（`[models]` 段 + `AI_MATE_MODEL_DIR`） | `apps/ai-mate` | 配置解析 golden 测试 |
+| C7 | 配置 schema（`[models]` 段 + `VOICE_COMPANION_MODEL_DIR`） | `apps/ai-mate` | 配置解析 golden 测试 |
 | C8 | `CaptureReadResult` 枚举 | `nomifun-audio` | 编译期契约 |
 
 ## 5. 推荐做（Recommended）

@@ -10,7 +10,7 @@ use serde_json::json;
 fn test_c2_01_status_response_golden() {
     let response = VoiceModelStatusResponse {
         state: ModelInstallState::NotInstalled,
-        models_dir: PathBuf::from("/var/lib/ai-mate/models"),
+        models_dir: PathBuf::from("/var/lib/voice-companion/models"),
         total_size_bytes: 0,
         files: vec![
             VoiceModelFileDetail {
@@ -34,7 +34,7 @@ fn test_c2_01_status_response_golden() {
         "state": {
             "status": "NotInstalled"
         },
-        "models_dir": "/var/lib/ai-mate/models",
+        "models_dir": "/var/lib/voice-companion/models",
         "total_size_bytes": 0,
         "files": [
             {
@@ -66,13 +66,13 @@ fn test_c2_01_status_response_golden() {
 fn test_c2_02_install_request_golden() {
     let req = VoiceModelInstallRequest {
         prefer_mirror: Some("modelscope".to_string()),
-        models_dir: Some(PathBuf::from("/var/lib/ai-mate/models")),
+        models_dir: Some(PathBuf::from("/var/lib/voice-companion/models")),
         force: None,
     };
 
     let expected_json = json!({
         "prefer_mirror": "modelscope",
-        "models_dir": "/var/lib/ai-mate/models"
+        "models_dir": "/var/lib/voice-companion/models"
     });
 
     let value = serde_json::to_value(&req).expect("serialize install request");

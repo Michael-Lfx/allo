@@ -33,7 +33,7 @@ impl HostTaskClient {
 #[async_trait]
 impl VoiceTaskClient for HostTaskClient {
     async fn current(&self) -> Result<Option<VoiceTaskSnapshot>,String> {
-        let response=self.client.get(&self.endpoint).header("x-ai-mate-control-token",&self.credential)
+        let response=self.client.get(&self.endpoint).header("x-voice-companion-control-token",&self.credential)
             .timeout(std::time::Duration::from_millis(200)).send().await.map_err(|_|"task_status_unavailable")?;
         if !response.status().is_success() {return Err("task_status_unavailable".into());}
         response.json().await.map_err(|_|"task_status_unavailable".into())
@@ -41,7 +41,7 @@ impl VoiceTaskClient for HostTaskClient {
 
     async fn control(&self, request:VoiceTaskControlCommand) -> Result<VoiceTaskSnapshot,String> {
         let endpoint=reqwest::Url::parse(&self.endpoint).and_then(|url|url.join("task-control")).map_err(|_|"invalid_host_task_endpoint")?;
-        let response=self.client.post(endpoint).header("x-ai-mate-control-token",&self.credential)
+        let response=self.client.post(endpoint).header("x-voice-companion-control-token",&self.credential)
             .json(&request).send().await.map_err(|_|"task_control_unknown")?;
         if !response.status().is_success() {
             return Err(response.json::<serde_json::Value>().await.ok().and_then(|value|value["code"].as_str().map(str::to_owned)).unwrap_or_else(||"task_control_unknown".into()));
@@ -54,7 +54,7 @@ impl VoiceTaskClient for HostTaskClient {
     async fn submit(&self, request: VoiceTaskSubmitRequest) -> Result<VoiceTaskDelivery, String> {
         // A lost response is indeterminate. Never manufacture a new command or retry a send.
         let response = self.client.post(&self.endpoint)
-            .header("x-ai-mate-control-token", &self.credential).json(&request)
+            .header("x-voice-companion-control-token", &self.credential).json(&request)
             .send().await.map_err(|_| "task_delivery_unknown")?;
         if !response.status().is_success() {
             return Err(response.json::<serde_json::Value>().await.ok()

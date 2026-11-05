@@ -6,5 +6,7 @@ export function isVoiceConversation(conversation: {type?:string;extra?:unknown} 
     || extra.is_default_voice === true
     || extra.is_voice_conversation === true
     || extra.session_mode === 'voice'
-    || extra.session_mode === 'companion';
+    || extra.session_mode === 'companion'
+    || typeof extra.voice_task_workspace === 'string'
+    || extra.voice_creation_request != null;
 }

@@ -358,7 +358,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
               type='button'
               onClick={handleDeleteClick}
               data-testid='btn-delete-preset'
-              className='inline-flex cursor-pointer items-center gap-6px border-none bg-transparent px-8px py-6px text-13px font-semibold text-t-tertiary hover:text-[rgb(var(--danger-6))]'
+              className='inline-flex cursor-pointer items-center gap-6px border-none bg-transparent px-8px py-6px text-13px font-semibold text-t-tertiary hover:text-danger-6'
             >
               <Delete theme='outline' size={14} fill='currentColor' />
               {t('common.delete', { defaultValue: 'Delete' })}
@@ -949,7 +949,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                           skill={skill}
                           localeKey={localeKey}
                           badge={
-                            <span className='bg-[rgba(var(--warning-6),0.08)] text-[rgb(var(--warning-6))] border border-[rgba(var(--warning-6),0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
+                            <span className='bg-[rgba(var(--warning-6),0.08)] text-warning-6 border border-[rgba(var(--warning-6),0.2)] text-10px px-4px py-1px rd-4px font-medium uppercase'>
                               {t(catalogSourceLabelKey.user, { defaultValue: 'User' })}
                             </span>
                           }

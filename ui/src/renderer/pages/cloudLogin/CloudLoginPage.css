@@ -209,7 +209,7 @@
 
 .cloud-login-diagnose__ok {
   margin: 0;
-  color: var(--text-success, var(--color-success-6, #00b42a));
+  color: rgb(var(--success-6));
   font-size: 13px;
 }
 
@@ -225,7 +225,7 @@
   padding: 10px 12px;
   border: 1px solid var(--border-base, rgba(0, 0, 0, 0.08));
   border-radius: 8px;
-  background: var(--bg-fill-1, rgba(0, 0, 0, 0.03));
+  background: var(--color-fill-1);
   color: var(--text-t-secondary, inherit);
   font-size: 12px;
   line-height: 1.45;

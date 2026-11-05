@@ -6,6 +6,16 @@
     "resetScopeUnavailable": "Voice status is still syncing. Nothing was cleared; please retry shortly.",
     "retryStart": "Check call startup"
   },
+  "keyboardWait": {
+    "sending": "Sending",
+    "queued": "Queued",
+    "accepted": "Task accepted, running",
+    "delivering": "Submitting task",
+    "cancelling": "Cancelling",
+    "syncing": "Syncing reply",
+    "unknown": "Checking task status",
+    "failed": "Send failed; you can retry"
+  },
   "dock": {
     "syncing": "Syncing voice status",
     "notInCall": "Not in a call",
@@ -182,16 +192,6 @@
       "error": "Request failed"
     }
   },
-  "dialogue": {
-    "title": "Quick reply model",
-    "description": "Automatically selects an available quick reply model. Tasks use the bound conversation's workspace, model and preset.",
-    "model": "Effective model",
-    "default": "Automatically use a Flowy Cloud chat model",
-    "selected": "{{provider}} / {{model}}",
-    "unavailable": "No dialogue model is available. Check provider configuration, enabled models and Flowy login.",
-    "failed": "Could not read the quick reply model. Reopen settings to retry.",
-    "stale": "Unavailable model: {{model}}"
-  },
   "audio": {
     "halfDuplex": "Half duplex: local echo cancellation is not ready; automatic interruption during playback is disabled.",
     "bargeInTest": "Interruption control test: echo-free test audio only.",
@@ -311,7 +311,7 @@
     "replyIncomplete": "Answer incomplete. Text received so far has been preserved."
   },
   "title": "Voice Companion",
-  "description": "AI Mate Voice Interaction Suite (~249MB)",
+  "description": "Voice Interaction Suite (~453MB)",
   "status": {
     "notInstalled": "Not Installed",
     "probingSource": "Selecting Source",
@@ -319,7 +319,7 @@
     "verifyingSha256": "Verifying Integrity",
     "ready": "Ready",
     "failed": "Installation Failed",
-    "removing": "Releasing Space",
+    "removing": "Uninstalling voice suite",
     "idle": "Idle",
     "listening": "Listening",
     "thinking": "Processing",
@@ -328,16 +328,17 @@
     "offline": "Offline"
   },
   "phases": {
-    "notInstalled": "AI Mate Voice Interaction Suite (~249MB)",
+    "notInstalled": "Voice Interaction Suite (~453MB)",
     "notInstalledDesc": "Supports far-field voice wake-up and offline speech recognition",
     "probingSource": "Selecting optimal mirror source",
     "downloading": "Downloading voice models ({{current}}/{{total}})",
     "downloadingFile": "Downloading {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "Verifying integrity ({{current}}/{{total}})",
+    "verifyingSha256Desc": "Verifying the integrity of each downloaded model file. Keep the app open.",
     "ready": "Ready",
     "readyDesc": "Models are installed and integrity-verified. Wake availability is shown by the service status below.",
     "standbyDesc": "Voice engine ready. Turn on switch to start listening in background",
-    "removing": "Releasing disk space",
+    "removing": "Uninstalling voice suite",
     "failed": "Installation or verification encountered an issue"
   },
   "progress": {
@@ -345,7 +346,7 @@
     "percent": "{{percent}}%",
     "ratio": "{{current}}/{{total}}",
     "bytesRatio": "{{downloaded}} / {{total}}",
-    "approxSize": "Approx. 249MB",
+    "chainAria": "Voice capability check stages; scroll horizontally to see every status",
     "waiting": "Waiting for new execution progress.",
     "thinking": "The executor is analyzing the task.",
     "answering": "The executor is producing a text result.",
@@ -363,12 +364,14 @@
     "more": "More Options",
     "download": "Download",
     "retry": "Retry",
-    "releaseSpace": "Release Space",
-    "confirmRelease": "Confirm Release?",
+    "uninstall": "Uninstall voice suite",
+    "uninstallConfirmTitle": "Uninstall voice suite?",
+    "uninstallConfirmContent": "This deletes the downloaded voice models and frees about 453 MB. Voice features become unavailable until you download them again.",
+    "uninstallConfirmOk": "Uninstall",
+    "uninstalling": "Uninstalling voice suite...",
     "cancel": "Cancel",
     "enableVoice": "Enable Voice Companion",
-    "disableVoice": "Disable Voice Companion",
-    "releasing": "Releasing..."
+    "disableVoice": "Disable Voice Companion"
   },
   "errors": {
     "downloadFailed": "Voice model download failed. Please check network connection",
@@ -380,13 +383,14 @@
     "unknownError": "An unknown error occurred",
     "modelMissing": "The voice model suite is not installed. Download and verify it in Voice settings first.",
     "componentMissing": "This installation is missing the voice service component. Repair or upgrade Flowy with the latest installer, then enable voice again.",
+    "componentMissingDev": "This source checkout has not built the voice service component yet. Run bun run dev (it builds it automatically), or run bun run ensure:voice-companion and retry.",
     "operationFailed": "The voice suite operation failed. The installed state below is unchanged.",
     "suiteInUse": "A voice call, task or approval is using the models. Finish it before downloading or deleting.",
     "resourceBusy": "Another model write is in progress for this directory. Wait for it to finish.",
     "deleteIncomplete": "Delete did not complete; some files are still present: {{reason}}"
   },
   "pairing": {
-    "title": "AI Mate Device Pairing",
+    "title": "Voice Device Pairing",
     "subtitle": "Enter the 6-digit code spoken by the device",
     "deviceStatus": "Device Status",
     "codePlaceholder": "Enter 6-digit code",
@@ -395,7 +399,7 @@
     "modelReadiness": "Model Readiness",
     "readyNotice": "Voice engine ready. Say \"Hey Flowy\" to wake up",
     "successTitle": "Pairing Successful",
-    "successDesc": "AI Mate Voice Companion is connected and ready"
+    "successDesc": "Voice companion is connected and ready"
   },
   "settings": {
     "nav": "Voice Companion",

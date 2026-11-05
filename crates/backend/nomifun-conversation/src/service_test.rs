@@ -17438,6 +17438,37 @@ async fn view_warmup_creates_agent_runtime_for_empty_pending_conversation() {
 }
 
 #[tokio::test]
+async fn voice_view_warmup_never_builds_an_agent_runtime() {
+    let (svc, _broadcaster, _repo, _default_runtime_registry) = make_service();
+    let runtime_registry = Arc::new(MockAgentRuntimeRegistry::new());
+    let workspace = tempfile::tempdir().unwrap();
+    let request: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "nomi",
+        "model": {"provider_id": PROVIDER_ID_1, "model": "m1"},
+        "extra": {
+            "voice": true,
+            "is_default_voice": true,
+            "workspace": workspace.path()
+        }
+    }))
+    .unwrap();
+    let conv = svc.create(TEST_USER_1, request).await.unwrap();
+
+    svc.warmup_for_view(
+        TEST_USER_1,
+        &conv.conversation_id,
+        &(runtime_registry.clone() as Arc<dyn AgentRuntimeRegistry>),
+    )
+    .await
+    .expect("voice view warmup must be a no-op, not an error");
+
+    assert!(
+        runtime_registry.get_runtime(&conv.conversation_id).is_none(),
+        "voice conversations must not spend the view-warmup preparation gate on an agent runtime"
+    );
+}
+
+#[tokio::test]
 async fn view_warmup_of_finished_conversation_never_builds_or_emits_turn_events() {
     let (svc, broadcaster, repo, _default_runtime_registry) = make_service();
     let slow_registry = Arc::new(SlowAgentRuntimeRegistry::new(Duration::from_millis(500)));

@@ -43,7 +43,7 @@ impl HostDialogueClient {
 
 impl HostDialogueClient {
     async fn request(&self,request:&VoiceDialogueRequest)->Result<reqwest::Response,RouteError> {
-        let response=self.client.post(&self.endpoint).header("x-ai-mate-control-token",&self.credential).json(request).send().await
+        let response=self.client.post(&self.endpoint).header("x-voice-companion-control-token",&self.credential).json(request).send().await
             .map_err(|_|RouteError::Network("host_dialogue_unreachable".into()))?;
         if !response.status().is_success() {
             let code=response.json::<serde_json::Value>().await.ok().and_then(|v|v["code"].as_str().map(str::to_owned)).unwrap_or_else(||"model_rejected".into());

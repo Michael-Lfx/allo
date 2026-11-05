@@ -5,6 +5,7 @@ import type { VoiceSnapshot } from '@common/adapter/voiceCompanion';
 const VOICE_ERROR_KEYS = {
     voice_turn_failed: 'voice.audio.turnFailed',
     voice_companion_missing: 'voice.errors.componentMissing',
+    voice_companion_missing_dev: 'voice.errors.componentMissingDev',
     task_not_found:'voice.task.noActive',task_status_unavailable:'voice.task.controlUnknown',task_receipt_unavailable:'voice.progress.unverified',
     confirmation_audio_or_timeout: 'voice.task.confirmationFailed', task_approval_failed: 'voice.task.confirmationFailed', task_approval_changed:'voice.task.scopeChanged',
     task_approval_detail_required:'voice.task.confirmationDetailRequired',

@@ -104,6 +104,7 @@
     "dev":           { "group": "dev",   "desc": "启动桌面应用开发（tauri dev，热重载）" },
     "dev:web":       { "group": "dev",   "desc": "启动 Web 全栈开发（后端 API + 前端 vite）" },
     "dev:ui":        { "group": "dev",   "desc": "仅启动前端开发服务器（纯 vite，无后端）" },
+    "ensure:voice-companion": { "group": "dev", "desc": "为源码检出构建/校验本地 voice-companion 守护进程（缺失或过期时自动构建，失败只告警）" },
     "build":         { "group": "build", "desc": "为当前操作系统打桌面安装包" },
     "build:fast":    { "group": "build", "desc": "快速构建可直接运行的 debug 桌面二进制（不打安装包）" },
     "build:win":     { "group": "build", "desc": "打 Windows 安装包（NSIS），汇总到 dist/desktop/" },

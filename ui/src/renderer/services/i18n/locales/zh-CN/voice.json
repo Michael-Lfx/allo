@@ -6,6 +6,16 @@
     "resetScopeUnavailable": "语音状态尚未同步，暂未清理。请稍后重试。",
     "retryStart": "核对通话启动状态"
   },
+  "keyboardWait": {
+    "sending": "正在发送",
+    "queued": "排队中",
+    "accepted": "任务已接单，正在执行",
+    "delivering": "正在提交任务",
+    "cancelling": "正在取消",
+    "syncing": "正在同步回复",
+    "unknown": "正在确认任务状态",
+    "failed": "发送失败，可重试"
+  },
   "dock": {
     "syncing": "正在同步语音状态",
     "notInCall": "未在通话",
@@ -179,16 +189,6 @@
       "error": "请求失败"
     }
   },
-  "dialogue": {
-    "title": "快速回复模型",
-    "description": "自动选择可用的快速对话模型。执行任务使用绑定会话的工作区、模型和预设。",
-    "model": "当前生效模型",
-    "default": "自动使用 Flowy Cloud 对话模型",
-    "selected": "{{provider}} / {{model}}",
-    "unavailable": "没有可用的对话模型。请检查供应商配置、模型启用状态及 Flowy 登录。",
-    "failed": "无法读取快速回复模型，请重新打开设置重试。",
-    "stale": "不可用的模型：{{model}}"
-  },
   "audio": {
     "halfDuplex": "半双工：本地回声消除尚未就绪，播报时自动插话已关闭。",
     "bargeInTest": "插话控制测试：仅用于无回声测试音频。",
@@ -308,7 +308,7 @@
     "replyIncomplete": "回答未完成，已收到的文字已保留。"
   },
   "title": "语音伴侣",
-  "description": "AI Mate 语音交互套件（约 249MB）",
+  "description": "语音交互套件（约 453MB）",
   "status": {
     "notInstalled": "未安装",
     "probingSource": "正在选择加速源",
@@ -316,7 +316,7 @@
     "verifyingSha256": "正在校验完整性",
     "ready": "已就绪",
     "failed": "安装失败",
-    "removing": "正在释放空间",
+    "removing": "正在卸载语音套件",
     "idle": "待机",
     "listening": "倾听中",
     "thinking": "处理中",
@@ -325,16 +325,17 @@
     "offline": "离线"
   },
   "phases": {
-    "notInstalled": "AI Mate 语音交互套件（约 249MB）",
+    "notInstalled": "语音交互套件（约 453MB）",
     "notInstalledDesc": "支持远场语音唤醒与离线语音识别",
     "probingSource": "正在选择加速源",
     "downloading": "正在下载语音模型 ({{current}}/{{total}})",
     "downloadingFile": "正在下载 {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "正在校验完整性 ({{current}}/{{total}})",
+    "verifyingSha256Desc": "正在逐个校验已下载模型文件的完整性，请保持应用开启。",
     "ready": "已就绪",
     "readyDesc": "模型已安装并通过完整性校验；唤醒可用性以下方服务状态为准",
     "standbyDesc": "语音引擎已就绪，打开开关即可在后台呼叫唤醒",
-    "removing": "正在释放磁盘空间",
+    "removing": "正在卸载语音套件",
     "failed": "下载或校验遇到问题"
   },
   "progress": {
@@ -342,7 +343,7 @@
     "percent": "{{percent}}%",
     "ratio": "{{current}}/{{total}}",
     "bytesRatio": "{{downloaded}} / {{total}}",
-    "approxSize": "约 249MB",
+    "chainAria": "语音能力检查阶段，可横向滚动查看全部状态",
     "waiting": "等待执行侧产生新进展。",
     "thinking": "执行侧正在分析任务。",
     "answering": "执行侧正在生成文字结果。",
@@ -360,12 +361,14 @@
     "more": "更多操作",
     "download": "下载",
     "retry": "重试",
-    "releaseSpace": "释放空间",
-    "confirmRelease": "确认释放？",
+    "uninstall": "卸载语音套件",
+    "uninstallConfirmTitle": "卸载语音套件？",
+    "uninstallConfirmContent": "将删除本机已下载的语音模型并释放约 453MB 磁盘空间。卸载后语音功能不可用，可随时重新下载。",
+    "uninstallConfirmOk": "卸载",
+    "uninstalling": "正在卸载语音套件…",
     "cancel": "取消",
     "enableVoice": "启用语音伴侣",
-    "disableVoice": "停用语音伴侣",
-    "releasing": "正在释放..."
+    "disableVoice": "停用语音伴侣"
   },
   "errors": {
     "downloadFailed": "语音模型下载失败，请检查网络连接",
@@ -377,22 +380,23 @@
     "unknownError": "发生未知错误",
     "modelMissing": "语音模型套件尚未安装，请先在语音设置下载并校验。",
     "componentMissing": "当前安装包缺少语音服务组件。请使用最新安装包修复或升级安装 Flowy，然后重新启用语音。",
+    "componentMissingDev": "开发环境还没有构建语音服务组件。直接运行 bun run dev（会自动构建），或执行 bun run ensure:voice-companion 后重试。",
     "operationFailed": "语音套件操作失败，下方安装状态仍以磁盘实际结果为准。",
     "suiteInUse": "语音通话、任务或审批正在占用模型，请结束后再下载或删除。",
     "resourceBusy": "该目录已有另一个模型写入操作，请等待完成。",
     "deleteIncomplete": "删除未完成，仍有文件存在：{{reason}}"
   },
   "pairing": {
-    "title": "AI Mate 设备配对",
+    "title": "语音设备配对",
     "subtitle": "请输入设备播报的 6 位数字配对码",
     "deviceStatus": "设备状态",
     "codePlaceholder": "请输入 6 位配对码",
     "verifying": "正在校验配对码...",
     "lockNotice": "连续 5 次输入错误，设备已锁定 15 分钟",
     "modelReadiness": "模型就绪状态",
-    "readyNotice": "AI Mate 语音引擎准备就绪，请说 Hey Flowy 唤醒",
+    "readyNotice": "语音引擎准备就绪，请说 Hey Flowy 唤醒",
     "successTitle": "配对成功",
-    "successDesc": "AI Mate 语音伴侣已连接并就绪"
+    "successDesc": "语音伴侣已连接并就绪"
   },
   "settings": {
     "nav": "语音伴侣",

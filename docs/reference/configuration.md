@@ -108,6 +108,8 @@ These are read by the backend regardless of which host embeds it.
 | `NOMIFUN_COMPANION_TOKEN` | `nomicore call` | Companion access token used against `/v1` Remote capability routes. |
 | `SENTRY_DSN` | `nomicore` / hosts | Optional Sentry DSN for backend panics and tracing errors. Unset disables Rust crash reporting. Conversation bodies are not attached. |
 | `NOMI_LOG_LEVEL` | hosts | Environment override for host log filtering (especially when launched as a child process by SDK without CLI flags). |
+| `VOICE_COMPANION_BIN` | desktop voice host | Explicit path to the voice companion daemon; used only when it points at a file. Otherwise the daemon is resolved from the packaged resource `bin/`, the executable directory, then source-checkout build and staged-resource directories. |
+| `NOMIFUN_SKIP_VOICE_COMPANION` | `bun run dev` | Dev-only. Set to `1` to skip automatic voice-companion provisioning in the dev preflight; voice stays unavailable until the daemon is built. |
 
 ## Frontend build variables
 

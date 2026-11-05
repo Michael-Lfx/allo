@@ -69,6 +69,16 @@ release 构建仍使用 stable 的 `NomiFun` 目录。开发环境需要复现 s
 `window.__nomiLocalTrust`，renderer 每次请求都会带上这个本次启动生成的信任
 secret。
 
+语音功能还需要**语音伴侣守护进程**。`voice-companion` 只是 dev-dependency
+（仅 library），`cargo run -p nomifun-app` 不会构建它，因此 `bun run dev`
+会先执行 `bun run ensure:voice-companion`：优先复用
+`target/debug`、`build.noindex/**`、`<target>/<triple>/<profile>` 或
+`apps/desktop/resources/bin` 下的已有产物；缺失或比 crate 源码旧时，用
+`cargo build -p voice-companion --bin voice-companion --no-default-features`
+重建；构建失败只告警、不阻断。可用 `NOMIFUN_SKIP_VOICE_COMPANION=1` 跳过，
+或用 `bun run ensure:voice-companion --check` 只检查不构建。解析器只认当前
+`voice-companion` 名称，不再读取旧命名 `ai-mate`。
+
 ### 开发重启的进程边界
 
 `bun run dev` 会启动一个长期 Vite（`127.0.0.1:5173`）和多轮 `tauri dev`。

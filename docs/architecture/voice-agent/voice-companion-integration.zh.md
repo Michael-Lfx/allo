@@ -29,7 +29,7 @@
 | N3 | `nomifun-voice-terminal/src/driver.rs:144` | 进入 AwaitingConfirmation 时已经开始 8 秒 deadline，PromptDone 后不重设 | 本地确认听取计时与物理提示播放完成对齐；runtime 授权有效期另外校验 |
 | N4 | `ui/src/renderer/pages/nomi/workspace/tabs/OverviewTab/ModelsSection.tsx:26`；`components/model/taskModelSelectState.ts:55` | 已有模型引用/失效状态/选择控件；桌宠声学配置已存在另一条产品路径 | 复用控件与 provider 解析，不复制桌宠 Profile 或依赖 companion_id |
 | N5 | `apps/desktop/src/memory_panel_window.rs:123` | 已有 `webui_init_script` 注入后台端口和信任信息、主线程创建窗口的模式 | 会话窗使用同样初始化和 platform adapter 约定，不绕过 auth |
-| N6 | `voice_companion_manager.rs:76`；`apps/desktop/tauri.conf.json`；`apps/desktop/resources/bin/` | resolver 搜索同目录和开发目录；bundle 资源映射到 bin；当前资源目录没有 ai-mate 产物，脚本检索未找到其桌面打包接线 | 开发启动不能作为安装交付证明；发布切片单独验证二进制与 native 库定位 |
+| N6 | `voice_companion_manager.rs:76`；`apps/desktop/tauri.conf.json`；`apps/desktop/resources/bin/` | resolver 搜索资源 `bin/`、可执行文件同目录与源码检出的构建/暂存目录；bundle 资源映射到 bin；桌面打包由 `scripts/prepare-voice-companion.mjs` 接线并产出 `bin/voice-companion.exe` | 开发启动不能作为安装交付证明；发布切片单独验证二进制与 native 库定位 |
 | N7 | `PRODUCT.md` 与 `ui-motion.zh.md` | 产品要求可见可控工作；已有 UI 子规范仅覆盖设置和无屏配对 | 新增会话窗契约，保留已有设置层级和设计令牌 |
 
 这些是静态检查结果。N6 没有检查外部已发布安装包，不据此断言所有发布产物都缺文件；发布前必须实测。
@@ -75,7 +75,7 @@ flowchart TD
 
 | Module | 小型 Interface | 内部 Implementation | 放置位置 |
 |---|---|---|---|
-| 语音会话 | 接受 wake/stop 与任务结果；输出真实状态、文本、任务请求 | PCM 生命周期、计时、VAD、ASR、router、短历史、播放 | 现有 voice-terminal 库与 ai-mate 装配 |
+| 语音会话 | 接受 wake/stop 与任务结果；输出真实状态、文本、任务请求 | PCM 生命周期、计时、VAD、ASR、router、短历史、播放 | 现有 voice-terminal 库与 voice-companion 装配 |
 | 产品投影 | snapshot、subscribe、执行明确控制命令 | 一个 daemon 连接、过期事件屏蔽、合并真实任务状态 | nomifun-app 伴侣管理及小型配套模块 |
 | runtime Adapter | submit、observe、cancel、confirm 及事件映射 | 调用 ConversationService，owner/幂等/回执/任务身份处理 | nomifun-app 的具体 `voice_runtime_bridge.rs` |
 | 窗口宿主 | 显示/隐藏、取当前快照、向后端提交控制 | 原生窗主线程操作、位置、权限与首次握手 | apps/desktop |

@@ -12,7 +12,7 @@
 | 代码位置 | 当前事实 | 需要的最小改变 |
 | --- | --- | --- |
 | `nomifun-audio/src/earcon.rs:11–74` | 六件资产、枚举及对应WAV | 保留资产与音频底层；声音语义不变成音频crate业务状态机 |
-| `apps/ai-mate/src/voice.rs:250–273` | accept_wake 发事件后调用Wake | 统一反馈请求，声音完成锚点/连说处理 |
+| `apps/voice-companion/src/voice.rs:250–273` | accept_wake 发事件后调用Wake | 统一反馈请求，声音完成锚点/连说处理 |
 | `voice.rs:288–386`、`voice_events.rs:100–106` | SpeechRecognized直接转Deciding | 仅有效内容安排识别成功音；不得把纯唤醒词当成功 |
 | `voice.rs:404、473、480` | Ignore/失败分支零散播放Sleep/Error | 按明确退出原因归一，错误与结束反馈去重 |
 | `voice.rs:684–724、974–979` | watchdog及追问超时发Idle，未统一播放Sleep | 每种正常超时闭环；无PCM故障与正常静默分开 |
@@ -49,7 +49,7 @@ flowchart LR
     RT["既有 runtime 真实回执<br/>V5至V7接线后"] -.-> HOST
 ```
 
-在 `apps/ai-mate` 内用一个会话级 `voice_feedback` 模块集中“事件→音类型/次数/取消”的业务规则；复用 `PlaybackPipeline` 和 `AudioSink`。使用已有Tokio timer，不建通用事件总线、全局调度器、插件系统或第二任务队列。宿主/UI只发用户配置与控制请求、读快照，不产生产品提示音。
+在 `apps/voice-companion` 内用一个会话级 `voice_feedback` 模块集中“事件→音类型/次数/取消”的业务规则；复用 `PlaybackPipeline` 和 `AudioSink`。使用已有Tokio timer，不建通用事件总线、全局调度器、插件系统或第二任务队列。宿主/UI只发用户配置与控制请求、读快照，不产生产品提示音。
 
 保持现有 `VoiceCompletionClient` 与 `TtsProvider`；固定错误短语也调用后者，不问LLM。无需新增模型、key、SDK或第三方依赖；没有本地TTS时，不声称离线能朗读详细原因。
 
@@ -173,7 +173,7 @@ PRD AF-AC-01–16为声音验收权威；原AC-01–20和既有性能门禁继�
 
 软件测试记录实际输出请求、音频数量、完成/取消、原文、模型调用次数、身份及状态序列；实机另记录可听性、误触发、说话被打断、时间窗和设备距离。网络合成与固定对话探针按显式测试执行，不默认消耗真实模型额度或开启录音。
 
-生产图必须包含宿主与daemon共同解析，沿Q的 `-p ai-mate -p Flowy` 检查TLS组合；生产不启用voice-skeleton。自动检查不能替代物理播放，健康探针不能替代用户旅程，正文显示不证明runtime接单。
+生产图必须包含宿主与daemon共同解析，沿Q的 `-p voice-companion -p Flowy` 检查TLS组合；生产不启用voice-skeleton。自动检查不能替代物理播放，健康探针不能替代用户旅程，正文显示不证明runtime接单。
 
 ---
 

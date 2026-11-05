@@ -20,7 +20,7 @@ pub const EXPECTED_FILES: &[&str] = &[
     "checksums.sha256",
 ];
 
-/// Authoritative list of expected files in local offline TTS models distribution (~197MB Matcha + Vocos suite).
+/// Authoritative list of expected files in local offline TTS models distribution (~206MB Matcha + Vocos suite).
 pub const EXPECTED_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
     "tts/matcha-icefall-zh-baker/tokens.txt",
@@ -35,6 +35,13 @@ pub const EXPECTED_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
+    // espeak-ng language/voice definitions. Matcha English is phonemized by the
+    // vendored piper frontend with `espeak_SetVoiceByName("en-us")`; without the
+    // language data that call fails and the sherpa C API lets the vendor C++
+    // exception escape, which aborts the daemon. Keep these in the required set
+    // so installs and repairs always fetch them.
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
     "tts/vocos-22khz-univ.onnx",
 ];
 

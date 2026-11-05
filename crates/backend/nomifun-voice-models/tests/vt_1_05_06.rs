@@ -396,6 +396,21 @@ fn test_default_mirror_urls_match_verified_assets() {
         .resolve_url("asr/tokens.txt")
         .contains("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"));
     assert!(!hf_mirror.supports("kws/encoder.int8.onnx"));
+    // espeak-ng-data lives under the same HF repo; the prefix rule must keep the
+    // repository path (not just the bare relative path) for lang/ files too.
+    for asset in [
+        "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
+        "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+        "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
+    ] {
+        assert!(hf_mirror.supports(asset), "hf mirror must serve {asset}");
+        let url = hf_mirror.resolve_url(asset);
+        let expected = asset.trim_start_matches("tts/matcha-icefall-en_US-ljspeech/");
+        assert!(
+            url.contains(&format!("/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/{expected}")),
+            "unexpected url for {asset}: {url}"
+        );
+    }
 
     let modelscope = global_mirrors
         .iter()

@@ -159,7 +159,7 @@ fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(PathBuf::from) {
+    if let Some(ai_mate) = std::env::var_os("VOICE_COMPANION_MODEL_DIR").map(PathBuf::from) {
         let asr_sub = ai_mate.join("asr");
         if is_valid_asr_dir(&asr_sub) {
             return Some(asr_sub);
@@ -200,8 +200,8 @@ fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        candidates.push(PathBuf::from("/var/lib/ai-mate/models/asr"));
-        candidates.push(PathBuf::from("/etc/ai-mate/models/asr"));
+        candidates.push(PathBuf::from("/var/lib/voice-companion/models/asr"));
+        candidates.push(PathBuf::from("/etc/voice-companion/models/asr"));
     }
 
     for c in candidates {

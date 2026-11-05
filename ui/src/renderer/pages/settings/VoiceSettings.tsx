@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Menu, Message, Switch } from '@arco-design/web-react';
+import { Button, Dropdown, Menu, Message, Modal, Switch } from '@arco-design/web-react';
 import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
@@ -296,12 +296,11 @@ const VoiceSettings: React.FC = () => {
   const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
   const [readyIconScaled, setReadyIconScaled] = useState(false);
 
-  // Inline two-step release confirmation state per ui-motion.zh.md §3
-  const [isConfirmingRelease, setIsConfirmingRelease] = useState(false);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const lastProgressUpdateRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Tracks the host-side self-check flag so the page can refresh the stored
+  // capability report the moment any check (user or automatic) finishes.
+  const selfCheckActiveRef = useRef(false);
 
   // Listen for prefers-reduced-motion OS changes
   useEffect(() => {
@@ -332,9 +331,6 @@ const VoiceSettings: React.FC = () => {
   // Clean up timers and audio streams on unmount
   useEffect(() => {
     return () => {
-      if (confirmTimerRef.current) {
-        clearTimeout(confirmTimerRef.current);
-      }
       if (asrTimerRef.current) {
         clearTimeout(asrTimerRef.current);
       }
@@ -579,14 +575,36 @@ const VoiceSettings: React.FC = () => {
     }
   }, [applyStateUpdate, operationErrorText, t]);
 
-  // Inline two-step confirmation per ui-motion.zh.md §3:
-  // First click shows "确认释放？" with a 3-second auto-revert timer.
-  // Second click within 3 seconds confirms deletion and calls DELETE.
+  // Uninstalling the voice suite removes ~450MB of local models, so the
+  // destructive action always goes through the shared confirmation dialog
+  // instead of an inline two-step menu that disappears after the first click.
   const fetchCapabilities = useCallback(async () => {
     try {
       setCapabilities(await getVoiceCapabilities());
     } catch {
       setCapabilities(null);
+    }
+  }, []);
+
+  // A second check request is rejected with `self_check_in_progress` while the
+  // host still runs one (for example the silent check started right after a
+  // download finished). Poll the stored report until it is newer than the one we
+  // already show, so the pill chain updates on the spot instead of only after a
+  // tab switch remounts the page.
+  const waitForFreshCapabilities = useCallback(async (previousCheckedAtMs: number | null | undefined) => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      try {
+        const report = await getVoiceCapabilities();
+        if (!report) continue;
+        const checkedAt = typeof report.checked_at_ms === 'number' ? report.checked_at_ms : 0;
+        if (checkedAt > (previousCheckedAtMs ?? 0)) {
+          setCapabilities(report);
+          return;
+        }
+      } catch {
+        // Transient status failures keep the previous report; retry until budget.
+      }
     }
   }, []);
 
@@ -605,47 +623,64 @@ const VoiceSettings: React.FC = () => {
       }
     } catch (e: any) {
       if (e?.code === 'self_check_in_progress') {
-        // Another check is already running in background; silently re-fetch capabilities after delay
-        setTimeout(() => { void fetchCapabilities(); }, 1500);
+        // Another check is already running in background: wait for its stored
+        // report instead of leaving the chain on the stale evidence.
+        void waitForFreshCapabilities(capabilities?.checked_at_ms);
         return;
       }
       Message.error(e instanceof Error ? e.message : t('voice.capabilities.checkFailed'));
     } finally {
       setCheckingCapabilities(false);
     }
-  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, fetchCapabilities]);
+  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, capabilities?.checked_at_ms, waitForFreshCapabilities]);
 
   useEffect(() => {
     if (modelStatus === 'Ready') {
       void fetchCapabilities();
-      // Auto-trigger background silent self-check on settings mount if not yet cached
-      if (!capabilities && !voiceSnapshot?.self_check_active) {
-        void runVoiceSelfCheck(false, undefined, 'silent')
-          .then((report) => setCapabilities(report))
-          .catch(() => {});
-      }
     }
   }, [modelStatus, fetchCapabilities]);
 
-  const handleReleaseClick = useCallback(() => {
-    if (!isConfirmingRelease) {
-      setIsConfirmingRelease(true);
-      if (confirmTimerRef.current) {
-        clearTimeout(confirmTimerRef.current);
-      }
-      confirmTimerRef.current = setTimeout(() => {
-        setIsConfirmingRelease(false);
-        confirmTimerRef.current = null;
-      }, 3000);
-    } else {
-      if (confirmTimerRef.current) {
-        clearTimeout(confirmTimerRef.current);
-        confirmTimerRef.current = null;
-      }
-      setIsConfirmingRelease(false);
-      void handleDelete();
+  // A first-run journey installs models before the user enables the service.
+  // The model-ready effect above therefore runs while prepare is still rejected
+  // with `voice_disabled`; retry the silent readiness check when the explicit
+  // enable switch turns on (PRD VC-02 / Journey A).
+  useEffect(() => {
+    if (
+      modelStatus !== 'Ready' ||
+      !voiceEnabled ||
+      capabilities ||
+      voiceSnapshot?.self_check_active
+    ) {
+      return;
     }
-  }, [isConfirmingRelease, handleDelete]);
+    void runVoiceSelfCheck(false, undefined, 'silent')
+      .then((report) => setCapabilities(report))
+      .catch(() => {});
+  }, [modelStatus, voiceEnabled, capabilities, voiceSnapshot?.self_check_active]);
+
+  // The host emits `self_check_active: true -> false` on the snapshot stream
+  // exactly when the final report has been stored. Refresh then, so a check
+  // that finished in the background (or whose HTTP response was rejected as
+  // already-running) still turns the chain green without a page remount.
+  useEffect(() => {
+    const active = Boolean(voiceSnapshot?.self_check_active);
+    const wasActive = selfCheckActiveRef.current;
+    selfCheckActiveRef.current = active;
+    if (wasActive && !active) {
+      void fetchCapabilities();
+    }
+  }, [voiceSnapshot?.self_check_active, fetchCapabilities]);
+
+  const handleUninstallClick = useCallback(() => {
+    Modal.confirm({
+      title: t('voice.actions.uninstallConfirmTitle'),
+      content: t('voice.actions.uninstallConfirmContent'),
+      okText: t('voice.actions.uninstallConfirmOk'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { status: 'danger' },
+      onOk: () => handleDelete(),
+    });
+  }, [handleDelete, t]);
 
   const handleToggleVoiceEnabled = useCallback(async (checked: boolean) => {
     setIsTogglingCompanion(true);
@@ -876,6 +911,9 @@ const VoiceSettings: React.FC = () => {
   const allStagesReady = (['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).every(
     (name) => resolveStageStatus(name) === 'ready'
   );
+  // While a check runs, show neutral "checking" pills instead of the previous
+  // report's evidence: the stale report must not look like the current verdict.
+  const selfCheckInFlight = checkingCapabilities || Boolean(voiceSnapshot?.self_check_active);
 
   let rowLabel = t('voice.phases.notInstalled');
   let rowDescription: React.ReactNode = t('voice.phases.notInstalledDesc');
@@ -891,10 +929,10 @@ const VoiceSettings: React.FC = () => {
       ? t('voice.phases.downloadingFile', { file: downloadDetail.current_file, current: cur, total })
       : t('voice.phases.downloading', { current: cur, total });
   } else if (modelStatus === 'VerifyingSha256') {
-    const cur = verifyDetail?.verified_files ?? 0;
-    const total = verifyDetail?.total_files ?? 7;
-    rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
-    rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
+    // The ratio lives in the control slot; the title carries the phase name and
+    // the description explains what is happening, so no line repeats the count.
+    rowLabel = t('voice.status.verifyingSha256');
+    rowDescription = t('voice.phases.verifyingSha256Desc');
   } else if (modelStatus === 'Ready') {
     const isReady = capabilities ? capabilities.can_start_full_call : allStagesReady;
     if (isReady) {
@@ -918,16 +956,15 @@ const VoiceSettings: React.FC = () => {
     );
   } else if (modelStatus === 'Removing') {
     rowLabel = t('voice.phases.removing');
-    rowDescription = t('voice.actions.releasing');
+    rowDescription = t('voice.actions.uninstalling');
   }
 
   return (
     <SettingsPageWrapper layout='form'>
       <div className='flex flex-col gap-24px'>
-        <SettingsPageHeader
-          title={t('voice.title')}
-          description={t('voice.settings.sectionDesc')}
-        />
+        {/* The section below owns the description; repeating it in the page
+            header rendered the same sentence twice. */}
+        <SettingsPageHeader title={t('voice.title')} />
 
         <SettingsSection
           title={t('voice.settings.sectionTitle')}
@@ -985,10 +1022,10 @@ const VoiceSettings: React.FC = () => {
                       <span>{rowLabel}</span>
                     </div>
                   }
-                  description={rowDescription}
+                  description={<span className='break-words'>{rowDescription}</span>}
                   controlLayout='actions'
                   control={
-                    <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
+                    <div className='flex flex-wrap items-center gap-3 font-variant-numeric tabular-nums'>
                       {modelStatus === 'NotInstalled' && (
                         <Button
                           type='primary'
@@ -1028,7 +1065,7 @@ const VoiceSettings: React.FC = () => {
                       )}
 
                       {modelStatus === 'Ready' && (
-                        <div className='flex items-center gap-12px'>
+                        <>
                           <Button
                             type='primary'
                             size='small'
@@ -1051,10 +1088,8 @@ const VoiceSettings: React.FC = () => {
                                 <Menu.Item key='repair' onClick={() => handleInstall(true)}>
                                   {t('voice.actions.repair')}
                                 </Menu.Item>
-                                <Menu.Item key='release' onClick={handleReleaseClick} className='text-danger-6'>
-                                  {isConfirmingRelease
-                                    ? t('voice.actions.confirmRelease')
-                                    : t('voice.actions.releaseSpace')}
+                                <Menu.Item key='uninstall' onClick={handleUninstallClick} className='text-danger-6'>
+                                  {t('voice.actions.uninstall')}
                                 </Menu.Item>
                               </Menu>
                             }
@@ -1068,7 +1103,7 @@ const VoiceSettings: React.FC = () => {
                               aria-label={t('voice.actions.more')}
                             />
                           </Dropdown>
-                        </div>
+                        </>
                       )}
 
                       {modelStatus === 'Failed' && (
@@ -1084,15 +1119,13 @@ const VoiceSettings: React.FC = () => {
 
                       {modelStatus === 'Removing' && (
                         <Button loading disabled size='small'>
-                          {t('voice.actions.releaseSpace')}
+                          {t('voice.actions.uninstall')}
                         </Button>
                       )}
                     </div>
                   }
                 />
               </div>
-
-              <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
 
               {/*
                 ui-motion.zh.md ��3 contract:
@@ -1118,10 +1151,17 @@ const VoiceSettings: React.FC = () => {
               </div>
             </div>
 
+            <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
+
             {modelStatus === 'Ready' && (
-              <div className='flex flex-wrap items-center gap-2 px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px' role='status'>
+              <div
+                className='voice-stage-chain flex items-center gap-x-1.5 overflow-x-auto px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px'
+                role='status'
+                tabIndex={0}
+                aria-label={t('voice.capabilities.chainAria')}
+              >
                 {(['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).map((name, idx) => {
-                  const status = resolveStageStatus(name);
+                  const status = selfCheckInFlight ? 'checking' : resolveStageStatus(name);
                   const isReady = status === 'ready';
                   const isFailed = status === 'failed';
                   const statusColor = isReady
@@ -1132,14 +1172,19 @@ const VoiceSettings: React.FC = () => {
                   const icon = isReady ? '●' : isFailed ? '✕' : '○';
 
                   return (
-                    <React.Fragment key={name}>
-                      {idx > 0 && <span className='text-t-tertiary font-mono select-none'>→</span>}
-                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
-                        <span>{icon}</span>
-                        <span>{t(`voice.capabilities.item.${name}`)}</span>
-                        <span>{t(`voice.capabilities.status.${status}`)}</span>
+                    // Connector and pill stay one non-shrinking unit inside a
+                    // single scrollable line: no wrapped row, no orphan arrow,
+                    // no stretched pill that shrinks its own label.
+                    <span key={name} className='inline-flex shrink-0 items-center gap-1.5'>
+                      {idx > 0 && (
+                        <span aria-hidden='true' className='text-t-tertiary font-mono select-none'>→</span>
+                      )}
+                      <span className={`inline-flex shrink-0 items-center gap-1 px-2 py-0.5 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
+                        <span aria-hidden='true' className='shrink-0'>{icon}</span>
+                        <span className='whitespace-nowrap'>{t(`voice.capabilities.item.${name}`)}</span>
+                        <span className='shrink-0 whitespace-nowrap'>{t(`voice.capabilities.status.${status}`)}</span>
                       </span>
-                    </React.Fragment>
+                    </span>
                   );
                 })}
               </div>
@@ -1174,73 +1219,65 @@ const VoiceSettings: React.FC = () => {
 
               <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
                 <SettingsList>
-                  <div className='min-h-68px flex items-center'>
-                    <div className='w-full'>
-                      <SettingsRow
-                        label={t('voice.diagnostics.micDevice')}
-                        description={
-                          micChecking
-                            ? t('voice.diagnostics.micDeviceChecking')
-                            : micStatus?.mic_available
-                              ? t('voice.diagnostics.micDetected', {
-                                  name: micStatus.device_name || 'Default Input',
-                                  rate: micStatus.sample_rate || 16000,
-                                  channels: micStatus.channels || 1,
-                                })
-                              : micStatus?.error || t('voice.diagnostics.micNotFound')
-                        }
-                        controlLayout='actions'
-                        control={
-                          <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
-                            <Button
-                              size='small'
-                              loading={micChecking}
-                              onClick={fetchDeviceStatus}
-                            >
-                              {t('voice.diagnostics.micDeviceProbe')}
-                            </Button>
-                          </div>
-                        }
-                      />
-                    </div>
-                  </div>
+                  <SettingsRow
+                    label={t('voice.diagnostics.micDevice')}
+                    description={
+                      <span className='break-words'>
+                        {micChecking
+                          ? t('voice.diagnostics.micDeviceChecking')
+                          : micStatus?.mic_available
+                            ? t('voice.diagnostics.micDetected', {
+                                name: micStatus.device_name || 'Default Input',
+                                rate: micStatus.sample_rate || 16000,
+                                channels: micStatus.channels || 1,
+                              })
+                            : micStatus?.error || t('voice.diagnostics.micNotFound')}
+                      </span>
+                    }
+                    controlLayout='actions'
+                    control={
+                      <Button
+                        size='small'
+                        loading={micChecking}
+                        onClick={fetchDeviceStatus}
+                      >
+                        {t('voice.diagnostics.micDeviceProbe')}
+                      </Button>
+                    }
+                  />
 
-                  <div className='min-h-68px flex items-center'>
-                    <div className='w-full'>
-                      <SettingsRow
-                        label={t('voice.diagnostics.asrTest')}
-                        description={
-                          asrRunning
-                            ? (asrRecording
-                                ? t('voice.diagnostics.asrTestRecording')
-                                : t('voice.diagnostics.asrTestTranscribing'))
-                            : asrResult
-                              ? (asrResult.success
-                                  ? t('voice.diagnostics.asrTestSuccess', {
-                                      text: asrResult.text,
-                                      duration: asrResult.duration_ms,
-                                    })
-                                  : t('voice.diagnostics.asrTestFailed', {
-                                      reason: asrResult.error || t('voice.errors.unknownError'),
-                                    }))
-                              : t('voice.diagnostics.asrTestIdleDesc')
-                        }
-                        controlLayout='actions'
-                        control={
-                          <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
-                            <Button
-                              type='primary'
-                              size='small'
-                              loading={asrRunning}
-                              onClick={handleStartAsrTest}
-                            >
-                              {t('voice.diagnostics.asrTestBtn')}
-                            </Button>
-                          </div>
-                        }
-                      />
-                    </div>
-                  </div>
+                  <SettingsRow
+                    label={t('voice.diagnostics.asrTest')}
+                    description={
+                      <span className='break-words'>
+                        {asrRunning
+                          ? (asrRecording
+                              ? t('voice.diagnostics.asrTestRecording')
+                              : t('voice.diagnostics.asrTestTranscribing'))
+                          : asrResult
+                            ? (asrResult.success
+                                ? t('voice.diagnostics.asrTestSuccess', {
+                                    text: asrResult.text,
+                                    duration: asrResult.duration_ms,
+                                  })
+                                : t('voice.diagnostics.asrTestFailed', {
+                                    reason: asrResult.error || t('voice.errors.unknownError'),
+                                  }))
+                            : t('voice.diagnostics.asrTestIdleDesc')}
+                      </span>
+                    }
+                    controlLayout='actions'
+                    control={
+                      <Button
+                        type='primary'
+                        size='small'
+                        loading={asrRunning}
+                        onClick={handleStartAsrTest}
+                      >
+                        {t('voice.diagnostics.asrTestBtn')}
+                      </Button>
+                    }
+                  />
                 </SettingsList>
 
                 {voiceEnabled && (

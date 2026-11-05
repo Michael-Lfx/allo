@@ -77,7 +77,7 @@ const WallpaperSection: React.FC = () => {
                 }}
                 className={classNames(
                   'size-36px rd-6px border-solid cursor-pointer overflow-hidden p-0',
-                  active ? 'border-2 border-primary-6' : 'border border-border-2'
+                  active ? 'border-2 border-solid border-primary-6' : 'border border-solid border-[var(--border-base)]'
                 )}
               >
                 <img
@@ -105,7 +105,7 @@ const WallpaperSection: React.FC = () => {
         <button
           type='button'
           onClick={() => fileRef.current?.click()}
-          className='shrink-0 size-36px rd-6px border border-dashed border-border-2 bg-transparent text-t-tertiary cursor-pointer flex items-center justify-center'
+          className='shrink-0 size-36px rd-6px border border-dashed border-[var(--border-base)] bg-transparent text-t-tertiary cursor-pointer flex items-center justify-center'
           title={t('settings.wallpaper.upload')}
         >
           <FlowyIcon name='plus' size={14} />
@@ -127,7 +127,7 @@ const WallpaperSection: React.FC = () => {
       ) : null}
 
       <div
-        className='rd-8px border border-solid border-border-2 overflow-hidden h-72px relative'
+        className='rd-8px border border-solid border-[var(--border-base)] overflow-hidden h-72px relative'
         style={{
           background: analysis ? analysis.seedHex : 'var(--color-fill-2)',
         }}

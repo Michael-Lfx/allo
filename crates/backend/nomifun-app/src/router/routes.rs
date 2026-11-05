@@ -865,8 +865,8 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
-    // Voice models management (desktop settings & AI Mate model distribution)
-    let voice_models_dir = std::env::var("AI_MATE_MODEL_DIR")
+    // Voice models management (desktop settings & voice companion model distribution)
+    let voice_models_dir = std::env::var("VOICE_COMPANION_MODEL_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| services.data_dir.join("models"));
     nomifun_audio::register_active_model_dir(voice_models_dir.clone());

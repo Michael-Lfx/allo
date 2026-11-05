@@ -401,3 +401,84 @@ describe('nomi send box dispatch behavior', () => {
     expect(attempts.size).toBe(0);
   });
 });
+
+describe('voice keyboard wait callbacks', () => {
+  test('a rejected host send still reports the same command before propagating', async () => {
+    const events: string[] = [];
+    let thrown: unknown = null;
+    try {
+      await dispatchNomiSend({
+      conversationId: voiceConvId,
+      conversationVoiceKind: 'voice',
+      workspacePath: 'D:/workspace/voice',
+      filesToSend: [],
+      message: '你好',
+      voiceSendAttempts: new Map(),
+      resolveConversationKind: async () => 'voice',
+      sendVoiceKeyboardMessage: async (_convId, cmdId) => {
+        events.push(`send:${cmdId}`);
+        throw new Error('task_delivery_pending');
+      },
+      onVoiceCommand: info => {
+        events.push(`wait:${info.commandId}`);
+      },
+      onVoiceCommandResult: info => {
+        events.push(`result:${info.commandId}:${info.error instanceof Error ? info.error.message : 'none'}`);
+      },
+      enqueue: () => null,
+      clearFiles: () => {},
+      emitFileClear: () => {},
+      notifyError: () => {},
+      plainTextOnlyError: 'plain',
+      loadFailedError: 'load',
+      generateId: () => 'cmd-failed',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error)?.message).toBe('task_delivery_pending');
+    expect(events).toEqual([
+      'wait:cmd-failed',
+      'send:cmd-failed',
+      'result:cmd-failed:task_delivery_pending',
+    ]);
+  });
+
+  test('publishes the stable command before awaiting the host and reports the receipt', async () => {
+    const events: string[] = [];
+    let commandId = '';
+    await dispatchNomiSend({
+      conversationId: voiceConvId,
+      conversationVoiceKind: 'voice',
+      workspacePath: 'D:/workspace/voice',
+      filesToSend: [],
+      message: '你好',
+      voiceSendAttempts: new Map(),
+      resolveConversationKind: async () => 'voice',
+      sendVoiceKeyboardMessage: async (_convId, cmdId) => {
+        commandId = cmdId;
+        events.push('send');
+        return { task: mockTaskSnapshot(cmdId) };
+      },
+      onVoiceCommand: info => {
+        events.push(`wait:${info.commandId}`);
+      },
+      onVoiceCommandResult: info => {
+        events.push(`result:${info.commandId}:${info.task?.status ?? 'none'}`);
+      },
+      enqueue: () => null,
+      clearFiles: () => {},
+      emitFileClear: () => {},
+      notifyError: () => {},
+      plainTextOnlyError: 'plain',
+      loadFailedError: 'load',
+      generateId: () => 'cmd-wait-order',
+    });
+    expect(events).toEqual([
+      'wait:cmd-wait-order',
+      'send',
+      'result:cmd-wait-order:accepted',
+    ]);
+    expect(commandId).toBe('cmd-wait-order');
+  });
+});

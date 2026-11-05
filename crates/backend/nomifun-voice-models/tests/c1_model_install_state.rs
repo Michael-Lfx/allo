@@ -115,7 +115,7 @@ fn test_c1_04_verifying_sha256_snapshot() {
 
 #[test]
 fn test_c1_05_ready_snapshot() {
-    let models_dir = PathBuf::from("/var/lib/ai-mate/models");
+    let models_dir = PathBuf::from("/var/lib/voice-companion/models");
     let state = ModelInstallState::Ready {
         models_dir: models_dir.clone(),
         total_size_bytes: 261_095_424,

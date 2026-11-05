@@ -158,6 +158,34 @@ fn task_profile_changed(
             != merged_extra.and_then(|extra| extra.get("task_profile"))
 }
 
+/// Persisted voice markers are the only view-warmup exemption. Voice features
+/// own their runtime initialization through the explicit task/send path, so a
+/// passive view mount must never hold the conversation preparation gate while
+/// MCP servers and the agent runtime are built.
+fn is_voice_conversation_extra(extra: &str) -> bool {
+    let Ok(extra) = serde_json::from_str::<serde_json::Value>(extra) else {
+        return false;
+    };
+    extra.get("voice").and_then(serde_json::Value::as_bool) == Some(true)
+        || extra
+            .get("is_default_voice")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        || extra
+            .get("is_voice_conversation")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        || matches!(
+            extra.get("session_mode").and_then(serde_json::Value::as_str),
+            Some("voice" | "companion")
+        )
+        || extra
+            .get("voice_task_workspace")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        || extra.get("voice_creation_request").is_some()
+}
+
 fn is_auto_title_eligible(
     current_name: &str,
     first_user_content: &str,
@@ -11634,8 +11662,10 @@ impl ConversationService {
         user_message_id: Option<&str>,
     ) -> Result<ConversationPairProjection, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
-        let token=CancellationToken::new();
-        let _guard=self.runtime_state.acquire_preparation_gate(conversation_id,&token).await?;
+        // Voice projection is bookkeeping, not a runtime mutation. Never wait
+        // behind a long preparation (chat warmup, runtime build, stop/reset):
+        // a busy gate falls through to the caller's idempotent append fallback.
+        let _guard=self.runtime_state.try_acquire_preparation_gate(conversation_id)?;
         if self.is_conversation_busy(user_id,conversation_id).await? {
             return Err(AppError::Conflict("Voice target is busy".into()));
         }
@@ -16405,6 +16435,14 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
         lease.ensure_active()?;
+
+        if is_voice_conversation_extra(&initial_row.extra) {
+            debug!(
+                conversation_id = %initial_row.conversation_id,
+                "Skipping view warmup for voice conversation"
+            );
+            return Ok(());
+        }
 
         self.ensure_not_retained_execution_attempt(user_id, &initial_row.conversation_id)
             .await?;

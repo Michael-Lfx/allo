@@ -93,3 +93,63 @@ describe('passive conversation warmup authority', () => {
     expect(warmupCalls).toBe(0);
   });
 });
+
+const voiceConversation = (
+  status: 'pending' | 'running' | 'finished',
+  isProcessing = false,
+  extra: Record<string, unknown> = { voice: true }
+): TChatConversation =>
+  ({
+    ...snapshot(status, isProcessing),
+    type: 'nomi',
+    extra: extra as TChatConversation['extra'],
+  }) as TChatConversation;
+
+describe('voice conversations never take the passive warmup path', () => {
+  test('voice Pending idle is not prepared passively and never hits the warmup POST', async () => {
+    let warmupCalls = 0;
+
+    expect(shouldWarmupConversationOnPassiveMount(voiceConversation('pending'))).toBe(false);
+
+    const warmed = await warmupConversationForPassiveMount(conversationId, {
+      getConversation: async () => voiceConversation('pending'),
+      warmup: async () => {
+        warmupCalls += 1;
+      },
+    });
+
+    expect(warmed).toBe(false);
+    expect(warmupCalls).toBe(0);
+  });
+
+  test('every persisted voice marker (companion session mode included) stays read-only on mount', async () => {
+    for (const extra of [
+      { voice: true },
+      { is_default_voice: true },
+      { is_voice_conversation: true },
+      { session_mode: 'voice' },
+      { session_mode: 'companion' },
+      { voice_task_workspace: 'C:/workspace/project' },
+      { voice_creation_request: { request_id: 'req' } },
+    ]) {
+      let warmupCalls = 0;
+      expect(shouldWarmupConversationOnPassiveMount(voiceConversation('pending', false, extra))).toBe(false);
+
+      const warmed = await warmupConversationForPassiveMount(conversationId, {
+        getConversation: async () => voiceConversation('pending', false, extra),
+        warmup: async () => {
+          warmupCalls += 1;
+        },
+      });
+
+      expect(warmed).toBe(false);
+      expect(warmupCalls).toBe(0);
+    }
+  });
+
+  test('ordinary conversations keep the exact Pending plus idle behaviour', () => {
+    expect(shouldWarmupConversationOnPassiveMount(snapshot('pending'))).toBe(true);
+    expect(shouldWarmupConversationOnPassiveMount({ ...snapshot('pending'), type: 'nomi', extra: { voice: false } as TChatConversation['extra'] })).toBe(true);
+    expect(shouldWarmupConversationOnPassiveMount({ ...snapshot('pending'), type: 'nomi', extra: { foo: 'bar' } as TChatConversation['extra'] })).toBe(true);
+  });
+});

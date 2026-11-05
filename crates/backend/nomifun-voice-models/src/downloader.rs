@@ -106,9 +106,7 @@ impl MirrorConfig {
         let mut mirrors = Vec::new();
 
         // Support custom mirror override via environment variable
-        if let Ok(custom_url) = std::env::var("VOICE_COMPANION_MODEL_MIRROR_URL")
-            .or_else(|_| std::env::var("AI_MATE_MODEL_MIRROR_URL"))
-        {
+        if let Ok(custom_url) = std::env::var("VOICE_COMPANION_MODEL_MIRROR_URL") {
             let custom_url = custom_url.trim().to_string();
             if !custom_url.is_empty() {
                 mirrors.push(Self {
@@ -222,9 +220,6 @@ impl MirrorConfig {
                 "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
                     "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=tokens.txt".to_string()
                 }
-                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=espeak-ng-data/en_dict".to_string()
-                }
                 "tts/vocos-22khz-univ.onnx" => {
                     "https://modelscope.cn/api/v1/models/csukuangfj/sherpa-onnx-models/repo?Revision=master&FilePath=vocoder-models/vocos-22khz-univ.onnx".to_string()
                 }
@@ -272,20 +267,14 @@ impl MirrorConfig {
                 "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
                     format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/tokens.txt")
                 }
-                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/en_dict")
-                }
-                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phontab")
-                }
-                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phonindex")
-                }
-                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phondata")
-                }
-                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/intonations")
+                // The whole `espeak-ng-data/` tree lives in the same HF repo; a
+                // prefix rule keeps dictionaries, voice definitions and future
+                // data files on one URL shape instead of one arm per file.
+                path if path.starts_with("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/") => {
+                    format!(
+                        "{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/{}",
+                        path.trim_start_matches("tts/matcha-icefall-en_US-ljspeech/")
+                    )
                 }
                 "tts/vocos-22khz-univ.onnx" => {
                     format!("{base}/k2-fsa/sherpa-onnx-models/resolve/main/vocoder-models/vocos-22khz-univ.onnx")

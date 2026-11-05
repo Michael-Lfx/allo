@@ -71,7 +71,6 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
       'progress.percent',
       'progress.ratio',
       'progress.bytesRatio',
-      'progress.approxSize',
     ];
     for (const key of progressKeys) {
       expect(typeof getLocaleValue(enVoice, key)).toBe('string');
@@ -83,8 +82,11 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
     const actionKeys = [
       'actions.downloadAndEnable',
       'actions.retry',
-      'actions.releaseSpace',
-      'actions.confirmRelease',
+      'actions.uninstall',
+      'actions.uninstallConfirmTitle',
+      'actions.uninstallConfirmContent',
+      'actions.uninstallConfirmOk',
+      'actions.uninstalling',
       'actions.cancel',
       'actions.enableVoice',
       'actions.disableVoice',
@@ -151,6 +153,27 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
       const zhVal = String(getLocaleValue(zhVoice, key));
       expect(enVal).toContain(placeholder);
       expect(zhVal).toContain(placeholder);
+    }
+  });
+});
+
+/**
+ * Dev provisioning: a source checkout that has no voice-companion binary must
+ * point developers at the build command, not at reinstalling an installer.
+ * Key is added together with the resolver/ensure fix (direction test, red first).
+ */
+describe('voice companion dev provisioning hint', () => {
+  test('exposes componentMissingDev in both locales', () => {
+    for (const locale of [enVoice, zhVoice]) {
+      const value = getLocaleValue(locale, 'errors.componentMissingDev');
+      expect(typeof value).toBe('string');
+      expect(String(value).length).toBeGreaterThan(0);
+    }
+  });
+
+  test('existing installer hint stays intact for packaged builds', () => {
+    for (const locale of [enVoice, zhVoice]) {
+      expect(typeof getLocaleValue(locale, 'errors.componentMissing')).toBe('string');
     }
   });
 });

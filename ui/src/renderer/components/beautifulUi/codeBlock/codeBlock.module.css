@@ -84,15 +84,15 @@
 }
 
 .copyCopied {
-  color: var(--color-success-6, #00b42a);
+  color: rgb(var(--success-6));
 }
 
 .copyCopied:hover {
-  color: var(--color-success-6, #00b42a);
+  color: rgb(var(--success-6));
 }
 
 .copy:focus-visible {
-  outline: 2px solid var(--color-primary-6, #165dff);
+  outline: 2px solid rgb(var(--primary-6));
   outline-offset: 1px;
 }
 
@@ -207,7 +207,7 @@
 }
 
 .body :global(.hljs-deletion) {
-  color: var(--color-danger-6, #f53f3f);
+  color: rgb(var(--danger-6));
 }
 
 .shikiRoot {
@@ -278,7 +278,7 @@ pre.body {
   margin-right: -5px;
   vertical-align: -0.1em;
   border-radius: 999px;
-  background: var(--color-primary-6, #165dff);
+  background: rgb(var(--primary-6));
   box-shadow: none;
   animation: code-block-caret 1s step-end infinite;
 }

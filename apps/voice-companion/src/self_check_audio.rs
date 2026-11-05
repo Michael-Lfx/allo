@@ -244,6 +244,39 @@ async fn synthesize(
     Ok(pcm)
 }
 
+struct GeneratedFixtureSet {
+    wake: Vec<f32>,
+    command: Vec<f32>,
+    non_wake: Vec<f32>,
+    online: bool,
+}
+
+async fn generate_fixture_set(
+    tts: &dyn TtsProvider,
+    cancel: &AtomicBool,
+    notify: &Notify,
+    deadline: std::time::Instant,
+) -> Result<GeneratedFixtureSet, String> {
+    let wake = synthesize(tts, "Hey Flowy.", "en-US-JennyNeural", cancel, notify, deadline).await?;
+    if let Some(reason) = stop_reason(cancel, deadline) {
+        return Err(reason.into());
+    }
+    let command = synthesize(tts, "今天天气怎么样？", "zh-CN-XiaoxiaoNeural", cancel, notify, deadline).await?;
+    if let Some(reason) = stop_reason(cancel, deadline) {
+        return Err(reason.into());
+    }
+    let non_wake = synthesize(tts, "Hello friend.", "en-US-JennyNeural", cancel, notify, deadline).await?;
+    let online = tts
+        .diagnostic("")
+        .is_some_and(|diagnostic| diagnostic.online);
+    Ok(GeneratedFixtureSet {
+        wake,
+        command,
+        non_wake,
+        online,
+    })
+}
+
 fn write_cache(dir: &Path, model_revision: &str, wake: &[f32], command: &[f32], non_wake: &[f32], source: &str, online: bool) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("fixture_cache_unwritable:{error}"))?;
     let files = [
@@ -328,17 +361,33 @@ pub async fn load_or_generate_until(
     if let Some(reason) = stop_reason(cancel, deadline) {
         return Err(reason.into());
     }
-    let wake = synthesize(tts, "Hey Flowy.", "en-US-JennyNeural", cancel, notify, deadline).await?;
-    if let Some(reason) = stop_reason(cancel, deadline) {
-        return Err(reason.into());
-    }
-    let command = synthesize(tts, "今天天气怎么样？", "zh-CN-XiaoxiaoNeural", cancel, notify, deadline).await?;
-    if let Some(reason) = stop_reason(cancel, deadline) {
-        return Err(reason.into());
-    }
-    let non_wake = synthesize(tts, "Hello friend.", "en-US-JennyNeural", cancel, notify, deadline).await?;
-    let diagnostic = tts.diagnostic("");
-    let online = diagnostic.as_ref().is_some_and(|value| value.online);
+    // The wake fixture drives the English KWS acoustic model, which was
+    // validated against the fixed Edge/Jenny fixtures. Prefer the online voice
+    // for fixture synthesis when one is available (the offline Matcha voice is
+    // often not detected for "Hey Flowy"), and fall back to the regular chain
+    // when the network voice is unavailable.
+    let generated = match tts.self_check_audio_provider() {
+        Some(preferred) => match generate_fixture_set(preferred.as_ref(), cancel, notify, deadline).await {
+            Ok(set) => set,
+            Err(reason) if matches!(reason.as_str(), "engine_check_cancelled" | "engine_check_timeout") => {
+                return Err(reason);
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    reason,
+                    "online self-check fixture synthesis failed; falling back to the provider chain"
+                );
+                generate_fixture_set(tts, cancel, notify, deadline).await?
+            }
+        },
+        None => generate_fixture_set(tts, cancel, notify, deadline).await?,
+    };
+    let GeneratedFixtureSet {
+        wake,
+        command,
+        non_wake,
+        online,
+    } = generated;
     let source = if online { "edge_online_generated" } else { "offline_tts_generated" };
     if let Some(reason) = stop_reason(cancel, deadline) {
         return Err(reason.into());

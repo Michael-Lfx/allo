@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use voice_companion::config::{AiMateConfig, Config, PreferMirror, ENV_AI_MATE_MODEL_DIR};
+use voice_companion::config::{VoiceCompanionConfig, Config, PreferMirror, ENV_VOICE_COMPANION_MODEL_DIR};
 
 #[test]
 fn test_default_config_golden() {
@@ -8,7 +8,7 @@ fn test_default_config_golden() {
 
     assert_eq!(
         config.models.models_dir,
-        PathBuf::from("/var/lib/ai-mate/models")
+        PathBuf::from("/var/lib/voice-companion/models")
     );
     assert_eq!(config.models.auto_download, true);
     assert_eq!(config.models.probe_timeout_ms, 1500);
@@ -36,7 +36,7 @@ fn test_github_mirror_golden() {
 
     assert_eq!(
         config.models.models_dir,
-        PathBuf::from("/opt/ai-mate/models")
+        PathBuf::from("/opt/voice-companion/models")
     );
     assert_eq!(config.models.auto_download, true);
     assert_eq!(config.models.probe_timeout_ms, 2000);
@@ -60,7 +60,7 @@ fn test_empty_models_section_defaults() {
 #[test]
 fn test_empty_toml_defaults() {
     let config = Config::from_toml_str("").expect("empty toml must parse successfully");
-    let default_config = AiMateConfig::default();
+    let default_config = VoiceCompanionConfig::default();
 
     assert_eq!(config, default_config);
     assert_eq!(
@@ -79,13 +79,13 @@ fn test_env_var_override_via_helper() {
 
     assert_eq!(
         config.models.models_dir,
-        PathBuf::from("/var/lib/ai-mate/models")
+        PathBuf::from("/var/lib/voice-companion/models")
     );
 
     // Apply env override using mock env provider
     let override_path = "/custom/env/models/path";
     config.apply_env_overrides_from(|key| {
-        if key == ENV_AI_MATE_MODEL_DIR {
+        if key == ENV_VOICE_COMPANION_MODEL_DIR {
             Some(override_path.to_string())
         } else {
             None
@@ -110,7 +110,7 @@ fn test_env_var_override_with_std_env() {
 
     // Set environment variable
     unsafe {
-        std::env::set_var(ENV_AI_MATE_MODEL_DIR, override_path);
+        std::env::set_var(ENV_VOICE_COMPANION_MODEL_DIR, override_path);
     }
 
     let loaded = Config::load_from_str(toml_str).expect("load_from_str must succeed");
@@ -118,7 +118,7 @@ fn test_env_var_override_with_std_env() {
 
     // Clean up
     unsafe {
-        std::env::remove_var(ENV_AI_MATE_MODEL_DIR);
+        std::env::remove_var(ENV_VOICE_COMPANION_MODEL_DIR);
     }
 }
 

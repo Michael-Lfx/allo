@@ -19,6 +19,25 @@ detection fails, distinguish KWS, sentence-end detection, final ASR matching and
 host readiness rejection. Package validation alone does not prove any of these
 runtime stages, and expanding text aliases does not prove acoustic recall.
 
+## A source checkout says the voice service component is missing
+
+In a source checkout this is a build gap, not a packaging bug: `bun run dev`
+builds only the Flowy binary, and `voice-companion` is a dev-dependency (library
+only), so nothing produces the daemon by default. Build or verify it with:
+
+```bash
+bun run ensure:voice-companion          # builds when missing or stale
+bun run ensure:voice-companion --check  # inspect only, exit 1 when not ready
+```
+
+`bun run dev` runs that step automatically; skip it with
+`NOMIFUN_SKIP_VOICE_COMPANION=1`. The daemon lands in `target/debug` and is also
+resolved from `build.noindex/**`, `<target>/<triple>/<profile>` and
+`apps/desktop/resources/bin`. Only the current `voice-companion` name is
+accepted — delete stale `ai-mate` artifacts if an old checkout still has them.
+Development builds report `voice_companion_missing_dev`, which points at the
+build command; packaged builds keep the installer guidance.
+
 ## Backend port / connection problems
 
 ### `nomifun-web: invalid --host '<value>'`
