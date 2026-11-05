@@ -157,11 +157,14 @@ pub fn render_graph_no_brief_note(goal: &str, degree_statement: &str) -> String 
         items.push("程度声明");
     }
     items.push("前置/后续节点段落");
-    let sentence = match items.as_slice() {
-        [only] => (*only).to_owned(),
-        [first, second] => format!("{first}与{second}"),
-        [first, middle @ .., last] => format!("{first}、{}与{last}", middle.join("、")),
-        [] => String::new(),
+    // 末项恒在场（恒 push）→ 列项非空是本函数不变量；原 slice match 的
+    // `[] =>` 空分支不可达，删臂改以 pop 末项拼装（单项直取、多项「、」
+    // 相连末项前「与」，输出逐字不变）。
+    let last = items.pop().expect("「前置/后续节点段落」恒在场");
+    let sentence = if items.is_empty() {
+        last.to_owned()
+    } else {
+        format!("{}与{last}", items.join("、"))
     };
     format!("\n学习图节点没有课程简报：内容忠于{sentence}。\n")
 }
