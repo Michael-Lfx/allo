@@ -1,5 +1,57 @@
     use super::*;
 
+    #[tokio::test]
+    async fn submit_scope_guard_rejects_stopped_revoked_or_moved_turns() {
+        use nomifun_api_types::voice::{
+            VoiceConnectionState, VoiceSessionPhase, VoiceTaskCommand,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        {
+            let mut snapshot = manager
+                .snapshot
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            snapshot.instance_id = "guard-host".into();
+            snapshot.session_id = Some("guard-session".into());
+            snapshot.turn_id = Some("guard-turn".into());
+            snapshot.phase = VoiceSessionPhase::Dispatching;
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+        }
+        let command = VoiceTaskCommand {
+            command_id: "guard-command".into(),
+            session_id: "guard-session".into(),
+            turn_id: "guard-turn".into(),
+            goal: "读取文件".into(),
+            record_id: None,
+            binding_id: None,
+        };
+        assert!(manager.submit_scope_guard("guard-host", &command).is_ok());
+        manager
+            .revoked_sessions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .push_back(command.session_id.clone());
+        assert_eq!(
+            manager.submit_scope_guard("guard-host", &command).unwrap_err(),
+            "task_scope_changed"
+        );
+        manager
+            .revoked_sessions
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        manager.shutdown_requested.store(true, Ordering::Release);
+        assert_eq!(
+            manager.submit_scope_guard("guard-host", &command).unwrap_err(),
+            "task_scope_changed"
+        );
+    }
+
     fn verify_feature_headless_binary() {
         let binary = std::env::var_os("VOICE_COMPANION_BIN")
             .map(std::path::PathBuf::from)

@@ -512,6 +512,10 @@ pub struct VoiceCompanionProcessManager {
     task_sync_seq: AtomicU64,
     events: broadcast::Sender<VoiceSessionSnapshot>,
     projection_started: AtomicBool,
+    /// At most one detached maintenance job may run at a time. The daemon
+    /// stream reader only schedules it; it never awaits storage, admission or
+    /// cleanup work.
+    maintenance_running: AtomicBool,
     generation: AtomicU64,
     process_changed: Notify,
     shutdown_requested: AtomicBool,
@@ -1265,6 +1269,7 @@ impl VoiceCompanionProcessManager {
             task_sync_seq: AtomicU64::new(0),
             events,
             projection_started: AtomicBool::new(false),
+            maintenance_running: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             process_changed: Notify::new(),
             shutdown_requested: AtomicBool::new(false),
@@ -1609,7 +1614,7 @@ impl VoiceCompanionProcessManager {
         if source.session_id.as_deref() != Some(&binding.session_id) {
             return Ok(());
         }
-        if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
+        if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp | VoiceSessionPhase::TextFollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected)
         {
@@ -1656,7 +1661,7 @@ impl VoiceCompanionProcessManager {
         if tasks.announcement_claimed(&task.command_id)? {return Ok(());}
         let source = match self.refresh_daemon_snapshot().await {Ok(source) => source,Err(_) => return Ok(())};
         if source.session_id.as_deref() != Some(&binding.session_id) { return Ok(()); }
-        if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
+        if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp | VoiceSessionPhase::TextFollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected) {return Ok(());}
         let text = format_task_result_announcement(task, goal, nomifun_api_types::voice::is_english_locale(source.locale.as_deref()));
@@ -1750,7 +1755,7 @@ impl VoiceCompanionProcessManager {
         if self.prompted_approvals.lock().unwrap_or_else(|error|error.into_inner()).contains(&confirmation.approval_id){return Ok(());}
         let source=match self.refresh_daemon_snapshot().await {Ok(source)=>source,Err(_)=>return Ok(())};
         if source.session_id.as_deref() != Some(&binding.session_id) { return Ok(()); }
-        if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
+        if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp | VoiceSessionPhase::TextFollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected) {return Ok(());}
         let summary=nomifun_ai_agent::voice_confirmation_summary(&confirmation.tool_name,&confirmation.arguments).ok_or("task_approval_detail_required")?;
@@ -1786,25 +1791,102 @@ impl VoiceCompanionProcessManager {
         }
     }
 
-    async fn submit_task(self: &Arc<Self>, request: VoiceTaskSubmitRequest) -> Result<VoiceTaskDelivery, String> {
-        if self.resource_write_active.load(Ordering::Acquire) {
-            return Err("voice_resource_write_in_progress".into());
+    fn submit_scope_guard(
+        &self,
+        instance_id: &str,
+        command: &nomifun_api_types::voice::VoiceTaskCommand,
+    ) -> Result<(), String> {
+        if self.resource_write_active.load(Ordering::Acquire) || self.shutdown_requested.load(Ordering::Acquire) {
+            return Err("task_scope_changed".into());
         }
-        let tasks = self.tasks.clone().ok_or("runtime_unavailable")?;
         let snapshot = self.snapshot();
-        if request.instance_id != snapshot.instance_id {return Err("task_scope_changed".into());}
+        if instance_id != snapshot.instance_id
+            || snapshot.session_id.as_deref() != Some(command.session_id.as_str())
+            || snapshot.turn_id.as_deref() != Some(command.turn_id.as_str())
+            || !matches!(
+                snapshot.phase,
+                VoiceSessionPhase::Deciding | VoiceSessionPhase::Dispatching
+            )
+            || !snapshot.enabled
+            || snapshot.connection != VoiceConnectionState::Connected
+            || self
+                .revoked_sessions
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(&command.session_id)
+        {
+            return Err("task_scope_changed".into());
+        }
+        Ok(())
+    }
+
+    async fn submit_task(self: &Arc<Self>, request: VoiceTaskSubmitRequest) -> Result<VoiceTaskDelivery, String> {
+        let tasks = self.tasks.clone().ok_or("runtime_unavailable")?;
+        self.submit_scope_guard(&request.instance_id, &request.command)?;
         if let Some(delivery)=tasks.replay(&request.command).await? {
             self.project_task(delivery.task.clone());
             return Ok(delivery);
         }
-        if snapshot.session_id.as_deref() != Some(request.command.session_id.as_str())
-            || snapshot.turn_id.as_deref() != Some(request.command.turn_id.as_str())
-            || !matches!(snapshot.phase, VoiceSessionPhase::Deciding | VoiceSessionPhase::Dispatching)
-            || !snapshot.enabled || snapshot.connection != VoiceConnectionState::Connected
-            || self.revoked_sessions.read().unwrap_or_else(|error|error.into_inner()).contains(&request.command.session_id)
-        { return Err("task_scope_changed".into()); }
         let recorder = self.dialogue_recorder.as_ref().ok_or("binding_invalid")?;
-        let frozen = recorder.task_configuration(&request.command).await?.ok_or("binding_invalid")?;
+        let frozen = match recorder.task_configuration(&request.command).await {
+            Ok(Some(frozen)) => frozen,
+            Ok(None) => return Err("binding_invalid".into()),
+            Err(code) if code == "task_delivery_pending" => {
+                // The Complete frame legitimately races the background history
+                // projection. Return an honest pending receipt now, but keep
+                // the exact command alive and create the task once the frozen
+                // projection becomes durable. Never mint a second command.
+                let recorder = recorder.clone();
+                let tasks = tasks.clone();
+                let manager = self.clone();
+                let command = request.command.clone();
+                let instance_id = request.instance_id.clone();
+                tokio::spawn(async move {
+                    for _ in 0..50 {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        let frozen = match recorder.task_configuration(&command).await {
+                            Ok(Some(frozen)) => frozen,
+                            Ok(None) => return,
+                            Err(code) if code == "task_delivery_pending" => continue,
+                            Err(_) => return,
+                        };
+                        // The original admission can disappear while the
+                        // background projection retry is waiting. Re-check the
+                        // exact instance/session/turn/phase/revocation fence
+                        // immediately before the irreversible submit.
+                        if let Err(code) = manager.submit_scope_guard(&instance_id, &command) {
+                            manager.project_task_error(code);
+                            return;
+                        }
+                        let result = tasks
+                            .submit_frozen_with_handoff_queued_with_context(
+                                command.clone(),
+                                frozen.config,
+                                Some(frozen.preset),
+                                frozen.handoff_content,
+                                frozen.display_text,
+                                frozen.conversation_id,
+                                frozen.message_id,
+                                frozen.voice_context_digest,
+                            )
+                            .await;
+                        match result {
+                            Ok(delivery) => manager.project_task(delivery.task),
+                            Err(code) => {
+                                if let Ok(task) = tasks.status_for(&command.command_id).await {
+                                    manager.project_task(task);
+                                } else {
+                                    manager.project_task_error(code);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                });
+                return Err("task_delivery_pending".into());
+            }
+            Err(code) => return Err(code),
+        };
         let config = frozen.config;
         // Admission belongs to the host: dropping a voice request cannot cancel
         // an accepted task or abandon its durable delivery record.
@@ -2418,14 +2500,41 @@ impl VoiceCompanionProcessManager {
                             _ = manager.process_changed.notified() => break,
                             _ = recovery_tick.tick() => {
                                 if manager.shutdown_requested.load(Ordering::Acquire)
-                                    || generation!=manager.generation.load(Ordering::Acquire)
-                                    || manager.recover_audio_if_needed().await {break;}
-                                if let Err(error) = manager.reconcile_empty_placeholders().await {
-                                    tracing::debug!(%error, "voice placeholder cleanup deferred");
-                                }
+                                    || generation!=manager.generation.load(Ordering::Acquire) {break;}
                                 admission_ticks = admission_ticks.wrapping_add(1);
-                                if admission_ticks % 2 == 0 {
-                                    manager.refresh_wake_admission().await;
+                                // Storage cleanup, audio recovery and admission
+                                // refresh may block on the journal/preparation
+                                // gate. They must never stop the snapshot reader,
+                                // otherwise a FollowUp can stay invisible behind
+                                // a maintenance RPC.
+                                if !manager.maintenance_running.swap(true, Ordering::AcqRel) {
+                                    let maintenance = manager.clone();
+                                    let maintenance_generation = generation;
+                                    tokio::spawn(async move {
+                                        if !maintenance.shutdown_requested.load(Ordering::Acquire) {
+                                            let _ = maintenance.recover_audio_if_needed().await;
+                                            if maintenance.shutdown_requested.load(Ordering::Acquire)
+                                                || maintenance_generation
+                                                    != maintenance.generation.load(Ordering::Acquire)
+                                            {
+                                                maintenance
+                                                    .maintenance_running
+                                                    .store(false, Ordering::Release);
+                                                return;
+                                            }
+                                            if let Err(error) = maintenance.reconcile_empty_placeholders().await {
+                                                tracing::debug!(%error, "voice placeholder cleanup deferred");
+                                            }
+                                            if admission_ticks % 2 == 0
+                                                && !maintenance.shutdown_requested.load(Ordering::Acquire)
+                                                && maintenance_generation
+                                                    == maintenance.generation.load(Ordering::Acquire)
+                                            {
+                                                maintenance.refresh_wake_admission().await;
+                                            }
+                                        }
+                                        maintenance.maintenance_running.store(false, Ordering::Release);
+                                    });
                                 }
                                 continue;
                             },

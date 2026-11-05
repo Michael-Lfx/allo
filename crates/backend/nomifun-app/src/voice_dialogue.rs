@@ -389,7 +389,25 @@ const RECORDING_QUEUE_CAPACITY: usize = 16;
 /// does not inherit a fixed per-turn latency.
 const RECORD_COMPLETION_GRACE_MS: u64 = 20;
 const RECORDING_JOB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Transient projection contention is retried a bounded number of times.
+/// The model output is already durable in the journal, so a retry replays only
+/// storage work and never re-calls the model or creates a new command.
+const RECORDING_JOB_MAX_ATTEMPTS: usize = 3;
+const RECORDING_JOB_RETRY_BASE: std::time::Duration = std::time::Duration::from_millis(100);
 const RECORDING_WORKER_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn is_transient_recording_error(error: &VoiceDialogueRecorderError) -> bool {
+    match error {
+        VoiceDialogueRecorderError::BindingBusy(_) => true,
+        VoiceDialogueRecorderError::WriteFailed(message) => {
+            message.contains("timeout")
+                || message.contains("busy")
+                || message.contains("gate")
+                || message.contains("temporarily")
+        }
+        _ => false,
+    }
+}
 
 fn note_recording_failure(
     recorder: &dyn VoiceDialogueRecorder,
@@ -535,18 +553,44 @@ impl RecordingQueue {
                     }
                 }
             };
-            let result = match tokio::time::timeout(
-                queue.job_timeout,
-                job.recorder
-                    .record_pair(&job.conversation_id, &job.request, &job.content),
-            )
-            .await
-            {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err(VoiceDialogueRecorderError::WriteFailed(
-                    "record_job_timeout".into(),
-                )),
+            let mut attempt = 1usize;
+            let result = loop {
+                let timed = tokio::time::timeout(
+                    queue.job_timeout,
+                    job.recorder
+                        .record_pair(&job.conversation_id, &job.request, &job.content),
+                )
+                .await;
+                let transient_error = match &timed {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) if is_transient_recording_error(error) => Some(error.clone()),
+                    Ok(Err(_)) => None,
+                    Err(_) => Some(VoiceDialogueRecorderError::WriteFailed(
+                        "record_job_timeout".into(),
+                    )),
+                };
+                let transient = transient_error.is_some();
+                if transient && attempt < RECORDING_JOB_MAX_ATTEMPTS {
+                    // Surface the first fast failure to the Complete frame's
+                    // short grace, then keep retrying the durable journal work
+                    // in the background without another model call.
+                    if let Some(completion) = job.completion.take() {
+                        let _ = completion.send(Err(transient_error.clone().unwrap_or(
+                            VoiceDialogueRecorderError::WriteFailed("record_retry".into()),
+                        )));
+                    }
+                }
+                if !transient || attempt >= RECORDING_JOB_MAX_ATTEMPTS {
+                    break match timed {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(VoiceDialogueRecorderError::WriteFailed(
+                            "record_job_timeout".into(),
+                        )),
+                    };
+                }
+                tokio::time::sleep(RECORDING_JOB_RETRY_BASE * attempt as u32).await;
+                attempt += 1;
             };
             if let Err(error) = &result {
                 note_recording_failure(
@@ -1913,6 +1957,87 @@ mod tests {
         })
         .await
         .expect("idle worker must remove its sender entry");
+    }
+
+    #[tokio::test]
+    async fn recording_queue_retries_transient_busy_without_a_second_job() {
+        struct RetryRecorder {
+            attempts: Arc<std::sync::atomic::AtomicUsize>,
+            succeeded: Arc<std::sync::atomic::AtomicBool>,
+        }
+        #[async_trait]
+        impl VoiceDialogueRecorder for RetryRecorder {
+            async fn preflight(
+                &self,
+                _request: &VoiceDialogueRequest,
+            ) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+                unreachable!()
+            }
+            async fn record_pair(
+                &self,
+                _conversation_id: &str,
+                _request: &VoiceDialogueRequest,
+                _assistant_content: &str,
+            ) -> Result<(), VoiceDialogueRecorderError> {
+                if self
+                    .attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 0
+                {
+                    Err(VoiceDialogueRecorderError::BindingBusy(
+                        "preparation_gate_busy".into(),
+                    ))
+                } else {
+                    self.succeeded
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        }
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let succeeded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let queue = Arc::new(RecordingQueue::with_limits(
+            2,
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(50),
+        ));
+        let (completion, completed) = tokio::sync::oneshot::channel();
+        let mut request = VoiceDialogueRequest::new("retry prompt");
+        request.session_id = Some("session-retry".into());
+        request.turn_id = Some("turn-retry".into());
+        queue.enqueue(RecordingJob {
+            recorder: Arc::new(RetryRecorder {
+                attempts: attempts.clone(),
+                succeeded: succeeded.clone(),
+            }),
+            conversation_id: "voice-conv-retry".into(),
+            request,
+            content: "retry reply".into(),
+            completion: Some(completion),
+        });
+        // The short Complete-frame grace intentionally sees the first fast
+        // transient failure; the bounded retry continues in the background.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), completed)
+            .await
+            .expect("first completion must arrive")
+            .expect("completion channel must stay open");
+        assert!(matches!(
+            first,
+            Err(VoiceDialogueRecorderError::BindingBusy(ref reason))
+                if reason == "preparation_gate_busy"
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !succeeded.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("transient busy must recover without a second job");
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one failed projection plus one bounded retry; no second job"
+        );
     }
 
     #[tokio::test]

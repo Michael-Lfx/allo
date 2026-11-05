@@ -1192,6 +1192,252 @@
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_task_delivery_keeps_the_call_alive() {
+        use nomifun_api_types::voice::{VoiceSessionPhase, VoiceTaskSnapshot, VoiceTaskSubmitRequest};
+        use nomifun_voice_terminal::{driver::StubVoiceRouter, playback::TestAudioSink, task_client::VoiceTaskClient};
+
+        struct UnknownClient;
+        #[async_trait::async_trait]
+        impl VoiceTaskClient for UnknownClient {
+            async fn current(&self) -> Result<Option<VoiceTaskSnapshot>, String> {
+                Ok(None)
+            }
+            async fn control(
+                &self,
+                _: nomifun_api_types::voice::VoiceTaskControlCommand,
+            ) -> Result<VoiceTaskSnapshot, String> {
+                Err("unused".into())
+            }
+            async fn submit(
+                &self,
+                _: VoiceTaskSubmitRequest,
+            ) -> Result<nomifun_api_types::voice::VoiceTaskDelivery, String> {
+                Err("task_delivery_unknown".into())
+            }
+        }
+
+        let root = tempdir().unwrap();
+        let (capture, _producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("读取工作区文件")),
+            Arc::new(StubVoiceRouter::new(
+                serde_json::from_value(serde_json::json!({
+                    "intent_type":"agent_task", "task_goal":"读取工作区文件", "requires_confirmation":false
+                }))
+                .unwrap(),
+            )),
+        );
+        let runtime = runtime.with_tasks(Arc::new(UnknownClient)).with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(std::sync::atomic::AtomicUsize::new(0)))),
+        );
+        runtime
+            .update_feedback(
+                serde_json::from_value(
+                    serde_json::json!({"mode":"off","volume":0,"speak_replies":false}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        runtime.handle_wake().await.unwrap();
+        assert_eq!(
+            runtime
+                .driver
+                .lock()
+                .await
+                .handle_event(AcousticEvent::SpeechEnd),
+            Ok(AcousticState::Deciding)
+        );
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let generation = runtime.playback.generation_id();
+        let old = runtime.snapshot();
+        VoiceCompanionRuntime::start_utterance(
+            vec![0.1; 1600],
+            runtime.driver.clone(),
+            runtime.router.clone(),
+            runtime.transcriber.clone(),
+            runtime.playback.clone(),
+            runtime.event_tx.clone(),
+            runtime.tts.clone(),
+            runtime.task_client.clone(),
+            &runtime.active_turn,
+            runtime.input_generation.clone(),
+            generation,
+            runtime.pending_utterances.clone(),
+            old.session_id.clone(),
+            runtime.engine_check_native_busy.clone(),
+            runtime.native_degraded.clone(),
+            runtime.native_job_epoch.clone(),
+            runtime.native_admission.clone(),
+            None,
+            None,
+        );
+        let turn = runtime.active_turn.lock().unwrap().take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), turn)
+            .await
+            .expect("unknown task delivery must finish the turn")
+            .unwrap();
+        let after = runtime.snapshot();
+        assert!(
+            after.ended_reason.is_none(),
+            "an unknown receipt must not manufacture a failed/ended call"
+        );
+        assert_eq!(after.phase, VoiceSessionPhase::Dispatching);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while runtime.snapshot().phase != VoiceSessionPhase::TextFollowUp {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("unknown delivery watchdog must publish an honest text follow-up");
+        let recovered = runtime.snapshot();
+        assert!(recovered.ended_reason.is_none());
+        assert!(recovered.assistant_text.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_task_receipt_prevents_pending_watchdog_from_overwriting_it() {
+        use nomifun_api_types::voice::{
+            VoiceSessionControlRequest, VoiceSessionPhase, VoiceTaskResultAnnouncement,
+            VoiceTaskSnapshot, VoiceTaskStatus, VoiceTaskSubmitRequest,
+        };
+        use nomifun_voice_terminal::{
+            driver::StubVoiceRouter, playback::TestAudioSink, task_client::VoiceTaskClient,
+        };
+
+        struct UnknownClient;
+        #[async_trait::async_trait]
+        impl VoiceTaskClient for UnknownClient {
+            async fn current(&self) -> Result<Option<VoiceTaskSnapshot>, String> {
+                Ok(None)
+            }
+            async fn control(
+                &self,
+                _: nomifun_api_types::voice::VoiceTaskControlCommand,
+            ) -> Result<VoiceTaskSnapshot, String> {
+                Err("unused".into())
+            }
+            async fn submit(
+                &self,
+                _: VoiceTaskSubmitRequest,
+            ) -> Result<nomifun_api_types::voice::VoiceTaskDelivery, String> {
+                Err("task_delivery_unknown".into())
+            }
+        }
+
+        let root = tempdir().unwrap();
+        let (capture, _producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("读取工作区文件")),
+            Arc::new(StubVoiceRouter::new(
+                serde_json::from_value(serde_json::json!({
+                    "intent_type":"agent_task", "task_goal":"读取工作区文件", "requires_confirmation":false
+                }))
+                .unwrap(),
+            )),
+        );
+        let runtime = runtime.with_tasks(Arc::new(UnknownClient)).with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(std::sync::atomic::AtomicUsize::new(0)))),
+        );
+        runtime
+            .update_feedback(
+                serde_json::from_value(
+                    serde_json::json!({"mode":"off","volume":0,"speak_replies":false}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        runtime.handle_wake().await.unwrap();
+        assert_eq!(
+            runtime
+                .driver
+                .lock()
+                .await
+                .handle_event(AcousticEvent::SpeechEnd),
+            Ok(AcousticState::Deciding)
+        );
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let generation = runtime.playback.generation_id();
+        let old = runtime.snapshot();
+        VoiceCompanionRuntime::start_utterance(
+            vec![0.1; 1600],
+            runtime.driver.clone(),
+            runtime.router.clone(),
+            runtime.transcriber.clone(),
+            runtime.playback.clone(),
+            runtime.event_tx.clone(),
+            runtime.tts.clone(),
+            runtime.task_client.clone(),
+            &runtime.active_turn,
+            runtime.input_generation.clone(),
+            generation,
+            runtime.pending_utterances.clone(),
+            old.session_id.clone(),
+            runtime.engine_check_native_busy.clone(),
+            runtime.native_degraded.clone(),
+            runtime.native_job_epoch.clone(),
+            runtime.native_admission.clone(),
+            None,
+            None,
+        );
+        let turn = runtime.active_turn.lock().unwrap().take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), turn)
+            .await
+            .expect("unknown task delivery must finish the turn")
+            .unwrap();
+        let after = runtime.snapshot();
+        assert_eq!(after.phase, VoiceSessionPhase::Dispatching);
+        let task = VoiceTaskSnapshot {
+            command_id: format!(
+                "voice-{}",
+                after.turn_id.as_deref().expect("turn id")
+            ),
+            session_id: after.session_id.clone().expect("session id"),
+            acoustic_turn_id: after.turn_id.clone().expect("turn id"),
+            conversation_id: Some("conversation".into()),
+            message_id: Some("message".into()),
+            runtime_turn_id: Some("runtime-turn".into()),
+            status: VoiceTaskStatus::Accepted,
+            result_ok: None,
+            result_text: None,
+            error_code: None,
+        };
+        runtime.update_task_status(Some(task.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(3300)).await;
+        let driver = runtime.driver.lock().await;
+        assert_eq!(driver.current_state(), AcousticState::Listening);
+        drop(driver);
+        assert_eq!(runtime.snapshot().phase, VoiceSessionPhase::Listening);
+        assert!(
+            runtime.snapshot().assistant_text.is_none(),
+            "the pending watchdog must not overwrite a real receipt with synthetic text"
+        );
+        let announcement = VoiceTaskResultAnnouncement {
+            scope: VoiceSessionControlRequest {
+                instance_id: after.instance_id.clone(),
+                session_id: Some(task.session_id.clone()),
+                turn_id: Some(task.acoustic_turn_id.clone()),
+            },
+            command_id: task.command_id.clone(),
+            notification_id: Some("receipt-notification".into()),
+            attempt_id: Some("receipt-attempt".into()),
+            goal: Some("读取工作区文件".into()),
+            text: "任务已完成。".into(),
+        };
+        runtime
+            .announce_task_result(announcement)
+            .await
+            .expect("a real receipt must leave the session able to play the result");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_dialogue_error_cannot_change_a_new_session() {
         use nomifun_voice_terminal::{contract::VoiceDecision, driver::{RouteError, VoiceRouter}};
 

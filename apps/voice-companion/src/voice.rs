@@ -3417,20 +3417,117 @@ impl VoiceCompanionRuntime {
                     if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                         return;
                     }
-                    let _ = driver_guard.handle_event(AcousticEvent::TaskAccepted);
+                    // A transport timeout is not proof that the host rejected the
+                    // command. Keep the call and the command identity alive; a
+                    // later follow-up may still observe the real task receipt.
+                    let delivery_unknown = matches!(
+                        code.as_deref(),
+                        Some(
+                            "task_delivery_unknown"
+                                | "task_delivery_pending"
+                                | "task_status_unavailable"
+                        )
+                    );
+                    if !delivery_unknown {
+                        let _ = driver_guard.handle_event(AcousticEvent::TaskAccepted);
+                    }
                     drop(driver_guard);
                     let failed = code.is_some();
                     if let Some(code) = code {
-                        let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {stage:"task".into(),code}, &control_scope);
-                        voice_feedback::play(playback,event_tx,VoiceCueKind::Error,generation).await;
+                        if delivery_unknown {
+                            warn!(code, "voice_task_delivery_unknown_kept_session_alive");
+                            let watchdog_events = event_tx.clone();
+                            let watchdog_driver = driver.clone();
+                            let watchdog_scope = control_scope.clone();
+                            let watchdog_command_id = command.command_id.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                                let current = watchdog_events.snapshot();
+                                if !watchdog_scope.matches(&current) || current.ended_reason.is_some() {
+                                    return;
+                                }
+                                // A real receipt may have arrived after the 3s
+                                // submit timeout. Never overwrite it with the
+                                // local pending notice.
+                                if current.task.as_ref().is_some_and(|task| {
+                                    task.command_id == watchdog_command_id
+                                        && !matches!(
+                                            task.status,
+                                            nomifun_api_types::voice::VoiceTaskStatus::Unknown
+                                                | nomifun_api_types::voice::VoiceTaskStatus::Delivering
+                                        )
+                                }) {
+                                    // A real receipt owns the rest of the turn.
+                                    // Release the local dispatching state without
+                                    // publishing a synthetic pending notice, so a
+                                    // later success can play its result summary.
+                                    let mut guard = watchdog_driver.lock().await;
+                                    if guard.current_state() == AcousticState::DispatchingTask {
+                                        let _ = guard.handle_event(AcousticEvent::TaskAccepted);
+                                        if guard.current_state() == AcousticState::Idle {
+                                            let _ = guard.handle_event(AcousticEvent::WakeHit);
+                                            let idle_secs = effective_idle_timeout(
+                                                watchdog_events.as_ref(),
+                                            );
+                                            if guard.begin_listening_window_with_secs(idle_secs) {
+                                                let _ = watchdog_events.send_scoped(
+                                                    VoiceCompanionEvent::Listening,
+                                                    &watchdog_scope,
+                                                );
+                                                let _ = watchdog_events.send_scoped(
+                                                    VoiceCompanionEvent::ListeningReady {
+                                                        timeout_secs: idle_secs,
+                                                    },
+                                                    &watchdog_scope,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    return;
+                                }
+                                let mut guard = watchdog_driver.lock().await;
+                                if guard.current_state() != AcousticState::DispatchingTask {
+                                    return;
+                                }
+                                // Keep the acks honest: the text says the receipt
+                                // is unconfirmed. TaskAccepted only releases the
+                                // local dispatching state so a later real result
+                                // can use the normal summary playback path.
+                                let _ = guard.handle_event(AcousticEvent::TaskAccepted);
+                                drop(guard);
+                                let is_en = nomifun_api_types::voice::is_english_locale(
+                                    watchdog_events.snapshot().locale.as_deref(),
+                                );
+                                let text = if is_en {
+                                    "Task receipt is not confirmed yet. You can keep talking or check the conversation."
+                                } else {
+                                    "任务接单状态尚未确认，可继续说话或在会话中查看结果。"
+                                };
+                                let _ = watchdog_events.send_scoped(
+                                    VoiceCompanionEvent::ResponseReady { text: text.into() },
+                                    &watchdog_scope,
+                                );
+                                let _ = watchdog_events.send_scoped(
+                                    VoiceCompanionEvent::FollowUpStarted { text_only: true },
+                                    &watchdog_scope,
+                                );
+                                let _ = watchdog_events.send_scoped(
+                                    VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 },
+                                    &watchdog_scope,
+                                );
+                            });
+                        } else {
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {stage:"task".into(),code}, &control_scope);
+                            voice_feedback::play(playback,event_tx,VoiceCueKind::Error,generation).await;
+                        }
                     }
                     let current = event_tx.snapshot();
                     if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                         return;
                     }
-                    if failed {
+                    if failed && !delivery_unknown {
                         let _ = event_tx.send_scoped(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed}, &control_scope);
-                    } else {
+                    } else if !failed {
                         let has_pending = {
                             let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
                             p.front().is_some_and(|item| item.generation_id == generation)

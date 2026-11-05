@@ -1443,6 +1443,152 @@ async fn review_missing_frozen_execution_cannot_bypass_the_cleared_conversation_
 }
 
 #[tokio::test]
+async fn task_configuration_waits_for_projection_without_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    let request = VoiceDialogueRequest::scoped("race-session", "race-turn", "读取文件");
+    let conversation = match recorder.preflight(&request).await.unwrap() {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    recorder
+        .record_pair(
+            &conversation,
+            &request,
+            r#"{"intent_type":"agent_task","task_goal":"读取文件","spoken_ack":"读取文件"}"#,
+        )
+        .await
+        .unwrap();
+    let journal = dir
+        .path()
+        .join("voice")
+        .join(format!("dialogue-{USER_ID}.json"));
+    let mut records: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    let record_index = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|record| {
+            record.get("request").and_then(|request| request.get("voice_record_id")).and_then(|id| id.as_str())
+                == request.voice_record_id.as_deref()
+        })
+        .expect("the frozen record must exist");
+    records.as_array_mut().unwrap()[record_index]["projected"] = serde_json::Value::Bool(false);
+    std::fs::write(&journal, serde_json::to_vec(&records).unwrap()).unwrap();
+    let command = nomifun_api_types::voice::VoiceTaskCommand {
+        command_id: "race-command".into(),
+        session_id: "race-session".into(),
+        turn_id: "race-turn".into(),
+        goal: "读取文件".into(),
+        record_id: request.voice_record_id.clone(),
+        binding_id: request.binding_id.clone(),
+    };
+    let pending = recorder.task_configuration(&command).await;
+    assert_eq!(
+        pending.err().as_deref(),
+        Some("task_delivery_pending"),
+        "a not-yet-projected record is a recoverable pending state, never a command conflict"
+    );
+    records.as_array_mut().unwrap()[record_index]["projected"] = serde_json::Value::Bool(true);
+    std::fs::write(&journal, serde_json::to_vec(&records).unwrap()).unwrap();
+    let projection = recorder
+        .task_configuration(&command)
+        .await
+        .expect("task configuration must succeed once projection is durable")
+        .expect("frozen execution must exist");
+    assert!(!projection.config.workspace.as_str().is_empty());
+}
+
+#[tokio::test]
+async fn task_configuration_recovers_when_projection_finishes_during_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    let request = VoiceDialogueRequest::scoped("race2-session", "race2-turn", "读取文件");
+    let conversation = match recorder.preflight(&request).await.unwrap() {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+    recorder
+        .record_pair(
+            &conversation,
+            &request,
+            r#"{"intent_type":"agent_task","task_goal":"读取文件","spoken_ack":"读取文件"}"#,
+        )
+        .await
+        .unwrap();
+    let journal = dir
+        .path()
+        .join("voice")
+        .join(format!("dialogue-{USER_ID}.json"));
+    let record_id = request.voice_record_id.clone().expect("record id");
+    let projected_false = {
+        let mut records: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+        let index = records
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|record| {
+                record
+                    .get("request")
+                    .and_then(|request| request.get("voice_record_id"))
+                    .and_then(|id| id.as_str())
+                    == Some(record_id.as_str())
+            })
+            .expect("the frozen record must exist");
+        records.as_array_mut().unwrap()[index]["projected"] = serde_json::Value::Bool(false);
+        std::fs::write(&journal, serde_json::to_vec(&records).unwrap()).unwrap();
+        index
+    };
+    let setter = {
+        let journal = journal.clone();
+        let record_id = record_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let mut records: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            let index = records
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|record| {
+                    record
+                        .get("request")
+                        .and_then(|request| request.get("voice_record_id"))
+                        .and_then(|id| id.as_str())
+                        == Some(record_id.as_str())
+                })
+                .expect("record still exists");
+            records.as_array_mut().unwrap()[index]["projected"] =
+                serde_json::Value::Bool(true);
+            std::fs::write(&journal, serde_json::to_vec(&records).unwrap()).unwrap();
+        })
+    };
+    let command = nomifun_api_types::voice::VoiceTaskCommand {
+        command_id: "race2-command".into(),
+        session_id: "race2-session".into(),
+        turn_id: "race2-turn".into(),
+        goal: "读取文件".into(),
+        record_id: request.voice_record_id.clone(),
+        binding_id: request.binding_id.clone(),
+    };
+    let started = std::time::Instant::now();
+    let configured = recorder.task_configuration(&command).await;
+    let elapsed = started.elapsed();
+    setter.await.unwrap();
+    let configured = configured.expect("projection completion must recover").expect("frozen config");
+    assert!(!configured.config.workspace.as_str().is_empty());
+    assert!(
+        elapsed >= std::time::Duration::from_millis(150),
+        "must not resolve before the test projection completes"
+    );
+    let _ = projected_false;
+}
+
+#[tokio::test]
 async fn test_c01_lock_inversion_barrier_prevention() {
     let dir = tempfile::tempdir().unwrap();
     let models = Arc::new(nomifun_voice_models::ModelManager::new(

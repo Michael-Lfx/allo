@@ -179,3 +179,54 @@ test('a stale instance cannot add live rows when the current instance is known',
  expect(mergeVoiceTranscript(old,id,[],state)).toEqual([]);
  expect(content(mergeVoiceTranscript(snapshot,id,[],state))).toEqual(['即时转写','第一句']);
 });
+
+test('empty-history live rows take a recent first-seen time instead of the 1970 epoch',()=>{
+ const now=1_760_000_000_000;
+ const history=reconcile(createLiveVoiceHistory(),{now}).state;
+ const messages=buildVoiceLiveMessages(snapshot,id,[],history);
+ expect(messages).toHaveLength(2);
+ for(const message of messages){
+  expect(message.created_at!).toBeGreaterThanOrEqual(now);
+  expect(message.created_at!).toBeLessThan(now+10);
+ }
+ expect(messages[0].created_at!).toBeLessThan(messages[1].created_at!);
+ expect(buildVoiceLiveMessages(snapshot,id,[],history).map(message=>message.created_at)).toEqual(messages.map(message=>message.created_at));
+});
+
+test('a turn keeps its first-seen time across snapshots, volume changes and later reconciles',()=>{
+ const now=1_760_000_000_000;
+ const first=reconcile(createLiveVoiceHistory(),{now}).state;
+ expect(first.observedAt.get('b')).toBe(now);
+ const firstCreated=buildVoiceLiveMessages(snapshot,id,[],first).map(message=>message.created_at);
+ const jitter={...snapshot,seq:99,audio:{rms_milli:88}} as VoiceSnapshot;
+ const second=reconcile(first,{snapshot:jitter,now:now+5_000});
+ expect(second.state.observedAt.get('b')).toBe(now);
+ expect(buildVoiceLiveMessages(jitter,id,[],second.state).map(message=>message.created_at)).toEqual(firstCreated);
+ const updated={...snapshot,conversation:[{...turn,assistant_text:'第一句。'}]};
+ const third=reconcile(second.state,{snapshot:updated,now:now+9_000});
+ expect(third.state.observedAt.get('b')).toBe(now);
+});
+
+test('durable rows anchor live rows to their DB created_at instead of the epoch',()=>{
+ const dbTime=1_712_345_678_901;
+ const persistedRow={message_id:'u',msg_id:'u',content:{content:'任务进度？'},position:'right',created_at:dbTime} as TMessage;
+ const messages=buildVoiceLiveMessages(snapshot,id,[persistedRow]);
+ expect(messages).toHaveLength(1);
+ expect(messages[0].created_at!).toBeGreaterThanOrEqual(dbTime);
+ expect(messages[0].created_at!).toBeLessThan(dbTime+10);
+});
+
+test('durable rows without a usable created_at still fall back to a recent clock',()=>{
+ const before=Date.now();
+ const messages=buildVoiceLiveMessages(snapshot,id,rows('u'));
+ expect(messages).toHaveLength(1);
+ expect(messages[0].created_at!).toBeGreaterThanOrEqual(before);
+ expect(messages[0].created_at!).toBeLessThan(before+60_000);
+});
+
+test('live row identity and ordering stay deterministic',()=>{
+ expect(buildVoiceLiveMessages(snapshot,id,[]).map(message=>message.id)).toEqual([
+  `voice-live:${id}:session:b:right`,
+  `voice-live:${id}:session:b:left`,
+ ]);
+});
