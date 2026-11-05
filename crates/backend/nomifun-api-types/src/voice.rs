@@ -47,7 +47,8 @@ impl Default for VoiceFeedbackConfig {
             dismiss_phrases: vec!["退下吧".into(), "结束通话".into(), "休息吧".into()],
             dismiss_reply: "好的，再见".into(),
             tts_backend: "local".into(),
-            tts_speed: 1.3,
+            // Product default; keep nomifun-voice-terminal's Sherpa config in sync.
+            tts_speed: 1.1,
             idle_timeout_secs: 30,
             input_device: None,
         }
@@ -1879,7 +1880,9 @@ fn default_wake_reply() -> String { "我在".into() }
 fn default_interject_keyword() -> String { "Flowy".into() }
 fn default_dismiss_phrases() -> Vec<String> { vec!["退下吧".into(), "结束通话".into(), "休息吧".into()] }
 fn default_dismiss_reply() -> String { "好的，再见".into() }
-fn default_tts_speed() -> f32 { 1.3 }
+/// Product default. The local Sherpa config mirrors this value so a missing
+/// preference and a provider fallback cannot drift to different speeds.
+fn default_tts_speed() -> f32 { 1.1 }
 fn default_tts_volume() -> u8 { 100 }
 fn default_idle_secs() -> u32 { 30 }
 
@@ -2150,7 +2153,13 @@ mod task_control_classifier_tests {
         let empty_json = "{}";
         let from_empty: VoiceUserPreferences = serde_json::from_str(empty_json).unwrap();
         assert_eq!(from_empty, prefs);
-        assert_eq!(from_empty.tts_speed, 1.3);
+        assert_eq!(from_empty.tts_speed, 1.1);
+        assert_eq!(VoiceFeedbackConfig::default().tts_speed, 1.1);
+        for speed in [1.3_f32, 1.0_f32, 1.1_f32] {
+            let explicit: VoiceUserPreferences =
+                serde_json::from_str(&format!(r#"{{"tts_speed":{speed}}}"#)).unwrap();
+            assert_eq!(explicit.tts_speed, speed, "explicit saved speed must survive");
+        }
         assert_eq!(from_empty.tts_volume, 100);
         assert!(from_empty.wake_enabled);
         assert_eq!(from_empty.dismiss_phrases.len(), 3);

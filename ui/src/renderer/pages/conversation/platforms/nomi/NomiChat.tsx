@@ -21,10 +21,23 @@ import {
 } from '@renderer/pages/conversation/Messages/hooks';
 import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Messages/usePendingConfirmationsRecovery';
 import HOC from '@renderer/utils/ui/HOC';
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import NomiSendBox from './NomiSendBox';
+import VoiceKeyboardWaitRow from './VoiceKeyboardWaitRow';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
+import { getVoiceTask, type VoiceTaskSnapshot } from '@common/adapter/voiceCompanion';
+import {
+  buildVoiceKeyboardWaitUserPreview,
+  hasAuthoritativeVoiceReply,
+  isVoiceKeyboardWaitExpired,
+  phaseFromDeliveryError,
+  phaseFromVoiceTask,
+  voiceKeyboardWaitStatusKey,
+  type VoiceKeyboardWait,
+  type VoiceKeyboardWaitPhase,
+} from './voiceKeyboardWait';
 import {mergeVoiceTranscript, createLiveVoiceHistory, reconcileLiveVoiceHistory} from '@renderer/pages/voiceSession/liveVoiceTurn';
 import { mergeWithCapabilities, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { emitter } from '@/renderer/utils/emitter';
@@ -115,7 +128,133 @@ const NomiChat: React.FC<{
     attemptedRefresh.current = live.refreshKey;
     void refreshVoiceHistory();
   }, [isVoiceConversation, live.refreshKey, historyPaging.refresh]);
+  const { t } = useTranslation();
+  // One keyboard task is visible at a time; a new command replaces this row.
+  const [keyboardWait, setKeyboardWait] = useState<VoiceKeyboardWait | null>(null);
+  const keyboardWaitPhaseRef = useRef<VoiceKeyboardWaitPhase | null>(null);
+  keyboardWaitPhaseRef.current = keyboardWait?.phase ?? null;
+  const refreshVoiceHistoryRef = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    setKeyboardWait(null);
+  }, [conversation_id]);
+
+  const handleVoiceKeyboardWait = useCallback(
+    (info: { conversationId: ConversationId; commandId: string; text: string }) => {
+      if (!isVoiceConversation || info.conversationId !== conversation_id) return;
+      setKeyboardWait({
+        conversationId: info.conversationId,
+        commandId: info.commandId,
+        text: info.text,
+        phase: 'sending',
+        startedAt: Date.now(),
+        task: null,
+      });
+    },
+    [conversation_id, isVoiceConversation]
+  );
+
+  const handleVoiceKeyboardResult = useCallback(
+    (info: {
+      conversationId: ConversationId;
+      commandId: string;
+      task?: VoiceTaskSnapshot;
+      error?: unknown;
+    }) => {
+      if (!isVoiceConversation || info.conversationId !== conversation_id) return;
+      setKeyboardWait(previous => {
+        if (!previous || previous.commandId !== info.commandId) return previous;
+        if (!info.task) {
+          return { ...previous, phase: phaseFromDeliveryError(info.error) };
+        }
+        return { ...previous, task: info.task, phase: phaseFromVoiceTask(info.task) };
+      });
+    },
+    [conversation_id, isVoiceConversation]
+  );
+
+  useEffect(() => {
+    refreshVoiceHistoryRef.current = refreshVoiceHistory;
+  }, [refreshVoiceHistory]);
+
+  useEffect(() => {
+    if (!keyboardWait || keyboardWait.conversationId !== conversation_id) return;
+    const commandId = keyboardWait.commandId;
+    const startedAt = keyboardWait.startedAt;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let refreshed = false;
+    const failedMeanwhile = () => keyboardWaitPhaseRef.current === 'failed';
+    const tick = async () => {
+      if (stopped || failedMeanwhile()) return;
+      if (isVoiceKeyboardWaitExpired({ startedAt }, Date.now())) {
+        setKeyboardWait(previous => (previous?.commandId === commandId ? null : previous));
+        return;
+      }
+      let task: VoiceTaskSnapshot | null = null;
+      try {
+        task = await getVoiceTask(commandId);
+      } catch {
+        if (stopped || failedMeanwhile()) return;
+        setKeyboardWait(previous =>
+          previous?.commandId === commandId ? { ...previous, phase: 'unknown' } : previous
+        );
+      }
+      if (stopped || failedMeanwhile()) return;
+      if (task) {
+        setKeyboardWait(previous =>
+          previous?.commandId === commandId
+            ? { ...previous, task, phase: phaseFromVoiceTask(task) }
+            : previous
+        );
+        if (task.status === 'completed' && !refreshed) {
+          refreshed = true;
+          void refreshVoiceHistoryRef.current();
+        }
+        if (task.status === 'failed') return;
+      }
+      timer = setTimeout(() => void tick(), 900);
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [keyboardWait?.commandId, keyboardWait?.startedAt, conversation_id]);
+
+  useEffect(() => {
+    if (keyboardWait?.phase !== 'failed') return;
+    const commandId = keyboardWait.commandId;
+    const timer = setTimeout(() => {
+      setKeyboardWait(previous => (previous?.commandId === commandId ? null : previous));
+    }, 5_000);
+    return () => clearTimeout(timer);
+  }, [keyboardWait?.commandId, keyboardWait?.phase]);
+
+  useEffect(() => {
+    if (
+      keyboardWait &&
+      hasAuthoritativeVoiceReply(persistedMessages, keyboardWait.task)
+    ) {
+      setKeyboardWait(null);
+    }
+  }, [persistedMessages, keyboardWait]);
+
+  const keyboardWaitStatusText = keyboardWait
+    ? t(voiceKeyboardWaitStatusKey(keyboardWait.phase), {
+        defaultValue: keyboardWait.phase,
+      })
+    : '';
+  const keyboardWaitUserPreview = useMemo(
+    () => buildVoiceKeyboardWaitUserPreview(keyboardWait, persistedMessages),
+    [keyboardWait, persistedMessages]
+  );
+
   const voiceMessages = isVoiceConversation ? mergeVoiceTranscript(voiceSnapshot, conversation_id, persistedMessages, live.state) : undefined;
+  const baseMessages = voiceMessages ?? (initialUserPreview ? [initialUserPreview] : undefined);
+  const messagesWithKeyboardWait = keyboardWaitUserPreview.length
+    ? [...(baseMessages ?? []), ...keyboardWaitUserPreview]
+    : baseMessages;
   usePendingConfirmationsRecovery(conversation_id, { enabled: !readOnly });
   const [dynamicModes, setDynamicModes] = useState<AgentModeOption[]>([]);
   const turnActivity = useNomiMessage(conversation_id, {
@@ -177,7 +316,7 @@ const NomiChat: React.FC<{
         <div className={CHAT_CONTENT_COLUMN_CLASSES}>
           <FlexFullContainer>
             <MessageList
-              messages={voiceMessages ?? (initialUserPreview ? [initialUserPreview] : undefined)}
+              messages={messagesWithKeyboardWait}
               className='flex-1'
               emptySlot={resolvedEmptySlot}
               onLoadOlder={historyPaging.loadOlder}
@@ -185,6 +324,11 @@ const NomiChat: React.FC<{
               loadingOlder={historyPaging.loadingOlder}
             />
           </FlexFullContainer>
+          {keyboardWait ? (
+            <div className='shrink-0'>
+              <VoiceKeyboardWaitRow wait={keyboardWait} statusText={keyboardWaitStatusText} />
+            </div>
+          ) : null}
           {!readOnly && !hideSendBox && (
             <>
               <GoalStatusNotice conversation_id={conversation_id} />
@@ -208,6 +352,8 @@ const NomiChat: React.FC<{
                 hideModelSelector={hideModelSelector}
                 dynamicModes={dynamicModes}
                 turnActivity={turnActivity}
+                onVoiceKeyboardWait={handleVoiceKeyboardWait}
+                onVoiceKeyboardResult={handleVoiceKeyboardResult}
               />
             </>
           )}

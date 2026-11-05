@@ -6,6 +6,15 @@
     "resetScopeUnavailable": "Voice status is still syncing. Nothing was cleared; please retry shortly.",
     "retryStart": "Check call startup"
   },
+  "keyboardWait": {
+    "sending": "Sending",
+    "queued": "Queued",
+    "accepted": "Task accepted, running",
+    "delivering": "Submitting task",
+    "syncing": "Syncing reply",
+    "unknown": "Checking task status",
+    "failed": "Send failed; you can retry"
+  },
   "dock": {
     "syncing": "Syncing voice status",
     "notInCall": "Not in a call",

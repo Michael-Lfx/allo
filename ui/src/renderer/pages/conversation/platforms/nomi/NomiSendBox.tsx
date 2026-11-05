@@ -5,7 +5,7 @@ import { conversationTarget, type ConversationId, type MessageId } from '@/commo
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession, voiceStartNeedsPrepare } from '@common/adapter/voiceCompanion';
+import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession, voiceStartNeedsPrepare, type VoiceTaskSnapshot } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
 import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
@@ -245,6 +245,17 @@ const NomiSendBox: React.FC<{
   voiceHistoryFailed?: boolean;
   onRetryVoiceHistory?: () => Promise<void>;
   voiceKind?: ConversationVoiceKind;
+  onVoiceKeyboardWait?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    text: string;
+  }) => void;
+  onVoiceKeyboardResult?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    task?: VoiceTaskSnapshot;
+    error?: unknown;
+  }) => void;
 }> = ({
   conversation_id,
   modelSelection,
@@ -258,6 +269,8 @@ const NomiSendBox: React.FC<{
   voiceHistoryFailed = false,
   onRetryVoiceHistory,
   voiceKind,
+  onVoiceKeyboardWait,
+  onVoiceKeyboardResult,
 }) => {
   const navigate = useNavigate();
   const [workspacePath, setWorkspacePath] = useState('');
@@ -1154,6 +1167,8 @@ const NomiSendBox: React.FC<{
       voiceSendAttempts: voiceSendAttempts.current,
       resolveConversationKind,
       sendVoiceKeyboardMessage,
+      onVoiceCommand: onVoiceKeyboardWait,
+      onVoiceCommandResult: onVoiceKeyboardResult,
       enqueue: safeEnqueue,
       clearFiles,
       emitFileClear: () => emitter.emit('nomi.selected.file.clear'),

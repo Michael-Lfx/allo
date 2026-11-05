@@ -51,6 +51,19 @@ export interface NomiSendDispatchDependencies {
     commandId: string,
     message: string
   ) => Promise<{ task: VoiceTaskSnapshot }>;
+  /** Fired immediately after the stable command identity exists, before the host await. */
+  onVoiceCommand?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    text: string;
+  }) => void;
+  /** Fired after the host returns a receipt/failure for that exact command. */
+  onVoiceCommandResult?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    task?: VoiceTaskSnapshot;
+    error?: unknown;
+  }) => void;
   enqueue: (
     item: { input: string; files: string[]; workspace_path?: string }
   ) => Promise<ConversationCommandQueueItem | null> | ConversationCommandQueueItem | null;
@@ -83,7 +96,30 @@ export async function dispatchNomiSend(deps: NomiSendDispatchDependencies): Prom
       commandId = (deps.generateId ?? uuid)();
       deps.voiceSendAttempts.set(key, commandId);
     }
-    await deps.sendVoiceKeyboardMessage(deps.conversationId, commandId, deps.message);
+    deps.onVoiceCommand?.({
+      conversationId: deps.conversationId,
+      commandId,
+      text: deps.message,
+    });
+    try {
+      const { task } = await deps.sendVoiceKeyboardMessage(
+        deps.conversationId,
+        commandId,
+        deps.message
+      );
+      deps.onVoiceCommandResult?.({
+        conversationId: deps.conversationId,
+        commandId,
+        task,
+      });
+    } catch (error) {
+      deps.onVoiceCommandResult?.({
+        conversationId: deps.conversationId,
+        commandId,
+        error,
+      });
+      throw error;
+    }
     if (deps.voiceSendAttempts.get(key) === commandId) {
       deps.voiceSendAttempts.delete(key);
     }

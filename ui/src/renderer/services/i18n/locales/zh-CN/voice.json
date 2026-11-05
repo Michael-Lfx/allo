@@ -6,6 +6,15 @@
     "resetScopeUnavailable": "语音状态尚未同步，暂未清理。请稍后重试。",
     "retryStart": "核对通话启动状态"
   },
+  "keyboardWait": {
+    "sending": "正在发送",
+    "queued": "排队中",
+    "accepted": "任务已接单，正在执行",
+    "delivering": "正在提交任务",
+    "syncing": "正在同步回复",
+    "unknown": "正在确认任务状态",
+    "failed": "发送失败，可重试"
+  },
   "dock": {
     "syncing": "正在同步语音状态",
     "notInCall": "未在通话",

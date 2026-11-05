@@ -3,7 +3,7 @@ import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import {AppMessage as Message} from '@renderer/components/notifications';
-import {isVoiceSessionInactive, shouldFollowVoiceSession} from '@renderer/components/layout/voiceWakeNavigation';
+import {nextVoiceWakeNavigation} from '@renderer/components/layout/voiceWakeNavigation';
 import {useTranslation} from 'react-i18next';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
@@ -314,33 +314,44 @@ const MeetingOpenListener: React.FC = () => {
 
 // Global voice companion wake listener: when wake word is detected from any idle page
 // (e.g. Home / Guid / New Conversation), navigates seamlessly to the bound active voice session.
-const GlobalVoiceWakeListener: React.FC = () => {
+const isVoiceWakeRouteProtected = (pathname: string): boolean => {
+  if (typeof window === 'undefined') return true;
+  return (
+    window.location.hash.startsWith('#/companion') ||
+    pathname.startsWith('/settings') ||
+    pathname.startsWith('/models')
+  );
+};
+
+export const GlobalVoiceWakeListener: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   // Tracks the call session we already followed. A different conversation must
   // stay where the user put it while the call is still active; only a new
   // call activation (wake / incoming call) may take the route.
   const followedSessionRef = useRef<string | null>(null);
+  // Keep the subscription stable across route changes; rebuilding it for every
+  // navigation resets the consumer sequence watermark used to drop stale
+  // snapshots. The callback reads the latest path through this ref instead.
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
 
   useEffect(() => {
-    if (typeof window === 'undefined' || window.location.hash.startsWith('#/companion')) return;
-    if (location.pathname.startsWith('/settings') || location.pathname.startsWith('/models')) return;
-
     let disposed = false;
     let cleanup: (() => void) | undefined;
 
     void import('@common/adapter/voiceCompanion').then(({ subscribeVoiceSession }) => {
       if (disposed) return;
       void subscribeVoiceSession((snapshot) => {
-        if (disposed) return;
-        if (isVoiceSessionInactive(snapshot)) {
-          followedSessionRef.current = null;
-          return;
-        }
-        const target = shouldFollowVoiceSession(followedSessionRef.current, snapshot);
-        followedSessionRef.current = snapshot.session_id ?? null;
-        if (target && location.pathname !== target) {
-          void navigate(target);
+        if (disposed || isVoiceWakeRouteProtected(pathnameRef.current)) return;
+        const next = nextVoiceWakeNavigation(
+          followedSessionRef.current,
+          snapshot,
+          pathnameRef.current,
+        );
+        followedSessionRef.current = next.followedSessionId;
+        if (next.target) {
+          void navigate(next.target);
         }
       }).then((unsub) => {
         if (disposed) unsub();
@@ -352,7 +363,7 @@ const GlobalVoiceWakeListener: React.FC = () => {
       disposed = true;
       cleanup?.();
     };
-  }, [navigate, location.pathname]);
+  }, [navigate]);
 
   return null;
 };

@@ -1026,7 +1026,8 @@ impl Default for SherpaOfflineTtsConfig {
             rule_fsts: None,
             rule_fars: None,
             num_threads: default_tts_threads(),
-            speed: 1.3,
+            // Keep in sync with nomifun-api-types' product default.
+            speed: 1.1,
             sid: 0,
             noise_scale: 0.667,
             noise_scale_w: 0.8,
@@ -1108,7 +1109,8 @@ impl SherpaOfflineTtsConfig {
             rule_fsts,
             rule_fars,
             num_threads: default_tts_threads(),
-            speed: 1.3,
+            // Keep in sync with nomifun-api-types' product default.
+            speed: 1.1,
             sid: 0,
             noise_scale: 0.667,
             noise_scale_w: 0.8,
@@ -1946,6 +1948,11 @@ impl TtsProvider for FallbackTtsProvider {
 #[cfg(all(test, feature = "local-tts"))]
 mod tts_cache_tests {
     use super::WavCache;
+
+    #[test]
+    fn default_local_tts_speed_is_one_point_one() {
+        assert_eq!(super::SherpaOfflineTtsConfig::default().speed, 1.1);
+    }
 
     #[test]
     fn cache_key_carries_voice_locale_speed_and_model_identity() {

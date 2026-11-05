@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   isVoiceSessionInactive,
+  nextVoiceWakeNavigation,
   shouldFollowVoiceSession,
   type VoiceSessionRouteSnapshot,
 } from './voiceWakeNavigation';
@@ -46,6 +47,28 @@ describe('voice wake navigation (problem 1: stop stealing the route)', () => {
     expect(shouldFollowVoiceSession(null, snapshot({ connection: 'connecting' }))).toBeNull();
     expect(shouldFollowVoiceSession(null, snapshot({ enabled: false }))).toBeNull();
     expect(shouldFollowVoiceSession(null, snapshot({ binding: null }))).toBeNull();
+  });
+
+  test('an unbound active frame keeps the activation available for the later bound frame', () => {
+    const unbound = nextVoiceWakeNavigation(null, snapshot({ binding: null }), '/guid');
+    expect(unbound).toEqual({ followedSessionId: null, target: null });
+
+    const bound = nextVoiceWakeNavigation(unbound.followedSessionId, snapshot(), '/guid');
+    expect(bound.target).toBe('/conversation/conv-voice');
+    expect(bound.followedSessionId).toBe('session-1');
+
+    // The same consumed session, and arriving on the target page, must not navigate again.
+    expect(nextVoiceWakeNavigation(bound.followedSessionId, snapshot(), '/guid').target).toBeNull();
+    expect(
+      nextVoiceWakeNavigation(null, snapshot(), '/conversation/conv-voice')
+    ).toEqual({ followedSessionId: 'session-1', target: null });
+  });
+
+  test('a stale unbound frame does not clear an older consumed session', () => {
+    expect(nextVoiceWakeNavigation('session-1', snapshot({ binding: null }), '/guid')).toEqual({
+      followedSessionId: 'session-1',
+      target: null,
+    });
   });
 
   test('idle snapshots reset the followed session so the next wake can navigate', () => {

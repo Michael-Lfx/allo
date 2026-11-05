@@ -39,6 +39,29 @@ export function shouldFollowVoiceSession(
   return `/conversation/${encodeURIComponent(conversationId)}`;
 }
 
+/**
+ * Advances the followed-session marker only when the snapshot has a real
+ * binding target. An unbound active frame is a normal intermediate state; it
+ * must not consume the activation, otherwise the later bound frame is ignored.
+ */
+export function nextVoiceWakeNavigation(
+  previousSessionId: string | null | undefined,
+  snapshot: VoiceSessionRouteSnapshot | null | undefined,
+  currentPath: string
+): { followedSessionId: string | null; target: string | null } {
+  if (isVoiceSessionInactive(snapshot)) {
+    return { followedSessionId: null, target: null };
+  }
+  const route = shouldFollowVoiceSession(previousSessionId, snapshot);
+  if (!route) {
+    return { followedSessionId: previousSessionId ?? null, target: null };
+  }
+  return {
+    followedSessionId: snapshot?.session_id ?? null,
+    target: route === currentPath ? null : route,
+  };
+}
+
 /** True when the snapshot ended or went back to idle, so the next activation counts as new. */
 export function isVoiceSessionInactive(
   snapshot: VoiceSessionRouteSnapshot | null | undefined
