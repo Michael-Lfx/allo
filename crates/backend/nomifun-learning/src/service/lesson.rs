@@ -1526,46 +1526,26 @@ impl LearningService {
         };
 
         // 8) 先例摘要（#180，n3 D5 口径）：闭包内教出本点涉及概念的节点，
-        //    **限本课程**（跨课程视角由前置路径承载）；先行节标题复用
-        //    taught_sections_for_lessons（零正文 = 空 sections 仍入行）；
-        //    按 node_id 升序稳定（归因纯函数面已排序）。
+        //    **限本课程**（跨课程视角由前置路径承载）；按 node_id 升序稳定
+        //    （归因纯函数面已排序）。p02 双传收敛：节要点由前置路径条目唯一
+        //    承载，先例只做概念归属映射——不再取先行节标题。
         let precedents: Vec<crate::lesson_draft::LessonPrecedent> = match closure.as_ref() {
             None => Vec::new(),
-            Some((appearance, meta)) => {
-                let mut teachers: Vec<(String, Vec<String>)> = appearance
-                    .teachers
-                    .iter()
-                    .filter(|(node, _)| {
-                        meta.get(node)
-                            .is_some_and(|(_, course)| course == course_id.as_str())
+            Some((appearance, meta)) => appearance
+                .teachers
+                .iter()
+                .filter(|(node, _)| {
+                    meta.get(node)
+                        .is_some_and(|(_, course)| course == course_id.as_str())
+                })
+                .filter_map(|(node, concepts)| {
+                    let (node_title, _) = meta.get(node)?;
+                    Some(crate::lesson_draft::LessonPrecedent {
+                        concept: concepts.join("、"),
+                        node_name: node_title.clone(),
                     })
-                    .cloned()
-                    .collect();
-                let teacher_ids: Vec<String> =
-                    teachers.iter().map(|(node, _)| node.clone()).collect();
-                let taught = self.taught_sections_for_lessons(&teacher_ids).await?;
-                teachers
-                    .drain(..)
-                    .filter_map(|(node, concepts)| {
-                        let (node_title, _) = meta.get(&node)?;
-                        // 零正文（先行节点未生成节）= 空 sections 仍入行
-                        // （learnhub「文件缺席 = 空」同形——行名与概念仍在）。
-                        let sections = taught
-                            .get(&node)
-                            .map(|rows| {
-                                rows.iter()
-                                    .map(|(title, _)| title.clone())
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        Some(crate::lesson_draft::LessonPrecedent {
-                            concept: concepts.join("、"),
-                            node_name: node_title.clone(),
-                            sections,
-                        })
-                    })
-                    .collect()
-            }
+                })
+                .collect(),
         };
 
         Ok(GraphNodeTopology {
@@ -1806,22 +1786,26 @@ impl LearningService {
                 let degree_statement = structure_degree_statement(
                     course.try_get("structure_json").map_err(internal)?,
                 );
-                let mut context_text =
-                    format!("学习目标：{}\n程度声明：{}", goal.trim(), degree_statement.trim());
+                // 头两行（p02 C 空值行省略）：与整卡生成同款——goal/degree
+                // 空白各自省行（旧档空串不再渲出「程度声明：」空行）。
+                let mut context_text = crate::render_graph_goal_degree_lines(
+                    goal.trim(),
+                    degree_statement.trim(),
+                );
                 // 声明面两行（absorb-8 z03）：缺席（旧档空串）整段省略
                 // （渲染函数内折叠——与整卡生成骨架行同标签同措辞）。
                 if let Some(declarations) = crate::render_intent_scope_lines(
                     Some(lesson_row.intent.as_str()),
                     Some(lesson_row.scope.as_str()),
                 ) {
-                    context_text.push('\n');
                     context_text.push_str(&declarations);
                 }
-                if !topology.prerequisite_path.trim().is_empty() {
-                    context_text.push_str(&format!(
-                        "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{}",
-                        topology.prerequisite_path
-                    ));
+                // 前置路径块与整卡生成同款渲染（p02 B 双头合并后的单一块头
+                // ——单节重写与整卡生成同一名相口径）。
+                if let Some(block) =
+                    crate::render_prerequisite_path_block(&topology.prerequisite_path)
+                {
+                    context_text.push_str(&format!("\n\n{block}"));
                 }
                 if let Some(faces) = &topology.concept_faces {
                     context_text.push_str(&format!("\n\n{}", faces.render_text()));
@@ -2652,9 +2636,11 @@ fn first_appearance_set(
     first_appearance_with_teachers(self_teaches, self_assumes, candidates).first_seen
 }
 
-/// 前置段渲染（概念网口径，ADR-0009）：开头一条档位契约（概念已教到标注
-/// 档位——不要重新讲授，只在需要时按该档位复述或引用；档位即停讲深度的
-/// 标尺），逐条 assumes 概念列出「概念 @档位」+ 登记表 definition + 跨课程
+/// 前置段渲染（概念网口径，ADR-0009）：开头一条档位标尺括注（知道=辨认
+/// 复述/会用=解题应用/能教=讲解纠错——正文深度不得超过标注档位；p02 B
+/// 双头合并后「不要重新讲授」契约句上移进块头
+/// [`crate::lesson_draft::render_prerequisite_path_block`]，本函数不再重复），
+/// 逐条 assumes 概念列出「概念 @档位」+ 登记表 definition + 跨课程
 /// 教它的节点（标题/课程 + 出生即带的 purpose + 已生成节的标题要点摘要）。
 /// 零正文场景（教师节点尚未生成内容）不削弱前置段：purpose 与 definition
 /// 都是出生即有的字段。没有任何节点教的概念按未覆盖兜底提示（正常情况下
@@ -2670,7 +2656,6 @@ fn render_prerequisite_path(
         return String::new();
     }
     let mut lines = vec![
-        "前置契约：以下概念已由其他节点教到标注档位，不要重新讲授，只在必要时按该档位复述或引用。".to_owned(),
         "（档位标尺：知道=能辨认复述，会用=能解题应用，能教=能讲解纠错——正文深度不得超过标注档位。）".to_owned(),
     ];
     for (concept, tier, definition, ref_name) in assumes {
@@ -2859,7 +2844,8 @@ mod tests {
 
     /// 前置段渲染（概念网口径，ADR-0009）：逐条 assumes 列「概念（应已掌
     /// 握到「档位」）」+ 跨课程教它的节点行（标题/课程）+ 已生成节的标题
-    /// 要点摘要；没有任何节点教的概念按未覆盖兜底提示。
+    /// 要点摘要；没有任何节点教的概念按未覆盖兜底提示。p02 B 双头合并：
+    /// 「前置契约」句上移进块头，本函数只保留档位标尺括注一次。
     #[test]
     fn prerequisite_path_carries_taught_section_summaries() {
         let assumes = vec![
@@ -2893,9 +2879,9 @@ mod tests {
             ],
         );
         let text = render_prerequisite_path(&assumes, &teachers, &taught);
-        // 档位契约头：不要重新讲授 + 档位即停讲深度标尺。
-        assert!(text.contains("不要重新讲授"), "{text}");
+        // 档位标尺括注保留一次；「前置契约」句已上移进块头（单头单次）。
         assert!(text.contains("能教=能讲解纠错"), "{text}");
+        assert!(!text.contains("前置契约："), "{text}");
         assert!(
             text.contains("勾股定理（学习者应已掌握到「会用」）"),
             "{text}"
@@ -2917,7 +2903,7 @@ mod tests {
     }
 
     /// 教师节点零正文（跨课程首学期常态）时前置段不塌缩：definition +
-    /// purpose + 档位契约独立于已生成节摘要成立（learnhub 约束强化口径）。
+    /// purpose + 档位标尺独立于已生成节摘要成立（learnhub 约束强化口径）。
     #[test]
     fn prerequisite_path_survives_ungenerated_teachers() {
         let assumes = vec![(
@@ -2937,7 +2923,7 @@ mod tests {
             )],
         );
         let text = render_prerequisite_path(&assumes, &teachers, &HashMap::new());
-        assert!(text.contains("不要重新讲授"), "{text}");
+        assert!(text.contains("（档位标尺：知道=能辨认复述"), "{text}");
         assert!(text.contains("定义：把多项式化成几个整式乘积"), "{text}");
         assert!(text.contains("本节练什么：练会观察公因式并提取"), "{text}");
         // 零 purpose 的教师也至少有标题行。
@@ -3197,7 +3183,7 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
-        // 先行节点两节 ready 正文（先例的先行节标题面）。
+        // 先行节点两节 ready 正文（前置路径「已教节」行的数据面）。
         for (section_key, title, position) in
             [("s1", "概念：对数收益的定义", 0), ("s2", "例题：两日换算", 1)]
         {
@@ -3235,16 +3221,12 @@ mod tests {
             topology.teaches_tiers,
             vec![("历史波动率".to_owned(), "知道".to_owned())]
         );
-        // 先例：α 的教师 L1（本课程），概念归到 L1 名下 + 先行节标题；
-        // β 首现无先例。
+        // 先例：α 的教师 L1（本课程），概念归到 L1 名下（p02 双传收敛后
+        // 只做概念归属映射，节要点由前置路径承载）；β 首现无先例。
         assert_eq!(topology.precedents.len(), 1, "{:?}", topology.precedents);
         let precedent = &topology.precedents[0];
         assert_eq!(precedent.concept, "对数收益率");
         assert_eq!(precedent.node_name, "收益率与对数收益率");
-        assert_eq!(
-            precedent.sections,
-            vec!["概念：对数收益的定义".to_owned(), "例题：两日换算".to_owned()]
-        );
     }
 
     /// Known Names 空名单：图课零挂接（双空）时名单为空 → `None`（行省略，

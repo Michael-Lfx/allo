@@ -773,10 +773,14 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let graph = context.graph.as_ref();
     match graph {
         Some(graph) => {
-            text.push_str(&format!(
-                "学习图节点（「本节点」是你要写的课时——只写它的范围，不越界讲后续节点，不重复前置节点已覆盖的内容）：\n学习目标：{}\n程度声明：{}\n",
-                graph.goal.trim(),
-                graph.degree_statement.trim()
+            text.push_str(
+                "学习图节点（「本节点」是你要写的课时——只写它的范围，不越界讲后续节点，不重复前置节点已覆盖的内容）：\n",
+            );
+            // 头两行（p02 C 空值行省略）：程度声明空值省行（真机 L4 空值
+            // 行噪声）；学习目标同款缺席省略——known_names 省行先例同形。
+            text.push_str(&nomifun_learning::render_graph_goal_degree_lines(
+                &graph.goal,
+                &graph.degree_statement,
             ));
             // 时长预算（k03，learnhub #154）：结构阶段估的节点尺寸锚——
             // 规划节容量与写作都对照它；allo 图节点列恒有值。
@@ -821,11 +825,13 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
             }
             if graph.prerequisite_path.is_empty() {
                 text.push_str("本节点没有前置——它是学习图的起点，从零讲起。\n");
-            } else {
-                text.push_str(&format!(
-                    "前置路径（学习者到达本节点前应已掌握，按学习顺序；条目下的要点是各前置实际教过的内容——不要重复讲授）：\n{}\n",
-                    graph.prerequisite_path
-                ));
+            } else if let Some(block) =
+                nomifun_learning::render_prerequisite_path_block(&graph.prerequisite_path)
+            {
+                // p02 B 双头合并：单一块头吸收「前置契约」句（真机 L11-12
+                // 两头并一），档位标尺括注由前置段保留一次。
+                text.push_str(&block);
+                text.push('\n');
             }
             if graph.upcoming_nodes.is_empty() {
                 text.push_str("本节点没有后续节点——结尾句做整个学习图的收束。\n");
@@ -908,10 +914,13 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 excerpt.text
             ));
         }
-    } else if graph.is_some() {
-        text.push_str(
-            "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
-        );
+    } else if let Some(graph) = graph {
+        // 无简报尾注（p02 C，真机 L33）：列项动态拼装，空值项省略——
+        // 不再指向空白程度声明。
+        text.push_str(&nomifun_learning::render_graph_no_brief_note(
+            &graph.goal,
+            &graph.degree_statement,
+        ));
     } else {
         let brief = context.course_description.trim();
         if brief.is_empty() {
@@ -1553,6 +1562,15 @@ mod tests {
         assert!(text.contains("程度声明：聚焦场内标准期权"));
         assert!(text.contains("前置路径"));
         assert!(text.contains("1. 什么是衍生品"));
+        // p02 B 双头合并：单一块头（吸收「前置契约」句），不再出现独立
+        // 契约行（真机 L11-12 两头并一）。
+        assert!(
+            text.contains(
+                "前置路径（学习者到达本节点前应已掌握，按学习顺序；概念已由其他节点教到标注档位——不要重新讲授，只在必要时按该档位复述或引用。条目下的要点是各前置实际教过的内容——不要重复讲授）："
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("前置契约："), "{text}");
         assert!(text.contains("后续节点"));
         assert!(text.contains("期权定价基础"));
         assert!(text.contains("学习图节点没有课程简报"));
@@ -1579,6 +1597,57 @@ mod tests {
         let text = lesson_user_text(&context);
         assert!(text.contains("从零讲起"));
         assert!(text.contains("整个学习图的收束"));
+    }
+
+    /// 空值行省略（p02 C，真机 L4/L33）：程度声明空值省行 + 无简报尾注
+    /// 省其列项；goal/degree 全空时头部只剩「学习图节点」框架行、尾注只剩
+    /// 前置/后续段落列项。
+    #[test]
+    fn lesson_user_text_omits_empty_degree_statement_and_tail_note_item() {
+        let mut context = lesson_context();
+        context.clear_grounding();
+        context.graph = Some(GraphLessonContext {
+            goal: "理解衍生品的基础计量工具".into(),
+            degree_statement: String::new(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
+            intent: None,
+            scope: None,
+        });
+        let text = lesson_user_text(&context);
+        assert!(text.contains("学习目标：理解衍生品的基础计量工具\n"), "{text}");
+        assert!(!text.contains("程度声明"), "{text}");
+        // 尾注：不再指向空白程度声明。
+        assert!(
+            text.contains(
+                "\n学习图节点没有课程简报：内容忠于学习目标与前置/后续节点段落。\n"
+            ),
+            "{text}"
+        );
+
+        // 全空：头部只剩框架行，尾注只剩前置/后续段落列项。
+        context.graph = Some(GraphLessonContext {
+            goal: "  ".into(),
+            degree_statement: " ".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
+            intent: None,
+            scope: None,
+        });
+        let text = lesson_user_text(&context);
+        assert!(text.contains("学习图节点（"), "{text}");
+        assert!(!text.contains("学习目标："), "{text}");
+        assert!(text.contains("内容忠于前置/后续节点段落。"), "{text}");
     }
 
     /// 概念面投影（j07）：图节点路径的用户回合渲染概念面段（首现/非首现/
@@ -1610,7 +1679,11 @@ mod tests {
         assert!(text.contains("首现"));
         assert!(text.contains("非首现"));
         assert!(text.contains("引用名"));
-        assert!(text.contains("旧叫法"));
+        // 旧叫法行方向化（p02 D）：「本课现用名（旧称：…）」新措辞在场，
+        // 「X 又叫 Y」旧方向措辞退场。
+        assert!(text.contains("本课现用名"), "{text}");
+        assert!(text.contains("（旧称：衍生工具）"), "{text}");
+        assert!(!text.contains("又叫"), "{text}");
         assert!(text.contains("用名纪律"));
 
         // 传统路径：graph = None → 概念面段不出现。
@@ -1671,7 +1744,6 @@ mod tests {
             precedents: vec![nomifun_learning::LessonPrecedent {
                 concept: "对数收益率".into(),
                 node_name: "收益率与对数收益率".into(),
-                sections: vec!["概念：对数收益".into(), "例题：两日收益换算".into()],
             }],
             intent: None,
             scope: None,
@@ -1684,10 +1756,11 @@ mod tests {
         // 档位行：深度角进节点块。
         assert!(text.contains("节点档位"), "{text}");
         assert!(text.contains("历史波动率（知道）"), "{text}");
-        // 先例块：概念 ← 节点 + 先行节标题（冒烟判据⑤机械 grep 面）。
+        // 先例块：概念 ← 节点映射（冒烟判据⑤机械 grep 面）；p02 双传收敛
+        // ——节清单不再重复进先例块（前置路径承载节要点）。
         assert!(text.contains("已建立先例"), "{text}");
         assert!(text.contains("概念「对数收益率」← 节点「收益率与对数收益率」"), "{text}");
-        assert!(text.contains("概念：对数收益；例题：两日收益换算"), "{text}");
+        assert!(!text.contains("概念：对数收益；例题：两日收益换算"), "{text}");
 
         // 全空三行：名单 None、档位空、先例空 → 全部省略。
         let mut bare = lesson_context();
