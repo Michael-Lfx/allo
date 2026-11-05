@@ -1,6 +1,14 @@
 # Map: 提示词与上下文质量修复波——absorb-8 真机法证驱动（p01–p03）
 
 <!-- wayfinder:map -->
+<!-- 状态：**已到达目的地（2026-11-05 关波）**。p01–p03 全关（Resolution 在票尾）；
+      集成分支 feat/learning-pctx-fixes 尖端含三票+评审修复轮（44b9fec2a）+
+      r01 立票（3cca17e78），全推 origin。合成树 2037 全绿；真机 content 臂
+      （干净库 run-1793861260083）EXIT=0 判据全过且 p02/p03 形状逐项核验落地
+      （overshoot scope-aware hit=0）；真机 grow 臂两次跑挖出 r01 存量契约矛盾
+      （validate_review 空节点 vs 提示词批级意见格式 → 评审静默降级 PASS），
+      p01 的 fragments 读数验收受其阻塞、随 r01 关票后补跑。并回
+      feat/learn0928 等用户通知。真机凭据链复用 absorb8-smoke 工作目录。 -->
 <!-- 状态：开图（2026-11-05）。来源 = absorb-8 真机两臂（grow/content EXIT=0）
       的提示词与上下文逐段法证（档案 run-1793828585963 / run-1793829277050，
       完整提取在 C:/Users/test/Desktop/work/absorb8-forensics/）。用户指示：
@@ -72,3 +80,12 @@
   触发条件未满足）；ArchivingCompleter turn 响应存档（观测面，非本波）。
 - intent/purpose 分工重叠（教练三文本字段）真机未观察到实际混淆——留观，
   不立票。
+
+## 关波后留观
+
+- **smoke 夹具卫生**：content 臂夹具播种未去重 canonical——复用累积库上
+  registry 同 canonical 多行（旧称行 ×2）、跨课程教师摘要同名课程多行
+  （本节练什么 ×2）；干净库零症状。候选修法（后续小票）：夹具 upsert 或
+  content 臂缺省临时库。
+- **p01 fragments 读数补跑**：r01 关票后 grow 臂补跑一次取
+  total（合并行+单字过滤）真机值。
