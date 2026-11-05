@@ -1,8 +1,7 @@
 # 语音五组问题修复 · 验收报告
 
 - 日期：2026-11-05（UTC+8）
-- 分支：`fix/voice-missing-service-component`；基线提交 `ded6a29dc`，复审修复已作为后续提交落在当前分支；未 push
-- 基线：`bdcbe49f4`
+- 分支：`fix/voice-missing-service-component`；基线 `bdcbe49f4`；实现提交 `ded6a29dc` + `a2519cb99`；未 push
 - 详细方案：`C:\Users\38788\.codex\visualizations\2026\11\05\01a1a965-aa1c-72b2-b7fd-e195b68e18f4\voice-five-issues-repair-plan.zh.md`
 - 任务账本：`PROGRESS.md` / `BLOCKED.md`（本目录）
 
@@ -44,7 +43,7 @@
 | diff hygiene | `git diff --check` | **exit 0** |
 | daemon build | `cargo build -p voice-companion --bin voice-companion` | exit 0 |
 | desktop build | `cargo build -p Flowy` | exit 0 |
-| typecheck baseline | `bun run typecheck` | **exit 2，基线既有 71 errors；改动文件 0 error** |
+| typecheck baseline | `bun run typecheck` | **exit 2，截至 2026-11-05 基线既有 71 errors；改动文件 0 error** |
 | aggregate gate | `bun run check` | **exit 2，同一批基线 typecheck 阻断** |
 
 ## D. 独立审查与修复
@@ -67,4 +66,4 @@
 - TC12 真实两轮天气（真实麦克风、上游 runtime、物理扬声器）未执行；见 `BLOCKED.md`。
 - R2/R4/R5 部分专项时序缺专门 integration 红灯；R4-1 >3s 投影为安全 fail-closed。
 - `bun run typecheck` / `bun run check` 的 71 个基线错误非本次引入；未修无关 UI 类型错误。
-- `ded6a29dc` 为基线提交；本次复审修复已提交在当前分支；未 push。
+- `ded6a29dc` 首轮修复、`a2519cb99` 复审修复；未 push。

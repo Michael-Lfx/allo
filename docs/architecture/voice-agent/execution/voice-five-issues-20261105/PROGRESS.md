@@ -1,8 +1,8 @@
 # 语音五组问题修复 · PROGRESS
 
 - 任务书：`goal` 2026-11-05；基线 `fix/voice-missing-service-component` / `bdcbe49f4`。
+- 实现提交：`ded6a29dc`（首轮修复）+ `a2519cb99`（code-review 复审修复）；未 push。
 - 详细方案：`C:\Users\38788\.codex\visualizations\2026\11\05\01a1a965-aa1c-72b2-b7fd-e195b68e18f4\voice-five-issues-repair-plan.zh.md`
-- 复审修复已提交；未 push。
 
 ## 阶段状态
 

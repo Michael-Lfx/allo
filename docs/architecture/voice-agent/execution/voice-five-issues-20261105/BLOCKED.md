@@ -16,13 +16,13 @@
 
 ## 基线红
 
-- `bun run typecheck`：71 个既有错误（未改文件：videoCanvas/vite.config/jointTraceReplay.test），改动文件 0 error。
+- `bun run typecheck`：截至 2026-11-05 有 71 个既有错误（未改文件：videoCanvas/vite.config/jointTraceReplay.test），改动文件 0 error。
 - `bun run check`：被同一批基线 typecheck 阻断。
 - `cargo fmt --all` 在 Windows 环境报文件名过长；使用改动文件 `rustfmt --check` 替代并通过。
 
 ## 产物 / 提交状态
 
 - `ACCEPTANCE.md`：需求→修复→测试→结论。
-- `ded6a29dc` 为基线提交。
+- 实现提交：`ded6a29dc`（首轮）+ `a2519cb99`（复审）。
 - code-review 后的 F1/F2/F4/F5/F7/F8 修复已提交在当前分支；F6 按既有 Complete-frame 契约保留。
 - 未 push。

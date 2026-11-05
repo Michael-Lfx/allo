@@ -74,6 +74,11 @@ Run the smallest check that covers your change. See
 
 Broad pre-PR pass: `cargo check --workspace && bun run check`
 
+> For large or cross-layer changes, batch the edits first. While editing, run
+> only the minimum check for the affected crate/module plus the focused UI test;
+> run the broad matrix and desktop/daemon/UI builds once after the code is
+> frozen, and do not run cargo builds/tests concurrently.
+
 > `bun run check` is the aggregate gate. It runs the `ui/` frontend checks
 > (typecheck · i18n · theme · button-layout · icons · dead-css · codemirror),
 > the repo-level gates (error-surface contract ·
