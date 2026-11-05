@@ -671,11 +671,7 @@
       "h3Required": "动作模仿需要选择 MiniMax-H3 视频模型",
       "h3Empty": "暂无 MiniMax-H3 视频模型",
       "empty": "暂无可用模型",
-      "noProviders": "请先在模型中心配置平台",
-      "tags": {
-        "value": "性价比",
-        "passRate": "高通过率"
-      }
+      "noProviders": "请先在模型中心配置平台"
     },
     "artifacts": {
       "title": "产物",

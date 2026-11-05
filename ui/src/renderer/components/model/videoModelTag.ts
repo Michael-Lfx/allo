@@ -1,21 +1,4 @@
 import type { ReactElement } from 'react';
-import { isMiniMaxH3VideoModel, isWan3VideoModel } from '@renderer/services/videoModelCapabilities';
-
-/** Catalog marks shown beside specific video models in the generation pickers. */
-export type VideoModelTagKind = 'value' | 'passRate';
-
-/**
- * MiniMax-H3 → 性价比. Wan 3.0 (including prime) → 高通过率.
- * Matching follows the shared video-model detectors so catalog ids
- * (`flowy/wan3.0-video`, `AIPC-…-prime`, `MiniMax-H3`) all qualify.
- */
-export function videoModelTagKind(model: string): VideoModelTagKind | null {
-  const id = model.trim();
-  if (!id) return null;
-  if (isMiniMaxH3VideoModel(id)) return 'value';
-  if (isWan3VideoModel(id)) return 'passRate';
-  return null;
-}
 
 export function videoModelOptionMatches(input: string, value: string, label: string): boolean {
   const needle = input.trim().toLowerCase();

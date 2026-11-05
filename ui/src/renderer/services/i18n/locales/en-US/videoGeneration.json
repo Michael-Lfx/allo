@@ -671,11 +671,7 @@
       "h3Required": "Action imitation requires a MiniMax-H3 video model",
       "h3Empty": "No MiniMax-H3 video model available",
       "empty": "No models available",
-      "noProviders": "Configure a platform in Model Hub first",
-      "tags": {
-        "value": "Best value",
-        "passRate": "High pass rate"
-      }
+      "noProviders": "Configure a platform in Model Hub first"
     },
     "artifacts": {
       "title": "Artifacts",

@@ -3,7 +3,7 @@ import { Select } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked } from '@/renderer/utils/model/planGate';
+import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import { pickDefaultLlmModel } from '../components/modelPreferenceDefaults';
 import type { GenerationPreferences } from './types';
@@ -34,12 +34,12 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
   const llmOptions = useMemo(() => {
     const seen = new Set<string>();
     const opts: { label: React.ReactNode; value: string; disabled?: boolean; locked?: boolean }[] = [];
-    const memberLabel = t('conversation.modelPicker.member', { defaultValue: 'Member' });
+    const memberLabel = t('conversation.modelPicker.member', { defaultValue: '会员' });
     for (const model of llmModels.flat) {
       if (seen.has(model.model)) continue;
       seen.add(model.model);
       const locked = isPlanLocked(model.minTierLevel ?? 0, effectiveModelTier);
-      const planName = model.requiredPlanName?.trim() || memberLabel;
+      const planName = requiredPlanBadgeLabel(model.minTierLevel, model.requiredPlanName, memberLabel);
       opts.push({
         value: model.model,
         disabled: locked,
@@ -47,7 +47,7 @@ const PreferencesPlanningModelSelect: React.FC<PreferencesPlanningModelSelectPro
         label: (
           <span className='flex min-w-0 items-center gap-6px'>
             <span className='min-w-0 truncate'>{`${formatCloudModelLabel(model.model)} · ${model.providerName}`}</span>
-            {locked ? <span className='chat-model-plan-badge shrink-0'>{planName}</span> : null}
+            {planName ? <span className='chat-model-plan-badge shrink-0'>{planName}</span> : null}
           </span>
         ),
       });

@@ -41,6 +41,10 @@ export type ModelChannel = {
         capabilityConfig?: ModelCapabilityConfig;
         /** Catalog `extra.input` includes `image` — Flowy multimodal chat. */
         supportsVision?: boolean;
+        /** Minimum plan tier required to call this model. `0` or absent is unrestricted. */
+        minTierLevel?: number;
+        /** Published plan name at `minTierLevel`, when the catalog has one. */
+        requiredPlanName?: string;
     }>;
 };
 
@@ -414,6 +418,14 @@ export function modelIconUrl(config: AiConfig, value: string) {
     const model = modelOptionName(value);
     const channel = resolveModelChannel(config, value);
     return channel.modelCosts?.find((item) => item.model === model)?.icon?.trim() || "";
+}
+
+export function modelPlanRequirement(config: AiConfig, value: string): { minTierLevel: number; requiredPlanName: string } {
+    const model = modelOptionName(value);
+    const channel = resolveModelChannel(config, value);
+    const cost = channel.modelCosts?.find((item) => item.model === model);
+    const minTierLevel = typeof cost?.minTierLevel === "number" && cost.minTierLevel > 0 ? Math.trunc(cost.minTierLevel) : 0;
+    return { minTierLevel, requiredPlanName: cost?.requiredPlanName?.trim() || "" };
 }
 
 export function modelOptionsFromChannels(channels: ModelChannel[]) {

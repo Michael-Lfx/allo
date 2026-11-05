@@ -33,7 +33,14 @@ function encodeOptions(models: IMediaModelOption[], channelId: string) {
 }
 
 function costEntries(
-  models: Array<{ id: string; name?: string; icon?: string; supportsVision?: boolean }>,
+  models: Array<{
+    id: string;
+    name?: string;
+    icon?: string;
+    supportsVision?: boolean;
+    minTierLevel?: number;
+    requiredPlanName?: string;
+  }>,
   capability: ModelCapability,
   serverBaseUrl?: string
 ): NonNullable<ModelChannel['modelCosts']> {
@@ -42,6 +49,9 @@ function costEntries(
       const model = (m.id || m.name || '').trim();
       if (!model) return null;
       const icon = rewriteCatalogIconUrl(m.icon, serverBaseUrl);
+      const minTierLevel =
+        typeof m.minTierLevel === 'number' && m.minTierLevel > 0 ? Math.trunc(m.minTierLevel) : 0;
+      const requiredPlanName = m.requiredPlanName?.trim();
       return {
         model,
         displayName: (m.name || m.id || model).trim(),
@@ -52,6 +62,8 @@ function costEntries(
         ...(capability === 'text' ? { protocol: 'chat-completion' as const } : {}),
         ...(capability === 'audio' ? { protocol: 'openai-audio' as const } : {}),
         ...(m.supportsVision ? { supportsVision: true } : {}),
+        ...(minTierLevel > 0 ? { minTierLevel } : {}),
+        ...(minTierLevel > 0 && requiredPlanName ? { requiredPlanName } : {}),
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -169,17 +181,35 @@ export function mergeAlloCatalogIntoConfig(
   ]);
   const mediaCosts = [
     ...costEntries(
-      imageModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
+      imageModels.map((m) => ({
+        id: m.id || m.name,
+        name: m.name,
+        icon: m.icon,
+        minTierLevel: m.min_tier_level,
+        requiredPlanName: m.required_plan_name,
+      })),
       'image',
       serverBaseUrl
     ),
     ...costEntries(
-      videoModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
+      videoModels.map((m) => ({
+        id: m.id || m.name,
+        name: m.name,
+        icon: m.icon,
+        minTierLevel: m.min_tier_level,
+        requiredPlanName: m.required_plan_name,
+      })),
       'video',
       serverBaseUrl
     ),
     ...costEntries(
-      audioModels.map((m) => ({ id: m.id || m.name, name: m.name, icon: m.icon })),
+      audioModels.map((m) => ({
+        id: m.id || m.name,
+        name: m.name,
+        icon: m.icon,
+        minTierLevel: m.min_tier_level,
+        requiredPlanName: m.required_plan_name,
+      })),
       'audio',
       serverBaseUrl
     ),

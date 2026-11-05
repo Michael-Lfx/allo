@@ -10,7 +10,7 @@ import { Select, Spin } from '@arco-design/web-react';
 import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked } from '@/renderer/utils/model/planGate';
+import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
 import {
@@ -37,11 +37,6 @@ function mediaModelLabel(model: IMediaModelOption): string {
   return name || formatCloudModelLabel(model.id);
 }
 
-function planBadgeName(name: string | undefined, fallback: string): string {
-  const trimmed = name?.trim();
-  return trimmed || fallback;
-}
-
 interface ModelSelectorsProps {
   value: VimaxModelSelection;
   onChange: (next: VimaxModelSelection) => void;
@@ -66,10 +61,11 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
   const llmModels = useGeneratorModels('text');
   const { imageModels, videoModels, effectiveModelTier: mediaTier, isLoading: mediaLoading } = useMediaModels();
   const effectiveTier = Math.max(profileTier, mediaTier ?? 0);
-  const memberLabel = t('conversation.modelPicker.member', { defaultValue: 'Member' });
-  const planBadge = (name: string | undefined) => (
-    <span className='chat-model-plan-badge shrink-0'>{planBadgeName(name, memberLabel)}</span>
-  );
+  const memberLabel = t('conversation.modelPicker.member', { defaultValue: '会员' });
+  const planBadge = (minTierLevel: number | undefined, name: string | undefined) => {
+    const label = requiredPlanBadgeLabel(minTierLevel, name, memberLabel);
+    return label ? <span className='chat-model-plan-badge shrink-0'>{label}</span> : null;
+  };
   const resolvePopupContainer =
     typeof popupContainer === 'function'
       ? popupContainer
@@ -97,7 +93,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
         label: (
           <span className='flex min-w-0 items-center gap-6px'>
             <span className='min-w-0 truncate'>{`${formatCloudModelLabel(m.model)} · ${m.providerName}`}</span>
-            {locked ? planBadge(m.requiredPlanName) : null}
+            {planBadge(m.minTierLevel, m.requiredPlanName)}
           </span>
         ),
       });
@@ -115,7 +111,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
         label: (
           <span className='flex min-w-0 items-center gap-6px'>
             <span className='min-w-0 truncate'>{mediaModelLabel(m)}</span>
-            {locked ? planBadge(m.required_plan_name) : null}
+            {planBadge(m.min_tier_level, m.required_plan_name)}
           </span>
         ),
       };
@@ -130,11 +126,11 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
         value: m.id,
         label: mediaModelLabel(m),
         locked,
-        planName: m.required_plan_name,
+        planBadge: planBadge(m.min_tier_level, m.required_plan_name),
       };
     });
     return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
-  }, [effectiveTier, videoModels]);
+  }, [effectiveTier, memberLabel, videoModels]);
 
   const videoSelectOptions = useMemo(
     () =>
@@ -145,13 +141,11 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
         label: (
           <span className='flex min-w-0 items-center gap-6px'>
             <VideoModelOptionLabel name={option.label} model={option.value} />
-            {option.locked ? (
-              <span className='chat-model-plan-badge shrink-0'>{planBadgeName(option.planName, memberLabel)}</span>
-            ) : null}
+            {option.planBadge}
           </span>
         ),
       })),
-    [memberLabel, videoOptions]
+    [videoOptions]
   );
 
   // Prefer first available model when session has none yet.

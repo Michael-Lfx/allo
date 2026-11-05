@@ -23,6 +23,7 @@ import {
   type ChatModelOption,
   type ChatModelPickerViewModel,
 } from '@/renderer/utils/model/chatModelPicker';
+import { requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 
 export interface ChatModelPickerMenuProps {
   viewModel: ChatModelPickerViewModel;
@@ -97,10 +98,12 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
       ? t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })
       : undefined;
     const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
-    const planBadge = planLocked
-      ? option.requiredPlanName?.trim() || t('conversation.modelPicker.member', { defaultValue: 'Member' })
-      : undefined;
-    const upgradeHint = planBadge
+    const planBadge = requiredPlanBadgeLabel(
+      option.minTierLevel,
+      option.requiredPlanName,
+      t('conversation.modelPicker.member', { defaultValue: '会员' }),
+    );
+    const upgradeHint = planLocked && planBadge
       ? t('conversation.modelPicker.planRequired', {
           plan: planBadge,
           defaultValue: 'Available after upgrading to {{plan}}',

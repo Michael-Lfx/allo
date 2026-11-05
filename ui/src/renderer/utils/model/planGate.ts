@@ -38,3 +38,16 @@ export function parseCatalogPlanGate(params: unknown): CatalogPlanGate {
 export function isPlanLocked(minTierLevel: number, effectiveTier: number): boolean {
   return minTierLevel > effectiveTier;
 }
+
+/** Label for a model that requires a plan. Absent when the model is open to everyone. */
+export function requiredPlanBadgeLabel(
+  minTierLevel: number | undefined,
+  requiredPlanName: string | undefined,
+  fallback: string,
+): string | undefined {
+  if (typeof minTierLevel !== 'number' || !Number.isFinite(minTierLevel) || minTierLevel <= 0) {
+    return undefined;
+  }
+  const name = requiredPlanName?.trim();
+  return name || fallback;
+}
