@@ -129,6 +129,8 @@ describe('voice conversations never take the passive warmup path', () => {
       { is_voice_conversation: true },
       { session_mode: 'voice' },
       { session_mode: 'companion' },
+      { voice_task_workspace: 'C:/workspace/project' },
+      { voice_creation_request: { request_id: 'req' } },
     ]) {
       let warmupCalls = 0;
       expect(shouldWarmupConversationOnPassiveMount(voiceConversation('pending', false, extra))).toBe(false);

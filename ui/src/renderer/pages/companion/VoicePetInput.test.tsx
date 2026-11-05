@@ -337,9 +337,9 @@ test('unmount stops the polling timer for the tracked task', async () => {
   let polls = 0;
   const app = await harness({
     send: async () => ({task: task({command_id: 'cmd-unmount', status: 'accepted'})}),
-    getTask: async () => {
+    getTask: async (commandId) => {
       polls += 1;
-      return task({status: 'accepted'});
+      return task({command_id: commandId, status: 'accepted'});
     },
     pollIntervalMs: 5,
   });
@@ -360,9 +360,9 @@ test('switching the frozen conversation stops polling the previous task and keep
   let polls = 0;
   const app = await harness({
     send: async () => ({task: task({command_id: 'cmd-switch', status: 'accepted'})}),
-    getTask: async () => {
+    getTask: async (commandId) => {
       polls += 1;
-      return task({status: 'accepted'});
+      return task({command_id: commandId, status: 'accepted'});
     },
     pollIntervalMs: 5,
   });

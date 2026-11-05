@@ -2,7 +2,7 @@
 
 - 任务书：`goal` 2026-11-05；基线 `fix/voice-missing-service-component` / `bdcbe49f4`。
 - 详细方案：`C:\Users\38788\.codex\visualizations\2026\11\05\01a1a965-aa1c-72b2-b7fd-e195b68e18f4\voice-five-issues-repair-plan.zh.md`
-- 未提交、未推送。
+- 复审修复已提交；未 push。
 
 ## 阶段状态
 
@@ -31,7 +31,7 @@
 | 命令 | 结果 |
 | --- | --- |
 | `cargo test -p nomifun-conversation --lib` | **658 passed / 0 failed** |
-| `cargo test -p nomifun-app --lib voice` | **141 passed / 0 failed / 11 ignored** |
+| `cargo test -p nomifun-app --lib voice` | **142 passed / 0 failed / 11 ignored** |
 | `cargo test -p nomifun-app --test voice_dialogue_integration` | **53 passed / 0 failed** |
 | `cargo test -p voice-companion` | **109 passed / 2 ignored / 0 failed**（lib 78 + 31 integration） |
 | `cargo test -p nomifun-voice-terminal` | **60 passed / 3 ignored / 0 failed** |
@@ -53,11 +53,24 @@
 - 复审 R-1（delayed retry scope）→ `submit_scope_guard` + 新测试绿。
 - 复审 R-2（真实回执释放 Dispatching）→ 静默 TaskAccepted + Listening 恢复 + `announce_task_result` 测试绿。
 - 最终复审：**无 Required，放行**。
-- R3 两个 TOCTOU 已做低风险缓解（workspace registry 串行锁、cleanup 逐 id 复核）；registry 另一半 RMW 已登记为 Optional。
+- R3 registry RMW 已用 `save_workspace_entry` 合并写回；cleanup/finish 已逐 id 复核。
 
 ## 未完成
 
 - TC12 真实设备/真实上游 runtime 未执行；见 `BLOCKED.md`。
 - R4-1 投影 >3s 安全 fail-closed（不执行、提示未确认），已明确记录。
 - `bun run typecheck` / `bun run check` 的 71 个基线错误非本次引入。
-- 未提交、未推送。
+- 复审修复已提交；未 push。
+
+## 审查后修复（已提交，未 push）
+
+在基线提交 `ded6a29dc` 之后，按 code-review 发现继续修复，并作为后续提交落在当前分支：
+
+- F1：拆分 `submit_instance_guard` / `submit_session_guard`，replay 先于 session/turn/phase 检查；恢复 `voice_resource_write_in_progress` 错误码；新增 accepted-command 在 Idle 后 replay 测试。
+- F2：`record_pair` phase-1 只做 journal 读写；`refresh_projection_epoch` 的 DB 校验移到锁外；`task_configuration` 改为短锁快照 + 锁外 DB/ledger/上下文 + 短锁回写。
+- F3：更新本文档与 ACCEPTANCE/BLOCKED 的提交状态。
+- F4：UI `isVoiceConversation` 补齐 `voice_task_workspace` / `voice_creation_request` marker。
+- F5：`resolve_target_conversation` 的 registry 写入改为 `save_workspace_entry`（registry 锁内重读、保留更新鲜的时间戳/其他 workspace）。
+- F6：保留既有 Complete-frame 快失败契约，不改为“重试成功才回报”；这是既有行为，不再按缺陷处理。
+- F7：`finish_call_placeholder` finalize 前再次短锁复核 turn 记录。
+- F8：`followsVoicePetTask` 同时校验 command_id，防止全局 query 的 foreign task 被接受。

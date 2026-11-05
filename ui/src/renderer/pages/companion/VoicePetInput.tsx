@@ -20,8 +20,11 @@ export function isVoicePetTaskTerminal(status: VoicePetTrackedStatus): boolean {
  * Only the command this composer submitted may drive its status. A task from
  * another conversation is the global queue's state, never this input's.
  */
-export function followsVoicePetTask(task: VoiceTaskSnapshot, conversationId: string): boolean {
-  return !task.conversation_id || task.conversation_id === conversationId;
+export function followsVoicePetTask(task: VoiceTaskSnapshot, commandId: string, conversationId: string): boolean {
+  // The exact command is the primary identity. A null conversation is only
+  // accepted for that command while the host is still binding it.
+  return task.command_id === commandId
+    && (!task.conversation_id || task.conversation_id === conversationId);
 }
 
 export type VoicePetTaskTrackerPorts = {
@@ -53,7 +56,7 @@ export function trackVoicePetTask(commandId: string, conversationId: string, por
     try {
       const task = await ports.getTask(commandId);
       if (stopped) return;
-      if (!followsVoicePetTask(task, conversationId)) {
+      if (!followsVoicePetTask(task, commandId, conversationId)) {
         stopped = true;
         return;
       }

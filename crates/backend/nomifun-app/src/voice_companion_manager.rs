@@ -1791,17 +1791,31 @@ impl VoiceCompanionProcessManager {
         }
     }
 
-    fn submit_scope_guard(
-        &self,
-        instance_id: &str,
-        command: &nomifun_api_types::voice::VoiceTaskCommand,
-    ) -> Result<(), String> {
-        if self.resource_write_active.load(Ordering::Acquire) || self.shutdown_requested.load(Ordering::Acquire) {
+    /// Fences that must hold even for an already accepted command. This is the
+    /// only part that may run before replay: replay must return the original
+    /// delivery after the live phase/turn has moved on.
+    fn submit_instance_guard(&self, instance_id: &str) -> Result<(), String> {
+        if self.resource_write_active.load(Ordering::Acquire) {
+            return Err("voice_resource_write_in_progress".into());
+        }
+        if self.shutdown_requested.load(Ordering::Acquire) {
             return Err("task_scope_changed".into());
         }
+        if instance_id != self.snapshot().instance_id {
+            return Err("task_scope_changed".into());
+        }
+        Ok(())
+    }
+
+    /// Fences for a command that has not been accepted yet. Keep this after
+    /// `tasks.replay`; otherwise a duplicate request for an accepted command
+    /// looks like a scope change.
+    fn submit_session_guard(
+        &self,
+        command: &nomifun_api_types::voice::VoiceTaskCommand,
+    ) -> Result<(), String> {
         let snapshot = self.snapshot();
-        if instance_id != snapshot.instance_id
-            || snapshot.session_id.as_deref() != Some(command.session_id.as_str())
+        if snapshot.session_id.as_deref() != Some(command.session_id.as_str())
             || snapshot.turn_id.as_deref() != Some(command.turn_id.as_str())
             || !matches!(
                 snapshot.phase,
@@ -1822,11 +1836,12 @@ impl VoiceCompanionProcessManager {
 
     async fn submit_task(self: &Arc<Self>, request: VoiceTaskSubmitRequest) -> Result<VoiceTaskDelivery, String> {
         let tasks = self.tasks.clone().ok_or("runtime_unavailable")?;
-        self.submit_scope_guard(&request.instance_id, &request.command)?;
+        self.submit_instance_guard(&request.instance_id)?;
         if let Some(delivery)=tasks.replay(&request.command).await? {
             self.project_task(delivery.task.clone());
             return Ok(delivery);
         }
+        self.submit_session_guard(&request.command)?;
         let recorder = self.dialogue_recorder.as_ref().ok_or("binding_invalid")?;
         let frozen = match recorder.task_configuration(&request.command).await {
             Ok(Some(frozen)) => frozen,
@@ -1854,7 +1869,10 @@ impl VoiceCompanionProcessManager {
                         // background projection retry is waiting. Re-check the
                         // exact instance/session/turn/phase/revocation fence
                         // immediately before the irreversible submit.
-                        if let Err(code) = manager.submit_scope_guard(&instance_id, &command) {
+                        if let Err(code) = manager
+                            .submit_instance_guard(&instance_id)
+                            .and_then(|()| manager.submit_session_guard(&command))
+                        {
                             manager.project_task_error(code);
                             return;
                         }

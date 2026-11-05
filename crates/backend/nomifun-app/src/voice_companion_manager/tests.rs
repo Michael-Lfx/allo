@@ -30,14 +30,15 @@
             record_id: None,
             binding_id: None,
         };
-        assert!(manager.submit_scope_guard("guard-host", &command).is_ok());
+        assert!(manager.submit_instance_guard("guard-host").is_ok());
+        assert!(manager.submit_session_guard(&command).is_ok());
         manager
             .revoked_sessions
             .write()
             .unwrap_or_else(|error| error.into_inner())
             .push_back(command.session_id.clone());
         assert_eq!(
-            manager.submit_scope_guard("guard-host", &command).unwrap_err(),
+            manager.submit_session_guard(&command).unwrap_err(),
             "task_scope_changed"
         );
         manager
@@ -45,11 +46,99 @@
             .write()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
+        manager.resource_write_active.store(true, Ordering::Release);
+        assert_eq!(
+            manager.submit_instance_guard("guard-host").unwrap_err(),
+            "voice_resource_write_in_progress"
+        );
+        manager.resource_write_active.store(false, Ordering::Release);
         manager.shutdown_requested.store(true, Ordering::Release);
         assert_eq!(
-            manager.submit_scope_guard("guard-host", &command).unwrap_err(),
+            manager.submit_instance_guard("guard-host").unwrap_err(),
             "task_scope_changed"
         );
+    }
+
+    #[tokio::test]
+    async fn accepted_task_replays_after_the_live_turn_has_moved_on() {
+        struct ReplayRuntime;
+        #[async_trait::async_trait]
+        impl VoiceTaskRuntime for ReplayRuntime {
+            async fn resolve_configuration(&self, config: &VoiceExecutionConfig) -> Result<VoiceExecutionConfig, String> { Ok(config.clone()) }
+            async fn prepare_configuration(&self, config: &VoiceExecutionConfig) -> Result<(VoiceExecutionConfig, Option<nomifun_api_types::ResolvedPresetSnapshot>), String> { Ok((config.clone(), None)) }
+            async fn create(&self, _: &str, _: &VoiceExecutionConfig, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>, _: &str) -> Result<String, crate::voice_tasks::TaskMutationError> { Ok("replay-conversation".into()) }
+            async fn create_bound(&self, _: &str, _: &VoiceExecutionConfig, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>, _: &str, target: Option<&str>) -> Result<String, crate::voice_tasks::TaskMutationError> { Ok(target.unwrap_or("replay-conversation").into()) }
+            async fn find_created(&self, _: &str, _: &str) -> Result<Option<String>, String> { Ok(Some("replay-conversation".into())) }
+            async fn append(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<(), crate::voice_tasks::TaskMutationError> { Ok(()) }
+            async fn send_bound(&self, _: &str, _: &str, _: &str, message_id: &str, _: &str, _: &str, _: &str, _: Option<&str>, _: Option<&VoiceExecutionConfig>, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
+                Ok(crate::voice_tasks::TaskReceipt { message_id: message_id.into(), runtime_turn_id: Some("runtime-turn".into()), replayed: false, completed: false, result_ok: None, result_text: None, error_code: None })
+            }
+            async fn send(&self, _: &str, _: &str, _: &str, message_id: &str) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
+                Ok(crate::voice_tasks::TaskReceipt { message_id: message_id.into(), runtime_turn_id: Some("runtime-turn".into()), replayed: false, completed: false, result_ok: None, result_text: None, error_code: None })
+            }
+            async fn observe(&self, _: &str, _: &str, _: &str) -> Result<Option<crate::voice_tasks::TaskReceipt>, String> { Ok(None) }
+            async fn cancel(&self, _: &str, _: &str, _: &str, _: &str) -> Result<(), String> { Ok(()) }
+            async fn confirmations(&self, _: &str, _: &str, _: &str, _: &str) -> Result<Vec<VoiceToolConfirmation>, String> { Ok(Vec::new()) }
+            async fn confirm(&self, _: &str, _: &str, _: &str, _: &str, _: &VoiceToolConfirmation, _: bool) -> Result<(), String> { Ok(()) }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+                dir.path(),
+            )
+            .with_tasks("replay-owner".into(), Arc::new(ReplayRuntime)),
+        );
+        {
+            let mut snapshot = manager.snapshot.write().unwrap_or_else(|error| error.into_inner());
+            snapshot.instance_id = "replay-instance".into();
+            snapshot.session_id = Some("replay-session".into());
+            snapshot.turn_id = Some("replay-turn".into());
+            snapshot.phase = VoiceSessionPhase::Deciding;
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+        }
+        let command = nomifun_api_types::voice::VoiceTaskCommand {
+            command_id: "replay-command".into(),
+            session_id: "replay-session".into(),
+            turn_id: "replay-turn".into(),
+            goal: "读取文件".into(),
+            record_id: None,
+            binding_id: None,
+        };
+        let config = VoiceExecutionConfig {
+            workspace: dir.path().to_string_lossy().into_owned(),
+            model: Some(VoiceModelRef { provider_id: "test-provider".into(), model: "test-model".into() }),
+            preset_id: None,
+            session_mode: None,
+        };
+        let first = manager
+            .tasks
+            .as_ref()
+            .expect("task service")
+            .submit(command.clone(), config)
+            .await
+            .expect("accepted task");
+        assert!(first.freshly_accepted);
+
+        // The live turn has moved on; a retry of the accepted command must
+        // still return its original delivery rather than a fake scope conflict.
+        {
+            let mut snapshot = manager.snapshot.write().unwrap_or_else(|error| error.into_inner());
+            snapshot.phase = VoiceSessionPhase::Idle;
+            snapshot.turn_id = None;
+            snapshot.session_id = None;
+        }
+        let replay = manager
+            .submit_task(nomifun_api_types::voice::VoiceTaskSubmitRequest {
+                instance_id: "replay-instance".into(),
+                command,
+            })
+            .await
+            .expect("replay must not be blocked by the moved-on live turn");
+        assert!(!replay.freshly_accepted);
+        assert_eq!(replay.task.command_id, "replay-command");
     }
 
     fn verify_feature_headless_binary() {
