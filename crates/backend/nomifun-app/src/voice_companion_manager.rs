@@ -394,6 +394,11 @@ impl Drop for SelfCheckFlight {
         });
     }
 }
+/// Upper bound for waiting for the model manager's background install/remove
+/// task before deciding whether the daemon can be restarted.
+const MODEL_WRITE_SETTLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30 * 60);
+
 /// Holds the host-side model-write gate. Dropping it re-opens call admission
 /// and restarts the daemon only when the user's enable intent is still valid.
 pub struct ModelWriteGuard {
@@ -421,19 +426,40 @@ impl Drop for ModelWriteGuard {
         let Some(manager) = self.manager.upgrade() else {
             return;
         };
-        manager.resource_write_active.store(false, Ordering::Release);
         if !self.resume_daemon {
+            manager.resource_write_active.store(false, Ordering::Release);
             return;
         }
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    if let Err(error) = manager.resume_after_model_write().await {
-                        warn!(%error, "voice_daemon_restart_after_model_write_failed");
+                    // `/install` acknowledges the request before its background
+                    // download finishes. Keep the write gate closed until the
+                    // manager reaches a terminal state, otherwise start_child()
+                    // observes ProbingSource/Downloading and never retries.
+                    let settled = manager
+                        .models_manager
+                        .wait_until_settled(MODEL_WRITE_SETTLE_TIMEOUT)
+                        .await;
+                    if settled.is_busy() {
+                        warn!(
+                            state = ?settled,
+                            "voice_model_write_did_not_settle_before_daemon_resume"
+                        );
+                    } else if settled.is_ready() {
+                        if let Err(error) = manager.clone().resume_after_model_write().await {
+                            warn!(%error, "voice_daemon_restart_after_model_write_failed");
+                        }
+                    } else {
+                        info!(state = ?settled, "voice_model_write_finished_not_ready");
                     }
+                    manager.resource_write_active.store(false, Ordering::Release);
                 });
             }
-            Err(error) => warn!(%error, "voice_model_write_guard_dropped_without_runtime"),
+            Err(error) => {
+                manager.resource_write_active.store(false, Ordering::Release);
+                warn!(%error, "voice_model_write_guard_dropped_without_runtime");
+            }
         }
     }
 }

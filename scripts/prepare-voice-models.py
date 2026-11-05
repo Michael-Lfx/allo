@@ -77,39 +77,161 @@ MODELS_MANIFEST = [
         "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
         "desc": "SenseVoiceSmall ASR Tokens",
     },
+    {
+        "rel_path": "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/model-steps-3.onnx",
+        "sha256": "78a9fd17e9a6c20198dca4e69d18f941303f8ab39ec61dde04cfc7595262ddfd",
+        "desc": "Matcha Chinese acoustic model",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-zh-baker/tokens.txt",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/tokens.txt",
+        "sha256": "56209b2bf609d5ac1d66ede6dae7bf5254bd3f8aa24c4a6823713d5b884d87ba",
+        "desc": "Matcha Chinese tokens",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-zh-baker/lexicon.txt",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/lexicon.txt",
+        "sha256": "38b886d46aefa50da6322a64d72fd595d5f4fae1051adb160d647541b1e0a4a2",
+        "desc": "Matcha Chinese lexicon",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-zh-baker/date.fst",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/date.fst",
+        "sha256": "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718",
+        "desc": "Matcha Chinese date normalizer",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-zh-baker/number.fst",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/number.fst",
+        "sha256": "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd",
+        "desc": "Matcha Chinese number normalizer",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-zh-baker/phone.fst",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/phone.fst",
+        "sha256": "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7",
+        "desc": "Matcha Chinese phone normalizer",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/model-steps-3.onnx",
+        "sha256": "4d7771c0ec063ca74f2fa92ba0ecfe14f73fa3f61c236d9469b92e102d8e9574",
+        "desc": "Matcha English acoustic model",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/tokens.txt",
+        "sha256": "bcb4a50830e9402112fe8cb57d53ae8523908868a5015f2040dde5f5fd231697",
+        "desc": "Matcha English tokens",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/en_dict",
+        "sha256": "71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35",
+        "desc": "espeak-ng English dictionary",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phontab",
+        "sha256": "886f3fa402cb0ba73d483aa8ad000af47a6b7cc06293c75a97913fba68a530f6",
+        "desc": "espeak-ng English phoneme table",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phonindex",
+        "sha256": "3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4",
+        "desc": "espeak-ng English phoneme index",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phondata",
+        "sha256": "4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3",
+        "desc": "espeak-ng English phoneme data",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/intonations",
+        "sha256": "3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc",
+        "desc": "espeak-ng English intonations",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/lang/gmw/en",
+        "sha256": "4605d5330801de3641c6e366d15f129ea1f5ffbce8722642aba01ace07ab9c83",
+        "desc": "espeak-ng English language definition",
+    },
+    {
+        "rel_path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/lang/gmw/en-US",
+        "sha256": "41534c2a22df5dd4f1052ff9e1a33a3ea7bff5a26b5c02bdad5ba8ddb7524704",
+        "desc": "espeak-ng English language definition-US",
+    },
+    {
+        "rel_path": "tts/vocos-22khz-univ.onnx",
+        "url_modelscope": None,  # ModelScope does not host the TTS subtree; use the HF mirror.
+        "url_hf": "https://hf-mirror.com/k2-fsa/sherpa-onnx-models/resolve/main/vocoder-models/vocos-22khz-univ.onnx",
+        "sha256": "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081",
+        "desc": "Vocos vocoder",
+    },
 ]
 
 
-def get_default_models_dir() -> Path:
+def detect_default_channel() -> str:
+    """Pick the data channel when the operator did not pass --channel.
+
+    A source checkout is a development environment by default; installed/release
+    operators can always pass --channel stable explicitly.
+    """
+    env_channel = os.environ.get("NOMI_CHANNEL", "").strip()
+    if env_channel:
+        return env_channel
+    repo_root = Path(__file__).resolve().parent.parent
+    if (repo_root / "apps" / "desktop" / "src" / "main.rs").is_file():
+        return "dev"
+    return "stable"
+
+
+def channel_leaf(channel: str) -> str:
+    return "Nomi" if not channel or channel == "stable" else f"Nomi-{channel}"
+
+
+def get_default_models_dir(channel: str | None = None) -> Path:
     env_dir = os.environ.get("VOICE_COMPANION_MODEL_DIR")
     if env_dir and env_dir.strip():
         return Path(env_dir.strip())
+    for env_name in ("NOMIFUN_DATA_DIR", "FLOWY_DATA_DIR"):
+        data_dir = os.environ.get(env_name)
+        if data_dir and data_dir.strip():
+            return Path(data_dir.strip()) / "models"
 
+    leaf = channel_leaf(channel or detect_default_channel())
     if sys.platform == "win32":
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            primary = Path(local_app_data) / "Flowy" / "Voice-Companion" / "models"
-            if primary.exists():
-                return primary
-            legacy = Path(local_app_data) / "Flowy" / "AI-Mate" / "models"
-            if legacy.exists():
-                return legacy
-            return primary
-        primary = Path("C:/ProgramData/Flowy/Voice-Companion/models")
-        if primary.exists():
-            return primary
-        legacy = Path("C:/ProgramData/Flowy/AI-Mate/models")
-        if legacy.exists():
-            return legacy
-        return primary
-    else:
-        primary = Path("/var/lib/voice-companion/models")
-        if primary.exists():
-            return primary
-        legacy = Path("/var/lib/ai-mate/models")
-        if legacy.exists():
-            return legacy
-        return primary
+            return Path(local_app_data) / "Flowy" / leaf / "models"
+        return Path("C:/ProgramData/Flowy/Nomi/models")
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Flowy" / leaf / "models"
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if data_home:
+        return Path(data_home) / "Flowy" / leaf / "models"
+    return Path.home() / ".local" / "share" / "Flowy" / leaf / "models"
 
 
 def compute_file_sha256(filepath: Path) -> str:
@@ -118,6 +240,14 @@ def compute_file_sha256(filepath: Path) -> str:
         while chunk := f.read(65536):
             hasher.update(chunk)
     return hasher.hexdigest().lower()
+
+
+def hf_official_url(url: str) -> str | None:
+    """Return the official HuggingFace equivalent of an hf-mirror URL."""
+    prefix = "https://hf-mirror.com/"
+    if url.startswith(prefix):
+        return "https://huggingface.co/" + url[len(prefix):]
+    return None
 
 
 def format_size(bytes_val: int) -> str:
@@ -257,16 +387,30 @@ def main():
         "-m",
         choices=["modelscope", "hf"],
         default="modelscope",
-        help="Model repository source: 'modelscope' (fastest in China) or 'hf' (HuggingFace)",
+        help="Model repository source: 'modelscope' (fastest in China) or 'hf' (HuggingFace); TTS always uses the HF mirror",
+    )
+    parser.add_argument(
+        "--channel",
+        choices=["stable", "dev"],
+        default=None,
+        help="Data channel (default: auto; source checkout uses dev, installed/release uses stable)",
     )
     args = parser.parse_args()
+    channel = args.channel or detect_default_channel()
 
-    models_dir = Path(args.output_dir) if args.output_dir else get_default_models_dir()
+    models_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else get_default_models_dir(channel)
+    )
     print("=" * 72)
-    print("Flowy AI Mate Voice Models Downloader")
+    print("Flowy Voice Models Downloader")
     print(f"Target Directory: {models_dir.resolve()}")
+    print(f"Channel: {channel}")
     print(f"Preferred Mirror: {args.mirror}")
     print("=" * 72)
+    if channel == "dev" and not args.output_dir:
+        print("Using the dev data root. Pass --channel stable for a release install root.")
 
     models_dir.mkdir(parents=True, exist_ok=True)
 
@@ -278,6 +422,14 @@ def main():
         desc = item["desc"]
         expected_sha = item["sha256"]
         url = item["url_modelscope"] if args.mirror == "modelscope" else item["url_hf"]
+        # ModelScope does not host the offline TTS subtree; its entries declare
+        # url_modelscope=None, so fall back to the HF mirror for those files.
+        if not url:
+            url = item["url_hf"]
+        candidate_urls = [url]
+        official_url = hf_official_url(url)
+        if official_url and official_url != url:
+            candidate_urls.append(official_url)
         target_path = models_dir / rel_path
 
         print(f"\n({idx}/{len(MODELS_MANIFEST)}) {desc} -> {rel_path}")
@@ -305,8 +457,14 @@ def main():
                 success_count += 1
                 continue
 
-        # Download
-        ok = download_file_with_resume(url, target_path, desc, expected_sha)
+        # Download with an hf-mirror -> huggingface.co fallback.
+        ok = False
+        for candidate_index, candidate_url in enumerate(candidate_urls):
+            if candidate_index > 0:
+                print(f"  [Fallback] Trying {candidate_url.split('/')[2]}...")
+            ok = download_file_with_resume(candidate_url, target_path, desc, expected_sha)
+            if ok:
+                break
         if not ok:
             # Fallback for keywords.txt
             if rel_path == "kws/keywords.txt":
@@ -350,19 +508,12 @@ def main():
     with open(checksums_file, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
-    # Optional: also link to desktop default directory if on Windows and path is AI-Mate
-    if sys.platform == "win32":
-        desktop_models_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Flowy" / "models"
-        if desktop_models_dir != models_dir and not desktop_models_dir.exists():
-            try:
-                desktop_models_dir.parent.mkdir(parents=True, exist_ok=True)
-                print(f"\nTip: Desktop app default models path is {desktop_models_dir}.")
-                print(f"To use these models in Desktop UI, set environment variable:")
-                print(f"  setx VOICE_COMPANION_MODEL_DIR \"{models_dir.resolve()}\"")
-            except Exception:
-                pass
+    # Point custom output directories at the desktop app's active data root.
+    desktop_models_dir = get_default_models_dir(channel)
+    if desktop_models_dir != models_dir:
+        print("\nTip: Desktop app model directory is " + str(desktop_models_dir) + ".")
+        print("If you copied models elsewhere, set VOICE_COMPANION_MODEL_DIR for the app.")
 
-    print("\n" + "=" * 72)
     print(f"SUCCESS: All {success_count} voice models downloaded and verified!")
     print(f"Models directory is Ready for Flowy AI Mate & Desktop Voice Companion.")
     print("=" * 72)

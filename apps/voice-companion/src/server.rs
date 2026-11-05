@@ -23,6 +23,19 @@ use crate::oobe::{OobeManager, oobe_routes};
 /// Default listen address for the companion daemon service (restricted to localhost by default).
 pub const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8080";
 
+/// Upper bound for waiting on the native worker before a self-check reports busy.
+const ENGINE_SELF_CHECK_BUSY_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+/// Poll interval while waiting for the native worker lease.
+const ENGINE_SELF_CHECK_BUSY_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The wait deadline never exceeds either the caller timeout or the fixed retry cap.
+fn self_check_busy_wait_deadline(
+    now: std::time::Instant,
+    timeout: std::time::Duration,
+) -> std::time::Instant {
+    (now + timeout).min(now + ENGINE_SELF_CHECK_BUSY_MAX_WAIT)
+}
+
 /// Embedded OOBE pairing static page shell.
 pub const INDEX_HTML: &str = include_str!("../static/index.html");
 
@@ -528,12 +541,27 @@ async fn voice_engine_self_check_handler(
     let timeout = std::time::Duration::from_millis(
         query.timeout_ms.unwrap_or(45_000).clamp(2_000, 120_000),
     );
-    Json(
-        runtime
-            .self_check_engines_with_request(query.request_id, timeout)
-            .await,
-    )
-    .into_response()
+    let now = std::time::Instant::now();
+    let wait_deadline = self_check_busy_wait_deadline(now, timeout);
+    let mut response = runtime
+        .self_check_engines_with_request(query.request_id, timeout)
+        .await;
+    // The worker may still be loading KWS/VAD/ASR immediately after daemon
+    // startup. Waiting a bounded moment here avoids a misleading one-shot
+    // "engine_check_native_busy" during first-run/settings self-check.
+    while response.reason.as_deref() == Some("engine_check_native_busy")
+        && std::time::Instant::now() < wait_deadline
+    {
+        tokio::time::sleep(ENGINE_SELF_CHECK_BUSY_RETRY).await;
+        let remaining = wait_deadline.saturating_duration_since(std::time::Instant::now());
+        response = runtime
+            .self_check_engines_with_request(
+                Some(response.request_id.clone()),
+                remaining,
+            )
+            .await;
+    }
+    Json(response).into_response()
 }
 
 async fn voice_engine_self_check_cancel_handler(
@@ -711,4 +739,22 @@ pub async fn run_server(
     let app = build_router_with_oobe(&config, manager, oobe);
     tracing::info!("AI Mate daemon listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await
+}
+
+#[cfg(test)]
+mod self_check_busy_wait_tests {
+    use super::*;
+
+    #[test]
+    fn busy_wait_is_capped_by_timeout_or_the_fixed_maximum() {
+        let now = std::time::Instant::now();
+        assert_eq!(
+            self_check_busy_wait_deadline(now, std::time::Duration::from_secs(2)),
+            now + std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            self_check_busy_wait_deadline(now, std::time::Duration::from_secs(60)),
+            now + ENGINE_SELF_CHECK_BUSY_MAX_WAIT
+        );
+    }
 }

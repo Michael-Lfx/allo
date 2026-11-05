@@ -11,10 +11,13 @@
 ## 1. 全平台统一目录拓扑规范 (Unified Storage Layout)
 无论是出厂镜像预刷、现场运维通过 U 盘直接拷贝（`cp -r` / 拖放），还是轻量在线包启动下载，所有本地模型资产**必须且只能存放于统一规范的根目录下**：
 - **Linux 伴侣主机 / 系统级服务基准**：`/var/lib/voice-companion/models/`（可在 `/etc/voice-companion/config.toml` 中配置 `models_dir`）；
-- **Windows 系统服务**：`%ProgramData%\Flowy\voice-companion\models\`（安装期提权创建并授权服务账户）；**Windows 桌面用户态**：`%LOCALAPPDATA%\Flowy\models\`（免提权）；
-- **macOS LaunchDaemon（系统级）**：`/Library/Application Support/Flowy/voice-companion/models/`；**macOS 桌面用户态**：`~/Library/Application Support/Flowy/models/`；
+- **Windows 系统服务**：`%ProgramData%\Flowy\voice-companion\models\`（安装期提权创建并授权服务账户）；**Windows 桌面用户态**：`%LOCALAPPDATA%\Flowy\Nomi\models\`（stable）/ `%LOCALAPPDATA%\Flowy\Nomi-dev\models\`（dev，`NOMI_CHANNEL=dev`）（免提权）；
+- **macOS LaunchDaemon（系统级）**：`/Library/Application Support/Flowy/voice-companion/models/`；**macOS 桌面用户态**：`~/Library/Application Support/Flowy/Nomi/models/`（stable）/ `~/Library/Application Support/Flowy/Nomi-dev/models/`（dev）；
+- **Linux 桌面用户态**：`~/.local/share/Flowy/Nomi/models/`（stable）/ `.../Flowy/Nomi-dev/models/`（dev）；
 - **桌面端选径规则**：场景 A（桌面 GUI 用户态按需下载）一律落用户态目录，严禁为写模型文件请求 UAC / sudo 提权；系统级目录仅供以服务身份运行的宿主使用；
-- **开发与便携式覆盖**：通过环境变量 `VOICE_COMPANION_MODEL_DIR` 或项目根目录 `./assets/models/` 覆盖。
+- **开发与便携式覆盖**：通过环境变量 `VOICE_COMPANION_MODEL_DIR`、`NOMIFUN_DATA_DIR` / `FLOWY_DATA_DIR`，或项目根目录 `./assets/models/` 覆盖。
+
+> **使用前提**：本套件只提供 KWS/VAD/ASR/TTS 声学能力；对话回复复用宿主已配置的 provider/model（含登录凭据）。未登录或未配置对话模型时，套件可以安装、自检到声学就绪，但不会生成真实对话回复。
 
 统一内部目录树结构：
 ```text
@@ -30,15 +33,20 @@
 ├── asr/
 │   ├── model.int8.onnx
 │   └── tokens.txt
+├── tts/
+│   ├── matcha-icefall-zh-baker/        # Matcha 中文声学模型、tokens、lexicon、FST
+│   ├── matcha-icefall-en_US-ljspeech/  # Matcha 英文声学模型、tokens、espeak-ng 数据
+│   └── vocos-22khz-univ.onnx           # Vocos 声码器
 └── checksums.sha256
 ```
-- **文件口径说明**：7 个为下载分发产物（计入 `checksums.sha256` 与下载进度分母）；`keywords.txt` 由 `text2token` 在本机编译生成（见 Phase 1），仅参与存在性检查，其一致性由编译工具链保证。
+- **文件口径说明**：23 个为下载分发产物（7 个基础 ASR/KWS/VAD 资产 + 16 个 TTS 资产，计入 `checksums.sha256` 与下载进度分母）；`keywords.txt` 由 `text2token` 在本机编译生成（见 Phase 1），仅参与存在性检查，其一致性由编译工具链保证；`checksums.sha256` 是清单文件。
+- **离线准备**：源码检出目录默认按 dev 通道准备 `Flowy/Nomi-dev/models`；release/离线部署可显式执行 `python scripts/prepare-voice-models.py --channel stable`，TTS 资产经 HF mirror，失败时回退 `huggingface.co`。
 - **离线直接拷贝兼容性**：不采用任何专有压缩格式或私有二进制打包，运维人员只需将准备好的标准 `models` 文件夹直接拷贝至对应路径，即可实现零外网依赖的离线交付。
 
 ## 2. 双重强校验与离线自检门禁 (Two-Tier Integrity Verification)
 设备开机初始化时，严格执行两级自检流程：
 1. **第一级：结构与文件存在性检测 (Layout Check)**：
-   - 检查全部 8 个关键文件是否存在且字节大小 $> 0$（7 个下载分发产物 + 1 个本机编译产物 `keywords.txt`）；
+   - 检查全部 25 个关键文件是否存在且字节大小 $> 0$（23 个下载分发产物 + 本机 `keywords.txt` + `checksums.sha256`）；缺少任一 TTS 资产同样视为未安装；
 2. **第二级：SHA256 密码学哈希校验 (Cryptographic Checksum)**：
    - 读取目录下的 `checksums.sha256`，并与 Rust 二进制中静态内嵌的只读基准清单比对：**内嵌清单为发布锚定的唯一权威基准**（随二进制版本更新，模型升级必须随二进制发布），目录文件仅作传输完整性参考，两者不一致时以内嵌清单为准；
    - 逐个校验文件哈希。若全部匹配，标记模型池就绪（`Status: Ready`），进入只读 `mmap` 推理加载；
@@ -67,7 +75,7 @@ stateDiagram-v2
     [*] --> NotInstalled: 初始未下载 / 文件缺失
     NotInstalled --> ProbingSource: 触发安装 (桌面 GUI 点击 / 无屏 auto_download)
     ProbingSource --> Downloading: 锁定最优加速源 (ModelScope / GitHub)
-    Downloading --> VerifyingSha256: 7 个关键模型文件下载完毕
+    Downloading --> VerifyingSha256: 23 个关键模型文件下载完毕
     Downloading --> Failed: 网络中断 / 重试超限
     VerifyingSha256 --> Ready: SHA256 校验 100% 匹配 (mmap 就绪)
     VerifyingSha256 --> Failed: 哈希不匹配 / 文件损坏
@@ -95,7 +103,7 @@ pub enum ModelInstallState {
         progress_percent: f32,
         speed_bytes_per_sec: u64,
     },
-    /// 密码学哈希自检中：7 个下载分发文件逐个 SHA256 校验
+    /// 密码学哈希自检中：23 个下载分发文件逐个 SHA256 校验
     VerifyingSha256 {
         current_file: String,
         verified_files: usize,

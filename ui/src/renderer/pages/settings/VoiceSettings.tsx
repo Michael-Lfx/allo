@@ -637,14 +637,26 @@ const VoiceSettings: React.FC = () => {
   useEffect(() => {
     if (modelStatus === 'Ready') {
       void fetchCapabilities();
-      // Auto-trigger background silent self-check on settings mount if not yet cached
-      if (!capabilities && !voiceSnapshot?.self_check_active) {
-        void runVoiceSelfCheck(false, undefined, 'silent')
-          .then((report) => setCapabilities(report))
-          .catch(() => {});
-      }
     }
   }, [modelStatus, fetchCapabilities]);
+
+  // A first-run journey installs models before the user enables the service.
+  // The model-ready effect above therefore runs while prepare is still rejected
+  // with `voice_disabled`; retry the silent readiness check when the explicit
+  // enable switch turns on (PRD VC-02 / Journey A).
+  useEffect(() => {
+    if (
+      modelStatus !== 'Ready' ||
+      !voiceEnabled ||
+      capabilities ||
+      voiceSnapshot?.self_check_active
+    ) {
+      return;
+    }
+    void runVoiceSelfCheck(false, undefined, 'silent')
+      .then((report) => setCapabilities(report))
+      .catch(() => {});
+  }, [modelStatus, voiceEnabled, capabilities, voiceSnapshot?.self_check_active]);
 
   // The host emits `self_check_active: true -> false` on the snapshot stream
   // exactly when the final report has been stored. Refresh then, so a check

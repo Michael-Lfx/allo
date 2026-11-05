@@ -195,3 +195,32 @@ Goal: one task book, branch `fix/voice-missing-service-component`, local commits
 - nomifun-app --lib voice_dialogue 18 passed/2 ignored。
 - voice-companion 106 passed/2 ignored。
 - UI 相关 10 pass；rustfmt 通过；改动文件 typecheck 无新报错。
+
+## 2026-11-05 同事安装/使用流程审查修复
+
+- TTS 完整性进入生命周期：`get_status`/`install` 使用包含 TTS 的文件 stamp，`verify_files` 在 ASR 就绪后继续校验 TTS SHA256；损坏 TTS 报可恢复 `Failed`，部分/损坏安装可再次 `install` 修复，不再被“ASR 已就绪”短路。
+- 新增回归：`a_partial_tts_suite_is_actually_repaired_by_install`、`corrupt_tts_is_not_reported_ready_and_can_be_repaired`；真实空目录安装复跑 23 文件/452MB/约 74s 到 Ready，`is_tts_ready=true`。
+- 离线准备脚本补齐 16 个 TTS 文件与 pinned SHA256，默认目标改为桌面数据根 `Flowy/Nomi[-channel]/models`（不再写旧的 `Voice-Companion/models`）；新增 Bun 清单一致性测试。
+- 发布打包脚本显式检查源可执行文件并清除旧 `ai-mate` daemon，修复 1 项既有测试失败；`prepare-voice-companion.test.mjs` 8/8 通过。
+- daemon 自检 HTTP 入口在 `engine_check_native_busy` 时最多等待 8s 再重试，首启/settings 自动自检不再一上来报 busy；实测 daemon 启动后立即自检直接返回全绿。
+- 清理 voice.rs 两个无意义 `mut` 警告。
+- 验证：`nomifun-voice-models` 56 passed；scripts 21 passed；voice-companion 106 passed/2 ignored；真实 daemon 模型状态 Ready（TTS hash 校验后）且 engine self-check 全绿。
+- 离线脚本真实全量执行：24/24 下载并 SHA 校验通过（ASR ModelScope + TTS HF mirror），checksums.sha256 写出成功。
+
+## 2026-11-05 第四轮审查修复
+
+- 离线准备脚本在源码检出目录默认 dev 通道，新增 `--channel stable|dev`；解决全新开发机默认写 `Nomi` 而 dev 应用读 `Nomi-dev` 的错位。
+- TTS 缺失时清空 `checked_files`，`refresh_integrity` 只在 Ready/Failed 时信任缓存；`install` 早退前直接重新校验 TTS layout+SHA，不再被 metadata 缓存短路。
+- `all_files` 改用 `tts_suite_is_pinned()` 判断，自定义 TTS 清单不再依赖中文模型键。
+- `identity_revision` 纳入 TTS 文件，TTS 修复/替换会使 revision 变化。
+- 离线脚本增加 hf-mirror -> huggingface.co 回退；`model-management.zh.md` 更新 `Nomi[-dev]` 路径、TTS 子树、23 个下载文件、对话 provider 前置条件和离线命令。
+- 自检 busy 重试的 250ms/8s 提取为常量并新增 deadline 单测。
+- 验证：`nomifun-voice-models` 58 passed；`voice-companion` 107 passed/2 ignored；`nomifun-app --lib voice` 139 passed/11 ignored；scripts 21 passed；rustfmt/diff check 通过。
+- 真实 daemon 复测：TTS 已进入 model_revision，启动后立即自检 KWS/VAD/ASR 全绿；离线脚本全量复跑 24/24 通过（`--channel stable` 显式指定）。
+
+## 2026-11-05 全流程收尾修复
+
+- 修复“启用状态下安装/修复模型后 daemon 不恢复”：`ModelManager::wait_until_settled` 等待后台安装进入终态；`ModelWriteGuard` 在等待期间保持写入门，`Ready` 后才按 autostart 重启 daemon，`Failed`/超时不误启动。
+- 修复“首次安装后启用不触发就绪检查”：`VoiceSettings` 的静默 readiness effect 增加 `voiceEnabled` 触发条件；并补结构测试断言。
+- 新增 `wait_until_settled` 单测；host manager 69 passed，host voice 139 passed/11 ignored。
+- 模型 59 passed；UI VoiceSettings 结构测试 21 passed；改动 UI 文件 typecheck 无新增错误。

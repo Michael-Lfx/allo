@@ -170,6 +170,15 @@ test('full-call readiness exposes an explicit check and repair path', () => {
   expect(source).not.toContain('activateExistingDictation');
   expect(source).not.toMatch(/setTimeout\([\s\S]{0,120}activateExistingDictation/);
 });
+test('enabling after the model download re-runs the silent readiness check', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  // First-run order is install -> enable. The model-ready effect runs while the
+  // host still rejects prepare with voice_disabled, so the enable transition
+  // must be a dependency of the auto-check effect.
+  expect(source).toMatch(/modelStatus !== 'Ready'[\s\S]{0,80}!voiceEnabled/);
+  expect(source).toContain('voiceSnapshot?.self_check_active');
+});
+
 test('first-call failure exposes an explicit prepare action', () => {
   const source = readFileSync(componentUrl, 'utf8');
   const guid = readFileSync(new URL('../guid/GuidPage.tsx', import.meta.url), 'utf8');

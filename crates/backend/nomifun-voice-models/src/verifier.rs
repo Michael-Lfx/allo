@@ -156,15 +156,24 @@ impl ModelVerifier {
         &self.baseline_manifest
     }
 
-    /// Cryptographically verifies all downloaded offline TTS model assets against the authoritative TTS manifest.
+    /// Cryptographically verifies all downloaded offline TTS model assets against
+    /// the manager's baseline TTS manifest. A reduced/custom suite without TTS
+    /// entries is treated as not pinning TTS; production managers always carry
+    /// the authoritative TTS hashes.
     pub async fn verify_tts(&self, models_dir: &Path) -> bool {
-        let manifest = default_tts_manifest();
+        if !self
+            .baseline_manifest
+            .keys()
+            .any(|path| path.starts_with("tts/"))
+        {
+            return true;
+        }
         for &rel_path in DOWNLOAD_TTS_FILES {
             let full_path = models_dir.join(rel_path);
             if !full_path.exists() {
                 return false;
             }
-            if let Some(expected) = manifest.get(rel_path) {
+            if let Some(expected) = self.baseline_manifest.get(rel_path) {
                 match compute_file_sha256(&full_path).await {
                     Ok(actual) => {
                         if !actual.eq_ignore_ascii_case(expected) {

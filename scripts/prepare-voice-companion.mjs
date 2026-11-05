@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Tauri beforeBuildCommand: compile the production daemon before collecting resources.
 import { spawnSync } from 'node:child_process';
-import { copyFile, mkdir, chmod } from 'node:fs/promises';
+import { access, copyFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -191,7 +191,15 @@ export function resolveVcRedistCrt(arch = 'x64', env = process.env) {
 }
 
 export async function stageVoiceCompanion(executable, outDir, binary, licenses, vcRedist = {}) {
+  // Fail explicitly before creating a staging directory when the build did not
+  // emit the executable; a bare copyFile rejection is easy to mis-handle in
+  // packaging tests and can leave a stale daemon-looking directory.
+  await access(executable);
   await mkdir(join(outDir, 'voice-licenses'), { recursive: true });
+  // Never leave a stale legacy daemon next to the newly staged one.
+  for (const legacyName of ['ai-mate.exe', 'ai-mate']) {
+    await rm(join(outDir, legacyName), { force: true });
+  }
   await copyFile(executable, join(outDir, binary));
   if (!binary.endsWith('.exe')) await chmod(join(outDir, binary), 0o755);
   for (const [name, path] of Object.entries(licenses)) await copyFile(path, join(outDir, 'voice-licenses', name));

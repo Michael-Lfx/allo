@@ -2787,9 +2787,9 @@ impl VoiceCompanionRuntime {
                 let mut saw_sentence = false;
                 let mut stall_warned = false;
                 let mut first_sentence_warned = false;
-                let mut first_sentence_tick = tokio::time::sleep(std::time::Duration::from_secs(10));
+                let first_sentence_tick = tokio::time::sleep(std::time::Duration::from_secs(10));
                 tokio::pin!(first_sentence_tick);
-                let mut stall_tick = tokio::time::sleep(std::time::Duration::from_secs(2));
+                let stall_tick = tokio::time::sleep(std::time::Duration::from_secs(2));
                 tokio::pin!(stall_tick);
 
                 loop {
