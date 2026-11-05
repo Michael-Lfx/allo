@@ -269,8 +269,10 @@ pub(crate) fn validate_term_provenance(
 
 /// 行名词是否逐字来自定义原文。宽容面：去掉首尾空白与**尾随括注**（模型常
 /// 写「数（直线上点对应的数）」这类注释），其余逐字比对——允许改写的行会把
-/// 「名词」变成综述，审计面随之失真。
-fn term_grounded(term: &str, definition: &str) -> bool {
+/// 「名词」变成综述，审计面随之失真。`pub(crate)`：碎片裁决「范围外」机械核
+/// （absorb-8 z02）复用同款逐字判定（learnhub `term_grounded` 单源同构），
+/// 不另立第二份逐字语义。
+pub(crate) fn term_grounded(term: &str, definition: &str) -> bool {
     let t = term.trim();
     if t.is_empty() {
         return false;
@@ -313,6 +315,8 @@ mod tests {
             nodes: vec![ProposedNode {
                 title: "判读借用".into(),
                 purpose: "p".into(),
+                intent: String::new(),
+                scope: String::new(),
                 est: Some(20),
                 difficulty: None,
                 teaches: vec![ConceptRefInput { name: "所有权".into(), tier: ConceptTier::Know }],

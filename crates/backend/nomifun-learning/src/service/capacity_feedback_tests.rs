@@ -14,6 +14,8 @@ fn capacity_pack() -> CoursePack {
         title: title.into(),
         summary: String::new(),
         purpose: format!("{title}的目标"),
+        intent: String::new(),
+        scope: String::new(),
         est: 10,
         source: None,
         sources: Vec::new(),
@@ -117,6 +119,7 @@ impl LessonContentAgentEngine for CapacityEngine {
             degraded_keys: Vec::new(),
             capacity_note: self.note.lock().unwrap().clone(),
             viz_lint_events: 0,
+            scope_findings: 0,
         })
     }
 

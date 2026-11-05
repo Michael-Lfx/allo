@@ -39,6 +39,7 @@ pub mod mint_evidence;
 pub mod mounting;
 pub mod name_adjudication;
 pub mod provenance;
+pub mod scope_findings;
 pub mod structure_contract;
 pub mod structure_gen;
 pub mod structure_ops;
@@ -169,6 +170,17 @@ pub struct ProposedNode {
     pub title: String,
     #[serde(default)]
     pub purpose: String,
+    /// 节点意图（absorb-8 z01，learnhub #205 同构）：为何有这个学习点、它在
+    /// 课里承担什么角色，一句话；出生即声明（`ng.node.brief` 门执法非空、各
+    /// ≤200 字符——[`super::growth_contract`]）。`#[serde(default)]` 空串容旧
+    /// （门在 contract 层拦截，进本结构的路径已过门；导入包/旧档空串 = 缺席），
+    /// 与 learnhub 的 `Option<String>` 不同形但语义同。
+    #[serde(default)]
+    pub intent: String,
+    /// 教学范围（absorb-8 z01）：本点教什么/教到哪/明确不碰什么（「不教 X」是
+    /// 边界声明不是内容），一两句；空串 = 缺席，同 [`ProposedNode::intent`]。
+    #[serde(default)]
+    pub scope: String,
     /// est：专注工作量尺寸锚（量纲宣言：1 est 分钟 = 1 分钟专注学习）；
     /// 常规 5–30，极困难最多 60（门放行 1–60）。DB 列保留旧名
     /// `learning_lessons.estimated_minutes`（列名无用户面，语义 = est）。
@@ -486,6 +498,8 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
     {
       "title": "节点标题（动作句：解/求/证明/推导/构造/比较/应用/辨析…）",
       "purpose": "练什么 + 从哪段课程外日常经验切入（座位表定位/给物品分类/分食物看温度一类生活场景）；找不到日常经验切口的节点不合格",
+      "intent": "一句话：为什么有这个学习点、它在课里承担什么角色（衔接哪条线/补哪个缺口）",
+      "scope": "一两句：教什么、教到哪、明确不碰什么；「不教 X」是边界声明，照实写",
       "est": 20,
       "difficulty": 2,
       "teaches": [ { "name": "概念名", "tier": "apply" } ],
@@ -512,6 +526,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 【节点纪律】
 - 节点是单次学习会话（动作句），est（专注工作量，1 est 分钟 = 1 分钟专注）常规 5-30，极困难最多 60。est 也是后续内容生成的容量预算锚——内容管线按它规划节与题量：按节点行为数与对象域宽度估，估大了内容会铺开，估小了会被迫砍雄心。
 - 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。
+- 声明面（intent/scope，每个节点出生即必带）：intent 一句话写**为什么有这个学习点**、它在课里承担什么角色（衔接哪条线、补哪个缺口）；scope 一两句写**教什么、教到哪、明确不碰什么**——「不教 X」「X 留待后续」类否定性提及是边界声明，照实写，不是缺陷。两处都写实质内容，不写「教好这个概念」一类空话；各不超过 200 字。拆分或修订被点名的条目时，两字段必须按各自那一半的实际内容**逐半重写**，禁止照抄原条目。
 - 道位配平：道（本质理解）与术（可执行）是一对标尺——一条线如果只有「怎么做」的操作台阶，要在合适的节点补一个「为什么成立」的台阶（说理、推导或辨析），让学习者不但能做，还能讲出它为什么可靠。
 - 悬空技巧不合格：每批装箱前先问「学习者此刻真正缺什么」——技巧依赖的更一般技能先立地基；只有操作没有理解的地方补「为什么成立」的台阶；学习目标点名而还没开线的能力，尽早开线。
 - 难度标尺（difficulty 1-5，如实申报）：1=生活经验直接上手；2=单概念入门（认读、模仿、单步操作）；3=单概念应用（多步计算、变式练习）；4=多概念综合/形式化引入（记号体系、复合结构）；5=严格证明与抽象推理。形式化/证明类内容不得压档。
@@ -546,8 +561,9 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 5. 每个节点的起点假设都在基线或已教账内——没有把「教材第一章」当零基础入口，也没有为了覆盖目标方向长出基线够不着的节点；
 6. 每个节点的 purpose 都有日常经验切口，且教的是还需要教的学科概念——纯生活动作（成人已会的）和写不出切口的中层内容，都换掉。
 7. 每个节点的 difficulty 都按标尺如实申报（形式化/证明类不得压档）。
+8. 每个节点的 intent/scope 都按声明面纪律写实质内容——一句话意图/一两句范围（各 ≤200 字）；拆分或修订被点名的条目时两字段逐半重写，不照抄原条目。
 【输出】
-- 只输出 JSON，不要 Markdown 代码块，不要任何解释。note 与 purpose 用中文。"#;
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。note、purpose、intent 与 scope 用中文。"#;
 
 /// [`COACH_SYSTEM`] 的装配面（t7）：数量契约段的 `{READY_TARGET}`/
 /// `{MAX_BATCH_NODES}` 占位符以常量单源注入——改批容量只改常量，提示词
@@ -721,6 +737,9 @@ pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
     for node in &mut batch.nodes {
         node.title = node.title.trim().to_owned();
         node.purpose = node.purpose.trim().to_owned();
+        // 声明面两字段（absorb-8 z01）同款 trim。
+        node.intent = node.intent.trim().to_owned();
+        node.scope = node.scope.trim().to_owned();
         for reference in node.teaches.iter_mut().chain(node.assumes.iter_mut()) {
             reference.name = reference.name.trim().to_owned();
         }
@@ -789,7 +808,7 @@ pub(crate) async fn coach_redraft(
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}{}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 点名集怎么算：点名集 = 打回问题清单各条的 node 字段（评审问题清单以各条的 node 字段为准——批级意见不点名任何节点，问题文字里提到的其它节点名不构成点名），照改必撞机械比对；批级问题只许改随批 mints / new_aliases 提名自身。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}{}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 点名集怎么算：点名集 = 打回问题清单各条的 node 字段（评审问题清单以各条的 node 字段为准——批级意见不点名任何节点，问题文字里提到的其它节点名不构成点名），照改必撞机械比对；批级问题只许改随批 mints / new_aliases 提名自身。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 拆分产物不要再造新并列：拆分产物的新显示名避免引入原条目没有的并列词（你拆的是合装，不是把合装换个位置重写）；确属对照/对比型连接的合法保留（「分辨 A 与 B」类）；被拆条目的 intent/scope 照各自那一半的实际内容逐半重写，禁止照抄原条目。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render(),
         prior_review_section(prior_review)
     );
@@ -854,13 +873,16 @@ const CONCEPT_REVIEW_HEAD: &str = r#"你是一名概念评审员：在结构门�
 
 /// 判据①（k07 新版，learnhub #127 e1f111c 的挂号子查结构化）：先框定
 /// 「登记表外名词」，再逐词核对出处三源（allo 四入口：含本节点 assumes），
-/// 点名批内提名不算出处与内嵌上位词在审；含糊词按概念处理。
+/// 点名批内提名不算出处与内嵌上位词在审；含糊词按概念处理。absorb-8 z02
+/// （learnhub #205 同构）：框定面补 intent/scope（机械点名四源同步追平），
+/// 边界声明豁免条款防判据①与范围外裁决互相矛盾打乒乓（范围外点名≠引用）。
 const CRITERION_ONE_V2: &str = r#"1. 挂号充分（子查：登记表外名词）：
-   - **框定**：节点标题与 purpose，以及随批 mints 的 canonical 与 new_aliases 的名字及定义里出现的每个领域名词，都是待查的「登记表外名词」——名单里已有的名字不算登记表外。
+   - **框定**：节点标题与 purpose、每节点的 intent/scope 声明，以及随批 mints 的 canonical 与 new_aliases 的名字及定义里出现的每个领域名词，都是待查的「登记表外名词」——名单里已有的名字不算登记表外。
    - **出处核对（四入口）**：每个登记表外名词，须能落到以下之一——①已教（已教账里的正名或别名）、②本节点 teaches（本节点自教）、③本节点 assumes、④课程外通用常识。「简单」不等于常识——课程内的基础概念也要挂号；既像常识又像本课概念的两可词，按概念处理（要求挂号）。四处皆无 = 挂号缺失，打回并指名该名词。
    - **批内提名本身不是出处**：某名词只有本批其它节点的 teaches 或本批铸名供给、而本节点不自教、也不在已教账/assumes 里，就是隐藏的批内先后（同批互不供给），照打——不要接受「批内兄弟会教」作为出处。
    - **概念名内嵌的上位词同样在审**：提名叫「研磨度的校准」，「研磨度」自己未在册、无人教、又非常识 = 挂号缺失，与显式名词同罪；名字里的每个构成词都要各自落到出处。
    - purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
+   - **scope/intent 划出的边界不是无出处缺口**：某节点 scope/intent 里「不教 X」「X 留待后续」类否定性边界点名的 X，是对边界的诚实声明，不构成对该词的引用——出处核对不得因它在本节点无出处而打回；出处核对与边界处置各管各的，不要互相矛盾打乒乓。
    - **修法（与覆盖法同款）**：缺的前提可补挂 assumes（已教可覆盖）；本节点能承载就并入 teaches 自教；都不可行则移出本批，下批再装。
 "#;
 
@@ -902,23 +924,28 @@ const ADVICE_SCOPE_CLAUSE: &str = r#"
 - advice 文字里提到的节点名不构成点名：点修的机械比对只认各条问题的 `node` 字段，批级意见的修法去动节点 = 整批打回。
 "#;
 
-/// 碎片裁决的输出契约段（m9 补接，learnhub #173 评审点名条款同构；织入
-/// 评审系统提示词尾部、挂号表契约之后）：`fragments` 数组行形状 + 裁决
-/// 两值词表 + 全覆盖执法语义。与 `term_provenance` 并行不并表——碎片 =
-/// 未着落的命名残片（缺口本身），provenance = 定义名词的出处（出处面），
-/// 两物各核。词表与 `fragment_verdict::FRAGMENT_VERDICTS` 互钉。
+/// 碎片裁决的输出契约段（m9 补接，learnhub #173 评审点名条款同构；absorb-8
+/// z02 三值扩面——learnhub #205 v1.20 同构；织入评审系统提示词尾部、挂号表
+/// 契约之后）：`fragments` 数组行形状 + 裁决三值词表 + 来源标记 + 范围外
+/// 裁决规则与三件机械核 + 全覆盖执法语义。与 `term_provenance` 并行不并表
+/// ——碎片 = 未着落的命名残片（缺口本身），provenance = 定义名词的出处
+/// （出处面），两物各核。词表与 `fragment_verdict::FRAGMENT_VERDICTS` /
+/// `FRAGMENT_SOURCES` 互钉。范围外机械核描述与
+/// `fragment_verdict::check_out_of_scope_row` 逐条对齐（learnhub `20f1dcf`
+/// 最终语义：按词判任一边界在场行、跨源多行合法；单行硬比不吸）。
 const FRAGMENT_OUTPUT_CONTRACT: &str = r#"
 【碎片裁决 fragments——输出硬约束】
-- 待审批次末尾的【机械点名清单】是机械层对本批提名定义做已知词掩码后仍未有着落的 CJK 片段（宁滥勿缺，必含切词噪声）。通过与打回的结论都必须携带 `fragments` 数组：清单里**每个片段都要有显式裁决**，缺数组或漏片段 = 结论无效（与挂号表同路：带死因重试恰一次，仍败按 Degraded 保守放行并留痕）。
-- 每行形状：{ "term": "片段原文", "verdict": "噪声|名词", "note": "一句话依据" }。term 与清单逐字对照（子串互含也算处置——允许对片段做最小辨认）。
+- 待审批次末尾的【机械点名清单】是机械层对本批提名定义、节点显示名与各节点 intent/scope 声明做已知词掩码后仍未有着落的 CJK 片段（宁滥勿缺，必含切词噪声），每行已标注来源（[definition]=提名定义、[node_title]=节点显示名、[intent]=节点意图、[scope]=教学范围）。通过与打回的结论都必须携带 `fragments` 数组：清单里**每个片段都要有显式裁决**，缺数组或漏片段 = 结论无效（与挂号表同路：带死因重试恰一次，仍败按 Degraded 保守放行并留痕）。
+- 每行形状：{ "term": "片段原文", "verdict": "噪声|名词|范围外", "source": "definition|node_title|intent|scope", "note": "一句话依据" }。term 与清单逐字对照（子串互含也算处置——允许对片段做最小辨认）；source 照清单行标注的来源原样填。
 - 裁**噪声**：切词碎片或元语言组合（停用词/虚字残留、跨词边界噪声），放行；note 写一句依据（进观测面审计档案）。「像名词」但拿不准的，按名词处理。
 - 裁**名词**：像样的领域名词却无出处——必须 pass=false 且在 problems 里指名该片段；判名词却放行 = 自相矛盾，结论无效。修法限三选一：并入本批某提名定义改写绕开 / 并入某节点 teaches 挂号自教 / 课程用语表增词提案（写进 findings，勿自行改登记表）。
+- 裁**范围外**：该片段在本批某节点的 intent/scope 声明里被明确划出边界（「不教 X」「X 留待后续」类否定性边界提及）——诚实写边界不打回，放行。写『不教积分』不是使用积分：只出现在标题/定义里的正向用词不构成边界声明，不得判范围外。**范围外的机械核（三条不满足任一 = 结论无效，与挂号表同路重试）**：①该词在清单里须有 [intent] 或 [scope] 来源的行（同词跨源多行都合法，引任一边界来源即可）；②行报 source 须为 intent/scope（边界声明只住这两处）；③term 须逐字命中本批某节点对应字段（intent→intent、scope→scope）的原文——scope 没写过的边界不成立。
 - 未处置的片段由机器按档处置（report-only 降 findings 留痕 / enforce 合成打回）；你只管逐条裁决，不要把清单当打回理由凭空造问题。
 "#;
 
 const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
-4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
+4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议——建议拆分时给出逐半后的 intent/scope（照各自那一半的实际内容写，不照抄原条目），供重裁直接消费。
 
 【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
 - 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）。逐条裁决「复用 | 新铸」：
@@ -1274,20 +1301,22 @@ pub(crate) fn verify_reuse_rulings(
 /// 是【提名候选集】的渲染文本（j04 复用裁决的可见面）。`known_names` =
 /// 挂号表机械核对的已知名池（gate_batch 装配：已教账 ∪ 登记表活跃名+别名
 /// ∪ 本批铸名/提名；小写折叠），off 臂不用。`naming_list` = 碎片点名清单
-/// （m9 补接；服务面派生：本批提名定义 × 已知面 → 未着落片段），off 臂传
-/// 空表不用。
+/// （m9 补接；absorb-8 z02 四源扩面带来源标记：提名定义 ∪ 显示名 ∪ intent
+/// ∪ scope × 已知面 → 未着落片段行），off 臂传空表不用。
 ///
 /// 挂号表臂（m3）：结论接受前机械核对 `term_provenance` 整表——表缺失/
 /// 行伪/表键解析失败 = 结论不可用，**恰一次**带死因重试评审；仍败 =
 /// Degraded 保守放行（评审器故障 ≠ 批缺陷），降级留痕走 findings（调用方
 /// 落 j09 通道）。重试只重掷评审（死因进评审反馈），不动外层 j03 预算。
 ///
-/// 碎片裁决面（m9 补接，独立清单独立校验，不并挂号表）：每个点名片段必须
-/// 有显式裁决——`名词` 判决却放行/未指名 = 自相矛盾（同路重试恰一次）；
-/// 未处置片段按 `fragment_enforce` 分档（缺省 false = report-only 降
-/// findings；true = 合成打回问题，L1 级门失败走既有重裁回路）。开关读数
-/// 在调用方（服务面读 `NOMI_LEARNING_LEXICON_ENFORCE`，learnhub
-/// `ReviewInput.fragment_enforce` 同缝——测试注入不经进程 env）。
+/// 碎片裁决面（m9 补接，独立清单独立校验，不并挂号表；absorb-8 z02 三值
+/// 扩面）：每个点名片段必须有显式裁决——`名词` 判决却放行/未指名 =
+/// 自相矛盾、`范围外` 行不过机械核（[`fragment_verdict::check_out_of_scope_row`]
+/// 三件：边界在场行 + 行报边界来源 + term 逐字命中）皆 = 结论不可用
+/// （同路重试恰一次）；未处置片段按 `fragment_enforce` 分档（缺省 false =
+/// report-only 降 findings；true = 合成打回问题，L1 级门失败走既有重裁
+/// 回路）。开关读数在调用方（服务面读 `NOMI_LEARNING_LEXICON_ENFORCE`，
+/// learnhub `ReviewInput.fragment_enforce` 同缝——测试注入不经进程 env）。
 ///
 /// 复用命中锚（f1）：`gate` 单参定死——核验与注入都在函数内取。评审 user
 /// 消息注入【本批复用命中】块（只含 `external_anchors_mech`，评审前已知；
@@ -1301,7 +1330,7 @@ pub(crate) async fn concept_review(
     context: &CoachContext,
     candidates: &str,
     known_names: &[String],
-    naming_list: &[String],
+    naming_list: &[fragment_verdict::NameFragment],
     fragment_enforce: bool,
     gate: &GateOutcome,
 ) -> ReviewOutcome {
@@ -1587,6 +1616,7 @@ pub(crate) async fn concept_review(
                 verdict.verdict == "pass",
                 &verdict.problems,
                 naming_list,
+                batch,
             ) {
                 Err(reason) => {
                     let death = format!("碎片裁决不可用:{reason}");
@@ -2032,17 +2062,50 @@ pub fn render_coverage_gauge(reading: &CoverageReading) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn reference(name: &str, tier: ConceptTier) -> ConceptRefInput {
         ConceptRefInput { name: name.to_owned(), tier }
     }
 
     fn node(title: &str, teaches: Vec<ConceptRefInput>, assumes: Vec<ConceptRefInput>) -> ProposedNode {
-        ProposedNode { title: title.to_owned(), purpose: String::new(), est: Some(20), difficulty: None, teaches, assumes }
+        ProposedNode {
+            title: title.to_owned(),
+            purpose: String::new(),
+            intent: String::new(),
+            scope: String::new(),
+            est: Some(20),
+            difficulty: None,
+            teaches,
+            assumes,
+        }
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
         ProposedBatch { nodes, mints: Vec::new(), new_aliases: Vec::new(), note: String::new() }
+    }
+
+    /// 碎片点名清单一行（absorb-8 z02 四源扩面；缺省 definition 源——旧
+    /// 测试的单源形态）。
+    fn naming_frag(term: &str) -> fragment_verdict::NameFragment {
+        fragment_verdict::NameFragment {
+            term: term.to_owned(),
+            source: fragment_verdict::FragmentSource::Definition,
+        }
+    }
+
+    /// 带声明面两字段的节点（范围外端到端测试的对照域）。
+    fn node_with_brief(title: &str, intent: &str, scope: &str) -> ProposedNode {
+        ProposedNode {
+            title: title.to_owned(),
+            purpose: String::new(),
+            intent: intent.to_owned(),
+            scope: scope.to_owned(),
+            est: Some(20),
+            difficulty: None,
+            teaches: Vec::new(),
+            assumes: Vec::new(),
+        }
     }
 
     // ── 复用命中锚集（f1）：gate 机械锚装配 ─────────────────────────────────
@@ -3073,6 +3136,7 @@ mod tests {
 
     /// 碎片契约织入评审系统提示词（挂号表两臂皆织——碎片面与挂号表面正交；
     /// 碎片面 off = 整面休眠零条款）。条款覆盖短语断言：删条款/改词表 = 红。
+    /// absorb-8 z02：词表三值 + 行形状 source 字段 + 范围外裁决规则与机械核。
     #[test]
     #[serial_test::serial]
     fn fragment_arm_weaves_the_verdict_contract_into_the_review_prompt() {
@@ -3081,12 +3145,19 @@ mod tests {
         let system = concept_review_system();
         for phrase in [
             "碎片裁决 fragments——输出硬约束",
-            "噪声|名词",
+            "噪声|名词|范围外",
             "每个片段都要有显式裁决",
             "子串互含也算处置",
             "判名词却放行 = 自相矛盾",
             "结论无效",
             "宁滥勿缺",
+            "\"source\": \"definition|node_title|intent|scope\"",
+            "照清单行标注的来源原样填",
+            "写『不教积分』不是使用积分",
+            "只出现在标题/定义里的正向用词不构成边界声明",
+            "范围外的机械核",
+            "引任一边界来源即可",
+            "逐字命中本批某节点对应字段",
         ] {
             assert!(system.contains(phrase), "碎片臂缺「{phrase}」");
         }
@@ -3099,13 +3170,158 @@ mod tests {
         );
         assert!(v1_arm.contains("advice 范围（点修守卫对齐）"), "m5 条款不动");
 
-        // 碎片面 off = 零条款（挂号表条款不随碎片面走）。
+        // 碎片面 off = 零条款（挂号表条款不随碎片面走；三值词表与范围外
+        // 裁决规则同条款一起消失——off 臂 = 面前行为）。
         let _fragments_off = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "off");
         let plain = concept_review_system();
-        for phrase in ["碎片裁决 fragments", "噪声|名词", "机械点名清单"] {
+        for phrase in ["碎片裁决 fragments", "噪声|名词", "范围外", "机械点名清单"] {
             assert!(!plain.contains(phrase), "碎片 off 臂不得出现「{phrase}」");
         }
         assert!(plain.contains("advice 范围（点修守卫对齐）"), "m5 条款恒在");
+    }
+
+    /// 判据①框定面补 intent/scope（absorb-8 z02）+ 边界声明豁免条款（范围外
+    /// 点名≠引用——防判据①与范围外裁决互相矛盾打乒乓）。条款覆盖短语断言。
+    #[test]
+    #[serial_test::serial]
+    fn criterion_one_frames_intent_scope_and_forgives_boundary_mentions() {
+        let _provenance = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let system = concept_review_system();
+        for phrase in [
+            "节点标题与 purpose、每节点的 intent/scope 声明，以及随批 mints",
+            "scope/intent 划出的边界不是无出处缺口",
+            "不构成对该词的引用",
+            "出处核对不得因它在本节点无出处而打回",
+        ] {
+            assert!(system.contains(phrase), "判据①缺「{phrase}」");
+        }
+        // 判据①旧版（V1 off 臂）逐字保留——本票不动它（off 臂 = 改版前措辞）。
+        // V1 臂 = 挂号表 off + V2 off（provenance on 恒走 V2，与 V2 开关无关）。
+        let _provenance_off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let _v2_off = set_env(crate::learning_graph::REVIEW_V2_SWITCH_ENV, "off");
+        let plain = concept_review_system();
+        assert!(
+            plain.contains("节点标题与 purpose 里出现的每个领域名词"),
+            "V1 并句措辞不动"
+        );
+        assert!(
+            !plain.contains("scope/intent 划出的边界不是无出处缺口"),
+            "V1 臂不带新条款"
+        );
+    }
+
+    /// 范围外裁决端到端（absorb-8 z02 病历形态，learnhub
+    /// `out_of_scope_multi_source_term_accepts_any_boundary_citation` 同缝）：
+    /// 同词双源清单（intent+scope），裁决行报 scope 判范围外 = 干净放行，
+    /// 读数记 rows；单行硬比会核伪的形态在此全链路通过。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn out_of_scope_boundary_citation_passes_clean_end_to_end() {
+        use fragment_verdict::FragmentSource;
+        let _fragments = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "on");
+        let reply = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "term_provenance": [],
+            "fragments": [
+                { "term": "方程", "verdict": "范围外", "source": "scope", "note": "scope 原文「不引入方程」" }
+            ]
+        }))
+        .unwrap();
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![reply].into_iter(),
+            Vec::new(),
+        )));
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不做展开与化简，不引入方程")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let naming = vec![
+            fragment_verdict::NameFragment { term: "方程".into(), source: FragmentSource::Intent },
+            fragment_verdict::NameFragment { term: "方程".into(), source: FragmentSource::Scope },
+        ];
+        let review = concept_review(
+            &completer,
+            None,
+            &batch,
+            &CoachContext::default(),
+            "",
+            &[],
+            &naming,
+            false,
+            &review_gate(),
+        )
+        .await;
+        assert!(review.problems.is_empty(), "范围外放行不打回：{review:?}");
+        assert!(review.findings.is_empty(), "零留痕：{review:?}");
+        assert_eq!(
+            review.fragments,
+            fragment_verdict::FragmentReadout { fragments: 2, rows: 1, unhandled: 0, degraded: false },
+            "跨源双行清点、单裁决行放行：{review:?}"
+        );
+        let prompts = &completer.0.lock().unwrap().1;
+        assert!(
+            prompts[0].contains("1. 方程 [intent]") && prompts[0].contains("2. 方程 [scope]"),
+            "跨源双行并列渲染：{}",
+            prompts[0]
+        );
+    }
+
+    /// 范围外机械核失败（行报非边界来源）：结论不可用——恰一次带死因重试
+    /// （次轮反馈指名死因），仍败 = Degraded 保守放行留痕（与「名词却放行」
+    /// 同缝）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn out_of_scope_machine_check_failure_retries_then_degrades() {
+        use fragment_verdict::FragmentSource;
+        let _fragments = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "on");
+        let bad = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "fragments": [
+                { "term": "方程", "verdict": "范围外", "source": "definition", "note": "定义里提过方程" }
+            ]
+        }))
+        .unwrap();
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![bad.clone(), bad].into_iter(),
+            Vec::new(),
+        )));
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不引入方程")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let naming = vec![
+            fragment_verdict::NameFragment { term: "方程".into(), source: FragmentSource::Intent },
+            fragment_verdict::NameFragment { term: "方程".into(), source: FragmentSource::Scope },
+        ];
+        let review = concept_review(
+            &completer,
+            None,
+            &batch,
+            &CoachContext::default(),
+            "",
+            &[],
+            &naming,
+            false,
+            &review_gate(),
+        )
+        .await;
+        assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
+        assert_eq!(review.findings.len(), 1, "降级必须留痕：{review:?}");
+        assert_eq!(review.findings[0].field, "fragments", "{:?}", review.findings[0]);
+        assert!(review.fragments.degraded, "{review:?}");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
+        assert!(
+            prompts[1].contains("碎片裁决不可用") && prompts[1].contains("非 intent/scope"),
+            "次轮须携带范围外机械核死因：{}",
+            prompts[1]
+        );
     }
 
     /// 碎片面开关取值判定（off/0/false；未设 = 开启）。
@@ -3153,7 +3369,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &[],
-            &["线段".to_owned(), "内角".to_owned()],
+            &[naming_frag("线段"), naming_frag("内角")],
             false,
             &review_gate(),
         )
@@ -3166,7 +3382,11 @@ mod tests {
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert!(prompts[0].contains("【机械点名清单"), "点名清单随 user 注入：{}", prompts[0]);
-        assert!(prompts[0].contains("1. 线段") && prompts[0].contains("2. 内角"), "{}", prompts[0]);
+        assert!(
+            prompts[0].contains("1. 线段 [definition]") && prompts[0].contains("2. 内角 [definition]"),
+            "点名清单行带来源标记：{}",
+            prompts[0]
+        );
         assert!(prompts[0].contains("碎片裁决 fragments"), "系统提示词带契约：{}", prompts[0]);
     }
 
@@ -3192,7 +3412,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &[],
-            &["线段".to_owned(), "内角".to_owned()],
+            &[naming_frag("线段"), naming_frag("内角")],
             false,
             &review_gate(),
         )
@@ -3236,7 +3456,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &[],
-            &["线段".to_owned(), "内角".to_owned()],
+            &[naming_frag("线段"), naming_frag("内角")],
             true,
             &review_gate(),
         )
@@ -3272,7 +3492,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &[],
-            &["线段".to_owned(), "内角".to_owned()],
+            &[naming_frag("线段"), naming_frag("内角")],
             true,
             &review_gate(),
         )
@@ -3306,7 +3526,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &[],
-            &["线段".to_owned()],
+            &[naming_frag("线段")],
             false,
             &review_gate(),
         )
@@ -3361,7 +3581,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &["所有权".to_owned()],
-            &["线段".to_owned()],
+            &[naming_frag("线段")],
             false,
             &review_gate(),
         )
@@ -3396,7 +3616,7 @@ mod tests {
             &CoachContext::default(),
             "",
             &[],
-            &["线段".to_owned()],
+            &[naming_frag("线段")],
             false,
             &review_gate(),
         )
@@ -3512,6 +3732,52 @@ mod tests {
             );
             assert!(prompt.contains("批级意见不点名任何节点"));
             assert!(prompt.contains("不构成点名"));
+        }
+    }
+
+    /// 拆步软条款（absorb-8 z02，learnhub `43056f6` 拆步自检同方向——allo
+    /// 无 selfcheck phase，落点 = redraft 修订纪律）：拆分产物不再造新并列 +
+    /// 对照型豁免保留 + intent/scope 逐半重写禁照抄。零机械门，条款覆盖短语
+    /// 断言：删条款 = 本测试红。
+    #[tokio::test]
+    async fn redraft_discipline_carries_split_step_clause() {
+        // 空脚本：回包缺失按调用失败处理——prompt 已先记录，装配面照样可断言。
+        let completer = ScriptedReview(std::sync::Mutex::new((Vec::new().into_iter(), Vec::new())));
+        let previous = batch_of(vec![node("判读三角形", vec![], vec![])]);
+        let _ = coach_redraft(
+            &completer,
+            None,
+            &CoachContext::default(),
+            &previous,
+            "- [mints] 点名「内角」未有着落",
+            "",
+        )
+        .await;
+        let prompts = completer.0.lock().unwrap().1.clone();
+        assert_eq!(prompts.len(), 1);
+        for phrase in [
+            "拆分产物不要再造新并列",
+            "避免引入原条目没有的并列词",
+            "你拆的是合装，不是把合装换个位置重写",
+            "确属对照/对比型连接的合法保留（「分辨 A 与 B」类）",
+            "intent/scope 照各自那一半的实际内容逐半重写，禁止照抄原条目",
+        ] {
+            assert!(prompts[0].contains(phrase), "redraft 修订纪律缺「{phrase}」：{}", prompts[0]);
+        }
+    }
+
+    /// 评审判据 4 的拆分建议 advice 条款（absorb-8 z02）：建议拆分时给出
+    /// 逐半后的 intent/scope 供 redraft 消费。条款覆盖短语断言。
+    #[test]
+    fn criterion_four_advice_names_per_half_brief_fields() {
+        let _provenance = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let system = concept_review_system();
+        for phrase in [
+            "可附拆分建议——建议拆分时给出逐半后的 intent/scope",
+            "照各自那一半的实际内容写，不照抄原条目",
+            "供重裁直接消费",
+        ] {
+            assert!(system.contains(phrase), "判据 4 缺「{phrase}」");
         }
     }
 
@@ -3646,7 +3912,8 @@ mod tests {
     fn parse_coach_reply_normalizes_chinese_tiers_and_string_est() {
         let raw = r#"{
             "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "est": "15",
+                { "title": "用配方法解方程", "purpose": "p",
+                  "intent": "i", "scope": "s", "est": "15",
                   "teaches": [{"name": "配方法", "tier": "会用"}],
                   "assumes": [{"name": "一元二次方程", "tier": "知道"}] }
             ],
@@ -3708,6 +3975,8 @@ mod tests {
         let raw = r#"{
             "nodes": [
                 { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
+                  "intent": " 为后续公式法补操作底座 ",
+                  "scope": " 教配方三步；不碰判别式 ",
                   "est": 15, "difficulty": 3,
                   "teaches": [{"name": " 配方法 ", "tier": "apply"}],
                   "assumes": [{"name": "一元二次方程", "tier": "know"}] }
@@ -3719,11 +3988,44 @@ mod tests {
         assert_eq!(batch.nodes.len(), 1);
         assert_eq!(batch.nodes[0].title, "用配方法解方程");
         assert_eq!(batch.nodes[0].est, Some(15));
+        // 声明面两字段（absorb-8 z01）：装填 + trim 归一。
+        assert_eq!(batch.nodes[0].intent, "为后续公式法补操作底座");
+        assert_eq!(batch.nodes[0].scope, "教配方三步；不碰判别式");
         assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
         assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
         assert_eq!(batch.mints[0].canonical, "配方法");
         assert_eq!(batch.mints[0].aliases, vec!["配方"]);
         assert_eq!(batch.note, "n");
+    }
+
+    /// serde 面容旧（absorb-8 z01）：缺两键的节点 JSON 照常反序列化为空串
+    /// （导入包/旧档语义缺席）——门在 contract 层拦生长 LLM 输出，不在
+    /// serde 层拒绝。
+    #[test]
+    fn proposed_node_deserializes_without_brief_fields_as_empty_strings() {
+        let node: ProposedNode = serde_json::from_value(json!({ "title": "旧档节点" })).unwrap();
+        assert_eq!(node.intent, "", "缺 intent = 空串（缺席语义）");
+        assert_eq!(node.scope, "", "缺 scope = 空串（缺席语义）");
+    }
+
+    /// 条款覆盖断言（absorb-8 z01，j08 三闸的单测substring 臂）：COACH_SYSTEM
+    /// 声明面条款与 JSON 形状示例的关键短语——删条款 = 本测试红。
+    #[test]
+    fn coach_system_carries_the_node_declaration_clause() {
+        let system = crate::learning_graph::coach_system();
+        for phrase in [
+            r#""intent": "一句话：为什么有这个学习点"#,
+            r#""scope": "一两句：教什么、教到哪、明确不碰什么"#,
+            "声明面（intent/scope，每个节点出生即必带）",
+            "为什么有这个学习点",
+            "教什么、教到哪、明确不碰什么",
+            "「不教 X」「X 留待后续」类否定性提及是边界声明",
+            "各不超过 200 字",
+            "逐半重写",
+            "note、purpose、intent 与 scope 用中文",
+        ] {
+            assert!(system.contains(phrase), "COACH_SYSTEM 缺「{phrase}」");
+        }
     }
 
     #[test]

@@ -1430,6 +1430,13 @@ async fn run_grow(
             return Ok(ExitCode::from(2));
         }
         let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
+        // 声明面读数行（absorb-8 z01，读数面非门禁）：本批 intent/scope 字符
+        // 均值——两字段写实质内容的观察面。
+        if let Some((rows, intent_avg, scope_avg)) =
+            batch_brief_readout(&wiring.pool, &course_id, seq).await?
+        {
+            println!("  [brief: rows={rows} intent_avg={intent_avg} scope_avg={scope_avg}]");
+        }
         // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
         // 挂号表读数行（m3）：rows/invalid/retried/degraded——机械校验观测面。
         // external_hits（f1 A5）：行 concept 命中本批复用锚的行数——挂号行
@@ -1587,6 +1594,69 @@ async fn batch_summary(
     Ok((node_ids.len(), seq))
 }
 
+/// 声明面读数（absorb-8 z01，读数面非门禁）：本批节点 intent/scope 的 trim 后
+/// 字符均值（`[brief: rows=N intent_avg=X scope_avg=Y]`）。批未落 = None。
+async fn batch_brief_readout(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<Option<(usize, usize, usize)>> {
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+    if node_ids.is_empty() {
+        return Ok(None);
+    }
+    let briefs = fetch_node_briefs(pool, &node_ids).await?;
+    let mut intent_total = 0usize;
+    let mut scope_total = 0usize;
+    for lesson_id in &node_ids {
+        let (intent, scope) = briefs
+            .get(lesson_id.as_str())
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+        intent_total += intent.trim().chars().count();
+        scope_total += scope.trim().chars().count();
+    }
+    let rows = node_ids.len();
+    Ok(Some((rows, intent_total / rows, scope_total / rows)))
+}
+
+/// 全批节点声明行一次取回（逐节点 `SELECT intent, scope … WHERE lesson_id = ?`
+/// N+1 的批量化）：IN 占位符按批规模展开，一条查询取回
+/// (lesson_id, intent, scope)，内存装配成按 lesson_id 的映射。缺行不静默——
+/// 调用方按原 fetch_one 语义以 RowNotFound 如实报错。
+async fn fetch_node_briefs(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    node_ids: &[String],
+) -> Result<std::collections::HashMap<String, (String, String)>> {
+    let mut sql = String::from(
+        "SELECT lesson_id, intent, scope FROM learning_lessons WHERE lesson_id IN (",
+    );
+    for index in 0..node_ids.len() {
+        if index > 0 {
+            sql.push(',');
+        }
+        sql.push('?');
+    }
+    sql.push(')');
+    let mut query = sqlx::query_as::<_, (String, String, String)>(&sql);
+    for lesson_id in node_ids {
+        query = query.bind(lesson_id);
+    }
+    Ok(query
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(lesson_id, intent, scope)| (lesson_id, (intent, scope)))
+        .collect())
+}
+
 /// 批次机械判据审计（s1）：首批 assumes 地板（空账全空/非空账验覆盖） + 就绪即发布（既往供给覆盖）
 /// + 铸名全局唯一。
 async fn audit_batch(
@@ -1604,6 +1674,23 @@ async fn audit_batch(
     .fetch_one(pool)
     .await?;
     let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+
+    // 声明面判据（absorb-8 z01）：ng.node.brief 契约门放行的批才会 applied
+    // （门拒 = 批不落 = wait_applied_batches 超时退出——判据「首批契约门过、
+    // 无 ng.node.brief 违约读数」的机械面），落库行 intent/scope 必须 trim 后
+    // 非空；空 = 门与落库断链（契约/落库漂移缺陷），如实违约。
+    // 全批声明行一次取回（fetch_node_briefs，N+1 批量化）。
+    let briefs = fetch_node_briefs(pool, &node_ids).await?;
+    for lesson_id in &node_ids {
+        let (intent, scope) = briefs
+            .get(lesson_id.as_str())
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+        if intent.trim().is_empty() || scope.trim().is_empty() {
+            violations.push(format!(
+                "节点声明面判据破坏：{lesson_id} 的 intent/scope 落库为空（ng.node.brief 门应已拦）"
+            ));
+        }
+    }
 
     // 批内节点的 assumes。
     let mut batch_assumes: Vec<(String, String, String)> = Vec::new(); // (lesson, concept, tier)
@@ -2349,7 +2436,14 @@ const SMOKE_RETURN_SERIES: &str = "四个交易日的日对数收益（%）：+3
 /// 槽 == 0——只数 Fail 后无复核 Pass 的未修正失败；累计 failed 只进读数行
 /// 不进硬门，自修正会话必须绿）且正文含「3.16」/「3.2」期望值变体（
 /// `math_verify read-out` 随附；viz_lint 读数经 f3 修复恢复真实）。
-/// 读数
+/// absorb-8 z03 追加⑨：声明面骨架行两行——节点 B 带创建意图/教学范围播种，
+/// 归档 user 含两行（命中播种原文，stale-binary 必红）+ system 含「声明优
+/// 先（创建意图/教学范围）」条款；追加⑩（learnhub 3b07214 旧档负样本同
+/// 款）：判据之后把节点行 intent/scope 置空再走一次真实装配——两行省略、
+/// scope_findings 零触发、发布照常成功（旧档零变化；瞬断注入面先归零，
+/// ⑦只判首跑，负臂真实支付第二轮 LLM）。读数追加 `scope_findings
+/// read-out`（报告-only：发布帧披露的 scope_boundary_hit 条数，人判读非
+/// 门禁）。读数
 /// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
 /// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
 /// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
@@ -2394,6 +2488,13 @@ async fn run_content(
     .await?;
     let lesson_a = nomifun_common::LearningLessonId::new().into_string();
     let lesson_b = nomifun_common::LearningLessonId::new().into_string();
+    // 声明面播种（absorb-8 z03 判据9/10）：节点 B 带创建意图/教学范围——
+    // 骨架行两行随真实管线装配进 user 面 + scope 词面核对的提取源（scope
+    // 边界词点名 GARCH——模型守界则零 findings，越界则读数行如实计数，
+    // 报告-only 非门禁）；节点 A 保持 DB 默认空串（旧档形态，判据⑤先例
+    // 面不受影响）。判据10 的负臂在判据之后把 B 置空再走一次装配。
+    let lesson_b_intent = "在收益率之后刻画波动率，承接两日换算例题";
+    let lesson_b_scope = "教波动率的直观动机与离散度量；不引入 GARCH 模型";
     // w1 种子预埋（蓝图 4.6 双保险）：L2 summary 带种子序列。走查结论（报
     // 告回写）：图线路径 generate_graph_lesson_content 的 SELECT 不取
     // l.summary、LessonGenerationContext 也无 summary 字段——该通道不进生
@@ -2430,6 +2531,14 @@ async fn run_content(
         .execute(&wiring.pool)
         .await?;
     }
+    // 节点 B 的声明两列（absorb-8 z03 正臂播种；z01 列 NOT NULL DEFAULT ''
+    // ——节点 A 不动即旧档）。
+    sqlx::query("UPDATE learning_lessons SET intent = ?, scope = ? WHERE lesson_id = ?")
+        .bind(lesson_b_intent)
+        .bind(lesson_b_scope)
+        .bind(&lesson_b)
+        .execute(&wiring.pool)
+        .await?;
     let concept_alpha = nomifun_common::LearningConceptId::new().into_string();
     let concept_beta = nomifun_common::LearningConceptId::new().into_string();
     // w1 种子预埋（蓝图 4.6「概念定义通道兜底」+ 走查修正）：概念定义才是
@@ -2689,6 +2798,31 @@ async fn run_content(
                 .into(),
         );
     }
+    // 判据9（absorb-8 z03，声明面骨架行两行 + 声明优先条款）：节点 B 带声
+    // 明播种 → 归档 user 含「创建意图：」「教学范围：」两行（命中播种原文
+    // ——行格式逐字固定，stale-binary 必红）；system 含「声明优先（创建意
+    // 图/教学范围）」条款（learnhub content-plan 声明优先 + content-write
+    // 以教学范围声明为界 的 allo 合成——两字段在场为意图/边界第一真相）。
+    {
+        let declaration_calls = user_texts
+            .iter()
+            .filter(|user| {
+                user.contains(&format!("创建意图：{lesson_b_intent}"))
+                    && user.contains(&format!("教学范围：{lesson_b_scope}"))
+            })
+            .count();
+        if declaration_calls == 0 {
+            failed.push(format!(
+                "判据9红：归档 user 缺声明面两行（创建意图：{lesson_b_intent} / 教学范围：{lesson_b_scope}）——#205 声明面装配"
+            ));
+        }
+        if !system_joined.contains("声明优先（创建意图/教学范围）") {
+            failed.push(
+                "判据9红：system 归档缺「声明优先（创建意图/教学范围）」条款——二进制可能是旧档"
+                    .into(),
+            );
+        }
+    }
 
     // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。密度基线
     // （e5）：节均字符量 + 例题节数——learnhub 定调「语义纪律不是机械门」，
@@ -2802,6 +2936,19 @@ async fn run_content(
             .filter_map(|value| value.get("viz_lint_events").and_then(|v| v.as_u64()))
             .sum();
         println!("viz_lint read-out: viz_lint_events={viz_lint_events}");
+        // scope 词面核对读数（absorb-8 z03，报告-only 非门禁）：发布帧披露
+        // 的 scope_boundary_hit 条数——0 = 零命中或旧档零扫描；命中只进观察
+        // 条/生成报告，人判读，不拦截不重试。
+        let scope_hit_events: u64 = rows
+            .iter()
+            .filter(|value| {
+                value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+            })
+            .filter_map(|value| value.get("scope_findings").and_then(|v| v.as_u64()))
+            .sum();
+        println!(
+            "scope_findings read-out: first_pass_hits={scope_hit_events}（报告-only：命中只进观察条，人判读非门禁）"
+        );
         // k05 读数面（非门禁）：四条纪律短语在存档里的在场性（off 臂 0）。
         let discipline_hits = [
             "具象替身先（R10）",
@@ -2859,6 +3006,65 @@ async fn run_content(
     // 相位耗时读数（e1）：内容相位（多节点逐条）——9-15 次串行小调用的
     // 调用数与字符量基线，两遍式对照（后续票）从这里起表。
     print_phase_readings(&wiring.task_finishes.lock().unwrap(), "lesson");
+
+    // 判据10（absorb-8 z03 旧档负样本，learnhub 3b07214 同款）：生成后将节
+    // 点行 intent/scope 置空再走一次真实装配——两行省略（旧档零变化）、
+    // scope_findings 零触发（无声明即无排除面）、发布照常成功（report-only
+    // 与声明面都不改变旧档的发布语义）。瞬断注入面先归零（判据⑦只判首跑）。
+    {
+        println!("[negative] regenerating node B with legacy shape (intent/scope zeroed)…");
+        sqlx::query(
+            "UPDATE learning_lessons SET intent = '', scope = '', content_generated = 0 \
+             WHERE lesson_id = ?",
+        )
+        .bind(&lesson_b)
+        .execute(&wiring.pool)
+        .await?;
+        wiring
+            .lesson_flaky_remaining
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let calls_before = rows.len();
+        if let Err(error) = service
+            .generate_lesson_content(&owner, &lesson_b_id, &request)
+            .await
+        {
+            failed.push(format!("判据10红：旧档（intent/scope 置空）重装配失败：{error}"));
+        } else {
+            let calls_after = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+                .unwrap_or_default();
+            let new_rows: Vec<serde_json::Value> = calls_after
+                .lines()
+                .skip(calls_before)
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect();
+            let legacy_user_hits = new_rows
+                .iter()
+                .filter_map(|value| value.get("user").and_then(|v| v.as_str()))
+                .filter(|user| user.contains("创建意图：") || user.contains("教学范围："))
+                .count();
+            if legacy_user_hits != 0 {
+                failed.push(format!(
+                    "判据10红：旧档装配出 {legacy_user_hits} 个声明两行 user 帧——缺席省略失灵"
+                ));
+            }
+            let legacy_scope_hits: u64 = new_rows
+                .iter()
+                .filter(|value| {
+                    value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+                })
+                .filter_map(|value| value.get("scope_findings").and_then(|v| v.as_u64()))
+                .sum();
+            if legacy_scope_hits != 0 {
+                failed.push(format!(
+                    "判据10红：旧档（scope 空）scope_findings={legacy_scope_hits}——零扫描失灵"
+                ));
+            }
+            println!(
+                "declaration read-out: legacy_two_line_user_frames={legacy_user_hits} legacy_scope_findings={legacy_scope_hits}（应为 0/0——旧档零变化）"
+            );
+        }
+    }
+
     if !failed.is_empty() {
         for failure in &failed {
             eprintln!("{failure}");

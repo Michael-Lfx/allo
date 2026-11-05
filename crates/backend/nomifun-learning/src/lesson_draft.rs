@@ -117,6 +117,32 @@ pub fn render_precedent_block(precedents: &[LessonPrecedent]) -> Option<String> 
     Some(text)
 }
 
+/// 声明面骨架行（absorb-8 z03，learnhub #205 契约 v2.17）：节点 intent/
+/// scope 声明的两行投影——「创建意图」行 + 「教学范围」行。任一字段缺席
+/// 或空白（旧档 DB 默认空串）即省该行；两字段皆不在场 = 整段省略（`None`，
+/// 旧行为零变化）。行格式逐字固定——真机冒烟对观测存档机械 grep 这一串；
+/// 范围行尾注即 content-write「点名边界不构成引用」配对条款的输入面短句。
+pub fn render_intent_scope_lines(
+    intent: Option<&str>,
+    scope: Option<&str>,
+) -> Option<String> {
+    let intent = intent.map(str::trim).filter(|intent| !intent.is_empty());
+    let scope = scope.map(str::trim).filter(|scope| !scope.is_empty());
+    if intent.is_none() && scope.is_none() {
+        return None;
+    }
+    let mut lines = String::new();
+    if let Some(intent) = intent {
+        lines.push_str(&format!("创建意图：{intent}\n"));
+    }
+    if let Some(scope) = scope {
+        lines.push_str(&format!(
+            "教学范围：{scope}（范围外内容不教，越界点名不构成引用）\n"
+        ));
+    }
+    Some(lines)
+}
+
 /// 超容自报归一（k03）：出现时按非空字符串收下（trim 后原样保留语义），
 /// 空白串按缺席裁成 `None`——形状条款只查非空，**永不退稿**（learnhub
 /// `extract_capacity_note` 同款；自报是自愿留痕，不是数量门）。
@@ -240,6 +266,14 @@ pub struct GraphLessonContext {
     /// 先例摘要（Precedent，learnhub #180）：按节点 id 升序稳定；空 =
     /// 无先例（块省略）。
     pub precedents: Vec<LessonPrecedent>,
+    /// 节点创建意图（absorb-8 z03，learnhub #205 声明面）：节点诞生即声明
+    /// 的「为什么有这个点」一句话——骨架行「创建意图」行的唯一数据源；
+    /// `None` = 旧档未声明（DB 空串折叠，行省略）。
+    pub intent: Option<String>,
+    /// 节点教学范围（absorb-8 z03）：「教什么/教到哪/明确不碰什么」的边界
+    /// 声明——声明优先条款的边界第一真相 + `scope_findings` 词面核对的
+    /// 提取源；`None`/空 = 旧档未声明（行省略 + 零扫描）。
+    pub scope: Option<String>,
 }
 
 /// 概念面读侧投影（二轮 g2 / j07）：首现判定（祖先闭包不动点，零新存储）
@@ -970,6 +1004,14 @@ impl LessonDraft {
             degraded_keys: self.degraded_keys.clone(),
             capacity_note: self.capacity_note.clone(),
             viz_lint_events: self.viz_lint_events,
+            // scope 边界词面 findings 计数（absorb-8 z03，报告-only）随发布
+            // 帧披露（viz_lint_events 读数同缝——冒烟 scope_findings 读数行
+            // 的数据源）。
+            scope_findings: self
+                .findings
+                .iter()
+                .filter(|finding| finding.kind == "scope_boundary_hit")
+                .count(),
         }
     }
 
@@ -1344,6 +1386,39 @@ fn audit_findings(
                 }
             }
         }
+        // ── scope 边界词面核对（absorb-8 z03，learnhub #205 Q1=b 域中立
+        // 移植，报告-only 零拦截）：「教学范围」声明排除段名词串 vs 节标题
+        // 与正文——「不该无痕地生成」由人判读 findings，不由机械打回；
+        // 否定性提及豁免（范围外点名 ≠ 引用）。scope 缺席/空白（旧档）=
+        // 零扫描零开销（模块对空 scope 恒返回空表）。
+        if let Some(scope) = context
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.scope.as_deref())
+        {
+            // 排除词串每课时提取一次，逐节复用（scope None = 不提取零开销）。
+            let excluded_terms =
+                crate::learning_graph::scope_findings::excluded_terms(scope);
+            for section in section_manifest.into_iter().flatten() {
+                let body = section_bodies
+                    .get(&section.section_key)
+                    .map(|(body, _)| body.as_str())
+                    .unwrap_or("");
+                for message in crate::learning_graph::scope_findings::scan_section_with_terms(
+                    &excluded_terms,
+                    &section.section_key,
+                    &section.title,
+                    body,
+                ) {
+                    findings.push(warning("scope_boundary_hit", message));
+                }
+            }
+            if let Some(document) = document {
+                for message in crate::learning_graph::scope_findings::scan_body(scope, document) {
+                    findings.push(warning("scope_boundary_hit", message));
+                }
+            }
+        }
         // R9 叙述声部（两条管线通用）：逐类点名命中节。
         const NARRATIVE_SELF: &[&str] = &["本课", "这一课", "本课时"];
         const STRUCTURE_WORDS: &[&str] = &["本节将", "下一节将", "接下来我们将", "如前所述"];
@@ -1484,6 +1559,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let mut draft = LessonDraft::new(ctx);
         // 正文同时出现引用名与正名（混用）+ 首现名在场 + R9 自称。
@@ -1541,6 +1618,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         let mut draft = LessonDraft::new(ctx);
         let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
@@ -1576,6 +1655,96 @@ mod tests {
                 .findings
                 .iter()
                 .any(|f| f.kind == "narrative_self_reference")
+        );
+    }
+
+    /// scope 边界词面核对（absorb-8 z03，报告-only）：图路径 scope 声明
+    /// 排除段名词串撞节标题/正文 → `scope_boundary_hit` warning（指名来源
+    /// 字段「教学范围」与命中位置）；否定性提及豁免；scope 缺席/空（旧档）
+    /// 与传统路径零扫描零 finding。
+    #[test]
+    fn audit_names_scope_boundary_hits_without_blocking() {
+        let graph_ctx = |scope: Option<&str>| {
+            let mut ctx = context();
+            ctx.graph = Some(GraphLessonContext {
+                goal: "g".into(),
+                degree_statement: "d".into(),
+                prerequisite_path: String::new(),
+                upcoming_nodes: String::new(),
+                concept_faces: None,
+                est_minutes: Some(20),
+                known_names: None,
+                teaches_tiers: Vec::new(),
+                precedents: Vec::new(),
+                intent: None,
+                scope: scope.map(str::to_owned),
+            });
+            ctx
+        };
+        let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
+        // 播种负样本（票面场景）：scope「不引入方程」+ 节标题含「方程」→
+        // 命中一条，指名来源与位置。
+        let mut draft = LessonDraft::new(graph_ctx(Some("教四则运算；不引入方程")));
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述\n{body}\n## 例子·方程的初步认识\n{body}\n## 验证\n{body}\n"),
+        }]);
+        let hits: Vec<&LessonFinding> = draft
+            .findings
+            .iter()
+            .filter(|f| f.kind == "scope_boundary_hit")
+            .collect();
+        assert_eq!(hits.len(), 1, "标题命中一条：{:?}", draft.findings);
+        assert_eq!(hits[0].severity, SEV_WARNING, "观察条非阻断");
+        assert!(
+            hits[0].message.contains("方程")
+                && hits[0].message.contains("教学范围")
+                && hits[0].message.contains("节标题"),
+            "finding 指名来源字段与命中位置：{}",
+            hits[0].message
+        );
+
+        // 否定性提及豁免：正文只在否定子句里点名边界 = 零 finding。
+        let mut draft = LessonDraft::new(graph_ctx(Some("教四则运算；不引入方程")));
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!(
+                "## 描述\n{body}本课不引入方程，后续课程再展开。\n## 例子\n{body}\n## 验证\n{body}\n"
+            ),
+        }]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "scope_boundary_hit"),
+            "否定性提及豁免不报：{:?}",
+            draft.findings
+        );
+
+        // 旧档零扫描：scope None / 空串（DB 默认）= 正文撞词也不报。
+        for scope in [None, Some("")] {
+            let mut draft = LessonDraft::new(graph_ctx(scope));
+            draft.apply_ops(vec![LessonOp::SetDocument {
+                document: format!("## 描述·方程\n{body}\n## 例子\n{body}\n## 验证\n{body}\n"),
+            }]);
+            assert!(
+                !draft
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == "scope_boundary_hit"),
+                "旧档（scope {scope:?}）零扫描零 finding"
+            );
+        }
+
+        // 传统路径（graph None）：无声明面，恒零扫描。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述·方程\n{body}\n## 例子\n{body}\n## 验证\n{body}\n"),
+        }]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "scope_boundary_hit"),
+            "传统路径零扫描"
         );
     }
 
@@ -1936,6 +2105,40 @@ mod tests {
         );
     }
 
+    /// 声明面骨架行（absorb-8 z03，learnhub #205 契约 v2.17）：两字段齐 =
+    /// 两行在场；单缺席 = 只渲染在场行；全空/全缺席 = 整段省略（`None`，
+    /// 旧档零变化——Known Names 省行先例同形）。
+    #[test]
+    fn intent_scope_lines_render_present_rows_and_omit_absent() {
+        // 全缺席（旧档）与全空串（DB 默认折叠后的等价形）= 整段省略。
+        assert_eq!(render_intent_scope_lines(None, None), None, "旧档整段省略");
+        assert_eq!(
+            render_intent_scope_lines(Some(""), Some("   ")),
+            None,
+            "空串/空白串按缺席折叠"
+        );
+        // 两字段齐：两行逐字在场（行格式逐字固定——真机冒烟机械 grep 面）。
+        let both = render_intent_scope_lines(
+            Some("在收益率之后解释波动率，承接换算例题"),
+            Some("教波动率的直观刻画；不引入 GARCH 模型"),
+        )
+        .expect("两字段齐有两行");
+        assert!(both.contains("创建意图：在收益率之后解释波动率，承接换算例题\n"), "{both}");
+        assert!(
+            both.contains("教学范围：教波动率的直观刻画；不引入 GARCH 模型（范围外内容不教，越界点名不构成引用）\n"),
+            "{both}"
+        );
+        // 单缺席：只渲染在场行（缺 intent 只出范围行，反之亦然）。
+        let scope_only =
+            render_intent_scope_lines(None, Some("教基本运算；不展开对数")).expect("有 scope 有行");
+        assert!(scope_only.starts_with("教学范围："), "{scope_only}");
+        assert!(!scope_only.contains("创建意图"), "{scope_only}");
+        let intent_only =
+            render_intent_scope_lines(Some("补齐内存安全主线"), None).expect("有 intent 有行");
+        assert!(intent_only.starts_with("创建意图："), "{intent_only}");
+        assert!(!intent_only.contains("教学范围"), "{intent_only}");
+    }
+
     /// est 铸值（k03/#178）：图节点带 est 时草稿 estimated_minutes 以节点
     /// 尺寸锚开盘（模型仍可 set_estimated_minutes 复议）；传统课时维持旧
     /// 默认 10；越界 est（>240）不铸回旧默认。
@@ -1955,6 +2158,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         assert_eq!(LessonDraft::new(ctx).estimated_minutes, 20, "节点 est 铸值");
 
@@ -1973,6 +2178,8 @@ mod tests {
             known_names: None,
             teaches_tiers: Vec::new(),
             precedents: Vec::new(),
+            intent: None,
+            scope: None,
         });
         assert_eq!(LessonDraft::new(ctx).estimated_minutes, 10, "越界 est 回默认");
     }

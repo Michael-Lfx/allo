@@ -156,3 +156,20 @@ part_of: ../map.md
 3. 旧档课程（存量开发库）内容生成零两行、零 scope findings、行为与
    基线一致（旧档零变化）。
 4. report-only 断言测试在场（有 findings 仍发布成功）。
+
+## 勘误（双轴评审修复轮注记）
+
+- 票面写 `MENTION_NEGATIONS` 21 词——learnhub 实码为 12 + 10 = 22 词
+  （`BOUNDARY_MARKERS` 12 + 否定性补充措辞 10），实现照实码 22。
+- `CLAUSE_DELIMS` 全角补全（，！？）为 upstream 缺陷修正：learnhub
+  源文件只剩半角逗/叹/问号的重复条目（全角形丢失的痕迹），allo 正文
+  与 scope 是全角中文标点，不补全角形则排除段过滚——已在
+  `scope_findings.rs` 模块 doc 注明。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`1e86ad3a1`（骨架行+scope_findings，11 文件 +818）→ `79b0d65c5`（smoke content 判据⑨⑩+读数），经 `c58b23262` 并回集成分支。
+- **验证**：`nomifun-learning` 843 全绿 / `nomifun-ai-agent` 1134 全绿（新测 10：scope_findings 5 + 渲染三态 1 + 审计接线 1 + report-only 发布 1 + 骨架行三态/传统臂 1 + 声明优先 1 + 观测帧 1）。
+- **真机 content 臂 EXIT=0 判据全过**：`scope_findings read-out: first_pass_hits=0（报告-only）`；legacy 负样本 `declaration read-out: legacy_two_line_user_frames=0 legacy_scope_findings=0（应为 0/0——旧档零变化）`；瞬断注入 2 次被门面吸收（attempts_used=2, stop_reason=success）；math_verify 2/2。
+- **偏差四处（实现报告记录）**：①MENTION_NEGATIONS 实为 12+10=22 词（票面笔误 21，已勘误注记）；②CLAUSE_DELIMS 补全角 ，！？（learnhub 上游缺陷，模块 doc 注明）；③来源字段名用 allo 措辞「教学范围」（非 learnhub「本点范围」）；④单节重写臂自带查询不入 GraphLessonContext——在重写臂图分支补投同标签两行，重写路径不跑草稿审计=存量形态（j07 同律），雾区留观。
+- upstream 候选：CLAUSE_DELIMS 全角丢失可回 learnhub 报缺陷。

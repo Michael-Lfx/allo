@@ -1,11 +1,16 @@
 # Map: 第八轮吸收波——learnhub #205 节点意图与教学范围（z01–z03）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-11-05）。来源 = learnhub main@20f1dcf 相对上次参照点
-      22d016d 的 12 个提交复核（全部为 #205 一个特性波 + 随批收口）。
-      用户指示（2026-11-05）：检查影响面，然后立票。
-      影响面盘点见本 map §影响面；两处开放裁决按「推荐项默认裁决」落票，
-      票面标注可复议。 -->
+<!-- 状态：**已到达目的地（2026-11-05 关波）**。z01–z03 全关（Resolution 在票尾），
+      集成分支 feat/learning-absorb-8 尖端 495b3ce60（z01 三提交 1ce098fd1 并回 +
+      z02 69c3f2d98 + z03 c58b23262 + 双轴评审修复轮 495b3ce60，全推 origin）；
+      合成树 learning 855 / ai-agent 1168 / nomifun-app 465 全绿；真机两臂串行
+      EXIT=0：grow `[brief: rows=5 intent_avg=40 scope_avg=42]` +
+      `[fragments: total=127 rows=127 unhandled=0 degraded=false]`，content
+      判据全过（scope_findings first_pass_hits=0 + legacy 负样本 0/0）。
+      并回 feat/learn0928 等用户通知（推送铁律）。真机凭据链：absorb8-smoke/
+      工作目录（data/encryption_key ← Nomi-dev，provider 行 ← absorb-7
+      quality.db，bun:sqlite 搬运）。 -->
 <!-- 基线：feat/learn0928 尖端 939443a1d（本波立票提交，已推 origin）。 -->
 <!-- 参照点：learnhub main 20f1dcf（2026-11-04 18:12 +0800）。 -->
 
@@ -123,3 +128,20 @@ learnhub `22d016d..20f1dcf` 共 12 个提交，按段归组：
 - **graph_node_topology 前置/后续/禁止清单摘要带 scope**：消费面收敛
   （learnhub scope 消费=骨架行+scope_findings），不做；真机若暴露下游
   写作越界复发再立票。
+
+## 真机法证留观（2026-11-05 两臂 EXIT=0 后法证）
+
+- **overshoot 软读数与边界诚实纪律打架**：content 臂 `overshoot read-out hit=1`
+  的最可能来源 = 一过正文按声明优先条款写了「不引入 GARCH」式诚实边界句——
+  scope_findings 的 MENTION_NEGATIONS 豁免让它正确报 0，而 overshoot 四词硬扫
+  无否定豁免、把合法边界点名误计超纲（另一解 = 一过真超纲、负样本臂碰巧更净；
+  一过正文已被负样本就地覆写 v1、turn 级档案 response 为空，不可追溯，两解
+  无法裁决）。report-only 不阻断；**后续小票候选**：overshoot 读数学会
+  「本点 scope 声明内专名豁免」（与 MENTION_NEGATIONS 同律），否则 scope 一旦
+  提到 GARCH 类词该读数恒红失去信号价值。
+- **范围外碎片噪音负担**：scope/intent 源切分产 80/127 碎片（含单字「萃/足/度」），
+  宁滥勿缺使然、模型全处置，但评审调用耗时 303s/次。观察项非缺陷。
+- **评审重试方差**：范围外 6→14、噪声 121→113（同批同清单两轮），机械核兜住
+  下限，方差属模型层，留观。
+- **内容臂档案 turn 级 response 为空**（与 absorb-7 同款存量）——法证一过内容
+  需 ArchivingCompleter 存 turn 响应，后置。

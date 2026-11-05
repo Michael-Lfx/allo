@@ -3308,17 +3308,19 @@ impl LearningService {
         })
     }
 
-    /// 碎片点名清单派生（m9 补接；纯函数在
+    /// 碎片点名清单派生（m9 补接；absorb-8 z02 四源扩面带来源标记——返回
+    /// `NameFragment` 行，跨源同词保留多行；纯函数在
     /// [`crate::learning_graph::fragment_verdict::derive_naming_list`]，本
     /// 方法只管取数）：读本课 `structure_json` 的课程层旁键（损坏 = fail
     /// loud）∪ 仓库 base ∪ gate 装配的已知名池（已教账 ∪ 登记表活跃名+别名
-    /// ∪ 本批铸名/提名）→ 本批提名定义的未着落片段。
+    /// ∪ 本批铸名/提名）→ 本批提名定义 ∪ 节点显示名 ∪ intent ∪ scope 的
+    /// 未着落片段。
     async fn derive_naming_list(
         &self,
         course_id: &LearningCourseId,
         batch: &crate::learning_graph::ProposedBatch,
         provenance_known: &HashSet<String>,
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<Vec<crate::learning_graph::fragment_verdict::NameFragment>, AppError> {
         let snapshot: Option<String> = sqlx::query_scalar(
             "SELECT structure_json FROM learning_courses WHERE course_id = ?",
         )
@@ -3484,14 +3486,17 @@ impl LearningService {
             let est = node.est.unwrap_or(10).max(1) as i64;
             sqlx::query(
                 "INSERT INTO learning_lessons \
-                 (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-                  difficulty, content_generated) \
-                 VALUES (?, ?, ?, '', ?, ?, ?, ?, 0)",
+                 (lesson_id, module_id, title, summary, purpose, intent, scope, position, \
+                  estimated_minutes, difficulty, content_generated) \
+                 VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, 0)",
             )
             .bind(lesson_id.as_str())
             .bind(&module_id)
             .bind(node.title.trim())
             .bind(node.purpose.trim())
+            // 声明面两列（absorb-8 z01）：契约门已保证 trim 后非空，落库照抄。
+            .bind(node.intent.trim())
+            .bind(node.scope.trim())
             .bind(next_position + offset as i64)
             .bind(est)
             .bind(i64::from(node.difficulty.unwrap_or(2)))

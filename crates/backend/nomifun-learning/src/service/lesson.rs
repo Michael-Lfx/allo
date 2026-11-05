@@ -19,6 +19,14 @@ fn structure_degree_statement(snapshot: Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// 节点声明面两列（intent/scope，absorb-8 z03）的旧档折叠：TEXT NOT NULL
+/// DEFAULT ''——空串/空白串折叠成 `None`（旧档未声明），非空 trim 后原样
+/// 透传（声明是模型读的原文，零加工）。
+fn non_empty_column(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 /// 课时检索的整步预算（t3，票面 20s）：检索 + 扩读在这个预算内完成，超时
 /// 按「检索不可用」降级——只丢补充片段，不阻断课时生成。
 const LESSON_RETRIEVAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
@@ -227,6 +235,24 @@ async fn read_lesson_supplements(
         }
     }
     Ok((supplements, hit_count))
+}
+
+/// 单节重写臂的课时名相行（`rewrite_lesson_section` 专用投影）：课时四字段
+/// + 所属课程标题。评审修复：原裸 `(String, String, String, String, String)`
+/// 五元组按下标取用，列序即语义易错——捆成具名结构后构造与取用同源，查询
+/// 列序不变（`c.title` 起别名供 FromRow 按列名映射）。
+#[derive(sqlx::FromRow)]
+struct NodeRowBrief {
+    /// 课时标题（l.title）。
+    title: String,
+    /// 课时教学意图（l.purpose）。
+    purpose: String,
+    /// 声明面：本节点 intent（l.intent，absorb-8 z03 骨架行声明源）。
+    intent: String,
+    /// 声明面：本节点 scope（l.scope，absorb-8 z03 骨架行声明源）。
+    scope: String,
+    /// 所属课程标题（c.title）。
+    course_title: String,
 }
 
 impl LearningService {
@@ -1119,7 +1145,7 @@ impl LearningService {
         task: &crate::service::GenerationTaskGuard,
     ) -> Result<(LessonView, Option<LessonRunStats>), AppError> {
         let lesson = sqlx::query(
-            "SELECT l.title, l.purpose, l.position, l.estimated_minutes, \
+            "SELECT l.title, l.purpose, l.intent, l.scope, l.position, l.estimated_minutes, \
                     m.title AS module_title \
              FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id \
              WHERE l.lesson_id = ?",
@@ -1130,6 +1156,11 @@ impl LearningService {
         .map_err(internal)?;
         let lesson_title: String = lesson.try_get("title").map_err(internal)?;
         let purpose: String = lesson.try_get("purpose").map_err(internal)?;
+        // 节点声明面两列（absorb-8 z01 落库 / z03 消费）：TEXT NOT NULL
+        // DEFAULT ''——空串/空白折叠成 `None`（旧档），骨架行两行整段省略
+        // + scope_findings 零扫描。
+        let intent = non_empty_column(lesson.try_get("intent").map_err(internal)?);
+        let scope = non_empty_column(lesson.try_get("scope").map_err(internal)?);
         let lesson_position: i64 = lesson.try_get("position").map_err(internal)?;
         // 结构阶段给的节点尺寸锚（k03）：列 NOT NULL DEFAULT 10，恒有值。
         let estimated_minutes: i64 = lesson.try_get("estimated_minutes").map_err(internal)?;
@@ -1187,6 +1218,10 @@ impl LearningService {
                 teaches_tiers: topology.teaches_tiers,
                 // 先例摘要（#180）：已建立语境视野（空 = 块省略）。
                 precedents: topology.precedents,
+                // 节点声明面（absorb-8 z03）：骨架行两行 + scope_findings
+                // 提取源；None = 旧档（行省略 + 零扫描）。
+                intent,
+                scope,
             }),
             // 学习图节点的目标在 graph.goal；本字段只承载传统课程目标。
             goal: None,
@@ -1738,7 +1773,22 @@ impl LearningService {
 
         // 防超纲与 grounded 上下文按课程类型分流（与两条生成路径同口径）。
         // 图路径带概念面段（首现/引用名/别名池——单节重写与整卡生成同一
-        // 名相口径，j07）。
+        // 名相口径，j07）。节点声明面两行（absorb-8 z03）先行取出：重写臂
+        // 不复用 generate_graph_lesson_content 的装配（各自 SELECT——本票
+        // 核对结论），声明在图臂 context_text 里对齐骨架行标签补投。
+        let lesson_row: NodeRowBrief = sqlx::query_as(
+            "SELECT l.title, l.purpose, l.intent, l.scope, c.title AS course_title \
+             FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id \
+             WHERE l.lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let lesson_title = lesson_row.title.clone();
+        let lesson_purpose = lesson_row.purpose.clone();
         let (grounding, forbidden): (Option<(String, String)>, String) =
             if course_kind == CourseKind::LearningGraph.as_str() {
                 let topology = self.graph_node_topology(&course_id, lesson_id).await?;
@@ -1758,6 +1808,15 @@ impl LearningService {
                 );
                 let mut context_text =
                     format!("学习目标：{}\n程度声明：{}", goal.trim(), degree_statement.trim());
+                // 声明面两行（absorb-8 z03）：缺席（旧档空串）整段省略
+                // （渲染函数内折叠——与整卡生成骨架行同标签同措辞）。
+                if let Some(declarations) = crate::render_intent_scope_lines(
+                    Some(lesson_row.intent.as_str()),
+                    Some(lesson_row.scope.as_str()),
+                ) {
+                    context_text.push('\n');
+                    context_text.push_str(&declarations);
+                }
                 if !topology.prerequisite_path.trim().is_empty() {
                     context_text.push_str(&format!(
                         "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{}",
@@ -1786,18 +1845,6 @@ impl LearningService {
             .ok_or_else(|| {
                 AppError::Conflict("knowledge-backed course generation is not configured".into())
             })?;
-        let lesson_row: (String, String, String) = sqlx::query_as(
-            "SELECT l.title, l.purpose, c.title FROM learning_lessons l \
-             JOIN learning_modules m ON m.module_id = l.module_id \
-             JOIN learning_courses c ON c.course_id = m.course_id \
-             WHERE l.lesson_id = ?",
-        )
-        .bind(lesson_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal)?;
-        let lesson_title = lesson_row.0;
-        let lesson_purpose = lesson_row.1;
 
         let grounding_refs = grounding
             .as_ref()
@@ -1818,7 +1865,7 @@ impl LearningService {
             completer.as_ref(),
             request.provider_id.as_ref().zip(request.model.as_deref()),
             teaching_style,
-            &lesson_row.2,
+            &lesson_row.course_title,
             &lesson_title,
             &lesson_purpose,
             &planned,
@@ -3498,6 +3545,7 @@ mod tests {
             degraded_keys: Vec::new(),
             capacity_note: None,
             viz_lint_events: 0,
+            scope_findings: 0,
         }
     }
 

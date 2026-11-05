@@ -139,15 +139,18 @@ impl LearningService {
                 .map_err(internal)?;
                 sqlx::query(
                     "INSERT INTO learning_lessons \
-                     (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+                     (lesson_id, module_id, title, summary, purpose, intent, scope, position, estimated_minutes, \
                       content_generated, source_path, source_start, source_end, source_paths_json) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(lesson_id.as_str())
                 .bind(module_id.as_str())
                 .bind(lesson.title.trim())
                 .bind(lesson.summary.trim())
                 .bind(lesson.purpose.trim())
+                // 声明面两键（absorb-8 z01）：导入包缺席 = 空串（旧档语义）。
+                .bind(lesson.intent.trim())
+                .bind(lesson.scope.trim())
                 .bind(lesson_position as i64)
                 .bind(lesson.est)
                 .bind(content_generated)
@@ -343,7 +346,7 @@ impl LearningService {
             let module_id: LearningModuleId =
                 parse_id(module_row.try_get("module_id").map_err(internal)?)?;
             let lesson_rows = sqlx::query(
-                "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, \
+                "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.intent, l.scope, l.position, l.estimated_minutes, \
                         l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
                         l.capacity_note, \
                         COALESCE(p.status, 'not_started') AS status \
@@ -386,6 +389,9 @@ impl LearningService {
                     title: lesson_row.try_get("title").map_err(internal)?,
                     summary: lesson_row.try_get("summary").map_err(internal)?,
                     purpose: lesson_row.try_get("purpose").map_err(internal)?,
+                    // 声明面两列（absorb-8 z01）：原样透出，空串 = 旧档未声明。
+                    intent: lesson_row.try_get("intent").map_err(internal)?,
+                    scope: lesson_row.try_get("scope").map_err(internal)?,
                     position: lesson_row.try_get("position").map_err(internal)?,
                     est: lesson_row.try_get("estimated_minutes").map_err(internal)?,
                     generated: content_generated != 0,
@@ -489,7 +495,7 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
         let row = sqlx::query(
-            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
+            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.intent, l.scope, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
                     l.capacity_note, \
                     c.source_kb_id AS course_source_kb_id, c.source_kb_ids AS course_source_kb_ids, c.samples_meta_json AS course_samples_meta_json, \
                     COALESCE(p.status, 'not_started') AS status \
@@ -531,6 +537,9 @@ impl LearningService {
             title: row.try_get("title").map_err(internal)?,
             summary: row.try_get("summary").map_err(internal)?,
             purpose: row.try_get("purpose").map_err(internal)?,
+            // 声明面两列（absorb-8 z01）：原样透出，空串 = 旧档未声明。
+            intent: row.try_get("intent").map_err(internal)?,
+            scope: row.try_get("scope").map_err(internal)?,
             position: row.try_get("position").map_err(internal)?,
             est: row.try_get("estimated_minutes").map_err(internal)?,
             generated: content_generated != 0,
