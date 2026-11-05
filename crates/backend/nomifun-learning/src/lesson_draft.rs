@@ -81,21 +81,22 @@ pub fn render_teaches_tier_line(tiers: &[(String, String)]) -> Option<String> {
 
 /// 先例（Precedent，learnhub #180 域中立移植）：本点涉及（teaches ∪
 /// assumes）的非首现概念，先前已由祖先闭包内某学习点教出的对应关系——
-/// 概念 + 教学节点显示名 + 该节点已生成节的标题。首现概念不入（本点自己
-/// 教）、声明-only 概念不入（零节点）、跨课程不入（前置路径已承载跨课程
-/// 视角）；正文全文回看（工具轮）是雾区，不在先例语义内。
+/// 概念 + 教学节点显示名。首现概念不入（本点自己教）、声明-only 概念不入
+/// （零节点）、跨课程不入（前置路径已承载跨课程视角）；正文全文回看（工具
+/// 轮）是雾区，不在先例语义内。p02 双传收敛：节要点摘要由前置路径条目
+/// 唯一承载，本结构只做概念归属映射。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LessonPrecedent {
     /// 该节点教出的本点涉及概念正名（多概念「、」连接；一条先例一个节点）。
     pub concept: String,
     /// 教学节点显示名。
     pub node_name: String,
-    /// 该节点已生成节的标题（节位置序；零正文 = 空 → 行内落「（正文未生成）」）。
-    pub sections: Vec<String>,
 }
 
 /// 先例摘要块（#180 输入面）：已建立语境（记号/句式/方法）的生成侧视野。
-/// 空先例整块省略（`None`）；块格式逐字固定（冒烟机械 grep 面）。
+/// p02 双传收敛：前置路径已带节要点，本块只做概念归属映射——概念归属 +
+/// 用名纪律所需的最小事实，细节由前置路径承载。空先例整块省略（`None`）；
+/// 块格式逐字固定（冒烟机械 grep 面）。
 pub fn render_precedent_block(precedents: &[LessonPrecedent]) -> Option<String> {
     if precedents.is_empty() {
         return None;
@@ -104,17 +105,68 @@ pub fn render_precedent_block(precedents: &[LessonPrecedent]) -> Option<String> 
         "已建立先例（本点涉及的非首现概念先前已由下列节点教出——沿用其已建立的语境与叫法，不重新讲授）：\n",
     );
     for precedent in precedents {
-        let sections = if precedent.sections.is_empty() {
-            "（正文未生成）".to_owned()
-        } else {
-            format!("（{}）", precedent.sections.join("；"))
-        };
         text.push_str(&format!(
-            "- 概念「{}」← 节点「{}」{}\n",
-            precedent.concept, precedent.node_name, sections
+            "- 概念「{}」← 节点「{}」\n",
+            precedent.concept, precedent.node_name
         ));
     }
     Some(text)
+}
+
+/// 前置路径块（p02 B 双头合并）：单一块头吸收原「前置契约」句——头部
+/// 一处说清「概念已教到档位、不要重新讲授、条目要点是前置实际教过的内容」，
+/// 档位标尺括注由 `crate::service::lesson::render_prerequisite_path` 保留
+/// 一次。空/空白路径整块省略（`None`——起点节点走「没有前置」句）。
+/// 块头逐字固定（冒烟机械 grep 面）。
+pub fn render_prerequisite_path_block(path: &str) -> Option<String> {
+    let path = path.trim();
+    (!path.is_empty()).then(|| {
+        format!(
+            "前置路径（学习者到达本节点前应已掌握，按学习顺序；概念已由其他节点教到标注档位——不要重新讲授，只在必要时按该档位复述或引用。条目下的要点是各前置实际教过的内容——不要重复讲授）：\n{path}"
+        )
+    })
+}
+
+/// 图臂头两行（p02 C 空值行省略）：「学习目标」「程度声明」各自在值
+/// 非空（trim 后）时渲染——结构快照无程度声明时不再渲出空行（真机 L4
+/// 空值行噪声；known_names 行缺席省略同款先例）。
+pub fn render_graph_goal_degree_lines(goal: &str, degree_statement: &str) -> String {
+    let goal = goal.trim();
+    let degree_statement = degree_statement.trim();
+    let mut lines = String::new();
+    if !goal.is_empty() {
+        lines.push_str(&format!("学习目标：{goal}\n"));
+    }
+    if !degree_statement.is_empty() {
+        lines.push_str(&format!("程度声明：{degree_statement}\n"));
+    }
+    lines
+}
+
+/// 图线无简报尾注（p02 C，真机 L33）：列项动态拼装——学习目标/程度声明
+/// 各自在值非空（trim 后）时入列，空值项省略（不再指向空白程度声明）；
+/// 「前置/后续节点段落」恒在场。列项间「、」相连、末项前用「与」。
+pub fn render_graph_no_brief_note(goal: &str, degree_statement: &str) -> String {
+    let goal = goal.trim();
+    let degree_statement = degree_statement.trim();
+    let mut items: Vec<&str> = Vec::new();
+    if !goal.is_empty() {
+        items.push("学习目标");
+    }
+    if !degree_statement.is_empty() {
+        items.push("程度声明");
+    }
+    items.push("前置/后续节点段落");
+    // 末项恒在场（恒 push）→ 列项非空是本函数不变量；原 slice match 的
+    // `[] =>` 空分支不可达，删臂改以 pop 末项拼装（单项直取、多项「、」
+    // 相连末项前「与」，输出逐字不变）。
+    let last = items.pop().expect("「前置/后续节点段落」恒在场");
+    let sentence = if items.is_empty() {
+        last.to_owned()
+    } else {
+        format!("{}与{last}", items.join("、"))
+    };
+    format!("\n学习图节点没有课程简报：内容忠于{sentence}。\n")
 }
 
 /// 声明面骨架行（absorb-8 z03，learnhub #205 契约 v2.17）：节点 intent/
@@ -330,14 +382,18 @@ impl GraphConceptFaces {
             lines.push(format!("- 引用名（正文用它开讲）：{rows}"));
         }
         if !self.aliases.is_empty() {
+            // p02 D 方向化措辞：「本课现用名（旧称：…）」——首现概念与
+            // 旧叫法并读不再可能误读（旧「X 又叫 Y + 正文不使用」的方向
+            // 读法易误伤首现概念）；数据面零改动（aliases 仍为活跃别名池
+            // 投影）。
             let rows = self
                 .aliases
                 .iter()
-                .map(|(canonical, aliases)| format!("{canonical} 又叫 {}", aliases.join("/")))
+                .map(|(canonical, aliases)| format!("{canonical}（旧称：{}）", aliases.join("/")))
                 .collect::<Vec<_>>()
                 .join("；");
             lines.push(format!(
-                "- 旧叫法（学习者可能在别处见过；正文不使用，必要时括注帮助辨认）：{rows}"
+                "- 本课现用名（别处可能见过的旧叫法正文不使用，必要时括注一次帮助辨认）：{rows}"
             ));
         }
         lines.join("\n")
@@ -2078,31 +2134,131 @@ mod tests {
         assert!(line.contains("内容形态与练习形态按档位定"), "{line}");
     }
 
-    /// 先例块：概念 ← 节点 + 先行节标题；零正文 = 「（正文未生成）」仍入行；
-    /// 空先例整块省略。
+    /// 先例块（p02 双传收敛）：概念 ← 节点映射只承载概念归属 + 用名纪律
+    /// 所需的最小事实——前置路径条目已带节点要点摘要，本块不再重复节
+    /// 清单（无括注尾巴、无「正文未生成」标记）；空先例整块省略。
     #[test]
-    fn precedent_block_renders_teachers_and_omits_empty() {
+    fn precedent_block_renders_concept_node_mapping_and_omits_empty() {
         assert_eq!(render_precedent_block(&[]), None, "空先例整块省略");
         let block = render_precedent_block(&[
             LessonPrecedent {
                 concept: "对数收益率".into(),
                 node_name: "收益率与对数收益率".into(),
-                sections: vec!["概念：对数收益".into(), "例题：换算".into()],
             },
             LessonPrecedent {
                 concept: "历史波动率".into(),
                 node_name: "未生成节点".into(),
-                sections: Vec::new(),
             },
         ])
         .expect("非空先例有块");
         assert!(block.contains("已建立先例"), "{block}");
         assert!(block.contains("概念「对数收益率」← 节点「收益率与对数收益率」"), "{block}");
-        assert!(block.contains("概念：对数收益；例题：换算"), "{block}");
+        assert!(block.contains("概念「历史波动率」← 节点「未生成节点」"), "{block}");
+        // 双传收敛：节清单不进先例块（细节由前置路径承载），零正文场景
+        // 不再有「（正文未生成）」尾巴。
+        assert!(!block.contains("概念：对数收益"), "{block}");
+        assert!(!block.contains("例题：换算"), "{block}");
+        assert!(!block.contains("正文未生成"), "{block}");
+    }
+
+    /// 前置路径块头（p02 B 双头合并）：单一头吸收「前置契约」句——不再
+    /// 出现独立的「前置契约：」行；档位标尺括注由 render_prerequisite_path
+    /// 保留一次。空/空白路径整块省略（起点节点「没有前置」句照走旧分支）。
+    #[test]
+    fn prerequisite_path_block_renders_single_merged_head() {
+        assert_eq!(render_prerequisite_path_block(""), None, "空路径整块省略");
+        assert_eq!(
+            render_prerequisite_path_block("   \n"),
+            None,
+            "空白路径按缺席折叠"
+        );
+        let block = render_prerequisite_path_block(
+            "- 对数收益率（学习者应已掌握到「会用」）：\n   定义：价格比取对数的一阶近似收益度量",
+        )
+        .expect("非空路径有块");
         assert!(
-            block.contains("概念「历史波动率」← 节点「未生成节点」（正文未生成）"),
+            block.starts_with(
+                "前置路径（学习者到达本节点前应已掌握，按学习顺序；概念已由其他节点教到标注档位——不要重新讲授，只在必要时按该档位复述或引用。条目下的要点是各前置实际教过的内容——不要重复讲授）：\n"
+            ),
             "{block}"
         );
+        assert!(block.contains("- 对数收益率"), "{block}");
+        // 单头单次：块内不再有独立「前置契约：」行。
+        assert!(!block.contains("前置契约："), "{block}");
+    }
+
+    /// 图臂头两行（p02 C 空值行省略）：goal/degree 齐全两行在场；degree
+    /// 空白省「程度声明」行；全空两行全省（known_names 省行先例同形）。
+    #[test]
+    fn graph_goal_degree_lines_omit_empty_values() {
+        let both = render_graph_goal_degree_lines(
+            "  理解衍生品的基础计量工具  ",
+            "聚焦场内标准期权，不含结构性产品",
+        );
+        assert_eq!(
+            both,
+            "学习目标：理解衍生品的基础计量工具\n程度声明：聚焦场内标准期权，不含结构性产品\n",
+            "{both}"
+        );
+        let no_degree = render_graph_goal_degree_lines("理解衍生品的基础计量工具", "   ");
+        assert_eq!(
+            no_degree,
+            "学习目标：理解衍生品的基础计量工具\n",
+            "{no_degree}"
+        );
+        assert!(!no_degree.contains("程度声明"), "{no_degree}");
+        let all_empty = render_graph_goal_degree_lines("", "  ");
+        assert_eq!(all_empty, "", "全空两行全省");
+    }
+
+    /// 无简报尾注（p02 C，真机 L33）：列项动态拼装——空值项省略，不再
+    /// 指向空白程度声明；两项齐全时逐字等于旧行（既有形态零变化）。
+    #[test]
+    fn graph_no_brief_note_omits_empty_items() {
+        let full = render_graph_no_brief_note("理解衍生品的基础计量工具", "聚焦场内标准期权");
+        assert_eq!(
+            full,
+            "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
+            "{full}"
+        );
+        let no_degree = render_graph_no_brief_note("理解衍生品的基础计量工具", " ");
+        assert_eq!(
+            no_degree,
+            "\n学习图节点没有课程简报：内容忠于学习目标与前置/后续节点段落。\n",
+            "{no_degree}"
+        );
+        let all_empty = render_graph_no_brief_note("", "");
+        assert_eq!(
+            all_empty,
+            "\n学习图节点没有课程简报：内容忠于前置/后续节点段落。\n",
+            "{all_empty}"
+        );
+    }
+
+    /// 旧叫法行方向化（p02 D）：「本课现用名（旧称：…）」——首现概念与
+    /// 旧叫法并读不再可能误读（真机首现概念恰为行内正名，「X 又叫 Y +
+    /// 正文不使用」的方向读法易误伤）；数据面零改动（aliases 仍为活跃
+    /// 别名池投影）。
+    #[test]
+    fn concept_faces_aliases_line_reads_direction_explicitly() {
+        let faces = GraphConceptFaces {
+            first_seen: vec!["历史波动率".into()],
+            returning: Vec::new(),
+            ref_names: Vec::new(),
+            aliases: vec![(
+                "历史波动率".into(),
+                vec!["贝塔系数".into(), "Beta".into()],
+            )],
+        };
+        let text = faces.render_text();
+        assert!(
+            text.contains(
+                "- 本课现用名（别处可能见过的旧叫法正文不使用，必要时括注一次帮助辨认）：历史波动率（旧称：贝塔系数/Beta）"
+            ),
+            "{text}"
+        );
+        // 旧方向措辞退场：「X 又叫 Y」不再出现。
+        assert!(!text.contains("又叫"), "{text}");
     }
 
     /// 声明面骨架行（absorb-8 z03，learnhub #205 契约 v2.17）：两字段齐 =

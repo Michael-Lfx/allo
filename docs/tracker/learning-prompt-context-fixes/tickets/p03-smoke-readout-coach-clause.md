@@ -2,7 +2,7 @@
 id: p03
 title: "smoke 读数与教练知情——overshoot scope 感知豁免、候选集空省略、四源知情条款"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -75,3 +75,29 @@ part_of: ../map.md
    真机 grow 臂候选段无空块（首批）。
 3. 复用裁决零回归：非首批场景（有登记表）候选集照常渲染（真机 grow
    第二批若触发，读数可见）。
+
+## Resolution（评审修复波留痕，2026-11-05）
+
+**A 项豁免粒度：按节点归属收窄不可行，留痕留观（不改 status）。**
+复核结论：归档帧（calls.jsonl 行）结构化字段只有 ts/method/ok/elapsed_ms/
+system_chars/user_chars/response_chars/system/user/response——**无节点标识**；
+`LearningCompleter` 接口（complete/complete_json 四臂）无元数据通道，按节点
+归属收窄需跨 crate 改 trait 签名 + 全部实现者 + ArchivingCompleter 落盘面，
+超出本票面。内容面归属（按帧内声明行/标题配对分组）为启发式，多轮调用
+（plan/write/retry/feedback）同帧共享声明行，脆。现状 = 全帧声明行拼接统一
+豁免，即**跨节点豁免粒度**：content 臂冒烟单节点生成跑无差；多节点跑误报
+豁免面扩大（读数偏松非偏紧，非门禁）。留痕落点：`learning_smoke.rs`
+`scope_aware_overshoot_hits` doc 注释（同批评审修复）；节点归属收窄待观测
+通道扩展票。
+
+**候选集空注记（B 项）对齐补刀（同批评审修复）**：注记触发条件保持
+「无任何候选行」，但文案由「登记表为空——首批无候选」改为与提示词侧同款
+的「登记表无近邻——候选缺席，全部按新铸处置」——登记表非空但全部提名无
+近邻时旧文案与事实不符（本票 B 项实施时未覆盖的情形②，评审双轴裁决补齐）。
+
+## Resolution（2026-11-05 关票）
+
+- **实现提交**：`ba598bba9`，经 `b026034a8` 并回；评审修复轮候选注记措辞对齐（项3）`ba742fff9`。
+- **验证**：nomifun-app 434 + learning 869 全绿（overshoot 两臂形状纯函数/候选渲染空省略/条款断言）。
+- **真机 content 臂（run-1793861260083）**：`overshoot read-out: hit=0 (scope-aware; human card)`——scope 感知豁免真机生效（absorb-8 基线同夹具 hit=1 误报消失）；候选集首批无空块；教练四源知情条款在场。
+- **豁免粒度留痕**（双轴评审项 2，已核实不可行收窄）：归档帧无节点标识、LearningCompleter trait 无元数据通道——按节点收窄需跨 crate trait 改造，超本批面。doc 注释 + 本 Resolution 双留痕：单节点跑（content 臂现状）无差；多节点跑误报豁免面扩大（读数偏松非偏紧，非门禁）。

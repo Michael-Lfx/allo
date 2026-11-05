@@ -2621,10 +2621,23 @@ impl LearningService {
 
     /// 提名候选集的评审可见面渲染（j04）：每条提名一节，直定宿主注明；
     /// 外部通行名证据块（m11）随同一节进评审 user 消息（判据面零污染：
-    /// 只加参考段，判据条款一字不动）。
+    /// 只加参考段，判据条款一字不动）。空块省略（p03）：无直定宿主、无候选、
+    /// 无证据的提名段零信息量（真机首批五连「提名「X」的候选：」空块只占
+    /// token 与注意力），不渲染该条；整块无任何候选行时输出一行缺省语义
+    /// 注记——触发条件按「无任何候选行」判，覆盖两种情形：①登记表空
+    /// （首批唯一真机形状）；②登记表非空但全部提名都无近邻。注记措辞与
+    /// 提示词侧【提名候选集】条款同款（「候选缺席 = 登记表无近邻，直接
+    /// 裁新铸」，learning_graph/mod.rs）——「登记表为空」旧文案在情形②
+    /// 与事实不符。复用裁决行为零变化：候选缺席 = 登记表无近邻，缺省
+    /// 新铸（既有语义，纯渲染收敛）。
     fn render_nomination_candidates(
         nominations: &[crate::learning_graph::NominationPlan],
     ) -> String {
+        if nominations.is_empty() {
+            // 零提名（无 mints 无 new_aliases）：空串——调用侧按空省略整个
+            // 【提名候选集】块（面前行为，不得凭空出现注记）。
+            return String::new();
+        }
         let mut sections = Vec::new();
         for plan in nominations {
             let mut lines = Vec::new();
@@ -2644,7 +2657,13 @@ impl LearningService {
             {
                 lines.push(block);
             }
+            if lines.is_empty() {
+                continue;
+            }
             sections.push(format!("提名「{}」的候选：\n{}", plan.name, lines.join("\n")));
+        }
+        if sections.is_empty() {
+            return "（登记表无近邻——候选缺席，全部按新铸处置）".to_owned();
         }
         sections.join("\n")
     }
@@ -5605,4 +5624,76 @@ pub(crate) struct GrowthApplied {
     pub note: String,
     pub ready_count: usize,
     pub idle: bool,
+}
+
+/// 提名候选集渲染的空省略单测（p03 票面验收）：真机 grow-review-user L147-155
+/// 病历——首批（登记表空）五连「提名「X」的候选：」空块只占 token 与注意力。
+#[cfg(test)]
+mod nomination_candidate_render_tests {
+    use super::LearningService;
+    use crate::learning_graph::defnear::NeighborCandidate;
+    use crate::learning_graph::NominationPlan;
+
+    fn plan(name: &str, candidates: Vec<NeighborCandidate>) -> NominationPlan {
+        NominationPlan {
+            name: name.to_owned(),
+            direct_host: None,
+            candidates,
+            evidence: Vec::new(),
+        }
+    }
+
+    /// 整块无任何候选 → 一行缺省语义注记，不再逐条渲出空块。触发条件 =
+    /// 「无任何候选行」，覆盖登记表空（首批真机形状）与登记表非空但全部
+    /// 提名无近邻两情形；注记措辞与提示词条款同款（不再断言「登记表为空」
+    /// ——情形②下与事实不符）。
+    #[test]
+    fn empty_candidates_render_as_single_default_note() {
+        let plans = vec![plan("滤杯", Vec::new()), plan("流程线", Vec::new())];
+        let text = LearningService::render_nomination_candidates(&plans);
+        assert_eq!(
+            text, "（登记表无近邻——候选缺席，全部按新铸处置）",
+            "空候选 = 一行注记（空块五连收敛；措辞与提示词同款）"
+        );
+        assert!(!text.contains("提名「滤杯」的候选"), "空块不得再渲染：{text}");
+    }
+
+    /// 有候选的提名照常渲染（复用裁决可见面零变化）；同批空候选提名不再
+    /// 渲出空块——候选缺席 = 登记表无近邻，缺省新铸语义不变。
+    #[test]
+    fn sections_with_candidates_render_and_empty_ones_are_skipped() {
+        let with_candidates = plan(
+            "历史波动率",
+            vec![NeighborCandidate {
+                concept_id: "c1".to_owned(),
+                canonical: "波动率".to_owned(),
+                reason: "定义近邻 0.86".to_owned(),
+            }],
+        );
+        let empty = plan("无邻提名", Vec::new());
+        let text = LearningService::render_nomination_candidates(&[with_candidates, empty]);
+        assert!(text.contains("提名「历史波动率」的候选"), "{text}");
+        assert!(text.contains("- 波动率（c1）：定义近邻 0.86"), "{text}");
+        assert!(!text.contains("提名「无邻提名」的候选"), "空块省略：{text}");
+        assert!(!text.contains("（登记表无近邻"), "有候选案不注记缺省：{text}");
+    }
+
+    /// 直定宿主（无候选）照常渲染——机械绑定信息不随空块省略丢失；该案
+    /// 不注记缺省缺项（直定宿主恰恰证明该词与登记表有机械绑定，非「无近邻」）。
+    #[test]
+    fn direct_host_without_candidates_still_renders() {
+        let mut direct = plan("对数收益率", Vec::new());
+        direct.direct_host = Some("对数收益率".to_owned());
+        let text = LearningService::render_nomination_candidates(&[direct]);
+        assert!(text.contains("直定宿主：对数收益率"), "{text}");
+        assert!(!text.contains("（登记表无近邻"), "直定宿主案不注记缺省：{text}");
+    }
+
+    /// 提名零条（无 mints 无 new_aliases）→ 空串（面前行为：调用侧按空省略
+    /// 整个【提名候选集】块，不得凭空出现注记）。
+    #[test]
+    fn no_nominations_renders_empty_string() {
+        let text = LearningService::render_nomination_candidates(&[]);
+        assert_eq!(text, "", "零提名 = 空串（块级省略，面前行为）");
+    }
 }

@@ -526,7 +526,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 【节点纪律】
 - 节点是单次学习会话（动作句），est（专注工作量，1 est 分钟 = 1 分钟专注）常规 5-30，极困难最多 60。est 也是后续内容生成的容量预算锚——内容管线按它规划节与题量：按节点行为数与对象域宽度估，估大了内容会铺开，估小了会被迫砍雄心。
 - 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。
-- 声明面（intent/scope，每个节点出生即必带）：intent 一句话写**为什么有这个学习点**、它在课里承担什么角色（衔接哪条线、补哪个缺口）；scope 一两句写**教什么、教到哪、明确不碰什么**——「不教 X」「X 留待后续」类否定性提及是边界声明，照实写，不是缺陷。两处都写实质内容，不写「教好这个概念」一类空话；各不超过 200 字。拆分或修订被点名的条目时，两字段必须按各自那一半的实际内容**逐半重写**，禁止照抄原条目。
+- 声明面（intent/scope，每个节点出生即必带）：intent 一句话写**为什么有这个学习点**、它在课里承担什么角色（衔接哪条线、补哪个缺口）；scope 一两句写**教什么、教到哪、明确不碰什么**——「不教 X」「X 留待后续」类否定性提及是边界声明，照实写，不是缺陷。两处都写实质内容，不写「教好这个概念」一类空话；各不超过 200 字。拆分或修订被点名的条目时，两字段必须按各自那一半的实际内容**逐半重写**，禁止照抄原条目。intent/scope 的词面与节点标题一并进评审机械点名（四源扫描）——照实写即可，评审按覆盖/边界处置；不必为避免点名而回避具体名词，也不要堆砌同义边界表述。
 - 道位配平：道（本质理解）与术（可执行）是一对标尺——一条线如果只有「怎么做」的操作台阶，要在合适的节点补一个「为什么成立」的台阶（说理、推导或辨析），让学习者不但能做，还能讲出它为什么可靠。
 - 悬空技巧不合格：每批装箱前先问「学习者此刻真正缺什么」——技巧依赖的更一般技能先立地基；只有操作没有理解的地方补「为什么成立」的台阶；学习目标点名而还没开线的能力，尽早开线。
 - 难度标尺（difficulty 1-5，如实申报）：1=生活经验直接上手；2=单概念入门（认读、模仿、单步操作）；3=单概念应用（多步计算、变式练习）；4=多概念综合/形式化引入（记号体系、复合结构）；5=严格证明与抽象推理。形式化/证明类内容不得压档。
@@ -900,9 +900,14 @@ const CRITERION_ONE_TABLE_CLAUSE: &str = r#"   - **逐词落行（按表核对�
 /// 挂号表的输出契约段（m3，织入评审系统提示词尾部）：行形状 + 来源四值 +
 /// 逐字规则 + 同形词盲区注记（#176 真机「次数」案：机械核行只认字面）+
 /// 机械执法语义。词表与 `provenance::TERM_SOURCES` 互钉，改词表须同步。
+/// p01（prompt-context-fixes）：自证禁令显性化——循环自证原本只埋在「报
+/// 自教」行内文中（run-1793828585963 病历：条款在场、首轮仍犯
+/// `{term:滤杯, ref:手冲器具功能}` = ref 指 concept 自身，死因重试 +303s
+/// ），提到段首作自查首项并嵌真机同形负例。禁令语义不变，机械核不动。
 const TABLE_OUTPUT_CONTRACT: &str = r#"
 
 【挂号表 term_provenance——输出硬约束】
+- **自查首项：自教行 ref ≠ 本行 concept**——自己不能证明自己：`{ "concept": "X", "term": "T", "source": "自教", "ref": "X" }` 恒无效（T 是 X 定义里的词，不由 X 自己供给）。负例（真机病历同形）：`{ "concept": "手冲器具功能", "term": "滤杯", "source": "自教", "ref": "手冲器具功能" }` = 循环自证，机械核必拒。T 的出处必须落到既往批次的已教账、本节点 teaches 的**其他**概念、或常识。
 - 通过与打回的结论都必须携带 `term_provenance` 数组：批内每条提名至少一行，缺表或某条提名零行 = 结论无效。
 - 每行形状：{ "concept": "提名名", "term": "该提名定义里引用或预设的领域名词", "source": "已教|自教|常识|缺失", "ref": "出处概念名" }。
 - 报**已教**：`ref` 必填，逐字照抄已教账/登记表的正名或别名；ref 写了本批铸名或提名的名字 = 无效——本批产出不是已教出处。
@@ -933,22 +938,36 @@ const ADVICE_SCOPE_CLAUSE: &str = r#"
 /// `FRAGMENT_SOURCES` 互钉。范围外机械核描述与
 /// `fragment_verdict::check_out_of_scope_row` 逐条对齐（learnhub `20f1dcf`
 /// 最终语义：按词判任一边界在场行、跨源多行合法；单行硬比不吸）。
+/// p01（prompt-context-fixes）三项扩写：噪声定义补「声明面正向提及且出处
+/// 已覆盖」的放行出口（真机 run-1793828585963 病历：滤杯/流程线等被自创
+/// 「scope 覆盖」话术挂在噪声名下，字面执行模型则误判名词打回好批）；清单
+/// 同词多源合并为一行的配套（渲染与读数面已合并，核验零改动）。与挂号表
+/// 的共用出处条款独立成段（[`FRAGMENT_PROVENANCE_RELATION_CLAUSE`]，两表
+/// 面都开才织入——挂号表 off 臂提示词里不存在该表）。
 const FRAGMENT_OUTPUT_CONTRACT: &str = r#"
 【碎片裁决 fragments——输出硬约束】
-- 待审批次末尾的【机械点名清单】是机械层对本批提名定义、节点显示名与各节点 intent/scope 声明做已知词掩码后仍未有着落的 CJK 片段（宁滥勿缺，必含切词噪声），每行已标注来源（[definition]=提名定义、[node_title]=节点显示名、[intent]=节点意图、[scope]=教学范围）。通过与打回的结论都必须携带 `fragments` 数组：清单里**每个片段都要有显式裁决**，缺数组或漏片段 = 结论无效（与挂号表同路：带死因重试恰一次，仍败按 Degraded 保守放行并留痕）。
-- 每行形状：{ "term": "片段原文", "verdict": "噪声|名词|范围外", "source": "definition|node_title|intent|scope", "note": "一句话依据" }。term 与清单逐字对照（子串互含也算处置——允许对片段做最小辨认）；source 照清单行标注的来源原样填。
-- 裁**噪声**：切词碎片或元语言组合（停用词/虚字残留、跨词边界噪声），放行；note 写一句依据（进观测面审计档案）。「像名词」但拿不准的，按名词处理。
+- 待审批次末尾的【机械点名清单】是机械层对本批提名定义、节点显示名与各节点 intent/scope 声明做已知词掩码后仍未有着落的 CJK 片段（宁滥勿缺，必含切词噪声），每行已标注来源（[definition]=提名定义、[node_title]=节点显示名、[intent]=节点意图、[scope]=教学范围；同词跨源已合并为一行、来源标签并列）。通过与打回的结论都必须携带 `fragments` 数组：清单里**每个片段都要有显式裁决**，缺数组或漏片段 = 结论无效（与挂号表同路：带死因重试恰一次，仍败按 Degraded 保守放行并留痕）。
+- 每行形状：{ "term": "片段原文", "verdict": "噪声|名词|范围外", "source": "definition|node_title|intent|scope", "note": "一句话依据" }。term 与清单逐字对照（子串互含也算处置——允许对片段做最小辨认）；source 从该词行标注的来源标签照填（同词多标签任取其一；判「范围外」必须引 intent/scope 来源）。
+- 清单中同词多源合并为一行——输出**每个词一行**即可，term 相同的一行裁决覆盖它的全部来源行（子串互含亦同）。
+- 裁**噪声**：切词碎片或元语言组合（停用词/虚字残留、跨词边界噪声），放行；note 写一句依据（进观测面审计档案）。另一类同判**噪声**——**声明面正向提及且出处已覆盖**：[node_title]/[intent]/[scope] 来源的片段若属本节点 teaches（或其别名/定义词面）、已教账、课程外常识的词面，或 intent/scope 的角色/路线描述词，判**噪声**放行，note 写明出处（如『本节点 teaches 手冲器具功能覆盖』）；这些词不是登记缺口。「像名词」但拿不准的，按名词处理。
 - 裁**名词**：像样的领域名词却无出处——必须 pass=false 且在 problems 里指名该片段；判名词却放行 = 自相矛盾，结论无效。修法限三选一：并入本批某提名定义改写绕开 / 并入某节点 teaches 挂号自教 / 课程用语表增词提案（写进 findings，勿自行改登记表）。
 - 裁**范围外**：该片段在本批某节点的 intent/scope 声明里被明确划出边界（「不教 X」「X 留待后续」类否定性边界提及）——诚实写边界不打回，放行。写『不教积分』不是使用积分：只出现在标题/定义里的正向用词不构成边界声明，不得判范围外。**范围外的机械核（三条不满足任一 = 结论无效，与挂号表同路重试）**：①该词在清单里须有 [intent] 或 [scope] 来源的行（同词跨源多行都合法，引任一边界来源即可）；②行报 source 须为 intent/scope（边界声明只住这两处）；③term 须逐字命中本批某节点对应字段（intent→intent、scope→scope）的原文——scope 没写过的边界不成立。
 - 未处置的片段由机器按档处置（report-only 降 findings 留痕 / enforce 合成打回）；你只管逐条裁决，不要把清单当打回理由凭空造问题。
 "#;
+
+/// p01 碎片面 ↔ 挂号表面的共用出处条款（A 项第二出口的 [definition] 臂）：
+/// 已在挂号表落行的定义片段不重复找出处——fragments 行裁噪声、note 引该
+/// 挂号表行。独立成段、只在两表面都开时织入：挂号表 off 臂（k07 后行为）
+/// 的提示词里不存在 `term_provenance`，提它就是空指向的噪声（off 臂零表
+/// 条款断言钉）。
+const FRAGMENT_PROVENANCE_RELATION_CLAUSE: &str = "- [definition] 来源的片段若已在 `term_provenance` 落行，fragments 行裁**噪声**并在 note 引该挂号表行（同一出处两表共用，不重复找出处）。\n";
 
 const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议——建议拆分时给出逐半后的 intent/scope（照各自那一半的实际内容写，不照抄原条目），供重裁直接消费。
 
 【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
-- 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）。逐条裁决「复用 | 新铸」：
+- 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）；候选缺席 = 登记表无近邻，直接裁新铸。逐条裁决「复用 | 新铸」：
 - 裁**复用** = 该名字其实是既有概念的另一投影：把它写进输出顶层 `reuse` 数组（`{ "name": "<提名名>", "concept_id": "<登记表概念 id>" }`）；concept_id 必须是评审材料里出现过的真实 id——优先本提名的候选，相关提名候选里指向同一概念的值同样可用；编造即违约。复用的概念不铸新行，提名名落为该概念的活跃别名。
 - 裁**新铸** = 提名确实是新概念：不写进 reuse 即可（缺省新铸）。
 - **new_aliases 提名的语义就是「既有概念的新名字」——必须裁复用**；你认为它该是新概念时不要裁决，整批会被打回并指点它改走 mints。
@@ -1066,6 +1085,10 @@ pub(crate) fn concept_review_system() -> String {
     };
     if review_fragments_enabled() {
         core.push_str(FRAGMENT_OUTPUT_CONTRACT);
+        // p01 共用出处条款只在两表面都开时织入（挂号表 off 臂零表条款）。
+        if review_provenance_enabled() {
+            core.push_str(FRAGMENT_PROVENANCE_RELATION_CLAUSE);
+        }
     }
     format!("{core}{ADVICE_SCOPE_CLAUSE}")
 }
@@ -1634,7 +1657,9 @@ pub(crate) async fn concept_review(
                     return degraded_outcome(&death, readout, frag_readout);
                 }
                 Ok(unhandled) => {
-                    frag_readout.fragments = naming_list.len();
+                    // p01 清单瘦身：读数 fragments 口径 = 合并渲染后行数
+                    // （机械派生待裁决词数；rows 口径不变——响应行数）。
+                    frag_readout.fragments = fragment_verdict::merged_row_count(naming_list);
                     frag_readout.rows = verdict.fragments.len();
                     frag_readout.unhandled = unhandled.len();
                     // 未处置分流（learnhub L1/L3 同款）：enforce on = 合成打
@@ -2619,6 +2644,10 @@ mod tests {
             // 机械核对条款的提示词面：循环自证/本批提名不当已教出处/缺失
             // 自认通道/逐字落地/全覆盖/结论无效。
             "循环自证",
+            // p01 自证显性化：自查式禁令提到条款头部（真机病历首轮仍犯）。
+            "自教行 ref ≠ 本行 concept",
+            "自己不能证明自己",
+            "恒无效",
             "本批产出不是已教出处",
             "洗成常识",
             "逐字取自该提名定义原文",
@@ -2827,6 +2856,51 @@ mod tests {
         assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
         assert!(prompts[1].contains("缺挂号表行"), "次轮须携带死因：{}", prompts[1]);
         assert!(prompts[1].contains("挂号表不可用"), "次轮须点名挂号表：{}", prompts[1]);
+    }
+
+    /// p01 自证显性化的真机病历同形钉（run-1793828585963 call2：`{concept:
+    /// 手冲器具功能, term:滤杯, source:自教, ref:手冲器具功能}` ref = concept
+    /// 自身，禁令条款在场仍首轮犯 → 死因重试烧掉 303s）：自教 ref 指向本行
+    /// concept 自身的响应被拒，反馈文案点名循环自证，次轮修正恢复。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn self_taught_ref_at_own_concept_retries_with_circular_death_cause() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let bad = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "term_provenance": [
+                { "concept": "借用", "term": "所有权", "source": "自教", "ref": "借用" }
+            ]
+        }))
+        .unwrap();
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![bad, pass_with_table(legal_table())].into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+            &[],
+            false,
+            &review_gate(),
+        )
+        .await;
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert_eq!(review.provenance.rows, 2, "次轮修正恢复：{review:?}");
+        assert_eq!(review.provenance.invalid, 1, "首轮循环自证被拒");
+        assert_eq!(review.provenance.retried, 1, "带死因重试恰一次");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
+        assert!(
+            prompts[1].contains("循环自证") && prompts[1].contains("指向提名概念自身"),
+            "次轮反馈文案点名循环自证：{}",
+            prompts[1]
+        );
     }
 
     // ── 复用命中锚接线（f1；A1/A3）──────────────────────────────────────────
@@ -3152,7 +3226,15 @@ mod tests {
             "结论无效",
             "宁滥勿缺",
             "\"source\": \"definition|node_title|intent|scope\"",
-            "照清单行标注的来源原样填",
+            "同词多标签任取其一",
+            // p01 第四出口：噪声定义扩义——声明面正向提及且出处已覆盖。
+            "声明面正向提及且出处已覆盖",
+            "这些词不是登记缺口",
+            "不重复找出处",
+            // p01 清单瘦身的 prompt 配套：合并渲染 + 一行覆盖多源。
+            "同词多源合并为一行",
+            "每个词一行",
+            "覆盖它的全部来源行",
             "写『不教积分』不是使用积分",
             "只出现在标题/定义里的正向用词不构成边界声明",
             "范围外的机械核",
@@ -3169,6 +3251,12 @@ mod tests {
             "挂号表 off 臂照常织碎片契约"
         );
         assert!(v1_arm.contains("advice 范围（点修守卫对齐）"), "m5 条款不动");
+        // p01 共用出处条款只随挂号表面织入：off 臂提示词里不存在
+        // term_provenance，条款不得泄漏（空指向即噪声）。
+        assert!(
+            !v1_arm.contains("不重复找出处") && !v1_arm.contains("term_provenance"),
+            "挂号表 off 臂不带共用出处条款"
+        );
 
         // 碎片面 off = 零条款（挂号表条款不随碎片面走；三值词表与范围外
         // 裁决规则同条款一起消失——off 臂 = 面前行为）。
@@ -3258,13 +3346,13 @@ mod tests {
         assert!(review.findings.is_empty(), "零留痕：{review:?}");
         assert_eq!(
             review.fragments,
-            fragment_verdict::FragmentReadout { fragments: 2, rows: 1, unhandled: 0, degraded: false },
-            "跨源双行清点、单裁决行放行：{review:?}"
+            fragment_verdict::FragmentReadout { fragments: 1, rows: 1, unhandled: 0, degraded: false },
+            "读数 fragments 口径 = 合并后行数（跨源同词一行）、单裁决行放行：{review:?}"
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert!(
-            prompts[0].contains("1. 方程 [intent]") && prompts[0].contains("2. 方程 [scope]"),
-            "跨源双行并列渲染：{}",
+            prompts[0].contains("1. 方程 [intent][scope]"),
+            "跨源同词合并一行多标签渲染：{}",
             prompts[0]
         );
     }
@@ -4023,9 +4111,27 @@ mod tests {
             "各不超过 200 字",
             "逐半重写",
             "note、purpose、intent 与 scope 用中文",
+            // p03 四源知情条款（真机 z02：intent/scope 源贡献 80/127 碎片，
+            // 教练对点名负担零知情——知情后引导「照实写」的写法预期）。
+            "一并进评审机械点名（四源扫描）",
+            "照实写即可，评审按覆盖/边界处置",
+            "不必为避免点名而回避具体名词",
+            "不要堆砌同义边界表述",
         ] {
             assert!(system.contains(phrase), "COACH_SYSTEM 缺「{phrase}」");
         }
+    }
+
+    /// 提名候选集缺省语义条款（p03）：候选缺席 = 登记表无近邻，直接裁新铸
+    /// ——与渲染面空省略注记同义对齐（评审 prompt 侧 substring 断言，删句
+    /// = 本测试红）。
+    #[test]
+    fn reuse_ruling_clause_states_empty_candidates_default_to_new_mint() {
+        let system = concept_review_system();
+        assert!(
+            system.contains("候选缺席 = 登记表无近邻，直接裁新铸"),
+            "【提名候选集】条款缺候选缺席缺省语义半句"
+        );
     }
 
     #[test]
