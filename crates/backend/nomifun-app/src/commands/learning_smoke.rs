@@ -1093,6 +1093,16 @@ const OVERSHOOT_TERMS: [&str; 4] = ["布朗运动", "伊藤引理", "GARCH", "�
 /// 原文（装配 user 帧的「创建意图：」「教学范围：」两行）= 声明过的词正文
 /// 提及属边界诚实（与 scope_findings 的 MENTION_NEGATIONS 同律），不计 hit；
 /// 未声明的命中照计——判据面非门禁不变。
+///
+/// 豁免粒度留痕（评审修复波 2026-11-05 复核）：票面语义 =「本节点」声明
+/// 豁免本节点正文，但归档帧（calls.jsonl 行：ts/method/ok/elapsed_ms/
+/// *_chars/system/user/response）**无结构化节点标识**，`LearningCompleter`
+/// 接口也无元数据通道——按节点归属收窄需跨 crate 改 trait 签名与全部实现
+/// 者，本票不做。现状实现把全部归档帧的声明行拼接统一豁免，即**跨节点
+/// 豁免粒度**：content 臂冒烟单节点生成跑（只 L2，`view.sections` 即该节
+/// 正文）无差；多节点跑里 A 节声明会豁免 B 节正文未声明的命中（误报豁免
+/// 面扩大，读数偏松非偏紧，非门禁不阻塞）——留观，节点归属收窄待观测
+/// 通道扩展票。
 fn scope_aware_overshoot_hits(declaration_text: &str, body_text: &str) -> usize {
     OVERSHOOT_TERMS
         .iter()
@@ -1101,7 +1111,8 @@ fn scope_aware_overshoot_hits(declaration_text: &str, body_text: &str) -> usize 
 }
 
 /// 从装配 user 帧提取声明行原文（「创建意图：」「教学范围：」行——判据9 的
-/// 行格式逐字固定，p03 overshoot 豁免的扫描源）。
+/// 行格式逐字固定，p03 overshoot 豁免的扫描源）。全帧拼接无节点归属——
+/// 跨节点豁免粒度留痕见 [`scope_aware_overshoot_hits`]。
 fn declaration_lines_from_user_frames<'a>(user_texts: &[&'a str]) -> Vec<&'a str> {
     user_texts
         .iter()
@@ -2685,10 +2696,11 @@ async fn run_content(
     .execute(&wiring.pool)
     .await?;
     // 先行节点正文两节（n3 布景对齐 learnhub 先行节点节）：L1 落两节
-    // ready 正文——先例摘要的先行节标题判据面（#180）。标题不动（判据⑤
-    // 机械 grep 面已核实）；w1 种子序列走 s2 例题的正文与要点——要点经
-    // 前置路径「已教节」行（title：points）进生成上下文，正文照蓝图 4.6
-    // 第 1 条预埋。
+    // ready 正文——先行节标题判据面（#180）。标题不动（判据⑤机械 grep
+    // 面已核实；p02 双传收敛后标题经前置路径「已教节」行进 user 归档，
+    // 先例块只做概念归属映射——判据⑤按双载体分别断言）；w1 种子序列走
+    // s2 例题的正文与要点——要点经前置路径「已教节」行（title：points）
+    // 进生成上下文，正文照蓝图 4.6 第 1 条预埋。
     // w1 种子预埋：s2 例题要点带序列（前置路径「已教节」行的流通通道）。
     let s2_points = format!("相邻两日收益相加等于区间收益；参考数据：{SMOKE_RETURN_SERIES}");
     for (section_key, kind, title, points, position) in [
@@ -2863,18 +2875,33 @@ async fn run_content(
             view.est
         ));
     }
-    // 判据⑤：先例摘要 + 先行节标题在 user 归档（#180 输入面）。
+    // 判据⑤（p02 双传收敛后双载体，#180 输入面）：先行节标题「概念：对
+    // 数收益的定义」经前置路径「已教节」行（title：points）进 user 归档
+    // ——不再由先例块承载；先例块本身按 p02 新形状单独验证——「已建立
+    // 先例」块头 + 「概念「X」← 节点「Y」」归属映射行（概念=登记表正名、
+    // 节点=教出它的 L1 标题；节清单/节标题已移出先例块，细节由前置路径
+    // 承载）。两载体缺一即红（旧断言三条件并判，映射行缺席可被前置路径
+    // 行补位而假绿——本断言补上先例块自身的验证面）。
+    let taught_path_calls = user_texts
+        .iter()
+        .filter(|user| user.contains("概念：对数收益的定义"))
+        .count();
+    if taught_path_calls == 0 {
+        failed.push(
+            "判据5红：归档 user 缺前置路径「已教节」行（概念：对数收益的定义）——#180 输入面"
+                .into(),
+        );
+    }
     let precedent_calls = user_texts
         .iter()
         .filter(|user| {
             user.contains("已建立先例")
-                && user.contains("概念：对数收益的定义")
-                && user.contains("收益率与对数收益率")
+                && user.contains("概念「对数收益率」← 节点「收益率与对数收益率」")
         })
         .count();
     if precedent_calls == 0 {
         failed.push(
-            "判据5红：归档 user 缺先例摘要或先行节标题（概念：对数收益的定义 / 收益率与对数收益率）——#180 输入面"
+            "判据5红：归档 user 缺先例块归属映射行（概念「对数收益率」← 节点「收益率与对数收益率」）——#180 输入面（p02 新形状）"
                 .into(),
         );
     }
