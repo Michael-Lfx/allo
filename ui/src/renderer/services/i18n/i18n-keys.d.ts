@@ -11363,6 +11363,7 @@ export type I18nKey =
   | 'voice.feedback.wakeWordsHint'
   | 'voice.feedback.wakeWordsPlaceholder'
   | 'voice.keyboardWait.accepted'
+  | 'voice.keyboardWait.cancelling'
   | 'voice.keyboardWait.delivering'
   | 'voice.keyboardWait.failed'
   | 'voice.keyboardWait.queued'

@@ -1,5 +1,7 @@
 import * as bunTest from 'bun:test';
 const { test, expect } = bunTest;
+const afterAll = (bunTest as unknown as { afterAll: (cb: () => void) => void }).afterAll;
+afterAll(() => dom.window.close());
 const mock = (bunTest as unknown as { mock: any }).mock;
 // @ts-expect-error jsdom has no local declaration in this workspace
 import { JSDOM } from 'jsdom';
@@ -88,6 +90,60 @@ pageTest('real Router subscriber consumes an unbound wake only once the same ses
     expect(container.textContent).toBe('/conversation/conv-router');
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
+  }
+}, 15000);
+
+pageTest('real Router subscriber ignores protected routes and self-check frames', async () => {
+  const { GlobalVoiceWakeListener } = await import('./Router');
+  const container = w.document.getElementById('root')!;
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        React.createElement(MemoryRouter, { initialEntries: ['/settings'] },
+          React.createElement(GlobalVoiceWakeListener),
+          React.createElement(LocationProbe)),
+      );
+      await Promise.resolve();
+    });
+    expect(listener).toBeTruthy();
+
+    await act(async () => {
+      listener?.({ ...snapshot('conv-protected'), self_check_active: false });
+      await Promise.resolve();
+    });
+    expect(container.textContent).toBe('/settings');
+
+    await act(async () => {
+      listener?.({ ...snapshot('conv-protected'), self_check_active: true });
+      await Promise.resolve();
+    });
+    expect(container.textContent).toBe('/settings');
+  } finally {
+    await act(async () => root.unmount());
+  }
+
+  const second = createRoot(container);
+  try {
+    await act(async () => {
+      second.render(
+        React.createElement(MemoryRouter, { initialEntries: ['/guid'] },
+          React.createElement(GlobalVoiceWakeListener),
+          React.createElement(LocationProbe)),
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      listener?.({ ...snapshot('conv-self-check'), self_check_active: true });
+      await Promise.resolve();
+    });
+    expect(container.textContent).toBe('/guid');
+    await act(async () => {
+      listener?.(snapshot('conv-self-check'));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toBe('/conversation/conv-self-check');
+  } finally {
+    await act(async () => second.unmount());
   }
 }, 15000);

@@ -36,9 +36,10 @@ const VoiceKeyboardWaitRow: React.FC<{
       className='shrink-0 w-full max-w-780px mx-auto px-8px m-t-10px'
       data-testid='voice-keyboard-wait-row'
       data-command-id={wait.commandId}
-      role='status'
-      aria-live='polite'
     >
+      <span className='sr-only' role='status' aria-live='polite'>
+        {statusText}
+      </span>
       <MessageThinking message={message} />
     </div>
   );

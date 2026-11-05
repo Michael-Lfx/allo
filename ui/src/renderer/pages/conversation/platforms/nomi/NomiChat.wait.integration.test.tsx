@@ -2,6 +2,7 @@ import * as bunTest from 'bun:test';
 const { expect } = bunTest;
 const mock = (bunTest as unknown as { mock: any }).mock;
 const afterAll = (bunTest as unknown as { afterAll: (cb: () => void | Promise<void>) => void }).afterAll;
+const pageTest = bunTest.test as unknown as (name: string, fn: () => Promise<void>, timeout?: number) => void;
 // @ts-expect-error jsdom has no local declaration in this workspace
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
@@ -14,6 +15,7 @@ import { CloudAuthContext } from '@renderer/hooks/context/CloudAuthContext';
 import { CreditsContext } from '@renderer/hooks/context/CreditsContext';
 import { ThemeContext } from '@renderer/hooks/context/ThemeContext';
 import zhVoice from '@renderer/services/i18n/locales/zh-CN/voice.json';
+import enVoice from '@renderer/services/i18n/locales/en-US/voice.json';
 
 const turnActivity = {
   running: false, hasHydratedRunningState: true, tokenUsage: null,
@@ -215,13 +217,8 @@ afterAll(() => dom.window.close());
       { message_id: '019b0000-0000-7000-8000-000000000912', conversation_id: CONVERSATION_ID, msg_id: '019b0000-0000-7000-8000-000000000912', type: 'text', content: { content: '分析这个项目的失败测试，修好后告诉我根因' }, position: 'right', status: 'finish', hidden: false, created_at: Date.now() },
       { message_id: '019b0000-0000-7000-8000-000000000913', conversation_id: CONVERSATION_ID, msg_id: '019b0000-0000-7000-8000-000000000913', type: 'text', content: { content: '根因是等待状态没有先于请求发布。' }, position: 'left', status: 'finish', hidden: false, created_at: Date.now() + 1 },
     ];
-    const { emitter } = await import('@renderer/utils/emitter');
     await act(async () => {
-      emitter.emit('conversation.messages.refresh', {
-        conversationId: CONVERSATION_ID,
-        reason: 'test',
-      } as any);
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
     });
     expect(container.textContent).toContain('根因是等待状态没有先于请求发布。');
     expect(container.textContent?.match(/根因是等待状态没有先于请求发布。/g)?.length).toBe(1);
@@ -230,3 +227,72 @@ afterAll(() => dom.window.close());
     await act(async () => root.unmount());
   }
 }, 30000);
+
+pageTest('a conversation reset clears the local keyboard wait row immediately', async () => {
+  sendStarted = false;
+  resolveSend = null;
+  resolveTaskGate = null;
+  taskGateUsed = false;
+  taskStatus = 'accepted';
+  historyItems = [];
+  const i18n = createInstance();
+  await i18n.init({ lng: 'en-US', resources: { 'en-US': { translation: { voice: enVoice } } }, initImmediate: false });
+  const NomiChat = (await import('./NomiChat')).default;
+  const modelSelection = {
+    current_model: { id: 'p', name: 'P', use_model: 'm' },
+    isCurrentModelAvailable: true,
+    isModelCatalogLoading: false,
+    refreshModelCatalog: () => {},
+    providers: [],
+    getAvailableModels: () => [],
+    handleSelectModel: async () => {},
+    formatModelLabel: (_p: any, m?: string) => m ?? '',
+    getDisplayModelName: (m?: string) => m ?? '',
+    modelPicker: { autoModels: [], cloudModels: [], otherProviderGroups: [] },
+  };
+  const container = w.document.getElementById('root')!;
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        React.createElement(I18nextProvider, { i18n },
+          React.createElement(MemoryRouter, null,
+            React.createElement(PreviewProvider as any, { persistNamespace: 'probe-reset', subscribeGlobalOpen: false, workspacePath: 'D:/ws' },
+              React.createElement(ThemeContext.Provider, { value: { theme: 'dark', themePreference: 'dark', setThemePreference: async () => {}, colorScheme: 'default', setColorScheme: async () => {}, fontScale: 1, setFontScale: async () => {} } as any },
+                React.createElement(CloudAuthContext.Provider, { value: { ready: false, status: 'unauthenticated' } as any },
+                  React.createElement(CreditsContext.Provider, { value: { checkInReceipt: null, checkInFailed: false, balance: 0, authenticated: false, balanceConfirmed: false, lastCheckInDayKey: 0, isFetchingBalance: false, isCheckingIn: false, lastRefreshAt: 0, cooldownSeconds: 0, canRefresh: false, fetchBalance: async () => {}, checkIn: async () => false, manualRefresh: () => {} } },
+                    React.createElement(NomiChat as any, {
+                      conversation_id: CONVERSATION_ID,
+                      workspace: 'D:/ws',
+                      isVoiceConversation: true,
+                      modelSelection,
+                    }))))))));
+      await Promise.resolve();
+    });
+    const suggestion = container.querySelector('button');
+    expect(suggestion).toBeTruthy();
+    await act(async () => {
+      (suggestion as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    const composer = container.querySelector('[data-testid="sendbox-input"]') as HTMLElement | null;
+    await act(async () => {
+      composer!.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeTruthy();
+    expect(container.textContent).toContain('Sending');
+
+    const { emitter } = await import('@renderer/utils/emitter');
+    await act(async () => {
+      emitter.emit('conversation.messages.refresh', {
+        conversationId: CONVERSATION_ID,
+        reason: 'reset',
+      } as any);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+  }
+}, 20000);

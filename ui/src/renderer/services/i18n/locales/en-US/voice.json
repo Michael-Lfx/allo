@@ -11,6 +11,7 @@
     "queued": "Queued",
     "accepted": "Task accepted, running",
     "delivering": "Submitting task",
+    "cancelling": "Cancelling",
     "syncing": "Syncing reply",
     "unknown": "Checking task status",
     "failed": "Send failed; you can retry"

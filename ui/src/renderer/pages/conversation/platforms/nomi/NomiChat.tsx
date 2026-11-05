@@ -40,7 +40,7 @@ import {
 } from './voiceKeyboardWait';
 import {mergeVoiceTranscript, createLiveVoiceHistory, reconcileLiveVoiceHistory} from '@renderer/pages/voiceSession/liveVoiceTurn';
 import { mergeWithCapabilities, type AgentModeOption } from '@/renderer/utils/model/agentModes';
-import { emitter } from '@/renderer/utils/emitter';
+import { addEventListener, emitter } from '@/renderer/utils/emitter';
 import { useNomiMessage } from './useNomiMessage';
 import type { NomiModelSelection } from './useNomiModelSelection';
 import { readNomiInitialHandoff, nomiInitialUserPreview } from './initialUserPreview';
@@ -132,12 +132,24 @@ const NomiChat: React.FC<{
   // One keyboard task is visible at a time; a new command replaces this row.
   const [keyboardWait, setKeyboardWait] = useState<VoiceKeyboardWait | null>(null);
   const keyboardWaitPhaseRef = useRef<VoiceKeyboardWaitPhase | null>(null);
-  keyboardWaitPhaseRef.current = keyboardWait?.phase ?? null;
+  useLayoutEffect(() => {
+    keyboardWaitPhaseRef.current = keyboardWait?.phase ?? null;
+  }, [keyboardWait?.phase]);
   const refreshVoiceHistoryRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     setKeyboardWait(null);
   }, [conversation_id]);
+
+  useEffect(
+    () =>
+      addEventListener('conversation.messages.refresh', event => {
+        if (event.conversationId === conversation_id && event.reason === 'reset') {
+          setKeyboardWait(null);
+        }
+      }),
+    [conversation_id]
+  );
 
   const handleVoiceKeyboardWait = useCallback(
     (info: { conversationId: ConversationId; commandId: string; text: string }) => {

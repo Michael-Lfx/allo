@@ -73,6 +73,7 @@ describe('voice keyboard wait view state', () => {
   test('maps real task phases without inventing success', () => {
     expect(phaseFromVoiceTask(task({ status: 'queued' }))).toBe('queued');
     expect(phaseFromVoiceTask(task({ status: 'delivering' }))).toBe('delivering');
+    expect(phaseFromVoiceTask(task({ status: 'cancelling' }))).toBe('cancelling');
     expect(phaseFromVoiceTask(task({ status: 'completed' }))).toBe('syncing');
     expect(phaseFromVoiceTask(task({ status: 'failed' }))).toBe('failed');
     expect(phaseFromVoiceTask(null)).toBe('unknown');

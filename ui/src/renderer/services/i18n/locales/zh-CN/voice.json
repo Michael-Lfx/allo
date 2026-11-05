@@ -11,6 +11,7 @@
     "queued": "排队中",
     "accepted": "任务已接单，正在执行",
     "delivering": "正在提交任务",
+    "cancelling": "正在取消",
     "syncing": "正在同步回复",
     "unknown": "正在确认任务状态",
     "failed": "发送失败，可重试"

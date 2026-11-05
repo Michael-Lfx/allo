@@ -7,6 +7,7 @@ export type VoiceKeyboardWaitPhase =
   | 'queued'
   | 'accepted'
   | 'delivering'
+  | 'cancelling'
   | 'syncing'
   | 'unknown'
   | 'failed';
@@ -35,6 +36,7 @@ export const voiceKeyboardWaitStatusKey = (phase: VoiceKeyboardWaitPhase): strin
     case 'queued': return 'voice.keyboardWait.queued';
     case 'accepted': return 'voice.keyboardWait.accepted';
     case 'delivering': return 'voice.keyboardWait.delivering';
+    case 'cancelling': return 'voice.keyboardWait.cancelling';
     case 'syncing': return 'voice.keyboardWait.syncing';
     case 'unknown': return 'voice.keyboardWait.unknown';
     case 'failed': return 'voice.keyboardWait.failed';
@@ -68,7 +70,7 @@ export function phaseFromVoiceTask(task: VoiceTaskSnapshot | null | undefined): 
     case 'delivering': return 'delivering';
     case 'completed': return 'syncing';
     case 'failed': return 'failed';
-    case 'cancelling': return 'unknown';
+    case 'cancelling': return 'cancelling';
     case 'unknown':
     case undefined:
     default: return 'unknown';
