@@ -34,6 +34,9 @@ import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
 import GuidVideoShortcut from './components/GuidVideoShortcut';
 import ShowcaseCards from './components/ShowcaseCards';
+import SlideOptionsControls from './presentation/SlideOptionsControls';
+import { DEFAULT_SLIDE_OPTIONS, applySlideHeader, type SlideOptions } from './presentation/slideOptions';
+import { PRESENTATION_SKILL_ID } from '@/common/adapter/ipcBridge';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
@@ -136,6 +139,10 @@ const GuidPage: React.FC = () => {
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
+  // "Slides" work mode (Nomi only, home page only): the composer keeps the
+  // user's own text; the ppt-master option line and the managed Skill are
+  // added when the first message is sent.
+  const [slideOptions, setSlideOptions] = useState<SlideOptions | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
   );
@@ -629,11 +636,23 @@ const GuidPage: React.FC = () => {
     },
     [pickerSkills, localeKey, t],
   );
+  const enterSlideMode = useCallback(() => {
+    setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, []);
+  const handleSlidesChange = useCallback(
+    (active: boolean) => (active ? enterSlideMode() : setSlideOptions(null)),
+    [enterSlideMode],
+  );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
       setGoalMode(false);
+      setSlideOptions(null);
     }
   }, [supportsHomeGoalCommand]);
+  // The managed ppt-master is in the catalog only while it is installed; before
+  // that the option line tells Nomi to check and install it first.
+  const managedSlidesSkillReady = pickerSkills.some((skill) => skill.skillId === PRESENTATION_SKILL_ID);
   const homeLauncherItems = useMemo<SlashLauncherItem[]>(
     () =>
       [
@@ -649,6 +668,11 @@ const GuidPage: React.FC = () => {
               kind: 'system' as const,
               name: 'goal',
               description: t('guid.goalMode.tooltip'),
+            }, {
+              id: 'system:ppt',
+              kind: 'system' as const,
+              name: 'ppt',
+              description: t('presentation.home.slashDescription'),
             }]
           : []),
         ...(supportsHomeSkillLoading
@@ -690,6 +714,15 @@ const GuidPage: React.FC = () => {
               '',
               homeTokenInputState.textSelection.end,
             ),
+          );
+        }
+        return;
+      }
+      if (item.name === 'ppt') {
+        enterSlideMode();
+        if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
+          guidInput.setInput(
+            replaceActiveSlashToken(guidInput.input, '', homeTokenInputState.textSelection.end),
           );
         }
         return;
@@ -939,6 +972,17 @@ const GuidPage: React.FC = () => {
     () => (supportsHomeSkillLoading ? homeSkillChips.map((skill) => skill.skillId) : []),
     [homeSkillChips, supportsHomeSkillLoading],
   );
+  // Slides mode applies only to a real brief: an empty composer stays empty
+  // (the send button stays disabled), and nothing is added to it visibly.
+  const slidesBrief = supportsHomeGoalCommand && slideOptions !== null && guidInput.input.trim().length > 0;
+  const sendInput = slidesBrief ? applySlideHeader(guidInput.input, slideOptions) : guidInput.input;
+  const sendSkillIds = useMemo(
+    () =>
+      slidesBrief && managedSlidesSkillReady && !homeInitialSkillIds.includes(PRESENTATION_SKILL_ID)
+        ? [...homeInitialSkillIds, PRESENTATION_SKILL_ID]
+        : homeInitialSkillIds,
+    [homeInitialSkillIds, managedSlidesSkillReady, slidesBrief],
+  );
 
   // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
   // collected up front and applied right after the conversation is created.
@@ -1016,8 +1060,8 @@ const GuidPage: React.FC = () => {
   }, [guidInput.setDir]);
 
   const send = useGuidSend({
-    // Input state
-    input: guidInput.input,
+    // Input state (slides mode prepends the ppt-master option line here)
+    input: sendInput,
     setInput: guidInput.setInput,
     files: guidInput.files,
     setFiles: guidInput.setFiles,
@@ -1042,7 +1086,7 @@ const GuidPage: React.FC = () => {
     findAgentByKey: agentSelection.findAgentByKey,
     getEffectiveAgentType: agentSelection.getEffectiveAgentType,
     onStalePreset: handleStalePreset,
-    initialSkillIds: homeInitialSkillIds,
+    initialSkillIds: sendSkillIds,
     onInitialSkillsSent: () => setHomeSkillChips([]),
     availableMcpServers,
     selectedMcpServerIds: guidSelectedMcpServerIds,
@@ -1555,6 +1599,13 @@ const GuidPage: React.FC = () => {
       autoWorkDraft={advancedConfig.autoWork}
       goalMode={supportsHomeGoalCommand && goalMode}
       onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
+      slidesActive={supportsHomeGoalCommand && slideOptions !== null}
+      onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
+      slideControls={
+        slideOptions !== null ? (
+          <SlideOptionsControls options={slideOptions} onChange={setSlideOptions} disabled={guidInput.loading} />
+        ) : undefined
+      }
       hasDraft={hasDraft}
       speechLocale={i18n.language}
       onSpeechTranscript={(transcript) => {
@@ -1596,7 +1647,11 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={t('conversation.welcome.placeholder')}
+              placeholder={
+                supportsHomeGoalCommand && slideOptions !== null
+                  ? t('presentation.home.placeholder')
+                  : t('conversation.welcome.placeholder')
+              }
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}

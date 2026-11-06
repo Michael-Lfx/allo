@@ -1,0 +1,75 @@
+{
+  "settings": {
+    "nav": "演示文稿",
+    "title": "演示文稿",
+    "description": "Nomi 制作 PPT 时使用内置的 ppt-master Skill。它和私有 Python 环境由 Flowy 自动下载和管理，不影响你电脑上的其他 Python。",
+    "capabilityGroup": "安装状态",
+    "detailsGroup": "详细信息",
+    "statusLabel": "ppt-master",
+    "notInstalledHint": "首次使用时 Nomi 会自动安装，也可以在这里提前安装。需要下载约 {{size}}。",
+    "lastFailure": "最近一次失败",
+    "requestFailed": "操作失败",
+    "version": "版本",
+    "commit": "固定提交",
+    "source": "下载来源",
+    "installedAt": "安装时间",
+    "skillDir": "Skill 目录"
+  },
+  "status": {
+    "not_installed": "未安装",
+    "installing": "安装中",
+    "ready": "已就绪",
+    "failed": "安装失败"
+  },
+  "stage": {
+    "fetching_skill": "下载 ppt-master",
+    "preparing_python": "准备 Python 环境",
+    "installing_dependencies": "安装依赖",
+    "self_test": "自检",
+    "committing": "完成安装"
+  },
+  "progress": {
+    "step": "第 {{current}}/{{total}} 步"
+  },
+  "actions": {
+    "install": "安装",
+    "retry": "重试安装",
+    "cancel": "取消安装",
+    "repair": "修复",
+    "uninstall": "卸载",
+    "uninstallConfirm": "卸载 ppt-master 和它的 Python 环境？之后制作 PPT 时会重新下载。"
+  },
+  "notice": {
+    "installing": "正在安装演示文稿能力（ppt-master），装好后 Nomi 会继续制作。",
+    "ready": "演示文稿能力已安装。",
+    "failed": "演示文稿能力安装失败。",
+    "cancelled": "已取消安装演示文稿能力。",
+    "details": "查看详情"
+  },
+  "home": {
+    "label": "幻灯片",
+    "slashDescription": "制作幻灯片（ppt-master）：选画布、页数和出稿方式",
+    "canvas": "画布",
+    "pages": "页数",
+    "mode": "出稿方式",
+    "canvases": {
+      "ppt169": "16:9",
+      "ppt43": "4:3",
+      "xiaohongshu": "小红书 3:4",
+      "moments": "方图 1:1",
+      "story": "竖版 9:16",
+      "a4": "A4"
+    },
+    "pageCounts": {
+      "auto": "页数自动",
+      "5-8": "5–8 页",
+      "10-15": "10–15 页",
+      "20+": "20 页以上"
+    },
+    "modes": {
+      "quick": "快速出稿",
+      "guided": "逐步确认"
+    },
+    "placeholder": "描述你的演示文稿主题，例如：季度业务复盘，面向管理层"
+  }
+}

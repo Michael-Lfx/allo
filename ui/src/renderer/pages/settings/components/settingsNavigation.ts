@@ -31,7 +31,8 @@ export type SettingsNavIcon =
   | 'mcp'
   | 'cloud-login'
   | 'about'
-  | 'voice';
+  | 'voice'
+  | 'presentation';
 
 export type SettingsNavItem = {
   id: string;
@@ -101,6 +102,13 @@ const BUILTIN_NAVIGATION: SettingsNavBuiltin[] = [
     groupId: 'capabilities',
     icon: 'voice',
     labelKey: 'voice.settings.nav',
+  },
+  {
+    id: 'presentation',
+    path: 'presentation',
+    groupId: 'capabilities',
+    icon: 'presentation',
+    labelKey: 'presentation.settings.nav',
   },
   { id: 'cloud-login', path: 'cloud-login', groupId: 'account', icon: 'cloud-login', labelKey: 'settings.cloudLoginNav' },
   { id: 'telemetry', path: 'telemetry', groupId: 'account', icon: 'telemetry', labelKey: 'settings.telemetryNav' },

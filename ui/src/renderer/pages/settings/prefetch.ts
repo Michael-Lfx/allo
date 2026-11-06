@@ -30,4 +30,5 @@ export function prefetchSettingsPages(): void {
   void import('./SkillsSettingsPage').catch(() => undefined);
   void import('@/renderer/pages/mcp').catch(() => undefined);
   void import('./VoiceSettings').catch(() => undefined);
+  void import('./PresentationSettings').catch(() => undefined);
 }

@@ -75,6 +75,7 @@ const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabi
 const LinkPhonePage = React.lazy(() => import('@renderer/pages/link'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const VoiceSettings = React.lazy(() => import('@renderer/pages/settings/VoiceSettings'));
+const PresentationSettings = React.lazy(() => import('@renderer/pages/settings/PresentationSettings'));
 const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
@@ -451,6 +452,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
           <Route path='/settings/voice' element={withRouteFallback(VoiceSettings)} />
+          <Route path='/settings/presentation' element={withRouteFallback(PresentationSettings)} />
           <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           {/* Feature pages embedded inside Settings */}

@@ -1,0 +1,75 @@
+{
+  "settings": {
+    "nav": "Presentations",
+    "title": "Presentations",
+    "description": "Nomi uses the built-in ppt-master Skill to make PPT decks. Flowy downloads and manages it with a private Python environment that does not touch any other Python on your computer.",
+    "capabilityGroup": "Installation",
+    "detailsGroup": "Details",
+    "statusLabel": "ppt-master",
+    "notInstalledHint": "Nomi installs it automatically the first time you ask for a deck, or you can install it now. About {{size}} to download.",
+    "lastFailure": "Last failure",
+    "requestFailed": "Action failed",
+    "version": "Version",
+    "commit": "Pinned commit",
+    "source": "Download source",
+    "installedAt": "Installed",
+    "skillDir": "Skill folder"
+  },
+  "status": {
+    "not_installed": "Not installed",
+    "installing": "Installing",
+    "ready": "Ready",
+    "failed": "Install failed"
+  },
+  "stage": {
+    "fetching_skill": "Downloading ppt-master",
+    "preparing_python": "Preparing Python",
+    "installing_dependencies": "Installing dependencies",
+    "self_test": "Self-test",
+    "committing": "Finishing"
+  },
+  "progress": {
+    "step": "Step {{current}}/{{total}}"
+  },
+  "actions": {
+    "install": "Install",
+    "retry": "Retry install",
+    "cancel": "Cancel install",
+    "repair": "Repair",
+    "uninstall": "Uninstall",
+    "uninstallConfirm": "Uninstall ppt-master and its Python environment? It is downloaded again the next time you make a deck."
+  },
+  "notice": {
+    "installing": "Installing the presentation capability (ppt-master). Nomi continues the deck once it is ready.",
+    "ready": "Presentation capability installed.",
+    "failed": "Presentation capability install failed.",
+    "cancelled": "Presentation capability install cancelled.",
+    "details": "Details"
+  },
+  "home": {
+    "label": "Slides",
+    "slashDescription": "Make a slide deck (ppt-master): pick canvas, length and pace",
+    "canvas": "Canvas",
+    "pages": "Pages",
+    "mode": "Pace",
+    "canvases": {
+      "ppt169": "16:9",
+      "ppt43": "4:3",
+      "xiaohongshu": "RED 3:4",
+      "moments": "Square 1:1",
+      "story": "Vertical 9:16",
+      "a4": "A4"
+    },
+    "pageCounts": {
+      "auto": "Auto length",
+      "5-8": "5–8 slides",
+      "10-15": "10–15 slides",
+      "20+": "20+ slides"
+    },
+    "modes": {
+      "quick": "Quick draft",
+      "guided": "Confirm each step"
+    },
+    "placeholder": "Describe your deck, e.g. quarterly business review for leadership"
+  }
+}

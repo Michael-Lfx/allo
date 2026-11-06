@@ -81,6 +81,7 @@
     "catalogSourceBuiltin": "Built-in",
     "catalogSourceCustom": "Custom",
     "catalogSourceExtension": "Extension",
+    "catalogSourceCapability": "Managed by Flowy",
     "filterAll": "All",
     "filterEmpty": "No skills match this filter",
     "sourceCatalog": "Granted",
