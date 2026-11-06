@@ -1644,13 +1644,15 @@ async fn complete_all_nodes(
     Ok(driven)
 }
 
-/// 等待第 `target` 个批次落定（applied），最多 15 分钟。
+/// 等待第 `target` 个批次落定（applied），最多 25 分钟（r01：评审打回/
+/// 守卫原地重试/降级重试各占一轮 LLM，多轮耗时显著长于基线——20 分钟
+/// 实测在重裁第 3 轮被截断）。
 async fn wait_applied_batches(
     pool: &nomifun_db::sqlx::SqlitePool,
     course_id: &nomifun_common::LearningCourseId,
     target: i64,
 ) -> Result<bool> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25 * 60);
     loop {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_growth_batches \
