@@ -28,6 +28,9 @@ use crate::loop_core::{
     GENERATE_REASONING_EFFORT, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
     REPAIR_REASONING_EFFORT, log_text, run_agent_loop,
 };
+// u06：压缩钩子类型随 FlowCycle::history_compaction 的签名外露（本 crate
+// 内的流实现都要引用它），私有 use 不够——crate 级再导出。
+pub(crate) use crate::loop_core::HistoryCompaction;
 use crate::one_shot::OneShotTool;
 
 /// 取消提示语：以 `LlmEvent::Error` / `ProviderError::Api` 注入。循环的
@@ -356,6 +359,13 @@ pub(crate) trait FlowCycle: Send + Sync {
     /// 工具白名单。`repair_face = true` 表示修复轮（大纲/课时收窄掉 start
     /// 工具；学习图无 start 工具，两个面相同）。
     fn tools(&self, ctx: Arc<Self::Ctx>, repair_face: bool) -> Vec<OneShotTool>;
+    /// u06 历史压缩钩子（缺省 `None`——课程大纲循环零变化，单测钉住）。
+    /// 仅课时内容循环在 `NOMI_LEARNING_LESSON_HISTORY_COMPACT` on 时返回
+    /// Some；钩子在每轮工具结果回灌后改写消息历史（语义见 loop_core 的
+    /// [`HistoryCompaction`]）。
+    fn history_compaction(&self, _ctx: &Arc<Self::Ctx>) -> Option<Arc<HistoryCompaction>> {
+        None
+    }
     /// finish 门（确定性审计）：`Ok` 即发布；`UnprocessableEntity` 表示
     /// danger findings 未清，修复循环继续。学习图的门是 async（终审软门
     /// + 落库），大纲/课时为同步语义——统一在 async 插头之后。
@@ -407,6 +417,9 @@ pub(crate) async fn run_loops<F: FlowCycle>(
     round_tokens: u32,
 ) -> Result<F::Output, AppError> {
     let budgets = flow.budgets();
+    // u06：压缩钩子每循环解析一次（仅课时内容循环返回 Some；大纲/学习
+    // 循环恒 None——零变化面）。
+    let compaction = flow.history_compaction(&ctx);
 
     // ── 生成循环：全工具面，注入的开场消息作为 user 轮 ──────────────────
     let generate_tools = flow.tools(Arc::clone(&ctx), false);
@@ -430,6 +443,7 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         GENERATE_REASONING_EFFORT,
         nomifun_learning::phase::GENERATE,
         Some(ctx.as_ref()),
+        compaction.as_deref(),
     )
     .await;
     // 发布优先级是显式差异（`publish_before_error`）：发布可能落在循环的
@@ -509,6 +523,7 @@ pub(crate) async fn run_loops<F: FlowCycle>(
             REPAIR_REASONING_EFFORT,
             nomifun_learning::phase::REPAIR,
             Some(ctx.as_ref()),
+            compaction.as_deref(),
         )
         .await;
         // 发布优先于循环错误（同生成循环，按流的显式声明）。

@@ -982,6 +982,7 @@ mod tests {
             GENERATE_REASONING_EFFORT,
             nomifun_learning::phase::GENERATE,
             Some(ctx.as_ref()),
+            None,
         )
         .await
         .unwrap();
@@ -1004,6 +1005,20 @@ mod tests {
             ContentBlock::ToolResult { is_error: true, content, .. }
                 if content.contains("co_start")
         ));
+    }
+
+    /// u06 零变化钉子：课程大纲循环不携带历史压缩钩子（`FlowCycle::
+    /// history_compaction` 缺省 None）——大纲循环每轮历史逐字节全量重发，
+    /// 压缩实验只属于课时内容循环。
+    #[tokio::test]
+    async fn outline_flow_never_carries_history_compaction() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service), kb_brief());
+        let flow = engine(service);
+        assert!(
+            crate::learning_loop::FlowCycle::history_compaction(&flow, &ctx).is_none(),
+            "大纲循环必须不传压缩钩子（u06 缺省 None 的零变化面）"
+        );
     }
 
     /// 空草稿必须被审计门禁拦截：生成 loop 里模型过早 co_finish（尺寸

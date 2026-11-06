@@ -140,6 +140,15 @@ pub(crate) fn json_compact<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|error| format!("序列化失败: {error}"))
 }
 
+/// u06 历史压缩钩子：每轮工具结果回灌后对消息历史做**原地改写**（把已落
+/// 库正文换成摘要占位符，腾掉每轮重发的全量正文）。缺省 `None` = 历史
+/// 逐字节全量重发（基线）。仅课时内容循环在开关
+/// `NOMI_LEARNING_LESSON_HISTORY_COMPACT` on 时经 [`crate::learning_loop::
+/// FlowCycle::history_compaction`] 传入——课程大纲循环与学习循环零变化
+/// （缺省 None，单测钉住）。钩子必须幂等且不改写未落库/最近写入的正文
+/// （语义契约见课时循环的钩子构造处）。
+pub(crate) type HistoryCompaction = dyn Fn(&mut [Message]) + Send + Sync;
+
 /// Truncate model text for log events (the full text stays in the message
 /// window; logs only need a fingerprint of what the model said).
 pub(crate) fn log_text(text: &str) -> String {
@@ -191,6 +200,7 @@ pub(crate) async fn run_agent_loop(
     reasoning_effort: Option<&str>,
     loop_label: &str,
     sink: Option<&dyn LoopEventSink>,
+    compaction: Option<&HistoryCompaction>,
 ) -> Result<String, AppError> {
     // The tool defs sent to the model and the handler table derive from the
     // SAME whitelist; there is no other tool source in this code path.
@@ -413,6 +423,12 @@ pub(crate) async fn run_agent_loop(
             }));
         }
         messages.push(Message::new(Role::User, result_blocks));
+        // u06：历史压缩钩子（可选，缺省 None）。此刻工具结果已回灌、下一
+        // 轮请求尚未装配——钩子改写历史，模型下一轮看到的即压缩后形状。
+        // None = 逐字节基线（全量重发）。
+        if let Some(compaction) = compaction {
+            compaction(&mut messages);
+        }
         round += 1;
     }
 
