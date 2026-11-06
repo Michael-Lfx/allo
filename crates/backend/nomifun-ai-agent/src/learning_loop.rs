@@ -366,6 +366,14 @@ pub(crate) trait FlowCycle: Send + Sync {
     fn history_compaction(&self, _ctx: &Arc<Self::Ctx>) -> Option<Arc<HistoryCompaction>> {
         None
     }
+    /// u07 修复轮开场上下文（缺省 `None`——课程大纲循环零变化，单测钉住
+    /// `outline_flow_never_carries_history_compaction`）。仅课时内容循环
+    /// 返回 Some（lesson_user_text 同源——修复轮是全新对话，概念面/档位/
+    /// 教学范围在审计报告里不可达，票面推断的修复盲区）。组装顺序（上下文
+    /// 先行、审计随后）见 [`compose_repair_user`]。
+    fn repair_opening_context(&self, _ctx: &Arc<Self::Ctx>) -> Option<String> {
+        None
+    }
     /// finish 门（确定性审计）：`Ok` 即发布；`UnprocessableEntity` 表示
     /// danger findings 未清，修复循环继续。学习图的门是 async（终审软门
     /// + 落库），大纲/课时为同步语义——统一在 async 插头之后。
@@ -505,10 +513,13 @@ pub(crate) async fn run_loops<F: FlowCycle>(
             Err(error) => return Err(error),
         }
         let audit = flow.repair_audit(ctx.as_ref(), &draft_id, round + 1)?;
-        let repair_user = match &idle_nudge {
-            Some(nudge) => format!("{nudge}\n\n{audit}"),
-            None => audit,
-        };
+        // u07：修复轮开场组装（[`compose_repair_user`]）——大纲流 None =
+        // 逐字基线（nudge + audit / audit）。
+        let repair_user = compose_repair_user(
+            flow.repair_opening_context(&ctx).as_deref(),
+            idle_nudge.as_deref(),
+            &audit,
+        );
         let repair_tools = flow.tools(Arc::clone(&ctx), true);
         let revision_before = flow.revision(ctx.as_ref(), &draft_id)?;
         let loop_result = run_agent_loop(
@@ -571,6 +582,24 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         "{} agent exhausted {REPAIR_LOOP_LIMIT} repair loops; the draft survives with these blocking findings:\n{audit}",
         flow.name(),
     )))
+}
+
+/// u07 修复轮开场组装（纯函数，四象限单测 `compose_repair_user_quadrants`）：
+/// 课时上下文（仅课时流注入；大纲流 None = 逐字基线）→ 空闲 nudge →
+/// 审计报告，顺序固定——上下文先行、审计随后（票面「修复轮开场注入课时
+/// 上下文，审计报告随后」）。空白 opening 按缺席裁（全仓省行先例同形）。
+fn compose_repair_user(opening: Option<&str>, nudge: Option<&str>, audit: &str) -> String {
+    let mut text = String::new();
+    if let Some(opening) = opening.filter(|opening| !opening.trim().is_empty()) {
+        text.push_str(opening);
+        text.push_str("\n\n");
+    }
+    if let Some(nudge) = nudge {
+        text.push_str(nudge);
+        text.push_str("\n\n");
+    }
+    text.push_str(audit);
+    text
 }
 
 /// 发布收尾：publish_ok 帧 + 每流钩子，三个发布点共用。
@@ -883,5 +912,33 @@ mod tests {
         assert_eq!(frames[0]["max_rounds"], crate::loop_core::GENERATE_MAX_ROUNDS);
         let log = channel.round_log_snapshot();
         assert!(log[0].contains("第1轮(生成)") && log[0].contains("ls_start✓"), "{log:?}");
+    }
+
+    /// u07 修复轮开场组装四象限（纯函数）：opening 只属于课时流（大纲流
+    /// None = 零变化），顺序固定——上下文 → nudge → 审计报告；基线两臂
+    /// （nudge 有/无、opening 缺席）逐字复现旧组装。
+    #[test]
+    fn compose_repair_user_quadrants() {
+        let audit = "课时草稿审计 — 1 条 finding：\n- [danger] x";
+        let nudge = "警告：你上一轮没有对草稿做任何修改";
+        let opening = "课程：测试课程\n课时（1/2）：课时一";
+
+        // 基线（大纲流）：opening 缺席——逐字复现旧两臂。
+        assert_eq!(super::compose_repair_user(None, None, audit), audit);
+        assert_eq!(
+            super::compose_repair_user(None, Some(nudge), audit),
+            format!("{nudge}\n\n{audit}")
+        );
+        // 课时流：上下文先行、审计随后；nudge 在中间。
+        assert_eq!(
+            super::compose_repair_user(Some(opening), None, audit),
+            format!("{opening}\n\n{audit}")
+        );
+        assert_eq!(
+            super::compose_repair_user(Some(opening), Some(nudge), audit),
+            format!("{opening}\n\n{nudge}\n\n{audit}")
+        );
+        // 空白 opening 按缺席裁（与全仓省行先例同形）。
+        assert_eq!(super::compose_repair_user(Some("  "), None, audit), audit);
     }
 }
