@@ -2606,6 +2606,19 @@ impl LearningService {
                     candidate.note.push('；');
                 }
                 candidate.note.push_str("评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）");
+                // u02 降级保全留痕：最后一次成功解析的 verdict 的 problems 已
+                // 逐条转 findings（field=`review_problems`）——批次 note 记数，
+                // 档案面可追溯；放行语义不变（不新增阻断）。
+                let preserved = review
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.field == "review_problems")
+                    .count();
+                if preserved > 0 {
+                    candidate.note.push_str(&format!(
+                        "；降级前评审提出 {preserved} 条问题，已转 findings 留痕"
+                    ));
+                }
             }
             batch = Some(candidate);
             batch_rulings = Some(rulings);

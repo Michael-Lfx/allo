@@ -1095,6 +1095,12 @@ pub(crate) fn redraft_splice_enabled() -> bool {
 /// 维持现状（保守放行，当场生效）——外层 j03 预算与指纹早停不动。
 const REVIEW_PROVENANCE_ATTEMPTS: usize = 2;
 
+/// 评审调用传输失败的独立重试额度（u02 分账，含首轮）：超时/网关/流中断
+/// 不占挂号表/碎片/契约违约的那一次重试——真机 run-1793951137445 第 3 轮
+/// 评审先超时用掉唯一重试、回包一处措辞未逐字即直接降级；两类额度各恰一
+/// 次，二者都用尽才降级。外层 j03 预算与指纹早停不动。
+const REVIEW_TRANSPORT_ATTEMPTS: usize = 2;
+
 /// 评审系统提示词装配（k07 判据①两臂 + m3 挂号表臂 + m5 advice 范围条
 /// 款 + m9 碎片裁决臂）：挂号表开 = V2 框定措辞 + 按表核对程序句 + 表输
 /// 出契约段（V2 off 不改表臂——V1 并句把「随批铸名」算出处，与表的「批内
@@ -1472,11 +1478,16 @@ pub(crate) async fn concept_review(
     /// ——零 problems，降级留痕进 findings（j09 通道 → k02 水位消费）。
     /// `face` = 死因归属（挂号表 / 碎片裁决），决定 findings 的 field 与
     /// 留痕措辞（m3 原文逐字保留）。置 `degraded` 信号（r01：降级面读数
-    /// 可区分）。
+    /// 可区分）。u02 降级保全：`preserved` = 最后一次成功解析的 verdict 的
+    /// problems——逐条转 findings（field=`review_problems`，issue 以「降级
+    /// 前评审已提出：」开头，node/advice 保留），降级不再吞掉已发现的硬伤
+    /// （真机 run-1793859632428 吞 6 条、run-1793951137445 吞 1 条合法
+    /// reject）。放行语义不变：problems 仍清零，不新增阻断。
     fn degraded_outcome(
         death: &str,
         readout: provenance::ProvenanceReadout,
         fragments: fragment_verdict::FragmentReadout,
+        preserved: &[ReviewProblem],
     ) -> ReviewOutcome {
         let (field, issue, advice) = if fragments.degraded {
             (
@@ -1499,10 +1510,13 @@ pub(crate) async fn concept_review(
                     .to_owned(),
             )
         };
+        let mut findings =
+            vec![ReviewFinding { node: String::new(), field: field.into(), issue, advice }];
+        findings.extend(preserved_problems_findings(preserved));
         ReviewOutcome {
             problems: Vec::new(),
             reuse: Vec::new(),
-            findings: vec![ReviewFinding { node: String::new(), field: field.into(), issue, advice }],
+            findings,
             degraded: true,
             provenance: readout,
             fragments,
@@ -1511,38 +1525,61 @@ pub(crate) async fn concept_review(
     /// 评审自身不可用（调用传输失败/回包违约重试仍败）的降级放行（r01）：
     /// 与 [`degraded_outcome`] 同形——problems/reuse 清零、findings 留痕
     /// （issue 含「评审缺席」+ 死因），并置 `degraded` 信号供读数面区分
-    /// 「评审缺席的成功」与「评审通过」。
+    /// 「评审缺席的成功」与「评审通过」。u02：同款保全 `preserved`。
     fn review_unavailable_outcome(
         death: &str,
         readout: provenance::ProvenanceReadout,
         fragments: fragment_verdict::FragmentReadout,
+        preserved: &[ReviewProblem],
     ) -> ReviewOutcome {
+        let mut findings = vec![ReviewFinding {
+            node: String::new(),
+            field: "review".into(),
+            issue: format!(
+                "评审缺席——Degraded 保守放行（评审器故障 ≠ 批缺陷）；死因：{death}"
+            ),
+            advice: "本批未获语义评审背书，留痕供修补回合关注；连续评审缺席时先查评审模型可用性"
+                .to_owned(),
+        }];
+        findings.extend(preserved_problems_findings(preserved));
         ReviewOutcome {
             problems: Vec::new(),
             reuse: Vec::new(),
-            findings: vec![ReviewFinding {
-                node: String::new(),
-                field: "review".into(),
-                issue: format!(
-                    "评审缺席——Degraded 保守放行（评审器故障 ≠ 批缺陷）；死因：{death}"
-                ),
-                advice: "本批未获语义评审背书，留痕供修补回合关注；连续评审缺席时先查评审模型可用性"
-                    .to_owned(),
-            }],
+            findings,
             degraded: true,
             provenance: readout,
             fragments,
         }
     }
+    /// u02 降级保全的 findings 行装配（两降级出口共用单源）：每条 problem
+    /// 一行，field=`review_problems`、issue 前缀「降级前评审已提出：」、
+    /// node/advice 原样保留。
+    fn preserved_problems_findings(preserved: &[ReviewProblem]) -> Vec<ReviewFinding> {
+        preserved
+            .iter()
+            .map(|problem| ReviewFinding {
+                node: problem.node.clone(),
+                field: "review_problems".into(),
+                issue: format!("降级前评审已提出：{}", problem.issue),
+                advice: problem.advice.clone(),
+            })
+            .collect()
+    }
     let known: HashSet<String> = known_names.iter().map(|name| name.trim().to_lowercase()).collect();
     let mut feedback = String::new();
     let mut readout = provenance::ProvenanceReadout::default();
     let mut frag_readout = fragment_verdict::FragmentReadout::default();
-    // 恰一次带死因重试（m3 局部语义；m9 碎片裁决同路共享——两面的自相矛
-    // 盾死因同享同一重试缝，外层 j03 预算不动；r01 起调用失败/回包违约
-    // 同享该缝（恰一次，面开关 off 也保底两次尝试）。
+    // 重试按失败原因分账（u02）：契约违约面（挂号表/碎片/回包形状——真机
+    // 病历的死因缝）沿用恰一次；传输失败（超时/网关/流中断）另计一次额度，
+    // 互不占用，二者都用尽才降级。外层 j03 预算不动。
     let max_attempts = REVIEW_PROVENANCE_ATTEMPTS;
-    for attempt in 1..=max_attempts {
+    let max_transport_attempts = REVIEW_TRANSPORT_ATTEMPTS;
+    let mut contract_failures = 0usize;
+    let mut transport_failures = 0usize;
+    // u02 降级保全：最后一次成功解析的 verdict 的 problems——任一降级出口
+    // 把它们逐条转 findings（「降级前评审已提出」不再被吞）。
+    let mut last_parsed_problems: Vec<ReviewProblem> = Vec::new();
+    loop {
         let mut user = format!(
             "{}\n\n【待审批次】\n{batch_json}{candidates_block}{anchors_block}",
             context.render()
@@ -1556,6 +1593,13 @@ pub(crate) async fn concept_review(
                     "碎片裁决机械校验未过",
                     "【重试纪律】逐条补齐被点名的片段处置（漏的补 fragments 行、判名词的配 problems 指名）；\
                      problems/reuse/findings 等其余裁决保持稳定，重新输出完整结论 JSON。",
+                )
+            } else if feedback.starts_with("【评审调用失败重试】") {
+                // u02 传输类独立臂：没有回包可修正——给「完整重评」出口。
+                (
+                    "评审调用失败（传输类，无回包）",
+                    "【重试纪律】上一轮没有收到任何回包，不存在可修正的违约处——请完整重新评审本批\
+                     （挂号表、碎片裁决、problems/reuse/findings 全部重新给出），重新输出完整结论 JSON。",
                 )
             } else if feedback.starts_with("【评审缺席重试】") {
                 (
@@ -1587,32 +1631,40 @@ pub(crate) async fn concept_review(
         .await
         {
             Ok(raw) => raw,
-            // 评审调用传输失败（r01）：不再静默放行——恰一次带死因重试
-            //（传输失败不占点修预算），仍败才降级并在读数标 degraded。
+            // 评审调用传输失败（r01；u02 分账）：不再静默放行——传输额度
+            // 恰一次带独立话术重试（超时没有回包，「修正违约处」句不可指
+            // 望），不占契约违约的那一次；传输额度用尽才降级并标 degraded。
             Err(error) => {
                 let death = format!("评审调用失败：{error}");
-                if attempt < max_attempts {
-                    feedback = format!("【评审缺席重试】{death}");
+                transport_failures += 1;
+                if transport_failures < max_transport_attempts {
+                    feedback = format!(
+                        "【评审调用失败重试】上一轮评审调用失败（{error}），没有收到回包——请完整重新评审本批"
+                    );
                     continue;
                 }
-                tracing::warn!(death = %death, "concept review call failed twice — degrading to PASS");
-                return review_unavailable_outcome(&death, readout, frag_readout);
+                tracing::warn!(
+                    death = %death,
+                    "concept review call failed twice (transport budget) — degrading to PASS"
+                );
+                return review_unavailable_outcome(&death, readout, frag_readout, &last_parsed_problems);
             }
         };
         // 评审自身不可用（调用失败或违约）→ 保守放行（语义不变：评审不阻断
-        // 结构合法的批次；reuse 随之丢失 = 退化现状）——r01 起：回包违约
-        // 先带死因重试恰一次，仍败才降级并留痕标信号。
+        // 结构合法的批次；reuse 随之丢失 = 退化现状）——回包违约走契约额度
+        // 恰一次带死因重试，仍败才降级并留痕标信号。
         let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
             tracing::warn!(
                 raw_head = %raw.chars().take(400).collect::<String>(),
                 "concept review reply is not a single JSON object — degrading to PASS"
             );
             let death = "评审回包不是单个 JSON 对象".to_owned();
-            if attempt < max_attempts {
+            contract_failures += 1;
+            if contract_failures < max_attempts {
                 feedback = format!("【评审缺席重试】{death}");
                 continue;
             }
-            return review_unavailable_outcome(&death, readout, frag_readout);
+            return review_unavailable_outcome(&death, readout, frag_readout, &last_parsed_problems);
         };
         let violations: Vec<String> = growth_contract::validate_review(&value)
             .into_iter()
@@ -1626,14 +1678,20 @@ pub(crate) async fn concept_review(
                 death = %death,
                 "concept review reply violated its contract — degrading to PASS"
             );
-            if attempt < max_attempts {
+            contract_failures += 1;
+            if contract_failures < max_attempts {
                 feedback = format!("【评审缺席重试】{death}");
                 continue;
             }
-            return review_unavailable_outcome(&death, readout, frag_readout);
+            return review_unavailable_outcome(&death, readout, frag_readout, &last_parsed_problems);
         }
         let verdict = match serde_json::from_value::<Verdict>(value) {
-            Ok(verdict) => verdict,
+            Ok(verdict) => {
+                // u02 降级保全的事实源：最后一次成功解析的 verdict 的
+                // problems——后续任一降级出口把它们转 findings 留痕。
+                last_parsed_problems = verdict.problems.clone();
+                verdict
+            }
             Err(error) => {
                 if !provenance_on && !fragments_on {
                     tracing::warn!(
@@ -1641,11 +1699,12 @@ pub(crate) async fn concept_review(
                         "concept review reply shape drifted — degrading to PASS"
                     );
                     let death = format!("评审回包形状漂移（结论不可解析）：{error}");
-                    if attempt < max_attempts {
+                    contract_failures += 1;
+                    if contract_failures < max_attempts {
                         feedback = format!("【评审缺席重试】{death}");
                         continue;
                     }
-                    return review_unavailable_outcome(&death, readout, frag_readout);
+                    return review_unavailable_outcome(&death, readout, frag_readout, &last_parsed_problems);
                 }
                 // 词表外 source/verdict 等形状缺陷 = 机械校验看不到的表伪形
                 // 态，与行伪同路：恰一次带死因重试（learnhub「结论不可解析」
@@ -1658,12 +1717,13 @@ pub(crate) async fn concept_review(
                 } else {
                     format!("碎片裁决不可用：结论不可解析（形状缺陷）：{error}")
                 };
-                if attempt < max_attempts {
+                contract_failures += 1;
+                if contract_failures < max_attempts {
                     if provenance_on {
                         readout.retried = 1;
                     }
                     feedback = death;
-                    tracing::warn!(attempt, "review table shape unparseable — retrying the review once");
+                    tracing::warn!("review table shape unparseable — retrying the review once");
                     continue;
                 }
                 tracing::warn!(death = %death, "review tables unusable twice — degraded pass");
@@ -1672,7 +1732,7 @@ pub(crate) async fn concept_review(
                 } else {
                     frag_readout.degraded = true;
                 }
-                return degraded_outcome(&death, readout, frag_readout);
+                return degraded_outcome(&death, readout, frag_readout, &last_parsed_problems);
             }
         };
         if !provenance_on && !fragments_on {
@@ -1697,11 +1757,11 @@ pub(crate) async fn concept_review(
                 Err(reason) => {
                     readout.invalid += 1;
                     let death = format!("挂号表不可用:{reason}");
-                    if attempt < max_attempts {
+                    contract_failures += 1;
+                    if contract_failures < max_attempts {
                         readout.retried = 1;
                         feedback = death;
                         tracing::warn!(
-                            attempt,
                             reason = %reason,
                             "provenance validation failed — retrying the review once with the death cause"
                         );
@@ -1709,7 +1769,7 @@ pub(crate) async fn concept_review(
                     }
                     tracing::warn!(death = %death, "provenance table unusable twice — degraded pass");
                     readout.degraded = true;
-                    return degraded_outcome(&death, readout, frag_readout);
+                    return degraded_outcome(&death, readout, frag_readout, &last_parsed_problems);
                 }
             }
         }
@@ -1724,10 +1784,10 @@ pub(crate) async fn concept_review(
             ) {
                 Err(reason) => {
                     let death = format!("碎片裁决不可用:{reason}");
-                    if attempt < max_attempts {
+                    contract_failures += 1;
+                    if contract_failures < max_attempts {
                         feedback = death;
                         tracing::warn!(
-                            attempt,
                             reason = %reason,
                             "fragment validation failed — retrying the review once with the death cause"
                         );
@@ -1735,7 +1795,7 @@ pub(crate) async fn concept_review(
                     }
                     tracing::warn!(death = %death, "fragment verdicts unusable twice — degraded pass");
                     frag_readout.degraded = true;
-                    return degraded_outcome(&death, readout, frag_readout);
+                    return degraded_outcome(&death, readout, frag_readout, &last_parsed_problems);
                 }
                 Ok(unhandled) => {
                     // p01 清单瘦身：读数 fragments 口径 = 合并渲染后行数
@@ -3002,6 +3062,39 @@ mod tests {
         Restore(env_var, previous)
     }
 
+    /// u02 分账 harness：按序弹出 `Result`（Err = 传输失败注入、Ok = 回包），
+    /// 每次调用记录 system\x1fuser——传输失败与违约可任意交错排布。
+    struct ScriptedResults(
+        std::sync::Mutex<(std::vec::IntoIter<Result<String, nomifun_common::AppError>>, Vec<String>)>,
+    );
+    #[async_trait::async_trait]
+    impl LearningCompleter for ScriptedResults {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, nomifun_common::AppError> {
+            unreachable!("review only uses the json seam")
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            system: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, nomifun_common::AppError> {
+            let mut guard = self.0.lock().unwrap();
+            guard.1.push(format!("{system}\n\x1f{user}"));
+            guard
+                .0
+                .next()
+                .unwrap_or_else(|| Err(nomifun_common::AppError::Internal("script exhausted".into())))
+        }
+    }
+
     /// 评审调用的缺省 gate（f1）：零错误零锚——既有评审测试的缺省装配。
     fn review_gate() -> GateOutcome {
         GateOutcome::default()
@@ -3799,6 +3892,163 @@ mod tests {
         assert!(review.findings[0].issue.contains("评审调用失败"), "{:?}", review.findings[0]);
         let prompts = &completer.0.lock().unwrap().2;
         assert_eq!(prompts.len(), 2, "重试恰一次后降级：{prompts:?}");
+    }
+
+    // ── u02：评审重试按失败原因分账 + 超时话术 + 降级保全 problems ──────────
+
+    /// u02 分账（超时→违约各一次仍救回，真机 run-1793951137445 第 3 轮病历
+    /// 同形）：传输失败走**独立额度**与新话术（无回包可修正——不再套「修正
+    /// 违约处」句），违约重试沿用现话术；两额度互不占用。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn transport_then_contract_failure_each_retry_once_and_recover() {
+        let _prov = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let _frag = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "off");
+        let good = serde_json::to_string(&serde_json::json!({ "verdict": "pass" })).unwrap();
+        let completer = ScriptedResults(std::sync::Mutex::new((
+            vec![
+                Err(nomifun_common::AppError::Timeout(
+                    "json coach call exceeded 480s".into(),
+                )),
+                Ok("not json".to_owned()),
+                Ok(good),
+            ]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("x", "i", "s")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let review = concept_review(
+            &completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate(),
+        )
+        .await;
+        assert!(!review.degraded, "两额度各用一次仍救回：{review:?}");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 3, "超时一次 + 违约一次 + 救回：{prompts:?}");
+        assert!(
+            prompts[1].contains("【评审调用失败重试】"),
+            "传输重试独立话术：{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("没有收到回包——请完整重新评审本批"),
+            "传输话术给「完整重评」出口：{}",
+            prompts[1]
+        );
+        assert!(
+            !prompts[1].contains("修正上一轮回包的违约处"),
+            "无回包可修正，不套违约句：{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[2].contains("【评审缺席重试】") && prompts[2].contains("修正上一轮回包的违约处"),
+            "违约重试沿用现话术：{}",
+            prompts[2]
+        );
+    }
+
+    /// u02 分账镜像（违约→超时各一次仍救回）：两额度任意交错各自恰一次。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn contract_then_transport_failure_each_retry_once_and_recover() {
+        let _prov = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let _frag = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "off");
+        let good = serde_json::to_string(&serde_json::json!({ "verdict": "pass" })).unwrap();
+        let completer = ScriptedResults(std::sync::Mutex::new((
+            vec![
+                Ok("not json".to_owned()),
+                Err(nomifun_common::AppError::Timeout(
+                    "json coach call exceeded 480s".into(),
+                )),
+                Ok(good),
+            ]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("x", "i", "s")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let review = concept_review(
+            &completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate(),
+        )
+        .await;
+        assert!(!review.degraded, "{review:?}");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 3, "{prompts:?}");
+        assert!(
+            prompts[1].contains("【评审缺席重试】"),
+            "违约轮先走现话术：{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[2].contains("【评审调用失败重试】"),
+            "传输轮走独立话术与额度：{}",
+            prompts[2]
+        );
+    }
+
+    /// u02 降级保全：最后一次**成功解析**的 verdict 的 problems 在降级时逐
+    /// 条转 findings（field=`review_problems`，issue 以「降级前评审已提出：」
+    /// 开头，node/advice 保留）；放行语义不变（零 problems、degraded 信号在
+    /// 场、降级留痕本体仍在）——真机 run-1793859632428 吞 6 条硬伤 / 病历同形。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn degraded_outcome_preserves_last_parsed_problems_as_findings() {
+        let _prov = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let reject_no_table = serde_json::to_string(&serde_json::json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "判读借用", "field": "teaches",
+                  "issue": "「借用」缺可核查的不变式语境", "advice": "补挂 assumes" }
+            ]
+        }))
+        .unwrap();
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![reject_no_table.clone(), reject_no_table].into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+            &[],
+            false,
+            &review_gate(),
+        )
+        .await;
+        assert!(review.degraded, "挂号表两连败降级：{review:?}");
+        assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
+        let preserved: Vec<_> = review
+            .findings
+            .iter()
+            .filter(|finding| finding.field == "review_problems")
+            .collect();
+        assert_eq!(preserved.len(), 1, "problems 转 findings：{review:?}");
+        assert!(
+            preserved[0].issue.starts_with("降级前评审已提出："),
+            "{:?}",
+            preserved[0]
+        );
+        assert!(preserved[0].issue.contains("缺可核查的不变式语境"));
+        assert_eq!(preserved[0].node, "判读借用", "node 保留");
+        assert_eq!(preserved[0].advice, "补挂 assumes", "advice 保留");
+        assert!(
+            review
+                .findings
+                .iter()
+                .any(|finding| finding.field == "term_provenance" && finding.issue.contains("Degraded")),
+            "降级留痕本体仍在：{review:?}"
+        );
     }
 
     /// 碎片面开关取值判定（off/0/false；未设 = 开启）。

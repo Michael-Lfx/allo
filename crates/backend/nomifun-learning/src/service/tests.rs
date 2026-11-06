@@ -4195,7 +4195,10 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
 /// 点修回填 on 臂（u01，服务级端到端；缺省开启）：评审打回点名甲，重裁修
 /// 甲、同时让未点名乙漂移——回填把乙抹平（`redraft_spliced=1`），守卫不再
 /// 拦截、无原地重试，批次直接进评审落位；回填后的落库批含上一稿乙原样。
+/// 断言依赖开关缺省态（进程全局 env）——`#[serial]` 与写 env 的测试互斥
+///（上一波同缝竞态教训：读缺省臂也必须串行）。
 #[tokio::test]
+#[serial_test::serial]
 async fn splice_on_arm_backfills_unnamed_drift_without_the_guard_retry() {
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
@@ -4217,7 +4220,7 @@ async fn splice_on_arm_backfills_unnamed_drift_without_the_guard_retry() {
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
             {"title": "乙节点", "purpose": "乙的原、用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
         ],
-        "mints": [{"canonical": "极限", "definition": "d"}], "note": "漂移稿"
+        "mints": [{"canonical": "极限", "definition": "无限逼近的值"}], "note": "漂移稿"
     }"#;
     let review_pass = serde_json::to_string(&json!({
         "verdict": "pass",
@@ -4239,7 +4242,9 @@ async fn splice_on_arm_backfills_unnamed_drift_without_the_guard_retry() {
     assert_eq!(completer.call_count(), 3, "回填后无守卫重试");
     let stats = service.growth_run_stats().expect("growth stats recorded");
     assert_eq!(stats.stop_reason, "success");
-    assert_eq!(stats.attempts_used, 1, "漂移回填不占轮");
+    // 轮次：第 1 轮起草撞门（幽灵引用——与守卫无关），第 2 轮重裁回填后落位
+    // ——守卫原地重试一次都没发生（off 臂同脚本要多烧一次原地重试调用）。
+    assert_eq!(stats.attempts_used, 2, "漂移回填不进守卫、不占原地重试");
     assert_eq!(stats.redraft_spliced, 1, "回填计数=1");
     // 落库批 = 回填后的重裁稿（漂移被抹平后过守卫落位）。
     let note: String = sqlx::query_scalar(
@@ -4251,6 +4256,57 @@ async fn splice_on_arm_backfills_unnamed_drift_without_the_guard_retry() {
     .await
     .unwrap();
     assert!(note.contains("漂移稿"), "重裁稿落位：{note}");
+}
+
+/// u02 降级保全（服务级端到端）：评审 reject 带 problems 但挂号表两连违约
+/// → 降级放行落库——problems 逐条转 findings 留痕（learning_structure_findings
+/// 的 `review_problems` 行），批次 note 追加「降级前评审提出 N 条问题，已转
+/// findings 留痕」；放行语义不变（不新增阻断，批照常落库）。挂号表面走
+/// 缺省开关（进程全局 env）——`#[serial]` 与写 env 的测试互斥。
+#[tokio::test]
+#[serial_test::serial]
+async fn degraded_review_preserves_problems_into_findings_and_batch_note() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let reject_no_table = serde_json::to_string(&json!({
+        "verdict": "reject",
+        "problems": [
+            {"node": "用定义计算极限", "field": "teaches",
+             "issue": "「极限」缺逼近语境", "advice": "补挂 assumes"}
+        ]
+    }))
+    .unwrap();
+    let completer = SequencedCompleter::new(vec![
+        VALID_BATCH.to_owned(),
+        reject_no_table.clone(),
+        reject_no_table,
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success", "降级放行照常落库");
+    assert!(stats.review_degraded, "降级信号在场");
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(note.contains("评审降级放行"), "{note}");
+    assert!(note.contains("降级前评审提出 1 条问题，已转 findings 留痕"), "{note}");
+    let preserved: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_structure_findings \
+         WHERE course_id = ? AND field = 'review_problems' AND issue LIKE '降级前评审已提出：%'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(preserved >= 1, "problems 已落 findings 留痕：{preserved}");
 }
 
 // ── 有状态复审（m5 #175C）+ advice 范围点名集（m5 #175A）────────────────────
