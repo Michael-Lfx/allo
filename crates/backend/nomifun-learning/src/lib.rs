@@ -18,8 +18,9 @@ mod verify_math;
 pub use switches::{
     is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
     lexicon_enforce_enabled, lexicon_enforce_enabled_value, open_judge_enabled,
-    open_judge_enabled_value, AUTO_REFILL_SWITCH_ENV, LEXICON_ENFORCE_SWITCH_ENV,
-    OPEN_JUDGE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+    open_judge_enabled_value, verify_batch_enabled, verify_batch_enabled_value,
+    AUTO_REFILL_SWITCH_ENV, LEXICON_ENFORCE_SWITCH_ENV, OPEN_JUDGE_SWITCH_ENV,
+    TASK_GATE_SWITCH_ENV, VERIFY_BATCH_SWITCH_ENV,
 };
 
 pub use completer::{LearningCompleter, LlmUsageDelta, LlmUsageMeter};

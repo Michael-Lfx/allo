@@ -119,6 +119,9 @@ nomi-tools.workspace = true
 # sink traits directly (async fns in traits).
 async-trait.workspace = true
 wiremock.workspace = true
+# 开关双臂测试写进程 env（u05/u06/u07）：NOMI_LEARNING_* 是进程全局态，
+# 与并行测试互踩——env 窗口必须串行（上一波非串行写 env 的竞态教训）。
+serial_test.workspace = true
 # Used by the acp_session_sync test setup to seed the conversations FK parent
 # directly on the in-memory pool (mirrors nomifun-db's own acp_session tests).
 sqlx = { workspace = true }
