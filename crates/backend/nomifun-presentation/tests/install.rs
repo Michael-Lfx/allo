@@ -249,6 +249,37 @@ async fn concurrent_install_requests_admit_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn wait_until_settled_times_out_while_installing_and_returns_early_once_ready() {
+    let fx = fixture(VERSION, false);
+    let gate = Arc::new(Notify::new());
+    let runtime = Arc::new(FakeRuntime { gate: Some(gate.clone()), ..Default::default() });
+    let svc = service(&fx.data_dir, spec(&[&fx.repo_dir], &fx.commit), runtime);
+
+    // Not installing: returns at once, whatever the budget.
+    let started = tokio::time::Instant::now();
+    assert_eq!(svc.wait_until_settled(Duration::from_secs(30)).await.status, PresentationCapabilityStatus::NotInstalled);
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    // Held install: the wait gives up at its budget and still reports installing.
+    assert!(svc.start_install(false).accepted);
+    let started = tokio::time::Instant::now();
+    let view = svc.wait_until_settled(Duration::from_millis(300)).await;
+    assert_eq!(view.status, PresentationCapabilityStatus::Installing);
+    assert!(started.elapsed() >= Duration::from_millis(300));
+
+    // Released install: the wait returns as soon as it settles, well before the budget.
+    let release = gate.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        release.notify_one();
+    });
+    let started = tokio::time::Instant::now();
+    let view = svc.wait_until_settled(Duration::from_secs(30)).await;
+    assert_eq!(view.status, PresentationCapabilityStatus::Ready, "{view:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unknown_commit_fails_cleanly() {
     let fx = fixture(VERSION, false);
     let missing = "0123456789abcdef0123456789abcdef01234567";

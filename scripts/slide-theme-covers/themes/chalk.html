@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cabin+Sketch:wght@700&family=Patrick+Hand&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: radial-gradient(circle at 40% 40%, #2C3E34, #24332B 60%, #1C2822); color: #F1F1EA; font-family: 'Patrick Hand', cursive; }
+  .frame { inset: 0; border: 18px solid #5A4130; box-shadow: inset 0 0 0 3px #3D2B1F, inset 0 0 60px rgba(0,0,0,.5); }
+  .dust { inset: 0; mix-blend-mode: screen; opacity: .5; }
+  .kicker { left: 96px; top: 96px; font-size: 30px; color: #8FD3C7; }
+  h1 { left: 92px; top: 140px; font-family: 'Cabin Sketch', cursive; font-size: 84px; font-weight: 700; line-height: 1.05; }
+  .sub { left: 98px; top: 384px; font-size: 32px; color: rgba(241,241,234,.85); }
+  .formula { left: 930px; top: 460px; font-family: 'Cabin Sketch', cursive; font-size: 64px; color: #F7D774; transform: rotate(-4deg); }
+  .note { left: 98px; top: 590px; font-size: 26px; color: rgba(241,241,234,.7); }
+  .chalk { opacity: .92; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <svg class="dust" width="1280" height="720"><filter id="d"><feTurbulence type="fractalNoise" baseFrequency=".7" numOctaves="3" seed="3"/><feColorMatrix values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .09 0"/></filter><rect width="1280" height="720" filter="url(#d)"/></svg>
+  <svg class="abs chalk" style="left:0;top:0" width="1280" height="720" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <defs>
+      <filter id="rough" x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" seed="9" result="n"/>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="3"/>
+      </filter>
+    </defs>
+    <g filter="url(#rough)" transform="translate(60 0)">
+      <path d="M36 360 C 160 370, 360 352, 580 364" stroke="#F7D774" stroke-width="5" stroke-dasharray="40 6"/>
+      <path d="M760 420 L760 140 M760 420 L1180 420" stroke="#F1F1EA" stroke-width="3"/>
+      <path d="M752 150 L760 136 L768 150 M1168 412 L1182 420 L1168 428" stroke="#F1F1EA" stroke-width="3"/>
+      <path d="M780 400 C 860 170, 1000 150, 1150 380" stroke="#8FD3C7" stroke-width="4" stroke-dasharray="14 10"/>
+      <circle cx="960" cy="214" r="18" stroke="#F7D774" stroke-width="4"/>
+      <path d="M960 232 L960 300 M952 290 L960 302 L968 290" stroke="#F7D774" stroke-width="3"/>
+      <path d="M980 206 L1060 186 M1048 180 L1062 186 L1052 196" stroke="#F1F1EA" stroke-width="3"/>
+      <ellipse cx="955" cy="510" rx="150" ry="70" stroke="#F1F1EA" stroke-width="3" stroke-opacity=".7"/>
+    </g>
+    <g fill="#F1F1EA" font-family="Patrick Hand, cursive" font-size="24" stroke="none" transform="translate(60 0)"><text x="1072" y="190">v</text><text x="974" y="292">g</text><text x="1150" y="452">t</text></g>
+  </svg>
+  <div class="frame"></div>
+  <div class="kicker">Lesson 1 ✱</div>
+  <h1>Physics 101<br>Motion &amp; Forces</h1>
+  <p class="sub">Why things move, and what makes them stop.</p>
+  <div class="formula">F = m · a</div>
+  <div class="note">Mr. Lee · Room 204 · Tuesday</div>
+</main>
+</body>
+</html>

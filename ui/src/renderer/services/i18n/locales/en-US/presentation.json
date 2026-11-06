@@ -71,5 +71,141 @@
       "guided": "Confirm each step"
     },
     "placeholder": "Describe your deck, e.g. quarterly business review for leadership"
+  },
+  "create": {
+    "title": "Create a presentation",
+    "refresh": "Show others",
+    "close": "Hide",
+    "templateTitle": "Choose a style",
+    "import": "Import template",
+    "importHint": "Pick a PPTX, PDF or image as a reference. Nomi turns it into a template first, then makes this deck with it",
+    "importFilter": "Template reference files",
+    "importedHint": "Imported template: after you send, Nomi first creates a template from this file",
+    "previous": "Previous",
+    "next": "Next",
+    "suggestions": {
+      "weeklyStatus": {
+        "title": "Automate a weekly team status report",
+        "prompt": "Make a weekly team status report: progress this week, key metrics, risks and next week's plan, for the department head"
+      },
+      "salesDashboard": {
+        "title": "Build a quarterly sales performance dashboard",
+        "prompt": "Make a quarterly sales performance review: revenue and attainment, region and product comparison, key accounts, plan for next quarter"
+      },
+      "competitors": {
+        "title": "Analyze competitors and positioning",
+        "prompt": "Make a competitor analysis: main competitors, market share, product and pricing comparison, our differentiated positioning and recommendations"
+      },
+      "productLaunch": {
+        "title": "Launch a new product",
+        "prompt": "Make a product launch deck: user pain points, product highlights, core feature walkthrough, pricing and go-to-market plan"
+      },
+      "fundraising": {
+        "title": "Prepare a fundraising pitch",
+        "prompt": "Make a fundraising pitch deck: problem and opportunity, product, business model, traction, team, the raise and use of funds"
+      },
+      "architecture": {
+        "title": "Explain a system architecture",
+        "prompt": "Make a technical architecture talk: overall architecture, core modules and data flow, key trade-offs, roadmap"
+      },
+      "onboarding": {
+        "title": "Design new-hire onboarding",
+        "prompt": "Make a new-hire onboarding deck: company intro, org structure, workflows, common tools and the first-week plan"
+      },
+      "postmortem": {
+        "title": "Review a production incident",
+        "prompt": "Make a blameless incident postmortem: impact, timeline, root cause, response and follow-up actions"
+      },
+      "explainer": {
+        "title": "Explain a complex idea simply",
+        "prompt": "Make an explainer deck that uses plain analogies to show how large language models work, for a non-technical audience"
+      }
+    },
+    "free": {
+      "name": "Free design",
+      "description": "No fixed look; Nomi designs it from your content"
+    },
+    "themes": {
+      "swiss": {
+        "name": "Minimal",
+        "description": "Swiss grid, lots of white space, one red accent"
+      },
+      "navy": {
+        "name": "Deep Sea",
+        "description": "Deep navy field, grid layout, calm and professional"
+      },
+      "frost": {
+        "name": "Glacier",
+        "description": "Ice-blue rounded cards, soft shadows, friendly"
+      },
+      "editorial": {
+        "name": "Journal",
+        "description": "Magazine columns and rules, serif titles"
+      },
+      "midnight": {
+        "name": "Midnight",
+        "description": "Dark field, glowing lines, techy"
+      },
+      "aurora": {
+        "name": "Aurora",
+        "description": "Gradient light behind translucent glass panels"
+      },
+      "data": {
+        "name": "Data",
+        "description": "Data journalism: small charts, source lines, dense"
+      },
+      "inkwash": {
+        "name": "Ink Wash",
+        "description": "Rice-paper space, brush strokes and one red seal"
+      },
+      "sketch": {
+        "name": "Sketchbook",
+        "description": "Warm paper, hand-drawn lines, soft color blocks"
+      },
+      "chalk": {
+        "name": "Chalkboard",
+        "description": "Green slate, chalk lettering, pastel accents"
+      },
+      "blueprint": {
+        "name": "Blueprint",
+        "description": "Deep blue paper, schematic lines and labels"
+      },
+      "pictorial": {
+        "name": "Pictorial",
+        "description": "Full-bleed images with text laid over them"
+      },
+      "papercut": {
+        "name": "Paper Cut",
+        "description": "Layered paper sheets with soft shadows"
+      },
+      "retro": {
+        "name": "Retro",
+        "description": "Mid-century poster: color blocks, sun rays, warm"
+      },
+      "pop": {
+        "name": "Pop",
+        "description": "Clashing geometric shapes and bold outlines"
+      },
+      "riso": {
+        "name": "Riso",
+        "description": "Risograph print: halftone, misregistration, two inks"
+      },
+      "newsprint": {
+        "name": "Newsprint",
+        "description": "Heavy ruled boxes, newspaper density, raw"
+      },
+      "inknotes": {
+        "name": "Ink Notes",
+        "description": "Black hand-ink notes on white, one accent"
+      },
+      "cream": {
+        "name": "Cream",
+        "description": "Creamy warm rounded cards, soft and gentle"
+      },
+      "pixel": {
+        "name": "Pixel",
+        "description": "Pixel blocks in a limited palette, game-like"
+      }
+    }
   }
 }

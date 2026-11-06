@@ -7,9 +7,9 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dropdown, Menu } from '@arco-design/web-react';
-import { Down } from '@icon-park/react';
+import { Down, Up } from '@icon-park/react';
 import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
-import { SLIDE_CANVASES, SLIDE_MODES, SLIDE_PAGES, type SlideOptions } from './slideOptions';
+import { SLIDE_CANVASES, SLIDE_MODES, SLIDE_PAGES, fileBaseName, type SlideOptions, type SlideTemplate } from './slideOptions';
 import styles from './SlideOptionsControls.module.css';
 
 type OptionPillProps<T extends string> = {
@@ -75,16 +75,62 @@ type SlideOptionsControlsProps = {
   options: SlideOptions;
   onChange: (options: SlideOptions) => void;
   disabled?: boolean;
+  /** Template pill: shows the current choice and toggles the create panel. */
+  templatesOpen?: boolean;
+  onToggleTemplates?: () => void;
 };
+
+function useTemplateLabel(): (template: SlideTemplate) => string {
+  const { t } = useTranslation();
+  return (template) => {
+    switch (template.kind) {
+      case 'free':
+        return t('presentation.create.free.name');
+      case 'theme':
+        return t(`presentation.create.themes.${template.id}.name`);
+      case 'import':
+        return fileBaseName(template.path);
+    }
+  };
+}
 
 /**
  * Canvas / length / pace pills in the home composer's bottom toolbar, shown
  * only while the work-mode selector is on "Slides".
  */
-const SlideOptionsControls: React.FC<SlideOptionsControlsProps> = ({ options, onChange, disabled }) => {
+const SlideOptionsControls: React.FC<SlideOptionsControlsProps> = ({
+  options,
+  onChange,
+  disabled,
+  templatesOpen = false,
+  onToggleTemplates,
+}) => {
   const { t } = useTranslation();
+  const templateLabel = useTemplateLabel();
   return (
     <span className={styles.group} data-testid='guid-slide-options'>
+      {onToggleTemplates && (
+        <button
+          type='button'
+          className={styles.pill}
+          data-button-shape='pill'
+          data-testid='guid-slide-template'
+          aria-label={t('presentation.create.templateTitle')}
+          aria-expanded={templatesOpen}
+          title={t('presentation.create.templateTitle')}
+          disabled={disabled}
+          onClick={onToggleTemplates}
+        >
+          <span className={styles.label}>{templateLabel(options.template)}</span>
+          <span className={styles.chevron} aria-hidden='true'>
+            {templatesOpen ? (
+              <Down theme='outline' size={12} fill='currentColor' />
+            ) : (
+              <Up theme='outline' size={12} fill='currentColor' />
+            )}
+          </span>
+        </button>
+      )}
       <OptionPill
         value={options.canvas}
         values={SLIDE_CANVASES}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@800;900&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Space+Mono:wght@700&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #F1EFE7; color: #000000; font-family: 'Source Serif 4', serif; }
+  .frame { left: 28px; top: 28px; right: 28px; bottom: 28px; border: 6px solid #000000; }
+  .mast { left: 28px; right: 28px; top: 28px; height: 64px; border-bottom: 4px solid #000000; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; font-family: 'Space Mono', monospace; font-size: 16px; }
+  .mast b { background: #FF3B00; color: #F1EFE7; padding: 4px 10px; }
+  h1 { left: 52px; top: 100px; font-family: 'Big Shoulders Display', sans-serif; font-size: 236px; font-weight: 900; line-height: .8; letter-spacing: -0.01em; text-transform: uppercase; }
+  .inv { left: 28px; right: 28px; top: 500px; bottom: 28px; background: #000000; }
+  .col { top: 524px; width: 300px; font-size: 15px; line-height: 1.5; color: #F1EFE7; }
+  .c1 { left: 56px; } .c2 { left: 384px; }
+  .c1 b { display: block; font-family: 'Big Shoulders Display', sans-serif; font-size: 34px; font-weight: 800; line-height: 1; color: #FF3B00; margin-bottom: 8px; }
+  .vr { top: 524px; left: 362px; width: 2px; height: 140px; background: #F1EFE7; opacity: .5; }
+  .stamp { left: 880px; top: 120px; padding: 14px 22px; border: 6px solid #FF3B00; color: #FF3B00; font-family: 'Big Shoulders Display', sans-serif; font-size: 54px; font-weight: 900; letter-spacing: .04em; transform: rotate(8deg); }
+  .no { right: 64px; top: 528px; font-family: 'Big Shoulders Display', sans-serif; font-size: 150px; font-weight: 900; line-height: .9; color: #FF3B00; }
+  .grain { inset: 0; mix-blend-mode: multiply; opacity: .45; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <div class="frame"></div>
+  <div class="mast"><span>THE DAILY BUILD</span><b>VOL. 26 · NO. 3</b><span>MONDAY EDITION</span></div>
+  <h1>Break<br>the Rules</h1>
+  <div class="stamp">MANIFESTO</div>
+  <div class="inv"></div>
+  <p class="col c1"><b>Ten rules for bold teams.</b>Ship rough, argue in public and kill the meeting nobody needs.</p>
+  <div class="vr"></div>
+  <p class="col c2">Read the full manifesto on page six, plus field notes from twelve teams who stopped asking for permission.</p>
+  <div class="no">№10</div>
+  <svg class="grain" width="1280" height="720"><filter id="g"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="8"/><feColorMatrix values="0 0 0 0 .2  0 0 0 0 .2  0 0 0 0 .2  0 0 0 .2 0"/></filter><rect width="1280" height="720" filter="url(#g)"/></svg>
+</main>
+</body>
+</html>

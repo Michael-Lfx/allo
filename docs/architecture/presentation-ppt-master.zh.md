@@ -234,6 +234,10 @@ P2 分两步：P2a 是 Gateway 工具和脚本运行，P2b 是 Skill 目录接�
 
    `presentation` 加进了 `work` 档（Nomi 主会话默认用这一档），没有加进 IM 用的 `lite` 档。Gateway 和 HTTP 接口共用同一个 `PresentationCapabilityService`（放在 `ModuleStates.presentation`），所以 Nomi 触发的安装和设置页看到的是同一个安装任务。
 
+   **安装完成后自动继续：** `nomi_presentation_status` 新增可选参数 `wait_seconds`（上限 60 秒，低于 MCP 默认 90 秒请求超时）。安装进行中带上它时，工具会在后端等待安装结束或超时再返回（`PresentationCapabilityService::wait_until_settled`，每 500 ms 检查一次）。`next` 提示要求 Nomi 不结束本轮回复，重复带 `wait_seconds=60` 调用直到状态变化，就绪后在同一轮里继续制作；失败时说明原因并只重试一次。这样首次安装（约 120 MB，可能要几分钟）不需要用户再发一条消息。
+
+   **设置页只在开发者模式显示：** 正常使用由 Nomi 自动安装，`presentation` 加入 `DEVELOPER_GATED_TAB_IDS`，设置导航只在开发者模式下列出它；会话里安装失败提示的"详情"按钮也只在开发者模式下显示。路由 `/settings/presentation` 保留，和 `cloud-login` 的做法一致。
+
 2. **`nomi_presentation_run_script`：**
    - `script` 是 `SKILL_DIR/scripts/` 下的相对路径，接受 `scripts/`、`${SKILL_DIR}/scripts/` 前缀；必须以 `.py` 结尾，不能含 `..`，解析后必须仍在 `scripts/` 里。ppt-master 文档里引用了 48 个脚本，固定清单很难维护，所以按目录限制，而不是按清单。
    - 拒绝 `confirm_ui/`、`svg_editor/`、`spec_review/`：它们会启动本地网页等待浏览器操作，Flowy 里改为在对话中确认。
@@ -275,6 +279,20 @@ P3 先交付最小可用的三块，下面写的是已经实现的样子。
   - 托管版未就绪时不带 Skill，由开头那行提示 Nomi 先查状态，必要时自己安装。
 - **暂不做（P4 以后）：** 首页展示卡片（需要配图素材）、风格 / 模板 / 配图 / 受众等高级选项、`extra.presentation_options` 落库、生成完成的产物卡片。
 - **规范：** 新增文案放在 `presentation` 命名空间，`zh-CN` 和 `en-US` 两份都有；`check:i18n`、`check:theme` 通过；结构测试为 `PresentationSettings.structure.test.ts`，选项文本有单元测试 `slideOptions.test.ts`。
+
+#### 3.8.1 首页"创建演示文稿"面板（P4a）
+
+在上面的最小版基础上，补上"首页展示卡片"和"模板"两项。"新建空白演示文稿"不做：ppt-master 没有编辑器，它的 `svg_editor` 已被禁用。
+
+- **入口：** 首页"创建"卡片改为按钮，点击后切到幻灯片模式，并在输入框上方展开面板。用下拉或 `/ppt` 进入幻灯片模式时也会展开。面板右上角的 × 只收起面板，不退出幻灯片模式；底部工具栏新增一个模板按钮，显示当前模板，点击可重新展开。
+- **推荐主题：** 共 9 个，每次显示 3 个，"换一批"轮换。点击后把完整的提示写进输入框；如果风格还是"自由设计"，同时选上这个主题对应的风格（例如周报对应"极简"）。用户已经选了风格时不覆盖。
+- **风格：** "自由设计"加上 20 个视觉风格（`slideThemes.ts`）。每个风格 = ppt-master 的一个 visual style（`references/visual-styles/_index.md`，共 18 个，全部用到）+ 一套固定配色 + 一种字体气质。ppt-master 的 visual style 只管形状、留白、装饰和字体气质，规定里不带任何颜色，所以配色由 Flowy 给；同一个 visual style 可以配不同颜色，例如"极简"和"深海"都是 `swiss-minimal`。名字是我们自己起的。缩略图是预先渲染的封面图（`presentation/covers/<id>.webp`，640×360）：每个主题一页 HTML 封面（`scripts/slide-theme-covers/themes/<id>.html`），按该主题的配色和 visual style 文件的规定设计，各配一个贴合风格的英文示例标题（中英文界面共用）；`bun scripts/slide-theme-covers/render.mjs [id…]` 用本机 Edge/Chrome 无头渲染。封面用的 Google Fonts（OFL）只在渲染时联网加载，不打包进应用；ppt-master 实际生成时字体由它自己按投放环境选择，所以封面表现的是风格方向，不是逐像素的生成结果。没有用 `templates/styles/`：那里是叙事方法（咨询决策、经营复盘等），不是外观，由 ppt-master 自己根据内容选择。
+- **传给 Nomi：** 选了风格时，开头那行加上 `look=<id>: visual_style=<style> (references/visual-styles/<style>.md); colors background …, text …, primary …, accent …; typography …(user-chosen look, keep it)`。Quick 和 Default 都会优先采用用户给的颜色锚点，visual style 用目录里的 id，ppt-master 会读对应文件。自由设计时不加这个字段。
+- **导入模板：** 选一个 PPTX、PDF 或图片，作为附件加入输入框（遵守附件的图片数量限制），开头那行写 `template=import "<文件名>" (attached; first run Create Template with project scope on it, then generate this deck from that workspace root)`。快照只读，不能写进 ppt-master 的模板库，所以用 project 范围，模板只在这个会话里有效，下次不会出现在模板列表里。移除附件或换选其他模板时，导入的选择和附件一起撤销。
+- **代码位置：** `ui/src/renderer/pages/guid/presentation/` 下的 `SlideCreatePanel.tsx`、`SlideThemeThumbnail.tsx`、`slideThemes.ts`、`slideGallery.ts`；选择存在 `SlideOptions.template`。文案在 `presentation.create.*`。
+- **配色：** 整个首页（参考 Manus）是浅灰底（`--bg-1` 与 `--bg-base` 按 7:3 混合），输入框、首页三张入口卡片、创建面板和推荐主题卡片用"浮起"表面色 `--flowy-raised`（亮色为白，暗色比底色浅一档）；卡片墙上的卡片是半透明的浮起色，被照亮时更白。只用主题变量，所以各个主题预设都跟着变。
+- **卡片墙背景：** 面板展开时，首页内容隐藏，整页换成一面幻灯片线框卡片墙（`SlideCardWall.tsx`），只装饰，`aria-hidden`。卡片从底部中心向外依次淡入。约三成卡片静止时是空框，其余线框图几乎看不见；空框也各自藏着一张线框图，被照亮（悬停或环境闪烁）时才显出来，暗下去又变回空框，每次环境闪烁都会给空框换一张随机线框图。框线是 1px 浅色细线（10% 文字色）；照亮时框线最多加深到 14%，悬停卡片 16%。悬停：指针下的卡片放大 1.12 倍、换浅色底和轻阴影；周围约 2.6 格内的卡片按距离渐亮（框线略深、淡淡的底色、线框图显出来）。点击：卡片做翻转样式的切换，转到侧面时换成另一张线框图再转回（空框会换成有图的）；同时一道翻转波浪按距离扩散到整面墙（每格约 55ms）：附近约三圈（3.2 格内）的卡片完整翻转一次，有图的换一张图、空框保持空框，并随波峰短暂变亮；更远的卡片只轻轻横向收窄再展开（收窄幅度从约 12% 随距离衰减到 3%），不换图。翻转全部用 2D 的 `scale` 做（先压成一条线、换图、再展开），不用 `rotateY` / `perspective` / `backface-visibility`：整面墙同时做 3D 翻转、且连续点击让多道波浪叠加时，Chromium/WebView2 会因为同时存在的 3D 合成层太多而闪出黑块。环境闪烁：每 2.2 秒在墙上随机挑一处（避开面板正下方），约 1.8 格内的几张卡片缓慢亮起再淡出，持续约 4 秒。性能做法：线框是 24 个横版 SVG（卡片统一为横版，不再混入竖版），以 data URI 写成墙上的 CSS 变量，卡片用 `mask` 引用，每张卡只有两个 div、没有 SVG 节点，颜色跟随主题；悬停只在墙上写 `--px/--py` 两个变量（rAF 节流，不触发 React 渲染），每张卡用注册过的 `--wall-glow` 和 `hypot()` 在 CSS 里算亮度；波浪的翻转和收窄只动 transform，波峰亮度和环境闪烁用 Web Animations 只在附近卡片上动画注册属性 `--wall-ripple` / `--wall-ambient`，与悬停亮度用 `max()` 合成；翻转只动 transform，换图直接改 DOM 上的 `--pat`；墙用 `contain: strict`；页面隐藏时闪烁暂停。触屏不做悬停，`prefers-reduced-motion` 时去掉入场、翻转、波浪和闪烁，点击直接换图。
+- **还没做：** 导入的模板跨会话保留（需要 Flowy 自己记录模板目录并在列表里展示）。
 
 ### 3.9 依赖维护
 
@@ -350,6 +368,7 @@ P3 先交付最小可用的三块，下面写的是已经实现的样子。
 | **P2b** | Skill 目录接入 `capability` 来源、重名处理、加载时插入 Flowy 说明、前端来源类型和文案 | ✅ 完成 |
 | **P3** | 设置页、会话安装提示、首页"幻灯片"工作模式和三项选项 | ✅ 完成（最小可用版，见 §3.8 的"暂不做"） |
 | **P4** | 应用内确认卡片、旁白和视频导出、创建模板、资料导入组 | 以后再做 |
+| **P4a** | 首页"创建演示文稿"面板：推荐主题、视觉风格、导入模板（会话内有效），见 §3.8.1 | ✅ 前端完成；导入模板的端到端测试待执行 |
 
 ---
 

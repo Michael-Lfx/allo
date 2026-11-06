@@ -1,0 +1,125 @@
+/*
+ * Home slide-card wall. Every visual is derived per card from a few inputs:
+ *   --c / --r        card cell (set once per render)
+ *   --px / --py      pointer in cell units (set on the wall, rAF-throttled)
+ *   --ink            resting strength of the wireframe, 0–1
+ *   --wall-ambient   random shimmer, animated on a few cards at a time
+ *   --wall-ripple    click ripple, animated on the cards around the click
+ * The registered properties let the browser interpolate them; only cards whose
+ * value changes repaint.
+ */
+@property --wall-glow {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --wall-ambient {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --wall-ripple {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+.wall {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  contain: strict;
+  /* Fade the top edge into the page. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 72px);
+  mask-image: linear-gradient(to bottom, transparent, black 72px);
+}
+
+.card {
+  position: absolute;
+  height: 38px;
+  contain: layout style;
+  cursor: pointer;
+  /* Pointer light over ~2.6 cells; neighbors stay clearly visible. */
+  --wall-glow: clamp(0, 1 - hypot(var(--c) - var(--px), (var(--r) - var(--py)) * 1.25) / 2.6, 1);
+  /* Whichever source is brightest wins: pointer, shimmer or ripple. */
+  --lit: max(var(--wall-glow), var(--wall-ambient), var(--wall-ripple));
+  transition:
+    --wall-glow var(--flowy-motion-base) ease-out,
+    transform var(--flowy-motion-slow) var(--flowy-ease-move);
+  animation: cardEnter 560ms var(--flowy-ease-enter) var(--enter) backwards;
+}
+
+/* Hairline frame on a half-white card; light makes it whiter and the line a bit darker. */
+.face {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--color-text-1) calc(10% + var(--lit) * 4%), transparent);
+  border-radius: 3px;
+  background-color: color-mix(in srgb, var(--flowy-raised) calc(65% + var(--lit) * 35%), transparent);
+  transition: box-shadow var(--flowy-motion-base) ease-out;
+}
+
+/* The wireframe: one shared mask image, colored by the theme. Barely there at
+   rest, revealed by light. */
+.face::after {
+  content: '';
+  position: absolute;
+  inset: 3px 4px;
+  background: var(--color-text-1);
+  opacity: calc(0.07 + var(--ink) * 0.08 + var(--lit) * 0.34);
+  -webkit-mask: var(--pat) center / contain no-repeat;
+  mask: var(--pat) center / contain no-repeat;
+}
+
+
+/* Blank frames: nothing at rest; the hidden wireframe appears only with light. */
+.card[data-blank] .face::after {
+  opacity: calc(var(--lit) * 0.34);
+}
+
+.card:hover {
+  z-index: 1;
+  transform: scale(1.12);
+}
+
+.card:hover .face {
+  border-color: color-mix(in srgb, var(--color-text-1) 16%, transparent);
+  background-color: var(--flowy-raised);
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--color-text-1) 5%, transparent);
+}
+
+.card:hover .face::after {
+  opacity: 0.46;
+}
+
+@keyframes cardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.94);
+  }
+}
+
+@media (hover: none) {
+  .card:hover {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    animation: none;
+    transition: none;
+  }
+
+  .face {
+    transition: none;
+  }
+
+  .card:hover {
+    transform: none;
+  }
+}

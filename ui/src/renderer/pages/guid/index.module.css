@@ -1,8 +1,8 @@
 .guidLayout {
   --preset-surface-bg: color-mix(in srgb, var(--bg-2) 65%, transparent);
   --preset-surface-bg-hover: color-mix(in srgb, var(--bg-2) 85%, transparent);
-  width: clamp(var(--app-min-width, 360px), calc(100% - 64px), 1080px);
-  max-width: 100%;
+  width: clamp(var(--app-min-width, 360px), calc(100% - 64px), 920px);
+  max-width: 920px;
   padding: 0 40px;
   box-sizing: border-box;
   margin: 0 auto;
@@ -415,7 +415,7 @@
 .guidInputCardWrap {
   width: 100%;
   box-sizing: border-box;
-  background: var(--flowy-panel);
+  background: var(--flowy-raised);
   border: 1px solid var(--color-border-2);
   border-radius: 24px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
@@ -2677,8 +2677,8 @@
   overflow-x: hidden;
   overflow-y: auto;
   position: relative;
-  /* 亮色首页比全局次级底再白一档；暗色仍跟 --color-bg-1 */
-  --guid-canvas: color-mix(in srgb, var(--color-bg-1) 38%, var(--bg-base, #fff));
+  /* 首页是浅灰底、白色输入框（参考 Manus）；暗色仍跟 --color-bg-1 */
+  --guid-canvas: color-mix(in srgb, var(--bg-1) 70%, var(--bg-base));
   background: var(--guid-canvas);
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--color-text-3) 55%, transparent) transparent;
@@ -2736,7 +2736,9 @@
 }
 
 .guidFixedInputArea .guidLayout {
-  width: 100%;
+  width: min(100%, 920px);
+  max-width: 920px;
+  margin-inline: auto;
   pointer-events: auto;
 }
 
@@ -2753,8 +2755,10 @@
 .guidPrimaryStage .guidLayout {
   display: flex;
   flex-direction: column;
-  width: 100%;
+  width: min(100%, 920px);
+  max-width: 920px;
   margin-top: 0;
+  margin-inline: auto;
   padding-top: 0;
   padding-bottom: 0;
 }
@@ -3409,4 +3413,31 @@
   .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger) {
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * Slides studio (create panel open): the card wall fills the page behind the
+ * composer. Home content is taken out of flow so the composer sits at the
+ * bottom, and only the panel and the input card catch the pointer — the gaps
+ * around them pass hover and clicks through to the wall. Width matches the
+ * home column (920px) set on `.guidLayout`.
+ */
+.guidContainer[data-slide-studio] .guidPrimaryStage {
+  display: none;
+}
+
+.guidContainer[data-slide-studio] .guidScrollArea {
+  pointer-events: none;
+}
+
+.guidContainer[data-slide-studio] .guidFixedInputArea {
+  background: none;
+}
+
+.guidContainer[data-slide-studio] .guidFixedInputArea .guidLayout {
+  pointer-events: none;
+}
+
+.guidContainer[data-slide-studio] .guidFixedInputArea .guidLayout > * {
+  pointer-events: auto;
 }

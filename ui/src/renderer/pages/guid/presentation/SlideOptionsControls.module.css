@@ -41,6 +41,12 @@
   opacity: 0.55;
 }
 
+.label {
+  overflow: hidden;
+  max-width: 140px;
+  text-overflow: ellipsis;
+}
+
 .chevron {
   display: inline-flex;
   line-height: 0;

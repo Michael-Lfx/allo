@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;800&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #EEF4FA; color: #1F3B57; font-family: 'Plus Jakarta Sans', sans-serif; }
+  .blob1 { left: 760px; top: -200px; width: 680px; height: 680px; border-radius: 50%; background: #4A90D9; opacity: .16; }
+  .blob2 { left: 1000px; top: 440px; width: 360px; height: 360px; border-radius: 50%; background: #9AD1F5; opacity: .6; }
+  .card { left: 72px; top: 88px; width: 700px; height: 544px; border-radius: 36px; background: rgba(255,255,255,.92); box-shadow: 0 24px 60px rgba(31,59,87,.10); }
+  .pill { left: 128px; top: 144px; padding: 10px 22px; border-radius: 999px; background: rgba(74,144,217,.14); color: #4A90D9; font-size: 17px; font-weight: 600; }
+  h1 { left: 124px; top: 214px; font-size: 88px; font-weight: 800; line-height: 1.02; letter-spacing: -0.035em; }
+  .sub { left: 128px; top: 424px; font-size: 23px; font-weight: 500; opacity: .7; }
+  .people { left: 128px; top: 520px; display: flex; align-items: center; gap: 16px; font-size: 17px; font-weight: 600; }
+  .faces { display: flex; }
+  .faces span { width: 52px; height: 52px; margin-right: -14px; border-radius: 50%; border: 3px solid #FFFFFF; display: grid; place-items: center; color: #FFFFFF; font-size: 17px; font-weight: 800; }
+  .chips { left: 840px; top: 250px; display: flex; flex-direction: column; gap: 18px; }
+  .chip { display: flex; align-items: center; gap: 16px; width: 344px; height: 68px; padding: 0 18px; border-radius: 34px; background: rgba(255,255,255,.94); box-shadow: 0 12px 30px rgba(31,59,87,.08); font-size: 19px; font-weight: 600; }
+  .chip b { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 16px; color: #FFFFFF; background: #4A90D9; }
+  .chip:nth-child(2) { margin-left: 32px; }
+  .chip:nth-child(2) b { background: #9AD1F5; color: #1F3B57; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <div class="blob1"></div>
+  <div class="blob2"></div>
+  <div class="card"></div>
+  <div class="pill">Week 1 · Onboarding</div>
+  <h1>Welcome<br>to the Team</h1>
+  <p class="sub">Everything you need for a great first week.</p>
+  <div class="people">
+    <div class="faces"><span style="background:#4A90D9">A</span><span style="background:#9AD1F5;color:#1F3B57">M</span><span style="background:#1F3B57">J</span></div>
+    <span style="margin-left:22px">People Team · 2026</span>
+  </div>
+  <div class="chips">
+    <div class="chip"><b>1</b>Meet your buddy</div>
+    <div class="chip"><b>2</b>Set up your tools</div>
+    <div class="chip"><b>3</b>Ship something small</div>
+  </div>
+</main>
+</body>
+</html>

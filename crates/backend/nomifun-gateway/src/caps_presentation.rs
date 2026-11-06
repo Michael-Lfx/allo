@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nomifun_api_types::PresentationCapabilityStatus;
 use nomifun_presentation::{ScriptError, usage_contract};
@@ -26,6 +27,19 @@ const LOCAL_ONLY: &[Surface] = &[Surface::Channel, Surface::Remote];
 #[serde(deny_unknown_fields)]
 struct NoParams {}
 
+/// Upper bound for one `wait_seconds` call. Kept below the 90 s default MCP
+/// request timeout so a waiting call always returns before the client gives up.
+const MAX_STATUS_WAIT_SECS: u64 = 60;
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StatusParams {
+    /// While an install is running, block up to this many seconds (max 60)
+    /// until it finishes, then return. Omit or 0 to return immediately.
+    #[serde(default)]
+    wait_seconds: Option<u64>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RunScriptParams {
@@ -42,15 +56,27 @@ struct RunScriptParams {
     cwd: Option<String>,
 }
 
-async fn status(deps: Arc<GatewayDeps>, _ctx: CallerCtx, _p: NoParams) -> Value {
-    let view = deps.presentation_service.status();
+/// Keep the turn open: the user is waiting for the deck, not for a status
+/// report, so Nomi waits in-turn and continues on its own once ready.
+const WAIT_IN_TURN: &str = "Do NOT end your reply or ask the user to come back. Tell the user once that it is downloading, then call nomi_presentation_status with wait_seconds=60 again (repeat until status changes), and continue making the deck as soon as it is ready.";
+
+async fn status(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: StatusParams) -> Value {
+    let wait = p.wait_seconds.unwrap_or(0).min(MAX_STATUS_WAIT_SECS);
+    let view = if wait == 0 {
+        deps.presentation_service.status()
+    } else {
+        deps.presentation_service.wait_until_settled(Duration::from_secs(wait)).await
+    };
     let next = match view.status {
-        PresentationCapabilityStatus::Ready => "Follow `usage` exactly.",
-        PresentationCapabilityStatus::Installing => {
-            "Installing now. Tell the user it is downloading, then call nomi_presentation_status again in about 20 seconds."
+        PresentationCapabilityStatus::Ready => {
+            "Ready. Continue the user's request now without waiting for another message; follow `usage` exactly.".to_owned()
         }
-        PresentationCapabilityStatus::NotInstalled | PresentationCapabilityStatus::Failed => {
-            "Not ready. Call nomi_presentation_install (no arguments; ~120 MB first download), tell the user, then poll nomi_presentation_status."
+        PresentationCapabilityStatus::Installing => format!("Still installing. {WAIT_IN_TURN}"),
+        PresentationCapabilityStatus::NotInstalled => format!(
+            "Not installed. Call nomi_presentation_install (no arguments; ~120 MB first download). {WAIT_IN_TURN}"
+        ),
+        PresentationCapabilityStatus::Failed => {
+            "Install failed. Tell the user the reason from `capability.failure`, call nomi_presentation_install once to retry, then wait the same way; if it fails again, stop and report the failure.".to_owned()
         }
     };
     let usage = view.skill_dir.as_deref().map(usage_contract);
@@ -60,11 +86,11 @@ async fn status(deps: Arc<GatewayDeps>, _ctx: CallerCtx, _p: NoParams) -> Value 
 async fn install(deps: Arc<GatewayDeps>, _ctx: CallerCtx, _p: NoParams) -> Value {
     let response = deps.presentation_service.start_install(false);
     let note = if response.accepted {
-        "install started in the background; poll nomi_presentation_status until status is ready"
+        "install started in the background; call nomi_presentation_status with wait_seconds=60 (repeat while installing) and continue the deck when ready, in this same reply"
     } else if response.capability.status == PresentationCapabilityStatus::Ready {
         "already installed; call nomi_presentation_status for the usage contract"
     } else {
-        "an install is already running; poll nomi_presentation_status"
+        "an install is already running; call nomi_presentation_status with wait_seconds=60 (repeat while installing)"
     };
     ok(json!({ "accepted": response.accepted, "capability": response.capability, "note": note }))
 }
@@ -98,11 +124,11 @@ async fn run_script(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: RunScriptParams) 
 }
 
 pub(crate) fn register(out: &mut Vec<Capability>) {
-    out.push(Capability::new::<NoParams, _, _>(
+    out.push(Capability::new::<StatusParams, _, _>(
         CapabilityMeta::new(
             "nomi_presentation_status",
             "presentation",
-            "Check the built-in ppt-master presentation Skill before creating or editing a PPT/PPTX/slide deck. Returns readiness, install progress, and once ready the SKILL_DIR + usage rules.",
+            "Check the built-in ppt-master presentation Skill before creating or editing a PPT/PPTX/slide deck. Returns readiness, install progress, and once ready the SKILL_DIR + usage rules. While installing, pass wait_seconds=60 to block until the install finishes so you can continue in the same reply.",
             DangerTier::Read,
         ),
         status,
@@ -157,6 +183,11 @@ mod tests {
     fn install_takes_no_arguments_and_run_script_has_a_closed_schema() {
         assert!(serde_json::from_value::<NoParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<NoParams>(json!({"url": "https://evil.example"})).is_err());
+        let status: StatusParams = serde_json::from_value(json!({})).unwrap();
+        assert!(status.wait_seconds.is_none());
+        let status: StatusParams = serde_json::from_value(json!({"wait_seconds": 60})).unwrap();
+        assert_eq!(status.wait_seconds, Some(60));
+        assert!(serde_json::from_value::<StatusParams>(json!({"wait_seconds": 5, "force": true})).is_err());
         let run: RunScriptParams = serde_json::from_value(json!({"script": "svg_to_pptx.py"})).unwrap();
         assert!(run.args.is_empty() && run.cwd.is_none());
         assert!(serde_json::from_value::<RunScriptParams>(json!({"script": "x.py", "python": "/bin/sh"})).is_err());

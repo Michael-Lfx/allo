@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@arco-design/web-react';
 import type { PresentationCapabilityStatus } from '@/common/adapter/ipcBridge';
 import { usePresentationCapability } from '@/renderer/hooks/presentation/usePresentationCapability';
+import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
 import PresentationInstallProgress from './PresentationInstallProgress';
 
 /** "Installed" is one-shot feedback after an install this surface watched. */
@@ -25,6 +26,8 @@ const PresentationInstallNotice: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { capability, pending, cancel, install } = usePresentationCapability();
+  // The settings page is developer-only, so only link to it when it is visible.
+  const { active: developerMode } = useDeveloperModeGate();
   const [settled, setSettled] = useState<PresentationCapabilityStatus | null>(null);
   const previous = useRef<PresentationCapabilityStatus | undefined>(undefined);
 
@@ -86,9 +89,11 @@ const PresentationInstallNotice: React.FC = () => {
               <Button size='mini' type='text' loading={pending === 'install'} onClick={() => void install()}>
                 {t('presentation.actions.retry')}
               </Button>
-              <Button size='mini' type='text' onClick={() => navigate('/settings/presentation')}>
-                {t('presentation.notice.details')}
-              </Button>
+              {developerMode && (
+                <Button size='mini' type='text' onClick={() => navigate('/settings/presentation')}>
+                  {t('presentation.notice.details')}
+                </Button>
+              )}
             </>
           )}
         </span>

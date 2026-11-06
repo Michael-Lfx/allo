@@ -48,6 +48,8 @@ const FETCH_WORK_DIR: &str = ".fetch";
 const TRASH_PREFIX: &str = ".trash-";
 /// Progress events while installing; identical views are not re-sent.
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(500);
+/// How often [`PresentationCapabilityService::wait_until_settled`] re-checks.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// `current.json`: the active snapshot. Paths are derived, never stored, so a
 /// moved data dir keeps working.
@@ -189,6 +191,21 @@ impl PresentationCapabilityService {
     pub fn status(&self) -> PresentationCapabilityView {
         let active = lock(&self.active);
         self.view_locked(active.as_ref())
+    }
+
+    /// Like [`Self::status`], but while an install runs, waits up to `max_wait`
+    /// for it to settle. Lets the agent keep its turn open across a
+    /// multi-minute first install by calling this in a loop instead of
+    /// ending its reply.
+    pub async fn wait_until_settled(&self, max_wait: Duration) -> PresentationCapabilityView {
+        let deadline = tokio::time::Instant::now() + max_wait;
+        loop {
+            let view = self.status();
+            if view.status != PresentationCapabilityStatus::Installing || tokio::time::Instant::now() >= deadline {
+                return view;
+            }
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + SETTLE_POLL_INTERVAL)).await;
+        }
     }
 
     /// Starts a background install unless one is running or the capability is

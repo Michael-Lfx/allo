@@ -4,9 +4,11 @@ import styles from './FeatureCards.module.css';
 
 export interface FeatureCardsProps {
   onStartFromLocal: () => void;
+  /** "Create" card: opens the slides panel. Omitted keeps the card static. */
+  onCreate?: () => void;
 }
 
-const FeatureCards: React.FC<FeatureCardsProps> = ({ onStartFromLocal }) => {
+const FeatureCards: React.FC<FeatureCardsProps> = ({ onStartFromLocal, onCreate }) => {
   const { t } = useTranslation();
 
   return (
@@ -21,15 +23,32 @@ const FeatureCards: React.FC<FeatureCardsProps> = ({ onStartFromLocal }) => {
         <BuildSketch />
       </article>
 
-      <article className={`${styles.entry} ${styles.create}`}>
-        <CreateMark />
-        <h2 className={styles.entryTitle}>
-          {t('guid.home.createTitle')}
-          <Chevron />
-        </h2>
-        <p className={styles.entryDescription}>{t('guid.home.createDescription')}</p>
-        <CreateSketch />
-      </article>
+      {onCreate ? (
+        <button
+          type='button'
+          data-testid='guid-home-create'
+          className={`${styles.entry} ${styles.create} ${styles.entryButton}`}
+          onClick={onCreate}
+        >
+          <CreateMark />
+          <span className={styles.entryTitle}>
+            {t('guid.home.createTitle')}
+            <Chevron />
+          </span>
+          <span className={styles.entryDescription}>{t('guid.home.createDescription')}</span>
+          <CreateSketch />
+        </button>
+      ) : (
+        <article className={`${styles.entry} ${styles.create}`}>
+          <CreateMark />
+          <h2 className={styles.entryTitle}>
+            {t('guid.home.createTitle')}
+            <Chevron />
+          </h2>
+          <p className={styles.entryDescription}>{t('guid.home.createDescription')}</p>
+          <CreateSketch />
+        </article>
+      )}
 
       <button type='button' data-testid='guid-home-studio' className={styles.studio} onClick={onStartFromLocal}>
         <FolderSketch />

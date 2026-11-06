@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #0D2B52; color: #E3EEFF; font-family: 'IBM Plex Sans', sans-serif; }
+  .grid { inset: 0; background-image: linear-gradient(rgba(142,197,255,.22) 1px, transparent 1px), linear-gradient(90deg, rgba(142,197,255,.22) 1px, transparent 1px), linear-gradient(rgba(142,197,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(142,197,255,.08) 1px, transparent 1px); background-size: 160px 160px, 160px 160px, 32px 32px, 32px 32px; background-position: -1px -1px; }
+  .vig { inset: 0; background: radial-gradient(circle at 30% 40%, transparent 40%, rgba(5,20,40,.55)); }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  .code { left: 80px; top: 96px; font-size: 16px; letter-spacing: .14em; color: #FFB703; }
+  h1 { left: 76px; top: 132px; font-family: 'IBM Plex Mono', monospace; font-size: 80px; font-weight: 700; line-height: 1.04; letter-spacing: -0.03em; }
+  .sub { left: 80px; top: 330px; width: 460px; font-size: 21px; line-height: 1.5; color: rgba(227,238,255,.75); }
+  .block { left: 80px; bottom: 64px; display: grid; grid-template-columns: 150px 150px 110px; border: 1.5px solid #8EC5FF; font-size: 12px; }
+  .block div { padding: 10px 12px; border-right: 1px solid rgba(142,197,255,.6); }
+  .block div:last-child { border-right: 0; }
+  .block small { display: block; font-size: 10px; letter-spacing: .14em; color: #8EC5FF; }
+  .block b { display: block; margin-top: 4px; font-size: 14px; font-weight: 600; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <div class="grid"></div>
+  <div class="vig"></div>
+  <svg class="abs" style="left:0;top:0" width="1280" height="720" fill="none" stroke="#8EC5FF" stroke-width="1.6" font-family="IBM Plex Mono, monospace" font-size="13">
+    <g transform="translate(900 210)">
+      <path d="M0 0 L140 -80 L280 0 L140 80 Z" fill="#8EC5FF" fill-opacity=".12"/>
+      <path d="M0 0 V36 L140 116 L280 36 V0 M140 80 V116"/>
+      <g transform="translate(0 110)"><path d="M0 0 L140 -80 L280 0 L140 80 Z" fill="#8EC5FF" fill-opacity=".06" stroke-dasharray="6 4"/><path d="M0 0 V36 L140 116 L280 36 V0 M140 80 V116"/></g>
+      <g transform="translate(0 220)"><path d="M0 0 L140 -80 L280 0 L140 80 Z" fill="#FFB703" fill-opacity=".14" stroke="#FFB703"/><path d="M0 0 V36 L140 116 L280 36 V0 M140 80 V116" stroke="#FFB703"/></g>
+      <path d="M140 -6 V 260" stroke-dasharray="3 5" stroke-opacity=".7"/>
+    </g>
+    <g stroke-width="1">
+      <path d="M1180 210 H1230"/><path d="M1230 210 L1236 204"/>
+      <path d="M1180 320 H1230"/><path d="M1180 430 H1230"/>
+      <path d="M870 520 V560 M1190 520 V560 M870 548 H1190 M870 548 L878 543 M870 548 L878 553 M1190 548 L1182 543 M1190 548 L1182 553"/>
+      <path d="M760 160 L900 210" stroke-dasharray="2 4"/>
+      <circle cx="760" cy="160" r="4" fill="#8EC5FF"/>
+    </g>
+    <g fill="#E3EEFF" stroke="none">
+      <text x="1236" y="214">API</text><text x="1236" y="324">SVC</text><text x="1236" y="434" fill="#FFB703">DATA</text>
+      <text x="990" y="578">L = 2400 mm</text><text x="660" y="150">A-01 GATEWAY</text>
+    </g>
+  </svg>
+  <div class="code mono">DWG-0426 / REV B</div>
+  <h1>System<br>Architecture</h1>
+  <p class="sub">Services, data flow and failure domains for the 2026 platform.</p>
+  <div class="block mono"><div><small>DRAWN BY</small><b>Platform Eng</b></div><div><small>DATE</small><b>2026-04-12</b></div><div><small>SHEET</small><b>01 / 24</b></div></div>
+</main>
+</body>
+</html>
