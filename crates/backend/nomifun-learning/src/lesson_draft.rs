@@ -2278,7 +2278,8 @@ mod tests {
     /// 旧叫法行方向化（p02 D）：「本课现用名（旧称：…）」——首现概念与
     /// 旧叫法并读不再可能误读（真机首现概念恰为行内正名，「X 又叫 Y +
     /// 正文不使用」的方向读法易误伤）；数据面零改动（aliases 仍为活跃
-    /// 别名池投影）。
+    /// 别名池投影）。夹具用「实际波动率」作历史波动率的同义名（u11 同款
+    /// 事实勘误：贝塔系数是市场敏感度，不是波动率的别名）。
     #[test]
     fn concept_faces_aliases_line_reads_direction_explicitly() {
         let faces = GraphConceptFaces {
@@ -2287,13 +2288,13 @@ mod tests {
             ref_names: Vec::new(),
             aliases: vec![(
                 "历史波动率".into(),
-                vec!["贝塔系数".into(), "Beta".into()],
+                vec!["实际波动率".into(), "Beta".into()],
             )],
         };
         let text = faces.render_text();
         assert!(
             text.contains(
-                "- 本课现用名（别处可能见过的旧叫法正文不使用，必要时括注一次帮助辨认）：历史波动率（旧称：贝塔系数/Beta）"
+                "- 本课现用名（别处可能见过的旧叫法正文不使用，必要时括注一次帮助辨认）：历史波动率（旧称：实际波动率/Beta）"
             ),
             "{text}"
         );

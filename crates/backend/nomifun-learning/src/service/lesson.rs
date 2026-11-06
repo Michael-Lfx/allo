@@ -2471,6 +2471,9 @@ impl LearningService {
             &existing_questions,
             // 手动加题无变式指令段（u10 参数：空 = 基线 focus 渲染）。
             "",
+            // 手动加题路径不核证据逐字（u10 评审修复收窄：核验耗尽会把错误
+            // 返给用户 = 新增用户可见失败；基线行为 = 不核）。
+            false,
         )
         .await
         .map_err(|error| {

@@ -43,7 +43,8 @@
 //! 防复用池 = 该节点既有全部题面），过既有质量门（题型形状 + 新颖性 + 可
 //! 判分；u10 on 臂追证据逐字核）；**生成失败如实跳过**（该节点只出旧题
 //! ——learnhub「quiz 无 abandon，失败顺延」的回合内化：不阻断回合，不降
-//! 级旧题）。u10（`NOMI_LEARNING_VARIANT_V2`，缺省 on 待 A/B）：有已生成
+//! 级旧题）。u10（`NOMI_LEARNING_VARIANT_V2`，显式 on 臂——开发期缺省
+//! off 待 A/B）：有已生成
 //! 课时正文才装配判底 document，正文缺席同样如实跳过（读数
 //! `variants_skipped_no_document` 留痕——不造「逐字证据」随判分下发学习
 //! 者）；变式硬性要求走独立指令段（不再伪装学习者提示）；单题提示词按请
@@ -904,6 +905,9 @@ impl LearningService {
             "",
             &existing,
             &variant_instruction,
+            // 变式路径：证据逐字核保留（on 臂违约 → 重试 → 耗尽 = 如实跳过
+            // + 读数留痕，不阻断回合）。
+            true,
         )
         .await
         {

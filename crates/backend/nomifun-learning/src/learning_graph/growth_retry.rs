@@ -622,7 +622,7 @@ mod tests {
         crate::switches::switch_env_guard(env_var, value)
     }
 
-    // ── u01：点修回填（NOMI_LEARNING_REDRAFT_SPLICE，缺省 on 待 A/B）────────
+    // ── u01：点修回填（NOMI_LEARNING_REDRAFT_SPLICE，开发期缺省 off）────────
 
     /// u01 主臂：同标题未点名节点的措辞/标点漂移被整对象回填（守卫归零，
     /// 不再消耗原地重试）；计数只数实际被抹平的节点；点名节点、新增节点
@@ -693,7 +693,7 @@ mod tests {
     }
 
     /// u01 开关面：off 臂候选稿逐字节不动、计数恒零（守卫照旧全量比对 =
-    /// 基线行为）；未设 = 缺省开启（缺省 on 待 A/B）。
+    /// 基线行为）；未设 = 开发期缺省 off（off 臂同形）；显式 on = 回填。
     #[test]
     #[serial_test::serial]
     fn splice_switch_off_arm_keeps_candidate_untouched() {
@@ -717,7 +717,11 @@ mod tests {
             assert_eq!(spliced, candidate, "off 臂候选稿逐字节不动");
         }
         let (spliced, count) = splice_unnamed_nodes_if_enabled(&previous, candidate.clone(), "", None);
-        assert_eq!(count, 1, "未设 = 缺省开启：{count}");
+        assert_eq!(count, 0, "未设 = 开发期缺省 off：{count}");
+        assert_eq!(spliced, candidate, "未设 = 候选稿逐字节不动（off 臂同形）");
+        let _on = set_switch_env(super::super::REDRAFT_SPLICE_SWITCH_ENV, Some("on"));
+        let (spliced, count) = splice_unnamed_nodes_if_enabled(&previous, candidate.clone(), "", None);
+        assert_eq!(count, 1, "显式 on = 回填：{count}");
         assert_ne!(spliced, candidate, "on 臂漂移被回填");
     }
 
