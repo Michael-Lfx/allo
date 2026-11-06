@@ -1542,6 +1542,7 @@ async fn run_grow(
                  [provenance: rows={} invalid={} retried={} degraded={} external_hits={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [names: name_hints={}]  \
+                 [redraft_spliced={}]  \
                  [review_state: {} injections={} review_degraded={}]",
                 stats.attempts_used,
                 stats.stop_reason,
@@ -1555,6 +1556,7 @@ async fn run_grow(
                 stats.review_fragments_unhandled,
                 stats.review_fragments_degraded,
                 stats.name_hints,
+                stats.redraft_spliced,
                 if stats.review_state { "on" } else { "off" },
                 stats.review_state_injections,
                 stats.review_degraded

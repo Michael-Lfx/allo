@@ -1945,6 +1945,7 @@ impl LearningService {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
             redraft_guard_violation, review_history_round, review_point_names, should_stop_early,
+            splice_unnamed_nodes_if_enabled,
         };
         let course_id = &engine.course_id;
         let inner_completer = self.course_completer()?;
@@ -2000,6 +2001,10 @@ impl LearningService {
         // L1 名字提示读数（y01）：跨预算轮累加，smoke 生长 OK 读数行透出
         // （读数面非门禁；提示不阻断）。
         let mut name_hints_readout = 0usize;
+        // 点修回填读数（u01）：跨预算轮累加的实际回填节点数——同标题漂移
+        // 被系统抹平的可观察信号（smoke grow 读数行 `redraft_spliced={n}`；
+        // off 臂恒零。读数面非门禁）。
+        let mut redraft_spliced_total = 0usize;
         // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
         // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
         // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
@@ -2102,11 +2107,31 @@ impl LearningService {
                             // 「未点名被改」机械守卫（仅重裁路径有上一稿可比；
                             // 全量枚举 + 点名集口径 = m5 #175A/#175B）。
                             if let Some(prev_ref) = previous.as_ref() {
+                                // 点修回填（u01，守卫前；on 臂）：上一稿中不在
+                                // 点名集、候选稿同标题仍在的节点整对象回填——
+                                // 标点/措辞漂移由系统抹平，守卫不再为它们消耗
+                                // 原地重试；off 臂候选稿原样返回（基线逐字节）。
+                                let (candidate, spliced) = splice_unnamed_nodes_if_enabled(
+                                    prev_ref,
+                                    candidate,
+                                    &feedback,
+                                    point_names.as_ref(),
+                                );
+                                if spliced > 0 {
+                                    redraft_spliced_total += spliced;
+                                    tracing::info!(
+                                        course = course_id.as_str(),
+                                        attempt,
+                                        spliced,
+                                        "coach redraft unnamed-node drift spliced back from the previous draft"
+                                    );
+                                }
                                 if let Some(violation) = redraft_guard_violation(
                                     prev_ref,
                                     &candidate,
                                     &feedback,
                                     point_names.as_ref(),
+                                    crate::learning_graph::redraft_splice_enabled(),
                                 ) {
                                     if !in_place_retried {
                                         // 原地重试恰一次（不占轮预算）：带守
@@ -2593,6 +2618,7 @@ impl LearningService {
             provenance_readout,
             fragment_readout,
             name_hints_readout,
+            redraft_spliced_total,
             review_state,
             review_state_injections,
             review_degraded,
@@ -2721,6 +2747,7 @@ impl LearningService {
         provenance: crate::learning_graph::provenance::ProvenanceReadout,
         fragments: crate::learning_graph::fragment_verdict::FragmentReadout,
         name_hints: usize,
+        redraft_spliced: usize,
         review_state: bool,
         review_state_injections: usize,
         review_degraded: bool,
@@ -2739,6 +2766,7 @@ impl LearningService {
                 review_fragments_unhandled: fragments.unhandled,
                 review_fragments_degraded: fragments.degraded,
                 name_hints,
+                redraft_spliced,
                 review_state,
                 review_state_injections,
                 review_degraded,

@@ -807,8 +807,15 @@ pub(crate) async fn coach_redraft(
     prior_review: &str,
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
+    // u01 回填句（on 臂）：修订纪律告知未点名节点由系统回填——模型不再被
+    // 要求搬运它们；off 臂空串 = 提示词逐字节回基线形。
+    let splice_sentence = if redraft_splice_enabled() {
+        "\n- 未点名节点由系统按上一稿原样回填，你对它们的改动不会生效；只需认真改被点名的部分。"
+    } else {
+        ""
+    };
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}{}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 点名集怎么算：点名集 = 打回问题清单各条的 node 字段（评审问题清单以各条的 node 字段为准——批级意见不点名任何节点，问题文字里提到的其它节点名不构成点名），照改必撞机械比对；批级问题只许改随批 mints / new_aliases 提名自身。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 拆分产物不要再造新并列：拆分产物的新显示名避免引入原条目没有的并列词（你拆的是合装，不是把合装换个位置重写）；确属对照/对比型连接的合法保留（「分辨 A 与 B」类）；被拆条目的 intent/scope 照各自那一半的实际内容逐半重写，禁止照抄原条目。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}{}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。{splice_sentence}\n- 点名集怎么算：点名集 = 打回问题清单各条的 node 字段（评审问题清单以各条的 node 字段为准——批级意见不点名任何节点，问题文字里提到的其它节点名不构成点名），照改必撞机械比对；批级问题只许改随批 mints / new_aliases 提名自身。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 拆分产物不要再造新并列：拆分产物的新显示名避免引入原条目没有的并列词（你拆的是合装，不是把合装换个位置重写）；确属对照/对比型连接的合法保留（「分辨 A 与 B」类）；被拆条目的 intent/scope 照各自那一半的实际内容逐半重写，禁止照抄原条目。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render(),
         prior_review_section(prior_review)
     );
@@ -1057,6 +1064,28 @@ pub fn is_review_state_disabled_value(value: &str) -> bool {
 pub(crate) fn review_state_enabled() -> bool {
     std::env::var(REVIEW_STATE_SWITCH_ENV)
         .map(|value| !is_review_state_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 点修回填的运维开关（u01，模型可用性修复波）：置 off/0/false = 回填臂
+/// 休眠——重裁候选稿不回填、守卫文案与修订纪律逐字回基线形（off 臂）；
+/// 未设/其它值 = 开启（缺省 on，待真机 A/B 定案）。on 臂三件：①重裁解析
+/// 后守卫前，上一稿中不在点名集、候选稿同标题仍在的节点整对象回填（抹掉
+/// 标点/措辞漂移——真机 run-1793951137445：重裁把未点名节点 purpose
+/// 「粗/中/细」写成「粗、中、细」→ 守卫拦 → 原地重试又改另一节点 → 二次
+/// 越权耗轮）；②守卫文案改指令式并给「从上一稿复制该节点 JSON」的可执行
+/// 出口；③修订纪律补回填句（改了也白改，模型不再被要求搬运未点名节点）。
+pub const REDRAFT_SPLICE_SWITCH_ENV: &str = "NOMI_LEARNING_REDRAFT_SPLICE";
+
+/// 点修回填开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_redraft_splice_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 点修回填是否开启（未设/其它值 = 开启）。
+pub(crate) fn redraft_splice_enabled() -> bool {
+    std::env::var(REDRAFT_SPLICE_SWITCH_ENV)
+        .map(|value| !is_redraft_splice_disabled_value(&value))
         .unwrap_or(true)
 }
 
@@ -2618,6 +2647,80 @@ mod tests {
         assert_eq!(review.reuse.len(), 1, "{review:?}");
         assert_eq!(review.reuse[0].name, "二进制数");
         assert_eq!(review.reuse[0].concept_id, "01a1442d-2338-7a40-a4bd-fe50a0a64a83");
+    }
+
+    // ── u01：重裁修订纪律的回填句（NOMI_LEARNING_REDRAFT_SPLICE 两臂）────────
+
+    /// u01 开关两臂的字节级钉：on 臂修订纪律补「未点名节点由系统按上一稿
+    /// 原样回填」句；off 臂 = 基线逐字——断言为「on 臂全文减去该句 == off
+    /// 臂全文」（差集恰为插入句本身）；未设 = 缺省开启（on 臂同形）。
+    /// env 是进程全局态：`#[serial]` 互斥。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn redraft_discipline_splice_sentence_switches_with_the_switch() {
+        const SENTENCE: &str =
+            "\n- 未点名节点由系统按上一稿原样回填，你对它们的改动不会生效；只需认真改被点名的部分。";
+        let capture = |pin: Option<&'static str>| async move {
+            struct Restore(&'static str, Option<String>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    match self.1.take() {
+                        Some(value) => unsafe { std::env::set_var(self.0, value) },
+                        None => unsafe { std::env::remove_var(self.0) },
+                    }
+                }
+            }
+            let restore = Restore(
+                REDRAFT_SPLICE_SWITCH_ENV,
+                match pin {
+                    Some(value) => {
+                        let previous = std::env::var(REDRAFT_SPLICE_SWITCH_ENV).ok();
+                        unsafe { std::env::set_var(REDRAFT_SPLICE_SWITCH_ENV, value) };
+                        previous
+                    }
+                    None => {
+                        let previous = std::env::var(REDRAFT_SPLICE_SWITCH_ENV).ok();
+                        unsafe { std::env::remove_var(REDRAFT_SPLICE_SWITCH_ENV) };
+                        previous
+                    }
+                },
+            );
+            // 回包无所谓（解析必败）——captured prompt 才是断言对象。
+            let completer = ScriptedReview(std::sync::Mutex::new((
+                vec!["not json".to_owned()].into_iter(),
+                Vec::new(),
+            )));
+            let previous = ProposedBatch {
+                nodes: Vec::new(),
+                mints: Vec::new(),
+                new_aliases: Vec::new(),
+                note: String::new(),
+            };
+            let _ = coach_redraft(&completer, None, &CoachContext::default(), &previous, "问题", "").await;
+            let prompts = completer.0.lock().unwrap().1.clone();
+            assert_eq!(prompts.len(), 1, "恰一次捕获");
+            let user = prompts[0]
+                .split('\x1f')
+                .nth(1)
+                .expect("captured system\\x1fuser")
+                .to_owned();
+            (user, restore)
+        };
+        let (off_arm, _restore_off) = capture(Some("off")).await;
+        assert!(
+            !off_arm.contains("由系统按上一稿原样回填"),
+            "off 臂零回填句：{off_arm}"
+        );
+        assert!(off_arm.contains("点修不是重写"), "基线纪律句照旧：{off_arm}");
+        let (on_arm, _restore_on) = capture(Some("on")).await;
+        let (default_arm, _restore_default) = capture(None).await;
+        assert_eq!(on_arm, default_arm, "未设 = 缺省开启（on 臂同形）");
+        assert!(on_arm.contains(SENTENCE), "on 臂补回填句：{on_arm}");
+        assert_eq!(
+            on_arm.replace(SENTENCE, ""),
+            off_arm,
+            "off 臂 = on 臂减去回填句（基线逐字节钉）"
+        );
     }
 
     /// k07 开关两臂：on 臂判据①为子查结构（登记表外名词/批内提名不算

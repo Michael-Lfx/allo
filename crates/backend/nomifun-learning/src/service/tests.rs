@@ -4118,10 +4118,16 @@ async fn over_capacity_redraft_gets_the_directed_instruction() {
     assert!(third_prompt.contains("留待后续批次"));
 }
 
-/// 「未点名被改」机械守卫：打回报告只点名甲，重裁改了乙 → guard 失败 →
-/// 原地重试恰一次（不占轮预算）；二次越权计轮，第三轮点修落位。
+/// 「未点名被改」机械守卫（u01 off 臂回归钉：`NOMI_LEARNING_REDRAFT_SPLICE=off`
+/// 时回填休眠，守卫照旧全量比对 = 基线行为）：打回报告只点名甲，重裁改了
+/// 乙 → guard 失败 → 原地重试恰一次（不占轮预算）；二次越权计轮，第三轮
+/// 点修落位。on 臂的同形漂移由系统回填、不再进守卫（见
+/// `splice_on_arm_backfills_unnamed_drift_without_the_guard_retry`）。
 #[tokio::test]
+#[serial_test::serial]
 async fn guard_failure_retries_in_place_once_then_counts_the_round() {
+    let _splice_off =
+        set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "off");
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
@@ -4184,6 +4190,67 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     let stats = service.growth_run_stats().expect("growth stats recorded");
     assert_eq!(stats.stop_reason, "success");
     assert_eq!(stats.attempts_used, 3);
+}
+
+/// 点修回填 on 臂（u01，服务级端到端；缺省开启）：评审打回点名甲，重裁修
+/// 甲、同时让未点名乙漂移——回填把乙抹平（`redraft_spliced=1`），守卫不再
+/// 拦截、无原地重试，批次直接进评审落位；回填后的落库批含上一稿乙原样。
+#[tokio::test]
+async fn splice_on_arm_backfills_unnamed_drift_without_the_guard_retry() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 首稿：甲引用幽灵（门报告点名甲），乙未点名。
+    let draft = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "引用未铸名概念", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [], "note": "首稿"
+    }"#;
+    // 重裁：甲修复、乙标点漂移（真机 run-1793951137445 同形：「原用途」→
+    // 「原、用途」）——on 臂由系统回填，不走守卫重试。
+    let redraft_with_drift = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原、用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "漂移稿"
+    }"#;
+    let review_pass = serde_json::to_string(&json!({
+        "verdict": "pass",
+        "term_provenance": [
+            {"concept": "极限", "term": "值", "source": "常识"}
+        ]
+    }))
+    .unwrap();
+    let completer = SequencedCompleter::new(vec![
+        draft.to_owned(),
+        redraft_with_drift.to_owned(),
+        review_pass,
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    // 调用数：起草1 + 重裁1 + 评审1 = 3——漂移被回填，无守卫原地重试
+    //（off 臂同脚本会多一次原地重试调用）。
+    assert_eq!(completer.call_count(), 3, "回填后无守卫重试");
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success");
+    assert_eq!(stats.attempts_used, 1, "漂移回填不占轮");
+    assert_eq!(stats.redraft_spliced, 1, "回填计数=1");
+    // 落库批 = 回填后的重裁稿（漂移被抹平后过守卫落位）。
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(note.contains("漂移稿"), "重裁稿落位：{note}");
 }
 
 // ── 有状态复审（m5 #175C）+ advice 范围点名集（m5 #175A）────────────────────
@@ -4334,13 +4401,16 @@ async fn review_state_off_arm_keeps_the_redraft_prompt_free_of_prior_opinions() 
     assert_eq!(stats.review_state_injections, 0);
 }
 
-/// 守卫违规路（m5 #175C 三路之一，服务级）：评审打回后的重裁越权改乙 →
-/// 原地重试再越权（改乙另一处）→ 本 attempt 失败计轮，第三轮重排同时携带
-/// 守卫文案与前轮评审意见段（重装不只剩守卫固定文案）。
+/// 守卫违规路（m5 #175C 三路之一，服务级；u01 off 臂回归钉：回填 off 时
+/// 越权漂移照旧进守卫）：评审打回后的重裁越权改乙 → 原地重试再越权（改乙
+/// 另一处）→ 本 attempt 失败计轮，第三轮重排同时携带守卫文案与前轮评审
+/// 意见段（重装不只剩守卫固定文案）。
 #[tokio::test]
 #[serial_test::serial]
 async fn guard_violation_attempt_failure_carries_the_review_history() {
     let _env = set_learning_env(crate::learning_graph::REVIEW_STATE_SWITCH_ENV, "on");
+    let _splice_off =
+        set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "off");
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
