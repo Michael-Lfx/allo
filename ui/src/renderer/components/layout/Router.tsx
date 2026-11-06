@@ -107,7 +107,9 @@ const SettingsRouteReady: React.FC<{ children: React.ReactNode; locationKey: str
 
 const RouteFallback: React.FC<RouteFallbackProps> = ({ Component, fullscreen = false }) => {
   const location = useLocation();
-  const resetKey = `${location.pathname}${location.search}${location.hash}`;
+  // location.key changes on every navigation, including a same-route "new task"
+  // click; clearing a captured route error then lets the failed subtree remount.
+  const resetKey = `${location.key}:${location.pathname}${location.search}${location.hash}`;
   const settingsSurface = isSettingsSurfacePath(location.pathname);
 
   return (
@@ -137,7 +139,9 @@ const withRouteFallback = (
 const SessionShellRoute: React.FC = () => {
   useVoiceContext();
   const location = useLocation();
-  const resetKey = `${location.pathname}${location.search}${location.hash}`;
+  // location.key changes on every navigation, including a same-route "new task"
+  // click; clearing a captured route error then lets the failed subtree remount.
+  const resetKey = `${location.key}:${location.pathname}${location.search}${location.hash}`;
 
   // Eager shell keeps sider mounted across /guid ↔ conversation; only page chunks suspend.
   return (

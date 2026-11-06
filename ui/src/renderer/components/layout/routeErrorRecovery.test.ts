@@ -5,6 +5,7 @@ import {
   claimDynamicImportReload,
   DYNAMIC_IMPORT_RETRY_STORAGE_KEY,
   DYNAMIC_IMPORT_RETRY_WINDOW_MS,
+  isDomCommitFailure,
   isDynamicImportFailure,
 } from './routeErrorRecovery';
 
@@ -89,5 +90,45 @@ describe('dynamic import route recovery', () => {
     expect(source).toContain('reloadExhausted: boolean');
     expect(source).toContain('reloadExhausted={dynamicImportReloadExhausted}');
     expect(source).toContain('common.routeError.reloadAgain');
+  });
+});
+
+describe('dom commit route recovery', () => {
+  const domCommitError = (message: string) => Object.assign(new Error(message), { name: 'NotFoundError' });
+
+  test('recognizes a detached-node commit failure thrown by React', () => {
+    expect(
+      isDomCommitFailure(
+        domCommitError(
+          "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isDomCommitFailure(
+        domCommitError(
+          "Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test('does not classify unrelated route errors as DOM commit failures', () => {
+    expect(isDomCommitFailure(new Error('route component crashed'))).toBe(false);
+    expect(isDomCommitFailure(domCommitError('removeChild failed inside a test helper'))).toBe(false);
+    expect(isDomCommitFailure(null)).toBe(false);
+    expect(isDomCommitFailure(undefined)).toBe(false);
+  });
+
+  test('the route boundary auto-remounts once for a DOM commit crash', () => {
+    const source = readFileSync(new URL('./RouteErrorBoundary.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('isDomCommitFailure');
+    expect(source).toContain('autoRecoveryAttempted');
+    expect(source).toContain('scheduleAutoRecovery');
+  });
+
+  test('every navigation, including a same-route new-task click, resets a captured route error', () => {
+    const source = readFileSync(new URL('./Router.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('`${location.key}:${location.pathname}${location.search}${location.hash}`');
   });
 });
