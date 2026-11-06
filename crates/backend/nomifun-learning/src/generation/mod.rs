@@ -26,7 +26,7 @@ mod sample;
 mod snapshot;
 mod structured_batch;
 mod structure;
-mod terms;
+pub(crate) mod terms;
 mod triage;
 #[cfg(test)]
 mod tests;
