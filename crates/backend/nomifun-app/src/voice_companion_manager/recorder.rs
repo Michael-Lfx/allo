@@ -379,12 +379,65 @@ impl ConversationVoiceDialogueRecorder {
         } else {
             let req_id = format!("voice-auto-{}", nomifun_common::generate_id());
             let home_conv = self.conversation_service.get(&self.user_id, &home).await.ok();
-            let mut model_ref = home_conv.as_ref().and_then(|c| {
-                c.model.as_ref().map(|m| nomifun_api_types::voice::VoiceModelRef {
-                    provider_id: m.provider_id.clone(),
-                    model: m.model.clone(),
-                })
-            });
+            let mut used_saved_default = false;
+            let mut model_ref = match self
+                .conversation_service
+                .default_voice_model_preference()
+                .await
+            {
+                Ok(Some(preference)) => {
+                    used_saved_default = true;
+                    Some(nomifun_api_types::voice::VoiceModelRef {
+                        provider_id: preference.provider_id,
+                        model: preference.model,
+                    })
+                }
+                Ok(None) => {
+                    tracing::warn!("voice_default_model_preference_missing");
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "voice_default_model_preference_invalid_fallback"
+                    );
+                    None
+                }
+            };
+            if let Some(model) = model_ref.clone() {
+                if let Some(runtime) = &self.execution_runtime {
+                    let probe = nomifun_api_types::voice::VoiceExecutionConfig {
+                        workspace: home_conv
+                            .as_ref()
+                            .and_then(|conversation| {
+                                conversation
+                                    .extra
+                                    .get("workspace")
+                                    .and_then(serde_json::Value::as_str)
+                            })
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into()),
+                        model: Some(model),
+                        preset_id: None,
+                        session_mode: None,
+                    };
+                    match runtime.prepare_configuration(&probe).await {
+                        Ok((prepared, _)) => model_ref = prepared.model,
+                        Err(error) => {
+                            tracing::warn!(%error, "voice_default_model_unavailable_fallback");
+                            model_ref = None;
+                        }
+                    }
+                }
+            }
+            if model_ref.is_none() {
+                model_ref = home_conv.as_ref().and_then(|c| {
+                    c.model.as_ref().map(|m| nomifun_api_types::voice::VoiceModelRef {
+                        provider_id: m.provider_id.clone(),
+                        model: m.model.clone(),
+                    })
+                });
+            }
             if model_ref.is_none() {
                 if let Some(runtime) = &self.execution_runtime {
                     let dummy = nomifun_api_types::voice::VoiceExecutionConfig {
@@ -396,6 +449,16 @@ impl ConversationVoiceDialogueRecorder {
                     if let Ok((prepared, _)) = runtime.prepare_configuration(&dummy).await {
                         model_ref = prepared.model;
                     }
+                }
+            }
+            if !used_saved_default {
+                match model_ref.as_ref() {
+                    Some(model) => tracing::warn!(
+                        provider_id = %model.provider_id,
+                        model = %model.model,
+                        "voice_default_model_fallback"
+                    ),
+                    None => tracing::warn!("voice_default_model_fallback_unresolved"),
                 }
             }
             let created = self.conversation_service.create_provisional_voice_conversation_with_locale(
@@ -410,6 +473,10 @@ impl ConversationVoiceDialogueRecorder {
             ).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
             created.conversation_id
         };
+        self.conversation_service
+            .ensure_voice_model_preference(&self.user_id, &conv_id)
+            .await
+            .map_err(|error| VoiceDialogueRecorderError::BindingInvalid(error.to_string()))?;
         Ok((conv_id, source_id))
     }
 }
@@ -1133,7 +1200,13 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     Some(companions) => companions.default_companion_id().await,
                     None => None,
                 };
-                if let Some(id) = self.retained_default_call().await? { return Ok((id, memory_owner)); }
+                if let Some(id) = self.retained_default_call().await? {
+                    self.conversation_service
+                        .ensure_voice_model_preference(&self.user_id, &id)
+                        .await
+                        .map_err(|error| VoiceDialogueRecorderError::BindingInvalid(error.to_string()))?;
+                    return Ok((id, memory_owner));
+                }
                 let home = self
                     .conversation_service
                     .ensure_default_voice_conversation_with_mode(&self.user_id, memory_owner.as_deref(), session_mode)

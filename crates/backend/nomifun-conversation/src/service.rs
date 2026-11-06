@@ -5885,9 +5885,38 @@ impl ConversationService {
 
     /// Trusted voice entry: the frozen workspace marker can only be stamped
     /// here and is rejected from public create/update payloads.
+    ///
+    /// Automatic voice conversations have no user-facing MCP picker. Leaving
+    /// `selected_mcp_server_ids` absent means "load every enabled host MCP"
+    /// (see `create_inner`), which makes the first voice turn pay every MCP
+    /// process connection before any token. Default them to the gateway-only
+    /// fence; an explicit selection or a preset snapshot still wins.
+    fn apply_default_voice_mcp_fence(req: &mut CreateConversationRequest) {
+        if let Some(obj) = req.extra.as_object_mut()
+            && !obj.contains_key("selected_mcp_server_ids")
+        {
+            obj.insert("selected_mcp_server_ids".to_owned(), serde_json::json!([]));
+        }
+    }
+
+    /// Trusted voice entry: the frozen workspace marker can only be stamped
+    /// here and is rejected from public create/update payloads.
     pub async fn create_voice_idempotent(&self,user_id:&str,mut req:CreateConversationRequest,creation_key:&str,workspace:&str,preset_snapshot:Option<ResolvedPresetSnapshot>)->Result<ConversationResponse,AppError> {
         req.preset_id=None;
         req.preset_overrides=None;
+        if preset_snapshot.is_none() {
+            if req.model.is_none() {
+                match self.default_voice_model_preference().await {
+                    Ok(Some(model)) => req.model = Some(model),
+                    Ok(None) => warn!("voice_default_model_preference_missing"),
+                    Err(error) => warn!(
+                        %error,
+                        "voice_default_model_preference_invalid_fallback"
+                    ),
+                }
+            }
+            Self::apply_default_voice_mcp_fence(&mut req);
+        }
         self.create_inner(user_id,req,preset_snapshot,Some(creation_key),Some(workspace),None).await
     }
 
@@ -6037,6 +6066,83 @@ impl ConversationService {
         }
     }
 
+    /// Read the user's persisted default chat model. Voice calls are often
+    /// started by a wake word, which has no UI request to carry a model, so the
+    /// automatic voice-conversation path must use the same saved preference as
+    /// the Composer instead of falling through to the runtime default.
+    pub async fn default_voice_model_preference(&self) -> Result<Option<ProviderWithModel>, String> {
+        let Some((_, _, client_prefs)) = self.failover_deps() else {
+            return Ok(None);
+        };
+        let preferences = client_prefs
+            .get_by_keys(&["nomi.defaultModel"])
+            .await
+            .map_err(|error| format!("voice_default_model_preference_unavailable: {error}"))?;
+        let Some(raw) = preferences
+            .into_iter()
+            .find(|preference| preference.key == "nomi.defaultModel")
+            .map(|preference| preference.value)
+        else {
+            return Ok(None);
+        };
+        let selected: ProviderWithModel = serde_json::from_str(&raw)
+            .map_err(|error| format!("voice_default_model_preference_invalid: {error}"))?;
+        selected
+            .validate()
+            .map_err(|error| format!("voice_default_model_preference_invalid: {error}"))?;
+        tracing::info!(
+            provider_id = %selected.provider_id,
+            model = %selected.model,
+            "voice_default_model_preference_selected"
+        );
+        Ok(Some(selected))
+    }
+
+    /// Reuse an existing default voice conversation without keeping a stale
+    /// model (typically the old runtime fallback). Only voice conversations are
+    /// touched; ordinary conversations keep their own model authority.
+    pub async fn ensure_voice_model_preference(&self, user_id: &str, conversation_id: &str) -> Result<(), AppError> {
+        let preference = match self.default_voice_model_preference().await {
+            Ok(preference) => preference,
+            Err(error) => {
+                warn!(%error, "voice_default_model_preference_invalid_fallback");
+                return Ok(());
+            }
+        };
+        let Some(preference) = preference else {
+            return Ok(());
+        };
+        let key = parse_conv_id(conversation_id)?;
+        let Some(row) = self.conversation_repo.get(key).await? else {
+            return Ok(());
+        };
+        if row.user_id != user_id {
+            return Err(AppError::NotFound(format!("Conversation {conversation_id} not found")));
+        }
+        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+        if extra.get("voice").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Ok(());
+        }
+        let serialized = serde_json::to_string(&preference)
+            .map_err(|error| AppError::Internal(format!("invalid voice model preference: {error}")))?;
+        if row.model.as_deref() == Some(serialized.as_str()) {
+            return Ok(());
+        }
+        let update = ConversationRowUpdate {
+            model: Some(Some(serialized)),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        self.conversation_repo.update(key, &update).await?;
+        tracing::info!(
+            conversation_id = %conversation_id,
+            provider_id = %preference.provider_id,
+            model = %preference.model,
+            "voice_model_preference_applied_to_existing_conversation"
+        );
+        Ok(())
+    }
+
     pub async fn ensure_default_voice_conversation_with_owner(&self, user_id: &str, owner: Option<&str>) -> Result<String, AppError> {
         self.ensure_default_voice_conversation_with_mode(user_id, owner, None).await
     }
@@ -6049,15 +6155,23 @@ impl ConversationService {
             None => format!("voice:default:{user_id}"),
         };
         if let Some(existing) = self.conversation_repo.find_by_creation_key(user_id, &creation_key).await? {
+            self.ensure_voice_model_preference(user_id, &existing.conversation_id).await?;
             return Ok(existing.conversation_id);
         }
         let mode = self.resolve_voice_session_mode(mode).await?;
-        let req = CreateConversationRequest {
+        let default_model = match self.default_voice_model_preference().await {
+            Ok(model) => model,
+            Err(error) => {
+                warn!(%error, "voice_default_model_preference_invalid_fallback");
+                None
+            }
+        };
+        let mut req = CreateConversationRequest {
             name: Some("语音助手".to_owned()),
             r#type: AgentType::Nomi,
             extra: serde_json::json!({ "is_default_voice": true, "voice": true, "memory_owner_companion_id": owner, "session_mode": mode }),
             source: Some(ConversationSource::Nomifun),
-            model: None,
+            model: default_model,
             preset_id: None,
             preset_overrides: None,
             delegation_policy: DelegationPolicy::Disabled,
@@ -6066,6 +6180,9 @@ impl ConversationService {
             execution_template_id: None,
             channel_chat_id: None,
         };
+        if req.preset_id.is_none() {
+            Self::apply_default_voice_mcp_fence(&mut req);
+        }
         let response = self.create_idempotent(user_id, req, &creation_key).await?;
         Ok(response.conversation_id)
     }
@@ -6112,8 +6229,30 @@ impl ConversationService {
             return Err(AppError::BadRequest("workspace_directory_invalid".into()));
         }
         let workspace = workspace.map(|ws| ws.to_string_lossy().into_owned());
+        let effective_model = match model {
+            Some(value) => Some(value.clone()),
+            None if preset_id.is_none() => match self.default_voice_model_preference().await {
+                Ok(preference) => preference.map(|preference| {
+                    nomifun_api_types::voice::VoiceModelRef {
+                        provider_id: preference.provider_id,
+                        model: preference.model,
+                    }
+                }),
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "voice_default_model_preference_invalid_fallback"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        if effective_model.is_none() && preset_id.is_none() {
+            tracing::warn!("voice_default_model_preference_missing");
+        }
         let creation_key = format!("voice:provisional:{user_id}:{request_id}");
-        let creation = serde_json::json!({"request_id":request_id,"workspace":workspace,"requested_mode":mode,"model":model,"preset_id":preset_id});
+        let creation = serde_json::json!({"request_id":request_id,"workspace":workspace,"requested_mode":mode,"model":effective_model.clone(),"preset_id":preset_id});
         if let Some(existing) = self
             .conversation_repo
             .find_by_creation_key(user_id, &creation_key)
@@ -6146,12 +6285,12 @@ impl ConversationService {
             extra_map.insert("locale".into(), serde_json::Value::String(loc.to_string()));
         }
         let extra = serde_json::Value::Object(extra_map);
-        let req = CreateConversationRequest {
+        let mut req = CreateConversationRequest {
             name: Some(default_name.to_owned()),
             r#type: AgentType::Nomi,
             extra,
             source: Some(ConversationSource::Nomifun),
-            model: model.map(|value| nomifun_common::ProviderWithModel {provider_id: value.provider_id.clone(), model: value.model.clone(), use_model: Some(value.model.clone())}),
+            model: effective_model.map(|value| nomifun_common::ProviderWithModel {provider_id: value.provider_id, model: value.model.clone(), use_model: Some(value.model)}),
             preset_id: preset_id.map(str::to_owned),
             preset_overrides: None,
             delegation_policy: DelegationPolicy::Disabled,
@@ -6160,6 +6299,9 @@ impl ConversationService {
             execution_template_id: None,
             channel_chat_id: None,
         };
+        if req.preset_id.is_none() {
+            Self::apply_default_voice_mcp_fence(&mut req);
+        }
         let created = self.create_inner(user_id, req, None, Some(&creation_key), workspace.as_deref(), Some(creation.clone())).await?;
         if created.extra.get("voice_creation_request") != Some(&creation) {
             return Err(AppError::Conflict("voice_start_request_conflict".into()));

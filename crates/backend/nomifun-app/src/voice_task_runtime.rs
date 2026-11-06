@@ -95,8 +95,35 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
             });
             preset_snapshot=Some(resolved);
         }
-        let model = effective.model.as_ref().ok_or("task_execution_model_unconfigured")?;
-        effective.model = Some(self.models.resolve_model(Some(model)).await?);
+        let model = effective.model.clone().ok_or("task_execution_model_unconfigured")?;
+        effective.model = Some(match self.models.resolve_model(Some(&model)).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::warn!(
+                    provider_id = %model.provider_id,
+                    model = %model.model,
+                    %error,
+                    "voice_task_model_unavailable_fallback"
+                );
+                match self.models.resolve_model(None).await {
+                    Ok(fallback) => {
+                        tracing::warn!(
+                            provider_id = %fallback.provider_id,
+                            model = %fallback.model,
+                            "voice_task_model_fallback"
+                        );
+                        fallback
+                    }
+                    Err(fallback_error) => {
+                        tracing::warn!(
+                            %fallback_error,
+                            "voice_task_model_fallback_unavailable"
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+        });
         Ok((effective,preset_snapshot))
     }
 
