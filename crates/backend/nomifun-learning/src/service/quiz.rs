@@ -39,13 +39,18 @@
 //!
 //! # 变体（q3；learnhub 变式站同职能，allo 复用课时加题引擎）
 //!
-//! 每覆盖节点在旧题之外生成 1 道同型变式（focus = 旧题考点换皮的提示，
+//! 每覆盖节点在旧题之外生成 1 道同型变式（要求原文点名旧题考点换皮 +
 //! 防复用池 = 该节点既有全部题面），过既有质量门（题型形状 + 新颖性 + 可
-//! 判分）；**生成失败如实跳过**（该节点只出旧题——learnhub「quiz 无
-//! abandon，失败顺延」的回合内化：不阻断回合，不降级旧题）。变式不落
-//! `learning_activities`（课时内容面零污染：课时练习与教新结算的题量口径
-//! 不被检测题改写），判分底随回合行落盘。作答呈现跨节点交错（learnhub 同
-//! 款：同节点题不相邻，确定性槽位轮转）。
+//! 判分；u10 on 臂追证据逐字核）；**生成失败如实跳过**（该节点只出旧题
+//! ——learnhub「quiz 无 abandon，失败顺延」的回合内化：不阻断回合，不降
+//! 级旧题）。u10（`NOMI_LEARNING_VARIANT_V2`，缺省 on 待 A/B）：有已生成
+//! 课时正文才装配判底 document，正文缺席同样如实跳过（读数
+//! `variants_skipped_no_document` 留痕——不造「逐字证据」随判分下发学习
+//! 者）；变式硬性要求走独立指令段（不再伪装学习者提示）；单题提示词按请
+//! 求题型装配与整课题库同源的形状契约。off 臂与基线逐字节一致（单测钉
+//! 住）。变式不落 `learning_activities`（课时内容面零污染：课时练习与教
+//! 新结算的题量口径不被检测题改写），判分底随回合行落盘。作答呈现跨节点
+//! 交错（learnhub 同款：同节点题不相邻，确定性槽位轮转）。
 //!
 //! # 校准（q3；learnhub CalibrationPoint 同形）
 //!
@@ -235,7 +240,7 @@ impl LearningService {
         for node in &selected {
             let rows = sqlx::query(&format!(
                 "SELECT a.activity_id, a.kind, a.prompt, a.config_json, l.title AS node_title, \
-                        l.summary AS node_summary, \
+                        l.summary AS node_summary, l.content_generated, \
                         (SELECT MAX(at.created_at) FROM learning_attempts at \
                           WHERE at.activity_id = a.activity_id \
                             AND at.enrollment_id = ?) AS last_attempt, \
@@ -277,6 +282,10 @@ impl LearningService {
             let prompt: String = row.try_get("prompt").map_err(internal)?;
             let node_name: String = row.try_get("node_title").map_err(internal)?;
             let node_summary: String = row.try_get("node_summary").map_err(internal)?;
+            let content_generated: bool = row
+                .try_get::<i64, _>("content_generated")
+                .map_err(internal)?
+                != 0;
             let config: StoredActivityConfig = serde_json::from_str(
                 &row.try_get::<String, _>("config_json").map_err(internal)?,
             )
@@ -321,6 +330,7 @@ impl LearningService {
                         &module_title,
                         &node_name,
                         &node_summary,
+                        content_generated,
                         // 变式与旧题同考点同节点（e5）：继承旧题的铸值难度，
                         // 本场回合内 tier 口径一致。
                         config.difficulty,
@@ -822,9 +832,10 @@ impl LearningService {
         Ok(signals.into_values().collect())
     }
 
-    /// 变式生成（q3）：同型换皮（focus 带旧题考点 + 防复用池 = 节点全部
+    /// 变式生成（q3）：同型换皮（要求原文点名旧题面 + 防复用池 = 节点全部
     /// 既有题面），质量门 = 课时加题引擎既有 validator（形状 + 新颖性 +
-    /// 可判分）。Err（含 completer 缺席的上游）= None 如实跳过。
+    /// 可判分；u10 on 臂追证据逐字核）。Err（含 completer 缺席的上游）=
+    /// None 如实跳过；u10 on 臂正文缺席同样如实跳过（读数留痕，回合照常）。
     #[allow(clippy::too_many_arguments)]
     async fn generate_quiz_variant(
         &self,
@@ -836,9 +847,38 @@ impl LearningService {
         module_title: &str,
         node_name: &str,
         node_summary: &str,
+        // u10 判底：节点正文是否已生成（on 臂缺席 = 跳过变式，不造证据）。
+        content_generated: bool,
         // e5：旧题的铸值难度，变式判分底原样继承（同考点同档）。
         bank_difficulty: Option<u8>,
     ) -> Option<GeneratedVariant> {
+        // 判底装配（u10 on 臂）：有已生成课时正文才让模型写「逐字证据」；
+        // 缺席 = 如实跳过（该节点只出旧题——不造证据随判分下发学习者），
+        // 读数 `variants_skipped_no_document` 留痕，回合不阻断。off 臂 =
+        // 基线形状（focus 伪装学习者提示 + document = 节点摘要，逐字节）。
+        let (focus, variant_instruction, document) = if variant_v2_enabled() {
+            let Some(document) = variant_document(content_generated, node_summary) else {
+                crate::generation::variant_readings::record_skipped_no_document();
+                tracing::info!(target: "nomifun_learning", node = %node,
+                    "quiz variant skipped: lesson body not generated (no document to ground on)");
+                return None;
+            };
+            (
+                String::new(),
+                variant_drill_instruction(bank_prompt),
+                document,
+            )
+        } else {
+            (
+                format!(
+                    "Quiz variant drill: test the same knowledge point as this existing \
+                     question from a fresh angle (new surface, same concept, judgeable answer): \
+                     \"{bank_prompt}\""
+                ),
+                String::new(),
+                node_summary.to_owned(),
+            )
+        };
         let existing = match self.existing_lesson_questions(
             &LearningLessonId::parse(node).ok()?,
         )
@@ -851,11 +891,6 @@ impl LearningService {
                 return None;
             }
         };
-        let focus = format!(
-            "Quiz variant drill: test the same knowledge point as this existing \
-             question from a fresh angle (new surface, same concept, judgeable answer): \
-             \"{bank_prompt}\""
-        );
         match generate_lesson_activity(
             completer,
             None,
@@ -864,29 +899,16 @@ impl LearningService {
             course_title,
             module_title,
             node_name,
-            node_summary,
-            // 变式以节点既有题面为地面（节点正文可能未生成）；excerpt 留空。
+            &document,
+            // excerpt 留空：变式判底 = 课时正文（document）本身。
             "",
             &existing,
+            &variant_instruction,
         )
         .await
         {
             Ok(pack) => {
-                let config = StoredActivityConfig {
-                    options: pack.options.clone(),
-                    answer: pack.answer.clone(),
-                    explanation: pack.explanation.clone(),
-                    distractors: pack.distractors.clone(),
-                    tol: None,
-                    matches: Vec::new(),
-                    difficulty: bank_difficulty,
-                    evidence: pack
-                        .evidence
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|evidence| !evidence.is_empty())
-                        .map(str::to_owned),
-                };
+                let config = variant_stored_config(&pack, bank_difficulty);
                 let config_json = serde_json::to_string(&config).ok()?;
                 tracing::info!(target: "nomifun_learning", node = %node,
                     kind = %pack.kind.as_str(), "quiz variant generated");
@@ -1034,6 +1056,57 @@ impl LearningService {
 }
 
 /// Option 的升序比较（`Some` 在前升序、`None` 落后——弱信号有值者优先）。
+/// u10 变式判底（on 臂纯函数）：已生成课时正文（content_generated 且摘要
+/// 非空）才装配 document；缺席 = None——调用方如实跳过变式（不造逐字证
+/// 据）并记 `variants_skipped_no_document` 读数。off 臂不走此装配。
+fn variant_document(content_generated: bool, summary: &str) -> Option<String> {
+    if content_generated && !summary.trim().is_empty() {
+        Some(summary.to_owned())
+    } else {
+        None
+    }
+}
+
+/// u10 变式指令独立段（on 臂纯函数）：「同考点/换皮/可判分/逐字证据」四项
+/// 硬性要求放进独立指令段（不再冒充学习者提示）；原文点名旧题面作为换皮
+/// 锚。尾部不带换行（装配面统一补）。
+fn variant_drill_instruction(bank_prompt: &str) -> String {
+    format!(
+        "Variant drill instructions (hard requirements for this question, not a \
+         learner preference):\n\
+         - Test the SAME knowledge point as this existing question from a fresh angle \
+         (new surface, same concept, judgeable answer): \"{bank_prompt}\"\n\
+         - The new question must stay grounded in the finished lesson document above \
+         and must not repeat or closely resemble any existing question.\n\
+         - The \"evidence\" field must quote the finished lesson document \
+         word-for-word (never paraphrase, never invent one)."
+    )
+}
+
+/// u10 变式判分底铸形（机械项）：tol 透传 pack.tol——数值题容差不再静默
+/// 回落 1e-9（舍入答案几乎必判错）；难度继承与空白证据修剪语义不变。
+fn variant_stored_config(
+    pack: &crate::models::ActivityPack,
+    bank_difficulty: Option<u8>,
+) -> StoredActivityConfig {
+    StoredActivityConfig {
+        options: pack.options.clone(),
+        answer: pack.answer.clone(),
+        explanation: pack.explanation.clone(),
+        distractors: pack.distractors.clone(),
+        tol: pack.tol,
+        matches: Vec::new(),
+        difficulty: bank_difficulty,
+        evidence: pack
+            .evidence
+            .as_deref()
+            .map(str::trim)
+            .filter(|evidence| !evidence.is_empty())
+            .map(str::to_owned),
+    }
+}
+
+/// Option 的升序比较（`Some` 在前升序、`None` 落后——弱信号有值者优先）。
 fn ascending_option(a: &Option<f64>, b: &Option<f64>) -> std::cmp::Ordering {
     match (a, b) {
         (Some(x), Some(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
@@ -1080,6 +1153,7 @@ struct StoredCalibrationPoint {
 #[cfg(test)]
 mod tests {
     use super::validate_round_shape;
+    use crate::models::ActivityKind;
 
     /// 三条形态规则（原 084 表级 CHECK）逐条钉住：合法三态 + 非法三样。
     #[test]
@@ -1098,5 +1172,60 @@ mod tests {
         assert!(validate_round_shape("fetched", None, None, None, None).is_err());
         // active 带结算面 → 拒绝。
         assert!(validate_round_shape("active", None, None, None, Some(3)).is_err());
+    }
+
+    // ── u10：变式判底装配 / 指令独立段 / tol 透传（纯函数面）──
+
+    /// 判底（on 臂）：已生成课时正文才装配 document；未生成或空摘要 =
+    /// None（调用方如实跳过变式并记 `variants_skipped_no_document`——不造
+    /// 逐字证据随判分下发）。
+    #[test]
+    fn variant_document_requires_a_generated_non_empty_body() {
+        assert_eq!(
+            super::variant_document(true, "波动率的离散度量正文。").as_deref(),
+            Some("波动率的离散度量正文。")
+        );
+        assert!(super::variant_document(false, "正文未生成时的占位。").is_none());
+        assert!(super::variant_document(true, "   ").is_none());
+        assert!(super::variant_document(false, "").is_none());
+    }
+
+    /// 指令独立段：要求段头声明这是硬性指令而非学习者偏好，原文点名旧题
+    /// 面（同考点换皮的锚），并保留可判分与逐字证据的要求词。
+    #[test]
+    fn variant_drill_instruction_names_the_bank_question_as_a_requirement() {
+        let instruction = super::variant_drill_instruction("What is 6 + 6?");
+        assert!(instruction.contains("Variant drill instructions"));
+        assert!(instruction.contains("not a learner preference"));
+        assert!(instruction.contains("\"What is 6 + 6?\""));
+        assert!(instruction.contains("judgeable"));
+        assert!(instruction.contains("word-for-word"));
+    }
+
+    /// tol 透传（机械项）：pack.tol 原样进变式判分底——数值题容差不再静默
+    /// 回落 1e-9（舍入答案几乎必判错）；无 tol = None（缺省语义不变）。
+    /// 难度继承与空白证据修剪语义不变。
+    #[test]
+    fn variant_stored_config_passes_tol_through() {
+        let pack = |tol: Option<f64>, evidence: Option<&str>| crate::models::ActivityPack {
+            kind: ActivityKind::Numeric,
+            prompt: "σ of the series?".into(),
+            options: vec![],
+            answer: serde_json::json!(3.16),
+            explanation: "sqrt of mean square".into(),
+            distractors: vec![],
+            tol,
+            section_key: None,
+            difficulty: None,
+            evidence: evidence.map(str::to_owned),
+        };
+        let config = super::variant_stored_config(&pack(Some(0.05), Some(" quote ")), Some(2));
+        assert_eq!(config.tol, Some(0.05), "tol 必须透传（不再回落 1e-9）");
+        assert_eq!(config.difficulty, Some(2), "旧题铸值难度原样继承");
+        assert_eq!(config.evidence.as_deref(), Some("quote"), "空白证据修剪语义不变");
+        let config = super::variant_stored_config(&pack(None, None), None);
+        assert_eq!(config.tol, None, "无 tol = None（缺省语义不变）");
+        assert_eq!(config.evidence, None);
+        assert!(config.matches.is_empty());
     }
 }

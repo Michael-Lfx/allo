@@ -30,7 +30,7 @@ pub(super) use crate::generation::{
     assemble_outline_pack, base_for_sample_path, build_blueprint_prompt,
     build_description_blueprint_prompt, generate_blueprint, generate_lesson,
     generate_lesson_activity, namespace_for_base, rel_path_for_base, sample_bases,
-    validate_blueprint,
+    validate_blueprint, variant_v2_enabled,
 };
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,

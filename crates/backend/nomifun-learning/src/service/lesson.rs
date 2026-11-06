@@ -2469,6 +2469,8 @@ impl LearningService {
             &summary,
             &excerpt,
             &existing_questions,
+            // 手动加题无变式指令段（u10 参数：空 = 基线 focus 渲染）。
+            "",
         )
         .await
         .map_err(|error| {
