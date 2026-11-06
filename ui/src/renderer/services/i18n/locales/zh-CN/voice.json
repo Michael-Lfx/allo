@@ -1,4 +1,5 @@
 {
+  "modelFallback": "所选语音模型不可用，已临时切换为 {{model}}",
   "composer": {
     "queued": "排队中 {{count}} 项",
     "historyFailed": "记录同步失败，当前内容已保留",

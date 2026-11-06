@@ -228,6 +228,7 @@ pub trait VoiceDialogueRecorder: Send + Sync {
     fn set_call_reservation(&self, _reservation: Option<VoiceCallReservation>) {}
     fn take_call_reservation(&self, _request_id: &str) -> Option<VoiceCallReservation> { None }
     fn current_call_reservation(&self) -> Option<VoiceCallReservation> { None }
+    fn take_model_fallback(&self) -> Option<nomifun_api_types::voice::VoiceModelFallback> { None }
     fn is_projected(&self, _session_id: &str, _conversation_id: &str, _turn_id: &str) -> bool { false }
     fn projected_message_ids(&self, _session_id: &str, _conversation_id: &str, _turn_id: &str) -> Option<(Option<String>, String)> { None }
     /// A task-control turn that could not produce an authoritative result is

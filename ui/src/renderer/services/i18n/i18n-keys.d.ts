@@ -11373,6 +11373,7 @@ export type I18nKey =
   | 'voice.keyboardWait.sending'
   | 'voice.keyboardWait.syncing'
   | 'voice.keyboardWait.unknown'
+  | 'voice.modelFallback'
   | 'voice.notification.dispatched'
   | 'voice.notification.failed'
   | 'voice.notification.interrupted'

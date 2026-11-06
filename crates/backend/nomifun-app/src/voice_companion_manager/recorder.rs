@@ -20,6 +20,7 @@ pub struct ConversationVoiceDialogueRecorder {
     turn_errors: RwLock<std::collections::HashMap<(String, String, String), VoiceSessionError>>,
     execution_runtime:Option<Arc<dyn VoiceTaskRuntime>>,
     pending_call_reservation: RwLock<Option<crate::voice_dialogue::VoiceCallReservation>>,
+    last_model_fallback: RwLock<Option<nomifun_api_types::voice::VoiceModelFallback>>,
     projection_fault_gate: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Serializes the workspace-session registry's read-modify-write. It is
     /// separate from the journal lock so a slow gate cannot block it.
@@ -80,6 +81,7 @@ impl ConversationVoiceDialogueRecorder {
             turn_errors: RwLock::new(std::collections::HashMap::new()),
             execution_runtime:None,
             pending_call_reservation: RwLock::new(None),
+            last_model_fallback: RwLock::new(None),
             workspace_registry_lock: tokio::sync::Mutex::new(()),
             conversation_service,
             companion_service: None,
@@ -110,6 +112,16 @@ impl ConversationVoiceDialogueRecorder {
     pub fn with_projection_fault_gate(mut self, gate: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.projection_fault_gate = Some(gate);
         self
+    }
+
+    /// Consume the fallback recorded by the most recent wake-target
+    /// resolution. The manager attaches it to the start response so the UI can
+    /// tell the user that the selected model was replaced.
+    pub fn take_model_fallback(&self) -> Option<nomifun_api_types::voice::VoiceModelFallback> {
+        self.last_model_fallback
+            .write()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     fn workspace_sessions_path(&self) -> PathBuf {
@@ -379,6 +391,10 @@ impl ConversationVoiceDialogueRecorder {
         } else {
             let req_id = format!("voice-auto-{}", nomifun_common::generate_id());
             let home_conv = self.conversation_service.get(&self.user_id, &home).await.ok();
+            if let Ok(mut slot) = self.last_model_fallback.write() {
+                *slot = None;
+            }
+            let mut requested_saved_model: Option<nomifun_api_types::voice::VoiceModelRef> = None;
             let mut used_saved_default = false;
             let mut model_ref = match self
                 .conversation_service
@@ -386,11 +402,13 @@ impl ConversationVoiceDialogueRecorder {
                 .await
             {
                 Ok(Some(preference)) => {
-                    used_saved_default = true;
-                    Some(nomifun_api_types::voice::VoiceModelRef {
+                    let requested = nomifun_api_types::voice::VoiceModelRef {
                         provider_id: preference.provider_id,
                         model: preference.model,
-                    })
+                    };
+                    requested_saved_model = Some(requested.clone());
+                    used_saved_default = true;
+                    Some(requested)
                 }
                 Ok(None) => {
                     tracing::warn!("voice_default_model_preference_missing");
@@ -406,23 +424,8 @@ impl ConversationVoiceDialogueRecorder {
             };
             if let Some(model) = model_ref.clone() {
                 if let Some(runtime) = &self.execution_runtime {
-                    let probe = nomifun_api_types::voice::VoiceExecutionConfig {
-                        workspace: home_conv
-                            .as_ref()
-                            .and_then(|conversation| {
-                                conversation
-                                    .extra
-                                    .get("workspace")
-                                    .and_then(serde_json::Value::as_str)
-                            })
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into()),
-                        model: Some(model),
-                        preset_id: None,
-                        session_mode: None,
-                    };
-                    match runtime.prepare_configuration(&probe).await {
-                        Ok((prepared, _)) => model_ref = prepared.model,
+                    match runtime.validate_model(&model).await {
+                        Ok(resolved) => model_ref = Some(resolved),
                         Err(error) => {
                             tracing::warn!(%error, "voice_default_model_unavailable_fallback");
                             model_ref = None;
@@ -461,6 +464,16 @@ impl ConversationVoiceDialogueRecorder {
                     ),
                     None => tracing::warn!("voice_default_model_fallback_unresolved"),
                 }
+            }
+            if let (Some(requested), Some(actual)) = (requested_saved_model, model_ref.clone())
+                && actual != requested
+                && let Ok(mut slot) = self.last_model_fallback.write()
+            {
+                *slot = Some(nomifun_api_types::voice::VoiceModelFallback {
+                    requested,
+                    actual,
+                    reason: "saved_model_unavailable".into(),
+                });
             }
             let created = self.conversation_service.create_provisional_voice_conversation_with_locale(
                 &self.user_id,
@@ -951,6 +964,13 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         g.clone()
     }
 
+    fn take_model_fallback(&self) -> Option<nomifun_api_types::voice::VoiceModelFallback> {
+        self.last_model_fallback
+            .write()
+            .ok()
+            .and_then(|mut slot| slot.take())
+    }
+
     fn is_projected(&self, session_id: &str, conversation_id: &str, turn_id: &str) -> bool {
         self.projected_turns.read().unwrap_or_else(|e|e.into_inner()).contains(&(session_id.into(), conversation_id.into(), turn_id.into()))
     }
@@ -1092,6 +1112,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         request_id: Option<&str>,
         locale: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+        // A previous failed start must not leak its fallback notice into this
+        // attempt's response.
+        if let Ok(mut slot) = self.last_model_fallback.write() {
+            *slot = None;
+        }
         // Share the journal lock with late projections publishing reuse pointers:
         // registry read/modify/write must not lose another workspace's update.
         let _guard = self.journal_lock.lock().await;

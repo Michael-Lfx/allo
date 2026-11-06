@@ -98,7 +98,7 @@ bun run build:ui
 | --- | --- | --- |
 | 新建自动语音会话 gateway-only | 🟢 | `01a1aefb` 490ms / `01a1af01` 364ms，`mcp_count=1`；对比旧 5 MCP 27,549ms |
 | 继承用户默认模型 | 🟡 | 已实现 `nomi.defaultModel` 优先；待真机确认新 commit 语音会话模型 |
-| P1 显式 fallback | 🟡 | 已实现并加日志；回退无 UI toast；preset 不可用直接失败 |
+| P1 显式 fallback | 🟢 | 已实现 fallback 日志 + `model_fallback` 响应 + Router warning toast；preset 不可用直接失败；真机提示待验 |
 | 旧语音会话 | ⚪ | 按用户范围不迁移；复用旧 retained/workspace 会话仍可能走旧 MCP 配置 |
 | 真机后验 | 🔴 | 尚未在新 commit 上重测首轮 runtime；app 集成测试受 `sherpa_onnx_sys` 阻断 |
 

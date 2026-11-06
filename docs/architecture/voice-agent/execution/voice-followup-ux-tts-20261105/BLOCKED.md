@@ -1,6 +1,6 @@
 # 第二轮语音 UX/TTS · BLOCKED / 待验
 
-> **2026-11-06 E 轮追加**：E 的运行时/模型边界见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。当前额外阻断：新 commit 真机首轮计时未做、`nomifun-app` 集成测试受 `sherpa_onnx_sys` rlib 缺失阻断、P1 fallback 无 UI 提示、旧语音会话不迁移。
+> **2026-11-06 E 轮追加**：E 的运行时/模型边界见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。当前额外阻断：新 commit 真机首轮计时未做、`nomifun-app` 集成测试受 `sherpa_onnx_sys` rlib 缺失阻断、P1 真机 toast 未验、旧语音会话不迁移。
 
 ## 硬阻断 / 授权待决
 
@@ -32,5 +32,5 @@
 | 新 commit 真机后验 | 尚未重启 Flowy 并用新 commit 新建语音会话 | 364–490ms 是 P0/P1 提交前数据；新 commit 首轮耗时待确认 |
 | `nomifun-app` 集成测试 | 本地 `sherpa_onnx_sys` rlib 缺失 | app 集成测试未全量跑；`cargo check`/`cargo build -p Flowy` 已过 |
 | 旧语音会话 | 按用户范围不迁移 | 旧 retained/workspace 会话仍可能复用 5 MCP / auto-cost |
-| P1 用户提示 | 当前只有日志，无 UI toast | 模型不可用回退时用户不会主动看到 |
+| P1 用户提示 | `model_fallback` 响应 + Router toast 已实现；尚未真机验证 | 模型不可用回退时用户可看到提示，但需现场确认 |
 | 外部工具能力 | 新语音默认 gateway-only | 浏览器/Excel/Figma 等 MCP 工具默认不可用 |

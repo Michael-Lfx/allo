@@ -2761,6 +2761,7 @@ impl VoiceCompanionProcessManager {
                             session_id: snap.session_id,
                             memory_owner_companion_id: memory_owner,
                             binding: snap.binding,
+                            model_fallback: None,
                         });
                     }
                     if now - reserved_at_epoch_ms < 10_000 {
@@ -2771,6 +2772,7 @@ impl VoiceCompanionProcessManager {
                             session_id: snap.session_id,
                             memory_owner_companion_id: memory_owner,
                             binding: snap.binding,
+                            model_fallback: None,
                         });
                     }
                     return Err((axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -2798,6 +2800,7 @@ impl VoiceCompanionProcessManager {
                         session_id: snap.session_id.or(session_id),
                         memory_owner_companion_id: memory_owner,
                         binding: snap.binding,
+                        model_fallback: None,
                     });
                 }
                 HandledStartOutcome::Stopped { conversation_id, .. } => {
@@ -2865,6 +2868,7 @@ impl VoiceCompanionProcessManager {
                     session_id: snap.session_id,
                     memory_owner_companion_id: snap.binding.as_ref().and_then(|b| b.memory_owner_companion_id.clone()),
                     binding: snap.binding,
+                    model_fallback: None,
                 });
             }
             return Err((axum::http::StatusCode::CONFLICT, serde_json::json!({
@@ -2921,6 +2925,7 @@ impl VoiceCompanionProcessManager {
                 }
                 _ => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "target_resolution_failed".to_string()),
             })?;
+        let model_fallback = recorder.take_model_fallback();
 
         let now_epoch_ms = chrono::Utc::now().timestamp_millis();
         let reservation = crate::voice_dialogue::VoiceCallReservation {
@@ -3022,6 +3027,7 @@ impl VoiceCompanionProcessManager {
             session_id: None,
             memory_owner_companion_id: memory_owner,
             binding: None,
+            model_fallback,
         })
     }
 

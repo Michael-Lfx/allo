@@ -68,6 +68,10 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         self.prepare_configuration(config).await.map(|(config,_)|config)
     }
 
+    async fn validate_model(&self, model:&VoiceModelRef) -> Result<VoiceModelRef,String> {
+        self.models.resolve_model(Some(model)).await
+    }
+
     async fn prepare_configuration(&self, config:&VoiceExecutionConfig) -> Result<(VoiceExecutionConfig,Option<nomifun_api_types::ResolvedPresetSnapshot>),String> {
         let mut effective = config.clone();
         if effective.model.is_none() && effective.preset_id.as_deref().is_none_or(|id| id.trim().is_empty()) {
