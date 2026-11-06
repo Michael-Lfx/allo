@@ -12,7 +12,7 @@ review: cargo test -p nomifun-learning——金样(golden/)、围栏、契约后
 - 目标原句：{{goal}}
 - 程度声明：{{proficiency_statement}}
 - 学习者基础：{{learner_basis}}
-- 当前结构快照（块参考行 + 边表；块引用 = 块名逐字）：
+- 当前结构快照（主干名单 + 块参考行 + 边表；块引用 = 块名逐字，add_block 的 spine 逐字取自主干名单）：
 {{structure_snapshot}}
 - 留痕（findings，数据缺陷观察；每条都是线索不是命令）：
 {{findings}}

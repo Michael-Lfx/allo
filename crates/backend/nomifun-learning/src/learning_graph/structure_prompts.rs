@@ -516,6 +516,8 @@ mod tests {
             // goal-decomposition 同批同步（「40–100」旧两档行文不得回流）。
             "25–80",
             "不足 25 拒收",
+            // u08：快照投影带主干名单——add_block 的 spine 逐字合法源。
+            "主干名单",
         ] {
             assert!(repair_body.contains(phrase), "repair prompt missing「{phrase}」");
         }
