@@ -34,6 +34,12 @@ import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
 import GuidVideoShortcut from './components/GuidVideoShortcut';
 import ShowcaseCards from './components/ShowcaseCards';
+import {
+  HomeStageFrame,
+  HomeStageOptions,
+  type HomeCapability,
+  type HomeStageOption,
+} from './components/HomeStagePanel';
 import SlideOptionsControls from './presentation/SlideOptionsControls';
 import SlideCreatePanel from './presentation/SlideCreatePanel';
 import SlideCardWall from './presentation/SlideCardWall';
@@ -99,6 +105,18 @@ import type { Preset } from '@/common/types/agent/presetTypes';
 import type { TProviderWithModel } from '@/common/config/storage';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
+import { createGenerationTask } from '../videoCanvas/api';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { clampClipDurationForModel, clipDurationBoundsForModel } from '../videoGeneration/durationBounds';
+import { formatClipOperationError } from '../videoGeneration/clipFailure';
+import { rememberVideoGenerationTask } from '../videoGeneration/routeMemory';
+import { composeClipPrompt } from '../videoGeneration/styleCatalog/looks';
+import { materializeHomeImageMentions } from '../videoGeneration/home/imageMentions';
+import {
+  DEFAULT_VIDEO_RESOLUTION,
+  VIDEO_RESOLUTIONS,
+  type VideoResolution,
+} from '@renderer/services/videoModelCapabilities';
 import styles from './index.module.css';
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
@@ -172,6 +190,24 @@ const GuidPage: React.FC = () => {
     [handleChatPopupVisibleChange]
   );
   const taskProfile = useTaskProfileStore((state) => state.taskProfile);
+  // Home stage state machine: `home` shows the two entries + membership card;
+  // a directory replaces them; a capability view shows that ability's prep area.
+  const [homeView, setHomeView] = useState<'home' | 'develop-directory' | 'create-directory' | 'capability'>('home');
+  const [homeCapability, setHomeCapability] = useState<HomeCapability>('office');
+  // Drafts are isolated per capability; only the capability's own text/workspace
+  // is written back to the composer when switching. No global task-profile setter.
+  const homeDraftsRef = useRef<Record<HomeCapability, { text: string; dir: string }>>({
+    office: { text: '', dir: '' },
+    develop: { text: '', dir: '' },
+    slides: { text: '', dir: '' },
+    video: { text: '', dir: '' },
+  });
+  const [homeTaskProfile, setHomeTaskProfile] = useState<'coding' | null>(null);
+  // Video capability: local homepage draft parameters. Nothing is uploaded or
+  // created until the user presses send.
+  const [homeVideoDuration, setHomeVideoDuration] = useState(6);
+  const [homeVideoResolution, setHomeVideoResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
+  const [homeVideoSubmitting, setHomeVideoSubmitting] = useState(false);
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
   const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
@@ -314,11 +350,40 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
-  const handleSelectShowcaseApp = useCallback(() => {
-    guidInput.setInput(t('guid.home.showcaseAppPrompt'));
-    useTaskProfileStore.getState().setTaskProfile('coding');
+  const focusHomeComposer = useCallback(() => {
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
-  }, [guidInput.setInput, t]);
+  }, []);
+  const switchHomeCapability = useCallback(
+    (next: HomeCapability) => {
+      if (next === homeCapability) return;
+      homeDraftsRef.current[homeCapability] = { text: guidInput.input, dir: guidInput.dir };
+      const draft = homeDraftsRef.current[next];
+      guidInput.setInput(draft.text);
+      guidInput.setDir(draft.dir);
+      setHomeTaskProfile(next === 'develop' ? 'coding' : null);
+      setHomeCapability(next);
+      focusHomeComposer();
+    },
+    [homeCapability, guidInput.input, guidInput.dir, guidInput.setInput, guidInput.setDir, focusHomeComposer],
+  );
+  const openHomeDirectory = useCallback((group: 'develop' | 'create') => {
+    setHomeView(group === 'develop' ? 'develop-directory' : 'create-directory');
+  }, []);
+  const closeHomePanel = useCallback(() => {
+    setHomeView('home');
+    focusHomeComposer();
+  }, [focusHomeComposer]);
+  const handleSelectShowcaseApp = useCallback(() => {
+    switchHomeCapability('develop');
+    guidInput.setInput(t('guid.home.showcaseAppPrompt'));
+    setHomeView('capability');
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, [guidInput.setInput, switchHomeCapability, t]);
+  const handleSelectShowcaseVideo = useCallback(() => {
+    switchHomeCapability('video');
+    setHomeView('capability');
+    focusHomeComposer();
+  }, [focusHomeComposer, switchHomeCapability]);
   const handleSelectShowcaseImage = useCallback(() => {
     guidInput.setInput(t('guid.home.showcaseImagePrompt'));
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
@@ -626,6 +691,89 @@ const GuidPage: React.FC = () => {
     agentSelection.currentEffectiveAgentInfo.agent_type,
   );
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
+
+  // Compact stage check: content width <= 560 (i.e. stage area <= 608) or
+  // available height <= 580. Measured on the real container so the 880x600
+  // desktop window and the browser viewport share one rule.
+  useEffect(() => {
+    const el = guidContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const apply = () => {
+      const compact = el.clientWidth - 48 <= 560 || el.clientHeight <= 580;
+      if (compact) el.setAttribute('data-home-compact', 'true');
+      else el.removeAttribute('data-home-compact');
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // ESC only changes stage display/focus; it never rewrites the draft.
+  useEffect(() => {
+    if (homeView === 'home') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setHomeView('home');
+      focusHomeComposer();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [homeView, focusHomeComposer]);
+
+  // Home directory entries and the per-capability input placeholder. Copy reuses
+  // existing bilingual keys only (i18n files stay read-only in this task).
+  const homeVideoDurationOptions = useMemo(() => clipDurationBoundsForModel('').ticks, []);
+  const homeDevelopOptions = useMemo<HomeStageOption[]>(
+    () => [
+      {
+        key: 'develop-new',
+        id: 'develop',
+        title: t('common.sider.newTask', { defaultValue: 'New task' }),
+        description: t('guid.home.buildDescription'),
+      },
+      {
+        key: 'develop-existing',
+        id: 'develop',
+        title: t('conversation.welcome.openFolder', { defaultValue: 'Open folder' }),
+        description: t('conversation.welcome.currentWorkspace', { defaultValue: 'Current project' }),
+      },
+    ],
+    [t],
+  );
+  const homeCreateOptions = useMemo<HomeStageOption[]>(
+    () => [
+      {
+        key: 'create-slides',
+        id: 'slides',
+        title: t('presentation.home.label'),
+        disabled: !supportsHomeGoalCommand,
+      },
+      {
+        key: 'create-video',
+        id: 'video',
+        title: t('videoGeneration.create.preferences.video'),
+        description: t('guid.home.videoShortcutSubtitle'),
+      },
+    ],
+    [supportsHomeGoalCommand, t],
+  );
+  const homeCapabilityTitle =
+    homeCapability === 'develop'
+      ? t('guid.home.buildTitle')
+      : homeCapability === 'slides'
+        ? t('presentation.home.label')
+        : homeCapability === 'video'
+          ? t('videoGeneration.create.preferences.video')
+          : t('guid.home.createTitle');
+  const homePlaceholder =
+    homeCapability === 'slides'
+      ? t('presentation.home.placeholder')
+      : homeCapability === 'video'
+        ? t('videoGeneration.create.composer.generatePlaceholder')
+        : t('conversation.welcome.placeholder');
+
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
   const pickerSkills = useMemo(
     () => installedPickerSkills(catalogSkills),
@@ -651,12 +799,18 @@ const GuidPage: React.FC = () => {
   );
   const enterSlideMode = useCallback(() => {
     setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
-    setSlidePanelOpen(true);
+    setSlidePanelOpen(false);
+    if (homeCapability !== 'slides') switchHomeCapability('slides');
+    setHomeView('capability');
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
-  }, []);
+  }, [homeCapability, switchHomeCapability]);
   const exitSlideMode = useCallback(() => {
     setSlideOptions(null);
-  }, []);
+    if (homeCapability === 'slides') {
+      switchHomeCapability('office');
+      setHomeView('home');
+    }
+  }, [homeCapability, switchHomeCapability]);
   const handleSlidesChange = useCallback(
     (active: boolean) => (active ? enterSlideMode() : exitSlideMode()),
     [enterSlideMode, exitSlideMode],
@@ -1042,7 +1196,11 @@ const GuidPage: React.FC = () => {
   );
   // Slides mode applies only to a real brief: an empty composer stays empty
   // (the send button stays disabled), and nothing is added to it visibly.
-  const slidesBrief = supportsHomeGoalCommand && slideOptions !== null && guidInput.input.trim().length > 0;
+  const slidesBrief =
+    homeCapability === 'slides' &&
+    supportsHomeGoalCommand &&
+    slideOptions !== null &&
+    guidInput.input.trim().length > 0;
   const sendInput = slidesBrief ? applySlideHeader(guidInput.input, slideOptions) : guidInput.input;
   const sendSkillIds = useMemo(
     () =>
@@ -1127,6 +1285,28 @@ const GuidPage: React.FC = () => {
     });
   }, [guidInput.setDir]);
 
+  const homeVideoSendRef = useRef<(() => void) | null>(null);
+  const backFromHomePanel = useCallback(() => {
+    setHomeView(
+      homeCapability === 'develop'
+        ? 'develop-directory'
+        : homeCapability === 'office'
+          ? 'home'
+          : 'create-directory',
+    );
+    focusHomeComposer();
+  }, [homeCapability, focusHomeComposer]);
+  const selectHomeOption = useCallback(
+    (option: HomeStageOption) => {
+      if (option.id === 'slides' && !supportsHomeGoalCommand) return;
+      if (option.id === 'slides') setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
+      switchHomeCapability(option.id);
+      setHomeView('capability');
+      if (option.key === 'develop-existing') void handleLinkWorkspace();
+    },
+    [handleLinkWorkspace, supportsHomeGoalCommand, switchHomeCapability],
+  );
+
   const send = useGuidSend({
     // Input state (slides mode prepends the ppt-master option line here)
     input: sendInput,
@@ -1148,7 +1328,7 @@ const GuidPage: React.FC = () => {
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
     reasoningEffort: effectiveReasoningEffort,
-    taskProfile,
+    taskProfile: homeTaskProfile ?? taskProfile,
 
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
@@ -1210,6 +1390,57 @@ const GuidPage: React.FC = () => {
 
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleComposerSend = send.sendMessageHandler;
+  // Homepage send: the video capability owns its own submit path (clip task +
+  // existing video result route); every other capability uses the existing
+  // session send path, so office/develop/slides keep their current behavior.
+  const homeSend = useCallback(() => {
+    if (homeCapability === 'video') {
+      homeVideoSendRef.current?.();
+      return;
+    }
+    handleComposerSend();
+  }, [handleComposerSend, homeCapability]);
+
+  // Video capability submit: the same clip-task contract the video page uses —
+  // upload only explicit material, create the task, register history, then open
+  // the existing clip result route. Failures keep the homepage draft untouched.
+  const submitHomeVideo = useCallback(async () => {
+    const text = guidInput.input.trim();
+    if (!text || homeVideoSubmitting) return;
+    setHomeVideoSubmitting(true);
+    try {
+      const prompt = composeClipPrompt(materializeHomeImageMentions(text), '');
+      const durationSecs = clampClipDurationForModel('', homeVideoDuration);
+      const task = await createGenerationTask({
+        mode: 'video',
+        prompt,
+        resolution: homeVideoResolution,
+        duration_secs: durationSecs,
+      });
+      const title =
+        text.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
+        t('videoGeneration.create.generateTitle', { defaultValue: '视频生成' });
+      rememberVideoGenerationTask(task.task_id, title);
+      await navigate(`/video-generation/clip/${encodeURIComponent(task.task_id)}`, {
+        state: { title, prompt, taskId: task.task_id },
+      });
+    } catch (cause) {
+      if (isInvalidCloudSessionError(cause)) {
+        await navigate('/cloud-login');
+        return;
+      }
+      const failure = formatClipOperationError(cause, t, {
+        key: 'videoGeneration.create.generateFailed',
+        defaultValue: '视频生成创建失败',
+      });
+      Message.error(failure.message);
+    } finally {
+      setHomeVideoSubmitting(false);
+    }
+  }, [guidInput.input, homeVideoDuration, homeVideoResolution, homeVideoSubmitting, navigate, t]);
+  homeVideoSendRef.current = () => {
+    void submitHomeVideo();
+  };
 
   const handleInputChange = useCallback(
     (value: string) => {
@@ -1306,7 +1537,7 @@ const GuidPage: React.FC = () => {
       if (isSubmitGesture(event, sendKey)) {
         event.preventDefault();
         if (!hasGuidInitialPayload(guidInput.input, homeInitialSkillIds)) return;
-        handleComposerSend();
+        homeSend();
       }
     },
     [
@@ -1315,7 +1546,7 @@ const GuidPage: React.FC = () => {
       homeSlashController,
       mention,
       guidInput.input,
-      handleComposerSend,
+      homeSend,
       sendKey,
     ],
   );
@@ -1667,7 +1898,7 @@ const GuidPage: React.FC = () => {
       autoWorkDraft={advancedConfig.autoWork}
       goalMode={supportsHomeGoalCommand && goalMode}
       onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
-      slidesActive={supportsHomeGoalCommand && slideOptions !== null}
+      slidesActive={supportsHomeGoalCommand && homeCapability === 'slides'}
       onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
       slideControls={
         slideOptions !== null ? (
@@ -1686,7 +1917,7 @@ const GuidPage: React.FC = () => {
         guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
       }}
       dictationActivation={dictationActivation}
-      onSend={handleComposerSend}
+      onSend={homeSend}
     />
   );
 
@@ -1702,20 +1933,130 @@ const GuidPage: React.FC = () => {
         <div className={styles.guidScrollArea}>
           <div className={styles.guidPrimaryStage}>
             <div className={styles.guidLayout}>
-              <div className={styles.homeMasthead}>
-                <GuidHomeBrand />
-                <div className={styles.homeVideo} data-testid='guid-home-video'>
-                  <GuidVideoShortcut />
+              <div className={styles.homeStage}>
+              {homeView === 'home' ? <GuidHomeBrand /> : null}
+              <div className={styles.homeVideo} data-testid='guid-home-video'>
+                <GuidVideoShortcut />
+              </div>
+              {homeView === 'home' ? (
+                <div className={styles.homeEntries}>
+                  <FeatureCards
+                    onOpenDevelop={() => openHomeDirectory('develop')}
+                    onOpenCreate={() => openHomeDirectory('create')}
+                  />
                 </div>
-              </div>
-              <FeatureCards
-                onStartFromLocal={() => void handleLinkWorkspace()}
-                onCreate={supportsHomeGoalCommand ? enterSlideMode : undefined}
-              />
-
+              ) : null}
+              {homeView === 'develop-directory' ? (
+                <HomeStageFrame
+                  title={t('guid.home.buildTitle')}
+                  onBack={closeHomePanel}
+                  onClose={closeHomePanel}
+                  testId='guid-home-develop-directory'
+                >
+                  <HomeStageOptions options={homeDevelopOptions} onSelect={selectHomeOption} />
+                </HomeStageFrame>
+              ) : null}
+              {homeView === 'create-directory' ? (
+                <HomeStageFrame
+                  title={t('guid.home.createTitle')}
+                  onBack={closeHomePanel}
+                  onClose={closeHomePanel}
+                  testId='guid-home-create-directory'
+                >
+                  <HomeStageOptions options={homeCreateOptions} onSelect={selectHomeOption} />
+                </HomeStageFrame>
+              ) : null}
+              {homeView === 'capability' ? (
+                <HomeStageFrame
+                  title={homeCapabilityTitle}
+                  onBack={backFromHomePanel}
+                  onClose={closeHomePanel}
+                  testId='guid-home-capability'
+                >
+                  {homeCapability === 'slides' && slideOptions !== null ? (
+                    <SlideCreatePanel
+                      template={slideOptions.template}
+                      onSelectTemplate={handleSelectSlideTemplate}
+                      onSelectSuggestion={handleSelectSlideSuggestion}
+                      onImportTemplate={handleImportSlideTemplate}
+                      onClose={closeHomePanel}
+                      disabled={guidInput.loading}
+                    />
+                  ) : null}
+                  {homeCapability === 'develop' ? (
+                    <div className={styles.homePanelStarters}>
+                      <button
+                        type='button'
+                        className={styles.homeStarter}
+                        onClick={() => {
+                          guidInput.setInput(t('guid.home.showcaseAppPrompt'));
+                          focusHomeComposer();
+                        }}
+                      >
+                        {t('guid.home.showcaseAppTitle')}
+                      </button>
+                      <p className={styles.homePanelHint}>{t('guid.home.buildDescription')}</p>
+                    </div>
+                  ) : null}
+                  {homeCapability === 'video' ? (
+                    <div className={styles.homePanelStarters}>
+                      <div className={styles.homeVideoParams}>
+                        <span className={styles.homeVideoParamLabel}>
+                          {t('videoGeneration.create.preferences.clipDuration')}
+                        </span>
+                        {homeVideoDurationOptions.map((secs) => (
+                          <button
+                            key={secs}
+                            type='button'
+                            className={`${styles.homeParamChip} ${
+                              homeVideoDuration === secs ? styles.homeParamChipActive : ''
+                            }`}
+                            onClick={() => setHomeVideoDuration(secs)}
+                          >
+                            {secs}s
+                          </button>
+                        ))}
+                      </div>
+                      <div className={styles.homeVideoParams}>
+                        <span className={styles.homeVideoParamLabel}>
+                          {t('videoGeneration.create.preferences.resolutionAria')}
+                        </span>
+                        {VIDEO_RESOLUTIONS.map((resolution) => (
+                          <button
+                            key={resolution}
+                            type='button'
+                            className={`${styles.homeParamChip} ${
+                              homeVideoResolution === resolution ? styles.homeParamChipActive : ''
+                            }`}
+                            onClick={() => setHomeVideoResolution(resolution)}
+                          >
+                            {resolution}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type='button'
+                        className={styles.homeStarter}
+                        onClick={() => {
+                          guidInput.setInput(t('guid.home.showcaseVideoTitle'));
+                          focusHomeComposer();
+                        }}
+                      >
+                        {t('guid.home.showcaseVideoTitle')}
+                      </button>
+                      <p className={styles.homePanelHint}>{t('guid.home.videoShortcutSubtitle')}</p>
+                    </div>
+                  ) : null}
+                </HomeStageFrame>
+              ) : null}
               <div className={styles.homeGallery}>
-                <ShowcaseCards onSelectApp={handleSelectShowcaseApp} onSelectImage={handleSelectShowcaseImage} />
+                <ShowcaseCards
+                  onSelectVideo={handleSelectShowcaseVideo}
+                  onSelectApp={handleSelectShowcaseApp}
+                  onSelectImage={handleSelectShowcaseImage}
+                />
               </div>
+            </div>
             </div>
           </div>
         </div>
@@ -1728,7 +2069,7 @@ const GuidPage: React.FC = () => {
                 onSelectTemplate={handleSelectSlideTemplate}
                 onSelectSuggestion={handleSelectSlideSuggestion}
                 onImportTemplate={handleImportSlideTemplate}
-                onClose={exitSlideMode}
+                onClose={() => setSlidePanelOpen(false)}
                 disabled={guidInput.loading}
               />
             )}
@@ -1740,10 +2081,28 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={
-                supportsHomeGoalCommand && slideOptions !== null
-                  ? t('presentation.home.placeholder')
-                  : t('conversation.welcome.placeholder')
+              placeholder={homePlaceholder}
+              entryStrip={
+                homeCapability !== 'office' ? (
+                  <div className={styles.homeCapabilityChip}>
+                    <span className={styles.homeCapabilityChipLabel}>{homeCapabilityTitle}</span>
+                    <button
+                      type='button'
+                      className={styles.homeCapabilityChipClose}
+                      aria-label={t('common.close', { defaultValue: 'Close' })}
+                      onClick={() => {
+                        if (homeCapability === 'slides') {
+                          exitSlideMode();
+                        } else {
+                          switchHomeCapability('office');
+                          setHomeView('home');
+                        }
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : undefined
               }
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}

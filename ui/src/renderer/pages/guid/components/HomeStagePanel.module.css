@@ -1,0 +1,218 @@
+.frame {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 220px;
+  box-sizing: border-box;
+  padding: 16px;
+  border-radius: var(--flowy-radius-lg, 12px);
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.back,
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out),
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
+}
+
+.close {
+  width: 28px;
+  padding: 0;
+}
+
+@media (hover: hover) {
+  .back:hover,
+  .close:hover {
+    background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+    color: var(--color-text-1);
+  }
+}
+
+.back:focus-visible,
+.close:focus-visible,
+.option:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: color-mix(in srgb, var(--color-text-1) 3%, var(--flowy-raised));
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out),
+    box-shadow var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
+}
+
+.option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (hover: hover) {
+  .option:not(:disabled):hover {
+    background: color-mix(in srgb, var(--color-text-1) 6%, var(--flowy-raised));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
+  }
+}
+
+.optionTitle {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.optionDescription {
+  color: var(--color-text-2);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.starterList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.starter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: color-mix(in srgb, var(--color-text-1) 3%, var(--flowy-raised));
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .starter:hover {
+    background: color-mix(in srgb, var(--color-text-1) 6%, var(--flowy-raised));
+  }
+}
+
+.starterTitle {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.starterArrow {
+  flex: 0 0 auto;
+  color: var(--color-text-2);
+}
+
+.hint {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.slidesBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+:global([data-home-compact='true']) .frame {
+  min-height: 178px;
+  padding: 12px;
+  gap: 10px;
+}
+
+:global([data-home-compact='true']) .options {
+  gap: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .back,
+  .close,
+  .option {
+    transition: none;
+  }
+}

@@ -1,4 +1,4 @@
-import { useContext, useId, useMemo } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import FlipCard from '@renderer/components/motion/FlipCard';
 import { formatSiderAccountLabel } from '@renderer/components/layout/Sider/accountLabel';
@@ -10,8 +10,8 @@ import styles from './GuidHomeCard.module.css';
 
 const PLUS_FIELD = (() => {
   const parts: string[] = [];
-  const cols = 24;
-  const rows = 10;
+  const cols = 19;
+  const rows = 8;
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const x = 14 + col * 23.2;
@@ -27,63 +27,47 @@ const hasCjk = (value: string) => /[\u3400-\u9fff]/.test(value);
 
 function PlusField() {
   return (
-    <svg className={styles.stars} viewBox='0 0 560 232' preserveAspectRatio='xMidYMid slice' aria-hidden='true'>
+    <svg className={styles.stars} viewBox='0 0 470 200' preserveAspectRatio='xMidYMid slice' aria-hidden='true'>
       <path d={PLUS_FIELD} fill='none' stroke='currentColor' strokeWidth='0.95' strokeLinecap='round' />
     </svg>
   );
 }
 
-function Seal({ phrase }: { phrase: string }) {
-  const id = useId().replace(/[^a-zA-Z0-9]/g, '');
-  const ringId = `seal-ring-${id}`;
-  const arcId = `seal-arc-${id}`;
-  const gradId = `seal-ink-${id}`;
-  const cjk = hasCjk(phrase);
-
+/** Membership seal for the compact card: two concentric rings, an F, one offset node. */
+function MemberSeal() {
   return (
-    <svg className={styles.seal} viewBox='0 0 120 120' aria-hidden='true'>
-      <defs>
-        <linearGradient id={gradId} x1='8' y1='8' x2='112' y2='112' gradientUnits='userSpaceOnUse'>
-          <stop offset='0%' stopColor='#7ea6d6' />
-          <stop offset='48%' stopColor='#c5b4c8' />
-          <stop offset='100%' stopColor='#e2ae86' />
-        </linearGradient>
-        <path id={ringId} d='M60 16a44 44 0 1 1 -0.01 0' />
-        <path id={arcId} d='M26 66A34 34 0 0 1 94 66' />
-      </defs>
-      <circle cx='60' cy='60' r='52' fill='none' stroke={`url(#${gradId})`} strokeWidth='1.15' strokeDasharray='1.5 3.2' />
-      <circle cx='60' cy='60' r='43.5' fill='none' stroke={`url(#${gradId})`} strokeWidth='0.75' opacity='0.7' />
-      <text fill={`url(#${gradId})`} className={cjk ? styles.sealTextCjk : styles.sealText}>
-        {cjk ? (
-          <textPath href={`#${arcId}`} startOffset='50%' textAnchor='middle'>
-            {phrase}
-          </textPath>
-        ) : (
-          <textPath href={`#${ringId}`} textLength='262' lengthAdjust='spacing'>
-            {phrase}
-          </textPath>
-        )}
-      </text>
-      <circle cx='53.2' cy='60' r='3.15' fill='#7ea4d4' />
-      <circle cx='66.8' cy='60' r='3.15' fill='#e4b08a' />
+    <svg className={styles.seal} viewBox='0 0 96 96' aria-hidden='true' focusable='false'>
+      <circle className={styles.sealRing} cx='48' cy='48' r='43' />
+      <circle className={styles.sealRingInner} cx='48' cy='48' r='32' />
+      <path className={styles.sealLetter} d='M42 33h15M42 33v30M42 48h11' />
+      <circle className={styles.sealNode} cx='61' cy='40' r='3.4' />
     </svg>
   );
 }
 
-function Postmark() {
-  return (
-    <svg className={styles.postmark} viewBox='0 0 46 70' aria-hidden='true'>
-      <path d='M4 14H36M1 24H42M6 34H30M2 44H38M8 54H24' />
-    </svg>
-  );
-}
-
-/** Homepage membership card. Replaces the wireframe wordmark. */
+/** Homepage membership card. Compact cross-two-rows flip card. */
 const GuidHomeBrand: React.FC = () => {
   const { t, i18n } = useTranslation();
   const { whoami, status } = useCloudAuth();
   const credits = useContext(CreditsContext);
   const dateLabel = useMemo(() => formatMembershipDate(new Date()), []);
+  const slotRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 416, height: 220 });
+
+  useEffect(() => {
+    const el = slotRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      const width = Math.max(160, Math.round(rect.width));
+      const height = Math.max(44, Math.round(rect.height));
+      setSize((current) => (current.width === width && current.height === height ? current : { width, height }));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const checking = status === 'checking';
   const signedIn = status === 'authenticated' && !!whoami?.authenticated;
@@ -111,33 +95,34 @@ const GuidHomeBrand: React.FC = () => {
   const wordmark = t('guid.home.cardWordmark');
 
   return (
-    <div className={`${layoutStyles.homeBrand} ${styles.slot}`} data-testid='guid-home-brand'>
-      <FlipCard
+    <div className={`${layoutStyles.homeBrand} ${styles.slot}`} ref={slotRef} data-testid='guid-home-brand'>
+      <div className={styles.cardFill}>
+        <FlipCard
         axis='y'
         flipOnClick
-        draggable
-        dragDistance={0}
-        tilt
-        tiltMax={8}
-        glare
-        glareOpacity={0.2}
-        hoverScale={1.025}
+        draggable={false}
+        tilt={false}
+        glare={false}
+        hoverScale={1}
         perspective={1200}
         stiffness={160}
         damping={22}
-        width={416}
-        height={192}
-        radius={24}
+        width={size.width}
+        height={size.height}
+        radius={12}
         background='transparent'
         color='#17171a'
         shadow
         shadowColor='#7d92b8'
-        shadowOpacity={0.2}
+        shadowOpacity={0.18}
         ariaLabel={t('guid.home.cardFlip')}
         front={
           <div className={styles.front}>
             <PlusField />
             <p className={styles.wordmark}>{wordmark}</p>
+            <div className={styles.sealRow}>
+              <MemberSeal />
+            </div>
             <div className={styles.bottomRow}>
               <div className={styles.identity}>
                 {checking ? (
@@ -147,13 +132,7 @@ const GuidHomeBrand: React.FC = () => {
                 )}
                 {badge ? <span className={styles.badge}>{badge}</span> : null}
               </div>
-              <div className={styles.mark}>
-                <span className={styles.date}>{dateLabel}</span>
-                <span className={styles.stamp}>
-                  <Seal phrase={t('guid.home.cardSeal')} />
-                  <Postmark />
-                </span>
-              </div>
+              <span className={styles.date}>{dateLabel}</span>
             </div>
           </div>
         }
@@ -182,6 +161,7 @@ const GuidHomeBrand: React.FC = () => {
           </div>
         }
       />
+      </div>
     </div>
   );
 };

@@ -1,7 +1,14 @@
 .slot {
-  width: min(416px, 100%);
-  max-width: 100%;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   container-type: inline-size;
+}
+
+.cardFill {
+  position: absolute;
+  inset: 0;
 }
 
 .front,
@@ -10,7 +17,9 @@
   width: 100%;
   height: 100%;
   box-sizing: border-box;
+  overflow: hidden;
   font-family: var(--flowy-font-sans);
+  border-radius: inherit;
 }
 
 .front,
@@ -22,7 +31,7 @@
 .front {
   display: flex;
   flex-direction: column;
-  padding: 18px 20px 16px 22px;
+  padding: 12px 16px;
   background:
     radial-gradient(90% 80% at 100% 88%, rgba(255, 206, 184, 0.95) 0%, rgba(255, 206, 184, 0) 58%),
     radial-gradient(70% 90% at 0% 0%, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0) 52%),
@@ -40,29 +49,77 @@
 
 .stars {
   position: absolute;
-  inset: 12px;
+  inset: 10px;
   width: auto;
   height: auto;
   color: #a9b7d6;
+  opacity: 0.55;
   pointer-events: none;
   -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 34%, transparent 88%);
   mask-image: linear-gradient(90deg, #000 0%, #000 34%, transparent 88%);
 }
 
 .wordmark,
-.backWord,
-.name {
+.name,
+.backWord {
   margin: 0;
-  color: #17171a;
+  color: var(--color-text-1);
   font-weight: 600;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
 }
 
 .wordmark {
   position: relative;
   z-index: 1;
-  font-size: 18px;
+  font-size: 16px;
+  line-height: 20px;
+}
+
+.sealRow {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.seal {
+  width: min(88px, 44%);
+  height: auto;
+  aspect-ratio: 1;
+  overflow: visible;
+  color: var(--color-text-1);
+}
+
+.sealRing {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.15;
+  stroke-dasharray: 1.5 3.2;
+  opacity: 0.5;
+}
+
+.sealRingInner {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 0.8;
+  opacity: 0.32;
+}
+
+.sealLetter {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.85;
+}
+
+.sealNode {
+  fill: rgb(var(--primary-6));
 }
 
 .bottomRow {
@@ -71,7 +128,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
   margin-top: auto;
 }
@@ -79,7 +136,7 @@
 .identity {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -87,94 +144,46 @@
 .name {
   min-width: 0;
   overflow: hidden;
-  font-size: 20px;
+  font-size: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .nameHold {
   display: block;
-  width: 92px;
-  height: 16px;
+  width: 80px;
+  height: 14px;
   border-radius: 999px;
-  background: rgba(36, 48, 78, 0.1);
+  background: color-mix(in srgb, var(--color-text-1) 10%, transparent);
 }
 
 .badge {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  height: 22px;
-  max-width: 108px;
-  padding: 0 9px;
+  height: 18px;
+  max-width: 96px;
+  padding: 0 6px;
   overflow: hidden;
-  border: 1px solid rgba(28, 28, 32, 0.18);
+  border: 1px solid color-mix(in srgb, var(--color-text-1) 18%, transparent);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.38);
-  color: #2c2c31;
-  font-size: 12px;
+  background: color-mix(in srgb, #ffffff 38%, transparent);
+  color: var(--color-text-1);
+  font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.01em;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mark {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-}
-
 .date {
-  position: relative;
-  z-index: 1;
-  margin-right: 2px;
-  color: rgba(48, 52, 68, 0.74);
-  font-size: 13px;
-  font-weight: 560;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.05em;
-}
-
-.stamp {
-  position: relative;
-  width: 108px;
-  height: 78px;
   flex: 0 0 auto;
-}
-
-.seal {
-  display: block;
-  width: 78px;
-  height: 78px;
-  overflow: visible;
-}
-
-.sealText {
-  font-size: 8.5px;
-  font-weight: 560;
-  letter-spacing: 1.4px;
-}
-
-.sealTextCjk {
-  font-size: 10px;
+  color: var(--color-text-2);
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 1.2px;
-}
-
-.postmark {
-  position: absolute;
-  top: 14px;
-  right: 0;
-  width: 30px;
-  height: 46px;
-  fill: none;
-  stroke: #c9b6ac;
-  stroke-width: 1.15;
-  stroke-linecap: round;
-  opacity: 0.72;
-  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  line-height: 16px;
 }
 
 .back {
@@ -182,7 +191,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 28px 32px 56px;
+  padding: 12px 16px 24px;
   background:
     radial-gradient(80% 70% at 50% 42%, #ffffff 0%, rgba(255, 255, 255, 0) 72%),
     linear-gradient(180deg, #fcfcfe 0%, #f7f4f2 100%);
@@ -195,8 +204,8 @@
   top: 46%;
   left: 50%;
   margin: 0;
-  color: rgba(22, 26, 40, 0.05);
-  font-size: clamp(72px, 22cqi, 118px);
+  color: color-mix(in srgb, var(--color-text-1) 5%, transparent);
+  font-size: clamp(48px, 18cqi, 88px);
   font-weight: 600;
   letter-spacing: -0.045em;
   line-height: 0.85;
@@ -211,37 +220,31 @@
   z-index: 1;
   max-width: 34em;
   margin: 0;
-  font-size: clamp(14px, 3.15cqi, 17px);
+  font-size: 13px;
   font-weight: 400;
-  letter-spacing: 0.02em;
-  line-height: 1.75;
+  letter-spacing: 0.01em;
+  line-height: 17px;
 }
 
 .quoteCool,
 .quoteWarm {
   display: block;
-}
-
-.quoteCool {
-  color: #8eabd4;
-}
-
-.quoteWarm {
-  color: #e2b196;
+  color: var(--color-text-1);
 }
 
 .meta {
   position: absolute;
-  right: 28px;
-  bottom: 48px;
-  left: 28px;
+  right: 16px;
+  bottom: 22px;
+  left: 16px;
   z-index: 1;
   margin: 0;
-  color: rgba(62, 70, 90, 0.58);
-  font-size: 12px;
+  color: var(--color-text-2);
+  font-size: 11px;
   font-weight: 450;
   letter-spacing: 0.01em;
-  line-height: 1.45;
+  line-height: 14px;
+  text-align: left;
 }
 
 .metaLine {
@@ -254,43 +257,46 @@
 .backWord {
   position: absolute;
   right: 0;
-  bottom: 16px;
+  bottom: 10px;
   left: 0;
   z-index: 1;
-  font-size: 18px;
+  font-size: 15px;
+  line-height: 18px;
   text-align: center;
 }
 
-@container (max-width: 360px) {
+@container (max-width: 220px) {
   .front {
-    padding: 14px 12px 12px 14px;
+    padding: 10px 12px;
   }
 
   .wordmark {
-    font-size: 16px;
+    font-size: 14px;
+    line-height: 18px;
   }
 
   .name {
-    font-size: 17px;
-  }
-
-  .stamp {
-    width: 92px;
-    height: 68px;
+    font-size: 14px;
+    line-height: 18px;
   }
 
   .seal {
-    width: 68px;
-    height: 68px;
+    width: min(64px, 40%);
   }
 
   .date {
-    font-size: 12px;
-    margin-right: 0;
+    font-size: 11px;
+    line-height: 14px;
+    letter-spacing: 0.02em;
   }
 
-  .back {
-    padding: 22px 18px 50px;
+  .quote {
+    font-size: 11px;
+    line-height: 15px;
+  }
+
+  .backWord {
+    font-size: 13px;
   }
 }
 
@@ -310,28 +316,9 @@
   color: rgba(198, 214, 240, 0.72);
 }
 
-:global([data-theme='dark']) .wordmark,
-:global([data-theme='dark']) .backWord,
-:global([data-theme='dark']) .name {
-  color: #f4f1ec;
-}
-
-:global([data-theme='dark']) .nameHold {
-  background: rgba(255, 255, 255, 0.12);
-}
-
 :global([data-theme='dark']) .badge {
-  border-color: rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.06);
-  color: #f3efe9;
-}
-
-:global([data-theme='dark']) .date {
-  color: rgba(236, 232, 226, 0.72);
-}
-
-:global([data-theme='dark']) .postmark {
-  stroke: rgba(232, 210, 196, 0.55);
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+  border-color: color-mix(in srgb, #ffffff 24%, transparent);
 }
 
 :global([data-theme='dark']) .back {
@@ -341,18 +328,20 @@
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-:global([data-theme='dark']) .watermark {
-  color: rgba(255, 255, 255, 0.045);
+:global([data-home-compact='true']) .front {
+  padding: 10px 12px;
 }
 
-:global([data-theme='dark']) .quoteCool {
-  color: #a9c4ee;
+:global([data-home-compact='true']) .seal {
+  width: min(64px, 42%);
 }
 
-:global([data-theme='dark']) .quoteWarm {
-  color: #f0c2a4;
+:global([data-home-compact='true']) .wordmark {
+  font-size: 14px;
+  line-height: 18px;
 }
 
-:global([data-theme='dark']) .meta {
-  color: rgba(226, 220, 212, 0.58);
+:global([data-home-compact='true']) .name {
+  font-size: 14px;
+  line-height: 18px;
 }

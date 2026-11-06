@@ -1,19 +1,18 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import appCover from './assets/showcase-app-cover.jpg';
 import imageCover from './assets/showcase-image-cover.jpg';
 import videoCover from './assets/showcase-video-cover.png';
 import styles from './ShowcaseCards.module.css';
 
 export interface ShowcaseCardsProps {
+  onSelectVideo: () => void;
   onSelectApp: () => void;
   onSelectImage: () => void;
 }
 
-const ShowcaseCards: React.FC<ShowcaseCardsProps> = ({ onSelectApp, onSelectImage }) => {
+const ShowcaseCards: React.FC<ShowcaseCardsProps> = ({ onSelectVideo, onSelectApp, onSelectImage }) => {
   const { t } = useTranslation();
-  const navigate = useNavigate();
 
   return (
     <div className={styles.row}>
@@ -21,7 +20,7 @@ const ShowcaseCards: React.FC<ShowcaseCardsProps> = ({ onSelectApp, onSelectImag
         type="button"
         className={styles.prompt}
         data-testid="guid-home-showcase-video"
-        onClick={() => navigate('/video-generation')}
+        onClick={onSelectVideo}
       >
         <article className={styles.card}>
           <img className={styles.cover} src={videoCover} alt="" />
@@ -32,7 +31,7 @@ const ShowcaseCards: React.FC<ShowcaseCardsProps> = ({ onSelectApp, onSelectImag
         </article>
         <p className={styles.caption}>{t('guid.home.showcaseVideoTitle')}</p>
       </button>
-      <button type='button' className={styles.prompt} onClick={onSelectApp}>
+      <button type="button" className={styles.prompt} onClick={onSelectApp}>
         <article className={styles.card}>
           <img className={`${styles.cover} ${styles.coverTop}`} src={appCover} alt="" />
           <span className={styles.badge}>
