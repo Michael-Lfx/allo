@@ -9,6 +9,8 @@ nomifun-api-types.workspace = true
 nomifun-db.workspace = true
 nomifun-realtime.workspace = true
 nomi-process-runtime.workspace = true
+# Managed ppt-master capability: listed in the Skill catalog while Ready.
+nomifun-presentation.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true

@@ -207,3 +207,96 @@ async fn catalog_lists_and_loads_global_agent_and_project_skills() {
     assert!(loaded[0].content.contains("Global agent review workflow"));
     assert!(loaded[1].content.contains("Project review workflow"));
 }
+
+/// Lay out a `Ready` managed ppt-master snapshot the way the presentation
+/// installer leaves it (current.json + snapshot with SKILL.md, venv python,
+/// self-test marker).
+fn install_managed_ppt_master(data_dir: &std::path::Path) -> std::path::PathBuf {
+    // Joined per component, like the installer: the host note embeds this path.
+    let root = data_dir.join("capabilities").join("presentation").join("ppt-master");
+    let snapshot = "6.8.0-4a68cddaf40d-abc123";
+    let snapshot_dir = root.join("snapshots").join(snapshot);
+    let skill_dir = snapshot_dir.join("skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: ppt-master\ndescription: Managed deck workflow\nmetadata:\n  version: \"6.8.0\"\n---\n\n# PPT Master Skill\nRun `python3 \"${SKILL_DIR}/scripts/attribution_guard.py\"`.\n",
+    )
+    .unwrap();
+    let python = if cfg!(windows) {
+        snapshot_dir.join("venv").join("Scripts").join("python.exe")
+    } else {
+        snapshot_dir.join("venv").join("bin").join("python")
+    };
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+    std::fs::write(&python, b"").unwrap();
+    std::fs::write(snapshot_dir.join("runtime-ready"), b"ready").unwrap();
+    std::fs::write(
+        root.join("current.json"),
+        serde_json::json!({
+            "capability_id": "presentation.ppt-master",
+            "skill_version": "6.8.0",
+            "commit": nomifun_presentation::manifest::SOURCE_COMMIT,
+            "tree": "t",
+            "source_url": "https://atomgit.com/hugohe3/ppt-master.git",
+            "snapshot_id": snapshot,
+            "installed_at_ms": 1
+        })
+        .to_string(),
+    )
+    .unwrap();
+    skill_dir
+}
+
+#[tokio::test]
+async fn managed_ppt_master_is_listed_only_when_ready_and_shadows_same_named_copies() {
+    let fixture = fixture().await;
+    let user_skills_dir = fixture.paths.user_skills_dir.clone();
+    write_skill(&user_skills_dir, "ppt-master", "ppt-master", "Hand-installed copy");
+
+    let before = nomifun_extension::skill_service::list_catalog_skills(&fixture.paths).await.unwrap();
+    assert!(before.iter().all(|skill| skill.source != SkillCatalogSource::Capability), "not installed yet");
+    assert!(before.iter().any(|skill| skill.name == "ppt-master" && skill.source == SkillCatalogSource::User));
+
+    let skill_dir = install_managed_ppt_master(&fixture.paths.data_dir);
+    let after = nomifun_extension::skill_service::list_catalog_skills(&fixture.paths).await.unwrap();
+    let managed: Vec<_> = after.iter().filter(|skill| skill.name == "ppt-master").collect();
+    assert_eq!(managed.len(), 1, "only the managed copy is discoverable: {managed:?}");
+    assert_eq!(managed[0].source, SkillCatalogSource::Capability);
+    assert_eq!(managed[0].source_key.as_deref(), Some("presentation"));
+    assert_eq!(managed[0].description, "Managed deck workflow");
+    assert!(after.iter().any(|skill| skill.name == "pdf"), "unrelated skills are untouched");
+
+    let loaded = nomifun_extension::skill_service::load_catalog_skills(
+        &fixture.paths,
+        &["capability:presentation:ppt-master".to_owned(), "user:ppt-master".to_owned()],
+    )
+    .await
+    .expect("managed and previously bound user copies both load");
+    let content = &loaded[0].content;
+    assert!(content.starts_with("---\nname: ppt-master\n"), "frontmatter stays first: {content}");
+    let note = content.find("Flowy host note").expect("host note injected");
+    assert!(note < content.find("# PPT Master Skill").unwrap());
+    assert!(content.contains("nomi_presentation_run_script"));
+    assert!(content.contains(&skill_dir.to_string_lossy().into_owned()));
+    assert_eq!(loaded[0].source, "capability");
+    assert!(loaded[1].content.contains("Hand-installed copy"));
+
+    let response = fixture
+        .router
+        .oneshot(Request::builder().uri("/api/skills/catalog").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+    let skills = body["data"]["skills"].as_array().unwrap();
+    assert!(skills.iter().any(|skill| {
+        skill["skill_id"] == "capability:presentation:ppt-master" && skill["source"] == "capability"
+    }));
+    assert!(skills.iter().all(|skill| skill["skill_id"] != "user:ppt-master"));
+
+    // A broken snapshot drops the managed entry and the user copy reappears.
+    std::fs::remove_file(skill_dir.parent().unwrap().join("runtime-ready")).unwrap();
+    let broken = nomifun_extension::skill_service::list_catalog_skills(&fixture.paths).await.unwrap();
+    assert!(broken.iter().all(|skill| skill.source != SkillCatalogSource::Capability));
+    assert!(broken.iter().any(|skill| skill.name == "ppt-master" && skill.source == SkillCatalogSource::User));
+}
