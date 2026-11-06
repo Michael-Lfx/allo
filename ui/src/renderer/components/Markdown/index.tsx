@@ -1,8 +1,7 @@
 
 
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import type { Components, ExtraProps, UrlTransform } from 'react-markdown';
-import type { PluggableList } from 'unified';
+import type { Components, ExtraProps, Options, UrlTransform } from 'react-markdown';
 
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
@@ -146,7 +145,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
     );
 
     const rehypePlugins = useMemo(() => {
-      const plugins: PluggableList = [];
+      const plugins: NonNullable<Options['rehypePlugins']> = [];
       if (allowHtml) plugins.push(rehypeRaw);
       if (trackIdeographs) plugins.push(rehypeIdeographTracking);
       plugins.push(rehypeKatex);

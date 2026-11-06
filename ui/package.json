@@ -8,6 +8,7 @@
     "dev:web": "vite --mode webdev",
     "build": "bun scripts/vite-production-build.mjs",
     "preview": "vite preview",
+    "test": "bun test --isolate",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
     "typecheck:auth": "bun node_modules/typescript/bin/tsc --noEmit -p tsconfig.auth.json",
     "test:auth": "bun test src/renderer/hooks/auth src/renderer/components/auth/authSurface.test.ts src/renderer/utils/analytics/authTelemetry.test.ts"

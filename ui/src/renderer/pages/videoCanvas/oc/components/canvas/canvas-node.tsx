@@ -22,7 +22,7 @@ import { hydrateCanvasVideoPreview } from "@oc/services/canvas-video-preview";
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { storyboardMinNodeHeight } from "./canvas-script-node";
-import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeStatus, type Position } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
 import { getNodeMinSize, shouldKeepAspectRatio } from "@oc/lib/canvas/node-registry";
@@ -1503,8 +1503,8 @@ function nodeTypeIcon(type: CanvasNodeType) {
 }
 
 // 节点状态徽章（对应 #97 决策2：左上角状态指示，loading/success/error）
-function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }) {
-    if (status === "loading") {
+function NodeStatusBadge({ status }: { status: CanvasNodeStatus }) {
+    if (status !== "success" && status !== "error") {
         return (
             <div
                 className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"

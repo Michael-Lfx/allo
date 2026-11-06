@@ -1214,9 +1214,10 @@ const MessageList: React.FC<{
         imageAnchor: streamImageAnchor(entry),
       })),
       pinnedStreamImages,
-      (image): { id: string; entry: IStreamImageVO; transcriptIndex: number } => ({
+      (image): { id: string; entry: IStreamImageVO; transcriptIndex: number; imageAnchor: undefined } => ({
         id: image.id,
         transcriptIndex: image.transcriptIndex,
+        imageAnchor: undefined,
         entry: {
           type: 'stream_image',
           id: image.id,

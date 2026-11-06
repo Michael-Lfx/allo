@@ -52,6 +52,7 @@ export const canvasThemes = {
             primary: "#4f6ee8",
             primarySoft: "rgba(79,110,232,.14)",
             danger: "#f87171",
+            onPrimary: "#ffffff",
         },
     },
     dark: {
@@ -104,6 +105,7 @@ export const canvasThemes = {
             primary: "#8f9bd6",
             primarySoft: "rgba(107,120,190,.2)",
             danger: "#fb7185",
+            onPrimary: "#101218",
         },
     },
 } as const;

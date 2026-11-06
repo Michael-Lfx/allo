@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, test as it } from 'bun:test';
 import {
   buildPresetExtractionDraft,
   buildPresetInstructions,

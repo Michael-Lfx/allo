@@ -7,13 +7,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { TFunction } from 'i18next';
 import {
   Alert,
   Button,
   Empty,
   InputNumber,
-  Message,
   Progress,
   Radio,
   Select,

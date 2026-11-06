@@ -33,7 +33,8 @@ describe("verifyCanvasAgentOps generation", () => {
     test("treats pending nodes as queued even before a taskId is bound", () => {
         const result = verifyCanvasAgentOps(snapshot("idle"), snapshot("pending"), [{ type: "run_generation", nodeId: "img-1", mode: "image" }]);
         expect(result.ok).toBe(true);
-        expect(result.generation).toEqual([expect.objectContaining({ nodeId: "img-1", outcome: "queued" })]);
+        expect(result.generation).toHaveLength(1);
+        expect(result.generation[0]).toMatchObject({ nodeId: "img-1", outcome: "queued" });
     });
 
     test("still reports not_started when the node stays idle", () => {
@@ -70,7 +71,8 @@ describe("verifyCanvasAgentOps generation", () => {
             metadata: { position: { x: 12, y: 8 }, prompt: "猫" } as CanvasNodeData["metadata"],
         }]);
         expect(after.nodes[0]?.position).toEqual({ x: 12, y: 8 });
-        expect(after.nodes[0]?.metadata?.position).toBeUndefined();
+        const metadata = after.nodes[0]?.metadata as Record<string, unknown> | undefined;
+        expect(metadata?.position).toBeUndefined();
         expect(after.nodes[0]?.metadata?.prompt).toBe("猫");
     });
 });

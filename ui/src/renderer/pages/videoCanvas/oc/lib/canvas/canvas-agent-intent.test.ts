@@ -89,7 +89,8 @@ describe("canvas agent intent", () => {
 
     test("empty apply with autoRun runs existing media instead of failing", () => {
         const ops = compileCanvasApplyOps({ autoRun: true, description: "小猫的一天" }, snapshot(), defaultConfig);
-        expect(ops).toEqual([expect.objectContaining({ type: "run_generation", nodeId: "vid-1", mode: "video" })]);
+        expect(ops).toHaveLength(1);
+        expect(ops[0]).toMatchObject({ type: "run_generation", nodeId: "vid-1", mode: "video" });
     });
 
     test("empty apply on a canvas without runnable media asks for nodes", () => {
@@ -100,17 +101,18 @@ describe("canvas agent intent", () => {
 
     test("run targets idle media with prompts and skips ready successes", () => {
         const ops = compileCanvasRunOps(snapshot());
-        expect(ops).toEqual([expect.objectContaining({ type: "run_generation", nodeId: "vid-1", mode: "video" })]);
+        expect(ops).toHaveLength(1);
+        expect(ops[0]).toMatchObject({ type: "run_generation", nodeId: "vid-1", mode: "video" });
     });
 
     test("refuses to rerun a node that is still generating or blocked by unchanged moderation", () => {
-        const loading = {
+        const loading: CanvasAgentSnapshot = {
             ...snapshot(),
             nodes: snapshot().nodes.map((node) => node.id === "vid-1" ? { ...node, metadata: { ...node.metadata, status: "loading" } } : node),
         };
         expect(() => compileCanvasRunOps(loading, ["vid-1"])).toThrow(CANVAS_AGENT_BUSY_RERUN_MESSAGE);
         const prompt = "齐天大圣金甲";
-        const blocked = {
+        const blocked: CanvasAgentSnapshot = {
             ...snapshot(),
             nodes: [{
                 id: "img-2",
@@ -190,12 +192,12 @@ describe("canvas agent intent", () => {
         const ops = compileCanvasApplyOps({
             patches: [{ id: "img-1", metadata: { position: { x: 200, y: 100 } } }],
         }, snapshot(), defaultConfig);
-        expect(ops).toEqual([
-            expect.objectContaining({ type: "update_node", id: "img-1", patch: { position: { x: 200, y: 100 } } }),
-        ]);
+        expect(ops).toHaveLength(1);
+        expect(ops[0]).toMatchObject({ type: "update_node", id: "img-1", patch: { position: { x: 200, y: 100 } } });
         const next = applyCanvasAgentOps(snapshot(), ops);
         expect(next.nodes.find((node) => node.id === "img-1")?.position).toEqual({ x: 200, y: 100 });
-        expect(next.nodes.find((node) => node.id === "img-1")?.metadata?.position).toBeUndefined();
+        const nextMetadata = next.nodes.find((node) => node.id === "img-1")?.metadata as Record<string, unknown> | undefined;
+        expect(nextMetadata?.position).toBeUndefined();
     });
 
     test("layout language plus recreate args moves existing nodes instead of cloning them", () => {

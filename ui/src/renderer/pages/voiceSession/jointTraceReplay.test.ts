@@ -17,6 +17,9 @@ import zhLocale from '../../services/i18n/locales/zh-CN/voice.json';
 import enLocale from '../../services/i18n/locales/en-US/voice.json';
 import defaultFixture from './fixtures/jointTraceFixture.json';
 
+const visibleMessageIds = (rows: TMessage[]): Set<string> =>
+  new Set(rows.flatMap((row) => (typeof row.message_id === 'string' ? [row.message_id] : [])));
+
 interface JointTracePayload {
   conversation_id: string;
   session_id: string;
@@ -197,7 +200,7 @@ test('reconcileLiveVoiceHistory tracks Turn B in history and accurately retires 
     snapshot: snapAtFailure,
     conversationId: convId,
     epoch: 1,
-    visibleIds: new Set(durableARows.map((r) => r.message_id)),
+    visibleIds: visibleMessageIds(durableARows),
     currentSequence: 1,
     latestPage: { conversationId: convId, epoch: 1, sequence: 1 },
   });
@@ -245,7 +248,7 @@ test('reconcileLiveVoiceHistory tracks Turn B in history and accurately retires 
     snapshot: snapAfterRecovery,
     conversationId: convId,
     epoch: 1,
-    visibleIds: new Set(durableABRows.map((r) => r.message_id)),
+    visibleIds: visibleMessageIds(durableABRows),
     currentSequence: 2,
     latestPage: { conversationId: convId, epoch: 1, sequence: 2 },
   });
@@ -274,6 +277,7 @@ test('scope and conversation isolation: foreign sessions and unmatched turns are
     turn_id: 'foreign-turn-123',
     user_text: 'foreign question',
     assistant_text: 'foreign reply',
+    model_text: null,
     reply_state: 'complete' as const,
   };
 
@@ -352,7 +356,7 @@ test('formalized negative control: bypassing or discarding history state fails o
     snapshot: snapAfterRecovery,
     conversationId: convId,
     epoch: 1,
-    visibleIds: new Set(durableBRows.map((r) => r.message_id)),
+    visibleIds: visibleMessageIds(durableBRows),
     currentSequence: 2,
     latestPage: { conversationId: convId, epoch: 1, sequence: 2 },
   });

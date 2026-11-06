@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Button, Input, Message, Select, Slider, Switch } from '@arco-design/web-react';
+import { Button, Input, Select, Slider, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { SettingsList, SettingsRow, SettingsSection } from '@renderer/components/settings/SettingsPagePrimitives';
 import { getVoiceFeedbackSettings, saveVoiceFeedback, getVoiceInputDevices, type VoiceFeedbackConfig, type VoiceFeedbackSettings, type AudioDeviceInfo } from '@common/adapter/voiceCompanion';

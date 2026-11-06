@@ -38,7 +38,7 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
     lastRefreshAt,
   });
 
-  const userId = whoami?.id;
+  const userId = whoami?.userId;
 
   // Check if current state has been dismissed for today
   const isDismissed =

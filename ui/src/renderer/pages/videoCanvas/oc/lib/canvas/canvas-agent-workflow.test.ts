@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { defaultConfig } from "@oc/stores/use-config-store";
 import { CanvasNodeType } from "@oc/types/canvas";
-import type { CanvasAgentSnapshot } from "./canvas-agent-ops";
+import type { CanvasAgentOp, CanvasAgentSnapshot } from "./canvas-agent-ops";
 import { partitionCanvasGenerationOps } from "./canvas-agent-ops";
 import { buildCanvasWorkflowOps } from "./canvas-agent-workflow";
 
@@ -35,11 +35,12 @@ describe("buildCanvasWorkflowOps", () => {
         }, snapshot(existingId), defaultConfig);
 
         const connects = ops.filter((op) => op.type === "connect_nodes");
-        const frame1Id = ops.find((op) => op.type === "add_node" && op.title === "关键帧1")?.id;
-        const videoId = ops.find((op) => op.type === "add_node" && op.title === "成片")?.id;
+        type AddNodeOp = Extract<CanvasAgentOp, { type: "add_node" }>;
+        const frame1Id = ops.find((op): op is AddNodeOp => op.type === "add_node" && op.title === "关键帧1")?.id;
+        const videoId = ops.find((op): op is AddNodeOp => op.type === "add_node" && op.title === "成片")?.id;
         expect(frame1Id).toBeTruthy();
-        expect(connects).toContainEqual({ type: "connect_nodes", fromNodeId: existingId, toNodeId: frame1Id });
-        expect(connects).toContainEqual({ type: "connect_nodes", fromNodeId: frame1Id, toNodeId: videoId });
+        expect(connects.some((op) => op.type === "connect_nodes" && op.fromNodeId === existingId && op.toNodeId === frame1Id)).toBe(true);
+        expect(connects.some((op) => op.type === "connect_nodes" && op.fromNodeId === frame1Id && op.toNodeId === videoId)).toBe(true);
         expect(connects.filter((op) => op.fromNodeId === existingId && op.toNodeId === frame1Id)).toHaveLength(1);
     });
 
@@ -49,7 +50,7 @@ describe("buildCanvasWorkflowOps", () => {
             edges: [{ from: "n1", to: "frame1" }],
         }, snapshot("existing-character"), defaultConfig);
         const frame1Id = ops.find((op) => op.type === "add_node")?.id;
-        expect(ops).toContainEqual({ type: "connect_nodes", fromNodeId: "existing-character", toNodeId: frame1Id });
+        expect(ops.some((op) => op.type === "connect_nodes" && op.fromNodeId === "existing-character" && op.toNodeId === frame1Id)).toBe(true);
 
         expect(() => buildCanvasWorkflowOps({
             nodes: [{ ref: "frame1", kind: "image", title: "关键帧1", prompt: "午后" }],
@@ -79,12 +80,13 @@ describe("buildCanvasWorkflowOps", () => {
             ],
         }, snapshot(existingId), defaultConfig);
 
-        const imageId = ops.find((op) => op.type === "add_node" && op.title === "关键帧：嘎子当兵")?.id;
-        const videoOp = ops.find((op) => op.type === "add_node" && op.title === "视频：嘎子当兵");
+        type AddNodeOp = Extract<CanvasAgentOp, { type: "add_node" }>;
+        const imageId = ops.find((op): op is AddNodeOp => op.type === "add_node" && op.title === "关键帧：嘎子当兵")?.id;
+        const videoOp = ops.find((op): op is AddNodeOp => op.type === "add_node" && op.title === "视频：嘎子当兵");
         const videoId = videoOp?.id;
         expect(imageId).toBeTruthy();
-        expect(ops).toContainEqual({ type: "connect_nodes", fromNodeId: existingId, toNodeId: imageId });
-        expect(ops).toContainEqual({ type: "connect_nodes", fromNodeId: imageId, toNodeId: videoId });
+        expect(ops.some((op) => op.type === "connect_nodes" && op.fromNodeId === existingId && op.toNodeId === imageId)).toBe(true);
+        expect(ops.some((op) => op.type === "connect_nodes" && op.fromNodeId === imageId && op.toNodeId === videoId)).toBe(true);
         expect(videoOp && "metadata" in videoOp ? videoOp.metadata?.videoStartFrameNodeId : undefined).toBe(imageId);
         expect(String(videoOp && "metadata" in videoOp ? videoOp.metadata?.prompt : "")).toContain(`@[node:${imageId}]`);
 

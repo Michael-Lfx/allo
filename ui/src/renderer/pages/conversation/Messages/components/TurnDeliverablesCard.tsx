@@ -14,24 +14,17 @@ import { formatBytes } from '@/renderer/utils/file/formatBytes';
 import { getFileTypeInfo } from '@/renderer/utils/file/fileType';
 import { splitFileDisplayPath } from '@/renderer/utils/file/pathDisplay';
 import { isDesktopShell } from '@/renderer/utils/platform';
-import {
-  Down,
-  Export,
-  FileCode,
-  FileExcel,
-  FileMusic,
-  FilePdf,
-  FilePpt,
-  FileTxt,
-  FileWord,
-  FileZip,
-  FolderOpen,
-  Pic,
-  PreviewOpen,
-  Shield,
-  VideoTwo,
-  WebPage,
-} from '@icon-park/react';
+import codeFileIcon from '@/renderer/assets/file-types/CODE.svg';
+import docxFileIcon from '@/renderer/assets/file-types/DOCX.svg';
+import javaFileIcon from '@/renderer/assets/file-types/JAVA.svg';
+import jpgFileIcon from '@/renderer/assets/file-types/JPG.svg';
+import mp3FileIcon from '@/renderer/assets/file-types/MP3.svg';
+import mp4FileIcon from '@/renderer/assets/file-types/MP4.svg';
+import pdfFileIcon from '@/renderer/assets/file-types/PDF.svg';
+import pptFileIcon from '@/renderer/assets/file-types/PPT.svg';
+import xlsFileIcon from '@/renderer/assets/file-types/XLS.svg';
+import zipFileIcon from '@/renderer/assets/file-types/ZIP.svg';
+import { Down, Export, FolderOpen, PreviewOpen, Shield } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -41,35 +34,50 @@ import styles from './TurnDeliverablesCard.module.css';
 const DEFAULT_VISIBLE_COUNT = 3;
 const DELIVERABLE_SETTLE_MS = 180;
 
-const GLYPH_BY_KIND: Record<Exclude<WorkspaceFileIconKind, 'markdown'>, typeof FileZip> = {
-  archive: FileZip,
-  audio: FileMusic,
-  code: FileCode,
-  excel: FileExcel,
-  html: WebPage,
-  image: Pic,
-  pdf: FilePdf,
-  presentation: FilePpt,
-  text: FileTxt,
-  video: VideoTwo,
-  word: FileWord,
+const FILE_SHEET_PATH =
+  'M7.7 2.7h10.1l7.5 7.5v15.9a3.25 3.25 0 0 1-3.25 3.25H7.7a3.25 3.25 0 0 1-3.25-3.25V5.95A3.25 3.25 0 0 1 7.7 2.7Z';
+const FILE_FOLD_PATH = 'M17.8 2.95v5.72c0 .9.73 1.63 1.63 1.63h5.63L17.8 2.95Z';
+const FILE_MARK_STROKE = {
+  stroke: '#fff',
+  strokeWidth: 1.65,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+} as const;
+
+const FILE_ICON_BY_KIND: Partial<Record<WorkspaceFileIconKind, string>> = {
+  archive: zipFileIcon,
+  audio: mp3FileIcon,
+  code: codeFileIcon,
+  excel: xlsFileIcon,
+  image: jpgFileIcon,
+  pdf: pdfFileIcon,
+  presentation: pptFileIcon,
+  video: mp4FileIcon,
+  word: docxFileIcon,
 };
 
-const MarkdownGlyph: React.FC = () => (
-  <svg className={styles.markdownGlyph} width='28' height='28' viewBox='0 0 24 24' fill='none'>
-    <path
-      fill='currentColor'
-      d='M6.15 3.35h7.55c.32 0 .63.13.85.35l4.75 4.75c.22.22.35.53.35.85v10.35c0 1.19-.96 2.15-2.15 2.15H6.15c-1.19 0-2.15-.96-2.15-2.15V5.5c0-1.19.96-2.15 2.15-2.15Z'
-    />
-    <path fill='#fff' fillOpacity='0.42' d='M13.55 3.55v4.55c0 .36.29.65.65.65h4.55L13.55 3.55Z' />
-    <path
-      stroke='#fff'
-      strokeWidth='1.6'
-      strokeLinecap='round'
-      d='M7.4 12.05h9.2M7.4 15.15h9.2M7.4 18.25h5.6'
-    />
-  </svg>
-);
+// Markdown has no replacement in the supplied artwork set; keep its existing
+// file-sheet glyph. HTML and plain text likewise retain the shared visual
+// language until dedicated assets are available.
+const CUSTOM_FILE_MARK_BY_KIND: Partial<Record<WorkspaceFileIconKind, React.ReactNode>> = {
+  html: (
+    <g {...FILE_MARK_STROKE} strokeWidth={1.55}>
+      <circle cx='15.8' cy='18.8' r='4.8' />
+      <path d='M11 18.8h9.6M15.8 14c2.1 2.4 2.1 7.2 0 9.6M15.8 14c-2.1 2.4-2.1 7.2 0 9.6' />
+    </g>
+  ),
+  markdown: (
+    <g {...FILE_MARK_STROKE}>
+      <path d='M9.1 20.7v-5.1l2.3 2.5 2.3-2.5v5.1' />
+      <path d='M18.2 15.9v4.8m-1.75-1.75 1.75 1.75 1.75-1.75' />
+    </g>
+  ),
+  text: (
+    <g {...FILE_MARK_STROKE}>
+      <path d='M9.3 15.3h13.1M9.3 18.7h13.1M9.3 22.1h8.7' />
+    </g>
+  ),
+};
 
 const fileTitle = (fileName: string): string => {
   const dot = fileName.lastIndexOf('.');
@@ -79,17 +87,26 @@ const fileTitle = (fileName: string): string => {
 
 const DeliverableGlyph: React.FC<{ fileName: string }> = ({ fileName }) => {
   const kind = getWorkspaceFileIconKind(fileName);
-  if (kind === 'markdown') {
+  const extension = fileName.toLowerCase().split('.').pop() || '';
+  const assetIcon = kind === 'code' && extension === 'java' ? javaFileIcon : FILE_ICON_BY_KIND[kind];
+
+  if (assetIcon) {
     return (
-      <span className={classNames(styles.glyph, styles.glyphMarkdown)} aria-hidden='true'>
-        <MarkdownGlyph />
+      <span className={styles.glyph} data-kind={kind} aria-hidden='true'>
+        <img className={styles.assetGlyph} src={assetIcon} alt='' draggable={false} />
       </span>
     );
   }
-  const Icon = GLYPH_BY_KIND[kind];
+
+  const customGlyphSize = kind === 'markdown' ? 32 : 28;
+
   return (
-    <span className={styles.glyph} aria-hidden='true'>
-      <Icon theme='filled' size={28} fill='currentColor' />
+    <span className={styles.glyph} data-kind={kind} aria-hidden='true'>
+      <svg className={styles.fileGlyph} width={customGlyphSize} height={customGlyphSize} viewBox='0 0 32 32' fill='none'>
+        <path fill='currentColor' d={FILE_SHEET_PATH} />
+        <path fill='#fff' fillOpacity='0.34' d={FILE_FOLD_PATH} />
+        {CUSTOM_FILE_MARK_BY_KIND[kind]}
+      </svg>
     </span>
   );
 };

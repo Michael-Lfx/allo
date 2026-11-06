@@ -42,7 +42,7 @@ const MarketCardShell: React.FC<MarketCardShellProps> = ({ children, testId, ref
     <article
       data-testid={testId}
       className={classNames(
-        'box-border flex h-auto min-w-0 self-stretch flex-col rounded-16px border border-solid border-[var(--color-border-2)] p-16px hover:border-[var(--color-border-3)] motion-reduce:transition-none',
+        'box-border flex h-auto min-w-0 self-stretch flex-col rounded-16px border border-solid border-[var(--color-border-2)] p-16px motion-reduce:transition-none',
         reflective ? styles.plate : 'bg-[var(--color-bg-2)] transition-colors duration-150'
       )}
       onPointerMove={reflective ? aimPlate : undefined}

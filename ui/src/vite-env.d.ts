@@ -18,3 +18,7 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare module '*run-dev-vite-deps.mjs' {
+  export function viteOptimizeDepDiskNames(file: string): string[];
+}

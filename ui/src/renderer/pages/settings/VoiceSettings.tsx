@@ -7,7 +7,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Dropdown, Menu, Message, Modal, Switch } from '@arco-design/web-react';
+import { Button, Dropdown, Menu, Modal, Switch } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';

@@ -53,7 +53,7 @@ describe("compact create menu", () => {
         const commands = resolveAddNodeMenuCommands({ workspaceMode: "professional", isProjectLinked: false, handlers });
         expect(commands.length).toBeGreaterThan(0);
         for (const command of commands) {
-            expect(isValidElement(command.icon), command.id).toBe(true);
+            if (!isValidElement(command.icon)) throw new Error(`unrenderable icon: ${command.id}`);
         }
     });
 
@@ -61,9 +61,12 @@ describe("compact create menu", () => {
         const commands = resolveAddNodeMenuCommands({ workspaceMode: "professional", isProjectLinked: false, handlers });
         const iconName = (id: string) => {
             const command = commands.find((item) => item.id === id);
-            expect(isValidElement(command?.icon), id).toBe(true);
-            const type = isValidElement(command?.icon) ? command.icon.type : null;
-            return typeof type === "object" && type && "displayName" in type ? String(type.displayName) : String(type);
+            const icon = command?.icon;
+            if (!isValidElement(icon)) throw new Error(`unrenderable icon: ${id}`);
+            const type = icon.type;
+            return typeof type === "object" && type && "displayName" in type
+                ? String((type as { displayName?: unknown }).displayName)
+                : String(type);
         };
         expect(iconName(CanvasNodeType.Text)).toBe("Type");
         expect(iconName(CanvasNodeType.Image)).toBe("Image");

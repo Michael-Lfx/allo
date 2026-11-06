@@ -148,6 +148,7 @@ impl OpenAIProvider {
         Ok(headers)
     }
 
+    #[cfg(test)]
     fn build_messages(
         messages: &[Message],
         system: &str,

@@ -226,7 +226,7 @@ const PreviewTabs: React.FC<PreviewTabsProps> = ({
                     title={tab.title}
                     className={`preview-tabs__tab group flex items-center gap-4px px-7px h-28px rd-6px cursor-pointer transition-colors flex-shrink-0 border-1px border-solid border-transparent ${
                       isActive
-                        ? 'bg-[#ececeb] text-t-primary font-medium'
+                        ? 'bg-fill-2 text-t-primary font-medium border-[var(--color-border-2)]'
                         : 'text-t-secondary hover:bg-3 hover:text-t-primary'
                     }`}
                     onClick={() => onSwitchTab(tab.id)}

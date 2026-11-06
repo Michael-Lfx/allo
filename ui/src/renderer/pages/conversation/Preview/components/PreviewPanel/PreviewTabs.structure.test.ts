@@ -17,10 +17,10 @@ describe('preview chrome tab strip', () => {
   });
 
   test('uses a compact bar with inset pill chips instead of full-height strips', () => {
-    expect(chromeCss.includes('height: 32px;')).toBe(true);
-    expect(source.includes('h-24px')).toBe(true);
+    expect(chromeCss.includes('height: 40px;')).toBe(true);
+    expect(source.includes('h-28px')).toBe(true);
     expect(source.includes('rd-6px')).toBe(true);
-    expect(source.includes('text-12px')).toBe(true);
+    expect(source.includes('text-13px')).toBe(true);
     expect(source.includes("minHeight: '36px'")).toBe(false);
     expect(source.includes('h-36px')).toBe(false);
   });
@@ -101,11 +101,13 @@ describe('tab overflow wheel pan', () => {
 });
 
 describe('preview chrome breadcrumb', () => {
-  test('renders workspace folder hierarchy on the toolbar, not only the leaf filename', () => {
+  test('keeps the toolbar filename-only and delegates richer chrome through leftExtra', () => {
     const toolbar = readFileSync(new URL('./PreviewToolbar.tsx', import.meta.url), 'utf8');
-    expect(toolbar.includes("t('preview.pathLabel')")).toBe(true);
-    expect(toolbar.includes('breadcrumbSegments')).toBe(true);
-    expect(toolbar.includes("{'>'}")).toBe(true);
+    const panel = readFileSync(new URL('./PreviewPanel.tsx', import.meta.url), 'utf8');
+    expect(toolbar.includes('title={file_name}')).toBe(true);
+    expect(toolbar.includes('leftExtra')).toBe(true);
+    expect(toolbar.includes('{leftExtra}')).toBe(true);
+    expect(panel.includes('leftExtra={toolbarExtras?.left}')).toBe(true);
     expect(toolbar.includes("const isImage = content_type === 'image'")).toBe(true);
   });
 
@@ -115,7 +117,7 @@ describe('preview chrome breadcrumb', () => {
     expect(toolbar.includes('isImage ? (')).toBe(true);
     expect(toolbar.includes("t('preview.openFileLocation')")).toBe(true);
     expect(toolbar.includes('showRevealInFolder')).toBe(true);
-    expect(toolbar.includes("{'>'}")).toBe(true);
+    expect(toolbar.includes('onRevealInFolder?.()')).toBe(true);
     expect(panel.includes('ipcBridge.shell.showItemInFolder.invoke')).toBe(true);
     expect(panel.includes("content_type === 'image' && Boolean(metadata?.file_path)")).toBe(true);
   });

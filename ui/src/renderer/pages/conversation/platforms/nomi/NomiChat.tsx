@@ -144,16 +144,6 @@ const NomiChat: React.FC<{
 
   useEffect(
     () =>
-      addEventListener('conversation.messages.refresh', event => {
-        if (event.conversationId === conversation_id && event.reason === 'reset') {
-          setKeyboardWait(null);
-        }
-      }),
-    [conversation_id]
-  );
-
-  useEffect(
-    () =>
       addEventListener('voice.keyboard.wait.clear', targetConversationId => {
         if (targetConversationId === conversation_id) setKeyboardWait(null);
       }),

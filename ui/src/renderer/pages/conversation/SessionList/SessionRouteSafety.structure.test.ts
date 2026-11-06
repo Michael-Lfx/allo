@@ -45,10 +45,10 @@ describe('shared session shell route safety', () => {
   });
 
   test('expired WebUI auth returns to login without tripping the application boundary', () => {
-    expect(mainSource).toMatch(/const \{ ready, status(?:, user)? \} = useAuth\(\)/);
-    expect(mainSource.includes("if (!ready || status !== 'authenticated') {")).toBe(true);
+    expect(mainSource).toMatch(/const \{[\s\S]*ready: cloudReady,[\s\S]*status: cloudStatus,[\s\S]*\} = useCloudAuth\(\)/);
+    expect(mainSource.includes("if (!cloudReady || cloudStatus !== 'authenticated') {")).toBe(true);
     expect(mainSource.includes('if (!active || isHandledAuthExpiredHttpError(error)) return;')).toBe(true);
-    expect(mainSource.includes("if (status !== 'authenticated') {\n    return router;")).toBe(true);
+    expect(mainSource.includes("if (cloudStatus !== 'authenticated') {\n    return router;")).toBe(true);
   });
 
   test('route parameter boundaries do not throw on malformed entity IDs', () => {

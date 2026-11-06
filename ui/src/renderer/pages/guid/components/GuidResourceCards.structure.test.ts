@@ -7,6 +7,7 @@ const readSource = (url: URL) => readFileSync(url, 'utf8');
 describe('Guid homepage single-screen layout', () => {
   test('keeps the conversation stage without task-intent starter cards', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
+    const actionRow = readSource(new URL('./GuidActionRow.tsx', import.meta.url));
 
     const inputIndex = source.indexOf('<GuidInputCard');
     const primaryStageIndex = source.indexOf('className={styles.guidPrimaryStage}');
@@ -16,10 +17,12 @@ describe('Guid homepage single-screen layout', () => {
     expect(inputIndex).toBeGreaterThan(primaryStageIndex);
     expect(editorHostIndex).toBeGreaterThan(inputIndex);
     expect(source.includes('GuidResourceCards')).toBe(false);
-    expect(source.includes('<TaskProfileSelector')).toBe(true);
-    const profileIndex = source.indexOf('<TaskProfileSelector');
-    expect(profileIndex).toBeGreaterThan(primaryStageIndex);
-    expect(profileIndex).toBeLessThan(inputIndex);
+    expect(source.includes('<GuidActionRow')).toBe(true);
+    expect(actionRow.includes('<TaskProfileSelector')).toBe(true);
+    const actionRowNodeIndex = source.indexOf('const actionRowNode');
+    expect(actionRowNodeIndex).toBeGreaterThan(-1);
+    expect(actionRowNodeIndex).toBeLessThan(inputIndex);
+    expect(source.includes('actionRow={actionRowNode}')).toBe(true);
     expect(source.includes('GuidReadinessStrip')).toBe(false);
     expect(source.includes("data-testid='guid-run-settings-toggle'")).toBe(false);
     expect(source.includes("data-testid='guid-run-settings-panel'")).toBe(false);
@@ -44,7 +47,7 @@ describe('Guid homepage single-screen layout', () => {
     const css = readSource(new URL('../index.module.css', import.meta.url));
     const block = css.match(/\.guidContainer\s*\{[^}]*\}/)?.[0] ?? '';
 
-    expect(block.includes('overflow-y: auto')).toBe(true);
+    expect(/overflow-y:\s*(?:auto|scroll)/.test(block)).toBe(true);
     expect(block.includes('overflow: hidden')).toBe(false);
   });
 

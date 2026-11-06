@@ -802,8 +802,13 @@ function canvasAgentWriteMessage(result: CanvasAgentPostcondition & { changed: b
 
 function refreshObservationMessages(messages: ResponseInputMessage[], snapshot: CanvasAgentSnapshot, previous?: CanvasAgentSnapshot | null, userText?: string): ResponseInputMessage[] {
     const observation = { role: "system" as const, content: observationPromptBlock(buildCanvasAgentObservation(snapshot, previous, canvasAgentGoalHint(userText || ""))) };
-    const rest = messages.filter((message) => !(message.role === "system" && typeof message.content === "string" && message.content.startsWith("[画布观察]")));
-    const systemIndex = rest.findIndex((message) => message.role === "system");
+    const rest = messages.filter((message) => !(
+        "role" in message &&
+        message.role === "system" &&
+        typeof message.content === "string" &&
+        message.content.startsWith("[画布观察]")
+    ));
+    const systemIndex = rest.findIndex((message) => "role" in message && message.role === "system");
     if (systemIndex < 0) return [observation, ...rest];
     return [...rest.slice(0, systemIndex + 1), observation, ...rest.slice(systemIndex + 1)];
 }

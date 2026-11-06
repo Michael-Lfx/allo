@@ -13,7 +13,7 @@ describe('sider user language menu', () => {
   test('shows native language labels and the active language check', () => {
     expect(source.includes("'zh-CN': '简体中文'")).toBe(true);
     expect(source.includes("'en-US': 'English'")).toBe(true);
-    expect(source.includes('<Check')).toBe(true);
+    expect(source.includes("name='check'")).toBe(true);
     expect(source.includes('normalizedLanguage === currentLanguage')).toBe(true);
   });
 

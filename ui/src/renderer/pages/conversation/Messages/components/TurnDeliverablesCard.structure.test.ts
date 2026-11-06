@@ -48,6 +48,21 @@ describe('TurnDeliverablesCard structure', () => {
     expect(cardSource.includes("title={t('preview.preview')}")).toBe(true);
   });
 
+  test('uses supplied file-type artwork while preserving the custom Markdown glyph', () => {
+    expect(cardSource.includes("from '@/renderer/assets/file-types/CODE.svg'")).toBe(true);
+    expect(cardSource.includes("from '@/renderer/assets/file-types/JAVA.svg'")).toBe(true);
+    expect(cardSource.includes("from '@/renderer/assets/file-types/JPG.svg'")).toBe(true);
+    expect(cardSource.includes("from '@/renderer/assets/file-types/ZIP.svg'")).toBe(true);
+    expect(cardSource.includes('const FILE_ICON_BY_KIND')).toBe(true);
+    expect(cardSource.includes("kind === 'code' && extension === 'java'")).toBe(true);
+    expect(cardSource.includes('styles.assetGlyph')).toBe(true);
+    expect(cardSource.includes('const CUSTOM_FILE_MARK_BY_KIND')).toBe(true);
+    expect(cardSource.includes('{CUSTOM_FILE_MARK_BY_KIND[kind]}')).toBe(true);
+    expect(cardSource.includes("kind === 'markdown' ? 32 : 28")).toBe(true);
+    expect(cardSource.includes('GLYPH_BY_KIND')).toBe(false);
+    expect(cardSource.includes('styles.glyphMarkdown')).toBe(false);
+  });
+
   test('renders a filename title with a kind and size meta line', () => {
     expect(cardSource.includes('splitFileDisplayPath(item.relativePath, item.fileName)')).toBe(true);
     expect(cardSource.includes('fileTitle(displayPath.fileName)')).toBe(true);

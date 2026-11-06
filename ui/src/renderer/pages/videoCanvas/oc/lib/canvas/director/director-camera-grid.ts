@@ -1,5 +1,5 @@
-import type { DirectorScene, DirectorShot, DirectorViewFraming } from "@oc/types/director";
-import { resolveDirectorViewFraming } from "@oc/lib/canvas/director/director-view-modes";
+import type { DirectorScene, DirectorShot } from "@oc/types/director";
+import { resolveDirectorViewFraming, type DirectorViewFraming } from "@oc/lib/canvas/director/director-view-modes";
 
 export type DirectorCameraGridOutput = {
     scene: DirectorScene;
