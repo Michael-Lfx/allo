@@ -1830,12 +1830,12 @@ fn variant_v2_switch_defaults_on_and_off_values_disable() {
     assert!(super::activities::variant_v2_enabled());
     for value in ["off", "OFF", "0", "false", " False "] {
         unsafe { std::env::set_var(super::activities::VARIANT_V2_SWITCH_ENV, value) };
-        assert!(super::activities::is_variant_v2_disabled_value(value));
+        assert!(!super::activities::variant_v2_enabled_value(Some(value)));
         assert!(!super::activities::variant_v2_enabled());
     }
     for value in ["on", "1", "true", ""] {
         unsafe { std::env::set_var(super::activities::VARIANT_V2_SWITCH_ENV, value) };
-        assert!(!super::activities::is_variant_v2_disabled_value(value));
+        assert!(super::activities::variant_v2_enabled_value(Some(value)));
         assert!(super::activities::variant_v2_enabled());
     }
 }

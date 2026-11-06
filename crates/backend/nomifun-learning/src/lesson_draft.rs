@@ -28,46 +28,13 @@ use crate::course_outline::{SEV_DANGER, SEV_WARNING};
 /// it ever blocks).
 const MAX_ACTIVITIES: usize = 10;
 
-/// 图课时「时长预算」行与超容自报的运维开关（k03，learnhub #154）：
-/// 置 off/0/false 时不注入预算行、计划工具的自报键按缺席处理（=旧行为）。
-/// 与 `NOMI_LEARNING_SOURCE_PLAN` 同款进程内运维开关，不进 UI/用户配置面。
-pub const EST_BUDGET_SWITCH_ENV: &str = "NOMI_LEARNING_EST_BUDGET";
-
-/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_est_budget_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 时长预算机制是否开启（未设/其它值 = 开启）。
-pub fn est_budget_enabled() -> bool {
-    std::env::var(EST_BUDGET_SWITCH_ENV)
-        .map(|value| !is_est_budget_disabled_value(&value))
-        .unwrap_or(true)
-}
-
-/// 档位优先序运维开关（u07，`NOMI_LEARNING_TIER_PRIORITY`）：只管两项
-/// 模型可见面——①生成系统提示词的「档位优先序」条款（ai-agent 面）；
-/// ②本面审计的节长上限 warning（`section_over_budget`）。未设/其它取值 =
-/// 开（**缺省 on 待 A/B**；票面推翻条件：on 臂知道档出现「只剩定义、无
-/// 情境引入」类空心化 → 默认 off）；off/0/false = 关（两处逐字节回基线）。
-/// 修复轮上下文注入与发布前数学失败回给模型两项为机械正确性补全，**不挂
-/// 本开关**（票面明示）。
-pub const TIER_PRIORITY_SWITCH_ENV: &str = "NOMI_LEARNING_TIER_PRIORITY";
-
-/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_tier_priority_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 档位优先序开关判定（取值注入面，纯函数——测试不触进程 env）。
-pub fn tier_priority_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_tier_priority_disabled_value(value)).unwrap_or(true)
-}
-
-/// 档位优先序开关的进程读数（[`tier_priority_enabled_value`] 同款语义）。
-pub fn tier_priority_enabled() -> bool {
-    tier_priority_enabled_value(std::env::var(TIER_PRIORITY_SWITCH_ENV).ok().as_deref())
-}
+// EST_BUDGET（k03）/ TIER_PRIORITY（u07）两开关的三件套住 `crate::switches`
+//（u 系开关收拢面），此处再导出保持旧路径（本面调用与 ai-agent 经 crate
+// 根的引用零改动）。
+pub(crate) use crate::switches::{
+    EST_BUDGET_SWITCH_ENV, TIER_PRIORITY_SWITCH_ENV, est_budget_enabled, est_budget_enabled_value,
+    tier_priority_enabled,
+};
 
 /// u07 节长预算锚映射：teaches 档位的**最高档** → 文字预算档（与提示词
 /// `prose_budget_rules` 同源 [`ComplexityTier::prose_budget`]，禁止手写
@@ -2175,10 +2142,10 @@ mod tests {
         assert!(line.contains("时长预算：20 分钟"), "{line}");
         assert!(line.contains("节点尺寸锚"), "{line}");
         for value in ["off", "OFF", "0", "false", " False "] {
-            assert!(is_est_budget_disabled_value(value), "{value:?} 关");
+            assert!(!est_budget_enabled_value(Some(value)), "{value:?} 关");
         }
         for value in ["on", "1", "true", "", "disable"] {
-            assert!(!is_est_budget_disabled_value(value), "{value:?} 不关");
+            assert!(est_budget_enabled_value(Some(value)), "{value:?} 不关");
         }
     }
 
@@ -2417,21 +2384,11 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn est_budget_switch_toggles_the_env_gate() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, value) },
-                    None => unsafe { std::env::remove_var(EST_BUDGET_SWITCH_ENV) },
-                }
-            }
-        }
-        let previous = std::env::var(EST_BUDGET_SWITCH_ENV).ok();
-        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "off") };
-        let _restore = Restore(previous);
+        let _off = crate::switches::switch_env_guard(EST_BUDGET_SWITCH_ENV, Some("off"));
         assert!(!est_budget_enabled(), "off 臂关闭预算行与自报");
 
-        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "on") };
+        drop(_off);
+        let _on = crate::switches::switch_env_guard(EST_BUDGET_SWITCH_ENV, Some("on"));
         assert!(est_budget_enabled(), "on 臂开启");
     }
 
@@ -2492,18 +2449,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn capacity_note_is_ignored_when_the_switch_is_off() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, value) },
-                    None => unsafe { std::env::remove_var(EST_BUDGET_SWITCH_ENV) },
-                }
-            }
-        }
-        let previous = std::env::var(EST_BUDGET_SWITCH_ENV).ok();
-        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "off") };
-        let _restore = Restore(previous);
+        let _restore = crate::switches::switch_env_guard(EST_BUDGET_SWITCH_ENV, Some("off"));
 
         let mut draft = LessonDraft::new(context());
         draft.apply_ops(vec![LessonOp::SetSectionManifest {
@@ -2597,38 +2543,15 @@ mod tests {
 
     use crate::LearningService;
 
-    /// NOMI_LEARNING_* 开关 env 窗口（串行写 env——并行测试互踩的竞态教训，
-    /// 与本文件既有的 est_budget 守卫同款）。drop 时恢复原值。
+    /// NOMI_LEARNING_* 开关 env 窗口单源在 `crate::switches::switch_env_guard`
+    ///（四份脚手架收拢）；本面便捷形（串行写 env——并行测试互踩的竞态教训）。
     fn tier_priority_env_guard(value: &'static str) -> impl Drop {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(previous) => unsafe {
-                        std::env::set_var(TIER_PRIORITY_SWITCH_ENV, previous)
-                    },
-                    None => unsafe { std::env::remove_var(TIER_PRIORITY_SWITCH_ENV) },
-                }
-            }
-        }
-        let previous = std::env::var(TIER_PRIORITY_SWITCH_ENV).ok();
-        unsafe { std::env::set_var(TIER_PRIORITY_SWITCH_ENV, value) };
-        Restore(previous)
+        crate::switches::switch_env_guard(TIER_PRIORITY_SWITCH_ENV, Some(value))
     }
 
-    /// 档位优先序开关（u07）：未设 = 开（**缺省 on 待 A/B**——票面推翻条件
-    /// = on 臂知道档出现「只剩定义、无情境引入」空心化才翻默认 off）；
-    /// off 系 = 关（条款与上限 warning 逐字节回基线）。纯函数面测试。
-    #[test]
-    fn tier_priority_switch_defaults_on_and_off_arm_is_explicit() {
-        assert!(tier_priority_enabled_value(None), "未设 = 条款在位（缺省 on 待 A/B）");
-        for value in ["off", "OFF", "0", "false", " False ", " off "] {
-            assert!(!tier_priority_enabled_value(Some(value)), "{value:?} = 基线对照臂");
-        }
-        for value in ["on", "1", "true", "yes", ""] {
-            assert!(tier_priority_enabled_value(Some(value)), "{value:?} = 条款在位");
-        }
-    }
+    /// 档位优先序开关（u07）的取值判定断言住 `crate::switches`（三件套收拢
+    /// 面同一份纯函数测试）；本文件只留进程读数的行为臂（见下方 env 守卫
+    /// 的 on/off 两臂测试）。
 
     /// 节长预算锚映射（u07）：teaches 档位最高档 → 文字预算档（与
     /// prose_budget_rules 同源 ComplexityTier::prose_budget）——知道 = 低

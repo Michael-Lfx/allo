@@ -18,23 +18,9 @@ pub fn qb_similarity_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// 变式链 V2 开关（u10，正优化验收协议）：`NOMI_LEARNING_VARIANT_V2`——on
-/// 臂装配变式判底（有正文才装、缺席如实跳过）、证据逐字核、按题型契约、
-/// 变式指令独立段；off 臂与基线逐字节一致（单测钉住）。缺省 on 待真机
-/// A/B：变式成功率/违约重试/证据逐字命中改善且护栏不劣化才落默认 on。
-pub const VARIANT_V2_SWITCH_ENV: &str = "NOMI_LEARNING_VARIANT_V2";
-
-/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_variant_v2_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 变式链 V2 是否开启（未设/其它值 = 开启；缺省 on 待 A/B）。
-pub fn variant_v2_enabled() -> bool {
-    std::env::var(VARIANT_V2_SWITCH_ENV)
-        .map(|value| !is_variant_v2_disabled_value(&value))
-        .unwrap_or(true)
-}
+// u10 变式链 V2 开关的三件套住 `crate::switches`（u 系开关收拢面），此处
+// 再导出保持旧路径（本面调用与 `super::activities::*` 测试引用零改动）。
+pub(crate) use crate::switches::{VARIANT_V2_SWITCH_ENV, variant_v2_enabled, variant_v2_enabled_value};
 
 /// 变式链读数（u10，冒烟读数面非门禁，进程内累计）：`skipped_no_document`
 /// = 课时正文缺席被如实跳过的变式请求数（on 臂，不阻断回合）；`evidence_

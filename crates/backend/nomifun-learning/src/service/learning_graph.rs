@@ -2131,7 +2131,6 @@ impl LearningService {
                                     &candidate,
                                     &feedback,
                                     point_names.as_ref(),
-                                    crate::learning_graph::redraft_splice_enabled(),
                                 ) {
                                     if !in_place_retried {
                                         // 原地重试恰一次（不占轮预算）：带守
