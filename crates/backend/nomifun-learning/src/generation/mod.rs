@@ -451,10 +451,11 @@ pub(crate) use self::activities::{
     ExistingLessonQuestion, filter_novel_activities, generate_lesson_activity,
     legacy_duplicate_hit, qb_similarity_enabled, similarity_hit,
 };
-pub use self::activities::{
-    QB_SIMILARITY_SWITCH_ENV, VARIANT_V2_SWITCH_ENV, is_variant_v2_disabled_value, qb_readings,
-    variant_readings, variant_v2_enabled,
-};
+// u10 变式链 V2 开关三件套住 `crate::switches`（u 系开关收拢面）；crate 根
+// 直取 switches（lib.rs），本面经 activities 的再导出保持旧路径；读数面
+// variant_readings 仍在 activities。
+pub(crate) use crate::switches::variant_v2_enabled;
+pub use self::activities::{QB_SIMILARITY_SWITCH_ENV, qb_readings, variant_readings};
 pub(crate) use self::parser::normalize_prompt;
 pub(crate) use self::assemble::assemble_outline_pack;
 pub(crate) use self::blueprint::{

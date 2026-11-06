@@ -1086,77 +1086,13 @@ pub(crate) fn review_state_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// 点修回填的运维开关（u01，模型可用性修复波）：置 off/0/false = 回填臂
-/// 休眠——重裁候选稿不回填、守卫文案与修订纪律逐字回基线形（off 臂）；
-/// 未设/其它值 = 开启（缺省 on，待真机 A/B 定案）。on 臂三件：①重裁解析
-/// 后守卫前，上一稿中不在点名集、候选稿同标题仍在的节点整对象回填（抹掉
-/// 标点/措辞漂移——真机 run-1793951137445：重裁把未点名节点 purpose
-/// 「粗/中/细」写成「粗、中、细」→ 守卫拦 → 原地重试又改另一节点 → 二次
-/// 越权耗轮）；②守卫文案改指令式并给「从上一稿复制该节点 JSON」的可执行
-/// 出口；③修订纪律补回填句（改了也白改，模型不再被要求搬运未点名节点）。
-pub const REDRAFT_SPLICE_SWITCH_ENV: &str = "NOMI_LEARNING_REDRAFT_SPLICE";
-
-/// 点修回填开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_redraft_splice_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 点修回填是否开启（未设/其它值 = 开启）。
-pub(crate) fn redraft_splice_enabled() -> bool {
-    std::env::var(REDRAFT_SPLICE_SWITCH_ENV)
-        .map(|value| !is_redraft_splice_disabled_value(&value))
-        .unwrap_or(true)
-}
-
-/// 评审输入补全的运维开关（u03，模型可用性修复波）：置 off/0/false = 补全
-/// 臂休眠——评审 user 不渲染候选词块、系统提示词不织两条款（off 臂逐字节
-/// 回基线）；未设/其它值 = 开启（缺省 on，待真机 A/B 定案）。on 臂三件：
-/// ①评审 user 每条提名下渲染「挂号表候选词」——定义原文的连续 CJK 片段
-/// 机械切出（不掩码），常识/缺失行的 term 逐字照抄有源（真机两次挂号表
-/// 违约都死在机械层只给掩码残片、模型凭记忆复述定义：滤杯循环自证、
-/// 「可溶物质」案）；②一条 problem 的 issue 可并列指名多词（顿号分隔），
-/// 名词裁决按词核验不受 8 条上限约束（run-1793859632428：判 11 个名词时
-/// 7 个无法逐条指名的算术死结）；③「宁放勿错」与碎片「拿不准按名词」两
-/// 类不确定默认的分工厘清。
-pub const REVIEW_CONTEXT_V2_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_CONTEXT_V2";
-
-/// 评审输入补全开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_review_context_v2_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 评审输入补全是否开启（未设/其它值 = 开启）。
-pub(crate) fn review_context_v2_enabled() -> bool {
-    std::env::var(REVIEW_CONTEXT_V2_SWITCH_ENV)
-        .map(|value| !is_review_context_v2_disabled_value(&value))
-        .unwrap_or(true)
-}
-
-/// 反循环臂的运维开关（u04，模型可用性修复波）：置 off/0/false = 三件全
-/// 休眠、提示词逐字节回基线；未设/其它值 = 开启（缺省 on，待真机 A/B 定
-/// 案）。on 臂三件：①课程语境词——课程标题 + 学习目标的确定性切片（复用
-/// generation 的 term_slices）渲染为「可作定义的背景用语，不单独要求挂
-/// 号；作为本节点教学对象（teaches）时照常挂号」，进教练首批块与评审
-/// user，并加入点名清单已知面（这些词不再作为碎片下发）——空已教账 +
-/// 判据①要求每个领域词有出处的死结由此解开（「手冲咖啡」课的入门定义不
-/// 可能不用「手冲/冲煮/咖啡粉」）；②评审翻案锁——有状态复审时前轮意见
-/// 随评审 user 回灌并锁定「按前轮意见做出的修改本身不得再判为问题」
-/// （反乒乓纪律此前只约束教练，评审不受约束才有了跨轮翻案）；③教练声
-/// 明面条款补「边界只写一次」——『不教 X / 留待后续』只写 scope，intent
-/// 只写角色，不再两字段各写一遍（5 节点 4 个重复的边界声明）。
-pub const ANTI_LOOP_SWITCH_ENV: &str = "NOMI_LEARNING_ANTI_LOOP";
-
-/// 反循环臂开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_anti_loop_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 反循环臂是否开启（未设/其它值 = 开启）。
-pub(crate) fn anti_loop_enabled() -> bool {
-    std::env::var(ANTI_LOOP_SWITCH_ENV)
-        .map(|value| !is_anti_loop_disabled_value(&value))
-        .unwrap_or(true)
-}
+// u01/u03/u04 三开关（REDRAFT_SPLICE / REVIEW_CONTEXT_V2 / ANTI_LOOP）的
+// 三件套住 `crate::switches`（u 系开关收拢面），此处再导出保持旧路径
+//（growth_retry / service 与测试的 `crate::learning_graph::*` 引用零改动）。
+pub(crate) use crate::switches::{
+    ANTI_LOOP_SWITCH_ENV, REDRAFT_SPLICE_SWITCH_ENV, REVIEW_CONTEXT_V2_SWITCH_ENV, anti_loop_enabled,
+    redraft_splice_enabled, review_context_v2_enabled,
+};
 
 /// u04 课程语境词块的渲染（教练首批块与评审 user 共用单源）：`words` =
 /// 课程标题 + 学习目标的机械切片顿号串（service 按开关装配；空 = 零注入

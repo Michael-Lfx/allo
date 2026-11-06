@@ -2887,22 +2887,10 @@ mod tests {
     // ── u05：verify_math 批量核验（NOMI_LEARNING_VERIFY_BATCH） ──────────
 
     /// NOMI_LEARNING_* 开关的进程 env 窗口（串行写 env——非串行 save/restore
-    /// 会泄漏进并行测试，上一波 z02 竞态教训）。返回守卫，drop 时恢复原值。
+    /// 会泄漏进并行测试，上一波 z02 竞态教训）：单源在
+    /// `nomifun_learning::switch_env_guard`（四份脚手架收拢），本面便捷形。
     fn learning_switch_env_guard(env: &'static str, value: &str) -> impl Drop {
-        struct Restore(&'static str, Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.1.take() {
-                    Some(previous) => unsafe {
-                        std::env::set_var(self.0, previous)
-                    },
-                    None => unsafe { std::env::remove_var(self.0) },
-                }
-            }
-        }
-        let previous = std::env::var(env).ok();
-        unsafe { std::env::set_var(env, value) };
-        Restore(env, previous)
+        nomifun_learning::switch_env_guard(env, Some(value))
     }
 
     /// u05 off 臂守卫（`learning_switch_env_guard` 的 verify_batch 便捷形）。
