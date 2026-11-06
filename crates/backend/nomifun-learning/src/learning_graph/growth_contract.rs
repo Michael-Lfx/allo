@@ -495,13 +495,25 @@ pub fn validate_review(value: &Value) -> Vec<ContractViolation> {
             violations.push(red("ng.review.problems", format!("{at} 不是对象")));
             continue;
         };
-        for key in ["node", "field", "issue"] {
+        // node 不在必填面（r01）：空串 = 批级意见（不点名任何节点——
+        // advice-range 条款规定的合法格式，真机病历 run-1793859632428：
+        // 模型照条款写批级意见被旧检查整包判违约 → 静默降级 PASS）；
+        // field/issue 仍是问题的最低识别面，空串照拒。
+        for key in ["field", "issue"] {
             if problem_map.get(key).and_then(Value::as_str).unwrap_or_default().trim().is_empty() {
                 violations.push(red(
                     "ng.review.problems",
                     format!("{at} 的 {key} 缺失或为空"),
                 ));
             }
+        }
+        // node 键必在（字符串，可为空串 = 批级意见）——与 review_schema
+        // 同源（required 含 node、无 minLength）。
+        if problem_map.get("node").and_then(Value::as_str).is_none() {
+            violations.push(red(
+                "ng.review.problems",
+                format!("{at} 的 node 缺失（批级意见填空串，不可省略键）"),
+            ));
         }
         let field = problem_map.get("field").and_then(Value::as_str).unwrap_or_default();
         if !REVIEW_FIELDS.contains(&field) {
@@ -631,9 +643,11 @@ pub fn review_schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
+                    // node 可为空串（r01）：批级意见不点名任何节点——与
+                    // validate_review 同源，键必在（空串表批级），不设 minLength。
                     "required": ["node", "field", "issue"],
                     "properties": {
-                        "node": { "type": "string", "minLength": 1 },
+                        "node": { "type": "string" },
                         "field": { "enum": REVIEW_FIELDS },
                         "issue": { "type": "string", "minLength": 1 },
                         "advice": { "type": "string" },
@@ -882,6 +896,18 @@ mod tests {
             json!(REVIEW_FIELDS)
         );
         assert_eq!(review["properties"]["problems"]["maxItems"], json!(REVIEW_PROBLEMS_MAX));
+        // r01：node 键必在但可空串（批级意见）——schema 无 minLength，与
+        // validate_review「键在场、值可空」同源。
+        assert_eq!(
+            review["properties"]["problems"]["items"]["required"],
+            json!(["node", "field", "issue"])
+        );
+        assert!(
+            review["properties"]["problems"]["items"]["properties"]["node"]
+                .get("minLength")
+                .is_none(),
+            "node 不设 minLength（空串 = 批级意见）"
+        );
         // 挂号表（m3）：新包 schema required——serde 解析面容旧（缺席 = 空），
         // 必填性 = schema required + 提示词 + 重试执法（learnhub「schema 侧
         // 约束最大化」同款）。source 词表与 provenance 解析面互钉。
@@ -980,5 +1006,72 @@ mod tests {
         value["nodes"][0]["intent"] = json!("为何有这个点：补齐入口层的分类经验");
         value["nodes"][0]["scope"] = json!("教什么：分类判读；不碰：排序算法");
         assert!(validate_proposal(&value).is_empty(), "{:?}", validate_proposal(&value));
+    }
+
+    /// 批级意见合法（r01 真机病历 run-1793859632428）：reject 的 problem
+    /// `node` 填空串（不点名任何节点——advice-range 条款规定的批级意见格
+    /// 式）必须过契约校验；`field`/`issue` 仍必填，空串照拒。
+    #[test]
+    fn review_reject_allows_empty_node_for_batch_level_opinions() {
+        let value = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints", "issue": "提名定义预设的构件概念无出处", "advice": "并入某节点 teaches 自教" },
+                { "node": "辨认绿茶：凭未发酵这一条从茶叶里认出绿茶", "field": "teaches", "issue": "「芽叶嫩度」无出处", "advice": "单教后再挂 assumes" }
+            ]
+        });
+        assert!(
+            validate_review(&value).is_empty(),
+            "空 node 批级意见合法：{:?}",
+            validate_review(&value)
+        );
+
+        let blank_node = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "  ", "field": "mints", "issue": "issue 在场", "advice": "a" }
+            ]
+        });
+        assert!(
+            validate_review(&blank_node).is_empty(),
+            "空白 node 同批级意见：{:?}",
+            validate_review(&blank_node)
+        );
+
+        let empty_issue = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints", "issue": "", "advice": "a" }
+            ]
+        });
+        assert!(
+            !validate_review(&empty_issue).is_empty(),
+            "issue 空串仍违约：{:?}",
+            validate_review(&empty_issue)
+        );
+        let empty_field = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "", "issue": "issue 在场", "advice": "a" }
+            ]
+        });
+        assert!(
+            !validate_review(&empty_field).is_empty(),
+            "field 空串仍违约：{:?}",
+            validate_review(&empty_field)
+        );
+        let missing_node_key = json!({
+            "verdict": "reject",
+            "problems": [
+                { "field": "mints", "issue": "issue 在场", "advice": "a" }
+            ]
+        });
+        assert!(
+            validate_review(&missing_node_key)
+                .iter()
+                .any(|v| v.message.contains("node 缺失")),
+            "node 键省略仍违约（批级意见填空串不可省略键）：{:?}",
+            validate_review(&missing_node_key)
+        );
     }
 }
