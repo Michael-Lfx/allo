@@ -648,6 +648,13 @@ pub enum VoiceCallStartStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceModelFallback {
+    pub requested: VoiceModelRef,
+    pub actual: VoiceModelRef,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceCallStartResponse {
     pub request_id: String,
     pub status: VoiceCallStartStatus,
@@ -658,6 +665,8 @@ pub struct VoiceCallStartResponse {
     pub memory_owner_companion_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<VoiceBindingSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_fallback: Option<VoiceModelFallback>,
 }
 use std::path::PathBuf;
 

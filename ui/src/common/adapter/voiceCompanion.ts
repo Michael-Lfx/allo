@@ -321,6 +321,12 @@ export interface VoiceCallStartRequest {
   locale?: string;
 }
 
+export interface VoiceModelFallback {
+  requested: VoiceModelRef;
+  actual: VoiceModelRef;
+  reason: string;
+}
+
 export interface VoiceCallStartResponse {
   request_id: string;
   status: 'starting' | 'ready' | 'active';
@@ -328,6 +334,7 @@ export interface VoiceCallStartResponse {
   session_id: string | null;
   memory_owner_companion_id?: string | null;
   binding?: VoiceSnapshot['binding'];
+  model_fallback?: VoiceModelFallback | null;
 }
 
 export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceCallStartResponse> {
@@ -564,6 +571,9 @@ export function startVoiceCallIntent(
         throw Object.assign(new Error('voice_call_identity_mismatch'), { code: 'voice_call_identity_mismatch', call_request_id: intent.request.request_id, start_outcome_unknown: true });
       }
       if (result.status === 'starting') intent.unknown = true;
+      if (result.model_fallback && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('voice:model-fallback', { detail: result.model_fallback }));
+      }
       if (intent.abandoned) {
         const outcome = await cancelCallByRequestId(intent.request.request_id);
         if (outcome.terminal) {

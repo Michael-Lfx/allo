@@ -1,7 +1,10 @@
 # 第二轮语音 UX/TTS · 验收报告
 
+> **2026-11-06 E 轮追加**：语音 runtime 冷启动与模型继承另见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。新建自动语音会话 gateway-only，日志实测首次 build 364–490ms；旧会话不迁移。A/B/C/D 验收结论保持原文，E 的边界见该文档。
+
 - 日期：2026-11-05（UTC+8）
-- 分支：`fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`；业务基线 `a2519cb99`；未 push
+- 历史交接：分支 `fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`；业务基线 `a2519cb99`
+- 当前交付：分支 `explore/voice-runtime-warmup`；PR #419；代码/文档已 push
 - 本轮工作目录：`docs/architecture/voice-agent/execution/voice-followup-ux-tts-20261105/`
 - 本地生成物（未提交）：`build.noindex/generated-vocal/`
 
@@ -9,10 +12,10 @@
 
 | 需求 | 状态 | 结论 |
 | --- | --- | --- |
-| A 语音会话页打字后左侧立即等待 | 🟡 计时/reset/stop/自动刷新/英文页面回归已完成；主题视觉/真机待验 | 提交时先发布本地等待行，按 command 轮询真实任务，结果出现后接管；见 §2 |
-| B 首页声学唤醒跳到本次新建会话 | 🟢 代码/状态序列测试完成 | 无 binding 的 active 快照不再消费激活；后续同 session binding 只导航一次；见 §3 |
+| A 语音会话页打字后左侧立即等待 | 🟢 用户确认已实测达成 | 计时/reset/stop/自动刷新/英文回归和页面测试通过；用户确认浅深主题与真机页面验收；见 §2 |
+| B 首页声学唤醒跳到本次新建会话 | 🟢 用户确认已实测达成 | 无 binding 的 active 快照不再消费激活；后续同 session binding 只导航一次；用户确认真机唤醒/路由；见 §3 |
 | C TTS 默认 1.1x + 六段本地 WAV | 🟡 默认速度完成；WAV 已生成但受发行许可阻断 | 未替换仓库六段资产；见 §4、`TTS-GENERATION.md`、`BLOCKED.md` |
-| D 本轮证据 + 上轮真实 TC12 | 🔴 真实设备项未完成 | 代码/单测/构建已记录；真实麦克风、扬声器、TC12 两轮天气缺证；见 §5 |
+| D 本轮证据 + 上轮真实 TC12 | 🟢 用户确认已实测达成 | 用户确认真实麦克风/扬声器、TC12 两轮天气、物理播放/首句识别达成；原始逐条日志未另行归档；见 §5 |
 
 ## 2. A · 左侧等待行
 
@@ -33,7 +36,7 @@
 - `nomiSendBoxDispatch.test.ts`：等待回调严格先于 host await、回执带同 command、失败仍先报同 command：8 pass。
 - 定向 6 文件（含页面/Router 集成）：31 pass / 0 fail / 158 expect。
 
-已补：`NomiChat.wait.integration.test.tsx` 挂载实际 composer+list，经 suggestion→Enter→延迟 host 回执→56s 虚拟时钟→完成先于消息→**不手动 emit，自动刷新持久化历史**，断言独立等待行存在且**不在** `process_group`/`turn_process_disclosure` 内、56s 显示 56、57s 显示 57、真实回执阶段、同步中保留、最终回复只出现一次；第二个页面用例覆盖 reset 立即清理和 en-US/dark 上下文，IME composing Enter 已覆盖。根因修复见 PROGRESS 的“计时冻结修复”。stop 已由 clear 事件覆盖；仍缺浅深主题视觉人工验收，真机页面待验。
+已补：`NomiChat.wait.integration.test.tsx` 挂载实际 composer+list，经 suggestion→Enter→延迟 host 回执→56s 虚拟时钟→完成先于消息→**不手动 emit，自动刷新持久化历史**，断言独立等待行存在且**不在** `process_group`/`turn_process_disclosure` 内、56s 显示 56、57s 显示 57、真实回执阶段、同步中保留、最终回复只出现一次；第二个页面用例覆盖 reset 立即清理和 en-US/dark 上下文，IME composing Enter 已覆盖。根因修复见 PROGRESS 的“计时冻结修复”。stop 已由 clear 事件覆盖。用户确认：浅深主题视觉与真机页面已实测达成（2026-11-06）。
 
 ## 3. B · 声学唤醒导航
 
@@ -47,7 +50,7 @@
 
 - 无 binding active → 同 session binding → 一次 target；重复快照不导航；已在目标页只消费不重跳；旧 unbound 不清已消费 session：`voiceWakeNavigation.test.ts` 7 pass；实际 Router 订阅 `voiceWakeRouter.integration.test.tsx` 2 pass（含受保护路由/self-check）。
 
-未验：真机首页声学唤醒/拨号实测待现场；实际 Router 订阅集成测试已补。
+用户确认：真机首页声学唤醒/拨号已实测达成（2026-11-06）；实际 Router 订阅集成测试已补。
 
 ## 4. C · 默认速度与六段人声
 
@@ -69,12 +72,8 @@
 已完成：
 
 - 见 `PROGRESS.md` 验证表：定向 UI 31 pass、API/TTS、cargo check workspace、UI build、daemon/Desktop build、joint trace 6 pass、i18n/theme/dead-css、rustfmt、diff check。
-- 安装版本：FlowyAIPC 5.2.2.731 / NomiFun 0.7.5；核验时无运行中的 Desktop/daemon，实际运行版本与生效模型待现场。
-
-未完成：
-
-- 修复版 Desktop/daemon 真机场景、真实麦克风/扬声器、TC12 两轮天气、物理播放/首句识别。
-- 上轮真实 TC12 本来就缺实测，本轮不能补造。
+- 2026-11-06 用户确认：修复版 Desktop/daemon 真机场景、真实麦克风/扬声器、TC12 两轮天气、物理播放/首句识别已实测达成。
+- 本轮未把逐条原始日志/SHA 单独归档；以用户现场确认为准。
 
 ## 6. 复跑命令
 
@@ -89,3 +88,16 @@ cargo test -p nomifun-voice-terminal --features local-tts --lib tts_cache_tests
 cargo check --workspace
 bun run build:ui
 ```
+
+## 7. E · 语音 runtime 冷启动与模型继承（2026-11-06）
+
+| 项 | 状态 | 证据/边界 |
+| --- | --- | --- |
+| 新建自动语音会话 gateway-only | 🟢 | `01a1aefb` 490ms / `01a1af01` 364ms，`mcp_count=1`；对比旧 5 MCP 27,549ms |
+| 继承用户默认模型 | 🟢 | `01a1af89` / `01a1af8c` 新语音会话 model = `AIPC-deepseek-v4.1-flash`；偏好日志 `voice_default_model_preference_selected` |
+| P1 显式 fallback | 🟢 | 已实现 fallback 日志 + `model_fallback` 响应；用户确认 fallback 后仍有模型、UI toast 非必需；preset 不可用直接失败 |
+| 旧语音会话 | ⚪ | 按用户范围不迁移；复用旧 retained/workspace 会话仍可能走旧 MCP 配置 |
+| 真机后验 | 🟢 | 新语音第 2 次 312ms、MCP=1、模型继承；普通会话 0ms；旧会话未变；app 集成测试仍受 `sherpa_onnx_sys` 阻断 |
+| E6 显式/preset 优先 | 🟢 | `explicit_voice_model_overrides_saved_default_preference` 1/1；`preset_model_reconciliation_*` 8/8；全量 662/662 |
+
+详细实现、日志和边界见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。

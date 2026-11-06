@@ -2,7 +2,7 @@
 //! Recovery observes receipts; it never reconstructs a send request on its own.
 use std::{path::PathBuf, sync::Arc};
 use async_trait::async_trait;
-use nomifun_api_types::voice::{VoiceExecutionConfig, VoiceTaskCommand, VoiceTaskDelivery, VoiceTaskNotification, VoiceTaskSnapshot, VoiceTaskStatus};
+use nomifun_api_types::voice::{VoiceExecutionConfig, VoiceModelRef, VoiceTaskCommand, VoiceTaskDelivery, VoiceTaskNotification, VoiceTaskSnapshot, VoiceTaskStatus};
 use nomifun_api_types::ResolvedPresetSnapshot;
 use nomifun_api_types::voice::{VoiceToolConfirmation,VoiceToolConfirmationRequest};
 use nomifun_common::MessageId;
@@ -31,6 +31,13 @@ pub(crate) trait VoiceTaskRuntime: Send + Sync {
     fn progress_events(&self,_conversation_id:&str)->Option<tokio::sync::broadcast::Receiver<nomifun_ai_agent::AgentStreamEvent>> {None}
     fn transport_healthy(&self,_conversation_id:&str)->Option<bool> {None}
     async fn resolve_configuration(&self, config: &VoiceExecutionConfig) -> Result<VoiceExecutionConfig, String>;
+    /// Validate a model reference without touching workspace or session-mode
+    /// state. Used by the wake path before it creates a voice conversation, so
+    /// an invalid workspace cannot be mistaken for an unavailable model.
+    async fn validate_model(&self, model: &VoiceModelRef) -> Result<VoiceModelRef, String> {
+        let _ = model;
+        Err("model_unavailable".into())
+    }
     async fn prepare_configuration(&self, config: &VoiceExecutionConfig) -> Result<(VoiceExecutionConfig,Option<ResolvedPresetSnapshot>),String>;
     async fn create(&self, owner: &str, config: &VoiceExecutionConfig, preset:Option<&ResolvedPresetSnapshot>, creation_key: &str) -> Result<String, TaskMutationError>;
     async fn create_bound(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&ResolvedPresetSnapshot>, creation_key:&str, target:Option<&str>) -> Result<String,TaskMutationError>;

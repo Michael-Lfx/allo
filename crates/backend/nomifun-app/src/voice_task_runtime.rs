@@ -68,6 +68,10 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         self.prepare_configuration(config).await.map(|(config,_)|config)
     }
 
+    async fn validate_model(&self, model:&VoiceModelRef) -> Result<VoiceModelRef,String> {
+        self.models.resolve_model(Some(model)).await
+    }
+
     async fn prepare_configuration(&self, config:&VoiceExecutionConfig) -> Result<(VoiceExecutionConfig,Option<nomifun_api_types::ResolvedPresetSnapshot>),String> {
         let mut effective = config.clone();
         if effective.model.is_none() && effective.preset_id.as_deref().is_none_or(|id| id.trim().is_empty()) {
@@ -95,8 +99,39 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
             });
             preset_snapshot=Some(resolved);
         }
-        let model = effective.model.as_ref().ok_or("task_execution_model_unconfigured")?;
-        effective.model = Some(self.models.resolve_model(Some(model)).await?);
+        let model = effective.model.clone().ok_or("task_execution_model_unconfigured")?;
+        effective.model = Some(match self.models.resolve_model(Some(&model)).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::warn!(
+                    provider_id = %model.provider_id,
+                    model = %model.model,
+                    %error,
+                    "voice_task_model_unavailable_fallback"
+                );
+                if preset_snapshot.is_some() {
+                    tracing::warn!("voice_task_preset_model_unavailable_no_fallback");
+                    return Err(error);
+                }
+                match self.models.resolve_model(None).await {
+                    Ok(fallback) => {
+                        tracing::warn!(
+                            provider_id = %fallback.provider_id,
+                            model = %fallback.model,
+                            "voice_task_model_fallback"
+                        );
+                        fallback
+                    }
+                    Err(fallback_error) => {
+                        tracing::warn!(
+                            %fallback_error,
+                            "voice_task_model_fallback_unavailable"
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+        });
         Ok((effective,preset_snapshot))
     }
 

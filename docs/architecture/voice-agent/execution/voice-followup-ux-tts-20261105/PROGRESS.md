@@ -1,6 +1,8 @@
 # 第二轮语音 UX/TTS · PROGRESS
 
-- 任务书：2026-11-05；分支 `fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`，业务基线 `a2519cb99`；交接时 ahead 3、干净；当前为本轮未提交 diff，未 push。
+> **2026-11-06 E 轮追加（最高优先）**：语音 runtime 冷启动与模型继承已另记于 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。结论：新建自动语音会话从 5 MCP / 27,549ms 降到 gateway-only / 364–490ms；新会话继承 `nomi.defaultModel`；P1 改为可观测 fallback。旧语音会话不迁移。以下 A/B/C/D 历史记录保留。
+
+- 任务书：2026-11-05；历史交接分支 `fix/voice-missing-service-component`，交接 HEAD `efe34e6e7`，业务基线 `a2519cb99`；当前交付分支 `explore/voice-runtime-warmup`，已 push，PR #419。
 - 任务 0：已核 HEAD/规则/旧验收文档；相关 UI 基线 21 pass / 0 fail；未发现运行中的 Desktop/daemon（安装版 FlowyAIPC 5.2.2.731 / NomiFun 0.7.5，运行版本待现场核）；本地 TTS 模型位于 `C:\Users\38788\AppData\Local\Flowy\models\tts`。
 - 顺序：A 会话页左侧等待（UI sub-agent 并行）→ B 唤醒导航 → C 1.1x 默认与六段 WAV → D 证据/TC12。
 - 风险：A 的真实页面 56 秒慢请求需保留等待但不缩短推理；六段固定 WAV 的中文 Baker 模型 README 标注 non-commercial，分发许可待核；真实语音/桌面验收仍缺设备。
@@ -35,9 +37,10 @@
 
 ## 仍未完成
 
-- A 已挂载实际 NomiChat composer+list，独立等待行不在 process 分组内，覆盖延迟回执/56s 虚拟时钟/阶段/完成先于消息/自动刷新/真实回复只出现一次/stop/reset；**仍缺浅深主题视觉人工验收（Enter/IME 已覆盖）**。
+- A 已挂载实际 NomiChat composer+list，独立等待行不在 process 分组内，覆盖延迟回执/56s 虚拟时钟/阶段/完成先于消息/自动刷新/真实回复只出现一次/stop/reset；用户确认浅深主题视觉与真机页面已实测达成。
+- B 用户确认真机首页声学唤醒/拨号已实测达成。
 - C 六段 WAV 生成通过指标，但未替换资产；等待模型/输出分发许可确认。
-- 真实 Desktop/daemon、麦克风、扬声器、TC12 两轮天气、物理播放全部待现场。
+- D 用户确认真实 Desktop/daemon、麦克风、扬声器、TC12 两轮天气、物理播放/首句识别已实测达成；原始逐条日志未另行归档。
 
 ## 复审修复（只读 reviewer）
 
@@ -49,7 +52,8 @@
 ## 复审放行（只读 reviewer）
 
 - Required 1/2、Recommended 3/6 全部关闭；无新增 Required，可进入下一阶段。
-- 仍未处理（已声明、不阻塞）：C7 旧架构文档仍保留历史 1.3x 表述（属历史记录，不回改）；A 的浅深主题视觉人工验收仍未做（stop/reset/Enter/IME 已覆盖）。
+- C7 历史文档口径：旧架构文档中的 1.3x 作为 2026-11-03 历史设计记录保留，不回改；当前默认 1.1x，1.3x 仅作为显式可选值。
+- A 的浅深主题视觉与真机页面已由用户确认完成（stop/reset/Enter/IME 已覆盖）。
 
 ## 计时冻结修复（按 first-principles 方案 A）
 

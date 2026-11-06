@@ -327,6 +327,7 @@ const isVoiceWakeRouteProtected = (pathname: string): boolean => {
 export const GlobalVoiceWakeListener: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useTranslation();
   // Tracks the call session we already followed. A different conversation must
   // stay where the user put it while the call is still active; only a new
   // call activation (wake / incoming call) may take the route.
@@ -336,6 +337,16 @@ export const GlobalVoiceWakeListener: React.FC = () => {
   // snapshots. The callback reads the latest path through this ref instead.
   const pathnameRef = useRef(location.pathname);
   pathnameRef.current = location.pathname;
+
+  useEffect(() => {
+    const onModelFallback = (event: Event) => {
+      const detail = (event as CustomEvent<{ actual?: { model?: string } }>).detail;
+      if (!detail?.actual?.model) return;
+      Message.warning(t('voice.modelFallback', { model: detail.actual.model }));
+    };
+    window.addEventListener('voice:model-fallback', onModelFallback);
+    return () => window.removeEventListener('voice:model-fallback', onModelFallback);
+  }, [t]);
 
   useEffect(() => {
     let disposed = false;
