@@ -1089,6 +1089,30 @@ pub(crate) fn redraft_splice_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// 评审输入补全的运维开关（u03，模型可用性修复波）：置 off/0/false = 补全
+/// 臂休眠——评审 user 不渲染候选词块、系统提示词不织两条款（off 臂逐字节
+/// 回基线）；未设/其它值 = 开启（缺省 on，待真机 A/B 定案）。on 臂三件：
+/// ①评审 user 每条提名下渲染「挂号表候选词」——定义原文的连续 CJK 片段
+/// 机械切出（不掩码），常识/缺失行的 term 逐字照抄有源（真机两次挂号表
+/// 违约都死在机械层只给掩码残片、模型凭记忆复述定义：滤杯循环自证、
+/// 「可溶物质」案）；②一条 problem 的 issue 可并列指名多词（顿号分隔），
+/// 名词裁决按词核验不受 8 条上限约束（run-1793859632428：判 11 个名词时
+/// 7 个无法逐条指名的算术死结）；③「宁放勿错」与碎片「拿不准按名词」两
+/// 类不确定默认的分工厘清。
+pub const REVIEW_CONTEXT_V2_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_CONTEXT_V2";
+
+/// 评审输入补全开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_review_context_v2_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 评审输入补全是否开启（未设/其它值 = 开启）。
+pub(crate) fn review_context_v2_enabled() -> bool {
+    std::env::var(REVIEW_CONTEXT_V2_SWITCH_ENV)
+        .map(|value| !is_review_context_v2_disabled_value(&value))
+        .unwrap_or(true)
+}
+
 /// 挂号表评审整路尝试上限（含首轮；「重试恰一次」= 2，learnhub
 /// REVIEW_MAX_ATTEMPTS 同款）。只作用于挂号表机械校验判「结论不可用」的
 /// 路径（表缺失/行伪/表键解析失败）；调用失败与整体解析失败的降级口径
@@ -1125,8 +1149,21 @@ pub(crate) fn concept_review_system() -> String {
             core.push_str(FRAGMENT_PROVENANCE_RELATION_CLAUSE);
         }
     }
-    format!("{core}{ADVICE_SCOPE_CLAUSE}")
+    let mut out = format!("{core}{ADVICE_SCOPE_CLAUSE}");
+    // u03 评审输入补全（on 臂）：两条款织入系统提示词尾部；off 臂零织入
+    //（逐字节回基线）。
+    if review_context_v2_enabled() {
+        out.push_str(REVIEW_CONTEXT_V2_CLAUSES);
+    }
+    out
 }
+
+/// u03 评审输入补全的两条款（on 臂，织入系统提示词尾部）：①problem 并列
+/// 指名多词——problems 上限 8 条封的是问题条数不是名词数，机械核按词子串
+/// 匹配天然支持并列（`fragment_verdict::validate_fragments` 零改动）；②两
+/// 类「不确定默认」的分工——「宁放勿错」（不算问题条）与碎片裁决「像名词
+/// 拿不准按名词处理」（必须打回的面）各管各的面，不再互相矛盾打乒乓。
+const REVIEW_CONTEXT_V2_CLAUSES: &str = "\n\n【问题条并列指名与不确定默认的分工】\n- 一条 problem 的 issue 可以并列指名多个名词（顿号分隔）——名词裁决按词核验，逐词给出出处判定；名词多时并列指名，不受「至多 8 条」约束（8 条封的是问题条数，不是名词数）。\n- 「宁放勿错」只管你无法从材料确认的问题；碎片裁决里拿不准的像名词片段仍按名词处理（判名词配 problems 指名）——两处默认各管各的面，不冲突，不要以「宁放勿错」为由跳过碎片裁决。\n";
 
 /// 评审产出（j04 扩权）：问题条 + 复用裁决。fails-open 降级 = 两者皆空。
 /// j09 findings warn 通道：数据缺陷观察不打回只留痕，与 problems 阻断通道
@@ -1357,6 +1394,39 @@ pub(crate) fn verify_reuse_rulings(
     anchors
 }
 
+/// u03 评审 user 的候选词块（on 臂）：每条提名（mints canonical ∪
+/// new_aliases name）渲染定义原文的逐字候选词——由
+/// [`definition_audit::verbatim_cjk_candidates`] 机械切出（不掩码、去重保
+/// 序），常识/缺失行的 term 逐字照抄有源；无 CJK 候选的提名不渲染行，整块
+/// 空则零注入（off 臂恒空 = 基线逐字节）。
+fn provenance_candidates_block(batch: &ProposedBatch) -> String {
+    fn append_candidate_line(lines: &mut String, name: &str, definition: &str) {
+        let candidates = definition_audit::verbatim_cjk_candidates(definition);
+        if candidates.is_empty() {
+            return;
+        }
+        lines.push_str(&format!(
+            "\n- 提名「{name}」挂号表候选词（取自定义原文，常识/缺失行请从中逐字照抄）：{}",
+            candidates.join("、")
+        ));
+    }
+    if !review_context_v2_enabled() {
+        return String::new();
+    }
+    let mut lines = String::new();
+    for mint in &batch.mints {
+        append_candidate_line(&mut lines, &mint.canonical, &mint.definition);
+    }
+    for alias in &batch.new_aliases {
+        append_candidate_line(&mut lines, &alias.name, &alias.definition);
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n【挂号表候选词（逐字照抄面——常识/缺失行的 term 从对应提名的定义里照抄）】{lines}")
+    }
+}
+
 /// Run the AI concept review over a gated batch. Any failure (no completer,
 /// call error, unparseable reply) degrades to an empty outcome — the review
 /// never blocks a structurally valid batch when it cannot run. `candidates`
@@ -1579,9 +1649,12 @@ pub(crate) async fn concept_review(
     // u02 降级保全：最后一次成功解析的 verdict 的 problems——任一降级出口
     // 把它们逐条转 findings（「降级前评审已提出」不再被吞）。
     let mut last_parsed_problems: Vec<ReviewProblem> = Vec::new();
+    // u03 评审输入补全（on 臂）：每条提名的定义原文逐字候选词块——常识/
+    // 缺失行的 term 照抄有源；off 臂恒空串（基线逐字节）。
+    let words_block = provenance_candidates_block(batch);
     loop {
         let mut user = format!(
-            "{}\n\n【待审批次】\n{batch_json}{candidates_block}{anchors_block}",
+            "{}\n\n【待审批次】\n{batch_json}{words_block}{candidates_block}{anchors_block}",
             context.render()
         );
         if fragments_on {
@@ -2780,6 +2853,88 @@ mod tests {
             on_arm.replace(SENTENCE, ""),
             off_arm,
             "off 臂 = on 臂减去回填句（基线逐字节钉）"
+        );
+    }
+
+    // ── u03：评审输入补全（NOMI_LEARNING_REVIEW_CONTEXT_V2 两臂）────────────
+
+    /// u03 开关两臂的字节级钉：on = 评审 user 每条提名下渲染定义原文的逐字
+    /// 候选词（不掩码切片，常识/缺失行的 term 照抄有源）+ 系统提示词补两条
+    /// 款（problem 并列指名多词 / 宁放勿错与碎片名词默认的分工）；off =
+    /// 提示词逐字节回基线——断言为「on 臂全文减去插入段 == off 臂全文」；
+    /// 未设 = 缺省开启（on 臂同形）。env 全局态：`#[serial]` 互斥。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn review_context_v2_switch_gates_candidates_block_and_clauses() {
+        const BLOCK: &str = "\n\n【挂号表候选词（逐字照抄面——常识/缺失行的 term 从对应提名的定义里照抄）】\n- 提名「借用」挂号表候选词（取自定义原文，常识/缺失行请从中逐字照抄）：所有权不变式下多读一写、引用随作用域在编译期检查";
+        const CLAUSES: &str = "\n\n【问题条并列指名与不确定默认的分工】\n- 一条 problem 的 issue 可以并列指名多个名词（顿号分隔）——名词裁决按词核验，逐词给出出处判定；名词多时并列指名，不受「至多 8 条」约束（8 条封的是问题条数，不是名词数）。\n- 「宁放勿错」只管你无法从材料确认的问题；碎片裁决里拿不准的像名词片段仍按名词处理（判名词配 problems 指名）——两处默认各管各的面，不冲突，不要以「宁放勿错」为由跳过碎片裁决。\n";
+        let capture = |pin: Option<&'static str>| async move {
+            struct Restore(Option<String>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    match self.0.take() {
+                        Some(value) => unsafe { std::env::set_var(REVIEW_CONTEXT_V2_SWITCH_ENV, value) },
+                        None => unsafe { std::env::remove_var(REVIEW_CONTEXT_V2_SWITCH_ENV) },
+                    }
+                }
+            }
+            let restore = Restore(match pin {
+                Some(value) => {
+                    let previous = std::env::var(REVIEW_CONTEXT_V2_SWITCH_ENV).ok();
+                    unsafe { std::env::set_var(REVIEW_CONTEXT_V2_SWITCH_ENV, value) };
+                    previous
+                }
+                None => {
+                    let previous = std::env::var(REVIEW_CONTEXT_V2_SWITCH_ENV).ok();
+                    unsafe { std::env::remove_var(REVIEW_CONTEXT_V2_SWITCH_ENV) };
+                    previous
+                }
+            });
+            // 回包无所谓（解析必败）——首轮捕获的 system/user 才是断言对象。
+            let completer = ScriptedReview(std::sync::Mutex::new((
+                vec!["not json".to_owned()].into_iter(),
+                Vec::new(),
+            )));
+            let _ = concept_review(
+                &completer,
+                None,
+                &review_batch_with_mint(),
+                &CoachContext::default(),
+                "",
+                &[],
+                &[],
+                false,
+                &review_gate(),
+            )
+            .await;
+            let prompts = completer.0.lock().unwrap().1.clone();
+            assert!(!prompts.is_empty(), "首轮已捕获");
+            let (system, user) = prompts[0]
+                .split_once('\x1f')
+                .expect("captured system\\x1fuser");
+            (system.to_owned(), user.to_owned(), restore)
+        };
+        let (sys_off, user_off, _off) = capture(Some("off")).await;
+        assert!(!user_off.contains("挂号表候选词"), "off 臂零候选词块：{user_off}");
+        assert!(
+            !sys_off.contains("问题条并列指名"),
+            "off 臂零补全条款：{sys_off}"
+        );
+        let (sys_on, user_on, _on) = capture(Some("on")).await;
+        let (sys_default, user_default, _default) = capture(None).await;
+        assert_eq!(sys_on, sys_default, "未设 = 缺省开启（system 同形）");
+        assert_eq!(user_on, user_default, "未设 = 缺省开启（user 同形）");
+        assert!(user_on.contains(BLOCK), "on 臂逐字候选词块：{user_on}");
+        assert!(sys_on.contains(CLAUSES), "on 臂两条款：{sys_on}");
+        assert_eq!(
+            user_on.replace(BLOCK, ""),
+            user_off,
+            "off 臂 user = on 臂减去候选词块（基线逐字节钉）"
+        );
+        assert_eq!(
+            sys_on.replace(CLAUSES, ""),
+            sys_off,
+            "off 臂 system = on 臂减去两条款（基线逐字节钉）"
         );
     }
 

@@ -143,6 +143,36 @@ fn normalize_run(run: &str) -> String {
     chars.into_iter().collect()
 }
 
+/// 评审候选词的逐字切片（u03，不掩码）：定义原文的**连续 CJK 段**逐段做
+/// 边界归一化（[`normalize_run`]，剥首尾虚字只到剩 1 字为止——结果仍为原
+/// 文逐字子串），去重保序。与 [`grounding_runs`] 的差别：不做已知词掩码
+/// （候选词是评审的「照抄菜单」，不是缺口清单——挂号表常识/缺失行的
+/// term 必须逐字取自定义原文，掩码残片会逼模型凭记忆复述定义，真机两次
+/// 违约都死在这里）。
+pub fn verbatim_cjk_candidates(definition: &str) -> Vec<String> {
+    let mut runs: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in definition.chars() {
+        if ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            runs.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        runs.push(cur);
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for run in &runs {
+        let norm = normalize_run(run);
+        if !norm.is_empty() && seen.insert(norm.clone()) {
+            out.push(norm);
+        }
+    }
+    out
+}
+
 /// 自指:定义里出现自身正名(ISO 704 禁止;这里只做精确包含,调用方传正名即可)。
 pub fn self_references(concepts: &[(String, String)]) -> Vec<String> {
     let mut out = Vec::new();
@@ -188,6 +218,41 @@ mod tests {
         include_str!("../../../../../docs/research/fixtures/learning/philosophy-intro/case.json");
     const RUST_FIXTURE: &str =
         include_str!("../../../../../docs/research/fixtures/learning/rust-ownership/case.json");
+
+    /// u03 评审候选词（不掩码切片）：定义原文的连续 CJK 段逐段边界归一化，
+    /// 去重保序——常识/缺失行的 term 必须逐字取自定义原文，评审的「照抄
+    /// 菜单」由此机械切出（真机两次挂号表违约都死在「掩码残片上凭记忆
+    /// 复述定义」：滤杯循环自证、「可溶物质」案）。
+    #[test]
+    fn verbatim_cjk_candidates_slice_runs_dedup_and_keep_order() {
+        let cands = verbatim_cjk_candidates("所有权不变式下多读一写：引用随作用域在编译期检查。");
+        assert_eq!(
+            cands,
+            vec!["所有权不变式下多读一写", "引用随作用域在编译期检查"],
+            "标点是段界；长段整段保留（不掩码）；顺序 = 原文出现序"
+        );
+        // 同词多段去重保序；边界虚字剥到剩 1 字为止（仍是原文逐字子串——
+        // normalize_run 的 LEAD 表不含「的」，只剥尾部的「是」）。
+        assert_eq!(verbatim_cjk_candidates("滤杯。滤杯"), vec!["滤杯"], "同词跨段去重按首现保序");
+        assert_eq!(
+            verbatim_cjk_candidates("的研磨度是"),
+            vec!["的研磨度"],
+            "边界虚字剥除后仍为原文逐字子串"
+        );
+        let cands = verbatim_cjk_candidates("滤杯承装咖啡粉，滤杯注水。");
+        assert_eq!(
+            cands,
+            vec!["滤杯承装咖啡粉", "滤杯注水"],
+            "两段不同即都保留，顺序 = 原文出现序"
+        );
+    }
+
+    /// u03 候选词：无 CJK / 空定义 → 空表（不渲染空行）。
+    #[test]
+    fn verbatim_cjk_candidates_empty_without_cjk() {
+        assert!(verbatim_cjk_candidates("").is_empty());
+        assert!(verbatim_cjk_candidates("pH 7.4, 25C").is_empty());
+    }
 
     fn contains(cands: &[String], want: &str) -> bool {
         cands.iter().any(|c| c == want)
