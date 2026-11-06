@@ -1828,10 +1828,10 @@ impl Drop for VariantSwitchRestore {
 /// 口径）。
 #[test]
 #[serial_test::serial]
-fn variant_v2_switch_defaults_off_and_explicit_on_enables() {
+fn variant_v2_switch_defaults_on_and_off_disables() {
     let _restore = VariantSwitchRestore::capture();
     unsafe { std::env::remove_var(super::activities::VARIANT_V2_SWITCH_ENV) };
-    assert!(!super::activities::variant_v2_enabled());
+    assert!(super::activities::variant_v2_enabled(), "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on）");
     for value in ["off", "OFF", "0", "false", " False "] {
         unsafe { std::env::set_var(super::activities::VARIANT_V2_SWITCH_ENV, value) };
         assert!(!super::activities::variant_v2_enabled_value(Some(value)));

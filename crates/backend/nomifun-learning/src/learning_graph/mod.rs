@@ -2872,8 +2872,8 @@ mod tests {
         assert!(off_arm.contains("点修不是重写"), "基线纪律句照旧：{off_arm}");
         let (on_arm, _restore_on) = capture(Some("on")).await;
         let (default_arm, _restore_default) = capture(None).await;
-        assert_eq!(off_arm, default_arm, "未设 = 开发期缺省 off（off 臂同形）");
-        assert!(on_arm.contains(SENTENCE), "on 臂补回填句：{on_arm}");
+        assert_eq!(on_arm, default_arm, "未设 = 缺省 on（2026-11-06 真机 A/B 达标后翻 on）");
+        assert!(default_arm.contains(SENTENCE), "缺省臂带回填句：{default_arm}");
         assert_eq!(
             on_arm.replace(SENTENCE, ""),
             off_arm,
@@ -2887,7 +2887,7 @@ mod tests {
     /// 候选词（不掩码切片，常识/缺失行的 term 照抄有源）+ 系统提示词补两条
     /// 款（problem 并列指名多词 / 宁放勿错与碎片名词默认的分工）；off =
     /// 提示词逐字节回基线——断言为「on 臂全文减去插入段 == off 臂全文」；
-    /// 未设 = 开发期缺省 off（off 臂同形）。env 全局态：`#[serial]` 互斥。
+    /// 显式 off = off 臂（缺省已于 2026-11-06 A/B 后翻 on）。env 全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
     async fn review_context_v2_switch_gates_candidates_block_and_clauses() {
@@ -2948,8 +2948,8 @@ mod tests {
         );
         let (sys_on, user_on, _on) = capture(Some("on")).await;
         let (sys_default, user_default, _default) = capture(None).await;
-        assert_eq!(sys_off, sys_default, "未设 = 开发期缺省 off（system 同形）");
-        assert_eq!(user_off, user_default, "未设 = 开发期缺省 off（user 同形）");
+        assert_eq!(sys_on, sys_default, "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on，system 同形）");
+        assert_eq!(user_on, user_default, "未设 = 缺省 on（user 同形）");
         assert!(user_on.contains(BLOCK), "on 臂逐字候选词块：{user_on}");
         assert!(sys_on.contains(CLAUSES), "on 臂两条款：{sys_on}");
         assert_eq!(
@@ -3001,7 +3001,7 @@ mod tests {
         assert!(off_arm.contains("不要堆砌同义边界表述"), "基线声明面条款照旧");
         let (on_arm, _on) = system_with(Some("on"));
         let (default_arm, _default) = system_with(None);
-        assert_eq!(off_arm, default_arm, "未设 = 开发期缺省 off");
+        assert_eq!(on_arm, default_arm, "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on）");
         assert!(on_arm.contains(BULLET), "on 臂补边界去重 bullet：{on_arm}");
         assert_eq!(
             on_arm.replace(BULLET, ""),
@@ -3104,7 +3104,8 @@ mod tests {
         assert!(!off_arm.contains("【翻案锁】"), "off 臂零翻案锁：{off_arm}");
         let (on_arm, _on) = capture(Some("on")).await;
         let (default_arm, _default) = capture(None).await;
-        assert_eq!(off_arm, default_arm, "未设 = 开发期缺省 off");
+        assert_eq!(on_arm, default_arm, "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on）");
+        assert!(default_arm.contains(COURSE_BLOCK), "缺省臂语境词块：{default_arm}");
         assert!(on_arm.contains(COURSE_BLOCK), "on 臂语境词块：{on_arm}");
         assert!(on_arm.contains(LOCK), "on 臂前轮意见 + 翻案锁：{on_arm}");
         assert_eq!(

@@ -77,7 +77,7 @@ pub const VERIFY_BATCH_SWITCH_ENV: &str = "NOMI_LEARNING_VERIFY_BATCH";
 /// verify_math 批量核验开关判定（取值注入面，纯函数——测试不触进程 env）。
 /// **缺省 off**：未设 = 基线单 claim 形状；显式非 off 取值 = 批量面。
 pub fn verify_batch_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
 /// verify_math 批量核验开关的进程读数（[`verify_batch_enabled_value`] 同款语义）。
@@ -168,7 +168,7 @@ pub const REDRAFT_SPLICE_SWITCH_ENV: &str = "NOMI_LEARNING_REDRAFT_SPLICE";
 
 /// 点修回填开关判定（取值注入面，纯函数——测试不触进程 env）。缺省 off。
 pub fn redraft_splice_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
 /// 点修回填是否开启（未设 = 关；显式非 off 取值 = 开）。
@@ -191,7 +191,7 @@ pub const REVIEW_CONTEXT_V2_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_CONTEXT_V2"
 
 /// 评审输入补全开关判定（取值注入面，纯函数——测试不触进程 env）。
 pub fn review_context_v2_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
 /// 评审输入补全是否开启（未设 = 关；显式非 off 取值 = 开）。
@@ -216,7 +216,7 @@ pub const ANTI_LOOP_SWITCH_ENV: &str = "NOMI_LEARNING_ANTI_LOOP";
 
 /// 反循环臂开关判定（取值注入面，纯函数——测试不触进程 env）。缺省 off。
 pub fn anti_loop_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
 /// 反循环臂是否开启（未设 = 关；显式非 off 取值 = 开）。
@@ -251,7 +251,7 @@ pub const TIER_PRIORITY_SWITCH_ENV: &str = "NOMI_LEARNING_TIER_PRIORITY";
 
 /// 档位优先序开关判定（取值注入面，纯函数——测试不触进程 env）。缺省 off。
 pub fn tier_priority_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
 /// 档位优先序开关的进程读数（[`tier_priority_enabled_value`] 同款语义）。
@@ -268,7 +268,7 @@ pub const VARIANT_V2_SWITCH_ENV: &str = "NOMI_LEARNING_VARIANT_V2";
 
 /// 变式链 V2 开关判定（取值注入面，纯函数——测试不触进程 env）。
 pub fn variant_v2_enabled_value(value: Option<&str>) -> bool {
-    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
 /// 变式链 V2 是否开启（未设 = 关；显式非 off 取值 = 开）。
@@ -359,8 +359,8 @@ mod tests {
     /// 显式 on = 批量面在位；off 系 = 关（工具面/R14 条款逐字节回退基线的
     /// 对照臂）。纯函数面测试（不触进程 env）。
     #[test]
-    fn verify_batch_switch_defaults_off_and_explicit_on_enables() {
-        assert!(!verify_batch_enabled_value(None), "未设 = 基线单 claim 形状（开发期缺省 off）");
+    fn verify_batch_switch_defaults_on_and_off_disables() {
+        assert!(verify_batch_enabled_value(None), "未设 = 基线单 claim 形状（开发期缺省 off）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!verify_batch_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -391,8 +391,8 @@ mod tests {
     /// 点修回填开关（u01）：未设 = 关（开发期缺省 off）；显式 on = 开；
     /// off 系 = 关。
     #[test]
-    fn redraft_splice_switch_defaults_off_and_explicit_on_enables() {
-        assert!(!redraft_splice_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+    fn redraft_splice_switch_defaults_on_and_off_disables() {
+        assert!(redraft_splice_enabled_value(None), "未设 = 基线（开发期缺省 off）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!redraft_splice_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -404,8 +404,8 @@ mod tests {
     /// 评审输入补全开关（u03）：未设 = 关（开发期缺省 off）；显式 on = 开；
     /// off 系 = 关。
     #[test]
-    fn review_context_v2_switch_defaults_off_and_explicit_on_enables() {
-        assert!(!review_context_v2_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+    fn review_context_v2_switch_defaults_on_and_off_disables() {
+        assert!(review_context_v2_enabled_value(None), "未设 = 基线（开发期缺省 off）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!review_context_v2_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -417,8 +417,8 @@ mod tests {
     /// 反循环臂开关（u04）：未设 = 关（开发期缺省 off）；显式 on = 开；
     /// off 系 = 关。
     #[test]
-    fn anti_loop_switch_defaults_off_and_explicit_on_enables() {
-        assert!(!anti_loop_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+    fn anti_loop_switch_defaults_on_and_off_disables() {
+        assert!(anti_loop_enabled_value(None), "未设 = 基线（开发期缺省 off）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!anti_loop_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -442,8 +442,8 @@ mod tests {
     /// 档位优先序开关（u07）：未设 = 关（开发期缺省 off）；显式 on = 开；
     /// off 系 = 关。
     #[test]
-    fn tier_priority_switch_defaults_off_and_explicit_on_enables() {
-        assert!(!tier_priority_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+    fn tier_priority_switch_defaults_on_and_off_disables() {
+        assert!(tier_priority_enabled_value(None), "未设 = 基线（开发期缺省 off）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!tier_priority_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -455,8 +455,8 @@ mod tests {
     /// 变式链 V2 开关（u10）：未设 = 关（开发期缺省 off）；显式 on = 开；
     /// off 系 = 关。
     #[test]
-    fn variant_v2_switch_defaults_off_and_explicit_on_enables() {
-        assert!(!variant_v2_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+    fn variant_v2_switch_defaults_on_and_off_disables() {
+        assert!(variant_v2_enabled_value(None), "未设 = 基线（开发期缺省 off）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!variant_v2_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
