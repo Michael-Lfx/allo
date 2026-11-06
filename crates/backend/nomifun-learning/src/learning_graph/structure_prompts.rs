@@ -454,9 +454,16 @@ mod tests {
             "门口清单",
             "逐字取自输入门口清单",
             "判据原文见输入门口清单",
+            // u09：交卷自检句与门对齐——『与/和/及』一律交裁决（词位不豁免，
+            // 「」内官方术语段除外），旧「词边『和』豁免」口径禁止回流。
+            "一律交裁决",
         ] {
             assert!(goal_body.contains(phrase), "goal prompt missing「{phrase}」");
         }
+        assert!(
+            !goal_body.contains("词边"),
+            "u09：自检句不得保留词边豁免口径（门无词位豁免，是否捆绑交裁决）"
+        );
         let (_, terrain_body) = split_template(PREREQUISITE_TERRAIN.template).unwrap();
         for phrase in [
             "G1",
