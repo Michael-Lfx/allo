@@ -1561,7 +1561,7 @@ pub(crate) async fn concept_review(
             // 评审调用传输失败（r01）：不再静默放行——恰一次带死因重试
             //（传输失败不占点修预算），仍败才降级并在读数标 degraded。
             Err(error) => {
-                let death = format!("评审调用失败（传输/超时）：{error}");
+                let death = format!("评审调用失败：{error}");
                 if attempt < max_attempts {
                     feedback = format!("【评审缺席重试】{death}");
                     continue;
