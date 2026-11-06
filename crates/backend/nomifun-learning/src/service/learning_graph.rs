@@ -934,23 +934,9 @@ impl LearningService {
             });
         }
 
-        // 回合输入（七件）。
-        let structure_snapshot = {
-            let mut lines: Vec<String> = blocks_for_obs
-                .iter()
-                .map(|(slug, name)| format!("- {name}（{slug}）"))
-                .collect();
-            if let Some(edges) = structure.get("edges").and_then(|value| value.as_array()) {
-                for edge in edges {
-                    let source = edge.get("source").and_then(|v| v.as_str()).unwrap_or("");
-                    let target = edge.get("target").and_then(|v| v.as_str()).unwrap_or("");
-                    let edge_type = edge.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let tier = edge.get("tier").and_then(|v| v.as_str()).unwrap_or("");
-                    lines.push(format!("  边：{source} -[{edge_type}/{tier}]-> {target}"));
-                }
-            }
-            lines.join("\n")
-        };
+        // 回合输入（七件）。快照投影含主干名单（u08）——add_block 的 spine
+        // 逐字合法源；块/边行与既有投影逐字同形。
+        let structure_snapshot = structure_ops::repair_snapshot_text(&structure);
         let round_input = structure_ops::RepairRoundInput {
             goal: if goal.trim().is_empty() { &title } else { goal.as_str() },
             proficiency_statement: &proficiency,
@@ -966,6 +952,7 @@ impl LearningService {
             model_override,
             &round_input,
             &structure,
+            &terrain,
             Some(&token),
         )
         .await;
