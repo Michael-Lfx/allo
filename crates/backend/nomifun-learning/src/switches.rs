@@ -65,6 +65,43 @@ pub fn is_auto_refill_disabled_value(value: &str) -> bool {
     is_off_switch_value(value)
 }
 
+/// verify_math 批量核验开关（u05，`NOMI_LEARNING_VERIFY_BATCH`）：未设或
+/// 其它取值 = 开（**缺省 on 待 A/B**——票面主指标：verify_math 调用次数 /
+/// 总 LLM 调用数 / 累计输入字符；推翻条件 = claim 覆盖下降 >20% 或
+/// math_verify failed 上升 → 默认 off）；off/0/false = 关——工具 schema/
+/// 描述/R14 条款逐字节回退基线单 claim 形状（同二进制对照臂）。
+pub const VERIFY_BATCH_SWITCH_ENV: &str = "NOMI_LEARNING_VERIFY_BATCH";
+
+/// verify_math 批量核验开关判定（取值注入面，纯函数——测试不触进程 env）。
+/// 缺省 on：未设 = 批量面在位（单 claim 形状向后兼容照旧可用）。
+pub fn verify_batch_enabled_value(value: Option<&str>) -> bool {
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
+}
+
+/// verify_math 批量核验开关的进程读数（[`verify_batch_enabled_value`] 同款语义）。
+pub fn verify_batch_enabled() -> bool {
+    verify_batch_enabled_value(std::env::var(VERIFY_BATCH_SWITCH_ENV).ok().as_deref())
+}
+
+/// 课时历史压缩实验开关（u06，`NOMI_LEARNING_LESSON_HISTORY_COMPACT`）：
+/// **缺省 off**——高风险项（压缩后模型看不到自己写过的正文，可能伤跨节
+/// 一致性），与碎片裁决闸同款「缺省关、显式开」反向语义：未设 / off / 0 /
+/// false = 关（历史逐字节重发，基线行为）；其它取值（on/1/true/…）= 开
+/// （已落库正文在历史中换摘要 + ls_inspect 可取回原文）。缺省值待真机
+/// A/B（输入字符降 ≥40% 且护栏全过）才翻 on。
+pub const LESSON_HISTORY_COMPACT_SWITCH_ENV: &str = "NOMI_LEARNING_LESSON_HISTORY_COMPACT";
+
+/// 课时历史压缩开关判定（**缺省关**——取值语义与 [`verify_batch_enabled_value`]
+/// 反向，见常量注记）：未设 = 关；显式非 off 取值 = 开。
+pub fn lesson_history_compact_enabled_value(value: Option<&str>) -> bool {
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+}
+
+/// 课时历史压缩开关的进程读数（[`lesson_history_compact_enabled_value`] 同款语义）。
+pub fn lesson_history_compact_enabled() -> bool {
+    lesson_history_compact_enabled_value(std::env::var(LESSON_HISTORY_COMPACT_SWITCH_ENV).ok().as_deref())
+}
+
 /// 开放题评审执行器开关（n5 机制面开关臂，`NOMI_LEARNING_OPEN_JUDGE`）：
 /// 未设或其它取值 = 新评审链（重试环 N=2 带原因回灌 + 90s 显式超时 +
 /// complete_json_with_thinking 通道 + schema 互斥校验）；off/0/false =
@@ -157,6 +194,34 @@ mod tests {
         }
         for value in ["on", "1", "true", "yes", ""] {
             assert!(open_judge_enabled_value(Some(value)), "{value:?} = 新评审链");
+        }
+    }
+
+    /// verify_math 批量核验开关（u05）：未设 = 开（**缺省 on 待 A/B**——
+    /// 单 claim 形状向后兼容，基线行为不变）；off 系 = 关（工具面/R14 条款
+    /// 逐字节回退基线的对照臂）。纯函数面测试（不触进程 env）。
+    #[test]
+    fn verify_batch_switch_defaults_on_and_off_arm_is_explicit() {
+        assert!(verify_batch_enabled_value(None), "未设 = 批量面在位（缺省 on 待 A/B）");
+        for value in ["off", "OFF", "0", "false", " False ", " off "] {
+            assert!(!verify_batch_enabled_value(Some(value)), "{value:?} = 基线对照臂");
+        }
+        for value in ["on", "1", "true", "yes", ""] {
+            assert!(verify_batch_enabled_value(Some(value)), "{value:?} = 批量面");
+        }
+    }
+
+    /// 课时历史压缩开关（u06）：**缺省 off**（高风险项——压缩伤跨节一致性
+    /// 的风险未证伪前不缺省开）；显式非 off 取值 = 开。与 u05 同为纯函数面
+    /// 测试（不触进程 env）。
+    #[test]
+    fn lesson_history_compact_switch_defaults_off_and_requires_explicit_on() {
+        assert!(!lesson_history_compact_enabled_value(None), "未设 = 关（缺省 off）");
+        for value in ["off", "OFF", "0", "false", " False ", " off "] {
+            assert!(!lesson_history_compact_enabled_value(Some(value)), "{value:?} = 关");
+        }
+        for value in ["on", "1", "true", "yes"] {
+            assert!(lesson_history_compact_enabled_value(Some(value)), "{value:?} = 开");
         }
     }
 }

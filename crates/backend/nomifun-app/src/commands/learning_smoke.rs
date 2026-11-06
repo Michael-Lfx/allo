@@ -2999,6 +2999,7 @@ async fn run_content(
     // 即合规，预埋序列只是测试夹具；硬门用种子字符串把数学合规的课误判红。
     let (mut math_calls, mut math_passed, mut math_failed, mut math_unresolved) =
         (0u64, 0u64, 0u64, 0u64);
+    let mut math_batches = 0u64;
     for value in rows
         .iter()
         .filter(|value| value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish"))
@@ -3008,10 +3009,13 @@ async fn run_content(
             math_passed += counters.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
             math_failed += counters.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
             math_unresolved += counters.get("unresolved").and_then(|v| v.as_u64()).unwrap_or(0);
+            // u05 批量读数（claims 数组形式的调用数；旧档无此键按 0——
+            // off 臂恒 0，on 臂 >0 且 calls/batches 即每批 claim 数）。
+            math_batches += counters.get("batches").and_then(|v| v.as_u64()).unwrap_or(0);
         }
     }
     println!(
-        "math_verify read-out: calls={math_calls} passed={math_passed} failed={math_failed} unresolved={math_unresolved}"
+        "math_verify read-out: calls={math_calls} passed={math_passed} failed={math_failed} unresolved={math_unresolved} batches={math_batches}"
     );
     if math_calls == 0 {
         failed.push(
@@ -3121,6 +3125,13 @@ async fn run_content(
             .count();
         println!(
             "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
+        );
+        // u07 读数面（非门禁）：档位优先序条款在存档 system 帧的在场计数
+        // （off 臂 0；on 臂 = system 帧数）——双臂对照的机械 grep，与 k05
+        // discipline 读数同款。
+        let tier_clause_calls = calls.lines().filter(|line| line.contains("档位优先序（u07）")).count();
+        println!(
+            "tier_priority read-out: clause_in_system={tier_clause_calls}（on 臂随条款注入；off 臂 0）"
         );
         // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
         // 历史波动率/实际波动率），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）

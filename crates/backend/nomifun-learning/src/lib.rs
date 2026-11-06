@@ -17,9 +17,11 @@ mod verify_math;
 
 pub use switches::{
     is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
-    lexicon_enforce_enabled, lexicon_enforce_enabled_value, open_judge_enabled,
-    open_judge_enabled_value, AUTO_REFILL_SWITCH_ENV, LEXICON_ENFORCE_SWITCH_ENV,
-    OPEN_JUDGE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+    lexicon_enforce_enabled, lexicon_enforce_enabled_value, lesson_history_compact_enabled,
+    lesson_history_compact_enabled_value, open_judge_enabled, open_judge_enabled_value,
+    verify_batch_enabled, verify_batch_enabled_value, AUTO_REFILL_SWITCH_ENV,
+    LESSON_HISTORY_COMPACT_SWITCH_ENV, LEXICON_ENFORCE_SWITCH_ENV, OPEN_JUDGE_SWITCH_ENV,
+    TASK_GATE_SWITCH_ENV, VERIFY_BATCH_SWITCH_ENV,
 };
 
 pub use completer::{LearningCompleter, LlmUsageDelta, LlmUsageMeter};
@@ -38,10 +40,12 @@ pub use lesson_draft::{
     EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
     LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
     LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, est_budget_enabled,
-    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
-    render_graph_goal_degree_lines, render_graph_no_brief_note, render_intent_scope_lines,
-    render_known_names_line, render_precedent_block, render_prerequisite_path_block,
-    render_teaches_tier_line,
+    is_est_budget_disabled_value, is_tier_priority_disabled_value, normalize_capacity_note,
+    render_est_budget_line, render_graph_goal_degree_lines, render_graph_no_brief_note,
+    render_intent_scope_lines, render_known_names_line, render_precedent_block,
+    render_prerequisite_path_block,
+    render_teaches_tier_line, tier_priority_enabled, tier_priority_enabled_value,
+    tier_prose_budget_cap, TIER_PRIORITY_SWITCH_ENV,
 };
 
 pub use generation::{
