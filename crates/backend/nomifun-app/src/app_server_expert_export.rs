@@ -33,8 +33,7 @@ use nomifun_api_types::{
 };
 use nomifun_app_server::agent_store::ExpertExportPolicy;
 use nomifun_app_server::{
-    ExpertPackError, ExpertPackProvider, MAX_EXPERT_PACK_BYTES, SkillFileBytes, SkillFileError,
-    SnapshotAssetProvider,
+    ExpertPackError, ExpertPackProvider, MAX_EXPERT_PACK_BYTES, SnapshotAssetProvider,
 };
 use nomifun_common::AppError;
 use nomifun_db::{IPluginSnapshotRepository, PluginSnapshotComponentRow};
@@ -658,6 +657,7 @@ mod tests {
     //! that nothing outside the definition's identity reaches the pack.
 
     use super::*;
+    use nomifun_app_server::{SkillFileBytes, SkillFileError};
     use nomifun_app_server::agent_store::AgentStoreExpertExport;
     use nomifun_db::{ComponentRuntimeRef, NewPluginSnapshot, NewPluginSnapshotComponent};
     use std::collections::HashMap;
