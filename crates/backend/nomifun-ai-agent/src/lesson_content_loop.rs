@@ -30,7 +30,7 @@ use nomifun_learning::{
 
 use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
-use crate::learning_loop::{FlowCycle, LoopBudgets, LoopChannel, WireConfig, run_loops};
+use crate::learning_loop::{FlowCycle, HistoryCompaction, LoopBudgets, LoopChannel, WireConfig, run_loops};
 use crate::loop_core::{LoopEventSink, json_compact};
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
@@ -388,6 +388,7 @@ impl LiveLessonContentAgentEngine {
             published_slot: Arc::new(Mutex::new(None)),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
         });
 
         match tokio::time::timeout(
@@ -516,6 +517,16 @@ impl FlowCycle for LiveLessonContentAgentEngine {
         lesson_content_tools(ctx, repair_face)
     }
 
+    fn history_compaction(&self, ctx: &Arc<LoopContext>) -> Option<Arc<HistoryCompaction>> {
+        // u06：仅开关 on 时装配压缩钩子（缺省 off = None = 历史逐字节全量
+        // 重发）。语义契约（钩子构造处集中说明，见 `lesson_history_compaction`）。
+        if nomifun_learning::lesson_history_compact_enabled() {
+            Some(lesson_history_compaction(Arc::clone(&ctx.stored_writes)))
+        } else {
+            None
+        }
+    }
+
     async fn finish(&self, ctx: &LoopContext, draft_id: &str) -> Result<LessonOutput, AppError> {
         // w1：verify_math 留痕随发布面穿出（finish 门后 warning，不挡发布）。
         // w1 评审修复口径：传未复核修正数（Fail 后无复核 Pass）——自修正
@@ -602,6 +613,46 @@ impl FlowCycle for LiveLessonContentAgentEngine {
 
 // ── Shared loop state ──────────────────────────────────────────────────────
 
+/// u06 落库写记录的种类（压缩钩子的状态面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredWriteKind {
+    /// 生成/修复面的 `ls_set_section_body`（key = section_key）。
+    SectionBody,
+    /// 修复面的 `ls_set_document`（key = "document"）。
+    Document,
+}
+
+/// 已成功落库的写入流水（u06 压缩钩子的判定面）：按写入顺序记录 (种类,
+/// key, 非空字符数)。`ls_inspect` 的读数与钩子占位符共用这份字符数——
+/// 认知与执法单源（handler 落库后从 inspect 视图回读，不自行复算）。
+#[derive(Debug, Default)]
+pub(crate) struct StoredWrites {
+    entries: Vec<(StoredWriteKind, String, usize)>,
+}
+
+impl StoredWrites {
+    fn record(&mut self, kind: StoredWriteKind, key: impl Into<String>, chars: usize) {
+        self.entries.push((kind, key.into(), chars));
+    }
+
+    /// 某 (种类, key) 最近一次落库的字符数；未落库 = None（钩子不改写）。
+    fn stored_chars(&self, kind: StoredWriteKind, key: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(entry_kind, entry_key, _)| *entry_kind == kind && entry_key == key)
+            .map(|(_, _, chars)| *chars)
+    }
+
+    /// 最近一次写入是否为该 (种类, key)——那一节保留原文（紧邻的修改仍
+    /// 有上下文，票面语义）。
+    fn is_latest(&self, kind: StoredWriteKind, key: &str) -> bool {
+        self.entries.last().is_some_and(|(entry_kind, entry_key, _)| {
+            *entry_kind == kind && entry_key == key
+        })
+    }
+}
+
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
 /// which lesson output (if any) was published by `ls_finish`. 线上翻译与轮
@@ -615,6 +666,9 @@ pub(crate) struct LoopContext {
     /// verify_math 调用计数槽（w1/A5）：两面工具共享（构造一次、闭包捕获
     /// Arc）——发布观测帧为唯一汇点。
     math_verify: Arc<MathVerifyCounters>,
+    /// u06 已落库写记录（压缩实验）：写侧工具在落库成功后记账、压缩钩子
+    /// 读账。开关 off 时记录照记（几个字节的开销）、钩子不装配。
+    stored_writes: Arc<Mutex<StoredWrites>>,
 }
 
 /// verify_math 调用计数（w1/A5）：calls/passed/failed/unresolved 四个原子
@@ -999,6 +1053,104 @@ fn compose_resume_user_text(
 
 // ── Tool set ───────────────────────────────────────────────────────────────
 
+/// u06 占位符前缀（幂等判定锚）：已压缩的 body 都以它开头，钩子重复经过
+/// 不再改写。
+const STORED_BODY_PLACEHOLDER_PREFIX: &str = "（已落库";
+
+/// u06 历史压缩钩子（`NOMI_LEARNING_LESSON_HISTORY_COMPACT` on 臂专用，
+/// 由 [`FlowCycle::history_compaction`] 在开关 on 时装配）：每轮工具结果
+/// 回灌后原地改写消息历史——**已成功落库**的 `ls_set_section_body` /
+/// `ls_set_document` 的 body/document 参数替换为落库摘要占位符（节 key +
+/// 非空字符数 + ls_inspect 取回指引），**最近一次写入**保留原文（紧邻的
+/// 修改仍有上下文，票面语义）。
+///
+/// 语义契约（u06 高风险项的三道安全垫）：
+/// - 只改历史视图，不改草稿——发布产物与 off 臂完全一致（A/B 只测历史
+///   形状对生成质量的影响）；
+/// - 只压记账面（[`StoredWrites`]）在案的 key；被拒 op 的调用体若其 key
+///   已由后续成功写入在案，同样换占位符（历史以「该节最新落库状态」为
+///   准，拒绝明细留在 ToolResult 里）；
+/// - 幂等：占位符以「（已落库」开头，钩子重复经过不再改写。
+/// 正文按需取回走 ls_inspect 的可选 section_key（同一开关的另一臂面）。
+fn lesson_history_compaction(
+    stored_writes: Arc<Mutex<StoredWrites>>,
+) -> Arc<HistoryCompaction> {
+    Arc::new(move |messages: &mut [nomi_types::message::Message]| {
+        let Ok(writes) = stored_writes.lock() else {
+            return;
+        };
+        for message in messages.iter_mut() {
+            for block in message.content.iter_mut() {
+                let nomi_types::message::ContentBlock::ToolUse { name, input, .. } = block
+                else {
+                    continue;
+                };
+                match name.as_str() {
+                    "ls_set_section_body" => {
+                        // key 转持有副本：占位符插值与 input 改写借用不交叠。
+                        let Some(key) = input
+                            .get("section_key")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                        else {
+                            continue;
+                        };
+                        let Some(body) =
+                            input.get("body").and_then(serde_json::Value::as_str)
+                        else {
+                            continue;
+                        };
+                        if body.starts_with(STORED_BODY_PLACEHOLDER_PREFIX)
+                            || writes.is_latest(StoredWriteKind::SectionBody, &key)
+                        {
+                            continue;
+                        }
+                        let Some(chars) =
+                            writes.stored_chars(StoredWriteKind::SectionBody, &key)
+                        else {
+                            continue;
+                        };
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert(
+                                "body".to_owned(),
+                                serde_json::json!(format!(
+                                    "（已落库：{key}，{chars} 字。需要原文时调用 ls_inspect 并传 section_key）"
+                                )),
+                            );
+                        }
+                    }
+                    "ls_set_document" => {
+                        let Some(body) =
+                            input.get("document").and_then(serde_json::Value::as_str)
+                        else {
+                            continue;
+                        };
+                        if body.starts_with(STORED_BODY_PLACEHOLDER_PREFIX)
+                            || writes.is_latest(StoredWriteKind::Document, "document")
+                        {
+                            continue;
+                        }
+                        let Some(chars) =
+                            writes.stored_chars(StoredWriteKind::Document, "document")
+                        else {
+                            continue;
+                        };
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert(
+                                "document".to_owned(),
+                                serde_json::json!(format!(
+                                    "（已落库：单篇文档全文，{chars} 字。需要概览时调用 ls_inspect；重写走 ls_set_document）"
+                                )),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    })
+}
+
 /// The `ls_*` whitelist. `repair_face` selects the loop's tool face: the
 /// generation face carries `ls_start` (the repair loop must never re-scope
 /// the draft) while the repair face additionally carries `ls_set_document`
@@ -1064,15 +1216,59 @@ fn ls_start(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
+/// ls_inspect 的基线描述（u06 off 臂 = 本串逐字回退；on 臂尾部追加取回
+/// 通道句）。改动基线文案必须同步更新 off 臂回归测试里的逐字副本。
+const LS_INSPECT_BASELINE_DESCRIPTION: &str = "当前草稿概览：文档字符数与章节清单、活动清单（position/kind/prompt 摘要）、estimated_minutes、审计 findings。每次修改前后调用，保持全局认知；update/remove 活动的 position 以这里为准。";
+
+/// u06 取回通道句（on 臂追加在 ls_inspect 描述尾部；off 臂零出现）。
+const LS_INSPECT_RETRIEVE_NOTE: &str = "传 section_key 时返回该节已落库的完整正文（历史被压缩后按需取回原文）。";
+
 fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
+    // u06：压缩实验臂给 ls_inspect 加原文取回面（可选 section_key）；
+    // off 臂描述/schema/行为逐字回基线（概览视图，多余字段照旧宽容）。
+    let compact = nomifun_learning::lesson_history_compact_enabled();
+    let description = if compact {
+        format!("{LS_INSPECT_BASELINE_DESCRIPTION}{LS_INSPECT_RETRIEVE_NOTE}")
+    } else {
+        LS_INSPECT_BASELINE_DESCRIPTION.to_owned()
+    };
+    let mut input_schema = serde_json::json!({ "type": "object", "properties": {} });
+    if compact {
+        input_schema["properties"]["section_key"] = serde_json::json!({
+            "type": "string",
+            "description": "可选：节 key（清单里的 s1、s2……）。传入时返回该节的完整正文"
+        });
+    }
     OneShotTool {
         name: "ls_inspect".into(),
-        description: "当前草稿概览：文档字符数与章节清单、活动清单（position/kind/prompt 摘要）、estimated_minutes、审计 findings。每次修改前后调用，保持全局认知；update/remove 活动的 position 以这里为准。".into(),
-        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-        handler: one_shot_handler(move |_input| {
+        description,
+        input_schema,
+        handler: one_shot_handler(move |input| {
             let ctx = Arc::clone(&ctx);
             async move {
                 let draft_id = ctx.require_draft()?;
+                // u06 取回通道（on 臂）：section_key 非空传入 → 返回该节
+                // 完整正文（历史压缩后的按需取回面）。off 臂不进此分支。
+                if compact {
+                    if let Some(section_key) = input
+                        .get("section_key")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                    {
+                        let body = ctx
+                            .service
+                            .lesson_draft_section_body(&draft_id, section_key)
+                            .map_err(|error| error.to_string())?;
+                        let chars =
+                            body.chars().filter(|c| !c.is_whitespace()).count();
+                        return Ok(json_compact(&serde_json::json!({
+                            "section_key": section_key,
+                            "chars": chars,
+                            "body": body,
+                        })));
+                    }
+                }
                 let view = ctx
                     .service
                     .inspect_lesson_draft(&draft_id)
@@ -1231,6 +1427,7 @@ fn ls_set_section_body(ctx: Arc<LoopContext>, repair_face: bool) -> OneShotTool 
                         ));
                     }
                 }
+                let last_section_key = section_key.clone();
                 let report = ctx
                     .service
                     .patch_lesson_draft(
@@ -1238,6 +1435,28 @@ fn ls_set_section_body(ctx: Arc<LoopContext>, repair_face: bool) -> OneShotTool 
                         vec![nomifun_learning::LessonOp::SetSectionBody { section_key, body }],
                     )
                     .map_err(|error| error.to_string())?;
+                // u06 落库记账：op 被接纳时从 inspect 视图回读该节字符数
+                // （与 ls_inspect/续跑开场同一读数源），压缩钩子据此换占位
+                // 符。op 被拒（lint 打回等）不记账——历史原样留给模型看。
+                if report.rejected.is_empty() {
+                    let view = ctx
+                        .service
+                        .inspect_lesson_draft(&draft_id)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(entry) = view
+                        .section_bodies
+                        .iter()
+                        .find(|entry| entry.section_key == last_section_key)
+                    {
+                        if let Ok(mut writes) = ctx.stored_writes.lock() {
+                            writes.record(
+                                StoredWriteKind::SectionBody,
+                                entry.section_key.clone(),
+                                entry.chars,
+                            );
+                        }
+                    }
+                }
                 Ok(json_compact(&report))
             }
         }),
@@ -1273,6 +1492,17 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
                         }],
                     )
                     .map_err(|error| error.to_string())?;
+                // u06 落库记账（修复面单篇契约）：与节写同款——接纳才记、
+                // 字符数从 inspect 视图回读（单源）。
+                if report.rejected.is_empty() {
+                    let view = ctx
+                        .service
+                        .inspect_lesson_draft(&draft_id)
+                        .map_err(|error| error.to_string())?;
+                    if let Ok(mut writes) = ctx.stored_writes.lock() {
+                        writes.record(StoredWriteKind::Document, "document", view.document_chars);
+                    }
+                }
                 Ok(json_compact(&report))
             }
         }),
@@ -2212,6 +2442,7 @@ mod tests {
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
             math_verify: Arc::new(MathVerifyCounters::default()),
         });
         (ctx, draft_slot, published_slot)
@@ -2336,6 +2567,7 @@ mod tests {
             GENERATE_REASONING_EFFORT,
             nomifun_learning::phase::GENERATE,
             Some(ctx.as_ref()),
+            None,
         )
         .await
         .unwrap();
@@ -2570,9 +2802,9 @@ mod tests {
 
     // ── u05：verify_math 批量核验（NOMI_LEARNING_VERIFY_BATCH） ──────────
 
-    /// 进程 env 开关窗口（串行写 env——非串行 save/restore 会泄漏进并行测试，
-    /// 上一波 z02 竞态教训）。返回守卫，drop 时恢复原值。
-    fn verify_batch_env_guard(value: &str) -> impl Drop {
+    /// NOMI_LEARNING_* 开关的进程 env 窗口（串行写 env——非串行 save/restore
+    /// 会泄漏进并行测试，上一波 z02 竞态教训）。返回守卫，drop 时恢复原值。
+    fn learning_switch_env_guard(env: &'static str, value: &str) -> impl Drop {
         struct Restore(&'static str, Option<String>);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -2584,9 +2816,19 @@ mod tests {
                 }
             }
         }
-        let previous = std::env::var(nomifun_learning::VERIFY_BATCH_SWITCH_ENV).ok();
-        unsafe { std::env::set_var(nomifun_learning::VERIFY_BATCH_SWITCH_ENV, value) };
-        Restore(nomifun_learning::VERIFY_BATCH_SWITCH_ENV, previous)
+        let previous = std::env::var(env).ok();
+        unsafe { std::env::set_var(env, value) };
+        Restore(env, previous)
+    }
+
+    /// u05 off 臂守卫（`learning_switch_env_guard` 的 verify_batch 便捷形）。
+    fn verify_batch_env_guard(value: &'static str) -> impl Drop {
+        learning_switch_env_guard(nomifun_learning::VERIFY_BATCH_SWITCH_ENV, value)
+    }
+
+    /// u06 off/on 臂守卫（`learning_switch_env_guard` 的历史压缩便捷形）。
+    fn lesson_compact_env_guard(value: &'static str) -> impl Drop {
+        learning_switch_env_guard(nomifun_learning::LESSON_HISTORY_COMPACT_SWITCH_ENV, value)
     }
 
     /// u05 off 臂逐字节回归（正优化验收协议②）：`NOMI_LEARNING_VERIFY_BATCH`
@@ -2790,6 +3032,252 @@ mod tests {
         let snapshot = counters.snapshot_json();
         assert_eq!(snapshot["batches"], 2, "{snapshot}");
         assert_eq!(snapshot["calls"], 2, "calls 仍按 claim 计: {snapshot}");
+    }
+
+    // ── u06：历史压缩实验（NOMI_LEARNING_LESSON_HISTORY_COMPACT，缺省 off）──
+
+    /// 压缩实验的标准脚本：开局 → 清单 → 写 s1 → 写 s2 → 活动 → finish →
+    /// 收尾文本。两节正文先后落库——压缩钩子「最近一次写入保留原文」语义
+    /// 的最小可辨形态（s1 被压、s2 在场）。
+    fn two_section_bodies_script() -> Vec<Vec<LlmEvent>> {
+        vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]
+    }
+
+    /// 从一轮请求的完整历史里按序抽 ls_set_section_body 的 (key, body)。
+    fn section_bodies_in_history(messages: &[nomi_types::message::Message]) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        for message in messages {
+            for block in &message.content {
+                if let ContentBlock::ToolUse { name, input, .. } = block {
+                    if name == "ls_set_section_body" {
+                        pairs.push((
+                            input["section_key"].as_str().unwrap_or("").to_owned(),
+                            input["body"].as_str().unwrap_or("").to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        pairs
+    }
+
+    /// u06 off 臂逐字节回归（缺省 off = 基线）：历史全量重发，两节正文在
+    /// 每一轮历史里逐字在场（同二进制对照臂——正文参数永不被改写）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn lesson_history_compact_off_arm_keeps_full_bodies_in_history() {
+        let _env = lesson_compact_env_guard("off");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(two_section_bodies_script());
+        run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("off 臂脚本照常发布");
+        let rounds = provider.seen_messages.lock().unwrap();
+        // 期望序列（写入序）；任意一轮历史里的正文必须是它的**逐字前缀**
+        // （早期轮次只有 s1，s2 落库后才齐全——但每一处正文都逐字在场，
+        // 从不被压缩）。
+        let expected = [("s1", concept_body()), ("s2", practice_body())];
+        for (index, round) in rounds.iter().enumerate() {
+            let bodies = section_bodies_in_history(round);
+            if bodies.is_empty() {
+                continue; // 正文写入轮之前的历史没有该工具调用
+            }
+            assert!(
+                bodies.len() <= expected.len(),
+                "第 {} 轮正文调用数超纲: {bodies:?}",
+                index + 1
+            );
+            for (actual, (key, body)) in bodies.iter().zip(expected.iter()) {
+                assert_eq!(actual.0, *key, "第 {} 轮 key 序", index + 1);
+                assert_eq!(
+                    actual.1, *body,
+                    "off 臂第 {} 轮历史必须逐字保留正文（基线行为）",
+                    index + 1
+                );
+            }
+        }
+    }
+
+    /// u06 on 臂：已落库正文在历史中换摘要——非最近写入的 s1 换占位符
+    /// （落库读数 + ls_inspect 取回指引，原正文退场），最近一次写入的 s2
+    /// 保留原文（紧邻修改仍有上下文）。发布结果与 off 臂完全一致（压缩只
+    /// 改历史视图，不改草稿）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn lesson_history_compact_on_arm_replaces_stored_bodies_but_keeps_latest() {
+        let _env = lesson_compact_env_guard("on");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(two_section_bodies_script());
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("on 臂脚本照常发布");
+        assert_eq!(output.sections.len(), 2, "压缩不改变草稿本身");
+
+        let rounds = provider.seen_messages.lock().unwrap();
+        // 压缩收敛在最后一轮历史：s1 换占位符、s2 原文在场。
+        let last = rounds.last().expect("最后一轮请求");
+        let bodies = section_bodies_in_history(last);
+        assert_eq!(bodies.len(), 2, "两节写入都在历史: {bodies:?}");
+        assert_eq!(bodies[0].0, "s1");
+        let placeholder = &bodies[0].1;
+        assert!(placeholder.contains("已落库：s1"), "占位符带节 key: {placeholder}");
+        assert!(
+            placeholder.contains("ls_inspect") && placeholder.contains("section_key"),
+            "占位符带取回指引: {placeholder}"
+        );
+        let s1_chars = concept_body().chars().filter(|c| !c.is_whitespace()).count();
+        assert!(
+            placeholder.contains(&s1_chars.to_string()),
+            "占位符带落库字数（{s1_chars}）: {placeholder}"
+        );
+        assert!(
+            !placeholder.contains("期权的定义"),
+            "原正文必须退场: {placeholder}"
+        );
+        assert_eq!(bodies[1].1, practice_body(), "最近一次写入保留原文");
+
+        // 早期轮次（s1 刚写入时它就是最近写入）：正文原样在场——保留规则
+        // 按写入时点判定，不回溯改写当时的保留件。
+        let s1_write_round = rounds
+            .iter()
+            .position(|round| !section_bodies_in_history(round).is_empty())
+            .expect("正文写入轮在场");
+        let mid = section_bodies_in_history(&rounds[s1_write_round]);
+        assert!(
+            mid.iter().any(|(key, body)| key == "s1" && *body == concept_body()),
+            "s1 刚写入的轮次保留原文（当时它是最近写入）: {mid:?}"
+        );
+    }
+
+    /// u06 on 臂的取回通道：ls_inspect 可选 section_key 返回该节完整正文
+    /// （历史被压缩后按需取回原文）；未知 key 可读退稿；缺席 = 基线概览。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn ls_inspect_section_key_returns_full_body_on_compact_arm() {
+        let _env = lesson_compact_env_guard("on");
+        let (service, _dir) = test_service().await;
+        let (ctx, draft_slot, _published) = context(Arc::clone(&service));
+        let view = service.create_lesson_draft(ctx.context.clone()).unwrap();
+        *draft_slot.lock().unwrap() = Some(view.draft_id.clone());
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    nomifun_learning::LessonOp::SetSectionManifest {
+                        sections: serde_json::from_value(section_manifest_ops()["sections"].clone())
+                            .unwrap(),
+                        capacity_note: None,
+                    },
+                    nomifun_learning::LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: concept_body(),
+                    },
+                ],
+            )
+            .unwrap();
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_inspect")
+            .unwrap();
+
+        // 带 section_key：完整正文在场（压缩后按需取回）。回包是 JSON——
+        // 按 JSON 解析比对（正文里的换行在 wire 上是转义序列）。
+        let reply = (tool.handler)(serde_json::json!({ "section_key": "s1" }))
+            .await
+            .expect("取回通道");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&reply).expect("取回通道回 JSON");
+        assert_eq!(parsed["section_key"], "s1", "{reply}");
+        assert_eq!(
+            parsed["body"],
+            serde_json::json!(concept_body().trim()),
+            "返回完整正文（逐字；草稿存 trim 后正文）: {reply}"
+        );
+        assert!(
+            parsed["chars"].as_u64().unwrap_or(0)
+                == concept_body().chars().filter(|c| !c.is_whitespace()).count() as u64,
+            "chars 用草稿同一口径: {reply}"
+        );
+        // 未知 key：可读 Err。
+        let error = (tool.handler)(serde_json::json!({ "section_key": "s9" }))
+            .await
+            .expect_err("未知节退稿");
+        assert!(error.contains("s9"), "{error}");
+        // 缺席 = 基线概览视图。
+        let overview = (tool.handler)(serde_json::json!({})).await.unwrap();
+        assert!(overview.contains("section_bodies"), "概览视图照旧: {overview}");
+    }
+
+    /// u06 off 臂（缺省）：ls_inspect 描述与 schema 逐字回基线（独立逐字
+    /// 副本为事实源），section_key 入参被无视（基线语义 = 概览视图）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn ls_inspect_off_arm_contract_is_byte_identical_baseline() {
+        let _env = lesson_compact_env_guard("off");
+        let (service, _dir) = test_service().await;
+        let (ctx, draft_slot, _published) = context(Arc::clone(&service));
+        // 活动草稿（概览 handler 需要 require_draft；空草稿即可）。
+        let view = service.create_lesson_draft(ctx.context.clone()).unwrap();
+        *draft_slot.lock().unwrap() = Some(view.draft_id.clone());
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_inspect")
+            .unwrap();
+        assert_eq!(
+            tool.description,
+            "当前草稿概览：文档字符数与章节清单、活动清单（position/kind/prompt 摘要）、estimated_minutes、审计 findings。每次修改前后调用，保持全局认知；update/remove 活动的 position 以这里为准。",
+            "off 臂描述逐字 = 基线"
+        );
+        assert_eq!(
+            tool.input_schema,
+            serde_json::json!({ "type": "object", "properties": {} }),
+            "off 臂 schema 逐字 = 基线（无 section_key 键）"
+        );
+        // 即使模型带了 section_key（旧 schema 不含此键，宽容多余字段），off
+        // 臂行为 = 基线概览，绝不触取回通道。
+        let reply = (tool.handler)(serde_json::json!({ "section_key": "s1" }))
+            .await
+            .unwrap();
+        assert!(reply.contains("revision"), "off 臂返回概览视图: {reply}");
     }
 
     /// f3 读数修复 + w1 计数槽（蓝图 4.3/A5）+ w1 评审修复的 unresolved 面：
@@ -3163,6 +3651,7 @@ mod tests {
             published_slot: Arc::new(Mutex::new(None)),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
         });
         let provider = ScriptedProvider::new(vec![
             // ── generation loop: finish immediately, blocked (no activities) ──
@@ -3242,6 +3731,7 @@ mod tests {
             published_slot: Arc::new(Mutex::new(None)),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
         });
 
         let provider = ScriptedProvider::new(vec![
