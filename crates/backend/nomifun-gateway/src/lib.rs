@@ -60,6 +60,7 @@ mod caps_knowledge;
 mod caps_knowledge_ext;
 mod caps_mcp;
 mod caps_memory;
+mod caps_presentation;
 mod caps_agent_execution;
 mod caps_provider;
 mod caps_requirement;

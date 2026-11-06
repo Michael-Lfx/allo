@@ -106,6 +106,10 @@ pub struct GatewayDeps {
     /// One shared persistent collaboration facade. REST, gateway tools, boot
     /// recovery and scheduling all use this exact instance.
     pub agent_execution_engine: Arc<nomifun_agent_execution::AgentExecutionEngine>,
+    /// Host-managed ppt-master install + script runner. The SAME instance the
+    /// `/api/presentation/capability/*` routes use, so an agent-triggered
+    /// install and the UI share one install slot and one progress stream.
+    pub presentation_service: Arc<nomifun_presentation::PresentationCapabilityService>,
     /// Gateway bridge to the application-owned [`BrowserSessionHub`]. `Some`
     /// only when the `browser-use` feature is on and the app injected the shared
     /// hub; the Gateway never owns a browser engine or Chromium process.
