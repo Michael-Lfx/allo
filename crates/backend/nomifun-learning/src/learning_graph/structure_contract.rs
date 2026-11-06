@@ -839,9 +839,11 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
         }
     }
 
-    // gd.no_schedule：排期红线扫全文（quality/disclaimer 元声明面豁免）。
+    // gd.no_schedule：排期红线扫全文（quality/disclaimer 元声明面豁免；
+    // u09 再豁免 goal——目标原句回执必须逐字，目标含排期类词不是产物的
+    // 排期语义，其余字段照扫）。
     let mut strings = Vec::new();
-    collect_strings(value, &["quality", "disclaimer"], &mut strings);
+    collect_strings(value, &["quality", "disclaimer", "goal"], &mut strings);
     for text in trim_strings(&strings) {
         if let Some(marker) = SCHEDULE_MARKERS.iter().find(|marker| text.contains(**marker)) {
             violations.push(ContractViolation::red(
@@ -1966,6 +1968,28 @@ mod tests {
             !codes(&validate_structure(&meta)).contains(&"gd.no_schedule"),
             "quality/disclaimer 元声明面豁免: {:?}",
             validate_structure(&meta)
+        );
+    }
+
+    /// u09 红绿样：goal 是目标原句的逐字回执——目标含「进度/计划/小时」
+    /// 类词时合规回执不得触发 gd.no_schedule（原句不许改写）；其余字段含
+    /// 排期词照扫照报（豁免面只有 goal）。
+    #[test]
+    fn gd_no_schedule_exempts_the_goal_receipt_but_not_other_fields() {
+        let mut receipt = golden_structure();
+        receipt["goal"] = json!("掌握项目进度管理：制定计划并按小时推进");
+        assert!(
+            !codes(&validate_structure(&receipt)).contains(&"gd.no_schedule"),
+            "goal 原句回执豁免：{:?}",
+            validate_structure(&receipt)
+        );
+
+        let mut elsewhere = golden_structure();
+        elsewhere["spines"][0]["definition"] = json!("学习计划的第一主干");
+        assert!(
+            codes(&validate_structure(&elsewhere)).contains(&"gd.no_schedule"),
+            "非 goal 字段照扫：{:?}",
+            validate_structure(&elsewhere)
         );
     }
 
