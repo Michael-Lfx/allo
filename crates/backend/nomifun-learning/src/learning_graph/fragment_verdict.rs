@@ -562,6 +562,30 @@ mod tests {
         assert_eq!(unhandled, vec![frag("内角", FragmentSource::Definition), frag("顶点", FragmentSource::NodeTitle)]);
     }
 
+    /// u03 并列指名（核验面零改动钉）：一条 problem 的 issue 顿号并列指名
+    /// 多个名词片段——validate_fragments 按词子串匹配 problems，多词并列
+    /// 天然可过；problems 上限 8 条不封名词数（run-1793859632428：判 11 个
+    /// 名词时 7 个无法逐条指名的算术死结由此解锁）。
+    #[test]
+    fn parallel_multi_noun_issue_satisfies_fragment_validation() {
+        let naming = vec![
+            frag("内角", FragmentSource::Definition),
+            frag("顶点", FragmentSource::Definition),
+            frag("线段", FragmentSource::Definition),
+        ];
+        let verdicts = vec![
+            verdict("内角", "名词", "像样领域名词"),
+            verdict("顶点", "名词", "像样领域名词"),
+            verdict("线段", "噪声", "切词碎片"),
+        ];
+        // 一条 problem 的 issue 并列指名「内角、顶点」（顿号分隔）。
+        let problems = vec![problem("登记表外名词「内角、顶点」查无出处")];
+        let unhandled =
+            validate_fragments(&verdicts, false, &problems, &naming, &ProposedBatch::default())
+                .expect("并列指名过核");
+        assert!(unhandled.is_empty(), "名词片段都有显式裁决与指名：{unhandled:?}");
+    }
+
     #[test]
     fn substring_containment_counts_as_disposition() {
         // 片段「线段」被裁决行「线段首尾」覆盖（子串互含 = 最小辨认）。
