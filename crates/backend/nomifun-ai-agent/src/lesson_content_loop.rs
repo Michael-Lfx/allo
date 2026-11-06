@@ -17,7 +17,7 @@
 //! agent path and the legacy two-stage path produce interchangeable output.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
@@ -30,7 +30,7 @@ use nomifun_learning::{
 
 use crate::factory::provider_config::resolve_provider_config;
 use crate::knowledge_completer::resolve_default_model;
-use crate::learning_loop::{FlowCycle, LoopBudgets, LoopChannel, WireConfig, run_loops};
+use crate::learning_loop::{FlowCycle, HistoryCompaction, LoopBudgets, LoopChannel, WireConfig, run_loops};
 use crate::loop_core::{LoopEventSink, json_compact};
 use crate::one_shot::{OneShotDeps, OneShotTool, one_shot_handler};
 
@@ -79,6 +79,44 @@ const CONTENT_DISCIPLINE_V2_CN: &str = "
 - 完备面不缩水（R20，写作面）：节清单分配的三个面在正文里一个不少——认得出什么（名称与边界）、推得出什么（结论与成立条件）、怎么推出来（中间步骤）；只在已教边界内补覆盖缺口，不扩到前提与前置节之外。
 ";
 
+/// u05 批量核验句（on 臂追加在 R14 条款行尾；off 臂零出现——R14 逐字回退）。
+const R14_BATCH_SENTENCE: &str = "一节写完后，把本节全部可算量一次性放进 claims 数组提交核验（单次至多 12 条），不要逐条多次调用。";
+/// R14 行尾锚（块内唯一出现——批量句的拼接点）。
+const R14_TAIL_ANCHOR: &str = "「≈」只许用在最后开方/极限步。";
+
+/// u07 档位优先序条款（`NOMI_LEARNING_TIER_PRIORITY` on 臂注入「写作成色」
+/// 段的「档位决定内容形态」行之后；off 臂 = 空串，模板逐字节回基线）。
+/// 票面语义：知道档 = 认识性讲解、不引入需逐步实算的推导、数值例至多 1
+/// （如有须经 verify_math）；例题密度/完备面要求只适用于会用、能教档。
+/// 末半句是反向护栏（票面推翻条件的方向锚）：不为凑密度写推导课，也不把
+/// 认识课删成只剩定义（概念面登场纪律不破）。单行条款（恰一个尾换行）。
+const TIER_PRIORITY_CLAUSE_CN: &str = "- 档位优先序（u07）：有档位声明时，档位优先于其它深度条款——标「知道」的节点做认识性讲解（认得、会辨认，有情境引入），不引入需逐步实算的推导，数值例至多 1 个（如有须经 verify_math 实算后才写入）；「例题密度 3-6」「完备面不缩水」等深度要求只适用于标「会用/能教」的节点。档位与其它条款冲突时按档位收敛，不为凑密度把认识课写成推导课，也不把认识课删成只剩定义、无情境引入的空心壳。\n";
+
+/// u07 条款装配面（纯函数——同进程双臂可测，env 不进单测；
+/// `discipline_v2_block` 同款先例）。
+fn tier_priority_clause(enabled: bool) -> &'static str {
+    if enabled {
+        TIER_PRIORITY_CLAUSE_CN
+    } else {
+        ""
+    }
+}
+
+/// 写作成色块的开关装配面（纯函数——同进程双臂可测，env 不进单测；
+/// `graph_budget_line` 同款先例）。`verify_batch` off = 基线块逐字回退
+/// （直接回基线常量，结构保证）；on = 仅 R14 行尾追加批量句，其余条款
+/// 逐字节不动。`content_discipline_v2` off 时本函数不被调用（整块摘除）。
+fn discipline_v2_block(verify_batch: bool) -> String {
+    if !verify_batch {
+        return CONTENT_DISCIPLINE_V2_CN.to_owned();
+    }
+    CONTENT_DISCIPLINE_V2_CN.replacen(
+        R14_TAIL_ANCHOR,
+        &format!("{R14_TAIL_ANCHOR}{R14_BATCH_SENTENCE}"),
+        1,
+    )
+}
+
 /// 完备性三面的规划面（y06，learnhub #202）：节点规划时过三面并查覆盖缺口
 /// ——这是已教边界内的覆盖下限，不是超纲许可；「只教本节任务点 / 只考正文
 /// 教过的」上限条款照旧（显式并置防互相加码）。
@@ -120,11 +158,16 @@ const EST_LEGACY_CLAUSE_CN: &str = "- 时长预算：用户消息里有「时长
 static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     let section_ranges = section_range_rules();
     let content_discipline_v2 = nomifun_learning::content_discipline_v2_enabled();
+    // u05：写作成色块的装配走纯函数（R14 行按批量开关追加批量句；off 臂
+    // 逐字回基线常量——discipline_v2_block 注记）。
     let discipline_v2 = if content_discipline_v2 {
-        CONTENT_DISCIPLINE_V2_CN
+        discipline_v2_block(nomifun_learning::verify_batch_enabled())
     } else {
-        ""
+        String::new()
     };
+    // u07：档位优先序条款（占位符在「档位决定内容形态」行之后；off 臂
+    // 空串 = 模板逐字节回基线）。
+    let tier_priority_clause = tier_priority_clause(nomifun_learning::tier_priority_enabled());
     // y06（#201/#202/#203）：条款批与写作成色块同命——开关 off 时整块摘除
     // （规划三面 / 分段例组规划半 / 选择题面五型 / 题库两考向）。
     let completeness_planning = if content_discipline_v2 {
@@ -174,7 +217,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 【写作成色（域中立纪律——写作取向，不是格式模板）】
 - 先推后练：方法与公式型结论先从已教前提推出，再进例题；不要先甩断言再补证明。
 - 档位决定内容形态：标到「知道」的概念做认识性介绍，标到「会用」以应用示范为主，标到「能教」才给完整推导与反例；没有档位声明的课时按节任务命名的内容形态把握深浅。
-- 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
+{tier_priority_clause}- 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
 - 对照要真对照：比较必须落在可核查的维度（适用范围、代价、失败形态），不写「X 更好」式的空对照。
 - 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。
 - 规划即雄心：节数、题量与练习形态照节清单填充，不自行加码——规划收敛过的容量不再膨胀；练习不引入清单未安排的方法论或推理链（那是后续节点的事）；题目考察的概念域照节清单（已知概念名单优先），情境载体按受众取向。{discipline_v2}
@@ -366,6 +409,7 @@ impl LiveLessonContentAgentEngine {
             published_slot: Arc::new(Mutex::new(None)),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
         });
 
         match tokio::time::timeout(
@@ -494,6 +538,24 @@ impl FlowCycle for LiveLessonContentAgentEngine {
         lesson_content_tools(ctx, repair_face)
     }
 
+    fn history_compaction(&self, ctx: &Arc<LoopContext>) -> Option<Arc<HistoryCompaction>> {
+        // u06：仅开关 on 时装配压缩钩子（缺省 off = None = 历史逐字节全量
+        // 重发）。语义契约（钩子构造处集中说明，见 `lesson_history_compaction`）。
+        if nomifun_learning::lesson_history_compact_enabled() {
+            Some(lesson_history_compaction(Arc::clone(&ctx.stored_writes)))
+        } else {
+            None
+        }
+    }
+
+    fn repair_opening_context(&self, ctx: &Arc<LoopContext>) -> Option<String> {
+        // u07 机械（修复轮带课时上下文，不挂开关——票面正确性/上下文补
+        // 全）：修复轮是全新对话，开场注入 lesson_user_text 同源上下文
+        // （概念面/档位/教学范围在审计报告里不可达），审计报告随后
+        // （run_loops 的 [`compose_repair_user`] 组装顺序）。
+        Some(lesson_user_text(&ctx.context))
+    }
+
     async fn finish(&self, ctx: &LoopContext, draft_id: &str) -> Result<LessonOutput, AppError> {
         // w1：verify_math 留痕随发布面穿出（finish 门后 warning，不挡发布）。
         // w1 评审修复口径：传未复核修正数（Fail 后无复核 Pass）——自修正
@@ -580,6 +642,46 @@ impl FlowCycle for LiveLessonContentAgentEngine {
 
 // ── Shared loop state ──────────────────────────────────────────────────────
 
+/// u06 落库写记录的种类（压缩钩子的状态面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredWriteKind {
+    /// 生成/修复面的 `ls_set_section_body`（key = section_key）。
+    SectionBody,
+    /// 修复面的 `ls_set_document`（key = "document"）。
+    Document,
+}
+
+/// 已成功落库的写入流水（u06 压缩钩子的判定面）：按写入顺序记录 (种类,
+/// key, 非空字符数)。`ls_inspect` 的读数与钩子占位符共用这份字符数——
+/// 认知与执法单源（handler 落库后从 inspect 视图回读，不自行复算）。
+#[derive(Debug, Default)]
+pub(crate) struct StoredWrites {
+    entries: Vec<(StoredWriteKind, String, usize)>,
+}
+
+impl StoredWrites {
+    fn record(&mut self, kind: StoredWriteKind, key: impl Into<String>, chars: usize) {
+        self.entries.push((kind, key.into(), chars));
+    }
+
+    /// 某 (种类, key) 最近一次落库的字符数；未落库 = None（钩子不改写）。
+    fn stored_chars(&self, kind: StoredWriteKind, key: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(entry_kind, entry_key, _)| *entry_kind == kind && entry_key == key)
+            .map(|(_, _, chars)| *chars)
+    }
+
+    /// 最近一次写入是否为该 (种类, key)——那一节保留原文（紧邻的修改仍
+    /// 有上下文，票面语义）。
+    fn is_latest(&self, kind: StoredWriteKind, key: &str) -> bool {
+        self.entries.last().is_some_and(|(entry_kind, entry_key, _)| {
+            *entry_kind == kind && entry_key == key
+        })
+    }
+}
+
 /// Everything the tool handlers need, captured once per generation. The two
 /// slots are the only mutable cross-round state: which draft is active and
 /// which lesson output (if any) was published by `ls_finish`. 线上翻译与轮
@@ -593,6 +695,9 @@ pub(crate) struct LoopContext {
     /// verify_math 调用计数槽（w1/A5）：两面工具共享（构造一次、闭包捕获
     /// Arc）——发布观测帧为唯一汇点。
     math_verify: Arc<MathVerifyCounters>,
+    /// u06 已落库写记录（压缩实验）：写侧工具在落库成功后记账、压缩钩子
+    /// 读账。开关 off 时记录照记（几个字节的开销）、钩子不装配。
+    stored_writes: Arc<Mutex<StoredWrites>>,
 }
 
 /// verify_math 调用计数（w1/A5）：calls/passed/failed/unresolved 四个原子
@@ -613,7 +718,21 @@ pub(crate) struct MathVerifyCounters {
     passed: AtomicUsize,
     failed: AtomicUsize,
     unresolved: AtomicUsize,
+    /// u05 批量调用次数（claims 数组形式的 verify_math 调用数；单 claim
+    /// 不计）。纯读数面——A/B 观测点（on 臂期望 >0，calls/batches 比即
+    /// 每批 claim 数）；off 臂恒 0。
+    batches: AtomicUsize,
+    /// u07 失败条目留痕（发布前数学失败可见的回给面）：每次 Fail 的
+    /// verdict 原文（reason/computed/counterexample）。软上限防病态会话
+    /// 无界增长——超出后新失败只计数不逐条留痕（打回条目截断声明）。
+    failures: Mutex<Vec<ClaimVerdict>>,
+    /// u07 修正机会闸（机械，防死循环）：`claim_fix_nudge` 首次 true 后
+    /// 恒 false——发布前打回至多一次。
+    fix_nudge_used: AtomicBool,
 }
+
+/// u07 失败条目留痕的软上限（打回条目数）。
+const MATH_FAILURE_ENTRIES_CAP: usize = 32;
 
 impl MathVerifyCounters {
     /// 按核验结论记一笔（op handler 每次 verify_claim 后调用）。
@@ -628,19 +747,52 @@ impl MathVerifyCounters {
             ClaimVerdict::Fail { .. } => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
                 self.unresolved.fetch_add(1, Ordering::Relaxed);
+                // u07 失败条目留痕（软上限内逐条；超额只计数）。
+                if let Ok(mut failures) = self.failures.lock() {
+                    if failures.len() < MATH_FAILURE_ENTRIES_CAP {
+                        failures.push(verdict.clone());
+                    }
+                }
             }
         }
     }
 
+    /// u07：领取「发布前修正机会」——首次调用返回 true 并置闸（此后恒
+    /// false）。机械防死循环：打回至多一次。
+    fn claim_fix_nudge(&self) -> bool {
+        !self.fix_nudge_used.swap(true, Ordering::SeqCst)
+    }
+
+    /// u07：失败条目原文列表（verdict 序列化——reason/computed/
+    /// counterexample 随打回可见）。空 = 无失败可回。
+    fn failures_json(&self) -> Vec<serde_json::Value> {
+        self.failures
+            .lock()
+            .map(|failures| {
+                failures
+                    .iter()
+                    .map(|verdict| serde_json::to_value(verdict).unwrap_or(serde_json::Value::Null))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// u05：一次批量调用记一笔（claims 数组通过形状校验后；退稿不记）。
+    fn record_batch(&self) {
+        self.batches.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// 发布观测帧的计数形状（smoke `math_verify read-out` 与判据⑧的取数
     /// 面）：failed = 会话累计（读数面）；unresolved = 未复核修正（finish
-    /// findings 口径，判据⑧硬门）。
+    /// findings 口径，判据⑧硬门）；batches = u05 批量调用次数（读数面，
+    /// off 臂恒 0）。
     fn snapshot_json(&self) -> serde_json::Value {
         serde_json::json!({
             "calls": self.calls.load(Ordering::Relaxed),
             "passed": self.passed.load(Ordering::Relaxed),
             "failed": self.failed.load(Ordering::Relaxed),
             "unresolved": self.unresolved.load(Ordering::Relaxed),
+            "batches": self.batches.load(Ordering::Relaxed),
         })
     }
 
@@ -966,6 +1118,104 @@ fn compose_resume_user_text(
 
 // ── Tool set ───────────────────────────────────────────────────────────────
 
+/// u06 占位符前缀（幂等判定锚）：已压缩的 body 都以它开头，钩子重复经过
+/// 不再改写。
+const STORED_BODY_PLACEHOLDER_PREFIX: &str = "（已落库";
+
+/// u06 历史压缩钩子（`NOMI_LEARNING_LESSON_HISTORY_COMPACT` on 臂专用，
+/// 由 [`FlowCycle::history_compaction`] 在开关 on 时装配）：每轮工具结果
+/// 回灌后原地改写消息历史——**已成功落库**的 `ls_set_section_body` /
+/// `ls_set_document` 的 body/document 参数替换为落库摘要占位符（节 key +
+/// 非空字符数 + ls_inspect 取回指引），**最近一次写入**保留原文（紧邻的
+/// 修改仍有上下文，票面语义）。
+///
+/// 语义契约（u06 高风险项的三道安全垫）：
+/// - 只改历史视图，不改草稿——发布产物与 off 臂完全一致（A/B 只测历史
+///   形状对生成质量的影响）；
+/// - 只压记账面（[`StoredWrites`]）在案的 key；被拒 op 的调用体若其 key
+///   已由后续成功写入在案，同样换占位符（历史以「该节最新落库状态」为
+///   准，拒绝明细留在 ToolResult 里）；
+/// - 幂等：占位符以「（已落库」开头，钩子重复经过不再改写。
+/// 正文按需取回走 ls_inspect 的可选 section_key（同一开关的另一臂面）。
+fn lesson_history_compaction(
+    stored_writes: Arc<Mutex<StoredWrites>>,
+) -> Arc<HistoryCompaction> {
+    Arc::new(move |messages: &mut [nomi_types::message::Message]| {
+        let Ok(writes) = stored_writes.lock() else {
+            return;
+        };
+        for message in messages.iter_mut() {
+            for block in message.content.iter_mut() {
+                let nomi_types::message::ContentBlock::ToolUse { name, input, .. } = block
+                else {
+                    continue;
+                };
+                match name.as_str() {
+                    "ls_set_section_body" => {
+                        // key 转持有副本：占位符插值与 input 改写借用不交叠。
+                        let Some(key) = input
+                            .get("section_key")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                        else {
+                            continue;
+                        };
+                        let Some(body) =
+                            input.get("body").and_then(serde_json::Value::as_str)
+                        else {
+                            continue;
+                        };
+                        if body.starts_with(STORED_BODY_PLACEHOLDER_PREFIX)
+                            || writes.is_latest(StoredWriteKind::SectionBody, &key)
+                        {
+                            continue;
+                        }
+                        let Some(chars) =
+                            writes.stored_chars(StoredWriteKind::SectionBody, &key)
+                        else {
+                            continue;
+                        };
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert(
+                                "body".to_owned(),
+                                serde_json::json!(format!(
+                                    "（已落库：{key}，{chars} 字。需要原文时调用 ls_inspect 并传 section_key）"
+                                )),
+                            );
+                        }
+                    }
+                    "ls_set_document" => {
+                        let Some(body) =
+                            input.get("document").and_then(serde_json::Value::as_str)
+                        else {
+                            continue;
+                        };
+                        if body.starts_with(STORED_BODY_PLACEHOLDER_PREFIX)
+                            || writes.is_latest(StoredWriteKind::Document, "document")
+                        {
+                            continue;
+                        }
+                        let Some(chars) =
+                            writes.stored_chars(StoredWriteKind::Document, "document")
+                        else {
+                            continue;
+                        };
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert(
+                                "document".to_owned(),
+                                serde_json::json!(format!(
+                                    "（已落库：单篇文档全文，{chars} 字。需要概览时调用 ls_inspect；重写走 ls_set_document）"
+                                )),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    })
+}
+
 /// The `ls_*` whitelist. `repair_face` selects the loop's tool face: the
 /// generation face carries `ls_start` (the repair loop must never re-scope
 /// the draft) while the repair face additionally carries `ls_set_document`
@@ -1031,15 +1281,59 @@ fn ls_start(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
+/// ls_inspect 的基线描述（u06 off 臂 = 本串逐字回退；on 臂尾部追加取回
+/// 通道句）。改动基线文案必须同步更新 off 臂回归测试里的逐字副本。
+const LS_INSPECT_BASELINE_DESCRIPTION: &str = "当前草稿概览：文档字符数与章节清单、活动清单（position/kind/prompt 摘要）、estimated_minutes、审计 findings。每次修改前后调用，保持全局认知；update/remove 活动的 position 以这里为准。";
+
+/// u06 取回通道句（on 臂追加在 ls_inspect 描述尾部；off 臂零出现）。
+const LS_INSPECT_RETRIEVE_NOTE: &str = "传 section_key 时返回该节已落库的完整正文（历史被压缩后按需取回原文）。";
+
 fn ls_inspect(ctx: Arc<LoopContext>) -> OneShotTool {
+    // u06：压缩实验臂给 ls_inspect 加原文取回面（可选 section_key）；
+    // off 臂描述/schema/行为逐字回基线（概览视图，多余字段照旧宽容）。
+    let compact = nomifun_learning::lesson_history_compact_enabled();
+    let description = if compact {
+        format!("{LS_INSPECT_BASELINE_DESCRIPTION}{LS_INSPECT_RETRIEVE_NOTE}")
+    } else {
+        LS_INSPECT_BASELINE_DESCRIPTION.to_owned()
+    };
+    let mut input_schema = serde_json::json!({ "type": "object", "properties": {} });
+    if compact {
+        input_schema["properties"]["section_key"] = serde_json::json!({
+            "type": "string",
+            "description": "可选：节 key（清单里的 s1、s2……）。传入时返回该节的完整正文"
+        });
+    }
     OneShotTool {
         name: "ls_inspect".into(),
-        description: "当前草稿概览：文档字符数与章节清单、活动清单（position/kind/prompt 摘要）、estimated_minutes、审计 findings。每次修改前后调用，保持全局认知；update/remove 活动的 position 以这里为准。".into(),
-        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-        handler: one_shot_handler(move |_input| {
+        description,
+        input_schema,
+        handler: one_shot_handler(move |input| {
             let ctx = Arc::clone(&ctx);
             async move {
                 let draft_id = ctx.require_draft()?;
+                // u06 取回通道（on 臂）：section_key 非空传入 → 返回该节
+                // 完整正文（历史压缩后的按需取回面）。off 臂不进此分支。
+                if compact {
+                    if let Some(section_key) = input
+                        .get("section_key")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                    {
+                        let body = ctx
+                            .service
+                            .lesson_draft_section_body(&draft_id, section_key)
+                            .map_err(|error| error.to_string())?;
+                        let chars =
+                            body.chars().filter(|c| !c.is_whitespace()).count();
+                        return Ok(json_compact(&serde_json::json!({
+                            "section_key": section_key,
+                            "chars": chars,
+                            "body": body,
+                        })));
+                    }
+                }
                 let view = ctx
                     .service
                     .inspect_lesson_draft(&draft_id)
@@ -1198,6 +1492,7 @@ fn ls_set_section_body(ctx: Arc<LoopContext>, repair_face: bool) -> OneShotTool 
                         ));
                     }
                 }
+                let last_section_key = section_key.clone();
                 let report = ctx
                     .service
                     .patch_lesson_draft(
@@ -1205,6 +1500,28 @@ fn ls_set_section_body(ctx: Arc<LoopContext>, repair_face: bool) -> OneShotTool 
                         vec![nomifun_learning::LessonOp::SetSectionBody { section_key, body }],
                     )
                     .map_err(|error| error.to_string())?;
+                // u06 落库记账：op 被接纳时从 inspect 视图回读该节字符数
+                // （与 ls_inspect/续跑开场同一读数源），压缩钩子据此换占位
+                // 符。op 被拒（lint 打回等）不记账——历史原样留给模型看。
+                if report.rejected.is_empty() {
+                    let view = ctx
+                        .service
+                        .inspect_lesson_draft(&draft_id)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(entry) = view
+                        .section_bodies
+                        .iter()
+                        .find(|entry| entry.section_key == last_section_key)
+                    {
+                        if let Ok(mut writes) = ctx.stored_writes.lock() {
+                            writes.record(
+                                StoredWriteKind::SectionBody,
+                                entry.section_key.clone(),
+                                entry.chars,
+                            );
+                        }
+                    }
+                }
                 Ok(json_compact(&report))
             }
         }),
@@ -1240,6 +1557,17 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
                         }],
                     )
                     .map_err(|error| error.to_string())?;
+                // u06 落库记账（修复面单篇契约）：与节写同款——接纳才记、
+                // 字符数从 inspect 视图回读（单源）。
+                if report.rejected.is_empty() {
+                    let view = ctx
+                        .service
+                        .inspect_lesson_draft(&draft_id)
+                        .map_err(|error| error.to_string())?;
+                    if let Ok(mut writes) = ctx.stored_writes.lock() {
+                        writes.record(StoredWriteKind::Document, "document", view.document_chars);
+                    }
+                }
                 Ok(json_compact(&report))
             }
         }),
@@ -1322,6 +1650,25 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
             let ctx = Arc::clone(&ctx);
             async move {
                 let draft_id = ctx.require_draft()?;
+                // u07 机械（发布前数学失败可见，不挂开关——票面正确性补
+                // 全）：会话存在未复核修正失败时，**首次** ls_finish 不进
+                // 门禁，把失败条目（verdict 原文：reason/computed/
+                // counterexample）与修正指引回给模型；修正机会仅一次
+                // （`claim_fix_nudge` 防死循环闸——模型无视打回时第二次
+                // ls_finish 照常走门禁，未复核失败以 warning 留痕，基线
+                // 语义不变）。干净会话零变化（unresolved = 0 不进此分支）。
+                if ctx.math_verify.unresolved_u32() > 0
+                    && ctx.math_verify.claim_fix_nudge()
+                {
+                    let failures = ctx.math_verify.failures_json();
+                    return Err(format!(
+                        "发布前数学失败可见：本会话 verify_math 有 {} 次失败未复核修正——\
+                         请按失败条目以实算值修正正文数字（R14），必要时用 verify_math 复核闭环后重新 ls_finish。\
+                         失败条目（verdict 原文，含 reason/computed/counterexample）：{}",
+                        ctx.math_verify.unresolved_u32(),
+                        json_compact(&failures),
+                    ));
+                }
                 // w1：verify_math 留痕随发布面穿出（finish 门后 warning，
                 // A3——不挡发布、不重放核验）。w1 评审修复口径：传未复核
                 // 修正数（unresolved），自修正会话零 warning。
@@ -1355,31 +1702,98 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 /// verdict JSON 内含 reason/computed/counterexample——核验失败是正常结论
 /// 不是工具故障）。无任何路径触库；每次调用记入计数槽（观测面）。
 ///
+/// u05 批量面（开关 `NOMI_LEARNING_VERIFY_BATCH`，显式 on 臂；开发期缺省
+/// off 待 A/B）：入参在
+/// 原单 claim 形状之外接受 `claims` 数组（≤[`VERIFY_MATH_BATCH_CAP`] 条/次，
+/// 超限可读退稿），逐条核验、逐条返回 verdict 列表（沿用单条文案）。读数
+/// 按 **claim** 计数口径不变（calls=条数），批量调用次数另记 batches。off
+/// 臂（票面正优化协议）：描述/schema/条款逐字节回退基线，claims 形状走基线
+/// 单 claim 解析路径。
+///
 /// 同步注记（w1 评审，记录不改）：本 description 与 input_schema 的字段
 /// 说明三处复述了求值器规则（表达式文法/函数表/容差缺省）——求值器单源
 /// 在 `nomifun_learning::verify_math`（`eval_expr` 文法与常量），同步靠人
 /// 盯，改动文法时逐字核对这三处文案。
+///
+/// 基线描述单源（u05 off 臂 = 本串逐字回退；on 臂尾部追加批量句）。改动
+/// 基线文案必须同步更新 off 臂回归测试里的逐字副本（那是独立事实源）。
+const VERIFY_MATH_BASELINE_DESCRIPTION: &str = "数学断言核验器（确定性实算，可复现）：把正文里的数学翻译成 claim 提交核验。两类 claim——eval = 求值表达式并与 expected 比对（expected 缺席 = 只回读实算值）；identity = 等式两边在变量域采样数值比对（缺省 7 点，相对容差 1e-9）。返回 verdict JSON：pass / fail（fail 带 reason、computed、counterexample——据此修正正文数字，再提交复核）。凡可算量（和、均值、平方和、单位换算、开方）写入正文前先在这里实算。表达式规则：显式 *（不支持隐式乘法与 %）、+ - * / ^ 括号、sqrt/sin/cos/tan/ln/log/exp/abs、pi/e。";
+
+/// u05 批量核验句（on 臂追加在工具描述尾部；off 臂零出现）。
+const VERIFY_MATH_BATCH_NOTE: &str = "一节写完后，把本节全部可算量放进 claims 数组一次性提交核验（单次至多 12 条，逐条返回 verdict），不必逐条多次调用。";
+
+/// 单次批量核验的 claim 上限（u05 票面：≤12 条/次，超限可读退稿）。
+const VERIFY_MATH_BATCH_CAP: usize = 12;
+
 fn verify_math_tool(ctx: Arc<LoopContext>) -> OneShotTool {
+    // 契约与 handler 读同一份开关值（构造时捕获——工具面与行为面一致）。
+    let batch = nomifun_learning::verify_batch_enabled();
+    let description = if batch {
+        format!("{VERIFY_MATH_BASELINE_DESCRIPTION}{VERIFY_MATH_BATCH_NOTE}")
+    } else {
+        VERIFY_MATH_BASELINE_DESCRIPTION.to_owned()
+    };
+    let mut input_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["eval", "identity"], "description": "claim 类型" },
+            "expr": { "type": "string", "description": "eval：待求值表达式" },
+            "expected": { "type": "number", "description": "eval：期望值（缺席 = 只回读实算值）" },
+            "lhs": { "type": "string", "description": "identity：等式左边" },
+            "rhs": { "type": "string", "description": "identity：等式右边" },
+            "variables": { "type": "array", "items": { "type": "string" }, "description": "identity：采样变量名清单" },
+            "tolerance": { "type": "number", "description": "相对容差（缺省 1e-9，绝对地板 1e-12）" },
+            "samples": { "type": "integer", "description": "identity：采样点数（缺省 7）" }
+        },
+        "required": ["kind"]
+    });
+    if batch {
+        input_schema["properties"]["claims"] = serde_json::json!({
+            "type": "array",
+            "maxItems": VERIFY_MATH_BATCH_CAP,
+            "description": "批量核验：claim 对象数组（每项同单 claim 形状），逐条返回 verdict 数组",
+            "items": { "type": "object" }
+        });
+    }
     OneShotTool {
         name: "verify_math".into(),
-        description: "数学断言核验器（确定性实算，可复现）：把正文里的数学翻译成 claim 提交核验。两类 claim——eval = 求值表达式并与 expected 比对（expected 缺席 = 只回读实算值）；identity = 等式两边在变量域采样数值比对（缺省 7 点，相对容差 1e-9）。返回 verdict JSON：pass / fail（fail 带 reason、computed、counterexample——据此修正正文数字，再提交复核）。凡可算量（和、均值、平方和、单位换算、开方）写入正文前先在这里实算。表达式规则：显式 *（不支持隐式乘法与 %）、+ - * / ^ 括号、sqrt/sin/cos/tan/ln/log/exp/abs、pi/e。".into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "kind": { "type": "string", "enum": ["eval", "identity"], "description": "claim 类型" },
-                "expr": { "type": "string", "description": "eval：待求值表达式" },
-                "expected": { "type": "number", "description": "eval：期望值（缺席 = 只回读实算值）" },
-                "lhs": { "type": "string", "description": "identity：等式左边" },
-                "rhs": { "type": "string", "description": "identity：等式右边" },
-                "variables": { "type": "array", "items": { "type": "string" }, "description": "identity：采样变量名清单" },
-                "tolerance": { "type": "number", "description": "相对容差（缺省 1e-9，绝对地板 1e-12）" },
-                "samples": { "type": "integer", "description": "identity：采样点数（缺省 7）" }
-            },
-            "required": ["kind"]
-        }),
+        description,
+        input_schema,
         handler: one_shot_handler(move |input| {
             let ctx = Arc::clone(&ctx);
             async move {
+                // u05 批量路径（on 臂且入参带 claims）：逐条核验逐条计数
+                // （calls 按 claim 计，覆盖口径不变），批量调用另记 batches。
+                // 空数组与超上限可读退稿（不产结论、不记批量）。
+                if batch {
+                    if let Some(claims_value) = input.get("claims") {
+                        let claims: Vec<MathClaim> =
+                            serde_json::from_value(claims_value.clone()).map_err(|error| {
+                                format!(
+                                    "verify_math: claims 必须是 claim 数组（每项 {{kind:eval|identity,...}}）——{error}"
+                                )
+                            })?;
+                        if claims.is_empty() {
+                            return Err(
+                                "verify_math: claims 是空数组——提交至少一条 claim，或改用单 claim 形状（kind/expr/... 在顶层）"
+                                    .into(),
+                            );
+                        }
+                        if claims.len() > VERIFY_MATH_BATCH_CAP {
+                            return Err(format!(
+                                "verify_math: 单次至多 {VERIFY_MATH_BATCH_CAP} 条 claim（收到 {} 条）——拆成多次提交，或只核验本节的可算量",
+                                claims.len()
+                            ));
+                        }
+                        ctx.math_verify.record_batch();
+                        let verdicts: Vec<ClaimVerdict> =
+                            claims.iter().map(verify_claim).collect();
+                        for verdict in &verdicts {
+                            ctx.math_verify.record(verdict);
+                        }
+                        return Ok(crate::loop_core::json_compact(&verdicts));
+                    }
+                }
                 let claim: MathClaim = serde_json::from_value(input).map_err(|error| {
                     format!("verify_math: claim 必须是 {{kind:eval|identity,...}} 形状——{error}")
                 })?;
@@ -2113,6 +2527,7 @@ mod tests {
             draft_slot: Arc::clone(&draft_slot),
             published_slot: Arc::clone(&published_slot),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
             math_verify: Arc::new(MathVerifyCounters::default()),
         });
         (ctx, draft_slot, published_slot)
@@ -2237,6 +2652,7 @@ mod tests {
             GENERATE_REASONING_EFFORT,
             nomifun_learning::phase::GENERATE,
             Some(ctx.as_ref()),
+            None,
         )
         .await
         .unwrap();
@@ -2467,6 +2883,770 @@ mod tests {
         assert_eq!(snapshot["failed"], 2, "累计 failed 保留（读数面）: {snapshot}");
         assert_eq!(snapshot["unresolved"], 0, "{snapshot}");
         assert_eq!(counters.unresolved_u32(), 0, "finish findings 零留痕");
+    }
+
+    // ── u05：verify_math 批量核验（NOMI_LEARNING_VERIFY_BATCH） ──────────
+
+    /// NOMI_LEARNING_* 开关的进程 env 窗口（串行写 env——非串行 save/restore
+    /// 会泄漏进并行测试，上一波 z02 竞态教训）：单源在
+    /// `nomifun_learning::switch_env_guard`（四份脚手架收拢），本面便捷形。
+    fn learning_switch_env_guard(env: &'static str, value: &str) -> impl Drop {
+        nomifun_learning::switch_env_guard(env, Some(value))
+    }
+
+    /// u05 off 臂守卫（`learning_switch_env_guard` 的 verify_batch 便捷形）。
+    fn verify_batch_env_guard(value: &'static str) -> impl Drop {
+        learning_switch_env_guard(nomifun_learning::VERIFY_BATCH_SWITCH_ENV, value)
+    }
+
+    /// u06 off/on 臂守卫（`learning_switch_env_guard` 的历史压缩便捷形）。
+    fn lesson_compact_env_guard(value: &'static str) -> impl Drop {
+        learning_switch_env_guard(nomifun_learning::LESSON_HISTORY_COMPACT_SWITCH_ENV, value)
+    }
+
+    /// u05 off 臂逐字节回归（正优化验收协议②）：`NOMI_LEARNING_VERIFY_BATCH`
+    /// = off 时——工具描述、input_schema 与基线逐字一致（测试内逐字副本为
+    /// 独立事实源，基线文案被改动会先在这里红）；claims 数组入参走基线单
+    /// claim 解析路径（同一个 Err 前缀），批量读数恒 0。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_math_off_arm_contract_is_byte_identical_baseline() {
+        let _env = verify_batch_env_guard("off");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(service);
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "verify_math")
+            .expect("verify_math on the generation face");
+
+        // 工具描述逐字 = 基线（独立副本，改动基线文案会在这里红）。
+        assert_eq!(tool.description, "数学断言核验器（确定性实算，可复现）：把正文里的数学翻译成 claim 提交核验。两类 claim——eval = 求值表达式并与 expected 比对（expected 缺席 = 只回读实算值）；identity = 等式两边在变量域采样数值比对（缺省 7 点，相对容差 1e-9）。返回 verdict JSON：pass / fail（fail 带 reason、computed、counterexample——据此修正正文数字，再提交复核）。凡可算量（和、均值、平方和、单位换算、开方）写入正文前先在这里实算。表达式规则：显式 *（不支持隐式乘法与 %）、+ - * / ^ 括号、sqrt/sin/cos/tan/ln/log/exp/abs、pi/e。");
+        // schema 逐字 = 基线：无 claims 键，required 恰为 ["kind"]。
+        assert_eq!(
+            tool.input_schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["eval", "identity"], "description": "claim 类型" },
+                    "expr": { "type": "string", "description": "eval：待求值表达式" },
+                    "expected": { "type": "number", "description": "eval：期望值（缺席 = 只回读实算值）" },
+                    "lhs": { "type": "string", "description": "identity：等式左边" },
+                    "rhs": { "type": "string", "description": "identity：等式右边" },
+                    "variables": { "type": "array", "items": { "type": "string" }, "description": "identity：采样变量名清单" },
+                    "tolerance": { "type": "number", "description": "相对容差（缺省 1e-9，绝对地板 1e-12）" },
+                    "samples": { "type": "integer", "description": "identity：采样点数（缺省 7）" }
+                },
+                "required": ["kind"]
+            }),
+            "off 臂 schema 逐字 = 基线"
+        );
+
+        // claims 数组入参 → 基线单 claim 解析路径（同一个 Err 前缀——基线
+        // 对该形状本就报 claim 形状错，off 臂如实复现）。
+        let error = (tool.handler)(serde_json::json!({
+            "claims": [
+                { "kind": "eval", "expr": "1+1", "expected": 2.0 },
+                { "kind": "eval", "expr": "2+2", "expected": 4.0 }
+            ]
+        }))
+        .await
+        .expect_err("off 臂 claims 形状按基线解析失败");
+        assert!(
+            error.starts_with("verify_math: claim 必须是"),
+            "基线同款前缀: {error}"
+        );
+        // 单 claim 形状照旧可用（向后兼容本来就是基线行为）。
+        let reply = (tool.handler)(serde_json::json!({
+            "kind": "eval", "expr": "1+1", "expected": 2.0
+        }))
+        .await
+        .unwrap();
+        assert!(reply.contains("\"kind\":\"pass\""), "{reply}");
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 1, "{counters}");
+        assert_eq!(counters["batches"], 0, "off 臂零批量: {counters}");
+    }
+
+    /// u05 on 臂批量语义：claims 数组逐条核验、返回逐条 verdict 列表（沿用
+    /// 单条文案）；计数按 **claim** 口径不变（calls=条数），另加 batches 读数
+    /// （批量调用次数）；单 claim 形状向后兼容（返回单 verdict、不记批量）；
+    /// 空数组与超上限（>12）给可读 Err。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_math_batch_handler_semantics() {
+        let _env = verify_batch_env_guard("on");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(service);
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "verify_math")
+            .expect("verify_math on the generation face");
+
+        // 工具面 on 臂：描述带批量句、schema 带 claims 属性（maxItems 12）。
+        assert!(
+            tool.description.contains("一次性提交核验"),
+            "描述带批量指引: {}",
+            tool.description
+        );
+        assert!(
+            tool.input_schema["properties"]["claims"]["maxItems"]
+                == serde_json::json!(VERIFY_MATH_BATCH_CAP),
+            "schema 带 claims 上限: {}",
+            tool.input_schema
+        );
+
+        // 批量核验：pass/fail 混批逐条返回，顺序与入参一致。
+        let reply = (tool.handler)(serde_json::json!({
+            "claims": [
+                { "kind": "eval", "expr": "1+1", "expected": 2.0 },
+                { "kind": "eval", "expr": "1+1", "expected": 2.2 },
+                { "kind": "identity", "lhs": "x^2", "rhs": "x*x", "variables": ["x"] }
+            ]
+        }))
+        .await
+        .expect("批量核验是 Ok（Fail 是正常结论不是工具故障）");
+        let verdicts: Vec<serde_json::Value> = serde_json::from_str(&reply).expect("verdict 数组");
+        assert_eq!(verdicts.len(), 3, "逐条列表: {reply}");
+        assert_eq!(verdicts[0]["kind"], "pass");
+        assert_eq!(verdicts[1]["kind"], "fail", "fail 条带实算值与修正指引: {verdicts:?}");
+        assert!(verdicts[1]["computed"] == serde_json::json!(2.0), "{verdicts:?}");
+        assert_eq!(verdicts[2]["kind"], "pass");
+
+        // 读数：按 claim 计数口径不变（calls=3），批量调用另记（batches=1）。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 3, "{counters}");
+        assert_eq!(counters["passed"], 2, "{counters}");
+        assert_eq!(counters["failed"], 1, "{counters}");
+        assert_eq!(counters["batches"], 1, "{counters}");
+
+        // 向后兼容：单 claim 形状照旧返回单 verdict 对象（不是数组），不计批量。
+        let reply = (tool.handler)(serde_json::json!({
+            "kind": "eval", "expr": "2+2", "expected": 4.0
+        }))
+        .await
+        .unwrap();
+        let verdict: serde_json::Value = serde_json::from_str(&reply).expect("单 verdict 对象");
+        assert_eq!(verdict["kind"], "pass", "{reply}");
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 4, "calls 按 claim 计: {counters}");
+        assert_eq!(counters["batches"], 1, "单 claim 不记批量: {counters}");
+
+        // 空数组：可读 Err（不产结论、不记批量）。
+        let error = (tool.handler)(serde_json::json!({ "claims": [] }))
+            .await
+            .expect_err("空数组退稿");
+        assert!(error.contains("claims"), "{error}");
+        // 超上限（13 > 12）：可读 Err 点名上限。
+        let mut many = Vec::new();
+        for index in 0..13 {
+            many.push(serde_json::json!({ "kind": "eval", "expr": format!("{index}+0") }));
+        }
+        let error = (tool.handler)(serde_json::json!({ "claims": many }))
+            .await
+            .expect_err("超上限退稿");
+        assert!(error.contains("12"), "点名上限: {error}");
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 4, "退稿不产结论: {counters}");
+        assert_eq!(counters["batches"], 1, "退稿不记批量: {counters}");
+    }
+
+    /// u05 写作成色块双臂：批量句只进 R14 条款尾部（on 臂），off 臂整块
+    /// 逐字等于基线常量；其余条款两臂逐字一致（纯函数面——env 不进单测）。
+    #[test]
+    fn discipline_v2_block_batch_sentence_only_on_batch_arm() {
+        let off = discipline_v2_block(false);
+        assert_eq!(
+            off, CONTENT_DISCIPLINE_V2_CN,
+            "off 臂 = 基线块逐字（结构保证：直接回基线常量）"
+        );
+        assert!(!off.contains("claims"), "基线块不提批量: {off}");
+
+        let on = discipline_v2_block(true);
+        // 其余条款逐字一致：把 R14 行剥掉后两臂全等。
+        let strip_r14 = |block: &str| {
+            block
+                .lines()
+                .filter(|line| !line.starts_with("- 可算量必须实算（R14）"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(strip_r14(&on), strip_r14(&off), "仅 R14 行变化");
+        // R14 行 = 基线行 + 批量句（行尾追加，句中不带换行）。
+        let on_r14 = on
+            .lines()
+            .find(|line| line.starts_with("- 可算量必须实算（R14）"))
+            .expect("R14 行在场");
+        let off_r14 = off
+            .lines()
+            .find(|line| line.starts_with("- 可算量必须实算（R14）"))
+            .expect("R14 行在场");
+        assert!(
+            on_r14.strip_prefix(off_r14)
+                .is_some_and(|rest| rest.contains("claims 数组")),
+            "批量句追加在 R14 行尾: {on_r14}"
+        );
+        assert_eq!(on.lines().count(), off.lines().count(), "不增行");
+    }
+
+    /// u05 读数面：batches 计数进快照（calls.jsonl 的 math_verify 读数源），
+    /// 批量调用记 1、单 claim 不记。
+    #[test]
+    fn math_verify_batches_counter_shapes_snapshot() {
+        let counters = MathVerifyCounters::default();
+        assert_eq!(counters.snapshot_json()["batches"], 0);
+        counters.record_batch();
+        counters.record(&ClaimVerdict::Pass { value: Some(2.0) });
+        counters.record_batch();
+        counters.record(&ClaimVerdict::Fail {
+            reason: "boom".into(),
+            computed: None,
+            counterexample: None,
+        });
+        let snapshot = counters.snapshot_json();
+        assert_eq!(snapshot["batches"], 2, "{snapshot}");
+        assert_eq!(snapshot["calls"], 2, "calls 仍按 claim 计: {snapshot}");
+    }
+
+    // ── u06：历史压缩实验（NOMI_LEARNING_LESSON_HISTORY_COMPACT，缺省 off）──
+
+    /// 压缩实验的标准脚本：开局 → 清单 → 写 s1 → 写 s2 → 活动 → finish →
+    /// 收尾文本。两节正文先后落库——压缩钩子「最近一次写入保留原文」语义
+    /// 的最小可辨形态（s1 被压、s2 在场）。
+    fn two_section_bodies_script() -> Vec<Vec<LlmEvent>> {
+        vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]
+    }
+
+    /// 从一轮请求的完整历史里按序抽 ls_set_section_body 的 (key, body)。
+    fn section_bodies_in_history(messages: &[nomi_types::message::Message]) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        for message in messages {
+            for block in &message.content {
+                if let ContentBlock::ToolUse { name, input, .. } = block {
+                    if name == "ls_set_section_body" {
+                        pairs.push((
+                            input["section_key"].as_str().unwrap_or("").to_owned(),
+                            input["body"].as_str().unwrap_or("").to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        pairs
+    }
+
+    /// u06 off 臂逐字节回归（缺省 off = 基线）：历史全量重发，两节正文在
+    /// 每一轮历史里逐字在场（同二进制对照臂——正文参数永不被改写）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn lesson_history_compact_off_arm_keeps_full_bodies_in_history() {
+        let _env = lesson_compact_env_guard("off");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(two_section_bodies_script());
+        run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("off 臂脚本照常发布");
+        let rounds = provider.seen_messages.lock().unwrap();
+        // 期望序列（写入序）；任意一轮历史里的正文必须是它的**逐字前缀**
+        // （早期轮次只有 s1，s2 落库后才齐全——但每一处正文都逐字在场，
+        // 从不被压缩）。
+        let expected = [("s1", concept_body()), ("s2", practice_body())];
+        for (index, round) in rounds.iter().enumerate() {
+            let bodies = section_bodies_in_history(round);
+            if bodies.is_empty() {
+                continue; // 正文写入轮之前的历史没有该工具调用
+            }
+            assert!(
+                bodies.len() <= expected.len(),
+                "第 {} 轮正文调用数超纲: {bodies:?}",
+                index + 1
+            );
+            for (actual, (key, body)) in bodies.iter().zip(expected.iter()) {
+                assert_eq!(actual.0, *key, "第 {} 轮 key 序", index + 1);
+                assert_eq!(
+                    actual.1, *body,
+                    "off 臂第 {} 轮历史必须逐字保留正文（基线行为）",
+                    index + 1
+                );
+            }
+        }
+    }
+
+    /// u06 on 臂：已落库正文在历史中换摘要——非最近写入的 s1 换占位符
+    /// （落库读数 + ls_inspect 取回指引，原正文退场），最近一次写入的 s2
+    /// 保留原文（紧邻修改仍有上下文）。发布结果与 off 臂完全一致（压缩只
+    /// 改历史视图，不改草稿）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn lesson_history_compact_on_arm_replaces_stored_bodies_but_keeps_latest() {
+        let _env = lesson_compact_env_guard("on");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(two_section_bodies_script());
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("on 臂脚本照常发布");
+        assert_eq!(output.sections.len(), 2, "压缩不改变草稿本身");
+
+        let rounds = provider.seen_messages.lock().unwrap();
+        // 压缩收敛在最后一轮历史：s1 换占位符、s2 原文在场。
+        let last = rounds.last().expect("最后一轮请求");
+        let bodies = section_bodies_in_history(last);
+        assert_eq!(bodies.len(), 2, "两节写入都在历史: {bodies:?}");
+        assert_eq!(bodies[0].0, "s1");
+        let placeholder = &bodies[0].1;
+        assert!(placeholder.contains("已落库：s1"), "占位符带节 key: {placeholder}");
+        assert!(
+            placeholder.contains("ls_inspect") && placeholder.contains("section_key"),
+            "占位符带取回指引: {placeholder}"
+        );
+        let s1_chars = concept_body().chars().filter(|c| !c.is_whitespace()).count();
+        assert!(
+            placeholder.contains(&s1_chars.to_string()),
+            "占位符带落库字数（{s1_chars}）: {placeholder}"
+        );
+        assert!(
+            !placeholder.contains("期权的定义"),
+            "原正文必须退场: {placeholder}"
+        );
+        assert_eq!(bodies[1].1, practice_body(), "最近一次写入保留原文");
+
+        // 早期轮次（s1 刚写入时它就是最近写入）：正文原样在场——保留规则
+        // 按写入时点判定，不回溯改写当时的保留件。
+        let s1_write_round = rounds
+            .iter()
+            .position(|round| !section_bodies_in_history(round).is_empty())
+            .expect("正文写入轮在场");
+        let mid = section_bodies_in_history(&rounds[s1_write_round]);
+        assert!(
+            mid.iter().any(|(key, body)| key == "s1" && *body == concept_body()),
+            "s1 刚写入的轮次保留原文（当时它是最近写入）: {mid:?}"
+        );
+    }
+
+    /// u06 on 臂的取回通道：ls_inspect 可选 section_key 返回该节完整正文
+    /// （历史被压缩后按需取回原文）；未知 key 可读退稿；缺席 = 基线概览。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn ls_inspect_section_key_returns_full_body_on_compact_arm() {
+        let _env = lesson_compact_env_guard("on");
+        let (service, _dir) = test_service().await;
+        let (ctx, draft_slot, _published) = context(Arc::clone(&service));
+        let view = service.create_lesson_draft(ctx.context.clone()).unwrap();
+        *draft_slot.lock().unwrap() = Some(view.draft_id.clone());
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    nomifun_learning::LessonOp::SetSectionManifest {
+                        sections: serde_json::from_value(section_manifest_ops()["sections"].clone())
+                            .unwrap(),
+                        capacity_note: None,
+                    },
+                    nomifun_learning::LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: concept_body(),
+                    },
+                ],
+            )
+            .unwrap();
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_inspect")
+            .unwrap();
+
+        // 带 section_key：完整正文在场（压缩后按需取回）。回包是 JSON——
+        // 按 JSON 解析比对（正文里的换行在 wire 上是转义序列）。
+        let reply = (tool.handler)(serde_json::json!({ "section_key": "s1" }))
+            .await
+            .expect("取回通道");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&reply).expect("取回通道回 JSON");
+        assert_eq!(parsed["section_key"], "s1", "{reply}");
+        assert_eq!(
+            parsed["body"],
+            serde_json::json!(concept_body().trim()),
+            "返回完整正文（逐字；草稿存 trim 后正文）: {reply}"
+        );
+        assert!(
+            parsed["chars"].as_u64().unwrap_or(0)
+                == concept_body().chars().filter(|c| !c.is_whitespace()).count() as u64,
+            "chars 用草稿同一口径: {reply}"
+        );
+        // 未知 key：可读 Err。
+        let error = (tool.handler)(serde_json::json!({ "section_key": "s9" }))
+            .await
+            .expect_err("未知节退稿");
+        assert!(error.contains("s9"), "{error}");
+        // 缺席 = 基线概览视图。
+        let overview = (tool.handler)(serde_json::json!({})).await.unwrap();
+        assert!(overview.contains("section_bodies"), "概览视图照旧: {overview}");
+    }
+
+    /// u06 off 臂（缺省）：ls_inspect 描述与 schema 逐字回基线（独立逐字
+    /// 副本为事实源），section_key 入参被无视（基线语义 = 概览视图）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn ls_inspect_off_arm_contract_is_byte_identical_baseline() {
+        let _env = lesson_compact_env_guard("off");
+        let (service, _dir) = test_service().await;
+        let (ctx, draft_slot, _published) = context(Arc::clone(&service));
+        // 活动草稿（概览 handler 需要 require_draft；空草稿即可）。
+        let view = service.create_lesson_draft(ctx.context.clone()).unwrap();
+        *draft_slot.lock().unwrap() = Some(view.draft_id.clone());
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_inspect")
+            .unwrap();
+        assert_eq!(
+            tool.description,
+            "当前草稿概览：文档字符数与章节清单、活动清单（position/kind/prompt 摘要）、estimated_minutes、审计 findings。每次修改前后调用，保持全局认知；update/remove 活动的 position 以这里为准。",
+            "off 臂描述逐字 = 基线"
+        );
+        assert_eq!(
+            tool.input_schema,
+            serde_json::json!({ "type": "object", "properties": {} }),
+            "off 臂 schema 逐字 = 基线（无 section_key 键）"
+        );
+        // 即使模型带了 section_key（旧 schema 不含此键，宽容多余字段），off
+        // 臂行为 = 基线概览，绝不触取回通道。
+        let reply = (tool.handler)(serde_json::json!({ "section_key": "s1" }))
+            .await
+            .unwrap();
+        assert!(reply.contains("revision"), "off 臂返回概览视图: {reply}");
+    }
+
+    // ── u07：档位优先序条款 / 发布前数学失败可见 / 修复轮课时上下文 ─────
+
+    /// u07 档位优先序条款双臂（纯函数面，env 不进单测）：off 臂 = 空串
+    /// （模板逐字节回基线）；on 臂 = 单行条款，点名知道档的三条收敛
+    /// （认识性讲解 / 不引入逐步实算推导 / 数值例至多 1 须 verify_math）
+    /// 与密度/完备面条款的档位限定，且带「不空心化」护栏半句。
+    #[test]
+    fn tier_priority_clause_only_on_tier_arm() {
+        let off = tier_priority_clause(false);
+        assert_eq!(off, "", "off 臂 = 空串（模板逐字节回基线）");
+        let on = tier_priority_clause(true);
+        assert!(on.starts_with("- 档位优先序"), "{on}");
+        assert!(on.contains("认识性讲解"), "{on}");
+        assert!(on.contains("逐步实算"), "{on}");
+        assert!(on.contains("数值例至多 1"), "{on}");
+        assert!(on.contains("verify_math"), "{on}");
+        assert!(on.contains("会用/能教"), "深度条款限定到会用/能教档: {on}");
+        // 护栏半句（推翻条件的方向锚）：不为凑密度写推导课，也不删成空心。
+        assert!(on.contains("只剩定义"), "{on}");
+        // 单行条款（模板插位在「档位决定内容形态」行之后）：恰一个换行且在尾。
+        assert_eq!(on.matches('\n').count(), 1, "{on}");
+        assert!(on.ends_with('\n'), "{on}");
+    }
+
+    /// u07 机械（发布前数学失败可见，不挂开关）：生成会话存在未复核修正
+    /// 失败时，**首次** ls_finish 被可读 Err 打回——失败条目（verdict 原文：
+    /// reason/computed/counterexample）+ 修正指引随打回可见；模型复核闭环
+    /// 后重新 ls_finish 发布成功。打回恰一次（防死循环闸）。
+    #[tokio::test]
+    async fn math_failure_visible_before_publish_with_one_fix_chance() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            // 恒错 identity → Fail verdict（此后无复核 Pass → unresolved=1）。
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "(x+1)^2", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            // 首次 ls_finish：被 u07 打回（失败条目可见），草稿保留。
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            // 修正轮：按反例改正后复核 Pass（unresolved 清零）。
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "x*x", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("复核闭环后发布成功");
+        assert_eq!(output.sections.len(), 2);
+
+        // 打回面：恰一次，失败条目（反例证据）与修正指引随打回可见。
+        // 计数口径 = **最后一轮请求的完整历史**（seen_messages 每轮带全量
+        // 历史，逐轮扫描会把同一条 ToolResult 重复计数）。
+        let rounds = provider.seen_messages.lock().unwrap();
+        let rejections: Vec<String> = rounds
+            .last()
+            .expect("最后一轮请求")
+            .iter()
+            .filter_map(|message| match &message.content[0] {
+                ContentBlock::ToolResult { is_error: true, content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .filter(|content| content.contains("发布前数学失败可见"))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            1,
+            "打回恰一次（修正机会仅一次，防死循环）: {rejections:?}"
+        );
+        assert!(
+            rejections[0].contains("counterexample"),
+            "失败条目带 verdict 原文（反例证据）: {}",
+            rejections[0]
+        );
+        assert!(
+            rejections[0].contains("采样核验失败"),
+            "失败条目带死因: {}",
+            rejections[0]
+        );
+        assert!(
+            rejections[0].contains("verify_math"),
+            "带修正指引（R14 复核闭环）: {}",
+            rejections[0]
+        );
+        // 计数收尾：累计 failed=1 保留（观测读数面），复核 Pass 清零未修正
+        // 数——finish findings 零 warning。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["failed"], 1, "{counters}");
+        assert_eq!(counters["unresolved"], 0, "{counters}");
+    }
+
+    /// u07 机械的另一半：模型无视打回（不做复核）直接再次 ls_finish——
+    /// 第二次**不再打回**（修正机会已用尽，防死循环闸），发布照常走完
+    /// （未复核失败以 `math_verify_failed` warning 留痕，不阻断——基线
+    /// 语义）。
+    #[tokio::test]
+    async fn math_failure_nudge_fires_exactly_once_then_publishes() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "(x+1)^2", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            // 首次 ls_finish：u07 打回。
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            // 无视打回：直接再次 ls_finish（unresolved 仍 1）→ 不再打回，
+            // 发布成功（warning 留痕走服务面，不挡发布）。
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("第二次 ls_finish 不再打回，发布照常");
+        assert_eq!(output.activities.len(), 3);
+
+        let rejections: Vec<String> = provider
+            .seen_messages
+            .lock()
+            .unwrap()
+            .last()
+            .expect("最后一轮请求")
+            .iter()
+            .filter_map(|message| match &message.content[0] {
+                ContentBlock::ToolResult { is_error: true, content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .filter(|content| content.contains("发布前数学失败可见"))
+            .collect();
+        assert_eq!(rejections.len(), 1, "恰一次: {rejections:?}");
+        // 发布面留痕（基线语义不变）：未复核失败数随 finish 进 warning。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["unresolved"], 1, "{counters}");
+    }
+
+    /// u07 机械（修复轮带课时上下文，不挂开关）：修复轮是全新对话——开场
+    /// user 轮注入 lesson_user_text 同源的课时上下文（课程/节点定位/档位
+    /// 行/前置路径在案），审计报告随后。
+    #[tokio::test]
+    async fn repair_round_opens_with_lesson_context_then_audit() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(vec![
+            // ── 生成 loop：规划 + 写一节 + 过早 finish（缺节 danger）──
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                LlmEvent::TextDelta("发布被拒，还有节没写".into()),
+                done(StopReason::EndTurn),
+            ],
+            // ── 修复 loop 1：补写缺的两节 ──
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            // ── 修复 loop 2：补活动 ──
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已补齐".into()), done(StopReason::EndTurn)],
+        ]);
+        run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("修复后发布");
+
+        // 修复轮请求 = 单消息全新对话，user 轮含「课时草稿审计」即修复轮。
+        let rounds = provider.seen_messages.lock().unwrap();
+        let repair_requests: Vec<&nomi_types::message::Message> = rounds
+            .iter()
+            .filter_map(|round| round.first())
+            .filter(|message| {
+                matches!(
+                    &message.content[0],
+                    ContentBlock::Text { text, .. } if text.contains("课时草稿审计")
+                )
+            })
+            .collect();
+        assert!(
+            !repair_requests.is_empty(),
+            "修复轮请求在场（finish 被拒后进入修复循环）"
+        );
+        for message in &repair_requests {
+            let text = match &message.content[0] {
+                ContentBlock::Text { text, .. } => text.as_str(),
+                _ => unreachable!(),
+            };
+            assert!(
+                text.starts_with("课程："),
+                "修复轮开场 = 课时上下文先行（lesson_user_text 同源）: {text}"
+            );
+            let context_end = text.find("课时草稿审计").expect("审计报告随后");
+            assert!(
+                text.find("课程：").expect("上下文在先") < context_end,
+                "审计报告在上下文之后: {text}"
+            );
+            // 上下文里档位/定位面在案（修复轮此前不可达的信息）。
+            assert!(text.contains("课时（"), "课时坐标在案: {text}");
+            assert!(text.contains("节点定位") || text.contains("课时目标"), "{text}");
+        }
     }
 
     /// f3 读数修复 + w1 计数槽（蓝图 4.3/A5）+ w1 评审修复的 unresolved 面：
@@ -2840,6 +4020,7 @@ mod tests {
             published_slot: Arc::new(Mutex::new(None)),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
         });
         let provider = ScriptedProvider::new(vec![
             // ── generation loop: finish immediately, blocked (no activities) ──
@@ -2919,6 +4100,7 @@ mod tests {
             published_slot: Arc::new(Mutex::new(None)),
             channel: LoopChannel::new(WIRE, BUDGETS.generate_max_rounds),
             math_verify: Arc::new(MathVerifyCounters::default()),
+            stored_writes: Arc::new(Mutex::new(StoredWrites::default())),
         });
 
         let provider = ScriptedProvider::new(vec![

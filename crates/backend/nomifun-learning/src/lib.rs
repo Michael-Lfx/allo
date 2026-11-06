@@ -17,9 +17,17 @@ mod verify_math;
 
 pub use switches::{
     is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
-    lexicon_enforce_enabled, lexicon_enforce_enabled_value, open_judge_enabled,
-    open_judge_enabled_value, AUTO_REFILL_SWITCH_ENV, LEXICON_ENFORCE_SWITCH_ENV,
-    OPEN_JUDGE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+    lexicon_enforce_enabled, lexicon_enforce_enabled_value, lesson_history_compact_enabled,
+    lesson_history_compact_enabled_value, open_judge_enabled, open_judge_enabled_value,
+    switch_env_guard, verify_batch_enabled, verify_batch_enabled_value, ANTI_LOOP_SWITCH_ENV,
+    AUTO_REFILL_SWITCH_ENV, EST_BUDGET_SWITCH_ENV, LESSON_HISTORY_COMPACT_SWITCH_ENV,
+    LEXICON_ENFORCE_SWITCH_ENV, OPEN_JUDGE_SWITCH_ENV, REDRAFT_SPLICE_SWITCH_ENV,
+    REVIEW_CONTEXT_V2_SWITCH_ENV, TASK_GATE_SWITCH_ENV, TIER_PRIORITY_SWITCH_ENV,
+    VARIANT_V2_SWITCH_ENV, VERIFY_BATCH_SWITCH_ENV, anti_loop_enabled, anti_loop_enabled_value,
+    est_budget_enabled, est_budget_enabled_value, redraft_splice_enabled,
+    redraft_splice_enabled_value, review_context_v2_enabled, review_context_v2_enabled_value,
+    tier_priority_enabled, tier_priority_enabled_value, variant_v2_enabled,
+    variant_v2_enabled_value,
 };
 
 pub use completer::{LearningCompleter, LlmUsageDelta, LlmUsageMeter};
@@ -35,19 +43,22 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
+    ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
     LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
-    LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, est_budget_enabled,
-    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
-    render_graph_goal_degree_lines, render_graph_no_brief_note, render_intent_scope_lines,
-    render_known_names_line, render_precedent_block, render_prerequisite_path_block,
-    render_teaches_tier_line,
+    LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, normalize_capacity_note,
+    render_est_budget_line, render_graph_goal_degree_lines, render_graph_no_brief_note,
+    render_intent_scope_lines, render_known_names_line, render_precedent_block,
+    render_prerequisite_path_block,
+    render_teaches_tier_line, tier_prose_budget_cap,
 };
 
 pub use generation::{
     Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure,
 };
 pub use generation::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
+// u10 变式链读数再导出：冒烟 quiz 臂的读数行（A/B 观测点）经 crate 根引用
+//（qb_readings 同一先例）；变式链 V2 开关三件套住 switches（见上）。
+pub use generation::variant_readings;
 // R14 EN 块随开关常量再导出（w1 评审修复）：ai-agent 的跨宿互钉测试经
 // crate 根引用（generation 模块私有，类型/常量公开先例同 SampleDisclosure）。
 // y06 的 `DISTRACTOR_MENU_BLOCK` 同因再导出：R21 标记需要在两宿同时可见

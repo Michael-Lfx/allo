@@ -663,6 +663,44 @@ fn structure_blocks(structure: &Value) -> Result<&Vec<Value>, String> {
 
 // ── 修补回合（单 LLM 调用 + st.ops 门 + RoundRetry）──────────────────────
 
+/// 修补快照投影（u08）：主干名单 + 块参考行 + 边表。主干名单在前——
+/// add_block 的 spine 逐字取自这份真实主干名集（gd.blocks.spine_ref 的
+/// 名集），写错即复核红条转条款反馈。
+pub(crate) fn repair_snapshot_text(structure: &Value) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let spines = structure
+        .get("spines")
+        .and_then(Value::as_array)
+        .map(|spines| {
+            spines
+                .iter()
+                .filter_map(|spine| spine.get("name").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .unwrap_or_default();
+    if !spines.is_empty() {
+        lines.push(format!("主干：{spines}"));
+    }
+    if let Some(blocks) = structure.get("blocks").and_then(Value::as_array) {
+        for block in blocks {
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+            let slug = block.get("slug").and_then(Value::as_str).unwrap_or("");
+            lines.push(format!("- {name}（{slug}）"));
+        }
+    }
+    if let Some(edges) = structure.get("edges").and_then(Value::as_array) {
+        for edge in edges {
+            let source = edge.get("source").and_then(Value::as_str).unwrap_or("");
+            let target = edge.get("target").and_then(Value::as_str).unwrap_or("");
+            let edge_type = edge.get("type").and_then(Value::as_str).unwrap_or("");
+            let tier = edge.get("tier").and_then(Value::as_str).unwrap_or("");
+            lines.push(format!("  边：{source} -[{edge_type}/{tier}]-> {target}"));
+        }
+    }
+    lines.join("\n")
+}
+
 /// 会话级系统行（与结构生成同基调；任务纪律住提示词资产）。
 const REPAIR_SYSTEM: &str =
     "你是学习课程的结构修补引擎：严格按任务说明输出一个 JSON 对象，不输出任何其他字符。";
@@ -678,7 +716,9 @@ pub(crate) struct RepairRoundInput<'a> {
 }
 
 /// 修补回合：装配 STRUCTURE_REPAIR 提示词（temperature 0.0 + thinking）→
-/// json 接缝 → st.ops 静态门；违规报告原文注入重试，≤ MAX_ATTEMPTS 轮，同
+/// json 接缝 → st.ops 静态门 + 应用模拟 + gd.* 全量复核（u08：可一行修正
+/// 的错误——重复边、无命中、错主干、复核红条——就地转条款违约走反馈重
+/// 试，不再冒到调用方终局）；违规报告原文注入重试，≤ MAX_ATTEMPTS 轮，同
 /// 指纹早停（j03 骨架复用）；**ops 空 = 合法结论**（返回空 Vec，调用方按
 /// noop 处理——LLM 已跑、不写盘）。真取消：令牌循环头检查 + select! 竞速。
 pub(crate) async fn run_repair_round(
@@ -686,6 +726,7 @@ pub(crate) async fn run_repair_round(
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     input: &RepairRoundInput<'_>,
     structure: &Value,
+    terrain: &Value,
     cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<Vec<StructureOp>, AppError> {
     let cancellation =
@@ -772,15 +813,52 @@ pub(crate) async fn run_repair_round(
         if vocab_rewrites > 0 {
             tracing::info!(rewrites = vocab_rewrites, "repair ops vocab normalized to stored codes");
         }
-        let violations = validate_ops(&artifact, structure);
-        let red: Vec<&ContractViolation> =
-            violations.iter().filter(|item| !item.warning).collect();
-        if red.is_empty() {
-            return parse_ops(&artifact).map_err(|errors| {
-                AppError::Internal(format!("修补产物解析失败：{}", errors.join("；")))
-            });
+        let mut violations = validate_ops(&artifact, structure);
+        // u08：静态门过后，在结构快照副本上试应用 ops + gd.* 全量复核——
+        // 应用面失败（同三元组重复、删除/翻转无命中）与复核红条（引用不
+        // 存在主干等）就地转条款违约走反馈重试，重试用尽才失败；调用方的
+        // st.ops.apply 门面执法保持不变（合法输入零影响）。ops 空 = noop
+        // 合法结论直接返回：候选面即现状，复核无事可查（照旧不跑——存量
+        // 结构的既有红条不得拦 noop，语义与既有逐字节一致）。
+        if violations.iter().all(|item| item.warning) {
+            match parse_ops(&artifact) {
+                Ok(ops) if ops.is_empty() => return Ok(ops),
+                Ok(ops) => {
+                    let mut candidate = structure.clone();
+                    match apply_ops(&mut candidate, &ops) {
+                        Ok(_) => {
+                            let mut review =
+                                structure_contract::validate_structure(&candidate);
+                            review
+                                .extend(structure_contract::reconcile_doors(&candidate, terrain));
+                            violations.extend(review);
+                            if violations.iter().all(|item| item.warning) {
+                                return Ok(ops);
+                            }
+                        }
+                        Err(error) => {
+                            violations.push(ContractViolation {
+                                code: ST_OPS_APPLY,
+                                message: format!(
+                                    "{error}——依序应用失败（结构与审计均未改动），修正后重新生成本轮 ops"
+                                ),
+                                warning: false,
+                            });
+                        }
+                    }
+                }
+                Err(errors) => {
+                    violations
+                        .extend(errors.into_iter().map(|message| ContractViolation {
+                            code: ST_OPS_SHAPE,
+                            message,
+                            warning: false,
+                        }));
+                }
+            }
         }
-        let owned: Vec<ContractViolation> = red.into_iter().cloned().collect();
+        let owned: Vec<ContractViolation> =
+            violations.into_iter().filter(|item| !item.warning).collect();
         last = structure_contract::format_violations(&owned);
         tracing::warn!(
             failure_kind = "parse",
@@ -1112,9 +1190,16 @@ mod tests {
             findings: "（无）",
             mount_observations: "（无）",
         };
-        let error = run_repair_round(&completer, None, &input, &sample_structure(), None)
-            .await
-            .unwrap_err();
+        let error = run_repair_round(
+            &completer,
+            None,
+            &input,
+            &sample_structure(),
+            &Value::Null,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(&error, AppError::Timeout(_)), "{error:?}");
         assert_eq!(
             completer.0.load(std::sync::atomic::Ordering::SeqCst),
@@ -1125,5 +1210,323 @@ mod tests {
             !error.to_string().contains("未通过条款门"),
             "不得伪装成条款耗尽：{error}"
         );
+    }
+
+    // ── u08：应用模拟 + gd.* 复核并入回合条款门 ──────────────────────────
+
+    /// 按序出稿的 completer：逐调用消费脚本、末项无限重复；记录每次装配的
+    /// user prompt（断言条款反馈注入重试输入）。
+    struct Scripted {
+        replies: std::sync::Mutex<Vec<String>>,
+        calls: std::sync::atomic::AtomicUsize,
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Scripted {
+        fn new(replies: Vec<String>) -> Self {
+            Self {
+                replies: std::sync::Mutex::new(replies),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                prompts: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn prompt(&self, index: usize) -> String {
+            self.prompts.lock().unwrap()[index].clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::completer::LearningCompleter for Scripted {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, AppError> {
+            unreachable!("repair round only uses the json seam")
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, AppError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.prompts.lock().unwrap().push(user.to_owned());
+            let mut replies = self.replies.lock().unwrap();
+            if replies.len() > 1 {
+                Ok(replies.remove(0))
+            } else {
+                Ok(replies[0].clone())
+            }
+        }
+    }
+
+    /// 一份恰好过 gd.* 全量复核的结构（6 主干 × 7 块，与契约 golden 同款
+    /// 配比）——复核并入回合门后，基线结构必须干净，否则反馈全是存量红。
+    fn contract_structure() -> Value {
+        let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+        let mut blocks = Vec::new();
+        for (spine_index, spine) in spine_names.iter().enumerate() {
+            for block_index in 0..7 {
+                let ordinal = spine_index * 7 + block_index;
+                let stage = ["basic", "advanced", "expert"][ordinal % 3];
+                blocks.push(json!({
+                    "name": format!("块{ordinal:02}"),
+                    "slug": format!("block-{ordinal:02}"),
+                    "spine": spine,
+                    "stage": stage,
+                    "note": format!("第 {ordinal} 个主题的一句话描述"),
+                }));
+            }
+        }
+        json!({
+            "goal": "能独立完成一元二次方程的求解与检验",
+            "goal_type": "capability",
+            "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
+            "domain_type": "theory",
+            "form_reference": "Flowy 学习结构模板 v1",
+            "source_tier": "catalog",
+            "generated_by": "test-model",
+            "disclaimer": "快照为生成时点参考地图，可能存在盲区",
+            "domain": {
+                "core_definition": "一元二次方程的代数求解体系",
+                "includes": ["方程变形", "求根公式", "判别式"],
+                "excludes": ["三次方程", "复数域", "数值分析"],
+                "prerequisite_doors": ["G1"],
+                "audience": "零基础成年学习者",
+                "scenarios": ["解题应用", "讲解他人"],
+                "granularity": "每块一个可独立教学的解题动作"
+            },
+            "spines": spine_names.iter().map(|spine| json!({
+                "name": spine,
+                "definition": format!("{spine}的一句话定义"),
+                "key_points": ["要点一"],
+                "instance": format!("达标{spine}时能独立完成一次求解"),
+            })).collect::<Vec<_>>(),
+            "blocks": blocks,
+            "edges": [
+                { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" }
+            ],
+            "gaps": [
+                { "item": "应用题情境覆盖不足", "direction": "补行程类情境" },
+                { "item": "图像法未展开", "direction": "补抛物线图像判读" },
+                { "item": "近似解法缺位", "direction": "补估算策略" }
+            ],
+            "quality": [
+                { "check": "主干数在 6–12 档", "status": "met" },
+                { "check": "块名一物一名", "status": "met" },
+                { "check": "边端点全部可解析", "status": "met" },
+                { "check": "无顺序承诺", "status": "met" },
+                { "check": "盲区已标注", "status": "unmet", "reason": "应用情境块待补" }
+            ]
+        })
+    }
+
+    fn contract_terrain() -> Value {
+        json!({
+            "doors": [
+                { "id": "G1", "criterion": "能用配方法解形如 x²=p 的方程", "kind": "hard" }
+            ]
+        })
+    }
+
+    fn round_input() -> RepairRoundInput<'static> {
+        RepairRoundInput {
+            goal: "g",
+            proficiency_statement: "p",
+            learner_basis: "b",
+            structure_snapshot: "（快照）",
+            findings: "（无留痕）",
+            mount_observations: "（无观察）",
+        }
+    }
+
+    /// u08 红绿样①（重复 add_edge）：同三元组边已存在——静态门查不到，
+    /// 应用模拟抓到后转 st.ops.apply 条款违约进反馈重试，下一轮可救回；
+    /// 不再冒到 service 终局。
+    #[tokio::test]
+    async fn duplicate_add_edge_becomes_round_feedback_and_recovers() {
+        let bad = json!({
+            "ops": [
+                { "op": "add_edge", "source": "块01", "target": "块00", "type": "assumes",
+                  "tier": "know", "note": "", "reason": "补前置" }
+            ]
+        })
+        .to_string();
+        let good = json!({
+            "ops": [
+                { "op": "add_edge", "source": "块00", "target": "块02", "type": "contrasts",
+                  "tier": "apply", "note": "", "reason": "真对照" }
+            ]
+        })
+        .to_string();
+        let completer = Scripted::new(vec![bad, good]);
+        let ops = run_repair_round(
+            &completer,
+            None,
+            &round_input(),
+            &contract_structure(),
+            &contract_terrain(),
+            None,
+        )
+        .await
+        .expect("第二稿应救回");
+        assert_eq!(ops.len(), 1);
+        assert!(
+            matches!(&ops[0], StructureOp::AddEdge { source, target, .. }
+                if source == "块00" && target == "块02"),
+            "{ops:?}"
+        );
+        assert_eq!(completer.calls(), 2);
+        let retry_prompt = completer.prompt(1);
+        assert!(retry_prompt.contains("st.ops.apply"), "反馈点名条款码：{retry_prompt}");
+        assert!(retry_prompt.contains("同三元组"), "反馈带引擎可读原因：{retry_prompt}");
+    }
+
+    /// u08 红绿样②（remove_edge 无命中）：静态门的端点域查不出无命中，
+    /// 应用模拟抓到后转条款违约进反馈重试，下一轮 noop 救回。
+    #[tokio::test]
+    async fn remove_edge_no_hit_becomes_round_feedback_and_recovers() {
+        let bad = json!({
+            "ops": [
+                { "op": "remove_edge", "source": "块00", "target": "块02", "type": "assumes",
+                  "reason": "删不存在的前置" }
+            ]
+        })
+        .to_string();
+        let completer = Scripted::new(vec![bad, r#"{"ops": []}"#.to_owned()]);
+        let ops = run_repair_round(
+            &completer,
+            None,
+            &round_input(),
+            &contract_structure(),
+            &contract_terrain(),
+            None,
+        )
+        .await
+        .expect("第二稿 noop 应救回");
+        assert!(ops.is_empty(), "空 ops 是合法结论");
+        assert_eq!(completer.calls(), 2);
+        let retry_prompt = completer.prompt(1);
+        assert!(retry_prompt.contains("st.ops.apply"), "反馈点名条款码：{retry_prompt}");
+        assert!(retry_prompt.contains("无命中"), "反馈带引擎可读原因：{retry_prompt}");
+    }
+
+    /// u08 红绿样③（add_block 引用不存在主干）：应用成功但 gd.blocks.spine_ref
+    /// 复核红条——转条款违约进反馈重试，下一轮 noop 救回（快照主干行给模型
+    /// 逐字合法源，本测试钉住「写错主干不再终局」）。
+    #[tokio::test]
+    async fn unknown_spine_add_block_becomes_review_red_feedback_and_recovers() {
+        let bad = json!({
+            "ops": [
+                { "op": "add_block", "name": "块新", "slug": "block-new",
+                  "spine": "不存在的主干", "stage": "basic", "note": "补块", "reason": "补块" }
+            ]
+        })
+        .to_string();
+        let completer = Scripted::new(vec![bad, r#"{"ops": []}"#.to_owned()]);
+        let ops = run_repair_round(
+            &completer,
+            None,
+            &round_input(),
+            &contract_structure(),
+            &contract_terrain(),
+            None,
+        )
+        .await
+        .expect("第二稿 noop 应救回");
+        assert!(ops.is_empty());
+        assert_eq!(completer.calls(), 2);
+        let retry_prompt = completer.prompt(1);
+        assert!(
+            retry_prompt.contains("gd.blocks.spine_ref"),
+            "复核红条转条款反馈：{retry_prompt}"
+        );
+    }
+
+    /// 同指纹早停照旧：复核红条逐轮相同 → 第 2 轮即停（不烧满 3 轮），
+    /// 终态错误带逐条款报告且明示结构与审计未改动。
+    #[tokio::test]
+    async fn same_fingerprint_review_reds_stop_early() {
+        let bad = json!({
+            "ops": [
+                { "op": "add_block", "name": "块新", "slug": "block-new",
+                  "spine": "不存在的主干", "stage": "basic", "note": "补块", "reason": "补块" }
+            ]
+        })
+        .to_string();
+        let completer = Scripted::new(vec![bad]);
+        let error = run_repair_round(
+            &completer,
+            None,
+            &round_input(),
+            &contract_structure(),
+            &contract_terrain(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(completer.calls(), 2, "同指纹第 2 轮早停");
+        let message = error.to_string();
+        assert!(message.contains("未通过条款门"), "{message}");
+        assert!(message.contains("gd.blocks.spine_ref"), "{message}");
+        assert!(message.contains("未改动"), "{message}");
+    }
+
+    /// 合法输入不变性①：合法 ops 一轮过门返回、恰 1 次调用、反馈仍是首次
+    /// 占位（不注入任何违约文本）。
+    #[tokio::test]
+    async fn legal_ops_pass_in_a_single_call_without_feedback() {
+        let good = json!({
+            "ops": [
+                { "op": "add_edge", "source": "块00", "target": "块02", "type": "contrasts",
+                  "tier": "apply", "note": "", "reason": "真对照" }
+            ]
+        })
+        .to_string();
+        let completer = Scripted::new(vec![good]);
+        let ops = run_repair_round(
+            &completer,
+            None,
+            &round_input(),
+            &contract_structure(),
+            &contract_terrain(),
+            None,
+        )
+        .await
+        .expect("合法 ops 一轮过");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(completer.calls(), 1);
+        assert!(
+            completer.prompt(0).contains("(无:首次)"),
+            "合法输入不得触发反馈：{}",
+            completer.prompt(0)
+        );
+    }
+
+    /// 快照补主干名单（u08）：主干行在前、块参考行与边表照旧。
+    #[test]
+    fn repair_snapshot_lists_spines_blocks_and_edges() {
+        let text = repair_snapshot_text(&contract_structure());
+        assert!(
+            text.contains("主干：主干一、主干二、主干三、主干四、主干五、主干六"),
+            "首行主干名单：{text}"
+        );
+        assert!(text.starts_with("主干："), "主干名单是快照第一行：{text}");
+        assert!(text.contains("- 块00（block-00）"), "块参考行照旧：{text}");
+        assert!(
+            text.contains("  边：块01 -[assumes/know]-> 块00"),
+            "边表行照旧：{text}"
+        );
+        assert!(text.contains("- 块41（block-41）"), "全部块都在：{text}");
     }
 }

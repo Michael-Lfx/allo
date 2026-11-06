@@ -17,7 +17,7 @@ use crate::generation::{
     LessonOutput, validate_lesson_document,
 };
 use crate::models::{
-    ActivityKind, ActivityPack, SectionKind, SectionPack, VISUAL_OPTIONS,
+    ActivityKind, ActivityPack, ComplexityTier, SectionKind, SectionPack, VISUAL_OPTIONS,
     visual_menu_text,
 };
 
@@ -28,21 +28,30 @@ use crate::course_outline::{SEV_DANGER, SEV_WARNING};
 /// it ever blocks).
 const MAX_ACTIVITIES: usize = 10;
 
-/// 图课时「时长预算」行与超容自报的运维开关（k03，learnhub #154）：
-/// 置 off/0/false 时不注入预算行、计划工具的自报键按缺席处理（=旧行为）。
-/// 与 `NOMI_LEARNING_SOURCE_PLAN` 同款进程内运维开关，不进 UI/用户配置面。
-pub const EST_BUDGET_SWITCH_ENV: &str = "NOMI_LEARNING_EST_BUDGET";
+// EST_BUDGET（k03）/ TIER_PRIORITY（u07）两开关的三件套住 `crate::switches`
+//（u 系开关收拢面），此处再导出保持旧路径（本面调用与 ai-agent 经 crate
+// 根的引用零改动）。
+pub(crate) use crate::switches::{
+    EST_BUDGET_SWITCH_ENV, TIER_PRIORITY_SWITCH_ENV, est_budget_enabled, est_budget_enabled_value,
+    tier_priority_enabled,
+};
 
-/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
-pub fn is_est_budget_disabled_value(value: &str) -> bool {
-    crate::is_off_switch_value(value)
-}
-
-/// 时长预算机制是否开启（未设/其它值 = 开启）。
-pub fn est_budget_enabled() -> bool {
-    std::env::var(EST_BUDGET_SWITCH_ENV)
-        .map(|value| !is_est_budget_disabled_value(&value))
-        .unwrap_or(true)
+/// u07 节长预算锚映射：teaches 档位的**最高档** → 文字预算档（与提示词
+/// `prose_budget_rules` 同源 [`ComplexityTier::prose_budget`]，禁止手写
+/// 数字）——知道 = 低档、会用 = 中档、能教 = 高档；混档取最高（深度上限
+/// 跟着最深概念走）；无档位（传统线/零 teaches）或档位标签不可识别 = 中
+/// 档（不猜测）。上限 = 锚 × 2，由消费面（审计 warning）乘。
+pub fn tier_prose_budget_cap(teaches_tiers: &[(String, String)]) -> usize {
+    let tiers = teaches_tiers.iter().map(|(_, tier)| tier.trim());
+    if tiers.clone().any(|tier| tier == "能教") {
+        ComplexityTier::High.prose_budget()
+    } else if tiers.clone().any(|tier| tier == "会用") {
+        ComplexityTier::Mid.prose_budget()
+    } else if tiers.clone().any(|tier| tier == "知道") {
+        ComplexityTier::Low.prose_budget()
+    } else {
+        ComplexityTier::Mid.prose_budget()
+    }
 }
 
 /// 图课时用户提示的「时长预算」行（k03）：est 是结构阶段给节点的尺寸锚，
@@ -1341,6 +1350,37 @@ fn audit_findings(
         ));
     }
 
+    // ── u07 节长上限 warning（`NOMI_LEARNING_TIER_PRIORITY` on 臂，warning
+    // 不阻断）：审计此前只有下限无上限——负样本「中 250 预算」被 s1（1330
+    // 字）突破、全公式推导挤掉认识性讲解。锚 = teaches 档位最高档的文字预
+    // 算（[`tier_prose_budget_cap`]，与预算行同源），单节 prose（剥可视化
+    // 块，`prose_char_count` 同下限口径）超过锚 2 倍即点名。修复轮与发布
+    // 前自查看得见；off 臂零该 finding（基线逐字节）。
+    if tier_priority_enabled() && sectioned {
+        let teaches_tiers = context
+            .graph
+            .as_ref()
+            .map(|graph| graph.teaches_tiers.as_slice())
+            .unwrap_or(&[]);
+        let anchor = tier_prose_budget_cap(teaches_tiers);
+        let cap = anchor * 2;
+        for (key, (body, planned)) in section_bodies {
+            let Some(planned) = planned else { continue };
+            let counted = crate::models::prose_char_count(body.trim());
+            if counted > cap {
+                findings.push(warning(
+                    "section_over_budget",
+                    format!(
+                        "section {key}（{}）纯文字 {counted} 字，超过节长预算锚 2 倍\
+                         （锚 {anchor} 字 × 2 = 上限 {cap} 字）——按档位收敛正文\
+                         （warning 留痕，不阻断发布）",
+                        planned.title.trim()
+                    ),
+                ));
+            }
+        }
+    }
+
     // ── Per-activity rules (shape), position-aware ──
     let mut seen_prompts: Vec<String> = Vec::new();
     for (position, activity) in activities.iter().enumerate() {
@@ -2102,10 +2142,10 @@ mod tests {
         assert!(line.contains("时长预算：20 分钟"), "{line}");
         assert!(line.contains("节点尺寸锚"), "{line}");
         for value in ["off", "OFF", "0", "false", " False "] {
-            assert!(is_est_budget_disabled_value(value), "{value:?} 关");
+            assert!(!est_budget_enabled_value(Some(value)), "{value:?} 关");
         }
         for value in ["on", "1", "true", "", "disable"] {
-            assert!(!is_est_budget_disabled_value(value), "{value:?} 不关");
+            assert!(est_budget_enabled_value(Some(value)), "{value:?} 不关");
         }
     }
 
@@ -2238,7 +2278,8 @@ mod tests {
     /// 旧叫法行方向化（p02 D）：「本课现用名（旧称：…）」——首现概念与
     /// 旧叫法并读不再可能误读（真机首现概念恰为行内正名，「X 又叫 Y +
     /// 正文不使用」的方向读法易误伤）；数据面零改动（aliases 仍为活跃
-    /// 别名池投影）。
+    /// 别名池投影）。夹具用「实际波动率」作历史波动率的同义名（u11 同款
+    /// 事实勘误：贝塔系数是市场敏感度，不是波动率的别名）。
     #[test]
     fn concept_faces_aliases_line_reads_direction_explicitly() {
         let faces = GraphConceptFaces {
@@ -2247,13 +2288,13 @@ mod tests {
             ref_names: Vec::new(),
             aliases: vec![(
                 "历史波动率".into(),
-                vec!["贝塔系数".into(), "Beta".into()],
+                vec!["实际波动率".into(), "Beta".into()],
             )],
         };
         let text = faces.render_text();
         assert!(
             text.contains(
-                "- 本课现用名（别处可能见过的旧叫法正文不使用，必要时括注一次帮助辨认）：历史波动率（旧称：贝塔系数/Beta）"
+                "- 本课现用名（别处可能见过的旧叫法正文不使用，必要时括注一次帮助辨认）：历史波动率（旧称：实际波动率/Beta）"
             ),
             "{text}"
         );
@@ -2344,21 +2385,11 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn est_budget_switch_toggles_the_env_gate() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, value) },
-                    None => unsafe { std::env::remove_var(EST_BUDGET_SWITCH_ENV) },
-                }
-            }
-        }
-        let previous = std::env::var(EST_BUDGET_SWITCH_ENV).ok();
-        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "off") };
-        let _restore = Restore(previous);
+        let _off = crate::switches::switch_env_guard(EST_BUDGET_SWITCH_ENV, Some("off"));
         assert!(!est_budget_enabled(), "off 臂关闭预算行与自报");
 
-        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "on") };
+        drop(_off);
+        let _on = crate::switches::switch_env_guard(EST_BUDGET_SWITCH_ENV, Some("on"));
         assert!(est_budget_enabled(), "on 臂开启");
     }
 
@@ -2419,18 +2450,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn capacity_note_is_ignored_when_the_switch_is_off() {
-        struct Restore(Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, value) },
-                    None => unsafe { std::env::remove_var(EST_BUDGET_SWITCH_ENV) },
-                }
-            }
-        }
-        let previous = std::env::var(EST_BUDGET_SWITCH_ENV).ok();
-        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "off") };
-        let _restore = Restore(previous);
+        let _restore = crate::switches::switch_env_guard(EST_BUDGET_SWITCH_ENV, Some("off"));
 
         let mut draft = LessonDraft::new(context());
         draft.apply_ops(vec![LessonOp::SetSectionManifest {
@@ -2518,5 +2538,204 @@ mod tests {
             "这是一段足够长的概念讲解正文，用于通过节级质检门的文字下限。".repeat(8)
         );
         assert_eq!(bodies[0].chars, s1_body.chars().filter(|c| !c.is_whitespace()).count());
+    }
+
+    // ── u07：档位优先序开关 + 节长上限 warning ──────────────────────────
+
+    use crate::LearningService;
+
+    /// NOMI_LEARNING_* 开关 env 窗口单源在 `crate::switches::switch_env_guard`
+    ///（四份脚手架收拢）；本面便捷形（串行写 env——并行测试互踩的竞态教训）。
+    fn tier_priority_env_guard(value: &'static str) -> impl Drop {
+        crate::switches::switch_env_guard(TIER_PRIORITY_SWITCH_ENV, Some(value))
+    }
+
+    /// 档位优先序开关（u07）的取值判定断言住 `crate::switches`（三件套收拢
+    /// 面同一份纯函数测试）；本文件只留进程读数的行为臂（见下方 env 守卫
+    /// 的 on/off 两臂测试）。
+
+    /// 节长预算锚映射（u07）：teaches 档位最高档 → 文字预算档（与
+    /// prose_budget_rules 同源 ComplexityTier::prose_budget）——知道 = 低
+    /// 150、会用 = 中 250、能教 = 高 400；混档取最高；无档位（传统线/零
+    /// teaches）= 中档。上限 = 锚 × 2（票面口径），由消费面乘。
+    #[test]
+    fn tier_prose_budget_cap_maps_teaching_tier_to_budget_anchor() {
+        let tiers = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+            rows.iter()
+                .map(|(name, tier)| ((*name).to_owned(), (*tier).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            tier_prose_budget_cap(&tiers(&[("历史波动率", "知道")])),
+            ComplexityTier::Low.prose_budget(),
+            "知道档 = 低档锚"
+        );
+        assert_eq!(
+            tier_prose_budget_cap(&tiers(&[("期权定价", "会用")])),
+            ComplexityTier::Mid.prose_budget(),
+            "会用档 = 中档锚"
+        );
+        assert_eq!(
+            tier_prose_budget_cap(&tiers(&[("希腊字母", "能教")])),
+            ComplexityTier::High.prose_budget(),
+            "能教档 = 高档锚"
+        );
+        assert_eq!(
+            tier_prose_budget_cap(&tiers(&[("历史波动率", "知道"), ("希腊字母", "能教")])),
+            ComplexityTier::High.prose_budget(),
+            "混档取最高（深度上限跟着最深概念走）"
+        );
+        assert_eq!(
+            tier_prose_budget_cap(&[]),
+            ComplexityTier::Mid.prose_budget(),
+            "无档位（传统线/零 teaches）= 中档锚"
+        );
+        assert_eq!(
+            tier_prose_budget_cap(&tiers(&[("旧档节点", "?")])),
+            ComplexityTier::Mid.prose_budget(),
+            "无法识别的档位标签落中档（不猜测）"
+        );
+    }
+
+    /// 知道档概念节：带表格（兑现 visual 承诺）+ prose 超过低档锚 2 倍。
+    fn tier_over_budget_body() -> String {
+        format!(
+            "## t-s1\n\n| 概念 | 直观 |\n| --- | --- |\n| 波动率 | 离散度 |\n\n{}",
+            "认识性讲解的正文段落，不引入逐步实算的推导，只建立直观。".repeat(14)
+        )
+    }
+
+    /// 知道档概念节：prose 低于锚 2 倍但高于下限（150）——不触发 warning。
+    fn tier_within_budget_body() -> String {
+        format!(
+            "## t-s1\n\n| 概念 | 直观 |\n| --- | --- |\n| 波动率 | 离散度 |\n\n{}",
+            "认识性讲解的正文段落，不引入逐步实算的推导，只建立直观。".repeat(6)
+        )
+    }
+
+    /// u07 节长上限 warning（on 臂）：单节 prose 超过预算锚 2 倍 →
+    /// `section_over_budget`（warning 不阻断——发布照常成功，正优化协议
+    /// 第 3 条：新检查只走 warning 留痕）；锚按 teaches 档位映射（知道 =
+    /// 低档 150 → 上限 300）；预算内不报；off 臂零该 finding（基线逐字节）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn audit_warns_section_over_budget_only_on_tier_priority_arm() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+
+        // 知道档节点（低档锚 150 → 上限 300）。
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: vec![("历史波动率".to_owned(), "知道".to_owned())],
+            precedents: Vec::new(),
+            intent: None,
+            scope: None,
+        });
+
+        // on 臂 + 超锚：warning 在案（severity warning、kind 点名、message
+        // 带节 key 与锚口径），且不阻断（无 danger 新增）。
+        let _env = tier_priority_env_guard("on");
+        let view = service.create_lesson_draft(ctx.clone()).unwrap();
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    LessonOp::SetSectionManifest {
+                        sections: vec![
+                            manifest_pack("s1", SectionKind::Concept, "表格"),
+                            manifest_pack("s2", SectionKind::Practice, "无"),
+                        ],
+                        capacity_note: None,
+                    },
+                    LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: tier_over_budget_body(),
+                    },
+                ],
+            )
+            .unwrap();
+        let findings = service.inspect_lesson_draft(&view.draft_id).unwrap().findings;
+        let hits: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.kind == "section_over_budget")
+            .collect();
+        assert_eq!(hits.len(), 1, "超锚 warning 在案：{findings:?}");
+        assert_eq!(hits[0].severity, SEV_WARNING);
+        assert!(hits[0].message.contains("s1"), "{hits:?}");
+        let anchor = ComplexityTier::Low.prose_budget();
+        assert!(
+            hits[0].message.contains(&(anchor * 2).to_string()),
+            "message 带上限口径（锚 {anchor} × 2）：{hits:?}"
+        );
+        // 超锚只产 warning：无任何 danger 级新键（不阻断面——既有 danger
+        // 全来自未完成的草稿本身，与本检查无关）。
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.severity == SEV_DANGER
+                    && finding.kind.contains("budget")),
+            "超锚不得产生 danger（正优化协议第 3 条）：{findings:?}"
+        );
+
+        // on 臂 + 预算内：零该 finding（下限门照旧独立工作）。
+        let within = service.create_lesson_draft(ctx.clone()).unwrap();
+        service
+            .patch_lesson_draft(
+                &within.draft_id,
+                vec![
+                    LessonOp::SetSectionManifest {
+                        sections: vec![
+                            manifest_pack("s1", SectionKind::Concept, "表格"),
+                            manifest_pack("s2", SectionKind::Practice, "无"),
+                        ],
+                        capacity_note: None,
+                    },
+                    LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: tier_within_budget_body(),
+                    },
+                ],
+            )
+            .unwrap();
+        let findings = service.inspect_lesson_draft(&within.draft_id).unwrap().findings;
+        assert!(
+            !findings.iter().any(|finding| finding.kind == "section_over_budget"),
+            "预算内零 warning：{findings:?}"
+        );
+
+        // off 臂（基线）：同一超锚正文零该 finding（逐字节回基线行为）。
+        drop(_env);
+        let _env = tier_priority_env_guard("off");
+        let off = service.create_lesson_draft(ctx).unwrap();
+        service
+            .patch_lesson_draft(
+                &off.draft_id,
+                vec![
+                    LessonOp::SetSectionManifest {
+                        sections: vec![
+                            manifest_pack("s1", SectionKind::Concept, "表格"),
+                            manifest_pack("s2", SectionKind::Practice, "无"),
+                        ],
+                        capacity_note: None,
+                    },
+                    LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: tier_over_budget_body(),
+                    },
+                ],
+            )
+            .unwrap();
+        let findings = service.inspect_lesson_draft(&off.draft_id).unwrap().findings;
+        assert!(
+            !findings.iter().any(|finding| finding.kind == "section_over_budget"),
+            "off 臂零该 finding（基线行为）：{findings:?}"
+        );
     }
 }

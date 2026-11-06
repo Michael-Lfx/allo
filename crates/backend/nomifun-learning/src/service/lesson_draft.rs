@@ -99,6 +99,27 @@ impl LearningService {
         Ok(self.lesson_draft(draft_id)?.inspect())
     }
 
+    /// u06 压缩实验的原文取回通道：按 section_key 返回该节**已落库的完整
+    /// 正文**（ls_inspect 可选 detail 面——历史被压缩后模型的按需取回口）。
+    /// 只在草稿存活期内可用；未知 key 报 NotFound（模型可读，转 Err 文本）。
+    /// 只读，不触审计不 bump revision。
+    pub fn lesson_draft_section_body(
+        &self,
+        draft_id: &str,
+        section_key: &str,
+    ) -> Result<String, AppError> {
+        let draft = self.lesson_draft(draft_id)?;
+        let (body, _) = draft
+            .section_bodies
+            .get(section_key)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "lesson draft {draft_id} has no stored body for section {section_key}"
+                ))
+            })?;
+        Ok(body.clone())
+    }
+
     /// Full findings text — the repair loop's primary input. The audit is
     /// re-run live so the report never reflects a stale cached snapshot.
     pub fn audit_lesson_draft(&self, draft_id: &str) -> Result<String, AppError> {

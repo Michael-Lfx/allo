@@ -30,7 +30,7 @@ pub(super) use crate::generation::{
     assemble_outline_pack, base_for_sample_path, build_blueprint_prompt,
     build_description_blueprint_prompt, generate_blueprint, generate_lesson,
     generate_lesson_activity, namespace_for_base, rel_path_for_base, sample_bases,
-    validate_blueprint,
+    validate_blueprint, variant_v2_enabled,
 };
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
@@ -161,6 +161,10 @@ pub struct GrowthRunStats {
     /// L1 名字形态提示读数（y01 生长侧）：`ng.mints.name_hint` 行数——
     /// 只提示不阻断（smoke 生长 OK 读数行 `name_hints={n}`）。
     pub name_hints: usize,
+    /// 点修回填读数（u01）：本跑实际回填的未点名节点数——同标题漂移被系统
+    /// 抹平、不再消耗守卫原地重试的可观察信号（smoke grow 读数行
+    /// `redraft_spliced={n}`；`NOMI_LEARNING_REDRAFT_SPLICE` off 臂恒零）。
+    pub redraft_spliced: usize,
     /// 有状态复审臂（m5）：`NOMI_LEARNING_REVIEW_STATE` 开关状态。
     pub review_state: bool,
     /// 前轮评审意见回灌重排的次数（0 = 本轮无回灌；off 臂恒 0）。

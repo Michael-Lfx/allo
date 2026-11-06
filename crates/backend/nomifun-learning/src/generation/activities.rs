@@ -18,6 +18,47 @@ pub fn qb_similarity_enabled() -> bool {
         .unwrap_or(true)
 }
 
+// u10 变式链 V2 开关的三件套住 `crate::switches`（u 系开关收拢面），此处
+// 再导出保持旧路径（本面调用与 `super::activities::*` 测试引用零改动）。
+pub(crate) use crate::switches::{VARIANT_V2_SWITCH_ENV, variant_v2_enabled, variant_v2_enabled_value};
+
+/// 变式链读数（u10，冒烟读数面非门禁，进程内累计）：`skipped_no_document`
+/// = 课时正文缺席被如实跳过的变式请求数（on 臂，不阻断回合）；`evidence_
+/// verbatim_misses` = 证据逐字核违约数（on 臂，走既有反馈重试）。冒烟档
+/// 在 quiz 臂读数行打印快照（A/B 观测点）。
+pub mod variant_readings {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SKIPPED_NO_DOCUMENT: AtomicUsize = AtomicUsize::new(0);
+    static EVIDENCE_VERBATIM_MISSES: AtomicUsize = AtomicUsize::new(0);
+
+    /// 一次快照（冒烟读数行的数据源）。
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct VariantReadings {
+        pub skipped_no_document: usize,
+        pub evidence_verbatim_misses: usize,
+    }
+
+    pub fn snapshot() -> VariantReadings {
+        VariantReadings {
+            skipped_no_document: SKIPPED_NO_DOCUMENT.load(Ordering::Relaxed),
+            evidence_verbatim_misses: EVIDENCE_VERBATIM_MISSES.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn reset() {
+        SKIPPED_NO_DOCUMENT.store(0, Ordering::Relaxed);
+        EVIDENCE_VERBATIM_MISSES.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_skipped_no_document() {
+        SKIPPED_NO_DOCUMENT.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_evidence_verbatim_miss() {
+        EVIDENCE_VERBATIM_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// 题面防雷同门的确定性计数器（k04 冒烟读数面）：进程内累计，冒烟档在
 /// 回合末打印快照。`pool_checks` = 过池比对次数，`sim_hits` = 命中次数，
 /// `dropped` = 题级丢弃条数，`retries` = 因门拒/破地板的反馈重试次数。
@@ -171,9 +212,11 @@ pub(crate) fn legacy_duplicate_hit<'a>(
 
 
 /// 整课题库面系统提示词（y06，learnhub #201）：V2 开关 on 时在旧常量后追加
-/// 干扰项五型菜单；off 臂逐字返回旧常量（旧行为臂）。
+/// 干扰项五型菜单；off 臂逐字返回旧常量（旧行为臂）。u10 起常量本体由
+/// [`lesson_system_text()`]（HEAD + 同源九题型契约块 + TAIL）重装配，字节
+/// 与历史常量逐字一致（golden 单测钉住——整课题库生成零变化）。
 pub(super) fn lesson_system_prompt() -> String {
-    let mut system = LESSON_SYSTEM.to_owned();
+    let mut system = lesson_system_text();
     if content_discipline_v2_enabled() {
         system.push_str(QUESTION_COVERAGE_BLOCK);
         system.push_str(DISTRACTOR_MENU_BLOCK);
@@ -181,12 +224,36 @@ pub(super) fn lesson_system_prompt() -> String {
     system
 }
 
-/// 单题/变式题库面系统提示词：与整课同源（变式站复用
-/// `LESSON_ACTIVITY_SYSTEM`，不另写第二份菜单），开关 on 才追加五型。
-pub(super) fn lesson_activity_system_prompt() -> String {
-    let mut system = LESSON_ACTIVITY_SYSTEM.to_owned();
+/// 基线原文里的旧单选选项数句（65e42c364 逐字，含行尾换行）：on 臂渲染时
+/// 去掉——它与同源契约行「3-5 distinct options」并陈是自相矛盾的双指令
+///（u10 评审修复，契约行为准）；off 臂逐字保留（基线原文的一部分）。
+const LEGACY_SINGLE_CHOICE_OPTION_COUNT_LINE: &str =
+    "- single_choice needs 2-4 distinct options and the answer must exactly equal one option.\n";
+
+/// 单题/变式题库面系统提示词：基线原文 + 语言尾段（机械项，两臂恒在——
+/// 独立事实源钉见 tests 的 `GOLDEN_LESSON_ACTIVITY_SYSTEM`），与整课九题型
+/// 契约同源（变式站复用，不另写第二份菜单），内容纪律开关 on 才追加五型；
+/// 变式链 V2（u10）on 才去掉旧单选选项数句（契约行为准）并按请求题型追加
+/// 形状条款（numeric 的 answer 为 JSON number 与 tol 随行携带）。双开关全
+/// off = 基线 + 语言尾段（旧行为臂）。
+pub(super) fn lesson_activity_system_prompt(kind: ActivityKind) -> String {
+    let mut system = String::from(LESSON_ACTIVITY_SYSTEM_BASELINE);
+    system.push_str(LESSON_ACTIVITY_SYSTEM_LANGUAGE_TAIL);
     if content_discipline_v2_enabled() {
         system.push_str(DISTRACTOR_MENU_BLOCK);
+    }
+    if variant_v2_enabled() {
+        // on 臂：旧的单选选项数句让位于同源契约行（后者为准）。
+        if system.contains(LEGACY_SINGLE_CHOICE_OPTION_COUNT_LINE) {
+            system = system.replace(LEGACY_SINGLE_CHOICE_OPTION_COUNT_LINE, "");
+        }
+        system.push_str(
+            "\nRequested kind shape (from the same question-kind contract the lesson \
+             bank uses; where it states different option bounds than the rules above, \
+             these bounds apply):\n",
+        );
+        system.push_str(&activity_kind_contract_line(kind));
+        system.push('\n');
     }
     system
 }
@@ -286,8 +353,18 @@ pub(crate) struct ExistingLessonQuestion {
 /// lesson body is fixed, so unlike [`generate_lesson`] there is no document
 /// stage: a single call produces one activity of the learner-chosen kind,
 /// grounded in the finished document plus the cited excerpt, and validated
-/// for shape and novelty against the questions the lesson already has.
-/// The result is a draft for preview — nothing is persisted here.
+/// for shape and novelty (against the questions the lesson already has) —
+/// plus, on the variant path with the variant chain V2 switch on and a
+/// grounding present, a verbatim-evidence gate. The result is a draft for
+/// preview — nothing is persisted here.
+/// `variant_instruction` (u10, on-arm): the variant drill's hard requirements
+/// rendered as their own instruction section instead of a learner focus hint;
+/// empty = the baseline focus rendering (manual addition and the off arm).
+/// `variant_path` (u10 评审修复): the evidence-verbatim gate is scoped to the
+/// quiz variant path only — the manual "add one question" path keeps the
+/// baseline behavior (no verbatim gate; a gate exhaustion there would surface
+/// a new user-visible failure the A/B never covers).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn generate_lesson_activity(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
@@ -299,6 +376,8 @@ pub(crate) async fn generate_lesson_activity(
     summary: &str,
     excerpt: &str,
     existing_questions: &[ExistingLessonQuestion],
+    variant_instruction: &str,
+    variant_path: bool,
 ) -> Result<ActivityPack, String> {
     let prompt = build_lesson_activity_prompt(
         kind,
@@ -309,8 +388,12 @@ pub(crate) async fn generate_lesson_activity(
         summary,
         excerpt,
         existing_questions,
+        variant_instruction,
     );
-    let system = lesson_activity_system_prompt();
+    let system = lesson_activity_system_prompt(kind);
+    // u10（on 臂）证据逐字核的判底合文：document + excerpt；两者皆空 =
+    // 判底缺席（不核——变式已在上游按缺席跳过，如实纪律）。
+    let grounding = format!("{summary}\n{excerpt}");
     let mut last_error = String::new();
     for attempt in 0..2 {
         if attempt > 0 {
@@ -335,7 +418,13 @@ pub(crate) async fn generate_lesson_activity(
         .map_err(|error| error.to_string())?;
         match parse_json_object::<ActivityPack>(&raw) {
             Ok(activity) => {
-                match validate_generated_activity(&activity, kind, existing_questions) {
+                match validate_generated_activity(
+                    &activity,
+                    kind,
+                    existing_questions,
+                    &grounding,
+                    variant_path,
+                ) {
                     Ok(()) => return Ok(activity),
                     Err(error) => last_error = error,
                 }
@@ -348,7 +437,8 @@ pub(crate) async fn generate_lesson_activity(
 
 
 /// Prompt for one additional activity: the finished lesson document in full,
-/// the cited excerpt, the learner's optional focus hint, and every existing
+/// the cited excerpt, the learner's optional focus hint (or, on the variant
+/// V2 arm, the drill's own instruction section), and every existing
 /// question — with a hard novelty requirement.
 fn build_lesson_activity_prompt(
     kind: ActivityKind,
@@ -359,6 +449,7 @@ fn build_lesson_activity_prompt(
     summary: &str,
     excerpt: &str,
     existing_questions: &[ExistingLessonQuestion],
+    variant_instruction: &str,
 ) -> String {
     let mut prompt = format!(
         "Course: {}\nModule: {}\nLesson: {}\n",
@@ -371,7 +462,10 @@ fn build_lesson_activity_prompt(
     prompt.push_str(&format!(
         "Cited file excerpt (the question must stay grounded in it):\n--- FILE: ---\n{excerpt}\n\n"
     ));
-    if !focus.trim().is_empty() {
+    if !variant_instruction.trim().is_empty() {
+        // u10（on 臂）：变式硬性要求走独立指令段——不再冒充学习者提示。
+        prompt.push_str(&format!("{variant_instruction}\n"));
+    } else if !focus.trim().is_empty() {
         prompt.push_str(&format!(
             "Focus hint from the learner: {}\n",
             focus.trim()
@@ -409,12 +503,18 @@ fn build_lesson_activity_prompt(
 }
 
 
-/// Single-activity validation: the requested kind's exact shape plus a
-/// novelty check against the lesson's existing questions.
-fn validate_generated_activity(
+/// Single-activity validation: the requested kind's exact shape and a novelty
+/// check against the lesson's existing questions — plus, on the variant path
+/// only (`variant_path`, u10 评审修复收窄；共享校验会把核验耗尽的错误返给
+/// 手动加题用户 = 新增用户可见失败) with the variant chain V2 switch on and
+/// a grounding present, a verbatim-evidence gate mirroring the whole-lesson
+/// chain's hard door.
+pub(super) fn validate_generated_activity(
     activity: &ActivityPack,
     kind: ActivityKind,
     existing_questions: &[ExistingLessonQuestion],
+    grounding: &str,
+    variant_path: bool,
 ) -> Result<(), String> {
     if activity.kind != kind {
         return Err(format!(
@@ -452,6 +552,36 @@ fn validate_generated_activity(
         if let Some(hit) = legacy_duplicate_hit(&activity.prompt, &pool) {
             return Err(format!(
                 "the question duplicates or closely resembles an existing question: \"{hit}\""
+            ));
+        }
+    }
+    // u10（on 臂，判底在场，**仅变式路径**）：objective 题的 evidence 必须
+    // 逐字出现在判底合文（document + excerpt）——改写不在场 = 违约走既有
+    // 重试，缺席同样违约（硬门口径与整课链 evidence_missing 对齐）。判底
+    // 缺席不核：变式已在上游按正文缺席跳过（如实、不造证据）。手动加题
+    // 路径（service/lesson.rs）不核 = 基线行为（核验耗尽会把错误返给用户，
+    // 是 A/B 覆盖不到的新增终局失败——总约束 3）。
+    if variant_path
+        && variant_v2_enabled()
+        && !grounding.trim().is_empty()
+        && activity.kind.is_objective()
+    {
+        let evidence = activity
+            .evidence
+            .as_deref()
+            .map(str::trim)
+            .filter(|evidence| !evidence.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "objective activity \"{}\" is missing its \"evidence\" — a verbatim quote (<=120 chars) from the lesson document; add it to every objective question",
+                    activity.prompt.trim()
+                )
+            })?;
+        if !grounding.contains(evidence) {
+            variant_readings::record_evidence_verbatim_miss();
+            return Err(format!(
+                "the \"evidence\" quote does not appear word-for-word in the lesson \
+                 document — copy the source text verbatim, never paraphrase: \"{evidence}\""
             ));
         }
     }
