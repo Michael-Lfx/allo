@@ -1542,7 +1542,7 @@ async fn run_grow(
                  [provenance: rows={} invalid={} retried={} degraded={} external_hits={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [names: name_hints={}]  \
-                 [review_state: {} injections={}]",
+                 [review_state: {} injections={} review_degraded={}]",
                 stats.attempts_used,
                 stats.stop_reason,
                 stats.review_provenance_rows,
@@ -1556,7 +1556,8 @@ async fn run_grow(
                 stats.review_fragments_degraded,
                 stats.name_hints,
                 if stats.review_state { "on" } else { "off" },
-                stats.review_state_injections
+                stats.review_state_injections,
+                stats.review_degraded
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
         }

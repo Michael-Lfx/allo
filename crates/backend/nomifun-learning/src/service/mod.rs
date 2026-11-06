@@ -165,6 +165,10 @@ pub struct GrowthRunStats {
     pub review_state: bool,
     /// 前轮评审意见回灌重排的次数（0 = 本轮无回灌；off 臂恒 0）。
     pub review_state_injections: usize,
+    /// 评审缺席降级放行信号（r01）：评审调用传输失败/回包违约重试仍败 =
+    /// true——「评审缺席的成功」与「评审通过」在 smoke 读数上可区分
+    ///（findings 通道同步留痕，issue 含「评审缺席」与死因）。
+    pub review_degraded: bool,
 }
 
 /// 生成注册的内部状态（见 [`LearningService::generation_tasks`]）。
