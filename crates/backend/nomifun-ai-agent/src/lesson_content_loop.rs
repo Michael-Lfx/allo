@@ -79,6 +79,26 @@ const CONTENT_DISCIPLINE_V2_CN: &str = "
 - 完备面不缩水（R20，写作面）：节清单分配的三个面在正文里一个不少——认得出什么（名称与边界）、推得出什么（结论与成立条件）、怎么推出来（中间步骤）；只在已教边界内补覆盖缺口，不扩到前提与前置节之外。
 ";
 
+/// u05 批量核验句（on 臂追加在 R14 条款行尾；off 臂零出现——R14 逐字回退）。
+const R14_BATCH_SENTENCE: &str = "一节写完后，把本节全部可算量一次性放进 claims 数组提交核验（单次至多 12 条），不要逐条多次调用。";
+/// R14 行尾锚（块内唯一出现——批量句的拼接点）。
+const R14_TAIL_ANCHOR: &str = "「≈」只许用在最后开方/极限步。";
+
+/// 写作成色块的开关装配面（纯函数——同进程双臂可测，env 不进单测；
+/// `graph_budget_line` 同款先例）。`verify_batch` off = 基线块逐字回退
+/// （直接回基线常量，结构保证）；on = 仅 R14 行尾追加批量句，其余条款
+/// 逐字节不动。`content_discipline_v2` off 时本函数不被调用（整块摘除）。
+fn discipline_v2_block(verify_batch: bool) -> String {
+    if !verify_batch {
+        return CONTENT_DISCIPLINE_V2_CN.to_owned();
+    }
+    CONTENT_DISCIPLINE_V2_CN.replacen(
+        R14_TAIL_ANCHOR,
+        &format!("{R14_TAIL_ANCHOR}{R14_BATCH_SENTENCE}"),
+        1,
+    )
+}
+
 /// 完备性三面的规划面（y06，learnhub #202）：节点规划时过三面并查覆盖缺口
 /// ——这是已教边界内的覆盖下限，不是超纲许可；「只教本节任务点 / 只考正文
 /// 教过的」上限条款照旧（显式并置防互相加码）。
@@ -120,10 +140,12 @@ const EST_LEGACY_CLAUSE_CN: &str = "- 时长预算：用户消息里有「时长
 static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     let section_ranges = section_range_rules();
     let content_discipline_v2 = nomifun_learning::content_discipline_v2_enabled();
+    // u05：写作成色块的装配走纯函数（R14 行按批量开关追加批量句；off 臂
+    // 逐字回基线常量——discipline_v2_block 注记）。
     let discipline_v2 = if content_discipline_v2 {
-        CONTENT_DISCIPLINE_V2_CN
+        discipline_v2_block(nomifun_learning::verify_batch_enabled())
     } else {
-        ""
+        String::new()
     };
     // y06（#201/#202/#203）：条款批与写作成色块同命——开关 off 时整块摘除
     // （规划三面 / 分段例组规划半 / 选择题面五型 / 题库两考向）。
@@ -613,6 +635,10 @@ pub(crate) struct MathVerifyCounters {
     passed: AtomicUsize,
     failed: AtomicUsize,
     unresolved: AtomicUsize,
+    /// u05 批量调用次数（claims 数组形式的 verify_math 调用数；单 claim
+    /// 不计）。纯读数面——A/B 观测点（on 臂期望 >0，calls/batches 比即
+    /// 每批 claim 数）；off 臂恒 0。
+    batches: AtomicUsize,
 }
 
 impl MathVerifyCounters {
@@ -632,15 +658,22 @@ impl MathVerifyCounters {
         }
     }
 
+    /// u05：一次批量调用记一笔（claims 数组通过形状校验后；退稿不记）。
+    fn record_batch(&self) {
+        self.batches.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// 发布观测帧的计数形状（smoke `math_verify read-out` 与判据⑧的取数
     /// 面）：failed = 会话累计（读数面）；unresolved = 未复核修正（finish
-    /// findings 口径，判据⑧硬门）。
+    /// findings 口径，判据⑧硬门）；batches = u05 批量调用次数（读数面，
+    /// off 臂恒 0）。
     fn snapshot_json(&self) -> serde_json::Value {
         serde_json::json!({
             "calls": self.calls.load(Ordering::Relaxed),
             "passed": self.passed.load(Ordering::Relaxed),
             "failed": self.failed.load(Ordering::Relaxed),
             "unresolved": self.unresolved.load(Ordering::Relaxed),
+            "batches": self.batches.load(Ordering::Relaxed),
         })
     }
 
@@ -1355,31 +1388,97 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 /// verdict JSON 内含 reason/computed/counterexample——核验失败是正常结论
 /// 不是工具故障）。无任何路径触库；每次调用记入计数槽（观测面）。
 ///
+/// u05 批量面（开关 `NOMI_LEARNING_VERIFY_BATCH`，缺省 on 待 A/B）：入参在
+/// 原单 claim 形状之外接受 `claims` 数组（≤[`VERIFY_MATH_BATCH_CAP`] 条/次，
+/// 超限可读退稿），逐条核验、逐条返回 verdict 列表（沿用单条文案）。读数
+/// 按 **claim** 计数口径不变（calls=条数），批量调用次数另记 batches。off
+/// 臂（票面正优化协议）：描述/schema/条款逐字节回退基线，claims 形状走基线
+/// 单 claim 解析路径。
+///
 /// 同步注记（w1 评审，记录不改）：本 description 与 input_schema 的字段
 /// 说明三处复述了求值器规则（表达式文法/函数表/容差缺省）——求值器单源
 /// 在 `nomifun_learning::verify_math`（`eval_expr` 文法与常量），同步靠人
 /// 盯，改动文法时逐字核对这三处文案。
+///
+/// 基线描述单源（u05 off 臂 = 本串逐字回退；on 臂尾部追加批量句）。改动
+/// 基线文案必须同步更新 off 臂回归测试里的逐字副本（那是独立事实源）。
+const VERIFY_MATH_BASELINE_DESCRIPTION: &str = "数学断言核验器（确定性实算，可复现）：把正文里的数学翻译成 claim 提交核验。两类 claim——eval = 求值表达式并与 expected 比对（expected 缺席 = 只回读实算值）；identity = 等式两边在变量域采样数值比对（缺省 7 点，相对容差 1e-9）。返回 verdict JSON：pass / fail（fail 带 reason、computed、counterexample——据此修正正文数字，再提交复核）。凡可算量（和、均值、平方和、单位换算、开方）写入正文前先在这里实算。表达式规则：显式 *（不支持隐式乘法与 %）、+ - * / ^ 括号、sqrt/sin/cos/tan/ln/log/exp/abs、pi/e。";
+
+/// u05 批量核验句（on 臂追加在工具描述尾部；off 臂零出现）。
+const VERIFY_MATH_BATCH_NOTE: &str = "一节写完后，把本节全部可算量放进 claims 数组一次性提交核验（单次至多 12 条，逐条返回 verdict），不必逐条多次调用。";
+
+/// 单次批量核验的 claim 上限（u05 票面：≤12 条/次，超限可读退稿）。
+const VERIFY_MATH_BATCH_CAP: usize = 12;
+
 fn verify_math_tool(ctx: Arc<LoopContext>) -> OneShotTool {
+    // 契约与 handler 读同一份开关值（构造时捕获——工具面与行为面一致）。
+    let batch = nomifun_learning::verify_batch_enabled();
+    let description = if batch {
+        format!("{VERIFY_MATH_BASELINE_DESCRIPTION}{VERIFY_MATH_BATCH_NOTE}")
+    } else {
+        VERIFY_MATH_BASELINE_DESCRIPTION.to_owned()
+    };
+    let mut input_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "enum": ["eval", "identity"], "description": "claim 类型" },
+            "expr": { "type": "string", "description": "eval：待求值表达式" },
+            "expected": { "type": "number", "description": "eval：期望值（缺席 = 只回读实算值）" },
+            "lhs": { "type": "string", "description": "identity：等式左边" },
+            "rhs": { "type": "string", "description": "identity：等式右边" },
+            "variables": { "type": "array", "items": { "type": "string" }, "description": "identity：采样变量名清单" },
+            "tolerance": { "type": "number", "description": "相对容差（缺省 1e-9，绝对地板 1e-12）" },
+            "samples": { "type": "integer", "description": "identity：采样点数（缺省 7）" }
+        },
+        "required": ["kind"]
+    });
+    if batch {
+        input_schema["properties"]["claims"] = serde_json::json!({
+            "type": "array",
+            "maxItems": VERIFY_MATH_BATCH_CAP,
+            "description": "批量核验：claim 对象数组（每项同单 claim 形状），逐条返回 verdict 数组",
+            "items": { "type": "object" }
+        });
+    }
     OneShotTool {
         name: "verify_math".into(),
-        description: "数学断言核验器（确定性实算，可复现）：把正文里的数学翻译成 claim 提交核验。两类 claim——eval = 求值表达式并与 expected 比对（expected 缺席 = 只回读实算值）；identity = 等式两边在变量域采样数值比对（缺省 7 点，相对容差 1e-9）。返回 verdict JSON：pass / fail（fail 带 reason、computed、counterexample——据此修正正文数字，再提交复核）。凡可算量（和、均值、平方和、单位换算、开方）写入正文前先在这里实算。表达式规则：显式 *（不支持隐式乘法与 %）、+ - * / ^ 括号、sqrt/sin/cos/tan/ln/log/exp/abs、pi/e。".into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "kind": { "type": "string", "enum": ["eval", "identity"], "description": "claim 类型" },
-                "expr": { "type": "string", "description": "eval：待求值表达式" },
-                "expected": { "type": "number", "description": "eval：期望值（缺席 = 只回读实算值）" },
-                "lhs": { "type": "string", "description": "identity：等式左边" },
-                "rhs": { "type": "string", "description": "identity：等式右边" },
-                "variables": { "type": "array", "items": { "type": "string" }, "description": "identity：采样变量名清单" },
-                "tolerance": { "type": "number", "description": "相对容差（缺省 1e-9，绝对地板 1e-12）" },
-                "samples": { "type": "integer", "description": "identity：采样点数（缺省 7）" }
-            },
-            "required": ["kind"]
-        }),
+        description,
+        input_schema,
         handler: one_shot_handler(move |input| {
             let ctx = Arc::clone(&ctx);
             async move {
+                // u05 批量路径（on 臂且入参带 claims）：逐条核验逐条计数
+                // （calls 按 claim 计，覆盖口径不变），批量调用另记 batches。
+                // 空数组与超上限可读退稿（不产结论、不记批量）。
+                if batch {
+                    if let Some(claims_value) = input.get("claims") {
+                        let claims: Vec<MathClaim> =
+                            serde_json::from_value(claims_value.clone()).map_err(|error| {
+                                format!(
+                                    "verify_math: claims 必须是 claim 数组（每项 {{kind:eval|identity,...}}）——{error}"
+                                )
+                            })?;
+                        if claims.is_empty() {
+                            return Err(
+                                "verify_math: claims 是空数组——提交至少一条 claim，或改用单 claim 形状（kind/expr/... 在顶层）"
+                                    .into(),
+                            );
+                        }
+                        if claims.len() > VERIFY_MATH_BATCH_CAP {
+                            return Err(format!(
+                                "verify_math: 单次至多 {VERIFY_MATH_BATCH_CAP} 条 claim（收到 {} 条）——拆成多次提交，或只核验本节的可算量",
+                                claims.len()
+                            ));
+                        }
+                        ctx.math_verify.record_batch();
+                        let verdicts: Vec<ClaimVerdict> =
+                            claims.iter().map(verify_claim).collect();
+                        for verdict in &verdicts {
+                            ctx.math_verify.record(verdict);
+                        }
+                        return Ok(crate::loop_core::json_compact(&verdicts));
+                    }
+                }
                 let claim: MathClaim = serde_json::from_value(input).map_err(|error| {
                     format!("verify_math: claim 必须是 {{kind:eval|identity,...}} 形状——{error}")
                 })?;
@@ -2467,6 +2566,230 @@ mod tests {
         assert_eq!(snapshot["failed"], 2, "累计 failed 保留（读数面）: {snapshot}");
         assert_eq!(snapshot["unresolved"], 0, "{snapshot}");
         assert_eq!(counters.unresolved_u32(), 0, "finish findings 零留痕");
+    }
+
+    // ── u05：verify_math 批量核验（NOMI_LEARNING_VERIFY_BATCH） ──────────
+
+    /// 进程 env 开关窗口（串行写 env——非串行 save/restore 会泄漏进并行测试，
+    /// 上一波 z02 竞态教训）。返回守卫，drop 时恢复原值。
+    fn verify_batch_env_guard(value: &str) -> impl Drop {
+        struct Restore(&'static str, Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.1.take() {
+                    Some(previous) => unsafe {
+                        std::env::set_var(self.0, previous)
+                    },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let previous = std::env::var(nomifun_learning::VERIFY_BATCH_SWITCH_ENV).ok();
+        unsafe { std::env::set_var(nomifun_learning::VERIFY_BATCH_SWITCH_ENV, value) };
+        Restore(nomifun_learning::VERIFY_BATCH_SWITCH_ENV, previous)
+    }
+
+    /// u05 off 臂逐字节回归（正优化验收协议②）：`NOMI_LEARNING_VERIFY_BATCH`
+    /// = off 时——工具描述、input_schema 与基线逐字一致（测试内逐字副本为
+    /// 独立事实源，基线文案被改动会先在这里红）；claims 数组入参走基线单
+    /// claim 解析路径（同一个 Err 前缀），批量读数恒 0。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_math_off_arm_contract_is_byte_identical_baseline() {
+        let _env = verify_batch_env_guard("off");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(service);
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "verify_math")
+            .expect("verify_math on the generation face");
+
+        // 工具描述逐字 = 基线（独立副本，改动基线文案会在这里红）。
+        assert_eq!(tool.description, "数学断言核验器（确定性实算，可复现）：把正文里的数学翻译成 claim 提交核验。两类 claim——eval = 求值表达式并与 expected 比对（expected 缺席 = 只回读实算值）；identity = 等式两边在变量域采样数值比对（缺省 7 点，相对容差 1e-9）。返回 verdict JSON：pass / fail（fail 带 reason、computed、counterexample——据此修正正文数字，再提交复核）。凡可算量（和、均值、平方和、单位换算、开方）写入正文前先在这里实算。表达式规则：显式 *（不支持隐式乘法与 %）、+ - * / ^ 括号、sqrt/sin/cos/tan/ln/log/exp/abs、pi/e。");
+        // schema 逐字 = 基线：无 claims 键，required 恰为 ["kind"]。
+        assert_eq!(
+            tool.input_schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["eval", "identity"], "description": "claim 类型" },
+                    "expr": { "type": "string", "description": "eval：待求值表达式" },
+                    "expected": { "type": "number", "description": "eval：期望值（缺席 = 只回读实算值）" },
+                    "lhs": { "type": "string", "description": "identity：等式左边" },
+                    "rhs": { "type": "string", "description": "identity：等式右边" },
+                    "variables": { "type": "array", "items": { "type": "string" }, "description": "identity：采样变量名清单" },
+                    "tolerance": { "type": "number", "description": "相对容差（缺省 1e-9，绝对地板 1e-12）" },
+                    "samples": { "type": "integer", "description": "identity：采样点数（缺省 7）" }
+                },
+                "required": ["kind"]
+            }),
+            "off 臂 schema 逐字 = 基线"
+        );
+
+        // claims 数组入参 → 基线单 claim 解析路径（同一个 Err 前缀——基线
+        // 对该形状本就报 claim 形状错，off 臂如实复现）。
+        let error = (tool.handler)(serde_json::json!({
+            "claims": [
+                { "kind": "eval", "expr": "1+1", "expected": 2.0 },
+                { "kind": "eval", "expr": "2+2", "expected": 4.0 }
+            ]
+        }))
+        .await
+        .expect_err("off 臂 claims 形状按基线解析失败");
+        assert!(
+            error.starts_with("verify_math: claim 必须是"),
+            "基线同款前缀: {error}"
+        );
+        // 单 claim 形状照旧可用（向后兼容本来就是基线行为）。
+        let reply = (tool.handler)(serde_json::json!({
+            "kind": "eval", "expr": "1+1", "expected": 2.0
+        }))
+        .await
+        .unwrap();
+        assert!(reply.contains("\"kind\":\"pass\""), "{reply}");
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 1, "{counters}");
+        assert_eq!(counters["batches"], 0, "off 臂零批量: {counters}");
+    }
+
+    /// u05 on 臂批量语义：claims 数组逐条核验、返回逐条 verdict 列表（沿用
+    /// 单条文案）；计数按 **claim** 口径不变（calls=条数），另加 batches 读数
+    /// （批量调用次数）；单 claim 形状向后兼容（返回单 verdict、不记批量）；
+    /// 空数组与超上限（>12）给可读 Err。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_math_batch_handler_semantics() {
+        let _env = verify_batch_env_guard("on");
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(service);
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "verify_math")
+            .expect("verify_math on the generation face");
+
+        // 工具面 on 臂：描述带批量句、schema 带 claims 属性（maxItems 12）。
+        assert!(
+            tool.description.contains("一次性提交核验"),
+            "描述带批量指引: {}",
+            tool.description
+        );
+        assert!(
+            tool.input_schema["properties"]["claims"]["maxItems"]
+                == serde_json::json!(VERIFY_MATH_BATCH_CAP),
+            "schema 带 claims 上限: {}",
+            tool.input_schema
+        );
+
+        // 批量核验：pass/fail 混批逐条返回，顺序与入参一致。
+        let reply = (tool.handler)(serde_json::json!({
+            "claims": [
+                { "kind": "eval", "expr": "1+1", "expected": 2.0 },
+                { "kind": "eval", "expr": "1+1", "expected": 2.2 },
+                { "kind": "identity", "lhs": "x^2", "rhs": "x*x", "variables": ["x"] }
+            ]
+        }))
+        .await
+        .expect("批量核验是 Ok（Fail 是正常结论不是工具故障）");
+        let verdicts: Vec<serde_json::Value> = serde_json::from_str(&reply).expect("verdict 数组");
+        assert_eq!(verdicts.len(), 3, "逐条列表: {reply}");
+        assert_eq!(verdicts[0]["kind"], "pass");
+        assert_eq!(verdicts[1]["kind"], "fail", "fail 条带实算值与修正指引: {verdicts:?}");
+        assert!(verdicts[1]["computed"] == serde_json::json!(2.0), "{verdicts:?}");
+        assert_eq!(verdicts[2]["kind"], "pass");
+
+        // 读数：按 claim 计数口径不变（calls=3），批量调用另记（batches=1）。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 3, "{counters}");
+        assert_eq!(counters["passed"], 2, "{counters}");
+        assert_eq!(counters["failed"], 1, "{counters}");
+        assert_eq!(counters["batches"], 1, "{counters}");
+
+        // 向后兼容：单 claim 形状照旧返回单 verdict 对象（不是数组），不计批量。
+        let reply = (tool.handler)(serde_json::json!({
+            "kind": "eval", "expr": "2+2", "expected": 4.0
+        }))
+        .await
+        .unwrap();
+        let verdict: serde_json::Value = serde_json::from_str(&reply).expect("单 verdict 对象");
+        assert_eq!(verdict["kind"], "pass", "{reply}");
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 4, "calls 按 claim 计: {counters}");
+        assert_eq!(counters["batches"], 1, "单 claim 不记批量: {counters}");
+
+        // 空数组：可读 Err（不产结论、不记批量）。
+        let error = (tool.handler)(serde_json::json!({ "claims": [] }))
+            .await
+            .expect_err("空数组退稿");
+        assert!(error.contains("claims"), "{error}");
+        // 超上限（13 > 12）：可读 Err 点名上限。
+        let mut many = Vec::new();
+        for index in 0..13 {
+            many.push(serde_json::json!({ "kind": "eval", "expr": format!("{index}+0") }));
+        }
+        let error = (tool.handler)(serde_json::json!({ "claims": many }))
+            .await
+            .expect_err("超上限退稿");
+        assert!(error.contains("12"), "点名上限: {error}");
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 4, "退稿不产结论: {counters}");
+        assert_eq!(counters["batches"], 1, "退稿不记批量: {counters}");
+    }
+
+    /// u05 写作成色块双臂：批量句只进 R14 条款尾部（on 臂），off 臂整块
+    /// 逐字等于基线常量；其余条款两臂逐字一致（纯函数面——env 不进单测）。
+    #[test]
+    fn discipline_v2_block_batch_sentence_only_on_batch_arm() {
+        let off = discipline_v2_block(false);
+        assert_eq!(
+            off, CONTENT_DISCIPLINE_V2_CN,
+            "off 臂 = 基线块逐字（结构保证：直接回基线常量）"
+        );
+        assert!(!off.contains("claims"), "基线块不提批量: {off}");
+
+        let on = discipline_v2_block(true);
+        // 其余条款逐字一致：把 R14 行剥掉后两臂全等。
+        let strip_r14 = |block: &str| {
+            block
+                .lines()
+                .filter(|line| !line.starts_with("- 可算量必须实算（R14）"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(strip_r14(&on), strip_r14(&off), "仅 R14 行变化");
+        // R14 行 = 基线行 + 批量句（行尾追加，句中不带换行）。
+        let on_r14 = on
+            .lines()
+            .find(|line| line.starts_with("- 可算量必须实算（R14）"))
+            .expect("R14 行在场");
+        let off_r14 = off
+            .lines()
+            .find(|line| line.starts_with("- 可算量必须实算（R14）"))
+            .expect("R14 行在场");
+        assert!(
+            on_r14.strip_prefix(off_r14)
+                .is_some_and(|rest| rest.contains("claims 数组")),
+            "批量句追加在 R14 行尾: {on_r14}"
+        );
+        assert_eq!(on.lines().count(), off.lines().count(), "不增行");
+    }
+
+    /// u05 读数面：batches 计数进快照（calls.jsonl 的 math_verify 读数源），
+    /// 批量调用记 1、单 claim 不记。
+    #[test]
+    fn math_verify_batches_counter_shapes_snapshot() {
+        let counters = MathVerifyCounters::default();
+        assert_eq!(counters.snapshot_json()["batches"], 0);
+        counters.record_batch();
+        counters.record(&ClaimVerdict::Pass { value: Some(2.0) });
+        counters.record_batch();
+        counters.record(&ClaimVerdict::Fail {
+            reason: "boom".into(),
+            computed: None,
+            counterexample: None,
+        });
+        let snapshot = counters.snapshot_json();
+        assert_eq!(snapshot["batches"], 2, "{snapshot}");
+        assert_eq!(snapshot["calls"], 2, "calls 仍按 claim 计: {snapshot}");
     }
 
     /// f3 读数修复 + w1 计数槽（蓝图 4.3/A5）+ w1 评审修复的 unresolved 面：
