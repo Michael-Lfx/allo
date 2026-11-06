@@ -1702,7 +1702,8 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 /// verdict JSON 内含 reason/computed/counterexample——核验失败是正常结论
 /// 不是工具故障）。无任何路径触库；每次调用记入计数槽（观测面）。
 ///
-/// u05 批量面（开关 `NOMI_LEARNING_VERIFY_BATCH`，缺省 on 待 A/B）：入参在
+/// u05 批量面（开关 `NOMI_LEARNING_VERIFY_BATCH`，显式 on 臂；开发期缺省
+/// off 待 A/B）：入参在
 /// 原单 claim 形状之外接受 `claims` 数组（≤[`VERIFY_MATH_BATCH_CAP`] 条/次，
 /// 超限可读退稿），逐条核验、逐条返回 verdict 列表（沿用单条文案）。读数
 /// 按 **claim** 计数口径不变（calls=条数），批量调用次数另记 batches。off
@@ -2887,22 +2888,10 @@ mod tests {
     // ── u05：verify_math 批量核验（NOMI_LEARNING_VERIFY_BATCH） ──────────
 
     /// NOMI_LEARNING_* 开关的进程 env 窗口（串行写 env——非串行 save/restore
-    /// 会泄漏进并行测试，上一波 z02 竞态教训）。返回守卫，drop 时恢复原值。
+    /// 会泄漏进并行测试，上一波 z02 竞态教训）：单源在
+    /// `nomifun_learning::switch_env_guard`（四份脚手架收拢），本面便捷形。
     fn learning_switch_env_guard(env: &'static str, value: &str) -> impl Drop {
-        struct Restore(&'static str, Option<String>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                match self.1.take() {
-                    Some(previous) => unsafe {
-                        std::env::set_var(self.0, previous)
-                    },
-                    None => unsafe { std::env::remove_var(self.0) },
-                }
-            }
-        }
-        let previous = std::env::var(env).ok();
-        unsafe { std::env::set_var(env, value) };
-        Restore(env, previous)
+        nomifun_learning::switch_env_guard(env, Some(value))
     }
 
     /// u05 off 臂守卫（`learning_switch_env_guard` 的 verify_batch 便捷形）。

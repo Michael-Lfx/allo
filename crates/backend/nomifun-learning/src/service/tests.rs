@@ -4192,14 +4192,16 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     assert_eq!(stats.attempts_used, 3);
 }
 
-/// 点修回填 on 臂（u01，服务级端到端；缺省开启）：评审打回点名甲，重裁修
+/// 点修回填 on 臂（u01，服务级端到端；显式 env on——开发期缺省 off）：评审打回点名甲，重裁修
 /// 甲、同时让未点名乙漂移——回填把乙抹平（`redraft_spliced=1`），守卫不再
 /// 拦截、无原地重试，批次直接进评审落位；回填后的落库批含上一稿乙原样。
-/// 断言依赖开关缺省态（进程全局 env）——`#[serial]` 与写 env 的测试互斥
-///（上一波同缝竞态教训：读缺省臂也必须串行）。
+/// on 臂 = 显式 env on（开发期缺省 off——正优化协议：未经验证不缺省启用，
+/// A/B 用显式臂）。进程全局态——`#[serial]` 与写 env 的测试互斥。
 #[tokio::test]
 #[serial_test::serial]
 async fn splice_on_arm_backfills_unnamed_drift_without_the_guard_retry() {
+    let _splice_on =
+        set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "on");
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
@@ -4311,14 +4313,16 @@ async fn degraded_review_preserves_problems_into_findings_and_batch_note() {
 
 // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重 ────────────────────
 
-/// u04 课程语境词切片（on 臂 = 标题+目标的确定性二元切片；off 臂恒空表
-/// ——碎片点名清单的已知面随之恢复基线）。
+/// u04 课程语境词切片（on 臂 = 标题+目标的确定性二元切片，显式 env on
+/// ——开发期缺省 off；off 臂恒空表——碎片点名清单的已知面随之恢复基线）。
 #[test]
 #[serial_test::serial]
 fn course_context_terms_follow_the_switch() {
+    let _on = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "on");
     let terms = crate::service::learning_graph::course_context_terms("家庭手冲咖啡入门", "学会手冲咖啡");
     assert!(terms.contains(&"手冲".to_owned()), "{terms:?}");
     assert!(terms.contains(&"咖啡".to_owned()), "{terms:?}");
+    drop(_on);
     let _off = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "off");
     assert!(
         crate::service::learning_graph::course_context_terms("家庭手冲咖啡入门", "学会手冲咖啡")
@@ -4328,12 +4332,14 @@ fn course_context_terms_follow_the_switch() {
 }
 
 /// u04 评审端到端：首轮评审打回 → 重裁 → 二轮评审的 user 带【前轮评审意见
-/// 与教练修订】+【翻案锁】+【课程语境词】（seed 课程的标题/目标切片）；
-/// ANTI_LOOP=off 臂三块全零（基线逐字节），coach 侧重排的前轮意见回灌
-/// （REVIEW_STATE 面）不受影响。env 全局态：`#[serial]` 互斥。
+/// 与教练修订】+【翻案锁】+【课程语境词】（seed 课程的标题/目标切片）——
+/// on 臂显式 env on（开发期缺省 off）；ANTI_LOOP=off 臂三块全零（基线逐字
+/// 节），coach 侧重排的前轮意见回灌（REVIEW_STATE 面）不受影响。env 全局
+/// 态：`#[serial]` 互斥。
 #[tokio::test]
 #[serial_test::serial]
 async fn review_retrial_carries_the_overturn_lock_and_course_context() {
+    let _on = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "on");
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
@@ -9013,9 +9019,15 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     /// plan 内判分底、投影同样零判底，complete 连变式一起结算。u10 判底
     /// （on 臂）：变式只在正文已生成时装配 document——本测给 6 节点播种已
     /// 生成正文，脚本应答带正文逐字证据（on 臂证据核在场；正文缺席的诚实
-    /// 跳过走 smoke quiz 臂读数与 variant_document 单测）。
+    /// 跳过走 smoke quiz 臂读数与 variant_document 单测）。on 臂 = 显式 env
+    /// on（开发期缺省 off）——进程全局态，`#[serial]` 互斥。
     #[tokio::test]
+    #[serial_test::serial]
     async fn quiz_variants_generate_with_completer_and_skip_honestly_without() {
+        let _v2_on = crate::switches::switch_env_guard(
+            crate::switches::VARIANT_V2_SWITCH_ENV,
+            Some("on"),
+        );
         let (service, user_id) = checkin_test_service().await;
         let (course_id, lessons, _activities) = seed_quiz_course(&service, &user_id, 6).await;
         let course = LearningCourseId::parse(&course_id).unwrap();
