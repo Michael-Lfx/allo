@@ -2571,13 +2571,16 @@ impl LearningService {
                     .note
                     .push_str(&format!("机械复用留痕：{}", traces.join("、")));
             }
-            // 评审缺席降级留痕（r01）：批次 note 不在点修守卫比对面，与
-            // 机械复用留痕同缝——「评审缺席的成功」在批次档案上可追溯。
+            // 评审降级留痕（r01）：批次 note 不在点修守卫比对面，与
+            // 机械复用留痕同缝——「评审结论不可用的成功」在批次档案上可追溯
+            // （覆盖调用失败/回包违约/挂号表·碎片机械校验降级；真机病历
+            // run-1793951137445：评审在场且 reject，但挂号表违约致整份结论
+            // 不可用——故措辞不写「缺席」）。
             if review_degraded {
                 if !candidate.note.trim().is_empty() {
                     candidate.note.push('；');
                 }
-                candidate.note.push_str("评审缺席降级放行（评审调用失败/回包违约，重试仍败——见 findings 留痕）");
+                candidate.note.push_str("评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）");
             }
             batch = Some(candidate);
             batch_rulings = Some(rulings);
