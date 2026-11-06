@@ -1,7 +1,7 @@
 # Map: 模型可用性修复波（u01–u11）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-11-06）。来源 = 全生成流程五路「模型可用性」审计（教练/评审/
+<!-- 状态：**已关波（2026-11-07）**：u01–u11 全关，开关缺省按真机 A/B 定（六 on / COMPACT off），learn0928 尖端含本波。原状态：开图（2026-11-06）。来源 = 全生成流程五路「模型可用性」审计（教练/评审/
       内容 agent/结构维护/出题判分），读实码 + 对照真机档案（absorb8-smoke、
       absorb7-smoke），清单见记忆 generation-pipeline-model-usability-audit。
       用户指示：立票并修，**要保证修复都是正优化而不是负优化**——本波总约束
@@ -92,3 +92,21 @@
   `target/debug/nomicore.exe`（17:27 实测被改写），开工前「改动前二进制」不可信。
 - off 臂由单测保证与基线逐字节一致（开关项），机械项两臂同享——两臂差异只来自开关。
 - 既有真机档案（r01 两跑、pctx content 干净跑）作历史参照，不作对照臂。
+
+## Resolution（2026-11-07 关波）：真机 A/B 数据与开关缺省终表
+
+规程：同一冻结二进制（learn0928 合并树构建，23:03）、同一目标/夹具、全新库（搬同一 provider 行）、两臂串行；off 臂 = 开关全 off（缺省即基线），on 臂 = env 显式置 on。
+
+| 臂 | off（基线） | on | 结论 |
+| --- | --- | --- | --- |
+| quiz（u10 VARIANT_V2） | 6 变式全过但带 2 次违约重试 | 6 变式全过、**0 重试**、证据门 0 miss、跳过 0（判底在场） | **VARIANT_V2 = on** |
+| content（u05 VERIFY_BATCH + u07 TIER_PRIORITY） | llm_calls=23 / input=819,243 / math 2 claims·2 调用 / 正文 4139 | **llm_calls=15 / input=281,171（-66%）/ 9 claims·2 批量调（batches=2）**；正文 2779 且质量核验不空心（情境引入/表格例题/R10-13 全 2）；档位条款 clause=2 | **VERIFY_BATCH = on；TIER_PRIORITY = on** |
+| content（u06 LESSON_HISTORY_COMPACT，两跑） | —（以 on 臂 281k 为基） | run1 input 517k（**+84% 劣化**）、run2 205k（-27%，未达 40% 门槛）；推测 ls_inspect 取回抵消 | **COMPACT = off（保持）**，数据留档 |
+| grow（u01 REDRAFT_SPLICE + u03 REVIEW_CONTEXT_V2 + u04 ANTI_LOOP） | reject 4 条 + 守卫原地重试 + 3 轮落库；碎片 **278**；878s/6 调用 | **attempts_used=1 首轮落库**、无打回无守卫重试；碎片 **106（-62%）**；339s/2 调用（-61%）；护栏全绿 | **三开关 = on**（u01 splice 本跑未触发——打回根因已被 u03/u04 消除；机制由单测覆盖，作为漂移守卫网保持 on） |
+| structure（u08/u09 机械项） | — | EXIT=0：7 主干/38 块/68 边/7 门口，首轮 2 调用过门 | 机械项无 A/B，回归通过 |
+
+**缺省终表**：REDRAFT_SPLICE / REVIEW_CONTEXT_V2 / ANTI_LOOP / VERIFY_BATCH / TIER_PRIORITY / VARIANT_V2 = **on**（真机达标）；LESSON_HISTORY_COMPACT = **off**（不达标，数据留档；`ls_inspect` 取回抵消节省的机制待后续观察）。EST_BUDGET（k03 既有）不动。
+
+**验证**：翻缺省后 learning 925 / ai-agent 1149 / app 434 全绿（缺省断言测试全部同步为「未设=on」；5 处按旧缺省写的测试改为显式 off 臂或断言缺省 on）。
+
+**遗留观察**：①u06 压缩的取回抵消机制（为何 run1 反增）待查；②保守放行丢弃合法 reject 的既有语义（r01 留观延续）；③smoke 夹具累积卫生；④五路审计的其余中低项（评审拆调用、开放题 rubric、结构双产物认领重试等）未立项，见审计记忆。
