@@ -2810,7 +2810,8 @@ mod tests {
 
     /// u01 开关两臂的字节级钉：on 臂修订纪律补「未点名节点由系统按上一稿
     /// 原样回填」句；off 臂 = 基线逐字——断言为「on 臂全文减去该句 == off
-    /// 臂全文」（差集恰为插入句本身）；未设 = 缺省开启（on 臂同形）。
+    /// 臂全文」（差集恰为插入句本身）；未设 = 开发期缺省 off（off 臂同形
+    /// ——A/B 达标后收尾提交统一翻 on，断言同步）。
     /// env 是进程全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
@@ -2871,7 +2872,7 @@ mod tests {
         assert!(off_arm.contains("点修不是重写"), "基线纪律句照旧：{off_arm}");
         let (on_arm, _restore_on) = capture(Some("on")).await;
         let (default_arm, _restore_default) = capture(None).await;
-        assert_eq!(on_arm, default_arm, "未设 = 缺省开启（on 臂同形）");
+        assert_eq!(off_arm, default_arm, "未设 = 开发期缺省 off（off 臂同形）");
         assert!(on_arm.contains(SENTENCE), "on 臂补回填句：{on_arm}");
         assert_eq!(
             on_arm.replace(SENTENCE, ""),
@@ -2886,7 +2887,7 @@ mod tests {
     /// 候选词（不掩码切片，常识/缺失行的 term 照抄有源）+ 系统提示词补两条
     /// 款（problem 并列指名多词 / 宁放勿错与碎片名词默认的分工）；off =
     /// 提示词逐字节回基线——断言为「on 臂全文减去插入段 == off 臂全文」；
-    /// 未设 = 缺省开启（on 臂同形）。env 全局态：`#[serial]` 互斥。
+    /// 未设 = 开发期缺省 off（off 臂同形）。env 全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
     async fn review_context_v2_switch_gates_candidates_block_and_clauses() {
@@ -2947,8 +2948,8 @@ mod tests {
         );
         let (sys_on, user_on, _on) = capture(Some("on")).await;
         let (sys_default, user_default, _default) = capture(None).await;
-        assert_eq!(sys_on, sys_default, "未设 = 缺省开启（system 同形）");
-        assert_eq!(user_on, user_default, "未设 = 缺省开启（user 同形）");
+        assert_eq!(sys_off, sys_default, "未设 = 开发期缺省 off（system 同形）");
+        assert_eq!(user_off, user_default, "未设 = 开发期缺省 off（user 同形）");
         assert!(user_on.contains(BLOCK), "on 臂逐字候选词块：{user_on}");
         assert!(sys_on.contains(CLAUSES), "on 臂两条款：{sys_on}");
         assert_eq!(
@@ -2966,7 +2967,7 @@ mod tests {
     // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重（ANTI_LOOP 两臂）
 
     /// u04 边界去重条款（on 臂）：教练声明面条款补「边界只写一次」；off 臂
-    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 缺省开启。
+    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 开发期缺省 off。
     #[test]
     #[serial_test::serial]
     fn anti_loop_switch_gates_coach_system_boundary_clause() {
@@ -3000,7 +3001,7 @@ mod tests {
         assert!(off_arm.contains("不要堆砌同义边界表述"), "基线声明面条款照旧");
         let (on_arm, _on) = system_with(Some("on"));
         let (default_arm, _default) = system_with(None);
-        assert_eq!(on_arm, default_arm, "未设 = 缺省开启");
+        assert_eq!(off_arm, default_arm, "未设 = 开发期缺省 off");
         assert!(on_arm.contains(BULLET), "on 臂补边界去重 bullet：{on_arm}");
         assert_eq!(
             on_arm.replace(BULLET, ""),
@@ -3037,7 +3038,7 @@ mod tests {
 
     /// u04 评审臂两块的字节级钉：on = 评审 user 带【课程语境词】块（教练
     /// 首批块同款单源）+ 有状态复审臂带【前轮评审意见与教练修订】与翻案
-    /// 锁；off = 两块零注入（差集恰为两块本身）；未设 = 缺省开启。
+    /// 锁；off = 两块零注入（差集恰为两块本身）；未设 = 开发期缺省 off。
     /// env 全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
@@ -3103,7 +3104,7 @@ mod tests {
         assert!(!off_arm.contains("【翻案锁】"), "off 臂零翻案锁：{off_arm}");
         let (on_arm, _on) = capture(Some("on")).await;
         let (default_arm, _default) = capture(None).await;
-        assert_eq!(on_arm, default_arm, "未设 = 缺省开启");
+        assert_eq!(off_arm, default_arm, "未设 = 开发期缺省 off");
         assert!(on_arm.contains(COURSE_BLOCK), "on 臂语境词块：{on_arm}");
         assert!(on_arm.contains(LOCK), "on 臂前轮意见 + 翻案锁：{on_arm}");
         assert_eq!(

@@ -1702,7 +1702,8 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 /// verdict JSON 内含 reason/computed/counterexample——核验失败是正常结论
 /// 不是工具故障）。无任何路径触库；每次调用记入计数槽（观测面）。
 ///
-/// u05 批量面（开关 `NOMI_LEARNING_VERIFY_BATCH`，缺省 on 待 A/B）：入参在
+/// u05 批量面（开关 `NOMI_LEARNING_VERIFY_BATCH`，显式 on 臂；开发期缺省
+/// off 待 A/B）：入参在
 /// 原单 claim 形状之外接受 `claims` 数组（≤[`VERIFY_MATH_BATCH_CAP`] 条/次，
 /// 超限可读退稿），逐条核验、逐条返回 verdict 列表（沿用单条文案）。读数
 /// 按 **claim** 计数口径不变（calls=条数），批量调用次数另记 batches。off

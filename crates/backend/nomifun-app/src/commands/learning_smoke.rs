@@ -3129,11 +3129,12 @@ async fn run_content(
             "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
         );
         // u07 读数面（非门禁）：档位优先序条款在存档 system 帧的在场计数
-        // （off 臂 0；on 臂 = system 帧数）——双臂对照的机械 grep，与 k05
-        // discipline 读数同款。
+        // ——on 臂随条款注入（= system 帧数），off 臂 0——双臂对照的机械
+        // grep，与 k05 discipline 读数同款。读数行保持纯 key=value ASCII
+        //（与同文件其它读数行一致），双臂说明只住本注释。
         let tier_clause_calls = calls.lines().filter(|line| line.contains("档位优先序（u07）")).count();
         println!(
-            "tier_priority read-out: clause_in_system={tier_clause_calls}（on 臂随条款注入；off 臂 0）"
+            "tier_priority read-out: clause_in_system={tier_clause_calls}"
         );
         // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
         // 历史波动率/实际波动率），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
