@@ -2580,7 +2580,8 @@ async fn run_content(
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
     // 最小两节点课程：L1 教 α；L2 assumes α（引用名 Alpha）teaches β；
-    // β 带活跃别名「贝塔系数」。概念面投影的数据源全部真实落库。
+    // β 带活跃别名「实际波动率」（u11：同义换名——旧夹具的「贝塔系数」在
+    // 金融上是另一个概念，模型照写即事实错误）。概念面投影的数据源全部真实落库。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let module_id = nomifun_common::LearningModuleId::new().into_string();
     sqlx::query(
@@ -2673,7 +2674,7 @@ async fn run_content(
         (
             &concept_beta,
             "历史波动率",
-            serde_json::json!([{"name": "贝塔系数", "status": "active"}]),
+            serde_json::json!([{"name": "实际波动率", "status": "active"}]),
             format!("收益序列离散程度的年化度量；参考数据：{SMOKE_RETURN_SERIES}"),
         ),
     ] {
@@ -3035,7 +3036,7 @@ async fn run_content(
         "faces: mentions_log_returns={} mentions_beta_canonical={} mentions_alias={}",
         joined.contains("对数收益率"),
         joined.contains("历史波动率"),
-        joined.contains("贝塔系数"),
+        joined.contains("实际波动率"),
     );
     // k03 读数面（非门禁）：预算行与超容自报在观测存档里的在场性——双臂
     // 对照的机械读数（off 臂预算行 0）。
@@ -3122,7 +3123,7 @@ async fn run_content(
             "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
         );
         // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
-        // 历史波动率/贝塔系数），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
+        // 历史波动率/实际波动率），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
         // 未声明地出现 = 读数红，回 #177/#178 续裁（对照卡人读清单）。scope
         // 感知豁免（p03）：命中词已在本节点 intent/scope 声明原文（user 帧的
         // 「创建意图：」「教学范围：」两行）= 声明过的词正文提及属边界诚实，
