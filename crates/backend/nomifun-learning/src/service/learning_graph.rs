@@ -31,6 +31,19 @@ fn findings_watermark_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// u04 课程语境词（确定性切片，无 LLM）：课程标题 + 学习目标过 generation
+/// 的 `term_slices`（标点/空白分段 → 中文相邻二元 / ASCII 整词 → 去停用词
+/// → 去重保序）。on 臂（`NOMI_LEARNING_ANTI_LOOP` 未设/非 off 值）= 切片
+/// 词表——进教练首批块与评审 user 的【课程语境词】块，并加入碎片点名清单
+/// 的已知面（这些词不再作为碎片下发）；off 臂 = 空表（整面休眠，提示词
+/// 逐字节回基线）。
+pub(crate) fn course_context_terms(title: &str, goal: &str) -> Vec<String> {
+    if !crate::learning_graph::anti_loop_enabled() {
+        return Vec::new();
+    }
+    crate::generation::terms::term_slices(&format!("{title}\n{goal}"))
+}
+
 /// 自动维护设置缺省与边界（learnhub `infra/settings.rs` 同量级：缺省开、
 /// 360 分钟、30..=10080；越界读侧回退缺省不报错）。
 pub const DEFAULT_MAINTENANCE_ENABLED: bool = true;
@@ -1932,6 +1945,7 @@ impl LearningService {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
             redraft_guard_violation, review_history_round, review_point_names, should_stop_early,
+            splice_unnamed_nodes_if_enabled,
         };
         let course_id = &engine.course_id;
         let inner_completer = self.course_completer()?;
@@ -1987,6 +2001,10 @@ impl LearningService {
         // L1 名字提示读数（y01）：跨预算轮累加，smoke 生长 OK 读数行透出
         // （读数面非门禁；提示不阻断）。
         let mut name_hints_readout = 0usize;
+        // 点修回填读数（u01）：跨预算轮累加的实际回填节点数——同标题漂移
+        // 被系统抹平的可观察信号（smoke grow 读数行 `redraft_spliced={n}`；
+        // off 臂恒零。读数面非门禁）。
+        let mut redraft_spliced_total = 0usize;
         // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
         // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
         // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
@@ -2089,11 +2107,31 @@ impl LearningService {
                             // 「未点名被改」机械守卫（仅重裁路径有上一稿可比；
                             // 全量枚举 + 点名集口径 = m5 #175A/#175B）。
                             if let Some(prev_ref) = previous.as_ref() {
+                                // 点修回填（u01，守卫前；on 臂）：上一稿中不在
+                                // 点名集、候选稿同标题仍在的节点整对象回填——
+                                // 标点/措辞漂移由系统抹平，守卫不再为它们消耗
+                                // 原地重试；off 臂候选稿原样返回（基线逐字节）。
+                                let (candidate, spliced) = splice_unnamed_nodes_if_enabled(
+                                    prev_ref,
+                                    candidate,
+                                    &feedback,
+                                    point_names.as_ref(),
+                                );
+                                if spliced > 0 {
+                                    redraft_spliced_total += spliced;
+                                    tracing::info!(
+                                        course = course_id.as_str(),
+                                        attempt,
+                                        spliced,
+                                        "coach redraft unnamed-node drift spliced back from the previous draft"
+                                    );
+                                }
                                 if let Some(violation) = redraft_guard_violation(
                                     prev_ref,
                                     &candidate,
                                     &feedback,
                                     point_names.as_ref(),
+                                    crate::learning_graph::redraft_splice_enabled(),
                                 ) {
                                     if !in_place_retried {
                                         // 原地重试恰一次（不占轮预算）：带守
@@ -2279,6 +2317,18 @@ impl LearningService {
             } else {
                 Vec::new()
             };
+            // u04 翻案锁回灌（有状态复审臂）：评审往返记录随评审 user 进
+            // 【前轮评审意见与教练修订】段——「按前轮意见做出的修改本身不
+            // 得再判为问题」；off 臂（NOMI_LEARNING_ANTI_LOOP=off 或
+            // REVIEW_STATE=off 或首轮）恒空串（基线逐字节）。
+            let review_prior = if review_state
+                && crate::learning_graph::anti_loop_enabled()
+                && !review_history.is_empty()
+            {
+                review_history.join("\n")
+            } else {
+                String::new()
+            };
             let mut review = crate::learning_graph::concept_review(
                 completer,
                 model_override,
@@ -2289,6 +2339,9 @@ impl LearningService {
                 &naming_list,
                 crate::lexicon_enforce_enabled(),
                 &outcome,
+                // u04 翻案锁的回灌面（有状态复审臂；off 臂/首轮恒空串——
+                // concept_review 内再闸一道开关）。
+                &review_prior,
             )
             .await;
             provenance_readout.merge(&review.provenance);
@@ -2568,6 +2621,19 @@ impl LearningService {
                     candidate.note.push('；');
                 }
                 candidate.note.push_str("评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）");
+                // u02 降级保全留痕：最后一次成功解析的 verdict 的 problems 已
+                // 逐条转 findings（field=`review_problems`）——批次 note 记数，
+                // 档案面可追溯；放行语义不变（不新增阻断）。
+                let preserved = review
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.field == "review_problems")
+                    .count();
+                if preserved > 0 {
+                    candidate.note.push_str(&format!(
+                        "；降级前评审提出 {preserved} 条问题，已转 findings 留痕"
+                    ));
+                }
             }
             batch = Some(candidate);
             batch_rulings = Some(rulings);
@@ -2580,6 +2646,7 @@ impl LearningService {
             provenance_readout,
             fragment_readout,
             name_hints_readout,
+            redraft_spliced_total,
             review_state,
             review_state_injections,
             review_degraded,
@@ -2708,6 +2775,7 @@ impl LearningService {
         provenance: crate::learning_graph::provenance::ProvenanceReadout,
         fragments: crate::learning_graph::fragment_verdict::FragmentReadout,
         name_hints: usize,
+        redraft_spliced: usize,
         review_state: bool,
         review_state_injections: usize,
         review_degraded: bool,
@@ -2726,6 +2794,7 @@ impl LearningService {
                 review_fragments_unhandled: fragments.unhandled,
                 review_fragments_degraded: fragments.degraded,
                 name_hints,
+                redraft_spliced,
                 review_state,
                 review_state_injections,
                 review_degraded,
@@ -2819,6 +2888,9 @@ impl LearningService {
         let taught_summary = self.render_taught_summary().await?;
         let registry_excerpt = self.render_registry_excerpt().await?;
 
+        // u04 课程语境词（on 臂；off 臂恒空 = 提示词基线逐字节）——取数在
+        // struct 字面量前（goal/title 随 goal 字段移动）。
+        let course_context_words = course_context_terms(&title, &goal).join("、");
         Ok(crate::learning_graph::CoachContext {
             goal: if goal.is_empty() { title } else { goal },
             proficiency_statement,
@@ -2831,6 +2903,8 @@ impl LearningService {
             behavior_digest,
             ready_count,
             registry_excerpt,
+            // u04 课程语境词（on 臂；off 臂恒空 = 提示词基线逐字节）。
+            course_context_words,
         })
     }
 
@@ -3342,26 +3416,29 @@ impl LearningService {
     /// 方法只管取数）：读本课 `structure_json` 的课程层旁键（损坏 = fail
     /// loud）∪ 仓库 base ∪ gate 装配的已知名池（已教账 ∪ 登记表活跃名+别名
     /// ∪ 本批铸名/提名）→ 本批提名定义 ∪ 节点显示名 ∪ intent ∪ scope 的
-    /// 未着落片段。
+    /// 未着落片段。u04（on 臂）：课程语境词并入已知面——语境词不再作为
+    /// 碎片下发（它们已随【课程语境词】块获得显式豁免语义）。
     async fn derive_naming_list(
         &self,
         course_id: &LearningCourseId,
         batch: &crate::learning_graph::ProposedBatch,
         provenance_known: &HashSet<String>,
     ) -> Result<Vec<crate::learning_graph::fragment_verdict::NameFragment>, AppError> {
-        let snapshot: Option<String> = sqlx::query_scalar(
-            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        let course: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
+        let snapshot = course.2;
         let course_lexicon =
             crate::learning_graph::lexicon::course_lexicon_from_snapshot(snapshot.as_deref())
                 .map_err(AppError::Internal)?;
         let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
         let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
         known.extend(provenance_known.iter().cloned());
+        known.extend(course_context_terms(&course.0, &course.1));
         Ok(crate::learning_graph::fragment_verdict::derive_naming_list(
             batch, &known, &course_lexicon,
         ))

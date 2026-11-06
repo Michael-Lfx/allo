@@ -154,20 +154,20 @@ pub(crate) fn should_stop_early(
 ///
 /// 违约**全量收集**（#175B：首错早退会让带守卫原因的原地重试只避开被报
 /// 的那处，其余违约盲试）；按上一稿节点出现序枚举（顺序确定性 = 重试反
-/// 馈的读者面），单违约文案与历史逐字同形（下游 substring 断言依赖）。
+/// 馈的读者面）。文案按 `direct_copy_wording` 两臂（u01）：false = 历史
+/// 基线形逐字（off 臂回归钉，下游 substring 断言依赖）；true = 指令式
+/// 「从上一稿复制该节点 JSON」出口（改动臂）并随文案携带上一稿节点 JSON
+/// （移除臂——原地重试的「上一稿」已是缺该节点的候选稿，JSON 必须随
+/// 文案携带才复制得了）。条款码 `ng.redraft.scope` 两臂同在。
 pub(crate) fn redraft_guard_violation(
     previous: &ProposedBatch,
     candidate: &ProposedBatch,
     problems: &str,
     point_names: Option<&HashSet<String>>,
+    direct_copy_wording: bool,
 ) -> Option<String> {
     let is_named = |title: &str| -> bool {
-        let title = title.trim();
-        !title.is_empty()
-            && match point_names {
-                Some(set) => set.contains(title),
-                None => problems.contains(title),
-            }
+        point_named(title, problems, point_names)
     };
     let mut violations: Vec<String> = Vec::new();
     for node in &previous.nodes {
@@ -175,9 +175,19 @@ pub(crate) fn redraft_guard_violation(
             continue;
         }
         match candidate.nodes.iter().find(|other| other.title == node.title) {
-            None => violations.push(unnamed_edit_message(&node.title, "被移除")),
+            None => violations.push(unnamed_edit_message(
+                &node.title,
+                "被移除",
+                direct_copy_wording,
+                Some(node),
+            )),
             Some(redrafted) if redrafted != node => {
-                violations.push(unnamed_edit_message(&node.title, "被改动"))
+                violations.push(unnamed_edit_message(
+                    &node.title,
+                    "被改动",
+                    direct_copy_wording,
+                    None,
+                ))
             }
             Some(_) => {}
         }
@@ -189,12 +199,101 @@ pub(crate) fn redraft_guard_violation(
     }
 }
 
-fn unnamed_edit_message(title: &str, action: &str) -> String {
+/// 点名判定单源（#175A；守卫与回填两面同口径——回填豁免面与守卫核对面
+/// 必须一致，否则回填会把守卫该报的改动悄悄抹掉）：`point_names` 在场 =
+/// 只认字段；缺省 = 散文子串口径。
+fn point_named(
+    title: &str,
+    problems: &str,
+    point_names: Option<&HashSet<String>>,
+) -> bool {
+    let title = title.trim();
+    !title.is_empty()
+        && match point_names {
+            Some(set) => set.contains(title),
+            None => problems.contains(title),
+        }
+}
+
+fn unnamed_edit_message(
+    title: &str,
+    action: &str,
+    direct_copy_wording: bool,
+    restore_node: Option<&ProposedNode>,
+) -> String {
+    if direct_copy_wording {
+        // u01 on 臂：指令式——不把节点名写成可被误读的主语（真机病历：
+        // 模型把「未被打回报告点名的节点「X」被改动」读成「把 X 恢复」，
+        // 反把点名节点回退），给「从上一稿复制 JSON」的可执行出口。
+        return match restore_node {
+            Some(node) => {
+                let node_json = serde_json::to_string(node).unwrap_or_default();
+                format!(
+                    "- [ng.redraft.scope] 点修越权：未被打回报告点名的节点「{title}」{action}。\
+                     该节点不在本轮打回范围内，必须原样保留——把下面的节点 JSON 原样复制回本批 nodes\
+                     （任何字段（含标点）都不要改）：{node_json}。请重新输出完整批次。"
+                )
+            }
+            None => format!(
+                "- [ng.redraft.scope] 点修越权：以下节点不在本轮打回范围内，必须与上一稿逐字一致\
+                 ——直接从上一稿复制该节点 JSON，任何字段（含标点）都不要改：「{title}」\
+                 （候选稿把它{action}）。请重新输出完整批次。"
+            ),
+        };
+    }
     format!(
         "- [ng.redraft.scope] 点修越权：未被打回报告点名的节点「{title}」{action}。\
          修订纪律是点修不是重写：只改被点名的地方，其余节点逐字保留（含 est/难度/teaches/assumes）；\
          修法确实需要动未点名节点才能成立时，放弃该修法。请重新输出完整批次。"
     )
+}
+
+/// u01 点修回填（纯函数）：上一稿中**不在点名集**、且候选稿里同标题仍在
+/// 的节点，用上一稿该节点**整对象回填**——抹掉标点/措辞漂移（真机
+/// run-1793951137445：「粗/中/细」→「粗、中、细」的漂移让守卫拦下整批，
+/// 原地重试又越权改了别的节点）。候选稿缺失（改名/删除）的未点名节点
+/// **不回填**，照旧走守卫（避免把「改名」变成「新旧并存」）；新增节点、
+/// 点名节点一律以候选稿为准。返回（回填后的批，实际回填节点数——逐字节
+/// 相同的照抄不计入）。
+pub(crate) fn splice_unnamed_nodes(
+    previous: &ProposedBatch,
+    mut candidate: ProposedBatch,
+    problems: &str,
+    point_names: Option<&HashSet<String>>,
+) -> (ProposedBatch, usize) {
+    let mut spliced = 0usize;
+    for node in &previous.nodes {
+        if point_named(&node.title, problems, point_names) {
+            continue;
+        }
+        if let Some(slot) = candidate
+            .nodes
+            .iter_mut()
+            .find(|other| other.title == node.title)
+        {
+            if *slot != *node {
+                *slot = node.clone();
+                spliced += 1;
+            }
+        }
+    }
+    (candidate, spliced)
+}
+
+/// u01 开关面（growth_body 调用点单源）：on = [`splice_unnamed_nodes`]；
+/// off = 候选稿原样返回、计数恒零（off 臂 = 基线逐字节——守卫照旧全量
+/// 比对）。开关读数在机制内（[`super::redraft_splice_enabled`]，缺省 on）。
+pub(crate) fn splice_unnamed_nodes_if_enabled(
+    previous: &ProposedBatch,
+    candidate: ProposedBatch,
+    problems: &str,
+    point_names: Option<&HashSet<String>>,
+) -> (ProposedBatch, usize) {
+    if super::redraft_splice_enabled() {
+        splice_unnamed_nodes(previous, candidate, problems, point_names)
+    } else {
+        (candidate, 0)
+    }
 }
 
 /// 容量定向打回的专用条款码（`ng.batch.size` 起草轮执法单源不变——本码
@@ -285,7 +384,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None).is_none());
+        assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None, false).is_none());
         // 未点名而改乙：guard。
         let candidate = ProposedBatch {
             nodes: vec![node("甲", "p1"), node("乙", "偷偷改了")],
@@ -293,7 +392,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        let violation = redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None);
+        let violation = redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None, false);
         assert!(
             violation.as_ref().is_some_and(|text| text.contains("乙")),
             "{violation:?}"
@@ -305,7 +404,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None).is_some());
+        assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None, false).is_some());
         // 新增节点合法。
         let candidate = ProposedBatch {
             nodes: vec![node("甲", "p1"), node("乙", "p2"), node("丙", "新铺垫")],
@@ -313,7 +412,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None).is_none());
+        assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲", None, false).is_none());
     }
 
     /// 声明面两字段自动进守卫（absorb-8 z01）：derived PartialEq 逐字段比对
@@ -335,7 +434,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        let violation = redraft_guard_violation(&previous, &candidate, "", None);
+        let violation = redraft_guard_violation(&previous, &candidate, "", None, false);
         assert!(
             violation.as_ref().is_some_and(|text| text.contains("甲")),
             "未点名只改 scope 也须触发守卫：{violation:?}"
@@ -362,7 +461,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        let err = redraft_guard_violation(&previous, &candidate, "问题涉及 甲", Some(&point_names))
+        let err = redraft_guard_violation(&previous, &candidate, "问题涉及 甲", Some(&point_names), false)
             .expect("两处违约须报全");
         assert!(err.contains("「乙」被改动"), "{err}");
         assert!(err.contains("「丙」") && err.contains("被移除"), "{err}");
@@ -375,7 +474,7 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         };
-        let err = redraft_guard_violation(&previous, &candidate, "", Some(&point_names))
+        let err = redraft_guard_violation(&previous, &candidate, "", Some(&point_names), false)
             .expect("单违约须照报");
         assert_eq!(
             err,
@@ -386,7 +485,7 @@ mod tests {
 
         // 全部点名 = 放行（点名节点允许改动，含被移除）。
         let all = ["甲", "乙", "丙"].into_iter().map(str::to_owned).collect::<HashSet<_>>();
-        assert!(redraft_guard_violation(&previous, &candidate, "", Some(&all)).is_none());
+        assert!(redraft_guard_violation(&previous, &candidate, "", Some(&all), false).is_none());
     }
 
     /// advice 范围（m5 #175A）：批级意见（node 空）的 issue/advice 文字提到
@@ -426,7 +525,7 @@ mod tests {
             note: String::new(),
         };
         assert!(
-            redraft_guard_violation(&previous, &candidate, "", Some(&point_names)).is_none(),
+            redraft_guard_violation(&previous, &candidate, "", Some(&point_names), false).is_none(),
             "守卫不误伤守纪律的点修"
         );
         // 顺批级意见的文字去改乙：违约照报（advice 提到的名字不构成点名）。
@@ -437,7 +536,7 @@ mod tests {
             note: String::new(),
         };
         let violation =
-            redraft_guard_violation(&previous, &candidate, "", Some(&point_names));
+            redraft_guard_violation(&previous, &candidate, "", Some(&point_names), false);
         assert!(violation.as_ref().is_some_and(|text| text.contains("乙")), "{violation:?}");
     }
 
@@ -503,5 +602,190 @@ mod tests {
             new_aliases: Vec::new(),
             note: String::new(),
         }
+    }
+
+    /// u01 开关的进程全局态守卫（Drop 恢复原值；与 mod.rs/service 侧同款）。
+    fn set_switch_env(env_var: &'static str, value: Option<&str>) -> impl Drop {
+        struct Restore(&'static str, Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.1.take() {
+                    Some(value) => unsafe { std::env::set_var(self.0, value) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let previous = std::env::var(env_var).ok();
+        match value {
+            Some(value) => unsafe { std::env::set_var(env_var, value) },
+            None => unsafe { std::env::remove_var(env_var) },
+        }
+        Restore(env_var, previous)
+    }
+
+    // ── u01：点修回填（NOMI_LEARNING_REDRAFT_SPLICE，缺省 on 待 A/B）────────
+
+    /// u01 主臂：同标题未点名节点的措辞/标点漂移被整对象回填（守卫归零，
+    /// 不再消耗原地重试）；计数只数实际被抹平的节点；点名节点、新增节点
+    /// 以候选稿为准。
+    #[test]
+    fn splice_reverts_unnamed_same_title_drift_and_counts_it() {
+        let previous = ProposedBatch {
+            nodes: vec![node("甲", "p1"), node("乙", "粗/中/细")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        // 候选稿：甲被点名修改（保留）；乙标点漂移（真机 run-1793951137445
+        // 同形：「粗/中/细」→「粗、中、细」+ scope 偷改）；丙新增。
+        let mut drifted_b = node("乙", "粗、中、细");
+        drifted_b.scope = "偷改的教学范围".into();
+        let mut named_edit = node("甲", "p1");
+        named_edit.purpose = "被点名的修改".into();
+        let candidate = ProposedBatch {
+            nodes: vec![named_edit, drifted_b, node("丙", "新铺垫")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let point_names = ["甲".to_owned()].into_iter().collect::<HashSet<_>>();
+        let (spliced, count) = splice_unnamed_nodes(&previous, candidate, "", Some(&point_names));
+        assert_eq!(count, 1, "只回填漂移的未点名乙：{count}");
+        assert_eq!(spliced.nodes[0].purpose, "被点名的修改", "点名节点以候选稿为准");
+        assert_eq!(spliced.nodes[1], node("乙", "粗/中/细"), "漂移节点整对象回填");
+        assert_eq!(spliced.nodes[2].title, "丙", "新增节点保留");
+        assert!(
+            redraft_guard_violation(&previous, &spliced, "", Some(&point_names), false).is_none(),
+            "回填后守卫必须通过——同标题漂移不再消耗原地重试"
+        );
+    }
+
+    /// u01：改名/删除的未点名节点不回填（候选稿无同标题），照旧走守卫——
+    /// 避免「改名」被回填成「新旧并存」。
+    #[test]
+    fn splice_skips_missing_nodes_and_guard_still_fires() {
+        let previous = ProposedBatch {
+            nodes: vec![node("乙", "原用途")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let candidate = ProposedBatch {
+            nodes: vec![node("乙二", "改名后的用途")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let (spliced, count) = splice_unnamed_nodes(&previous, candidate, "", None);
+        assert_eq!(count, 0, "同标题缺失不回填：{count}");
+        assert!(spliced.nodes.iter().any(|n| n.title == "乙二"), "改名稿保留");
+        let violation = redraft_guard_violation(&previous, &spliced, "", None, false);
+        assert!(
+            violation.as_ref().is_some_and(|text| text.contains("乙") && text.contains("被移除")),
+            "改名 = 删除，守卫照报：{violation:?}"
+        );
+    }
+
+    /// u01 开关面：off 臂候选稿逐字节不动、计数恒零（守卫照旧全量比对 =
+    /// 基线行为）；未设 = 缺省开启（缺省 on 待 A/B）。
+    #[test]
+    #[serial_test::serial]
+    fn splice_switch_off_arm_keeps_candidate_untouched() {
+        let previous = ProposedBatch {
+            nodes: vec![node("乙", "粗/中/细")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let candidate = ProposedBatch {
+            nodes: vec![node("乙", "粗、中、细")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        {
+            let _off = set_switch_env(super::super::REDRAFT_SPLICE_SWITCH_ENV, Some("off"));
+            let (spliced, count) =
+                splice_unnamed_nodes_if_enabled(&previous, candidate.clone(), "", None);
+            assert_eq!(count, 0, "off 臂零回填：{count}");
+            assert_eq!(spliced, candidate, "off 臂候选稿逐字节不动");
+        }
+        let (spliced, count) = splice_unnamed_nodes_if_enabled(&previous, candidate.clone(), "", None);
+        assert_eq!(count, 1, "未设 = 缺省开启：{count}");
+        assert_ne!(spliced, candidate, "on 臂漂移被回填");
+    }
+
+    /// u01 on 臂守卫文案：指令式、节点名不作主语、给「从上一稿复制」的可
+    /// 执行出口；条款码 `ng.redraft.scope` 两臂同在（下游 substring 断言
+    /// 依赖）。移除臂嵌上一稿节点 JSON——原地重试的「上一稿」已是缺该节点
+    /// 的候选稿，JSON 必须随文案携带才复制得了。
+    #[test]
+    fn guard_wording_direct_copy_arm_instructs_verbatim_copy() {
+        let previous = ProposedBatch {
+            nodes: vec![node("甲", "p1"), node("乙", "乙的原用途"), node("丙", "丙的原用途")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let point_names = ["甲".to_owned()].into_iter().collect::<HashSet<_>>();
+        // 改动臂：乙漂移。
+        let candidate = ProposedBatch {
+            nodes: vec![node("甲", "改了的 p1"), node("乙", "被偷改的用途"), node("丙", "丙的原用途")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let edited = redraft_guard_violation(&previous, &candidate, "", Some(&point_names), true)
+            .expect("on 臂照报改动");
+        assert!(edited.contains("ng.redraft.scope"), "{edited}");
+        assert!(
+            edited.contains("必须与上一稿逐字一致——直接从上一稿复制该节点 JSON，任何字段（含标点）都不要改：「乙」"),
+            "指令式文案且节点名不作主语：{edited}"
+        );
+        assert!(
+            !edited.contains("逐字保留（含 est/难度/teaches/assumes）"),
+            "基线句不出现在 on 臂：{edited}"
+        );
+        // 移除臂：丙缺失——文案携带上一稿节点 JSON。
+        let candidate = ProposedBatch {
+            nodes: vec![node("甲", "改了的 p1"), node("乙", "乙的原用途")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let removed = redraft_guard_violation(&previous, &candidate, "", Some(&point_names), true)
+            .expect("on 臂照报移除");
+        assert!(removed.contains("「丙」") && removed.contains("被移除"), "{removed}");
+        assert!(
+            removed.contains(r#""title":"丙""#) && removed.contains(r#""purpose":"丙的原用途""#),
+            "移除文案携带可复制的节点 JSON：{removed}"
+        );
+    }
+
+    /// u01 off 臂守卫文案逐字回归：`direct_copy_wording=false` 时单违约文案
+    /// 与历史逐字同形（下游 substring 断言依赖的基线钉）。
+    #[test]
+    fn guard_wording_off_arm_is_verbatim_historical() {
+        let previous = ProposedBatch {
+            nodes: vec![node("甲", "p1"), node("乙", "p2"), node("丙", "p3")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let point_names = ["甲".to_owned()].into_iter().collect::<HashSet<_>>();
+        let candidate = ProposedBatch {
+            nodes: vec![node("甲", "改了的 p1"), node("乙", "被偷改的 p2"), node("丙", "p3")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let err = redraft_guard_violation(&previous, &candidate, "", Some(&point_names), false)
+            .expect("单违约须照报");
+        assert_eq!(
+            err,
+            "- [ng.redraft.scope] 点修越权：未被打回报告点名的节点「乙」被改动。\
+             修订纪律是点修不是重写：只改被点名的地方，其余节点逐字保留（含 est/难度/teaches/assumes）；\
+             修法确实需要动未点名节点才能成立时，放弃该修法。请重新输出完整批次。"
+        );
     }
 }
