@@ -1993,6 +1993,10 @@ impl LearningService {
         // 碎片裁决机械读数（m9 补接 smoke total/rows/unhandled/degraded）：
         // 同款跨轮累加（读数面非门禁）。
         let mut fragment_readout = crate::learning_graph::fragment_verdict::FragmentReadout::default();
+        // 评审缺席降级信号（r01）：任一轮评审调用失败/回包违约重试仍败即置
+        // 位——「评审缺席的成功」在 smoke 读数与批次 note 上可区分（读数面
+        // 非门禁）。
+        let mut review_degraded = false;
         // L1 名字提示读数（y01）：跨预算轮累加，smoke 生长 OK 读数行透出
         // （读数面非门禁；提示不阻断）。
         let mut name_hints_readout = 0usize;
@@ -2302,6 +2306,10 @@ impl LearningService {
             .await;
             provenance_readout.merge(&review.provenance);
             fragment_readout.merge(&review.fragments);
+            // 评审缺席信号（r01）：任一轮置位即保持（跨轮不褪）。
+            if review.degraded {
+                review_degraded = true;
+            }
             // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
             // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
             // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
@@ -2563,6 +2571,14 @@ impl LearningService {
                     .note
                     .push_str(&format!("机械复用留痕：{}", traces.join("、")));
             }
+            // 评审缺席降级留痕（r01）：批次 note 不在点修守卫比对面，与
+            // 机械复用留痕同缝——「评审缺席的成功」在批次档案上可追溯。
+            if review_degraded {
+                if !candidate.note.trim().is_empty() {
+                    candidate.note.push('；');
+                }
+                candidate.note.push_str("评审缺席降级放行（评审调用失败/回包违约，重试仍败——见 findings 留痕）");
+            }
             batch = Some(candidate);
             batch_rulings = Some(rulings);
             stop_reason = "success";
@@ -2576,6 +2592,7 @@ impl LearningService {
             name_hints_readout,
             review_state,
             review_state_injections,
+            review_degraded,
         );
         if stop_reason == "cancelled" {
             return Err(cancel_err());
@@ -2703,6 +2720,7 @@ impl LearningService {
         name_hints: usize,
         review_state: bool,
         review_state_injections: usize,
+        review_degraded: bool,
     ) {
         if let Ok(mut stats) = self.growth_run_stats.lock() {
             *stats = Some(GrowthRunStats {
@@ -2720,6 +2738,7 @@ impl LearningService {
                 name_hints,
                 review_state,
                 review_state_injections,
+                review_degraded,
             });
         }
     }
