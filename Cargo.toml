@@ -68,6 +68,7 @@ nomifun-ssh = { path = "crates/backend/nomifun-ssh" }
 nomifun-importer = { path = "crates/backend/nomifun-importer" }
 nomifun-voice-models = { path = "crates/backend/nomifun-voice-models" }
 nomifun-voice-terminal = { path = "crates/backend/nomifun-voice-terminal" }
+nomifun-presentation = { path = "crates/backend/nomifun-presentation" }
 
 # --- Internal crates: shared ---
 nomifun-net = { path = "crates/shared/nomifun-net" }
@@ -215,7 +216,11 @@ flate2 = "1"
 tar = "0.4"
 # ffmpeg managed install (linux static builds are tar.xz).
 xz2 = "0.1"
-git2 = { version = "0.20", default-features = false }
+# `https`: the presentation capability shallow-fetches ppt-master from
+# AtomGit/GitHub. libgit2 uses WinHTTP on Windows and SecureTransport on macOS;
+# on Linux it needs OpenSSL, so `vendored-openssl` builds it statically instead
+# of adding a libssl runtime/package dependency (no `ssh`: never needed).
+git2 = { version = "0.20", default-features = false, features = ["https", "vendored-openssl"] }
 mime_guess = "2"
 rust-embed = "8"
 # URL percent-encoding used by the standalone agent-store binary.

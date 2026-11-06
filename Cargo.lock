@@ -4290,6 +4290,8 @@ dependencies = [
  "libc",
  "libgit2-sys",
  "log",
+ "openssl-probe 0.1.6",
+ "openssl-sys",
  "url",
 ]
 
@@ -5712,6 +5714,7 @@ dependencies = [
  "cc",
  "libc",
  "libz-sys",
+ "openssl-sys",
  "pkg-config",
 ]
 
@@ -7136,6 +7139,7 @@ dependencies = [
  "nomifun-notify",
  "nomifun-office",
  "nomifun-poi",
+ "nomifun-presentation",
  "nomifun-preset",
  "nomifun-public",
  "nomifun-realtime",
@@ -7650,6 +7654,7 @@ dependencies = [
  "nomifun-api-types",
  "nomifun-common",
  "nomifun-db",
+ "nomifun-presentation",
  "nomifun-realtime",
  "regex",
  "reqwest 0.12.28",
@@ -7727,6 +7732,7 @@ dependencies = [
  "nomifun-knowledge",
  "nomifun-mcp",
  "nomifun-models-dev",
+ "nomifun-presentation",
  "nomifun-requirement",
  "nomifun-shell",
  "nomifun-system",
@@ -8037,6 +8043,33 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "nomifun-presentation"
+version = "1.7.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "bytes",
+ "dunce",
+ "flate2",
+ "git2",
+ "http-body-util",
+ "nomi-process-runtime",
+ "nomifun-api-types",
+ "nomifun-net",
+ "nomifun-realtime",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -9163,9 +9196,37 @@ dependencies = [
 
 [[package]]
 name = "openssl-probe"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
+
+[[package]]
+name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "openssl-src"
+version = "300.6.1+3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "openssl-sys"
+version = "0.9.118"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19c413d6ec9ebaf5e1c829d355cb3e9f783778d700f135be0921d52fce3c60ae"
+dependencies = [
+ "cc",
+ "libc",
+ "openssl-src",
+ "pkg-config",
+ "vcpkg",
+]
 
 [[package]]
 name = "option-ext"
@@ -10957,7 +11018,7 @@ version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
 dependencies = [
- "openssl-probe",
+ "openssl-probe 0.2.1",
  "rustls-pki-types",
  "schannel",
  "security-framework",

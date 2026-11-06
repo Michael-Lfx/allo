@@ -22,7 +22,7 @@ export type SkillInfo = {
  * Lightweight catalog metadata used only by Preset binding. Unlike the legacy
  * Skills Hub list, it deliberately retains builtin/user name collisions.
  */
-export type PresetSkillCatalogSource = 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
+export type PresetSkillCatalogSource = 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy' | 'capability';
 
 export type PresetSkillCatalogItem = {
   skill_id: string;

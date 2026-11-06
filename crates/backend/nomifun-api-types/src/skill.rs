@@ -21,6 +21,9 @@ pub enum SkillCatalogSource {
     Extension,
     Mcp,
     Legacy,
+    /// Host-managed capability Skill (e.g. `capability:presentation:ppt-master`),
+    /// installed and versioned by the backend, listed only while ready.
+    Capability,
 }
 
 impl SkillCatalogSource {
@@ -33,6 +36,7 @@ impl SkillCatalogSource {
             Self::Extension => "extension",
             Self::Mcp => "mcp",
             Self::Legacy => "legacy",
+            Self::Capability => "capability",
         }
     }
 }
@@ -136,6 +140,7 @@ fn parse_skill_catalog_source(value: &str) -> Result<SkillCatalogSource, String>
         "extension" => Ok(SkillCatalogSource::Extension),
         "mcp" => Ok(SkillCatalogSource::Mcp),
         "legacy" => Ok(SkillCatalogSource::Legacy),
+        "capability" => Ok(SkillCatalogSource::Capability),
         _ => Err(format!("unknown skill catalog source '{value}'")),
     }
 }
@@ -799,6 +804,16 @@ mod tests {
         assert_eq!(id.as_str(), "extension:office%3Aplugin:pdf%2Fexport");
         assert_eq!(id.source(), SkillCatalogSource::Extension);
         assert_eq!(serde_json::to_value(id).unwrap(), json!("extension:office%3Aplugin:pdf%2Fexport"));
+    }
+
+    #[test]
+    fn capability_skill_id_round_trips() {
+        let id = SkillId::new(SkillCatalogSource::Capability, Some("presentation"), "ppt-master");
+        assert_eq!(id.as_str(), "capability:presentation:ppt-master");
+        let parsed = SkillId::parse("capability:presentation:ppt-master").unwrap();
+        assert_eq!(parsed.source(), SkillCatalogSource::Capability);
+        assert_eq!(parsed.local_key().as_deref(), Some("ppt-master"));
+        assert_eq!(serde_json::to_value(SkillCatalogSource::Capability).unwrap(), json!("capability"));
     }
 
     #[test]

@@ -81,6 +81,7 @@
     "catalogSourceBuiltin": "内置",
     "catalogSourceCustom": "自定义",
     "catalogSourceExtension": "扩展",
+    "catalogSourceCapability": "Flowy 托管",
     "filterAll": "全部",
     "filterEmpty": "这个筛选下还没有技能",
     "sourceCatalog": "已配置",

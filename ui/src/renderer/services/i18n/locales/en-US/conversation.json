@@ -758,7 +758,8 @@
       "project": "Project",
       "extension": "Extension",
       "mcp": "MCP",
-      "legacy": "Legacy"
+      "legacy": "Legacy",
+      "capability": "Managed by Flowy"
     }
   },
   "slashLauncher": {

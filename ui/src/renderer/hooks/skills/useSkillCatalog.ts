@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { resolveCatalogSkillAvatar } from '@/renderer/pages/settings/skill/skillPresentation';
 import { SKILL_CATALOG_CHANGED_EVENT } from './skillCatalogEvents';
 
-export type SkillCatalogSource = 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
+export type SkillCatalogSource = 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy' | 'capability';
 
 export interface SkillCatalogEntry {
   skillId: string;
@@ -43,14 +43,22 @@ function mapCatalogEntry(entry: {
 
 /**
  * Composer and slash pickers list the Flowy skill library: skills the user
- * installed, plus shipped builtins. A user copy of the same name replaces the
+ * installed, plus shipped builtins and Flowy-managed capability Skills (the
+ * backend lists those only while installed). A user copy of the same name replaces the
  * builtin. Skills only discovered from `~/.agents/skills` or a workspace
  * checkout are not library skills.
  */
 export function isInstalledPickerSkill(
   skill: Pick<SkillCatalogEntry, 'source' | 'sourceKey'>,
 ): boolean {
-  if (skill.source === 'builtin' || skill.source === 'extension' || skill.source === 'mcp') return true;
+  if (
+    skill.source === 'builtin' ||
+    skill.source === 'capability' ||
+    skill.source === 'extension' ||
+    skill.source === 'mcp'
+  ) {
+    return true;
+  }
   return skill.source === 'user' && !skill.sourceKey;
 }
 

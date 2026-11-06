@@ -60,6 +60,7 @@ const catalogSourceLabelKey = {
   extension: 'conversation.skills.sources.extension',
   mcp: 'conversation.skills.sources.mcp',
   legacy: 'conversation.skills.sources.legacy',
+  capability: 'conversation.skills.sources.capability',
 } as const;
 
 const LocalizedSkillContent: React.FC<{

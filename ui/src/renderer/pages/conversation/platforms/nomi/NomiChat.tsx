@@ -10,6 +10,7 @@ import ConversationEmptyPrompt from '@renderer/pages/conversation/Messages/compo
 import { usePendingConversation } from '@/renderer/pages/conversation/components/ConversationShell/PendingConversationContext';
 import TurnStatusRail from '@renderer/pages/conversation/Messages/components/TurnStatusRail';
 import GoalStatusNotice from '@/renderer/components/chat/GoalStatusNotice';
+import PresentationInstallNotice from '@/renderer/components/presentation/PresentationInstallNotice';
 import { ConversationArtifactProvider } from '@renderer/pages/conversation/Messages/artifacts';
 import { CHAT_CONTENT_COLUMN_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import {
@@ -352,6 +353,7 @@ const NomiChat: React.FC<{
           {!readOnly && !hideSendBox && (
             <>
               <GoalStatusNotice conversation_id={conversation_id} />
+              <PresentationInstallNotice />
               <TurnStatusRail
                 presentation={turnActivity.presentation}
                 completionSummary={{

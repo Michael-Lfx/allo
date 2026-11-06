@@ -1,0 +1,276 @@
+.panel {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 20px;
+  background: var(--flowy-raised);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--color-text-1) 8%, transparent);
+  animation: panelEnter var(--flowy-motion-slow) var(--flowy-ease-enter);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.title,
+.subtitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.headerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.iconButton,
+.textButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--flowy-motion-fast) ease, color var(--flowy-motion-fast) ease;
+}
+
+.iconButton {
+  width: 30px;
+  padding: 0;
+}
+
+.textButton {
+  padding: 0 10px;
+}
+
+.iconButton:hover:not(:disabled),
+.textButton:hover:not(:disabled) {
+  background: var(--color-fill-2);
+  color: var(--color-text-1);
+}
+
+.iconButton:disabled,
+.textButton:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.suggestions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0 16px;
+}
+
+.suggestion {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 96px;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 14px;
+  background: var(--flowy-raised);
+  color: var(--color-text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--flowy-motion-fast) ease, border-color var(--flowy-motion-fast) ease;
+}
+
+.suggestion:hover:not(:disabled) {
+  border-color: var(--color-border-3);
+  background: var(--color-fill-1);
+}
+
+.suggestion:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.suggestionIcon {
+  display: inline-flex;
+  line-height: 0;
+  color: var(--color-text-2);
+}
+
+.suggestionText {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.rail {
+  display: grid;
+  grid-auto-columns: calc((100% - 30px) / 4);
+  grid-auto-flow: column;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 3px 3px 2px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.rail::-webkit-scrollbar {
+  display: none;
+}
+
+.template {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-1);
+  font: inherit;
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+.template:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.thumb {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+/* The rail scrolls horizontally, so an outer ring on the first card (自由设计)
+   is clipped on the leading edge. Draw the stroke inside the thumbnail. */
+.thumb::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--color-border-2);
+  transition: box-shadow var(--flowy-motion-fast) ease;
+}
+
+.template:hover:not(:disabled) .thumb {
+  transform: translateY(-2px);
+}
+
+.template[data-selected] .thumb::after {
+  box-shadow: inset 0 0 0 2px rgb(var(--primary-6));
+}
+
+.template:focus-visible {
+  outline: none;
+}
+
+.template:focus-visible .thumb::after {
+  box-shadow:
+    inset 0 0 0 2px rgb(var(--primary-6)),
+    inset 0 0 0 4px color-mix(in srgb, rgb(var(--primary-6)) 25%, transparent);
+}
+
+.thumbImage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.freeThumb,
+.importThumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--color-text-2);
+}
+
+.freeThumb {
+  background: linear-gradient(135deg, var(--color-fill-1), var(--color-fill-3));
+}
+
+.importThumb {
+  background: var(--color-fill-2);
+}
+
+.templateName {
+  overflow: hidden;
+  color: var(--color-text-1);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template[data-selected] .templateName {
+  font-weight: 600;
+}
+
+@keyframes panelEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+
+  .thumb,
+  .thumb::after {
+    transition: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .suggestions {
+    grid-template-columns: 1fr;
+  }
+
+  .suggestion {
+    min-height: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .rail {
+    grid-auto-columns: calc((100% - 10px) / 2);
+  }
+}

@@ -34,6 +34,18 @@ import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
 import GuidVideoShortcut from './components/GuidVideoShortcut';
 import ShowcaseCards from './components/ShowcaseCards';
+import SlideOptionsControls from './presentation/SlideOptionsControls';
+import SlideCreatePanel from './presentation/SlideCreatePanel';
+import SlideCardWall from './presentation/SlideCardWall';
+import type { SlideSuggestion } from './presentation/slideGallery';
+import {
+  DEFAULT_SLIDE_OPTIONS,
+  SLIDE_TEMPLATE_IMPORT_EXTENSIONS,
+  applySlideHeader,
+  type SlideOptions,
+  type SlideTemplate,
+} from './presentation/slideOptions';
+import { PRESENTATION_SKILL_ID } from '@/common/adapter/ipcBridge';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
@@ -136,6 +148,14 @@ const GuidPage: React.FC = () => {
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
+  // "Slides" work mode (Nomi only, home page only): the composer keeps the
+  // user's own text; the ppt-master option line and the managed Skill are
+  // added when the first message is sent.
+  const [slideOptions, setSlideOptions] = useState<SlideOptions | null>(null);
+  // "Create presentation" panel above the composer (topics + templates).
+  // It opens with slides mode. Dismissing the panel exits slides mode, and
+  // leaving slides mode closes the panel.
+  const [slidePanelOpen, setSlidePanelOpen] = useState(false);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
   );
@@ -629,11 +649,78 @@ const GuidPage: React.FC = () => {
     },
     [pickerSkills, localeKey, t],
   );
+  const enterSlideMode = useCallback(() => {
+    setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
+    setSlidePanelOpen(true);
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, []);
+  const exitSlideMode = useCallback(() => {
+    setSlideOptions(null);
+  }, []);
+  const handleSlidesChange = useCallback(
+    (active: boolean) => (active ? enterSlideMode() : exitSlideMode()),
+    [enterSlideMode, exitSlideMode],
+  );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
       setGoalMode(false);
+      setSlideOptions(null);
     }
   }, [supportsHomeGoalCommand]);
+  useEffect(() => {
+    if (slideOptions === null) setSlidePanelOpen(false);
+  }, [slideOptions]);
+  const slideStudioOpen = supportsHomeGoalCommand && slideOptions !== null && slidePanelOpen;
+  // An imported template is the attached reference file: removing the chip (or
+  // a draft reset) drops the template choice too.
+  const importedTemplatePath = slideOptions?.template.kind === 'import' ? slideOptions.template.path : null;
+  useEffect(() => {
+    if (importedTemplatePath !== null && !guidInput.files.includes(importedTemplatePath)) {
+      setSlideOptions((current) => (current ? { ...current, template: DEFAULT_SLIDE_OPTIONS.template } : current));
+    }
+  }, [guidInput.files, importedTemplatePath]);
+  const handleSelectSlideTemplate = useCallback(
+    (template: SlideTemplate) => {
+      // Leaving an imported template detaches the reference file it added.
+      if (importedTemplatePath !== null && (template.kind !== 'import' || template.path !== importedTemplatePath)) {
+        guidInput.handleRemoveFile(importedTemplatePath);
+      }
+      setSlideOptions((current) => ({ ...(current ?? DEFAULT_SLIDE_OPTIONS), template }));
+    },
+    [guidInput.handleRemoveFile, importedTemplatePath],
+  );
+  const handleSelectSlideSuggestion = useCallback(
+    (suggestion: SlideSuggestion) => {
+      guidInput.setInput(t(`presentation.create.suggestions.${suggestion.id}.prompt`));
+      // A topic brings its matching theme only while no template was chosen.
+      if (slideOptions?.template.kind === 'free') {
+        setSlideOptions({ ...slideOptions, template: { kind: 'theme', id: suggestion.theme } });
+      }
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput, slideOptions, t],
+  );
+  const handleImportSlideTemplate = useCallback(() => {
+    void ipcBridge.dialog.showOpen
+      .invoke({
+        properties: ['openFile'],
+        filters: [{ name: t('presentation.create.importFilter'), extensions: [...SLIDE_TEMPLATE_IMPORT_EXTENSIONS] }],
+      })
+      .then((paths) => {
+        const path = paths?.[0];
+        if (!path) return;
+        // Same admission as any attachment (image limit); a rejected file
+        // never shows up in `files`, so the effect above reverts the choice.
+        guidInput.handleFilesUploaded([path]);
+        handleSelectSlideTemplate({ kind: 'import', path });
+      })
+      .catch((error) => {
+        console.warn('[GuidPage] Failed to open template file selector:', error);
+      });
+  }, [guidInput.handleFilesUploaded, handleSelectSlideTemplate, t]);
+  // The managed ppt-master is in the catalog only while it is installed; before
+  // that the option line tells Nomi to check and install it first.
+  const managedSlidesSkillReady = pickerSkills.some((skill) => skill.skillId === PRESENTATION_SKILL_ID);
   const homeLauncherItems = useMemo<SlashLauncherItem[]>(
     () =>
       [
@@ -649,6 +736,11 @@ const GuidPage: React.FC = () => {
               kind: 'system' as const,
               name: 'goal',
               description: t('guid.goalMode.tooltip'),
+            }, {
+              id: 'system:ppt',
+              kind: 'system' as const,
+              name: 'ppt',
+              description: t('presentation.home.slashDescription'),
             }]
           : []),
         ...(supportsHomeSkillLoading
@@ -690,6 +782,15 @@ const GuidPage: React.FC = () => {
               '',
               homeTokenInputState.textSelection.end,
             ),
+          );
+        }
+        return;
+      }
+      if (item.name === 'ppt') {
+        enterSlideMode();
+        if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
+          guidInput.setInput(
+            replaceActiveSlashToken(guidInput.input, '', homeTokenInputState.textSelection.end),
           );
         }
         return;
@@ -939,6 +1040,17 @@ const GuidPage: React.FC = () => {
     () => (supportsHomeSkillLoading ? homeSkillChips.map((skill) => skill.skillId) : []),
     [homeSkillChips, supportsHomeSkillLoading],
   );
+  // Slides mode applies only to a real brief: an empty composer stays empty
+  // (the send button stays disabled), and nothing is added to it visibly.
+  const slidesBrief = supportsHomeGoalCommand && slideOptions !== null && guidInput.input.trim().length > 0;
+  const sendInput = slidesBrief ? applySlideHeader(guidInput.input, slideOptions) : guidInput.input;
+  const sendSkillIds = useMemo(
+    () =>
+      slidesBrief && managedSlidesSkillReady && !homeInitialSkillIds.includes(PRESENTATION_SKILL_ID)
+        ? [...homeInitialSkillIds, PRESENTATION_SKILL_ID]
+        : homeInitialSkillIds,
+    [homeInitialSkillIds, managedSlidesSkillReady, slidesBrief],
+  );
 
   // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
   // collected up front and applied right after the conversation is created.
@@ -1016,8 +1128,8 @@ const GuidPage: React.FC = () => {
   }, [guidInput.setDir]);
 
   const send = useGuidSend({
-    // Input state
-    input: guidInput.input,
+    // Input state (slides mode prepends the ppt-master option line here)
+    input: sendInput,
     setInput: guidInput.setInput,
     files: guidInput.files,
     setFiles: guidInput.setFiles,
@@ -1042,7 +1154,7 @@ const GuidPage: React.FC = () => {
     findAgentByKey: agentSelection.findAgentByKey,
     getEffectiveAgentType: agentSelection.getEffectiveAgentType,
     onStalePreset: handleStalePreset,
-    initialSkillIds: homeInitialSkillIds,
+    initialSkillIds: sendSkillIds,
     onInitialSkillsSent: () => setHomeSkillChips([]),
     availableMcpServers,
     selectedMcpServerIds: guidSelectedMcpServerIds,
@@ -1555,6 +1667,19 @@ const GuidPage: React.FC = () => {
       autoWorkDraft={advancedConfig.autoWork}
       goalMode={supportsHomeGoalCommand && goalMode}
       onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
+      slidesActive={supportsHomeGoalCommand && slideOptions !== null}
+      onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
+      slideControls={
+        slideOptions !== null ? (
+          <SlideOptionsControls
+            options={slideOptions}
+            onChange={setSlideOptions}
+            disabled={guidInput.loading}
+            templatesOpen={slidePanelOpen}
+            onToggleTemplates={() => setSlidePanelOpen((open) => !open)}
+          />
+        ) : undefined
+      }
       hasDraft={hasDraft}
       speechLocale={i18n.language}
       onSpeechTranscript={(transcript) => {
@@ -1567,7 +1692,13 @@ const GuidPage: React.FC = () => {
 
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
-      <div ref={guidContainerRef} className={styles.guidContainer}>
+      <div
+        ref={guidContainerRef}
+        className={styles.guidContainer}
+        data-slide-studio={slideStudioOpen || undefined}
+      >
+        {/* Slides studio: a wall of slide cards replaces the home content behind the create panel. */}
+        {slideStudioOpen && <SlideCardWall />}
         <div className={styles.guidScrollArea}>
           <div className={styles.guidPrimaryStage}>
             <div className={styles.guidLayout}>
@@ -1577,7 +1708,10 @@ const GuidPage: React.FC = () => {
                   <GuidVideoShortcut />
                 </div>
               </div>
-              <FeatureCards onStartFromLocal={() => void handleLinkWorkspace()} />
+              <FeatureCards
+                onStartFromLocal={() => void handleLinkWorkspace()}
+                onCreate={supportsHomeGoalCommand ? enterSlideMode : undefined}
+              />
 
               <div className={styles.homeGallery}>
                 <ShowcaseCards onSelectApp={handleSelectShowcaseApp} onSelectImage={handleSelectShowcaseImage} />
@@ -1588,6 +1722,16 @@ const GuidPage: React.FC = () => {
 
         <div className={styles.guidFixedInputArea}>
           <div className={styles.guidLayout}>
+            {slideStudioOpen && slideOptions !== null && (
+              <SlideCreatePanel
+                template={slideOptions.template}
+                onSelectTemplate={handleSelectSlideTemplate}
+                onSelectSuggestion={handleSelectSlideSuggestion}
+                onImportTemplate={handleImportSlideTemplate}
+                onClose={exitSlideMode}
+                disabled={guidInput.loading}
+              />
+            )}
             <GuidInputCard
               containerRef={guidInputCardRef}
               input={guidInput.input}
@@ -1596,7 +1740,11 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={t('conversation.welcome.placeholder')}
+              placeholder={
+                supportsHomeGoalCommand && slideOptions !== null
+                  ? t('presentation.home.placeholder')
+                  : t('conversation.welcome.placeholder')
+              }
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}

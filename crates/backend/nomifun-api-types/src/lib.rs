@@ -46,6 +46,7 @@ mod provider;
 mod provider_connection;
 mod provider_model;
 mod preset;
+mod presentation;
 mod remote_agent;
 mod requirement;
 mod response;
@@ -152,6 +153,12 @@ pub use preset::{
     PresetKnowledgePolicy, PresetOverrides, PresetResponse, PresetSource, PresetTagDimension,
     PresetTagResponse, PresetTarget, ResolvePresetRequest, ResolvedPresetSnapshot,
     SetPresetStateRequest, SkillBinding, UpdatePresetRequest, UpdatePresetTagRequest,
+};
+pub use presentation::{
+    PRESENTATION_CAPABILITY_STATUS_EVENT, PresentationCancelResponse, PresentationCapabilityStatus,
+    PresentationCapabilityView, PresentationInstallFailure, PresentationInstallProgress,
+    PresentationInstallRequest, PresentationInstallResponse, PresentationInstallStage,
+    PresentationUninstallResponse,
 };
 pub use auth::{
     AuthStatusResponse, ChangePasswordRequest, ChangeUsernameRequest, ChangeUsernameResponse, LoginRequest,

@@ -1,0 +1,54 @@
+.group {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: 6px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pill:hover,
+.pill:focus-visible {
+  background: var(--color-fill-2);
+  color: var(--color-text-1);
+}
+
+.pill:focus-visible {
+  outline: 2px solid rgb(var(--primary-6));
+  outline-offset: 2px;
+}
+
+.pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.label {
+  overflow: hidden;
+  max-width: 140px;
+  text-overflow: ellipsis;
+}
+
+.chevron {
+  display: inline-flex;
+  line-height: 0;
+  color: var(--color-text-3);
+}

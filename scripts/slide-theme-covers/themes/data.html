@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #FFFFFF; color: #222222; font-family: 'IBM Plex Sans', sans-serif; }
+  .tag { left: 72px; top: 0; width: 56px; height: 20px; background: #D55E00; }
+  .kicker { left: 72px; top: 56px; font-size: 15px; font-weight: 600; letter-spacing: .14em; color: #D55E00; }
+  h1 { left: 70px; top: 88px; font-family: 'Source Serif 4', serif; font-size: 78px; font-weight: 700; line-height: 1.02; letter-spacing: -0.02em; }
+  .stand { left: 72px; top: 272px; width: 500px; font-size: 21px; line-height: 1.45; color: #555555; }
+  .rule { left: 72px; right: 72px; top: 376px; height: 1px; background: #222222; }
+  .stat { left: 72px; top: 404px; }
+  .stat b { display: block; font-family: 'Source Serif 4', serif; font-size: 112px; font-weight: 700; line-height: 1; color: #D55E00; letter-spacing: -0.03em; }
+  .stat span { display: block; margin-top: 10px; width: 300px; font-size: 17px; line-height: 1.4; }
+  .stat2 { left: 420px; top: 404px; }
+  .stat2 b { display: block; font-family: 'Source Serif 4', serif; font-size: 112px; font-weight: 700; line-height: 1; color: #0072B2; letter-spacing: -0.03em; }
+  .stat2 span { display: block; margin-top: 10px; width: 220px; font-size: 17px; line-height: 1.4; }
+  .chart { left: 720px; top: 56px; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  .source { left: 72px; right: 72px; top: 662px; display: flex; justify-content: space-between; font-size: 13px; color: #777777; border-top: 1px solid #DDDDDD; padding-top: 12px; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <div class="tag"></div>
+  <div class="kicker">BRIEFING · ENERGY</div>
+  <h1>The State of<br>Global Energy</h1>
+  <p class="stand">Solar overtakes coal in new capacity as storage costs keep falling.</p>
+  <svg class="chart" width="488" height="300" font-family="IBM Plex Mono, monospace" font-size="12" fill="#777777">
+    <text x="0" y="12" font-family="IBM Plex Sans, sans-serif" font-size="15" font-weight="600" fill="#222222">New capacity added, GW</text>
+    <rect x="0" y="26" width="12" height="12" fill="#0072B2"/><text x="18" y="36">Solar</text>
+    <rect x="80" y="26" width="12" height="12" fill="#BBBBBB"/><text x="98" y="36">Coal</text>
+    <g stroke="#E5E5E5"><line x1="0" y1="80" x2="488" y2="80"/><line x1="0" y1="140" x2="488" y2="140"/><line x1="0" y1="200" x2="488" y2="200"/></g>
+    <line x1="0" y1="260" x2="488" y2="260" stroke="#222222"/>
+    <g fill="#0072B2">
+      <rect x="10" y="236" width="22" height="24"/><rect x="80" y="226" width="22" height="34"/><rect x="150" y="210" width="22" height="50"/>
+      <rect x="220" y="190" width="22" height="70"/><rect x="290" y="160" width="22" height="100"/><rect x="360" y="122" width="22" height="138"/>
+    </g>
+    <rect x="430" y="68" width="22" height="192" fill="#D55E00"/>
+    <g fill="#BBBBBB">
+      <rect x="34" y="200" width="22" height="60"/><rect x="104" y="206" width="22" height="54"/><rect x="174" y="212" width="22" height="48"/>
+      <rect x="244" y="220" width="22" height="40"/><rect x="314" y="226" width="22" height="34"/><rect x="384" y="232" width="22" height="28"/><rect x="454" y="238" width="22" height="22"/>
+    </g>
+    <text x="10" y="280">2019</text><text x="150" y="280">2021</text><text x="290" y="280">2023</text><text x="430" y="280" fill="#D55E00" font-weight="600">2025</text>
+    <text x="0" y="76">300</text><text x="0" y="136">200</text><text x="0" y="196">100</text>
+  </svg>
+  <div class="stat"><b>+38%</b><span>more solar capacity installed in 2025 than the year before</span></div>
+  <div class="stat2"><b>1 in 3</b><span>new power plants built worldwide is now solar</span></div>
+  <div class="source mono"><span>Source: illustrative data for this template</span><span>Energy Desk · 2026</span></div>
+</main>
+</body>
+</html>

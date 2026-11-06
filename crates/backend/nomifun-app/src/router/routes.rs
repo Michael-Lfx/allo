@@ -49,6 +49,7 @@ use nomifun_shell::shell_routes;
 use nomifun_system::{connection_test_routes, system_routes};
 use nomifun_terminal::terminal_routes;
 use nomifun_webhook::webhook_routes;
+use nomifun_presentation::presentation_routes;
 
 use nomifun_secret::secret_routes;
 
@@ -395,6 +396,7 @@ pub async fn create_router(services: &AppServices) -> Router {
         // REST, model tools and boot recovery share the same public facade and
         // therefore one scheduler handle map and one durable state machine.
         agent_execution_engine: states.agent_execution.clone(),
+        presentation_service: states.presentation.service.clone(),
         // Gateway is only an adapter to the one process-wide browser hub. An
         // unsupported/degraded host leaves this as `None`; it never creates a
         // fallback BrowserTool/Chromium owner inside the Gateway.
@@ -988,6 +990,14 @@ pub fn create_router_with_all_state(
     // Skill avatars are referenced by plain `<img>` tags and must not sit
     // behind the owner auth middleware.
     let skill_icon_public = skill_icon_routes(states.skill.clone());
+
+    // Presentation capability: host-managed ppt-master install + readiness
+    // (same service instance the gateway presentation tools use).
+    let presentation_authenticated = protect_instance_owner(
+        presentation_routes(states.presentation.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
 
     // Channel routes protected by auth middleware
     let channel_authenticated = protect_instance_owner(
@@ -1630,6 +1640,7 @@ pub fn create_router_with_all_state(
         .merge(extension_authenticated)
         .merge(hub_authenticated)
         .merge(skill_authenticated)
+        .merge(presentation_authenticated)
         .merge(channel_authenticated)
         .merge(cron_authenticated)
         .merge(requirement_authenticated)

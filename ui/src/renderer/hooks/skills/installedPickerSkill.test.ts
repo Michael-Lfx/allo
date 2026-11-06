@@ -14,6 +14,18 @@ describe('isInstalledPickerSkill', () => {
     expect(isInstalledPickerSkill(skill('mcp', 'server'))).toBe(true);
   });
 
+  test('keeps Flowy-managed capability skills (listed by the backend only when installed)', () => {
+    expect(isInstalledPickerSkill(skill('capability', 'presentation'))).toBe(true);
+    const catalog = [
+      { name: 'ppt-master', source: 'capability' as const, sourceKey: 'presentation' },
+      { name: 'guizang-ppt-skill', source: 'builtin' as const },
+    ];
+    expect(installedPickerSkills(catalog).map((entry) => `${entry.source}:${entry.name}`)).toEqual([
+      'capability:ppt-master',
+      'builtin:guizang-ppt-skill',
+    ]);
+  });
+
   test('hides skills that were only discovered on disk', () => {
     expect(isInstalledPickerSkill(skill('legacy'))).toBe(false);
     expect(isInstalledPickerSkill(skill('project', 'workspace'))).toBe(false);

@@ -18,6 +18,7 @@ import {
   Tool,
   TreeDiagram,
   Voice,
+  Ppt,
 } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
@@ -49,6 +50,7 @@ const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentT
   'cloud-login': CloudStorage,
   about: Info,
   voice: Voice,
+  presentation: Ppt,
 };
 
 const SettingsNavIconSlot: React.FC<{ item: SettingsNavItem; selected: boolean }> = ({ item, selected }) => {

@@ -1,0 +1,13 @@
+# Core runtime group of the pinned ppt-master Skill (skills/ppt-master/requirements.txt).
+# svg_to_pptx + template registration + confirm_ui/svg_editor. PyMuPDF (AGPL),
+# edge-tts, source_to_md and image backends are intentionally not installed.
+# Regenerate requirements-core.lock.txt with the command in locks/README.md.
+python-pptx>=0.6.21
+lxml>=4.9
+XlsxWriter>=3.0.0
+Pillow>=9.0.0
+numpy>=1.20.0
+skia-pathops>=0.9.2
+uharfbuzz>=0.50.0
+PyYAML>=6.0
+flask>=3.0.0

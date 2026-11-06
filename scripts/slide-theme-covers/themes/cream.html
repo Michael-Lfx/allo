@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #FFF8F0; color: #3D3A35; font-family: 'Nunito', sans-serif; }
+  .blob { left: 700px; top: 60px; width: 560px; height: 600px; border-radius: 48% 52% 44% 56% / 56% 44% 56% 44%; background: #FFD6A5; }
+  .blob2 { left: 1080px; top: -80px; width: 260px; height: 260px; border-radius: 50%; background: #F28C6A; opacity: .35; }
+  .panel { left: 790px; top: 150px; width: 380px; height: 420px; border-radius: 40px; background: #FFFFFF; box-shadow: 0 24px 48px rgba(61,58,53,.10); }
+  .tag { left: 96px; top: 104px; padding: 8px 20px; border-radius: 999px; background: rgba(242,140,106,.16); color: #F28C6A; font-size: 17px; font-weight: 800; }
+  h1 { left: 92px; top: 160px; font-size: 104px; font-weight: 900; line-height: .98; letter-spacing: -0.03em; }
+  .sub { left: 98px; top: 388px; width: 460px; font-size: 23px; font-weight: 600; line-height: 1.45; color: rgba(61,58,53,.7); }
+  .days { left: 98px; top: 520px; display: flex; gap: 12px; }
+  .days span { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; font-size: 17px; font-weight: 800; background: #FFFFFF; box-shadow: 0 6px 14px rgba(61,58,53,.08); }
+  .days .on { background: #F28C6A; color: #FFFFFF; }
+  .cap { left: 830px; top: 476px; width: 300px; font-size: 20px; font-weight: 800; text-align: center; }
+  .cap small { display: block; margin-top: 4px; font-size: 15px; font-weight: 600; opacity: .6; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <div class="blob"></div>
+  <div class="blob2"></div>
+  <div class="panel"></div>
+  <svg class="abs" style="left:880px;top:190px" width="200" height="270" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M70 70 C 60 50, 84 40, 74 18 M100 70 C 90 50, 114 40, 104 18 M130 70 C 120 50, 144 40, 134 18" stroke="#F28C6A" stroke-width="6" opacity=".7"/>
+    <rect x="30" y="96" width="130" height="150" rx="32" fill="#F28C6A"/>
+    <path d="M160 130 C 200 130, 200 200, 160 200" stroke="#F28C6A" stroke-width="16"/>
+    <rect x="30" y="96" width="130" height="34" rx="17" fill="#FFD6A5"/>
+    <circle cx="95" cy="186" r="20" fill="#FFF8F0" opacity=".6"/>
+  </svg>
+  <div class="tag">Wellness Workshop</div>
+  <h1>Mindful<br>Mornings</h1>
+  <p class="sub">Five small rituals for a calmer, kinder start to the day.</p>
+  <div class="days"><span class="on">M</span><span class="on">T</span><span class="on">W</span><span>T</span><span>F</span></div>
+  <div class="cap">Day 3 of 5<small>10 minutes a day</small></div>
+</main>
+</body>
+</html>

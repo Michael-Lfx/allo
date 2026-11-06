@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #FFF1E6; color: #5B3A29; font-family: 'Fredoka', sans-serif; }
+  .kicker { left: 96px; top: 96px; padding: 8px 20px; border-radius: 6px 18px 6px 18px; background: #F4845F; color: #FFF1E6; font-size: 18px; font-weight: 600; letter-spacing: .08em; box-shadow: 0 4px 0 rgba(91,58,41,.15); }
+  h1 { left: 92px; top: 150px; font-size: 112px; font-weight: 700; line-height: .95; letter-spacing: -0.01em; }
+  .sub { left: 98px; top: 386px; width: 460px; font-size: 24px; font-weight: 500; line-height: 1.4; color: rgba(91,58,41,.78); }
+  .foot { left: 98px; top: 462px; font-size: 17px; font-weight: 600; letter-spacing: .1em; color: #F4845F; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <svg class="abs" style="left:0;top:0" width="1280" height="720">
+    <defs>
+      <filter id="sheet" x="-5%" y="-20%" width="110%" height="140%"><feDropShadow dx="0" dy="-6" stdDeviation="8" flood-color="#5B3A29" flood-opacity=".18"/></filter>
+      <filter id="lift" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#5B3A29" flood-opacity=".18"/></filter>
+    </defs>
+    <circle cx="1020" cy="200" r="120" fill="#F7B267" filter="url(#lift)"/>
+    <circle cx="1020" cy="200" r="84" fill="#F4845F" filter="url(#lift)"/>
+    <path d="M0 520 C 160 470, 300 540, 470 500 S 760 420, 920 460 S 1160 520, 1280 470 V720 H0 Z" fill="#F7B267" filter="url(#sheet)"/>
+    <path d="M0 580 C 180 540, 340 610, 540 570 S 860 500, 1040 540 S 1220 590, 1280 560 V720 H0 Z" fill="#F4845F" filter="url(#sheet)"/>
+    <path d="M0 640 C 220 610, 420 670, 640 630 S 980 590, 1140 620 S 1260 640, 1280 630 V720 H0 Z" fill="#C8553D" filter="url(#sheet)"/>
+    <path d="M0 690 C 260 670, 520 710, 780 680 S 1160 670, 1280 684 V720 H0 Z" fill="#5B3A29" filter="url(#sheet)"/>
+    <g fill="#5B3A29" filter="url(#lift)">
+      <path d="M840 470 L 860 380 L 880 470 Z"/><path d="M860 400 L 840 420 L 860 410 Z" fill="#FFF1E6"/>
+      <path d="M1130 500 L 1160 360 L 1190 500 Z" fill="#C8553D"/>
+      <path d="M1180 500 L 1200 420 L 1220 500 Z"/>
+    </g>
+    <g fill="#FFF1E6" filter="url(#lift)">
+      <path d="M740 130 c 10 -18, 34 -18, 44 0 c 16 -4, 28 10, 22 24 h -78 c -8 -10, 0 -26, 12 -24 Z"/>
+      <path d="M1150 90 c 8 -14, 26 -14, 34 0 c 12 -3, 22 8, 17 18 h -60 c -6 -8, 0 -20, 9 -18 Z"/>
+    </g>
+  </svg>
+  <div class="kicker">ANNUAL REPORT</div>
+  <h1>Seasons<br>of Growth</h1>
+  <p class="sub">A year of small steps, shared roots and new beginnings.</p>
+  <div class="foot">GREENLEAF FOUNDATION · 2026</div>
+</main>
+</body>
+</html>

@@ -1,0 +1,34 @@
+[package]
+name = "nomifun-presentation"
+version.workspace = true
+edition.workspace = true
+
+# Host-managed presentation capability: installs one pinned ppt-master Skill
+# snapshot plus a private Python runtime and reports readiness. Split out of
+# nomifun-app so nomifun-gateway (agent tools) and nomifun-extension (skill
+# catalog) can depend on it without a cycle.
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+dunce.workspace = true
+flate2.workspace = true
+git2.workspace = true
+nomifun-api-types.workspace = true
+nomifun-net.workspace = true
+nomifun-realtime.workspace = true
+nomi-process-runtime.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }

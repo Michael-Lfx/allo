@@ -758,7 +758,8 @@
       "project": "项目",
       "extension": "扩展",
       "mcp": "MCP",
-      "legacy": "兼容"
+      "legacy": "兼容",
+      "capability": "Flowy 托管"
     }
   },
   "slashLauncher": {

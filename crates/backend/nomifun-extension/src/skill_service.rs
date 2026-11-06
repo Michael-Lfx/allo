@@ -1007,8 +1007,9 @@ async fn list_catalog_skills_with_roots(
     paths: &SkillPaths,
     roots: &CatalogSkillRoots,
 ) -> Result<Vec<SkillCatalogItem>, ExtensionError> {
-    let mut catalog: Vec<SkillCatalogItem> = catalog_skill_files(paths, roots, true)
-        .await?
+    let mut candidates = catalog_skill_files(paths, roots, true).await?;
+    prefer_capability_skills(&mut candidates);
+    let mut catalog: Vec<SkillCatalogItem> = candidates
         .into_iter()
         .map(|candidate| SkillCatalogItem {
             avatar: catalog_item_avatar(paths, &candidate),
@@ -1057,6 +1058,11 @@ async fn load_catalog_skills_with_roots(
         let content = match &candidate.location {
             CatalogSkillLocation::Builtin(relative_location) => read_builtin_skill(paths, relative_location).await?,
             CatalogSkillLocation::File(path) => tokio::fs::read_to_string(path).await?,
+            CatalogSkillLocation::Capability(path) => {
+                let raw = tokio::fs::read_to_string(path).await?;
+                let skill_dir = skill_dir_from_manifest_path(path);
+                nomifun_presentation::with_host_note(&raw, &skill_dir.to_string_lossy())
+            }
         };
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
@@ -1068,7 +1074,9 @@ async fn load_catalog_skills_with_roots(
                     .to_string_lossy()
                     .into_owned(),
             ),
-            CatalogSkillLocation::File(path) => Some(path.to_string_lossy().into_owned()),
+            CatalogSkillLocation::File(path) | CatalogSkillLocation::Capability(path) => {
+                Some(path.to_string_lossy().into_owned())
+            }
         };
         loaded.push(LoadedCatalogSkill {
             skill_id: candidate.skill_id.clone(),
@@ -1099,6 +1107,9 @@ struct CatalogSkillFile {
 enum CatalogSkillLocation {
     Builtin(String),
     File(PathBuf),
+    /// Host-managed capability Skill: `SKILL.md` under the capability's
+    /// active snapshot. Loaded with the host note inserted.
+    Capability(PathBuf),
 }
 
 fn catalog_item_avatar(paths: &SkillPaths, candidate: &CatalogSkillFile) -> Option<String> {
@@ -1106,7 +1117,9 @@ fn catalog_item_avatar(paths: &SkillPaths, candidate: &CatalogSkillFile) -> Opti
         CatalogSkillLocation::Builtin(relative) => {
             skill_dir_from_manifest_path(&paths.builtin_skills_dir.join(relative))
         }
-        CatalogSkillLocation::File(path) => skill_dir_from_manifest_path(path),
+        CatalogSkillLocation::File(path) | CatalogSkillLocation::Capability(path) => {
+            skill_dir_from_manifest_path(path)
+        }
     };
     find_skill_icon(&dir).map(|_| skill_icon_api_path(&candidate.name))
 }
@@ -1173,7 +1186,55 @@ async fn catalog_skill_files(
         .await?;
     }
 
+    candidates.extend(capability_catalog_skill(paths).await);
     Ok(candidates)
+}
+
+/// Owner key and local key of the managed presentation Skill:
+/// `capability:presentation:ppt-master`.
+const PRESENTATION_CAPABILITY_SOURCE_KEY: &str = "presentation";
+
+/// The host-managed ppt-master Skill, only while its capability is `Ready`.
+async fn capability_catalog_skill(paths: &SkillPaths) -> Option<CatalogSkillFile> {
+    let data_dir = paths.data_dir.clone();
+    let ready = tokio::task::spawn_blocking(move || nomifun_presentation::ready_skill(&data_dir))
+        .await
+        .ok()
+        .flatten()?;
+    let manifest = ready.skill_dir.join(SKILL_MANIFEST_FILE);
+    let content = tokio::fs::read_to_string(&manifest).await.ok()?;
+    let (name, description) = parse_frontmatter_fields(&content)?;
+    let source = SkillCatalogSource::Capability;
+    let local_key = nomifun_presentation::manifest::SKILL_NAME.to_owned();
+    Some(CatalogSkillFile {
+        skill_id: SkillId::new(source, Some(PRESENTATION_CAPABILITY_SOURCE_KEY), &local_key)
+            .as_str()
+            .to_owned(),
+        name,
+        description,
+        source,
+        source_key: Some(PRESENTATION_CAPABILITY_SOURCE_KEY.to_owned()),
+        local_key,
+        location: CatalogSkillLocation::Capability(manifest),
+    })
+}
+
+/// While a managed capability Skill is listed, hide every other catalog entry
+/// with the same name from discovery, so ranking and pickers resolve to the
+/// managed copy (which runs through the host tools). Those entries stay on
+/// disk, in the Skills settings page, and loadable by their existing ids.
+fn prefer_capability_skills(candidates: &mut Vec<CatalogSkillFile>) {
+    let managed: std::collections::HashSet<String> = candidates
+        .iter()
+        .filter(|candidate| candidate.source == SkillCatalogSource::Capability)
+        .map(|candidate| candidate.name.clone())
+        .collect();
+    if managed.is_empty() {
+        return;
+    }
+    candidates.retain(|candidate| {
+        candidate.source == SkillCatalogSource::Capability || !managed.contains(&candidate.name)
+    });
 }
 
 async fn extend_catalog_with_optional_directory(
@@ -1246,6 +1307,8 @@ fn catalog_source_sort_key(source: SkillCatalogSource) -> &'static str {
         SkillCatalogSource::Extension => "extension",
         SkillCatalogSource::Mcp => "mcp",
         SkillCatalogSource::Legacy => "legacy",
+        // Right after builtin: Flowy-managed, ships with the product.
+        SkillCatalogSource::Capability => "builtin~capability",
     }
 }
 

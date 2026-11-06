@@ -1,0 +1,211 @@
+{
+  "settings": {
+    "nav": "演示文稿",
+    "title": "演示文稿",
+    "description": "Nomi 制作 PPT 时使用内置的 ppt-master Skill。它和私有 Python 环境由 Flowy 自动下载和管理，不影响你电脑上的其他 Python。",
+    "capabilityGroup": "安装状态",
+    "detailsGroup": "详细信息",
+    "statusLabel": "ppt-master",
+    "notInstalledHint": "首次使用时 Nomi 会自动安装，也可以在这里提前安装。需要下载约 {{size}}。",
+    "lastFailure": "最近一次失败",
+    "requestFailed": "操作失败",
+    "version": "版本",
+    "commit": "固定提交",
+    "source": "下载来源",
+    "installedAt": "安装时间",
+    "skillDir": "Skill 目录"
+  },
+  "status": {
+    "not_installed": "未安装",
+    "installing": "安装中",
+    "ready": "已就绪",
+    "failed": "安装失败"
+  },
+  "stage": {
+    "fetching_skill": "下载 ppt-master",
+    "preparing_python": "准备 Python 环境",
+    "installing_dependencies": "安装依赖",
+    "self_test": "自检",
+    "committing": "完成安装"
+  },
+  "progress": {
+    "step": "第 {{current}}/{{total}} 步"
+  },
+  "actions": {
+    "install": "安装",
+    "retry": "重试安装",
+    "cancel": "取消安装",
+    "repair": "修复",
+    "uninstall": "卸载",
+    "uninstallConfirm": "卸载 ppt-master 和它的 Python 环境？之后制作 PPT 时会重新下载。"
+  },
+  "notice": {
+    "installing": "正在安装演示文稿能力（ppt-master），装好后 Nomi 会继续制作。",
+    "ready": "演示文稿能力已安装。",
+    "failed": "演示文稿能力安装失败。",
+    "cancelled": "已取消安装演示文稿能力。",
+    "details": "查看详情"
+  },
+  "home": {
+    "label": "幻灯片",
+    "slashDescription": "制作幻灯片（ppt-master）：选画布、页数和出稿方式",
+    "canvas": "画布",
+    "pages": "页数",
+    "mode": "出稿方式",
+    "canvases": {
+      "ppt169": "16:9",
+      "ppt43": "4:3",
+      "xiaohongshu": "小红书 3:4",
+      "moments": "方图 1:1",
+      "story": "竖版 9:16",
+      "a4": "A4"
+    },
+    "pageCounts": {
+      "auto": "页数自动",
+      "5-8": "5–8 页",
+      "10-15": "10–15 页",
+      "20+": "20 页以上"
+    },
+    "modes": {
+      "quick": "快速出稿",
+      "guided": "逐步确认"
+    },
+    "placeholder": "描述你的演示文稿主题，例如：季度业务复盘，面向管理层"
+  },
+  "create": {
+    "title": "创建演示文稿",
+    "refresh": "换一批",
+    "close": "关闭",
+    "templateTitle": "选择风格",
+    "import": "导入模板",
+    "importHint": "选一个 PPTX、PDF 或图片作为参考，Nomi 会先把它做成模板，再用它制作这份演示文稿",
+    "importFilter": "模板参考文件",
+    "importedHint": "导入的模板：发送后 Nomi 先根据这个文件创建模板",
+    "previous": "上一组",
+    "next": "下一组",
+    "suggestions": {
+      "weeklyStatus": {
+        "title": "自动化每周团队状态报告",
+        "prompt": "做一份团队每周状态报告：本周进展、关键指标、风险和下周计划，面向部门负责人"
+      },
+      "salesDashboard": {
+        "title": "构建季度销售绩效仪表板",
+        "prompt": "做一份季度销售绩效汇报：营收和目标完成率、区域和产品对比、重点客户、下季度打法"
+      },
+      "competitors": {
+        "title": "分析竞争者市场和定位",
+        "prompt": "做一份竞品分析：主要竞争者、市场份额、产品和价格对比、我们的差异化定位和建议"
+      },
+      "productLaunch": {
+        "title": "发布一款新产品",
+        "prompt": "做一份新产品发布会演示：用户痛点、产品亮点、核心功能演示、价格和上市计划"
+      },
+      "fundraising": {
+        "title": "准备融资路演",
+        "prompt": "做一份融资路演 BP：问题和机会、产品、商业模式、增长数据、团队、融资计划和资金用途"
+      },
+      "architecture": {
+        "title": "讲清楚系统技术架构",
+        "prompt": "做一份技术架构分享：系统整体架构、核心模块和数据流、关键技术取舍、后续演进计划"
+      },
+      "onboarding": {
+        "title": "设计新员工入职培训",
+        "prompt": "做一份新员工入职培训课件：公司介绍、组织结构、工作流程、常用工具和第一周安排"
+      },
+      "postmortem": {
+        "title": "复盘一次线上故障",
+        "prompt": "做一份线上故障复盘：影响范围、时间线、根因分析、处理过程和改进措施，不追责"
+      },
+      "explainer": {
+        "title": "科普一个复杂概念",
+        "prompt": "做一份科普演示，用通俗的比喻讲清楚大语言模型是怎么工作的，面向非技术观众"
+      }
+    },
+    "free": {
+      "name": "自由设计",
+      "description": "不指定风格，由 Nomi 根据内容设计"
+    },
+    "themes": {
+      "swiss": {
+        "name": "极简",
+        "description": "瑞士网格，大量留白，一个红色强调"
+      },
+      "navy": {
+        "name": "深海",
+        "description": "深蓝底色，网格排版，冷静专业"
+      },
+      "frost": {
+        "name": "冰川",
+        "description": "冰蓝圆角卡片，轻阴影，亲和"
+      },
+      "editorial": {
+        "name": "刊物",
+        "description": "杂志式分栏和细线，衬线标题"
+      },
+      "midnight": {
+        "name": "夜幕",
+        "description": "深色底，发光线条，科技感"
+      },
+      "aurora": {
+        "name": "极光",
+        "description": "渐变光影加半透明玻璃面板"
+      },
+      "data": {
+        "name": "数据",
+        "description": "数据新闻风格：小图表、来源行、信息密"
+      },
+      "inkwash": {
+        "name": "水墨",
+        "description": "宣纸留白，笔触和一枚朱印"
+      },
+      "sketch": {
+        "name": "手账",
+        "description": "暖色纸面，手绘线条和柔和色块"
+      },
+      "chalk": {
+        "name": "黑板",
+        "description": "墨绿黑板，粉笔字和粉彩点缀"
+      },
+      "blueprint": {
+        "name": "蓝图",
+        "description": "深蓝图纸，工程线稿和标注"
+      },
+      "pictorial": {
+        "name": "画报",
+        "description": "大图铺满，文字压在图上"
+      },
+      "papercut": {
+        "name": "剪纸",
+        "description": "层叠纸片，柔和投影，有手作感"
+      },
+      "retro": {
+        "name": "复古",
+        "description": "上世纪海报：色块、放射线、暖色"
+      },
+      "pop": {
+        "name": "波普",
+        "description": "撞色几何和粗描边，活泼"
+      },
+      "riso": {
+        "name": "油印",
+        "description": "孔版印刷感：网点、错版、双色"
+      },
+      "newsprint": {
+        "name": "报刊",
+        "description": "粗框分区，报纸密度，生猛直接"
+      },
+      "inknotes": {
+        "name": "墨记",
+        "description": "白纸黑墨的手写笔记，少量强调色"
+      },
+      "cream": {
+        "name": "奶油",
+        "description": "奶油暖色圆角，柔和温暖"
+      },
+      "pixel": {
+        "name": "像素",
+        "description": "像素方块和有限配色，游戏感"
+      }
+    }
+  }
+}

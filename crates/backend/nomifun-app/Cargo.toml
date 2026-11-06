@@ -303,6 +303,9 @@ nomifun-terminal.workspace = true
 nomifun-ssh.workspace = true
 nomifun-audio.workspace = true
 nomifun-voice-models.workspace = true
+# Presentation capability (ppt-master install + readiness); see
+# docs/architecture/presentation-ppt-master.zh.md.
+nomifun-presentation.workspace = true
 nomi-process-runtime.workspace = true
 nomifun-preset.workspace = true
 nomifun-runtime.workspace = true

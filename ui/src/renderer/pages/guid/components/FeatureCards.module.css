@@ -11,8 +11,15 @@
   position: relative;
   overflow: hidden;
   border-radius: 20px;
-  background: color-mix(in srgb, var(--color-fill-2) 55%, var(--color-bg-1));
-  transition: background-color 220ms ease;
+  background: var(--flowy-raised);
+  /* White cards on the grey home page: a hairline ring plus a soft drop, like the
+     composer. Drawn with box-shadow so buttons keep `border: 0` and their size. */
+  box-shadow:
+    0 0 0 1px var(--color-border-2),
+    0 2px 12px color-mix(in srgb, var(--color-text-1) 5%, transparent);
+  transition:
+    background-color 220ms ease,
+    box-shadow 220ms ease;
 }
 
 .studio {
@@ -27,7 +34,10 @@
 
 .entry:hover,
 .studio:hover {
-  background: color-mix(in srgb, var(--color-text-1) 5%, color-mix(in srgb, var(--color-fill-2) 55%, var(--color-bg-1)));
+  background: color-mix(in srgb, var(--color-text-1) 4%, var(--flowy-raised));
+  box-shadow:
+    0 0 0 1px var(--color-border-3),
+    0 4px 16px color-mix(in srgb, var(--color-text-1) 8%, transparent);
 }
 
 .entry {
@@ -39,6 +49,16 @@
   min-height: 0;
   padding: 16px 22px;
   text-align: left;
+}
+
+.entryButton {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
 }
 
 .build {

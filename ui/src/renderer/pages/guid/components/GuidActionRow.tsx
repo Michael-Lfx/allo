@@ -86,6 +86,11 @@ type GuidActionRowProps = {
   /** Arms the first message as a `/goal` objective. */
   goalMode?: boolean;
   onGoalModeChange?: (enabled: boolean) => void;
+  /** Home "Slides" work mode (Nomi only); omitted hides the entry. */
+  slidesActive?: boolean;
+  onSlidesChange?: (active: boolean) => void;
+  /** ppt-master option pills, rendered after the work-mode selector in slides mode. */
+  slideControls?: React.ReactNode;
   /** When true the primary button starts an AutoWork session (no chat send):
    * it shows a robot icon + "Start AutoWork" tooltip. Disabled/onClick are
    * still driven by the parent. */
@@ -136,6 +141,9 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onSend,
   goalMode = false,
   onGoalModeChange,
+  slidesActive = false,
+  onSlidesChange,
+  slideControls,
   autoWorkMode = false,
 }) => {
   const { t } = useTranslation();
@@ -310,7 +318,13 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             modeLabelFormatter={getModeDisplayLabel}
           />
         )}
-        <TaskProfileSelector compact className={styles.composerTaskProfile} />
+        <TaskProfileSelector
+          compact
+          className={styles.composerTaskProfile}
+          slidesActive={slidesActive}
+          onSlidesChange={onSlidesChange}
+        />
+        {slidesActive && slideControls}
         {goalMode && onGoalModeChange && (
           <Button
             type='text'

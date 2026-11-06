@@ -50,6 +50,8 @@ nomifun-shell.workspace = true
 # MCP-server + extensions/hub/skills domain capabilities.
 nomifun-mcp.workspace = true
 nomifun-extension.workspace = true
+# Host-managed ppt-master capability (status / install / run_script).
+nomifun-presentation.workspace = true
 # Shared GW2 classifier only; BrowserRegistry does not construct BrowserTool.
 nomi-browser = { workspace = true, optional = true }
 nomifun-browser-platform = { workspace = true, optional = true }

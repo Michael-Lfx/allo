@@ -561,6 +561,10 @@ impl GatewayMcpConfig {
         // work and inspect it (nomi_delegate/nomi_execution_get).
         // Remote projects the same domain through companion-scoped auth.
         "agent_execution",
+        // Built-in ppt-master Skill: Nomi checks/installs it and runs its
+        // scripts when the owner asks for a deck. Install/run are denied on
+        // Channel/Remote by capability policy.
+        "presentation",
     ];
     pub const DESKTOP_DOMAINS: &'static [&'static str] = &[
         "conversation",
@@ -1395,6 +1399,10 @@ mod tests {
         assert!(GatewayMcpConfig::DESKTOP_DOMAINS.contains(&"agent_execution"));
         assert!(!GatewayMcpConfig::LITE_DOMAINS.contains(&"agent_execution"));
         assert!(GatewayMcpConfig::WORK_DOMAINS.contains(&"remote"));
+        // Owner desktop Nomi sessions use `work`; the ppt-master capability
+        // must be reachable there, and stays out of the IM `lite` profile.
+        assert!(GatewayMcpConfig::WORK_DOMAINS.contains(&"presentation"));
+        assert!(!GatewayMcpConfig::LITE_DOMAINS.contains(&"presentation"));
         assert!(GatewayMcpConfig::DESKTOP_DOMAINS.contains(&"remote"));
         assert!(GatewayMcpConfig::ADMIN_DOMAINS.contains(&"remote"));
         assert!(!GatewayMcpConfig::LITE_DOMAINS.contains(&"remote"));

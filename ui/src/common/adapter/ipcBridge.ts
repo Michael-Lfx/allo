@@ -1645,7 +1645,7 @@ export const fs = {
         skill_id: string;
         name: string;
         description: string;
-        source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
+        source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy' | 'capability';
         source_key?: string;
         market_id?: string;
         name_i18n?: Record<string, string>;
@@ -8594,4 +8594,80 @@ export const meeting = {
     (p) => `/api/meetings/voiceprints/${p.voiceprint_id}`
   ),
   onEvent: wsEmitter<MeetingEvent>('meeting:event'),
+};
+
+// ---------------------------------------------------------------------------
+// Presentation capability — host-managed ppt-master Skill + private Python.
+// Wire contract: `nomifun-api-types/src/presentation.rs`. Instance scoped: the
+// install lives in the data dir and is shared by every conversation.
+// ---------------------------------------------------------------------------
+
+export type PresentationCapabilityStatus = 'not_installed' | 'installing' | 'ready' | 'failed';
+export type PresentationInstallStage =
+  | 'fetching_skill'
+  | 'preparing_python'
+  | 'installing_dependencies'
+  | 'self_test'
+  | 'committing';
+
+export interface IPresentationInstallProgress {
+  received_bytes: number;
+  /** Known size of the current download; `0` while fetching the Skill over git. */
+  total_bytes: number;
+  received_objects: number;
+  total_objects: number;
+}
+
+export interface IPresentationInstallFailure {
+  stage?: PresentationInstallStage | null;
+  message: string;
+  at_ms: number;
+}
+
+export interface IPresentationCapability {
+  capability_id: string;
+  version: string;
+  source_commit: string;
+  license: string;
+  sources: string[];
+  estimated_download_bytes: number;
+  status: PresentationCapabilityStatus;
+  stage?: PresentationInstallStage;
+  progress?: IPresentationInstallProgress;
+  skill_dir?: string;
+  python?: string;
+  installed_from?: string;
+  installed_at_ms?: number;
+  failure?: IPresentationInstallFailure;
+}
+
+export interface IPresentationInstallResponse {
+  accepted: boolean;
+  capability: IPresentationCapability;
+}
+
+export interface IPresentationCancelResponse {
+  cancelled: boolean;
+  capability: IPresentationCapability;
+}
+
+export interface IPresentationUninstallResponse {
+  capability: IPresentationCapability;
+}
+
+/** Catalog id of the managed ppt-master Skill (listed only while ready). */
+export const PRESENTATION_SKILL_ID = 'capability:presentation:ppt-master';
+
+export const presentation = {
+  status: httpGet<IPresentationCapability, void>('/api/presentation/capability/status'),
+  /** Starts a background install; `force` repairs a ready install. */
+  install: httpPost<IPresentationInstallResponse, { force?: boolean }>(
+    '/api/presentation/capability/install',
+    (p) => ({ force: Boolean(p?.force) })
+  ),
+  cancel: httpPost<IPresentationCancelResponse, void>('/api/presentation/capability/cancel', () => ({})),
+  /** 409 `PRESENTATION_CAPABILITY_BUSY` while an install runs. */
+  uninstall: httpDelete<IPresentationUninstallResponse, void>('/api/presentation/capability'),
+  /** Same payload as `status`, pushed on every change. */
+  onStatus: wsEmitter<IPresentationCapability>('presentationCapability.status'),
 };

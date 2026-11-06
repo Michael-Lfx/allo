@@ -26,6 +26,7 @@ const useSourceLabel = (source: string): string => {
   if (source === 'builtin') return t('nomi.skills.catalogSourceBuiltin', { defaultValue: '内置' });
   if (source === 'custom') return t('nomi.skills.catalogSourceCustom', { defaultValue: '自定义' });
   if (source === 'extension') return t('nomi.skills.catalogSourceExtension', { defaultValue: '扩展' });
+  if (source === 'capability') return t('nomi.skills.catalogSourceCapability', { defaultValue: 'Flowy 托管' });
   return source;
 };
 
