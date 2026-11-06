@@ -1,7 +1,26 @@
 .root {
+  --deliverable-file-amber: #d97706;
+  --deliverable-file-blue: #3d84f6;
+  --deliverable-file-green: #14945f;
+  --deliverable-file-red: #dc4c4c;
+  --deliverable-file-slate: #68758a;
+  --deliverable-file-teal: #0d9488;
+  --deliverable-file-violet: #7c5ce5;
+
   container: turn-deliverables / inline-size;
   width: 100%;
   min-width: 0;
+}
+
+[data-theme='dark'] .root,
+body[arco-theme='dark'] .root {
+  --deliverable-file-amber: #f5b74e;
+  --deliverable-file-blue: #69a7ff;
+  --deliverable-file-green: #4ec98b;
+  --deliverable-file-red: #ff7a7a;
+  --deliverable-file-slate: #9aa8bd;
+  --deliverable-file-teal: #36c7b5;
+  --deliverable-file-violet: #a79aff;
 }
 
 .header {
@@ -96,24 +115,46 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  color: var(--flowy-info, var(--info));
+  color: var(--deliverable-file-blue);
 }
 
-.glyph svg {
+.glyph[data-kind='archive'],
+.glyph[data-kind='html'],
+.glyph[data-kind='presentation'] {
+  color: var(--deliverable-file-amber);
+}
+
+.glyph[data-kind='audio'],
+.glyph[data-kind='video'] {
+  color: var(--deliverable-file-violet);
+}
+
+.glyph[data-kind='code'],
+.glyph[data-kind='text'] {
+  color: var(--deliverable-file-slate);
+}
+
+.glyph[data-kind='excel'] {
+  color: var(--deliverable-file-green);
+}
+
+.glyph[data-kind='image'] {
+  color: var(--deliverable-file-teal);
+}
+
+.glyph[data-kind='pdf'] {
+  color: var(--deliverable-file-red);
+}
+
+.fileGlyph {
   display: block;
 }
 
-.glyphMarkdown {
-  color: #3d84f6;
-}
-
-.markdownGlyph {
+.assetGlyph {
   display: block;
-}
-
-[data-theme='dark'] .glyphMarkdown,
-body[arco-theme='dark'] .glyphMarkdown {
-  color: #69a7ff;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
 }
 
 .copy {
