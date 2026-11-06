@@ -48,6 +48,11 @@ pub use generation::{
     Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure,
 };
 pub use generation::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
+// u10 变式链 V2 开关与读数再导出：冒烟 quiz 臂的读数行（A/B 观测点）经
+// crate 根引用（qb_readings 同一先例）。
+pub use generation::{
+    VARIANT_V2_SWITCH_ENV, is_variant_v2_disabled_value, variant_readings, variant_v2_enabled,
+};
 // R14 EN 块随开关常量再导出（w1 评审修复）：ai-agent 的跨宿互钉测试经
 // crate 根引用（generation 模块私有，类型/常量公开先例同 SampleDisclosure）。
 // y06 的 `DISTRACTOR_MENU_BLOCK` 同因再导出：R21 标记需要在两宿同时可见
