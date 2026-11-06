@@ -7,38 +7,43 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { browseDirectory, createDirectory } from './directorySelectionApi';
 
-const realFetch = globalThis.fetch;
-const realWindow = (globalThis as { window?: Window }).window;
-const realDocument = (globalThis as { document?: Document }).document;
+const realFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+const realWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+const realDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+
+function restoreGlobal(name: 'fetch' | 'window' | 'document', descriptor?: PropertyDescriptor): void {
+  if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+  else Reflect.deleteProperty(globalThis, name);
+}
 
 function installWebUiGlobals(csrfToken = ''): void {
-  (globalThis as { window?: unknown }).window = {
-    location: {
-      origin: 'http://192.168.3.68:25808',
-      protocol: 'http:',
-      host: '192.168.3.68:25808',
-      pathname: '/#/guid',
-      hash: '#/guid',
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      location: {
+        origin: 'http://192.168.3.68:25808',
+        protocol: 'http:',
+        host: '192.168.3.68:25808',
+        pathname: '/#/guid',
+        hash: '#/guid',
+      },
+      dispatchEvent: () => true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
-    dispatchEvent: () => true,
-  };
-  (globalThis as { document?: unknown }).document = {
-    cookie: csrfToken ? `nomifun-csrf-token=${csrfToken}` : '',
-  };
+  });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    writable: true,
+    value: { cookie: csrfToken ? `nomifun-csrf-token=${csrfToken}` : '' },
+  });
 }
 
 afterEach(() => {
-  globalThis.fetch = realFetch;
-  if (realWindow === undefined) {
-    delete (globalThis as { window?: Window }).window;
-  } else {
-    (globalThis as { window?: Window }).window = realWindow;
-  }
-  if (realDocument === undefined) {
-    delete (globalThis as { document?: Document }).document;
-  } else {
-    (globalThis as { document?: Document }).document = realDocument;
-  }
+  if (realFetch) Object.defineProperty(globalThis, 'fetch', realFetch);
+  restoreGlobal('window', realWindow);
+  restoreGlobal('document', realDocument);
 });
 
 describe('directorySelectionApi WebUI request security', () => {

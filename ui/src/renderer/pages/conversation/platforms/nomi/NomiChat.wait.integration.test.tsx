@@ -291,7 +291,7 @@ pageTest('a stop or reset clears the local keyboard wait row immediately', async
     });
     expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeNull();
 
-    // Start a second wait and clear it through the reset refresh channel.
+    // Start a second wait and clear it through the dedicated keyboard-wait channel.
     sendStarted = false;
     const secondSuggestion = container.querySelector('button');
     expect(secondSuggestion).toBeTruthy();
@@ -306,10 +306,7 @@ pageTest('a stop or reset clears the local keyboard wait row immediately', async
     });
     expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeTruthy();
     await act(async () => {
-      emitter.emit('conversation.messages.refresh', {
-        conversationId: CONVERSATION_ID,
-        reason: 'reset',
-      } as any);
+      emitter.emit('voice.keyboard.wait.clear', CONVERSATION_ID);
       await Promise.resolve();
     });
     expect(container.querySelector('[data-testid="voice-keyboard-wait-row"]')).toBeNull();

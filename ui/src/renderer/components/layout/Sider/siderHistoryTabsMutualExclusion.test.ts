@@ -29,8 +29,8 @@ describe('sider history tabs mutual exclusion and empty states', () => {
 
     // Video, skill store, then companion, as full-width rows. Projects stay in the list below.
     expect(siderSource.includes('<MessageOne')).toBe(false);
-    expect(siderSource.includes('<VideoOne')).toBe(true);
-    expect(siderSource.includes('<Ghost')).toBe(true);
+    expect(siderSource.includes("name='video'")).toBe(true);
+    expect(siderSource.includes("name='ghost'")).toBe(true);
     expect(siderSource.includes('🐱')).toBe(false);
     const videoRow = siderSource.indexOf("testId='sider-video-module-row'");
     const skillStoreRow = siderSource.indexOf("testId='sider-skill-store-row'");

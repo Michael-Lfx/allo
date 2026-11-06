@@ -130,13 +130,15 @@ export const useEntryFlyoutBox = <T extends HTMLElement>(
     onUpdate();
     const anchor = anchorRef?.current;
     const resize = anchor && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onUpdate) : null;
-    resize?.observe(anchor);
+    if (anchor) resize?.observe(anchor);
     const mutation = anchor && typeof MutationObserver !== 'undefined' ? new MutationObserver(onUpdate) : null;
-    mutation?.observe(anchor, {
-      attributes: true,
-      subtree: true,
-      attributeFilter: ['aria-selected'],
-    });
+    if (anchor) {
+      mutation?.observe(anchor, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: ['aria-selected'],
+      });
+    }
     window.addEventListener('resize', onUpdate);
     window.addEventListener('scroll', onUpdate, true);
     return () => {

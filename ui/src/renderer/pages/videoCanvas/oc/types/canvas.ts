@@ -36,7 +36,7 @@ export enum CanvasNodeType {
     ArtCritique = "ai-art-critique",
 }
 
-export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
+export type CanvasNodeStatus = "idle" | "pending" | "queued" | "running" | "processing" | "loading" | "success" | "error";
 export type CanvasMediaPerformanceMode = "auto" | "quality" | "performance";
 export type CanvasWorkspaceMode = "simple" | "professional";
 export type CanvasToolMode = "move" | "box-select";
@@ -227,6 +227,7 @@ export type CanvasNodeMetadata = {
     batchFailedCount?: number;
     batchUsesReferenceImages?: boolean;
     primaryImageId?: string;
+    resourceId?: string;
     imageBatchExpanded?: boolean;
     /** `"grid"` is generation fan-out; `"deck"` is a stacked upload pile. Missing means grid. */
     imageStackLayout?: "grid" | "deck";

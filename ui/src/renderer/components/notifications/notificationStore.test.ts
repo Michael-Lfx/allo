@@ -4,6 +4,14 @@ import type { NotificationScope } from './notificationTypes';
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await wait(10);
+  }
+};
+
 const activeOf = (scope: NotificationScope) =>
   notificationStore.getSnapshot().filter((record) => record.scopeId === scope.id && record.status === 'active');
 
@@ -35,7 +43,7 @@ describe('notificationStore', () => {
     try {
       scope.show({ content: 'bye', duration: 30, onClose: () => (closed += 1) });
       expect(activeOf(scope)).toHaveLength(1);
-      await wait(30 + NOTIFICATION_EXIT_DURATION + 50);
+      await waitFor(() => anyOf(scope).length === 0);
       expect(anyOf(scope)).toHaveLength(0);
       expect(closed).toBe(1);
     } finally {
@@ -91,7 +99,7 @@ describe('notificationStore', () => {
       const [record] = activeOf(scope);
       expect(record.content).toBe('v2');
       expect(record.duration).toBe(30);
-      await wait(30 + NOTIFICATION_EXIT_DURATION + 50);
+      await waitFor(() => anyOf(scope).length === 0);
       expect(anyOf(scope)).toHaveLength(0);
     } finally {
       scope.dispose();

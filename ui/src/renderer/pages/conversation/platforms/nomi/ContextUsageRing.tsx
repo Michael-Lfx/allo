@@ -10,6 +10,7 @@ import {
   formatTokenCount,
   type ContextBreakdownSegment,
   type ContextUsageCategory,
+  type SummarizedConversationPropertiesView,
 } from './turnMetrics';
 
 export type ContextUsageRingProps = {

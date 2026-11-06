@@ -46,13 +46,12 @@ const WallpaperSection: React.FC = () => {
       void setPrefs({ enabled: false });
       return;
     }
-    const fallback =
-      (prefs.id && library.some((item) => item.wallpaperId === prefs.id) ? prefs.id : library[0]?.wallpaperId) ?? null;
+    const fallback = library.find((item) => item.wallpaperId === prefs.id) ?? library[0];
     if (!fallback) {
       fileRef.current?.click();
       return;
     }
-    applyLibraryItem(fallback);
+    applyLibraryItem(fallback.wallpaperId);
   };
 
   return (

@@ -57,7 +57,7 @@ describe('CodeBlock', () => {
   test('uses an accent streaming caret without a primary glow', () => {
     expect(cssSource.includes('linear-gradient')).toBe(false);
     expect(cssSource.includes('0 0 8px')).toBe(false);
-    expect(cssSource.includes('background: var(--color-primary-6')).toBe(true);
+    expect(cssSource.includes('background: rgb(var(--primary-6))')).toBe(true);
   });
 
   test('uses inherited code font tokens and does not pin light token colors on .root', () => {

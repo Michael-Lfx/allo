@@ -71,7 +71,7 @@ describe('committedImageArtifactsFromTools', () => {
     const emptyCall = {
       type: 'tool_call',
       content: { artifacts: [] },
-    } as IMessageToolCall;
+    } as unknown as IMessageToolCall;
     const acpCall = {
       type: 'acp_tool_call',
       content: { update: { content: [{ type: 'artifact', artifact: cat }] } },

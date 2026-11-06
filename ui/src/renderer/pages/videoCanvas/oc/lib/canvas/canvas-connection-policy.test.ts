@@ -41,7 +41,11 @@ describe("canvas video-to-video connections", () => {
     });
 
     test("allows connecting a video node into a generic catalog video model", () => {
-        expect(canvasConnectionError(videoConfig("default::grok-imagine-video"), nodes, [], candidate)).toBe("");
+        expect(canvasConnectionError(videoConfig("default::catalog-video"), nodes, [], candidate)).toBe("");
+    });
+
+    test("rejects a known video model without reference-video support", () => {
+        expect(canvasConnectionError(videoConfig("default::grok-imagine-video"), nodes, [], candidate)).toBe("已配置模型均不支持参考视频");
     });
 });
 

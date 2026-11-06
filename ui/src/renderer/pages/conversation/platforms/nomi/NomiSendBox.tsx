@@ -2139,6 +2139,7 @@ const NomiSendBox: React.FC<{
       if (isVoiceConversation) await resetVoiceHistory(voiceSnapshot, conversation_id, clearContext);
       else await clearContext();
       if (isVoiceConversation) {
+        emitter.emit('voice.keyboard.wait.clear', conversation_id);
         emitter.emit('conversation.messages.refresh', {conversationId: conversation_id, reason: 'reset'});
       }
       if (!mountedRef.current || lifecycleGenerationRef.current !== generation) return;

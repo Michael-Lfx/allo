@@ -10,9 +10,9 @@ const sendBoxSource = readFileSync(
 describe('Nomi Skill load delivery', () => {
   test('delivers selected source-qualified Skill IDs through the conversation send boundary', () => {
     expect(source.includes('inject_skills: injectSkills')).toBe(true);
-    expect(source.includes('onSendWithSkills={onSendWithSkillsHandler}')).toBe(true);
-    expect(source.includes('skillChips={skillChips}')).toBe(true);
-    expect(source.includes('onSkillChipsChange={setSkillChips}')).toBe(true);
+    expect(source.includes('onSendWithSkills={isVoiceConversation?undefined:onSendWithSkillsHandler}')).toBe(true);
+    expect(source.includes('skillChips={isVoiceConversation?[]:skillChips}')).toBe(true);
+    expect(source.includes('onSkillChipsChange={isVoiceConversation?undefined:setSkillChips}')).toBe(true);
     expect(sendBoxSource.includes("key: 'skills'")).toBe(true);
     expect(sendBoxSource.includes('GuidEntryFlyout')).toBe(true);
     expect(sendBoxSource.includes('onToggleSkill={handleToggleCatalogSkill}')).toBe(true);
@@ -26,7 +26,7 @@ describe('Nomi Skill load delivery', () => {
     expect(skillSendStart).toBeGreaterThan(-1);
     expect(skillSendEnd).toBeGreaterThan(skillSendStart);
     expect(skillSend.includes('await executeCommand({ input: message, files: filesToSend, injectSkills });')).toBe(true);
-    expect(skillSend.includes('catch')).toBe(false);
+    expect(skillSend.includes('throw err;')).toBe(true);
     expect(skillSend.includes('throw new Error')).toBe(true);
     expect(sendBoxSource.includes('setInput(finalMessage);')).toBe(true);
     expect(sendBoxSource.includes('onSkillChipsChange?.(submittedSkills);')).toBe(true);

@@ -9,8 +9,12 @@ import { CanvasNodeType } from "@oc/types/canvas";
 import type { AddNodeMenuCommand } from "../tool-definition";
 
 /** 真正创建节点的命令：文案走 i18n，图标用节点类型对应的 Lucide 组件。 */
-function nodeCommand(type: CanvasNodeType, rest: Omit<AddNodeMenuCommand, "id" | "label" | "icon">): AddNodeMenuCommand {
-    return { id: type, label: () => getNodeLabel(type), icon: () => nodeTypeIcon(type), section: "node", ...rest };
+type NodeCommandOverrides = Omit<AddNodeMenuCommand, "id" | "label" | "icon" | "section"> & {
+    section?: AddNodeMenuCommand["section"];
+};
+
+function nodeCommand(type: CanvasNodeType, { section = "node", ...rest }: NodeCommandOverrides): AddNodeMenuCommand {
+    return { id: type, label: () => getNodeLabel(type), icon: () => nodeTypeIcon(type), section, ...rest };
 }
 
 /**

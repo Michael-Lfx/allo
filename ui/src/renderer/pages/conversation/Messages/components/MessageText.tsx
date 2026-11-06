@@ -848,7 +848,7 @@ const MessageText: React.FC<{
       onCancel={() => setShowExtractModal(false)}
       messageText={text}
       userQuestion={userQuestion}
-      conversationTitle={conversation?.title}
+      conversationTitle={conversation?.name}
     />
   ) : null;
 

@@ -6,7 +6,8 @@
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Table, Tag, Typography } from '@arco-design/web-react';
+import { Button, Table, Tag, Typography } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { exportBusinessReport } from './businessReportExport';
 import type { EvalBusinessMatrixRow, EvalBusinessReport } from './api';

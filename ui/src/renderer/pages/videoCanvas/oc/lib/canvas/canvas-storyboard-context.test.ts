@@ -23,9 +23,8 @@ describe("resolveStoryboardGenerationContext", () => {
             }),
         ]);
         expect(context.projectStyle.prompt).toBe("");
-        expect(context.characters).toEqual([
-            expect.objectContaining({ assetId: "", versionId: "", name: "噜噜" }),
-        ]);
+        expect(context.characters).toHaveLength(1);
+        expect(context.characters[0]).toMatchObject({ assetId: "", versionId: "", name: "噜噜" });
     });
 
     test("still requires a synced Yingce character version", () => {

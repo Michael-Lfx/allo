@@ -6,7 +6,7 @@
 
 import * as bunTest from 'bun:test';
 
-const { beforeEach, describe, expect, test } = bunTest;
+const { afterEach, beforeEach, describe, expect, test } = bunTest;
 const mock = (bunTest as unknown as { mock: { module: (specifier: string, factory: () => unknown) => void } }).mock;
 
 type StatusListener = (evt: Record<string, unknown>) => void;
@@ -72,6 +72,12 @@ const {
 } = await import('./updateAutoDownload');
 
 const names = () => events.map((e) => e.name);
+const realLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+
+const restoreLocalStorage = (): void => {
+  if (realLocalStorage) Object.defineProperty(globalThis, 'localStorage', realLocalStorage);
+  else Reflect.deleteProperty(globalThis, 'localStorage');
+};
 
 beforeEach(() => {
   resetUpdateAutoDownloadForTests();
@@ -81,8 +87,14 @@ beforeEach(() => {
   downloadCalls = 0;
   checkData = { updateInfo: { version: '1.1.0' }, retainedVersion: null, packageState: 'idle' };
   downloadImpl = async () => ({ success: true });
-  (globalThis as { localStorage?: unknown }).localStorage = { getItem: () => null };
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    writable: true,
+    value: { getItem: () => null },
+  });
 });
+
+afterEach(restoreLocalStorage);
 
 describe('background update auto-download', () => {
   test('the first attempt is not blocked by the cooldown, even early in the process lifetime', async () => {
