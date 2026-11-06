@@ -2,7 +2,7 @@
 id: u10
 title: "出题链补洞：变式判底正文/缺席跳过 + 证据逐字核 + 按题型装配契约 + tol 透传 + 指令独立段 + 语言跟随"
 type: task
-status: open
+status: closed
 lane: D
 blocked_by: []
 part_of: ../map.md

@@ -2,7 +2,7 @@
 id: u11
 title: "smoke 夹具：「贝塔系数」别名换成正确同义名"
 type: task
-status: open
+status: closed
 lane: D
 blocked_by: [u10]
 part_of: ../map.md

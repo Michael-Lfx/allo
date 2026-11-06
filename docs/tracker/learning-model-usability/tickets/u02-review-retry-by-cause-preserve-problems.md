@@ -2,7 +2,7 @@
 id: u02
 title: "评审重试按失败原因分账 + 超时重试话术 + 降级保全 problems"
 type: task
-status: open
+status: closed
 lane: A
 blocked_by: [u01]
 part_of: ../map.md

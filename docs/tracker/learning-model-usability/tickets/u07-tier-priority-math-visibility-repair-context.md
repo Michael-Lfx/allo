@@ -2,7 +2,7 @@
 id: u07
 title: "档位优先条款 + 节长上限 warning + 发布前数学失败可见 + 修复轮带课时上下文"
 type: task
-status: open
+status: closed
 lane: B
 blocked_by: [u06]
 part_of: ../map.md
