@@ -81,3 +81,12 @@
 2. 合并后主仓串行：learning / ai-agent / app / db（单线程）全量 + workspace check。
 3. 真机 A/B：A 车道 grow 臂、B 车道 content 臂、C 车道 structure 臂（修补无真机
    基线→单测为主）、D 车道 quiz 臂（先补基线跑）。
+
+## A/B 规程补充（2026-11-06 开工后）
+
+- **两臂同一冻结二进制、仅开关不同**：全部车道合并后在主仓构建一次 nomicore，立即复制到
+  `C:/Users/test/Desktop/work/absorb8-smoke/bin-ab/` 冻结使用，所有 A/B 臂都跑这份副本。
+  原因：并行车道的 `cargo test -p nomifun-app` 会经集成测试重链共享目标目录里的
+  `target/debug/nomicore.exe`（17:27 实测被改写），开工前「改动前二进制」不可信。
+- off 臂由单测保证与基线逐字节一致（开关项），机械项两臂同享——两臂差异只来自开关。
+- 既有真机档案（r01 两跑、pctx content 干净跑）作历史参照，不作对照臂。
