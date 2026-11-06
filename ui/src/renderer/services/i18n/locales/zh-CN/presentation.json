@@ -75,7 +75,7 @@
   "create": {
     "title": "创建演示文稿",
     "refresh": "换一批",
-    "close": "收起",
+    "close": "关闭",
     "templateTitle": "选择风格",
     "import": "导入模板",
     "importHint": "选一个 PPTX、PDF 或图片作为参考，Nomi 会先把它做成模板，再用它制作这份演示文稿",

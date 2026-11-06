@@ -75,7 +75,7 @@
   "create": {
     "title": "Create a presentation",
     "refresh": "Show others",
-    "close": "Hide",
+    "close": "Close",
     "templateTitle": "Choose a style",
     "import": "Import template",
     "importHint": "Pick a PPTX, PDF or image as a reference. Nomi turns it into a template first, then makes this deck with it",

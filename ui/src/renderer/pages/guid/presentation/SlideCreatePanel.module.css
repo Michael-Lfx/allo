@@ -163,24 +163,38 @@
   overflow: hidden;
   aspect-ratio: 16 / 9;
   border-radius: 12px;
-  box-shadow: 0 0 0 1px var(--color-border-2);
-  transition: box-shadow var(--flowy-motion-fast) ease, transform var(--flowy-motion-base) var(--flowy-ease-move);
+  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+/* The rail scrolls horizontally, so an outer ring on the first card (自由设计)
+   is clipped on the leading edge. Draw the stroke inside the thumbnail. */
+.thumb::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--color-border-2);
+  transition: box-shadow var(--flowy-motion-fast) ease;
 }
 
 .template:hover:not(:disabled) .thumb {
   transform: translateY(-2px);
 }
 
-.template[data-selected] .thumb {
-  box-shadow: 0 0 0 2px rgb(var(--primary-6));
+.template[data-selected] .thumb::after {
+  box-shadow: inset 0 0 0 2px rgb(var(--primary-6));
 }
 
 .template:focus-visible {
   outline: none;
 }
 
-.template:focus-visible .thumb {
-  box-shadow: 0 0 0 2px rgb(var(--primary-6)), 0 0 0 4px color-mix(in srgb, rgb(var(--primary-6)) 25%, transparent);
+.template:focus-visible .thumb::after {
+  box-shadow:
+    inset 0 0 0 2px rgb(var(--primary-6)),
+    inset 0 0 0 4px color-mix(in srgb, rgb(var(--primary-6)) 25%, transparent);
 }
 
 .thumbImage {
@@ -238,7 +252,8 @@
     animation: none;
   }
 
-  .thumb {
+  .thumb,
+  .thumb::after {
     transition: none;
   }
 }

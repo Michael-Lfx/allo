@@ -152,8 +152,9 @@ const GuidPage: React.FC = () => {
   // user's own text; the ppt-master option line and the managed Skill are
   // added when the first message is sent.
   const [slideOptions, setSlideOptions] = useState<SlideOptions | null>(null);
-  // "Create presentation" panel above the composer (topics + templates); only
-  // meaningful while slides mode is on.
+  // "Create presentation" panel above the composer (topics + templates).
+  // It opens with slides mode. Dismissing the panel exits slides mode, and
+  // leaving slides mode closes the panel.
   const [slidePanelOpen, setSlidePanelOpen] = useState(false);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
@@ -653,9 +654,12 @@ const GuidPage: React.FC = () => {
     setSlidePanelOpen(true);
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
   }, []);
+  const exitSlideMode = useCallback(() => {
+    setSlideOptions(null);
+  }, []);
   const handleSlidesChange = useCallback(
-    (active: boolean) => (active ? enterSlideMode() : setSlideOptions(null)),
-    [enterSlideMode],
+    (active: boolean) => (active ? enterSlideMode() : exitSlideMode()),
+    [enterSlideMode, exitSlideMode],
   );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
@@ -1724,7 +1728,7 @@ const GuidPage: React.FC = () => {
                 onSelectTemplate={handleSelectSlideTemplate}
                 onSelectSuggestion={handleSelectSlideSuggestion}
                 onImportTemplate={handleImportSlideTemplate}
-                onClose={() => setSlidePanelOpen(false)}
+                onClose={exitSlideMode}
                 disabled={guidInput.loading}
               />
             )}

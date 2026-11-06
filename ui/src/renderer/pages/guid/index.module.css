@@ -2675,7 +2675,9 @@
   display: flex;
   flex-direction: column;
   overflow-x: hidden;
-  overflow-y: auto;
+  /* Always reserve the 14px bar. `auto` drops it when slides mode hides the
+     home column, and the centered layout shifts sideways. */
+  overflow-y: scroll;
   position: relative;
   /* 首页是浅灰底、白色输入框（参考 Manus）；暗色仍跟 --color-bg-1 */
   --guid-canvas: color-mix(in srgb, var(--bg-1) 70%, var(--bg-base));

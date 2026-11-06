@@ -56,6 +56,9 @@ describe('Presentation capability surfaces', () => {
     expect(page).toContain("id: 'system:ppt'");
     expect(page).toContain('PRESENTATION_SKILL_ID');
     expect(page).toContain('slidesActive={supportsHomeGoalCommand && slideOptions !== null}');
+    // Closing the create-presentation panel exits slides mode; the panel
+    // itself closes because slide options are cleared.
+    expect(page).toContain('onClose={exitSlideMode}');
     expect(page).toContain('<SlideOptionsControls');
     expect(page).not.toContain('entryStrip=');
     expect(page).not.toContain('SlideOptionsStrip');
