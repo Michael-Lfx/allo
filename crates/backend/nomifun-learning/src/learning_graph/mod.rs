@@ -569,9 +569,21 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 /// `{MAX_BATCH_NODES}` 占位符以常量单源注入——改批容量只改常量，提示词
 /// 不再手写数字。
 pub(crate) fn coach_system() -> String {
-    COACH_SYSTEM
+    let mut text = COACH_SYSTEM
         .replace("{READY_TARGET}", &READY_TARGET.to_string())
-        .replace("{MAX_BATCH_NODES}", &MAX_BATCH_NODES.to_string())
+        .replace("{MAX_BATCH_NODES}", &MAX_BATCH_NODES.to_string());
+    // u04 边界去重（on 臂）：声明面条款补「边界只写一次」——intent/scope
+    // 不再两字段各写一遍同一条边界（真机 5 节点 4 个重复，每轮重发多付
+    // token 并加重评审四源点名）；off 臂零插入（逐字节回基线）。
+    if anti_loop_enabled() {
+        text = text.replace(
+            "也不要堆砌同义边界表述。\n- 道位配平",
+            "也不要堆砌同义边界表述。\n\
+             - 边界只写一次：「不教 X / 留待后续」这类边界只写在 scope；intent 只写这个点为何存在、\
+             承担什么角色，不要把同一条边界在两字段各写一遍。\n- 道位配平",
+        );
+    }
+    text
 }
 
 /// Everything the coach needs, rendered once into the opening user message.
@@ -603,6 +615,9 @@ pub struct CoachContext {
     pub ready_count: usize,
     /// 块 9：登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
+    /// u04 课程语境词（顿号串；service 按开关装配，off 臂恒空）：课程标题
+    /// + 学习目标的确定性切片——首批块与评审 user 共用（评审面同读此字段）。
+    pub course_context_words: String,
 }
 
 impl CoachContext {
@@ -654,6 +669,10 @@ impl CoachContext {
                  - 入口从结构参考的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
                  - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。\n\
                  {}", ledger_line));
+            // u04 课程语境词（首批块；service 按开关装配，off 臂恒空）：
+            // 首批定义可用的背景用语——判据①的「每个领域词都要有出处」在
+            // 空已教账的首批不可能字字有源，语境词给了确定的豁免面。
+            text.push_str(&course_context_words_block(&self.course_context_words));
         }
         // 块 4：当前就绪。
         text.push_str(&format!(
@@ -1113,6 +1132,45 @@ pub(crate) fn review_context_v2_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// 反循环臂的运维开关（u04，模型可用性修复波）：置 off/0/false = 三件全
+/// 休眠、提示词逐字节回基线；未设/其它值 = 开启（缺省 on，待真机 A/B 定
+/// 案）。on 臂三件：①课程语境词——课程标题 + 学习目标的确定性切片（复用
+/// generation 的 term_slices）渲染为「可作定义的背景用语，不单独要求挂
+/// 号；作为本节点教学对象（teaches）时照常挂号」，进教练首批块与评审
+/// user，并加入点名清单已知面（这些词不再作为碎片下发）——空已教账 +
+/// 判据①要求每个领域词有出处的死结由此解开（「手冲咖啡」课的入门定义不
+/// 可能不用「手冲/冲煮/咖啡粉」）；②评审翻案锁——有状态复审时前轮意见
+/// 随评审 user 回灌并锁定「按前轮意见做出的修改本身不得再判为问题」
+/// （反乒乓纪律此前只约束教练，评审不受约束才有了跨轮翻案）；③教练声
+/// 明面条款补「边界只写一次」——『不教 X / 留待后续』只写 scope，intent
+/// 只写角色，不再两字段各写一遍（5 节点 4 个重复的边界声明）。
+pub const ANTI_LOOP_SWITCH_ENV: &str = "NOMI_LEARNING_ANTI_LOOP";
+
+/// 反循环臂开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_anti_loop_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 反循环臂是否开启（未设/其它值 = 开启）。
+pub(crate) fn anti_loop_enabled() -> bool {
+    std::env::var(ANTI_LOOP_SWITCH_ENV)
+        .map(|value| !is_anti_loop_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// u04 课程语境词块的渲染（教练首批块与评审 user 共用单源）：`words` =
+/// 课程标题 + 学习目标的机械切片顿号串（service 按开关装配；空 = 零注入
+/// ——off 臂逐字节回基线）。
+pub(crate) fn course_context_words_block(words: &str) -> String {
+    if words.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n【课程语境词】{words}——可作定义的背景用语，不单独要求挂号；\
+         作为本节点教学对象（teaches）时照常挂号。\n"
+    )
+}
+
 /// 挂号表评审整路尝试上限（含首轮；「重试恰一次」= 2，learnhub
 /// REVIEW_MAX_ATTEMPTS 同款）。只作用于挂号表机械校验判「结论不可用」的
 /// 路径（表缺失/行伪/表键解析失败）；调用失败与整体解析失败的降级口径
@@ -1465,11 +1523,39 @@ pub(crate) async fn concept_review(
     naming_list: &[fragment_verdict::NameFragment],
     fragment_enforce: bool,
     gate: &GateOutcome,
+    prior_review: &str,
 ) -> ReviewOutcome {
     let provenance_on = review_provenance_enabled();
     let fragments_on = review_fragments_enabled();
     let enforce_on = fragment_enforce;
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
+    // u04 反循环臂（缺省 on；service 传 `prior_review` = 评审往返记录，
+    // off/首轮为空串）：①课程语境词进评审 user（可作定义的背景用语，不
+    // 单独要求挂号；作为 teaches 照常挂号——教练首批块同款单源渲染）；
+    // ②翻案锁——有状态复审时前轮意见随 user 回灌并锁定「按前轮意见做出
+    // 的修改本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告」
+    // （反乒乓纪律此前只约束教练，评审不受约束才有跨轮翻案）。off 臂两块
+    // 恒零注入（基线逐字节）。
+    let anti_loop = anti_loop_enabled();
+    // 首批（花名册空）的语境词已随 context.render() 的首批块进 user（同一
+    // 单源 [`course_context_words_block`]）——评审面不重注（避免双份）；
+    // 非首批由评审面补注（语境词恒在评审可见面）。
+    let course_ctx_block = if !anti_loop {
+        String::new()
+    } else if context.roster.trim().is_empty() {
+        String::new()
+    } else {
+        course_context_words_block(&context.course_context_words)
+    };
+    let overturn_lock = if anti_loop && !prior_review.trim().is_empty() {
+        format!(
+            "\n\n【前轮评审意见与教练修订】\n{prior_review}\n\
+             【翻案锁】按前轮意见做出的修改，本身不得再判为问题；\
+             修改若引入与前轮无关的新硬伤照常报告。"
+        )
+    } else {
+        String::new()
+    };
     let candidates_block = if candidates.trim().is_empty() {
         String::new()
     } else {
@@ -1654,12 +1740,14 @@ pub(crate) async fn concept_review(
     let words_block = provenance_candidates_block(batch);
     loop {
         let mut user = format!(
-            "{}\n\n【待审批次】\n{batch_json}{words_block}{candidates_block}{anchors_block}",
+            "{}\n\n【待审批次】\n{batch_json}{words_block}{course_ctx_block}{candidates_block}{anchors_block}",
             context.render()
         );
         if fragments_on {
             user.push_str(&fragment_verdict::naming_list_block(naming_list));
         }
+        // u04 翻案锁（有状态复审臂）：置于点名清单之后、重试段之前。
+        user.push_str(&overturn_lock);
         if !feedback.is_empty() {
             let (face_note, discipline) = if feedback.starts_with("碎片裁决不可用") {
                 (
@@ -2775,7 +2863,7 @@ mod tests {
             vec![],
         )]);
         let review =
-            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate()).await;
+            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate(), "").await;
         assert_eq!(review.problems.len(), 2, "{review:?}");
         assert_eq!(review.reuse.len(), 1, "{review:?}");
         assert_eq!(review.reuse[0].name, "二进制数");
@@ -2905,6 +2993,7 @@ mod tests {
                 &[],
                 false,
                 &review_gate(),
+                "",
             )
             .await;
             let prompts = completer.0.lock().unwrap().1.clone();
@@ -2935,6 +3024,156 @@ mod tests {
             sys_on.replace(CLAUSES, ""),
             sys_off,
             "off 臂 system = on 臂减去两条款（基线逐字节钉）"
+        );
+    }
+
+    // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重（ANTI_LOOP 两臂）
+
+    /// u04 边界去重条款（on 臂）：教练声明面条款补「边界只写一次」；off 臂
+    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 缺省开启。
+    #[test]
+    #[serial_test::serial]
+    fn anti_loop_switch_gates_coach_system_boundary_clause() {
+        const BULLET: &str = "\n- 边界只写一次：「不教 X / 留待后续」这类边界只写在 scope；intent 只写这个点为何存在、承担什么角色，不要把同一条边界在两字段各写一遍。";
+        fn system_with(pin: Option<&'static str>) -> (String, impl Drop) {
+            struct Restore(Option<String>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    match self.0.take() {
+                        Some(value) => unsafe { std::env::set_var(ANTI_LOOP_SWITCH_ENV, value) },
+                        None => unsafe { std::env::remove_var(ANTI_LOOP_SWITCH_ENV) },
+                    }
+                }
+            }
+            let restore = Restore(match pin {
+                Some(value) => {
+                    let previous = std::env::var(ANTI_LOOP_SWITCH_ENV).ok();
+                    unsafe { std::env::set_var(ANTI_LOOP_SWITCH_ENV, value) };
+                    previous
+                }
+                None => {
+                    let previous = std::env::var(ANTI_LOOP_SWITCH_ENV).ok();
+                    unsafe { std::env::remove_var(ANTI_LOOP_SWITCH_ENV) };
+                    previous
+                }
+            });
+            (coach_system(), restore)
+        }
+        let (off_arm, _off) = system_with(Some("off"));
+        assert!(!off_arm.contains("边界只写一次"), "off 臂零条款：{off_arm}");
+        assert!(off_arm.contains("不要堆砌同义边界表述"), "基线声明面条款照旧");
+        let (on_arm, _on) = system_with(Some("on"));
+        let (default_arm, _default) = system_with(None);
+        assert_eq!(on_arm, default_arm, "未设 = 缺省开启");
+        assert!(on_arm.contains(BULLET), "on 臂补边界去重 bullet：{on_arm}");
+        assert_eq!(
+            on_arm.replace(BULLET, ""),
+            off_arm,
+            "off 臂 = on 臂减去 bullet（基线逐字节钉）"
+        );
+    }
+
+    /// u04 课程语境词块渲染（单源）：空串零注入；非空 = 固定句式。
+    #[test]
+    fn course_context_words_block_renders_single_source() {
+        assert_eq!(course_context_words_block(""), String::new());
+        assert_eq!(course_context_words_block("  "), String::new());
+        assert_eq!(
+            course_context_words_block("手冲、咖啡"),
+            "\n【课程语境词】手冲、咖啡——可作定义的背景用语，不单独要求挂号；作为本节点教学对象（teaches）时照常挂号。\n"
+        );
+    }
+
+    /// u04 语境词只进教练首批块：花名册为空 = 渲染；非空批 = 不渲染。
+    #[test]
+    fn coach_first_batch_block_carries_course_context_words() {
+        let mut context = CoachContext::default();
+        context.course_context_words = "手冲、咖啡".into();
+        let first = context.render();
+        assert!(first.contains("【课程语境词】"), "{first}");
+        assert!(first.contains("可作定义的背景用语"), "{first}");
+        context.roster = "ready | 甲节点 | teaches(极限@know) assumes()".into();
+        assert!(
+            !context.render().contains("【课程语境词】"),
+            "非首批不渲染语境词块（只进教练首批块）"
+        );
+    }
+
+    /// u04 评审臂两块的字节级钉：on = 评审 user 带【课程语境词】块（教练
+    /// 首批块同款单源）+ 有状态复审臂带【前轮评审意见与教练修订】与翻案
+    /// 锁；off = 两块零注入（差集恰为两块本身）；未设 = 缺省开启。
+    /// env 全局态：`#[serial]` 互斥。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn anti_loop_switch_gates_review_context_and_overturn_lock() {
+        const COURSE_BLOCK: &str = "\n【课程语境词】手冲、咖啡——可作定义的背景用语，不单独要求挂号；作为本节点教学对象（teaches）时照常挂号。\n";
+        const HISTORY: &str = "第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）";
+        const LOCK: &str = "\n\n【前轮评审意见与教练修订】\n第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）\n【翻案锁】按前轮意见做出的修改，本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告。";
+        let capture = |pin: Option<&'static str>| async move {
+            struct Restore(Option<String>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    match self.0.take() {
+                        Some(value) => unsafe { std::env::set_var(ANTI_LOOP_SWITCH_ENV, value) },
+                        None => unsafe { std::env::remove_var(ANTI_LOOP_SWITCH_ENV) },
+                    }
+                }
+            }
+            let restore = Restore(match pin {
+                Some(value) => {
+                    let previous = std::env::var(ANTI_LOOP_SWITCH_ENV).ok();
+                    unsafe { std::env::set_var(ANTI_LOOP_SWITCH_ENV, value) };
+                    previous
+                }
+                None => {
+                    let previous = std::env::var(ANTI_LOOP_SWITCH_ENV).ok();
+                    unsafe { std::env::remove_var(ANTI_LOOP_SWITCH_ENV) };
+                    previous
+                }
+            });
+            let completer = ScriptedReview(std::sync::Mutex::new((
+                vec!["not json".to_owned()].into_iter(),
+                Vec::new(),
+            )));
+            let mut context = CoachContext::default();
+            context.course_context_words = "手冲、咖啡".into();
+            // 非首批（花名册非空）：首批块不渲染语境词——评审面注入是唯一
+            // 来源（首批经 context.render() 单源进 user，评审面不重注）。
+            context.roster = "ready | 甲节点 | teaches(极限@know) assumes()".into();
+            let _ = concept_review(
+                &completer,
+                None,
+                &review_batch_with_mint(),
+                &context,
+                "",
+                &[],
+                &[],
+                false,
+                &review_gate(),
+                HISTORY,
+            )
+            .await;
+            let prompts = completer.0.lock().unwrap().1.clone();
+            assert!(!prompts.is_empty(), "首轮已捕获");
+            let user = prompts[0]
+                .split_once('\x1f')
+                .expect("captured system\\x1fuser")
+                .1
+                .to_owned();
+            (user, restore)
+        };
+        let (off_arm, _off) = capture(Some("off")).await;
+        assert!(!off_arm.contains("【课程语境词】"), "off 臂零语境词块：{off_arm}");
+        assert!(!off_arm.contains("【翻案锁】"), "off 臂零翻案锁：{off_arm}");
+        let (on_arm, _on) = capture(Some("on")).await;
+        let (default_arm, _default) = capture(None).await;
+        assert_eq!(on_arm, default_arm, "未设 = 缺省开启");
+        assert!(on_arm.contains(COURSE_BLOCK), "on 臂语境词块：{on_arm}");
+        assert!(on_arm.contains(LOCK), "on 臂前轮意见 + 翻案锁：{on_arm}");
+        assert_eq!(
+            on_arm.replace(COURSE_BLOCK, "").replace(LOCK, ""),
+            off_arm,
+            "off 臂 = on 臂减去两块（基线逐字节钉）"
         );
     }
 
@@ -3091,7 +3330,7 @@ mod tests {
         )));
         let batch = batch_of(vec![node("校准研磨度", vec![], vec![])]);
         let review =
-            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate()).await;
+            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate(), "").await;
         assert!(review.problems.is_empty(), "pass 不阻断：{review:?}");
         assert_eq!(review.findings.len(), 1, "{review:?}");
         assert!(review.findings[0].issue.contains("内嵌的上位词"));
@@ -3277,6 +3516,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         // Degraded 保守放行：零 problems（评审器故障 ≠ 批缺陷），降级留痕
@@ -3329,6 +3569,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -3377,6 +3618,7 @@ mod tests {
             &[],
             false,
             &gate,
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -3437,6 +3679,7 @@ mod tests {
             &[],
             false,
             &gate,
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -3495,6 +3738,7 @@ mod tests {
             &[],
             false,
             &gate,
+            "",
         )
         .await;
         assert!(review.problems.is_empty() && review.findings.is_empty(), "{review:?}");
@@ -3535,6 +3779,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -3566,6 +3811,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         // off 臂 = k07 后行为：不要求表、不做机械校验，缺表照常放行。
@@ -3605,6 +3851,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -3781,6 +4028,7 @@ mod tests {
             &naming,
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "范围外放行不打回：{review:?}");
@@ -3838,6 +4086,7 @@ mod tests {
             &naming,
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
@@ -3882,6 +4131,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert_eq!(review.problems.len(), 1, "批级意见 reject 被尊重：{review:?}");
@@ -3920,6 +4170,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "重试救回：{review:?}");
@@ -3963,6 +4214,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
@@ -4004,6 +4256,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "重试救回：{review:?}");
@@ -4039,6 +4292,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
@@ -4079,6 +4333,7 @@ mod tests {
         };
         let review = concept_review(
             &completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate(),
+            "",
         )
         .await;
         assert!(!review.degraded, "两额度各用一次仍救回：{review:?}");
@@ -4132,6 +4387,7 @@ mod tests {
         };
         let review = concept_review(
             &completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate(),
+            "",
         )
         .await;
         assert!(!review.degraded, "{review:?}");
@@ -4179,6 +4435,7 @@ mod tests {
             &[],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.degraded, "挂号表两连败降级：{review:?}");
@@ -4254,6 +4511,7 @@ mod tests {
             &[naming_frag("线段"), naming_frag("内角")],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -4297,6 +4555,7 @@ mod tests {
             &[naming_frag("线段"), naming_frag("内角")],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "report-only 不打回：{review:?}");
@@ -4341,6 +4600,7 @@ mod tests {
             &[naming_frag("线段"), naming_frag("内角")],
             true,
             &review_gate(),
+            "",
         )
         .await;
         assert_eq!(review.problems.len(), 1, "未处置合成打回问题：{review:?}");
@@ -4377,6 +4637,7 @@ mod tests {
             &[naming_frag("线段"), naming_frag("内角")],
             true,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "全处置不误伤：{review:?}");
@@ -4411,6 +4672,7 @@ mod tests {
             &[naming_frag("线段")],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
@@ -4466,6 +4728,7 @@ mod tests {
             &[naming_frag("线段")],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(
@@ -4501,6 +4764,7 @@ mod tests {
             &[naming_frag("线段")],
             false,
             &review_gate(),
+            "",
         )
         .await;
         assert!(review.problems.is_empty() && review.findings.is_empty(), "{review:?}");

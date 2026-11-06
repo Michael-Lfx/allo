@@ -31,6 +31,19 @@ fn findings_watermark_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// u04 课程语境词（确定性切片，无 LLM）：课程标题 + 学习目标过 generation
+/// 的 `term_slices`（标点/空白分段 → 中文相邻二元 / ASCII 整词 → 去停用词
+/// → 去重保序）。on 臂（`NOMI_LEARNING_ANTI_LOOP` 未设/非 off 值）= 切片
+/// 词表——进教练首批块与评审 user 的【课程语境词】块，并加入碎片点名清单
+/// 的已知面（这些词不再作为碎片下发）；off 臂 = 空表（整面休眠，提示词
+/// 逐字节回基线）。
+pub(crate) fn course_context_terms(title: &str, goal: &str) -> Vec<String> {
+    if !crate::learning_graph::anti_loop_enabled() {
+        return Vec::new();
+    }
+    crate::generation::terms::term_slices(&format!("{title}\n{goal}"))
+}
+
 /// 自动维护设置缺省与边界（learnhub `infra/settings.rs` 同量级：缺省开、
 /// 360 分钟、30..=10080；越界读侧回退缺省不报错）。
 pub const DEFAULT_MAINTENANCE_ENABLED: bool = true;
@@ -2317,6 +2330,18 @@ impl LearningService {
             } else {
                 Vec::new()
             };
+            // u04 翻案锁回灌（有状态复审臂）：评审往返记录随评审 user 进
+            // 【前轮评审意见与教练修订】段——「按前轮意见做出的修改本身不
+            // 得再判为问题」；off 臂（NOMI_LEARNING_ANTI_LOOP=off 或
+            // REVIEW_STATE=off 或首轮）恒空串（基线逐字节）。
+            let review_prior = if review_state
+                && crate::learning_graph::anti_loop_enabled()
+                && !review_history.is_empty()
+            {
+                review_history.join("\n")
+            } else {
+                String::new()
+            };
             let mut review = crate::learning_graph::concept_review(
                 completer,
                 model_override,
@@ -2327,6 +2352,9 @@ impl LearningService {
                 &naming_list,
                 crate::lexicon_enforce_enabled(),
                 &outcome,
+                // u04 翻案锁的回灌面（有状态复审臂；off 臂/首轮恒空串——
+                // concept_review 内再闸一道开关）。
+                &review_prior,
             )
             .await;
             provenance_readout.merge(&review.provenance);
@@ -2873,6 +2901,9 @@ impl LearningService {
         let taught_summary = self.render_taught_summary().await?;
         let registry_excerpt = self.render_registry_excerpt().await?;
 
+        // u04 课程语境词（on 臂；off 臂恒空 = 提示词基线逐字节）——取数在
+        // struct 字面量前（goal/title 随 goal 字段移动）。
+        let course_context_words = course_context_terms(&title, &goal).join("、");
         Ok(crate::learning_graph::CoachContext {
             goal: if goal.is_empty() { title } else { goal },
             proficiency_statement,
@@ -2885,6 +2916,8 @@ impl LearningService {
             behavior_digest,
             ready_count,
             registry_excerpt,
+            // u04 课程语境词（on 臂；off 臂恒空 = 提示词基线逐字节）。
+            course_context_words,
         })
     }
 
@@ -3396,26 +3429,29 @@ impl LearningService {
     /// 方法只管取数）：读本课 `structure_json` 的课程层旁键（损坏 = fail
     /// loud）∪ 仓库 base ∪ gate 装配的已知名池（已教账 ∪ 登记表活跃名+别名
     /// ∪ 本批铸名/提名）→ 本批提名定义 ∪ 节点显示名 ∪ intent ∪ scope 的
-    /// 未着落片段。
+    /// 未着落片段。u04（on 臂）：课程语境词并入已知面——语境词不再作为
+    /// 碎片下发（它们已随【课程语境词】块获得显式豁免语义）。
     async fn derive_naming_list(
         &self,
         course_id: &LearningCourseId,
         batch: &crate::learning_graph::ProposedBatch,
         provenance_known: &HashSet<String>,
     ) -> Result<Vec<crate::learning_graph::fragment_verdict::NameFragment>, AppError> {
-        let snapshot: Option<String> = sqlx::query_scalar(
-            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        let course: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
+        let snapshot = course.2;
         let course_lexicon =
             crate::learning_graph::lexicon::course_lexicon_from_snapshot(snapshot.as_deref())
                 .map_err(AppError::Internal)?;
         let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
         let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
         known.extend(provenance_known.iter().cloned());
+        known.extend(course_context_terms(&course.0, &course.1));
         Ok(crate::learning_graph::fragment_verdict::derive_naming_list(
             batch, &known, &course_lexicon,
         ))

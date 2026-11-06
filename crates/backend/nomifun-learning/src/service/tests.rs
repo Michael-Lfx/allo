@@ -4309,6 +4309,90 @@ async fn degraded_review_preserves_problems_into_findings_and_batch_note() {
     assert!(preserved >= 1, "problems 已落 findings 留痕：{preserved}");
 }
 
+// ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重 ────────────────────
+
+/// u04 课程语境词切片（on 臂 = 标题+目标的确定性二元切片；off 臂恒空表
+/// ——碎片点名清单的已知面随之恢复基线）。
+#[test]
+#[serial_test::serial]
+fn course_context_terms_follow_the_switch() {
+    let terms = crate::service::learning_graph::course_context_terms("家庭手冲咖啡入门", "学会手冲咖啡");
+    assert!(terms.contains(&"手冲".to_owned()), "{terms:?}");
+    assert!(terms.contains(&"咖啡".to_owned()), "{terms:?}");
+    let _off = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "off");
+    assert!(
+        crate::service::learning_graph::course_context_terms("家庭手冲咖啡入门", "学会手冲咖啡")
+            .is_empty(),
+        "off 臂恒空表"
+    );
+}
+
+/// u04 评审端到端：首轮评审打回 → 重裁 → 二轮评审的 user 带【前轮评审意见
+/// 与教练修订】+【翻案锁】+【课程语境词】（seed 课程的标题/目标切片）；
+/// ANTI_LOOP=off 臂三块全零（基线逐字节），coach 侧重排的前轮意见回灌
+/// （REVIEW_STATE 面）不受影响。env 全局态：`#[serial]` 互斥。
+#[tokio::test]
+#[serial_test::serial]
+async fn review_retrial_carries_the_overturn_lock_and_course_context() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = SequencedCompleter::new(vec![
+        VALID_BATCH.to_owned(),
+        review_reject_verdict(),
+        VALID_BATCH.to_owned(),
+        review_pass_verdict(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    // 调用序：起草(0) → 评审1(1) → 重裁(2) → 评审2(3)。
+    let review2 = completer.prompt(3).expect("second review prompt recorded");
+    assert!(
+        review2.contains("【前轮评审意见与教练修订】") && review2.contains("第 1 轮评审打回"),
+        "前轮意见随评审 user 回灌：{review2}"
+    );
+    assert!(
+        review2.contains("【翻案锁】按前轮意见做出的修改，本身不得再判为问题"),
+        "翻案锁在场：{review2}"
+    );
+    assert!(
+        review2.contains("【课程语境词】") && review2.contains("课程"),
+        "语境词（标题/目标切片）进评审 user：{review2}"
+    );
+    // off 臂：三块全零（基线逐字节）；coach 侧重排意见回灌不受影响。
+    let _off = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "off");
+    let (service2, _knowledge2, owner2) = job_test_service().await;
+    let (course_id2, _a2, _b2) = seed_graph_course(&service2).await;
+    let course2 = nomifun_common::LearningCourseId::parse(&course_id2).unwrap();
+    let completer2 = SequencedCompleter::new(vec![
+        VALID_BATCH.to_owned(),
+        review_reject_verdict(),
+        VALID_BATCH.to_owned(),
+        review_pass_verdict(),
+    ]);
+    *service2.course_completer.write().unwrap() = Some(completer2.clone());
+    service2
+        .kick_growth(&owner2, &course2, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service2, &course_id2).await;
+    let review2_off = completer2.prompt(3).expect("off-arm second review prompt recorded");
+    assert!(!review2_off.contains("【课程语境词】"), "off 臂零语境词块：{review2_off}");
+    assert!(!review2_off.contains("【翻案锁】"), "off 臂零翻案锁：{review2_off}");
+    assert!(
+        !review2_off.contains("前轮评审意见与教练修订"),
+        "off 臂评审 user 无前轮意见段（该段是 u04 评审臂新增）：{review2_off}"
+    );
+    // coach 侧重排（REVIEW_STATE 面）照旧带前轮意见段——反乒乓纪律不受
+    // ANTI_LOOP 影响。
+    let redraft_off = completer2.prompt(2).expect("off-arm redraft prompt recorded");
+    assert!(
+        redraft_off.contains("前轮评审意见") && redraft_off.contains("已修不重提"),
+        "coach 侧意见回灌照旧：{redraft_off}"
+    );
+}
+
 // ── 有状态复审（m5 #175C）+ advice 范围点名集（m5 #175A）────────────────────
 
 /// 评审开关的进程全局态守卫（service 侧局部帮手；Drop 恢复原值）。
