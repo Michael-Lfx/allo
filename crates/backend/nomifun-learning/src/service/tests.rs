@@ -3731,7 +3731,7 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     // r01：脚本评审面耗尽 → 评审缺席降级放行，批次 note 留痕（可观测化）。
     assert_eq!(
         note,
-        "首批两节点；评审缺席降级放行（评审调用失败/回包违约，重试仍败——见 findings 留痕）"
+        "首批两节点；评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）"
     );
     let generated: i64 = sqlx::query_scalar(
         "SELECT MIN(content_generated) FROM learning_lessons l \
@@ -4817,7 +4817,7 @@ async fn growth_auto_triggers_on_lesson_completion() {
     // r01：评审缺席降级留痕同批注（可观测化，见 growth_applies 测试注）。
     assert_eq!(
         note,
-        "完成触发的补货批；评审缺席降级放行（评审调用失败/回包违约，重试仍败——见 findings 留痕）"
+        "完成触发的补货批；评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）"
     );
 }
 
