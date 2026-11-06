@@ -426,6 +426,7 @@ impl ConversationVoiceDialogueRecorder {
                         Err(error) => {
                             tracing::warn!(%error, "voice_default_model_unavailable_fallback");
                             model_ref = None;
+                            used_saved_default = false;
                         }
                     }
                 }
@@ -473,10 +474,6 @@ impl ConversationVoiceDialogueRecorder {
             ).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
             created.conversation_id
         };
-        self.conversation_service
-            .ensure_voice_model_preference(&self.user_id, &conv_id)
-            .await
-            .map_err(|error| VoiceDialogueRecorderError::BindingInvalid(error.to_string()))?;
         Ok((conv_id, source_id))
     }
 }
@@ -1200,13 +1197,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     Some(companions) => companions.default_companion_id().await,
                     None => None,
                 };
-                if let Some(id) = self.retained_default_call().await? {
-                    self.conversation_service
-                        .ensure_voice_model_preference(&self.user_id, &id)
-                        .await
-                        .map_err(|error| VoiceDialogueRecorderError::BindingInvalid(error.to_string()))?;
-                    return Ok((id, memory_owner));
-                }
+                if let Some(id) = self.retained_default_call().await? { return Ok((id, memory_owner)); }
                 let home = self
                     .conversation_service
                     .ensure_default_voice_conversation_with_mode(&self.user_id, memory_owner.as_deref(), session_mode)

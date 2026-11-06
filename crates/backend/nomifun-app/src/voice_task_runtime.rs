@@ -105,6 +105,10 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
                     %error,
                     "voice_task_model_unavailable_fallback"
                 );
+                if preset_snapshot.is_some() {
+                    tracing::warn!("voice_task_preset_model_unavailable_no_fallback");
+                    return Err(error);
+                }
                 match self.models.resolve_model(None).await {
                     Ok(fallback) => {
                         tracing::warn!(

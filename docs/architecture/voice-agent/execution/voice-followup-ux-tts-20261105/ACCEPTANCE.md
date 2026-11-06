@@ -1,5 +1,7 @@
 # 第二轮语音 UX/TTS · 验收报告
 
+> **2026-11-06 E 轮追加**：语音 runtime 冷启动与模型继承另见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。新建自动语音会话 gateway-only，日志实测首次 build 364–490ms；旧会话不迁移。A/B/C/D 验收结论保持原文，E 的边界见该文档。
+
 - 日期：2026-11-05（UTC+8）
 - 分支：`fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`；业务基线 `a2519cb99`；未 push
 - 本轮工作目录：`docs/architecture/voice-agent/execution/voice-followup-ux-tts-20261105/`
@@ -89,3 +91,15 @@ cargo test -p nomifun-voice-terminal --features local-tts --lib tts_cache_tests
 cargo check --workspace
 bun run build:ui
 ```
+
+## 7. E · 语音 runtime 冷启动与模型继承（2026-11-06）
+
+| 项 | 状态 | 证据/边界 |
+| --- | --- | --- |
+| 新建自动语音会话 gateway-only | 🟢 | `01a1aefb` 490ms / `01a1af01` 364ms，`mcp_count=1`；对比旧 5 MCP 27,549ms |
+| 继承用户默认模型 | 🟡 | 已实现 `nomi.defaultModel` 优先；待真机确认新 commit 语音会话模型 |
+| P1 显式 fallback | 🟡 | 已实现并加日志；回退无 UI toast；preset 不可用直接失败 |
+| 旧语音会话 | ⚪ | 按用户范围不迁移；复用旧 retained/workspace 会话仍可能走旧 MCP 配置 |
+| 真机后验 | 🔴 | 尚未在新 commit 上重测首轮 runtime；app 集成测试受 `sherpa_onnx_sys` 阻断 |
+
+详细实现、日志和边界见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。

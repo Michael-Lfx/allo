@@ -6098,51 +6098,6 @@ impl ConversationService {
         Ok(Some(selected))
     }
 
-    /// Reuse an existing default voice conversation without keeping a stale
-    /// model (typically the old runtime fallback). Only voice conversations are
-    /// touched; ordinary conversations keep their own model authority.
-    pub async fn ensure_voice_model_preference(&self, user_id: &str, conversation_id: &str) -> Result<(), AppError> {
-        let preference = match self.default_voice_model_preference().await {
-            Ok(preference) => preference,
-            Err(error) => {
-                warn!(%error, "voice_default_model_preference_invalid_fallback");
-                return Ok(());
-            }
-        };
-        let Some(preference) = preference else {
-            return Ok(());
-        };
-        let key = parse_conv_id(conversation_id)?;
-        let Some(row) = self.conversation_repo.get(key).await? else {
-            return Ok(());
-        };
-        if row.user_id != user_id {
-            return Err(AppError::NotFound(format!("Conversation {conversation_id} not found")));
-        }
-        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
-        if extra.get("voice").and_then(serde_json::Value::as_bool) != Some(true) {
-            return Ok(());
-        }
-        let serialized = serde_json::to_string(&preference)
-            .map_err(|error| AppError::Internal(format!("invalid voice model preference: {error}")))?;
-        if row.model.as_deref() == Some(serialized.as_str()) {
-            return Ok(());
-        }
-        let update = ConversationRowUpdate {
-            model: Some(Some(serialized)),
-            updated_at: Some(now_ms()),
-            ..Default::default()
-        };
-        self.conversation_repo.update(key, &update).await?;
-        tracing::info!(
-            conversation_id = %conversation_id,
-            provider_id = %preference.provider_id,
-            model = %preference.model,
-            "voice_model_preference_applied_to_existing_conversation"
-        );
-        Ok(())
-    }
-
     pub async fn ensure_default_voice_conversation_with_owner(&self, user_id: &str, owner: Option<&str>) -> Result<String, AppError> {
         self.ensure_default_voice_conversation_with_mode(user_id, owner, None).await
     }
@@ -6155,7 +6110,6 @@ impl ConversationService {
             None => format!("voice:default:{user_id}"),
         };
         if let Some(existing) = self.conversation_repo.find_by_creation_key(user_id, &creation_key).await? {
-            self.ensure_voice_model_preference(user_id, &existing.conversation_id).await?;
             return Ok(existing.conversation_id);
         }
         let mode = self.resolve_voice_session_mode(mode).await?;

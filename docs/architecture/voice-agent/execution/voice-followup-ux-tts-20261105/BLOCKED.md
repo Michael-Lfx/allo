@@ -1,5 +1,7 @@
 # 第二轮语音 UX/TTS · BLOCKED / 待验
 
+> **2026-11-06 E 轮追加**：E 的运行时/模型边界见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。当前额外阻断：新 commit 真机首轮计时未做、`nomifun-app` 集成测试受 `sherpa_onnx_sys` rlib 缺失阻断、P1 fallback 无 UI 提示、旧语音会话不迁移。
+
 ## 硬阻断 / 授权待决
 
 | 项 | 原因 | 已做 | 影响 |
@@ -22,3 +24,13 @@
 1. 产品/法务确认 Matcha 中文模型输出与生成 WAV 的分发许可；确认后再决定是否替换 `crates/backend/nomifun-audio/assets/vocal/`。
 2. 运行修复版 Desktop/daemon，复核 1.1x 透传、缓存键、真机六段播放与首句识别。
 3. 真机 A/B、TC12 两轮天气。
+
+## E 轮新增阻断 / 边界（2026-11-06）
+
+| 项 | 原因 | 影响 |
+| --- | --- | --- |
+| 新 commit 真机后验 | 尚未重启 Flowy 并用新 commit 新建语音会话 | 364–490ms 是 P0/P1 提交前数据；新 commit 首轮耗时待确认 |
+| `nomifun-app` 集成测试 | 本地 `sherpa_onnx_sys` rlib 缺失 | app 集成测试未全量跑；`cargo check`/`cargo build -p Flowy` 已过 |
+| 旧语音会话 | 按用户范围不迁移 | 旧 retained/workspace 会话仍可能复用 5 MCP / auto-cost |
+| P1 用户提示 | 当前只有日志，无 UI toast | 模型不可用回退时用户不会主动看到 |
+| 外部工具能力 | 新语音默认 gateway-only | 浏览器/Excel/Figma 等 MCP 工具默认不可用 |

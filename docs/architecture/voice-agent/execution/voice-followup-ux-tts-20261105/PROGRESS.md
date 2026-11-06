@@ -1,5 +1,7 @@
 # 第二轮语音 UX/TTS · PROGRESS
 
+> **2026-11-06 E 轮追加（最高优先）**：语音 runtime 冷启动与模型继承已另记于 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。结论：新建自动语音会话从 5 MCP / 27,549ms 降到 gateway-only / 364–490ms；新会话继承 `nomi.defaultModel`；P1 改为可观测 fallback。旧语音会话不迁移。以下 A/B/C/D 历史记录保留。
+
 - 任务书：2026-11-05；分支 `fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`，业务基线 `a2519cb99`；交接时 ahead 3、干净；当前为本轮未提交 diff，未 push。
 - 任务 0：已核 HEAD/规则/旧验收文档；相关 UI 基线 21 pass / 0 fail；未发现运行中的 Desktop/daemon（安装版 FlowyAIPC 5.2.2.731 / NomiFun 0.7.5，运行版本待现场核）；本地 TTS 模型位于 `C:\Users\38788\AppData\Local\Flowy\models\tts`。
 - 顺序：A 会话页左侧等待（UI sub-agent 并行）→ B 唤醒导航 → C 1.1x 默认与六段 WAV → D 证据/TC12。
