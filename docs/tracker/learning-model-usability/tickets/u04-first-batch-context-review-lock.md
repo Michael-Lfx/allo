@@ -2,7 +2,7 @@
 id: u04
 title: "首批课程语境词豁免 + 评审翻案锁 + intent/scope 边界去重"
 type: task
-status: open
+status: closed
 lane: A
 blocked_by: [u03]
 part_of: ../map.md

@@ -2,7 +2,7 @@
 id: u01
 title: "重裁同标题未点名节点回填 + 守卫文案改写"
 type: task
-status: open
+status: closed
 lane: A
 blocked_by: []
 part_of: ../map.md

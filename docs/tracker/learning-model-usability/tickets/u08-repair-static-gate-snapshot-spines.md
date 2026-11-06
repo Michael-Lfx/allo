@@ -2,7 +2,7 @@
 id: u08
 title: "修补回合：应用模拟+复核并入静态门走反馈重试；快照补主干名单"
 type: task
-status: open
+status: closed
 lane: C
 blocked_by: []
 part_of: ../map.md

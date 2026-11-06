@@ -2,7 +2,7 @@
 id: u03
 title: "评审输入补全：挂号表逐字候选词 + 一条 problem 可并列多词 + 默认方向厘清"
 type: task
-status: open
+status: closed
 lane: A
 blocked_by: [u02]
 part_of: ../map.md

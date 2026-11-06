@@ -2,7 +2,7 @@
 id: u05
 title: "verify_math 批量（claims 数组，向后兼容）"
 type: task
-status: open
+status: closed
 lane: B
 blocked_by: []
 part_of: ../map.md

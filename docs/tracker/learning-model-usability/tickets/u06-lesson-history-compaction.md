@@ -2,7 +2,7 @@
 id: u06
 title: "历史压缩实验：已落库正文在历史中换摘要 + ls_inspect 可取回原文"
 type: task
-status: open
+status: closed
 lane: B
 blocked_by: [u05]
 part_of: ../map.md

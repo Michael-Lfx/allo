@@ -2,7 +2,7 @@
 id: u09
 title: "结构提示词「和」自检句对齐门 + goal 字段豁免排期扫描"
 type: task
-status: open
+status: closed
 lane: C
 blocked_by: [u08]
 part_of: ../map.md
