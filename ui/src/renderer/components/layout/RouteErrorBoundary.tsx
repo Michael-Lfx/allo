@@ -3,7 +3,8 @@
 import React from 'react';
 import { captureException } from '@/renderer/utils/analytics/telemetry';
 import { useTranslation } from 'react-i18next';
-import { claimDynamicImportReload, isDomCommitFailure, isDynamicImportFailure } from './routeErrorRecovery';
+import { DomCommitRecovery } from './errorBoundaryRecovery';
+import { claimDynamicImportReload, isDynamicImportFailure } from './routeErrorRecovery';
 
 interface RouteErrorBoundaryProps {
   children: React.ReactNode;
@@ -17,8 +18,6 @@ interface RouteErrorBoundaryState {
   error: Error | null;
   componentStack: string | null;
   dynamicImportReloadExhausted: boolean;
-  /** One automatic remount is allowed for external-DOM-mutation commit crashes. */
-  autoRecoveryAttempted: boolean;
 }
 
 interface RouteErrorFallbackProps {
@@ -30,11 +29,6 @@ interface RouteErrorFallbackProps {
 }
 
 type RouteErrorActionKey = 'reloadAgain' | 'reloadApplication' | 'retry';
-
-/** A DOM commit crash is recoverable by remounting the failed subtree once. */
-const AUTO_RECOVERY_DELAY_MS = 0;
-/** Re-arm auto recovery only after the remounted subtree stayed healthy. */
-const AUTO_RECOVERY_REARM_MS = 5_000;
 
 const RouteErrorFallback: React.FC<RouteErrorFallbackProps> = ({
   error,
@@ -142,11 +136,11 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
     error: null,
     componentStack: null,
     dynamicImportReloadExhausted: false,
-    autoRecoveryAttempted: false,
   };
 
-  private autoRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
-  private autoRecoveryRearmTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly domCommitRecovery = new DomCommitRecovery({
+    onRecover: () => this.setState({ error: null, componentStack: null }),
+  });
 
   static getDerivedStateFromError(error: Error): Partial<RouteErrorBoundaryState> {
     return { error, dynamicImportReloadExhausted: false };
@@ -163,57 +157,28 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
     );
     captureException(error);
     this.setState({ componentStack: info.componentStack ?? null });
-    if (isDomCommitFailure(error) && !this.state.autoRecoveryAttempted) {
-      // Chrome's answer to a detached-node commit crash is a clean remount:
-      // the boundary already unmounted the stale subtree, so retrying renders
-      // from scratch. Do it once; a second failure falls back to the panel.
+    // Only route-scoped boundaries remount themselves: a root-level commit crash
+    // can indicate wider renderer corruption, so the application boundary keeps
+    // the explicit reload panel instead of silently rebooting the whole app.
+    if (this.props.scope !== 'application' && this.domCommitRecovery.maybeSchedule(error)) {
       // eslint-disable-next-line no-console
       console.warn('[RouteErrorBoundary] external DOM mutation crashed commit — remounting once:', error);
-      this.setState({ autoRecoveryAttempted: true });
-      this.scheduleAutoRecovery();
     }
   }
 
   componentDidUpdate(previousProps: RouteErrorBoundaryProps): void {
     if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
-      this.clearAutoRecovery();
+      this.domCommitRecovery.reset();
       this.setState({
         error: null,
         componentStack: null,
         dynamicImportReloadExhausted: false,
-        autoRecoveryAttempted: false,
       });
     }
   }
 
   componentWillUnmount(): void {
-    this.clearAutoRecovery();
-  }
-
-  private clearAutoRecovery(): void {
-    if (this.autoRecoveryTimer !== null) {
-      clearTimeout(this.autoRecoveryTimer);
-      this.autoRecoveryTimer = null;
-    }
-    if (this.autoRecoveryRearmTimer !== null) {
-      clearTimeout(this.autoRecoveryRearmTimer);
-      this.autoRecoveryRearmTimer = null;
-    }
-  }
-
-  private scheduleAutoRecovery(): void {
-    this.clearAutoRecovery();
-    this.autoRecoveryTimer = setTimeout(() => {
-      this.autoRecoveryTimer = null;
-      this.setState({ error: null, componentStack: null }, () => {
-        // Re-arm only if the remount holds; a crash loop inside the rearm
-        // window keeps the panel visible instead of retrying forever.
-        this.autoRecoveryRearmTimer = setTimeout(() => {
-          this.autoRecoveryRearmTimer = null;
-          if (!this.state.error) this.setState({ autoRecoveryAttempted: false });
-        }, AUTO_RECOVERY_REARM_MS);
-      });
-    }, AUTO_RECOVERY_DELAY_MS);
+    this.domCommitRecovery.dispose();
   }
 
   private handleReset = (): void => {
@@ -232,8 +197,8 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
       this.setState({ dynamicImportReloadExhausted: true });
       return;
     }
-    this.clearAutoRecovery();
-    this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false, autoRecoveryAttempted: false });
+    this.domCommitRecovery.reset();
+    this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
   };
 
   private handleApplicationReload = (): void => {

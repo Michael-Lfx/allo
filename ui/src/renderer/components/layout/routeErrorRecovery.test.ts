@@ -94,37 +94,58 @@ describe('dynamic import route recovery', () => {
 });
 
 describe('dom commit route recovery', () => {
-  const domCommitError = (message: string) => Object.assign(new Error(message), { name: 'NotFoundError' });
+  const domException = (name: string, message: string) => Object.assign(new Error(message), { name });
 
   test('recognizes a detached-node commit failure thrown by React', () => {
     expect(
       isDomCommitFailure(
-        domCommitError(
+        domException(
+          'NotFoundError',
           "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
         ),
       ),
     ).toBe(true);
     expect(
       isDomCommitFailure(
-        domCommitError(
+        domException(
+          'NotFoundError',
           "Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
         ),
       ),
+    ).toBe(true);
+    expect(
+      isDomCommitFailure(
+        domException('HierarchyRequestError', 'Failed to execute appendChild: The new child element contains the parent.'),
+      ),
+    ).toBe(true);
+  });
+
+  test('classifies by DOMException name even when the message text is localized', () => {
+    expect(isDomCommitFailure(domException('NotFoundError', '无法在“Node”上执行“removeChild”'))).toBe(true);
+  });
+
+  test('keeps a message-only fallback for engines that do not forward the DOMException name', () => {
+    expect(
+      isDomCommitFailure(new Error("Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.")),
     ).toBe(true);
   });
 
   test('does not classify unrelated route errors as DOM commit failures', () => {
     expect(isDomCommitFailure(new Error('route component crashed'))).toBe(false);
-    expect(isDomCommitFailure(domCommitError('removeChild failed inside a test helper'))).toBe(false);
+    expect(isDomCommitFailure(new Error('removeChild failed inside a test helper'))).toBe(false);
+    expect(isDomCommitFailure(domException('TypeError', 'x is not a function'))).toBe(false);
     expect(isDomCommitFailure(null)).toBe(false);
     expect(isDomCommitFailure(undefined)).toBe(false);
   });
 
-  test('the route boundary auto-remounts once for a DOM commit crash', () => {
-    const source = readFileSync(new URL('./RouteErrorBoundary.tsx', import.meta.url), 'utf8');
-    expect(source).toContain('isDomCommitFailure');
-    expect(source).toContain('autoRecoveryAttempted');
-    expect(source).toContain('scheduleAutoRecovery');
+  test('wires one-shot remount recovery into route and settings-rail boundaries', () => {
+    const boundarySource = readFileSync(new URL('./RouteErrorBoundary.tsx', import.meta.url), 'utf8');
+    expect(boundarySource).toContain('DomCommitRecovery');
+    expect(boundarySource).toContain("scope !== 'application'");
+    const siderBoundarySource = readFileSync(new URL('./SettingsSiderErrorBoundary.tsx', import.meta.url), 'utf8');
+    expect(siderBoundarySource).toContain('DomCommitRecovery');
+    const siderSource = readFileSync(new URL('./Sider/index.tsx', import.meta.url), 'utf8');
+    expect(siderSource).toContain('location.key');
   });
 
   test('every navigation, including a same-route new-task click, resets a captured route error', () => {

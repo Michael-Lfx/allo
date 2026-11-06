@@ -564,7 +564,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       {/* Main content area */}
       {isSettings ? (
         <div className='flex-1 min-h-0 overflow-y-auto overflow-x-hidden'>
-          <SettingsSiderErrorBoundary resetKey={`${pathname}${search}${hash}`}>
+          <SettingsSiderErrorBoundary resetKey={`${location.key}:${pathname}${search}${hash}`}>
             <Suspense fallback={<div className='size-full' />}>
               <SettingsSider collapsed={collapsed} tooltipEnabled={tooltipEnabled} />
             </Suspense>

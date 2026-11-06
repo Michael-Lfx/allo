@@ -2,7 +2,8 @@ const DYNAMIC_IMPORT_ERROR_PATTERN =
   /Failed to fetch dynamically imported module|Importing a module script failed|dynamically imported module|ChunkLoadError|does not provide an export named/i;
 
 const DOM_COMMIT_OPERATIONS_PATTERN = /(removeChild|insertBefore|replaceChild|appendChild)/i;
-const DOM_COMMIT_DETAIL_PATTERN = /not a child|not a descendant/i;
+const DOM_COMMIT_DETAIL_PATTERN = /not a child|not a descendant|contains the parent/i;
+const DOM_COMMIT_EXCEPTION_NAMES = new Set(['NotFoundError', 'HierarchyRequestError']);
 
 export const DYNAMIC_IMPORT_RETRY_STORAGE_KEY = 'flowy.dynamic-import-retry';
 export const DYNAMIC_IMPORT_RETRY_WINDOW_MS = 10_000;
@@ -32,10 +33,18 @@ export function isDynamicImportFailure(error: unknown): boolean {
  * `removeChild`/`insertBefore` then throws `NotFoundError` during the commit
  * phase. The failed subtree is unmounted by the boundary, so remounting it once
  * starts from a clean DOM and recovers without a full page reload.
+ *
+ * Chromium's DOMException message text is not part of a stable contract, so the
+ * DOMException name is the primary signal; the message patterns stay as a
+ * fallback for engines/wrappers that only forward the text.
  */
 export function isDomCommitFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const message = 'message' in error && typeof error.message === 'string' ? error.message : '';
+  const name = 'name' in error && typeof error.name === 'string' ? error.name : '';
+  if (DOM_COMMIT_EXCEPTION_NAMES.has(name)) {
+    return true;
+  }
   return DOM_COMMIT_OPERATIONS_PATTERN.test(message) && DOM_COMMIT_DETAIL_PATTERN.test(message);
 }
 
