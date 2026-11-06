@@ -3728,7 +3728,11 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     .await
     .unwrap();
     assert_eq!(seq, 1);
-    assert_eq!(note, "首批两节点");
+    // r01：脚本评审面耗尽 → 评审缺席降级放行，批次 note 留痕（可观测化）。
+    assert_eq!(
+        note,
+        "首批两节点；评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）"
+    );
     let generated: i64 = sqlx::query_scalar(
         "SELECT MIN(content_generated) FROM learning_lessons l \
          JOIN learning_modules m ON m.module_id = l.module_id \
@@ -4173,9 +4177,10 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     assert_eq!(applied, 1, "the third-round point-fix lands");
     // 调用数：起草1 + 重裁1 + 原地重试1（乙越权）+ 计轮重裁1（丙越权）+
     // 第 3 轮重裁1（合法稿 vs 守卫基准触发甲「被移除」的原地重试）+ 评审1
-    // = 6。**3 轮预算内落库**本身即证明原地重试未占轮预算——纯计轮会在
+    // + 评审缺席重试1（r01：违约/传输恰一次重试，脚本耗尽两连 → 降级）
+    // = 7。**3 轮预算内落库**本身即证明原地重试未占轮预算——纯计轮会在
     // 第 3 轮耗尽后失败（5 调用即断）。
-    assert_eq!(completer.call_count(), 6);
+    assert_eq!(completer.call_count(), 7);
     let stats = service.growth_run_stats().expect("growth stats recorded");
     assert_eq!(stats.stop_reason, "success");
     assert_eq!(stats.attempts_used, 3);
@@ -4809,7 +4814,11 @@ async fn growth_auto_triggers_on_lesson_completion() {
     .await
     .unwrap();
     assert_eq!(status, "applied");
-    assert_eq!(note, "完成触发的补货批");
+    // r01：评审缺席降级留痕同批注（可观测化，见 growth_applies 测试注）。
+    assert_eq!(
+        note,
+        "完成触发的补货批；评审降级放行（评审结论不可用：调用失败、回包违约或机械校验未过，重试仍败——见 findings 留痕）"
+    );
 }
 
 /// 课程大纲引擎的测试替身（t1）：只记录收到的简报，返回固定的最小蓝图。

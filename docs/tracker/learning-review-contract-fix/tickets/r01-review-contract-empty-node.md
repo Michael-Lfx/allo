@@ -2,7 +2,7 @@
 id: r01
 title: "validate_review 空节点矛盾 + 评审静默降级可观测化 + 违约死因重试"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -75,3 +75,14 @@ part_of: ../map.md
    或违约被重试救回；读数行在评审缺席场景显式标注（不再静默全零）。
 3. 病历同形测试：本票病历的两份响应形状（run#1 超时 / run#2 空节点
    违约）钉住。
+
+## Resolution（2026-11-06 关票）
+
+- **实现提交**：`97dae868c`（A/B/C 主体）→ `846e3977e`（双轴评审修复：review_schema 的 node 与校验器同源——键必在、值可空串、无 minLength，互钉测试钉住；校验器补「node 键必在」；调用失败死因标签去过宽限定）→ smoke 等待窗口 15→25 分钟 → 批次 note 措辞改为「评审降级放行（评审结论不可用：…）」。
+- **验证**：nomifun-learning 875 全绿（二次全量确认；首轮 2 红为并行 env 泄漏 flake，隔离均绿）；新测 6 条（validate_review 空节点/空白/空 field·issue/缺 node 键四态 + concept_review 违约救回/违约两连降级/传输救回/传输两连降级/空节点 reject 被尊重）；3 条存量断言按新语义更新（批次 note 后缀 ×2、守卫测试调用计数 6→7=评审重试一次）；nomifun-app 434 绿；workspace check 0 错。
+- **真机 grow（全新库，与 absorb-8 基线同目标）两跑**：
+  - run-1793949722364：评审回包 4 problems 含 **3 条空 node 批级意见 → 通过契约校验、reject 被尊重**（`growth batch rejected by concept review problem_count=4`）——病历 run-1793859632428 的同形回包在旧码下被静默吞掉，A 修复真机实证。重裁路径耗时超出旧 15 分钟窗口 EXIT=2（smoke 观测窗口问题，非管线）。
+  - run-1793951137445（25 分钟窗口）**EXIT=0 落库**：attempts_used=3、stop_reason=success、5 节点；第 3 轮评审调用撞 provider SSE 瞬断+480s 超时 → **r01 传输重试接住** → 重试回包挂号表违约 → 结论不可用 → 降级放行，且**降级在读数上可见**：`review_degraded=true`、provenance `degraded=true`、批次 note 留痕、findings 落 term_provenance 降级行——病历 run-1793858439491 的同类场景在旧码下是 `stop_reason=success` + 读数全零。
+- **留观（不阻塞关票）**：
+  1. 共享重试缝的混合失败：同一次评审里「传输失败 + 挂号表违约」各占一次尝试即耗尽，m3 原文留痕「挂号表机械校验两连败」在混合场景下措辞不精确（m3 文案按约逐字保留未改）。
+  2. 保守放行会丢弃合法 reject：run-1793951137445 第 3 轮评审确有 1 条 reject，但挂号表违约使整份结论作废——这是 m3/ADR-0026 既有语义（评审器故障 ≠ 批缺陷，Non-goal 不动），r01 之后至少**可见**；是否「表违约时仍尊重 problems」属后续设计裁决。

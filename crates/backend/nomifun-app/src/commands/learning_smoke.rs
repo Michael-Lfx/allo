@@ -1542,7 +1542,7 @@ async fn run_grow(
                  [provenance: rows={} invalid={} retried={} degraded={} external_hits={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [names: name_hints={}]  \
-                 [review_state: {} injections={}]",
+                 [review_state: {} injections={} review_degraded={}]",
                 stats.attempts_used,
                 stats.stop_reason,
                 stats.review_provenance_rows,
@@ -1556,7 +1556,8 @@ async fn run_grow(
                 stats.review_fragments_degraded,
                 stats.name_hints,
                 if stats.review_state { "on" } else { "off" },
-                stats.review_state_injections
+                stats.review_state_injections,
+                stats.review_degraded
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
         }
@@ -1643,13 +1644,15 @@ async fn complete_all_nodes(
     Ok(driven)
 }
 
-/// 等待第 `target` 个批次落定（applied），最多 15 分钟。
+/// 等待第 `target` 个批次落定（applied），最多 25 分钟（r01：评审打回/
+/// 守卫原地重试/降级重试各占一轮 LLM，多轮耗时显著长于基线——20 分钟
+/// 实测在重裁第 3 轮被截断）。
 async fn wait_applied_batches(
     pool: &nomifun_db::sqlx::SqlitePool,
     course_id: &nomifun_common::LearningCourseId,
     target: i64,
 ) -> Result<bool> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25 * 60);
     loop {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_growth_batches \
