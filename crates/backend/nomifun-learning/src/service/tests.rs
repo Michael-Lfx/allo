@@ -8800,7 +8800,10 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
 
     /// 变体（q3）：completer 缺席 = 每节点只出旧题（如实跳过）；脚本
     /// completer 在场 = 每节点 1 变式（同型换皮 + 防复用池），变式判分走
-    /// plan 内判分底、投影同样零判底，complete 连变式一起结算。
+    /// plan 内判分底、投影同样零判底，complete 连变式一起结算。u10 判底
+    /// （on 臂）：变式只在正文已生成时装配 document——本测给 6 节点播种已
+    /// 生成正文，脚本应答带正文逐字证据（on 臂证据核在场；正文缺席的诚实
+    /// 跳过走 smoke quiz 臂读数与 variant_document 单测）。
     #[tokio::test]
     async fn quiz_variants_generate_with_completer_and_skip_honestly_without() {
         let (service, user_id) = checkin_test_service().await;
@@ -8808,6 +8811,19 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         let course = LearningCourseId::parse(&course_id).unwrap();
         for lesson in &lessons {
             complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let node_body = "Doubling maps a count to twice itself; the doubling of any \
+                         whole number is always an even number.";
+        for lesson in &lessons {
+            sqlx::query(
+                "UPDATE learning_lessons SET summary = ?, content_generated = 1 \
+                 WHERE lesson_id = ?",
+            )
+            .bind(node_body)
+            .bind(lesson)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
         }
         // 无 completer：bank-only。
         let round = service.quiz_start(&user_id, &course).await.unwrap();
@@ -8822,7 +8838,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(!plan_json.contains(r#""origin":"variant""#), "无 completer 无变式: {plan_json}");
 
         // 有 completer：每节点 (1 旧题 + 1 变式)。
-        let reply = r#"{"kind":"single_choice","prompt":"Variant probe: which property is unique?","options":["A","B"],"answer":"A","explanation":"variant bottom","distractors":[]}"#;
+        let reply = r#"{"kind":"single_choice","prompt":"Variant probe: which property is unique?","options":["A","B"],"answer":"A","explanation":"variant bottom","evidence":"the doubling of any whole number is always an even number","distractors":[]}"#;
         let kb_dir = std::env::temp_dir().join("quiz-variant-test-kb");
         let knowledge_service = Arc::new(KnowledgeService::new(
             Arc::new(nomifun_db::SqliteKnowledgeRepository::new(

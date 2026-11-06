@@ -2067,6 +2067,8 @@ async fn run_quiz(
     let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
     // k04：读数从零开始（进程内计数器，多次运行同一进程时不吃陈旧数）。
     nomifun_learning::qb_readings::reset();
+    // u10：变式链读数同步归零（跳过变式数/证据逐字违约数——quiz 臂读数行）。
+    nomifun_learning::variant_readings::reset();
     // 变式站的 LLM 调用落观测档案（structure 冒烟同纪律）：挂 ArchivingCompleter。
     let (wiring, _archiving, _live) =
         wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
@@ -2079,6 +2081,9 @@ async fn run_quiz(
     let now = nomifun_common::now_ms();
 
     // 种子课程：K 节点（est 25），每节点一道单选（answer = "B"），报名 owner。
+    // u10 判底（on 臂）：变式只在「课时正文已生成」时装配 document——种子
+    // 节点带 content_generated=1 与简短正文（真实覆盖节点形态；正文缺席时
+    // 变式如实跳过，不造逐字证据），变式证据逐字核有真地面可引。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let module_id = nomifun_common::LearningModuleId::new().into_string();
     let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
@@ -2106,14 +2111,20 @@ async fn run_quiz(
     let mut activity_ids = Vec::new();
     for index in 0..k {
         let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+        let node_body = format!(
+            "Node {index} reviews the doubling fact: adding a number to itself doubles \
+             it. Example: 2 + 2 = 4 and 3 + 3 = 6, and the doubling of any whole number \
+             is always an even number."
+        );
         sqlx::query(
             "INSERT INTO learning_lessons \
-             (lesson_id, module_id, title, summary, position, estimated_minutes) \
-             VALUES (?, ?, ?, '', ?, 25)",
+             (lesson_id, module_id, title, summary, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, ?, ?, ?, 25, 1)",
         )
         .bind(&lesson_id)
         .bind(&module_id)
         .bind(format!("Node {index}"))
+        .bind(&node_body)
         .bind(index)
         .execute(&wiring.pool)
         .await?;
@@ -2215,11 +2226,23 @@ async fn run_quiz(
         |item: &serde_json::Value| item.get("origin").and_then(|v| v.as_str()) == Some("variant");
     let variant_count = plan_items.iter().filter(|item| is_variant(item)).count();
     // k04 读数行（非门禁）：题面防雷同门的确定性计数器——off 臂 sim_hits
-    // 与 dropped 恒 0（门不在），on 臂为门实际命中数。
+    // 与 dropped 恒 0（门不在），on 臂为门实际命中数。u10 追变式链读数：
+    // `variants_skipped_no_document`（正文缺席被如实跳过的变式数，on 臂才
+    // 会 >0）与 `evidence_verbatim_misses`（证据逐字核违约数，on 臂走既有
+    // 重试）——真机 A/B 的观测点；变式链开关态随行打印。
     let qb = nomifun_learning::qb_readings::snapshot();
+    let variant_readings = nomifun_learning::variant_readings::snapshot();
     println!(
-        "qb_similarity read-out: pools={k} pool_checks={} sim_hits={} dropped={} retries={} variants_generated={variant_count}",
-        qb.pool_checks, qb.sim_hits, qb.dropped, qb.retries
+        "qb_similarity read-out: pools={k} pool_checks={} sim_hits={} dropped={} retries={} \
+         variants_generated={variant_count} variants_skipped_no_document={} \
+         evidence_verbatim_misses={} variant_v2={}",
+        qb.pool_checks,
+        qb.sim_hits,
+        qb.dropped,
+        qb.retries,
+        variant_readings.skipped_no_document,
+        variant_readings.evidence_verbatim_misses,
+        if nomifun_learning::variant_v2_enabled() { "on" } else { "off" },
     );
     let variants_present = variant_count > 0;
     // 每条计划项的判分底：bank 题 = 种子 config（answer "B"）；变式题 =
@@ -2557,7 +2580,8 @@ async fn run_content(
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
     // 最小两节点课程：L1 教 α；L2 assumes α（引用名 Alpha）teaches β；
-    // β 带活跃别名「贝塔系数」。概念面投影的数据源全部真实落库。
+    // β 带活跃别名「实际波动率」（u11：同义换名——旧夹具的「贝塔系数」在
+    // 金融上是另一个概念，模型照写即事实错误）。概念面投影的数据源全部真实落库。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let module_id = nomifun_common::LearningModuleId::new().into_string();
     sqlx::query(
@@ -2650,7 +2674,7 @@ async fn run_content(
         (
             &concept_beta,
             "历史波动率",
-            serde_json::json!([{"name": "贝塔系数", "status": "active"}]),
+            serde_json::json!([{"name": "实际波动率", "status": "active"}]),
             format!("收益序列离散程度的年化度量；参考数据：{SMOKE_RETURN_SERIES}"),
         ),
     ] {
@@ -3012,7 +3036,7 @@ async fn run_content(
         "faces: mentions_log_returns={} mentions_beta_canonical={} mentions_alias={}",
         joined.contains("对数收益率"),
         joined.contains("历史波动率"),
-        joined.contains("贝塔系数"),
+        joined.contains("实际波动率"),
     );
     // k03 读数面（非门禁）：预算行与超容自报在观测存档里的在场性——双臂
     // 对照的机械读数（off 臂预算行 0）。
@@ -3099,7 +3123,7 @@ async fn run_content(
             "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
         );
         // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
-        // 历史波动率/贝塔系数），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
+        // 历史波动率/实际波动率），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
         // 未声明地出现 = 读数红，回 #177/#178 续裁（对照卡人读清单）。scope
         // 感知豁免（p03）：命中词已在本节点 intent/scope 声明原文（user 帧的
         // 「创建意图：」「教学范围：」两行）= 声明过的词正文提及属边界诚实，
