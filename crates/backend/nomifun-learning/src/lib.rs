@@ -40,10 +40,12 @@ pub use lesson_draft::{
     EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
     LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
     LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, est_budget_enabled,
-    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
-    render_graph_goal_degree_lines, render_graph_no_brief_note, render_intent_scope_lines,
-    render_known_names_line, render_precedent_block, render_prerequisite_path_block,
-    render_teaches_tier_line,
+    is_est_budget_disabled_value, is_tier_priority_disabled_value, normalize_capacity_note,
+    render_est_budget_line, render_graph_goal_degree_lines, render_graph_no_brief_note,
+    render_intent_scope_lines, render_known_names_line, render_precedent_block,
+    render_prerequisite_path_block,
+    render_teaches_tier_line, tier_priority_enabled, tier_priority_enabled_value,
+    tier_prose_budget_cap, TIER_PRIORITY_SWITCH_ENV,
 };
 
 pub use generation::{

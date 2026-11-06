@@ -1009,7 +1009,9 @@ mod tests {
 
     /// u06 零变化钉子：课程大纲循环不携带历史压缩钩子（`FlowCycle::
     /// history_compaction` 缺省 None）——大纲循环每轮历史逐字节全量重发，
-    /// 压缩实验只属于课时内容循环。
+    /// 压缩实验只属于课时内容循环。u07 同律：修复轮开场不注入上下文
+    /// （`repair_opening_context` 缺省 None——大纲修复轮 user = 审计报告
+    /// 原样）。
     #[tokio::test]
     async fn outline_flow_never_carries_history_compaction() {
         let (service, _dir) = test_service().await;
@@ -1018,6 +1020,10 @@ mod tests {
         assert!(
             crate::learning_loop::FlowCycle::history_compaction(&flow, &ctx).is_none(),
             "大纲循环必须不传压缩钩子（u06 缺省 None 的零变化面）"
+        );
+        assert!(
+            crate::learning_loop::FlowCycle::repair_opening_context(&flow, &ctx).is_none(),
+            "大纲修复轮开场必须不注入上下文（u07 缺省 None 的零变化面）"
         );
     }
 

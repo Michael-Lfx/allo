@@ -17,7 +17,7 @@
 //! agent path and the legacy two-stage path produce interchangeable output.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use nomi_providers::{LlmProvider, create_provider};
@@ -84,6 +84,24 @@ const R14_BATCH_SENTENCE: &str = "一节写完后，把本节全部可算量一�
 /// R14 行尾锚（块内唯一出现——批量句的拼接点）。
 const R14_TAIL_ANCHOR: &str = "「≈」只许用在最后开方/极限步。";
 
+/// u07 档位优先序条款（`NOMI_LEARNING_TIER_PRIORITY` on 臂注入「写作成色」
+/// 段的「档位决定内容形态」行之后；off 臂 = 空串，模板逐字节回基线）。
+/// 票面语义：知道档 = 认识性讲解、不引入需逐步实算的推导、数值例至多 1
+/// （如有须经 verify_math）；例题密度/完备面要求只适用于会用、能教档。
+/// 末半句是反向护栏（票面推翻条件的方向锚）：不为凑密度写推导课，也不把
+/// 认识课删成只剩定义（概念面登场纪律不破）。单行条款（恰一个尾换行）。
+const TIER_PRIORITY_CLAUSE_CN: &str = "- 档位优先序（u07）：有档位声明时，档位优先于其它深度条款——标「知道」的节点做认识性讲解（认得、会辨认，有情境引入），不引入需逐步实算的推导，数值例至多 1 个（如有须经 verify_math 实算后才写入）；「例题密度 3-6」「完备面不缩水」等深度要求只适用于标「会用/能教」的节点。档位与其它条款冲突时按档位收敛，不为凑密度把认识课写成推导课，也不把认识课删成只剩定义、无情境引入的空心壳。\n";
+
+/// u07 条款装配面（纯函数——同进程双臂可测，env 不进单测；
+/// `discipline_v2_block` 同款先例）。
+fn tier_priority_clause(enabled: bool) -> &'static str {
+    if enabled {
+        TIER_PRIORITY_CLAUSE_CN
+    } else {
+        ""
+    }
+}
+
 /// 写作成色块的开关装配面（纯函数——同进程双臂可测，env 不进单测；
 /// `graph_budget_line` 同款先例）。`verify_batch` off = 基线块逐字回退
 /// （直接回基线常量，结构保证）；on = 仅 R14 行尾追加批量句，其余条款
@@ -147,6 +165,9 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     } else {
         String::new()
     };
+    // u07：档位优先序条款（占位符在「档位决定内容形态」行之后；off 臂
+    // 空串 = 模板逐字节回基线）。
+    let tier_priority_clause = tier_priority_clause(nomifun_learning::tier_priority_enabled());
     // y06（#201/#202/#203）：条款批与写作成色块同命——开关 off 时整块摘除
     // （规划三面 / 分段例组规划半 / 选择题面五型 / 题库两考向）。
     let completeness_planning = if content_discipline_v2 {
@@ -196,7 +217,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 【写作成色（域中立纪律——写作取向，不是格式模板）】
 - 先推后练：方法与公式型结论先从已教前提推出，再进例题；不要先甩断言再补证明。
 - 档位决定内容形态：标到「知道」的概念做认识性介绍，标到「会用」以应用示范为主，标到「能教」才给完整推导与反例；没有档位声明的课时按节任务命名的内容形态把握深浅。
-- 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
+{tier_priority_clause}- 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
 - 对照要真对照：比较必须落在可核查的维度（适用范围、代价、失败形态），不写「X 更好」式的空对照。
 - 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。
 - 规划即雄心：节数、题量与练习形态照节清单填充，不自行加码——规划收敛过的容量不再膨胀；练习不引入清单未安排的方法论或推理链（那是后续节点的事）；题目考察的概念域照节清单（已知概念名单优先），情境载体按受众取向。{discipline_v2}
@@ -527,6 +548,14 @@ impl FlowCycle for LiveLessonContentAgentEngine {
         }
     }
 
+    fn repair_opening_context(&self, ctx: &Arc<LoopContext>) -> Option<String> {
+        // u07 机械（修复轮带课时上下文，不挂开关——票面正确性/上下文补
+        // 全）：修复轮是全新对话，开场注入 lesson_user_text 同源上下文
+        // （概念面/档位/教学范围在审计报告里不可达），审计报告随后
+        // （run_loops 的 [`compose_repair_user`] 组装顺序）。
+        Some(lesson_user_text(&ctx.context))
+    }
+
     async fn finish(&self, ctx: &LoopContext, draft_id: &str) -> Result<LessonOutput, AppError> {
         // w1：verify_math 留痕随发布面穿出（finish 门后 warning，不挡发布）。
         // w1 评审修复口径：传未复核修正数（Fail 后无复核 Pass）——自修正
@@ -693,7 +722,17 @@ pub(crate) struct MathVerifyCounters {
     /// 不计）。纯读数面——A/B 观测点（on 臂期望 >0，calls/batches 比即
     /// 每批 claim 数）；off 臂恒 0。
     batches: AtomicUsize,
+    /// u07 失败条目留痕（发布前数学失败可见的回给面）：每次 Fail 的
+    /// verdict 原文（reason/computed/counterexample）。软上限防病态会话
+    /// 无界增长——超出后新失败只计数不逐条留痕（打回条目截断声明）。
+    failures: Mutex<Vec<ClaimVerdict>>,
+    /// u07 修正机会闸（机械，防死循环）：`claim_fix_nudge` 首次 true 后
+    /// 恒 false——发布前打回至多一次。
+    fix_nudge_used: AtomicBool,
 }
+
+/// u07 失败条目留痕的软上限（打回条目数）。
+const MATH_FAILURE_ENTRIES_CAP: usize = 32;
 
 impl MathVerifyCounters {
     /// 按核验结论记一笔（op handler 每次 verify_claim 后调用）。
@@ -708,8 +747,34 @@ impl MathVerifyCounters {
             ClaimVerdict::Fail { .. } => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
                 self.unresolved.fetch_add(1, Ordering::Relaxed);
+                // u07 失败条目留痕（软上限内逐条；超额只计数）。
+                if let Ok(mut failures) = self.failures.lock() {
+                    if failures.len() < MATH_FAILURE_ENTRIES_CAP {
+                        failures.push(verdict.clone());
+                    }
+                }
             }
         }
+    }
+
+    /// u07：领取「发布前修正机会」——首次调用返回 true 并置闸（此后恒
+    /// false）。机械防死循环：打回至多一次。
+    fn claim_fix_nudge(&self) -> bool {
+        !self.fix_nudge_used.swap(true, Ordering::SeqCst)
+    }
+
+    /// u07：失败条目原文列表（verdict 序列化——reason/computed/
+    /// counterexample 随打回可见）。空 = 无失败可回。
+    fn failures_json(&self) -> Vec<serde_json::Value> {
+        self.failures
+            .lock()
+            .map(|failures| {
+                failures
+                    .iter()
+                    .map(|verdict| serde_json::to_value(verdict).unwrap_or(serde_json::Value::Null))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// u05：一次批量调用记一笔（claims 数组通过形状校验后；退稿不记）。
@@ -1585,6 +1650,25 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
             let ctx = Arc::clone(&ctx);
             async move {
                 let draft_id = ctx.require_draft()?;
+                // u07 机械（发布前数学失败可见，不挂开关——票面正确性补
+                // 全）：会话存在未复核修正失败时，**首次** ls_finish 不进
+                // 门禁，把失败条目（verdict 原文：reason/computed/
+                // counterexample）与修正指引回给模型；修正机会仅一次
+                // （`claim_fix_nudge` 防死循环闸——模型无视打回时第二次
+                // ls_finish 照常走门禁，未复核失败以 warning 留痕，基线
+                // 语义不变）。干净会话零变化（unresolved = 0 不进此分支）。
+                if ctx.math_verify.unresolved_u32() > 0
+                    && ctx.math_verify.claim_fix_nudge()
+                {
+                    let failures = ctx.math_verify.failures_json();
+                    return Err(format!(
+                        "发布前数学失败可见：本会话 verify_math 有 {} 次失败未复核修正——\
+                         请按失败条目以实算值修正正文数字（R14），必要时用 verify_math 复核闭环后重新 ls_finish。\
+                         失败条目（verdict 原文，含 reason/computed/counterexample）：{}",
+                        ctx.math_verify.unresolved_u32(),
+                        json_compact(&failures),
+                    ));
+                }
                 // w1：verify_math 留痕随发布面穿出（finish 门后 warning，
                 // A3——不挡发布、不重放核验）。w1 评审修复口径：传未复核
                 // 修正数（unresolved），自修正会话零 warning。
@@ -3278,6 +3362,302 @@ mod tests {
             .await
             .unwrap();
         assert!(reply.contains("revision"), "off 臂返回概览视图: {reply}");
+    }
+
+    // ── u07：档位优先序条款 / 发布前数学失败可见 / 修复轮课时上下文 ─────
+
+    /// u07 档位优先序条款双臂（纯函数面，env 不进单测）：off 臂 = 空串
+    /// （模板逐字节回基线）；on 臂 = 单行条款，点名知道档的三条收敛
+    /// （认识性讲解 / 不引入逐步实算推导 / 数值例至多 1 须 verify_math）
+    /// 与密度/完备面条款的档位限定，且带「不空心化」护栏半句。
+    #[test]
+    fn tier_priority_clause_only_on_tier_arm() {
+        let off = tier_priority_clause(false);
+        assert_eq!(off, "", "off 臂 = 空串（模板逐字节回基线）");
+        let on = tier_priority_clause(true);
+        assert!(on.starts_with("- 档位优先序"), "{on}");
+        assert!(on.contains("认识性讲解"), "{on}");
+        assert!(on.contains("逐步实算"), "{on}");
+        assert!(on.contains("数值例至多 1"), "{on}");
+        assert!(on.contains("verify_math"), "{on}");
+        assert!(on.contains("会用/能教"), "深度条款限定到会用/能教档: {on}");
+        // 护栏半句（推翻条件的方向锚）：不为凑密度写推导课，也不删成空心。
+        assert!(on.contains("只剩定义"), "{on}");
+        // 单行条款（模板插位在「档位决定内容形态」行之后）：恰一个换行且在尾。
+        assert_eq!(on.matches('\n').count(), 1, "{on}");
+        assert!(on.ends_with('\n'), "{on}");
+    }
+
+    /// u07 机械（发布前数学失败可见，不挂开关）：生成会话存在未复核修正
+    /// 失败时，**首次** ls_finish 被可读 Err 打回——失败条目（verdict 原文：
+    /// reason/computed/counterexample）+ 修正指引随打回可见；模型复核闭环
+    /// 后重新 ls_finish 发布成功。打回恰一次（防死循环闸）。
+    #[tokio::test]
+    async fn math_failure_visible_before_publish_with_one_fix_chance() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            // 恒错 identity → Fail verdict（此后无复核 Pass → unresolved=1）。
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "(x+1)^2", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            // 首次 ls_finish：被 u07 打回（失败条目可见），草稿保留。
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            // 修正轮：按反例改正后复核 Pass（unresolved 清零）。
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "x*x", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("复核闭环后发布成功");
+        assert_eq!(output.sections.len(), 2);
+
+        // 打回面：恰一次，失败条目（反例证据）与修正指引随打回可见。
+        // 计数口径 = **最后一轮请求的完整历史**（seen_messages 每轮带全量
+        // 历史，逐轮扫描会把同一条 ToolResult 重复计数）。
+        let rounds = provider.seen_messages.lock().unwrap();
+        let rejections: Vec<String> = rounds
+            .last()
+            .expect("最后一轮请求")
+            .iter()
+            .filter_map(|message| match &message.content[0] {
+                ContentBlock::ToolResult { is_error: true, content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .filter(|content| content.contains("发布前数学失败可见"))
+            .collect();
+        assert_eq!(
+            rejections.len(),
+            1,
+            "打回恰一次（修正机会仅一次，防死循环）: {rejections:?}"
+        );
+        assert!(
+            rejections[0].contains("counterexample"),
+            "失败条目带 verdict 原文（反例证据）: {}",
+            rejections[0]
+        );
+        assert!(
+            rejections[0].contains("采样核验失败"),
+            "失败条目带死因: {}",
+            rejections[0]
+        );
+        assert!(
+            rejections[0].contains("verify_math"),
+            "带修正指引（R14 复核闭环）: {}",
+            rejections[0]
+        );
+        // 计数收尾：累计 failed=1 保留（观测读数面），复核 Pass 清零未修正
+        // 数——finish findings 零 warning。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["failed"], 1, "{counters}");
+        assert_eq!(counters["unresolved"], 0, "{counters}");
+    }
+
+    /// u07 机械的另一半：模型无视打回（不做复核）直接再次 ls_finish——
+    /// 第二次**不再打回**（修正机会已用尽，防死循环闸），发布照常走完
+    /// （未复核失败以 `math_verify_failed` warning 留痕，不阻断——基线
+    /// 语义）。
+    #[tokio::test]
+    async fn math_failure_nudge_fires_exactly_once_then_publishes() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "(x+1)^2", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            // 首次 ls_finish：u07 打回。
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            // 无视打回：直接再次 ls_finish（unresolved 仍 1）→ 不再打回，
+            // 发布成功（warning 留痕走服务面，不挡发布）。
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("第二次 ls_finish 不再打回，发布照常");
+        assert_eq!(output.activities.len(), 3);
+
+        let rejections: Vec<String> = provider
+            .seen_messages
+            .lock()
+            .unwrap()
+            .last()
+            .expect("最后一轮请求")
+            .iter()
+            .filter_map(|message| match &message.content[0] {
+                ContentBlock::ToolResult { is_error: true, content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .filter(|content| content.contains("发布前数学失败可见"))
+            .collect();
+        assert_eq!(rejections.len(), 1, "恰一次: {rejections:?}");
+        // 发布面留痕（基线语义不变）：未复核失败数随 finish 进 warning。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["unresolved"], 1, "{counters}");
+    }
+
+    /// u07 机械（修复轮带课时上下文，不挂开关）：修复轮是全新对话——开场
+    /// user 轮注入 lesson_user_text 同源的课时上下文（课程/节点定位/档位
+    /// 行/前置路径在案），审计报告随后。
+    #[tokio::test]
+    async fn repair_round_opens_with_lesson_context_then_audit() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+        let provider = ScriptedProvider::new(vec![
+            // ── 生成 loop：规划 + 写一节 + 过早 finish（缺节 danger）──
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                LlmEvent::TextDelta("发布被拒，还有节没写".into()),
+                done(StopReason::EndTurn),
+            ],
+            // ── 修复 loop 1：补写缺的两节 ──
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            // ── 修复 loop 2：补活动 ──
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已补齐".into()), done(StopReason::EndTurn)],
+        ]);
+        run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .expect("修复后发布");
+
+        // 修复轮请求 = 单消息全新对话，user 轮含「课时草稿审计」即修复轮。
+        let rounds = provider.seen_messages.lock().unwrap();
+        let repair_requests: Vec<&nomi_types::message::Message> = rounds
+            .iter()
+            .filter_map(|round| round.first())
+            .filter(|message| {
+                matches!(
+                    &message.content[0],
+                    ContentBlock::Text { text, .. } if text.contains("课时草稿审计")
+                )
+            })
+            .collect();
+        assert!(
+            !repair_requests.is_empty(),
+            "修复轮请求在场（finish 被拒后进入修复循环）"
+        );
+        for message in &repair_requests {
+            let text = match &message.content[0] {
+                ContentBlock::Text { text, .. } => text.as_str(),
+                _ => unreachable!(),
+            };
+            assert!(
+                text.starts_with("课程："),
+                "修复轮开场 = 课时上下文先行（lesson_user_text 同源）: {text}"
+            );
+            let context_end = text.find("课时草稿审计").expect("审计报告随后");
+            assert!(
+                text.find("课程：").expect("上下文在先") < context_end,
+                "审计报告在上下文之后: {text}"
+            );
+            // 上下文里档位/定位面在案（修复轮此前不可达的信息）。
+            assert!(text.contains("课时（"), "课时坐标在案: {text}");
+            assert!(text.contains("节点定位") || text.contains("课时目标"), "{text}");
+        }
     }
 
     /// f3 读数修复 + w1 计数槽（蓝图 4.3/A5）+ w1 评审修复的 unresolved 面：
