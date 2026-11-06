@@ -3,7 +3,8 @@
 > **2026-11-06 E 轮追加**：语音 runtime 冷启动与模型继承另见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。新建自动语音会话 gateway-only，日志实测首次 build 364–490ms；旧会话不迁移。A/B/C/D 验收结论保持原文，E 的边界见该文档。
 
 - 日期：2026-11-05（UTC+8）
-- 分支：`fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`；业务基线 `a2519cb99`；未 push
+- 历史交接：分支 `fix/voice-missing-service-component`；交接 HEAD `efe34e6e7`；业务基线 `a2519cb99`
+- 当前交付：分支 `explore/voice-runtime-warmup`；PR #419；代码/文档已 push
 - 本轮工作目录：`docs/architecture/voice-agent/execution/voice-followup-ux-tts-20261105/`
 - 本地生成物（未提交）：`build.noindex/generated-vocal/`
 

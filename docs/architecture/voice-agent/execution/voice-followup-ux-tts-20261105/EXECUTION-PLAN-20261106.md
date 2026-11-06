@@ -4,7 +4,7 @@
 - 分支：`explore/voice-runtime-warmup`
 - 执行 checkpoint：`9f66997e8 fix: surface voice model fallback and isolate validation`
 - 历史提交：`5e28569b4`（模型继承）、`18df67f4a`（首轮审查修复 + 文档）
-- 当前状态：checkpoint 之前的功能代码已提交；本方案文件与文档状态更新尚未提交
+- 当前状态：功能代码与测试/文档已提交并 push；PR #419
 - 验证原则：固定 commit、串行验证、先验收再改代码
 
 ## 1. 目标
