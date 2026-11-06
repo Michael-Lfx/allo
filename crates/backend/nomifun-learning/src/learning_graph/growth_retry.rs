@@ -693,7 +693,7 @@ mod tests {
     }
 
     /// u01 开关面：off 臂候选稿逐字节不动、计数恒零（守卫照旧全量比对 =
-    /// 基线行为）；未设 = 开发期缺省 off（off 臂同形）；显式 on = 回填。
+    /// 基线行为）；显式 off = off 臂（缺省已于 2026-11-06 A/B 后翻 on）；显式 on = 回填。
     #[test]
     #[serial_test::serial]
     fn splice_switch_off_arm_keeps_candidate_untouched() {
@@ -717,8 +717,8 @@ mod tests {
             assert_eq!(spliced, candidate, "off 臂候选稿逐字节不动");
         }
         let (spliced, count) = splice_unnamed_nodes_if_enabled(&previous, candidate.clone(), "", None);
-        assert_eq!(count, 0, "未设 = 开发期缺省 off：{count}");
-        assert_eq!(spliced, candidate, "未设 = 候选稿逐字节不动（off 臂同形）");
+        assert_eq!(count, 1, "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on）：{count}");
+        assert_ne!(spliced, candidate, "未设 = 漂移被回填（on 臂同形）");
         let _on = set_switch_env(super::super::REDRAFT_SPLICE_SWITCH_ENV, Some("on"));
         let (spliced, count) = splice_unnamed_nodes_if_enabled(&previous, candidate.clone(), "", None);
         assert_eq!(count, 1, "显式 on = 回填：{count}");
