@@ -4142,7 +4142,11 @@ mod tests {
 
     /// 评审判据 4 的拆分建议 advice 条款（absorb-8 z02）：建议拆分时给出
     /// 逐半后的 intent/scope 供 redraft 消费。条款覆盖短语断言。
+    /// **必须 `#[serial]`**：写进程全局 env——非串行时会与串行测试交错
+    /// save/restore，把他人临时置的 `off` 当「旧值」恢复回去，使挂号表开关
+    /// 永久关闭（2026-11-06 实证：同轮其它挂号表测试读数全零）。
     #[test]
+    #[serial_test::serial]
     fn criterion_four_advice_names_per_half_brief_fields() {
         let _provenance = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
         let system = concept_review_system();
