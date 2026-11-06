@@ -3845,6 +3845,57 @@ async fn provisional_voice_creation_inherits_saved_default_model() {
 }
 
 #[tokio::test]
+async fn explicit_voice_model_overrides_saved_default_preference() {
+    let (service, _, _, database) = make_sqlite_projection_service().await;
+    nomifun_db::sqlx::query("INSERT INTO providers (provider_id, platform, name, base_url, api_key_encrypted, enabled, created_at, updated_at) VALUES (?, 'openai', 'voice explicit model test', 'https://example.invalid', 'test-only', 1, 1, 1)")
+        .bind(PROVIDER_ID_1).execute(database.pool()).await.unwrap();
+    for model in ["AIPC-deepseek-v4.1-flash", "AIPC-qwen3.8-flash"] {
+        nomifun_db::sqlx::query(r#"INSERT INTO provider_models (provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at) VALUES (?, ?, 1, 0, '["chat"]', '[]', '{}', 'inferred', 1, 1)"#)
+            .bind(PROVIDER_ID_1).bind(model).execute(database.pool()).await.unwrap();
+    }
+    service.with_failover_deps(
+        Arc::new(StubProviderRepo::new(vec![])),
+        Arc::new(StubProviderModelRepo::new(vec![])),
+        Arc::new(FixedClientPrefRepo {
+            preferences: vec![ClientPreference {
+                id: 1,
+                key: "nomi.defaultModel".into(),
+                value: json!({
+                    "provider_id": PROVIDER_ID_1,
+                    "model": "AIPC-deepseek-v4.1-flash"
+                })
+                .to_string(),
+                updated_at: 1,
+            }],
+        }),
+    );
+    let workspace = tempfile::tempdir().unwrap();
+    let explicit = nomifun_api_types::voice::VoiceModelRef {
+        provider_id: PROVIDER_ID_1.to_owned(),
+        model: "AIPC-qwen3.8-flash".to_owned(),
+    };
+    let created = service
+        .create_provisional_voice_conversation(
+            PROJECTION_OWNER,
+            None,
+            Some("yolo"),
+            Some(workspace.path().to_str().unwrap()),
+            "voice-explicit-model-overrides-default",
+            Some(&explicit),
+            None,
+        )
+        .await
+        .unwrap();
+    let model = created.model.expect("explicit voice model must be stored");
+    assert_eq!(model.provider_id, PROVIDER_ID_1);
+    assert_eq!(model.model, "AIPC-qwen3.8-flash");
+    assert_eq!(
+        created.extra["voice_creation_request"]["model"]["model"],
+        json!("AIPC-qwen3.8-flash")
+    );
+}
+
+#[tokio::test]
 async fn voice_mode_uses_explicit_then_saved_preference_then_yolo() {
     let (service, _, _, _) = make_service();
     assert_eq!(service.resolve_voice_session_mode(None).await.unwrap(), "yolo");

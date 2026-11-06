@@ -1,5 +1,5 @@
 {
-  "modelFallback": "The selected voice model is unavailable. Temporarily using {{model}}.",
+  "modelFallback": "The selected chat model is unavailable. Temporarily using {{model}}.",
   "composer": {
     "queued": "{{count}} queued",
     "historyFailed": "History sync failed; current text is preserved",
