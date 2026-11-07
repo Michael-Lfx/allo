@@ -4,13 +4,31 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dropdown, Menu } from '@arco-design/web-react';
 import { Down, Up } from '@icon-park/react';
 import dropdownMenuStyles from '@/renderer/styles/configDropdownMenu.module.css';
 import { SLIDE_CANVASES, SLIDE_MODES, SLIDE_PAGES, fileBaseName, type SlideOptions, type SlideTemplate } from './slideOptions';
 import styles from './SlideOptionsControls.module.css';
+
+/**
+ * Escape belongs to an open dropdown before the homepage layer: close the menu
+ * in the capture phase so the home ESC handler never sees a live popup.
+ */
+function useEscapeToClose(open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [open, close]);
+}
 
 type OptionPillProps<T extends string> = {
   value: T;
@@ -24,6 +42,7 @@ type OptionPillProps<T extends string> = {
 
 function OptionPill<T extends string>({ value, values, label, ariaLabel, testId, disabled, onChange }: OptionPillProps<T>) {
   const [open, setOpen] = useState(false);
+  useEscapeToClose(open, () => setOpen(false));
   const menu = (
     <Menu
       className={dropdownMenuStyles.configDropdownMenu}
@@ -78,6 +97,8 @@ type SlideOptionsControlsProps = {
   /** Template pill: shows the current choice and toggles the create panel. */
   templatesOpen?: boolean;
   onToggleTemplates?: () => void;
+  /** Compact stage: keep template + pages, fold canvas/pace into one summary. */
+  compact?: boolean;
 };
 
 function useTemplateLabel(): (template: SlideTemplate) => string {
@@ -104,9 +125,42 @@ const SlideOptionsControls: React.FC<SlideOptionsControlsProps> = ({
   disabled,
   templatesOpen = false,
   onToggleTemplates,
+  compact = false,
 }) => {
   const { t } = useTranslation();
   const templateLabel = useTemplateLabel();
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  useEscapeToClose(summaryOpen, () => setSummaryOpen(false));
+  const summaryLabel = `${t(`presentation.home.canvases.${options.canvas}`)} · ${t(`presentation.home.modes.${options.mode}`)}`;
+  // Compact keeps canvas + pace folded into one control, but the summary stays
+  // operable: it opens the same two option lists instead of becoming decoration.
+  const summaryMenu = (
+    <Menu
+      className={dropdownMenuStyles.configDropdownMenu}
+      onClickMenuItem={(key) => {
+        setSummaryOpen(false);
+        const [kind, value] = String(key).split(':');
+        if (kind === 'canvas') {
+          const canvas = SLIDE_CANVASES.find((candidate) => String(candidate) === value);
+          if (canvas) onChange({ ...options, canvas });
+        } else if (kind === 'mode') {
+          const mode = SLIDE_MODES.find((candidate) => String(candidate) === value);
+          if (mode) onChange({ ...options, mode });
+        }
+      }}
+    >
+      {SLIDE_CANVASES.map((canvas) => (
+        <Menu.Item key={`canvas:${canvas}`} data-testid={`guid-slide-summary-canvas-${canvas}`}>
+          {t(`presentation.home.canvases.${canvas}`)}
+        </Menu.Item>
+      ))}
+      {SLIDE_MODES.map((mode) => (
+        <Menu.Item key={`mode:${mode}`} data-testid={`guid-slide-summary-mode-${mode}`}>
+          {t(`presentation.home.modes.${mode}`)}
+        </Menu.Item>
+      ))}
+    </Menu>
+  );
   return (
     <span className={styles.group} data-testid='guid-slide-options'>
       {onToggleTemplates && (
@@ -132,15 +186,6 @@ const SlideOptionsControls: React.FC<SlideOptionsControlsProps> = ({
         </button>
       )}
       <OptionPill
-        value={options.canvas}
-        values={SLIDE_CANVASES}
-        label={(value) => t(`presentation.home.canvases.${value}`)}
-        ariaLabel={t('presentation.home.canvas')}
-        testId='guid-slide-canvas'
-        disabled={disabled}
-        onChange={(canvas) => onChange({ ...options, canvas })}
-      />
-      <OptionPill
         value={options.pages}
         values={SLIDE_PAGES}
         label={(value) => t(`presentation.home.pageCounts.${value}`)}
@@ -149,15 +194,52 @@ const SlideOptionsControls: React.FC<SlideOptionsControlsProps> = ({
         disabled={disabled}
         onChange={(pages) => onChange({ ...options, pages })}
       />
-      <OptionPill
-        value={options.mode}
-        values={SLIDE_MODES}
-        label={(value) => t(`presentation.home.modes.${value}`)}
-        ariaLabel={t('presentation.home.mode')}
-        testId='guid-slide-mode'
-        disabled={disabled}
-        onChange={(mode) => onChange({ ...options, mode })}
-      />
+      {compact ? (
+        <Dropdown
+          trigger='click'
+          position='tl'
+          droplist={summaryMenu}
+          disabled={disabled}
+          popupVisible={summaryOpen}
+          onVisibleChange={(visible) => {
+            if (!disabled) setSummaryOpen(visible);
+          }}
+        >
+          <button
+            type='button'
+            className={styles.summary}
+            data-button-shape='pill'
+            data-testid='guid-slide-summary'
+            aria-haspopup='menu'
+            aria-label={`${t('presentation.home.canvas')} · ${t('presentation.home.mode')}`}
+            title={summaryLabel}
+            disabled={disabled}
+          >
+            {summaryLabel}
+          </button>
+        </Dropdown>
+      ) : (
+        <>
+          <OptionPill
+            value={options.canvas}
+            values={SLIDE_CANVASES}
+            label={(value) => t(`presentation.home.canvases.${value}`)}
+            ariaLabel={t('presentation.home.canvas')}
+            testId='guid-slide-canvas'
+            disabled={disabled}
+            onChange={(canvas) => onChange({ ...options, canvas })}
+          />
+          <OptionPill
+            value={options.mode}
+            values={SLIDE_MODES}
+            label={(value) => t(`presentation.home.modes.${value}`)}
+            ariaLabel={t('presentation.home.mode')}
+            testId='guid-slide-mode'
+            disabled={disabled}
+            onChange={(mode) => onChange({ ...options, mode })}
+          />
+        </>
+      )}
     </span>
   );
 };

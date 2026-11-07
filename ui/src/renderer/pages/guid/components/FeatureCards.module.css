@@ -20,7 +20,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: 16px;
+  padding: 8px 16px;
   border-radius: var(--flowy-radius-lg, 12px);
   background: var(--flowy-raised);
   box-shadow: 0 0 0 1px var(--flowy-border-subtle);
@@ -75,21 +75,16 @@
 
 .sketch {
   flex: 0 0 auto;
-  width: auto;
-  height: 72px;
-  max-width: 46%;
+  width: 144px;
+  height: 86px;
   overflow: visible;
   pointer-events: none;
 }
 
-.sketchFloat {
-  transform-box: fill-box;
-}
-
 .lineMain {
   fill: none;
-  stroke: color-mix(in srgb, var(--color-text-1) 24%, transparent);
-  stroke-width: 1.5;
+  stroke: color-mix(in srgb, var(--color-text-1) 52%, transparent);
+  stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
@@ -97,20 +92,35 @@
 
 .lineSub {
   fill: none;
-  stroke: color-mix(in srgb, var(--color-text-1) 14%, transparent);
-  stroke-width: 1.25;
+  stroke: color-mix(in srgb, var(--color-text-1) 18%, transparent);
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
 
-.lineAccent {
+.trailLight {
   fill: none;
-  stroke: color-mix(in srgb, rgb(var(--primary-6)) 52%, transparent);
-  stroke-width: 1.5;
+  stroke: color-mix(in srgb, rgb(var(--primary-6)) 70%, transparent);
+  stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
+  opacity: 0;
+  transition: opacity 220ms var(--flowy-ease-move, ease-out);
   vector-effect: non-scaling-stroke;
+}
+
+.holeSub {
+  fill: color-mix(in srgb, var(--color-text-1) 24%, transparent);
+}
+
+.holeAccent {
+  fill: color-mix(in srgb, rgb(var(--warning-6)) 82%, transparent);
+}
+
+.playTriangle {
+  fill: color-mix(in srgb, rgb(var(--warning-6)) 88%, transparent);
+  stroke: none;
 }
 
 .dotSub {
@@ -121,11 +131,26 @@
   fill: rgb(var(--primary-6));
 }
 
+.nodeWarm {
+  fill: color-mix(in srgb, rgb(var(--warning-6)) 88%, transparent);
+}
+
+.pageGroup,
 .codeGroup,
-.playGroup,
-.backSheet {
+.backSheet,
+.filmBody {
   transform-box: fill-box;
-  transition: transform 180ms var(--flowy-ease-move, ease-out);
+  transform-origin: center;
+  transition: transform 220ms var(--flowy-ease-move, ease-out);
+}
+
+@keyframes trail-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @media (hover: hover) {
@@ -134,16 +159,20 @@
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
   }
 
-  .entryButton:hover .codeGroup {
-    transform: translateX(3px);
+  .entryButton:hover .pageGroup {
+    transform: translateY(-4px);
   }
 
-  .entryButton:hover .playGroup {
-    transform: translateY(-3px);
+  .entryButton:hover .trailLight {
+    opacity: 1;
+  }
+
+  .entryButton:hover .filmBody {
+    transform: translateX(5px) scaleX(1.03);
   }
 
   .entryButton:hover .backSheet {
-    transform: rotate(2deg);
+    transform: rotate(4deg);
   }
 }
 
@@ -153,11 +182,11 @@
 }
 
 :global([data-theme='dark']) .lineMain {
-  stroke: color-mix(in srgb, var(--color-text-1) 20%, transparent);
+  stroke: color-mix(in srgb, var(--color-text-1) 48%, transparent);
 }
 
 :global([data-theme='dark']) .lineSub {
-  stroke: color-mix(in srgb, var(--color-text-1) 12%, transparent);
+  stroke: color-mix(in srgb, var(--color-text-1) 16%, transparent);
 }
 
 :global([data-theme='dark']) .entryButton:hover {
@@ -170,7 +199,7 @@
 }
 
 :global([data-home-compact='true']) .entry {
-  padding: 12px;
+  padding: 6px 12px;
   gap: 10px;
 }
 
@@ -185,21 +214,27 @@
 }
 
 :global([data-home-compact='true']) .sketch {
-  height: 55px;
-  max-width: 42%;
+  width: 104px;
+  height: 62px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .entryButton,
+  .pageGroup,
   .codeGroup,
-  .playGroup,
-  .backSheet {
+  .backSheet,
+  .filmBody,
+  .trailLight {
     transition: none;
   }
 
-  .entryButton:hover .codeGroup,
-  .entryButton:hover .playGroup,
+  .entryButton:hover .pageGroup,
+  .entryButton:hover .filmBody,
   .entryButton:hover .backSheet {
     transform: none;
+  }
+
+  .entryButton:hover .trailLight {
+    opacity: 1;
   }
 }

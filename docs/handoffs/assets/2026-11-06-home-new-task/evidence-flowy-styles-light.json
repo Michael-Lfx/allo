@@ -1,0 +1,68 @@
+{
+  "ok": true,
+  "tab_id": 1356842799,
+  "value": {
+    "card": {
+      "bg": "rgb(255, 255, 255)",
+      "border": "rgb(29, 29, 31)",
+      "color": "rgb(29, 29, 31)",
+      "radius": "6px"
+    },
+    "sketch": {
+      "bg": "rgba(0, 0, 0, 0)",
+      "border": "rgb(29, 29, 31)",
+      "color": "rgb(29, 29, 31)",
+      "fill": "none",
+      "radius": "0px",
+      "stroke": "rgb(215, 219, 226)"
+    },
+    "sketchPaths": [
+      {
+        "fill": "none",
+        "stroke": "rgb(215, 219, 226)"
+      },
+      {
+        "fill": "none",
+        "stroke": "rgb(215, 219, 226)"
+      },
+      {
+        "fill": "none",
+        "stroke": "rgb(215, 219, 226)"
+      },
+      {
+        "fill": "rgb(244, 246, 248)",
+        "stroke": "rgb(197, 203, 211)"
+      },
+      {
+        "fill": "rgb(231, 235, 240)",
+        "stroke": "rgb(197, 203, 211)"
+      },
+      {
+        "fill": "rgb(255, 255, 255)",
+        "stroke": "rgb(183, 190, 199)"
+      },
+      {
+        "fill": "rgb(76, 141, 255)",
+        "stroke": "none"
+      },
+      {
+        "fill": "none",
+        "stroke": "rgb(213, 218, 225)"
+      }
+    ],
+    "studioSvg": {
+      "fill": "rgb(0, 0, 0)"
+    },
+    "theme": "light",
+    "vars": {
+      "--bg-1": "#f5f5f7",
+      "--bg-2": "#f4f4f3",
+      "--color-bg-popup": "#ffffff",
+      "--color-border-2": "#e0e0de",
+      "--color-text-1": "#1d1d1f",
+      "--color-text-2": "#4b4b4b",
+      "--color-text-3": "#7a7a76",
+      "--flowy-raised": "#ffffff"
+    }
+  }
+}

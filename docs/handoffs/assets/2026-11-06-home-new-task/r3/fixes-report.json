@@ -1,0 +1,37 @@
+{
+  "summaryTag": "BUTTON",
+  "summaryTextBefore": "16:9 · Quick draft",
+  "summaryMenuPopups": 1,
+  "summaryTextAfter": "4:3 · Quick draft",
+  "canvasAfter": "4:3 · Quick draft",
+  "escDropdown": {
+    "panelOpen": true,
+    "popups": 0
+  },
+  "imageClick": true,
+  "beforeConfirm": {
+    "layer": "home",
+    "text": "keep this office draft",
+    "bar": true
+  },
+  "confirmBar": {
+    "role": "alertdialog",
+    "focusIsCancel": true,
+    "text": "keep this office draft"
+  },
+  "confirmEscaped": {
+    "bar": false,
+    "text": "keep this office draft",
+    "focusReturned": "guid-input"
+  },
+  "memberLayer": "home",
+  "memberKeyboardBack": "true",
+  "memberKeyboardFront": "false",
+  "memberBrandRect": {
+    "x": 679.9296875,
+    "y": 205,
+    "w": 294.109375,
+    "h": 178
+  },
+  "memberHoverAfterKeyboard": "true"
+}

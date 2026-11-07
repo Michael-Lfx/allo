@@ -3608,3 +3608,323 @@
 .guidContainer[data-slide-studio] .guidFixedInputArea .guidLayout > * {
   pointer-events: auto;
 }
+
+/* --- Second round: input-area workspace layers --- */
+
+.slidePanelHost {
+  width: 100%;
+  margin: 0 0 8px;
+  max-height: 232px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: var(--flowy-radius-lg, 12px);
+}
+
+:global([data-home-compact='true']) .slidePanelHost {
+  max-height: 168px;
+}
+
+.prepPanel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 12px;
+  border-radius: var(--flowy-radius-lg, 12px);
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  animation: prep-in 160ms ease-out both;
+}
+
+@keyframes prep-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.prepHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  min-height: 32px;
+}
+
+.prepBack {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  margin: 0;
+  padding: 0 8px 0 4px;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.prepBack:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  color: var(--color-text-1);
+}
+
+.prepTitle {
+  color: var(--color-text-1);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.prepClose {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.prepClose:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  color: var(--color-text-1);
+}
+
+.prepStarter {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: color-mix(in srgb, var(--color-text-1) 4%, var(--flowy-raised));
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: var(--color-text-1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prepStarter:hover {
+  background: color-mix(in srgb, var(--color-text-1) 7%, var(--flowy-raised));
+}
+
+.prepHint {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.prepBack:focus-visible,
+.prepClose:focus-visible,
+.prepStarter:focus-visible,
+.exampleConfirmApply:focus-visible,
+.exampleConfirmCancel:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+.exampleConfirm {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--flowy-radius-lg, 12px);
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+}
+
+.exampleConfirmText {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-1);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exampleConfirmActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.exampleConfirmCancel,
+.exampleConfirmApply {
+  height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.exampleConfirmCancel {
+  background: transparent;
+  color: var(--color-text-2);
+}
+
+.exampleConfirmCancel:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  color: var(--color-text-1);
+}
+
+.exampleConfirmApply {
+  background: rgb(var(--primary-6));
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prepPanel {
+    animation: none;
+  }
+}
+
+/* --- Review fixes: compact action row must never let the config group paint
+   over the slide controls; allow the row to wrap instead of overlapping. --- */
+:global([data-home-compact='true']) .actionRow {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+/* --- Third round: preview-led directories and capability heroes --- */
+
+.dirThumbImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.homePrepStage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 24px 0;
+}
+
+.homePrepHero {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 16px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.homePrepHero {
+  cursor: pointer;
+}
+
+button.homePrepHero:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 16%, var(--flowy-border-subtle));
+}
+
+button.homePrepHero:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+.homePrepCover {
+  flex: 0 0 auto;
+  width: 220px;
+  aspect-ratio: 16 / 10;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.homePrepCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.homePrepTitle {
+  color: var(--color-text-1);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.homePrepText {
+  color: var(--color-text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.homePrepMeta,
+.prepMeta {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  color: var(--color-text-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+:global([data-home-compact='true']) .homePrepStage {
+  padding: 12px 0;
+}
+
+:global([data-home-compact='true']) .homePrepHero {
+  padding: 12px;
+  gap: 10px;
+}
+
+:global([data-home-compact='true']) .homePrepCover {
+  width: 140px;
+}
+
+:global([data-home-compact='true']) .homePrepTitle {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+:global([data-home-compact='true']) .homePrepText {
+  font-size: 12px;
+  line-height: 18px;
+}

@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import FlipCard from '@renderer/components/motion/FlipCard';
 import { formatSiderAccountLabel } from '@renderer/components/layout/Sider/accountLabel';
@@ -24,6 +24,20 @@ const PLUS_FIELD = (() => {
 })();
 
 const hasCjk = (value: string) => /[\u3400-\u9fff]/.test(value);
+
+/** Hover preview is disabled for reduced motion and non-fine pointers. */
+function usePrefersReducedMotion() {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!query) return;
+    const apply = () => setReduce(query.matches);
+    apply();
+    query.addEventListener?.('change', apply);
+    return () => query.removeEventListener?.('change', apply);
+  }, []);
+  return reduce;
+}
 
 function PlusField() {
   return (
@@ -53,6 +67,36 @@ const GuidHomeBrand: React.FC = () => {
   const dateLabel = useMemo(() => formatMembershipDate(new Date()), []);
   const slotRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 416, height: 220 });
+  // Hover previews the back face after ~100ms; a click/keyboard activation pins
+  // it explicitly. Reduced motion keeps only click/keyboard flips.
+  const reduceMotion = usePrefersReducedMotion();
+  const [preview, setPreview] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  // After an explicit unpin click, do not let the hover preview immediately
+  // flip the card back while the pointer is still resting on it.
+  const suppressPreviewRef = useRef(false);
+  const hoverTimerRef = useRef<number | null>(null);
+  const clearHoverTimer = () => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  };
+  useEffect(() => clearHoverTimer, []);
+  const handlePointerEnter = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (reduceMotion || event.pointerType !== 'mouse' || suppressPreviewRef.current) return;
+    clearHoverTimer();
+    hoverTimerRef.current = window.setTimeout(() => {
+      hoverTimerRef.current = null;
+      setPreview(true);
+    }, 100);
+  };
+  const handlePointerLeave = () => {
+    clearHoverTimer();
+    suppressPreviewRef.current = false;
+    setPreview(false);
+  };
+  const showBack = pinned || preview;
 
   useEffect(() => {
     const el = slotRef.current;
@@ -95,11 +139,32 @@ const GuidHomeBrand: React.FC = () => {
   const wordmark = t('guid.home.cardWordmark');
 
   return (
-    <div className={`${layoutStyles.homeBrand} ${styles.slot}`} ref={slotRef} data-testid='guid-home-brand'>
+    <div
+      className={`${layoutStyles.homeBrand} ${styles.slot}`}
+      ref={slotRef}
+      data-testid='guid-home-brand'
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
+    >
       <div className={styles.cardFill}>
         <FlipCard
         axis='y'
-        flipOnClick
+        flipped={showBack}
+        onFlipChange={(next) => {
+          // A click while the hover preview is showing pins the back face; it
+          // must not bounce back to the front under the same pointer.
+          if (!next && preview && !pinned) {
+            setPinned(true);
+          } else {
+            // Only a pointer unpin suppresses the next hover preview; a keyboard
+            // unpin must not disable hover preview for the next pointer entry.
+            if (!next && pinned && (slotRef.current?.matches(':hover') ?? false)) {
+              suppressPreviewRef.current = true;
+            }
+            setPinned(next);
+          }
+          setPreview(false);
+        }}
         draggable={false}
         tilt={false}
         glare={false}

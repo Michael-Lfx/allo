@@ -126,53 +126,6 @@ const SlideCreatePanel: React.FC<SlideCreatePanelProps> = ({
         <span className={styles.headerActions}>
           <button
             type='button'
-            className={styles.iconButton}
-            aria-label={t('presentation.create.refresh')}
-            title={t('presentation.create.refresh')}
-            data-testid='guid-slide-suggestions-refresh'
-            onClick={() => setPage((current) => current + 1)}
-          >
-            <Refresh theme='outline' size={16} fill='currentColor' />
-          </button>
-          <button
-            type='button'
-            className={styles.iconButton}
-            aria-label={t('presentation.create.close')}
-            title={t('presentation.create.close')}
-            data-testid='guid-slide-create-close'
-            onClick={onClose}
-          >
-            <Close theme='outline' size={16} fill='currentColor' />
-          </button>
-        </span>
-      </header>
-
-      <div className={styles.suggestions}>
-        {suggestionPage(page).map((suggestion) => {
-          const Icon = SUGGESTION_ICONS[suggestion.icon];
-          return (
-            <button
-              key={suggestion.id}
-              type='button'
-              className={styles.suggestion}
-              data-testid={`guid-slide-suggestion-${suggestion.id}`}
-              disabled={disabled}
-              onClick={() => onSelectSuggestion(suggestion)}
-            >
-              <span className={styles.suggestionIcon}>
-                <Icon theme='outline' size={18} fill='currentColor' />
-              </span>
-              <span className={styles.suggestionText}>{t(`presentation.create.suggestions.${suggestion.id}.title`)}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className={styles.header}>
-        <h3 className={styles.subtitle}>{t('presentation.create.templateTitle')}</h3>
-        <span className={styles.headerActions}>
-          <button
-            type='button'
             className={styles.textButton}
             data-testid='guid-slide-template-import'
             title={t('presentation.create.importHint')}
@@ -200,8 +153,28 @@ const SlideCreatePanel: React.FC<SlideCreatePanelProps> = ({
           >
             <Right theme='outline' size={16} fill='currentColor' />
           </button>
+          <button
+            type='button'
+            className={styles.iconButton}
+            aria-label={t('presentation.create.refresh')}
+            title={t('presentation.create.refresh')}
+            data-testid='guid-slide-suggestions-refresh'
+            onClick={() => setPage((current) => current + 1)}
+          >
+            <Refresh theme='outline' size={16} fill='currentColor' />
+          </button>
+          <button
+            type='button'
+            className={styles.iconButton}
+            aria-label={t('presentation.create.close')}
+            title={t('presentation.create.close')}
+            data-testid='guid-slide-create-close'
+            onClick={onClose}
+          >
+            <Close theme='outline' size={16} fill='currentColor' />
+          </button>
         </span>
-      </div>
+      </header>
 
       <div
         ref={railRef}
@@ -238,6 +211,30 @@ const SlideCreatePanel: React.FC<SlideCreatePanelProps> = ({
             <SlideThemeThumbnail id={id} className={styles.thumbImage} />
           )
         )}
+      </div>
+
+      {/* Topic suggestions stay on one line below the templates so the real
+          template covers are the first thing visible in every height. */}
+      <div className={styles.suggestions}>
+        {suggestionPage(page).map((suggestion) => {
+          const Icon = SUGGESTION_ICONS[suggestion.icon];
+          return (
+            <button
+              key={suggestion.id}
+              type='button'
+              className={styles.suggestion}
+              data-testid={`guid-slide-suggestion-${suggestion.id}`}
+              disabled={disabled}
+              onClick={() => onSelectSuggestion(suggestion)}
+              title={t(`presentation.create.suggestions.${suggestion.id}.title`)}
+            >
+              <span className={styles.suggestionIcon}>
+                <Icon theme='outline' size={14} fill='currentColor' />
+              </span>
+              <span className={styles.suggestionText}>{t(`presentation.create.suggestions.${suggestion.id}.title`)}</span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
