@@ -59,3 +59,41 @@
 2. 会员「再次点击解除」的点击路径与触屏翻面未做最终独立取证（本次验证了键盘解除 + hover 恢复；代码语义已覆盖）。
 3. 构建「真实开发任务生成交互 HTML → 浏览器操作 → 第二条指令修改」未执行（需长时真实开发任务）。
 4. 宽窗幻灯片面板 3px 内部滚动（235 vs 232），保留为面板内滚动，不阻塞。
+
+## R2/R3 轮待裁决与未闭环（2026-11-07 17:5x）
+
+已交付：R2 模型可用性修复（去回退/三态可辨/零可用禁用/上传前与创建前双资格校验）与 R3 创建结果未知修复（阶段化清理、未知态保留素材与草稿且禁重发、唯一素材集认领、导航失败重开路径），证据与纯首页补丁在仓库外 `D:\tmp\flowy-review-r2r3`。
+
+待裁决：
+1. 「确认创建后导航失败」证据未取：hash 路由没有 pushState 注入点；如需该条证据，需改为在结果路由层注入失败或增加可注入 seam（属代码改动，需另行授权）。
+2. 「当前模型在线失效」四态之一未单列：共享 `useMediaModels` 120s 模块缓存阻止同页二次刷新；如需单列证据，需允许改动共享 hook 或在测试环境提供缓存失效入口（冻结文件，需授权）。
+3. 未知/核查/重新打开的专用文案键缺失，当前复用 `common.unknownError` / `videoGeneration.clip.refresh` / `videoGeneration.list.generateRecentTitle`；补键需动 i18n（冻结，需授权）。
+
+## R2/R3 收口后的待裁决（2026-11-07 18:1x）
+
+已关闭：R2「当前模型在线失效」已补证据（动态刷新共享目录缓存 + 能力切换复测，见 progress）。
+
+仍待裁决：
+1. R3「确认创建后导航失败」证据不可得：哈希路由直接写原生 `location.hash`（`hash.configurable=false`），3 次注入尝试（实例 pushState / 原型 pushState / pushState+location.assign+location.replace）均无法让 `navigate` 抛错；最后一次证据 `D:\tmp\flowy-review-r2r3\probe-casec3.mjs` 输出 `patched=[pushState,location.assign,location.replace]` 仍导航成功。要拿到该证据需在结果路由层注入失败或增加可注入 seam（代码/测试改动，需授权）。
+2. 幻灯片附件跨能力实发未做：附件入口使用 native 文件对话框，当前 DOM/CDP 自动化路径不可达；需人工操作或增加测试入口（需授权）。
+3. 构建交互 HTML 双指令未做：需一次长时真实开发任务 + 浏览器操作 + 第二条修改指令，超出本轮时间盒。
+4. 未知/核查/重新打开文案复用现有 i18n 键（`common.unknownError`、`videoGeneration.clip.refresh`、`videoGeneration.list.generateRecentTitle`），缺专用键；补键需动冻结 i18n。
+5. 视频产物：任务 `01a1b578…` 观察窗口内仍「生成中」，产物未生成（渠道/耗时未定，单列，不归因首页）。
+
+## R3 第三条路径关闭记录（2026-11-07 18:2x）
+
+已关闭：R3「确认创建后导航失败」已取得可复现证据——向 `History.prototype.pushState` 注入 `DOMException('DataCloneError')` 使 react-router 重抛而非降级 `location.assign`，`navigate()` 真实失败；随后任务与参考素材保留、0 DELETE、重开原任务成功（详见 progress 与 `D:\tmp\flowy-review-r2r3\r3-open-failure.json`）。
+
+仍未闭环（保留）：
+1. 幻灯片附件跨能力实发：附件入口走 native 文件对话框，DOM/CDP 自动化不可达；需人工或测试入口（需授权）。
+2. 构建交互 HTML 双指令：需长时真实开发任务，未执行。
+3. 未知/核查/重新打开文案缺专用 i18n 键（复用 `common.unknownError`/`videoGeneration.clip.refresh`/`videoGeneration.list.generateRecentTitle`）；补键需动冻结 i18n。
+
+## 审查修复轮（2026-11-07 22:2x）
+
+已修复（详见 progress）：R2 上传期失效拦截（ref）、tier 组合对齐视频页、no-model 刷新强制重取、核查/打开竞态守卫、认领分页、清理日志、死字段与注释、恢复条动作去重；另加目录探测 15s 超时。
+
+仍待裁决（未改）：
+1. 未知态跨路由持久化：离开首页后恢复态/草稿丢失（素材不 DELETE、无数据损失，但成孤儿）；需要持久化方案与解除语义，可能新增 i18n 键（冻结）。
+2. 无素材未知态人工解除：规范禁止按文案/时间认领，关闭动作需产品定义；缺专用文案键。
+3. 专用文案键（未知/核查/重新打开）仍复用现有键，补键需动冻结 i18n。

@@ -19,8 +19,19 @@ export type HomeVideoComposerProps = {
   modelOptions: HomeVideoModelOption[];
   onModelChange: (value: string) => void;
   modelsLoading?: boolean;
+  /** Distinguishes loading / catalog failure / no plan-eligible model. */
+  catalogState?: 'loading' | 'error' | 'no-model' | 'ready';
+  /** Catalog rows filtered out because the current plan cannot call them. */
+  lockedModelCount?: number;
   /** Manual retry when the media-model catalog failed to load. */
   onRetryModels?: () => void;
+  /** Unknown create outcome or confirmed task whose navigation failed. */
+  recovery?: {
+    kind: 'unknown' | 'navigation-failed';
+    checking?: boolean;
+    onCheck: () => void;
+    onOpen: () => void;
+  };
   durationSecs: number;
   durationOptions: number[];
   onDurationChange: (value: number) => void;
@@ -48,7 +59,10 @@ const HomeVideoComposer: React.FC<HomeVideoComposerProps> = ({
   modelOptions,
   onModelChange,
   modelsLoading = false,
+  catalogState = 'ready',
+  lockedModelCount = 0,
   onRetryModels,
+  recovery,
   durationSecs,
   durationOptions,
   onDurationChange,
@@ -85,7 +99,7 @@ const HomeVideoComposer: React.FC<HomeVideoComposerProps> = ({
     [onSend],
   );
 
-  const modelMissing = !model && !modelsLoading;
+  const modelMissing = !model && !modelsLoading && catalogState === 'ready';
 
   return (
     <section className={styles.composer} data-testid='guid-home-video-composer'>
@@ -109,7 +123,12 @@ const HomeVideoComposer: React.FC<HomeVideoComposerProps> = ({
         />
       </div>
       <div className={styles.controls}>
-        <div className={styles.params}>
+        <div
+          className={styles.params}
+          data-testid='guid-home-video-catalog'
+          data-catalog-state={catalogState}
+          data-locked-count={lockedModelCount}
+        >
           <div className={styles.paramGroup}>
             <span className={styles.paramLabel}>
               {t('videoGeneration.create.preferences.modelAndResolution')}
@@ -160,11 +179,33 @@ const HomeVideoComposer: React.FC<HomeVideoComposerProps> = ({
               {t('videoGeneration.create.preferences.noModelSelected')}
             </span>
           ) : null}
-          {modelOptions.length === 0 && !modelsLoading && onRetryModels ? (
+          {catalogState === 'loading' && modelsLoading ? (
+            <span className={styles.modelHint} data-testid='guid-home-video-model-loading'>
+              {t('videoGeneration.create.preferences.loading')}
+            </span>
+          ) : null}
+          {catalogState === 'error' ? (
+            <span className={styles.modelHint} data-testid='guid-home-video-model-error'>
+              {t('videoGeneration.list.loadError')}
+            </span>
+          ) : null}
+          {catalogState === 'no-model' ? (
+            <span className={styles.modelHint} data-testid='guid-home-video-model-locked'>
+              {t('videoGeneration.create.modelRequiredAction', {
+                defaultValue: 'A video model is required before generating.',
+              })}
+              {lockedModelCount > 0 ? ` (${lockedModelCount})` : ''}
+            </span>
+          ) : null}
+          {onRetryModels && (catalogState === 'error' || catalogState === 'no-model') ? (
             <button
               type='button'
               className={styles.retryModels}
-              data-testid='guid-home-video-model-retry'
+              data-testid={
+                catalogState === 'error'
+                  ? 'guid-home-video-model-retry'
+                  : 'guid-home-video-model-refresh'
+              }
               onClick={onRetryModels}
             >
               <Refresh theme='outline' size={12} />
@@ -172,6 +213,39 @@ const HomeVideoComposer: React.FC<HomeVideoComposerProps> = ({
             </button>
           ) : null}
         </div>
+        {recovery ? (
+          <div
+            className={styles.params}
+            data-testid={`guid-home-video-recovery-${recovery.kind}`}
+            role='status'
+          >
+            <span className={styles.modelHint}>{t('common.unknownError')}</span>
+            {recovery.kind === 'unknown' ? (
+              <button
+                type='button'
+                className={styles.retryModels}
+                data-testid='guid-home-video-recovery-check'
+                disabled={recovery.checking}
+                onClick={recovery.onCheck}
+              >
+                <Refresh theme='outline' size={12} />
+                <span>{t('videoGeneration.clip.refresh')}</span>
+              </button>
+            ) : null}
+            <button
+              type='button'
+              className={styles.retryModels}
+              data-testid='guid-home-video-recovery-open'
+              onClick={recovery.onOpen}
+            >
+              <span>
+                {recovery.kind === 'unknown'
+                  ? t('videoGeneration.list.generateRecentTitle')
+                  : t('common.retry')}
+              </span>
+            </button>
+          </div>
+        ) : null}
         <div className={styles.actions}>
           <button type='button' className={styles.back} onClick={onExit}>
             <Left theme='outline' size={14} />
@@ -181,7 +255,7 @@ const HomeVideoComposer: React.FC<HomeVideoComposerProps> = ({
             type='button'
             className={styles.send}
             data-testid='guid-home-video-send'
-            disabled={submitting || text.trim().length === 0 || !model}
+            disabled={submitting || text.trim().length === 0 || !model || catalogState !== 'ready' || recovery?.kind === 'unknown'}
             onClick={onSend}
             aria-label={t('common.send', { defaultValue: 'Send' })}
           >

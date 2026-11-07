@@ -194,3 +194,75 @@
 **门禁（最终）**：本轮修复后统一复跑（见下一条命令输出回执）。改动仍仅 `guid/` + 两份执行记录；未推送。
 
 **门禁回执（最终）**：`bun test ui/src/renderer/pages/guid` = 137 pass / 3 fail（2 基线 + 已批 `GuidPhaseOneStyle.test.ts:12`）；`tsc --noEmit`（ui/）= 71 条既有诊断（guid 仅 `entryFlyoutPlacement.ts` 两条既有）；`check:i18n`、`check:theme`、`check:dead-css`、`check:button-layout-contract`、`check:css-scope`、`check:icons` 全部 0；`bun run build:ui` 成功；`git diff --check` 清洁。改动范围仅 `ui/src/renderer/pages/guid/`、两份执行记录与任务证据目录。
+
+## 2026-11-07 R2/R3 修复轮（进行中）
+
+目标：R2 移除套餐过滤回退、零可用禁用发送、上传前与创建前两次资格校验、加载/目录失败/无可用模型三态可辨；R3 阶段化区分上传阶段 / 明确未创建 / 创建结果未知 / 已确认创建，未知态保留草稿与素材 ID 且禁止重发，唯一素材集认领任务，导航失败可重开；补四态与三条故障证据；交付纯首页补丁。
+顺序：代码（GuidPage → HomeVideoComposer）→ 浏览器 R2 四态 → 桌面 R3 故障注入三条 → 门禁 → 补丁导出与 apply --check。
+最大风险：未知态误清理素材或盲目重发。控制规则：只有「POST 未发出」或「明确 4xx 未创建」才清理本次上传素材；5xx/超时/断线/解析失败一律保留并阻断。
+边界：仅 GuidPage.tsx、HomeVideoComposer.tsx、两份执行记录；Git 只读（不新建分支/不 commit/push）；冻结文件不动；证据在仓库外。
+
+### R2/R3 修复与证据（2026-11-07 17:5x，超时盒内交付）
+
+**代码（仅 `GuidPage.tsx` 与 `HomeVideoComposer.tsx`）**
+- R2：删除「套餐过滤后回退原始目录」；按目录返回的 effective_model_tier 过滤；仅当当前模型仍在可用集才保留，否则选可用默认项，零可用清空选择；三态可辨：`loading`（hook loading / 空结果探测中）、`error`（空结果且目录直连失败，可重试）、`no-model`（目录成功但无可用或全锁定）；上传前与创建前各校验一次模型资格；按钮与 Enter 共用同一提交守卫。
+- R3：以 `postIssued` 阶段化区分「上传未完成/明确未创建」与「创建结果未知」；仅「POST 未发出」或「明确 4xx」才清理本次上传素材；5xx/超时/断线/解析失败保留草稿与素材 ID，置 `homeVideoRecovery`，同一发送动作只做核查不再 POST（切换首页能力返回后仍阻断）；核查用 `listGenerationTasks` 按「本次上传素材 ID 集合相等」唯一认领；成功/认领成功走既有结果页与侧栏；导航失败保留任务并提供重开路径；连续点击、快捷键、异步重入共用 ref 守卫。
+
+**证据（仓库外 `D:\tmp\flowy-review-r2r3`）**
+- R2 四态 `r2-four-states.json`、`r2-1..5.png`：loading（hint 可见、发送禁用）；部分锁定（lockedCount=1、选项仅 Open A）；全锁定（lockedCount=2、无模型、发送禁用；按钮 + Enter 共 0 POST / 0 上传 / 0 DELETE，草稿保留）；恢复（1 次 POST，body model=open-b，0 上传）；目录失败 → error 文案 + 重试 → 恢复 ready。
+- R3 `r3-faults.json`、`r3-1..4.png`：明确 4xx（Fetch 注入 400，后端 0 任务；仅 1 次 DELETE=本次上传素材；草稿保留；重试成功进入 clip）；后端已创建但响应被阻断（Response 阶段捕获真实 2xx 后 fail，hash 保持 `#/guid`、草稿保留、0 DELETE、0 重复 POST；核查按素材集认领同一 task `01a1b562-4c6e-79c1-8af7-2a027a910471`，extra POST=0）；无参考图未知态（核查后仍 0 POST、hash 保持 `#/guid`，不盲目重发）。
+- 后端侧证（`2026-11-07.nomicore.log`）：4xx 用例未到达后端，仅重试产生 1 条 `POST /api/video-canvas/tasks` 201（09:41:14）；阻断响应用例恰 1 条 201（09:41:20）；无参考图用例恰 1 条 201（09:41:34）；09:41:10 仅 1 条 `DELETE media`（对应 4xx 清理），其后无 DELETE。
+
+**门禁**：`bun test ui/src/renderer/pages/guid` 137 pass/3 fail（身份不变：GuidPhaseOneStyle×1 已批 + GuidResourceCards×2 基线）；tsc 71 条同名既有（guid 仅 entryFlyoutPlacement）；i18n/theme/dead-css/button-layout-contract/css-scope/icons=0；motion 既有 MarketCardShell + 82/82；`build:ui` 成功；`git diff --check` 清洁。HEAD 仍 `c242e2bfd`，冻结文件未改（工作区仅 3 个允许文件 + 原未跟踪 error-boundary 文档）。
+
+**纯产品补丁**：`D:\tmp\flowy-review-r2r3\home-new-task-r2r3.patch`（`git diff --binary aafed553f -- ui/src/renderer/pages/guid/`；16 个首页文件，0 个非首页路径）；在 `aafed553f` 干净副本 `parent-tree` 上 `git apply --check` = 0，`git apply --stat` = 16 files, +2375/-671。
+
+**未闭环**：①「确认创建后导航失败」注入未执行：哈希路由写 `window.location.hash`，pushState 注入点不存在（代码路径已实现，缺该条证据）；②「当前模型在线失效」未单列：共享 hook 120s 模块缓存使同一页面无法二次刷新目录（已由全锁定态与创建前二次资格校验覆盖）；③未知/核查/重开文案复用现有键（`common.unknownError`、`videoGeneration.clip.refresh`、`videoGeneration.list.generateRecentTitle`），缺专用键 → 待裁决。
+
+### R2/R3 收口与任务 3 补测（2026-11-07 18:1x）
+
+- **R2 四态闭环（补「当前模型在线失效」）**：通过页面内动态 `import('/src/renderer/hooks/agent/useMediaModels.ts')` 调 `refreshMediaModelsCatalog()` 绕过共享 hook 的 120s 缓存，再切换能力触发重取：`selectedBefore=Open A` → 目录全锁定后 `state=no-model`、选中清空、发送禁用，按钮 + Enter 合计 **0 POST / 0 上传 / 0 DELETE**，草稿保留；恢复目录后 `selected=Open B`，发送 **1 次 POST，body.model=open-b**。证据：`r2-6-invalidated.png`、`r2-7-recovered-after-invalidation.png`、`r2-four-states.json`。
+- **R3 第三条证据（确认创建后导航失败）**：3 次注入尝试均无法制造 `navigate` 失败（① 实例 pushState 覆盖；② `History.prototype.pushState` 覆盖——已被路由用于侧栏导航，但结果页导航仍成功；③ 同时覆盖 pushState + `location.assign` + `location.replace`，路由仍直接写 `location.hash` 成功，`hash` 属性 `configurable=false`）。最后一次可复现证据 `probe-casec3.mjs` 输出：`patched=[pushState,location.assign,location.replace]`、`hashConfigurable=false`，任务 `01a1b577…` 仍进入结果页。结论：哈希路由原生写 hash，无注入 seam；代码路径 `openHomeVideoTask` catch → `navigation-failed` 恢复条已实现，证据列待裁决。
+- **任务 3：视频符合模型规格参考图实发（成功）**：512×512 参考图（`ref-spec-512.png`，仓库外），`POST /api/video-canvas/media/upload` **201**（10:05:06.445Z），任务 `01a1b578-0e0a-7081-9f04-e774837c433c` 创建 **201**（10:05:06.420Z），nomicore `video_generate API params`：`model=AIPC-minimax-h3, duration=Some(6), resolution=Some("768P"), image_count=1`（参考图 presigned URL 已脱敏），路由与侧栏一致（`d10-video-ready-512.png`、`d11-video-sent-512.png`、`video-spec-send.json`）。观察窗口内任务仍「生成中」，**产物未生成**（单列）。
+- **任务 3：会员设备证据（成功）**：会员卡 click-again `true → false`、移出后再次 hover 预览恢复 `true`、触屏翻转 `true`（`member-device.json`、`member-click-again.png`、`member-touch.png`）。
+- **仍未做**：幻灯片导入附件后切办公实发（附件入口走 native 文件对话框，DOM 自动化不可用）；构建真实任务生成 index.html + 双指令（长时真实任务）。两者保留在 blocked。
+- 本轮**未再改产品代码**；补丁从同一工作树重导出并重新 `git apply --check` 通过；门禁复跑结果与上一轮一致（见回执）。
+
+补充回执（2026-11-07 18:1x）：
+- 视频产物状态更新：任务 `01a1b578-0e0a-7081-9f04-e774837c433c` 在后续轮询中进入完成态（结果页出现「打开视频所在位置 / 重新生成」），**产物已生成**；此前「生成中」为本轮观察窗口内状态，已更新为完成后状态（`d12-video-final-status.png`）。
+- 门禁复跑（本轮，代码未再改动）：tests 137 pass/3 fail（同一失败身份）、tsc 71 条同名既有、i18n/theme/dead-css/button-layout-contract/css-scope/icons=0、motion 既有 MarketCardShell + 82/82、build:ui 成功、git diff --check=0。
+- 补丁重导出：`home-new-task-r2r3.patch` 仍为 16 个首页文件、0 非首页路径、125877 bytes；父提交干净副本 `git apply --check=0`，`--stat` 16 files/+2375/−671。
+
+### R3 第三条路径取得可复现证据（2026-11-07 18:2x）
+
+- **注入方式**：将 `History.prototype.pushState` 对结果页 URL 抛出 `DOMException(name='DataCloneError')`。react-router 的 hash history 只会把非 DataCloneError 的 pushState 失败降级为原生 `location.assign`（不可覆盖），而 DataCloneError 会被重新抛出，因此 `navigate()` 真实失败，进入 `openHomeVideoTask` 的 catch。
+- **代码加固（同一允许文件）**：`rememberVideoGenerationTask` 移入 `openHomeVideoTask` 的 try 内——「登记任务 + 打开结果页」作为一个受保护步骤，任一失败都保留任务与素材并显示重开路径。
+- **实测**（`r3-open-failure.json`、`r3-9-open-path-failed.png`、`r3-10-open-path-reopened.png`）：结果页导航真实抛错后 hash=`#/guid`、`guid-home-video-recovery-navigation-failed`=true、`recovery-unknown`=false；随后点击恢复条「打开」重新进入原任务 `01a1b581-eeb4-7ef3-88fc-b9c00b87beeb`。
+- **后端侧证**：该次尝试恰好 1 条 `POST /api/video-canvas/tasks` 201（10:15:53.763Z）与 1 条 `media/upload` 201（10:15:53.783Z）；`video_generate API params` 含 `image_count=1`、`local_frames=["reference_image←01a1b581-ee9d-…"]`（任务保留参考素材）；重开后 `GET /api/video-canvas/tasks/01a1b581-eeb4-…` 200；该窗口 **0 条素材 DELETE**。
+- 至此 R3 三条路径证据齐备；此前「注入不可得」的结论被本方法取代。
+
+最终回执（2026-11-07 18:3x，R3 第三条路径闭合并复跑门禁）
+- 代码变更（本轮唯一产品改动）：`openHomeVideoTask` 将 `rememberVideoGenerationTask` 移入 try，与 `navigate` 作为同一受保护「打开已确认任务」步骤。
+- 门禁（改动后复跑）：tests 137 pass/3 fail（身份同基线）；tsc 71 条同名既有（guid 仅 `entryFlyoutPlacement.ts`）；i18n/theme/dead-css/button-layout-contract/css-scope/icons=0；motion 既有 MarketCardShell + 82/82；build:ui 成功；git diff --check=0。
+- 补丁重导出：16 个首页文件、0 非首页路径、**126118 bytes**、`+2378/−671`；父提交干净副本 `git apply --check=0`。
+- 未推送、未提交新 commit；HEAD 保持 `c242e2bfd`；工作区仅 2 个允许产品文件 + 2 份记录修改，`error-boundary-hardening-plan.md` 未跟踪保留；桌面调试实例已关闭。
+
+### 审查后「全部修复」轮（2026-11-07 22:2x）
+
+只改两个允许产品文件，未动冻结项，未提交/推送。
+
+修复项与证据：
+1. [Required] R2 上传期间目录刷新拦截失效（陈旧闭包）→ 新增 `homeVideoEligibilityRef`，每次渲染同步最新 `{model, openModels}`，创建前复检改读 ref。运行证据 `r2-mid-upload.json`：上传被挂起期间目录刷新为全锁定并重进能力 → `before=ready/Open A`，`after=no-model/选中清空`，`uploads=1、deletes=1（仅本次上传）、tasks=0（0 次创建 POST）、draftText 保留`，`uploadsCleaned=true、noCreatePost=true`。
+2. [Required] 套餐层级组合对齐独立视频页 → `catalogTier = Math.max(profileTier, mediaTier ?? 0)`（与 `GenerationPreferencesPopover` 契约一致）。静态核对，未构造 profile/media tier 分叉环境。
+3. [Optional] no-model 状态下用户触发刷新需真正重取 → `retryHomeVideoCatalog` 先 `refreshMediaModelsCatalog()` 再 `revalidate()`，绕过 120s 模块缓存。运行证据 `r2-no-model-refresh.json`：`before=no-model（1 次 models 请求）` → 改目录后点击 Refresh → `after=ready/Open B（第 2 次 models 请求）`。
+4. [Optional] 竞态：核查增加 ref 守卫（双击不再重复列表查询）；打开任务增加 open ref 守卫（重复点击/成功与恢复条竞态只执行一次）；目录探测加 15s 超时。
+5. [Optional] 认领扫描从「最近 50 条」改为分页扫描（50/页、上限 500），避免唯一任务被新任务挤出窗口。
+6. [Optional] 清理日志：`Promise.allSettled` 失败逐条 `console.warn`（含 media id 与原因），不再静默孤儿。
+7. [Optional] 删除未使用的 `draftText` 字段；修正“Failures keep the homepage draft untouched”陈旧注释。
+8. [Optional] 恢复条按类型去重：`unknown` 显示「核查 + 最近视频」，`navigation-failed` 只显示「重试打开」；不再两个按钮同动作。
+
+未处理的审查问题（需产品/授权决定，保持待裁决）：
+- 未知态跨路由持久化（离开 `/guid` 后恢复态丢失、素材成孤儿）：需要 sessionStorage 设计 + 明确解除策略，且可能引入新的可见文案（i18n 冻结）。
+- 无素材未知态的人工解除/关闭：规范禁止自动认领，关闭动作等于允许新尝试，需产品定义；同样缺专用文案键。
+
+**审查修复轮门禁回执（2026-11-07 22:3x）**：tests 137 pass/3 fail（失败身份与基线一致：`GuidPhaseOneStyle` 已批 1 条 + `GuidResourceCards` 基线 2 条）；tsc 71 条同名既有（guid 仅 `entryFlyoutPlacement.ts` 两条）；i18n/theme/dead-css/button-layout-contract/css-scope/icons=0；motion 既有 MarketCardShell + 82/82；`build:ui` 成功（1m49s）；`git diff --check=0`。补丁重导出：16 个首页文件、0 非首页路径、129215 bytes、`+2450/−672`，父提交 `aafed553f` 干净副本 `git apply --check=0`。HEAD 仍 `c242e2bfd`，未提交/推送；工作区仅允许的 2 个产品文件 + 2 份记录修改，error-boundary 文档保持未跟踪。

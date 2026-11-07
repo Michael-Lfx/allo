@@ -105,11 +105,17 @@ import type { Preset } from '@/common/types/agent/presetTypes';
 import type { TProviderWithModel } from '@/common/config/storage';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
-import { createGenerationTask, deleteCanvasMedia, uploadCanvasMedia } from '../videoCanvas/api';
-import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import {
+  createGenerationTask,
+  deleteCanvasMedia,
+  listGenerationTasks,
+  uploadCanvasMedia,
+  type GenerationTaskView,
+} from '../videoCanvas/api';
+import { isBackendHttpError, isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { clampClipDurationForModel, clipDurationBoundsForModel } from '../videoGeneration/durationBounds';
 import { pickDefaultVideoModel } from '../videoGeneration/components/modelPreferenceDefaults';
-import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
+import { refreshMediaModelsCatalog, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
 import { isPlanLocked } from '@/renderer/utils/model/planGate';
 import { formatClipOperationError } from '../videoGeneration/clipFailure';
@@ -127,6 +133,64 @@ import styles from './index.module.css';
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
 type HomeFlyout = GuidEntryFlyoutMode | 'knowledge';
+
+/** A stuck create POST must not pin the homepage send guard forever. */
+const HOME_VIDEO_CREATE_TIMEOUT_MS = 60_000;
+/** The empty-catalog probe is only a classifier; never let it hang the picker. */
+const HOME_VIDEO_CATALOG_PROBE_TIMEOUT_MS = 15_000;
+const HOME_VIDEO_CLAIM_PAGE_SIZE = 50;
+/** Bound the recovery scan so a huge history cannot turn one check into N requests. */
+const HOME_VIDEO_CLAIM_MAX_TASKS = 500;
+
+function withHomeVideoTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message = 'home video operation timed out',
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * A 4xx from the create endpoint is a deterministic rejection: the backend did
+ * not accept the task, so this attempt's uploads are safe to clean. 5xx,
+ * timeouts, disconnects and parse failures are all ambiguous.
+ */
+function isDefinitelyNotCreatedCreateError(error: unknown): boolean {
+  return isBackendHttpError(error) && error.status >= 400 && error.status < 500;
+}
+
+/**
+ * Recovery scans the standalone task list in pages so a unique media set is not
+ * missed just because newer tasks pushed it past the first page.
+ */
+async function listHomeVideoClaimCandidates(): Promise<GenerationTaskView[]> {
+  const tasks: GenerationTaskView[] = [];
+  let offset = 0;
+  while (tasks.length < HOME_VIDEO_CLAIM_MAX_TASKS) {
+    const page = await listGenerationTasks(HOME_VIDEO_CLAIM_PAGE_SIZE, offset, {
+      standalone: true,
+    });
+    const batch = page.tasks ?? [];
+    tasks.push(...batch);
+    offset += batch.length;
+    if (batch.length === 0 || offset >= (page.total ?? 0)) break;
+  }
+  return tasks;
+}
 
 const asHomeFlyout = (key: string | undefined): HomeFlyout | null =>
   key === 'preset' || key === 'skills' || key === 'knowledge' ? key : null;
@@ -226,24 +290,92 @@ const GuidPage: React.FC = () => {
   const [homeVideoSubmitting, setHomeVideoSubmitting] = useState(false);
   const effectiveModelTier = useEffectiveModelTier();
   const videoModelCatalog = useMediaModels({ enabled: homeCapability === 'video' });
-  // Only models the current plan can actually call; fall back to the raw catalog
-  // when the tier-filtered list is empty so the composer never dead-ends.
-  const homeVideoOpenModels = useMemo(() => {
-    const open = videoModelCatalog.videoModels.filter(
-      (model) => !isPlanLocked(model.min_tier_level ?? 0, effectiveModelTier),
-    );
-    return open.length > 0 ? open : videoModelCatalog.videoModels;
-  }, [effectiveModelTier, videoModelCatalog.videoModels]);
+  /**
+   * `useMediaModels` collapses a failed catalog request into an empty list, so an
+   * empty picker alone cannot tell "catalog failed, retry" apart from "no model
+   * available for this plan". Probe the same endpoint once after an empty load to
+   * classify it; the probe only runs in the empty case.
+   */
+  const [homeVideoCatalogProbe, setHomeVideoCatalogProbe] = useState<
+    'idle' | 'checking' | 'ok' | 'failed'
+  >('idle');
+  const homeVideoCatalogProbeSeqRef = useRef(0);
+  // Match the video page contract: never under-grant because one of the two tier
+  // sources is stale or missing (profile/seat tier vs catalog effective tier).
+  const catalogTier = Math.max(
+    effectiveModelTier,
+    typeof videoModelCatalog.effectiveModelTier === 'number'
+      ? videoModelCatalog.effectiveModelTier
+      : 0,
+  );
+  // No fallback to the raw catalog: a model the current plan cannot call must
+  // never become selectable or sendable.
+  const homeVideoOpenModels = useMemo(
+    () =>
+      videoModelCatalog.videoModels.filter(
+        (model) => !isPlanLocked(model.min_tier_level ?? 0, catalogTier),
+      ),
+    [videoModelCatalog.videoModels, catalogTier],
+  );
+  const homeVideoLockedModelCount =
+    videoModelCatalog.videoModels.length - homeVideoOpenModels.length;
   const homeVideoModelOptions = useMemo(
     () => homeVideoOpenModels.map((model) => ({ value: model.id, label: model.name || model.id })),
     [homeVideoOpenModels],
   );
+  // The submit closure can run for seconds while uploads are in flight; keep the
+  // latest eligibility in a ref so the pre-create re-check sees a catalog refresh.
+  const homeVideoEligibilityRef = useRef({ model: homeVideoModel, openModels: homeVideoOpenModels });
+  homeVideoEligibilityRef.current = { model: homeVideoModel, openModels: homeVideoOpenModels };
+  const homeVideoCatalogLoading =
+    homeCapability === 'video' && (videoModelCatalog.isLoading || homeVideoCatalogProbe === 'checking');
+  const homeVideoCatalogFailed =
+    homeCapability === 'video' &&
+    !homeVideoCatalogLoading &&
+    videoModelCatalog.videoModels.length === 0 &&
+    homeVideoCatalogProbe === 'failed';
+  const homeVideoCatalogState: 'loading' | 'error' | 'no-model' | 'ready' = homeVideoCatalogLoading
+    ? 'loading'
+    : homeVideoCatalogFailed
+      ? 'error'
+      : homeVideoModelOptions.length === 0
+        ? 'no-model'
+        : 'ready';
   useEffect(() => {
-    if (homeVideoModelOptions.length === 0) return;
+    if (homeCapability !== 'video') {
+      homeVideoCatalogProbeSeqRef.current += 1;
+      setHomeVideoCatalogProbe('idle');
+      return;
+    }
+    if (videoModelCatalog.isLoading) return;
+    if (videoModelCatalog.videoModels.length > 0) {
+      setHomeVideoCatalogProbe('ok');
+      return;
+    }
+    const seq = ++homeVideoCatalogProbeSeqRef.current;
+    setHomeVideoCatalogProbe('checking');
+    void withHomeVideoTimeout(
+      ipcBridge.media.listModels.invoke(),
+      HOME_VIDEO_CATALOG_PROBE_TIMEOUT_MS,
+      'home video catalog probe timed out',
+    )
+      .then(() => {
+        if (seq === homeVideoCatalogProbeSeqRef.current) setHomeVideoCatalogProbe('ok');
+      })
+      .catch(() => {
+        if (seq === homeVideoCatalogProbeSeqRef.current) setHomeVideoCatalogProbe('failed');
+      });
+  }, [homeCapability, videoModelCatalog.isLoading, videoModelCatalog.videoModels.length]);
+  useEffect(() => {
+    if (homeVideoCatalogLoading) return;
+    if (homeVideoModelOptions.length === 0) {
+      setHomeVideoModel((current) => (current ? '' : current));
+      return;
+    }
     if (homeVideoModel && homeVideoModelOptions.some((option) => option.value === homeVideoModel)) return;
     const preferred = pickDefaultVideoModel(homeVideoOpenModels);
-    if (preferred) setHomeVideoModel(preferred);
-  }, [homeVideoModel, homeVideoModelOptions, homeVideoOpenModels]);
+    setHomeVideoModel(preferred ?? '');
+  }, [homeVideoCatalogLoading, homeVideoModel, homeVideoModelOptions, homeVideoOpenModels]);
   // Model switches clamp duration and normalize resolution to that model's own
   // table; submit sends these normalized values.
   useEffect(() => {
@@ -260,19 +392,34 @@ const GuidPage: React.FC = () => {
       return caps.includes(normalized) ? normalized : (caps[caps.length - 1] ?? current);
     });
   }, [homeVideoModel]);
-  // A failed media-model catalog would leave an empty picker; retry once when the
-  // capability opens (the composer also exposes a manual refresh).
-  const mediaModelsRetriedRef = useRef(false);
-  useEffect(() => {
-    if (homeCapability !== 'video') {
-      mediaModelsRetriedRef.current = false;
-      return;
-    }
-    if (videoModelCatalog.isLoading || videoModelCatalog.videoModels.length > 0) return;
-    if (mediaModelsRetriedRef.current) return;
-    mediaModelsRetriedRef.current = true;
-    void videoModelCatalog.revalidate();
-  }, [homeCapability, videoModelCatalog]);
+  const retryHomeVideoCatalog = useCallback(() => {
+    homeVideoCatalogProbeSeqRef.current += 1;
+    setHomeVideoCatalogProbe('idle');
+    // revalidate() alone can reuse the 120s module cache; a user-triggered retry
+    // must actually re-read the catalog (plan upgrades, tier changes).
+    void refreshMediaModelsCatalog().then(() => videoModelCatalog.revalidate());
+  }, [videoModelCatalog]);
+  // R3: the attempt that owns the in-flight uploads/POST. `postIssued` is the
+  // only switch between "definitely not created" and "outcome unknown".
+  type HomeVideoAttemptSnapshot = {
+    uploadedMediaIds: string[];
+    prompt: string;
+    title: string;
+    model: string;
+    resolution: VideoResolution;
+    durationSecs: number;
+  };
+  type HomeVideoRecovery = HomeVideoAttemptSnapshot & { postIssued: true };
+  const homeVideoAttemptRef = useRef<(HomeVideoAttemptSnapshot & { postIssued: boolean }) | null>(null);
+  const homeVideoSendGuardRef = useRef(false);
+  const homeVideoRecoveryCheckingRef = useRef(false);
+  const homeVideoOpenGuardRef = useRef(false);
+  const [homeVideoRecovery, setHomeVideoRecovery] = useState<HomeVideoRecovery | null>(null);
+  const [homeVideoRecoveryChecking, setHomeVideoRecoveryChecking] = useState(false);
+  const [homeVideoNavFailure, setHomeVideoNavFailure] = useState<{
+    taskId: string;
+    title: string;
+  } | null>(null);
   // Example cards only replace a visible draft after an explicit confirmation.
   const [pendingExample, setPendingExample] = useState<{ title: string; run: () => void } | null>(null);
   const exampleConfirmCancelRef = useRef<HTMLButtonElement>(null);
@@ -1634,17 +1781,135 @@ const GuidPage: React.FC = () => {
 
   // Video capability submit: the same clip-task contract the video page uses —
   // upload only explicit material, create the task, register history, then open
-  // the existing clip result route. Failures keep the homepage draft untouched.
+  // the existing clip result route. Failures before the create POST keep the
+  // homepage draft; a confirmed task is never discarded.
+  const clearHomeVideoDraft = useCallback(() => {
+    setHomeVideoText('');
+    setHomeVideoRefs((current) => {
+      current.forEach((reference) => URL.revokeObjectURL(reference.previewUrl));
+      return [];
+    });
+  }, []);
+  const cleanupHomeVideoAttemptMedia = useCallback(async (attempt: { uploadedMediaIds: string[] }) => {
+    if (attempt.uploadedMediaIds.length === 0) return;
+    const results = await Promise.allSettled(
+      attempt.uploadedMediaIds.map((mediaId) => deleteCanvasMedia(mediaId)),
+    );
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.warn(
+          'Failed to delete an unconfirmed home-video upload:',
+          attempt.uploadedMediaIds[index],
+          result.reason,
+        );
+      }
+    });
+  }, []);
+  const openHomeVideoTask = useCallback(
+    async (taskId: string, title: string, prompt: string) => {
+      if (homeVideoOpenGuardRef.current) return false;
+      homeVideoOpenGuardRef.current = true;
+      try {
+        // Registering the task in history and opening its route are one guarded
+        // "open the confirmed task" step: either failure keeps the task + media
+        // and surfaces the reopen path instead of discarding the result.
+        rememberVideoGenerationTask(taskId, title);
+        await navigate(`/video-generation/clip/${encodeURIComponent(taskId)}`, {
+          state: { title, prompt, taskId },
+        });
+        setHomeVideoNavFailure(null);
+        return true;
+      } catch (navigationError) {
+        // Confirmed task: keep it and its media, and surface a reopen path.
+        console.error('Failed to open the video task route:', navigationError);
+        setHomeVideoNavFailure({ taskId, title });
+        return false;
+      } finally {
+        homeVideoOpenGuardRef.current = false;
+      }
+    },
+    [navigate],
+  );
+  const resolveHomeVideoUnknownAttempt = useCallback(async () => {
+    const pending = homeVideoRecovery;
+    if (!pending || homeVideoRecoveryCheckingRef.current) return;
+    homeVideoRecoveryCheckingRef.current = true;
+    setHomeVideoRecoveryChecking(true);
+    try {
+      if (pending.uploadedMediaIds.length === 0) {
+        // No media set to attribute a task uniquely: never claim by text/time.
+        Message.warning(t('common.unknownError'));
+        return;
+      }
+      const tasks = await listHomeVideoClaimCandidates();
+      const wanted = [...pending.uploadedMediaIds].sort().join(',');
+      const matches = tasks.filter(
+        (task) => [...(task.reference_media_ids ?? [])].sort().join(',') === wanted,
+      );
+      if (matches.length !== 1) {
+        Message.warning(t('common.unknownError'));
+        return;
+      }
+      const task = matches[0];
+      setHomeVideoRecovery(null);
+      clearHomeVideoDraft();
+      await openHomeVideoTask(task.task_id, pending.title, pending.prompt);
+    } catch (cause) {
+      Message.error(
+        formatClipOperationError(cause, t, {
+          key: 'videoGeneration.list.loadError',
+          defaultValue: '加载失败',
+        }).message,
+      );
+    } finally {
+      homeVideoRecoveryCheckingRef.current = false;
+      setHomeVideoRecoveryChecking(false);
+    }
+  }, [
+    homeVideoRecovery,
+    clearHomeVideoDraft,
+    openHomeVideoTask,
+    t,
+  ]);
   const submitHomeVideo = useCallback(async () => {
-    const text = homeVideoText.trim();
-    if (!text || homeVideoSubmitting) return;
-    if (!homeVideoModel) {
-      Message.warning(t('videoGeneration.create.preferences.noModelSelected'));
+    if (homeVideoSendGuardRef.current) return;
+    // R3: the same send action can never issue a second POST for an attempt whose
+    // outcome is unproven — it only checks/claims the existing backend task.
+    if (homeVideoRecovery) {
+      void resolveHomeVideoUnknownAttempt();
       return;
     }
+    const text = homeVideoText.trim();
+    if (!text) return;
+    if (homeVideoCatalogLoading) {
+      Message.warning(t('videoGeneration.create.preferences.loading'));
+      return;
+    }
+    if (homeVideoCatalogFailed) {
+      Message.error(t('videoGeneration.list.loadError'));
+      return;
+    }
+    // R2: model eligibility is checked before any upload starts.
+    if (!homeVideoModel || !homeVideoOpenModels.some((model) => model.id === homeVideoModel)) {
+      Message.warning(
+        t('videoGeneration.create.modelRequiredAction', {
+          defaultValue: 'A video model is required before generating.',
+        }),
+      );
+      return;
+    }
+    homeVideoSendGuardRef.current = true;
     setHomeVideoSubmitting(true);
-    const uploadedMediaIds: string[] = [];
-    let taskCreated = false;
+    const attempt = {
+      uploadedMediaIds: [] as string[],
+      prompt: '',
+      title: '',
+      model: homeVideoModel,
+      resolution: normalizeVideoResolution(homeVideoModel, homeVideoResolution),
+      durationSecs: clampClipDurationForModel(homeVideoModel, homeVideoDuration),
+      postIssued: false,
+    };
+    homeVideoAttemptRef.current = attempt;
     try {
       const pendingReferences = homeVideoRefs.filter((reference) => reference.file);
       if (homeVideoRefs.length > 0 && pendingReferences.length === 0) {
@@ -1657,65 +1922,93 @@ const GuidPage: React.FC = () => {
       for (const reference of pendingReferences) {
         const media = await uploadCanvasMedia(
           reference.file,
-          reference.file.name.replace(/\.[^.]+$/, '').trim() || `reference-${uploadedMediaIds.length + 1}`,
+          reference.file.name.replace(/\.[^.]+$/, '').trim() || `reference-${attempt.uploadedMediaIds.length + 1}`,
         );
-        uploadedMediaIds.push(media.media_id);
+        attempt.uploadedMediaIds.push(media.media_id);
       }
-      const prompt = composeClipPrompt(materializeHomeImageMentions(text), '');
-      // Model, duration and resolution come from the same capability table the
-      // controls render, so the request always carries a model-valid tuple.
-      const durationSecs = clampClipDurationForModel(homeVideoModel, homeVideoDuration);
-      const task = await createGenerationTask({
-        mode: 'video',
-        prompt,
-        model: homeVideoModel,
-        resolution: normalizeVideoResolution(homeVideoModel, homeVideoResolution),
-        duration_secs: durationSecs,
-        reference_media_ids: uploadedMediaIds,
-      });
-      taskCreated = true;
-      const title =
+      // R2: the catalog can refresh while uploads are in flight, so re-check the
+      // selected model before the create POST. Uploads are this attempt's own.
+      // Read the eligibility REF (not this closure): a running submit keeps its
+      // original render's state values for its whole lifetime.
+      const liveEligibility = homeVideoEligibilityRef.current;
+      if (
+        !attempt.model ||
+        !liveEligibility.openModels.some((model) => model.id === attempt.model)
+      ) {
+        await cleanupHomeVideoAttemptMedia(attempt);
+        homeVideoAttemptRef.current = null;
+        Message.warning(
+          t('videoGeneration.create.modelRequiredAction', {
+            defaultValue: 'A video model is required before generating.',
+          }),
+        );
+        return;
+      }
+      attempt.prompt = composeClipPrompt(materializeHomeImageMentions(text), '');
+      attempt.title =
         text.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
         t('videoGeneration.create.generateTitle', { defaultValue: '视频生成' });
-      rememberVideoGenerationTask(task.task_id, title);
-      // Only the successfully submitted draft version is cleared; refs keep no file.
-      setHomeVideoText('');
-      setHomeVideoRefs((current) => {
-        current.forEach((reference) => URL.revokeObjectURL(reference.previewUrl));
-        return [];
-      });
-      try {
-        await navigate(`/video-generation/clip/${encodeURIComponent(task.task_id)}`, {
-          state: { title, prompt, taskId: task.task_id },
-        });
-      } catch (navigationError) {
-        // The task exists and is registered in the sidebar; never delete its
-        // references because a page transition failed.
-        console.error('Failed to open the video task route:', navigationError);
-      }
+      // Everything before this line is proving "no task exists"; after it the
+      // backend may have created a task even if this page sees a failure.
+      attempt.postIssued = true;
+      const task = await withHomeVideoTimeout(
+        createGenerationTask({
+          mode: 'video',
+          prompt: attempt.prompt,
+          model: attempt.model,
+          resolution: attempt.resolution,
+          duration_secs: attempt.durationSecs,
+          reference_media_ids: attempt.uploadedMediaIds,
+        }),
+        HOME_VIDEO_CREATE_TIMEOUT_MS,
+      );
+      homeVideoAttemptRef.current = null;
+      setHomeVideoNavFailure(null);
+      clearHomeVideoDraft();
+      await openHomeVideoTask(task.task_id, attempt.title, attempt.prompt);
     } catch (cause) {
-      if (!taskCreated && uploadedMediaIds.length > 0) {
-        await Promise.allSettled(uploadedMediaIds.map((mediaId) => deleteCanvasMedia(mediaId)));
-      }
+      const pending = homeVideoAttemptRef.current;
+      homeVideoAttemptRef.current = null;
       if (isInvalidCloudSessionError(cause)) {
+        if (pending) await cleanupHomeVideoAttemptMedia(pending);
         await navigate('/cloud-login');
         return;
       }
-      const failure = formatClipOperationError(cause, t, {
-        key: 'videoGeneration.create.generateFailed',
-        defaultValue: '视频生成创建失败',
-      });
-      Message.error(failure.message);
+      if (!pending) return;
+      if (!pending.postIssued || isDefinitelyNotCreatedCreateError(cause)) {
+        // Upload-stage failure, or a deterministic 4xx rejection: no task exists,
+        // so only this attempt's uploads are cleaned. Draft stays retryable.
+        await cleanupHomeVideoAttemptMedia(pending);
+        const failure = formatClipOperationError(cause, t, {
+          key: 'videoGeneration.create.generateFailed',
+          defaultValue: '视频生成创建失败',
+        });
+        Message.error(failure.message);
+        return;
+      }
+      // 5xx / timeout / disconnect / unparsable response: the task may exist.
+      // Keep the draft, the uploaded media ids and block this send path until a
+      // unique media set confirms the backend task.
+      setHomeVideoRecovery({ ...pending, postIssued: true });
+      Message.warning(t('common.unknownError'));
     } finally {
+      homeVideoSendGuardRef.current = false;
       setHomeVideoSubmitting(false);
     }
   }, [
+    homeVideoRecovery,
+    resolveHomeVideoUnknownAttempt,
     homeVideoText,
-    homeVideoRefs,
+    homeVideoCatalogLoading,
+    homeVideoCatalogFailed,
     homeVideoModel,
-    homeVideoDuration,
+    homeVideoOpenModels,
     homeVideoResolution,
-    homeVideoSubmitting,
+    homeVideoDuration,
+    homeVideoRefs,
+    cleanupHomeVideoAttemptMedia,
+    clearHomeVideoDraft,
+    openHomeVideoTask,
     navigate,
     t,
   ]);
@@ -2372,10 +2665,43 @@ const GuidPage: React.FC = () => {
                 model={homeVideoModel}
                 modelOptions={homeVideoModelOptions}
                 onModelChange={setHomeVideoModel}
-                modelsLoading={videoModelCatalog.isLoading}
-                onRetryModels={() => {
-                  void videoModelCatalog.revalidate();
-                }}
+                modelsLoading={homeVideoCatalogState === 'loading'}
+                catalogState={homeVideoCatalogState}
+                lockedModelCount={homeVideoLockedModelCount}
+                onRetryModels={retryHomeVideoCatalog}
+                recovery={
+                  homeVideoRecovery
+                    ? {
+                        kind: 'unknown',
+                        checking: homeVideoRecoveryChecking,
+                        onCheck: () => {
+                          void resolveHomeVideoUnknownAttempt();
+                        },
+                        onOpen: () => {
+                          void navigate('/video-generation');
+                        },
+                      }
+                    : homeVideoNavFailure
+                      ? {
+                          kind: 'navigation-failed',
+                          checking: false,
+                          onCheck: () => {
+                            void openHomeVideoTask(
+                              homeVideoNavFailure.taskId,
+                              homeVideoNavFailure.title,
+                              '',
+                            );
+                          },
+                          onOpen: () => {
+                            void openHomeVideoTask(
+                              homeVideoNavFailure.taskId,
+                              homeVideoNavFailure.title,
+                              '',
+                            );
+                          },
+                        }
+                      : undefined
+                }
                 durationSecs={homeVideoDuration}
                 durationOptions={homeVideoDurationOptions}
                 onDurationChange={setHomeVideoDuration}
