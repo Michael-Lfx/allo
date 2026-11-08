@@ -2,7 +2,7 @@
 id: w04
 title: "评审翻案条款补全 + 卫生批（开关注释同步、app 测试 serial、回合同干题面池）"
 type: task
-status: open
+status: closed
 lane: growth+hygiene
 blocked_by: []
 part_of: ../map.md

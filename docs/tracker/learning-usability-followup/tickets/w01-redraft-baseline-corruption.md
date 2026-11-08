@@ -2,7 +2,7 @@
 id: w01
 title: "点修基准污染修复——守卫原地重试不得替换上一稿基准"
 type: task
-status: open
+status: closed
 lane: growth
 blocked_by: []
 part_of: ../map.md

@@ -2,7 +2,7 @@
 id: w03
 title: "提示词对齐——结构 goal 回执例外句 + 出题形状示例去字母答案"
 type: task
-status: open
+status: closed
 lane: prompts
 blocked_by: []
 part_of: ../map.md

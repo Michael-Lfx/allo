@@ -2,7 +2,7 @@
 id: w02
 title: "切片质量——语境词/候选词去二元垃圾 + 教练全批语境词"
 type: task
-status: open
+status: closed
 lane: growth
 blocked_by: []
 part_of: ../map.md
