@@ -2021,6 +2021,13 @@ impl LearningService {
         // 意见不点名任何节点）；门/契约等散文报告 = None（守卫退回子串口
         // 径）。守卫文案不得扩张点名集——原地重试期间保持评审集不变。
         let mut point_names: Option<HashSet<String>> = None;
+        // 点名探针（w01）：守卫/回填的散文回退口径取材面。正常轮与
+        // feedback 同源（None = 直接用 feedback）；守卫文案入 feedback
+        // 期间（原地重试轮、守卫计轮失败后的下一轮）钉在触发本轮重裁的
+        // 原始打回报告——守卫文本提及的标题（被守卫点为越权的节点）不
+        // 是点名，散文回退口径不得被守卫文本污染。任何非守卫报告落
+        // feedback 即复位（探针与 feedback 重新同源）。
+        let mut naming_probe: Option<String> = None;
         let mut stop_reason = "exhausted";
         'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
             attempts_used = attempt;
@@ -2107,6 +2114,10 @@ impl LearningService {
                             // 「未点名被改」机械守卫（仅重裁路径有上一稿可比；
                             // 全量枚举 + 点名集口径 = m5 #175A/#175B）。
                             if let Some(prev_ref) = previous.as_ref() {
+                                // 点名判定取材面（w01）：探针在位（feedback 是
+                                // 守卫文案）用探针，否则用 feedback——守卫文本
+                                // 自身提及的标题不得构成点名。
+                                let probe = naming_probe.as_deref().unwrap_or(feedback.as_str());
                                 // 点修回填（u01，守卫前；on 臂）：上一稿中不在
                                 // 点名集、候选稿同标题仍在的节点整对象回填——
                                 // 标点/措辞漂移由系统抹平，守卫不再为它们消耗
@@ -2114,7 +2125,7 @@ impl LearningService {
                                 let (candidate, spliced) = splice_unnamed_nodes_if_enabled(
                                     prev_ref,
                                     candidate,
-                                    &feedback,
+                                    probe,
                                     point_names.as_ref(),
                                 );
                                 if spliced > 0 {
@@ -2129,21 +2140,30 @@ impl LearningService {
                                 if let Some(violation) = redraft_guard_violation(
                                     prev_ref,
                                     &candidate,
-                                    &feedback,
+                                    probe,
                                     point_names.as_ref(),
                                 ) {
                                     if !in_place_retried {
-                                        // 原地重试恰一次（不占轮预算）：带守
-                                        // 卫原因对最新一稿点修，评审上下文保留；
-                                        // 点名集不因守卫文案扩张。
+                                        // 原地重试恰一次（不占轮预算）：带守卫
+                                        // 原因对**原始上一稿**重新点修，评审上下
+                                        // 文保留；点名集不因守卫文案扩张。
+                                        // w01：失败候选稿整稿作废——previous 不
+                                        // 动（守卫比对与【上一稿】装配仍以原始
+                                        // 上一稿为基准，越权改动不得经重试洗白
+                                        // 成「原样」）；探针钉在触发本轮重裁的
+                                        // 原始报告（守卫文案入 feedback 后，散
+                                        // 文回退口径仍认原始点名，守卫文本提及
+                                        // 的标题不构成点名）。
                                         in_place_retried = true;
                                         tracing::warn!(
                                             course = course_id.as_str(),
                                             attempt,
                                             "coach redraft edited unnamed nodes — in-place retry with the guard reason"
                                         );
+                                        if naming_probe.is_none() {
+                                            naming_probe = Some(feedback.clone());
+                                        }
                                         feedback = violation;
-                                        previous = Some(candidate);
                                         continue 'drafting;
                                     }
                                     // 二次越权 = 本 attempt 失败，计轮推进
@@ -2229,6 +2249,13 @@ impl LearningService {
                         prev_fingerprint = if guard { None } else { Some(fingerprint) };
                         last = fail.report.clone();
                         feedback_has_review_section = fail.review_history.is_some();
+                        // 探针随 feedback 的性质同步（w01）：非守卫报告落
+                        // feedback = 复位（散文回退口径重新同源）；守卫文案
+                        // 落 feedback = 探针保持（同 attempt 的原地重试已把
+                        // 它钉在原始报告）。
+                        if !fail.guard {
+                            naming_probe = None;
+                        }
                         feedback = fail.into_feedback();
                         tracing::warn!(
                             course = course_id.as_str(),
@@ -2269,6 +2296,7 @@ impl LearningService {
                 // 指纹 = 门报告结构化序列化（字段序稳定即确定性）；门报告是
                 // 散文（无 node 字段面），点名集退回子串口径。
                 point_names = None;
+                naming_probe = None;
                 feedback_has_review_section = false;
                 let fingerprint = serde_json::to_string(&outcome.errors)
                     .unwrap_or_else(|_| normalize_report(&report));
@@ -2515,6 +2543,7 @@ impl LearningService {
                 // 点名集 = 评审问题清单各条的 node 字段（m5 #175A 机械面）；
                 // 评审往返记录随 attempt 传递（m5 #175C，off 臂不积累）。
                 point_names = Some(review_point_names(&review.problems));
+                naming_probe = None;
                 feedback_has_review_section = false;
                 if review_state {
                     let round = review_history.len() + 1;
@@ -2582,6 +2611,8 @@ impl LearningService {
                 }
                 prev_fingerprint = Some(fingerprint);
                 last = report.clone();
+                // 别名裁决打回报告 = 真实打回面：探针复位（w01）。
+                naming_probe = None;
                 feedback = report;
                 previous = Some(candidate);
                 continue;
