@@ -57,3 +57,5 @@
   - quiz：EXIT=0、6 变式 0 重试、**`variant_same_stem_hits=2` 真机在场**（w04 软约束按设计只记数）。
   - structure：**EXIT=2（非 w01–w04 回归）**——goal 回执被接受（w03/u09 生效），但压力目标「掌握项目**进度**管理…」暴露**更深层的既有契约冲突**：课程主题本身的领域定义（「量化各活动的进度弹性」「安排进度压缩」）被 gd.no_schedule 扫中，三轮各撞不同条款级联失败。属设计裁决（领域术语白名单/按课程域豁免/放宽扫描面），待用户拍板；触发条件=再遇排期/计划类课程目标。
 - **教训**：实现期间分支账再度纠缠（docs 提交落在 feat/learning-usability、实现分支从 learn0928 拉）——「提交前 git branch --show-current」应成为固定动作。
+
+**终验（2026-11-09，w01–w04 合并后重建二进制 00:18、全新库四臂串行）**：grow EXIT=0（attempts_used=1、碎片 98、无守卫重试——w01/w02 生效）；content EXIT=0（math 4 claims/1 批量、档位条款在场）；structure EXIT=0（7 主干/43 块/76 边，goal 例外句在场）；quiz EXIT=0（6 变式 0 重试、`variant_same_stem_hits=2` 同干池真机在场）。四臂全绿，关票。
