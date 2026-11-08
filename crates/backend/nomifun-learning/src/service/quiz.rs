@@ -43,13 +43,18 @@
 //! 防复用池 = 该节点既有全部题面），过既有质量门（题型形状 + 新颖性 + 可
 //! 判分；u10 on 臂追证据逐字核）；**生成失败如实跳过**（该节点只出旧题
 //! ——learnhub「quiz 无 abandon，失败顺延」的回合内化：不阻断回合，不降
-//! 级旧题）。u10（`NOMI_LEARNING_VARIANT_V2`，显式 on 臂——开发期缺省
-//! off 待 A/B）：有已生成
+//! 级旧题）。u10（`NOMI_LEARNING_VARIANT_V2`，缺省 on——2026-11-07 真机
+//! A/B 达标）：有已生成
 //! 课时正文才装配判底 document，正文缺席同样如实跳过（读数
 //! `variants_skipped_no_document` 留痕——不造「逐字证据」随判分下发学习
 //! 者）；变式硬性要求走独立指令段（不再伪装学习者提示）；单题提示词按请
 //! 求题型装配与整课题库同源的形状契约。off 臂与基线逐字节一致（单测钉
-//! 住）。变式不落 `learning_activities`（课时内容面零污染：课时练习与教
+//! 住——u10 面自身；w04 的回合同干避免清单是两臂共用的附加段，见下）。
+//! w04 回合同干池：变式装配把**本回合已落盘题面**（题库题 + 已生成变式，
+//! 按回合收集）以「避免与以下题面重复」清单附给变式提示词（软约束，两臂
+//! 同款）；**不加硬门**——重复照出，只记读数 `variant_same_stem_hits`
+//! （冒烟 quiz 读数行透出；同干判定复用防复用池的相似度函数与阈值）。
+//! 变式不落 `learning_activities`（课时内容面零污染：课时练习与教
 //! 新结算的题量口径不被检测题改写），判分底随回合行落盘。作答呈现跨节点
 //! 交错（learnhub 同款：同节点题不相邻，确定性槽位轮转）。
 //!
@@ -238,6 +243,10 @@ impl LearningService {
 
         // 选题：每覆盖节点 1 道 objective 旧题（LRU）+ 1 道变式（尽力）。
         let mut node_plans: Vec<(Vec<QuizPlanItem>, Vec<QuizRoundQuestionView>)> = Vec::new();
+        // w04 回合同干题面池：本回合已落盘题面（题库题 + 已生成变式，按
+        // 回合收集序）——以「避免与以下题面重复」清单附给后续变式提示词；
+        // 命中不加硬门，只记 `variant_same_stem_hits` 读数（见变式装配处）。
+        let mut round_stems: Vec<String> = Vec::new();
         for node in &selected {
             let rows = sqlx::query(&format!(
                 "SELECT a.activity_id, a.kind, a.prompt, a.config_json, l.title AS node_title, \
@@ -281,6 +290,8 @@ impl LearningService {
             let kind_text: String = row.try_get("kind").map_err(internal)?;
             let kind = ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?;
             let prompt: String = row.try_get("prompt").map_err(internal)?;
+            // 题库题随选随入回合池（先于本节点变式装配——变式也要避它）。
+            round_stems.push(prompt.clone());
             let node_name: String = row.try_get("node_title").map_err(internal)?;
             let node_summary: String = row.try_get("node_summary").map_err(internal)?;
             let content_generated: bool = row
@@ -335,9 +346,14 @@ impl LearningService {
                         // 变式与旧题同考点同节点（e5）：继承旧题的铸值难度，
                         // 本场回合内 tier 口径一致。
                         config.difficulty,
+                        // w04 回合同干池：本回合已落盘题面清单（软约束入提示
+                        // 词 + 同干读数；不含本变式自身）。
+                        &round_stems,
                     )
                     .await
                 {
+                    // 变式题面落盘即入回合池（后续节点的变式避它）。
+                    round_stems.push(variant.prompt.clone());
                     let variant_activity = LearningActivityId::new();
                     plan_items.push(QuizPlanItem {
                         node: node.clone(),
@@ -835,8 +851,11 @@ impl LearningService {
 
     /// 变式生成（q3）：同型换皮（要求原文点名旧题面 + 防复用池 = 节点全部
     /// 既有题面），质量门 = 课时加题引擎既有 validator（形状 + 新颖性 +
-    /// 可判分；u10 on 臂追证据逐字核）。Err（含 completer 缺席的上游）=
-    /// None 如实跳过；u10 on 臂正文缺席同样如实跳过（读数留痕，回合照常）。
+    /// 可判分；u10 on 臂追证据逐字核）。w04：`round_stems` = 本回合已落盘
+    /// 题面池——以「避免与以下题面重复」清单附给提示词（两臂同款软约束），
+    /// 生成结果同干命中只记读数 `variant_same_stem_hits` 不加硬门。Err（含
+    /// completer 缺席的上游）= None 如实跳过；u10 on 臂正文缺席同样如实跳
+    /// 过（读数留痕，回合照常）。
     #[allow(clippy::too_many_arguments)]
     async fn generate_quiz_variant(
         &self,
@@ -852,11 +871,15 @@ impl LearningService {
         content_generated: bool,
         // e5：旧题的铸值难度，变式判分底原样继承（同考点同档）。
         bank_difficulty: Option<u8>,
+        // w04：本回合已落盘题面池（题库题 + 先前变式；不含本变式自身）。
+        round_stems: &[String],
     ) -> Option<GeneratedVariant> {
         // 判底装配（u10 on 臂）：有已生成课时正文才让模型写「逐字证据」；
         // 缺席 = 如实跳过（该节点只出旧题——不造证据随判分下发学习者），
         // 读数 `variants_skipped_no_document` 留痕，回合不阻断。off 臂 =
         // 基线形状（focus 伪装学习者提示 + document = 节点摘要，逐字节）。
+        // w04 回合同干避免清单两臂同款附加（空池 = 零附加）。
+        let round_avoid_block = round_stem_avoidance_block(round_stems);
         let (focus, variant_instruction, document) = if variant_v2_enabled() {
             let Some(document) = variant_document(content_generated, node_summary) else {
                 crate::generation::variant_readings::record_skipped_no_document();
@@ -866,7 +889,7 @@ impl LearningService {
             };
             (
                 String::new(),
-                variant_drill_instruction(bank_prompt),
+                format!("{}{round_avoid_block}", variant_drill_instruction(bank_prompt)),
                 document,
             )
         } else {
@@ -874,7 +897,7 @@ impl LearningService {
                 format!(
                     "Quiz variant drill: test the same knowledge point as this existing \
                      question from a fresh angle (new surface, same concept, judgeable answer): \
-                     \"{bank_prompt}\""
+                     \"{bank_prompt}\"{round_avoid_block}"
                 ),
                 String::new(),
                 node_summary.to_owned(),
@@ -912,6 +935,13 @@ impl LearningService {
         .await
         {
             Ok(pack) => {
+                // w04 回合同干读数（软约束出口）：命中不加硬门——重复照出，
+                // 只留痕（`variant_same_stem_hits`，冒烟读数行透出）。
+                if let Some((_, score)) = round_same_stem_hit(&pack.prompt, round_stems) {
+                    crate::generation::variant_readings::record_same_stem_hit();
+                    tracing::info!(target: "nomifun_learning", node = %node, score = %score,
+                        "quiz variant stem duplicates a round question (recorded, not gated)");
+                }
                 let config = variant_stored_config(&pack, bank_difficulty);
                 let config_json = serde_json::to_string(&config).ok()?;
                 tracing::info!(target: "nomifun_learning", node = %node,
@@ -1087,6 +1117,50 @@ fn variant_drill_instruction(bank_prompt: &str) -> String {
     )
 }
 
+/// w04 回合同干避免清单（纯函数）：本回合已落盘题面以「避免与以下题面重
+/// 复」清单附给变式提示词——**软约束**（模型可见面；机械硬门仍在节点级防
+/// 复用池）。空池（回合首题）= 空串零附加。清单逐行带引号原文，便于模型
+/// 逐字对照。
+fn round_stem_avoidance_block(round_stems: &[String]) -> String {
+    if round_stems.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "\nAvoid duplicating any question stem already used in this quiz round \
+         (do not produce a question that matches or closely paraphrases any of \
+         the following):\n",
+    );
+    for stem in round_stems {
+        block.push_str(&format!("- \"{}\"\n", stem.trim()));
+    }
+    block
+}
+
+/// w04 回合同干判定（纯函数）：复用防复用池的相似度函数
+/// （[`crate::learning_graph::defnear::stem_similarity`]，同一阈值）对新变
+/// 式题面对回合级池判一次，返回最佳命中（平手取先入池者——确定性）。与
+/// 题面防雷同门不同：**不加硬门**（命中照常采纳），也不走
+/// `similarity_hit`（那会顺带记 qb_readings——冒烟读数行的门计数保持单
+/// 源）；本判定只喂 `variant_same_stem_hits` 读数。
+fn round_same_stem_hit<'a>(prompt: &str, pool: &'a [String]) -> Option<(&'a str, f64)> {
+    if crate::generation::normalize_prompt(prompt).is_empty() {
+        return None;
+    }
+    let mut best: Option<(&str, f64)> = None;
+    for candidate in pool {
+        if crate::generation::normalize_prompt(candidate).is_empty() {
+            continue;
+        }
+        let score = crate::learning_graph::defnear::stem_similarity(prompt, candidate);
+        if score >= crate::learning_graph::defnear::STEM_SIMILARITY_THRESHOLD
+            && best.is_none_or(|(_, best_score)| score > best_score)
+        {
+            best = Some((candidate.as_str(), score));
+        }
+    }
+    best
+}
+
 /// u10 变式判分底铸形（机械项）：tol 透传 pack.tol——数值题容差不再静默
 /// 回落 1e-9（舍入答案几乎必判错）；难度继承与空白证据修剪语义不变。
 fn variant_stored_config(
@@ -1231,5 +1305,76 @@ mod tests {
         assert_eq!(config.tol, None, "无 tol = None（缺省语义不变）");
         assert_eq!(config.evidence, None);
         assert!(config.matches.is_empty());
+    }
+
+    // ── w04：回合同干题面池（避免清单 + 同干读数，纯函数面）──
+
+    /// 避免清单装配：空池 = 零附加（回合首题不带清单）；非空池 = 固定句式
+    /// + 逐行带引号题面（软约束出口——清单只在提示词面，门在节点级防复用池）。
+    #[test]
+    fn round_stem_avoidance_block_lists_round_prompts_and_empty_pool_adds_nothing() {
+        assert_eq!(super::round_stem_avoidance_block(&[]), String::new());
+        let block = super::round_stem_avoidance_block(&[
+            "What is 6 + 6?".to_owned(),
+            "  极限的定义是什么？  ".to_owned(),
+        ]);
+        assert!(block.contains("quiz round"), "清单句点名回合范围：{block}");
+        assert!(block.contains("- \"What is 6 + 6?\""), "题库题入清单：{block}");
+        assert!(
+            block.contains("- \"极限的定义是什么？\""),
+            "题面 trim 后入清单（不带池外空白）：{block}"
+        );
+    }
+
+    /// 同干判定：换数题命中（复用防复用池同款阈值）；异考法不误伤；同干
+    /// 命中取池内最佳（多命中时分数最高者胜）。
+    #[test]
+    fn round_same_stem_hit_detects_renumbered_stem_and_spares_new_angles() {
+        let existing = "小明有3个苹果，又买了5个，现在一共有多少个苹果？";
+        let renumbered = "小明有4个苹果，又买了6个，现在一共有多少个苹果？";
+        let pool = vec![existing.to_owned()];
+        let (hit, score) =
+            super::round_same_stem_hit(renumbered, &pool).expect("换数题同干命中");
+        assert_eq!(hit, existing);
+        assert!(
+            score >= crate::learning_graph::defnear::STEM_SIMILARITY_THRESHOLD,
+            "命中分过阈值：{score:.3}"
+        );
+        let pool = vec!["极限的定义是什么？".to_owned()];
+        assert!(
+            super::round_same_stem_hit("用极限证明函数在一点连续需要哪些步骤？", &pool).is_none(),
+            "异考法不命中（判回打回能力不削弱）"
+        );
+        assert!(super::round_same_stem_hit("   ", &pool).is_none(), "空题面不判");
+        // 多命中取最佳：换数题（高分）压过弱近邻（低分命中）。
+        let pool = vec![
+            "用极限证明函数在一点连续需要哪些步骤？".to_owned(),
+            "小明有5个苹果，又买了6个，现在一共有多少个苹果？".to_owned(),
+        ];
+        let (hit, _) = super::round_same_stem_hit(renumbered, &pool).expect("多命中取最佳");
+        assert!(
+            hit.contains("小明有5个苹果"),
+            "最佳命中 = 分最高者：{hit}"
+        );
+    }
+
+    /// 同干读数：进程内累计（冒烟读数行透出的 `variant_same_stem_hits`）。
+    /// 读数是进程全局态——本测只取**增量**断言（不 reset，不与并行测试的
+    /// reset/record 互相踩）。
+    #[test]
+    fn variant_readings_same_stem_hits_accumulate_as_a_delta() {
+        let before = crate::generation::variant_readings::snapshot().same_stem_hits;
+        let pool = ["小明有3个苹果，又买了5个，现在一共有多少个苹果？".to_owned()];
+        let hit = super::round_same_stem_hit(
+            "小明有4个苹果，又买了6个，现在一共有多少个苹果？",
+            &pool,
+        );
+        assert!(hit.is_some(), "前置：换数题确实同干命中");
+        crate::generation::variant_readings::record_same_stem_hit();
+        assert_eq!(
+            crate::generation::variant_readings::snapshot().same_stem_hits,
+            before + 1,
+            "一次同干命中 = 读数 +1"
+        );
     }
 }
