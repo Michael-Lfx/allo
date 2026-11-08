@@ -7163,6 +7163,7 @@ dependencies = [
  "sentry-tracing",
  "serde",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "sqlx",
  "sysinfo",
