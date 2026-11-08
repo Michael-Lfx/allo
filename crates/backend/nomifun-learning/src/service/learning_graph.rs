@@ -32,16 +32,17 @@ fn findings_watermark_enabled() -> bool {
 }
 
 /// u04 课程语境词（确定性切片，无 LLM）：课程标题 + 学习目标过 generation
-/// 的 `term_slices`（标点/空白分段 → 中文相邻二元 / ASCII 整词 → 去停用词
-/// → 去重保序）。on 臂（`NOMI_LEARNING_ANTI_LOOP` 未设/非 off 值）= 切片
-/// 词表——进教练首批块与评审 user 的【课程语境词】块，并加入碎片点名清单
-/// 的已知面（这些词不再作为碎片下发）；off 臂 = 空表（整面休眠，提示词
-/// 逐字节回基线）。
+/// 的 `context_word_slices`（w02 最大 munch：虚字分段 → 互含消解到不动点
+/// → 去停用词 → 去重保序——跨词界二元垃圾不再产出；`term_slices` 本体
+/// 不动，采样打分与检索查询仍吃二元）。on 臂（`NOMI_LEARNING_ANTI_LOOP`
+/// 未设/非 off 值）= 切片词表——进教练每一批 prompt 与评审 user 的
+/// 【课程语境词】块，并加入碎片点名清单的已知面（词对齐掩码，残片不再
+/// 产生）；off 臂 = 空表（整面休眠，提示词逐字节回基线）。
 pub(crate) fn course_context_terms(title: &str, goal: &str) -> Vec<String> {
     if !crate::learning_graph::anti_loop_enabled() {
         return Vec::new();
     }
-    crate::generation::terms::term_slices(&format!("{title}\n{goal}"))
+    crate::generation::terms::context_word_slices(&format!("{title}\n{goal}"))
 }
 
 /// 自动维护设置缺省与边界（learnhub `infra/settings.rs` 同量级：缺省开、

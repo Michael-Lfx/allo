@@ -4534,15 +4534,23 @@ async fn degraded_review_preserves_problems_into_findings_and_batch_note() {
 
 // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重 ────────────────────
 
-/// u04 课程语境词切片（on 臂 = 标题+目标的确定性二元切片，显式 env on
-/// ——开发期缺省 off；off 臂恒空表——碎片点名清单的已知面随之恢复基线）。
+/// u04 课程语境词切片（on 臂 = 标题+目标的最大 munch 切片——w02 起不再
+/// 产出跨词界二元垃圾；显式 env on——开发期缺省 off；off 臂恒空表——碎片
+/// 点名清单的已知面随之恢复基线）。此表同时是点名清单的掩码池：垃圾二元
+/// 不再入池。
 #[test]
 #[serial_test::serial]
 fn course_context_terms_follow_the_switch() {
     let _on = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "on");
     let terms = crate::service::learning_graph::course_context_terms("家庭手冲咖啡入门", "学会手冲咖啡");
-    assert!(terms.contains(&"手冲".to_owned()), "{terms:?}");
-    assert!(terms.contains(&"咖啡".to_owned()), "{terms:?}");
+    assert_eq!(
+        terms,
+        vec!["家庭手冲咖啡入门".to_owned(), "学会手冲咖啡".to_owned()],
+        "最大 munch：短语整段保留、无互含二元垃圾（标题与目标短语互不内嵌）"
+    );
+    for garbage in ["会手", "冲咖", "啡的", "取状", "态判"] {
+        assert!(!terms.contains(&garbage.to_owned()), "垃圾二元 {garbage} 不在掩码池：{terms:?}");
+    }
     drop(_on);
     let _off = set_learning_env(crate::learning_graph::ANTI_LOOP_SWITCH_ENV, "off");
     assert!(
