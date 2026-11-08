@@ -4121,8 +4121,10 @@ async fn over_capacity_redraft_gets_the_directed_instruction() {
 /// 「未点名被改」机械守卫（u01 off 臂回归钉：`NOMI_LEARNING_REDRAFT_SPLICE=off`
 /// 时回填休眠，守卫照旧全量比对 = 基线行为）：打回报告只点名甲，重裁改了
 /// 乙 → guard 失败 → 原地重试恰一次（不占轮预算）；二次越权计轮，第三轮
-/// 点修落位。on 臂的同形漂移由系统回填、不再进守卫（见
-/// `splice_on_arm_backfills_unnamed_drift_without_the_guard_retry`）。
+/// 点修落位。w01：原地重试不替换上一稿基准——守卫始终对原始上一稿比对
+/// （乙的复原靠「与原始上一稿一致」过守卫，不靠守卫文案豁免），第三轮
+/// 点修也是对原始上一稿逐字复原。on 臂的同形漂移由系统回填、不再进守卫
+/// （见 `splice_on_arm_backfills_unnamed_drift_without_the_guard_retry`）。
 #[tokio::test]
 #[serial_test::serial]
 async fn guard_failure_retries_in_place_once_then_counts_the_round() {
@@ -4151,8 +4153,8 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
         ],
         "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿"
     }"#;
-    // 重裁#2（原地重试）：乙复原、丙被偷改（守卫文案只点名过乙，丙仍属
-    // 未点名）→ 二次越权，计轮。
+    // 重裁#2（原地重试）：乙复原（w01：守卫对照原始上一稿——乙与违约稿
+    // 逐字一致，不需守卫文案豁免）、丙被偷改 → 二次越权，计轮。
     let redraft_editing_unnamed_again = r#"{
         "nodes": [
             {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
@@ -4162,12 +4164,32 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
         ],
         "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿二"
     }"#;
-    // 重裁#3：合法批落位（重试反馈的守卫文案点名乙，guard 放行）。
+    // 重裁#3：对原始上一稿点修落位——甲修复（门报告点名，改动放行）、
+    // 乙丙对违约稿逐字复原（未点名，守卫过）。
+    let redraft_legal = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "无限逼近的值"}], "note": "合法稿"
+    }"#;
+    // 评审放行结论（单行挂号表，本批只铸极限——review_pass_verdict 的双行
+    // 形会被「行 concept 不在批内提名」判违约触发重试）。
+    let review_pass = serde_json::to_string(&json!({
+        "verdict": "pass",
+        "term_provenance": [
+            {"concept": "极限", "term": "值", "source": "常识"}
+        ]
+    }))
+    .unwrap();
     let completer = SequencedCompleter::new(vec![
         draft.to_owned(),
         redraft_editing_unnamed.to_owned(),
         redraft_editing_unnamed_again.to_owned(),
-        VALID_BATCH.to_owned(),
+        redraft_legal.to_owned(),
+        review_pass,
     ]);
     *service.course_completer.write().unwrap() = Some(completer.clone());
     service.kick_growth(&owner, &course, true, None).await.unwrap();
@@ -4182,14 +4204,213 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     .unwrap();
     assert_eq!(applied, 1, "the third-round point-fix lands");
     // 调用数：起草1 + 重裁1 + 原地重试1（乙越权）+ 计轮重裁1（丙越权）+
-    // 第 3 轮重裁1（合法稿 vs 守卫基准触发甲「被移除」的原地重试）+ 评审1
-    // + 评审缺席重试1（r01：违约/传输恰一次重试，脚本耗尽两连 → 降级）
-    // = 7。**3 轮预算内落库**本身即证明原地重试未占轮预算——纯计轮会在
-    // 第 3 轮耗尽后失败（5 调用即断）。
-    assert_eq!(completer.call_count(), 7);
+    // 第 3 轮重裁1（乙丙对原始上一稿逐字复原、甲被门报告点名故修复放行
+    // ——守卫过）+ 评审1 = 5。**3 轮预算内落库**本身即证明原地重试未占
+    // 轮预算——纯计轮会在第 3 轮耗尽后失败（4 调用即断）。
+    assert_eq!(completer.call_count(), 5);
+    // 落库批 = 第三轮点修稿（越权稿一/二整稿作废，未随批落库）。
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(note.contains("合法稿"), "点修稿落位，越权稿作废：{note}");
     let stats = service.growth_run_stats().expect("growth stats recorded");
     assert_eq!(stats.stop_reason, "success");
     assert_eq!(stats.attempts_used, 3);
+}
+
+/// w01①（门散文路径）：守卫原地重试不替换上一稿基准——失败候选稿整稿作
+/// 废，原地重试的【上一稿】装配与守卫比对都以**原始上一稿**为基准。模型
+/// 按守卫文案对原始上一稿点修（乙复原）后落位；失败候选的越权漂移不进
+/// 任何基准、不落库。off 臂（回填休眠，守卫是唯一观察面）。
+#[tokio::test]
+#[serial_test::serial]
+async fn guard_in_place_retry_keeps_the_original_previous_as_baseline() {
+    let _splice_off =
+        set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "off");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 违约稿：甲引用幽灵（门报告点名甲），乙丙干净（未点名）。
+    let draft = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "引用未铸名概念", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [], "note": "违约稿"
+    }"#;
+    // 重裁#1（失败候选稿）：甲修复、乙被偷改（未点名）→ guard，原地重试。
+    let redraft_editing_unnamed = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "被偷改的用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿"
+    }"#;
+    // 重裁#2（原地重试）：模型按守卫文案对**原始上一稿**点修——甲修复、
+    // 乙复原。守卫对照原始上一稿（乙逐字一致）→ 过守卫落位。
+    let redraft_restored = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "无限逼近的值"}], "note": "点修复原稿"
+    }"#;
+    // 评审放行结论（单行挂号表，本批只铸极限——双行形会判违约触发重试）。
+    let review_pass = serde_json::to_string(&json!({
+        "verdict": "pass",
+        "term_provenance": [
+            {"concept": "极限", "term": "值", "source": "常识"}
+        ]
+    }))
+    .unwrap();
+    let completer = SequencedCompleter::new(vec![
+        draft.to_owned(),
+        redraft_editing_unnamed.to_owned(),
+        redraft_restored.to_owned(),
+        review_pass,
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    // 调用数：起草1 + 重裁1（乙越权→原地重试）+ 原地重裁1（对原始上一稿
+    // 复原→守卫过）+ 评审1 = 4。
+    assert_eq!(completer.call_count(), 4);
+    // 原地重试（第 3 次调用）的装配基准 = 原始上一稿（违约稿）：【上一稿】
+    // 块携带乙的原用途，失败候选稿的越权漂移不进装配。
+    let in_place_prompt = completer.prompt(2).expect("in-place retry prompt recorded");
+    assert!(
+        in_place_prompt.contains(r#""purpose": "乙的原用途""#),
+        "原地重试的【上一稿】必须是原始上一稿：{in_place_prompt}"
+    );
+    assert!(
+        !in_place_prompt.contains("被偷改的用途"),
+        "失败候选稿整稿作废，不进【上一稿】装配：{in_place_prompt}"
+    );
+    // 落库批 = 对原始上一稿点修的复原稿（越权稿未落库）。
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(note.contains("点修复原稿"), "复原稿落位，越权稿作废：{note}");
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success");
+    assert_eq!(stats.attempts_used, 2);
+}
+
+/// w01②（门散文路径）：守卫文案自身提及的标题不构成点名——原地重试轮的
+/// 守卫比对仍用触发本轮重裁的原始门报告做散文回退口径，模型在原地重试轮
+/// 保留越权改动（守卫文案点过名）→ 照样违约计轮，越权稿不落库。修前行为
+/// （回归钉的反面）：守卫文案点名乙 → 二轮免检 → 越权稿直接落库。
+#[tokio::test]
+#[serial_test::serial]
+async fn guard_text_mentions_do_not_constitute_point_naming() {
+    let _splice_off =
+        set_learning_env(crate::learning_graph::REDRAFT_SPLICE_SWITCH_ENV, "off");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 违约稿：甲引用幽灵（门报告点名甲——全场唯一的点名来源），乙丙干净。
+    let draft = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "引用未铸名概念", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [], "note": "违约稿"
+    }"#;
+    // 重裁#1：甲修复、乙被偷改（门报告未点名乙）→ guard 违约一，原地重试
+    //（守卫文案提及乙——修前它会成为二轮的「点名」）。
+    let redraft_editing_unnamed = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "被偷改的用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿"
+    }"#;
+    // 重裁#2（原地重试）：模型保留乙的越权改动（赌守卫文案已把它「点名」
+    // ——w01 下不成立：守卫文本提及的标题不构成点名）→ 二次越权，计轮。
+    let redraft_keeping_the_edit = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "被偷改的用途二", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿二"
+    }"#;
+    // 重裁#3（计轮后）：按守卫文案对原始上一稿点修——乙复原、丙原样、甲
+    // 修复（门报告点名）→ 守卫过、过门、评审放行落位。
+    let redraft_restored = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "intent": "i", "scope": "s", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "intent": "i", "scope": "s", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "无限逼近的值"}], "note": "合法稿"
+    }"#;
+    // 评审放行结论（单行挂号表，本批只铸极限——双行形会判违约触发重试）。
+    let review_pass = serde_json::to_string(&json!({
+        "verdict": "pass",
+        "term_provenance": [
+            {"concept": "极限", "term": "值", "source": "常识"}
+        ]
+    }))
+    .unwrap();
+    let completer = SequencedCompleter::new(vec![
+        draft.to_owned(),
+        redraft_editing_unnamed.to_owned(),
+        redraft_keeping_the_edit.to_owned(),
+        redraft_restored.to_owned(),
+        review_pass,
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    // 调用数：起草1 + 重裁1（乙越权→原地重试）+ 原地重裁1（乙越权照旧
+    // → 二次违约计轮）+ 计轮重裁1（复原→守卫过）+ 评审1 = 5。修前行为
+    // （守卫文案点名乙 = 免检）会在原地重试轮直接落库，只烧 4 调用。
+    assert_eq!(completer.call_count(), 5);
+    // 计轮重裁（第 4 次调用）的反馈 = 二次守卫文案（乙照旧被拦）。
+    let next_attempt_prompt = completer.prompt(3).expect("post-guard redraft prompt recorded");
+    assert!(
+        next_attempt_prompt.contains("ng.redraft.scope"),
+        "守卫文案照发：{next_attempt_prompt}"
+    );
+    // 落库批 = 复原稿；两轮越权稿（乙的越权改动）整稿作废、不落库。
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        note.contains("合法稿") && !note.contains("越权稿"),
+        "越权修改不得经守卫重试洗白落库：{note}"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success");
+    assert_eq!(stats.attempts_used, 3, "二次越权计轮");
 }
 
 /// 点修回填 on 臂（u01，服务级端到端；显式 env on——开发期缺省 off）：评审打回点名甲，重裁修
@@ -4595,9 +4816,10 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
         review_reject_verdict(),
         q1.to_owned(),
         q2.to_owned(),
-        // 计轮重裁 = 原地基准（q1）逐字复原：守卫对照的是原地重试留下的
-        // 基准稿，重蹈 q1 即过守卫，est=25 照常过门落库。
-        q1.to_owned(),
+        // 计轮重裁 = 原始上一稿（VALID_BATCH）逐字复原：w01 下守卫对照的
+        // 始终是原始上一稿（失败候选不替换基准）——重蹈 q1 的 est=25 会再
+        // 次违约；按守卫文案复原 est=20 后过守卫落库（越权 est 不落库）。
+        VALID_BATCH.to_owned(),
         review_pass_verdict(),
     ]);
     *service.course_completer.write().unwrap() = Some(completer.clone());
@@ -4612,6 +4834,20 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
     .await
     .unwrap();
     assert_eq!(applied, 1, "the third-attempt point-fix lands");
+    // 落库批 = 复原稿（越权稿一/二的 est=25 整稿作废——w01：越权修改不得
+    // 经守卫重试洗白落库）。
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied' ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        note.contains("首批两节点") && !note.contains("越权稿"),
+        "复原稿落位，越权稿作废：{note}"
+    );
     // 序列：起草 → 评审拒 → 重裁(越权一) → 原地重试(越权二) → 计轮重裁 → 评审过。
     assert_eq!(completer.call_count(), 6);
     // 原地重试（第 4 次调用）：意见段由 prior 参数独立注入，守卫文案不扩张点名集。
