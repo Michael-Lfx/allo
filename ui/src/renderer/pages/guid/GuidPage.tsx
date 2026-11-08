@@ -32,7 +32,6 @@ import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
 import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
-import GuidVideoShortcut from './components/GuidVideoShortcut';
 import ShowcaseCards from './components/ShowcaseCards';
 import HomeInputDrawer from './components/HomeInputDrawer';
 import HomeVideoComposer from './components/HomeVideoComposer';
@@ -2511,9 +2510,6 @@ const GuidPage: React.FC = () => {
               {homeView === 'home' ? (
                 <div className={styles.homeStage}>
                   <GuidHomeBrand />
-                  <div className={styles.homeVideo} data-testid='guid-home-video'>
-                    <GuidVideoShortcut />
-                  </div>
                   <div className={styles.homeEntries}>
                     <FeatureCards
                       onOpenDevelop={() => openHomeDirectory('develop')}

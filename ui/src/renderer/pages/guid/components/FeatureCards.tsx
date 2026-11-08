@@ -11,11 +11,10 @@ export interface FeatureCardsProps {
 
 /**
  * Home stage entries: two stacked capability buttons (develop / create).
- *
- * Illustrations are purpose-drawn inline SVGs with distinct silhouettes:
- * develop = two code trails feeding a front-facing browser layout; create =
- * a diagonal film strip with sprocket holes over the corner of a demo page.
- * Only inner groups move on hover; the card frame, text and neighbours stay put.
+ * The illustrations use the approved 176x96 geometry: develop reads as code
+ * connecting into a browser page, create as a demo page with a playable frame.
+ * Only inner SVG groups move on hover; the card frame, copy and neighbours stay
+ * put. Reduced motion keeps every group stationary.
  */
 const FeatureCards: React.FC<FeatureCardsProps> = ({ onOpenDevelop, onOpenCreate }) => {
   const { t } = useTranslation();
@@ -35,7 +34,7 @@ const FeatureCards: React.FC<FeatureCardsProps> = ({ onOpenDevelop, onOpenCreate
           </span>
           <span className={styles.entryDescription}>{t('guid.home.buildDescription')}</span>
         </span>
-        <DevelopSketch />
+        <BuildEntryArt />
       </button>
 
       <button
@@ -51,7 +50,7 @@ const FeatureCards: React.FC<FeatureCardsProps> = ({ onOpenDevelop, onOpenCreate
           </span>
           <span className={styles.entryDescription}>{t('guid.home.createDescription')}</span>
         </span>
-        <CreateSketch />
+        <CreateEntryArt />
       </button>
     </div>
   );
@@ -72,54 +71,62 @@ function Chevron() {
   );
 }
 
-/** Develop: code trails from the lower-left converge into a browser layout. */
-function DevelopSketch() {
+/** Build: code block -> arrow -> browser page; only the inner groups move. */
+function BuildEntryArt() {
   return (
-    <svg className={styles.sketch} viewBox='0 0 160 96' aria-hidden='true' focusable='false'>
-      <g className={styles.pageGroup}>
-        <rect className={styles.lineMain} x='54' y='14' width='92' height='62' rx='7' />
-        <path className={styles.lineSub} d='M54 28h92' />
-        <circle className={styles.dotSub} cx='62' cy='21' r='1.4' />
-        <circle className={styles.dotSub} cx='68' cy='21' r='1.4' />
-        <circle className={styles.dotSub} cx='74' cy='21' r='1.4' />
-        <path className={styles.lineSub} d='M92 28v48' />
-        <rect className={styles.lineSub} x='60' y='36' width='24' height='34' rx='2' />
-        <rect className={styles.lineSub} x='100' y='36' width='38' height='14' rx='2' />
-        <rect className={styles.lineSub} x='100' y='56' width='38' height='14' rx='2' />
+    <svg
+      className={styles.entryArt}
+      data-art='build'
+      viewBox='0 0 176 96'
+      aria-hidden='true'
+      focusable='false'
+      fill='none'
+      stroke='currentColor'
+      strokeWidth='2'
+      strokeLinecap='round'
+      strokeLinejoin='round'
+    >
+      <g className={styles.artSource}>
+        <rect x='9' y='29' width='47' height='38' rx='7' />
+        <path d='m24 43-6 5 6 5m13-10 6 5-6 5m-5-13-3 16' />
       </g>
-      <g className={styles.codeGroup}>
-        <path className={styles.lineSub} d='M8 84l4 4-4 4' />
-        <path className={styles.lineSub} d='M18 78l4 4-4 4' />
-        <path className={styles.lineSub} d='M14 88h16l12-12h12' />
-        <path className={styles.lineSub} d='M24 82h10l12-10h8' />
-        <path className={styles.trailLight} d='M44 76h10' />
-        <circle className={styles.node} cx='54' cy='76' r='2.4' />
+      <path className={styles.artLink} d='M60 48h18m-5-5 5 5-5 5' />
+      <rect x='84' y='17' width='82' height='62' rx='8' />
+      <path d='M84 31h82M94 24h2m5 0h2' />
+      <g className={styles.artResult}>
+        <rect x='95' y='41' width='59' height='12' rx='3' className={styles.artAccent} />
+        <path d='M95 63h24m8 0h27M95 70h18m14 0h18' />
       </g>
     </svg>
   );
 }
 
-/** Create: diagonal film strip with sprocket holes over a demo page corner. */
-function CreateSketch() {
+/** Create: chart demo page plus a playable frame with a play key and timeline. */
+function CreateEntryArt() {
   return (
-    <svg className={styles.sketch} viewBox='0 0 160 96' aria-hidden='true' focusable='false'>
-      <g className={styles.backSheet}>
-        <rect className={styles.lineSub} x='58' y='12' width='86' height='54' rx='6' />
-        <path className={styles.lineSub} d='M68 24h34' />
-        <path className={styles.lineSub} d='M68 32h24' />
+    <svg
+      className={styles.entryArt}
+      data-art='create'
+      viewBox='0 0 176 96'
+      aria-hidden='true'
+      focusable='false'
+      fill='none'
+      stroke='currentColor'
+      strokeWidth='2'
+      strokeLinecap='round'
+      strokeLinejoin='round'
+    >
+      <g className={styles.artSource}>
+        <rect x='12' y='13' width='78' height='55' rx='7' />
+        <path d='M24 26h42m-42 9h23' />
+        <path d='M25 55v-8h8v8m5 0V44h8v11m5 0V41h8v14' />
       </g>
-      <g className={styles.filmRotate} transform='rotate(-12 88 58)'>
-        <g className={styles.filmBody}>
-          <rect className={styles.lineMain} x='42' y='42' width='94' height='34' rx='6' />
-          <rect className={styles.holeSub} x='50' y='47' width='9' height='5' rx='1.6' />
-          <rect className={styles.holeAccent} x='68' y='47' width='9' height='5' rx='1.6' />
-          <rect className={styles.holeSub} x='86' y='47' width='9' height='5' rx='1.6' />
-          <path className={styles.playTriangle} d='M96 51l14 8-14 8z' />
-          <path className={styles.lineSub} d='M50 68h22' />
-          <path className={styles.lineSub} d='M120 66h10' />
-        </g>
+      <g className={styles.artResult}>
+        <rect className={styles.artPlate} x='74' y='32' width='87' height='51' rx='8' />
+        <path className={styles.artAccent} d='m110 45 14 8-14 8Z' />
+        <path d='M86 71h63' />
+        <circle className={styles.artAccent} cx='102' cy='71' r='3' />
       </g>
-      <circle className={styles.nodeWarm} cx='132' cy='82' r='2.4' />
     </svg>
   );
 }

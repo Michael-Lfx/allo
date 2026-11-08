@@ -1,5 +1,24 @@
 # 首页「新建任务」设计进度
 
+## 首页视觉重设计回执（2026-11-08）
+
+- 补上首屏单独签收约定。旧验收已证明版心与模板状态，但不能证明线稿和会员材质已更换。现行 §8 将样板、产品证据和源码差异分别核对，首关仅默认首页。
+- 本轮 Chrome 自动打开本地样板被 URL 策略拒绝，仍未取得真实渲染证据。保留 §3 内联 SVG 和已有 HTML 样板作为设计参考。
+
+- 接收八张问题截图，重开视觉设计。首页只删除右上视频快捷卡，侧栏视频入口保留。红框整组在扣掉输入后的剩余区居中。
+- 已核实两条接线：代码开发提交与工具栏分别读取首页和全局模式。视频准备仍在首页路由内，专用编辑器和预览分处上下两区。
+- [现行规格](2026-11-06-home-new-task-design-proposal.md) 已加入两枚 SVG、正式 Flowy 标志的会员封面、模式受控示例、六条中英构建提示和性能验收。可打开的 HTML 样板路径在规格顶部。
+- 样板校验通过：3 段 SVG XML、7 个本地素材路径、JS 语法与模式菜单、三类预填、收模板保留草稿、取消替换和视频返回的逻辑检查。无头 Chromium 启动超时，浏览器渲染与实机帧率均待验。
+- 后续先验收首页首屏，再统一三种准备区，最后采真实链路和性能证据。当前为设计与样例交付，已有产品工作区变更保留。
+
+## 视觉与布局优先方案回执（2026-11-07）
+
+- 目标为先对齐 Manus 参考图的视觉层次、统一版心与吸底工作区，再验收其他能力。实际开工对照为 `feat/redesign-home-new-task` 的 `c4c503ce4`。
+- 已对照 Manus 目录、幻灯片和视频截图，读取 Flowy R3 测量与组件接线。确认构建主项缺样式、紧凑档左右各差 14px、视频宽窗预览与输入区相隔约 326px。
+- 已在 [设计提案](2026-11-06-home-new-task-design-proposal.md) 顶部追加现行规格、实施顺序、文件边界和验收矩阵，历史提案完整保留。
+- 实施顺序为 V0 改前取证 → V1 共用版心 → V2 四态样板 → 视觉签收 → V3 构建与视频 → V4 交付。最大风险是以旧浏览器小窗或静态截图代替真实桌面与连续操作验收。
+- 当前交付是设计方案，产品代码未动。执行者从 V0 接手，先记录本地基线、桌面实际尺寸和侧栏状态。
+
 ## 当前分层交互方案
 
 - 已确认移除本地文件大卡，保留输入框「在项目中工作」。网站以可在浏览器操作的本地 HTML 验收。发送联动分为开发前核对现有路径、接线后实跑新首页两步。
@@ -266,3 +285,92 @@
 - 无素材未知态的人工解除/关闭：规范禁止自动认领，关闭动作等于允许新尝试，需产品定义；同样缺专用文案键。
 
 **审查修复轮门禁回执（2026-11-07 22:3x）**：tests 137 pass/3 fail（失败身份与基线一致：`GuidPhaseOneStyle` 已批 1 条 + `GuidResourceCards` 基线 2 条）；tsc 71 条同名既有（guid 仅 `entryFlyoutPlacement.ts` 两条）；i18n/theme/dead-css/button-layout-contract/css-scope/icons=0；motion 既有 MarketCardShell + 82/82；`build:ui` 成功（1m49s）；`git diff --check=0`。补丁重导出：16 个首页文件、0 非首页路径、129215 bytes、`+2450/−672`，父提交 `aafed553f` 干净副本 `git apply --check=0`。HEAD 仍 `c242e2bfd`，未提交/推送；工作区仅允许的 2 个产品文件 + 2 份记录修改，error-boundary 文档保持未跟踪。
+
+## 视觉与布局优先 V0–V2 实施回执（2026-11-07 23:2x–00:1x）
+
+**开工状态**：HEAD `c4c503ce4`，分支 `feat/redesign-home-new-task`，宿主 Windows Tauri/WebView2；真实窗口 2884×1696 @2.25 = **1281.78×753.78 CSS**，侧栏常驻，zh-CN。目标 1280×832 / 880×600 在桌面宿主不可达（内容高度 753.78 < 832），目标尺寸证据为 Chrome headless 1280×832 / 880×600 仿真；桌面实际形态截图见外部 `desktop/desktop-host-default-2884x1696@2.25.png`，**桌面目标态与侧栏常驻同屏标为未验**。
+
+**改前基线（before/metrics.json）**：宽窗 input 768，抽屉/面板与 input 外沿 0/0、间距 8；紧凑档 input **812**、抽屉/面板 **784**（左右各差 14）；宽窗面板 host 有可见滚动条，panel 实际宽 753（比 input 少 15）；紧凑档模板卡 104px，首屏可见自由设计+6 主题；宽窗模板 169.75px，首屏自由设计+3（另计导入卡）；输入底边已恒定（drift 0）。
+
+**改动（仅白名单 3 个 CSS 文件）**
+1. `index.module.css`：紧凑档取消共享输入卡的内联 `-14px` 边距与 `calc(100%+28px)` 宽（改为单列 784）；`slidePanelHost` 保留内部滚动但隐藏滚动条占位 → 面板与输入同宽。
+2. `HomeInputDrawer.module.css`：目录预览改 16:9 内容框 + `object-fit: contain`（不裁主体、允许中性底）；紧凑档媒体卡改横向排列，缩略图 112×63。
+3. `SlideCreatePanel.module.css`：紧凑档模板轨道改 248px 横向卡（112×63 缩略图 + 名称），首屏自由设计+2 完整卡，其余由既有左右控件访问。
+
+**改后量测（after/metrics.json，目标尺寸）**
+- 1280×832：input / 抽屉 / 面板 host 均 768；抽屉 gap 8、左右外沿 0/0；面板 gap 8、左右外沿 0/0；panel 高 227.48 ≤232；首屏模板 4（自由设计+3）；建议行 1；input 底边 812 四态 drift 0；左右边距 158.5/168.5 ≥24；无纵向滚动。
+- 880×600：input / 抽屉 / 面板 host 均 **784**；抽屉/面板 gap 8、左右外沿 0/0；panel 高 142 ≤168；首屏模板 3（自由设计+2，无露出第 4 张）；建议行 1；input 底边 592 四态 drift 0；左右边距 43/53 ≥16；文档滚动 600/600（无纵向滚动）；`data-home-compact=true`。
+- 草稿与选择：办公室草稿穿过目录保留；幻灯片草稿在收起面板后保留；模板选择在面板重开时仍为已选；收起后焦点回到 `guid-input`；打开目录/选模板/收起期间创建任务 POST 计数 0。
+- 失败校验：DevTools 临时给抽屉 `margin-left:4px` → 量测报 `left:4 / right:-4`（两种尺寸）；刷新后正式量测恢复 0/0（`after-falsify/metrics.json`）。
+
+**亮暗与文案**：`variants/` 含两尺寸亮色四态截图与 en-US 四态截图；en-US 长文案在入口、目录、模板名/建议中 overflow 节点均为 0；暗色为默认验收色。Escape 仅收模板面板（保留幻灯片能力/草稿/背景，焦点回输入）；`prefers-reduced-motion: reduce` 下抽屉动画为 `none`。
+
+**门禁**：开工基线（c4c503ce4）为 tests 137 pass/3 fail、tsc 71 条、i18n/theme/dead-css/button-layout-contract/css-scope/icons=0、motion MarketCardShell+82/82；改后 tests 137/3（失败身份一致）、tsc 71、同组检查全 0、motion 同基线、`build:ui` 成功、`git diff --check=0`。HEAD 保持 `c4c503ce4`，未提交/未推送；仅白名单 3 个 CSS 文件与两份记录被追加（用户已修改的提案与记录保留），未跟踪 error-boundary 文档保留。
+
+**证据**：外置目录 `D:\tmp\flowy-visual-v0v2\`（`before/`、`after/` 四态静帧与 `metrics.json`、`after-falsify/`、`variants/`、`record/four-states-1280x832.gif`、`four-states-880x600.gif`、`desktop/`）。
+
+## 视频快捷入口删除回执（2026-11-07 00:2x）
+
+用户明确要求删除首页右上「创建你的视频 / 让想法变为现实」快捷卡（原 44px `GuidVideoShortcut` 行），理由为 Flowy 无必要保留。已按产品决定执行，覆盖本提案「保留 44px 独立视频快捷入口」的旧要求：
+
+- `GuidPage.tsx` 移除 `GuidVideoShortcut` import 与 `homeVideo` 行；`index.module.css` 删除 `.homeVideo`，首页网格改为两行（入口/会员第一行、三案例第二行）。首页四态其余结构、草稿、模板面板、吸底输入不变。
+- 侧栏「视频」导航保留，独立视频入口仍可通过侧栏进入（未改动侧栏文件）。
+- 改后复测（after/metrics.json）：1280×832 与 880×600 四态的 input/抽屉/面板宽度、8px 间距、左右外沿 0、input 底边 drift 0、首屏模板 4/3、无纵向滚动均与删除前一致；亮暗、en-US 长文案、Escape、减少动效复测通过。
+- **新门禁差异（已知，需裁决）**：删除后 `bun test ui/src/renderer/pages/guid` 为 **136 pass / 4 fail**；新增失败身份为 `Guid homepage single-screen layout > places the sidebar wordmark above the homepage cards`，原因是冻结结构测试 `components/GuidResourceCards.structure.test.ts:31-40` 仍要求源码在 `GuidHomeBrand` 与 `FeatureCards` 之间存在 `<GuidVideoShortcut`。测试按任务边界冻结，未改测试、未用注释/死代码绕过。其余 3 个 fail 与删除前基线一致（`guid phase-one visual sample`、`Guid homepage single-screen layout` 另两条）。待授权更新该结构测试或接受此差异。
+- 组件文件 `components/GuidVideoShortcut.tsx`、`GuidVideoShortcut.module.css` 现已无引用；因白名单不含这两个文件，暂未删除，等待授权一并清理。
+- 证据：`after/shots/*-default.png`（快捷卡已消失）、`variants/`、`record/four-states-*.gif` 已按删除后状态重录。
+
+## 桌面宿主复验（删除快捷卡后，2026-11-07 00:3x）
+
+- 真实 WebView2 窗口（2.25 DPR）实测 CSS 视口 **1280×752**，侧栏常驻展开，zh-CN；`guid-home-video-shortcut` / `guid-home-video` 均不存在，快捷卡删除在真实宿主生效。
+- 四态实机复测（`D:\tmp\flowy-visual-v0v2\desktop-after\`）：input 768，抽屉 768 gap 8 / 外沿 0/0，面板 host 768 gap 8 / 外沿 0/0（panel 227.3 ≤232），首屏模板自由设计+3，input 底边四态 drift 0，幻灯片草稿保留、模板选择重开仍选中、收起后焦点回 `guid-input`。
+- 目标尺寸说明：真实窗口高度 752 CSS < 832；880×600 紧凑档在桌面宿主不可达，仍以浏览器 880×600 仿真为准，桌面紧凑目标态标为未验。官方 `bun run typecheck`=71 条（基线同）。
+
+## 键盘与焦点复验（2026-11-08 00:1x）
+
+- 两尺寸实测（`D:\tmp\flowy-visual-v0v2\keyboard\keyboard.json`，截图 `*-member-keyboard-flip.png`）：
+  - Shift+Tab 从输入框向前可依次到达「在项目中工作」、三张案例、创建/构建入口、会员卡（role=button、tabIndex 0）；入口与会员均可达。
+  - Enter 打开创建目录后焦点落在首个选项（`guid-home-option-create-slides`）；再 Enter 进入幻灯片准备面板；焦点模板卡后 Enter 选中模板（`data-selected=true`）；Escape 先收面板。
+  - 会员卡键盘 Enter 前 `aria-pressed=false` → 后 `true`，翻面可用；焦点环与命中保留。
+  - 正向 Tab 从底部输入继续向后会离开页面（输入在 DOM 末尾，属预期）；可达性以上述 Shift+Tab 顺序为准。
+  - 收起模板后焦点回 `guid-input`，幻灯片草稿保留（与四态量测一致）。
+- 结论：Tab / Enter / Escape / 会员翻面 / 减少动效均有本轮实测证据；无新增产品改动。
+
+## 用户授权后的测试同步与组件清理（2026-11-08 00:2x）
+
+用户明确授权「更新结构测试并清理未引用组件」后执行：
+
+- `components/GuidResourceCards.structure.test.ts`：`places the sidebar wordmark above the homepage cards` 更新为 `...without the retired video shortcut`，保留 wordmark 位于 primary stage 与 FeatureCards 之间的断言，新增 `expect(source.includes('<GuidVideoShortcut')).toBe(false)`，不再要求旧快捷入口存在。
+- 删除已无引用的 `components/GuidVideoShortcut.tsx`、`GuidVideoShortcut.module.css`（全局已无其他引用）。
+- 门禁复跑：`bun test ui/src/renderer/pages/guid` = **137 pass / 3 fail**，失败身份与开工基线完全一致（`guid phase-one visual sample`、`Guid homepage single-screen layout` 的两条）；`tsc` 71 条；i18n/theme/dead-css/button-layout-contract/css-scope/icons 全 0；motion 同基线（MarketCardShell + 82/82）；`git diff --check=0`；`build:ui` 见最终日志。
+- 至此删除快捷卡带来的新增门禁失败已消除；HEAD 仍 `c4c503ce4`，未提交/未推送。
+
+## 首页视觉重设计第一关 H1–H4 实施回执（2026-11-08 13:5x–14:3x）
+
+**开工状态**：分支 `feat/redesign-home-new-task`，HEAD `c4c503ce4`，保留 V0–V2 未提交改动与未跟踪错误边界方案；宿主真实 WebView2 窗口 CSS 视口 **1280×752**、DPR 2.25、侧栏展开（宽 168 CSS）；浏览器证据为 Chrome headless 1280×832 / 880×600、DPR 1（宽窗侧栏展开，紧凑档收起）。两目标桌面尺寸在本机不可达（窗口内容高度 752 < 832），桌面实际形态与浏览器精确尺寸分开标注。
+
+**H1 已证：整组居中。** 改前宽窗整组中点误差 105.00px、紧凑 40.00px；改后两尺寸、暗亮均为 **0.00px**（宽窗可用区 36→670，组 165→541；紧凑 48→450，组 104→394）。改后宽窗 input 768×142（top 670 / bottom 812），紧凑 784×142（top 450 / bottom 592）；真实桌面暗/亮误差均 0（input 768×141.78，top 590.22 / bottom 732）。880×600 默认态 body 600/600、scrollArea 402/402 无纵向滚动。组与输入同列、宽窗左右留白 ≥24、紧凑 ≥16。注入整组向下 4px 后复测误差=4，移除后=0（falsify 证据）。
+
+**H2 已证：SVG 与内部动效。** 两段 SVG 按 §3 路径/分组接入，静态可辨「代码→箭头→浏览器」「演示页＋播放画面」；宽窗绘图区 144px、紧凑 104px。悬停实测 transform：来源 +2px、结果 −4px、连接 +3px（200ms），移出恢复 none，两尺寸与真实桌面一致；减少动效下三组 transform 均为 none。
+
+**H3 已证：会员正面与翻面。** 正面改为正式 FlowyLogo 44px + 实际用户名/计划 + `--flowy-raised` 表面（padding 16、gap 8、姓名 15/22·600、计划 12/18，底部轻边线），旧手绘 F、十字格、渐变与装饰日期移除。真实桌面（已登录）实测：悬停预览背面、移出未固定复位；点击固定后移出仍为背面（aria-pressed true），再次点击解除（false）；键盘 Enter 翻面 true；减少动效下悬停不翻、键盘仍可翻。证据中用户名/套餐/邮箱区域已模糊遮挡。
+
+**H4 已证：增高输入框。** 浏览器中等草稿 input 142→182，两尺寸误差均 0；长草稿宽窗 input 502（top 310）、可用区 274 < 组 376，自动顶对齐，scrollArea 274/424，滚到底后末张案例可见、发送可见；紧凑 input 262（top 330）、可用区 282 < 组 290，同回退，scroll 282/346，末案例与发送均可见。真实桌面长草稿 input 141.78→501.78（top 590.22→230.22），可用区 194.22，scroll 194/424，末尾案例与发送可见。
+
+**证据**（仓库外）：`D:\tmp\flowy-home-h1h4\`：`before/`、`after/`（两尺寸暗亮四态静帧+metrics）、`interactions/`（H2 静止/悬停/复位、H3 各态、H4 中等/长草稿+滚动证明、falsify+截图）、`reduced/`（减少动效）、`desktop/`（真实宿主暗亮、遮罩静帧、motion-* 可定位帧、`home-h1h4-recording.gif` 15.0s、`desktop.json`）、`measurements.json`（合并量测表）。
+
+**门禁**：tests **137 pass / 3 fail**（失败身份与开工基线一致）、typecheck 71 条、i18n/theme/dead-css/button-layout-contract/css-scope/icons 全 0、motion 同基线（MarketCardShell + 82/82）、`build:ui` 成功、`git diff --check=0`。本轮产品增量仅白名单：`index.module.css`、`components/FeatureCards.tsx/.module.css`、`components/GuidHomeBrand.tsx`、`components/GuidHomeCard.module.css`；文档仅追加两份记录。HEAD 未变，未提交/未推送。
+
+**紧凑档宽度合规修正（2026-11-08 14:2x）**：复核 H1「内容最大宽 768px」时发现紧凑档仍是 784px，已把紧凑档主区和输入区的 `.guidLayout` 上限改为 800px（16px 内边距内为 768px 内容）。改后紧凑 880×600：input/组宽均 **768**（left 56 / right 824，左右留白各 56 ≥16），暗亮误差仍 **0.00px**；暗亮/交互截图、medium/long 草稿与 falsify 证据已按新宽度重录。门禁在冻结后重跑（见最终日志）。桌面实际窗口 1280×752 不受此修正影响。
+
+## 审查修复回执（2026-11-08 15:0x）
+
+按 `/code-review` 自审结论逐项修复，并复跑证据与门禁：
+
+- **紧凑档模板首屏回归（Required）**：`SlideCreatePanel.module.css` 紧凑 rail 由固定 248px 改为按真实内容宽 `calc((100% - 16px) / 3)`，卡片补 `min-width:0`。四态冒烟复测：紧凑首屏 **3** 项（自由设计+2 主题）、宽窗 **4** 项；面板高 142/227.48、间距 8、抽屉/面板外沿 0/0 均不变。
+- **长草稿滚动条横向漂移**：`index.module.css` 的 `.guidScrollArea` 增加 `scrollbar-gutter: stable both-edges`；长草稿复测宽窗组 left 348.5 = input 348.5、紧凑 56 = 56（原约 7.5px 偏移消失），居中误差仍 0。
+- **会员点击细节**：wrapper `onClick` 忽略 `detail===0`（键盘/辅助技术由 FlipCard 自身处理，避免双触发）；移除 `checking` 提前返回，认证检查期间也可固定。浏览器（未认证/checking）复测由 `memberPinnedAway=false` 变为 **true**；真实桌面既有鼠标/键盘路径不受影响。
+- **会员紧凑内边距**：移除紧凑/窄容器的 12px 覆盖，正面保持规格 16px、`.memberFace` gap 8。
+- **过期注释**：`guidContainer` 注释改为「上区是唯一滚动容器」。
+- 证据刷新：`D:\tmp\flowy-home-h1h4\measurements.json`（浏览器两尺寸 + 桌面 1280×752）；四态冒烟写入 `D:\tmp\flowy-visual-v0v2\after\metrics.json`。
+- 最终门禁：tests **137 pass / 3 fail**（身份同基线）、typecheck 71 条、i18n/theme/dead-css/button-layout-contract/css-scope/icons 全 0、motion 同基线（MarketCardShell + 82/82）、`build:ui` 成功、`git diff --check=0`。

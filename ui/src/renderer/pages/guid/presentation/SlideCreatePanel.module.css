@@ -283,17 +283,37 @@
   }
 }
 
-/* Compact height budget: the template rail comes first and keeps two themes
-   plus free design visible inside the 168px panel before suggestions scroll. */
+/* Compact height budget: the template rail comes first and keeps free design
+   plus two themes visible inside the 168px panel before suggestions scroll. */
 :global([data-home-compact='true']) .panel {
   gap: 4px;
   padding: 8px 10px;
 }
 
 :global([data-home-compact='true']) .rail {
-  grid-auto-columns: 104px;
+  /* Size cards from the real rail content width: free design + two themes fit,
+     the rest stays on the existing left/right rail controls. */
+  grid-auto-columns: calc((100% - 16px) / 3);
   gap: 8px;
   margin-top: 0;
+}
+
+:global([data-home-compact='true']) .template {
+  flex-direction: row;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  text-align: left;
+}
+
+:global([data-home-compact='true']) .thumb {
+  flex: 0 0 112px;
+  width: 112px;
+  aspect-ratio: 16 / 9;
+}
+
+:global([data-home-compact='true']) .templateName {
+  font-size: 12px;
 }
 
 :global([data-home-compact='true']) .thumb {

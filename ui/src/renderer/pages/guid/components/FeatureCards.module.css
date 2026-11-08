@@ -12,6 +12,7 @@
      contract resolves card buttons to the card radius (12px), without a second
      `!important`. Static article cards never enter this rule. */
   --flowy-radius-control: var(--flowy-radius-lg, 12px);
+  --entry-accent: color-mix(in srgb, rgb(var(--primary-6)) 82%, currentColor);
   position: relative;
   display: flex;
   align-items: center;
@@ -73,120 +74,56 @@
   flex: 0 0 auto;
 }
 
-.sketch {
-  flex: 0 0 auto;
-  width: 144px;
-  height: 86px;
-  overflow: visible;
-  pointer-events: none;
+.entryArt {
+  width: min(44%, 144px);
+  height: auto;
+  flex: none;
+  color: var(--color-text-2);
 }
 
-.lineMain {
-  fill: none;
-  stroke: color-mix(in srgb, var(--color-text-1) 52%, transparent);
-  stroke-width: 1.75;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
+.artSource {
+  opacity: 0.77;
 }
 
-.lineSub {
-  fill: none;
-  stroke: color-mix(in srgb, var(--color-text-1) 18%, transparent);
-  stroke-width: 1;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
+.artLink,
+.artAccent {
+  stroke: var(--entry-accent, currentColor);
 }
 
-.trailLight {
-  fill: none;
-  stroke: color-mix(in srgb, rgb(var(--primary-6)) 70%, transparent);
-  stroke-width: 1.75;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0;
-  transition: opacity 220ms var(--flowy-ease-move, ease-out);
-  vector-effect: non-scaling-stroke;
+.artPlate {
+  fill: var(--flowy-raised);
 }
 
-.holeSub {
-  fill: color-mix(in srgb, var(--color-text-1) 24%, transparent);
-}
-
-.holeAccent {
-  fill: color-mix(in srgb, rgb(var(--warning-6)) 82%, transparent);
-}
-
-.playTriangle {
-  fill: color-mix(in srgb, rgb(var(--warning-6)) 88%, transparent);
-  stroke: none;
-}
-
-.dotSub {
-  fill: color-mix(in srgb, var(--color-text-2) 70%, transparent);
-}
-
-.node {
-  fill: rgb(var(--primary-6));
-}
-
-.nodeWarm {
-  fill: color-mix(in srgb, rgb(var(--warning-6)) 88%, transparent);
-}
-
-.pageGroup,
-.codeGroup,
-.backSheet,
-.filmBody {
+.artResult,
+.artSource,
+.artLink {
   transform-box: fill-box;
   transform-origin: center;
-  transition: transform 220ms var(--flowy-ease-move, ease-out);
+  transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-@keyframes trail-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .entryButton:hover {
     background: color-mix(in srgb, var(--color-text-1) 4%, var(--flowy-raised));
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
   }
 
-  .entryButton:hover .pageGroup {
+  .entryButton:hover .artResult {
     transform: translateY(-4px);
   }
 
-  .entryButton:hover .trailLight {
-    opacity: 1;
+  .entryButton:hover .artSource {
+    transform: translateY(2px);
   }
 
-  .entryButton:hover .filmBody {
-    transform: translateX(5px) scaleX(1.03);
-  }
-
-  .entryButton:hover .backSheet {
-    transform: rotate(4deg);
+  .entryButton:hover .artLink {
+    transform: translateX(3px);
   }
 }
 
 .entryButton:focus-visible {
   outline: 2px solid var(--flowy-focus);
   outline-offset: 2px;
-}
-
-:global([data-theme='dark']) .lineMain {
-  stroke: color-mix(in srgb, var(--color-text-1) 48%, transparent);
-}
-
-:global([data-theme='dark']) .lineSub {
-  stroke: color-mix(in srgb, var(--color-text-1) 16%, transparent);
 }
 
 :global([data-theme='dark']) .entryButton:hover {
@@ -213,28 +150,21 @@
   line-height: 16px;
 }
 
-:global([data-home-compact='true']) .sketch {
-  width: 104px;
-  height: 62px;
+:global([data-home-compact='true']) .entryArt {
+  width: min(40%, 104px);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .entryButton,
-  .pageGroup,
-  .codeGroup,
-  .backSheet,
-  .filmBody,
-  .trailLight {
+  .artResult,
+  .artSource,
+  .artLink {
     transition: none;
   }
 
-  .entryButton:hover .pageGroup,
-  .entryButton:hover .filmBody,
-  .entryButton:hover .backSheet {
-    transform: none;
-  }
-
-  .entryButton:hover .trailLight {
-    opacity: 1;
+  .entryButton:hover .artResult,
+  .entryButton:hover .artSource,
+  .entryButton:hover .artLink {
+    transform: none !important;
   }
 }
