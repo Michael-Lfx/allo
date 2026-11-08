@@ -1469,9 +1469,12 @@ pub(crate) async fn concept_review(
     // off/首轮为空串）：①课程语境词进评审 user（可作定义的背景用语，不
     // 单独要求挂号；作为 teaches 照常挂号——教练首批块同款单源渲染）；
     // ②翻案锁——有状态复审时前轮意见随 user 回灌并锁定「按前轮意见做出
-    // 的修改本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告」
-    // （反乒乓纪律此前只约束教练，评审不受约束才有跨轮翻案）。off 臂两块
-    // 恒零注入（基线逐字节）。
+    // 的修改本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告；
+    // 对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判——
+    // 认为前轮判定有误时写进 findings 说明，不得以改判方式打回」（w04 补
+    // 全：只禁「按前轮意见做的修改」再判时，轮1判常识→轮2要求挂号的改判
+    // 仍合法——run-1793951137445 病历形态）。off 臂两块恒零注入（基线逐
+    // 字节）。
     let anti_loop = anti_loop_enabled();
     // 首批（花名册空）的语境词已随 context.render() 的首批块进 user（同一
     // 单源 [`course_context_words_block`]）——评审面不重注（避免双份）；
@@ -1487,7 +1490,9 @@ pub(crate) async fn concept_review(
         format!(
             "\n\n【前轮评审意见与教练修订】\n{prior_review}\n\
              【翻案锁】按前轮意见做出的修改，本身不得再判为问题；\
-             修改若引入与前轮无关的新硬伤照常报告。"
+             修改若引入与前轮无关的新硬伤照常报告。\
+             对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判；\
+             认为前轮判定有误时写进 findings 说明，不得以改判方式打回。"
         )
     } else {
         String::new()
@@ -3038,14 +3043,18 @@ mod tests {
 
     /// u04 评审臂两块的字节级钉：on = 评审 user 带【课程语境词】块（教练
     /// 首批块同款单源）+ 有状态复审臂带【前轮评审意见与教练修订】与翻案
-    /// 锁；off = 两块零注入（差集恰为两块本身）；未设 = 开发期缺省 off。
+    /// 锁（w04 补全：同一词源前轮判定的无证据改判禁令）；off = 两块零注
+    /// 入（差集恰为两块本身）；未设 = 缺省 on（2026-11-07 真机 A/B 达标）。
     /// env 全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
     async fn anti_loop_switch_gates_review_context_and_overturn_lock() {
         const COURSE_BLOCK: &str = "\n【课程语境词】手冲、咖啡——可作定义的背景用语，不单独要求挂号；作为本节点教学对象（teaches）时照常挂号。\n";
         const HISTORY: &str = "第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）";
-        const LOCK: &str = "\n\n【前轮评审意见与教练修订】\n第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）\n【翻案锁】按前轮意见做出的修改，本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告。";
+        const LOCK: &str = "\n\n【前轮评审意见与教练修订】\n第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）\n【翻案锁】按前轮意见做出的修改，本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告。对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判；认为前轮判定有误时写进 findings 说明，不得以改判方式打回。";
+        /// w04 补全句单独钉（条款两臂装配：句在 on 臂、不在 off 臂——
+        /// 逐字节差集断言已覆盖，此处按票面要求显式钉句子本身）。
+        const OVERTURN_BAN: &str = "对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判；认为前轮判定有误时写进 findings 说明，不得以改判方式打回。";
         let capture = |pin: Option<&'static str>| async move {
             struct Restore(Option<String>);
             impl Drop for Restore {
@@ -3102,12 +3111,20 @@ mod tests {
         let (off_arm, _off) = capture(Some("off")).await;
         assert!(!off_arm.contains("【课程语境词】"), "off 臂零语境词块：{off_arm}");
         assert!(!off_arm.contains("【翻案锁】"), "off 臂零翻案锁：{off_arm}");
+        assert!(
+            !off_arm.contains(OVERTURN_BAN),
+            "off 臂零同干改判禁令（w04 补全句）：{off_arm}"
+        );
         let (on_arm, _on) = capture(Some("on")).await;
         let (default_arm, _default) = capture(None).await;
         assert_eq!(on_arm, default_arm, "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on）");
         assert!(default_arm.contains(COURSE_BLOCK), "缺省臂语境词块：{default_arm}");
         assert!(on_arm.contains(COURSE_BLOCK), "on 臂语境词块：{on_arm}");
         assert!(on_arm.contains(LOCK), "on 臂前轮意见 + 翻案锁：{on_arm}");
+        assert!(
+            on_arm.contains(OVERTURN_BAN),
+            "on 臂翻案锁带同干改判禁令（w04 补全）：{on_arm}"
+        );
         assert_eq!(
             on_arm.replace(COURSE_BLOCK, "").replace(LOCK, ""),
             off_arm,
