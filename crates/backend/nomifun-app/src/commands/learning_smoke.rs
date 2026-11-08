@@ -2231,19 +2231,22 @@ async fn run_quiz(
     // 与 dropped 恒 0（门不在），on 臂为门实际命中数。u10 追变式链读数：
     // `variants_skipped_no_document`（正文缺席被如实跳过的变式数，on 臂才
     // 会 >0）与 `evidence_verbatim_misses`（证据逐字核违约数，on 臂走既有
-    // 重试）——真机 A/B 的观测点；变式链开关态随行打印。
+    // 重试）——真机 A/B 的观测点；变式链开关态随行打印。w04 追
+    // `variant_same_stem_hits`（变式题面与本回合已落盘题面同干的命中数，
+    // 两臂——软约束照出只留痕）。
     let qb = nomifun_learning::qb_readings::snapshot();
     let variant_readings = nomifun_learning::variant_readings::snapshot();
     println!(
         "qb_similarity read-out: pools={k} pool_checks={} sim_hits={} dropped={} retries={} \
          variants_generated={variant_count} variants_skipped_no_document={} \
-         evidence_verbatim_misses={} variant_v2={}",
+         evidence_verbatim_misses={} variant_same_stem_hits={} variant_v2={}",
         qb.pool_checks,
         qb.sim_hits,
         qb.dropped,
         qb.retries,
         variant_readings.skipped_no_document,
         variant_readings.evidence_verbatim_misses,
+        variant_readings.same_stem_hits,
         if nomifun_learning::variant_v2_enabled() { "on" } else { "off" },
     );
     let variants_present = variant_count > 0;

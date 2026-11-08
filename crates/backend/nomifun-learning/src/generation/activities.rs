@@ -24,31 +24,37 @@ pub(crate) use crate::switches::{VARIANT_V2_SWITCH_ENV, variant_v2_enabled, vari
 
 /// 变式链读数（u10，冒烟读数面非门禁，进程内累计）：`skipped_no_document`
 /// = 课时正文缺席被如实跳过的变式请求数（on 臂，不阻断回合）；`evidence_
-/// verbatim_misses` = 证据逐字核违约数（on 臂，走既有反馈重试）。冒烟档
-/// 在 quiz 臂读数行打印快照（A/B 观测点）。
+/// verbatim_misses` = 证据逐字核违约数（on 臂，走既有反馈重试）；
+/// `same_stem_hits` = 回合同干题面命中数（w04，两臂——变式题面与本回合
+/// 已落盘题面同干，**不加硬门照常采纳**，只留痕；判定与阈值同防复用池，
+/// 不计入门的 qb_readings）。冒烟档在 quiz 臂读数行打印快照（A/B 观测点）。
 pub mod variant_readings {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static SKIPPED_NO_DOCUMENT: AtomicUsize = AtomicUsize::new(0);
     static EVIDENCE_VERBATIM_MISSES: AtomicUsize = AtomicUsize::new(0);
+    static SAME_STEM_HITS: AtomicUsize = AtomicUsize::new(0);
 
     /// 一次快照（冒烟读数行的数据源）。
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct VariantReadings {
         pub skipped_no_document: usize,
         pub evidence_verbatim_misses: usize,
+        pub same_stem_hits: usize,
     }
 
     pub fn snapshot() -> VariantReadings {
         VariantReadings {
             skipped_no_document: SKIPPED_NO_DOCUMENT.load(Ordering::Relaxed),
             evidence_verbatim_misses: EVIDENCE_VERBATIM_MISSES.load(Ordering::Relaxed),
+            same_stem_hits: SAME_STEM_HITS.load(Ordering::Relaxed),
         }
     }
 
     pub fn reset() {
         SKIPPED_NO_DOCUMENT.store(0, Ordering::Relaxed);
         EVIDENCE_VERBATIM_MISSES.store(0, Ordering::Relaxed);
+        SAME_STEM_HITS.store(0, Ordering::Relaxed);
     }
 
     pub(crate) fn record_skipped_no_document() {
@@ -56,6 +62,9 @@ pub mod variant_readings {
     }
     pub(crate) fn record_evidence_verbatim_miss() {
         EVIDENCE_VERBATIM_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_same_stem_hit() {
+        SAME_STEM_HITS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
