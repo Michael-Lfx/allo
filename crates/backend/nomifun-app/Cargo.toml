@@ -392,3 +392,6 @@ tower = { workspace = true, features = ["util"] }
 tokio-tungstenite.workspace = true
 wiremock = "0.6"
 toml.workspace = true
+# 写进程环境变量/读进程全局态的测试必须 `#[serial_test::serial]` 互斥
+# （`models_list_falls_back...` 与并行测试存在进程级竞态，实测红过一次）。
+serial_test.workspace = true

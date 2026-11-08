@@ -5,6 +5,8 @@
 //! 按标点/空白分段，中文段按**相邻二元**切片（整句子串命中蕴含其全部二元片段
 //! 命中，故二元不丢召回），ASCII 词整词保留；再过滤单字与停用词、去重、限长。
 //! 同一套词条同时喂给采样打分与（t3 的）检索查询，两处口径才不会漂移。
+//! 另有语境词专用切片 [`context_word_slices`]（w02 最大 munch）——u04 课程
+//! 语境词的装配源，只要「像词」不要全量二元，检索词条不消费它。
 
 /// 词条上限：长目标截取前 [`TERM_MAX_COUNT`] 个词条（按出现顺序）。上限只
 /// 服务于打分成本与查询长度——目标的开头承载意图，尾部细节进不了词条表。
@@ -52,6 +54,104 @@ pub(crate) fn term_slices(text: &str) -> Vec<String> {
         }
     }
     terms
+}
+
+/// 语境词短语边界表（w02 最大 munch 的切分点，私有）：无歧义虚字单字——
+/// 在标题/目标文本里几乎必为句法边界。是 definition 侧
+/// `definition_audit::FUNCTION_CHARS` 的**从严子集**：会/用/表/取 等歧义
+/// 单字不切（「学会手冲咖啡」不能在「会」处碎掉、「使用滤杯」不能在「用」
+/// 处碎掉）——本表只管语境词装配，与那张定义侧表无互锁关系。
+const MUNCH_BOUNDARY_CHARS: &str = "的了是在和与及或把被从向到为以对之于之其这那";
+
+/// 语境词切片（w02 最大 munch；u04 课程语境词的装配源）：与 [`term_slices`]
+/// 同底（分段 → 去停用词 → 去重保序 → 限长），但 CJK 段不再炸成全部相邻
+/// 二元——**互含消解到不动点**：
+/// ①CJK 段先按 [`MUNCH_BOUNDARY_CHARS`] 切成短语，ASCII 词整词；
+/// ②凡短语 P（≥2 字）逐字内嵌于另一短语 Q，Q 在该处拆开：P 自成条目，
+///   残段（≥2 字）另立条目、单字残段丢弃，迭代到不再互含；
+/// ③停用词短语整条滤除。
+/// 产物 = 标题/目标中互不包含的最长 CJK 串（手冲咖啡/萃取状态判读/调整
+/// 形态）——跨词界二元垃圾（冲咖/啡的/取状/态判）不再产出。无词典依赖
+/// 的确定性与「像词」不可兼得：无词典就无法把「萃取状态判读」再拆成
+/// 萃取状态/判读，短语整段保留（有意义、非垃圾）——这是取舍不是缺陷。
+/// [`term_slices`] 本体不动：采样打分与检索查询仍吃二元（整句子串命中
+/// 蕴含全部二元命中，召回面不变）；语境词是提示词豁免面，要「像词」不要
+/// 「全量二元」，同时作为点名清单已知面，词对齐了掩码残片才不产生。
+pub(crate) fn context_word_slices(text: &str) -> Vec<String> {
+    let lowered = text.to_lowercase();
+    // ①初池：CJK 短语（虚字边界切段，单字残段即弃）+ ASCII 整词。
+    let mut items: Vec<String> = Vec::new();
+    for run in script_runs(&lowered) {
+        let chars: Vec<char> = run.chars().collect();
+        if !is_cjk(chars[0]) {
+            if chars.len() >= MIN_LATIN_TERM_CHARS {
+                items.push(run);
+            }
+            continue;
+        }
+        let mut phrase = String::new();
+        for ch in chars {
+            if MUNCH_BOUNDARY_CHARS.contains(ch) {
+                if phrase.chars().count() >= 2 {
+                    items.push(std::mem::take(&mut phrase));
+                } else {
+                    phrase.clear();
+                }
+            } else {
+                phrase.push(ch);
+            }
+        }
+        if phrase.chars().count() >= 2 {
+            items.push(phrase);
+        }
+    }
+    // ②互含消解（不动点；每次拆解使容器短 ≥2 字，必然终止）。取文本序
+    // 第一对拆：容器在原位换成残段，出现序大体保留。
+    loop {
+        let mut splice: Option<(usize, usize, usize)> = None; // (容器, 起点, P 长度)
+        'scan: for (qi, container) in items.iter().enumerate() {
+            let q: Vec<char> = container.chars().collect();
+            for (pi, part) in items.iter().enumerate() {
+                if pi == qi {
+                    continue;
+                }
+                let p: Vec<char> = part.chars().collect();
+                if p.len() < 2 || p.len() >= q.len() {
+                    continue;
+                }
+                if let Some(pos) = (0..=q.len() - p.len()).find(|&i| q[i..i + p.len()] == p[..]) {
+                    splice = Some((qi, pos, p.len()));
+                    break 'scan;
+                }
+            }
+        }
+        let Some((qi, pos, plen)) = splice else { break };
+        let q: Vec<char> = items.remove(qi).chars().collect();
+        // 前缀/后缀按出现序插回原位（残段 <2 字即弃）。
+        let mut at = qi;
+        let prefix = q[..pos].iter().collect::<String>();
+        if prefix.chars().count() >= 2 {
+            items.insert(at, prefix);
+            at += 1;
+        }
+        let suffix = q[pos + plen..].iter().collect::<String>();
+        if suffix.chars().count() >= 2 {
+            items.insert(at, suffix);
+        }
+    }
+    // ③停用词滤除 + 去重保序 + 限长（与 term_slices 同尺）。
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in items {
+        if STOPWORDS.contains(&item.as_str()) || !seen.insert(item.clone()) {
+            continue;
+        }
+        out.push(item);
+        if out.len() >= TERM_MAX_COUNT {
+            return out;
+        }
+    }
+    out
 }
 
 /// 词条在文本里出现的次数（子串计数，大小写归一由调用方保证）。用于打分与
@@ -182,5 +282,45 @@ mod tests {
         assert!(term_slices("").is_empty());
         assert!(term_slices("   \n\t  ").is_empty());
         assert!(term_slices("？！、。").is_empty());
+    }
+
+    // ── w02 语境词最大 munch（context_word_slices）────────────────────────
+
+    /// 真机同型（run-1793980240191）：标题内嵌于目标短语 → 消解出标题词与
+    /// 残段「学会」，虚字（的/与）处切段；产物互不包含、无跨词界二元垃圾。
+    #[test]
+    fn context_word_slices_munch_to_longest_noncontained_strings() {
+        let words = context_word_slices("手冲咖啡\n学会手冲咖啡的萃取状态判读与调整");
+        assert_eq!(
+            words,
+            vec!["手冲咖啡", "学会", "萃取状态判读", "调整"],
+            "最大 munch：标题词自成条目、残段保留、内部二元不再出现"
+        );
+        for garbage in ["会手", "冲咖", "啡的", "的萃", "取状", "态判", "读与", "与调"] {
+            assert!(!words.contains(&garbage.to_owned()), "垃圾二元 {garbage} 不在语境词：{words:?}");
+        }
+    }
+
+    /// `term_slices` 本体不动：采样/检索词条仍吃全部相邻二元（含跨词界
+    /// 二元——整句子串命中蕴含二元命中，召回面不因语境词精化而变）。
+    #[test]
+    fn term_slices_still_emits_adjacent_bigrams_for_retrieval() {
+        let bigrams = term_slices("学会手冲咖啡的萃取状态判读与调整");
+        assert!(bigrams.contains(&"冲咖".to_owned()), "检索词条二元照旧：{bigrams:?}");
+        assert!(bigrams.contains(&"态判".to_owned()), "检索词条二元照旧：{bigrams:?}");
+    }
+
+    /// 停用词短语整条滤除；ASCII 整词；虚字切段产生的单字残段不立条目；
+    /// 无互含时短语整段保留（无词典不强拆——取舍见函数注释）。
+    #[test]
+    fn context_word_slices_drop_stopword_phrases_and_keep_ascii_whole() {
+        let words = context_word_slices("理解闭包对象的语义与这个 SQL 优化");
+        assert_eq!(
+            words,
+            vec!["理解闭包", "语义", "sql", "优化"],
+            "「这个」是停用词短语；「象」是单字残段；ASCII 整词小写"
+        );
+        assert!(context_word_slices("手冲咖啡的手冲咖啡").contains(&"手冲咖啡".to_owned()));
+        assert!(context_word_slices("").is_empty());
     }
 }
