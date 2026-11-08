@@ -625,7 +625,7 @@ mod tests {
         crate::switches::switch_env_guard(env_var, value)
     }
 
-    // ── u01：点修回填（NOMI_LEARNING_REDRAFT_SPLICE，开发期缺省 off）────────
+    // ── u01：点修回填（NOMI_LEARNING_REDRAFT_SPLICE，缺省 on——2026-11-07 A/B 达标）────────
 
     /// u01 主臂：同标题未点名节点的措辞/标点漂移被整对象回填（守卫归零，
     /// 不再消耗原地重试）；计数只数实际被抹平的节点；点名节点、新增节点

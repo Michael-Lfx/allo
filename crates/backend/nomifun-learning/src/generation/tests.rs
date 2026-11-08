@@ -1798,7 +1798,7 @@ fn content_discipline_v2_switch_adds_the_material_clauses() {
     );
 }
 
-// ── u10：变式链 V2（NOMI_LEARNING_VARIANT_V2，开发期缺省 off）──
+// ── u10：变式链 V2（NOMI_LEARNING_VARIANT_V2，缺省 on——2026-11-07 A/B 达标）──
 
 /// 变式链 V2 开关的环境守卫（串行测试内使用，离开作用域即还原）。
 struct VariantSwitchRestore(Option<String>);
@@ -1822,7 +1822,7 @@ impl Drop for VariantSwitchRestore {
     }
 }
 
-/// 开关取值判定与缺省：未设 = off（开发期缺省 off——正优化协议：未经验证
+/// 开关取值判定与缺省：未设 = on（2026-11-07 A/B 达标后翻缺省——正优化协议：未经验证
 /// 不缺省启用，A/B 达标后收尾提交统一翻 on），off/0/false = off，显式
 /// on/1/true = on（大小写与首尾空白宽容——与既有 NOMI_LEARNING_* 开关同
 /// 口径）。

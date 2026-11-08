@@ -4413,10 +4413,10 @@ async fn guard_text_mentions_do_not_constitute_point_naming() {
     assert_eq!(stats.attempts_used, 3, "二次越权计轮");
 }
 
-/// 点修回填 on 臂（u01，服务级端到端；显式 env on——开发期缺省 off）：评审打回点名甲，重裁修
+/// 点修回填 on 臂（u01，服务级端到端；显式 env on——缺省已于 2026-11-07 A/B 后翻 on）：评审打回点名甲，重裁修
 /// 甲、同时让未点名乙漂移——回填把乙抹平（`redraft_spliced=1`），守卫不再
 /// 拦截、无原地重试，批次直接进评审落位；回填后的落库批含上一稿乙原样。
-/// on 臂 = 显式 env on（开发期缺省 off——正优化协议：未经验证不缺省启用，
+/// on 臂 = 显式 env on（缺省已于 2026-11-07 A/B 后翻 on——正优化协议：验证前不缺省启用，
 /// A/B 用显式臂）。进程全局态——`#[serial]` 与写 env 的测试互斥。
 #[tokio::test]
 #[serial_test::serial]
@@ -4535,7 +4535,7 @@ async fn degraded_review_preserves_problems_into_findings_and_batch_note() {
 // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重 ────────────────────
 
 /// u04 课程语境词切片（on 臂 = 标题+目标的最大 munch 切片——w02 起不再
-/// 产出跨词界二元垃圾；显式 env on——开发期缺省 off；off 臂恒空表——碎片
+/// 产出跨词界二元垃圾；显式 env on——缺省已于 2026-11-07 A/B 后翻 on；off 臂恒空表——碎片
 /// 点名清单的已知面随之恢复基线）。此表同时是点名清单的掩码池：垃圾二元
 /// 不再入池。
 #[test]
@@ -4562,7 +4562,7 @@ fn course_context_terms_follow_the_switch() {
 
 /// u04 评审端到端：首轮评审打回 → 重裁 → 二轮评审的 user 带【前轮评审意见
 /// 与教练修订】+【翻案锁】+【课程语境词】（seed 课程的标题/目标切片）——
-/// on 臂显式 env on（开发期缺省 off）；ANTI_LOOP=off 臂三块全零（基线逐字
+/// on 臂显式 env on（缺省 on——2026-11-07 A/B 达标）；ANTI_LOOP=off 臂三块全零（基线逐字
 /// 节），coach 侧重排的前轮意见回灌（REVIEW_STATE 面）不受影响。env 全局
 /// 态：`#[serial]` 互斥。
 #[tokio::test]

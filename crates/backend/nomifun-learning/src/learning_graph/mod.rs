@@ -1698,7 +1698,7 @@ pub(crate) async fn concept_review(
     // 缺失行的 term 照抄有源；off 臂恒空串（基线逐字节）。
     let words_block = provenance_candidates_block(batch);
     loop {
-    let mut user = format!(
+        let mut user = format!(
         "{}\n\n【待审批次】\n{batch_json}{words_block}{candidates_block}{anchors_block}",
         context.render()
     );
@@ -2833,7 +2833,7 @@ mod tests {
 
     /// u01 开关两臂的字节级钉：on 臂修订纪律补「未点名节点由系统按上一稿
     /// 原样回填」句；off 臂 = 基线逐字——断言为「on 臂全文减去该句 == off
-    /// 臂全文」（差集恰为插入句本身）；未设 = 开发期缺省 off（off 臂同形
+    /// 臂全文」（差集恰为插入句本身）；未设 = 缺省 on（off 臂为显式对照）
     /// ——A/B 达标后收尾提交统一翻 on，断言同步）。
     /// env 是进程全局态：`#[serial]` 互斥。
     #[tokio::test]
@@ -3026,7 +3026,7 @@ mod tests {
     // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重（ANTI_LOOP 两臂）
 
     /// u04 边界去重条款（on 臂）：教练声明面条款补「边界只写一次」；off 臂
-    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 开发期缺省 off。
+    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 缺省 on（2026-11-07 A/B 达标后翻缺省）。
     #[test]
     #[serial_test::serial]
     fn anti_loop_switch_gates_coach_system_boundary_clause() {
