@@ -464,6 +464,24 @@ mod tests {
             !goal_body.contains("词边"),
             "u09：自检句不得保留词边豁免口径（门无词位豁免，是否捆绑交裁决）"
         );
+        // w03（可用性收尾波）：goal 回执例外句与排期禁令同条在场——排期红线
+        // 约束的是行文与计划面，【学习目标】回执段逐字照抄原句（含其中的排
+        // 期类词）不计入本条（与 gd.no_schedule 的门侧 goal 豁免对齐）；
+        // 例外句缺失 = 旧无例外的全句禁令回流，先红。
+        let discipline_line = goal_body
+            .lines()
+            .find(|line| line.contains("排期、日程、时间表、进度、计划"))
+            .expect("goal prompt 输出纪律行（排期禁令）在场");
+        for phrase in [
+            "排期红线约束的是行文与计划面",
+            "【学习目标】回执段逐字照抄原句",
+            "不计入本条",
+        ] {
+            assert!(
+                discipline_line.contains(phrase),
+                "w03：goal 回执例外句必须与排期禁令同条在场（旧无例外的全句禁令不得回流）：{discipline_line}"
+            );
+        }
         let (_, terrain_body) = split_template(PREREQUISITE_TERRAIN.template).unwrap();
         for phrase in [
             "G1",

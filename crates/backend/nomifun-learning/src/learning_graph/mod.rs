@@ -616,7 +616,8 @@ pub struct CoachContext {
     /// 块 9：登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
     /// u04 课程语境词（顿号串；service 按开关装配，off 臂恒空）：课程标题
-    /// + 学习目标的确定性切片——首批块与评审 user 共用（评审面同读此字段）。
+    /// + 学习目标的最大 munch 切片（w02）——教练每一批 prompt 与评审 user
+    /// 共用（评审面同读此字段）。
     pub course_context_words: String,
 }
 
@@ -669,11 +670,14 @@ impl CoachContext {
                  - 入口从结构参考的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
                  - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。\n\
                  {}", ledger_line));
-            // u04 课程语境词（首批块；service 按开关装配，off 臂恒空）：
-            // 首批定义可用的背景用语——判据①的「每个领域词都要有出处」在
-            // 空已教账的首批不可能字字有源，语境词给了确定的豁免面。
-            text.push_str(&course_context_words_block(&self.course_context_words));
         }
+        // u04 课程语境词（w02 起每一批都渲染；service 按开关装配，off 臂恒
+        // 空 = 基线逐字节）：课程标题/目标定义可用的背景用语——判据①的
+        // 「每个领域词都要有出处」在空已教账的首批不可能字字有源，语境词给
+        // 了确定的豁免面；非首批教练同读此面，措辞不再不对称保守（F6：原
+        // 仅首批可见，非首批教练不知豁免面）。评审 user 经同一单源携带
+        // （[`course_context_words_block`]），评审面不再补注。
+        text.push_str(&course_context_words_block(&self.course_context_words));
         // 块 4：当前就绪。
         text.push_str(&format!(
             "\n【当前就绪】{ready} 个（目标 {READY_TARGET} 个，缺口 {gap} 个）\n",
@@ -1094,9 +1098,9 @@ pub(crate) use crate::switches::{
     redraft_splice_enabled, review_context_v2_enabled,
 };
 
-/// u04 课程语境词块的渲染（教练首批块与评审 user 共用单源）：`words` =
-/// 课程标题 + 学习目标的机械切片顿号串（service 按开关装配；空 = 零注入
-/// ——off 臂逐字节回基线）。
+/// u04 课程语境词块的渲染（教练每一批 prompt 与评审 user 共用单源）：
+/// `words` = 课程标题 + 学习目标的最大 munch 切片顿号串（service 按开关装
+/// 配；空 = 零注入——off 臂逐字节回基线）。
 pub(crate) fn course_context_words_block(words: &str) -> String {
     if words.trim().is_empty() {
         return String::new();
@@ -1392,10 +1396,16 @@ pub(crate) fn verify_reuse_rulings(
 /// new_aliases name）渲染定义原文的逐字候选词——由
 /// [`definition_audit::verbatim_cjk_candidates`] 机械切出（不掩码、去重保
 /// 序），常识/缺失行的 term 逐字照抄有源；无 CJK 候选的提名不渲染行，整块
-/// 空则零注入（off 臂恒空 = 基线逐字节）。
+/// 空则零注入（off 臂恒空 = 基线逐字节）。w02：元语言碎屑过滤——候选词是
+/// 「照抄菜单」，切出的元语言词与纯虚词段混进菜单会诱导挂号表 term 照抄
+/// 元语言（真机病历：候选词块含「记作/表示」却被要求逐字照抄）；过滤只
+/// 丢碎屑，其余候选仍是定义原文逐字子串（照抄语义不变、真词不删）。
 fn provenance_candidates_block(batch: &ProposedBatch) -> String {
     fn append_candidate_line(lines: &mut String, name: &str, definition: &str) {
-        let candidates = definition_audit::verbatim_cjk_candidates(definition);
+        let candidates: Vec<String> = definition_audit::verbatim_cjk_candidates(definition)
+            .into_iter()
+            .filter(|candidate| !is_candidate_meta_debris(candidate))
+            .collect();
         if candidates.is_empty() {
             return;
         }
@@ -1419,6 +1429,23 @@ fn provenance_candidates_block(batch: &ProposedBatch) -> String {
     } else {
         format!("\n\n【挂号表候选词（逐字照抄面——常识/缺失行的 term 从对应提名的定义里照抄）】{lines}")
     }
+}
+
+/// 候选词块的元语言碎屑停用词（w02）：定义的元语言句式（「记作 X」「表示
+/// Y」「称为 Z」「其中…」）与「定义/即」这类簿记词——被标点/字母切成孤立
+/// 段后混进「逐字照抄」菜单。表内词永不照抄。
+const CANDIDATE_META_STOPWORDS: &[&str] = &["记作", "表示", "称为", "其中", "定义", "即"];
+
+/// 一条候选词是否元语言碎屑（w02）：恰为元语言停用词；全字皆虚字
+/// （[`definition_audit::FUNCTION_CHARS`] 的纯虚词串）；或**单字残留**——
+/// 边界归一化（剥首尾虚字到剩 1 字）的单字残渣（「其中」剥出「中」、「称
+/// 为」剥出「称」）不必然落在虚字表内，而单字从来不是照抄菜单想要的
+/// 「真词」（词条纪律：词 ≥2 字；grounding 里单字只作边界 token）。
+/// ≥2 字且含任一实字的候选不动（真词不删，照抄语义不变）。
+fn is_candidate_meta_debris(candidate: &str) -> bool {
+    candidate.chars().count() == 1
+        || CANDIDATE_META_STOPWORDS.contains(&candidate)
+        || candidate.chars().all(|ch| definition_audit::FUNCTION_CHARS.contains(ch))
 }
 
 /// Run the AI concept review over a gated batch. Any failure (no completer,
@@ -1466,28 +1493,24 @@ pub(crate) async fn concept_review(
     let enforce_on = fragment_enforce;
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
     // u04 反循环臂（缺省 on；service 传 `prior_review` = 评审往返记录，
-    // off/首轮为空串）：①课程语境词进评审 user（可作定义的背景用语，不
-    // 单独要求挂号；作为 teaches 照常挂号——教练首批块同款单源渲染）；
-    // ②翻案锁——有状态复审时前轮意见随 user 回灌并锁定「按前轮意见做出
-    // 的修改本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告」
-    // （反乒乓纪律此前只约束教练，评审不受约束才有跨轮翻案）。off 臂两块
-    // 恒零注入（基线逐字节）。
+    // off/首轮为空串）：①翻案锁——有状态复审时前轮意见随 user 回灌并锁定
+    // 「按前轮意见做出的修改本身不得再判为问题；修改若引入与前轮无关的新
+    // 硬伤照常报告；对同一词源的前轮判定（如已判常识/已判缺失），无新证据
+    // 不得改判——认为前轮判定有误时写进 findings 说明，不得以改判方式打
+    // 回」（w04 补全：只禁「按前轮意见做的修改」再判时，轮1判常识→轮2要
+    // 求挂号的改判仍合法——run-1793951137445 病历形态）。②课程语境词不再
+    // 由评审面补注（w02）：context.render() 每一批都渲染【课程语境词】块
+    // （同一单源 [`course_context_words_block`]），评审 user 经渲染自然携
+    // 带——补注通道撤销，避免双份；豁免语义（可作定义背景用语、teaches
+    // 照常挂号）不变。off 臂两块恒零注入（基线逐字节）。
     let anti_loop = anti_loop_enabled();
-    // 首批（花名册空）的语境词已随 context.render() 的首批块进 user（同一
-    // 单源 [`course_context_words_block`]）——评审面不重注（避免双份）；
-    // 非首批由评审面补注（语境词恒在评审可见面）。
-    let course_ctx_block = if !anti_loop {
-        String::new()
-    } else if context.roster.trim().is_empty() {
-        String::new()
-    } else {
-        course_context_words_block(&context.course_context_words)
-    };
     let overturn_lock = if anti_loop && !prior_review.trim().is_empty() {
         format!(
             "\n\n【前轮评审意见与教练修订】\n{prior_review}\n\
              【翻案锁】按前轮意见做出的修改，本身不得再判为问题；\
-             修改若引入与前轮无关的新硬伤照常报告。"
+             修改若引入与前轮无关的新硬伤照常报告。\
+             对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判；\
+             认为前轮判定有误时写进 findings 说明，不得以改判方式打回。"
         )
     } else {
         String::new()
@@ -1676,9 +1699,9 @@ pub(crate) async fn concept_review(
     let words_block = provenance_candidates_block(batch);
     loop {
         let mut user = format!(
-            "{}\n\n【待审批次】\n{batch_json}{words_block}{course_ctx_block}{candidates_block}{anchors_block}",
-            context.render()
-        );
+        "{}\n\n【待审批次】\n{batch_json}{words_block}{candidates_block}{anchors_block}",
+        context.render()
+    );
         if fragments_on {
             user.push_str(&fragment_verdict::naming_list_block(naming_list));
         }
@@ -2810,7 +2833,7 @@ mod tests {
 
     /// u01 开关两臂的字节级钉：on 臂修订纪律补「未点名节点由系统按上一稿
     /// 原样回填」句；off 臂 = 基线逐字——断言为「on 臂全文减去该句 == off
-    /// 臂全文」（差集恰为插入句本身）；未设 = 开发期缺省 off（off 臂同形
+    /// 臂全文」（差集恰为插入句本身）；未设 = 缺省 on（off 臂为显式对照）
     /// ——A/B 达标后收尾提交统一翻 on，断言同步）。
     /// env 是进程全局态：`#[serial]` 互斥。
     #[tokio::test]
@@ -2964,10 +2987,46 @@ mod tests {
         );
     }
 
+    /// w02 候选词元语言碎屑过滤：定义被标点/字母切出的孤立元语言段
+    /// （记作/其中/表示/称为）与纯虚词串不进「照抄菜单」；「其中/称为」
+    /// 被边界归一化剥出的单字残渣（中/称）同滤；≥2 字含实字的候选照旧
+    /// 保留（真词不删、逐字照抄语义不变）。env 全局态：`#[serial]`。
+    #[test]
+    #[serial_test::serial]
+    fn provenance_candidates_block_filters_meta_debris() {
+        let mut batch = ProposedBatch::default();
+        batch.mints.push(ConceptMint {
+            canonical: "水流".into(),
+            aliases: Vec::new(),
+            definition: "记作 q。其中：表示，称为，的水流".into(),
+            source: None,
+        });
+        let _on = set_env(REVIEW_CONTEXT_V2_SWITCH_ENV, "on");
+        let block = provenance_candidates_block(&batch);
+        assert!(block.contains("的水流"), "含实字候选保留：{block}");
+        // 「其中/称为」经边界归一化剥成单字「中/称」——单字残渣同滤。
+        for debris in ["记作", "其中", "表示", "称为", "、中", "、称"] {
+            assert!(!block.contains(debris), "元语言碎屑 {debris} 不进菜单：{block}");
+        }
+        // 全部候选都是碎屑 → 整行不渲染（块整体零注入）。
+        let mut debris_only = ProposedBatch::default();
+        debris_only.mints.push(ConceptMint {
+            canonical: "虚词".into(),
+            aliases: Vec::new(),
+            definition: "记作。其中：表示".into(),
+            source: None,
+        });
+        let debris_block = provenance_candidates_block(&debris_only);
+        assert!(debris_block.is_empty(), "全碎屑候选零行渲染：{debris_block}");
+        drop(_on);
+        let _off = set_env(REVIEW_CONTEXT_V2_SWITCH_ENV, "off");
+        assert!(provenance_candidates_block(&batch).is_empty(), "off 臂整块恒空");
+    }
+
     // ── u04：课程语境词 + 评审翻案锁 + intent/scope 边界去重（ANTI_LOOP 两臂）
 
     /// u04 边界去重条款（on 臂）：教练声明面条款补「边界只写一次」；off 臂
-    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 开发期缺省 off。
+    /// 逐字节回基线（差集恰为插入 bullet 本身）；未设 = 缺省 on（2026-11-07 A/B 达标后翻缺省）。
     #[test]
     #[serial_test::serial]
     fn anti_loop_switch_gates_coach_system_boundary_clause() {
@@ -3021,31 +3080,46 @@ mod tests {
         );
     }
 
-    /// u04 语境词只进教练首批块：花名册为空 = 渲染；非空批 = 不渲染。
+    /// u04 语境词进教练每一批（w02 扩面，原仅首批 F6）：花名册空/非空皆
+    /// 渲染，且都在【当前就绪】块之前（首批位置不变——首批纪律之后）。
     #[test]
-    fn coach_first_batch_block_carries_course_context_words() {
+    fn coach_context_words_render_in_every_batch() {
         let mut context = CoachContext::default();
         context.course_context_words = "手冲、咖啡".into();
         let first = context.render();
         assert!(first.contains("【课程语境词】"), "{first}");
         assert!(first.contains("可作定义的背景用语"), "{first}");
-        context.roster = "ready | 甲节点 | teaches(极限@know) assumes()".into();
+        let first_at = first.find("【课程语境词】").unwrap();
         assert!(
-            !context.render().contains("【课程语境词】"),
-            "非首批不渲染语境词块（只进教练首批块）"
+            first_at > first.find("首批纪律").unwrap() && first_at < first.find("【当前就绪】").unwrap(),
+            "首批块位置不变（首批纪律之后、当前就绪之前）：{first}"
+        );
+        context.roster = "ready | 甲节点 | teaches(极限@know) assumes()".into();
+        let later = context.render();
+        let later_at = later.find("【课程语境词】").unwrap();
+        assert!(
+            later.contains("【课程语境词】")
+                && later.contains("可作定义的背景用语")
+                && later_at < later.find("【当前就绪】").unwrap(),
+            "非首批教练同读豁免面（w02 扩面），位置同首批：{later}"
         );
     }
 
-    /// u04 评审臂两块的字节级钉：on = 评审 user 带【课程语境词】块（教练
-    /// 首批块同款单源）+ 有状态复审臂带【前轮评审意见与教练修订】与翻案
-    /// 锁；off = 两块零注入（差集恰为两块本身）；未设 = 开发期缺省 off。
+    /// u04 评审臂两块的字节级钉：on = 评审 user 带【课程语境词】块（w02 起
+    /// 经 context.render() 每一批单源携带、恰一次）+ 有状态复审臂带【前轮
+    /// 评审意见与教练修订】与翻案锁（w04 补全：同一词源前轮判定的无证据改
+    /// 判禁令）；off = 两块零注入（差集恰为两块本身；off 臂语境词空串 =
+    /// service 装配口径）；未设 = 缺省 on（2026-11-07 真机 A/B 达标）。
     /// env 全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
     async fn anti_loop_switch_gates_review_context_and_overturn_lock() {
         const COURSE_BLOCK: &str = "\n【课程语境词】手冲、咖啡——可作定义的背景用语，不单独要求挂号；作为本节点教学对象（teaches）时照常挂号。\n";
         const HISTORY: &str = "第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）";
-        const LOCK: &str = "\n\n【前轮评审意见与教练修订】\n第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）\n【翻案锁】按前轮意见做出的修改，本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告。";
+        const LOCK: &str = "\n\n【前轮评审意见与教练修订】\n第 1 轮评审打回：\n- [teaches] 甲: 缺前提（建议：补挂 assumes）\n【翻案锁】按前轮意见做出的修改，本身不得再判为问题；修改若引入与前轮无关的新硬伤照常报告。对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判；认为前轮判定有误时写进 findings 说明，不得以改判方式打回。";
+        /// w04 补全句单独钉（条款两臂装配：句在 on 臂、不在 off 臂——
+        /// 逐字节差集断言已覆盖，此处按票面要求显式钉句子本身）。
+        const OVERTURN_BAN: &str = "对同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判；认为前轮判定有误时写进 findings 说明，不得以改判方式打回。";
         let capture = |pin: Option<&'static str>| async move {
             struct Restore(Option<String>);
             impl Drop for Restore {
@@ -3073,9 +3147,10 @@ mod tests {
                 Vec::new(),
             )));
             let mut context = CoachContext::default();
-            context.course_context_words = "手冲、咖啡".into();
-            // 非首批（花名册非空）：首批块不渲染语境词——评审面注入是唯一
-            // 来源（首批经 context.render() 单源进 user，评审面不重注）。
+            // off 臂语境词 = 空串（service 装配口径：开关 off → 空表）；
+            // on 臂非空。非首批（花名册非空）：w02 起块由 render() 每一批
+            // 携带，评审面补注通道已撤销（无双份）。
+            context.course_context_words = if pin == Some("off") { "" } else { "手冲、咖啡" }.into();
             context.roster = "ready | 甲节点 | teaches(极限@know) assumes()".into();
             let _ = concept_review(
                 &completer,
@@ -3102,12 +3177,25 @@ mod tests {
         let (off_arm, _off) = capture(Some("off")).await;
         assert!(!off_arm.contains("【课程语境词】"), "off 臂零语境词块：{off_arm}");
         assert!(!off_arm.contains("【翻案锁】"), "off 臂零翻案锁：{off_arm}");
+        assert!(
+            !off_arm.contains(OVERTURN_BAN),
+            "off 臂零同干改判禁令（w04 补全句）：{off_arm}"
+        );
         let (on_arm, _on) = capture(Some("on")).await;
         let (default_arm, _default) = capture(None).await;
         assert_eq!(on_arm, default_arm, "未设 = 缺省 on（2026-11-06 A/B 达标后翻 on）");
         assert!(default_arm.contains(COURSE_BLOCK), "缺省臂语境词块：{default_arm}");
         assert!(on_arm.contains(COURSE_BLOCK), "on 臂语境词块：{on_arm}");
+        assert_eq!(
+            on_arm.matches("【课程语境词】").count(),
+            1,
+            "单源恰一次（render 携带、评审面不补注）：{on_arm}"
+        );
         assert!(on_arm.contains(LOCK), "on 臂前轮意见 + 翻案锁：{on_arm}");
+        assert!(
+            on_arm.contains(OVERTURN_BAN),
+            "on 臂翻案锁带同干改判禁令（w04 补全）：{on_arm}"
+        );
         assert_eq!(
             on_arm.replace(COURSE_BLOCK, "").replace(LOCK, ""),
             off_arm,
