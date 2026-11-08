@@ -9020,7 +9020,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     /// （on 臂）：变式只在正文已生成时装配 document——本测给 6 节点播种已
     /// 生成正文，脚本应答带正文逐字证据（on 臂证据核在场；正文缺席的诚实
     /// 跳过走 smoke quiz 臂读数与 variant_document 单测）。on 臂 = 显式 env
-    /// on（开发期缺省 off）——进程全局态，`#[serial]` 互斥。
+    /// on（缺省 on——2026-11-07 真机 A/B 达标；显式钉住照旧）——进程全局
+    /// 态，`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
     async fn quiz_variants_generate_with_completer_and_skip_honestly_without() {
@@ -9072,12 +9073,44 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 Arc::from(user_id.as_str()),
             ),
         ));
-        service.set_generation_dependencies(
-            knowledge_service,
-            ScriptedCompleter::new(reply, false),
-        );
+        let completer = ScriptedCompleter::new(reply, false);
+        service.set_generation_dependencies(knowledge_service, completer.clone());
+        // w04 回合同干池读数基线（进程全局态只取增量，不 reset）。
+        let same_stem_before = crate::generation::variant_readings::snapshot().same_stem_hits;
         let round = service.quiz_start(&user_id, &course).await.unwrap();
         assert_eq!(round.questions.len(), 12, "6 节点 × (1 旧题 + 1 变式)");
+        // w04 回合同干池装配：变式提示词带本回合已落盘题面的「避免重复」
+        // 清单（末次调用 = 第 6 个变式——池 = 5×(旧题+变式) + 本节点旧题
+        // = 11 条；清单逐行 `- "` 带引号，独占标记）。软约束不加硬门：脚本
+        // 变式逐字同题面，第 2..6 个变式与第 1 个同干 → 各记一次读数（照
+        // 出）；首变式 vs 本节点旧题不误伤（现有新颖性门同款阈值）。
+        {
+            let last_user = completer
+                .last_user
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("变式提示词已捕获");
+            assert!(
+                last_user.contains("quiz round"),
+                "避免清单句在变式提示词：{last_user}"
+            );
+            assert_eq!(
+                last_user.matches("\n- \"").count(),
+                11,
+                "第 6 变式的回合池 = 11 条：{last_user}"
+            );
+            assert!(
+                last_user.contains("\"Variant probe: which property is unique?\""),
+                "先前变式题面入池（回合级防同干）：{last_user}"
+            );
+            assert_eq!(
+                crate::generation::variant_readings::snapshot().same_stem_hits
+                    - same_stem_before,
+                5,
+                "变式 2..6 同干命中各记一次（重复照出，只记读数）"
+            );
+        }
         // 交错：同节点两题不相邻。
         for pair in round.questions.windows(2) {
             assert_ne!(
