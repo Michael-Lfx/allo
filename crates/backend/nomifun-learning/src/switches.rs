@@ -66,16 +66,17 @@ pub fn is_auto_refill_disabled_value(value: &str) -> bool {
 }
 
 /// verify_math 批量核验开关（u05，`NOMI_LEARNING_VERIFY_BATCH`）：未设 =
-/// 关（**开发期缺省 off**——正优化协议：未经验证不缺省启用；真机 A/B
-/// 达标后在收尾提交统一翻 on。票面主指标：verify_math 调用次数 /
-/// 总 LLM 调用数 / 累计输入字符；推翻条件 = claim 覆盖下降 >20% 或
-/// math_verify failed 上升 → 默认 off）；显式 on/1/true = 开（批量面在
-/// 位，单 claim 形状向后兼容照旧可用）；off/0/false = 关——工具 schema/
-/// 描述/R14 条款逐字节回退基线单 claim 形状（同二进制对照臂）。
+/// 开（**缺省 on（2026-11-07 真机 A/B 达标）**——收尾提交统一翻 on。票面
+/// 主指标：verify_math 调用次数 / 总 LLM 调用数 / 累计输入字符；推翻条件
+/// = claim 覆盖下降 >20% 或 math_verify failed 上升 → 默认 off）；显式
+/// on/1/true = 开（批量面在位，单 claim 形状向后兼容照旧可用）；
+/// off/0/false = 关——工具 schema/描述/R14 条款逐字节回退基线单 claim
+/// 形状（同二进制对照臂）。
 pub const VERIFY_BATCH_SWITCH_ENV: &str = "NOMI_LEARNING_VERIFY_BATCH";
 
 /// verify_math 批量核验开关判定（取值注入面，纯函数——测试不触进程 env）。
-/// **缺省 off**：未设 = 基线单 claim 形状；显式非 off 取值 = 批量面。
+/// **缺省 on（2026-11-07 真机 A/B 达标）**：未设 = 批量面；off 系 = 基线
+/// 单 claim 形状。
 pub fn verify_batch_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
@@ -157,8 +158,8 @@ pub fn switch_env_guard(env_var: &'static str, value: Option<&str>) -> impl Drop
 
 /// 点修回填的运维开关（u01，模型可用性修复波）：置 off/0/false = 回填臂
 /// 休眠——重裁候选稿不回填、守卫文案与修订纪律逐字回基线形（off 臂）；
-/// 未设 = 关（**开发期缺省 off**——正优化协议：未经验证不缺省启用，真机
-/// A/B 达标后收尾提交统一翻 on）；显式非 off 取值 = 开。on 臂三件：①重裁解析
+/// 未设 = 开（**缺省 on（2026-11-07 真机 A/B 达标）**——收尾提交统一翻
+/// on）；显式非 off 取值 = 开。on 臂三件：①重裁解析
 /// 后守卫前，上一稿中不在点名集、候选稿同标题仍在的节点整对象回填（抹掉
 /// 标点/措辞漂移——真机 run-1793951137445：重裁把未点名节点 purpose
 /// 「粗/中/细」写成「粗、中、细」→ 守卫拦 → 原地重试又改另一节点 → 二次
@@ -166,20 +167,21 @@ pub fn switch_env_guard(env_var: &'static str, value: Option<&str>) -> impl Drop
 /// 出口；③修订纪律补回填句（改了也白改，模型不再被要求搬运未点名节点）。
 pub const REDRAFT_SPLICE_SWITCH_ENV: &str = "NOMI_LEARNING_REDRAFT_SPLICE";
 
-/// 点修回填开关判定（取值注入面，纯函数——测试不触进程 env）。缺省 off。
+/// 点修回填开关判定（取值注入面，纯函数——测试不触进程 env）。缺省
+/// on（2026-11-07 真机 A/B 达标）。
 pub fn redraft_splice_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
-/// 点修回填是否开启（未设 = 关；显式非 off 取值 = 开）。
+/// 点修回填是否开启（未设 = 开；显式非 off 取值 = 开）。
 pub fn redraft_splice_enabled() -> bool {
     redraft_splice_enabled_value(std::env::var(REDRAFT_SPLICE_SWITCH_ENV).ok().as_deref())
 }
 
 /// 评审输入补全的运维开关（u03，模型可用性修复波）：置 off/0/false = 补全
 /// 臂休眠——评审 user 不渲染候选词块、系统提示词不织两条款（off 臂逐字节
-/// 回基线）；未设 = 关（**开发期缺省 off**——正优化协议：未经验证不缺省
-/// 启用，真机 A/B 达标后收尾提交统一翻 on）；显式非 off 取值 = 开。on 臂三件：
+/// 回基线）；未设 = 开（**缺省 on（2026-11-07 真机 A/B 达标）**——收尾提
+/// 交统一翻 on）；显式非 off 取值 = 开。on 臂三件：
 /// ①评审 user 每条提名下渲染「挂号表候选词」——定义原文的连续 CJK 片段
 /// 机械切出（不掩码），常识/缺失行的 term 逐字照抄有源（真机两次挂号表
 /// 违约都死在机械层只给掩码残片、模型凭记忆复述定义：滤杯循环自证、
@@ -194,32 +196,35 @@ pub fn review_context_v2_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
-/// 评审输入补全是否开启（未设 = 关；显式非 off 取值 = 开）。
+/// 评审输入补全是否开启（未设 = 开；显式非 off 取值 = 开）。
 pub fn review_context_v2_enabled() -> bool {
     review_context_v2_enabled_value(std::env::var(REVIEW_CONTEXT_V2_SWITCH_ENV).ok().as_deref())
 }
 
 /// 反循环臂的运维开关（u04，模型可用性修复波）：置 off/0/false = 三件全
-/// 休眠、提示词逐字节回基线；未设 = 关（**开发期缺省 off**——正优化协议：
-/// 未经验证不缺省启用，真机 A/B 达标后收尾提交统一翻 on）；显式非 off
+/// 休眠、提示词逐字节回基线；未设 = 开（**缺省 on（2026-11-07 真机 A/B
+/// 达标）**——收尾提交统一翻 on）；显式非 off
 /// 取值 = 开。on 臂三件：①课程语境词——课程标题 + 学习目标的确定性切片（复用
 /// generation 的 term_slices）渲染为「可作定义的背景用语，不单独要求挂
 /// 号；作为本节点教学对象（teaches）时照常挂号」，进教练首批块与评审
 /// user，并加入点名清单已知面（这些词不再作为碎片下发）——空已教账 +
 /// 判据①要求每个领域词有出处的死结由此解开（「手冲咖啡」课的入门定义不
 /// 可能不用「手冲/冲煮/咖啡粉」）；②评审翻案锁——有状态复审时前轮意见
-/// 随评审 user 回灌并锁定「按前轮意见做出的修改本身不得再判为问题」
-/// （反乒乓纪律此前只约束教练，评审不受约束才有了跨轮翻案）；③教练声
+/// 随评审 user 回灌并锁定「按前轮意见做出的修改本身不得再判为问题；对
+/// 同一词源的前轮判定（如已判常识/已判缺失），无新证据不得改判——认为
+/// 前轮判定有误时写进 findings 说明，不得以改判方式打回」（w04 补全；
+/// 反乒乓纪律此前只约束教练，评审不受约束才有了跨轮翻案）；③教练声
 /// 明面条款补「边界只写一次」——『不教 X / 留待后续』只写 scope，intent
 /// 只写角色，不再两字段各写一遍（5 节点 4 个重复的边界声明）。
 pub const ANTI_LOOP_SWITCH_ENV: &str = "NOMI_LEARNING_ANTI_LOOP";
 
-/// 反循环臂开关判定（取值注入面，纯函数——测试不触进程 env）。缺省 off。
+/// 反循环臂开关判定（取值注入面，纯函数——测试不触进程 env）。缺省
+/// on（2026-11-07 真机 A/B 达标）。
 pub fn anti_loop_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
-/// 反循环臂是否开启（未设 = 关；显式非 off 取值 = 开）。
+/// 反循环臂是否开启（未设 = 开；显式非 off 取值 = 开）。
 pub fn anti_loop_enabled() -> bool {
     anti_loop_enabled_value(std::env::var(ANTI_LOOP_SWITCH_ENV).ok().as_deref())
 }
@@ -241,15 +246,16 @@ pub fn est_budget_enabled() -> bool {
 
 /// 档位优先序运维开关（u07，`NOMI_LEARNING_TIER_PRIORITY`）：只管两项
 /// 模型可见面——①生成系统提示词的「档位优先序」条款（ai-agent 面）；
-/// ②本面审计的节长上限 warning（`section_over_budget`）。未设 = 关（
-/// **开发期缺省 off**——正优化协议：未经验证不缺省启用，真机 A/B 达标后
-/// 收尾提交统一翻 on；票面推翻条件：on 臂知道档出现「只剩定义、无情境
+/// ②本面审计的节长上限 warning（`section_over_budget`）。未设 = 开（
+/// **缺省 on（2026-11-07 真机 A/B 达标）**——收尾提交统一翻 on；票面推
+/// 翻条件：on 臂知道档出现「只剩定义、无情境
 /// 引入」类空心化 → 默认 off）；显式非 off 取值 = 开；off/0/false = 关
 ///（两处逐字节回基线）。修复轮上下文注入与发布前数学失败回给模型两项为
 /// 机械正确性补全，**不挂本开关**（票面明示）。
 pub const TIER_PRIORITY_SWITCH_ENV: &str = "NOMI_LEARNING_TIER_PRIORITY";
 
-/// 档位优先序开关判定（取值注入面，纯函数——测试不触进程 env）。缺省 off。
+/// 档位优先序开关判定（取值注入面，纯函数——测试不触进程 env）。缺省
+/// on（2026-11-07 真机 A/B 达标）。
 pub fn tier_priority_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
@@ -261,9 +267,9 @@ pub fn tier_priority_enabled() -> bool {
 
 /// 变式链 V2 开关（u10，正优化验收协议）：`NOMI_LEARNING_VARIANT_V2`——on
 /// 臂装配变式判底（有正文才装、缺席如实跳过）、证据逐字核、按题型契约、
-/// 变式指令独立段；off 臂与基线逐字节一致（单测钉住）。未设 = 关（**开发
-/// 期缺省 off**——正优化协议：未经验证不缺省启用）；真机 A/B 达标（变式
-/// 成功率/违约重试/证据逐字命中改善且护栏不劣化）后在收尾提交统一翻 on。
+/// 变式指令独立段；off 臂与基线逐字节一致（单测钉住）。未设 = 开（**缺省
+/// on（2026-11-07 真机 A/B 达标）**——变式成功率/违约重试/证据逐字命中
+/// 改善且护栏不劣化，收尾提交统一翻 on）。
 pub const VARIANT_V2_SWITCH_ENV: &str = "NOMI_LEARNING_VARIANT_V2";
 
 /// 变式链 V2 开关判定（取值注入面，纯函数——测试不触进程 env）。
@@ -271,7 +277,7 @@ pub fn variant_v2_enabled_value(value: Option<&str>) -> bool {
     value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
 }
 
-/// 变式链 V2 是否开启（未设 = 关；显式非 off 取值 = 开）。
+/// 变式链 V2 是否开启（未设 = 开；显式非 off 取值 = 开）。
 pub fn variant_v2_enabled() -> bool {
     variant_v2_enabled_value(std::env::var(VARIANT_V2_SWITCH_ENV).ok().as_deref())
 }
@@ -354,13 +360,12 @@ mod tests {
         }
     }
 
-    /// verify_math 批量核验开关（u05）：未设 = 关（**开发期缺省 off**——
-    /// 正优化协议：未经验证不缺省启用，A/B 达标后收尾提交统一翻 on）；
-    /// 显式 on = 批量面在位；off 系 = 关（工具面/R14 条款逐字节回退基线的
-    /// 对照臂）。纯函数面测试（不触进程 env）。
+    /// verify_math 批量核验开关（u05）：未设 = 开（**缺省 on（2026-11-07
+    /// 真机 A/B 达标）**）；显式 on = 批量面在位；off 系 = 关（工具面/R14
+    /// 条款逐字节回退基线的对照臂）。纯函数面测试（不触进程 env）。
     #[test]
     fn verify_batch_switch_defaults_on_and_off_disables() {
-        assert!(verify_batch_enabled_value(None), "未设 = 基线单 claim 形状（开发期缺省 off）");
+        assert!(verify_batch_enabled_value(None), "未设 = 批量面——缺省 on（2026-11-07 真机 A/B 达标）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!verify_batch_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -384,15 +389,15 @@ mod tests {
     }
 
     // ── 收拢面（u 系五开关 + EST_BUDGET）：三件套的纯函数取值判定统一住
-    // 本文件；缺省臂断言与收尾口径一致（本波开发期缺省一律 off——正优化
-    // 协议：未经验证不缺省启用，A/B 达标后收尾提交统一翻 on）。
+    // 本文件；缺省臂断言与收尾口径一致（收尾提交已统一翻 on——缺省
+    // on（2026-11-07 真机 A/B 达标））。
     // 纯函数面（不触进程 env）。
 
-    /// 点修回填开关（u01）：未设 = 关（开发期缺省 off）；显式 on = 开；
-    /// off 系 = 关。
+    /// 点修回填开关（u01）：未设 = 开（缺省 on（2026-11-07 真机 A/B 达
+    /// 标））；显式 on = 开；off 系 = 关。
     #[test]
     fn redraft_splice_switch_defaults_on_and_off_disables() {
-        assert!(redraft_splice_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+        assert!(redraft_splice_enabled_value(None), "未设 = 回填臂——缺省 on（2026-11-07 真机 A/B 达标）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!redraft_splice_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -401,11 +406,11 @@ mod tests {
         }
     }
 
-    /// 评审输入补全开关（u03）：未设 = 关（开发期缺省 off）；显式 on = 开；
-    /// off 系 = 关。
+    /// 评审输入补全开关（u03）：未设 = 开（缺省 on（2026-11-07 真机 A/B
+    /// 达标））；显式 on = 开；off 系 = 关。
     #[test]
     fn review_context_v2_switch_defaults_on_and_off_disables() {
-        assert!(review_context_v2_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+        assert!(review_context_v2_enabled_value(None), "未设 = 补全臂——缺省 on（2026-11-07 真机 A/B 达标）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!review_context_v2_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -414,11 +419,11 @@ mod tests {
         }
     }
 
-    /// 反循环臂开关（u04）：未设 = 关（开发期缺省 off）；显式 on = 开；
-    /// off 系 = 关。
+    /// 反循环臂开关（u04）：未设 = 开（缺省 on（2026-11-07 真机 A/B 达
+    /// 标））；显式 on = 开；off 系 = 关。
     #[test]
     fn anti_loop_switch_defaults_on_and_off_disables() {
-        assert!(anti_loop_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+        assert!(anti_loop_enabled_value(None), "未设 = 反循环臂——缺省 on（2026-11-07 真机 A/B 达标）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!anti_loop_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -439,11 +444,11 @@ mod tests {
         }
     }
 
-    /// 档位优先序开关（u07）：未设 = 关（开发期缺省 off）；显式 on = 开；
-    /// off 系 = 关。
+    /// 档位优先序开关（u07）：未设 = 开（缺省 on（2026-11-07 真机 A/B 达
+    /// 标））；显式 on = 开；off 系 = 关。
     #[test]
     fn tier_priority_switch_defaults_on_and_off_disables() {
-        assert!(tier_priority_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+        assert!(tier_priority_enabled_value(None), "未设 = 条款在位——缺省 on（2026-11-07 真机 A/B 达标）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!tier_priority_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
@@ -452,11 +457,11 @@ mod tests {
         }
     }
 
-    /// 变式链 V2 开关（u10）：未设 = 关（开发期缺省 off）；显式 on = 开；
-    /// off 系 = 关。
+    /// 变式链 V2 开关（u10）：未设 = 开（缺省 on（2026-11-07 真机 A/B 达
+    /// 标））；显式 on = 开；off 系 = 关。
     #[test]
     fn variant_v2_switch_defaults_on_and_off_disables() {
-        assert!(variant_v2_enabled_value(None), "未设 = 基线（开发期缺省 off）");
+        assert!(variant_v2_enabled_value(None), "未设 = 变式 V2——缺省 on（2026-11-07 真机 A/B 达标）");
         for value in ["off", "OFF", "0", "false", " False ", " off "] {
             assert!(!variant_v2_enabled_value(Some(value)), "{value:?} = 基线对照臂");
         }
