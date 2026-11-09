@@ -11,10 +11,10 @@ import { RouteMap } from './RouteMap';
 const { Text } = Typography;
 
 const TABS = [
-  ['mindmap', 'learningGraphStructMindmap'],
-  ['net', 'learningGraphStructNet'],
-  ['route', 'learningGraphStructRoute'],
-  ['matrix', 'learningGraphStructMatrix'],
+  ['mindmap', 'learning.learningGraphStructMindmap'],
+  ['net', 'learning.learningGraphStructNet'],
+  ['route', 'learning.learningGraphStructRoute'],
+  ['matrix', 'learning.learningGraphStructMatrix'],
 ] as const;
 
 type TabKey = (typeof TABS)[number][0];
@@ -58,7 +58,7 @@ export function StructureGraphTab({
     return (
       <Empty
         description={
-          view ? t('learningGraphStructureMissing') : t('learningGraphStructureGenerating')
+          view ? t('learning.learningGraphStructureMissing') : t('learning.learningGraphStructureGenerating')
         }
       />
     );
@@ -89,10 +89,10 @@ export function StructureGraphTab({
         <div className='flex flex-col gap-6px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-10px'>
           <div className='flex flex-wrap items-center gap-8px'>
             <Text bold className='text-13px'>
-              {t('learningGraphMountTitle')}
+              {t('learning.learningGraphMountTitle')}
             </Text>
             <Tag size='small' color='arcoblue' className='!mx-0'>
-              {t('learningGraphMountCounts', {
+              {t('learning.learningGraphMountCounts', {
                 mounted_count: mounts.mounted_count,
                 outside_count: mounts.outside_count,
                 not_evaluated_count: mounts.not_evaluated_count,
@@ -100,31 +100,31 @@ export function StructureGraphTab({
             </Tag>
             {mounts.stale && (
               <Tag size='small' color='orangered' className='!mx-0'>
-                {t('learningGraphMountStale')}
+                {t('learning.learningGraphMountStale')}
               </Tag>
             )}
             <span className='flex-1' />
             {onMount && (
               <Button size='mini' loading={mounting} onClick={onMount}>
-                {t('learningGraphMountRun')}
+                {t('learning.learningGraphMountRun')}
               </Button>
             )}
             {onRepair && (
               <Button size='mini' loading={repairing} onClick={onRepair}>
-                {t('learningGraphRepairRun')}
+                {t('learning.learningGraphRepairRun')}
               </Button>
             )}
           </div>
           {mounts.stale && (
             <Text type='warning' className='text-11px leading-16px'>
-              {t('learningGraphRepairStaleBanner')}
+              {t('learning.learningGraphRepairStaleBanner')}
             </Text>
           )}
           {mounts.index.length > 0 && (
             <div className='flex flex-col gap-2px'>
               {mounts.index.map((entry) => (
                 <Text key={entry.block} type='secondary' className='text-11px leading-16px'>
-                  {t('learningGraphMountIndexEntry', {
+                  {t('learning.learningGraphMountIndexEntry', {
                     block: entry.block_name ?? entry.block,
                     count: entry.nodes.length,
                     nodes: entry.nodes.join('、'),
@@ -139,10 +139,10 @@ export function StructureGraphTab({
                 <Tag key={index} size='small' color='gray' className='!mx-0'>
                   {t(
                     observation.kind === 'outside-node'
-                      ? 'learningGraphMountObsOutside'
+                      ? 'learning.learningGraphMountObsOutside'
                       : observation.kind === 'empty-block'
-                        ? 'learningGraphMountObsEmpty'
-                        : 'learningGraphMountObsOverloaded',
+                        ? 'learning.learningGraphMountObsEmpty'
+                        : 'learning.learningGraphMountObsOverloaded',
                     { detail: observation.detail }
                   )}
                 </Tag>
@@ -170,7 +170,7 @@ export function StructureGraphTab({
       {tab === 'matrix' && <MatrixView structure={structure} />}
 
       <Text type='secondary' className='text-11px leading-16px'>
-        {t('learningGraphStructFooter')}
+        {t('learning.learningGraphStructFooter')}
       </Text>
     </div>
   );

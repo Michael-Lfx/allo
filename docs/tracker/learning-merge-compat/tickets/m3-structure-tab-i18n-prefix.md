@@ -2,7 +2,7 @@
 id: m3
 title: "结构 tab 43 处 t() 补 learning. 前缀——裸 key 不再露出"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -52,3 +52,16 @@ part_of: ../map.md
 - i18n 词典内容改动（key 双语已齐全，零翻译）。
 - 防复发扫描闸（后置清单：check:i18n 扫调用点会对动态键误报，需独立小票）。
 - 结构 tab 其它 UX 项（空态语义、失败态文案语义在后置清单）。
+
+## Resolution（2026-11-09 施工收口）
+
+**代码面验收全过，已闭票；双主题目验留待下次真机批次。** 施工 = `5e787091f`。
+
+- 六文件 51 行改动 = 43 处单行调用 + 8 处同缺陷变体（票面证据明确列出的动态
+  键 / TABS 数组 / 三元形态，单行 grep 盖不到但同属「裸 key 不再露出」票面
+  目标）；动态键模板 `learning.learningGraphTier_${tier}` 带前缀，对齐
+  LearningGraphWorkspace.tsx:1012 先例。
+- 验证：全仓 `t('learning[A-Z]` 归零（含反引/双引号变体与 GateCoverage 扩散
+  检查均零命中）；`gen:i18n` + `check:i18n` 过（11582 keys，词典零改动）；
+  typecheck 54 错 = 父分支存量债，stash 对照基线逐条持平零新增零涉及 learning。
+- 防复发扫描闸仍为票面非目标（map 后置清单）。

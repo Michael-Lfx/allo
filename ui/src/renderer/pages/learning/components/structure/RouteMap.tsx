@@ -98,16 +98,16 @@ export function RouteMap({ structure }: { structure: StructureView }) {
   return (
     <div className='flex flex-col gap-8px'>
       <div className='flex flex-wrap items-center gap-8px text-12px'>
-        <span className='text-t-secondary'>{t('learningGraphStructRoute')}:</span>
+        <span className='text-t-secondary'>{t('learning.learningGraphStructRoute')}:</span>
         <select
           value={spine}
           onChange={(event) => setSpine(event.target.value)}
           className='rounded-4px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-8px py-2px text-12px text-[var(--color-text-1)]'
         >
-          <option value='__all__'>{t('learningGraphStructRouteAll')}</option>
+          <option value='__all__'>{t('learning.learningGraphStructRouteAll')}</option>
           {structure.spines.map((item) => (
             <option key={item.name} value={item.name}>
-              {t('learningGraphStructRouteSpine', {
+              {t('learning.learningGraphStructRouteSpine', {
                 name: item.name,
                 count: spineBlockCount(item.name),
               })}
@@ -115,12 +115,12 @@ export function RouteMap({ structure }: { structure: StructureView }) {
           ))}
         </select>
         <span className='text-11px text-t-tertiary'>
-          {t('learningGraphStructRouteCounts', {
+          {t('learning.learningGraphStructRouteCounts', {
             blocks: nodes.length,
             edges: edges.length,
           })}
           {extraPrereqs.size > 0 && (
-            <> · {t('learningGraphStructRouteExtra', { extra: extraPrereqs.size })}</>
+            <> · {t('learning.learningGraphStructRouteExtra', { extra: extraPrereqs.size })}</>
           )}
         </span>
       </div>
@@ -192,7 +192,7 @@ export function RouteMap({ structure }: { structure: StructureView }) {
                       className='mr-4px rounded-3px px-3px text-8px'
                       style={{ background: 'var(--color-primary-1)', color: EDGE_COLORS.assumes }}
                     >
-                      {t('learningGraphStructPrereqTag')}
+                      {t('learning.learningGraphStructPrereqTag')}
                     </span>
                   )}
                   {node.name}
