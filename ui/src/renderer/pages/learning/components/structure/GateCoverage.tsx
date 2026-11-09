@@ -1,5 +1,5 @@
-import { Button, Modal, Tag, Typography } from '@arco-design/web-react';
-import { useMemo, useState } from 'react';
+import { Alert, Button, Modal, Tag, Typography } from '@arco-design/web-react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BasisView, StructureView, TerrainView } from '../../types';
 
@@ -12,11 +12,18 @@ const { Text } = Typography;
  * 投影（terrain.doors + blocks[].door_refs + GET basis 读数），前端不做第二
  * 份真相。撤销 = 删锚行收缩本课已知投影；铸出的概念留池（声明可撤、概念
  * 不灭）。课程内铁律照旧：不渲染概念节点、不跨课解析。
+ *
+ * 声明只进行一次（c1）：读侧已有锚行（`basis.declarations > 0`）即整卡冻结
+ * 为纯展示——全部门口渲染为 disabled checkbox，勾选态 = 是否已声明，持久化
+ * 结果以「勾选还在」呈现。草稿勾选是受控 props（由工作区持有，学习 Tab 与
+ * 结构图 Tab 两个挂载点共享），声明成功后由工作区清空。
  */
 export function GateCoverage({
   structure,
   terrain,
   basis,
+  checked = [],
+  onCheckedChange,
   declaring = false,
   revoking = false,
   onDeclare,
@@ -25,13 +32,14 @@ export function GateCoverage({
   structure: StructureView;
   terrain: TerrainView;
   basis: BasisView | null;
+  checked?: string[];
+  onCheckedChange?: (doors: string[]) => void;
   declaring?: boolean;
   revoking?: boolean;
   onDeclare?: (doors: string[]) => void;
   onRevoke?: () => void;
 }) {
   const { t } = useTranslation();
-  const [checked, setChecked] = useState<string[]>([]);
   const blocksByDoor = useMemo(() => {
     const byDoor = new Map<string, string[]>();
     for (const block of structure.blocks) {
@@ -45,10 +53,8 @@ export function GateCoverage({
   }, [structure.blocks]);
 
   const declaredDoors = useMemo(() => new Set(basis?.doors ?? []), [basis]);
-  const selectableDoors = useMemo(
-    () => terrain.doors.filter((door) => !declaredDoors.has(door.id)),
-    [terrain.doors, declaredDoors]
-  );
+  const frozen = basis !== null && basis.declarations > 0;
+  const interactive = !frozen && onDeclare !== undefined && onCheckedChange !== undefined;
   const pendingSelection = checked.filter((door) => !declaredDoors.has(door));
 
   const confirmDeclare = () => {
@@ -61,10 +67,7 @@ export function GateCoverage({
       }),
       okText: t('learning.learningGraphBasisConfirmOk'),
       cancelText: t('learning.learningGraphBasisCancel'),
-      onOk: () => {
-        onDeclare(pendingSelection);
-        setChecked([]);
-      },
+      onOk: () => onDeclare(pendingSelection),
     });
   };
 
@@ -97,29 +100,46 @@ export function GateCoverage({
           {t('learning.learningGraphGateHint')}
         </Text>
       </div>
+      {/* 声明的动机（未声明时）/ 一次性冻结说明（已声明后）：用户需要先知道
+          声明换来什么、而且只能做一次，再决定勾不勾。 */}
+      {interactive && <Alert type='info' content={t('learning.learningGraphBasisWhyDeclare')} />}
+      {frozen && (
+        <Text type='secondary' className='text-12px leading-18px'>
+          {t('learning.learningGraphBasisFrozenHint')}
+        </Text>
+      )}
       <div className='flex flex-col gap-4px'>
         {terrain.doors.map((door) => {
           const blocks = blocksByDoor.get(door.id) ?? [];
           const declared = declaredDoors.has(door.id);
-          const isSelectable = selectableDoors.some((candidate) => candidate.id === door.id);
+          const doorAria = `${t('learning.learningGraphBasisDoorAria')}: ${door.id}`;
           return (
             <div
               key={door.id}
               className='flex flex-wrap items-center gap-6px text-11px'
             >
-              {isSelectable && onDeclare ? (
+              {interactive ? (
                 <input
                   type='checkbox'
                   className='shrink-0 cursor-pointer'
-                  aria-label={`${t('learning.learningGraphBasisDoorAria')}: ${door.id}`}
+                  aria-label={doorAria}
                   checked={checked.includes(door.id)}
                   onChange={(event) =>
-                    setChecked((previous) =>
+                    onCheckedChange(
                       event.target.checked
-                        ? [...previous, door.id]
-                        : previous.filter((candidate) => candidate !== door.id)
+                        ? [...checked, door.id]
+                        : checked.filter((candidate) => candidate !== door.id)
                     )
                   }
+                />
+              ) : frozen ? (
+                <input
+                  type='checkbox'
+                  className='shrink-0'
+                  aria-label={doorAria}
+                  checked={declared}
+                  disabled
+                  readOnly
                 />
               ) : null}
               <Tag size='small' color={door.kind === 'hard' ? 'orangered' : 'green'} className='!mx-0'>
@@ -130,10 +150,16 @@ export function GateCoverage({
                   ? t('learning.learningGraphGateKindHard')
                   : t('learning.learningGraphGateKindSelfCheck')}
               </Tag>
-              {declared && (
+              {declared ? (
                 <Tag size='small' color='green' className='!mx-0'>
                   {t('learning.learningGraphBasisDeclaredTag')}
                 </Tag>
+              ) : (
+                frozen && (
+                  <Tag size='small' color='gray' className='!mx-0'>
+                    {t('learning.learningGraphBasisNotDeclaredTag')}
+                  </Tag>
+                )
               )}
               <span className='text-[var(--color-text-2)]'>{door.criterion}</span>
               <span className='flex-1' />
@@ -164,20 +190,23 @@ export function GateCoverage({
             </Tag>
           )}
           <span className='flex-1' />
-          {basis !== null && basis.declarations > 0 && onRevoke && (
+          {frozen && onRevoke && (
             <Button size='mini' status='warning' loading={revoking} onClick={confirmRevoke}>
               {t('learning.learningGraphBasisRevoke')}
             </Button>
           )}
-          <Button
-            type='primary'
-            size='mini'
-            disabled={pendingSelection.length === 0 || (basis !== null && !basis.enabled)}
-            loading={declaring}
-            onClick={confirmDeclare}
-          >
-            {t('learning.learningGraphBasisDeclareButton', { count: pendingSelection.length })}
-          </Button>
+          {!frozen && (
+            <Button
+              type='primary'
+              // 读数缺席（basis 拉取失败）时无法确认是否已声明过——不放行，
+              // 免得绕过「只声明一次」。
+              disabled={pendingSelection.length === 0 || basis === null || !basis.enabled}
+              loading={declaring}
+              onClick={confirmDeclare}
+            >
+              {t('learning.learningGraphBasisDeclareButton', { count: pendingSelection.length })}
+            </Button>
+          )}
         </div>
       )}
       {basis !== null && basis.doors.length > 0 && (

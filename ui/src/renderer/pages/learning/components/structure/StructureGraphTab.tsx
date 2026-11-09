@@ -35,6 +35,8 @@ export function StructureGraphTab({
   mounting,
   onRepair,
   repairing,
+  basisChecked,
+  onBasisCheckedChange,
   onDeclareBasis,
   declaringBasis,
   onRevokeBasis,
@@ -46,6 +48,8 @@ export function StructureGraphTab({
   mounting?: boolean;
   onRepair?: () => void;
   repairing?: boolean;
+  basisChecked?: string[];
+  onBasisCheckedChange?: (doors: string[]) => void;
   onDeclareBasis?: (doors: string[]) => void;
   declaringBasis?: boolean;
   onRevokeBasis?: () => void;
@@ -157,6 +161,8 @@ export function StructureGraphTab({
           structure={structure}
           terrain={view.terrain}
           basis={basis ?? null}
+          checked={basisChecked}
+          onCheckedChange={onBasisCheckedChange}
           declaring={declaringBasis}
           revoking={revokingBasis}
           onDeclare={onDeclareBasis}

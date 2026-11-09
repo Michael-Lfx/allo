@@ -477,6 +477,8 @@ const LearningGraphWorkspace: React.FC<{
               basis={basis}
               declaring={declaringBasis}
               revoking={revokingBasis}
+              basisChecked={basisDraftChecked}
+              onBasisCheckedChange={setBasisDraftChecked}
               onDeclare={(doors) => void declareBasis(doors)}
               onRevoke={() => void revokeBasis()}
               starting={growing}
@@ -620,6 +622,8 @@ const LearningGraphWorkspace: React.FC<{
             mounting={mounting}
             onRepair={() => void repairStructure()}
             repairing={repairing}
+            basisChecked={basisDraftChecked}
+            onBasisCheckedChange={setBasisDraftChecked}
             onDeclareBasis={(doors) => void declareBasis(doors)}
             declaringBasis={declaringBasis}
             onRevokeBasis={() => void revokeBasis()}
