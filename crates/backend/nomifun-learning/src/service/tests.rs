@@ -2571,6 +2571,101 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    /// 按标题删课的同款红绿样（m2 订正，同
+    /// [`course_delete_sweeps_question_tags_of_purged_activities`]）：教程种子
+    /// 替换旧预设课走的是 `delete_courses_by_title`，question_tags 的删除语句
+    /// 同样必须排在 activities 删除之前——排在之后则子查询查的是已清空的
+    /// learning_activities，恒空 = 标签永不生效，题库留下该课活动的幽灵
+    /// 标签行。
+    #[tokio::test]
+    async fn course_delete_by_title_sweeps_question_tags_of_purged_activities() {
+        let (service, _knowledge, _owner_id) = job_test_service().await;
+        let pool = service.pool_for_tests();
+        let pack = CoursePack {
+            title: "标签课替换".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![ActivityPack {
+                        difficulty: None,
+                        kind: ActivityKind::SingleChoice,
+                        prompt: "Pick the size of a vector.".into(),
+                        options: vec!["magnitude".into(), "speed".into()],
+                        answer: json!("magnitude"),
+                        explanation: String::new(),
+                        distractors: Vec::new(),
+                        tol: None,
+                        section_key: None,
+                        evidence: None,
+                    }],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        let activity_id: String = sqlx::query_scalar(
+            "SELECT a.activity_id FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ?",
+        )
+        .bind(course.course.id.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let tag_id = nomifun_common::LearningTagId::new();
+        sqlx::query("INSERT INTO learning_tags (tag_id, name, created_at) VALUES (?, '标签', ?)")
+            .bind(tag_id.as_str())
+            .bind(now_ms())
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_question_tags (question_id, source, tag_id) \
+             VALUES (?, 'course', ?)",
+        )
+        .bind(&activity_id)
+        .bind(tag_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        service.delete_courses_by_title("标签课替换").await.unwrap();
+        // 按标题删课是物理删除（教程种子替换语义）：课程行应已不在。
+        let courses: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses WHERE title = '标签课替换'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(courses, 0, "by-title delete must remove the course rows");
+        let residue: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_question_tags \
+             WHERE question_id = ? AND source = 'course'",
+        )
+        .bind(&activity_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            residue, 0,
+            "by-title delete must not leave ghost question tags behind purged activities"
+        );
+    }
+
     /// 安排面收窄（三轮 g3「现存且启用」）：归档课的卡离开到期队列、恢复后
     /// 回来；队列收窄不拦已出卡的作答提交（历史面如实落账）；概况读数随
     /// enabled 与 due_today 反映。
