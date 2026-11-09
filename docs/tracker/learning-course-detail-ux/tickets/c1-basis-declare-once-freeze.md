@@ -2,8 +2,8 @@
 id: c1
 title: "已会声明一次性冻结 + 勾选状态持久呈现（disabled checkbox 冻结态 + 草稿勾选上提共享）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -66,3 +66,22 @@ state 上提到 LearningGraphWorkspace，经 props 下传两个挂载点（Decla
 
 - 声明反馈通道与 WS 收敛（c2）；撤销声明删除（c3）；后端任何改动。
 - 冻结后的补声明/再声明能力（用户裁决 5：一次后纯展示）。
+
+## Resolution（2026-11-09 施工收口）
+
+**全验收过，闭票。** 施工 = `3d3a5f585`（feat(learning): one-shot gate
+declaration freeze）。
+
+- **冻结态 = disabled checkbox 勾选态持久呈现**：`basis.declarations > 0` 即
+  frozen（与 `enabled` 无关），全门渲染 disabled checkbox（checked = 已声明）
+  + 绿「已会声明」/ 灰「未声明」tag；`unresolved` 与通道关闭提示保留。读数
+  缺席（basis 拉取失败）时声明按钮不放行——不能绕过「只声明一次」。
+- **草稿勾选上提**：`basisDraftChecked` 工作区单持，DeclarationWindow /
+  StructureGraphTab 两挂载点经 props 共享；清空时机移到 `declareBasis` API
+  成功后（原来在确认弹窗 onOk 立即清，失败也丢）。
+- **显著性与动机**：声明按钮 mini→默认尺寸；卡片内加 info Alert
+  「为什么要声明」（未声明时）/「一次性冻结说明」（冻结后）；确认弹窗补
+  「声明只能进行一次，确认后不可修改」。新 i18n keys ×3 双侧对称。
+- **测试面**：typecheck 55 错全为存量债（videoCanvas 48 等，learning/i18n 零
+  错）；`check:i18n` 绿。真机手验留波次汇总门统一走查（声明→冻结→切 Tab
+  勾选保持）。
