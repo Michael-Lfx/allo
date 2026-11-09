@@ -22,8 +22,10 @@ export type HomeStageOption = {
   preview?: React.ReactNode;
   /** Low-contrast project-tree outline for "open existing project". */
   tree?: boolean;
-  /** Small technical note under the copy (e.g. index.html). */
-  meta?: string;
   /** Larger primary tile in a mixed directory (build's website item). */
   emphasis?: boolean;
+  /** Selected example in a multi-step picker. */
+  selected?: boolean;
+  /** Prompt key for the example; keeps labels/cover/prompt in one definition. */
+  promptKey?: string;
 };

@@ -34,6 +34,7 @@ import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
 import ShowcaseCards from './components/ShowcaseCards';
 import HomeInputDrawer from './components/HomeInputDrawer';
+import BuildAmbientWall, { type BuildAmbientVariant } from './components/BuildAmbientWall';
 import HomeVideoComposer from './components/HomeVideoComposer';
 import buildWebsiteMain from './components/assets/build/website-main.jpg';
 import buildWebsiteExhibition1 from './components/assets/build/website-exhibition-1.jpg';
@@ -213,14 +214,18 @@ const HOME_BUILD_COPY = {
     secondLabel: 'guid.home.buildPrompts.website.secondLabel',
     first: 'guid.home.buildPrompts.website.first',
     second: 'guid.home.buildPrompts.website.second',
+    thirdLabel: 'guid.home.buildPrompts.website.thirdLabel',
+    third: 'guid.home.buildPrompts.website.third',
   },
   app: {
     title: 'guid.home.buildChoices.app.title',
     description: 'guid.home.buildChoices.app.description',
-    firstLabel: 'guid.home.buildPrompts.app.firstLabel',
-    secondLabel: 'guid.home.buildPrompts.app.secondLabel',
-    first: 'guid.home.buildPrompts.app.first',
-    second: 'guid.home.buildPrompts.app.second',
+    firstLabel: 'guid.home.buildPrompts.app.secondLabel',
+    secondLabel: 'guid.home.buildPrompts.app.firstLabel',
+    first: 'guid.home.buildPrompts.app.second',
+    second: 'guid.home.buildPrompts.app.first',
+    thirdLabel: 'guid.home.buildPrompts.app.thirdLabel',
+    third: 'guid.home.buildPrompts.app.third',
   },
   game: {
     title: 'guid.home.buildChoices.game.title',
@@ -229,41 +234,44 @@ const HOME_BUILD_COPY = {
     secondLabel: 'guid.home.buildPrompts.game.secondLabel',
     first: 'guid.home.buildPrompts.game.first',
     second: 'guid.home.buildPrompts.game.second',
+    thirdLabel: 'guid.home.buildPrompts.game.thirdLabel',
+    third: 'guid.home.buildPrompts.game.third',
   },
 } as const;
 
-const HOME_BUILD_STAGE_COPY = {
-  website: {
-    headline: 'guid.home.buildPrep.websiteHeadline',
-    subtitle: 'guid.home.buildPrep.websiteSubtitle',
-  },
-  app: {
-    headline: 'guid.home.buildPrep.appHeadline',
-    subtitle: 'guid.home.buildPrep.appSubtitle',
-  },
-  game: {
-    headline: 'guid.home.buildPrep.gameHeadline',
-    subtitle: 'guid.home.buildPrep.gameSubtitle',
-  },
-} as const;
+const BUILD_DRAWER_COLLAPSE_MS = 340;
+const BUILD_DRAWER_EXPAND_MS = 420;
 
-const HOME_BUILD_MEDIA: Record<HomeBuildKind, { cover: string; hero: string; cards: [string, string] }> = {
-  website: {
-    cover: buildWebsiteMain,
-    hero: buildWebsiteExhibition2,
-    cards: [buildWebsiteMain, buildWebsiteExhibition1],
-  },
-  app: {
-    cover: buildAppMain,
-    hero: buildAppHabits,
-    cards: [buildAppMain, buildAppSpending],
-  },
-  game: {
-    cover: buildGameMain,
-    hero: buildGameNeon,
-    cards: [buildGameMain, buildGameSokoban],
-  },
+type BuildDrawerMotion = 'idle' | 'closing' | 'opening';
+
+type HomeBuildExample = {
+  labelKey: string;
+  promptKey: string;
+  cover: string;
 };
+
+const HOME_BUILD_EXAMPLES: Record<
+  HomeBuildKind,
+  readonly [HomeBuildExample, HomeBuildExample, HomeBuildExample]
+> = {
+  website: [
+    { labelKey: 'guid.home.buildPrompts.website.firstLabel', promptKey: 'guid.home.buildPrompts.website.first', cover: buildWebsiteMain },
+    { labelKey: 'guid.home.buildPrompts.website.secondLabel', promptKey: 'guid.home.buildPrompts.website.second', cover: buildWebsiteExhibition1 },
+    { labelKey: 'guid.home.buildPrompts.website.thirdLabel', promptKey: 'guid.home.buildPrompts.website.third', cover: buildWebsiteExhibition2 },
+  ],
+  app: [
+    { labelKey: 'guid.home.buildPrompts.app.secondLabel', promptKey: 'guid.home.buildPrompts.app.second', cover: buildAppSpending },
+    { labelKey: 'guid.home.buildPrompts.app.firstLabel', promptKey: 'guid.home.buildPrompts.app.first', cover: buildAppMain },
+    { labelKey: 'guid.home.buildPrompts.app.thirdLabel', promptKey: 'guid.home.buildPrompts.app.third', cover: buildAppHabits },
+  ],
+  game: [
+    { labelKey: 'guid.home.buildPrompts.game.firstLabel', promptKey: 'guid.home.buildPrompts.game.first', cover: buildGameMain },
+    { labelKey: 'guid.home.buildPrompts.game.secondLabel', promptKey: 'guid.home.buildPrompts.game.second', cover: buildGameSokoban },
+    { labelKey: 'guid.home.buildPrompts.game.thirdLabel', promptKey: 'guid.home.buildPrompts.game.third', cover: buildGameNeon },
+  ],
+};
+
+const HOME_BUILD_EXAMPLE_SLOTS = ['first', 'second', 'third'] as const;
 
 const homeBuildKindOfOption = (key: string): HomeBuildKind | null => {
   if (key === 'develop-website') return 'website';
@@ -337,8 +345,9 @@ const GuidPage: React.FC = () => {
     [handleChatPopupVisibleChange]
   );
   // Home stage state machine: `home` shows the two entries + membership card;
-  // a directory replaces them; a capability view shows that ability's prep area.
-  const [homeView, setHomeView] = useState<'home' | 'develop-directory' | 'create-directory' | 'capability'>('home');
+  // a directory replaces them; build-examples is a drawer layer, not a
+  // capability prep page.
+  const [homeView, setHomeView] = useState<'home' | 'develop-directory' | 'build-examples' | 'create-directory' | 'capability'>('home');
   // Mirrors data-home-compact so React children (action row) can compact too.
   const [homeCompact, setHomeCompact] = useState(false);
   const [homeCapability, setHomeCapability] = useState<HomeCapability>('office');
@@ -356,6 +365,11 @@ const GuidPage: React.FC = () => {
   });
   // Build directory category; drives the prepared prompts and the preview copy.
   const [homeBuildKind, setHomeBuildKind] = useState<HomeBuildKind | null>(null);
+  const [selectedBuildExample, setSelectedBuildExample] = useState<string | null>(null);
+  const [buildDrawerMotion, setBuildDrawerMotion] = useState<BuildDrawerMotion>('idle');
+  const [buildTransitionDirection, setBuildTransitionDirection] = useState<'forward' | 'back' | 'home' | null>(null);
+  const [buildDirectoryMotion, setBuildDirectoryMotion] = useState<'enter' | 'expand' | 'exit' | 'idle'>('enter');
+  const [pendingBuildKind, setPendingBuildKind] = useState<HomeBuildKind | null>(null);
   // Video capability: local homepage draft parameters. Nothing is uploaded or
   // created until the user presses send. The prompt, model and explicit
   // references live with this draft and survive capability switches.
@@ -685,17 +699,31 @@ const GuidPage: React.FC = () => {
     ],
   );
   const openHomeDirectory = useCallback((group: 'develop' | 'create') => {
+    setBuildDrawerMotion('idle');
+    setBuildTransitionDirection(null);
+    setBuildDirectoryMotion('enter');
+    setPendingBuildKind(null);
     setHomeView(group === 'develop' ? 'develop-directory' : 'create-directory');
   }, []);
   const closeHomePanel = useCallback(() => {
+    if (
+      homeView === 'develop-directory' &&
+      buildDrawerMotion === 'idle' &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      setBuildDirectoryMotion('exit');
+      setBuildTransitionDirection('home');
+      setBuildDrawerMotion('closing');
+      return;
+    }
+    setBuildDrawerMotion('idle');
+    setBuildTransitionDirection(null);
+    setBuildDirectoryMotion('idle');
+    setPendingBuildKind(null);
     setHomeView('home');
+    if (homeCapability !== 'office') switchHomeCapability('office');
     focusHomeComposer();
-  }, [focusHomeComposer]);
-  const backToBuildDirectory = useCallback(() => {
-    setHomeView('develop-directory');
-    setPendingExample(null);
-    focusHomeComposer();
-  }, [focusHomeComposer]);
+  }, [buildDrawerMotion, focusHomeComposer, homeCapability, homeView, switchHomeCapability]);
   /** A capability draft counts as occupied when it has text, attachments or an imported template. */
   const capabilityHasDraft = useCallback(
     (capability: HomeCapability) => {
@@ -745,29 +773,56 @@ const GuidPage: React.FC = () => {
     [applyHomeExample, capabilityHasDraft],
   );
   const applyBuildPrompt = useCallback(
-    (kind: HomeBuildKind, slot: 'first' | 'second') => {
+    (kind: HomeBuildKind, promptKey: string) => {
+      // Build examples are exploratory: overwrite the current build draft
+      // immediately and keep the picker open so another example can be tried.
       setHomeBuildKind(kind);
       switchHomeCapability('develop');
-      guidInput.setInput(t(HOME_BUILD_COPY[kind][slot]));
-      setHomeView('capability');
+      guidInput.setInput(t(promptKey));
       setPendingExample(null);
       window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
     },
     [guidInput.setInput, switchHomeCapability, t],
   );
-  const requestBuildPrompt = useCallback(
-    (kind: HomeBuildKind, slot: 'first' | 'second') => {
-      if (capabilityHasDraft('develop')) {
-        setPendingExample({
-          title: t('guid.home.buildPrep.replaceTitle', { category: t(HOME_BUILD_COPY[kind].title) }),
-          run: () => applyBuildPrompt(kind, slot),
-        });
-        return;
-      }
-      applyBuildPrompt(kind, slot);
+  const selectBuildExample = useCallback(
+    (option: HomeStageOption) => {
+      const kind = homeBuildKind ?? 'website';
+      const promptKey = option.promptKey;
+      if (!promptKey) return;
+      setSelectedBuildExample(option.key);
+      applyBuildPrompt(kind, promptKey);
     },
-    [applyBuildPrompt, capabilityHasDraft, t],
+    [applyBuildPrompt, homeBuildKind],
   );
+  const showBuildDirectory = useCallback((animated: boolean) => {
+    setBuildDirectoryMotion(animated ? 'expand' : 'idle');
+    setBuildDrawerMotion(animated ? 'opening' : 'idle');
+    setBuildTransitionDirection(null);
+    setPendingBuildKind(null);
+    setHomeView('develop-directory');
+    setSelectedBuildExample(null);
+    setPendingExample(null);
+  }, []);
+  const backFromBuildExamples = useCallback(() => {
+    // Let X interrupt the opening animation instead of ignoring the click.
+    if (buildDrawerMotion === 'opening') {
+      setBuildTransitionDirection('back');
+      setBuildDirectoryMotion('expand');
+      setHomeView('develop-directory');
+      setSelectedBuildExample(null);
+      setPendingExample(null);
+      setPendingBuildKind(null);
+      return;
+    }
+    if (buildDrawerMotion !== 'idle') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      showBuildDirectory(false);
+      return;
+    }
+    setPendingBuildKind(null);
+    setBuildTransitionDirection('back');
+    setBuildDrawerMotion('closing');
+  }, [buildDrawerMotion, showBuildDirectory]);
   const dismissPendingExample = useCallback(() => {
     setPendingExample(null);
     focusHomeComposer();
@@ -1146,12 +1201,27 @@ const GuidPage: React.FC = () => {
         id: 'develop',
         title: t(HOME_BUILD_COPY[kind].title),
         description: t(HOME_BUILD_COPY[kind].description),
-        meta: 'index.html',
-        cover: HOME_BUILD_MEDIA[kind].cover,
+        cover: HOME_BUILD_EXAMPLES[kind][0].cover,
         coverAlt: t(HOME_BUILD_COPY[kind].title),
       })),
     [t],
   );
+  const homeBuildExampleOptions = useMemo<HomeStageOption[]>(() => {
+    const kind: HomeBuildKind = homeBuildKind ?? 'website';
+    return HOME_BUILD_EXAMPLES[kind].map((example, index) => {
+      const slot = HOME_BUILD_EXAMPLE_SLOTS[index];
+      const key = `build-example-${kind}-${slot}`;
+      return {
+        key,
+        id: 'develop',
+        title: t(example.labelKey),
+        cover: example.cover,
+        coverAlt: t(example.labelKey),
+        promptKey: example.promptKey,
+        selected: selectedBuildExample === key,
+      };
+    });
+  }, [homeBuildKind, selectedBuildExample, t]);
   const homeCreateOptions = useMemo<HomeStageOption[]>(
     () => [
       {
@@ -1173,7 +1243,6 @@ const GuidPage: React.FC = () => {
     ],
     [supportsHomeGoalCommand, t],
   );
-  const activeBuildKind: HomeBuildKind = homeBuildKind ?? 'website';
   const composerMode: 'office' | 'coding' | 'slides' =
     homeCapability === 'slides' ? 'slides' : homeCapability === 'develop' ? 'coding' : 'office';
   const composerProfile: 'office' | 'coding' = composerMode === 'coding' ? 'coding' : 'office';
@@ -1254,12 +1323,12 @@ const GuidPage: React.FC = () => {
   // Entering slides restores the slide-card wall independently of whether the
   // template panel is expanded; closing the panel keeps the wall and the mode.
   const slideStudioOpen = supportsHomeGoalCommand && homeCapability === 'slides';
-  // Plain "new task" home stays blank; only the build directory/stage reuse the
-  // slide wall as an ambient layer. Slides owns the wall through slideStudioOpen.
-  const showAmbientWall =
-    !slideStudioOpen &&
-    (homeView === 'develop-directory' ||
-      (homeView === 'capability' && homeCapability === 'develop'));
+  const buildAmbientVariant: BuildAmbientVariant | null =
+    homeView === 'develop-directory'
+      ? 'directory'
+      : homeView === 'build-examples'
+        ? (homeBuildKind ?? 'website')
+        : null;
   // ESC: native selectors, dropdown menus and mention popovers keep priority;
   // then the template panel, then the capability layer, then the directory.
   useEffect(() => {
@@ -1786,6 +1855,18 @@ const GuidPage: React.FC = () => {
     setHomeView('home');
     focusHomeComposer();
   }, [focusHomeComposer, homeCapability, switchHomeCapability]);
+  const showBuildExamples = useCallback(
+    (kind: HomeBuildKind, animated: boolean) => {
+      setHomeBuildKind(kind);
+      setSelectedBuildExample(null);
+      setPendingExample(null);
+      switchHomeCapability('develop');
+      setHomeView('build-examples');
+      setBuildTransitionDirection(null);
+      setBuildDrawerMotion(animated ? 'opening' : 'idle');
+    },
+    [switchHomeCapability],
+  );
   const selectHomeOption = useCallback(
     (option: HomeStageOption) => {
       if (option.id === 'slides' && !supportsHomeGoalCommand) return;
@@ -1796,18 +1877,63 @@ const GuidPage: React.FC = () => {
       }
       const buildKind = homeBuildKindOfOption(option.key);
       if (buildKind) {
-        setHomeBuildKind(buildKind);
-        setPendingExample(null);
-        switchHomeCapability('develop');
-        setHomeView('capability');
-        focusHomeComposer();
+        if (buildDrawerMotion !== 'idle') return;
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          showBuildExamples(buildKind, false);
+        } else {
+          setBuildDirectoryMotion('exit');
+          setBuildTransitionDirection('forward');
+          setPendingBuildKind(buildKind);
+          setBuildDrawerMotion('closing');
+        }
         return;
       }
       switchHomeCapability(option.id);
       setHomeView('capability');
     },
-    [focusHomeComposer, supportsHomeGoalCommand, switchHomeCapability],
+    [buildDrawerMotion, showBuildExamples, supportsHomeGoalCommand, switchHomeCapability],
   );
+  const handleDirectoryMotionEnd = useCallback(() => {
+    if (buildDirectoryMotion === 'exit') {
+      if (buildTransitionDirection === 'forward' && pendingBuildKind) {
+        showBuildExamples(pendingBuildKind, true);
+        setPendingBuildKind(null);
+        return;
+      }
+      if (buildTransitionDirection === 'home') {
+        setBuildDrawerMotion('idle');
+        setBuildTransitionDirection(null);
+        setBuildDirectoryMotion('idle');
+        setPendingBuildKind(null);
+        setHomeView('home');
+        if (homeCapability !== 'office') switchHomeCapability('office');
+        focusHomeComposer();
+      }
+      return;
+    }
+    if (buildDirectoryMotion === 'expand') {
+      setBuildDrawerMotion('idle');
+      setBuildDirectoryMotion('idle');
+    }
+  }, [
+    buildDirectoryMotion,
+    buildTransitionDirection,
+    focusHomeComposer,
+    homeCapability,
+    pendingBuildKind,
+    showBuildExamples,
+    switchHomeCapability,
+  ]);
+  const handleExamplesMotionEnd = useCallback(() => {
+    if (buildTransitionDirection === 'back' && buildDrawerMotion === 'closing') {
+      showBuildDirectory(true);
+      return;
+    }
+    if (buildDrawerMotion === 'opening') {
+      setBuildDrawerMotion('idle');
+      setBuildDirectoryMotion('idle');
+    }
+  }, [buildDrawerMotion, buildTransitionDirection, showBuildDirectory]);
 
   const send = useGuidSend({
     // Input state (slides mode prepends the ppt-master option line here)
@@ -2629,12 +2755,17 @@ const GuidPage: React.FC = () => {
         className={styles.guidContainer}
         data-slide-studio={slideStudioOpen || undefined}
       >
-        {/* Slides studio owns the wall; home/build pages reuse it as an ambient layer. */}
+        {/* Slides owns the slide-card wall. Build has its own lightweight layer. */}
         {slideStudioOpen ? (
           <SlideCardWall />
-        ) : showAmbientWall ? (
-          <div className={styles.ambientWall} data-testid='guid-ambient-wall' aria-hidden='true'>
-            <SlideCardWall />
+        ) : buildAmbientVariant ? (
+          <div
+            className={styles.ambientWall}
+            data-testid='guid-build-ambient'
+            data-ambient-variant={buildAmbientVariant}
+            aria-hidden='true'
+          >
+            <BuildAmbientWall variant={buildAmbientVariant} />
           </div>
         ) : null}
         <div className={styles.guidScrollArea} data-home-layer={homeView}>
@@ -2656,73 +2787,6 @@ const GuidPage: React.FC = () => {
                       onSelectImage={handleSelectShowcaseImage}
                     />
                   </div>
-                </div>
-              ) : null}
-              {homeView === 'capability' && homeCapability === 'develop' ? (
-                <div className={`${styles.homePrepStage} ${styles.buildPrepStage}`}>
-                  <section className={styles.buildStage} data-testid='guid-home-develop-prep'>
-                    <div className={styles.buildStageHead}>
-                      <button
-                        type='button'
-                        className={styles.buildBack}
-                        data-testid='guid-home-build-back'
-                        onClick={backToBuildDirectory}
-                      >
-                        <span aria-hidden='true'>‹</span>
-                        <span>{t('guid.home.buildPrep.back')}</span>
-                      </button>
-                      <div className={styles.buildTabs} role='group' aria-label={t('guid.home.buildDescription')}>
-                        {HOME_BUILD_KINDS.map((kind) => (
-                          <button
-                            key={kind}
-                            type='button'
-                            aria-pressed={activeBuildKind === kind}
-                            data-testid={`guid-home-build-tab-${kind}`}
-                            className={`${styles.buildTab} ${activeBuildKind === kind ? styles.buildTabActive : ''}`}
-                            onClick={() => {
-                              // A pending replacement belongs to the category that
-                              // opened it; never let it confirm against a new tab.
-                              setPendingExample(null);
-                              setHomeBuildKind(kind);
-                            }}
-                          >
-                            {t(HOME_BUILD_COPY[kind].title)}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className={styles.buildHero}>
-                      <img className={styles.buildHeroImage} src={HOME_BUILD_MEDIA[activeBuildKind].hero} alt='' />
-                      <div className={styles.buildHeroCopy}>
-                        <h2 className={styles.buildHeroTitle}>{t(HOME_BUILD_STAGE_COPY[activeBuildKind].headline)}</h2>
-                        <p className={styles.buildHeroSubtitle}>{t(HOME_BUILD_STAGE_COPY[activeBuildKind].subtitle)}</p>
-                      </div>
-                    </div>
-                    <h3 className={styles.buildSectionTitle}>{t('guid.home.buildPrep.promptsTitle')}</h3>
-                    <div className={styles.buildPromptGrid}>
-                      {(['first', 'second'] as const).map((slot, index) => (
-                        <button
-                          key={slot}
-                          type='button'
-                          className={styles.buildPromptCard}
-                          data-testid={`guid-home-build-prompt-${activeBuildKind}-${slot}`}
-                          onClick={() => requestBuildPrompt(activeBuildKind, slot)}
-                        >
-                          <img
-                            className={styles.buildPromptImage}
-                            src={HOME_BUILD_MEDIA[activeBuildKind].cards[index]}
-                            alt=''
-                          />
-                          <span className={styles.buildPromptBody}>
-                            <span className={styles.buildPromptLabel}>
-                              {t(HOME_BUILD_COPY[activeBuildKind][slot === 'first' ? 'firstLabel' : 'secondLabel'])}
-                            </span>
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    <p className={styles.buildStageHint}>{t('guid.home.buildPrep.hint')}</p>
-                  </section>
                 </div>
               ) : null}
               {homeView === 'capability' && homeCapability === 'video' ? (
@@ -2786,6 +2850,28 @@ const GuidPage: React.FC = () => {
                 onClose={closeHomePanel}
                 closeLabel={t('common.close', { defaultValue: 'Close' })}
                 testId='guid-home-develop-directory'
+                onMotionEnd={handleDirectoryMotionEnd}
+                motion={buildDirectoryMotion}
+                motionDuration={buildDrawerMotion === 'closing' ? BUILD_DRAWER_COLLAPSE_MS : BUILD_DRAWER_EXPAND_MS}
+              />
+            ) : null}
+            {homeView === 'build-examples' ? (
+              <HomeInputDrawer
+                title={t(HOME_BUILD_COPY[homeBuildKind ?? 'website'].title)}
+                options={homeBuildExampleOptions}
+                onSelect={selectBuildExample}
+                onClose={backFromBuildExamples}
+                closeLabel={t('common.close', { defaultValue: 'Close' })}
+                testId='guid-home-build-examples'
+                onMotionEnd={handleExamplesMotionEnd}
+                motion={
+                  buildTransitionDirection === 'back' && buildDrawerMotion === 'closing'
+                    ? 'exit'
+                    : buildDrawerMotion === 'opening'
+                      ? 'expand'
+                      : 'idle'
+                }
+                motionDuration={buildDrawerMotion === 'closing' ? BUILD_DRAWER_COLLAPSE_MS : BUILD_DRAWER_EXPAND_MS}
               />
             ) : null}
             {homeView === 'create-directory' ? (

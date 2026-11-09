@@ -14,6 +14,12 @@ type HomeInputDrawerProps = {
   backLabel?: string;
   closeLabel?: string;
   testId?: string;
+  /** Build-level transition: exit collapses into the composer, expand grows from it. */
+  motion?: 'enter' | 'expand' | 'exit' | 'idle';
+  /** One source of truth for the CSS animation timing in milliseconds. */
+  motionDuration?: number;
+  /** Fired when the drawer's own CSS transition finishes. */
+  onMotionEnd?: (motion: 'enter' | 'expand' | 'exit' | 'idle') => void;
 };
 
 /** Low-contrast project tree outline for the "open existing project" item. */
@@ -46,10 +52,17 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
   backLabel,
   closeLabel,
   testId,
+  motion = 'enter',
+  motionDuration,
+  onMotionEnd,
 }) => {
   const firstOptionRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
   const hasMedia = options.some((option) => option.cover || option.preview || option.tree);
 
+  // Focus the first option when a new drawer layer mounts, not when a
+  // selected card re-renders the same option list (that would fight the
+  // composer focus after picking an example).
   useEffect(() => {
     const first = options.find((option) => !option.disabled);
     if (first) {
@@ -57,10 +70,32 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
       return () => window.cancelAnimationFrame(frame);
     }
     return undefined;
-  }, [options]);
+  }, [options.length, testId]);
+
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (!drawer) return undefined;
+    if (motion === 'exit') drawer.setAttribute('inert', '');
+    else drawer.removeAttribute('inert');
+    return () => drawer.removeAttribute('inert');
+  }, [motion]);
 
   return (
-    <section className={`${styles.drawer} ${hasMedia ? styles.drawerMedia : ''}`} data-testid={testId}>
+    <section
+      ref={drawerRef}
+      className={`${styles.drawer} ${hasMedia ? styles.drawerMedia : ''}`}
+      data-testid={testId}
+      data-motion={motion}
+      aria-hidden={motion === 'exit' ? true : undefined}
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget) onMotionEnd?.(motion);
+      }}
+      style={
+        motionDuration
+          ? ({ '--drawer-motion-duration': `${motionDuration}ms` } as React.CSSProperties)
+          : undefined
+      }
+    >
       <header className={styles.header}>
         {onBack ? (
           <button type='button' className={styles.back} onClick={onBack}>
@@ -84,9 +119,10 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
               type='button'
               className={`${styles.option} ${hasMedia ? styles.mediaOption : ''} ${
                 option.emphasis ? styles.mediaOptionEmphasis : ''
-              }`}
+              } ${option.selected ? styles.mediaOptionSelected : ''}`}
               data-testid={`guid-home-option-${option.key}`}
               disabled={option.disabled}
+              aria-pressed={option.selected || undefined}
               onClick={() => onSelect(option)}
             >
               {hasMedia ? (
@@ -103,7 +139,6 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
               <span className={styles.optionCopy}>
                 <span className={styles.optionTitle}>{option.title}</span>
                 {option.description ? <span className={styles.optionDescription}>{option.description}</span> : null}
-                {option.meta ? <span className={styles.optionMeta}>{option.meta}</span> : null}
               </span>
             </button>
           );
