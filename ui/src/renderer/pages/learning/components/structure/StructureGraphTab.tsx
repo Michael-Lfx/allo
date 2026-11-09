@@ -39,8 +39,6 @@ export function StructureGraphTab({
   onBasisCheckedChange,
   onDeclareBasis,
   declaringBasis,
-  onRevokeBasis,
-  revokingBasis,
 }: {
   view: LearningStructureView | null;
   basis?: BasisView | null;
@@ -52,8 +50,6 @@ export function StructureGraphTab({
   onBasisCheckedChange?: (doors: string[]) => void;
   onDeclareBasis?: (doors: string[]) => void;
   declaringBasis?: boolean;
-  onRevokeBasis?: () => void;
-  revokingBasis?: boolean;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabKey>('mindmap');
@@ -164,9 +160,7 @@ export function StructureGraphTab({
           checked={basisChecked}
           onCheckedChange={onBasisCheckedChange}
           declaring={declaringBasis}
-          revoking={revokingBasis}
           onDeclare={onDeclareBasis}
-          onRevoke={onRevokeBasis}
         />
       )}
 

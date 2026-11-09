@@ -18,11 +18,9 @@ export function DeclarationWindow({
   structureError,
   basis,
   declaring,
-  revoking,
   basisChecked,
   onBasisCheckedChange,
   onDeclare,
-  onRevoke,
   starting,
   growthRunning,
   onStart,
@@ -32,11 +30,9 @@ export function DeclarationWindow({
   structureError: string | null;
   basis: BasisView | null;
   declaring: boolean;
-  revoking: boolean;
   basisChecked: string[];
   onBasisCheckedChange: (doors: string[]) => void;
   onDeclare?: (doors: string[]) => void;
-  onRevoke?: () => void;
   starting: boolean;
   growthRunning: boolean;
   onStart: () => void;
@@ -86,9 +82,7 @@ export function DeclarationWindow({
             checked={basisChecked}
             onCheckedChange={onBasisCheckedChange}
             declaring={declaring}
-            revoking={revoking}
             onDeclare={onDeclare}
-            onRevoke={onRevoke}
           />
         )}
         <div className='flex flex-wrap items-center gap-8px'>

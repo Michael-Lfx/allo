@@ -240,10 +240,10 @@ const LearningGraphWorkspace: React.FC<{
     }
   }, [detail.course.id, refetchStructure, t]);
 
-  // ── 已会声明（Declared Known，m2）：读数 + 声明 + 撤销 ──────────────────
+  // ── 已会声明（Declared Known，m2）：读数 + 一次性声明（c3 起产品面无撤销
+  // 入口；后端 DELETE /basis 留作纠错通道）──────────────────────────────
   const [basis, setBasis] = useState<BasisView | null>(null);
   const [declaringBasis, setDeclaringBasis] = useState(false);
-  const [revokingBasis, setRevokingBasis] = useState(false);
   // 草稿勾选（c1）：工作区单持，学习 Tab 声明窗口与结构图 Tab 两个过门自检
   // 挂载点共享同一份——切 Tab 不丢；声明成功后清空，失败保留。
   const [basisDraftChecked, setBasisDraftChecked] = useState<string[]>([]);
@@ -262,8 +262,8 @@ const LearningGraphWorkspace: React.FC<{
         });
     };
     load();
-    // 声明/撤销/生长经 WS course-generation 流（basis_declared /
-    // basis_revoked 复用既有事件面）驱动重拉。
+    // 声明/生长经 WS course-generation 流（basis_declared 复用既有事件面）
+    // 驱动重拉；后端纠错通道撤销（basis_revoked）同样会被读数接住。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
       if (event.course_id === detail.course.id) load();
     });
@@ -309,22 +309,6 @@ const LearningGraphWorkspace: React.FC<{
     },
     [detail.course.id, onRefresh, t]
   );
-
-  const revokeBasis = useCallback(async () => {
-    setRevokingBasis(true);
-    try {
-      await learningApi.revokeBasis(detail.course.id);
-      const view = await learningApi.basisView(detail.course.id);
-      setBasis(view);
-    } catch (actionError) {
-      Modal.error({
-        title: t('learning.learningGraphBasisRevokeFailed'),
-        content: errorMessage(t, actionError),
-      });
-    } finally {
-      setRevokingBasis(false);
-    }
-  }, [detail.course.id, t]);
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
@@ -511,11 +495,9 @@ const LearningGraphWorkspace: React.FC<{
               structureError={structureError}
               basis={basis}
               declaring={declaringBasis}
-              revoking={revokingBasis}
               basisChecked={basisDraftChecked}
               onBasisCheckedChange={setBasisDraftChecked}
               onDeclare={(doors) => void declareBasis(doors)}
-              onRevoke={() => void revokeBasis()}
               starting={growing}
               growthRunning={graph.growth_running}
               onStart={() => void grow()}
@@ -661,8 +643,6 @@ const LearningGraphWorkspace: React.FC<{
             onBasisCheckedChange={setBasisDraftChecked}
             onDeclareBasis={(doors) => void declareBasis(doors)}
             declaringBasis={declaringBasis}
-            onRevokeBasis={() => void revokeBasis()}
-            revokingBasis={revokingBasis}
           />
         </Tabs.TabPane>
       </Tabs>

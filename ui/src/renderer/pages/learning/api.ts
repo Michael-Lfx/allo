@@ -166,16 +166,11 @@ export const learningApi = {
       `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
       { doors }
     ),
-  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露
+  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露。
+  // 撤销（DELETE /basis）不在产品面（c3）：后端接口保留作纠错通道。
   basisView: (courseId: string) =>
     httpRequest<BasisView>(
       'GET',
-      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
-    ),
-  // 撤销本课全部已会声明（删锚行；概念留池——声明可撤、概念不灭）
-  revokeBasis: (courseId: string) =>
-    httpRequest<{ revoked: number }>(
-      'DELETE',
       `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
     ),
   getCourse: (id: string) =>
