@@ -173,7 +173,7 @@ git push origin main
 - **手动触发构建**：登录 EdgeOne Makers 控制台手动触发本次构建。
 - **发布后自检三部曲**：
   1. 访问中英文档，断言页面包含预渲染正文而非空白 SPA 壳。
-  2. 执行 `bun run publish:market -- --verify-only` 确认三个市场的 ModelScope 归档摘要一致。
+  2. 在 `workbuddy-market-collect` 侧确认三个索引可达且与台账一致：`curl -sI .../wb-market/<market>/index.json` 返回 200，并与 `wb-market/state.json` 的 `index_sha256`（或 `uv run wbcollect pipeline verify`）一致。站点仓的 `bun run publish:market -- --verify-only` 只校验**已冻结的旧 `{market}.zip`**，不再属于发布门禁。
   3. 真实点击下载直链，确认浏览器能成功下载对应的 Windows ZIP 资产。
 
 ### S8: 归档后台账与变更转正
@@ -337,8 +337,8 @@ git push origin main
 然后做**部署后自检**（顺序即用户体验顺序）：
 
 1. `/<lang>/docs/typescript-sdk` 中英两页都有正文（不是 SPA 空壳——空壳说明该页没进 `react-router.config.ts` 的 `prerender()`）；
-2. **站点产物文件数**：EdgeOne Makers 构建日志里没有 `File count exceeds project limit`。上限是 20,000 个文件——`market-source/` 三个市场合计 22,612 个，所以自 doc 30 起整树**不再进产物**，产物里只应有站点自身约 94 个文件 + 目录页头像约 648 个（本地 `bun run build` 后数 `build/client` 即可预检）。⚠️ **`/source/<market>/…` 与 `/source/<market>/_files.txt` 已退役**，不要再把它们当作部署自检项；
-3. **市场归档可达且摘要一致**：`bun run publish:market -- --verify-only` 三个市场全绿（它 `HEAD` 每个稳定 URL，比对 `X-Linked-Etag` 与 `content/market-hosts.json` 记录的 sha256）。归档在 ModelScope，**不在本站产物里**；
+2. **站点产物文件数**：EdgeOne Makers 构建日志里没有 `File count exceeds project limit`。上限是 20,000 个文件——三个市场自 doc 30 起整树**不再进产物**（现在都是索引型镜像，`market-source/` 约 1.7k 文件），产物里只有站点自身约 94 个文件 + 目录页头像约 1,708 个（本地 `bun run build` 后数 `build/client` 即可预检）。⚠️ **`/source/<market>/…` 与 `/source/<market>/_files.txt` 已退役**，不要再把它们当作部署自检项；
+3. **市场索引可达且摘要一致**：三个官方源的 `wb-market/<market>/index.json` 均 200，且与 `wb-market/state.json` 的 `index_sha256` 一致（WMC 侧 `uv run wbcollect pipeline verify`）。`is_official_source` 按地址判定，源在 ModelScope，**不在本站产物里**。站点仓 `bun run publish:market -- --verify-only` 只针对冻结的旧 `{market}.zip`，不再作为发布门禁；
 4. 首页/兼容性页的下载直链真能下到 zip：`https://github.com/szStarWave/agent-store-site/releases/download/v<版本>/flowy-agent-store-v<版本>-windows-x86_64.zip`。
 
 ### S8 发布后台账
@@ -365,7 +365,7 @@ git push origin main
 | `content/docs/{zh-CN,en-US}/examples-sdk.md` | 对外用法（新子客户端、错误处理）变化 | 人工 |
 | `content/docs/{zh-CN,en-US}/compatibility.md` | 已发布平台变化 | 人工（与站点 `app/lib/platform.ts` 的 `RELEASED_PLATFORMS` 同改） |
 | `content/docs/{zh-CN,en-US}/{configuration,plugins-market}.md` | 市场源**类型**（`source_kind` 取值表）或**官方默认源地址**变化 | 人工（两页都写这两件事，必须同改；`30` §7 的迁移口径也在此） |
-| `content/market-hosts.json` + `dist-market/*.zip` | 市场内容变化 | `bun run pack:market` 产出、`bun run publish:market` 上传并回验（**不要手改**） |
+| 市场内容（`wb-market/<market>/index.json` + payload/entries） | 市场内容变化 | `workbuddy-market-collect` 生成上传；核对 `wb-market/state.json` 的 `index_sha256`（**不要手改**）。站点仓 `content/market-hosts.json` + `dist-market/*.zip` 仅为**冻结的旧 `{market}.zip` 台账**，不随索引发布更新 |
 | `content/release.json` | 每次发版 | `bun run check:release-sync` |
 | 所有页的双语结构 | 任何时候 | 站点 `bun run check:docs-sync` |
 

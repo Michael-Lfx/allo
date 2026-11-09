@@ -112,9 +112,9 @@ flowchart TD
 # ~/.agent-store/config.toml
 
 [default_marketplaces.experts]
-source_kind = "zip"
-source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/experts.zip"
-download_on_start = false   # 新增字段：缺省为 true；设为 false 则仅注册空条目与元数据，不下载归档
+source_kind = "index"
+source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/experts/index.json"
+download_on_start = false   # 新增字段：缺省为 true；设为 false 则仅注册空条目与元数据，不拉取索引/内容
 ```
 
 #### 优先级判定流水线

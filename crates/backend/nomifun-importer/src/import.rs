@@ -468,6 +468,14 @@ impl ImporterService {
             }
         }
 
+        // Doc `52` §3.5: stamp the skill → connector dependency once, before the
+        // snapshot is written.
+        stamp_skill_requirements(
+            &mut builder.components,
+            &builder.index_display,
+            request.entry_name.as_deref(),
+        );
+
         let status = if builder.errors.is_empty() && builder.warnings.is_empty() {
             "completed"
         } else {
@@ -738,6 +746,7 @@ fn author_display(manifest: &PluginManifest) -> DisplayFields {
         description: manifest.localized_display_description(),
         prompts: manifest.quick_prompts.clone(),
         tags: manifest.tags.clone(),
+        ..DisplayFields::default()
     }
 }
 
@@ -760,6 +769,40 @@ fn attach_display_fields(payload: &mut serde_json::Value, display: &DisplayField
     }
     if !display.tags.is_empty() {
         payload["tags"] = serde_json::to_value(&display.tags).unwrap_or_default();
+    }
+    if !display.required_connectors.is_empty() {
+        payload["required_connectors"] =
+            serde_json::to_value(&display.required_connectors).unwrap_or_default();
+    }
+}
+
+/// Stamp the skill → connector dependency onto every skill component (doc `52`
+/// §3.5).
+///
+/// The market row's explicit `requires_connectors` wins. When the entry itself
+/// is a connector (`entry_kind: "connector"`), its bundled skills fall back to
+/// the entry's own name: those skills exist to drive the connector's MCP tools
+/// and arrive with it. Manual imports (no entry name) declare nothing.
+fn stamp_skill_requirements(
+    components: &mut [Component],
+    display: &DisplayFields,
+    entry_name: Option<&str>,
+) {
+    let mut required = display.required_connectors.clone();
+    if required.is_empty() && display.entry_kind.as_deref() == Some("connector") {
+        if let Some(name) = entry_name {
+            required = vec![name.to_owned()];
+        }
+    }
+    if required.is_empty() {
+        return;
+    }
+    for component in components.iter_mut() {
+        if component.kind != crate::models::KIND_SKILL {
+            continue;
+        }
+        component.payload["required_connectors"] =
+            serde_json::to_value(&required).unwrap_or_default();
     }
 }
 
@@ -1428,7 +1471,17 @@ fn build_mcp_connector_components(
         builder.push(credential_component(declaration, directory_name, meta));
     }
     let bindings = Bindings::from_declaration(declaration.as_ref());
-    let auth_mode = market_credential_mode(source, directory_name, &pre_auth);
+    // Prefer the index row's `auth_mode`: an index market ships one `index.json`
+    // at the market root, so `market_auth_mode`'s climb to a sibling
+    // `.codebuddy-connector/connectors.json` lands nowhere and every `token` /
+    // `oauth` connector would otherwise normalize to `none` (`34` §6.1).
+    let index_auth_mode = builder.index_display.auth_mode.clone();
+    let auth_mode = market_credential_mode(
+        source,
+        directory_name,
+        &pre_auth,
+        index_auth_mode.as_deref(),
+    );
 
     for (name, config) in servers {
         let url = config
@@ -2048,9 +2101,19 @@ impl Bindings {
 /// and the same layout the marketplace scanner reads, so climbing two levels is
 /// not a guess. A hand-made connector directory has no index: the `mcp.json`
 /// `preAuth` field is then the only declaration, as before.
-fn market_credential_mode(source: &Path, directory_name: &str, pre_auth: &str) -> String {
-    let declared = market_auth_mode(source, directory_name)
+fn market_credential_mode(
+    source: &Path,
+    directory_name: &str,
+    pre_auth: &str,
+    index_auth_mode: Option<&str>,
+) -> String {
+    // The index row wins when it declares one: it is the only declaration an
+    // index market carries. `market_auth_mode` stays for directory markets,
+    // whose sibling `connectors.json` is still the truth there.
+    let declared = index_auth_mode
+        .map(str::to_owned)
         .filter(|mode| !mode.is_empty())
+        .or_else(|| market_auth_mode(source, directory_name).filter(|mode| !mode.is_empty()))
         .unwrap_or_else(|| pre_auth.to_owned());
     match declared.as_str() {
         "token" => "token".to_owned(),
@@ -2430,6 +2493,56 @@ mod tests {
 
     /// TC-9: the author's declaration wins per locale, the index row fills the
     /// gaps — and the stamped payload carries the wire field names verbatim.
+    /// Doc `52` §3.5: a connector entry stamps its bundled skills with its own
+    /// name, an explicit market declaration wins over that fallback, and no
+    /// other component kind carries the key.
+    #[test]
+    fn skill_requirements_come_from_the_market_row_or_the_connector_entry() {
+        let skill = |id: &str| {
+            Component::new(
+                crate::models::KIND_SKILL,
+                id.into(),
+                id.into(),
+                Some(format!("skills/{id}/SKILL.md")),
+                crate::compat::skill(),
+                json!({ "name": id }),
+            )
+        };
+        let agent = Component::new(
+            crate::models::KIND_AGENT,
+            "wb-adc-sandbox".into(),
+            "adc".into(),
+            None,
+            crate::compat::agent(false),
+            json!({ "name": "adc" }),
+        );
+
+        let mut components = vec![skill("adc-sandbox-usage"), agent];
+        let connector_entry = DisplayFields {
+            entry_kind: Some("connector".into()),
+            ..DisplayFields::default()
+        };
+        stamp_skill_requirements(&mut components, &connector_entry, Some("adc-sandbox"));
+        assert_eq!(components[0].payload["required_connectors"], json!(["adc-sandbox"]));
+        assert!(
+            components[1].payload.get("required_connectors").is_none(),
+            "only skills declare a connector dependency"
+        );
+
+        let declared = DisplayFields {
+            required_connectors: vec!["declared-connector".into()],
+            entry_kind: Some("connector".into()),
+            ..DisplayFields::default()
+        };
+        let mut explicit = vec![skill("some-skill")];
+        stamp_skill_requirements(&mut explicit, &declared, Some("ignored-entry"));
+        assert_eq!(explicit[0].payload["required_connectors"], json!(["declared-connector"]));
+
+        let mut plain = vec![skill("plain-skill")];
+        stamp_skill_requirements(&mut plain, &DisplayFields::default(), Some("skills-entry"));
+        assert!(plain[0].payload.get("required_connectors").is_none());
+    }
+
     #[test]
     fn the_author_declaration_wins_and_the_index_fills_the_missing_locale() {
         let manifest: PluginManifest = serde_json::from_value(json!({
@@ -2447,6 +2560,7 @@ mod tests {
             }),
             prompts: vec![LocalizedText { zh: Some("索引行示例".into()), en: None }],
             tags: vec![LocalizedText { zh: Some("数据智能".into()), en: None }],
+            ..DisplayFields::default()
         });
 
         let merged = builder.display_for(Some(&manifest));
@@ -2677,5 +2791,36 @@ mod tests {
             "the redaction must say where it came from: {:?}",
             builder.warnings
         );
+    }
+
+    /// Doc `34` §6.1: an index market has no sibling `connectors.json` next to
+    /// the extracted entry, so the row's `auth_mode` has to win over an empty
+    /// `preAuth` — otherwise every `token` / `oauth` connector normalizes to
+    /// `none` and offers no credential entry point.
+    #[test]
+    fn index_auth_mode_wins_over_a_missing_preauth() {
+        let sandbox = std::env::temp_dir().join("nomifun-auth-mode-fixture");
+        // The entry sits under `payload/member`, i.e. no
+        // `<market>/.codebuddy-connector/connectors.json` two levels up — exactly
+        // the shape `materialize_payload_entry` hands the importer.
+        let source = sandbox.join("payload").join("member");
+        std::fs::create_dir_all(&source).unwrap();
+
+        assert_eq!(
+            market_credential_mode(&source, "member", "", Some("token")),
+            "token"
+        );
+        assert_eq!(
+            market_credential_mode(&source, "member", "", Some("oauth")),
+            "oauth"
+        );
+        // Without an index row the `preAuth` field is the only declaration.
+        assert_eq!(
+            market_credential_mode(&source, "member", "token", None),
+            "token"
+        );
+        assert_eq!(market_credential_mode(&source, "member", "", None), "none");
+
+        let _ = std::fs::remove_dir_all(&sandbox);
     }
 }

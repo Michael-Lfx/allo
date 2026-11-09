@@ -94,7 +94,7 @@
  * must never pick an auth affordance from a shape. No method changes, so the
  * documented route split stays `56 / 83`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-20";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-21";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1513,6 +1513,15 @@ export interface StoreItem {
   available?: boolean;
   /** Why the market marked the entry unavailable (`fp-20`). */
   unavailable_reason?: string | null;
+  /**
+   * Connector entry names this entry depends on (`fp-21`, doc `52`).
+   *
+   * Declared by an `index` market on the skills bundled inside a connector
+   * package. Such an item stays visible but is never installable on its own
+   * (`blocked_reason` names the connector) — install the connector, which
+   * ships the skill. Absent = no dependency.
+   */
+  required_connectors?: string[];
   version: string;
   source_kind: string;
   installed: boolean;

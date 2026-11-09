@@ -168,6 +168,21 @@ pub(crate) struct MarketIndexInfo {
     /// Payload markets (`skills` / `connectors`) name the entry's directory
     /// inside the shared payload zip; `None` for per-entry archive markets.
     member: Option<String>,
+    /// Connector entry names this entry depends on (`fp-21`, doc `52`).
+    ///
+    /// Only an `index` market declares it, and only on skill rows: these are
+    /// the skills bundled inside a connector package, which are usable only
+    /// once that connector is installed. Empty = no dependency.
+    requires_connectors: Vec<String>,
+    /// The row's `auth_mode` (`token` / `oauth` / `server-side` / …), as the
+    /// market declares it. Connector entries only; `None` for the legacy
+    /// indexes that predate the field and for every non-index source.
+    ///
+    /// Carried into [`DisplayFields::auth_mode`] so an index-market install can
+    /// still name its credential mode: unlike a directory market, there is no
+    /// `.codebuddy-connector/connectors.json` next to the extracted entry for
+    /// the importer to read.
+    auth_mode: Option<String>,
 }
 
 impl MarketIndexInfo {
@@ -197,6 +212,11 @@ impl MarketIndexInfo {
         self.version.as_deref()
     }
 
+    /// Connector entry names this row depends on (empty = none).
+    pub(crate) fn entry_requires_connectors(&self) -> &[String] {
+        &self.requires_connectors
+    }
+
     /// The payload member directory for a payload-market entry.
     pub(crate) fn entry_member(&self) -> Option<&str> {
         self.member.as_deref()
@@ -210,6 +230,12 @@ impl MarketIndexInfo {
             description: (!self.description.is_empty()).then(|| self.description.clone()),
             prompts: self.examples.clone(),
             tags: self.tags.clone(),
+            // Doc `52` §3.5: both are market-only facts that ride the display
+            // channel into the snapshot payload; `entry_kind` is import-time
+            // only (a connector stamps its bundled skills with itself).
+            required_connectors: self.requires_connectors.clone(),
+            entry_kind: self.kind.clone(),
+            auth_mode: self.auth_mode.clone(),
         }
     }
 }
@@ -382,6 +408,12 @@ fn read_index(
                     .and_then(|v| v.as_str())
                     .map(str::to_owned),
                 member: None,
+                requires_connectors: Vec::new(),
+                auth_mode: item
+                    .get("auth_mode")
+                    .and_then(|value| value.as_str())
+                    .filter(|mode| !mode.trim().is_empty())
+                    .map(str::to_owned),
             },
         );
     }
@@ -440,6 +472,23 @@ fn read_store_index(root: &Path) -> (HashMap<String, MarketIndexInfo>, Option<Ma
                 kind: item.get("kind").and_then(|value| value.as_str()).map(str::to_owned),
                 category_id: item.get("category_id").and_then(|value| value.as_str()).map(str::to_owned),
                 member: item.get("member").and_then(|value| value.as_str()).map(str::to_owned),
+                requires_connectors: item
+                    .get("requires_connectors")
+                    .and_then(|value| value.as_array())
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .filter(|name| !name.trim().is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                auth_mode: item
+                    .get("auth_mode")
+                    .and_then(|value| value.as_str())
+                    .filter(|mode| !mode.trim().is_empty())
+                    .map(str::to_owned),
             },
         );
     }
@@ -818,6 +867,18 @@ impl StoreProvider for AppServerStoreProvider {
                                 .unwrap_or_else(|| "市场标记该条目不可用".to_owned())
                         })
                     })
+                })
+                .or_else(|| {
+                    // `52` D1/D4: a connector's bundled skill is never installed
+                    // on its own — the connector package already ships it, and a
+                    // second copy would collide by name (`skill id == name`).
+                    let deps = index_meta.map(|meta| meta.entry_requires_connectors()).unwrap_or(&[]);
+                    (!deps.is_empty()).then(|| {
+                        format!(
+                            "requires connector {}; install it from the connectors market",
+                            deps.join(", ")
+                        )
+                    })
                 });
 
                 let display_name = manifest
@@ -975,6 +1036,9 @@ impl StoreProvider for AppServerStoreProvider {
                     sha256: index_meta.and_then(|meta| meta.sha256.clone()),
                     available: index_meta.map(|meta| meta.available).unwrap_or(true),
                     unavailable_reason: index_meta.and_then(|meta| meta.unavailable_reason.clone()),
+                    required_connectors: index_meta
+                        .map(|meta| meta.entry_requires_connectors().to_vec())
+                        .unwrap_or_default(),
                     version,
                     source_kind: entry.source_kind.clone(),
                     installed,
@@ -1013,18 +1077,60 @@ impl StoreProvider for AppServerStoreProvider {
 
         // What the marketplace advertises right now, derived exactly the way
         // `store/list` derives it.
-        let live = {
-            let index = market_root_dir(&row, &self.market_root)
-                .map(|root| MarketIndex::read(&root))
-                .unwrap_or_default();
-            entry_facts(&row, &entry, &self.market_root, &index).version
-        };
+        let index = market_root_dir(&row, &self.market_root)
+            .map(|root| MarketIndex::read(&root))
+            .unwrap_or_default();
+        let live = entry_facts(&row, &entry, &self.market_root, &index).version;
+        let required: Vec<String> = index
+            .entry_meta(entry_name)
+            .map(|meta| meta.entry_requires_connectors().to_vec())
+            .unwrap_or_default();
 
         let existing = self
             .snapshots
             .find_snapshot_by_provenance(marketplace_id, entry_name)
             .await
             .map_err(AppError::from)?;
+
+        // Doc `52` D4: a connector's bundled skill is never installed on its own
+        // — the connector package already ships it, and a second copy would
+        // collide by name (`skill id == name`). An entry that is *already*
+        // installed (a pre-`52` standalone copy) stays a no-op rather than
+        // erroring, so the historical state can still be released.
+        if !required.is_empty() {
+            let already_installed = match existing.as_ref() {
+                Some(snapshot) => self
+                    .snapshots
+                    .get_components(&snapshot.snapshot_id)
+                    .await
+                    .map_err(AppError::from)?
+                    .iter()
+                    .any(|component| component.installed == 1),
+                None => false,
+            };
+            if !already_installed {
+                return Ok(AppServerStoreInstallResult {
+                    marketplace_id: marketplace_id.to_owned(),
+                    entry_name: entry_name.to_owned(),
+                    snapshot_id: existing
+                        .as_ref()
+                        .map(|snapshot| snapshot.snapshot_id.clone())
+                        .unwrap_or_default(),
+                    version: live.clone(),
+                    reused: false,
+                    installed_count: 0,
+                    warnings: vec![],
+                    errors: vec![format!(
+                        "requires connector {}; install it from the connectors market",
+                        required.join(", ")
+                    )],
+                    outcomes: vec![],
+                    previous_version: None,
+                    previous_snapshot_id: None,
+                    released_count: 0,
+                });
+            }
+        }
 
         let snapshot_id = match existing {
             Some(row) => {
@@ -1434,6 +1540,7 @@ mod tests {
             sha256: None,
             available: true,
             unavailable_reason: None,
+            required_connectors: vec![],
             version: "2.0.0".into(),
             source_kind: "directory".into(),
             installed: true,
@@ -1705,6 +1812,38 @@ mod index_market_tests {
         assert_eq!(facts.kind, "team", "index row kind overrides the directory guess");
         assert_eq!(facts.version, "1.2.3");
         assert_eq!(facts.index_info.as_ref().unwrap().name_zh.as_deref(), Some("A股研究团队"));
+    }
+
+    /// Doc `52`: an index row's `requires_connectors` is parsed and exposed; an
+    /// absent one stays empty instead of inventing a dependency.
+    #[test]
+    fn index_row_carries_skill_connector_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = serde_json::json!({
+            "schema_version": 2,
+            "market": "skills",
+            "entries": [
+                {
+                    "name": "adc-sandbox-usage", "kind": "skill", "size": 1,
+                    "download": "https://cdn.example/p.zip", "member": "adc-sandbox-usage",
+                    "requires_connectors": ["adc-sandbox", "another"]
+                },
+                {
+                    "name": "plain", "kind": "skill", "size": 1,
+                    "download": "https://cdn.example/p.zip", "member": "plain"
+                }
+            ]
+        });
+        std::fs::write(dir.path().join("index.json"), index.to_string()).unwrap();
+        let parsed = MarketIndex::read(dir.path());
+        assert_eq!(
+            parsed.entry_meta("adc-sandbox-usage").unwrap().entry_requires_connectors(),
+            ["adc-sandbox".to_owned(), "another".to_owned()]
+        );
+        assert!(
+            parsed.entry_meta("plain").unwrap().entry_requires_connectors().is_empty(),
+            "an absent key declares no dependency"
+        );
     }
 
     #[test]

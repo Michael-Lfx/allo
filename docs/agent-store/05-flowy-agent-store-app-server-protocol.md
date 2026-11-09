@@ -1,6 +1,6 @@
 # allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
 
-> 状态：现行规范（统一协议 v1，指纹 `fp-20`，56 WS 核心方法 / 83 双端路由端点）  \
+> 状态：现行规范（统一协议 v1，指纹 `fp-21`，56 WS 核心方法 / 83 双端路由端点）  \
 > 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
 > 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
 > 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
@@ -16,7 +16,7 @@ App Server Protocol 确立为系统的**唯一公共对外接口面**：
 1. **彻底物理隔离**：外部消费端禁止直连数据库、禁止依赖内部私有 UUIDv7 或数据库行，统一面向**不透明公共 ID（Opaque Public IDs）**与标准化 RPC 信封。
 2. **双模契约同构（Dual-Transport Parity）**：WebSocket 负责长连接双向交互、流式通知与审批推送；HTTP 辅助通道负责单次幂等导入、文件上传及离线请求。双端共用同一套底层 Rust 分发器，杜绝两套行为。
 3. **零凭据过线防御（Zero Credential Leakage）**：API Key、OAuth 访问令牌、物理文件路径严格留在宿主内部；连接器调用走宿主受控代理（`connector/call`），凭据模板按 `${secret:NAME}` 声明式解析。
-4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-20`）守卫协议两端，消解冗余复杂的迁移开销。
+4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-21`）守卫协议两端，消解冗余复杂的迁移开销。
 
 ---
 
@@ -183,6 +183,13 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
+> 指纹：**`fp-21`**（2026-10-30）给 **`AppServerStoreItem` 增 `required_connectors`**
+> （doc `52`）：`index` 市场在技能条目上声明它依赖的连接器**条目名**（连接器包内嵌的
+> 技能脱离连接器不可用）。宿主据此派生 `blocked_reason`（条目仍列出、但不可单独安装），
+> 并在导入期把该字段戳进 skill 组件 payload，由已有的
+> `AppServerSkillSummary.required_connectors` 原样读回——后者字段早已存在，填充它不改变
+> 形状，本变更只新增一个可选 DTO 字段（空时省略键）。**无方法增删**，计数仍 `56 / 83`。
+
 > 指纹：**`fp-20`**（2026-10-29）新增 **`index` 市场源类型**（doc `30` §6.1）：`AppServerMarketplaceSourceKind` 增 `Index`；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`；官方三个市场均改为 `wb-market/<market>/index.json`——`experts` 逐条 `tar.gz`，`skills` / `connectors` 共享 payload zip（`member` 定位），安装期按 `sha256` / `size` 校验后下载解包；迁移 `069` 重建 `plugin_marketplaces` 的 `source_kind` CHECK 以接受 `index`。方法计数不变（56 / 83）。
 
 > 指纹：**`fp-19`**（2026-10-26）给**导出面补上逐实体的图标引用**（doc `51`）：
@@ -1230,18 +1237,22 @@ POST   /api/app-server/market-settings                    # market/settings-set�
 `market/add` 请求体：
 
 ```text
-{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url|zip", "source": "<源>" }
+{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url|zip|index", "source": "<源>" }
 ```
 
 - `marketplace_id` 从 `name` 推导（无则源 basename），kebab-case 稳定名（内部唯一）；
 - 同源重复添加幂等：返回既有市场行，不报错；
-- 远端源（github/git/url/zip）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
+- 远端源（github/git/url/zip/index）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
   原子晋升到 live 根（backup+rename）；失败不注册且 last-good 不被触碰。
 - **`zip`（`fp-7` 加入）**：`source` 是一个 HTTP(S) 归档地址，**归档根目录即市场根**。
   与 `url` 的区别只在传输：`url` 按 `_files.txt` 逐文件镜像，`zip` 取一个归档再解压。
-  官方三个市场都走 `zip`（`experts` 由 14,714 次请求降为 1 次）。归档下载**跟随重定向**，
+  历史上官方三个市场曾走 `zip`（`experts` 由 14,714 次请求降为 1 次）；`fp-20` 起官方三个市场改为 `index`（见 `30` §6.1），`zip` 保留给第三方与冻结旧包。归档下载**跟随重定向**，
   用 `HEAD` 的 `X-Linked-Etag`（内容 sha256）判新旧与校验完整性；解压沿
   `nomifun-common::zip_safe` 的 zip-slip / 符号链接 / 预算防护。见 `18` §5.3。
+- **`index`（`fp-20` 加入）**：`source` 指向一个 `index.json`（`schema_version=2`）。添加时只拉
+  `index.json`（+ 可选 `categories.json`）与校验结构，**不下载条目内容**；条目的 `download`
+  在 `store/install` / `market/entry-import` 时才按索引声明的 `sha256`/`size` 下载、校验并解包
+  （`skills`/`connectors` 共享 payload zip，用 `member` 定位）。见 `30` §6.1。
 
 `market/refresh` 响应（`AppServerMarketplaceRefreshResult`）：
 
@@ -1255,6 +1266,8 @@ POST   /api/app-server/market-settings                    # market/settings-set�
   ETag/Last-Modified 摘要，相同 → no-op；
 - ZIP：`HEAD` 取归档内容 sha256；与已记录 `resolved_revision` 相同 → `changed=false`
   （**不下载归档**）；
+- INDEX：只拉 `index.json`（约 1 MiB）；`resolved_revision` = `index.json` 内容 sha256，
+  未变即 `changed=false`；条目内容不随 refresh 下载；
 - `directory`：重新探测目录，内容摘要变化才更新投影；
 - `resolved_revision` 仅内部追溯，不是公共身份标识。
 

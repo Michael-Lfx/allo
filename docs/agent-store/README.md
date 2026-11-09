@@ -161,6 +161,7 @@ flowchart TD
 | [`50-localized-display-fields.zh.md`](file:///c:/workspace/allo/docs/agent-store/50-localized-display-fields.zh.md) | 四类实体的多语言展示字段：四类（专家/专家团/技能/连接器）× 两面（list/get）统一 `display_name` / `display_description` / `tags` / `quick_prompts` 四字段；数据在**导入期**按「作者声明 → 市场索引行 → 缺席」逐语种合并并戳进快照组件 payload（沿用 `44` 的 `index_tags` 通道），读面**零额外 I/O**；顺带修专家团 `tags`/`category_id` 空壳与 `description_zh/en` 兄弟键；指纹 `fp-17 → fp-18`；D1~D11 决策、TC-1~TC-13 验收、本机四市场覆盖率实测 | 🔧 已实施（2026-10-22；指纹 `fp-18`，四类 summary 各带四字段，导入期合并 + 读面零额外 I/O；`web` 584 tests / `nomifun-app` 107 / `nomifun-app-server` 192 全绿；真机 LDF-001~LDF-009 全过；站点仓 typescript-sdk + changelog 已同步） |
 
 | [`51-export-icons.zh.md`](file:///c:/workspace/allo/docs/agent-store/51-export-icons.zh.md) | 导出面图标补齐（专家/专家团/技能/连接器）：市场 `icons/` 与 entry 目录是**兄弟关系**、`copy_tree` 带不到 ⇒ 安装期按实体类型固化进不可变快照（插件/团 `avatars/`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/`），路径写进组件 payload `avatar`（作者声明优先、永不覆盖）；导出面只加 `skills[].icon` / `connectors[].icon`（纯路径字符串），字节仍走 `skill/file` 与 `import/asset`；`pack_format 3 → 4`、指纹 `fp-18 → fp-19`；D1~D12 决策、TC-IM/TC-EX/TC-SDK 用例、连接器图标的**可达性边界**（§3.3.5） | 🔧 已实施（2026-10-26；`nomifun-importer` 64+32 / `nomifun-app` 111 / `nomifun-app-server` 192 / `web` 586 全绿；指纹门 10 落点 + 站点 2 文件；真机 EXI-001~EXI-005 PASS） |
+| [`52-skill-connector-dependency.zh.md`](file:///c:/workspace/allo/docs/agent-store/52-skill-connector-dependency.zh.md) | 技能与连接器依赖：本机 1543 条技能中 1024 条来自连接器包却可单装（装完无 MCP 工具）；采集端按来源路径发布 `requires_connectors`、宿主 `StoreItem.required_connectors` 透出（`fp-20 → fp-21`）、附属技能**可见不可单装**并引导装连接器、依赖不可用继承 `available=false`、`SkillSummary.required_connectors` 复用 `50` 的导入期戳字段链路填充（连接器带来的技能也标，见 §3.5）；**SDK 面优先**（`protocol` 加 `required_connectors`、`client` 加 `dependencies()`、拦截复用 `item_blocked`，WebUI 只消费）；D1~D8 决策、SCD-001~SCD-012 验收 | 🔧 已实施主体（2026-10-30；collector 12 tests / importer 65+32 / web 591 passed；指纹 `fp-21`；未发版） |
 
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
@@ -313,7 +314,7 @@ flowchart TD
 ## 本轮（2026-10-29 实施 `index` 市场源：`fp-19 → fp-20`，尚未发版）
 
 1. **wire**：`AppServerMarketplaceSourceKind` 增 `Index`（wire `"index"`）；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`。方法计数不变（56 / 83），无方法增删。
-2. **官方 experts 切 index**：`builtin_default_marketplaces` 的 `experts` 改为 `.../wb-market/experts/index.json`，`skills` / `connectors` 暂留 zip。
+2. **官方 experts 切 index**：`builtin_default_marketplaces` 的 `experts` 改为 `.../wb-market/experts/index.json`；后续按 `30` §6.1，`skills` / `connectors` 也已一并切到 index（本条记录的是当次范围）。
 3. **索引先行**：`fetch_remote` 的 `index` 分支只拉 `index.json`（+ 校验并落地 `categories.json`），`revision = index.json` 内容 sha256；条目 `tar.gz` 在 `import_entry` 按索引 `sha256` / `size` 校验后下载、安全解包（拒绝绝对路径 / `..` / 链接 / 设备文件），并自动下钻 experts 归档的顶层 `<plugin-name>/` 目录。
 4. **展示面**：`MarketIndex` 读 `root/index.json`（按 name），`store/list` 头像优先绝对 `icon_url`，类别字典新增 `root/categories.json`（taxonomy 形状）；`default_init_prompt` / `quick_prompts` / 双语 `description` 从 index 行进入卡片，`store.avatarUrl(item)` 与 `Harness.serverRootUrl` 已加入 SDK。
 5. **门禁**：`check:fingerprint` 已覆盖本仓 7 文件 10 处 + 站点 2 处，随本次升级到 `fp-20`；`check:market` 已识别 index（24/24 自测）。
