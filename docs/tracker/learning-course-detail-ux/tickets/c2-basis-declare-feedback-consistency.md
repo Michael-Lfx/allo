@@ -2,8 +2,8 @@
 id: c2
 title: "声明反馈与数据一致（Message 替代阻塞 Modal + onRefresh + WS 监听收敛）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -58,3 +58,23 @@ ConceptTable 的无过滤 `courseGeneration` 订阅按需过滤，消除「一�
 
 - 冻结态与勾选持久呈现（c1）；后端事件面改动（`basis_declared` 事件本身保
   留，读侧需要它）。
+
+## Resolution（2026-11-09 施工收口）
+
+**全验收过，闭票。** 施工 = `f766ce511`。
+
+- **反馈**：成功 `Message.success`（读数原样：门口/命中块/铸出/复用），noop
+  `Message.info`，失败保持 `Modal.error`。`learningGraphBasisDeclareDoneTitle`
+  随 toast 化成孤儿 key，双侧对称删除（11585→11584 keys）。
+- **数据一致**：成功路径追加 `onRefresh()`——`detail.graph` 就绪集/推荐集即时
+  反映声明效果。
+- **WS 收敛（实码核实事件面后定稿）**：帧的 `event` 字段由
+  `emit_graph_event`（learning_graph.rs:4651-4658）注入；`structure_` 前缀同
+  时覆盖 `structure_mount_*` / `structure_repair_*` 维护回合帧。落地口径：
+  GraphHistory 只听 `growth_*`；SystemActionsSection 听 `growth_*` +
+  `structure_mount_*` + `structure_repair_*`（账本行只由 auto_refill 生长与维
+  护回合写，见 system_action.rs 的 kind 集）——比票面「structure_*」更窄，
+  结构生成帧不添账本行；ConceptTable 听 `growth_*` + `structure_*` +
+  `basis_declared`；basis 读侧保持全量。
+- **测试面**：typecheck 55 错持平存量（learning/i18n 零错）；`check:i18n` 绿。
+  真机手验留汇总门（声明 → toast + 就绪计数变化、历史 Tab 不闪刷）。

@@ -84,7 +84,7 @@
 | id | 票 | 优先 | 状态 |
 | --- | --- | --- | --- |
 | c1 | 已会声明一次性冻结 + 勾选状态持久呈现（disabled checkbox 冻结态 + 草稿勾选上提共享 + 按钮升级与动机文案） | 高 | ✅ closed（3d3a5f585） |
-| c2 | 声明反馈与数据一致（Message 替代阻塞 Modal + onRefresh + WS 监听收敛） | 高 | open |
+| c2 | 声明反馈与数据一致（Message 替代阻塞 Modal + onRefresh + WS 监听收敛） | 高 | ✅ closed（f766ce511） |
 | c3 | 删撤销声明（仅前端全链；后端不动） | 高 | open |
 | c4 | 结构图 Tab 布局：过门自检移到图视图之后 | 中 | open |
 | c5 | 结构图生成完成自动呈现一次（切 Tab + 轻提示） | 中 | open |
