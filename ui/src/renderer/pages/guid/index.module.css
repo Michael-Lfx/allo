@@ -2772,7 +2772,7 @@
    cross-two-rows membership card underneath; covers row; bottom composer. */
 .homeStage {
   display: grid;
-  grid-template-columns: minmax(0, 62fr) minmax(0, 38fr);
+  grid-template-columns: minmax(0, 70fr) minmax(0, 30fr);
   grid-template-rows: auto auto;
   column-gap: 12px;
   row-gap: 8px;

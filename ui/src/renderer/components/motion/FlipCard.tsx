@@ -49,6 +49,10 @@ export interface FlipCardProps {
   shadowColor?: string;
   shadowOpacity?: number;
   disabled?: boolean;
+  /** Keep the full visual interaction but let the caller own flip activation.
+   * When false, the root is not a button and renders no tab/click/key handler;
+   * pointer tilt, hover lift, glare and the rotor remain unchanged. */
+  interactive?: boolean;
   ariaLabel?: string;
   className?: string;
 }
@@ -104,6 +108,7 @@ const FlipCard: React.FC<FlipCardProps> = ({
   shadowColor = '#000000',
   shadowOpacity = 0.45,
   disabled = false,
+  interactive = true,
   ariaLabel = 'Flip card',
   className = '',
 }) => {
@@ -187,6 +192,9 @@ const FlipCard: React.FC<FlipCardProps> = ({
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (disabled || e.button !== 0 || grip.current) return;
+    // Let real buttons/links inside a face receive a normal click instead of
+    // having pointer capture retarget it to the card root.
+    if ((e.target as HTMLElement | null)?.closest('button, a, input, select, textarea')) return;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
@@ -281,11 +289,11 @@ const FlipCard: React.FC<FlipCardProps> = ({
   return (
     <div
       ref={rootRef}
-      role='button'
-      tabIndex={disabled ? -1 : 0}
-      aria-pressed={shown}
-      aria-label={ariaLabel}
-      aria-disabled={disabled || undefined}
+      role={interactive ? 'button' : 'group'}
+      tabIndex={interactive && !disabled ? 0 : undefined}
+      aria-pressed={interactive ? shown : undefined}
+      aria-label={interactive ? ariaLabel : undefined}
+      aria-disabled={interactive && disabled ? true : undefined}
       className={rootClass}
       data-axis={axis}
       data-draggable={draggable && !disabled && !reduce ? '' : undefined}
@@ -303,8 +311,8 @@ const FlipCard: React.FC<FlipCardProps> = ({
       onPointerLeave={() => {
         if (!grip.current) rest();
       }}
-      onKeyDown={onKeyDown}
-      onClick={onClick}
+      onKeyDown={interactive ? onKeyDown : undefined}
+      onClick={interactive ? onClick : undefined}
       onDragStart={(e) => e.preventDefault()}
       style={
         {

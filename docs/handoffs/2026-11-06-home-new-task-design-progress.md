@@ -440,3 +440,16 @@
 - 验证：1280×832 首页 `ambient=false`、构建图库 `ambient=true`、构建类别页 `ambient=true`；首页截图无卡片墙，构建类别页底部胶囊为 Coding。
 - 证据：`D:\tmp\flowy-build-categories\home-blank\home-blank-1280x832.png`、`build-stage-ambient-1280x832.png`。
 - 待跑完整门禁；本轮未提交。
+
+## 会员卡“签到月历”回执（2026-11-09）
+
+按确认方向实现全新会员卡：
+
+- 正面：当前月完整 6×7 月历，已签到日勾选，今日描边；顶部保留身份、套餐和积分余额，底部显示今日签到状态与本月签到天数；未登录、加载、失败、已签到状态区分。
+- 交互：点击卡片或“查看账户/返回签到”翻面，键盘通过按钮操作；不再使用 `FlipCard` 的 hover 预翻、3D spring、glare 和动态 blur 阴影，改成自绘 2D transform 翻转。
+- 背面：签到摘要 + 积分账户，包含今日签到、可用积分、本月签到和“查看积分明细”（实测跳转 `#/billing`）；没有公告 API，因此没有硬编码公告或未读气泡。
+- 数据：复用 `CreditsContext` 与 `getCheckinRecords`，本月签到天数用当月记录数，不新增后端、不 mock；沿用签到 cron timezone。
+- 布局：卡片 276px，高密度窗口 252px；1280×832 / 880×600 首页无页面级滚动，完整月历与底部 composer 共存；左侧入口行同步拉伸。
+- 证据：`D:\tmp\flowy-build-categories\card-review\`、`card-layout\`；桌面签到用户截图显示 3,640 积分、本月签到 9 天、今日 +1,000；guest 1280/880 截图正常。
+- 门禁：GUID+Billing+TaskProfileSelector tests 203 pass / 3 fail（失败身份同基线）、typecheck 71、所有 check 0、motion 82/82 基线、build:ui 0、diff-check 0。
+- 未提交：会员卡改动在当前工作树，等用户指令。

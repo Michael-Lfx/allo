@@ -1,14 +1,17 @@
 .slot {
   position: relative;
   width: 100%;
-  height: 100%;
-  min-width: 0;
+  height: 244px;
+  min-height: 244px;
   container-type: inline-size;
+  outline: none;
+  cursor: pointer;
 }
 
-.cardFill {
-  position: absolute;
-  inset: 0;
+.slot:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+  border-radius: 24px;
 }
 
 .front,
@@ -18,171 +21,326 @@
   height: 100%;
   box-sizing: border-box;
   overflow: hidden;
+  border-radius: inherit;
   font-family: var(--flowy-font-sans);
-  border-radius: inherit;
-}
-
-.front,
-.back {
-  border-radius: inherit;
+  --card-ink: #17171a;
+  --card-muted: rgba(48, 52, 68, 0.72);
+  --card-line: rgba(28, 28, 32, 0.14);
+  --card-badge-line: rgba(28, 28, 32, 0.18);
+  --card-badge-bg: rgba(255, 255, 255, 0.38);
+  --card-accent: var(--brand, var(--color-primary, #ffceb8));
+  --card-accent-wash: color-mix(in srgb, var(--card-accent) 14%, transparent);
+  --card-base-end: color-mix(in srgb, var(--card-accent) 10%, #f8f8fc);
+  --card-signed-bg: color-mix(in srgb, var(--card-ink) 8%, transparent);
+  --card-signed-line: color-mix(in srgb, var(--card-ink) 16%, transparent);
+  --card-today-ring: color-mix(in srgb, var(--card-ink) 52%, transparent);
 }
 
 .front {
-  padding: 16px;
-  background: var(--flowy-raised);
-  box-shadow: inset 0 0 0 1px var(--flowy-border-subtle);
-}
-
-.memberFace {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  width: 100%;
-  height: 100%;
+  padding: 18px 14px 12px;
+  background:
+    radial-gradient(90% 80% at 100% 88%, var(--card-accent-wash) 0%, transparent 58%),
+    radial-gradient(70% 90% at 0% 0%, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0) 52%),
+    linear-gradient(104deg, #eef3ff 0%, #f7f6fd 36%, #faf9fd 68%, var(--card-base-end) 100%);
+  box-shadow: inset 0 0 0 1px rgba(176, 190, 214, 0.45);
+}
+
+.front::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.postmark {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  width: 22px;
+  height: 34px;
+  fill: none;
+  stroke: color-mix(in srgb, var(--card-accent) 45%, var(--card-muted));
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.frontTop {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
   min-width: 0;
-  color: var(--color-text-1);
 }
 
-.memberName {
-  min-width: 0;
-  max-width: 100%;
+.month {
   overflow: hidden;
-  color: var(--color-text-1);
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 22px;
-  letter-spacing: -0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.memberNameHold {
-  display: block;
-  width: 96px;
-  height: 16px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-1) 10%, transparent);
-}
-
-.memberPlan {
-  width: 100%;
-  margin-top: auto;
-  padding-top: 8px;
-  overflow: hidden;
-  border-top: 1px solid var(--flowy-border-subtle);
-  color: var(--color-text-2);
+  color: var(--card-ink);
   font-size: 12px;
-  font-weight: 450;
+  font-weight: 600;
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.weekdays,
+.calendar {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.weekdays {
+  margin-top: 7px;
+  color: var(--card-muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 11px;
+  text-align: center;
+}
+
+.weekdays span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 1px;
+  margin-top: 1px;
+}
+
+.day,
+.blankDay {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+}
+
+.day {
+  color: var(--card-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.day.future {
+  opacity: 0.4;
+}
+
+.day.today {
+  box-shadow: inset 0 0 0 1px var(--card-today-ring);
+  color: var(--card-ink);
+  font-weight: 600;
+}
+
+.day.signed {
+  background: var(--card-signed-bg);
+  box-shadow: inset 0 0 0 1px var(--card-signed-line);
+  color: var(--card-ink);
+}
+
+.day.signed.today {
+  background: var(--card-signed-bg);
+  box-shadow: inset 0 0 0 1.5px var(--card-today-ring);
+}
+
+.dayNumber {
+  position: relative;
+  z-index: 1;
+}
+
+.dayCheck {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  color: var(--card-ink);
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .back {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 16px 24px;
+  padding: 14px 14px 12px;
   background:
     radial-gradient(80% 70% at 50% 42%, #ffffff 0%, rgba(255, 255, 255, 0) 72%),
     linear-gradient(180deg, #fcfcfe 0%, #f7f4f2 100%);
   box-shadow: inset 0 0 0 1px rgba(176, 190, 214, 0.28);
-  text-align: center;
 }
 
-.watermark {
-  position: absolute;
-  top: 46%;
-  left: 50%;
-  margin: 0;
-  color: color-mix(in srgb, var(--color-text-1) 5%, transparent);
-  font-size: clamp(48px, 18cqi, 88px);
-  font-weight: 600;
-  letter-spacing: -0.045em;
-  line-height: 0.85;
-  white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
-  transform: translate(-50%, -54%);
-}
-
-.quote {
+.backHead {
   position: relative;
   z-index: 1;
-  max-width: 34em;
-  margin: 0;
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  line-height: 17px;
-}
-
-.quoteCool,
-.quoteWarm {
-  display: block;
-  color: var(--color-text-1);
-}
-
-.meta {
-  position: absolute;
-  right: 16px;
-  bottom: 22px;
-  left: 16px;
-  z-index: 1;
-  margin: 0;
-  color: var(--color-text-2);
-  font-size: 11px;
-  font-weight: 450;
-  letter-spacing: 0.01em;
+  color: var(--card-ink);
+  font-size: 10px;
+  font-weight: 600;
   line-height: 14px;
-  text-align: left;
 }
 
-.metaLine {
-  display: block;
+.messageList {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  margin-top: 5px;
+}
+
+.messageRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--card-line);
+  color: var(--card-muted);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.messageRow strong {
+  overflow: hidden;
+  color: var(--card-ink);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todayValue {
+  max-width: 62%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.backWord {
-  position: absolute;
-  right: 0;
-  bottom: 10px;
-  left: 0;
+.backBottom {
+  position: relative;
   z-index: 1;
-  font-size: 15px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--card-line);
+}
+
+.identity {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+}
+
+.name {
+  max-width: 104px;
+  overflow: hidden;
+  color: var(--card-ink);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
   line-height: 18px;
-  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 18px;
+  max-width: 110px;
+  padding: 0 7px;
+  overflow: hidden;
+  border: 1px solid var(--card-badge-line);
+  border-radius: 999px;
+  background: var(--card-badge-bg);
+  color: var(--card-muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailButton {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--card-ink);
+  font: inherit;
+  font-size: 10px;
+  line-height: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.detailButton:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.detailButton:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+:global([data-home-compact='true']) .slot {
+  height: 232px;
+  min-height: 232px;
+}
+
+:global([data-theme='dark']) .front {
+  --card-ink: #f4f1ec;
+  --card-muted: rgba(236, 232, 226, 0.7);
+  --card-line: rgba(255, 255, 255, 0.15);
+  --card-badge-line: rgba(255, 255, 255, 0.28);
+  --card-badge-bg: rgba(255, 255, 255, 0.06);
+  --card-accent: var(--brand, var(--color-primary, #c9b6ac));
+  --card-accent-wash: color-mix(in srgb, var(--card-accent) 18%, transparent);
+  --card-base-end: color-mix(in srgb, var(--card-accent) 16%, #26242d);
+  background:
+    radial-gradient(85% 80% at 100% 88%, var(--card-accent-wash) 0%, transparent 58%),
+    radial-gradient(70% 80% at 0% 0%, rgba(120, 150, 210, 0.18) 0%, rgba(120, 150, 210, 0) 50%),
+    linear-gradient(104deg, #1a2333 0%, #242233 38%, #292631 70%, var(--card-base-end) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+:global([data-theme='dark']) .front::after {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 :global([data-theme='dark']) .back {
+  --card-ink: #f4f1ec;
+  --card-muted: rgba(236, 232, 226, 0.7);
+  --card-line: rgba(255, 255, 255, 0.15);
+  --card-badge-line: rgba(255, 255, 255, 0.28);
+  --card-badge-bg: rgba(255, 255, 255, 0.06);
   background:
     radial-gradient(80% 70% at 50% 42%, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0) 70%),
     linear-gradient(180deg, #1b2030 0%, #221f28 100%);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-
-@container (max-width: 220px) {
-  .memberName {
-    font-size: 14px;
-    line-height: 20px;
-  }
-
-  .memberPlan {
-    padding-top: 6px;
-    font-size: 12px;
-    line-height: 16px;
-  }
-
-  .quote {
-    font-size: 11px;
-    line-height: 15px;
-  }
-
-  .backWord {
-    font-size: 13px;
-  }
 }
