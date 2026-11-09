@@ -406,6 +406,7 @@
   "learningGraphAuditSelfRefTooltip": "The definition mentions the concept's own canonical name (ISO 704 forbids self-reference)",
   "learningGraphAuditMutual": "Mutual · {{name}}",
   "learningGraphAuditMutualTooltip": "References \"{{name}}\" and is referenced back — the shortest form of a circular definition",
+  "learningGraphAuditUnavailable": "Definition audit is unavailable right now: the concept list is shown as usual, but the audit column has no gap/self-reference/mutual markers.",
   "learningGraphTier_know": "Know",
   "learningGraphTier_apply": "Apply",
   "learningGraphTier_teach": "Teach",
