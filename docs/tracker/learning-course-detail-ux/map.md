@@ -89,7 +89,7 @@
 | c4 | 结构图 Tab 布局：过门自检移到图视图之后 | 中 | ✅ closed（ee3fad798；挂载三态段一并下移） |
 | c5 | 结构图生成完成自动呈现一次（切 Tab + 轻提示） | 中 | ✅ closed（5aca3276c；在场 + 离场零节点兜底，持久水位） |
 | c6 | 概念表修复（definition 渲染 / 互指覆盖写 bug / rowKey / error 拆分） | 高 | ✅ closed（5ad2867aa） |
-| c7 | 概念后端端点：单概念详情 + 全局总览 + other_courses 带 id + Rust 测试 | 高 | open |
+| c7 | 概念后端端点：单概念详情 + 全局总览 + other_courses 带 id + Rust 测试 | 高 | ✅ closed（7230cb291；learning 944/0） |
 | c8 | 概念详情页 + 总览页（路由/两页/概念表入口与行点击；blocked_by c7） | 高 | open |
 
 ## 验证总纲
