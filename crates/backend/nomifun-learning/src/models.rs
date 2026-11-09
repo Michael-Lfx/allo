@@ -2458,8 +2458,9 @@ pub struct GraphConceptRowView {
     pub definition: String,
     /// 本课程内教/假定该概念的节点（带学习者进度状态）。
     pub refs: Vec<GraphConceptRefView>,
-    /// 其他还在教该概念的课程标题（跨课程就绪的来源可见性）。
-    pub other_courses: Vec<String>,
+    /// 其他还在教该概念的课程（跨课程就绪的来源可见性；带 course_id——
+    /// c7 形状升级：原 `Vec<String>` 只有标题，前端无法跳转）。
+    pub other_courses: Vec<ConceptCourseTitleView>,
     /// 铸造出处（attestation 簿记，068：可空；`basis-declaration` =
     /// 已会声明铸入——前端据此出「已会声明」来源徽标）。
     #[serde(default)]
@@ -2492,6 +2493,86 @@ pub struct GraphConceptRefView {
     /// 概念正名）。
     pub ref_name: Option<String>,
     pub status: LessonStatus,
+}
+
+// ── 概念详情 / 全局总览（c7）：registry 是全局表（无课程归属列），概念
+// 页面与其数据端点也是全局面（不挂课程路由）─────────────────────────────
+
+/// 一条概念 → 概念的关系边（互指/提及/被提及共用；canonical 名随行展示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptLinkView {
+    pub concept_id: String,
+    pub canonical: String,
+}
+
+/// other_courses 行：标题之外带 course_id（前端可点跳课程详情）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptCourseTitleView {
+    pub course_id: String,
+    pub title: String,
+}
+
+/// 一门课程内对该概念的全部节点引用（详情页按课程分组的使用面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptCourseRefsView {
+    pub course_id: String,
+    pub course_title: String,
+    pub refs: Vec<GraphConceptRefView>,
+}
+
+/// 一门课程声明过该概念（`learning_basis_declarations` 锚行反查）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptDeclaredInView {
+    pub course_id: String,
+    pub course_title: String,
+}
+
+/// 单概念详情（`GET /api/learning/concepts/{concept_id}`）：条目 + 读时推导
+/// 关系（零 LLM 零写库；CONTEXT：登记表不存关系）+ 跨课程使用 + 声明使用。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptDetailView {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 活跃别名（j04 结构化记录；退役名不列）。
+    pub aliases: Vec<GraphConceptAliasView>,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub deprecated: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// 定义包含自身正名（自指；audit 同口径）。
+    pub self_reference: bool,
+    /// 互指 partner（双向提及，全部）。
+    pub mutual: Vec<ConceptLinkView>,
+    /// 本概念定义提到的其他概念（单向；互指 partner 不重复计入）。
+    pub mentions: Vec<ConceptLinkView>,
+    /// 定义提到本概念的其他概念（单向；互指 partner 不重复计入）。
+    pub mentioned_by: Vec<ConceptLinkView>,
+    /// 按课程分组的节点引用（teaches + assumes 全量；未删课程）。
+    pub usages: Vec<ConceptCourseRefsView>,
+    /// 声明过它的课程。
+    pub declared_in: Vec<ConceptDeclaredInView>,
+}
+
+/// 全局概念总览行（`GET /api/learning/concepts`）：登记表非废弃条目 + 计数
+/// 与审计旗标（细节进详情页，总览只给计数）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptOverviewRowView {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 活跃别名数。
+    pub alias_count: u32,
+    /// 在教/引用该概念的未删课程数（teaches + assumes 去重）。
+    pub course_count: u32,
+    /// 节点引用行数（teaches + assumes）。
+    pub ref_count: u32,
+    /// 声明过它的课程数。
+    pub declared_course_count: u32,
+    pub self_reference: bool,
+    /// 互指 partner 数。
+    pub mutual_count: u32,
 }
 
 // ── 已会声明（Declared Known，m2 / ADR-0032 移植）────────────────────────

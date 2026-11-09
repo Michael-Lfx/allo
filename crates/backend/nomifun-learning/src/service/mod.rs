@@ -623,6 +623,8 @@ mod capacity_feedback_tests;
 #[cfg(test)]
 mod concept_search_tests;
 #[cfg(test)]
+mod concept_view_tests;
+#[cfg(test)]
 mod tests;
 
 use self::course::CourseKbSources;

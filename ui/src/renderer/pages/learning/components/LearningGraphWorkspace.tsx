@@ -1113,7 +1113,9 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           width: 180,
           render: (_: unknown, row: GraphConceptRowView) =>
             row.other_courses.length > 0 ? (
-              <span className='text-12px text-t-secondary'>{row.other_courses.join('、')}</span>
+              <span className='text-12px text-t-secondary'>
+                {row.other_courses.map((course) => course.title).join('、')}
+              </span>
             ) : (
               <span className='text-12px text-t-tertiary'>—</span>
             ),
