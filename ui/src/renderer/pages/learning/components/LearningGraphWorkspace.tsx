@@ -888,12 +888,15 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
   );
 };
 
-/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源 + 定义审计行级标记。 */
+/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源 + 定义审计
+ * 行级标记 + 概念定义（c6：判断「是不是这个意思」的一手材料，行内常驻）。
+ * 审计与行表是两个请求两份错误（c6）：审计失败只降级审计列，不打翻整表。 */
 const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
   const [rows, setRows] = useState<GraphConceptRowView[] | null>(null);
   const [audit, setAudit] = useState<ConceptAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [auditUnavailable, setAuditUnavailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -901,20 +904,26 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
       learningApi
         .graphConcepts(courseId)
         .then((view) => {
-          if (!cancelled) setRows(view);
+          if (!cancelled) {
+            setRows(view);
+            setError(null);
+          }
         })
         .catch((loadError) => {
           if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
         });
-      // 定义审计（m9 只读）：与行表并行拉取，任一失败都明示（审计缺席是
-      // 静默误导——缺口看不见不等于没有缺口）。
+      // 定义审计（m9 只读）：与行表并行拉取；失败只降级审计列并明示
+      // （审计缺席是静默误导——缺口看不见不等于没有缺口），不打翻概念表。
       learningApi
         .conceptAudit(courseId)
         .then((report) => {
-          if (!cancelled) setAudit(report);
+          if (!cancelled) {
+            setAudit(report);
+            setAuditUnavailable(false);
+          }
         })
-        .catch((loadError) => {
-          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        .catch(() => {
+          if (!cancelled) setAuditUnavailable(true);
         });
     };
     load();
@@ -933,17 +942,22 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
     };
   }, [courseId]);
 
-  // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名）。
+  // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名——互指可多组，
+  // 收集全部而不是只剩最后一个 partner（c6 修覆盖写 bug））。
   const auditMarkers = useMemo(() => {
     const fragments = new Map<string, string[]>();
     const selfRefs = new Set<string>();
-    const mutualWith = new Map<string, string>();
+    const mutualWith = new Map<string, string[]>();
     if (audit) {
       for (const entry of audit.flagged) fragments.set(entry.concept_id, entry.fragments);
       for (const entry of audit.self_refs) selfRefs.add(entry.concept_id);
       for (const pair of audit.mutual_cycles) {
-        mutualWith.set(pair.a_concept_id, pair.b_name);
-        mutualWith.set(pair.b_concept_id, pair.a_name);
+        const aPartners = mutualWith.get(pair.a_concept_id) ?? [];
+        aPartners.push(pair.b_name);
+        mutualWith.set(pair.a_concept_id, aPartners);
+        const bPartners = mutualWith.get(pair.b_concept_id) ?? [];
+        bPartners.push(pair.a_name);
+        mutualWith.set(pair.b_concept_id, bPartners);
       }
     }
     return { fragments, selfRefs, mutualWith };
@@ -965,8 +979,8 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   const renderAuditMarkers = (row: GraphConceptRowView) => {
     const fragments = auditMarkers.fragments.get(row.concept_id) ?? [];
     const isSelfRef = auditMarkers.selfRefs.has(row.concept_id);
-    const mutualPartner = auditMarkers.mutualWith.get(row.concept_id);
-    if (fragments.length === 0 && !isSelfRef && !mutualPartner) {
+    const mutualPartners = auditMarkers.mutualWith.get(row.concept_id) ?? [];
+    if (fragments.length === 0 && !isSelfRef && mutualPartners.length === 0) {
       return <span className='text-12px text-t-tertiary'>—</span>;
     }
     return (
@@ -978,15 +992,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
             </Tag>
           </Tooltip>
         )}
-        {mutualPartner && (
+        {mutualPartners.map((partner) => (
           <Tooltip
-            content={t('learning.learningGraphAuditMutualTooltip', { name: mutualPartner })}
+            key={partner}
+            content={t('learning.learningGraphAuditMutualTooltip', { name: partner })}
           >
             <Tag size='small' color='purple' className='!mx-0'>
-              {t('learning.learningGraphAuditMutual', { name: mutualPartner })}
+              {t('learning.learningGraphAuditMutual', { name: partner })}
             </Tag>
           </Tooltip>
-        )}
+        ))}
         {fragments.length > 0 && (
           <Tooltip
             content={t('learning.learningGraphAuditFragmentsTooltip', {
@@ -1002,17 +1017,24 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
     );
   };
   return (
-    <Table
-      size='small'
-      border={{ wrapper: true, cell: true }}
-      pagination={false}
-      scroll={{ x: true }}
-      data={rows}
-      columns={[
+    <div className='flex flex-col gap-6px'>
+      {auditUnavailable && (
+        <Text type='warning' className='text-12px leading-18px'>
+          {t('learning.learningGraphAuditUnavailable')}
+        </Text>
+      )}
+      <Table
+        size='small'
+        border={{ wrapper: true, cell: true }}
+        pagination={false}
+        scroll={{ x: true }}
+        data={rows}
+        rowKey='concept_id'
+        columns={[
         {
           title: t('learning.learningGraphConceptCanonical'),
           dataIndex: 'canonical',
-          width: 160,
+          width: 200,
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='min-w-0'>
               <div className='flex items-center gap-4px'>
@@ -1025,6 +1047,15 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
                   </Tag>
                 )}
               </div>
+              {/* 概念定义常驻副行（c6）：两行截断 + 悬浮看全文——判断
+                  「是不是这个意思」不必离开表格。 */}
+              {row.definition.trim() !== '' && (
+                <Tooltip content={row.definition}>
+                  <div className='mt-2px text-11px leading-16px text-t-secondary [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden'>
+                    {row.definition}
+                  </div>
+                </Tooltip>
+              )}
               {row.aliases.length > 0 && (
                 <div className='truncate text-11px text-t-tertiary'>
                   {row.aliases
@@ -1091,10 +1122,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           title: t('learning.learningGraphConceptAudit'),
           dataIndex: 'audit',
           width: 200,
-          render: (_: unknown, row: GraphConceptRowView) => renderAuditMarkers(row),
+          render: (_: unknown, row: GraphConceptRowView) =>
+            auditUnavailable ? (
+              <span className='text-12px text-t-tertiary'>—</span>
+            ) : (
+              renderAuditMarkers(row)
+            ),
         },
-      ]}
-    />
+        ]}
+      />
+    </div>
   );
 };
 

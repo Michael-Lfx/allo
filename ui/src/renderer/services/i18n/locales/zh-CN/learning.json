@@ -406,6 +406,7 @@
   "learningGraphAuditSelfRefTooltip": "定义中出现了概念自身正名（ISO 704 禁止自指）",
   "learningGraphAuditMutual": "互指·{{name}}",
   "learningGraphAuditMutualTooltip": "与「{{name}}」互相引用——循环定义的最短形态",
+  "learningGraphAuditUnavailable": "定义审计暂不可用：概念列表照常显示，审计列暂不标记缺口/自指/互指。",
   "learningGraphTier_know": "知道",
   "learningGraphTier_apply": "会用",
   "learningGraphTier_teach": "能教",

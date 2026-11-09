@@ -3493,6 +3493,7 @@ export type I18nKey =
   | 'learning.learningGraphAuditMutualTooltip'
   | 'learning.learningGraphAuditSelfRef'
   | 'learning.learningGraphAuditSelfRefTooltip'
+  | 'learning.learningGraphAuditUnavailable'
   | 'learning.learningGraphAutoPreparing'
   | 'learning.learningGraphBasisCancel'
   | 'learning.learningGraphBasisConfirmContent'
