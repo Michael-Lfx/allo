@@ -410,3 +410,33 @@
 - **Optional 死代码/CSS**：移除未使用的 `showcaseAppCover` import、`homeCapabilityTitle`，删除旧 `.prep*` 样式块；typecheck 仍 71 条基线。
 - **Optional 背景性能证据**：1280×832 暗色首页实测 196 个墙格、2s 共 242 帧、平均 8.28ms、最大 8.6ms、>50ms 帧 0（headless 120Hz，仅帧采样，不是完整 trace）；记录于 `D:\\tmp\\flowy-build-categories\\perf-home.json`。
 - 视觉/交互边界：880×600 类别页提示词卡在 composer 上方可见，更多示例需滚动；真实桌面 1280×752 中文证据保留。
+
+## 推荐起步改“图片 + 标题”回执（2026-11-09 09:0x）
+
+按用户反馈调整：类别页的推荐起步不再显示提示词正文，改为图片+标题选项；点击仍按原逻辑填入提示词（已有草稿走替换确认）。
+
+- 每类 3 张图全部使用：主图用于类别页 hero，两张卡片分别使用与第一条/第二条提示词对应的图片；移除原“更多示例”条。
+- 浏览器证据：1280×832 / 880×600 的 DOM JSON 与截图更新；entry 空、2 张图片卡片、3 张图加载、首条填入、第二条确认、取消保留、返回保留草稿。
+- 真实桌面 1280×752 中文截图更新；紧凑档提示词卡在 composer 上方可见（prompt bottom 420.59 < composer top 450）。
+- 门禁：tests 137 pass / 3 fail 基线、typecheck 71、所有 check 0、motion 82/82 基线、build:ui 0、diff-check 0。
+- 未提交：新增的图片卡片改动在 5145db272 之后的工作树，等用户指令。
+
+## 构建模式与图片选项卡回执（2026-11-09 09:3x）
+
+按用户反馈修复“构建模块应选择代码开发”：
+
+- `GuidPage` 删除第二份 `homeTaskProfile`，改用 `composerMode`/`composerProfile` 从 `homeCapability` 派生；`useTaskProfileSelector` 增加可选受控 `value/onChange`，`GuidActionRow` 透传。构建类别页和点击示例后胶囊显示“代码开发”，发送 profile 也使用 coding；切到日常办公/幻灯片走同一受控回调。
+- 类别 tab 保持普通按钮组语义；当前 profile 从菜单中隐藏。
+- 推荐起步改为图片 + 标题选项，点击后仍填入对应提示词；9 张图分别用于 hero + 两张卡片（每类 3 张全部使用），移除多余文本/示例条。
+- 证据：`profile-check.mjs` 输出 home Daily office → gallery Daily office → stage Coding → filled Coding，菜单不含当前 Coding；真实桌面截图 `review-desktop/desktop-website-stage.png` 底部胶囊为“代码开发”；浏览器 1280×832 / 880×600 图片选项卡与提示词行为证据已刷新。
+- 门禁：GUID tests 137 pass/3 fail（另加 TaskProfileSelector 结构测试总 139 pass/3 fail，失败身份同基线）、typecheck 71、所有 check 0、motion 82/82 基线、build:ui 0、diff-check 0。
+- 未提交：本轮改动在 5145db272 之后的工作树，等用户指令。
+
+## 首页空白背景回执（2026-11-09）
+
+按用户要求把环境背景收窄到构建模块：
+
+- `showAmbientWall` 移除 `homeView === 'home'`，首页新建任务不再渲染 `guid-ambient-wall` / `SlideCardWall`；构建图库、构建类别页仍保留环境墙；幻灯片模块自己的 `slideStudioOpen` 分支不变。
+- 验证：1280×832 首页 `ambient=false`、构建图库 `ambient=true`、构建类别页 `ambient=true`；首页截图无卡片墙，构建类别页底部胶囊为 Coding。
+- 证据：`D:\tmp\flowy-build-categories\home-blank\home-blank-1280x832.png`、`build-stage-ambient-1280x832.png`。
+- 待跑完整门禁；本轮未提交。

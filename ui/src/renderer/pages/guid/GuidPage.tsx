@@ -69,7 +69,6 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
-import { useTaskProfileStore } from '@/renderer/stores/taskProfileStore';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import GuidEntryFlyout, { GuidAnchoredFlyout, type GuidEntryFlyoutMode } from './components/GuidEntryFlyout';
@@ -248,18 +247,21 @@ const HOME_BUILD_STAGE_COPY = {
   },
 } as const;
 
-const HOME_BUILD_MEDIA: Record<HomeBuildKind, { cover: string; examples: [string, string] }> = {
+const HOME_BUILD_MEDIA: Record<HomeBuildKind, { cover: string; hero: string; cards: [string, string] }> = {
   website: {
     cover: buildWebsiteMain,
-    examples: [buildWebsiteExhibition1, buildWebsiteExhibition2],
+    hero: buildWebsiteExhibition2,
+    cards: [buildWebsiteMain, buildWebsiteExhibition1],
   },
   app: {
     cover: buildAppMain,
-    examples: [buildAppSpending, buildAppHabits],
+    hero: buildAppHabits,
+    cards: [buildAppMain, buildAppSpending],
   },
   game: {
     cover: buildGameMain,
-    examples: [buildGameSokoban, buildGameNeon],
+    hero: buildGameNeon,
+    cards: [buildGameMain, buildGameSokoban],
   },
 };
 
@@ -334,7 +336,6 @@ const GuidPage: React.FC = () => {
     (visible: boolean) => handleChatPopupVisibleChange('strategy', visible),
     [handleChatPopupVisibleChange]
   );
-  const taskProfile = useTaskProfileStore((state) => state.taskProfile);
   // Home stage state machine: `home` shows the two entries + membership card;
   // a directory replaces them; a capability view shows that ability's prep area.
   const [homeView, setHomeView] = useState<'home' | 'develop-directory' | 'create-directory' | 'capability'>('home');
@@ -353,7 +354,6 @@ const GuidPage: React.FC = () => {
     slides: { text: '', dir: '', files: [], slideOptions: null },
     video: { text: '', dir: '', files: [], slideOptions: null },
   });
-  const [homeTaskProfile, setHomeTaskProfile] = useState<'coding' | null>(null);
   // Build directory category; drives the prepared prompts and the preview copy.
   const [homeBuildKind, setHomeBuildKind] = useState<HomeBuildKind | null>(null);
   // Video capability: local homepage draft parameters. Nothing is uploaded or
@@ -653,6 +653,7 @@ const GuidPage: React.FC = () => {
   const switchHomeCapability = useCallback(
     (next: HomeCapability) => {
       if (next === homeCapability) return;
+      setPendingExample(null);
       const leaving = homeDraftsRef.current[homeCapability];
       homeDraftsRef.current[homeCapability] = {
         text: guidInput.input,
@@ -668,7 +669,6 @@ const GuidPage: React.FC = () => {
       // or send a template imported for slides.
       setSlideOptions(next === 'slides' ? (draft.slideOptions ?? DEFAULT_SLIDE_OPTIONS) : null);
       if (next !== 'slides') setSlidePanelOpen(false);
-      setHomeTaskProfile(next === 'develop' ? 'coding' : null);
       setHomeCapability(next);
       focusHomeComposer();
     },
@@ -1174,6 +1174,25 @@ const GuidPage: React.FC = () => {
     [supportsHomeGoalCommand, t],
   );
   const activeBuildKind: HomeBuildKind = homeBuildKind ?? 'website';
+  const composerMode: 'office' | 'coding' | 'slides' =
+    homeCapability === 'slides' ? 'slides' : homeCapability === 'develop' ? 'coding' : 'office';
+  const composerProfile: 'office' | 'coding' = composerMode === 'coding' ? 'coding' : 'office';
+  const handleHomeTaskProfileChange = useCallback(
+    (profile: 'office' | 'coding') => {
+      if (profile === 'coding') {
+        if (homeCapability !== 'develop') {
+          switchHomeCapability('develop');
+          setHomeView('home');
+        }
+        return;
+      }
+      if (homeCapability !== 'office') {
+        switchHomeCapability('office');
+        setHomeView('home');
+      }
+    },
+    [homeCapability, switchHomeCapability],
+  );
   const homePlaceholder =
     homeCapability === 'slides'
       ? t('presentation.home.placeholder')
@@ -1235,10 +1254,11 @@ const GuidPage: React.FC = () => {
   // Entering slides restores the slide-card wall independently of whether the
   // template panel is expanded; closing the panel keeps the wall and the mode.
   const slideStudioOpen = supportsHomeGoalCommand && homeCapability === 'slides';
+  // Plain "new task" home stays blank; only the build directory/stage reuse the
+  // slide wall as an ambient layer. Slides owns the wall through slideStudioOpen.
   const showAmbientWall =
     !slideStudioOpen &&
-    (homeView === 'home' ||
-      homeView === 'develop-directory' ||
+    (homeView === 'develop-directory' ||
       (homeView === 'capability' && homeCapability === 'develop'));
   // ESC: native selectors, dropdown menus and mention popovers keep priority;
   // then the template panel, then the capability layer, then the directory.
@@ -1810,7 +1830,7 @@ const GuidPage: React.FC = () => {
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
     reasoningEffort: effectiveReasoningEffort,
-    taskProfile: homeTaskProfile ?? taskProfile,
+    taskProfile: composerProfile,
 
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
@@ -2578,6 +2598,8 @@ const GuidPage: React.FC = () => {
       onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
       slidesActive={supportsHomeGoalCommand && homeCapability === 'slides'}
       onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
+      taskProfile={composerProfile}
+      onTaskProfileChange={handleHomeTaskProfileChange}
       slideControls={
         homeCapability === 'slides' && slideOptions !== null ? (
           <SlideOptionsControls
@@ -2670,7 +2692,7 @@ const GuidPage: React.FC = () => {
                       </div>
                     </div>
                     <div className={styles.buildHero}>
-                      <img className={styles.buildHeroImage} src={HOME_BUILD_MEDIA[activeBuildKind].cover} alt='' />
+                      <img className={styles.buildHeroImage} src={HOME_BUILD_MEDIA[activeBuildKind].hero} alt='' />
                       <div className={styles.buildHeroCopy}>
                         <h2 className={styles.buildHeroTitle}>{t(HOME_BUILD_STAGE_COPY[activeBuildKind].headline)}</h2>
                         <p className={styles.buildHeroSubtitle}>{t(HOME_BUILD_STAGE_COPY[activeBuildKind].subtitle)}</p>
@@ -2678,7 +2700,7 @@ const GuidPage: React.FC = () => {
                     </div>
                     <h3 className={styles.buildSectionTitle}>{t('guid.home.buildPrep.promptsTitle')}</h3>
                     <div className={styles.buildPromptGrid}>
-                      {(['first', 'second'] as const).map((slot) => (
+                      {(['first', 'second'] as const).map((slot, index) => (
                         <button
                           key={slot}
                           type='button'
@@ -2686,19 +2708,17 @@ const GuidPage: React.FC = () => {
                           data-testid={`guid-home-build-prompt-${activeBuildKind}-${slot}`}
                           onClick={() => requestBuildPrompt(activeBuildKind, slot)}
                         >
+                          <img
+                            className={styles.buildPromptImage}
+                            src={HOME_BUILD_MEDIA[activeBuildKind].cards[index]}
+                            alt=''
+                          />
                           <span className={styles.buildPromptBody}>
                             <span className={styles.buildPromptLabel}>
                               {t(HOME_BUILD_COPY[activeBuildKind][slot === 'first' ? 'firstLabel' : 'secondLabel'])}
                             </span>
-                            <span className={styles.buildPromptText}>{t(HOME_BUILD_COPY[activeBuildKind][slot])}</span>
                           </span>
                         </button>
-                      ))}
-                    </div>
-                    <h3 className={styles.buildSectionTitle}>{t('guid.home.buildPrep.examplesTitle')}</h3>
-                    <div className={styles.buildExampleStrip}>
-                      {HOME_BUILD_MEDIA[activeBuildKind].examples.map((src, index) => (
-                        <img key={index} src={src} alt='' aria-hidden='true' />
                       ))}
                     </div>
                     <p className={styles.buildStageHint}>{t('guid.home.buildPrep.hint')}</p>

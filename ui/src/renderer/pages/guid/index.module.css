@@ -4009,23 +4009,6 @@ button.homePrepHero:focus-visible {
   line-height: 18px;
 }
 
-.buildExampleStrip {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.buildExampleStrip img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 4;
-  object-fit: cover;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
-  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
-  opacity: 0.86;
-}
-
 .buildPromptGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4034,7 +4017,6 @@ button.homePrepHero:focus-visible {
 
 .buildPromptCard {
   display: flex;
-  min-height: 92px;
   flex-direction: column;
   min-width: 0;
   margin: 0;
@@ -4054,6 +4036,14 @@ button.homePrepHero:focus-visible {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
 }
 
+.buildPromptImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+}
+
 .buildPromptBody {
   display: flex;
   flex-direction: column;
@@ -4067,16 +4057,6 @@ button.homePrepHero:focus-visible {
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
-}
-
-.buildPromptText {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--color-text-2);
-  font-size: 11px;
-  line-height: 16px;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .buildStageHint {
@@ -4153,11 +4133,18 @@ button.homePrepHero:focus-visible {
 }
 
 :global([data-home-compact='true']) .buildPromptCard {
-  min-height: 78px;
+  flex-direction: column;
+  min-height: 0;
+}
+
+:global([data-home-compact='true']) .buildPromptImage {
+  flex: none;
+  width: 100%;
+  aspect-ratio: 16 / 5;
 }
 
 :global([data-home-compact='true']) .buildPromptBody {
-  padding: 8px 10px 9px;
+  padding: 8px 10px;
 }
 
 
@@ -4178,11 +4165,22 @@ button.homePrepHero:focus-visible {
     font-size: 21px;
   }
 
-  .buildPromptCard {
-    min-height: 82px;
-  }
 
-  .buildExampleStrip img {
-    aspect-ratio: 16 / 3.4;
-  }
+}
+
+
+/* Final compact fit for image+title prompt cards: keep both cards entirely
+   above the fixed composer at 880x600 while leaving the hero readable. */
+:global([data-home-compact='true']) .buildHero {
+  height: 132px;
+  min-height: 0;
+}
+
+:global([data-home-compact='true']) .buildHeroImage {
+  height: 132px;
+  min-height: 0;
+}
+
+:global([data-home-compact='true']) .buildPromptImage {
+  aspect-ratio: 16 / 4.5;
 }

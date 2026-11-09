@@ -7,7 +7,7 @@ import { entryFlyoutPositionStyle, useEntryFlyoutBox } from './entryFlyoutPlacem
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
-import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
+import TaskProfileSelector, { type TaskProfile } from '@/renderer/components/agent/TaskProfileSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { AvailableAgent } from '../types';
@@ -89,6 +89,9 @@ type GuidActionRowProps = {
   /** Home "Slides" work mode (Nomi only); omitted hides the entry. */
   slidesActive?: boolean;
   onSlidesChange?: (active: boolean) => void;
+  /** Optional controlled home work profile (build capability = coding). */
+  taskProfile?: TaskProfile;
+  onTaskProfileChange?: (profile: TaskProfile) => void;
   /** ppt-master option pills, rendered after the work-mode selector in slides mode. */
   slideControls?: React.ReactNode;
   /** When true the primary button starts an AutoWork session (no chat send):
@@ -143,6 +146,8 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onGoalModeChange,
   slidesActive = false,
   onSlidesChange,
+  taskProfile,
+  onTaskProfileChange,
   slideControls,
   autoWorkMode = false,
 }) => {
@@ -321,6 +326,8 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         <TaskProfileSelector
           compact
           className={styles.composerTaskProfile}
+          value={taskProfile}
+          onChange={onTaskProfileChange}
           slidesActive={slidesActive}
           onSlidesChange={onSlidesChange}
         />
