@@ -2,8 +2,8 @@
 id: c6
 title: "概念表修复：渲染 definition / 互指覆盖写 bug / rowKey / 审计失败降级不整表报错"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -49,3 +49,20 @@ part_of: ../map.md
 
 - 行点击进详情、页头「全部概念」入口、other_courses 可点链接（c8，依赖 c7
   端点与 DTO）；后端改动（c7）。
+
+## Resolution（2026-11-09 施工收口）
+
+**全验收过，闭票。** 施工 = `5ad2867aa`。
+
+- **定义常驻**：概念列（宽 160→200）在名称下渲染 `definition` 两行截断
+  （`-webkit-line-clamp` 任意值类）+ Tooltip 全文；空定义不渲染占位。
+- **互指多 partner**：`mutualWith` 改 `Map<string, string[]>` 收集全部，审计列逐
+  个渲染「互指·{name}」chip（原覆盖写只剩最后一个）。
+- **rowKey**：`rowKey='concept_id'`。
+- **错误隔离**：概念列表与审计两份状态——列表失败才整表报错（且成功重拉会清
+  错）；审计失败 → 表格照常、审计列显「—」、表上方 warning 文案
+  `learningGraphAuditUnavailable`（新 key 双侧对称；审计缺席必须明示，不静默）。
+- **验收**：typecheck 55 错持平存量（learning/i18n 零错）；`check:i18n` /
+  `check:theme` / `check:css-scope` / `check:motion` 绿；`check:dead-css` 红但
+  全部命中在本波未触文件（Wallpaper/Herdsman/CloudLogin/eval 等存量债），
+  `pages/learning` 零命中——记入汇总门存量清单。
