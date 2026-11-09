@@ -279,21 +279,25 @@ const LearningGraphWorkspace: React.FC<{
       try {
         const result = await learningApi.declareBasis(detail.course.id, doors);
         setBasisDraftChecked([]);
+        // 声明反馈走非阻塞 toast（c2）：阻塞弹窗叠在冻结展示上是二次打断；
+        // 失败保持 Modal——需要用户看见并处置。
         if (result.noop) {
-          Modal.info({ title: t('learning.learningGraphBasisDeclareNoop') });
+          Message.info(t('learning.learningGraphBasisDeclareNoop'));
         } else {
-          Modal.info({
-            title: t('learning.learningGraphBasisDeclareDoneTitle'),
-            content: t('learning.learningGraphBasisDeclareDone', {
+          Message.success(
+            t('learning.learningGraphBasisDeclareDone', {
               doors: result.doors.join('、'),
               blocks: result.blocks.join('、'),
               minted: result.minted,
               reused: result.reused,
-            }),
-          });
+            })
+          );
         }
         const view = await learningApi.basisView(detail.course.id);
         setBasis(view);
+        // 声明改就绪集/推荐集（声明概念按能教计）：立即重拉课程详情，调度
+        // 效果当场可见，而不是等下次无关刷新。
+        onRefresh();
       } catch (actionError) {
         Modal.error({
           title: t('learning.learningGraphBasisDeclareFailed'),
@@ -303,7 +307,7 @@ const LearningGraphWorkspace: React.FC<{
         setDeclaringBasis(false);
       }
     },
-    [detail.course.id, t]
+    [detail.course.id, onRefresh, t]
   );
 
   const revokeBasis = useCallback(async () => {
@@ -689,10 +693,12 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
         });
     };
     load();
-    // 生长全程都会改批次时间线（生长开始落 pending 行、终结落定状态）——
-    // 组件自订阅事件流：课程详情刷新不经过本组件，靠它自己重拉。
+    // 只有生长回合改批次时间线（开始落 pending 行、终结落定状态）——生长
+    // 全程之外的帧（basis_declared 等）与本账本无关，过滤掉避免无意义闪刷
+    // （c2：声明不该让历史列表重拉）。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id === courseId) load();
+      if (event.course_id !== courseId) return;
+      if ((event.event ?? '').startsWith('growth_')) load();
     });
     return () => {
       cancelled = true;
@@ -795,9 +801,15 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
         });
     };
     load();
-    // 批行/维护动作的终态帧同通道：生长与结构回合结束都可能添行。
+    // 账本行只由生长回合（auto_refill 补批）与结构维护回合（挂载/修补）写
+    // ——只听这三组帧（c2）：basis_declared 等其余事件不添行，不过滤会
+    // 假刷新。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id === courseId) load();
+      if (event.course_id !== courseId) return;
+      const name = event.event ?? '';
+      if (name.startsWith('growth_') || name.startsWith('structure_mount_') || name.startsWith('structure_repair_')) {
+        load();
+      }
     });
     return () => {
       cancelled = true;
@@ -884,9 +896,14 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
         });
     };
     load();
-    // 生长落库会铸新概念入登记表——概念表自订阅事件流，落库后重拉。
+    // 生长落库会铸新概念入登记表、结构回合改节点引用、声明给概念打已会标
+    // ——听这三组（c2）；其余帧（如 basis_revoked，UI 已无入口）不重拉。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id === courseId) load();
+      if (event.course_id !== courseId) return;
+      const name = event.event ?? '';
+      if (name.startsWith('growth_') || name.startsWith('structure_') || name === 'basis_declared') {
+        load();
+      }
     });
     return () => {
       cancelled = true;
