@@ -13,6 +13,8 @@
      `!important`. Static article cards never enter this rule. */
   --flowy-radius-control: var(--flowy-radius-lg, 12px);
   --entry-accent: color-mix(in srgb, rgb(var(--primary-6)) 82%, currentColor);
+  --feature-hover-duration: 800ms;
+  --feature-bar-duration: 555ms;
   position: relative;
   display: flex;
   align-items: center;
@@ -81,25 +83,48 @@
   color: var(--color-text-2);
 }
 
-.artSource {
-  opacity: 0.77;
+.artFrameTrace {
+  opacity: 0;
+  stroke: var(--entry-accent);
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  transition:
+    stroke-dashoffset var(--feature-hover-duration, 800ms) cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.artLink,
+.artStateCode,
+.artStateLine,
+.artStatePage,
+.artStateBars {
+  transition:
+    opacity var(--feature-hover-duration, 800ms) cubic-bezier(0.2, 0.8, 0.2, 1),
+    clip-path var(--feature-hover-duration, 800ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.artStateCode,
+.artStateLine {
+  opacity: 1;
+}
+
+.artStatePage,
+.artStateBars {
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+}
+
+.artBar {
+  fill: color-mix(in srgb, var(--entry-accent) 10%, transparent);
+  stroke: var(--entry-accent);
+  transform-box: fill-box;
+  transform-origin: bottom;
+  transform: scaleY(0);
+  transition: transform var(--feature-bar-duration, 560ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition-delay: var(--bar-delay, 0ms);
+}
+
 .artAccent {
   stroke: var(--entry-accent, currentColor);
-}
-
-.artPlate {
-  fill: var(--flowy-raised);
-}
-
-.artResult,
-.artSource,
-.artLink {
-  transform-box: fill-box;
-  transform-origin: center;
-  transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -108,17 +133,45 @@
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
   }
 
-  .entryButton:hover .artResult {
-    transform: translateY(-4px);
+  .entryButton:hover .artStateCode,
+  .entryButton:hover .artStateLine {
+    opacity: 0;
   }
 
-  .entryButton:hover .artSource {
-    transform: translateY(2px);
+  .entryButton:hover .artStatePage,
+  .entryButton:hover .artStateBars {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
   }
 
-  .entryButton:hover .artLink {
-    transform: translateX(3px);
+  .entryButton:hover .artFrameTrace {
+    opacity: 1;
+    stroke-dashoffset: 0;
   }
+
+  .entryButton:hover .artBar {
+    transform: scaleY(1);
+  }
+}
+
+.entryButton:focus-visible .artStateCode,
+.entryButton:focus-visible .artStateLine {
+  opacity: 0;
+}
+
+.entryButton:focus-visible .artStatePage,
+.entryButton:focus-visible .artStateBars {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+}
+
+.entryButton:focus-visible .artFrameTrace {
+  opacity: 1;
+  stroke-dashoffset: 0;
+}
+
+.entryButton:focus-visible .artBar {
+  transform: scaleY(1);
 }
 
 .entryButton:focus-visible {
@@ -156,15 +209,53 @@
 
 @media (prefers-reduced-motion: reduce) {
   .entryButton,
-  .artResult,
-  .artSource,
-  .artLink {
+  .artWindowFrame,
+  .artStateCode,
+  .artStateLine,
+  .artStatePage,
+  .artStateBars,
+  .artBar,
+  .artFrameTrace {
     transition: none;
   }
 
-  .entryButton:hover .artResult,
-  .entryButton:hover .artSource,
-  .entryButton:hover .artLink {
-    transform: none !important;
+  .entryButton:hover .artFrameTrace {
+    opacity: 0;
+    stroke-dashoffset: 1;
+  }
+
+  .entryButton:hover .artStateCode,
+  .entryButton:hover .artStateLine {
+    opacity: 1 !important;
+  }
+
+  .entryButton:hover .artStatePage,
+  .entryButton:hover .artStateBars {
+    opacity: 0 !important;
+    clip-path: inset(0 100% 0 0) !important;
+  }
+
+  .entryButton:hover .artBar {
+    transform: scaleY(0) !important;
+  }
+
+  .entryButton:focus-visible .artFrameTrace {
+    opacity: 0;
+    stroke-dashoffset: 1;
+  }
+
+  .entryButton:focus-visible .artStateCode,
+  .entryButton:focus-visible .artStateLine {
+    opacity: 1 !important;
+  }
+
+  .entryButton:focus-visible .artStatePage,
+  .entryButton:focus-visible .artStateBars {
+    opacity: 0 !important;
+    clip-path: inset(0 100% 0 0) !important;
+  }
+
+  .entryButton:focus-visible .artBar {
+    transform: scaleY(0) !important;
   }
 }
