@@ -3638,7 +3638,6 @@ export type I18nKey =
   | 'learning.learningGraphBasisConfirmTitle'
   | 'learning.learningGraphBasisDeclareButton'
   | 'learning.learningGraphBasisDeclareDone'
-  | 'learning.learningGraphBasisDeclareDoneTitle'
   | 'learning.learningGraphBasisDeclareFailed'
   | 'learning.learningGraphBasisDeclareNoop'
   | 'learning.learningGraphBasisDeclaredDoors'

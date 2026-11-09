@@ -516,7 +516,6 @@
   "learningGraphBasisRevokeConfirmOk": "确认撤销",
   "learningGraphBasisRevokeFailed": "撤销声明失败",
   "learningGraphBasisDeclareNoop": "勾选的门口均已声明过：本次零改动（幂等增量）。",
-  "learningGraphBasisDeclareDoneTitle": "已会声明完成",
   "learningGraphBasisDeclareDone": "门口 {{doors}} 已声明为已会，命中块：{{blocks}}；铸出新概念 {{minted}} 个、复用既有概念 {{reused}} 个（零节点、零排课、零 XP）。",
   "learningGraphBasisDeclareFailed": "已会声明失败",
   "learningGraphBasisOff": "已会声明通道未开启",
