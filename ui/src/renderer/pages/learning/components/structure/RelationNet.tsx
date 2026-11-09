@@ -78,12 +78,12 @@ export function RelationNet({ structure }: { structure: StructureView }) {
   return (
     <div className='flex flex-col gap-8px'>
       <div className='flex flex-wrap items-center gap-8px text-12px'>
-        <TextLabel>{t('learningGraphStructRelationFilter')}:</TextLabel>
+        <TextLabel>{t('learning.learningGraphStructRelationFilter')}:</TextLabel>
         {[
-          ['__all__', t('learningGraphStructRelationAll')],
-          ['assumes', t('learningGraphStructRelation_assumes')],
-          ['composes', t('learningGraphStructRelation_composes')],
-          ['contrasts', t('learningGraphStructRelation_contrasts')],
+          ['__all__', t('learning.learningGraphStructRelationAll')],
+          ['assumes', t('learning.learningGraphStructRelation_assumes')],
+          ['composes', t('learning.learningGraphStructRelation_composes')],
+          ['contrasts', t('learning.learningGraphStructRelation_contrasts')],
         ].map(([value, label]) => (
           <FilterChip
             key={value}
@@ -94,7 +94,7 @@ export function RelationNet({ structure }: { structure: StructureView }) {
           </FilterChip>
         ))}
         <span className='mx-4px text-t-tertiary'>·</span>
-        <TextLabel>{t('learningGraphStructHideSpines')}:</TextLabel>
+        <TextLabel>{t('learning.learningGraphStructHideSpines')}:</TextLabel>
         {structure.spines.map((spine) => (
           <FilterChip
             key={spine.name}
@@ -111,7 +111,7 @@ export function RelationNet({ structure }: { structure: StructureView }) {
       </div>
       {structure.hubs.length > 0 && (
         <div className='flex flex-wrap items-center gap-6px text-11px text-t-secondary'>
-          {t('learningGraphStructHubs')}:
+          {t('learning.learningGraphStructHubs')}:
           {structure.hubs.map((hub) => (
             <span
               key={hub.name}
@@ -132,13 +132,13 @@ export function RelationNet({ structure }: { structure: StructureView }) {
         onSelect={setSelected}
       />
       <span className='text-11px text-t-tertiary'>
-        {t('learningGraphStructCounts', {
+        {t('learning.learningGraphStructCounts', {
           blocks: visibleBlocks.length,
           spines: structure.spines.length,
         })}
         {' · '}
-        {t('learningGraphStructEdgeCount', { edges: visibleEdges.length })}
-        {unregistered.length > 0 ? ` · ${t('learningGraphStructUnregistered', { count: unregistered.length })}` : ''}
+        {t('learning.learningGraphStructEdgeCount', { edges: visibleEdges.length })}
+        {unregistered.length > 0 ? ` · ${t('learning.learningGraphStructUnregistered', { count: unregistered.length })}` : ''}
       </span>
       {selected && (
         <BlockDetail block={selected} structure={structure} onClose={() => setSelected(null)} />
