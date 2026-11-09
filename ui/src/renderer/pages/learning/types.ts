@@ -915,12 +915,80 @@ export interface GraphConceptRowView {
   definition: string;
   /** 本课程内教/假定该概念的节点（带学习者进度状态） */
   refs: GraphConceptRefView[];
-  /** 其他还在教该概念的课程标题（跨课程就绪的来源可见性） */
-  other_courses: string[];
+  /** 其他还在教该概念的课程（跨课程就绪的来源可见性；c7 起带 course_id 可跳转） */
+  other_courses: ConceptCourseTitleView[];
   /** 铸造出处（attestation 簿记；'basis-declaration' = 已会声明铸入） */
   source?: string | null;
   /** 本课已会声明覆盖该概念（声明锚反查；无节点也入表） */
   declared?: boolean;
+}
+
+// ── 概念详情 / 全局总览（c7）：registry 是全局表，概念页面是全局面 ──────────
+
+/** 一条概念 → 概念关系边（互指/提及/被提及共用） */
+export interface ConceptLinkView {
+  concept_id: string;
+  canonical: string;
+}
+
+/** other_courses 行：标题之外带 course_id（可点跳课程） */
+export interface ConceptCourseTitleView {
+  course_id: string;
+  title: string;
+}
+
+/** 一门课程内对该概念的全部节点引用（详情页按课程分组） */
+export interface ConceptCourseRefsView {
+  course_id: string;
+  course_title: string;
+  refs: GraphConceptRefView[];
+}
+
+/** 一门课程声明过该概念（已会声明锚反查） */
+export interface ConceptDeclaredInView {
+  course_id: string;
+  course_title: string;
+}
+
+/** 单概念详情：条目 + 读时推导关系 + 跨课程使用 + 声明使用 */
+export interface ConceptDetailView {
+  concept_id: string;
+  canonical: string;
+  definition: string;
+  aliases: GraphConceptAliasView[];
+  source?: string | null;
+  deprecated: boolean;
+  created_at: number;
+  updated_at: number;
+  /** 定义包含自身正名（自指） */
+  self_reference: boolean;
+  /** 互指 partner（全部；不重复出现在单向 mentions/mentioned_by） */
+  mutual: ConceptLinkView[];
+  /** 本概念定义提到的其他概念（单向） */
+  mentions: ConceptLinkView[];
+  /** 定义提到本概念的其他概念（单向） */
+  mentioned_by: ConceptLinkView[];
+  /** 按课程分组的节点引用（teaches + assumes 全量） */
+  usages: ConceptCourseRefsView[];
+  /** 声明过它的课程 */
+  declared_in: ConceptDeclaredInView[];
+}
+
+/** 全局概念总览行：登记表非废弃条目 + 计数与审计旗标 */
+export interface ConceptOverviewRowView {
+  concept_id: string;
+  canonical: string;
+  definition: string;
+  alias_count: number;
+  /** 在教/引用该概念的未删课程数（teaches + assumes 去重） */
+  course_count: number;
+  /** 节点引用行数（teaches + assumes） */
+  ref_count: number;
+  /** 声明过它的课程数 */
+  declared_course_count: number;
+  self_reference: boolean;
+  /** 互指 partner 数 */
+  mutual_count: number;
 }
 
 // ── 已会声明（Declared Known，m2）──────────────────────────────────────────
