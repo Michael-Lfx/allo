@@ -530,6 +530,12 @@ pub const MIGRATED_GLOBAL_STATE_KEYS: &[&str] = &[
 /// `companion_runtime_state` key for one companion's mood word.
 pub const MOOD_KEY: &str = "mood";
 
+/// The full v3 baseline DDL: every baseline table plus its named indexes. This
+/// is the ONE schema source — fresh stores replay it once, and the boot repair
+/// replays it on EVERY open of an existing v3 store — so every statement here
+/// must stay `IF NOT EXISTS`-shaped. That shape is pinned by
+/// `tests::schema_replay_only_contains_if_not_exists_creates`; the FTS stanza
+/// lives separately in [`FTS_SCHEMA`].
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS companion_memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1558,39 +1564,37 @@ async fn create_baseline_schema(pool: &SqlitePool) -> Result<(), AppError> {
     validate_baseline_schema(pool).await
 }
 
-/// Idempotent baseline repair for stores that already carry
-/// `user_version = STORE_VERSION` but predate a baseline addition that shipped
-/// without a `STORE_VERSION` bump: j05 added `companion_learning_xp` to
-/// [`SCHEMA`] and the validation registry while the version stayed 3, so every
-/// main-era store opened into a hard "missing table" boot failure (the
-/// 2026-11-09 upgrade drill reproduced it on an untouched data directory).
+/// Idempotent baseline repair: a plain replay of [`SCHEMA`] — the SAME single
+/// source that creates fresh stores (and that `collapse_owner_columns` replays
+/// for its rebuilds); no second DDL list exists to drift. Every statement is
+/// already `IF NOT EXISTS`-shaped, so on a complete store this pass writes
+/// nothing, and a future baseline addition needs no new migration here: adding
+/// the table and its indexes to [`SCHEMA`] alone keeps older same-version
+/// stores bootable. Shipping a baseline addition without a `STORE_VERSION`
+/// bump is the supported mechanism this pass exists to absorb (it is how j05's
+/// `companion_learning_xp` landed while the version stayed 3, which is why the
+/// 2026-11-09 upgrade drill reproduced a hard "missing table" boot failure on
+/// every main-era store before this pass existed).
 ///
-/// The repair is a plain replay of [`SCHEMA`] — the SAME single source that
-/// creates fresh stores (and that `collapse_owner_columns` replays for its
-/// rebuilds); no second DDL list exists to drift. Every statement is already
-/// `IF NOT EXISTS`-shaped, so on a complete store this pass writes nothing,
-/// and a future baseline increment needs no new migration here: adding the
-/// table to [`SCHEMA`] alone keeps older same-version stores bootable.
+/// Called only from the tail of [`upgrade_schema_in_place`], which owns BOTH
+/// gates in one place: the `user_version = STORE_VERSION` check and the
+/// `companion_memories` presence check. Stores outside the v3 layout —
+/// unversioned, future-version, or missing `companion_memories` — never reach
+/// this replay and get zero writes; they are left for
+/// `validate_baseline_schema` to reject loudly.
 ///
 /// Boundaries, deliberately narrow:
-/// - Only MISSING objects are filled. SQLite's `IF NOT EXISTS` compares names,
-///   not bodies, so an existing table or index with the wrong shape is left
-///   untouched and still reaches `validate_baseline_schema`, which keeps
-///   failing the boot loudly — repair and contract enforcement stay separate.
-/// - Only v3 stores are repaired (same gate as `upgrade_schema_in_place`);
-///   unversioned or future-version stores get zero writes here.
+/// - Only MISSING objects are filled: the baseline tables and their named
+///   indexes (hence "schema objects", not just tables). SQLite's
+///   `IF NOT EXISTS` compares names, not bodies, so an existing table or index
+///   with the wrong shape is left untouched and still reaches
+///   `validate_baseline_schema`, which keeps failing the boot loudly — repair
+///   and contract enforcement stay separate.
 /// - The FTS index is not part of this pass: its missing case is owned by
 ///   `upgrade_schema_in_place` (which creates and rebuilds it), and a v3 store
 ///   missing even `companion_memories` is corruption, not a migration
 ///   artifact — that stays fail-loud by design.
-async fn ensure_baseline_tables(pool: &SqlitePool) -> Result<(), AppError> {
-    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(pool)
-        .await
-        .map_err(db_err)?;
-    if version != STORE_VERSION {
-        return Ok(());
-    }
+async fn ensure_baseline_schema_objects(pool: &SqlitePool) -> Result<(), AppError> {
     sqlx::raw_sql(SCHEMA)
         .execute(pool)
         .await
@@ -1604,9 +1608,17 @@ async fn ensure_baseline_tables(pool: &SqlitePool) -> Result<(), AppError> {
 /// `companion_id`, add the external-content FTS5 index when missing, rebuild the
 /// index when its row count desyncs from the main table, remove the retired
 /// learn-run/suggestion tables, and re-home the vestigial unowned memories and
-/// skills onto `row_owner`. User memories and skills are preserved verbatim —
-/// nothing is ever deleted or duplicated here.
-/// Non-v3 stores are left untouched for `validate_baseline_schema` to reject.
+/// skills onto `row_owner`. The tail tops the store up to the current baseline
+/// object set by replaying [`SCHEMA`]
+/// ([`ensure_baseline_schema_objects`]) — same-version gaps from baseline
+/// additions that shipped without a version bump are filled here. User memories
+/// and skills are preserved verbatim — nothing is ever deleted or duplicated
+/// here.
+///
+/// Both gates live at the top of THIS pass: a store whose `user_version` is
+/// not [`STORE_VERSION`], or that has no `companion_memories` table at all
+/// (not a v3 layout), gets ZERO writes — it is left untouched for
+/// `validate_baseline_schema` to reject loudly.
 async fn upgrade_schema_in_place(
     pool: &SqlitePool,
     row_owner: Option<&str>,
@@ -1624,7 +1636,10 @@ async fn upgrade_schema_in_place(
             .await
             .map_err(db_err)?;
     if columns.is_empty() {
-        // No companion_memories table at all — not a v3 layout; leave it to validation.
+        // No companion_memories table at all — not a v3 layout; leave it to
+        // validation. The baseline repair at the tail of this pass is skipped
+        // with it: replaying SCHEMA here would silently recreate a table set
+        // for a layout this crate cannot vouch for.
         return Ok(());
     }
     for (column, definition) in [
@@ -1683,7 +1698,12 @@ async fn upgrade_schema_in_place(
     }
     backfill_memory_owner(pool, row_owner).await?;
     backfill_skill_owner(pool, row_owner).await?;
-    Ok(())
+    // Baseline repair rides at the tail of the SAME gated pass, so there is one
+    // version gate and one layout gate for the whole open path: a same-version
+    // v3 store that predates a baseline addition is topped up here, while the
+    // two early returns above leave unversioned, future-version and
+    // no-`companion_memories` stores with zero writes for validation to reject.
+    ensure_baseline_schema_objects(pool).await
 }
 
 /// One-time, idempotent collapse of the retired two-column owner encoding
@@ -2160,16 +2180,13 @@ impl CompanionStore {
                 .await
                 .map_err(db_err)?;
             let init = if database_exists {
-                // In-place upgrade first (idempotent ALTER/CREATE IF; preserves
-                // rows), then repair any baseline objects the store predates
-                // (same-version gaps from schema shipped without a version
-                // bump), then the strict contract check. Both this bootstrap
-                // check and the pool check below see the repaired file.
+                // ONE gated pass: in-place upgrade (idempotent ALTER/CREATE IF;
+                // preserves rows) ends with the baseline repair for same-version
+                // gaps from schema shipped without a version bump, then the
+                // strict contract check. Both this bootstrap check and the pool
+                // check below see the repaired file.
                 match upgrade_schema_in_place(&bootstrap, row_owner).await {
-                    Ok(()) => {
-                        ensure_baseline_tables(&bootstrap).await?;
-                        validate_baseline_schema(&bootstrap).await
-                    }
+                    Ok(()) => validate_baseline_schema(&bootstrap).await,
                     Err(error) => Err(error),
                 }
             } else {
@@ -4780,6 +4797,68 @@ mod tests {
         SCHEMA.replacen(needle, replacement, 1)
     }
 
+    /// Strip SQL line comments, respecting single-quoted string literals so a
+    /// `'--'` inside a CHECK literal can never be mistaken for a comment
+    /// opener (`''` inside a literal toggles twice and stays balanced).
+    fn strip_sql_line_comments(sql: &str) -> String {
+        let mut stripped = String::with_capacity(sql.len());
+        let mut in_literal = false;
+        let mut chars = sql.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\'' {
+                in_literal = !in_literal;
+                stripped.push(c);
+            } else if c == '-' && !in_literal && chars.peek() == Some(&'-') {
+                chars.next();
+                for skipped in chars.by_ref() {
+                    if skipped == '\n' {
+                        stripped.push('\n');
+                        break;
+                    }
+                }
+            } else {
+                stripped.push(c);
+            }
+        }
+        stripped
+    }
+
+    /// [`SCHEMA`] is replayed on EVERY open of an existing v3 store (the
+    /// baseline-repair tail of `upgrade_schema_in_place`), so each of its
+    /// statements must stay a no-op against an already-complete store. This
+    /// pins the shape: after stripping comments, every statement must be an
+    /// `IF NOT EXISTS`-shaped `CREATE` of a baseline table or index. Anything
+    /// else — an `INSERT`, `ALTER`, `DROP`, `PRAGMA`, or a bare `CREATE`
+    /// without `IF NOT EXISTS` — would do real work on every launch and turns
+    /// this test red before it can ship.
+    ///
+    /// Out of scope by design: [`FTS_SCHEMA`] is owned by the upgrade pass's
+    /// missing-index branch, which executes it once, gated on the FTS table's
+    /// absence — not on every boot — so its `CREATE VIRTUAL TABLE` statement
+    /// is not part of this pin.
+    #[test]
+    fn schema_replay_only_contains_if_not_exists_creates() {
+        let stripped = strip_sql_line_comments(SCHEMA);
+        let statements: Vec<&str> = stripped
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+            .collect();
+        assert!(
+            !statements.is_empty(),
+            "SCHEMA must not strip down to nothing — the pin itself must stay wired"
+        );
+        for statement in statements {
+            assert!(
+                statement.starts_with("CREATE TABLE IF NOT EXISTS ")
+                    || statement.starts_with("CREATE INDEX IF NOT EXISTS ")
+                    || statement.starts_with("CREATE UNIQUE INDEX IF NOT EXISTS "),
+                "SCHEMA is replayed on every boot, so it must only contain \
+                 IF NOT EXISTS-shaped CREATE TABLE/INDEX statements; got: {statement}"
+            );
+        }
+    }
+
     async fn assert_malformed_v3_rejected(schema: &str, description: &str) {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -4967,10 +5046,11 @@ mod tests {
                 .await
                 .unwrap();
             // The pin: companion_learning_xp is the ONLY baseline-table delta
-            // between main (8fd9a4fb0) and j05 (04c5da393). If a future
-            // baseline increment repeats the "schema without version bump"
-            // mistake, this fixture must drop that new table HERE too — one
-            // extra line per affected table, exactly like this one.
+            // between main (8fd9a4fb0) and j05 (04c5da393). When a future
+            // baseline addition ships the same way — schema without a version
+            // bump, the mechanism the repair pass exists to absorb — this
+            // fixture must drop that new table HERE too — one extra line per
+            // affected table, exactly like this one.
             sqlx::raw_sql("DROP TABLE companion_learning_xp")
                 .execute(&pool)
                 .await
