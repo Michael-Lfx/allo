@@ -7,9 +7,9 @@ export function MatrixView({ structure }: { structure: StructureView }) {
   const { t } = useTranslation();
   const colorFor = buildGroupPalette(structure.spines.map((spine) => spine.name));
   const columns: Array<{ key: 'entryway' | 'intermediate' | 'advanced'; label: string }> = [
-    { key: 'entryway', label: t('learningGraphStructStage_entry') },
-    { key: 'intermediate', label: t('learningGraphStructStage_intermediate') },
-    { key: 'advanced', label: t('learningGraphStructStage_advanced') },
+    { key: 'entryway', label: t('learning.learningGraphStructStage_entry') },
+    { key: 'intermediate', label: t('learning.learningGraphStructStage_intermediate') },
+    { key: 'advanced', label: t('learning.learningGraphStructStage_advanced') },
   ];
 
   return (
@@ -18,7 +18,7 @@ export function MatrixView({ structure }: { structure: StructureView }) {
         <thead>
           <tr>
             <th className='border-b border-b-solid border-b-[var(--color-border-2)] border-r border-r-solid border-r-[var(--color-border-2)] bg-[var(--color-fill-1)] px-10px py-6px text-left font-500 text-[var(--color-text-1)]'>
-              {t('learningGraphStructMatrixSpine')}
+              {t('learning.learningGraphStructMatrixSpine')}
             </th>
             {columns.map((column) => (
               <th

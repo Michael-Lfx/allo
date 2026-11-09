@@ -56,7 +56,7 @@ export function Mindmap({ structure }: { structure: StructureView }) {
               fontSize={12}
               fontWeight={700}
             >
-              {structure.scalars.goal.trim().slice(0, 14) || t('learningGraphStructTheme')}
+              {structure.scalars.goal.trim().slice(0, 14) || t('learning.learningGraphStructTheme')}
             </text>
           </g>
           {layout.groups.map((group) => {
@@ -152,7 +152,7 @@ export function Mindmap({ structure }: { structure: StructureView }) {
         </svg>
       </div>
       <span className='text-11px text-t-tertiary'>
-        {t('learningGraphStructCounts', {
+        {t('learning.learningGraphStructCounts', {
           blocks: structure.blocks.length,
           spines: structure.spines.length,
         })}

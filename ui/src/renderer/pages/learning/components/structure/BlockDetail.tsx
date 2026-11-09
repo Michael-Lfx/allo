@@ -32,11 +32,11 @@ export function BlockDetail({
   const stageLabel = (stage: BlockView['stage']) => {
     switch (stage) {
       case 'basic':
-        return t('learningGraphStructStage_entry');
+        return t('learning.learningGraphStructStage_entry');
       case 'advanced':
-        return t('learningGraphStructStage_intermediate');
+        return t('learning.learningGraphStructStage_intermediate');
       case 'expert':
-        return t('learningGraphStructStage_advanced');
+        return t('learning.learningGraphStructStage_advanced');
       default:
         // 未知落库码（未来版本新增档位）原样可见降级，不吞值。
         return stage;
@@ -45,18 +45,18 @@ export function BlockDetail({
   const relationLabel = (type: string) => {
     switch (type) {
       case 'assumes':
-        return t('learningGraphStructRelation_assumes');
+        return t('learning.learningGraphStructRelation_assumes');
       case 'composes':
-        return t('learningGraphStructRelation_composes');
+        return t('learning.learningGraphStructRelation_composes');
       case 'contrasts':
-        return t('learningGraphStructRelation_contrasts');
+        return t('learning.learningGraphStructRelation_contrasts');
       default:
         return type;
     }
   };
   const tierLabel = (tier: StructureEdgeView['tier']) =>
     tier === 'know' || tier === 'apply' || tier === 'teach'
-      ? t(`learningGraphTier_${tier}`)
+      ? t(`learning.learningGraphTier_${tier}`)
       : tier;
 
   return (
@@ -75,8 +75,8 @@ export function BlockDetail({
           {stageLabel(block.stage)}
         </Tag>
         <Text type='secondary' className='text-11px'>
-          {t('learningGraphStructLayer', { layer: block.layer })}
-          {block.no_prereq ? ` · ${t('learningGraphStructNoPrereq')}` : ''}
+          {t('learning.learningGraphStructLayer', { layer: block.layer })}
+          {block.no_prereq ? ` · ${t('learning.learningGraphStructNoPrereq')}` : ''}
         </Text>
         <span className='flex-1' />
         <button
@@ -93,7 +93,7 @@ export function BlockDetail({
       {block.door_refs.length > 0 && (
         <div className='mt-6px flex flex-wrap items-center gap-4px text-11px'>
           <Text type='secondary' className='text-11px'>
-            {t('learningGraphStructDoorRefsLabel')}
+            {t('learning.learningGraphStructDoorRefsLabel')}
           </Text>
           {block.door_refs.map((door) => (
             <Tag key={door} size='small' color='green' className='!mx-0'>
@@ -115,11 +115,11 @@ export function BlockDetail({
               </Tag>
               <span className='text-[var(--color-text-2)]'>
                 {edge.source === block.name
-                  ? t('learningGraphStructRelationOut', {
+                  ? t('learning.learningGraphStructRelationOut', {
                       target: edge.target,
                       tier: tierLabel(edge.tier),
                     })
-                  : t('learningGraphStructRelationIn', {
+                  : t('learning.learningGraphStructRelationIn', {
                       source: edge.source,
                       tier: tierLabel(edge.tier),
                     })}
@@ -132,7 +132,7 @@ export function BlockDetail({
         </div>
       )}
       <div className='mt-8px border-t border-t-solid border-t-[var(--color-border-2)] pt-6px text-11px text-t-tertiary'>
-        {t('learningGraphStructDetailNote')}
+        {t('learning.learningGraphStructDetailNote')}
       </div>
     </div>
   );
