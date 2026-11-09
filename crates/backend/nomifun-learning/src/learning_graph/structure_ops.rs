@@ -212,7 +212,7 @@ impl StructureOp {
                 reason,
             }),
             "merge_blocks" => {
-                let sources: Vec<String> = item
+                let mut sources: Vec<String> = item
                     .get("sources")
                     .and_then(Value::as_array)
                     .ok_or_else(|| format!("{at}（merge_blocks）缺 sources 数组"))?
@@ -221,6 +221,13 @@ impl StructureOp {
                     .map(|value| value.trim().to_owned())
                     .filter(|value| !value.is_empty())
                     .collect();
+                // 保序去重：LLM 偶发重复合并源（["A","A"]），合并 A,A→B ≡
+                // A→B 语义无害——parse 面就地收编，不给校验/应用面留重复
+                // 形态（重复源曾让 apply 的 source 定位 panic）。
+                {
+                    let mut seen = HashSet::new();
+                    sources.retain(|source| seen.insert(source.clone()));
+                }
                 if sources.is_empty() {
                     return Err(format!("{at}（merge_blocks）sources 为空"));
                 }
@@ -634,7 +641,10 @@ pub fn apply_ops(structure: &mut Value, ops: &[StructureOp]) -> Result<Vec<Strin
                     let position = blocks
                         .iter()
                         .position(|block| block["name"] == **source)
-                        .expect("source existence checked above");
+                        // 防御面：即便重复源绕过 parse 去重直灌进来（如新调用
+                        // 面），也 Err 化走既有重试/失败留痕通道，绝不 panic
+                        // （重复源第一轮 remove 后第二轮定位必空）。
+                        .ok_or_else(|| format!("{at} 源块「{source}」不存在"))?;
                     blocks.remove(position);
                 }
                 blocks.push(serde_json::json!({
@@ -1059,6 +1069,69 @@ mod tests {
         assert_eq!(edges[0]["target"], json!("块甲"));
         assert!(cascade.iter().any(|note| note.contains("自环退场 1 条")));
         assert!(cascade.iter().any(|note| note.contains("去重 1 条")));
+    }
+
+    #[test]
+    fn merge_sources_with_duplicates_dedup_at_parse_preserving_order() {
+        // LLM 偶发重复合并源（["块一","块一"]）——parse 面保序收编为单源
+        // （合并 A,A→B ≡ A→B，语义无害），不给校验/应用面留重复形态。
+        let artifact = ops_artifact(json!([
+            { "op": "merge_blocks", "sources": ["块一", "块一", "块二", "块一"],
+              "name": "块甲", "slug": "block-new", "stage": "basic", "note": "n",
+              "reason": "重复源收编" }
+        ]));
+        let ops = parse_ops(&artifact).expect("parse");
+        let [StructureOp::MergeBlocks { sources, .. }] = &ops[..] else {
+            panic!("expected one MergeBlocks op, got {ops:?}");
+        };
+        assert_eq!(sources, &["块一".to_owned(), "块二".to_owned()], "重复源保序去重");
+    }
+
+    #[test]
+    fn merge_with_duplicate_sources_full_round_matches_single_source_merge() {
+        // 完整回合（parse→validate→apply）：重复合并源不再 panic，且最终
+        // 结构与单源合并逐字段等价（apply 面结果一致性由结构对象钉死）。
+        let dup = ops_artifact(json!([
+            { "op": "merge_blocks", "sources": ["块一", "块一"], "name": "块甲",
+              "slug": "block-new", "stage": "basic", "note": "n", "reason": "重复源" }
+        ]));
+        let single = ops_artifact(json!([
+            { "op": "merge_blocks", "sources": ["块一"], "name": "块甲",
+              "slug": "block-new", "stage": "basic", "note": "n", "reason": "单源" }
+        ]));
+        assert!(
+            validate_ops(&dup, &sample_structure())
+                .iter()
+                .all(|item| item.warning),
+            "重复合并源不是校验违约（无新增违约形态）"
+        );
+        let dup_ops = parse_ops(&dup).expect("parse dup");
+        let single_ops = parse_ops(&single).expect("parse single");
+        let mut dup_structure = sample_structure();
+        let mut single_structure = sample_structure();
+        apply_ops(&mut dup_structure, &dup_ops).expect("重复源回合不 panic");
+        apply_ops(&mut single_structure, &single_ops).expect("单源回合");
+        assert_eq!(dup_structure, single_structure, "A,A→B 与 A→B 结果等价");
+    }
+
+    #[test]
+    fn merge_apply_errs_on_duplicate_source_when_caller_bypasses_parse() {
+        // 防御面：即便未来出现绕过 parse 去重的新调用面（直构 op 携带重复
+        // 源），apply 也必须 Err 化走既有重试/失败留痕通道，绝不 panic。
+        let mut structure = sample_structure();
+        let error = apply_ops(
+            &mut structure,
+            &[StructureOp::MergeBlocks {
+                sources: vec!["块一".into(), "块一".into()],
+                name: "块甲".into(),
+                slug: "block-new".into(),
+                stage: "basic".into(),
+                note: "n".into(),
+                reason: "重复源防御".into(),
+            }],
+        )
+        .expect_err("重复源必须 Err 而非 panic");
+        assert!(error.contains("源块「块一」不存在"), "{error}");
     }
 
     #[test]
