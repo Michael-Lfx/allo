@@ -2,8 +2,8 @@
 id: c3
 title: "删撤销声明（仅前端全链；后端 DELETE /basis 保留）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -59,3 +59,21 @@ StructureGraphTab 的透传 props，`api.ts` 的 `revokeBasis` client 方法与�
 ## 非目标
 
 - 后端 DELETE /basis 与其测试（明确保留）；声明冻结（c1）。
+
+## Resolution（2026-11-09 施工收口）
+
+**全验收过，闭票。** 施工 = `1b5acb939`（8 文件 +10/−84）。
+
+- 删净面：GateCoverage 撤销按钮 + `confirmRevoke` + `revoking/onRevoke` props；
+  工作区 `revokeBasis` / `revokingBasis`；DeclarationWindow / StructureGraphTab
+  透传 props；`api.ts` `revokeBasis` client（`{ revoked: number }` 是内联类型，
+  无孤儿 type 需删）；五个 `learningGraphBasisRevoke*` keys 双侧对称删除
+  （11584→11579）。
+- **票外顺手一处**：`learningGraphBasisDeclaredDoors` 文案原含「撤销声明只删声明
+  锚，概念保留」，入口已无，双侧改为纯读数「已声明门口：…（覆盖 N 个概念）」。
+- **保留面（刻意）**：`phaseMeta.ts` 的 `basisRevoked: 'basis_revoked'` 是与后端
+  phase 清单（events.rs `phase::BASIS_REVOKED`）互钉的单源，后端接口保留仍会发
+  该帧——不删；basis 读侧订阅照常接住纠错通道撤销帧。
+- **验收**：grep `evokeBasis|revokingBasis|learningGraphBasisRevoke` 归零；
+  `git diff --stat bffb22b0d -- crates/` 为空；typecheck 55 错持平存量
+  （learning/i18n 零错）；`check:i18n` 绿。
