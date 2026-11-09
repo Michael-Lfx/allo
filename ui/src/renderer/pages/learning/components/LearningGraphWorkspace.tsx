@@ -244,6 +244,9 @@ const LearningGraphWorkspace: React.FC<{
   const [basis, setBasis] = useState<BasisView | null>(null);
   const [declaringBasis, setDeclaringBasis] = useState(false);
   const [revokingBasis, setRevokingBasis] = useState(false);
+  // 草稿勾选（c1）：工作区单持，学习 Tab 声明窗口与结构图 Tab 两个过门自检
+  // 挂载点共享同一份——切 Tab 不丢；声明成功后清空，失败保留。
+  const [basisDraftChecked, setBasisDraftChecked] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -275,6 +278,7 @@ const LearningGraphWorkspace: React.FC<{
       setDeclaringBasis(true);
       try {
         const result = await learningApi.declareBasis(detail.course.id, doors);
+        setBasisDraftChecked([]);
         if (result.noop) {
           Modal.info({ title: t('learning.learningGraphBasisDeclareNoop') });
         } else {
@@ -504,6 +508,8 @@ const LearningGraphWorkspace: React.FC<{
               basis={basis}
               declaring={declaringBasis}
               revoking={revokingBasis}
+              basisChecked={basisDraftChecked}
+              onBasisCheckedChange={setBasisDraftChecked}
               onDeclare={(doors) => void declareBasis(doors)}
               onRevoke={() => void revokeBasis()}
               starting={growing}
@@ -647,6 +653,8 @@ const LearningGraphWorkspace: React.FC<{
             mounting={mounting}
             onRepair={() => void repairStructure()}
             repairing={repairing}
+            basisChecked={basisDraftChecked}
+            onBasisCheckedChange={setBasisDraftChecked}
             onDeclareBasis={(doors) => void declareBasis(doors)}
             declaringBasis={declaringBasis}
             onRevokeBasis={() => void revokeBasis()}
