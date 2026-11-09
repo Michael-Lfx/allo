@@ -72,6 +72,13 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/concepts/audit",
             get(concept_audit),
         )
+        // 概念是全局实体（registry 无课程归属列）：总览与详情不挂课程路由
+        // （c7）；详情的关系/使用/声明面全部读时推导，零 LLM 零写库。
+        .route("/api/learning/concepts", get(concepts_overview))
+        .route(
+            "/api/learning/concepts/{concept_id}",
+            get(concept_detail),
+        )
         .route(
             "/api/learning/courses/{id}/graph/structure/regenerate",
             post(regenerate_graph_structure),
@@ -466,6 +473,29 @@ async fn concept_audit(
     let course_id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.concept_audit(&course_id).await?,
+    )))
+}
+
+/// 全局概念总览（c7）：跨课程共享的登记表非废弃概念 + 计数与审计旗标
+/// （详情看细节，总览给计数；上限与概念检索同界）。
+async fn concepts_overview(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ConceptOverviewRowView>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.concepts_overview().await?,
+    )))
+}
+
+/// 单概念详情（c7）：条目 + 读时推导关系（自指/互指/单向提及）+ 按课程
+/// 分组的跨课程使用 + 已会声明使用反查。
+async fn concept_detail(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(concept_id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ConceptDetailView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.concept_detail(&user.id, &concept_id).await?,
     )))
 }
 

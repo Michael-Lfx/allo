@@ -18,6 +18,7 @@ import {
 } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
@@ -26,6 +27,11 @@ import { batchStatusMeta, buildSystemActionRows } from '../systemActions';
 import { overloadedBadgeCount } from '../capacityFeedback';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
+import {
+  loadStructurePresentedWatermark,
+  saveStructurePresentedWatermark,
+  shouldPresentStructure,
+} from '../structurePresentation';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
@@ -152,6 +158,7 @@ const LearningGraphWorkspace: React.FC<{
           setStructure(view);
           setStructureError(null);
           if (view.structure) setStructureRunning(false);
+          presentStructureOnce(view);
         })
         .catch((loadError) => {
           if (!cancelled) {
@@ -205,6 +212,34 @@ const LearningGraphWorkspace: React.FC<{
       .catch(() => undefined);
   }, [detail.course.id]);
 
+  // ── 结构图自动呈现（c5）：「生成完成后至少呈现给用户一次」───────────────
+  // 在场臂：WS structure_completed 到达时呈现（建课跳转后生长跑完的路径）；
+  // 离场臂：挂载拉到「零节点 + 有新结构」时呈现（用户在生成期间退出，回来
+  // 只走 HTTP 的路径）。水位 = localStorage 持久的结构 generated_at——重生成
+  // 出新结构（时间戳更新）值得再呈现一次，同一次生成绝不重复抢焦点；用户
+  // 已在结构图 Tab 视为已呈现。
+  const structurePresentingRef = React.useRef(false);
+  const presentStructureOnce = useCallback(
+    (view: LearningStructureView) => {
+      const generatedAt = view.generated_at;
+      if (!shouldPresentStructure(loadStructurePresentedWatermark(detail.course.id), generatedAt)) {
+        return;
+      }
+      if (generatedAt !== null) saveStructurePresentedWatermark(detail.course.id, generatedAt);
+      if (structurePresentingRef.current) return;
+      structurePresentingRef.current = true;
+      setActiveTab((current) => {
+        if (current === 'structure') return current;
+        Message.info(t('learning.learningGraphStructureReadyToast'));
+        return 'structure';
+      });
+    },
+    [detail.course.id, t]
+  );
+
+  // 离场兜底臂（见 presentStructureOnce 注释）：仅当本课没有任何节点（零节
+  // 点 = 首批未生长 = 生成期最可能离场的形态）且拉到新结构时触发一次。
+
   // 结构挂载回合（j08）：同步命令，完成后重取投影（挂载三态段随之刷新）。
   const mountStructure = useCallback(async () => {
     setMounting(true);
@@ -240,10 +275,13 @@ const LearningGraphWorkspace: React.FC<{
     }
   }, [detail.course.id, refetchStructure, t]);
 
-  // ── 已会声明（Declared Known，m2）：读数 + 声明 + 撤销 ──────────────────
+  // ── 已会声明（Declared Known，m2）：读数 + 一次性声明（c3 起产品面无撤销
+  // 入口；后端 DELETE /basis 留作纠错通道）──────────────────────────────
   const [basis, setBasis] = useState<BasisView | null>(null);
   const [declaringBasis, setDeclaringBasis] = useState(false);
-  const [revokingBasis, setRevokingBasis] = useState(false);
+  // 草稿勾选（c1）：工作区单持，学习 Tab 声明窗口与结构图 Tab 两个过门自检
+  // 挂载点共享同一份——切 Tab 不丢；声明成功后清空，失败保留。
+  const [basisDraftChecked, setBasisDraftChecked] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -259,8 +297,8 @@ const LearningGraphWorkspace: React.FC<{
         });
     };
     load();
-    // 声明/撤销/生长经 WS course-generation 流（basis_declared /
-    // basis_revoked 复用既有事件面）驱动重拉。
+    // 声明/生长经 WS course-generation 流（basis_declared 复用既有事件面）
+    // 驱动重拉；后端纠错通道撤销（basis_revoked）同样会被读数接住。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
       if (event.course_id === detail.course.id) load();
     });
@@ -275,21 +313,26 @@ const LearningGraphWorkspace: React.FC<{
       setDeclaringBasis(true);
       try {
         const result = await learningApi.declareBasis(detail.course.id, doors);
+        setBasisDraftChecked([]);
+        // 声明反馈走非阻塞 toast（c2）：阻塞弹窗叠在冻结展示上是二次打断；
+        // 失败保持 Modal——需要用户看见并处置。
         if (result.noop) {
-          Modal.info({ title: t('learning.learningGraphBasisDeclareNoop') });
+          Message.info(t('learning.learningGraphBasisDeclareNoop'));
         } else {
-          Modal.info({
-            title: t('learning.learningGraphBasisDeclareDoneTitle'),
-            content: t('learning.learningGraphBasisDeclareDone', {
+          Message.success(
+            t('learning.learningGraphBasisDeclareDone', {
               doors: result.doors.join('、'),
               blocks: result.blocks.join('、'),
               minted: result.minted,
               reused: result.reused,
-            }),
-          });
+            })
+          );
         }
         const view = await learningApi.basisView(detail.course.id);
         setBasis(view);
+        // 声明改就绪集/推荐集（声明概念按能教计）：立即重拉课程详情，调度
+        // 效果当场可见，而不是等下次无关刷新。
+        onRefresh();
       } catch (actionError) {
         Modal.error({
           title: t('learning.learningGraphBasisDeclareFailed'),
@@ -299,24 +342,8 @@ const LearningGraphWorkspace: React.FC<{
         setDeclaringBasis(false);
       }
     },
-    [detail.course.id, t]
+    [detail.course.id, onRefresh, t]
   );
-
-  const revokeBasis = useCallback(async () => {
-    setRevokingBasis(true);
-    try {
-      await learningApi.revokeBasis(detail.course.id);
-      const view = await learningApi.basisView(detail.course.id);
-      setBasis(view);
-    } catch (actionError) {
-      Modal.error({
-        title: t('learning.learningGraphBasisRevokeFailed'),
-        content: errorMessage(t, actionError),
-      });
-    } finally {
-      setRevokingBasis(false);
-    }
-  }, [detail.course.id, t]);
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
@@ -340,6 +367,14 @@ const LearningGraphWorkspace: React.FC<{
   // 声明窗口（e3）：零节点（结构完成、首批未生长）时学习 Tab 落在门口
   // 声明画面——生长不再自动抢跑，首批由「开始学习」显式触发。
   const zeroNodes = lessons.length === 0;
+
+  // 离场兜底臂挂载（零节点 + 拉到新结构 → 呈现一次；见 presentStructureOnce）。
+  const zeroNodesAutoPresentedRef = React.useRef(false);
+  useEffect(() => {
+    if (!zeroNodes || zeroNodesAutoPresentedRef.current || structure === null) return;
+    zeroNodesAutoPresentedRef.current = true;
+    presentStructureOnce(structure);
+  }, [zeroNodes, structure, presentStructureOnce]);
 
   return (
     <div className='app-page-shell h-full w-full box-border overflow-y-auto'>
@@ -503,9 +538,9 @@ const LearningGraphWorkspace: React.FC<{
               structureError={structureError}
               basis={basis}
               declaring={declaringBasis}
-              revoking={revokingBasis}
+              basisChecked={basisDraftChecked}
+              onBasisCheckedChange={setBasisDraftChecked}
               onDeclare={(doors) => void declareBasis(doors)}
-              onRevoke={() => void revokeBasis()}
               starting={growing}
               growthRunning={graph.growth_running}
               onStart={() => void grow()}
@@ -647,10 +682,10 @@ const LearningGraphWorkspace: React.FC<{
             mounting={mounting}
             onRepair={() => void repairStructure()}
             repairing={repairing}
+            basisChecked={basisDraftChecked}
+            onBasisCheckedChange={setBasisDraftChecked}
             onDeclareBasis={(doors) => void declareBasis(doors)}
             declaringBasis={declaringBasis}
-            onRevokeBasis={() => void revokeBasis()}
-            revokingBasis={revokingBasis}
           />
         </Tabs.TabPane>
       </Tabs>
@@ -681,10 +716,12 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
         });
     };
     load();
-    // 生长全程都会改批次时间线（生长开始落 pending 行、终结落定状态）——
-    // 组件自订阅事件流：课程详情刷新不经过本组件，靠它自己重拉。
+    // 只有生长回合改批次时间线（开始落 pending 行、终结落定状态）——生长
+    // 全程之外的帧（basis_declared 等）与本账本无关，过滤掉避免无意义闪刷
+    // （c2：声明不该让历史列表重拉）。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id === courseId) load();
+      if (event.course_id !== courseId) return;
+      if ((event.event ?? '').startsWith('growth_')) load();
     });
     return () => {
       cancelled = true;
@@ -787,9 +824,15 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
         });
     };
     load();
-    // 批行/维护动作的终态帧同通道：生长与结构回合结束都可能添行。
+    // 账本行只由生长回合（auto_refill 补批）与结构维护回合（挂载/修补）写
+    // ——只听这三组帧（c2）：basis_declared 等其余事件不添行，不过滤会
+    // 假刷新。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id === courseId) load();
+      if (event.course_id !== courseId) return;
+      const name = event.event ?? '';
+      if (name.startsWith('growth_') || name.startsWith('structure_mount_') || name.startsWith('structure_repair_')) {
+        load();
+      }
     });
     return () => {
       cancelled = true;
@@ -846,12 +889,16 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
   );
 };
 
-/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源 + 定义审计行级标记。 */
+/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源 + 定义审计
+ * 行级标记 + 概念定义（c6：判断「是不是这个意思」的一手材料，行内常驻）。
+ * 审计与行表是两个请求两份错误（c6）：审计失败只降级审计列，不打翻整表。 */
 const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [rows, setRows] = useState<GraphConceptRowView[] | null>(null);
   const [audit, setAudit] = useState<ConceptAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [auditUnavailable, setAuditUnavailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -859,26 +906,37 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
       learningApi
         .graphConcepts(courseId)
         .then((view) => {
-          if (!cancelled) setRows(view);
+          if (!cancelled) {
+            setRows(view);
+            setError(null);
+          }
         })
         .catch((loadError) => {
           if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
         });
-      // 定义审计（m9 只读）：与行表并行拉取，任一失败都明示（审计缺席是
-      // 静默误导——缺口看不见不等于没有缺口）。
+      // 定义审计（m9 只读）：与行表并行拉取；失败只降级审计列并明示
+      // （审计缺席是静默误导——缺口看不见不等于没有缺口），不打翻概念表。
       learningApi
         .conceptAudit(courseId)
         .then((report) => {
-          if (!cancelled) setAudit(report);
+          if (!cancelled) {
+            setAudit(report);
+            setAuditUnavailable(false);
+          }
         })
-        .catch((loadError) => {
-          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        .catch(() => {
+          if (!cancelled) setAuditUnavailable(true);
         });
     };
     load();
-    // 生长落库会铸新概念入登记表——概念表自订阅事件流，落库后重拉。
+    // 生长落库会铸新概念入登记表、结构回合改节点引用、声明给概念打已会标
+    // ——听这三组（c2）；其余帧（如 basis_revoked，UI 已无入口）不重拉。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id === courseId) load();
+      if (event.course_id !== courseId) return;
+      const name = event.event ?? '';
+      if (name.startsWith('growth_') || name.startsWith('structure_') || name === 'basis_declared') {
+        load();
+      }
     });
     return () => {
       cancelled = true;
@@ -886,17 +944,22 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
     };
   }, [courseId]);
 
-  // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名）。
+  // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名——互指可多组，
+  // 收集全部而不是只剩最后一个 partner（c6 修覆盖写 bug））。
   const auditMarkers = useMemo(() => {
     const fragments = new Map<string, string[]>();
     const selfRefs = new Set<string>();
-    const mutualWith = new Map<string, string>();
+    const mutualWith = new Map<string, string[]>();
     if (audit) {
       for (const entry of audit.flagged) fragments.set(entry.concept_id, entry.fragments);
       for (const entry of audit.self_refs) selfRefs.add(entry.concept_id);
       for (const pair of audit.mutual_cycles) {
-        mutualWith.set(pair.a_concept_id, pair.b_name);
-        mutualWith.set(pair.b_concept_id, pair.a_name);
+        const aPartners = mutualWith.get(pair.a_concept_id) ?? [];
+        aPartners.push(pair.b_name);
+        mutualWith.set(pair.a_concept_id, aPartners);
+        const bPartners = mutualWith.get(pair.b_concept_id) ?? [];
+        bPartners.push(pair.a_name);
+        mutualWith.set(pair.b_concept_id, bPartners);
       }
     }
     return { fragments, selfRefs, mutualWith };
@@ -912,14 +975,32 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
       </div>
     );
   }
+  // 课程内概念表只是全局概念的本课切片（c8）：表头常驻全局总览入口，行点击
+  // 进概念详情（定义全文 / 关联关系 / 跨课程应用）。
+  const header = (
+    <div className='flex flex-wrap items-center gap-8px'>
+      <Text type='secondary' className='text-12px leading-18px'>
+        {t('learning.conceptTableHint')}
+      </Text>
+      <span className='flex-1' />
+      <Button size='small' onClick={() => navigate('/learn/concepts')}>
+        {t('learning.conceptsOverviewTitle')}
+      </Button>
+    </div>
+  );
   if (rows.length === 0) {
-    return <Empty description={t('learning.learningGraphConceptsEmpty')} />;
+    return (
+      <div className='flex flex-col gap-6px'>
+        {header}
+        <Empty description={t('learning.learningGraphConceptsEmpty')} />
+      </div>
+    );
   }
   const renderAuditMarkers = (row: GraphConceptRowView) => {
     const fragments = auditMarkers.fragments.get(row.concept_id) ?? [];
     const isSelfRef = auditMarkers.selfRefs.has(row.concept_id);
-    const mutualPartner = auditMarkers.mutualWith.get(row.concept_id);
-    if (fragments.length === 0 && !isSelfRef && !mutualPartner) {
+    const mutualPartners = auditMarkers.mutualWith.get(row.concept_id) ?? [];
+    if (fragments.length === 0 && !isSelfRef && mutualPartners.length === 0) {
       return <span className='text-12px text-t-tertiary'>—</span>;
     }
     return (
@@ -931,15 +1012,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
             </Tag>
           </Tooltip>
         )}
-        {mutualPartner && (
+        {mutualPartners.map((partner) => (
           <Tooltip
-            content={t('learning.learningGraphAuditMutualTooltip', { name: mutualPartner })}
+            key={partner}
+            content={t('learning.learningGraphAuditMutualTooltip', { name: partner })}
           >
             <Tag size='small' color='purple' className='!mx-0'>
-              {t('learning.learningGraphAuditMutual', { name: mutualPartner })}
+              {t('learning.learningGraphAuditMutual', { name: partner })}
             </Tag>
           </Tooltip>
-        )}
+        ))}
         {fragments.length > 0 && (
           <Tooltip
             content={t('learning.learningGraphAuditFragmentsTooltip', {
@@ -955,17 +1037,29 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
     );
   };
   return (
-    <Table
-      size='small'
-      border={{ wrapper: true, cell: true }}
-      pagination={false}
-      scroll={{ x: true }}
-      data={rows}
-      columns={[
+    <div className='flex flex-col gap-6px'>
+      {header}
+      {auditUnavailable && (
+        <Text type='warning' className='text-12px leading-18px'>
+          {t('learning.learningGraphAuditUnavailable')}
+        </Text>
+      )}
+      <Table
+        size='small'
+        border={{ wrapper: true, cell: true }}
+        pagination={false}
+        scroll={{ x: true }}
+        data={rows}
+        rowKey='concept_id'
+        rowClassName={() => 'cursor-pointer'}
+        onRow={(row: GraphConceptRowView) => ({
+          onClick: () => navigate(`/learn/concepts/${encodeURIComponent(row.concept_id)}`),
+        })}
+        columns={[
         {
           title: t('learning.learningGraphConceptCanonical'),
           dataIndex: 'canonical',
-          width: 160,
+          width: 200,
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='min-w-0'>
               <div className='flex items-center gap-4px'>
@@ -978,6 +1072,15 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
                   </Tag>
                 )}
               </div>
+              {/* 概念定义常驻副行（c6）：两行截断 + 悬浮看全文——判断
+                  「是不是这个意思」不必离开表格。 */}
+              {row.definition.trim() !== '' && (
+                <Tooltip content={row.definition}>
+                  <div className='mt-2px text-11px leading-16px text-t-secondary [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden'>
+                    {row.definition}
+                  </div>
+                </Tooltip>
+              )}
               {row.aliases.length > 0 && (
                 <div className='truncate text-11px text-t-tertiary'>
                   {row.aliases
@@ -1035,7 +1138,23 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           width: 180,
           render: (_: unknown, row: GraphConceptRowView) =>
             row.other_courses.length > 0 ? (
-              <span className='text-12px text-t-secondary'>{row.other_courses.join('、')}</span>
+              <div className='flex flex-wrap items-center gap-x-8px'>
+                {row.other_courses.map((course) => (
+                  <Button
+                    key={course.course_id}
+                    type='text'
+                    size='mini'
+                    className='!px-0 text-12px'
+                    onClick={(event) => {
+                      // 行点击 = 进概念详情；课程链接不冒泡，直接去该课程。
+                      event.stopPropagation();
+                      navigate(`/learn/${encodeURIComponent(course.course_id)}`);
+                    }}
+                  >
+                    {course.title}
+                  </Button>
+                ))}
+              </div>
             ) : (
               <span className='text-12px text-t-tertiary'>—</span>
             ),
@@ -1044,10 +1163,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           title: t('learning.learningGraphConceptAudit'),
           dataIndex: 'audit',
           width: 200,
-          render: (_: unknown, row: GraphConceptRowView) => renderAuditMarkers(row),
+          render: (_: unknown, row: GraphConceptRowView) =>
+            auditUnavailable ? (
+              <span className='text-12px text-t-tertiary'>—</span>
+            ) : (
+              renderAuditMarkers(row)
+            ),
         },
-      ]}
-    />
+        ]}
+      />
+    </div>
   );
 };
 

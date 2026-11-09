@@ -7,6 +7,8 @@ import type {
   CapacityFeedbackView,
   CheckinStatus,
   ConceptAuditReport,
+  ConceptDetailView,
+  ConceptOverviewRowView,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
@@ -119,6 +121,12 @@ export const learningApi = {
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/concepts/audit`
     ),
+  // 全局概念总览（c7）：登记表非废弃概念 + 计数/审计旗标（概念是全局实体，
+  // 不挂课程路由）
+  conceptsOverview: () => httpRequest<ConceptOverviewRowView[]>('GET', `${BASE}/concepts`),
+  // 单概念详情（c7）：条目 + 读时推导关系 + 跨课程使用 + 声明使用；未知 id = 404
+  conceptDetail: (conceptId: string) =>
+    httpRequest<ConceptDetailView>('GET', `${BASE}/concepts/${encodeURIComponent(conceptId)}`),
   // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
   // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口
   graphStructure: (courseId: string) =>
@@ -166,16 +174,11 @@ export const learningApi = {
       `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
       { doors }
     ),
-  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露
+  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露。
+  // 撤销（DELETE /basis）不在产品面（c3）：后端接口保留作纠错通道。
   basisView: (courseId: string) =>
     httpRequest<BasisView>(
       'GET',
-      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
-    ),
-  // 撤销本课全部已会声明（删锚行；概念留池——声明可撤、概念不灭）
-  revokeBasis: (courseId: string) =>
-    httpRequest<{ revoked: number }>(
-      'DELETE',
       `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
     ),
   getCourse: (id: string) =>

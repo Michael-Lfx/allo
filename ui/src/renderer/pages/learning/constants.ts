@@ -33,6 +33,9 @@ export const QUESTION_SELECTABLE_COLUMNS = ['source', 'state', 'due_at', 'tags']
 export const QUESTION_COLUMNS_STORAGE_KEY = 'learning.questionTableColumns';
 export const REVIEW_FILTERS_STORAGE_KEY = 'learning.reviewFilters';
 export const REVIEW_BANNER_EXPANDED_KEY = 'learning.reviewBannerExpanded';
+/** 结构图自动呈现水位（c5）：某课的结构图被自动呈现过一次的持久标记。值 =
+ * 结构 generated_at（ms）；重生成后时间戳更新 → 再次自动呈现一次。 */
+export const STRUCTURE_PRESENTED_KEY = 'learning.structurePresented';
 
 /**
  * 归档确认的"算法数据达标"阈值：复习次数不少于该值，且记忆稳定性不低于

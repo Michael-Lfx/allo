@@ -4278,10 +4278,12 @@ impl LearningService {
         if ref_rows.is_empty() && declared_counts.is_empty() {
             return Ok(Vec::new());
         }
-        // 跨课程来源：还有哪些别的课程在教这些概念。
-        let mut other_courses: HashMap<String, Vec<String>> = HashMap::new();
+        // 跨课程来源：还有哪些别的课程在教这些概念（带 course_id——c7 形状
+        // 升级，前端可点跳课程；teaches 口径与去重语义不变）。
+        let mut other_courses: HashMap<String, Vec<crate::models::ConceptCourseTitleView>> =
+            HashMap::new();
         for row in &sqlx::query(
-            "SELECT lc.concept_id, c.title FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL              WHERE lc.role = 'teaches' AND m.course_id <> ?",
+            "SELECT lc.concept_id, c.course_id, c.title FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL              WHERE lc.role = 'teaches' AND m.course_id <> ?              ORDER BY c.title, c.course_id",
         )
         .bind(course_id.as_str())
         .fetch_all(&self.pool)
@@ -4289,10 +4291,14 @@ impl LearningService {
         .map_err(internal)?
         {
             let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+            let other_course_id: String = row.try_get("course_id").map_err(internal)?;
             let title: String = row.try_get("title").map_err(internal)?;
             let courses = other_courses.entry(concept_id).or_default();
-            if !courses.contains(&title) {
-                courses.push(title);
+            if !courses.iter().any(|course| course.course_id == other_course_id) {
+                courses.push(crate::models::ConceptCourseTitleView {
+                    course_id: other_course_id,
+                    title,
+                });
             }
         }
 
@@ -4413,6 +4419,290 @@ impl LearningService {
             rows.extend(declared_view);
         }
         Ok(rows)
+    }
+
+    /// 单概念详情（c7）：条目 + 读时推导关系 + 按课程分组的跨课程使用 +
+    /// 声明使用。未知 id = 404；deprecated 照常返回（存档阅读面，关系索引
+    /// 只扫非废弃集——已废弃概念的互指/提及面随之留空，如实）。
+    pub async fn concept_detail(
+        &self,
+        user_id: &UserId,
+        concept_id: &str,
+    ) -> Result<crate::models::ConceptDetailView, AppError> {
+        let row = sqlx::query(
+            "SELECT concept_id, canonical, aliases_json, doc_version, definition, source, \
+             deprecated, created_at, updated_at \
+             FROM learning_concept_registry WHERE concept_id = ?",
+        )
+        .bind(concept_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let Some(row) = row else {
+            return Err(AppError::NotFound(format!("concept {concept_id}")));
+        };
+        let canonical: String = row.try_get("canonical").map_err(internal)?;
+        let definition: String = row.try_get("definition").map_err(internal)?;
+        let aliases_json: String = row.try_get("aliases_json").map_err(internal)?;
+        let doc_version: i64 = row.try_get("doc_version").map_err(internal)?;
+
+        // 关系：非废弃全量做一次读时推导（零 LLM 零写库，CONTEXT：登记表
+        // 不存关系）。互指 partner 不重复计入单向提及（展示契约：互指优先）。
+        let index_rows = sqlx::query(
+            "SELECT concept_id, canonical, definition FROM learning_concept_registry \
+             WHERE deprecated = 0 ORDER BY canonical, concept_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut entries: Vec<(String, String, String)> = Vec::with_capacity(index_rows.len());
+        for index_row in &index_rows {
+            entries.push((
+                index_row.try_get("concept_id").map_err(internal)?,
+                index_row.try_get("canonical").map_err(internal)?,
+                index_row.try_get("definition").map_err(internal)?,
+            ));
+        }
+        let relations = concept_relation_index(&entries);
+        let empty = ConceptRelations::default();
+        let entry = relations.get(concept_id).unwrap_or(&empty);
+        let name_by_id: HashMap<&str, &str> = entries
+            .iter()
+            .map(|(id, name, _)| (id.as_str(), name.as_str()))
+            .collect();
+        let mut mention_ids = entry.mentions.clone();
+        mention_ids.retain(|id| !entry.mutual.contains(id));
+        let mut mentioned_by_ids = entry.mentioned_by.clone();
+        mentioned_by_ids.retain(|id| !entry.mutual.contains(id));
+        let links = |ids: &std::collections::BTreeSet<String>| -> Vec<crate::models::ConceptLinkView> {
+            ids.iter()
+                .map(|id| crate::models::ConceptLinkView {
+                    concept_id: id.clone(),
+                    canonical: name_by_id
+                        .get(id.as_str())
+                        .map(|name| (*name).to_owned())
+                        .unwrap_or_default(),
+                })
+                .collect()
+        };
+
+        // 使用面：teaches + assumes 全量（概念表 Tab 只显示本课；详情页给
+        // 跨课程全貌），按课程分组（查询按课程排序，顺序稳定），带学习者
+        // 进度状态（无注册 = not_started）。
+        let usage_rows = sqlx::query(
+            "SELECT m.course_id, c.title AS course_title, lc.role, lc.tier, lc.ref_name, \
+             l.lesson_id, l.title AS lesson_title, \
+             COALESCE(p.status, 'not_started') AS status \
+             FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             LEFT JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
+             LEFT JOIN learning_lesson_progress p \
+               ON p.lesson_id = l.lesson_id AND p.enrollment_id = e.enrollment_id \
+             WHERE lc.concept_id = ? \
+             ORDER BY c.title, c.course_id, m.position, l.position, l.lesson_id",
+        )
+        .bind(user_id.as_str())
+        .bind(concept_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut usages: Vec<crate::models::ConceptCourseRefsView> = Vec::new();
+        for usage_row in &usage_rows {
+            let usage_course_id: String = usage_row.try_get("course_id").map_err(internal)?;
+            let course_title: String = usage_row.try_get("course_title").map_err(internal)?;
+            let status_text: String = usage_row.try_get("status").map_err(internal)?;
+            let reference = crate::models::GraphConceptRefView {
+                lesson_id: parse_id(
+                    usage_row
+                        .try_get::<String, _>("lesson_id")
+                        .map_err(internal)?,
+                )?,
+                title: usage_row.try_get("lesson_title").map_err(internal)?,
+                role: usage_row.try_get("role").map_err(internal)?,
+                tier: usage_row.try_get("tier").map_err(internal)?,
+                ref_name: usage_row
+                    .try_get::<Option<String>, _>("ref_name")
+                    .map_err(internal)?
+                    .filter(|name| !name.trim().is_empty()),
+                status: LessonStatus::try_from(status_text.as_str())
+                    .map_err(AppError::Internal)?,
+            };
+            match usages.last_mut() {
+                Some(group) if group.course_id == usage_course_id => group.refs.push(reference),
+                _ => usages.push(crate::models::ConceptCourseRefsView {
+                    course_id: usage_course_id,
+                    course_title,
+                    refs: vec![reference],
+                }),
+            }
+        }
+
+        // 声明使用：锚行 concept_ids_json 反查（未删课程；一课多次声明去重）。
+        let mut declared_in: Vec<crate::models::ConceptDeclaredInView> = Vec::new();
+        for anchor_row in &sqlx::query(
+            "SELECT d.course_id, d.concept_ids_json, c.title FROM learning_basis_declarations d \
+             JOIN learning_courses c ON c.course_id = d.course_id AND c.deleted_at IS NULL \
+             ORDER BY c.title, d.course_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        {
+            let anchor_course_id: String = anchor_row.try_get("course_id").map_err(internal)?;
+            let concept_ids_json: String = anchor_row.try_get("concept_ids_json").map_err(internal)?;
+            let Ok(ids) = serde_json::from_str::<Vec<String>>(&concept_ids_json) else {
+                continue;
+            };
+            if ids.iter().any(|id| id == concept_id)
+                && !declared_in.iter().any(|declared| declared.course_id == anchor_course_id)
+            {
+                declared_in.push(crate::models::ConceptDeclaredInView {
+                    course_id: anchor_course_id,
+                    course_title: anchor_row.try_get("title").map_err(internal)?,
+                });
+            }
+        }
+
+        Ok(crate::models::ConceptDetailView {
+            concept_id: concept_id.to_owned(),
+            canonical,
+            definition,
+            aliases: Self::alias_views(&aliases_json, doc_version),
+            source: row.try_get("source").map_err(internal)?,
+            deprecated: row.try_get::<i64, _>("deprecated").map_err(internal)? != 0,
+            created_at: row.try_get("created_at").map_err(internal)?,
+            updated_at: row.try_get("updated_at").map_err(internal)?,
+            self_reference: entry.self_reference,
+            mutual: links(&entry.mutual),
+            mentions: links(&mention_ids),
+            mentioned_by: links(&mentioned_by_ids),
+            usages,
+            declared_in,
+        })
+    }
+
+    /// 全局概念总览（c7）：登记表非废弃全量（检索同界上限，命中即 warn 截
+    /// 断）+ 跨课使用计数 + 声明课程计数 + 审计旗标（自指/互指，读时推导）。
+    pub async fn concepts_overview(
+        &self,
+    ) -> Result<Vec<crate::models::ConceptOverviewRowView>, AppError> {
+        let registry_rows = sqlx::query(
+            "SELECT concept_id, canonical, aliases_json, doc_version, definition \
+             FROM learning_concept_registry WHERE deprecated = 0 \
+             ORDER BY canonical, concept_id LIMIT ?",
+        )
+        .bind(SEARCH_REGISTRY_LIMIT)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        if registry_rows.len() as i64 >= SEARCH_REGISTRY_LIMIT {
+            tracing::warn!(
+                limit = SEARCH_REGISTRY_LIMIT,
+                "concept overview read hit the registry cap; rows may be truncated"
+            );
+        }
+        // 跨课使用计数（teaches + assumes 都算在用；未删课程去重）。
+        let mut usage_counts: HashMap<String, (u32, u32)> = HashMap::new();
+        for count_row in &sqlx::query(
+            "SELECT lc.concept_id, COUNT(DISTINCT m.course_id) AS course_count, COUNT(*) AS ref_count \
+             FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             GROUP BY lc.concept_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        {
+            let concept_id: String = count_row.try_get("concept_id").map_err(internal)?;
+            let course_count: i64 = count_row.try_get("course_count").map_err(internal)?;
+            let ref_count: i64 = count_row.try_get("ref_count").map_err(internal)?;
+            usage_counts.insert(concept_id, (course_count as u32, ref_count as u32));
+        }
+        // 声明课程计数（锚行 concept_ids_json 反查；未删课程）。
+        let mut declared_courses: HashMap<String, std::collections::BTreeSet<String>> =
+            HashMap::new();
+        for (course_id_str, concept_ids_json) in sqlx::query_as::<_, (String, String)>(
+            "SELECT d.course_id, d.concept_ids_json FROM learning_basis_declarations d \
+             JOIN learning_courses c ON c.course_id = d.course_id AND c.deleted_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        {
+            let Ok(ids) = serde_json::from_str::<Vec<String>>(&concept_ids_json) else {
+                continue;
+            };
+            for id in ids {
+                declared_courses.entry(id).or_default().insert(course_id_str.clone());
+            }
+        }
+        // 审计旗标：一次全局关系推导（自指/互指；缺口片段依赖课程词表，留
+        // 在课程内审计端点）。
+        let mut entries: Vec<(String, String, String)> = Vec::with_capacity(registry_rows.len());
+        let mut rows = Vec::with_capacity(registry_rows.len());
+        for registry_row in &registry_rows {
+            let concept_id: String = registry_row.try_get("concept_id").map_err(internal)?;
+            let canonical: String = registry_row.try_get("canonical").map_err(internal)?;
+            let definition: String = registry_row.try_get("definition").map_err(internal)?;
+            let aliases_json: String = registry_row.try_get("aliases_json").map_err(internal)?;
+            let doc_version: i64 = registry_row.try_get("doc_version").map_err(internal)?;
+            entries.push((concept_id.clone(), canonical.clone(), definition.clone()));
+            let (course_count, ref_count) = usage_counts
+                .get(&concept_id)
+                .copied()
+                .unwrap_or((0, 0));
+            let declared_course_count = declared_courses
+                .get(&concept_id)
+                .map(|set| set.len() as u32)
+                .unwrap_or(0);
+            rows.push(crate::models::ConceptOverviewRowView {
+                alias_count: Self::alias_views(&aliases_json, doc_version).len() as u32,
+                course_count,
+                ref_count,
+                declared_course_count,
+                concept_id,
+                canonical,
+                definition,
+                self_reference: false,
+                mutual_count: 0,
+            });
+        }
+        let relations = concept_relation_index(&entries);
+        for row in &mut rows {
+            if let Some(entry) = relations.get(row.concept_id.as_str()) {
+                row.self_reference = entry.self_reference;
+                row.mutual_count = entry.mutual.len() as u32;
+            }
+        }
+        Ok(rows)
+    }
+
+    /// `aliases_json` → 活跃别名视图（行级代际不符降级空池 + warn；与
+    /// graph_concepts 行装配同口径，抽出供详情/总览复用）。
+    fn alias_views(
+        aliases_json: &str,
+        doc_version: i64,
+    ) -> Vec<crate::models::GraphConceptAliasView> {
+        if doc_version != crate::learning_graph::alias_records::ALIAS_DOC_VERSION {
+            tracing::warn!(
+                doc_version,
+                "alias doc version unsupported; treating the alias pool as empty"
+            );
+            return Vec::new();
+        }
+        crate::learning_graph::alias_records::parse_alias_records(aliases_json)
+            .into_iter()
+            .filter(|record| record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE)
+            .map(|record| crate::models::GraphConceptAliasView {
+                name: record.name,
+                definition: record.definition,
+                attestation: record.attestation,
+            })
+            .collect()
     }
 
     /// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
@@ -5741,6 +6031,76 @@ pub(crate) struct GrowthApplied {
     pub note: String,
     pub ready_count: usize,
     pub idle: bool,
+}
+
+/// 单概念的关系集（c7；concept_id 集，展示层 join 登记表补 canonical 名）。
+#[derive(Default)]
+struct ConceptRelations {
+    self_reference: bool,
+    mutual: std::collections::BTreeSet<String>,
+    mentions: std::collections::BTreeSet<String>,
+    mentioned_by: std::collections::BTreeSet<String>,
+}
+
+/// 登记表 (concept_id, canonical, definition) 集合 → 全局关系索引（纯函数，
+/// 零 LLM 零写库）。自指/互指控 `definition_audit` 的 canonical 名子串原语
+/// （与课程内审计同口径）；单向提及 = A 的定义包含 B 的正名（A≠B）——audit
+/// 不产出的非对称一半，互指的两半在这里也各记一笔（调用侧把互指 partner 从
+/// 单向集里剔除）。名字名单与审计共用「宁滥勿缺」取向：短词过匹配是已接受
+/// 的展示口径，不做第二套截断。
+fn concept_relation_index(
+    entries: &[(String, String, String)],
+) -> HashMap<String, ConceptRelations> {
+    let mut index: HashMap<String, ConceptRelations> = entries
+        .iter()
+        .map(|(id, _, _)| (id.clone(), ConceptRelations::default()))
+        .collect();
+    let pairs: Vec<(String, String)> = entries
+        .iter()
+        .map(|(_, name, definition)| (name.clone(), definition.clone()))
+        .collect();
+    for name in crate::learning_graph::definition_audit::self_references(&pairs) {
+        if let Some((id, _, _)) = entries.iter().find(|(_, candidate, _)| *candidate == name) {
+            if let Some(relations) = index.get_mut(id) {
+                relations.self_reference = true;
+            }
+        }
+    }
+    let name_to_id: HashMap<&str, &str> = entries
+        .iter()
+        .map(|(id, name, _)| (name.as_str(), id.as_str()))
+        .collect();
+    for (a, b) in crate::learning_graph::definition_audit::mutual_cycles(&pairs) {
+        let (Some(a_id), Some(b_id)) = (name_to_id.get(a.as_str()), name_to_id.get(b.as_str()))
+        else {
+            continue;
+        };
+        if let Some(relations) = index.get_mut(*a_id) {
+            relations.mutual.insert((*b_id).to_owned());
+        }
+        if let Some(relations) = index.get_mut(*b_id) {
+            relations.mutual.insert((*a_id).to_owned());
+        }
+    }
+    for (a_id, a_name, a_definition) in entries {
+        if a_name.is_empty() {
+            continue;
+        }
+        for (b_id, b_name, _) in entries {
+            if a_id == b_id || b_name.is_empty() {
+                continue;
+            }
+            if a_definition.contains(b_name.as_str()) {
+                if let Some(relations) = index.get_mut(a_id) {
+                    relations.mentions.insert(b_id.clone());
+                }
+                if let Some(relations) = index.get_mut(b_id) {
+                    relations.mentioned_by.insert(a_id.clone());
+                }
+            }
+        }
+    }
+    index
 }
 
 /// 提名候选集渲染的空省略单测（p03 票面验收）：真机 grow-review-user L147-155

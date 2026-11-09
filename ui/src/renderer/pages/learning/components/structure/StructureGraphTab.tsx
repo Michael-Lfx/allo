@@ -35,10 +35,10 @@ export function StructureGraphTab({
   mounting,
   onRepair,
   repairing,
+  basisChecked,
+  onBasisCheckedChange,
   onDeclareBasis,
   declaringBasis,
-  onRevokeBasis,
-  revokingBasis,
 }: {
   view: LearningStructureView | null;
   basis?: BasisView | null;
@@ -46,10 +46,10 @@ export function StructureGraphTab({
   mounting?: boolean;
   onRepair?: () => void;
   repairing?: boolean;
+  basisChecked?: string[];
+  onBasisCheckedChange?: (doors: string[]) => void;
   onDeclareBasis?: (doors: string[]) => void;
   declaringBasis?: boolean;
-  onRevokeBasis?: () => void;
-  revokingBasis?: boolean;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabKey>('mindmap');
@@ -84,6 +84,18 @@ export function StructureGraphTab({
           </button>
         ))}
       </div>
+
+      {/* 切换器只控制图视图：画布与图注紧贴切换器（c4）。挂载三态段与过门
+          自检是另外两组管理内容，放在图之后——夹在切换器与画布之间会被读
+          成「切换器控制的内容」。 */}
+      {tab === 'mindmap' && <Mindmap structure={structure} />}
+      {tab === 'net' && <RelationNet structure={structure} />}
+      {tab === 'route' && <RouteMap structure={structure} />}
+      {tab === 'matrix' && <MatrixView structure={structure} />}
+
+      <Text type='secondary' className='text-11px leading-16px'>
+        {t('learning.learningGraphStructFooter')}
+      </Text>
 
       {mounts && (
         <div className='flex flex-col gap-6px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-10px'>
@@ -157,21 +169,12 @@ export function StructureGraphTab({
           structure={structure}
           terrain={view.terrain}
           basis={basis ?? null}
+          checked={basisChecked}
+          onCheckedChange={onBasisCheckedChange}
           declaring={declaringBasis}
-          revoking={revokingBasis}
           onDeclare={onDeclareBasis}
-          onRevoke={onRevokeBasis}
         />
       )}
-
-      {tab === 'mindmap' && <Mindmap structure={structure} />}
-      {tab === 'net' && <RelationNet structure={structure} />}
-      {tab === 'route' && <RouteMap structure={structure} />}
-      {tab === 'matrix' && <MatrixView structure={structure} />}
-
-      <Text type='secondary' className='text-11px leading-16px'>
-        {t('learning.learningGraphStructFooter')}
-      </Text>
     </div>
   );
 }
