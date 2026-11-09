@@ -841,11 +841,22 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
 
     // gd.no_schedule：排期红线扫全文（quality/disclaimer 元声明面豁免；
     // u09 再豁免 goal——目标原句回执必须逐字，目标含排期类词不是产物的
-    // 排期语义，其余字段照扫）。
+    // 排期语义，其余字段照扫；x01 再收半步——marker 命中处若该词本身出自
+    // 学习目标原句（用户点名的课程主题词，如进度管理课的「进度」），同样
+    // 不构成产物的排期语义——课程主题与排期承诺是两回事；其余 marker
+    // （时间表/每天/每周/小时…）照扫，真正的排期承诺形态仍被拦）。
+    let goal_text = value
+        .get("goal")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let mut strings = Vec::new();
     collect_strings(value, &["quality", "disclaimer", "goal"], &mut strings);
     for text in trim_strings(&strings) {
-        if let Some(marker) = SCHEDULE_MARKERS.iter().find(|marker| text.contains(**marker)) {
+        if let Some(marker) = SCHEDULE_MARKERS
+            .iter()
+            .find(|marker| text.contains(**marker) && !goal_text.contains(**marker))
+        {
             violations.push(ContractViolation::red(
                 "gd.no_schedule",
                 format!(
@@ -1984,12 +1995,48 @@ mod tests {
             validate_structure(&receipt)
         );
 
+        // x01 主题词豁免后，此处「照扫」改用 goal 不含的 marker 验证：
+        // goal 含「计划」——含「计划」的定义被豁免；含「每周」的仍照报。
         let mut elsewhere = golden_structure();
-        elsewhere["spines"][0]["definition"] = json!("学习计划的第一主干");
+        elsewhere["goal"] = json!("掌握项目进度管理：制定计划并按小时推进");
+        elsewhere["spines"][0]["definition"] = json!("每周固定推进两讲，配套练习");
         assert!(
             codes(&validate_structure(&elsewhere)).contains(&"gd.no_schedule"),
-            "非 goal 字段照扫：{:?}",
+            "非主题 marker（goal 外的「每周」）照扫：{:?}",
             validate_structure(&elsewhere)
+        );
+        let mut subject = golden_structure();
+        subject["goal"] = json!("掌握项目进度管理：制定计划并按小时推进");
+        subject["spines"][0]["definition"] = json!("制定计划并拆解任务清单");
+        assert!(
+            !codes(&validate_structure(&subject)).contains(&"gd.no_schedule"),
+            "goal 内主题词（计划）在其它字段落位 = 领域语义豁免：{:?}",
+            validate_structure(&subject)
+        );
+    }
+
+    /// x01 真机病历同形（run：进度管理课三轮级联失败 EXIT=2）：排期
+    /// marker 命中处，若该词本身出自课程目标原句（用户点名的课程主题词），
+    /// 不构成产物的排期语义——进度管理课的定义必然谈论「进度」；非主题
+    /// marker（时间表/每天/每周…）照扫照报，真正的排期承诺形态仍被拦。
+    #[test]
+    fn gd_no_schedule_exempt_subject_words_from_the_goal_but_keep_other_markers() {
+        let mut value = golden_structure();
+        value["goal"] = json!("掌握项目进度管理的关键路径方法");
+        value["spines"][0]["definition"] = json!("量化各活动的进度弹性，判断延误影响");
+        assert!(
+            !codes(&validate_structure(&value)).contains(&"gd.no_schedule"),
+            "主题词豁免：{:?}",
+            validate_structure(&value)
+        );
+
+        let mut hard = golden_structure();
+        hard["goal"] = json!("掌握项目进度管理的关键路径方法");
+        hard["spines"][0]["definition"] = json!("按时间表每周推进三章");
+        assert!(
+            codes(&validate_structure(&hard)).contains(&"gd.no_schedule"),
+            "非主题 marker（goal 外的「时间表/每周」）照扫：{:?}",
+            validate_structure(&hard)
         );
     }
 
