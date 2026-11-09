@@ -2,8 +2,8 @@
 id: c8
 title: "概念详情页 + 全局总览页（路由 / 两页 / 概念表行点击与页头入口 / 其他课程可点）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [c7]
 part_of: ../map.md
 ---
@@ -54,3 +54,30 @@ part_of: ../map.md
 ## 非目标
 
 - 节点直达（需节点 URL 化）；概念编辑；总览分页（后置清单）。
+
+## Resolution（2026-11-09 施工收口）
+
+**全验收过，闭票。** 施工 = `383e630f6`。
+
+- **路由**：`Router.tsx` 两条 lazy 路由 `/learn/concepts` 与
+  `/learn/concepts/:conceptId`（静态段优先于 `/learn/:id`），页面放
+  `pages/learning/concepts/`（默认导出供 lazy）。
+- **总览页** `ConceptsOverviewPage`：沿用学习列表页页壳与内容列限宽；表 = 概念
+  （名 + 定义两行截断 + Tooltip）/ 别名 / 课程 / 学习节点 / 已会声明 / 定义审计
+  （自指、互指 ×N）；行点击进详情；名称/定义本地筛选（票外小增量：上限 500 行
+  时有用，零后端成本）；>50 行前端分页。
+- **详情页** `ConceptDetailPage`：标题 + 来源/自指/废弃 tag；定义全文 + 别名
+  （名/定义/出处）；关联关系三组（互指紫 / 定义中提到蓝 / 被其定义提到灰，chip
+  点击互跳）+ 「读时推导不存储」说明；学习节点应用按课程分组（课程名可点跳课
+  程，节点行 = 教/假定·层级 + 标题 + 引用名 + 进度，节点纯文字并注明暂不支持直
+  达）；声明过已会的课程（可点）；返回上一页 + 「全部概念」入口；加载/错误/空
+  三态（未知 id 走错误态，不白屏）。
+- **课程内入口**：概念表表头常驻说明 + 「全部概念」按钮（空表也有）；行点击 →
+  详情；「其他课程也在教」渲染为可点课程链接（stopPropagation，不触发行点击）。
+- **i18n**：26 个新 key 双侧对称（11581→11607）；复用既有 key 4 处（概念/已会
+  声明/定义审计/自指，以及教·假定·层级/引用名）。
+- **验收**：typecheck 55 错持平存量（learning/i18n/Router 零错）；`check:i18n` /
+  `check:theme` / `check:icons` / `check:button-layout-contract` /
+  `check:css-scope` / `check:motion` 绿；`check:dead-css` 学习域零命中（该闸红
+  为他处存量债）；学习域前端单测 **119 pass / 0 fail**（17 文件）。真机手验留
+  汇总门。
