@@ -575,9 +575,40 @@ fn derive_marketplace_id(name: Option<&str>, source: &str) -> String {
 /// third-party: the product does not own it, so it never auto-updates by
 /// default.
 pub(crate) fn is_official_source(source_kind: &str, source: &str) -> bool {
-    nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces()
+    let builtin = nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces();
+    if builtin
         .iter()
         .any(|(_, kind, uri)| kind == source_kind && uri == source)
+    {
+        return true;
+    }
+    // Doc 30 §6.1: an index market may be addressed through either ModelScope
+    // file endpoint — `resolve/master/wb-market/<m>/index.json` or the public
+    // file API `…/api/v1/models/{repo}/repo?Revision=master&FilePath=wb-market/<m>/index.json`
+    // (`resolve/master` 421s on some files, so both forms exist in the wild).
+    // The same logical index is the product's own mirror either way, so treat
+    // them as equivalent instead of letting a URL-shape difference silently
+    // demote the real source to third-party (auto-update off).
+    let key = official_index_key(source);
+    key.is_some()
+        && builtin.iter().any(|(_, kind, uri)| {
+            kind == source_kind && official_index_key(uri).as_deref() == key.as_deref()
+        })
+}
+
+/// Logical identity of an official index URL: `wb-market/<market>/index.json`,
+/// only for the product's own ModelScope repo (both endpoint shapes).
+fn official_index_key(source: &str) -> Option<String> {
+    if !source.contains("modelscope.cn") || !source.contains("me9rez/flowy-marketplace") {
+        return None;
+    }
+    let start = source.find("wb-market/")?;
+    let tail = source[start..].split(['?', '#']).next().unwrap_or("");
+    if tail.starts_with("wb-market/") && tail.ends_with("/index.json") {
+        Some(tail.to_owned())
+    } else {
+        None
+    }
 }
 
 /// Composition-root Marketplace provider.
@@ -1640,6 +1671,24 @@ mod tests {
         for (_, kind, source) in nomifun_app_server::AgentStoreConfig::builtin_default_marketplaces() {
             assert!(is_official_source(&kind, &source), "{source} must be official");
         }
+        // Doc 30 §6.1: both ModelScope endpoint shapes address the same
+        // official index and must classify identically.
+        let index = "wb-market/experts/index.json";
+        assert!(is_official_source(
+            "index",
+            &format!("https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/{index}")
+        ));
+        assert!(is_official_source(
+            "index",
+            &format!("https://modelscope.cn/api/v1/models/me9rez/flowy-marketplace/repo?Revision=master&FilePath={index}")
+        ));
+        assert!(
+            !is_official_source(
+                "index",
+                &format!("https://evil.test/models/me9rez/flowy-marketplace/resolve/master/{index}")
+            ),
+            "a look-alike path on another host must not be official"
+        );
         assert!(
             !is_official_source("url", "https://example.test/.codebuddy-plugin/marketplace.json"),
             "a third-party URL source must not be official"

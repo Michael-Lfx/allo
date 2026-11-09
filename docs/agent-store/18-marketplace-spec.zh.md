@@ -301,10 +301,13 @@ sequenceDiagram
 | `git` | `https://` `http://` `git@` `ssh://` `git://` 前缀 | 原样 | 其他前缀且非 `.git` 结尾、且不是已存在目录 |
 | `url` | HTTP(S) 清单地址 | 原样 | 非 `http(s)://` |
 | `zip` | HTTP(S) 归档地址 | 原样 | 非 `http(s)://` |
+| `index` | HTTP(S) `index.json` 地址（顶层带 `payload` 时即 payload 市场） | 原样 | 非 `http(s)://`，或 `schema_version != 2` |
 
-> `directory` 之外的四种均为**远程源**，走 §5 的获取与晋升流程。
+> `directory` 之外的**五种**均为**远程源**，走 §5 的获取与晋升流程。
 >
 > **`zip`（2026-09-17 加入，doc 30）**：一个归档，**归档根目录即市场根**（清单在归档根，不套一层目录）。用于官方源——`url` 形态下 `experts` 的首次获取要发 **14,714 次请求 / 611 MiB**（逐文件镜像），归档是 **1 次请求 / 289 MiB**，且是同样那些字节。新鲜度与完整性见 §5.3。`url` / `git` / `github` **全部保留**，第三方源继续可用整树镜像。
+>
+> **`index`（2026-10-29 加入，doc 30 §6.1，`fp-20`）**：市场根只放一个 `index.json`（+ 可选 `categories.json`），条目 `download` 是绝对 https 地址并带 `sha256`/`size`；`skills`/`connectors` 共享一个 payload zip，条目用 `member` 定位目录。官方三个市场均已切到该形态。
 
 ---
 

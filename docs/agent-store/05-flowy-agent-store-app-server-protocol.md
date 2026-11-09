@@ -1237,18 +1237,22 @@ POST   /api/app-server/market-settings                    # market/settings-set�
 `market/add` 请求体：
 
 ```text
-{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url|zip", "source": "<源>" }
+{ "name": "<可选稳定名>", "source_kind": "directory|github|git|url|zip|index", "source": "<源>" }
 ```
 
 - `marketplace_id` 从 `name` 推导（无则源 basename），kebab-case 稳定名（内部唯一）；
 - 同源重复添加幂等：返回既有市场行，不报错；
-- 远端源（github/git/url/zip）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
+- 远端源（github/git/url/zip/index）添加时**同步获取**：克隆/下载到 staging → 完整清单校验 →
   原子晋升到 live 根（backup+rename）；失败不注册且 last-good 不被触碰。
 - **`zip`（`fp-7` 加入）**：`source` 是一个 HTTP(S) 归档地址，**归档根目录即市场根**。
   与 `url` 的区别只在传输：`url` 按 `_files.txt` 逐文件镜像，`zip` 取一个归档再解压。
-  官方三个市场都走 `zip`（`experts` 由 14,714 次请求降为 1 次）。归档下载**跟随重定向**，
+  历史上官方三个市场曾走 `zip`（`experts` 由 14,714 次请求降为 1 次）；`fp-20` 起官方三个市场改为 `index`（见 `30` §6.1），`zip` 保留给第三方与冻结旧包。归档下载**跟随重定向**，
   用 `HEAD` 的 `X-Linked-Etag`（内容 sha256）判新旧与校验完整性；解压沿
   `nomifun-common::zip_safe` 的 zip-slip / 符号链接 / 预算防护。见 `18` §5.3。
+- **`index`（`fp-20` 加入）**：`source` 指向一个 `index.json`（`schema_version=2`）。添加时只拉
+  `index.json`（+ 可选 `categories.json`）与校验结构，**不下载条目内容**；条目的 `download`
+  在 `store/install` / `market/entry-import` 时才按索引声明的 `sha256`/`size` 下载、校验并解包
+  （`skills`/`connectors` 共享 payload zip，用 `member` 定位）。见 `30` §6.1。
 
 `market/refresh` 响应（`AppServerMarketplaceRefreshResult`）：
 
@@ -1262,6 +1266,8 @@ POST   /api/app-server/market-settings                    # market/settings-set�
   ETag/Last-Modified 摘要，相同 → no-op；
 - ZIP：`HEAD` 取归档内容 sha256；与已记录 `resolved_revision` 相同 → `changed=false`
   （**不下载归档**）；
+- INDEX：只拉 `index.json`（约 1 MiB）；`resolved_revision` = `index.json` 内容 sha256，
+  未变即 `changed=false`；条目内容不随 refresh 下载；
 - `directory`：重新探测目录，内容摘要变化才更新投影；
 - `resolved_revision` 仅内部追溯，不是公共身份标识。
 

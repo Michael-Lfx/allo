@@ -51,7 +51,7 @@ pub struct AgentStoreConfig {
     ///
     /// ```toml
     /// [default_marketplaces.experts]
-    /// source_kind = "url"      # url | github | git | directory | zip
+    /// source_kind = "url"      # url | github | git | directory | zip | index
     /// source = "http://127.0.0.1:8300/marketplace.json"
     /// ```
     #[serde(default)]
@@ -1184,18 +1184,12 @@ impl AgentStoreConfig {
     /// address as third-party. (The lazy fallback registration deliberately
     /// pins `auto_update = false` anyway: see `register_unfetched`.)
     pub fn builtin_default_marketplaces() -> Vec<(String, String, String)> {
-        // Doc 30: the official bundles ship as **one archive per market** on
-        // ModelScope, not as a file-per-entry tree on the site. The `url` form
-        // cost a first fetch 14,714 requests / 611 MiB for `experts` alone
-        // (the site mirrors every listed file); the archive is 1 request /
-        // 289 MiB and is the same bytes the mirror would have pulled.
-        //
-        // `master` is deliberate, not sloppiness: a market is a *moving*
-        // target, so pinning a commit sha here would freeze every client at
-        // whatever was current when this binary was built, and shipping a new
-        // binary would be the only way to publish a market change. Clients
-        // detect the change with a `HEAD` (`X-Linked-Etag` = content sha256),
-        // so an unchanged archive is never re-downloaded.
+        // Doc 30 §6.1: the three official markets are index-first — one small
+        // pointer each, entry content fetched on demand. (`zip` remains a
+        // supported source kind for third parties and frozen old bundles.)
+        // `master` is deliberate: a market is a *moving* target; clients detect
+        // change via the index/host `X-Linked-Etag` (content sha256), so an
+        // unchanged market is never re-downloaded.
         const MARKET_HOST: &str =
             "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master";
         // Doc 30 §6.1: all three official markets are index-first now — one

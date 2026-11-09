@@ -179,7 +179,7 @@ source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/mast
 - `categories.json` 采用 `taxonomy[]`（`id/zh/en/description_zh/description_en`），`app_server_categories` 优先读它，缺失再回退 `manifest.json` / 内置词表；
 - 官方三个市场（`experts` / `skills` / `connectors`）均已切到 `wb-market/<market>/index.json`；旧 `experts.zip` / `skills.zip` / `connectors.zip` 冻结保留两个发布版本。
 
-发布侧由 `workbuddy-market-collect` 的 `pipeline plan/ingest/transform/package/publish/verify` 生成并上传；索引 URL 统一用 ModelScope 公开文件口 `…/api/v1/models/{repo}/repo?Revision=master&FilePath=…`（`resolve/master` 对个别文件会返回 421）。
+发布侧由 `workbuddy-market-collect` 的 `pipeline plan/ingest/transform/package/publish/verify` 生成并上传。索引 URL 有两种等价文件口：`resolve/master/wb-market/<market>/index.json`（默认内置源即此形态，实测可访问）与公开文件 API `…/api/v1/models/{repo}/repo?Revision=master&FilePath=wb-market/<market>/index.json`；`is_official_source` 对两者判定一致。条目 `download` 一律使用 api/v1 文件口（`resolve/master` 对个别大文件会返回 421）。
 
 落地补充：
 

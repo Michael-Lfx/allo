@@ -314,7 +314,7 @@ flowchart TD
 ## 本轮（2026-10-29 实施 `index` 市场源：`fp-19 → fp-20`，尚未发版）
 
 1. **wire**：`AppServerMarketplaceSourceKind` 增 `Index`（wire `"index"`）；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`。方法计数不变（56 / 83），无方法增删。
-2. **官方 experts 切 index**：`builtin_default_marketplaces` 的 `experts` 改为 `.../wb-market/experts/index.json`，`skills` / `connectors` 暂留 zip。
+2. **官方 experts 切 index**：`builtin_default_marketplaces` 的 `experts` 改为 `.../wb-market/experts/index.json`；后续按 `30` §6.1，`skills` / `connectors` 也已一并切到 index（本条记录的是当次范围）。
 3. **索引先行**：`fetch_remote` 的 `index` 分支只拉 `index.json`（+ 校验并落地 `categories.json`），`revision = index.json` 内容 sha256；条目 `tar.gz` 在 `import_entry` 按索引 `sha256` / `size` 校验后下载、安全解包（拒绝绝对路径 / `..` / 链接 / 设备文件），并自动下钻 experts 归档的顶层 `<plugin-name>/` 目录。
 4. **展示面**：`MarketIndex` 读 `root/index.json`（按 name），`store/list` 头像优先绝对 `icon_url`，类别字典新增 `root/categories.json`（taxonomy 形状）；`default_init_prompt` / `quick_prompts` / 双语 `description` 从 index 行进入卡片，`store.avatarUrl(item)` 与 `Harness.serverRootUrl` 已加入 SDK。
 5. **门禁**：`check:fingerprint` 已覆盖本仓 7 文件 10 处 + 站点 2 处，随本次升级到 `fp-20`；`check:market` 已识别 index（24/24 自测）。
