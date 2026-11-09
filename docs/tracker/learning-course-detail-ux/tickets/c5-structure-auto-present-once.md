@@ -2,8 +2,8 @@
 id: c5
 title: "结构图生成完成后自动呈现一次（首次 structure_completed 切到结构图 Tab + 轻提示）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -46,3 +46,28 @@ part_of: ../map.md
 ## 非目标
 
 - 跨会话持久「已看过」标记（每次挂载重置可接受）；生长（growth_*）完成的呈现。
+
+## Resolution（2026-11-09 施工收口）
+
+**全验收过，闭票。** 施工 = `5aca3276c`。
+
+- **票内裁决：补「离场兜底臂」并改用持久水位**（推翻票面非目标第一条）。实码
+  核实：图课程 `generateCourse` 返回时只建了课程行，结构在后台分钟级生成
+  （`useCourseCreation.ts:217`）——用户若在生成期间离开再回来，只走 HTTP、
+  收不到 `structure_completed`，纯 mount 级 ref 会让「至少呈现一次」落空。
+  - 在场臂：结构投影每次落地（含 WS `structure_completed` 触发的重取）都过
+    `presentStructureOnce`；
+  - 离场臂：零节点课程（首批未生长 = 建课后的声明窗口期）挂载拉到新结构时
+    呈现；有节点的课程不走此臂（不打扰在学用户）；
+  - 水位 = localStorage `learning.structurePresented`（courseId → 已呈现结构
+    的 `generated_at`）：同一次生成至多呈现一次；重生成出新结构值得再看一次；
+    用户已在结构图 Tab 视为已呈现（只写水位不 toast）。
+- **纯决策层** `structurePresentation.ts`（判定 + 注入式存储，浏览器默认
+  localStorage、缺席落进程内兜底）+ `structurePresentation.test.ts` 9 例
+  （首次/重生成/追平/非法时间戳/往返/不串课/覆写/损坏 JSON/形状不对）。bun
+  test 无 DOM——注入式存储是为此，不依赖 localStorage 全局。
+- **toast**：新 key `learningGraphStructureReadyToast`（zh/en 对称），带下一步
+  指引（先声明已会再开始学习）。
+- **验收**：9/9 单测绿；typecheck 55 错持平存量（learning/i18n 零错）；
+  `check:i18n` 绿。真机手验（在场切 Tab / 离场回来切 Tab / 同次不重复）留汇
+  总门。
