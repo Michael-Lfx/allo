@@ -2,7 +2,8 @@
 --
 -- 折叠自 069_retire_graph_dag_and_concepts – 088_learning_basis_declarations
 -- （先例 217030a7c）。净形：未发布表直接建终态、已发布表的数据变换逐字保留；
--- 已发布迁移 001–068 一字不动，文件不重命名、不重排号。
+-- 已发布迁移 001–065 一字不动（066–068 随本次合并首发，非已发布，同属
+-- 不重命名、不重排号的不动集），文件不重命名、不重排号。
 --
 -- 节号（后续票据的引用地址）：
 -- §1 069 退役旧图与 per-course 概念体系（含 x01：自建题 kind 恢复 050 九值全集）
@@ -13,6 +14,7 @@
 -- §5 XP 账本与复习作答流水列（081）
 -- §6 挂载/findings/维护水位/已会声明（082/083/087/088）
 -- §7 quiz 回合（084）
+-- §8 课程行失联孤儿子树一次性清理（m2：到期计数归真 + 题库幽灵行清零）
 --
 -- 折叠后旧 dev 库谱系不再是新谱系前缀，启动即拒；运行 `bun run reset:dev`
 -- 后重启一次（旧数据集进 retired-datasets/）。smoke 临时库不受影响。
@@ -727,6 +729,70 @@ CREATE INDEX idx_learning_quiz_rounds_user
 CREATE INDEX idx_learning_quiz_rounds_course
     ON learning_quiz_rounds(course_id);
 
+
+-- ==== §8 课程行失联孤儿子树一次性清理（m2）====
+-- due 队列升级为「现存且启用」单源口径（§3 enabled 列）后，课程行已失联的
+-- 孤儿复习子树永不出队，到期计数/日历/记忆预测照数虚高，题库留幽灵行：
+-- main 时代 delete_course(delete_reviews=false) 只硬删课程行，enrollments/
+-- modules/lessons/activities/review_items 全保留且可复习（historical_text_ref
+-- 契约下启动修复也永不删这些行）；升级前已删课程的残余则键不上 §1 的
+-- course_kind 键定。此处自底向上一次性清空——与 kind 无关，按「课程行失联」
+-- （NOT IN learning_courses）键定，新删除语义「删课 = 卡清」对存量一并执法。
+-- 执行顺序即编号顺序（子查询依赖父链存活）；§1 已直接删掉的图子树对本段是
+-- no-op——本段兜的是 §1 键不上的预删人群与任何残余。清理集红线：只碰下列
+-- 11 张旧形状表；070 新生表（xp_events / mounts / findings / repairs /
+-- maintenance / quiz_rounds / basis / system_actions / capacity_feedback）对
+-- 被清课程零 legacy 行，不写任何语句；learning_review_events 与
+-- learning_checkins 按既有契约保留（打卡统计不随卡删）。
+
+-- 1) 学史：失联卡的推进史联带清除（与 §1 对图课程同语义）
+DELETE FROM learning_review_log WHERE source = 'course' AND item_id IN (
+    SELECT r.review_item_id FROM learning_review_items r
+    JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id
+    WHERE e.course_id NOT IN (SELECT course_id FROM learning_courses));
+
+-- 2) 课程题标签
+DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (
+    SELECT a.activity_id FROM learning_activities a
+    JOIN learning_lessons l ON l.lesson_id = a.lesson_id
+    JOIN learning_modules m ON m.module_id = l.module_id
+    WHERE m.course_id NOT IN (SELECT course_id FROM learning_courses));
+
+-- 3) 复习卡 / 4) 作答（按失联注册）
+DELETE FROM learning_review_items WHERE enrollment_id IN (
+    SELECT enrollment_id FROM learning_enrollments
+    WHERE course_id NOT IN (SELECT course_id FROM learning_courses));
+DELETE FROM learning_attempts WHERE enrollment_id IN (
+    SELECT enrollment_id FROM learning_enrollments
+    WHERE course_id NOT IN (SELECT course_id FROM learning_courses));
+
+-- 5) 活动 / 6) 节 / 7) 进度（失联课时）
+DELETE FROM learning_activities WHERE lesson_id IN (
+    SELECT l.lesson_id FROM learning_lessons l
+    JOIN learning_modules m ON m.module_id = l.module_id
+    WHERE m.course_id NOT IN (SELECT course_id FROM learning_courses));
+DELETE FROM learning_lesson_sections WHERE lesson_id IN (
+    SELECT l.lesson_id FROM learning_lessons l
+    JOIN learning_modules m ON m.module_id = l.module_id
+    WHERE m.course_id NOT IN (SELECT course_id FROM learning_courses));
+DELETE FROM learning_lesson_progress WHERE
+    enrollment_id IN (SELECT enrollment_id FROM learning_enrollments
+        WHERE course_id NOT IN (SELECT course_id FROM learning_courses))
+    OR lesson_id IN (
+    SELECT l.lesson_id FROM learning_lessons l
+    JOIN learning_modules m ON m.module_id = l.module_id
+    WHERE m.course_id NOT IN (SELECT course_id FROM learning_courses));
+
+-- 8) 课时 / 9) 注册 / 10) 模块 / 11) 课程标签
+DELETE FROM learning_lessons WHERE module_id IN (
+    SELECT module_id FROM learning_modules
+    WHERE course_id NOT IN (SELECT course_id FROM learning_courses));
+DELETE FROM learning_enrollments WHERE course_id NOT IN (
+    SELECT course_id FROM learning_courses);
+DELETE FROM learning_modules WHERE course_id NOT IN (
+    SELECT course_id FROM learning_courses);
+DELETE FROM learning_course_tags WHERE course_id NOT IN (
+    SELECT course_id FROM learning_courses);
 
 -- ==== §10 已发布表枚举集去 CHECK（x05，保 id 式重建，ADR-0015）====
 -- 只删枚举集 CHECK（kind/source/status/course_kind/teaching_style）与
