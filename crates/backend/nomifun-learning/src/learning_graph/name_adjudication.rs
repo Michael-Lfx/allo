@@ -151,10 +151,19 @@ impl<'a> NameAdjudicator<'a> {
                 }
             };
             for suspect in &pending {
-                let verdict = verdicts
-                    .iter()
-                    .find(|verdict| verdict.name == suspect.name)
-                    .expect("mechanical check guarantees exactly one row per pending name");
+                // 防御面：机械校验保证每名恰一条（:parse_verdicts），这里缺
+                // 结论只可能是上游违约——走既有 Degraded 通道降级为提示，
+                // 绝不 panic（图模块生产代码零 panic 红线）。
+                let Some(verdict) = verdicts.iter().find(|verdict| verdict.name == suspect.name)
+                else {
+                    let reason = format!("裁决结果缺名字「{}」的结论", suspect.name);
+                    tracing::warn!(
+                        reason = %reason,
+                        suspects = pending.len(),
+                        "name adjudication missing a verdict row — degrading to hints"
+                    );
+                    return Adjudication::Degraded(reason);
+                };
                 self.memo.insert(suspect.name.clone(), verdict.clone());
             }
         }
