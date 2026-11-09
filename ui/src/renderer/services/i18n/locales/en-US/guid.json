@@ -166,6 +166,55 @@
     "studioTitle": "Start from a local file",
     "buildTitle": "Build",
     "buildDescription": "Websites, apps, and games",
+    "buildChoices": {
+      "website": {
+        "title": "Website",
+        "description": "Interactive browser page"
+      },
+      "app": {
+        "title": "App",
+        "description": "Small browser app"
+      },
+      "game": {
+        "title": "Game",
+        "description": "A playable browser game"
+      }
+    },
+    "buildPrep": {
+      "title": "Build preparation",
+      "hint": "Pick a starter prompt; you can still edit it before sending.",
+      "replaceTitle": "Replace the current draft with the {{category}} prompt?",
+      "use": "Use this prompt",
+      "back": "Back to build",
+      "examplesTitle": "More examples",
+      "promptsTitle": "Start with a prompt",
+      "websiteHeadline": "Your idea, live in minutes.",
+      "websiteSubtitle": "Describe the site you want; Flowy designs, builds and hosts it.",
+      "appHeadline": "Describe it. Use it.",
+      "appSubtitle": "From reading logs to weekly spending — start with the outcome.",
+      "gameHeadline": "Any idea, playable.",
+      "gameSubtitle": "Describe a world, rule or mechanic; Flowy builds a browser game."
+    },
+    "buildPrompts": {
+      "website": {
+        "firstLabel": "Photography studio site",
+        "secondLabel": "Exhibition guide",
+        "first": "Build a single-page index.html for an independent photography studio. Include a clear booking entry point, a portfolio filter, keyboard-accessible previews with Escape dismissal, service information, and a validated booking draft. Use warm paper, dark ink, and one teal accent. Without a backend, create copyable booking details. Verify at 390px and 1280px, including keyboard order and form errors.",
+        "second": "Build an offline exhibition guide in index.html. Organize title, dates and venue, provide a date-based schedule, curator notes, accessible visit information, and a print view. Use sourced local media or SVG placeholders. Verify schedule switching, anchor navigation, reading order, and print layout."
+      },
+      "app": {
+        "firstLabel": "Reading tracker",
+        "secondLabel": "Weekly spending tracker",
+        "first": "Build a local reading tracker in index.html. Add, edit and delete books, record progress, ratings and notes, and filter by status and tags. Show a yearly goal and monthly trend. Support CSV import/export and persistence after reload. Handle empty states, malformed rows and duplicates. Verify editing, reload and a CSV round trip.",
+        "second": "Build a local weekly spending tracker in index.html. Let users add, edit and delete amounts, dates and categories. Show remaining budget and category totals. Persist locally and support JSON import/export. Verify invalid amounts, week boundaries, reload, and malformed imports. Label example data."
+      },
+      "game": {
+        "firstLabel": "Paper plane game",
+        "secondLabel": "Box-pushing puzzle",
+        "first": "Build an offline 2D paper-plane game in index.html. Use keyboard and touch controls to fly through rings and avoid obstacles within 45 seconds. Implement start, pause, results and restart; pause on focus loss. Separate simulation from rendering, use a fixed step and expose a concise read-only game state. Verify scoring, collisions, timeouts, restart and touch.",
+        "second": "Build a locally playable box-pushing puzzle in index.html with three solvable stages. Support arrows and touch, undo, reset, stage selection and a win state. Keep rule state separate from rendering and use no network. Play every stage to completion and verify legal pushes, wall collisions, undo and victory."
+      }
+    },
     "createTitle": "Create",
     "createDescription": "Slides, images, and video",
     "showcaseVideoTitle": "Make a short animated film",

@@ -154,7 +154,9 @@
 
 .mediaGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Three build categories (website/app/game) and the two create choices both
+     keep one shared, content-driven grid without special-casing the drawer. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
 }
 

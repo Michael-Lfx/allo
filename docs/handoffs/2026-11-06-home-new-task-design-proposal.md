@@ -1,5 +1,313 @@
 # Flowy 首页「新建任务」视觉设计与开发方案
 
+## 当前实施规格 · 首页视觉重设计（2026-11-08）
+
+**状态**　第一关 H1–H4 已交付（commit 93100ef9f）。2026-11-09 构建目录已按 Manus 交互重做：三卡图库 → 专属类别页（大图/推荐起步/更多示例），首页与构建页接入幻灯片卡片墙环境背景，并使用 9 张生成封面；待负责人视觉签收。工作模式、统一准备区、背景墙性能留待 §7 第二/三关。2026-11-07 规格归档在下方。
+
+**交付**　[可打开的 HTML 样板与源码](C:/Users/38788/.codex/visualizations/2026/11/06/01a1b018-4a82-71d3-9f8a-93b4abc67cd1/flowy-home-visual-specimen.html)。同一文件可打开看亮暗与交互，也能直接搜索 data-art="build"、data-art="create"、wallTile 和 examples 复制样例。素材引用当前工作区的 Flowy 正式标志与已存在的封面。样板内的访客身份、发送禁用和示例确认仅用于演示。
+
+### 1. 逐图决定与实现原因
+
+| 图 | 决定 | 开发落点 |
+| --- | --- | --- |
+| 1 | 红框整组，包括双入口、会员卡和三案例，在输入框以外剩余高度内居中 | 吸底输入独占下方，.guidScrollArea 作为剩余区；用自动纵向边距居中整组，空间不足改为顶对齐并局部滚动。 |
+| 2 | 构建画出代码到网页，创建画出演示页与可播放视频 | 两段可复制 SVG 见 §3。静态先辨识，悬浮只动内部图形。 |
+| 3 | 会员封面改为安静的成员档案，复用正式 Flowy 标志 | GuidHomeBrand 保持现有翻面、会员资料与权益来源，替换正面装饰。 |
+| 4、7 | 工作模式显示当前项，展开只列可切换项。代码开发、幻灯片各有独立底色 | 当前 GuidPage 为发送覆盖 homeTaskProfile，但 GuidActionRow 的 TaskProfileSelector 仍读全局 store。选项固定遍历 PROFILES 并附加 slides，所以会出现自己。用受控值贯通显示、切换、发送。 |
+| 5、6 | 视频、构建以 Flowy 幻灯片准备态为标准，共用输入上方的标题、内容区和操作槽 | 视频准备目前仍在 /guid，HomeVideoComposer 只换了编辑器。发送后仍走既有视频结果页。移除上方孤立 hero，预览移到吸底输入上方。 |
+| 7、8 | 构建目录只列网站、应用、游戏。每项给已写好的提示词，切到代码开发 | 已实施（2026-11-09）：构建入口为三张真实封面卡；点类别进入专属页（返回构建、网站/应用/游戏 tab、大图、两条推荐起步、更多示例），不再点卡即填词；首页/构建页有低对比卡片墙背景；九张生成封面落在 `components/assets/build/`。 |
+| 6 | 背景墙保持外观，收紧动画成本 | SlideCardWall 的逐卡入场、整页指针变量写入、全网格点击波和环境定时器都是待验证成本，按 §6 采 trace。 |
+
+首页右上快捷卡继续删除。侧栏「视频」与其原路由保留。首页视频封面继续进入首页的视频准备态。参考图只用于版式和层级判断。
+
+### 2. 几何、颜色与交互契约
+
+- 版心上限 768 CSS px，宽窗边距 ≥24px，紧凑档 ≥16px。默认态量取标题栏下边缘与输入外框上边缘之间的内容矩形，两端对称留白后取中点。红框整组中心与该中点偏差 ≤2 CSS px。空间装不下时从顶部开始，滚动仅在上区。输入高度变化时剩余区重新分配。
+- 宽窗双入口 104px × 2，行距 12px，列比 62:38。紧凑档入口高 84px，三案例保留。准备面板与输入外沿偏差 ≤1px，间距 8px，输入外框底边漂移 ≤1px。宽窗模板首屏 4 项，紧凑档 3 项，按实际 rail 内容宽度计算，避免固定 248px。
+- 工作模式按日常办公、代码开发、幻灯片排序。胶囊显示当前项和图标，菜单排除当前项。普通办公用中性色。代码开发用青绿，幻灯片用紫色，视频专用输入用蓝色。亮色前景建议 #0d6c63／#5542a7／#175999，暗色 #82e2d4／#d6caff／#a8d1ff。用对应颜色与现有表面混合 14% 作填充、35% 作边线，前景与填充至少 4.5:1。标签、图标和焦点轮廓同步表达状态。
+- 打开目录保持原草稿和模式。选网站、应用、游戏进入该类代码开发准备；进入类别页时不改草稿，点推荐起步才填入第一条或第二条提示词；已有正文、附件或项目草稿时沿用替换确认，取消保留原视图和草稿，确认才应用。项目选择与普通草稿继续隔离。点击选模板、提示词、关闭均不发送。
+- 工作区标题行、示例或模板、输入工具栏同列。幻灯片保留模板、页数、画布、导入。视频保留真实模型、参考图、时长与清晰度。构建只呈现本地 HTML 成果、真实项目选择和起步提示。准备态的「返回」回来源，关闭仅收起准备内容并保留已选模式。回首页的动作另有明确入口。Escape 先关菜单和确认层，再收当前准备内容。
+
+#### 剩余高度居中的接线示例
+
+```css
+/* 保留现有吸底输入，剩余高度由上区消费。 */
+.guidScrollArea {
+  flex: 1 1 0;
+  min-block-size: 0;
+  overflow-y: auto;
+}
+.guidScrollArea[data-home-layer='home'] {
+  display: flex;
+  flex-direction: column;
+}
+.guidScrollArea[data-home-layer='home'] .guidPrimaryStage {
+  flex: 0 0 auto;
+  margin-block: auto;
+}
+.guidFixedInputArea { flex: 0 0 auto; }
+
+/* rail 是紧凑面板的实际内容宽，包含间距前先扣掉可见的内边距。 */
+:global([data-home-compact='true']) .rail {
+  grid-auto-columns: minmax(0, calc((100% - 16px) / 3));
+  gap: 8px;
+}
+```
+
+以上述节点的实际盒模型验收。继承样式如有固定高度或内边距，先让上下内边距对称，再量中线。小窗缩略图随单卡可用宽度从 112×63 降为 80×45，仍不足时将标题放到图下。
+
+### 3. 两张入口 SVG 和会员封面源码
+
+两张图共用 176×96 坐标。宽窗渲染宽 144px，紧凑档 104px。构建左侧是代码，沿箭头连到带页眉与内容区的浏览器。创建左后是带图表的演示页，前方是带播放键与进度条的画面。SVG 为装饰，按钮标题负责可访问名称。复制进 TSX 时按 React 属性拼写转换 className、strokeWidth、strokeLinecap、strokeLinejoin。
+
+```svg
+<svg class="entryArt" data-art="build" viewBox="0 0 176 96" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <g class="artSource"><rect x="9" y="29" width="47" height="38" rx="7"/><path d="m24 43-6 5 6 5m13-10 6 5-6 5m-5-13-3 16"/></g>
+  <path class="artLink" d="M60 48h18m-5-5 5 5-5 5"/>
+  <rect x="84" y="17" width="82" height="62" rx="8"/><path d="M84 31h82M94 24h2m5 0h2"/>
+  <g class="artResult"><rect x="95" y="41" width="59" height="12" rx="3" class="artAccent"/><path d="M95 63h24m8 0h27M95 70h18m14 0h18"/></g>
+</svg>
+<svg class="entryArt" data-art="create" viewBox="0 0 176 96" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <g class="artSource"><rect x="12" y="13" width="78" height="55" rx="7"/><path d="M24 26h42m-42 9h23"/><path d="M25 55v-8h8v8m5 0V44h8v11m5 0V41h8v14"/></g>
+  <g class="artResult"><rect class="artPlate" x="74" y="32" width="87" height="51" rx="8"/><path class="artAccent" d="m110 45 14 8-14 8Z"/><path d="M86 71h63"/><circle class="artAccent" cx="102" cy="71" r="3"/></g>
+</svg>
+```
+
+```css
+.entryArt { width: min(44%, 144px); height: auto; flex: none; color: var(--color-text-2); }
+.artSource { opacity: .77; }
+.artLink, .artAccent { stroke: var(--entry-accent, currentColor); }
+.artPlate { fill: var(--flowy-raised); }
+.artResult, .artSource, .artLink {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 200ms cubic-bezier(.2, .8, .2, 1);
+}
+@media (hover: hover) and (pointer: fine) {
+  .entryButton:hover .artResult { transform: translateY(-4px); }
+  .entryButton:hover .artSource { transform: translateY(2px); }
+  .entryButton:hover .artLink { transform: translateX(3px); }
+}
+:global([data-home-compact='true']) .entryArt { width: min(40%, 104px); }
+@media (prefers-reduced-motion: reduce) {
+  .artResult, .artSource, .artLink { transition: none; transform: none !important; }
+}
+```
+
+会员正面采用一张中性档案卡。左上复用正式标志 44px，中间一行实际用户名，下方显示真实计划，细线作收尾。去掉手画 F、密集网格、强渐变和装饰性日期。背面继续展示既有权益与动作，现有点击固定、鼠标悬浮预览和键盘翻面继续使用。以下为正面结构，放入现有翻卡容器中。
+
+```tsx
+import FlowyLogo from '@/renderer/components/brand/FlowyLogo';
+
+<div className={styles.memberFace}>
+  <FlowyLogo size={44} title="Flowy" />
+  <span className={styles.memberName}>{displayName}</span>
+  <span className={styles.memberPlan}>{planLabel}</span>
+</div>
+```
+
+正面 padding 16px，行距 8px，姓名 15/22·600，计划 12/18。表面用 var(--flowy-raised)，分隔线用现有轻边线。样板中的假名不进入产品。
+
+### 4. 模式与工作区接线示例
+
+首页已有 homeCapability、homeDraftsRef、switchHomeCapability、requestHomeExample 等入口。建议沿用状态和草稿拷贝，去掉首页第二份可分叉的 homeTaskProfile，统一派生。TaskProfileSelector 加首页专用的可选受控值与回调。未传受控值的调用保留全局模式行为。GuidActionRow 只透传首页的模式与选择动作。已有模型不支持幻灯片时，沿用 supportsHomeGoalCommand 过滤。
+
+```tsx
+type ComposerMode = 'office' | 'coding' | 'slides';
+type BuildKind = 'website' | 'app' | 'game';
+
+const composerMode: ComposerMode =
+  homeCapability === 'slides' ? 'slides' :
+  homeCapability === 'develop' ? 'coding' : 'office';
+const sendProfile = composerMode === 'coding' ? 'coding' : 'office';
+const availableModes: readonly ComposerMode[] = supportsHomeGoalCommand
+  ? ['office', 'coding', 'slides']
+  : ['office', 'coding'];
+const menuModes = availableModes.filter((mode) => mode !== composerMode);
+
+// 同一 composerMode 驱动标签、图标、填充色和菜单。
+// 既有 useGuidSend 使用 taskProfile: sendProfile。
+// 视频在原来的 submitHomeVideo 分支，参数及安全逻辑保留。
+const onHomeModeChange = (next: ComposerMode) => {
+  if (next === composerMode) return;
+  if (next === 'slides') {
+    enterSlideMode();
+    return;
+  }
+  switchHomeCapability(next === 'coding' ? 'develop' : 'office');
+  setHomeView('home');
+};
+```
+
+上段为接线示例，菜单由原 Arco 组件构造，复用键盘事件与已有 i18n。初始化时若保留用户已有工作模式偏好，只从全局 store 初始化一次，进入构建分类时不改全局偏好。工作区沿用现有 HomeInputDrawer、SlideCreatePanel、HomeVideoComposer。统一同一个底部容器的标题行、边线、预览内容和编辑器槽，避免为了重排新造路由或复制发送器。
+
+### 5. 构建目录的六个可直接用的提示词
+
+每类第一条为默认起步提示，第二条在同一准备面板里可替换。网站、应用和游戏走现有代码开发链路，最终产物以实际验证为准。应用首条可以用现有阅读记录封面；网站和游戏用自己的结构小图，标成示例，不展示未生成的结果。英文与中文用同一稳定 ID。
+
+**摄影工作室网站**（website-1）
+
+> 在所选项目创建可直接打开的 index.html，为一家独立摄影工作室制作单页网站。包含首屏预约入口、可按人像和活动筛选的作品集、支持键盘和 Escape 关闭的预览、服务信息和带校验的预约草稿。视觉用暖白底、深墨文字和单一青色强调。没有真实服务端时只生成可复制的预约信息。测试 390px 和 1280px，确认筛选、预览、表单和键盘顺序。
+
+**独立展览指南**（website-2）
+
+> 制作一个无需联网的展览指南 index.html。用清晰的标题、日期和地点组织内容，展示按日期切换的日程、策展人介绍和无障碍到访信息。提供打印视图。使用有来源的本地素材或 SVG 占位，保留移动端阅读顺序，并验证日程切换、锚点和打印样式。
+
+**个人阅读记录**（app-1）
+
+> 创建一个本地可运行的阅读记录应用 index.html。支持新增、编辑、删除书目，记录进度、评分和笔记，并按状态和标签筛选。展示年度目标和月度趋势，支持 CSV 导入导出和页面刷新后恢复。给出错误行、空状态和重复项处理。验证新增、刷新、导入错误以及导出后重导的流程。
+
+**每周开支记录**（app-2）
+
+> 制作无需登录的每周开支记录 index.html。输入金额、日期和分类，支持编辑与删除，显示周预算余额和分类统计。数据保存在本地，支持 JSON 导入导出。验证金额格式、跨周汇总、刷新恢复与损坏文件的提示，示例数据注明为示例。
+
+**纸飞机穿环**（game-1）
+
+> 制作一款能在浏览器本地运行的 2D 纸飞机穿环游戏 index.html。方向键或触控操纵，在 45 秒内依次穿环并躲开障碍。提供开始、暂停、结算和重开，浏览器失焦时暂停。把模拟状态与绘制分开，用固定步长更新，并提供精简的可读状态用于验证。用真实键盘和触控操作，检查得分、碰撞、超时、重开及不同屏幕宽度。
+
+**星光推箱**（game-2）
+
+> 制作本地可玩的推箱解谜 index.html，包含三个由易到难且已验可解的关卡。支持方向键和触控、撤销、重置、完成提示和关卡切换。规则状态独立于绘制，不联网。逐关实际操作，验证合法推动、撞墙、撤销与胜利，给出三关各自的完成证据。
+
+| ID | en-US 提示词 |
+| --- | --- |
+| website-1 | Build a single-page index.html for an independent photography studio. Include a clear booking entry point, a portfolio filter, keyboard-accessible previews with Escape dismissal, service information, and a validated booking draft. Use warm paper, dark ink, and one teal accent. Without a backend, create copyable booking details. Verify at 390px and 1280px, including keyboard order and form errors. |
+| website-2 | Build an offline exhibition guide in index.html. Organize title, dates and venue, provide a date-based schedule, curator notes, accessible visit information, and a print view. Use sourced local media or SVG placeholders. Verify schedule switching, anchor navigation, reading order, and print layout. |
+| app-1 | Build a local reading tracker in index.html. Add, edit and delete books, record progress, ratings and notes, and filter by status and tags. Show a yearly goal and monthly trend. Support CSV import/export and persistence after reload. Handle empty states, malformed rows and duplicates. Verify editing, reload and a CSV round trip. |
+| app-2 | Build a local weekly spending tracker in index.html. Let users add, edit and delete amounts, dates and categories. Show remaining budget and category totals. Persist locally and support JSON import/export. Verify invalid amounts, week boundaries, reload, and malformed imports. Label example data. |
+| game-1 | Build an offline 2D paper-plane game in index.html. Use keyboard and touch controls to fly through rings and avoid obstacles within 45 seconds. Implement start, pause, results and restart; pause on focus loss. Separate simulation from rendering, use a fixed step and expose a concise read-only game state. Verify scoring, collisions, timeouts, restart and touch. |
+| game-2 | Build a locally playable box-pushing puzzle in index.html with three solvable stages. Support arrows and touch, undo, reset, stage selection and a win state. Keep rule state separate from rendering and use no network. Play every stage to completion and verify legal pushes, wall collisions, undo and victory. |
+
+三类提示词都参考并改写自公开的上游资料，不整段复制：网站/应用参考 [Anthropic Frontend Design](https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md) 的布局、视觉方向与交互，并用 [OpenAI Playwright Interactive](https://github.com/openai/skills/blob/main/skills/.curated/playwright-interactive/SKILL.md) 做操作验收；游戏参考 [OpenAI Web Game Foundations](https://github.com/openai/plugins/blob/main/plugins/game-studio/skills/web-game-foundations/SKILL.md) 的输入、模拟与绘制分离和固定步长，并用同一 Playwright 资料做操作验收。六条提示词保留 Flowy 自有 ID（website-1/2、app-1/2、game-1/2），每条都由我方改写并在中英文案中维护。
+
+### 6. 幻灯片性能先验证再改
+
+**优先方案。** 首页幻灯片把每卡 DOM 换成一层静态 SVG pattern，保留大小错落的线稿卡片和向输入区淡出的遮罩。样板的 wallTile 提供可直接使用的 272×124 平铺单元。React 版用 useId 为 pattern ID 隔离。整层可做一次 160ms opacity 入场，静止后无计时器、无逐卡 animate、无指针写 CSS 变量。背景设置 aria-hidden 与 pointer-events:none。模板轨、输入、键盘和背景开关仍使用既有交互。
+
+**量测。** 在同一 WebView2、窗口、DPR 和电源状态，改前改后各跑 3 次。每次从创建进入幻灯片，滑动模板、在输入框录入、移动鼠标并静置 10 秒。记录 Chromium trace 的长任务、帧间隔和 Paint/Style 时间，并确认无背景 DOM 批处理或动画定时器。60Hz 下以操作段 P95 帧间隔 ≤20ms、静置段背景引起的 ≥50ms 长任务为 0 为目标。小窗、暗亮与减少动效分别截图。当前掌握的是用户观察和可疑代码路径，尚未量得改前帧率或主因。
+
+### 7. 交付顺序与停止线
+
+1. **先做一屏视觉。** 接居中版式、两个 SVG、会员正面。交亮暗首屏与居中量测。工作模式按 §8 单独交付，不在第一屏混入。
+2. **再做同一套准备区。** 先用幻灯片对齐，完成静态背景墙和宽度自适应模板轨，再把构建和视频的内容放进同一底部结构。构建目录恰好三类，点击后看到对应提示词和代码开发胶囊。视频原路径、附件、实际参数和发送保护独立回归。
+3. **最后走真实验证。** 1280×832 和 880×600 优先真实桌面，说明侧栏状态和 DPR，浏览器仿真单列。开关层级前后量输入位置，确认 Enter 和 Escape、附件隔离、旧草稿确认与原路由。构建三类各用安全测试目录，至少完成一条真实任务、浏览器操作和第二次修改。性能交 trace 前后对照。
+4. **明确改动边界。** 现有首页组件、首页专用模板背景、GuidActionRow 透传是主体。共享 TaskProfileSelector 只允许增补可选受控接缝及对应样式，独立视频、侧栏、共享发送、后端、脚本和依赖沿用现有边界。新增成果名称、六条提示词和可访问文案用中英 i18n，涉及既有冻结文件的改动待独立授权。保留历史变更，实施时按工作区现状核对再开工。
+
+### 8. 补充执行约定 · 先验默认首页
+
+本节优先于 §7 的首轮执行顺序。第一次交付只做默认首页在 Flowy 真实入口的视觉。工作模式、准备区统一和背景墙性能依次交付。首页右上视频快捷卡的删除结论与侧栏视频保留结论继续有效。
+
+#### 参考材料的用途
+
+| 材料 | 可作为依据的内容 |
+| --- | --- |
+| 11 月 8 日八张问题图与本提案 §1–§2 | 产品意图、要修的画面、布局和状态约束。截图中的账号及示例文案属于现状记录 |
+| §3 的两段 SVG、会员正面示例 | 执行 agent 直接使用路径、分组、官方标志和动效参数。适配 React 属性、CSS Module 和现有主题 token |
+| HTML 样板 | 查看布局、图形方向和配色。该文件依赖本地素材路径，会员只演示点击换面，输入和发送是演示控件。可复制 SVG、样式片段和样例数据。实际产品交互以现有组件及本提案为准 |
+| Flowy 真实入口的改后截图、连续录屏、DOM 量测 | 产品视觉、实际行为和几何的签收材料。浏览器仿真和真实 WebView2 分别记录 |
+
+执行者开工前先打开现有首页，在同一宿主和尺寸各留一张改前画面。若 HTML 无法预览，可直接用 §3 源码完成首屏，在 Flowy 实际入口截图。禁止把样板的测试身份、禁用发送、原生 confirm 或绝对 file URL 带进产品。
+
+#### 第一关 · 默认首页交付清单
+
+首轮只改红框整组、两张入口卡和会员封面。最小交付是两套同尺寸改前改后截图、一段 15–25 秒的真实首页录屏、一张量测表。
+
+| 编号 | 画面或操作 | 必须能看到或量到 |
+| --- | --- | --- |
+| H1 | 1280×832 与 880×600。宽窗至少一组亮暗对照。记录宿主、CSS 内容区、DPR、侧栏是否占宽 | 红框整组在扣除输入框后的剩余区域居中，装得下时中点误差 ≤2 CSS px，装不下时上区从顶部排布且滚动可达。三张案例和输入仍能找到。顶部没有视频快捷卡，侧栏视频入口仍在 |
+| H2 | 录屏先停在两张入口的静止帧，再依次移入、停稳、移出 | 构建画面可见代码、箭头和浏览器，创建可见演示页和播放画面。以 §3 的路径和分组为准。每张至少留移入前、运动中、复位后三个时刻。只动 SVG 内组，约 200ms，卡片及文字不位移。减少动效下无移动 |
+| H3 | 会员正面、鼠标预览、移出，最后键盘翻面 | 正面出现正式 Flowy 标志和低对比表面，原手绘 F 与大面积渐变消失。保持既有资料来源、翻面和主动固定。截图使用隔离账号或遮挡真实身份与工作区 |
+| H4 | 同一个窗口先空草稿，再输入足以使输入区增高的文本 | 居中参考点随输入外框变化，输入底边与发送仍可达。核对真实页面的内容区高度与滚动区。两种目标桌面尺寸无法取得时，用可取得的桌面形态加浏览器目标宽度，逐项标注未验状态 |
+
+第一关每个编号都附具体证据和对应代码差异。H2、H3 即使版心量测或测试通过也要各自有画面。修改仅限已经授权的首页版式与视觉文件，保留未提交工作。提交、推送和历史操作按既有授权边界。
+
+#### 第二、第三关的反例
+
+- **模式与草稿。** 带一条有正文、附件和项目路径的办公草稿，从构建选游戏，分别走取消与确认。取消后状态与原草稿逐项一致。确认后胶囊显示青绿代码开发、菜单排除代码开发，并从实际发送入口核对任务 profile。随后切幻灯片，紫色胶囊与模板只属于幻灯片，办公草稿仍可恢复。
+- **准备区与性能。** 三类构建、幻灯片、视频逐态截图，量同一外沿和 8px 间隔。保持侧栏占宽后缩窄，再移入模板区、横移、输入并静置。模板数量和显示完整度按实际内容宽核对，性能按 §6 的同宿主 trace 比较。真实桌面不可用时分别记录结构通过与性能未验。
+
+签收顺序为 H1–H4 首屏 → 模式及草稿 → 准备区和性能。每关按当前规格、运行证据和代码差异三方对照。证据还缺的项目保持未验。视觉签收与发布准入分别记录。
+
+**实施状态（2026-11-08）**：H1–H4 已完成并有真实运行证据（commit 93100ef9f）；构建目录已实现网站/应用/游戏三卡、删除打开文件夹，并接入 §5 六条提示词；第一关待负责人视觉签收，工作模式、统一准备区、背景墙性能仍按 §8 后置。
+
+**实施状态（2026-11-09）**：构建目录改为 Manus 式图库 + 专属类别页；首页、构建图库、构建类别页复用 `SlideCardWall` 作为环境背景；九张生成封面（网站 3、应用 3、游戏 3）已落本地 assets；进入类别页不再自动填词，点推荐起步才填/确认；证据在 `D:\tmp\flowy-build-categories\`。
+
+**审查修复（2026-11-09）**：类别 tab 切换清空旧替换确认；tab 改为 `role=group` + `aria-pressed` 且不再抢焦点；移除旧 `.prep*` 样式与未使用变量/导入；9 张封面纳入提交；§2 已对齐“进入类别页不改草稿、点提示词才填”。
+
+## 上一轮视觉样板规格与记录
+
+## 当前实施规格 · 视觉与布局优先（2026-11-07）
+
+**状态**　待实施与视觉签收。以 `feat/redesign-home-new-task` 的 `c4c503ce4` 为本地对照。以下数值标为「实测」的来自既有记录，其余均为本轮设计目标。下方历史方案与证据继续保留。
+
+### 1. Manus 参考拆解与当前差距
+
+Manus 的「新建任务」帮助桌面工作者在输入前看懂可交付的成果，并在深入到特定能力时就近完成准备。参考画面依次给出能力入口、成果预览和与成果对应的输入。做得好的地方是每一层只承担一种决策，且输入框始终提供空间锚点。这里以所附截图判断画面，以 Flowy 的实际宿主和交互取证判断行为。
+
+| 层级 | Manus 参考里有效的选择 | Flowy 当前实测或代码事实 |
+| --- | --- | --- |
+| 默认首页 | 安静的能力卡、强辨识度的案例和统一版心，使入口、示例与输入自然分层 | 宽窗已是 768px 版心，入口高 104px、间距 12px。会员面约 287×220px，渐变在默认暗色态比主入口更抢眼。参见 Flowy `r3/e1-default-wide.png`、Manus `01-home-light.png`、`02-home-dark.png` |
+| 构建与创建 | 构建目录用「网站」作主项，其他能力降为小预览。创建靠成果缩略图解释幻灯片和视频 | `GuidPage` 给构建主项传入 `emphasis`，`HomeInputDrawer` 引用 `mediaOptionEmphasis`，样式模块没有同名规则，实际两列等宽。创建小窗预览实测约 362×84px，裁切过扁。参见 Manus `03-build-directory.png`、`06-create-directory.png`，Flowy `r3/e14-create-dir-compact.png` |
+| 能力准备 | 幻灯片背景是环境层，模板和主题建议在输入框上方。视频把示例与专属输入放在同一浏览区域 | 幻灯片已接模板、背景墙和真实参数。构建同时显示上方封面与底部文字示例。视频宽窗预览底边到编辑器顶边实测约 326px，两者分属 `guidScrollArea` 与 `guidFixedInputArea`。参见 Manus `05-build-website.png`、`07-create-slides.png`、`11-create-video.png`，Flowy `r3/e11-video-prep-wide.png` |
+| 小窗 | 输入、内容外沿和下一步操作可以一起扫到 | Flowy 880×600 浏览器样本的目录宽 784px、普通输入卡宽 812px，两侧各差 14px，纵向间隔已为 8px。样本侧栏未展开，桌面实际宿主状态仍需验收 |
+
+源文件见 [Manus 截图索引](assets/2026-11-06-home-new-task/manus-reference/) 和 [Flowy R3 尺寸记录](assets/2026-11-06-home-new-task/r3/evidence-report.json)。Manus 素材仅作评审参考，产品预览使用 Flowy 现有素材。
+
+### 2. 结构与视觉规格
+
+```text
+默认首页                  目录                       能力准备
+[双入口    ][会员勋章]     [构建／创建        ×]      [返回   当前能力      ×]
+[视频][应用][图片]         [真实成果预览与说明]        [示例／模板，只有一处]
+       ↓                          ↓                          ↓
+[项目 · 正文 · 发送]       [项目 · 原草稿 · 发送]      [能力输入 · 参数 · 发送]
+```
+
+**共用版心。** 首页舞台、抽屉、模板外框和输入外框对齐同一列。宽窗内容最大宽 768px，主区域左右最少各留 24px。紧凑档左右各留 16px，用扣除标题栏和侧栏后的可用尺寸判定。保持现有 `data-home-compact` 入口，验收按实际 DOM 宽度修正边界。底部区从可用高度中先预留输入与发送，再给预览或模板分配空间。面板到编辑器外框间距 8px，左右外沿偏差各 ≤1 CSS px，固定宿主与窗口下输入外框底边漂移 ≤1 CSS px。焦点外环不计入盒模型量测。
+
+**默认首页。** 保留左侧「构建／创建」、右侧会员位、三张案例和独立视频快捷入口。宽窗入口 104px × 2 行、行距 12px、列比例 62:38。入口标题 18/24、字重 600，描述 13/18，文案与图案净距 ≥12px。入口插画框 144×86px，紧凑档 104×62px。构建用浏览器正视轮廓与一段代码轨迹，创建用斜向胶片、播放符号与演示页一角。主线 1.75px、辅助线 1px，保留一处主题强调点。会员维持右栏位置，中心 48px 勋章，身份文字做次一级，底色回到现有中性表面。保留悬浮预览、点击固定、键盘和触屏入口。三张案例保留原素材与比例策略，宽窗封面高 116px，紧凑档 76px，标题放在封面下方。独立视频入口保持 44px 高及原有目的地。
+
+**二级目录。** 同一个贴底抽屉承载两组目录。宽窗内边距 12px，紧凑档 10px，选项间距 8px，统一圆角层次为面板 12px、预览 8px。构建用网页预览作主项，宽窗主次列约 2:1。主项复用阅读记录封面与 `index.html` 提示，次项用目录树接既有项目选择。创建保留两个等权项，幻灯片复用真实模板封面，视频复用已有短片封面。紧凑档用约 112×63px 缩略图加标题和一行说明，空间不足时降至约 80×45px，保持画面完整。宽窗两列用 16:9 内容框配合尺寸上限，预览允许留中性底。入口点击只打开目录，选具体成果后才切换能力。项目选择取消时，保持可继续操作的目录或原草稿。
+
+**幻灯片准备。** 保留 `SlideCardWall`，通过首页作用域的遮罩降低模板面板和输入附近的背景对比。面板第一排给真实模板，宽窗首屏显示自由设计和 3 张完整模板，紧凑档显示自由设计和 2 张，其他项通过既有左右控件浏览。保留模板导入。建议提示放到一行，无法容纳时按现有交互入口收起，焦点仍能到达每项。面板限高宽窗 232px、紧凑档 168px，必要时只让面板内部滚动。底部先显示模板和页数，比例与出稿方式收成可编辑摘要。关闭模板后保留背景、模式、草稿与模板选择，焦点回到输入框或模板入口。
+
+**构建和视频准备。** 同一项成果只展示一次，移除位于上方滚动区的重复 hero，把真实封面、简短说明和可应用示例并入输入上方的准备区。构建展示 `index.html` 与真实项目选择，视频展示已有短片封面和专用编辑器。视频继续使用现有模型、时长、清晰度和参考图控件。紧凑档次要参数可折为摘要，当前模型与发送保留独立空间。默认态图片案例继续使用现有示例确认流程；功能目录仅列可用能力。
+
+**层级与动效。** 设计目标为「直接输入 → 展开目录 → 选择能力 → 准备和发送」。准备态「返回」回来源目录，从首页案例直接进入时返回首页。「关闭」回首页，模板面板关闭仅收模板。Escape 先交给当前原生选择器、引用或参数菜单，其次确认条，再收模板或退一层。关闭后的焦点返回有效触发项。目录用约 160ms 淡入与最多 8px 位移，线稿保留约 220ms 局部反馈，卡面文字和输入位置固定。减少动效时即时显示目标状态。亮暗主题沿用语义表面、边线、正文和强调色，醒目颜色留给真实预览、焦点与发送。键盘焦点和选中态用边框或形状辅助识别。
+
+### 3. 实施顺序与文件边界
+
+| 顺序 | 修改面 | 做法与通过条件 |
+| --- | --- | --- |
+| V0 固定对照 | 只读 `PRODUCT.md`、`DESIGN.md`、本提案、Manus 01/02/03/05/06/07/11/12/13 与 R3 对照 | 记录实际 HEAD、运行宿主、侧栏状态、CSS 视口和系统缩放。对照图分开标注原尺寸和评审缩放尺寸。先保存 Flowy 改前四态 |
+| V1 统一骨架 | `GuidPage.tsx`、`index.module.css`、`components/FeatureCards.tsx` 及样式、`components/GuidHomeBrand.tsx`、`components/GuidHomeCard.module.css`、`components/ShowcaseCards.module.css` | 一套版心和吸底定位。调静态主次、SVG 与会员材质。CSS 图形与可点击语义分层。若全局按钮圆角覆盖，使用局部视觉内层承载圆角与裁切，原生按钮保留焦点和命中，沿用全局覆盖规则 |
+| V2 完成视觉样板 | `components/HomeInputDrawer.tsx` 及样式、`presentation/SlideCreatePanel.tsx` 及样式、`presentation/SlideCardWall.module.css`、`presentation/SlideOptionsControls.module.css` 的首页作用域 | 先走「首页 → 创建 → 幻灯片 → 收起模板」。逐帧对齐版心、缩略图、参数栏与输入底边。第一道签收只看这条切片，旧 GIF 只当对照 |
+| V3 扩展已确认规则 | `GuidPage.tsx`、`HomeInputDrawer`、`index.module.css`、`components/HomeVideoComposer.tsx` 及样式 | 接构建主次、项目选择、构建与视频贴底预览。回归原回调、焦点、草稿与示例确认。优先调整布局和交互呈现，提交与恢复逻辑由单独任务验收 |
+| V4 交付 | 既有进度与待裁决，仓库外的脱敏验收目录 | 交改前改后证据、测量 JSON、变更文件列表和前端门禁结果。视觉签收与发布准入分开记录 |
+
+文件表以 `ui/src/renderer/pages/guid/` 为根。复用既有布局、回调、i18n 键、SVG 与产品封面。`onSend`、项目选择、模板和附件契约、既有视频入口与结果页、侧栏保持原接口。`GuidPhaseOneStyle.test.ts`、`GuidHomeBrand.structure.test.ts`、`GuidResourceCards.structure.test.ts`、全局 Arco 覆盖、i18n、脚本、共享发送与后端均为冻结基线。会员仍经 `GuidHomeBrand` 输出现有翻卡，三张封面和独立视频入口保留。若测试断言与当前已知例外冲突，记录失败名与证据。沿用纯补丁交付，提交和推送另行授权。
+
+### 4. 关键取舍与验收矩阵
+
+- **同一版心优先。** Manus 的参考行高 130px，Flowy 宽窗沿用 104px 以保留案例和底部输入。紧凑档设计预算为顶部 44、双入口与行距 178、案例与标题 96、输入 142、三处间距 30、上下内距 24，共 514px。预算为设计约束，实机按可用内容高度复核。
+- **先看成果，再填参数。** 创作目录保留两种真实能力，构建区优先解释本地 HTML。会员与独立视频快捷入口保持辅助地位。没有专用文案键时复用准确的既有键，术语缺口记录在待裁决。
+- **呈现与发送分开验收。** 动效、画面、焦点与布局走本轮签收。视频未知态防重发、无效成功回包、草稿保护、模型目录自动恢复及相应取证仍走独立发布门槛。
+
+| 门槛 | 检查方法 | 通过条件 |
+| --- | --- | --- |
+| 同屏与外沿 | `1280×832`、`880×600` 真实桌面，记录侧栏常驻、覆盖或折叠与缩放。测量 DOM 的 `getBoundingClientRect()` 和 `scrollHeight/clientHeight` | 两个尺寸下默认态所有主要入口、三案例和输入可达。目标小窗同屏且主页无纵向滚动。抽屉 8px 间隔、同宽、外沿与底边误差 ≤1px。小于基准尺寸时局部滚动也能触达控件 |
+| 视觉四态 | 同一窗口录制首页、创建目录、幻灯片准备、关闭模板，补亮暗静态对照和中英文长文案检查 | 入口与会员主次清楚，预览主体完整，宽窄都无截字或叠盖。模板与输入始终可操作。参考截图只用于判断画面结构 |
+| 真实交互 | Tab、Enter、Escape，目录返回、关闭、示例取消／应用，会员悬浮／固定与减少动效。补构建和视频各一条回放 | 操作前后焦点和草稿可追踪。模板收起不退出模式。视频参数和发送位置无叠盖。已有提交接口调用及数据形状保持一致 |
+| 前端门禁 | `bun test ui/src/renderer/pages/guid`、类型检查、主题/i18n/dead-css/button-layout-contract/css-scope/icons/motion 检查、`bun run build:ui`、`git diff --check` | 对照本地实际开工基线，无新增失败。既有 `c4c503ce4` 审查快照为 137 通过／3 失败、71 条类型诊断，远端主线更新后重测，保留失败身份和原始输出 |
+
+**首个样板。** 用现有幻灯片素材完成 V1 与 V2，把两种尺寸的四态证据放在一起。记录输入框底边、抽屉左右边、模板首屏可见项和下一步动作。先验收这条链的画面与手感，再按同一尺度完成 V3。桌面侧栏展开目标、需要的新键和实际环境阻塞写入 [待裁决](2026-11-06-home-new-task-design-blocked.md)。
+
+### 5. 给执行 agent 的开工摘要
+
+从 V0 开工。先保留一份 `c4c503ce4` 或实际开工 HEAD 的四态证据，按本节 V1、V2 完成同版心和「首页 → 创建目录 → 幻灯片 → 收起模板」。分别用 1280×832、880×600 真实桌面窗口验收，并贴 8px 间隔、左右外沿和底边差值。把四态亮暗静帧与短录屏交视觉评审。签收后按 V3 做构建和视频，最后跑 V4。冻结项、待裁决和 Git 授权按上文执行。断点接手先读进度，每项完成即追加记录。
+
+## 历史方案与实施前底稿
+
 **状态**　新设计待评审。首轮与二轮已经有实现和取证，当前还有草稿、模型选择和会员翻面的审查缺口。本轮提出首页及各层内容的统一视觉方向，开发前先评审一个完整的视觉切片。
 
 ## 当前推荐方案 · 首页展示成果，深入后展示怎么开始

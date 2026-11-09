@@ -35,7 +35,15 @@ import GuidHomeBrand from './components/GuidHomeBrand';
 import ShowcaseCards from './components/ShowcaseCards';
 import HomeInputDrawer from './components/HomeInputDrawer';
 import HomeVideoComposer from './components/HomeVideoComposer';
-import showcaseAppCover from './components/assets/showcase-app-cover.jpg';
+import buildWebsiteMain from './components/assets/build/website-main.jpg';
+import buildWebsiteExhibition1 from './components/assets/build/website-exhibition-1.jpg';
+import buildWebsiteExhibition2 from './components/assets/build/website-exhibition-2.jpg';
+import buildAppMain from './components/assets/build/app-main.jpg';
+import buildAppSpending from './components/assets/build/app-spending.jpg';
+import buildAppHabits from './components/assets/build/app-habits.jpg';
+import buildGameMain from './components/assets/build/game-main.jpg';
+import buildGameSokoban from './components/assets/build/game-sokoban.jpg';
+import buildGameNeon from './components/assets/build/game-neon.jpg';
 import showcaseVideoCover from './components/assets/showcase-video-cover.png';
 import type { HomeCapability, HomeStageOption } from './components/homeStage';
 import SlideOptionsControls from './presentation/SlideOptionsControls';
@@ -194,6 +202,74 @@ async function listHomeVideoClaimCandidates(): Promise<GenerationTaskView[]> {
 const asHomeFlyout = (key: string | undefined): HomeFlyout | null =>
   key === 'preset' || key === 'skills' || key === 'knowledge' ? key : null;
 
+type HomeBuildKind = 'website' | 'app' | 'game';
+
+const HOME_BUILD_KINDS: readonly HomeBuildKind[] = ['website', 'app', 'game'];
+
+const HOME_BUILD_COPY = {
+  website: {
+    title: 'guid.home.buildChoices.website.title',
+    description: 'guid.home.buildChoices.website.description',
+    firstLabel: 'guid.home.buildPrompts.website.firstLabel',
+    secondLabel: 'guid.home.buildPrompts.website.secondLabel',
+    first: 'guid.home.buildPrompts.website.first',
+    second: 'guid.home.buildPrompts.website.second',
+  },
+  app: {
+    title: 'guid.home.buildChoices.app.title',
+    description: 'guid.home.buildChoices.app.description',
+    firstLabel: 'guid.home.buildPrompts.app.firstLabel',
+    secondLabel: 'guid.home.buildPrompts.app.secondLabel',
+    first: 'guid.home.buildPrompts.app.first',
+    second: 'guid.home.buildPrompts.app.second',
+  },
+  game: {
+    title: 'guid.home.buildChoices.game.title',
+    description: 'guid.home.buildChoices.game.description',
+    firstLabel: 'guid.home.buildPrompts.game.firstLabel',
+    secondLabel: 'guid.home.buildPrompts.game.secondLabel',
+    first: 'guid.home.buildPrompts.game.first',
+    second: 'guid.home.buildPrompts.game.second',
+  },
+} as const;
+
+const HOME_BUILD_STAGE_COPY = {
+  website: {
+    headline: 'guid.home.buildPrep.websiteHeadline',
+    subtitle: 'guid.home.buildPrep.websiteSubtitle',
+  },
+  app: {
+    headline: 'guid.home.buildPrep.appHeadline',
+    subtitle: 'guid.home.buildPrep.appSubtitle',
+  },
+  game: {
+    headline: 'guid.home.buildPrep.gameHeadline',
+    subtitle: 'guid.home.buildPrep.gameSubtitle',
+  },
+} as const;
+
+const HOME_BUILD_MEDIA: Record<HomeBuildKind, { cover: string; examples: [string, string] }> = {
+  website: {
+    cover: buildWebsiteMain,
+    examples: [buildWebsiteExhibition1, buildWebsiteExhibition2],
+  },
+  app: {
+    cover: buildAppMain,
+    examples: [buildAppSpending, buildAppHabits],
+  },
+  game: {
+    cover: buildGameMain,
+    examples: [buildGameSokoban, buildGameNeon],
+  },
+};
+
+const homeBuildKindOfOption = (key: string): HomeBuildKind | null => {
+  if (key === 'develop-website') return 'website';
+  if (key === 'develop-app') return 'app';
+  if (key === 'develop-game') return 'game';
+  return null;
+};
+
 const GuidPage: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -278,6 +354,8 @@ const GuidPage: React.FC = () => {
     video: { text: '', dir: '', files: [], slideOptions: null },
   });
   const [homeTaskProfile, setHomeTaskProfile] = useState<'coding' | null>(null);
+  // Build directory category; drives the prepared prompts and the preview copy.
+  const [homeBuildKind, setHomeBuildKind] = useState<HomeBuildKind | null>(null);
   // Video capability: local homepage draft parameters. Nothing is uploaded or
   // created until the user presses send. The prompt, model and explicit
   // references live with this draft and survive capability switches.
@@ -613,6 +691,11 @@ const GuidPage: React.FC = () => {
     setHomeView('home');
     focusHomeComposer();
   }, [focusHomeComposer]);
+  const backToBuildDirectory = useCallback(() => {
+    setHomeView('develop-directory');
+    setPendingExample(null);
+    focusHomeComposer();
+  }, [focusHomeComposer]);
   /** A capability draft counts as occupied when it has text, attachments or an imported template. */
   const capabilityHasDraft = useCallback(
     (capability: HomeCapability) => {
@@ -631,6 +714,7 @@ const GuidPage: React.FC = () => {
   const applyHomeExample = useCallback(
     (kind: 'app' | 'image' | 'video') => {
       if (kind === 'app') {
+        setHomeBuildKind('app');
         switchHomeCapability('develop');
         guidInput.setInput(t('guid.home.showcaseAppPrompt'));
         setHomeView('capability');
@@ -659,6 +743,30 @@ const GuidPage: React.FC = () => {
       applyHomeExample(kind);
     },
     [applyHomeExample, capabilityHasDraft],
+  );
+  const applyBuildPrompt = useCallback(
+    (kind: HomeBuildKind, slot: 'first' | 'second') => {
+      setHomeBuildKind(kind);
+      switchHomeCapability('develop');
+      guidInput.setInput(t(HOME_BUILD_COPY[kind][slot]));
+      setHomeView('capability');
+      setPendingExample(null);
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput, switchHomeCapability, t],
+  );
+  const requestBuildPrompt = useCallback(
+    (kind: HomeBuildKind, slot: 'first' | 'second') => {
+      if (capabilityHasDraft('develop')) {
+        setPendingExample({
+          title: t('guid.home.buildPrep.replaceTitle', { category: t(HOME_BUILD_COPY[kind].title) }),
+          run: () => applyBuildPrompt(kind, slot),
+        });
+        return;
+      }
+      applyBuildPrompt(kind, slot);
+    },
+    [applyBuildPrompt, capabilityHasDraft, t],
   );
   const dismissPendingExample = useCallback(() => {
     setPendingExample(null);
@@ -1032,25 +1140,16 @@ const GuidPage: React.FC = () => {
     [homeVideoModel],
   );
   const homeDevelopOptions = useMemo<HomeStageOption[]>(
-    () => [
-      {
-        key: 'develop-new',
+    () =>
+      HOME_BUILD_KINDS.map((kind) => ({
+        key: `develop-${kind}`,
         id: 'develop',
-        emphasis: true,
-        title: t('guid.home.buildTitle'),
-        description: t('guid.home.buildDescription'),
+        title: t(HOME_BUILD_COPY[kind].title),
+        description: t(HOME_BUILD_COPY[kind].description),
         meta: 'index.html',
-        cover: showcaseAppCover,
-        coverAlt: t('guid.home.showcaseAppTitle'),
-      },
-      {
-        key: 'develop-existing',
-        id: 'develop',
-        tree: true,
-        title: t('conversation.welcome.openFolder', { defaultValue: 'Open folder' }),
-        description: t('conversation.welcome.currentWorkspace', { defaultValue: 'Current project' }),
-      },
-    ],
+        cover: HOME_BUILD_MEDIA[kind].cover,
+        coverAlt: t(HOME_BUILD_COPY[kind].title),
+      })),
     [t],
   );
   const homeCreateOptions = useMemo<HomeStageOption[]>(
@@ -1074,14 +1173,7 @@ const GuidPage: React.FC = () => {
     ],
     [supportsHomeGoalCommand, t],
   );
-  const homeCapabilityTitle =
-    homeCapability === 'develop'
-      ? t('guid.home.buildTitle')
-      : homeCapability === 'slides'
-        ? t('presentation.home.label')
-        : homeCapability === 'video'
-          ? t('videoGeneration.create.preferences.video')
-          : t('guid.home.createTitle');
+  const activeBuildKind: HomeBuildKind = homeBuildKind ?? 'website';
   const homePlaceholder =
     homeCapability === 'slides'
       ? t('presentation.home.placeholder')
@@ -1143,6 +1235,11 @@ const GuidPage: React.FC = () => {
   // Entering slides restores the slide-card wall independently of whether the
   // template panel is expanded; closing the panel keeps the wall and the mode.
   const slideStudioOpen = supportsHomeGoalCommand && homeCapability === 'slides';
+  const showAmbientWall =
+    !slideStudioOpen &&
+    (homeView === 'home' ||
+      homeView === 'develop-directory' ||
+      (homeView === 'capability' && homeCapability === 'develop'));
   // ESC: native selectors, dropdown menus and mention popovers keep priority;
   // then the template panel, then the capability layer, then the directory.
   useEffect(() => {
@@ -1677,11 +1774,19 @@ const GuidPage: React.FC = () => {
         setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
         setSlidePanelOpen(true);
       }
+      const buildKind = homeBuildKindOfOption(option.key);
+      if (buildKind) {
+        setHomeBuildKind(buildKind);
+        setPendingExample(null);
+        switchHomeCapability('develop');
+        setHomeView('capability');
+        focusHomeComposer();
+        return;
+      }
       switchHomeCapability(option.id);
       setHomeView('capability');
-      if (option.key === 'develop-existing') void handleLinkWorkspace();
     },
-    [handleLinkWorkspace, supportsHomeGoalCommand, switchHomeCapability],
+    [focusHomeComposer, supportsHomeGoalCommand, switchHomeCapability],
   );
 
   const send = useGuidSend({
@@ -2502,8 +2607,14 @@ const GuidPage: React.FC = () => {
         className={styles.guidContainer}
         data-slide-studio={slideStudioOpen || undefined}
       >
-        {/* Slides studio: a wall of slide cards replaces the home content behind the create panel. */}
-        {slideStudioOpen && <SlideCardWall />}
+        {/* Slides studio owns the wall; home/build pages reuse it as an ambient layer. */}
+        {slideStudioOpen ? (
+          <SlideCardWall />
+        ) : showAmbientWall ? (
+          <div className={styles.ambientWall} data-testid='guid-ambient-wall' aria-hidden='true'>
+            <SlideCardWall />
+          </div>
+        ) : null}
         <div className={styles.guidScrollArea} data-home-layer={homeView}>
           <div className={styles.guidPrimaryStage}>
             <div className={styles.guidLayout}>
@@ -2526,15 +2637,72 @@ const GuidPage: React.FC = () => {
                 </div>
               ) : null}
               {homeView === 'capability' && homeCapability === 'develop' ? (
-                <div className={styles.homePrepStage}>
-                  <div className={styles.homePrepHero} data-testid='guid-home-develop-hero'>
-                    <img className={styles.homePrepCover} src={showcaseAppCover} alt='' />
-                    <div className={styles.homePrepCopy}>
-                      <span className={styles.homePrepTitle}>{t('guid.home.showcaseAppTitle')}</span>
-                      <span className={styles.homePrepText}>{t('guid.home.buildDescription')}</span>
-                      <code className={styles.homePrepMeta}>index.html</code>
+                <div className={`${styles.homePrepStage} ${styles.buildPrepStage}`}>
+                  <section className={styles.buildStage} data-testid='guid-home-develop-prep'>
+                    <div className={styles.buildStageHead}>
+                      <button
+                        type='button'
+                        className={styles.buildBack}
+                        data-testid='guid-home-build-back'
+                        onClick={backToBuildDirectory}
+                      >
+                        <span aria-hidden='true'>‹</span>
+                        <span>{t('guid.home.buildPrep.back')}</span>
+                      </button>
+                      <div className={styles.buildTabs} role='group' aria-label={t('guid.home.buildDescription')}>
+                        {HOME_BUILD_KINDS.map((kind) => (
+                          <button
+                            key={kind}
+                            type='button'
+                            aria-pressed={activeBuildKind === kind}
+                            data-testid={`guid-home-build-tab-${kind}`}
+                            className={`${styles.buildTab} ${activeBuildKind === kind ? styles.buildTabActive : ''}`}
+                            onClick={() => {
+                              // A pending replacement belongs to the category that
+                              // opened it; never let it confirm against a new tab.
+                              setPendingExample(null);
+                              setHomeBuildKind(kind);
+                            }}
+                          >
+                            {t(HOME_BUILD_COPY[kind].title)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                    <div className={styles.buildHero}>
+                      <img className={styles.buildHeroImage} src={HOME_BUILD_MEDIA[activeBuildKind].cover} alt='' />
+                      <div className={styles.buildHeroCopy}>
+                        <h2 className={styles.buildHeroTitle}>{t(HOME_BUILD_STAGE_COPY[activeBuildKind].headline)}</h2>
+                        <p className={styles.buildHeroSubtitle}>{t(HOME_BUILD_STAGE_COPY[activeBuildKind].subtitle)}</p>
+                      </div>
+                    </div>
+                    <h3 className={styles.buildSectionTitle}>{t('guid.home.buildPrep.promptsTitle')}</h3>
+                    <div className={styles.buildPromptGrid}>
+                      {(['first', 'second'] as const).map((slot) => (
+                        <button
+                          key={slot}
+                          type='button'
+                          className={styles.buildPromptCard}
+                          data-testid={`guid-home-build-prompt-${activeBuildKind}-${slot}`}
+                          onClick={() => requestBuildPrompt(activeBuildKind, slot)}
+                        >
+                          <span className={styles.buildPromptBody}>
+                            <span className={styles.buildPromptLabel}>
+                              {t(HOME_BUILD_COPY[activeBuildKind][slot === 'first' ? 'firstLabel' : 'secondLabel'])}
+                            </span>
+                            <span className={styles.buildPromptText}>{t(HOME_BUILD_COPY[activeBuildKind][slot])}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <h3 className={styles.buildSectionTitle}>{t('guid.home.buildPrep.examplesTitle')}</h3>
+                    <div className={styles.buildExampleStrip}>
+                      {HOME_BUILD_MEDIA[activeBuildKind].examples.map((src, index) => (
+                        <img key={index} src={src} alt='' aria-hidden='true' />
+                      ))}
+                    </div>
+                    <p className={styles.buildStageHint}>{t('guid.home.buildPrep.hint')}</p>
+                  </section>
                 </div>
               ) : null}
               {homeView === 'capability' && homeCapability === 'video' ? (
@@ -2621,35 +2789,6 @@ const GuidPage: React.FC = () => {
                   disabled={guidInput.loading}
                 />
               </div>
-            ) : null}
-            {homeView === 'capability' && homeCapability === 'develop' ? (
-              <section className={styles.prepPanel} data-testid='guid-home-develop-prep'>
-                <header className={styles.prepHeader}>
-                  <button type='button' className={styles.prepBack} onClick={backFromHomePanel}>
-                    <span aria-hidden='true'>‹</span>
-                    <span>{t('workshop.back', { defaultValue: 'Back' })}</span>
-                  </button>
-                  <span className={styles.prepTitle}>{homeCapabilityTitle}</span>
-                  <button
-                    type='button'
-                    className={styles.prepClose}
-                    onClick={backFromHomePanel}
-                    aria-label={t('common.close', { defaultValue: 'Close' })}
-                  >
-                    ×
-                  </button>
-                </header>
-                <button
-                  type='button'
-                  className={styles.prepStarter}
-                  data-testid='guid-home-develop-starter'
-                  onClick={() => requestHomeExample('app', t('guid.home.showcaseAppTitle'))}
-                >
-                  {t('guid.home.showcaseAppTitle')}
-                </button>
-                <p className={styles.prepHint}>{t('guid.home.buildDescription')}</p>
-                <code className={styles.prepMeta}>index.html</code>
-              </section>
             ) : null}
             {homeView === 'capability' && homeCapability === 'video' ? (
               <HomeVideoComposer

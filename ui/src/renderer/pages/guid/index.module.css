@@ -2684,6 +2684,8 @@
 }
 
 .guidScrollArea {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
@@ -3636,124 +3638,6 @@
   max-height: 168px;
 }
 
-.prepPanel {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  margin: 0 0 8px;
-  padding: 12px;
-  border-radius: var(--flowy-radius-lg, 12px);
-  background: var(--flowy-raised);
-  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
-  animation: prep-in 160ms ease-out both;
-}
-
-@keyframes prep-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.prepHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 32px;
-  min-height: 32px;
-}
-
-.prepBack {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 28px;
-  margin: 0;
-  padding: 0 8px 0 4px;
-  border: 0;
-  border-radius: var(--flowy-radius-field, 8px);
-  background: transparent;
-  color: var(--color-text-2);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.prepBack:hover {
-  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
-  color: var(--color-text-1);
-}
-
-.prepTitle {
-  color: var(--color-text-1);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 20px;
-}
-
-.prepClose {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: var(--flowy-radius-field, 8px);
-  background: transparent;
-  color: var(--color-text-2);
-  font: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.prepClose:hover {
-  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
-  color: var(--color-text-1);
-}
-
-.prepStarter {
-  display: flex;
-  align-items: center;
-  min-height: 48px;
-  width: 100%;
-  margin: 0;
-  padding: 10px 12px;
-  border: 0;
-  border-radius: var(--flowy-radius-field, 8px);
-  background: color-mix(in srgb, var(--color-text-1) 4%, var(--flowy-raised));
-  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
-  color: var(--color-text-1);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.prepStarter:hover {
-  background: color-mix(in srgb, var(--color-text-1) 7%, var(--flowy-raised));
-}
-
-.prepHint {
-  margin: 0;
-  color: var(--color-text-2);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.prepBack:focus-visible,
-.prepClose:focus-visible,
-.prepStarter:focus-visible,
 .exampleConfirmApply:focus-visible,
 .exampleConfirmCancel:focus-visible {
   outline: 2px solid var(--flowy-focus);
@@ -3819,11 +3703,6 @@
   color: #fff;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .prepPanel {
-    animation: none;
-  }
-}
 
 /* --- Review fixes: compact action row must never let the config group paint
    over the slide controls; allow the row to wrap instead of overlapping. --- */
@@ -3906,8 +3785,7 @@ button.homePrepHero:focus-visible {
   line-height: 20px;
 }
 
-.homePrepMeta,
-.prepMeta {
+.homePrepMeta {
   align-self: flex-start;
   padding: 2px 8px;
   border-radius: 999px;
@@ -3972,4 +3850,339 @@ button.homePrepHero:focus-visible {
      the measured red box (entries + member + cases) lands on the real midpoint. */
   padding-top: 20px;
   padding-bottom: 12px;
+}
+
+@media (max-width: 640px) {
+  .buildHeroArt {
+    width: 150px;
+  }
+}
+
+
+/* --- Manus-style build category stage and ambient slide-card wall --- */
+.buildPrepStage {
+  padding: 6px 0;
+}
+.ambientWall {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.72;
+  -webkit-mask-image: radial-gradient(135% 96% at 50% 44%, black 0%, black 56%, transparent 93%);
+  mask-image: radial-gradient(135% 96% at 50% 44%, black 0%, black 56%, transparent 93%);
+}
+
+:global([data-theme='light']) .ambientWall {
+  opacity: 0.5;
+}
+
+.ambientWall::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--guid-canvas, var(--color-bg-1)) 18%, transparent);
+  pointer-events: none;
+}
+
+.buildStage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 0 10px;
+}
+
+.buildStageHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.buildBack {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin: 0;
+  padding: 0 9px 0 5px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.buildBack:hover {
+  color: var(--color-text-1);
+  background: color-mix(in srgb, var(--color-text-1) 5%, var(--flowy-raised));
+}
+
+.buildTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+}
+
+.buildTab {
+  height: 26px;
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.buildTabActive {
+  background: color-mix(in srgb, var(--color-text-1) 9%, transparent);
+  color: var(--color-text-1);
+}
+
+.buildHero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.5fr);
+  align-items: stretch;
+  min-height: 180px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+}
+
+.buildHeroImage {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+  object-fit: cover;
+}
+
+.buildHeroCopy {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 22px 20px 22px 22px;
+}
+
+.buildHeroTitle {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.16;
+  letter-spacing: -0.01em;
+}
+
+.buildHeroSubtitle {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.buildSectionTitle {
+  margin: 2px 0 0;
+  color: var(--color-text-1);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.buildExampleStrip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.buildExampleStrip img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 4;
+  object-fit: cover;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  opacity: 0.86;
+}
+
+.buildPromptGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.buildPromptCard {
+  display: flex;
+  min-height: 92px;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.buildPromptCard:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
+}
+
+.buildPromptBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 11px 11px;
+}
+
+.buildPromptLabel {
+  color: var(--color-text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.buildPromptText {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 11px;
+  line-height: 16px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.buildStageHint {
+  margin: 0;
+  color: var(--color-text-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.buildBack:focus-visible,
+.buildTab:focus-visible,
+.buildPromptCard:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .buildHero {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .buildHeroImage {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 174px;
+  }
+
+  .buildHeroCopy {
+    grid-column: 1;
+    grid-row: 1;
+    padding: 18px;
+  }
+
+  .buildHeroTitle {
+    font-size: 21px;
+  }
+
+  .buildPromptGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+
+/* Compact build stage: keep the category tabs, the hero and both prompt cards
+   above the fixed composer; the example strip can scroll. */
+:global([data-home-compact='true']) .buildStage {
+  gap: 6px;
+  padding: 2px 0 6px;
+}
+
+:global([data-home-compact='true']) .buildHero {
+  height: 146px;
+  min-height: 0;
+}
+
+:global([data-home-compact='true']) .buildHeroImage {
+  height: 146px;
+  min-height: 0;
+}
+
+:global([data-home-compact='true']) .buildHeroCopy {
+  padding: 14px 16px;
+}
+
+:global([data-home-compact='true']) .buildHeroTitle {
+  font-size: 20px;
+  line-height: 1.18;
+}
+
+:global([data-home-compact='true']) .buildHeroSubtitle {
+  font-size: 11px;
+  line-height: 16px;
+}
+
+:global([data-home-compact='true']) .buildPromptCard {
+  min-height: 78px;
+}
+
+:global([data-home-compact='true']) .buildPromptBody {
+  padding: 8px 10px 9px;
+}
+
+
+/* Short desktop windows: keep the category hero, tabs and prompt cards above
+   the composer; the example strip remains reachable by scrolling. */
+@media (max-height: 780px) {
+  .buildHero {
+    height: 150px;
+    min-height: 0;
+  }
+
+  .buildHeroImage {
+    height: 150px;
+    min-height: 0;
+  }
+
+  .buildHeroTitle {
+    font-size: 21px;
+  }
+
+  .buildPromptCard {
+    min-height: 82px;
+  }
+
+  .buildExampleStrip img {
+    aspect-ratio: 16 / 3.4;
+  }
 }

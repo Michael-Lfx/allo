@@ -374,3 +374,39 @@
 - **过期注释**：`guidContainer` 注释改为「上区是唯一滚动容器」。
 - 证据刷新：`D:\tmp\flowy-home-h1h4\measurements.json`（浏览器两尺寸 + 桌面 1280×752）；四态冒烟写入 `D:\tmp\flowy-visual-v0v2\after\metrics.json`。
 - 最终门禁：tests **137 pass / 3 fail**（身份同基线）、typecheck 71 条、i18n/theme/dead-css/button-layout-contract/css-scope/icons 全 0、motion 同基线（MarketCardShell + 82/82）、`build:ui` 成功、`git diff --check=0`。
+
+
+## 构建目录三类与六条提示词回执（2026-11-08 23:3x）
+
+按用户确认的 Goal 范围（构建目录三类 + §5 六条提示词 + 提案修正）实施，未提交/未推送：
+
+- **目录**：`homeDevelopOptions` 由「构建/打开文件夹」改为网站/应用/游戏三张等权卡；项目选择继续由输入框「在项目中工作」承担；`HomeInputDrawer` 媒体网格改为 `auto-fit minmax(180px,1fr)`，创建目录仍保持 2 列。
+- **文案与提示词**：中英 `guid.json` 增加三类标签/说明、构建准备文案和 website-1/2、app-1/2、game-1/2 六条提示词；`gen:i18n` 已更新 `i18n-keys.d.ts`，`check:i18n=0`。
+- **行为**：空 develop 草稿选类自动填首条；已有正文/附件/项目草稿走替换确认，取消保持目录视图与草稿、确认才切换并填入；准备区展示该类两条提示词并可切换，替换同样确认；不发送。
+- **证据**（仓库外）：`D:\tmp\flowy-build-categories\evidence\`：浏览器 1280×832 / 880×600 三卡、首条/第二条、取消/确认、无打开文件夹；真实 WebView2 1280×752 DPR2.25 中文暗亮三卡、三类首条提示、第二条确认/取消；创建目录回归；`build-directory.json`、`build-directory-extra.json`、`desktop\desktop.json`、`desktop\draft-replacement.json`。浏览器/桌面均无 create POST（0）。
+- **门禁**：tests 137 pass / 3 fail（身份同基线）、typecheck 71 条、i18n/theme/dead-css/button-layout-contract/css-scope/icons 全 0、motion 同基线（MarketCardShell + 82/82）、`build:ui` 成功、`git diff --check=0`。
+- **提案**：状态改为 H1–H4 已交付、构建三类已实施；§1 行 7/8 更新；§5 增加逐类开源来源映射与“参考改写”说明；§7 首屏步骤去掉模式混入，明确按 §8 后置。
+- 未做：工作模式、统一准备区、背景墙性能、第二/三关验收（留在后续 Goal）；第一关负责人视觉签收未做。
+
+## 构建目录 Manus 化与背景墙回执（2026-11-09 00:5x）
+
+按用户「按推荐做」执行：构建交互 Manus 化、首页/类别页接幻灯片卡片墙、生成更多封面。未提交/未推送。
+
+- **交互**：构建入口仍是三张真实封面卡；点类别进入专属类别页（返回构建、网站/应用/游戏 tab、左侧主张、右侧大图、推荐起步、更多示例），**进入页面不再自动填词**；点推荐起步才填入/确认；返回图库保留草稿。项目选择、附件、发送路径未改。
+- **背景**：`SlideCardWall` 以低对比环境层接入首页、构建图库、构建类别页；`pointer-events:none`、遮罩、减少动效沿用组件自身处理；未改 H1–H4 布局/滚动容器。
+- **图片**：通过已登录的浏览器 Gemini（bsk 驱动）生成 9 张 16:9 封面，落 `ui/src/renderer/pages/guid/components/assets/build/`：网站 main + 2 个展览示例；应用 main + 每周开支/习惯示例；游戏 main + 推箱/霓虹示例。均为本地 assets，不引远程 URL。
+- **证据**（仓库外）：`D:\tmp\flowy-build-categories\final-evidence\`（1280×832、880×600 的 DOM JSON 与截图；进入页 inputEmpty=true，promptCards=2，图片 3 张加载，第二提示确认/取消，返回保留草稿）；`review-desktop\desktop.json` + 截图（真实 WebView2 1280×752、中文、进入页空、首条填入）；`review2\`（880 紧凑、1280 亮色、确认/取消）。生成原图在 `images\`。
+- **门禁**：tests 137 pass / 3 fail（身份同基线）、typecheck 71 条、i18n/theme/dead-css/button-layout-contract/css-scope/icons 全 0、motion 同基线（MarketCardShell + 82/82）、`build:ui` 成功、`git diff --check=0`。
+- **备注**：Flow 的「编辑图片」要求先有素材，不能纯文生图；本轮改用同一 Google 账号的 Gemini 网页生成，bsk 会话已停。H1–H4 原有默认首页布局未改，视觉签收仍待负责人。
+
+## 审查修复回执（2026-11-09 08:4x）
+
+按 `/code-review` 结论逐项修复，准备提交：
+
+- **Required tab 切换旧确认**：类别 tab 点击先 `setPendingExample(null)`，确认回调不再跨类别存活；复测序列（网站第二条确认 → 切 App）确认条消失、tab 保持 App、原网站首条草稿保留，不再回跳/注入旧类别提示词。
+- **Required 图片资产**：`components/assets/build/` 下 9 张封面全部纳入提交；不再只提交引用。
+- **Required 规格冲突**：提案 §2 已改为“进入类别页不改草稿，点推荐起步才填/确认”，与 2026-11-09 设计和实现一致。
+- **Optional 可访问性**：类别 tab 由 `role=tablist/tab` 改为 `role=group` + `aria-pressed`，点击不再把焦点抢到 composer；tab 增加稳定 `data-testid`。
+- **Optional 死代码/CSS**：移除未使用的 `showcaseAppCover` import、`homeCapabilityTitle`，删除旧 `.prep*` 样式块；typecheck 仍 71 条基线。
+- **Optional 背景性能证据**：1280×832 暗色首页实测 196 个墙格、2s 共 242 帧、平均 8.28ms、最大 8.6ms、>50ms 帧 0（headless 120Hz，仅帧采样，不是完整 trace）；记录于 `D:\\tmp\\flowy-build-categories\\perf-home.json`。
+- 视觉/交互边界：880×600 类别页提示词卡在 composer 上方可见，更多示例需滚动；真实桌面 1280×752 中文证据保留。
