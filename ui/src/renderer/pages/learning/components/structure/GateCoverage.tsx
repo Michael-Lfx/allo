@@ -10,8 +10,8 @@ const { Text } = Typography;
  * 移植）：「门口 → 覆盖块」映射展示；勾选满足的门口 → 确认（三后果如实：
  * 不生成学习节点、不安排学习、不计 XP）→ 按声明铸概念。数据全部来自读侧
  * 投影（terrain.doors + blocks[].door_refs + GET basis 读数），前端不做第二
- * 份真相。撤销 = 删锚行收缩本课已知投影；铸出的概念留池（声明可撤、概念
- * 不灭）。课程内铁律照旧：不渲染概念节点、不跨课解析。
+ * 份真相。声明在产品面不可撤（c3：撤销入口已移除；后端 DELETE /basis 留作
+ * 纠错通道，铸出的概念留池）。课程内铁律照旧：不渲染概念节点、不跨课解析。
  *
  * 声明只进行一次（c1）：读侧已有锚行（`basis.declarations > 0`）即整卡冻结
  * 为纯展示——全部门口渲染为 disabled checkbox，勾选态 = 是否已声明，持久化
@@ -25,9 +25,7 @@ export function GateCoverage({
   checked = [],
   onCheckedChange,
   declaring = false,
-  revoking = false,
   onDeclare,
-  onRevoke,
 }: {
   structure: StructureView;
   terrain: TerrainView;
@@ -35,9 +33,7 @@ export function GateCoverage({
   checked?: string[];
   onCheckedChange?: (doors: string[]) => void;
   declaring?: boolean;
-  revoking?: boolean;
   onDeclare?: (doors: string[]) => void;
-  onRevoke?: () => void;
 }) {
   const { t } = useTranslation();
   const blocksByDoor = useMemo(() => {
@@ -68,19 +64,6 @@ export function GateCoverage({
       okText: t('learning.learningGraphBasisConfirmOk'),
       cancelText: t('learning.learningGraphBasisCancel'),
       onOk: () => onDeclare(pendingSelection),
-    });
-  };
-
-  const confirmRevoke = () => {
-    if (!onRevoke) return;
-    Modal.confirm({
-      title: t('learning.learningGraphBasisRevokeConfirmTitle'),
-      content: t('learning.learningGraphBasisRevokeConfirmContent', {
-        doors: (basis?.doors ?? []).join('、'),
-      }),
-      okText: t('learning.learningGraphBasisRevokeConfirmOk'),
-      cancelText: t('learning.learningGraphBasisCancel'),
-      onOk: () => onRevoke(),
     });
   };
 
@@ -190,11 +173,6 @@ export function GateCoverage({
             </Tag>
           )}
           <span className='flex-1' />
-          {frozen && onRevoke && (
-            <Button size='mini' status='warning' loading={revoking} onClick={confirmRevoke}>
-              {t('learning.learningGraphBasisRevoke')}
-            </Button>
-          )}
           {!frozen && (
             <Button
               type='primary'
