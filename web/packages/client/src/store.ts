@@ -376,6 +376,38 @@ export class StoreClient {
   }
 
   /**
+   * The connector catalogue entries an item depends on (doc `52`).
+   *
+   * `StoreItem.required_connectors` names connector **entry** names, not MCP
+   * server names — the two differ in practice (the entry
+   * `fenbi-baokao-decision` installs a server called `fenbi_mcp`), and install
+   * state only exists per entry. So this is an exact `entry_name` match over
+   * items of kind `connector`, across every loaded market; the skill market and
+   * the connector market are separate, which is why the lookup is not scoped to
+   * the item's own marketplace.
+   *
+   * Order follows the declaration. A name the catalogue does not resolve (the
+   * connector market is not synced yet) is skipped instead of throwing: the
+   * dependency is a display/route fact, and a partial answer beats an error.
+   *
+   * Pass `items` to reuse one {@link list} result — a caller rendering the whole
+   * skill catalogue must not issue one request per item.
+   */
+  async dependencies(item: StoreItem, items?: StoreItem[]): Promise<StoreItem[]> {
+    const declared = item.required_connectors ?? [];
+    if (declared.length === 0) return [];
+    const catalogue = items ?? (await this.list());
+    const byEntryName = new Map(
+      catalogue
+        .filter((candidate) => candidate.kind === "connector")
+        .map((candidate) => [candidate.entry_name, candidate] as const),
+    );
+    return declared
+      .map((name) => byEntryName.get(name))
+      .filter((candidate): candidate is StoreItem => candidate !== undefined);
+  }
+
+  /**
    * Installed items whose marketplace offers a different version.
    *
    * Both conditions matter: `update_available` is computed from the imported

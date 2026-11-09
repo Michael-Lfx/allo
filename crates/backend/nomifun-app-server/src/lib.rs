@@ -258,7 +258,7 @@ use tokio::sync::mpsc;
 /// consumer's JSON is unchanged; no method is added or removed, so the documented
 /// split stays `56 / 83`. The artifact contract moves with it
 /// (`pack_format 3 → 4`).
-pub const PROTOCOL_VERSION: &str = "fp-20";
+pub const PROTOCOL_VERSION: &str = "fp-21";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

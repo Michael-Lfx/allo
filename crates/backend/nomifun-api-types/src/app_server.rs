@@ -1606,6 +1606,15 @@ pub struct AppServerStoreItem {
     /// older host keeps every listed item installable.
     #[serde(default = "default_available")]
     pub available: bool,
+    /// Connector entry names this entry depends on (`fp-21`, doc `52`).
+    ///
+    /// Declared by an `index` market on the skills **bundled inside a connector
+    /// package**: their `SKILL.md` only instructions the connector's MCP tools,
+    /// so the entry stays visible but is never installed on its own — the
+    /// connector package ships it. Empty (and omitted on the wire) = no
+    /// dependency.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_connectors: Vec<String>,
     /// Why the market marked the entry unavailable (`index` sources). Present
     /// only alongside `available = false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

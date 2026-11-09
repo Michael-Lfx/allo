@@ -468,6 +468,14 @@ impl ImporterService {
             }
         }
 
+        // Doc `52` §3.5: stamp the skill → connector dependency once, before the
+        // snapshot is written.
+        stamp_skill_requirements(
+            &mut builder.components,
+            &builder.index_display,
+            request.entry_name.as_deref(),
+        );
+
         let status = if builder.errors.is_empty() && builder.warnings.is_empty() {
             "completed"
         } else {
@@ -738,6 +746,7 @@ fn author_display(manifest: &PluginManifest) -> DisplayFields {
         description: manifest.localized_display_description(),
         prompts: manifest.quick_prompts.clone(),
         tags: manifest.tags.clone(),
+        ..DisplayFields::default()
     }
 }
 
@@ -760,6 +769,40 @@ fn attach_display_fields(payload: &mut serde_json::Value, display: &DisplayField
     }
     if !display.tags.is_empty() {
         payload["tags"] = serde_json::to_value(&display.tags).unwrap_or_default();
+    }
+    if !display.required_connectors.is_empty() {
+        payload["required_connectors"] =
+            serde_json::to_value(&display.required_connectors).unwrap_or_default();
+    }
+}
+
+/// Stamp the skill → connector dependency onto every skill component (doc `52`
+/// §3.5).
+///
+/// The market row's explicit `requires_connectors` wins. When the entry itself
+/// is a connector (`entry_kind: "connector"`), its bundled skills fall back to
+/// the entry's own name: those skills exist to drive the connector's MCP tools
+/// and arrive with it. Manual imports (no entry name) declare nothing.
+fn stamp_skill_requirements(
+    components: &mut [Component],
+    display: &DisplayFields,
+    entry_name: Option<&str>,
+) {
+    let mut required = display.required_connectors.clone();
+    if required.is_empty() && display.entry_kind.as_deref() == Some("connector") {
+        if let Some(name) = entry_name {
+            required = vec![name.to_owned()];
+        }
+    }
+    if required.is_empty() {
+        return;
+    }
+    for component in components.iter_mut() {
+        if component.kind != crate::models::KIND_SKILL {
+            continue;
+        }
+        component.payload["required_connectors"] =
+            serde_json::to_value(&required).unwrap_or_default();
     }
 }
 
@@ -2430,6 +2473,56 @@ mod tests {
 
     /// TC-9: the author's declaration wins per locale, the index row fills the
     /// gaps — and the stamped payload carries the wire field names verbatim.
+    /// Doc `52` §3.5: a connector entry stamps its bundled skills with its own
+    /// name, an explicit market declaration wins over that fallback, and no
+    /// other component kind carries the key.
+    #[test]
+    fn skill_requirements_come_from_the_market_row_or_the_connector_entry() {
+        let skill = |id: &str| {
+            Component::new(
+                crate::models::KIND_SKILL,
+                id.into(),
+                id.into(),
+                Some(format!("skills/{id}/SKILL.md")),
+                crate::compat::skill(),
+                json!({ "name": id }),
+            )
+        };
+        let agent = Component::new(
+            crate::models::KIND_AGENT,
+            "wb-adc-sandbox".into(),
+            "adc".into(),
+            None,
+            crate::compat::agent(false),
+            json!({ "name": "adc" }),
+        );
+
+        let mut components = vec![skill("adc-sandbox-usage"), agent];
+        let connector_entry = DisplayFields {
+            entry_kind: Some("connector".into()),
+            ..DisplayFields::default()
+        };
+        stamp_skill_requirements(&mut components, &connector_entry, Some("adc-sandbox"));
+        assert_eq!(components[0].payload["required_connectors"], json!(["adc-sandbox"]));
+        assert!(
+            components[1].payload.get("required_connectors").is_none(),
+            "only skills declare a connector dependency"
+        );
+
+        let declared = DisplayFields {
+            required_connectors: vec!["declared-connector".into()],
+            entry_kind: Some("connector".into()),
+            ..DisplayFields::default()
+        };
+        let mut explicit = vec![skill("some-skill")];
+        stamp_skill_requirements(&mut explicit, &declared, Some("ignored-entry"));
+        assert_eq!(explicit[0].payload["required_connectors"], json!(["declared-connector"]));
+
+        let mut plain = vec![skill("plain-skill")];
+        stamp_skill_requirements(&mut plain, &DisplayFields::default(), Some("skills-entry"));
+        assert!(plain[0].payload.get("required_connectors").is_none());
+    }
+
     #[test]
     fn the_author_declaration_wins_and_the_index_fills_the_missing_locale() {
         let manifest: PluginManifest = serde_json::from_value(json!({
@@ -2447,6 +2540,7 @@ mod tests {
             }),
             prompts: vec![LocalizedText { zh: Some("索引行示例".into()), en: None }],
             tags: vec![LocalizedText { zh: Some("数据智能".into()), en: None }],
+            ..DisplayFields::default()
         });
 
         let merged = builder.display_for(Some(&manifest));

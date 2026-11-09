@@ -1269,6 +1269,7 @@ impl FakeStoreProvider {
                 sha256: None,
                 available: true,
                 unavailable_reason: None,
+                required_connectors: vec![],
                 version: "2.1.0".into(),
                 source_kind: "directory".into(),
                 installed: false,

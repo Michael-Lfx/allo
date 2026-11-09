@@ -25,13 +25,27 @@ pub(crate) fn localized_or_none(text: &LocalizedText) -> Option<AppServerLocaliz
     (!text.is_empty()).then(|| to_localized(text))
 }
 
-/// The four display fields a component payload carries.
+/// The four display fields a component payload carries, plus the market-only
+/// skill dependency (`52`).
 pub(crate) fn display_from_payload(payload: &serde_json::Value) -> DisplayFields {
     DisplayFields {
         name: localized_field(payload, "display_name"),
         description: localized_field(payload, "display_description"),
         prompts: localized_items(payload, "quick_prompts"),
         tags: localized_items(payload, "tags"),
+        required_connectors: payload
+            .get("required_connectors")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        entry_kind: None,
     }
 }
 

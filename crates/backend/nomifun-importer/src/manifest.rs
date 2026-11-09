@@ -235,6 +235,19 @@ pub struct DisplayFields {
     pub description: Option<LocalizedText>,
     pub prompts: Vec<LocalizedText>,
     pub tags: Vec<LocalizedText>,
+    /// Connector entry names this skill depends on (doc `52`).
+    ///
+    /// Carried on this struct because it travels the same one-way channel as
+    /// the display fields: market index row → import → component payload →
+    /// catalog read. Never authored in a manifest, so `merge` always takes the
+    /// index side.
+    pub required_connectors: Vec<String>,
+    /// The market entry's own kind (`agent` / `team` / `skill` / `connector`).
+    ///
+    /// Import-time only: an entry of kind `connector` stamps its bundled skills
+    /// with the entry itself as their dependency (doc `52` §3.5). Absent for
+    /// every non-index source.
+    pub entry_kind: Option<String>,
 }
 
 impl DisplayFields {
@@ -245,6 +258,9 @@ impl DisplayFields {
             description: merge_localized(author.description, index.description),
             prompts: if author.prompts.is_empty() { index.prompts } else { author.prompts },
             tags: if author.tags.is_empty() { index.tags } else { author.tags },
+            // Market-only facts: an author manifest never declares these.
+            required_connectors: index.required_connectors,
+            entry_kind: index.entry_kind,
         }
     }
 
@@ -253,6 +269,7 @@ impl DisplayFields {
             && self.description.is_none()
             && self.prompts.is_empty()
             && self.tags.is_empty()
+            && self.required_connectors.is_empty()
     }
 }
 
@@ -665,12 +682,15 @@ mod tests {
             description: None,
             prompts: Vec::new(),
             tags: vec![LocalizedText { zh: Some("作者标签".into()), en: None }],
+            ..DisplayFields::default()
         };
         let index = DisplayFields {
             name: Some(LocalizedText { zh: Some("索引名".into()), en: Some("Index name".into()) }),
             description: Some(LocalizedText { zh: Some("索引简介".into()), en: None }),
             prompts: vec![LocalizedText { zh: Some("索引示例".into()), en: None }],
             tags: vec![LocalizedText { zh: Some("索引标签".into()), en: None }],
+            required_connectors: vec!["adc-sandbox".into()],
+            entry_kind: Some("skill".into()),
         };
         let merged = DisplayFields::merge(author, index);
         assert_eq!(merged.name.as_ref().and_then(|t| t.zh.as_deref()), Some("作者名"));
@@ -682,6 +702,8 @@ mod tests {
             Some("作者标签"),
             "a declared author list is not merged item by item"
         );
+        assert_eq!(merged.required_connectors, vec!["adc-sandbox".to_owned()]);
+        assert_eq!(merged.entry_kind.as_deref(), Some("skill"));
     }
 
     #[test]
