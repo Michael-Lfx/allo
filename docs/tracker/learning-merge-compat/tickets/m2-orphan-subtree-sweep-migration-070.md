@@ -162,3 +162,6 @@ part_of: ../map.md
   revert 验证真实红：幽灵标签残留 1 行）。
 - 真机判据（下次冒烟批次）：001–065 老库（含一门删课保留复习的课程）→ 070 →
   due_count 不含幻影卡、日历/记忆预测归真、问题管理无幽灵行、活课程出卡正常。
+  执行方案已立：
+  [blueprints/2026-11-09-m2-upgrade-drill.md](../blueprints/2026-11-09-m2-upgrade-drill.md)
+  （双二进制 8fd9a4fb → 03a0c5380，隔离数据目录，零 LLM 依赖，六判据）。
