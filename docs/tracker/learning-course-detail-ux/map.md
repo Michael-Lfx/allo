@@ -1,10 +1,12 @@
 # Map: 图课程详情页 UX 修复——已会声明收敛 · 结构图呈现 · 概念表/详情/总览（c1–c8）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-11-09）。来源 = 用户四张截图反馈（学习 Tab 声明窗口 /
-      概念表 Tab / 结构图 Tab / 概念条目缺失详情页），当批分析后用户拍板立
-      票。建课流程简化（表单字段与生成计划页）用户明示「下一批再说」，入
-      后置清单。 -->
+<!-- 状态：收图（2026-11-09）。c1–c8 全部施工完毕闭票；集成 =
+      feat/learning-course-detail-ux，已并回 feat/learn0928。真机 UI 走查（声
+      明冻结/勾选保持/自动切 Tab/概念页全链 + 两主题）留用户目验，FAIL 按票
+      重开。来源 = 用户四张截图反馈（学习 Tab 声明窗口 / 概念表 Tab / 结构图
+      Tab / 概念条目缺失详情页），当批分析后用户拍板立票。建课流程简化（表单
+      字段与生成计划页）用户明示「下一批再说」，入后置清单。 -->
 <!-- 基线：feat/learn0928 尖端 bffb22b0d；集成分支 = feat/learning-course-detail-ux。 -->
 
 ## 用户裁决（2026-11-09，本波次全部工作的依据）
@@ -104,11 +106,37 @@
 4. 全过 → map 收图，集成分支并回 feat/learn0928 并推送（合并 main 等用户通
    知）。
 
+## 验证记录（2026-11-09 收图）
+
+- **测试**：nomifun-learning 全量 **944 passed / 0 failed**（含新增
+  `concept_view_tests` 3 例）；学习域前端单测 **119 pass / 0 fail**（17 文件，
+  含新增 `structurePresentation.test.ts` 9 例）。
+- **闸门**：`cargo check --workspace` 绿。`check:i18n` / `check:theme` /
+  `check:icons` / `check:button-layout-contract` / `check:css-scope` /
+  `check:motion` / `check:error-surface-contract` /
+  `check:support-surface-contract` / `check:codemirror-runtime` /
+  `check:process-runtime-boundary` / `check:browser-platform-boundary` /
+  `check:windows-console-hide` / `check:market` / `check:fingerprint` /
+  `check:release-sync` / `help --check` 全绿。
+- **存量红（非本波）**：`typecheck` 55 错（videoCanvas 48 等）——c1 与 c8 两次
+  全量输出逐条 diff 完全一致，**本波零新增**；`check:dead-css` 红在 Wallpaper /
+  Herdsman / CloudLogin / eval 等未触文件，`pages/learning` 零命中。聚合
+  `bun run check` 因 `&&` 串联在 typecheck 一步即被存量截断，故逐闸实跑。
+- **真实数据冒烟（c7）**：开发库副本起后端被数据集身份守卫拦下（副本的
+  work-root 归属标记指向原 Nomi-dev，`factory_reset.rs:969`）——不为冒烟动安全
+  层，改用 bun:sqlite 对副本跑端点同款 SQL：登记表 10 概念（全部当前代际、无
+  重名）、1 条声明锚覆盖期权课 5 概念（即截图「已会声明」五行）、关系扫描恰 1
+  对互指（投入资金 ↔ 百分比损益，与截图审计列一致）、声明概念节点使用 0（对
+  应「已会声明（无学习节点）」）。副本已删除。
+- **留观**：UI 真机走查（声明一次 → 冻结勾选态 / 切 Tab 与重进勾选保持 / toast
+  与就绪计数 / 结构完成自动切 Tab / 概念表行点击 → 详情 → 关系互跳 → 总览）
+  留用户在桌面端目验。
+
 ## 后置清单（本波不修）
 
 | 项 | 说明 |
 | --- | --- |
 | 建课流程简化 | 用户明示「下一批再说」：表单只留目标输入、生成计划确认页去留 |
 | 概念详情页节点引用可跳转 | 依赖学习节点 URL 化（选中态本地 state），MVP 纯文字 |
-| 概念总览分页 | c7 先沿用 registry 上限 500，超限再议分页/检索 |
-| 结构图 Tab 挂载三态段位置 | 用户未点名，随 c4 顺带观察是否也属「管理段」需下沉 |
+| 概念总览分页 | c7 先沿用 registry 上限 500，超限再议分页/检索（c8 已有前端本地筛选 + 50 行分页） |
+| 真机冒烟用后端实例 | 开发库原样副本会被数据集身份守卫拒绝启动；下次需要真机后端冒烟时按既有「新建工作目录 + 搬凭据/provider」惯例备阵地 |
