@@ -18,6 +18,7 @@ import {
 } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
@@ -893,6 +894,7 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
  * 审计与行表是两个请求两份错误（c6）：审计失败只降级审计列，不打翻整表。 */
 const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [rows, setRows] = useState<GraphConceptRowView[] | null>(null);
   const [audit, setAudit] = useState<ConceptAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -973,8 +975,26 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
       </div>
     );
   }
+  // 课程内概念表只是全局概念的本课切片（c8）：表头常驻全局总览入口，行点击
+  // 进概念详情（定义全文 / 关联关系 / 跨课程应用）。
+  const header = (
+    <div className='flex flex-wrap items-center gap-8px'>
+      <Text type='secondary' className='text-12px leading-18px'>
+        {t('learning.conceptTableHint')}
+      </Text>
+      <span className='flex-1' />
+      <Button size='small' onClick={() => navigate('/learn/concepts')}>
+        {t('learning.conceptsOverviewTitle')}
+      </Button>
+    </div>
+  );
   if (rows.length === 0) {
-    return <Empty description={t('learning.learningGraphConceptsEmpty')} />;
+    return (
+      <div className='flex flex-col gap-6px'>
+        {header}
+        <Empty description={t('learning.learningGraphConceptsEmpty')} />
+      </div>
+    );
   }
   const renderAuditMarkers = (row: GraphConceptRowView) => {
     const fragments = auditMarkers.fragments.get(row.concept_id) ?? [];
@@ -1018,6 +1038,7 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   };
   return (
     <div className='flex flex-col gap-6px'>
+      {header}
       {auditUnavailable && (
         <Text type='warning' className='text-12px leading-18px'>
           {t('learning.learningGraphAuditUnavailable')}
@@ -1030,6 +1051,10 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
         scroll={{ x: true }}
         data={rows}
         rowKey='concept_id'
+        rowClassName={() => 'cursor-pointer'}
+        onRow={(row: GraphConceptRowView) => ({
+          onClick: () => navigate(`/learn/concepts/${encodeURIComponent(row.concept_id)}`),
+        })}
         columns={[
         {
           title: t('learning.learningGraphConceptCanonical'),
@@ -1113,9 +1138,23 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           width: 180,
           render: (_: unknown, row: GraphConceptRowView) =>
             row.other_courses.length > 0 ? (
-              <span className='text-12px text-t-secondary'>
-                {row.other_courses.map((course) => course.title).join('、')}
-              </span>
+              <div className='flex flex-wrap items-center gap-x-8px'>
+                {row.other_courses.map((course) => (
+                  <Button
+                    key={course.course_id}
+                    type='text'
+                    size='mini'
+                    className='!px-0 text-12px'
+                    onClick={(event) => {
+                      // 行点击 = 进概念详情；课程链接不冒泡，直接去该课程。
+                      event.stopPropagation();
+                      navigate(`/learn/${encodeURIComponent(course.course_id)}`);
+                    }}
+                  >
+                    {course.title}
+                  </Button>
+                ))}
+              </div>
             ) : (
               <span className='text-12px text-t-tertiary'>—</span>
             ),
