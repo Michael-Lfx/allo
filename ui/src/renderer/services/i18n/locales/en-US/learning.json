@@ -463,6 +463,7 @@
   "learningGraphRepairStaleBanner": "Structure repaired — existing mounts pending re-evaluation; run a mount round to re-evaluate",
   "learningGraphStructureMissing": "Not generated yet",
   "learningGraphStructureHint": "The knowledge structure is an in-course reference map (spines and blocks) for orientation only; study order follows the coach.",
+  "learningGraphStructureReadyToast": "The knowledge structure is ready — opened the structure graph for you; declare the gates you already meet, then start learning.",
   "learningGraphStructureLoadFailed": "Failed to read status",
   "learningGraphTabStructure": "Structure",
   "learningGraphStructMindmap": "Mindmap",

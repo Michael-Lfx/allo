@@ -26,6 +26,11 @@ import { batchStatusMeta, buildSystemActionRows } from '../systemActions';
 import { overloadedBadgeCount } from '../capacityFeedback';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
+import {
+  loadStructurePresentedWatermark,
+  saveStructurePresentedWatermark,
+  shouldPresentStructure,
+} from '../structurePresentation';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
@@ -152,6 +157,7 @@ const LearningGraphWorkspace: React.FC<{
           setStructure(view);
           setStructureError(null);
           if (view.structure) setStructureRunning(false);
+          presentStructureOnce(view);
         })
         .catch((loadError) => {
           if (!cancelled) {
@@ -204,6 +210,34 @@ const LearningGraphWorkspace: React.FC<{
       .then((view) => setStructure(view))
       .catch(() => undefined);
   }, [detail.course.id]);
+
+  // ── 结构图自动呈现（c5）：「生成完成后至少呈现给用户一次」───────────────
+  // 在场臂：WS structure_completed 到达时呈现（建课跳转后生长跑完的路径）；
+  // 离场臂：挂载拉到「零节点 + 有新结构」时呈现（用户在生成期间退出，回来
+  // 只走 HTTP 的路径）。水位 = localStorage 持久的结构 generated_at——重生成
+  // 出新结构（时间戳更新）值得再呈现一次，同一次生成绝不重复抢焦点；用户
+  // 已在结构图 Tab 视为已呈现。
+  const structurePresentingRef = React.useRef(false);
+  const presentStructureOnce = useCallback(
+    (view: LearningStructureView) => {
+      const generatedAt = view.generated_at;
+      if (!shouldPresentStructure(loadStructurePresentedWatermark(detail.course.id), generatedAt)) {
+        return;
+      }
+      if (generatedAt !== null) saveStructurePresentedWatermark(detail.course.id, generatedAt);
+      if (structurePresentingRef.current) return;
+      structurePresentingRef.current = true;
+      setActiveTab((current) => {
+        if (current === 'structure') return current;
+        Message.info(t('learning.learningGraphStructureReadyToast'));
+        return 'structure';
+      });
+    },
+    [detail.course.id, t]
+  );
+
+  // 离场兜底臂（见 presentStructureOnce 注释）：仅当本课没有任何节点（零节
+  // 点 = 首批未生长 = 生成期最可能离场的形态）且拉到新结构时触发一次。
 
   // 结构挂载回合（j08）：同步命令，完成后重取投影（挂载三态段随之刷新）。
   const mountStructure = useCallback(async () => {
@@ -332,6 +366,14 @@ const LearningGraphWorkspace: React.FC<{
   // 声明窗口（e3）：零节点（结构完成、首批未生长）时学习 Tab 落在门口
   // 声明画面——生长不再自动抢跑，首批由「开始学习」显式触发。
   const zeroNodes = lessons.length === 0;
+
+  // 离场兜底臂挂载（零节点 + 拉到新结构 → 呈现一次；见 presentStructureOnce）。
+  const zeroNodesAutoPresentedRef = React.useRef(false);
+  useEffect(() => {
+    if (!zeroNodes || zeroNodesAutoPresentedRef.current || structure === null) return;
+    zeroNodesAutoPresentedRef.current = true;
+    presentStructureOnce(structure);
+  }, [zeroNodes, structure, presentStructureOnce]);
 
   return (
     <div className='app-page-shell h-full w-full box-border overflow-y-auto'>

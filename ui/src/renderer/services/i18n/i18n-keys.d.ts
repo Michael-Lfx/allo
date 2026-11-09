@@ -3605,6 +3605,7 @@ export type I18nKey =
   | 'learning.learningGraphStructureHint'
   | 'learning.learningGraphStructureLoadFailed'
   | 'learning.learningGraphStructureMissing'
+  | 'learning.learningGraphStructureReadyToast'
   | 'learning.learningGraphStructureRegenerate'
   | 'learning.learningGraphStructureSummary'
   | 'learning.learningGraphStructureTitle'
