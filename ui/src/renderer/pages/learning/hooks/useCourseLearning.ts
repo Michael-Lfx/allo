@@ -136,7 +136,10 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
 
   const submitAttempt = useCallback(
     async (activity: Activity, response: unknown) => {
-      if (!modelChoice) {
+      // 模型门只拦 AI 判分题型：谓词镜像后端 nomifun-learning 的
+      // ActivityKind::is_ai_graded（Reflection | OpenQuestion），两端须同步改。
+      // 客观题纯规则判分、零 AI 调用，未选模型照常提交。
+      if (!modelChoice && (activity.kind === 'reflection' || activity.kind === 'open_question')) {
         Message.warning(t('learning.form.modelPending'));
         return;
       }
