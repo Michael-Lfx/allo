@@ -2,7 +2,7 @@
 id: m4
 title: "课内答题模型门收窄到 AI 判分题型——客观题不再被误拦"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -65,3 +65,19 @@ multi_choice / numeric / ordering / matching）未选模型也能正常作答。
 - 复习会话补模型门（现状无门、后端有回退，是否要对齐属产品语义，另议）。
 - `LessonQuestionDialog` / `LessonStudy` 两处正确的门不动。
 - 模型选择器/目录加载行为不动。
+
+## Resolution（2026-11-09 施工收口）
+
+**代码面验收全过，已闭票；清空模型手验流程留待下次真机批次。** 施工 =
+`d1d9b6b42`。
+
+- 门收窄为 `!modelChoice && (kind === 'reflection' || kind === 'open_question')`，
+  注释指回后端 `ActivityKind::is_ai_graded` 防两端漂移（漂移风险的契约级收口
+  在 map 后置清单）。
+- 红绿样：新增 `useCourseLearning.test.ts` 5 用例（single_choice/numeric 无
+  模型可提交出分；reflection/open_question 被拦且提示；带模型正常提交带参）。
+  红样实录 + 反向验证（临时删门 → 两个拦截用例变红 → 恢复）。mock 只在本文件
+  用例生效防 bun test 单进程串扰，同跑 LessonStudy/ReviewSession/
+  CapacityFeedbackCard 13 用例无串扰。
+- `bun test src/renderer/pages/learning` 16 文件 110 pass；typecheck 存量债
+  持平零新增。

@@ -2,7 +2,7 @@
 id: m1
 title: "结构修补 merge_sources 重复源 panic——Err 化 + parse 去重 + 维护标志位守卫"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -71,3 +71,21 @@ part_of: ../map.md
 
 - name_adjudication 校验逻辑重构（只做防御性 Err 化）。
 - 维护回合的业务语义/调度策略改动（开关、间隔、水位全不动）。
+
+## Resolution（2026-11-09 施工收口）
+
+**代码面验收全过，已闭票。** 施工 = `b930762de`（parse 保序去重 / apply Err 化 /
+liveness 守卫 Drop + catch_unwind 镜像 nomi-agent 工具执行面既有模式）+ 评审
+补测 `c0aa5af73`（维护循环吞 panic 假 service 并推进下轮）。
+
+- 红绿样：红样直接钉在票面 :637 panic 点（重复源完整回合 panic 实录）+ parse
+  去重断言红样；绿 = `cargo test -p nomifun-learning` **941 passed** /
+  `-p nomifun-app-server` **195 passed** 全绿，fmt 过。
+- name_adjudication :157 落为 `let-else` → 既有 `Adjudication::Degraded` 通道
+  （非字面 Err）——合「既有通道」精神，措辞偏差记档（评审轴确认）。
+- 守卫测试路径取舍（评审轴补测时确认）：`start_learning_auto_maintenance` 收
+  具体类型 `Arc<LearningService>`（无 trait/泛型）+ 私有 30s tick 常量 + 进程级
+  one-shot 标志位，真实 spawn 链无法注入 panic 假 service 且不为测试开生产口子
+  → 测 `learning_maintenance_tick_guarded` 包裹层（panic → Err 死因 → 循环推进
+  → 下轮重拉）+ 守卫结构体复位单测，两者合计覆盖票面语义。
+- 零迁移、零 DB/API 形状变化（验收条款满足）。
