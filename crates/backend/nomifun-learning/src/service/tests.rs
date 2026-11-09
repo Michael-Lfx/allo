@@ -2486,6 +2486,91 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    /// 删课必须连带课程题标签（m2 红绿样）：question_tags 的删除语句排在
+    /// activities 删除之前——排在之后则其子查询查的是已清空的
+    /// learning_activities，恒空 = 标签永不生效，题库留下该课活动的幽灵
+    /// 标签行。
+    #[tokio::test]
+    async fn course_delete_sweeps_question_tags_of_purged_activities() {
+        let (service, _knowledge, owner_id) = job_test_service().await;
+        let pool = service.pool_for_tests();
+        let pack = CoursePack {
+            title: "标签课".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![ActivityPack {
+                        difficulty: None,
+                        kind: ActivityKind::SingleChoice,
+                        prompt: "Pick the size of a vector.".into(),
+                        options: vec!["magnitude".into(), "speed".into()],
+                        answer: json!("magnitude"),
+                        explanation: String::new(),
+                        distractors: Vec::new(),
+                        tol: None,
+                        section_key: None,
+                        evidence: None,
+                    }],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        let activity_id: String = sqlx::query_scalar(
+            "SELECT a.activity_id FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ?",
+        )
+        .bind(course.course.id.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let tag_id = nomifun_common::LearningTagId::new();
+        sqlx::query("INSERT INTO learning_tags (tag_id, name, created_at) VALUES (?, '标签', ?)")
+            .bind(tag_id.as_str())
+            .bind(now_ms())
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_question_tags (question_id, source, tag_id) \
+             VALUES (?, 'course', ?)",
+        )
+        .bind(&activity_id)
+        .bind(tag_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        service.delete_course(&course.course.id, &owner_id).await.unwrap();
+        let residue: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_question_tags \
+             WHERE question_id = ? AND source = 'course'",
+        )
+        .bind(&activity_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            residue, 0,
+            "course question tags must not outlive their purged activities"
+        );
+    }
+
     /// 安排面收窄（三轮 g3「现存且启用」）：归档课的卡离开到期队列、恢复后
     /// 回来；队列收窄不拦已出卡的作答提交（历史面如实落账）；概况读数随
     /// enabled 与 due_today 反映。
