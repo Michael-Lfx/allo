@@ -9011,6 +9011,42 @@ mod tests {
         LEARNING_MAINTENANCE_STARTED.store(false, Ordering::SeqCst); // 清场
     }
 
+    /// 假 service 的回合体：第一轮 panic（模拟维护任务中途炸掉），第二轮
+    /// 正常返回——用于在包裹层复刻真实 spawn 循环的推进语义。
+    async fn fake_service_tick(round: u32) -> u32 {
+        if round == 0 {
+            panic!("模拟 service 回合 panic");
+        }
+        round
+    }
+
+    #[tokio::test]
+    async fn maintenance_loop_absorbs_panicking_service_tick_and_advances_next_round() {
+        // 真实 spawn 链无法注入假 service（`start_learning_auto_maintenance`
+        // 收具体 `Arc<LearningService>`，无 trait/时钟口子；tick 间隔为私有
+        // 常量），按退路在 [`learning_maintenance_tick_guarded`] 包裹层复刻
+        // `start_learning_auto_maintenance` 循环体的真实形状：回合 panic →
+        // `Err(死因)`（生产侧进 tracing::error），循环不死于 panic、照常推进
+        // 到下一轮；下一轮重新拉起且原样透传。标志位复位由上面的 liveness
+        // 守卫测试单独覆盖。
+        let mut round_outputs: Vec<Result<u32, String>> = Vec::new();
+        for round in 0..2u32 {
+            let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(
+                fake_service_tick(round),
+            ));
+            round_outputs.push(tick.await);
+        }
+        let cause = round_outputs[0].as_ref().expect_err("panic 必须收编为 Err 死因");
+        assert!(cause.contains("模拟 service 回合 panic"), "{cause}");
+        assert_eq!(
+            *round_outputs[1]
+                .as_ref()
+                .expect("panic 后循环必须存活并推进到下一轮"),
+            1,
+            "下一轮重新拉起且原样透传"
+        );
+    }
+
     fn request() -> InitializeRequest {
         InitializeRequest {
             protocol_version: PROTOCOL_VERSION.into(),
