@@ -111,7 +111,7 @@
 | m2 | 070 增课程失联孤儿子树清理段（+基线测试 fixture + 头注订正 + question_tags 顺序 bug） | **高** | ✅ closed |
 | m3 | 结构 tab 43 处 `t()` 补 `learning.` 前缀 | **高** | ✅ closed |
 | m4 | 课内答题模型门收窄到 AI 判分题型 | **高** | ✅ closed |
-| m5 | companion store v3 老库缺基线表——升级启动即崩（真机演练新发现） | **高（并回 blocker）** | 🔴 open |
+| m5 | companion store v3 老库缺基线表——升级启动即崩（真机演练新发现） | **高（并回 blocker）** | ✅ closed（541925e8b，真机复验全过） |
 
 ## 真机升级演练（2026-11-09，m2 判据 + m5 来源）
 
