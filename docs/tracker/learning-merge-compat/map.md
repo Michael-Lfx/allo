@@ -111,3 +111,24 @@
 | m2 | 070 增课程失联孤儿子树清理段（+基线测试 fixture + 头注订正 + question_tags 顺序 bug） | **高** | ✅ closed |
 | m3 | 结构 tab 43 处 `t()` 补 `learning.` 前缀 | **高** | ✅ closed |
 | m4 | 课内答题模型门收窄到 AI 判分题型 | **高** | ✅ closed |
+| m5 | companion store v3 老库缺基线表——升级启动即崩（真机演练新发现） | **高（并回 blocker）** | 🔴 open |
+
+## 真机升级演练（2026-11-09，m2 判据 + m5 来源）
+
+方案 [blueprints/2026-11-09-m2-upgrade-drill.md](blueprints/2026-11-09-m2-upgrade-drill.md)
+执行完毕（双二进制 8fd9a4fb → 03a0c5380，约 75 分钟，证据
+`C:/Users/test/Desktop/work/mc-drill/evidence/`）：
+
+- **判据 2–6 全 PASS**（机器证据级）：due_count 10→4 精确等于期望（幻影卡
+  L2 4 + G1 2 归零）；日历/记忆预测归真；问题管理 49→25 行幽灵清零；活课程
+  7/7 读写流全 200；保全面 SQL 断言 35/35（L1 内容逐格 diff 424/424 相同、
+  review_events 10 行逐行一致含 6 行被清卡作答流水、L2+G1 十一表全零）。
+  **阴性对照**：升级前库喂同套脚本仅 20/35 过，失败项恰落在清扫/互斥/迁移
+  面——脚本真有抓幻影能力。
+- **判据 1 有条件 PASS → 催生 m5**：070 迁移本身成功（_sqlx_migrations 69 行、
+  066/067/068/070 全 success、零 retired 触发），但新二进制首次启动崩在
+  companion store 缺 `companion_learning_xp` 基线表（票外存量缺陷，04c5da393
+  起）——已立 m5，为当前并回 blocker。
+- 演练取舍如实记档：due_at 回拨制造到期卡（卡本体全走老 API 真路径）、checkin
+  走队列清空自动落行、tutorial pack 剥不存在知识库引用、sections 空表由
+  config_json/summary 全行 diff 承担守恒。
