@@ -689,13 +689,15 @@ impl LearningService {
                 SELECT l.lesson_id FROM learning_lessons l \
                 JOIN learning_modules m ON m.module_id = l.module_id \
                 WHERE m.course_id = ?)",
-            "DELETE FROM learning_activities WHERE lesson_id IN (\
-                SELECT l.lesson_id FROM learning_lessons l \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
+            // 题库标签先于活动行删除（m2 订正）：子查询按活动行键定，排在
+            // activities 删除之后则恒空 = 标签永不生效，题库留幽灵行。
             "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
                 SELECT a.activity_id FROM learning_activities a \
                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_activities WHERE lesson_id IN (\
+                SELECT l.lesson_id FROM learning_lessons l \
                 JOIN learning_modules m ON m.module_id = l.module_id \
                 WHERE m.course_id = ?)",
             "DELETE FROM learning_lessons WHERE module_id IN (\
@@ -798,13 +800,15 @@ impl LearningService {
                 .await
                 .map_err(internal)?;
             let content_sql = [
-                "DELETE FROM learning_activities WHERE lesson_id IN (\
-                    SELECT l.lesson_id FROM learning_lessons l \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
+                // 题库标签先于活动行删除（m2 订正，同 delete_course）：子查询
+                // 按活动行键定，排在 activities 删除之后则恒空 = 永不生效。
                 "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
                     SELECT a.activity_id FROM learning_activities a \
                     JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                    JOIN learning_modules m ON m.module_id = l.module_id \
+                    WHERE m.course_id = ?)",
+                "DELETE FROM learning_activities WHERE lesson_id IN (\
+                    SELECT l.lesson_id FROM learning_lessons l \
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     WHERE m.course_id = ?)",
                 "DELETE FROM learning_lessons WHERE module_id IN (\
