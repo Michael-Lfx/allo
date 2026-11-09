@@ -174,6 +174,15 @@ pub(crate) struct MarketIndexInfo {
     /// the skills bundled inside a connector package, which are usable only
     /// once that connector is installed. Empty = no dependency.
     requires_connectors: Vec<String>,
+    /// The row's `auth_mode` (`token` / `oauth` / `server-side` / …), as the
+    /// market declares it. Connector entries only; `None` for the legacy
+    /// indexes that predate the field and for every non-index source.
+    ///
+    /// Carried into [`DisplayFields::auth_mode`] so an index-market install can
+    /// still name its credential mode: unlike a directory market, there is no
+    /// `.codebuddy-connector/connectors.json` next to the extracted entry for
+    /// the importer to read.
+    auth_mode: Option<String>,
 }
 
 impl MarketIndexInfo {
@@ -226,6 +235,7 @@ impl MarketIndexInfo {
             // only (a connector stamps its bundled skills with itself).
             required_connectors: self.requires_connectors.clone(),
             entry_kind: self.kind.clone(),
+            auth_mode: self.auth_mode.clone(),
         }
     }
 }
@@ -399,6 +409,11 @@ fn read_index(
                     .map(str::to_owned),
                 member: None,
                 requires_connectors: Vec::new(),
+                auth_mode: item
+                    .get("auth_mode")
+                    .and_then(|value| value.as_str())
+                    .filter(|mode| !mode.trim().is_empty())
+                    .map(str::to_owned),
             },
         );
     }
@@ -469,6 +484,11 @@ fn read_store_index(root: &Path) -> (HashMap<String, MarketIndexInfo>, Option<Ma
                             .collect()
                     })
                     .unwrap_or_default(),
+                auth_mode: item
+                    .get("auth_mode")
+                    .and_then(|value| value.as_str())
+                    .filter(|mode| !mode.trim().is_empty())
+                    .map(str::to_owned),
             },
         );
     }

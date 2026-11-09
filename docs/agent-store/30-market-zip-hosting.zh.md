@@ -175,6 +175,8 @@ source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/mast
 - `market/refresh` 只拉约 1 MiB 索引；`revision` = `index.json` 内容 sha256，未变即 `Unchanged`，last-good 保留；
 - `store/list` 直接读 `index.json` 的 `display` / `description` / `tags` / `examples` / `quick_prompts` / `default_init_prompt` / `icon_url` / `category_id` / `available`，卡片不再依赖已下载的条目目录；
 - `store/install` / `market/entry-import` 才下载条目内容：`experts` 是逐条 `tar.gz`；`skills` / `connectors` 共享一个 payload zip（顶层 `payload.url/sha256/size`，条目用 `member` 定位目录）。两者都先按声明摘要/大小校验，再安全解包；归档若带顶层 `<plugin-name>/` 自动下钻一层；
+- 共享包**也可以省略顶层 `payload`**：当所有条目 `download` 指向同一地址且各自带 `member` 时，客户端把该地址当作 payload（摘要优先取文件名里的 64 位 hex，否则取下载字节/宿主 `X-Linked-Etag`）。这是推荐精选技能索引的实际形态（`workbuddy-market-collect` 的 `build-recommend-market.py`）；
+- 连接器条目的 `auth_mode`（`token` / `oauth` / …）随索引行经 `DisplayFields.auth_mode` 进入导入；`index` 市场没有条目目录旁的 `.codebuddy-connector/connectors.json`，若只读 `preAuth` 会把全部 token/oauth 连接器归一成 `none`；
 - `StoreItem` 增加 `icon_url`（绝对）、`download_size`、`sha256`、`available`、`unavailable_reason`；`avatar_url` 优先绝对 `icon_url`，否则回退相对 asset 路由；`store_asset_route` 对远程图标 302；
 - `categories.json` 采用 `taxonomy[]`（`id/zh/en/description_zh/description_en`），`app_server_categories` 优先读它，缺失再回退 `manifest.json` / 内置词表；
 - 官方三个市场（`experts` / `skills` / `connectors`）均已切到 `wb-market/<market>/index.json`；旧 `experts.zip` / `skills.zip` / `connectors.zip` 冻结保留两个发布版本。

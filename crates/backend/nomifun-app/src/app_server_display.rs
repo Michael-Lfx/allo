@@ -46,6 +46,11 @@ pub(crate) fn display_from_payload(payload: &serde_json::Value) -> DisplayFields
             })
             .unwrap_or_default(),
         entry_kind: None,
+        auth_mode: payload
+            .get("auth_mode")
+            .and_then(|value| value.as_str())
+            .filter(|mode| !mode.trim().is_empty())
+            .map(str::to_owned),
     }
 }
 

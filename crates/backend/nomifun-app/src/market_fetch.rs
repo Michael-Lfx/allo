@@ -511,6 +511,34 @@ pub(crate) fn validate_index_json(text: &str) -> Result<(), AppError> {
         .and_then(Value::as_array)
         .filter(|entries| !entries.is_empty())
         .ok_or_else(|| bad("index.json entries must be a non-empty array"))?;
+    // A shared-payload market normally declares one top-level `payload` object.
+    // A recommend-built index omits it and instead leaves every entry's
+    // `download` pointing at that same archive, naming its directory with
+    // `member`. That is the same distribution shape, so accept it: the shared
+    // URL *is* the payload, and per-entry `sha256` may stay absent.
+    let shared_member_download: Option<&str> = if has_payload {
+        None
+    } else {
+        let mut common: Option<&str> = None;
+        let mut shared = true;
+        for item in entries {
+            let download = item.get("download").and_then(Value::as_str).unwrap_or("");
+            let member = item.get("member").and_then(Value::as_str).unwrap_or("");
+            if member.trim().is_empty() || download.is_empty() {
+                shared = false;
+                break;
+            }
+            match common {
+                None => common = Some(download),
+                Some(first) if first == download => {}
+                _ => {
+                    shared = false;
+                    break;
+                }
+            }
+        }
+        shared.then_some(common).flatten()
+    };
     let mut seen = std::collections::HashSet::new();
     for (index, item) in entries.iter().enumerate() {
         let name = item
@@ -531,7 +559,8 @@ pub(crate) fn validate_index_json(text: &str) -> Result<(), AppError> {
             )));
         }
         let sha256 = item.get("sha256").and_then(Value::as_str).unwrap_or("");
-        if !is_lower_hex64(sha256) && !(has_payload && sha256.is_empty()) {
+        let verified_by_shared_archive = has_payload || shared_member_download.is_some();
+        if !is_lower_hex64(sha256) && !(verified_by_shared_archive && sha256.is_empty()) {
             return Err(bad(format!(
                 "index.json entry `{name}` sha256 must be 64 lowercase hex characters"
             )));
@@ -871,22 +900,51 @@ mod tests {
         })
         .to_string();
         assert!(validate_index_json(&payload).is_ok());
+    }
 
-        // Without a payload digest there is nothing to verify the archive
-        // against, so the per-entry sha stays mandatory.
-        let no_payload = serde_json::json!({
+    /// A recommend-built index omits the top-level `payload` and instead points
+    /// every entry's `download` at one shared archive, naming a `member`. That is
+    /// the same distribution shape as a payload market, so it must validate.
+    #[test]
+    fn shared_member_index_allows_entries_without_their_own_sha() {
+        let shared = serde_json::json!({
             "schema_version": 2,
             "market": "skills",
-            "entries": [{
-                "name": "s",
-                "kind": "skill",
-                "download": "https://h/payload.zip",
-                "member": "s",
-                "size": 5,
-            }],
+            "entries": [
+                { "name": "a", "kind": "skill", "download": "https://h/skills-abc.zip",
+                  "member": "a", "size": 5, "available": true },
+                { "name": "b", "kind": "skill", "download": "https://h/skills-abc.zip",
+                  "member": "b", "size": 6, "available": true }
+            ],
         })
         .to_string();
-        assert!(validate_index_json(&no_payload).is_err());
+        assert!(validate_index_json(&shared).is_ok());
+
+        // Distinct downloads with no top-level payload are *not* one shared
+        // archive: without a per-entry sha there is nothing to verify each one.
+        let distinct = serde_json::json!({
+            "schema_version": 2,
+            "market": "skills",
+            "entries": [
+                { "name": "a", "kind": "skill", "download": "https://h/a.zip", "member": "a", "size": 5 },
+                { "name": "b", "kind": "skill", "download": "https://h/b.zip", "member": "b", "size": 6 }
+            ],
+        })
+        .to_string();
+        assert!(validate_index_json(&distinct).is_err());
+
+        // A `member` on one entry and a bare `download` on the next is neither a
+        // shared payload nor a per-entry archive, so it is refused.
+        let mixed = serde_json::json!({
+            "schema_version": 2,
+            "market": "skills",
+            "entries": [
+                { "name": "a", "kind": "skill", "download": "https://h/shared.zip", "member": "a", "size": 5 },
+                { "name": "b", "kind": "skill", "download": "https://h/other.zip", "size": 6 }
+            ],
+        })
+        .to_string();
+        assert!(validate_index_json(&mixed).is_err());
     }
 }
 

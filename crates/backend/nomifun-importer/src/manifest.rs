@@ -248,6 +248,16 @@ pub struct DisplayFields {
     /// with the entry itself as their dependency (doc `52` §3.5). Absent for
     /// every non-index source.
     pub entry_kind: Option<String>,
+    /// The market index row's `auth_mode` (`token` / `oauth` / `server-side` /
+    /// …), carried so a connector imported from an **index** market can name how
+    /// it authenticates (`34` §6.1).
+    ///
+    /// The directory-market path reads it back out of
+    /// `<market>/.codebuddy-connector/connectors.json`; an index market has no
+    /// such file next to the extracted entry (its root is one `index.json`), so
+    /// the row value has to ride this same one-way channel instead. Market-only,
+    /// like `required_connectors`: `merge` always takes the index side.
+    pub auth_mode: Option<String>,
 }
 
 impl DisplayFields {
@@ -261,6 +271,7 @@ impl DisplayFields {
             // Market-only facts: an author manifest never declares these.
             required_connectors: index.required_connectors,
             entry_kind: index.entry_kind,
+            auth_mode: index.auth_mode,
         }
     }
 
@@ -691,6 +702,7 @@ mod tests {
             tags: vec![LocalizedText { zh: Some("索引标签".into()), en: None }],
             required_connectors: vec!["adc-sandbox".into()],
             entry_kind: Some("skill".into()),
+            auth_mode: None,
         };
         let merged = DisplayFields::merge(author, index);
         assert_eq!(merged.name.as_ref().and_then(|t| t.zh.as_deref()), Some("作者名"));

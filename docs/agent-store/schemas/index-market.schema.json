@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-store/index-market.schema.json",
   "title": "Agent Store index market (schema_version 2)",
-  "description": "Doc 30 §6.1: an index-first market ships one `index.json` (+ optional `categories.json`). Each entry names an absolute `download` URL plus the archive's sha256/size; entry payloads are fetched on demand instead of mirroring a tree.",
+  "description": "Doc 30 §6.1: an index-first market ships one `index.json` (+ optional `categories.json`). Each entry names an absolute `download` URL plus the archive's sha256/size; entry payloads are fetched on demand instead of mirroring a tree. A shared-payload market (skills/connectors) declares one top-level `payload` and each entry a `member`; a recommend-built index may omit `payload` while every entry shares one `download`, which the client treats as that payload.",
   "type": "object",
   "required": ["schema_version", "market", "entries"],
   "properties": {

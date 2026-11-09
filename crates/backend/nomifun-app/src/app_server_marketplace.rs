@@ -333,6 +333,19 @@ fn icon_extension(url: &str) -> &'static str {
     }
 }
 
+/// The content sha256 an archive URL spells in its basename (`skills-<hex>.zip`).
+///
+/// Only used to identify an *inferred* shared payload (one whose index omits the
+/// top-level `payload` object). A URL without a digest is still downloadable;
+/// the digest then comes from the bytes the host serves.
+fn sha256_from_archive_url(url: &str) -> Option<String> {
+    let name = url.split(['?', '#']).next()?.rsplit('/').next()?;
+    let stem = name.strip_suffix(".zip").unwrap_or(name);
+    let candidate = stem.rsplit('-').next()?;
+    (candidate.len() == 64 && candidate.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| candidate.to_ascii_lowercase())
+}
+
 fn resolve_extracted_root(extracted: std::path::PathBuf) -> std::path::PathBuf {
     let is_payload = |path: &Path| {
         path.join(".codebuddy-plugin/plugin.json").is_file()
@@ -677,6 +690,18 @@ impl AppServerMarketplaceProvider {
             })?;
             return materialize_payload_entry(&cache, member, payload).await;
         }
+        // A recommend-built index omits the top-level `payload` but points every
+        // entry's `download` at the same archive. Treat that shared URL as the
+        // payload: the digest is taken from the URL when it spells one, else from
+        // the bytes the host serves.
+        if let Some(member) = meta.entry_member() {
+            let inferred = crate::app_server_store::MarketPayload {
+                url: entry.source_uri.clone(),
+                sha256: sha256_from_archive_url(&entry.source_uri).unwrap_or_default(),
+                size: 0,
+            };
+            return materialize_payload_entry(&cache, member, &inferred).await;
+        }
         let sha256 = meta
             .entry_sha256()
             .ok_or_else(|| AppError::BadRequest(format!("entry {} has no sha256", entry.name)))?;
@@ -710,7 +735,9 @@ impl AppServerMarketplaceProvider {
         if dest.is_file() {
             return Some(dest);
         }
-        match crate::market_source::download_small_file(url, &dest, 64 * 1024).await {
+        // Doc `51`: the icon gate is 512 KiB. Mirrored here so an icon the
+        // importer would accept is not dropped by the download step first.
+        match crate::market_source::download_small_file(url, &dest, 512 * 1024).await {
             Ok(()) => Some(dest),
             Err(_) => None,
         }
@@ -748,8 +775,16 @@ async fn materialize_payload_entry(
             payload.url
         )));
     }
-    if payload.sha256.len() != 64 {
-        return Err(AppError::Internal("payload sha256 must be 64 hex chars".into()));
+    // A declared digest is verified. An inferred shared payload (recommend-built
+    // index: no top-level `payload`, one common `download`) may leave it blank;
+    // the bytes that arrive then name the archive.
+    let declared = payload.sha256.trim();
+    if !declared.is_empty()
+        && !(declared.len() == 64 && declared.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(AppError::Internal(
+            "payload sha256 must be 64 hex chars".into(),
+        ));
     }
     let member_path = std::path::Path::new(member);
     let safe = !member.is_empty()
@@ -763,51 +798,85 @@ async fn materialize_payload_entry(
     }
     std::fs::create_dir_all(cache)
         .map_err(|error| AppError::Internal(format!("create entry cache: {error}")))?;
-    let archive = cache.join(format!("payload-{}.zip", payload.sha256));
-    if !archive.is_file() {
-        let (digest, server) = crate::market_source::download_archive(&payload.url, &archive)
-            .await
-            .map_err(AppError::Internal)?;
-        if let Some(server) = server {
-            if server != payload.sha256 {
-                let _ = std::fs::remove_file(&archive);
-                return Err(AppError::Internal(format!(
-                    "payload digest mismatch: index declares {}, host reports {server}",
-                    payload.sha256
-                )));
+
+    // A previously downloaded archive is only reused when it still hashes to the
+    // declared digest — a truncated file must not silently serve every install.
+    let mut existing = (!declared.is_empty())
+        .then(|| cache.join(format!("payload-{declared}.zip")))
+        .filter(|path| path.is_file());
+    if let Some(path) = existing.clone() {
+        let intact = crate::market_source::sha256_file(&path)
+            .map(|actual| actual.eq_ignore_ascii_case(declared))
+            .unwrap_or(false);
+        if !intact {
+            let _ = std::fs::remove_file(&path);
+            existing = None;
+        }
+    }
+
+    let archive = match existing {
+        Some(path) => path,
+        None => {
+            let tmp = cache.join(format!(
+                "payload-incoming-{}.zip",
+                nomifun_common::generate_id()
+            ));
+            let (digest, server) = crate::market_source::download_archive(&payload.url, &tmp)
+                .await
+                .map_err(AppError::Internal)?;
+            if !declared.is_empty() {
+                if let Some(server) = server {
+                    if !server.eq_ignore_ascii_case(declared) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(AppError::Internal(format!(
+                            "payload digest mismatch: index declares {declared}, host reports {server}"
+                        )));
+                    }
+                }
+                if !digest.eq_ignore_ascii_case(declared) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(AppError::Internal(format!(
+                        "payload downloaded bytes hash to {digest}, index declares {declared}"
+                    )));
+                }
             }
+            if payload.size > 0 {
+                let length = std::fs::metadata(&tmp)
+                    .map_err(|error| AppError::Internal(format!("stat payload archive: {error}")))?
+                    .len();
+                if length != payload.size as u64 {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(AppError::Internal(format!(
+                        "payload archive is {length} bytes, index declares {}",
+                        payload.size
+                    )));
+                }
+            }
+            let final_archive = cache.join(format!("payload-{digest}.zip"));
+            if final_archive.is_file() {
+                let _ = std::fs::remove_file(&tmp);
+            } else {
+                std::fs::rename(&tmp, &final_archive).map_err(|error| {
+                    let _ = std::fs::remove_file(&tmp);
+                    AppError::Internal(format!("promote payload archive: {error}"))
+                })?;
+            }
+            final_archive
         }
-        if digest != payload.sha256 {
-            let _ = std::fs::remove_file(&archive);
-            return Err(AppError::Internal(format!(
-                "payload downloaded bytes hash to {digest}, index declares {}",
-                payload.sha256
-            )));
-        }
-    }
-    let actual = crate::market_source::sha256_file(&archive).map_err(AppError::Internal)?;
-    if actual != payload.sha256 {
-        let _ = std::fs::remove_file(&archive);
-        return Err(AppError::Internal(format!(
-            "payload archive hash {actual} does not match index sha256 {}",
-            payload.sha256
-        )));
-    }
-    let length = std::fs::metadata(&archive)
-        .map_err(|error| AppError::Internal(format!("stat payload archive: {error}")))?
-        .len();
-    if length != payload.size as u64 {
-        let _ = std::fs::remove_file(&archive);
-        return Err(AppError::Internal(format!(
-            "payload archive is {length} bytes, index declares {}",
-            payload.size
-        )));
-    }
-    let extracted = cache.join(format!("payload-{}", payload.sha256));
+    };
+
+    let digest = archive
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.strip_prefix("payload-"))
+        .ok_or_else(|| {
+            AppError::Internal("payload archive name is not content-addressed".into())
+        })?
+        .to_owned();
+    let extracted = cache.join(format!("payload-{digest}"));
     if !extracted.is_dir() {
         let tmp = cache.join(format!(
-            ".payload-{}-{}",
-            payload.sha256,
+            ".payload-{digest}-{}",
             nomifun_common::generate_id()
         ));
         crate::market_source::extract_zip_market(&archive, &tmp)
@@ -2306,7 +2375,7 @@ mod extracted_root_tests {
 
 #[cfg(test)]
 mod icon_name_tests {
-    use super::icon_extension;
+    use super::{icon_extension, sha256_from_archive_url};
 
     #[test]
     fn icon_extension_uses_the_url_path_and_falls_back_to_png() {
@@ -2314,6 +2383,17 @@ mod icon_name_tests {
         assert_eq!(icon_extension("https://cdn/x/a.SVG?x=1"), "svg");
         assert_eq!(icon_extension("https://cdn/x/icon"), "png");
         assert_eq!(icon_extension("https://cdn/x/a.exe"), "png");
+    }
+
+    #[test]
+    fn archive_url_digest_is_read_from_the_basename() {
+        let sha = "a".repeat(64);
+        assert_eq!(
+            sha256_from_archive_url(&format!("https://h/p/skills-{sha}.zip?x=1")),
+            Some(sha.clone())
+        );
+        assert_eq!(sha256_from_archive_url("https://h/p/skills.zip"), None);
+        assert_eq!(sha256_from_archive_url("https://h/p/skills-ABC.zip"), None);
     }
 }
 
@@ -2367,6 +2447,46 @@ mod archive_materialization_tests {
         .expect("materialize");
         assert!(root.join(".codebuddy-plugin/plugin.json").is_file());
         assert_eq!(root.file_name().unwrap(), "demo");
+    }
+
+    fn payload_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
+        use zip::write::SimpleFileOptions;
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buffer);
+            let options = SimpleFileOptions::default();
+            for (path, body) in members {
+                writer.start_file(*path, options).unwrap();
+                writer.write_all(body).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buffer.into_inner()
+    }
+
+    /// A recommend-built index has no top-level `payload` and no per-entry
+    /// digest; the shared `download` is the payload, identified by the bytes
+    /// that arrive. `member` still selects the entry inside it.
+    #[tokio::test]
+    async fn a_shared_payload_without_a_declared_digest_still_materializes_its_member() {
+        let bytes = payload_zip(&[("alpha/SKILL.md", b"# alpha"), ("beta/SKILL.md", b"# beta")]);
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/payload-abc.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+            .mount(&mock)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let payload = crate::app_server_store::MarketPayload {
+            url: format!("{}/payload-abc.zip", mock.uri()),
+            sha256: String::new(),
+            size: 0,
+        };
+        let source = materialize_payload_entry(cache.path(), "beta", &payload)
+            .await
+            .expect("materialize");
+        assert!(source.join("SKILL.md").is_file());
+        assert_eq!(source.file_name().unwrap(), "beta");
     }
 
     #[tokio::test]
