@@ -1,13 +1,16 @@
 # Map: 并回兼容收口——feat/learn0928 → main 合并前必修四票（m1–m4）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-11-09）。来源 = 并回 main 前的兼容性审计（本会话三路
-      子代理深查 + 逐项实码复核 + 影响面复查），用户裁决后立票。
-      审计结论：迁移层（070_learning_domain_rebuild）闭环安全——8 张 rebuild
-      表逐列 INSERT SELECT 零丢行、CHECK 只松不紧、基线迁移测试覆盖已发布链
-      001–065 + 存量数据升级路径（nomifun-db 935 测试全绿）；无 BLOCKER 级
-      数据损坏风险。四票全部 open、互不阻塞，均为并回 main 前必修。 -->
-<!-- 基线：feat/learn0928 尖端 85edbb6ad。 -->
+<!-- 状态：收图（2026-11-09）。四票 m1–m4 全部施工完毕、双轴代码评审（规范
+      0 硬违规 + 规格零实现错误）后闭票；真机判据（m2 升级演练 / m3 目验 /
+      m4 手验）留待下次真机冒烟批次执行，FAIL 按票重开。集成 =
+      feat/learning-merge-compat，已并回 feat/learn0928。
+      来源 = 并回 main 前的兼容性审计（本会话三路子代理深查 + 逐项实码复核
+      + 影响面复查），用户裁决后立票。审计结论：迁移层
+      （070_learning_domain_rebuild）闭环安全——8 张 rebuild 表逐列
+      INSERT SELECT 零丢行、CHECK 只松不紧、基线迁移测试覆盖已发布链
+      001–065 + 存量数据升级路径；无 BLOCKER 级数据损坏风险。 -->
+<!-- 基线：feat/learn0928 尖端 85edbb6ad；集成分支尖端见 git。 -->
 
 ## 用户裁决（2026-11-09，本波次全部工作的依据）
 
@@ -71,6 +74,9 @@
 | 前端健壮性小项 | 课程列表 Promise.all 一坏全坏（index.tsx:86-95）；generationTasks 瞬断 500 终止 35 分钟轮询（useCourseLearning.ts:55）；XpPanel 星期 label 作 React key 撞重（XpPanel.tsx:192）；GraphHistory/ConceptTable 错误态不随成功清理 | 均有兜底 UI 不白屏；攒一波前端打磨票 |
 | 分节课时无 practice 节时题目隐藏 | 活动恒无 `section_key` 字段（后端不发）而前端 `=== null` 判断（model.ts:51、types.ts:307）——main 上已存在的存量问题 | 非本分支回归；改 `== null` + 标可选即修，随前端打磨票 |
 | 孤儿课时 404（原审计 M1） | main 删课遗留课时现被 inner-join 拒答（course.rs:497-513） | **随 m2 清理段自然消失**（子树清掉后不再有该人群） |
+| delete_course/by_title 重复级联提取 | course.rs 两段同形 DELETE 级联（m2 被迫两处同改；评审发现） | 存量形状；提取共享删除助手属重构，随学习域清理票 |
+| panic 守卫同形下沉 shared | liveness guard/catch_unwind 与 nomi-agent tool_execution.rs 同形复制（评审发现） | 权衡「shared 保持稀少」；第二处再现时再议 |
+| 门谓词两端漂移风险 | useCourseLearning 裸字面量镜像 ActivityKind::is_ai_graded，靠注释维持同步（评审发现） | 低成本收口=契约测试钉两端；随学习域测试加固票 |
 
 ## 验证总纲
 
@@ -84,11 +90,24 @@
 5. 汇总门：`cargo check --workspace && bun run check`；真机冒烟（smoke content
    档 + 一次 dev 库升级演练：001–065 库 → 070 后课程列表/课时/复习/打卡全通）。
 
+## 双轴评审记录（2026-11-09，集成分支 @ c0aa5af73）
+
+- **规范轴：0 硬违规。** 署名 16 提交全人类零 AI 尾注；070 改动符合头注自订
+  契约；前端三红线无违。判断题四条（不入本波）：①服务内 delete_course/
+  delete_courses_by_title 重复级联（下文后置清单）；②panic 守卫与 nomi-agent
+  工具执行面同形（可下沉 shared，权衡「shared 保持稀少」）；③m4 门谓词裸
+  字面量镜像后端（注释已令同步）；④`merge(learning):` 类型——仓内有
+  usability-followup closure 先例，实为家规，撤回。
+- **规格轴：零实现错误。** m2 §8 与票面 SQL 逐字一致、070 既有段一字未动、
+  fixture 断言全过；m1 保序去重钉死；m4 谓词恰好两题型；m3 全形态归零。
+  两处打折已补（m1 守卫测试走包裹层真实形状 / by_title 红绿样），一处措辞
+  偏差记档（name_adjudication 走 Degraded 通道），真机项留观。
+
 ## Tickets
 
-| id | 票 | 优先 |
-| --- | --- | --- |
-| m1 | 结构修补 merge_sources 重复源 panic → Err + parse 去重 + 维护任务标志位守卫 | **高** |
-| m2 | 070 增课程失联孤儿子树清理段（+基线测试 fixture + 头注订正 + question_tags 顺序 bug） | **高** |
-| m3 | 结构 tab 43 处 `t()` 补 `learning.` 前缀 | **高** |
-| m4 | 课内答题模型门收窄到 AI 判分题型 | **高** |
+| id | 票 | 优先 | 状态 |
+| --- | --- | --- | --- |
+| m1 | 结构修补 merge_sources 重复源 panic → Err + parse 去重 + 维护任务标志位守卫 | **高** | ✅ closed |
+| m2 | 070 增课程失联孤儿子树清理段（+基线测试 fixture + 头注订正 + question_tags 顺序 bug） | **高** | ✅ closed |
+| m3 | 结构 tab 43 处 `t()` 补 `learning.` 前缀 | **高** | ✅ closed |
+| m4 | 课内答题模型门收窄到 AI 判分题型 | **高** | ✅ closed |

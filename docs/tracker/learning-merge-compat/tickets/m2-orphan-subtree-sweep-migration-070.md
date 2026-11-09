@@ -2,7 +2,7 @@
 id: m2
 title: "070 增课程失联孤儿子树清理段——到期计数归真 + 题库幽灵行清零"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -140,3 +140,25 @@ part_of: ../map.md
 - due 队列 join 口径不动（「现存且启用」单源口径是对的）。
 - 新删除语义不动（墓碑 + 物理删 activities/lessons，未来不再产生失联子树）。
 - XP/checkin 历史语义（后置清单，产品裁决另议）。
+
+## Resolution（2026-11-09 施工收口）
+
+**代码面验收全过，已闭票；真机升级演练判据留待下次真机冒烟批次（代码面已
+备齐，FAIL 按票重开）。** 施工 = `16815a9b8`（070 §8 清理段 + 头注订正）+
+`fda5259e1`（基线 fixture）+ `e391fa019`（delete_course question_tags 顺序）+
+评审补测 `e6519df63`（by_title 红绿样）。
+
+- §8 十一条与票面 SQL 逐字一致（评审轴核对），执行顺序即编号顺序；§1–§14
+  既有语句一字未动（全文件仅头注措辞行一删，001–068 → 001–065 订正 + 节号
+  清单登记 §8）。
+- fixture 断言读数：两形态失联子树（ORPHAN_COURSE_TRAD 传统删课保留残影 /
+  ORPHAN_COURSE_GRAPH 图课残余）11 表计数全零；活课程守恒面（4 课时/1 活动/
+  1 注册/4 进度/1+1 标签）不动；`learning_review_events`×3（含两张被清卡的
+  作答流水）与 `learning_checkins`×1 保留面行数不变；悬空课时/模块/注册 = 0。
+  `cargo test -p nomifun-db` 52 测试二进制全绿。
+- 票面外收口（如实记档，评审轴判「合理同缺陷收口」）：`delete_courses_by_title`
+  与 delete_course 逐字复制的同款死语句一并换序修；红绿样
+  `course_delete_by_title_sweeps_question_tags_of_purged_activities`（临时
+  revert 验证真实红：幽灵标签残留 1 行）。
+- 真机判据（下次冒烟批次）：001–065 老库（含一门删课保留复习的课程）→ 070 →
+  due_count 不含幻影卡、日历/记忆预测归真、问题管理无幽灵行、活课程出卡正常。
