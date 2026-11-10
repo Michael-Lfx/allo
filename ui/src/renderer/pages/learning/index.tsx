@@ -11,6 +11,7 @@ import { CourseWorkspace } from './components/CourseWorkspace';
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { ReviewBanner } from './components/ReviewBanner';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
+import { restoredTaskTopic } from './coursePlan';
 import { useCheckinStatus } from './hooks/useCheckinStatus';
 import { useCourseCreation } from './hooks/useCourseCreation';
 import { useCourseLearning } from './hooks/useCourseLearning';
@@ -443,11 +444,17 @@ const LearningPage: React.FC = () => {
           />
         </Suspense>
 
-        {/* 后台生成指示条：对话框关闭后生成仍在继续，从这里查看进度或取消 */}
+        {/* 后台生成指示条：对话框关闭后生成仍在继续，从这里查看进度或取消。
+            副行文案（c3）：恢复态按快照 kind 走词典组装，后端中文 topic 不
+            直达 UI；实时链 description 即用户输入，原样显示。 */}
         {creation.generation && !creation.generateVisible && (
           <CourseGenerationPill
             status={creation.generation.status}
-            topic={creation.generation.request.description ?? ''}
+            topic={
+              creation.generation.restoredTask
+                ? restoredTaskTopic(creation.generation.restoredTask, t)
+                : creation.generation.request.description ?? ''
+            }
             sources={knowledgeBaseNames(
               creation.generation.request.knowledge_base_ids ?? [],
               creation.knowledgeBases

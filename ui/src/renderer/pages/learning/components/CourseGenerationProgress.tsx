@@ -187,9 +187,11 @@ export function CourseGenerationProgress({
           )}
           {events.map((event, index) => {
             if (event.phase === PHASE.started) {
+              // c3 防御收口：started 行一律走词典，不读 event.text——graph 流
+              // 已整段隐藏（c1）、v2 流无 text 帧，防未来新流把后端中文直带入 UI。
               return (
                 <div key={index} className='text-13px text-t-secondary'>
-                  {event.text ?? t('learning.genWaitingEvents')}
+                  {t('learning.genWaitingEvents')}
                 </div>
               );
             }
