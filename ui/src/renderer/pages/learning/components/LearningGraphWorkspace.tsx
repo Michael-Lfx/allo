@@ -312,7 +312,7 @@ const LearningGraphWorkspace: React.FC<{
     async (doors: string[]) => {
       setDeclaringBasis(true);
       try {
-        const result = await learningApi.declareBasis(detail.course.id, doors);
+        const result = await learningApi.declareBasis(detail.course.id, doors, model.choice);
         setBasisDraftChecked([]);
         // 声明反馈走非阻塞 toast（c2）：阻塞弹窗叠在冻结展示上是二次打断；
         // 失败保持 Modal——需要用户看见并处置。
@@ -342,7 +342,7 @@ const LearningGraphWorkspace: React.FC<{
         setDeclaringBasis(false);
       }
     },
-    [detail.course.id, onRefresh, t]
+    [detail.course.id, model.choice, onRefresh, t]
   );
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
