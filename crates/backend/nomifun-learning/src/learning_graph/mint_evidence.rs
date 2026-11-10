@@ -167,6 +167,13 @@ pub fn research_eligible(plan: &NominationPlan) -> bool {
 /// 对每条够格提名恰搜一次（批级同名去重），命中后证据块附 top-2、扩邻行
 /// 并入候选集。fail-open：开关关 / 无提供方 / 搜索失败 / 零结果一律无证据
 /// 继续（结构化 warn）。返回批级读数（含 off 臂的显式零）。
+///
+/// 并发形态：资格门与去重是纯函数，先同步算出待搜列表（index + 机械派生
+/// 查询词），再 `join_all` 统一 fan-out（候选数 = 批内歧义提名数，天然有界
+/// 无需限流）；`&mut [NominationPlan]` 分片借用不能与并发 future 同生命周期
+/// 共存，故全部收齐后按 index 升序回填——stats 累计与日志顺序随之与串行版
+/// 逐字段一致，fail-open 语义（无提供方 / 失败 / 零结果 = 无证据照常评审）
+/// 零改动。
 pub async fn attach_evidence(
     nominations: &mut [NominationPlan],
     registry: &[defnear::RegistryEntry],
@@ -177,20 +184,33 @@ pub async fn attach_evidence(
         return stats;
     }
     let search = search.expect("上方刚判 Some");
+    // 资格门（歧义多候选案）+ 批级同名去重先行：不碰网络，只产出待搜列表。
     let mut searched: HashSet<String> = HashSet::new();
-    for plan in nominations.iter_mut() {
-        if !research_eligible(plan) || !searched.insert(plan.name.trim().to_lowercase()) {
-            continue;
-        }
-        let query = research_query(&plan.name);
-        stats.searches += 1;
-        match search
+    let pending: Vec<(usize, String)> = nominations
+        .iter()
+        .enumerate()
+        .filter(|(_, plan)| {
+            research_eligible(plan) && searched.insert(plan.name.trim().to_lowercase())
+        })
+        .map(|(index, plan)| (index, research_query(&plan.name)))
+        .collect();
+    stats.searches = pending.len();
+    // fan-out：每个 future 持共享的 `&dyn SearchProvider` 各搜一次，返回
+    // (index, 查询词, 结果) 三元组；候选数有界，join_all 即可不限流。
+    let results = futures::future::join_all(pending.into_iter().map(|(index, query)| async move {
+        let result = search
             .search(SearchQuery {
                 query: query.clone(),
                 count: flowy_web::DEFAULT_SEARCH_COUNT,
             })
-            .await
-        {
+            .await;
+        (index, query, result)
+    }))
+    .await;
+    // 按 index 升序回填：stats 累计与结构化日志恢复与串行版一致的确定性顺序。
+    for (index, query, result) in results {
+        let plan = &mut nominations[index];
+        match result {
             Ok(result) if result.hits.is_empty() => {
                 stats.degraded += 1;
                 tracing::warn!(
@@ -393,8 +413,15 @@ mod tests {
 
     impl CannedSearch {
         fn with(query: &str, hits: Vec<flowy_web::types::SearchHit>) -> Self {
+            Self::with_many(vec![(query, hits)])
+        }
+
+        fn with_many(pairs: Vec<(&str, Vec<flowy_web::types::SearchHit>)>) -> Self {
             Self {
-                results: [(query.to_owned(), hits)].into_iter().collect(),
+                results: pairs
+                    .into_iter()
+                    .map(|(query, hits)| (query.to_owned(), hits))
+                    .collect(),
                 queries: std::sync::Mutex::new(Vec::new()),
             }
         }
@@ -555,6 +582,85 @@ mod tests {
         let stats = attach_evidence(&mut plans, &[], Some(&canned)).await;
         assert_eq!(canned.queries().len(), 1, "批级同名去重：恰一次搜索");
         assert_eq!(stats.searches, 1);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn attach_fans_out_multi_candidate_batch_with_per_plan_backfill() {
+        // 混合批钉并发等价面：2 个可搜歧义案 + 1 直定跳过 + 同名去重对
+        // （首例零结果 fail-open，次例不搜）+ 1 个 Err fail-open——fan-out
+        // 收齐回填后，stats 与逐 plan 结果必须和串行版逐字段一致（index 不串位）。
+        let canned = CannedSearch::with_many(vec![
+            (
+                "角度弧度换算 概念 定义",
+                vec![
+                    hit("弧度制换算 - 维基教科书", "弧长与半径之比"),
+                    hit("互化 - 数学百科", "互化公式"),
+                    hit("第三条不入证据块", "无命中"),
+                ],
+            ),
+            (
+                "闭包 概念 定义",
+                vec![
+                    hit("闭包 - 计算机科学", "捕获环境"),
+                    hit("词法作用域 - 百科", "无命中"),
+                ],
+            ),
+            ("同名案 概念 定义", vec![]),
+            // 「递归」缺席 canned 表 = 替身 Err（fail-open 错误路）。
+        ]);
+        let direct = NominationPlan {
+            name: "直定案".to_owned(),
+            direct_host: Some("01A".to_owned()),
+            candidates: vec![candidate("01A", "宿主"), candidate("01B", "陪跑")],
+            evidence: Vec::new(),
+        };
+        let mut plans = vec![
+            ambiguous_plan("角度弧度换算"),
+            direct,
+            ambiguous_plan("闭包"),
+            ambiguous_plan("同名案"),
+            ambiguous_plan("同名案"),
+            ambiguous_plan("递归"),
+        ];
+        let registry = vec![entry("01C", "互化", &[])];
+        let stats = attach_evidence(&mut plans, &registry, Some(&canned)).await;
+        // 恰 4 次搜索（并发后次序可能交错，按集合断言）：3 个不同名歧义案
+        // + 同名案首例；直定案与同名案次例不搜。
+        let queries = canned.queries();
+        assert_eq!(queries.len(), 4, "去重后恰 4 次搜索:{queries:?}");
+        for expected in [
+            "角度弧度换算 概念 定义",
+            "闭包 概念 定义",
+            "同名案 概念 定义",
+            "递归 概念 定义",
+        ] {
+            assert!(
+                queries.iter().any(|query| query == expected),
+                "缺查询 {expected}:{queries:?}"
+            );
+        }
+        // index 不串位：每个 plan 只回填自己查询的结果。
+        assert_eq!(plans[0].evidence.len(), 2, "证据块 top-2");
+        assert_eq!(plans[0].evidence[0].title, "弧度制换算 - 维基教科书");
+        assert_eq!(plans[0].candidates.len(), 3, "扩邻 01C 互化补入");
+        assert!(plans[1].evidence.is_empty(), "直定案跳过零证据");
+        assert_eq!(plans[2].evidence.len(), 2, "闭包案拿到自己的命中");
+        assert_eq!(plans[2].evidence[0].title, "闭包 - 计算机科学");
+        assert_eq!(plans[2].candidates.len(), 2, "闭包案无扩邻");
+        assert!(plans[3].evidence.is_empty(), "零结果 fail-open 无证据");
+        assert!(plans[4].evidence.is_empty(), "同名次例去重跳过零证据");
+        assert!(plans[5].evidence.is_empty(), "Err fail-open 无证据");
+        // 读数与串行版逐字段相等：搜索 4、命中 3+2、扩邻 1、降级 1+1。
+        assert_eq!(
+            stats,
+            MintResearchStats {
+                searches: 4,
+                evidence_hits: 5,
+                expansions: 1,
+                degraded: 2,
+            }
+        );
     }
 
     #[tokio::test]
