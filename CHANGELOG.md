@@ -5,6 +5,7 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Optimized computer-use observation with semantic, automatic, text, and visual modes; window-scoped screenshots; isolated per-caller references; richer target selectors; and wait-for-state actions across the stdio and gateway capability surfaces.
 - Aligned voice companion microphone device routing with industry standards: removed virtual device blacklists to ensure reliable capture across remote desktop environments (such as NetEase UU Remote and ToDesk), added explicit microphone device selection in settings with dynamic hot-swapping, and enforced physical microphone stream release for privacy indicator compliance.
 - Upgraded voice companion KWS engine to official 9MB Sherpa-ONNX bilingual Zipformer with dynamic Chinese pinyin and English CMUdict phoneme compilation, enabling real-time hot-reloaded custom wake words without restarting the application.
 - Overhauled offline TTS pipeline to bundle all 10 Matcha-TTS and Vocos acoustic assets into ModelManager's 17-file SHA-256 verification and download pipeline, prioritizing ModelScope and hf-mirror to prevent silent Edge-TTS fallbacks upon reinstallation.

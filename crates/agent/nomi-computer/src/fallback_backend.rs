@@ -99,6 +99,25 @@ pub fn find_window(window_id: u32) -> Result<WindowInfo, String> {
         })
 }
 
+fn is_capture_candidate(window: &WindowInfo) -> bool {
+    window.width > 0
+        && window.height > 0
+        && !(window.x <= -30_000 && window.y <= -30_000)
+}
+
+/// Best-effort target for a foreground-scoped screenshot. Prefers the focused
+/// visible window, then the first visible window in z-order. Hidden/minimized
+/// Windows windows are reported by xcap at the `-32000` sentinel and must not be
+/// selected as a screenshot target.
+pub fn foreground_window() -> Result<Option<WindowInfo>, String> {
+    let windows = list_windows()?;
+    Ok(windows
+        .iter()
+        .find(|window| window.is_focused && is_capture_candidate(window))
+        .cloned()
+        .or_else(|| windows.into_iter().find(is_capture_candidate)))
+}
+
 /// Bring a window to the foreground.
 ///
 /// On Windows this uses the real activation API (`SetForegroundWindow` on the
@@ -232,6 +251,30 @@ mod tests {
         assert!(text.contains("Inbox"));
         assert!(text.contains("800x600"));
         assert!(text.contains("[focused]"));
+    }
+
+    #[test]
+    fn hidden_windows_are_not_capture_candidates() {
+        let hidden = WindowInfo {
+            id: 1,
+            title: "hidden".to_string(),
+            app_name: "app".to_string(),
+            x: -31_991,
+            y: -32_000,
+            width: 219,
+            height: 30,
+            is_focused: true,
+            pid: Some(1),
+        };
+        assert!(!is_capture_candidate(&hidden));
+
+        let visible = WindowInfo {
+            x: 100,
+            y: 80,
+            is_focused: false,
+            ..hidden
+        };
+        assert!(is_capture_candidate(&visible));
     }
 
     // Requires a real window server session.
