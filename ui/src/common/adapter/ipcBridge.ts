@@ -1784,6 +1784,8 @@ export interface ILearningCourseGenerationEvent {
   pipeline?: 'sampling' | 'source_plan';
   /** 学习图生长的细分事件名（growth_started/growth_redraft/growth_completed/...） */
   event?: string;
+  /** growth_redraft 帧：本轮被哪道关口打回（结构门 / AI 概念评审）。 */
+  stage?: 'gates' | 'concept_review';
   /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
   loop?: 'generate' | 'repair';
   round?: number;

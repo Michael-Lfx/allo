@@ -10,6 +10,7 @@ import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
+import { GrowthTaskPillHost } from '@renderer/pages/learning/components/GrowthTaskPillHost';
 import { loadVideoCanvasProjectPage } from '@renderer/pages/videoCanvas/loadProjectPage';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
@@ -211,6 +212,10 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
       <MeetingOpenListener />
       <CompanionWindowsSyncMount />
       <TrayLabelsMount />
+      {/* Learning-graph growth floating pill (g4): visible on every protected
+          page while a growth task is queued/running — view progress, jump
+          back to the graph workspace, or cancel. */}
+      <GrowthTaskPillHost />
       {React.cloneElement(layout)}
     </>
   );

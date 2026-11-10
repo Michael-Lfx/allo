@@ -210,6 +210,15 @@ export const learningApi = {
   // 长任务快照（课时异步生成的轮询面；响应体 `poll` 字段同指此处）
   generationTasks: () =>
     httpRequest<LearningGenerationTaskView[]>('GET', `${BASE}/generation-tasks`),
+  // 统一取消（按任务键，真取消）：取消胜出 = `{state: 'cancelled'}`；任务已
+  // 先到终态（竞速落败）= 如实回 done/failed；键不存在 = 404。生长悬浮
+  // Pill（g4）的取消入口——终态仍以随后的快照轮询为准。
+  cancelGenerationTask: (key: string) =>
+    httpRequest<{ state: string }>(
+      'POST',
+      `${BASE}/generation-tasks/${encodeURIComponent(key)}/cancel`,
+      {}
+    ),
   // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
   //（其余节与题目不动）；旧课时（无节清单）返回 400。feedback 为可选
   // 学习建议（ADR-0007），为空即同分布重生成。
