@@ -9,6 +9,9 @@ at a high level rather than a complete commit log.
 - Delegating from a Default or Auto-Accept Edits session now asks the user to approve the execution plan before any sub-Agent starts, instead of silently running the sub-Agents as YOLO. YOLO sessions, and hosts that never recorded a session mode (App Server, cron, IM channels, tests), keep starting immediately.
 - Fixed a read-only execution step being reported as failed for a missing artifact it was explicitly forbidden to create. A negated action list ("do not create/read/write any files") no longer counts as a promise to deliver those files.
 - Note for 1.6.5–1.6.8: Default and Auto-Accept Edits sessions could hit this loop when delegating write tasks. Workaround: use YOLO, add the tool to `[tools].allow_list`, or avoid delegated writes until this fix ships.
+- Fixed learning-graph course creation showing a frozen progress pane next to the finished course. While structure generation runs in the background the dialog now shows a single notice with a cancel button, and a finished course collapses to its course card.
+- Background course generation restored after leaving the Learning page now settles on its real outcome (completed with the course ready to open, failed, or cancelled) instead of showing "generating" forever. A restored task that starts running leaves "queued", and one that failed or was cancelled shows guidance instead of a retry that would have created a duplicate course.
+- Generation pills and dialogs in Learning no longer show backend Chinese text to English users: growth step lines, restored task labels, and restored failure messages are localized in both zh-CN and en-US.
 
 ## v1.6.8 - 2026-10-23
 

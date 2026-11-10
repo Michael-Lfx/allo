@@ -114,6 +114,8 @@ export function CreateCourseDialog({
           // c1：学习图流呈现最小化（running 单行后台提示），按请求的
           // course_kind 分流；v2 流不传（缺省）呈现零变化。
           courseKind={generation.request.course_kind}
+          // 恢复态（restoredTask 在场）终态只出指引文案，不提供重发式重试。
+          restored={generation.restoredTask !== null}
           onStartLearning={onStartLearning}
           onRetry={onRetry}
           onCancel={onCancel}

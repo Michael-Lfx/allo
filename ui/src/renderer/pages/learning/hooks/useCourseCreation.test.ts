@@ -38,10 +38,12 @@ mock.module('../components/LearningModelSelector', () => ({
 const {
   RESTORED_GENERATION_POLL_MS,
   restoredGenerationFromTask,
+  retryableGenerationRequest,
   startRestoredGenerationConvergence,
   useCourseCreation,
 } = await import('./useCourseCreation');
 type RestoredGenerationConvergence = import('./useCourseCreation').RestoredGenerationConvergence;
+type CourseGenerationState = import('./useCourseCreation').CourseGenerationState;
 
 interface FakeTimerApi {
   useFakeTimers: () => void;
@@ -121,14 +123,20 @@ const courseDetail = (id: string): CourseDetail => ({
   graph: null,
 });
 
+/** 任务翻 failed 的收敛错误文案走本地化（测试替身 = 与 locale JSON 同义的
+ * 人面句）；后端中文 detail 不进 error 面。 */
+const FAILED_COPY_STUB = '后台任务已失败。';
+
 /** 假数据源驱动一轮收敛：快照按轮询序逐帧给出（末帧常驻；Error 帧 = 快照
  * 不可达），课程详情按 id 应答并记账。 */
 function startConvergence(options: {
   frames: Array<LearningGenerationTaskView[] | Error>;
   fetchCourse?: (courseId: string) => Promise<CourseDetail>;
+  onRunning?: () => void;
 }) {
   const converged: RestoredGenerationConvergence[] = [];
   const courseRequests: string[] = [];
+  let runningCalls = 0;
   let polls = 0;
   const stop = startRestoredGenerationConvergence({
     taskKey: TASK_KEY,
@@ -143,9 +151,13 @@ function startConvergence(options: {
       return options.fetchCourse ? options.fetchCourse(courseId) : courseDetail(courseId);
     },
     describeError: (error) => (error instanceof Error ? error.message : 'unknown'),
+    describeFailed: () => FAILED_COPY_STUB,
     onConverge: (next) => converged.push(next),
+    onRunning: options.onRunning ?? (() => {
+      runningCalls += 1;
+    }),
   });
-  return { stop, converged, courseRequests, polls: () => polls };
+  return { stop, converged, courseRequests, runningCalls: () => runningCalls, polls: () => polls };
 }
 
 const t = ((key: string) => key) as unknown as Translate;
@@ -196,6 +208,51 @@ describe('restoredGenerationFromTask：从快照行重建对话框生成态', ()
   });
 });
 
+/** 恢复态终态：收敛写回保留 restoredTask，request 仍是按快照 topic 合成的
+ * 那一份（description = 后端 topic 标签）。 */
+const restoredTerminal = (status: 'failed' | 'cancelled'): CourseGenerationState => {
+  const restored = restoredGenerationFromTask(task({ topic: '知识结构生成' }));
+  if (!restored) throw new Error('expected restored state');
+  return { ...restored, status, error: status === 'failed' ? '后台任务已失败' : null };
+};
+
+describe('retryableGenerationRequest：重试守卫', () => {
+  test('恢复态 failed / cancelled 不可重发——合成请求会以后端 topic 标签为名新建课程', () => {
+    expect(retryableGenerationRequest(restoredTerminal('failed'))).toBeNull();
+    expect(retryableGenerationRequest(restoredTerminal('cancelled'))).toBeNull();
+  });
+
+  test('in-session failed / cancelled：按原请求重试（行为不变）', () => {
+    const request = {
+      course_kind: 'learning_graph' as const,
+      description: '通盘认识股票市场基础',
+    };
+    const inSession = (status: 'failed' | 'cancelled'): CourseGenerationState => ({
+      status,
+      request,
+      restoredTask: null,
+      result: null,
+      error: status === 'failed' ? '网络错误' : null,
+    });
+    expect(retryableGenerationRequest(inSession('failed'))).toEqual(request);
+    expect(retryableGenerationRequest(inSession('cancelled'))).toEqual(request);
+  });
+
+  test('非终态（queued/running/completed）与无生成态不可重试', () => {
+    expect(retryableGenerationRequest(null)).toBeNull();
+    for (const status of ['queued', 'running', 'completed'] as const) {
+      const state: CourseGenerationState = {
+        status,
+        request: { description: 'x' },
+        restoredTask: null,
+        result: null,
+        error: null,
+      };
+      expect(retryableGenerationRequest(state)).toBeNull();
+    }
+  });
+});
+
 describe('startRestoredGenerationConvergence：恢复态终态收敛', () => {
   test('恢复 running → 快照翻 done → completed，按快照行 course_id 拉课程详情', async () => {
     await withFakeTimers(async () => {
@@ -214,7 +271,7 @@ describe('startRestoredGenerationConvergence：恢复态终态收敛', () => {
     });
   });
 
-  test('快照翻 failed → failed，错误即后端 detail 人面', async () => {
+  test('快照翻 failed → failed，错误是本地化文案（后端中文 detail 不进 error 面）', async () => {
     await withFakeTimers(async () => {
       const run = startConvergence({
         frames: [[task()], [task({ state: 'failed', detail: 'Provider 连续失败，已停止' })]],
@@ -223,8 +280,16 @@ describe('startRestoredGenerationConvergence：恢复态终态收敛', () => {
       await tick();
       await tick();
       expect(run.courseRequests).toEqual([]);
-      expect(run.converged).toEqual([
-        { status: 'failed', result: null, error: 'Provider 连续失败，已停止' },
+      expect(run.converged).toEqual([{ status: 'failed', result: null, error: FAILED_COPY_STUB }]);
+
+      // detail 缺席同样收敛为 failed，且 error 非空（宁缺不泄漏，不挂空）。
+      const noDetail = startConvergence({
+        frames: [[task()], [task({ state: 'failed', detail: null })]],
+      });
+      await tick();
+      await tick();
+      expect(noDetail.converged).toEqual([
+        { status: 'failed', result: null, error: FAILED_COPY_STUB },
       ]);
     });
   });
@@ -318,6 +383,36 @@ describe('startRestoredGenerationConvergence：恢复态终态收敛', () => {
     });
   });
 
+  test('恢复 queued → 快照开跑 → 报 running 推进（非终态，轮询继续）', async () => {
+    await withFakeTimers(async () => {
+      const run = startConvergence({
+        frames: [
+          [task({ state: 'queued', queue_position: 1 })],
+          [task()],
+          [task({ state: 'done' })],
+        ],
+      });
+
+      // 仍在排队：不推进、不收敛。
+      await tick();
+      expect(run.runningCalls()).toBe(0);
+      expect(run.converged).toEqual([]);
+
+      // 开跑：报一次 running 推进，界面不再停「排队中」；轮询继续等终态。
+      await tick();
+      expect(run.runningCalls()).toBe(1);
+      expect(run.converged).toEqual([]);
+
+      // 之后照常收敛到终态并停表。
+      await tick();
+      expect(run.polls()).toBe(3);
+      expect(run.runningCalls()).toBe(1);
+      expect(run.converged).toEqual([
+        { status: 'completed', result: courseDetail('course-1'), error: null },
+      ]);
+    });
+  });
+
   test('stop 之后不再轮询，在途读数也不写回（in-session 接管时防双写）', async () => {
     await withFakeTimers(async () => {
       const converged: RestoredGenerationConvergence[] = [];
@@ -333,7 +428,10 @@ describe('startRestoredGenerationConvergence：恢复态终态收敛', () => {
         },
         fetchCourse: async (courseId) => courseDetail(courseId),
         describeError: () => 'unused',
-        onConverge: (next) => converged.push(next),
+        describeFailed: () => 'unused',
+        onConverge: (next) => {
+          converged.push(next);
+        },
       });
 
       await tick();
@@ -354,12 +452,12 @@ describe('startRestoredGenerationConvergence：恢复态终态收敛', () => {
 
 /** SSR 探针挂载 hook（单次渲染，不重渲染）：动作面直接调用，状态迁移经
  * HTTP 边界补丁的读数次数观察。 */
-function mountCourseCreation() {
+function mountCourseCreation(translate: Translate = t) {
   let hook: ReturnType<typeof useCourseCreation> | undefined;
   function Probe(): null {
     hook = useCourseCreation({
       navigate: () => undefined,
-      t,
+      t: translate,
       setBusyId: () => undefined,
     });
     return null;
@@ -422,6 +520,31 @@ describe('useCourseCreation 接线', () => {
       expect(snapshots).toBe(2);
 
       await tick();
+      await tick();
+      expect(snapshots).toBe(2);
+    });
+  });
+
+  test('恢复 running → 快照翻 failed → 以本地化键出错误文案（后端 detail 不直达 UI）', async () => {
+    await withFakeTimers(async () => {
+      const tCalls: string[] = [];
+      const recordingT = ((key: string) => {
+        tCalls.push(key);
+        return key;
+      }) as unknown as Translate;
+      let snapshots = 0;
+      learningApi.generationTasks = async () => {
+        snapshots += 1;
+        return snapshots === 1 ? [task()] : [task({ state: 'failed', detail: '后端中文诊断句' })];
+      };
+
+      const hook = mountCourseCreation(recordingT);
+      await hook.refreshGenerationStatus();
+      await tick();
+      await tick();
+      expect(tCalls).toContain('learning.restoredTaskFailed');
+
+      // 终态收敛后停表。
       await tick();
       expect(snapshots).toBe(2);
     });
