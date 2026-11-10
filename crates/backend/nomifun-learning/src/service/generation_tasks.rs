@@ -79,9 +79,10 @@ pub struct GenerationTaskView {
     pub topic: String,
     /// queued | running | done | failed | cancelled（queued 只在过闸路径出现）。
     pub state: String,
-    /// step 机器面（英文常量；前端不造步骤文案）。
+    /// step 机器面（英文常量；UI 进度人面由前端词典按它组装，c3 起）。
     pub step: Option<String>,
-    /// detail 人面（后端单源的单句中文）。
+    /// detail 诊断面（后端单句中文；UI 进度行不再消费，仅 failed 态作失败
+    /// 原因展示与诊断日志面）。
     pub detail: Option<String>,
     pub elapsed_secs: Option<u64>,
     /// 排队登记时刻（unix ms；非 queued = None，m7 排队可见）。
