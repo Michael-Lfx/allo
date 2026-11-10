@@ -116,6 +116,53 @@
             .unwrap();
     }
 
+    /// g3 冲突同步暴露（slot 臂）：结构生成进行中再触发 regenerate，冲突必须
+    /// 在请求生命周期内同步返回（此前 spawn 后冲突只 WARN、HTTP 恒 200
+    /// `kicked=true`——2026-11-09 病历：1ms 200 + 后台 WARN + UI 零反馈）。
+    #[tokio::test]
+    async fn regenerate_structure_conflicts_synchronously_when_slot_taken() {
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _a, _b) = seed_graph_course(&service).await;
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        // 占住 `learning-structure-{course}` slot：等价于一次在跑的结构生成。
+        let slot_key = format!("learning-structure-{}", course.as_str());
+        let _slot = service.acquire_generation_slot(&owner, slot_key).unwrap();
+        let error = service
+            .regenerate_structure(&owner, &course, None)
+            .await
+            .expect_err("regenerate must surface the slot conflict synchronously");
+        assert!(
+            matches!(error, AppError::Conflict(_)),
+            "expected a conflict, got {error}"
+        );
+    }
+
+    /// g3 冲突同步暴露（registry 臂）：同键 structure 任务已有
+    /// `queued|running` 记录时，regenerate 同步报 Conflict（此前同样只 WARN）。
+    #[tokio::test]
+    async fn regenerate_structure_conflicts_synchronously_when_registry_task_active() {
+        let (service, _knowledge, owner) = job_test_service().await;
+        let (course_id, _a, _b) = seed_graph_course(&service).await;
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        let _key = service
+            .generation_tasks
+            .pre_register(
+                crate::service::KIND_STRUCTURE,
+                course.as_str(),
+                None,
+                "占位在跑任务",
+            )
+            .unwrap();
+        let error = service
+            .regenerate_structure(&owner, &course, None)
+            .await
+            .expect_err("regenerate must surface the registry conflict synchronously");
+        assert!(
+            matches!(error, AppError::Conflict(_)),
+            "expected a conflict, got {error}"
+        );
+    }
+
     fn valid_pack() -> CoursePack {
         CoursePack {
             title: "Linear Algebra".into(),
