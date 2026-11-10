@@ -3633,7 +3633,6 @@ export type I18nKey =
   | 'learning.learningGraphStructureLoadFailed'
   | 'learning.learningGraphStructureMissing'
   | 'learning.learningGraphStructureReadyToast'
-  | 'learning.learningGraphStructureRegenerate'
   | 'learning.learningGraphStructureSummary'
   | 'learning.learningGraphStructureTitle'
   | 'learning.learningGraphSystemActionKindGrowth'

@@ -448,7 +448,6 @@
   "learningGraphStructureFailed": "知识结构生成失败",
   "learningGraphStructureSummary": "{{spines}} 主干 · {{blocks}} 块 · {{doors}} 门口",
   "learningGraphStructureGenerate": "生成知识结构",
-  "learningGraphStructureRegenerate": "重新生成",
   "learningGraphMountTitle": "结构挂载",
   "learningGraphMountRun": "运行挂载",
   "learningGraphMountFailed": "结构挂载失败",

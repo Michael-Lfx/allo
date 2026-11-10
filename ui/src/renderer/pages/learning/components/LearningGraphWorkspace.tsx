@@ -471,17 +471,20 @@ const LearningGraphWorkspace: React.FC<{
               {t('learning.learningGraphStructureMissing')}
             </Text>
           )}
-          <Button
-            size='mini'
-            type='text'
-            loading={regenerating}
-            disabled={regenerating || structureRunning || busyId !== null}
-            onClick={() => void regenerateStructure()}
-          >
-            {structure?.structure
-              ? t('learning.learningGraphStructureRegenerate')
-              : t('learning.learningGraphStructureGenerate')}
-          </Button>
+          {/* 重生成已从产品面移除（d3，用户裁决：重生成遗留问题太多）——仅在
+              结构缺失/失败时保留首次「生成」入口（失败重试路径）；后端
+              regenerate 端点保留作纠错通道。 */}
+          {structure !== null && !structure.structure && (
+            <Button
+              size='mini'
+              type='text'
+              loading={regenerating}
+              disabled={regenerating || structureRunning || busyId !== null}
+              onClick={() => void regenerateStructure()}
+            >
+              {t('learning.learningGraphStructureGenerate')}
+            </Button>
+          )}
           <span className='flex-1' />
           {autoPreparing && (
             <Tag size='small' color='processing' className='!mx-0'>
@@ -529,7 +532,16 @@ const LearningGraphWorkspace: React.FC<{
         ))}
       </div>
 
-      <Tabs activeTab={activeTab} onChange={setActiveTab} type='line' className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px'>
+      {/* 内容区确定高链（d1）：arco 默认 .arco-tabs-content overflow:hidden +
+          content-item-active height:auto——超高内容被静默裁掉且全链无滚动条。
+          把激活 item 钉在本 Tab 的剩余槽高并自滚，各 TabPane 在固定视口内自
+          管滚动（学习 Tab 两栏行 h-full 后由内部各自滚）。 */}
+      <Tabs
+        activeTab={activeTab}
+        onChange={setActiveTab}
+        type='line'
+        className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:min-h-0 [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px [&_.arco-tabs-content-item-active]:h-full [&_.arco-tabs-content-item-active]:overflow-y-auto'
+      >
         <Tabs.TabPane key='study' title={t('learning.learningGraphTabStudy')}>
           {zeroNodes ? (
             <DeclarationWindow
@@ -546,8 +558,8 @@ const LearningGraphWorkspace: React.FC<{
               onStart={() => void grow()}
             />
           ) : (
-          <div className='flex min-h-0 gap-12px'>
-            <aside className='flex w-280px shrink-0 flex-col gap-10px'>
+          <div className='flex h-full min-h-0 gap-12px'>
+            <aside className='flex max-h-full w-280px shrink-0 flex-col gap-10px overflow-y-auto'>
               {/* 主推荐卡：当前应学的节点——最重要的学习入口，点击即进入学习 */}
               <div
                 className='cursor-pointer rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px transition-colors hover:border-[var(--color-primary-6)]'

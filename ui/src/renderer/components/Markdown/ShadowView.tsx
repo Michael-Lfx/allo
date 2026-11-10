@@ -550,6 +550,10 @@ const createInitStyle = (
     max-width: 100%;
     height: auto;
     display: block;
+    /* 图形放行溢出（d2）：模型画的图内容画出 viewBox/width 声明时，svg 视口
+       默认裁剪（课时图右卡片文字被裁的根因）。容器自身 overflow-x:auto 兜横
+       向超宽；纵向溢出随页面滚动可见。 */
+    overflow: visible;
   }
   .markdown-figure-jsxgraph {
     /* Minimal stand-in for jsxgraph.css's .jxgbox: the package's "exports"
