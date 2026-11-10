@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
+DEFAULT_CHANNEL_ROOT = "channels"
 DEFAULT_API_HOST = "modelscope.cn"
 KNOWN_API_HOSTS = ("modelscope.cn", "modelscope.ai")
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / "apps/desktop/signing/.env.modelscope"
@@ -89,12 +90,19 @@ def fetch_json(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def build_channel_yml(manifest: dict, channel: str) -> str:
+def normalize_channel_root(value: str) -> str:
+    root = value.strip().strip("/")
+    if not root or not all(ch.isalnum() or ch in "-_" for ch in root):
+        raise SystemExit(f"ERROR: invalid --channel-root {value!r}")
+    return root
+
+
+def build_channel_yml(manifest: dict, channel: str, channel_root: str = DEFAULT_CHANNEL_ROOT) -> str:
     lines = [
         f'version: "{manifest.get("version", "")}"',
         f"channel: {channel}",
         f'pub_date: "{manifest.get("pub_date", "")}"',
-        f"manifest: channels/{channel}/latest.json",
+        f"manifest: {channel_root}/{channel}/latest.json",
     ]
     notes = manifest.get("notes")
     if isinstance(notes, str) and notes.strip():
@@ -110,6 +118,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Roll back ModelScope channel pointer")
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
+    parser.add_argument(
+        "--channel-root",
+        default=DEFAULT_CHANNEL_ROOT,
+        help="Manifest directory under --prefix (default: channels; UniBuddy: unibuddy_channels)",
+    )
     parser.add_argument("--api-host", default=DEFAULT_API_HOST)
     parser.add_argument("--endpoint", default=None)
     parser.add_argument("--token-env", default=None)
@@ -117,7 +130,7 @@ def main() -> None:
     parser.add_argument(
         "--to-version",
         required=True,
-        help="Target version with or without v prefix (must exist under channels/.../history/)",
+        help="Target version with or without v prefix (must exist under <channel-root>/.../history/)",
     )
     parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
     parser.add_argument("--dry-run", action="store_true")
@@ -129,6 +142,7 @@ def main() -> None:
         version = version[1:]
     version_tag = f"v{version}"
     prefix = args.prefix.strip("/")
+    channel_root = normalize_channel_root(args.channel_root)
     try:
         api_host = normalize_api_host(args.api_host)
     except ValueError as exc:
@@ -138,7 +152,7 @@ def main() -> None:
     repo = args.repo
     channel = args.channel
 
-    history_path = f"{prefix}/channels/{channel}/history/{version_tag}.json"
+    history_path = f"{prefix}/{channel_root}/{channel}/history/{version_tag}.json"
     history_url = modelscope_file_url(repo, history_path, api_host)
     try:
         manifest = fetch_json(history_url)
@@ -170,13 +184,13 @@ def main() -> None:
     latest_local = tmp / "latest.json"
     channel_local = tmp / "channel.yml"
     latest_local.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    channel_local.write_text(build_channel_yml(manifest, channel), encoding="utf-8")
+    channel_local.write_text(build_channel_yml(manifest, channel, channel_root), encoding="utf-8")
 
     api = HubApi(endpoint=endpoint)
     api.login(token)
     for local, remote, label in (
-        (channel_local, f"{prefix}/channels/{channel}/channel.yml", "channel.yml"),
-        (latest_local, f"{prefix}/channels/{channel}/latest.json", "latest.json"),
+        (channel_local, f"{prefix}/{channel_root}/{channel}/channel.yml", "channel.yml"),
+        (latest_local, f"{prefix}/{channel_root}/{channel}/latest.json", "latest.json"),
     ):
         api.upload_file(
             path_or_fileobj=str(local),

@@ -11,6 +11,10 @@
  *   allo/channels/windows|macos|linux/latest.json
  *   allo/{windows|macos|linux}/v{version}/...
  *
+ * UniBuddy 仍把安装包放在 allo/{windows|macos|linux}/v{version}/，
+ * 清单目录改为 allo/unibuddy_channels/...（--product UniBuddy --channel-root unibuddy_channels）。
+ * 不传这两个参数时行为与 Flowy 相同。
+ *
  * 旧的共享 alpha 清单已废弃；正式发版构建必须叠加
  * apps/desktop/tauri.channel.{windows|macos|linux}.conf.json。
  *
@@ -27,7 +31,6 @@ const DEFAULT_REPO = 'Michael-Lfx/allo';
 const DEFAULT_MS_REPO = 'flowy2025/flowyaipc';
 const DEFAULT_MS_PREFIX = 'allo';
 const DEFAULT_MS_API_HOST = 'modelscope.cn';
-const PRODUCT = 'Flowy';
 const ALL_KEYS = ['windows-x86_64', 'windows-aarch64', 'darwin-x86_64', 'darwin-aarch64', 'linux-x86_64', 'linux-aarch64'];
 const ALL_KEYS_SET = new Set(ALL_KEYS);
 const PLATFORM_CHANNELS = ['windows', 'macos', 'linux'];
@@ -51,40 +54,40 @@ function assertPlatformChannel(channel) {
   }
 }
 
-/** Reject legacy NomiFun_* names; require Flowy product prefix per platform key. */
-function assertFlowyArtifactName(key, name) {
+/** Reject legacy NomiFun_* names; require the active product prefix per platform key. */
+function assertProductArtifactName(key, name, product) {
   if (!ALL_KEYS_SET.has(key)) {
     throw new Error(`未知平台键 ${key}（允许: ${ALL_KEYS.join(', ')}）`);
   }
   if (/^NomiFun/i.test(name)) {
     throw new Error(
-      `${key} 产物仍为遗留名 ${name}。productName 已是 Flowy，请用当前配置重建（期望 Flowy_* / Flowy.app.*）。`,
+      `${key} 产物仍为遗留名 ${name}。请用当前配置重建（期望 ${product}_* / ${product}.app.*）。`,
     );
   }
   const lower = name.toLowerCase();
   if (key.startsWith('windows-')) {
-    if (!name.startsWith(`${PRODUCT}_`) || !lower.endsWith('-setup.exe')) {
+    if (!name.startsWith(`${product}_`) || !lower.endsWith('-setup.exe')) {
       throw new Error(
-        `${key} 产物名非法: ${name}（期望 ${PRODUCT}_{version}_x64-setup.exe 或 …_arm64-setup.exe）`,
+        `${key} 产物名非法: ${name}（期望 ${product}_{version}_x64-setup.exe 或 …_arm64-setup.exe）`,
       );
     }
     return;
   }
   if (key.startsWith('darwin-')) {
     if (
-      name === `${PRODUCT}.app.tar.gz` ||
-      (name.startsWith(`${PRODUCT}_`) && lower.endsWith('.app.tar.gz'))
+      name === `${product}.app.tar.gz` ||
+      (name.startsWith(`${product}_`) && lower.endsWith('.app.tar.gz'))
     ) {
       return;
     }
     throw new Error(
-      `${key} 产物名非法: ${name}（期望 ${PRODUCT}.app.tar.gz 或 ${PRODUCT}_{version}_*.app.tar.gz）`,
+      `${key} 产物名非法: ${name}（期望 ${product}.app.tar.gz 或 ${product}_{version}_*.app.tar.gz）`,
     );
   }
   if (key.startsWith('linux-')) {
-    if (!name.startsWith(`${PRODUCT}_`) || !lower.endsWith('.appimage')) {
+    if (!name.startsWith(`${product}_`) || !lower.endsWith('.appimage')) {
       throw new Error(
-        `${key} 产物名非法: ${name}（期望 ${PRODUCT}_{version}_amd64.AppImage / _x86_64.AppImage / _aarch64.AppImage）`,
+        `${key} 产物名非法: ${name}（期望 ${product}_{version}_amd64.AppImage / _x86_64.AppImage / _aarch64.AppImage）`,
       );
     }
     return;
@@ -92,14 +95,14 @@ function assertFlowyArtifactName(key, name) {
   throw new Error(`未处理的平台键: ${key}`);
 }
 
-function buildChannelYml(manifest, channel) {
+function buildChannelYml(manifest, channel, channelRoot, prefix) {
   const lines = [
     `# ${channel} channel pointer — updated by make:latest / upload-modelscope-release.py.`,
-    `# Clients read allo/channels/${channel}/latest.json, not this file directly.`,
+    `# Clients read ${prefix}/${channelRoot}/${channel}/latest.json, not this file directly.`,
     `version: "${manifest.version || ''}"`,
     `channel: ${channel}`,
     `pub_date: "${manifest.pub_date || ''}"`,
-    `manifest: channels/${channel}/latest.json`,
+    `manifest: ${channelRoot}/${channel}/latest.json`,
   ];
   const notes = typeof manifest.notes === 'string' ? manifest.notes.trim() : '';
   if (notes) {
@@ -123,6 +126,31 @@ function flag(name, fallback = undefined) {
 const host = flag('host', 'github');
 const msRepo = flag('ms-repo', DEFAULT_MS_REPO);
 const msPrefix = flag('ms-prefix', DEFAULT_MS_PREFIX);
+const productArg = flag('product', 'Flowy');
+if (typeof productArg !== 'string') {
+  console.error('✗ --product 需要产品名。');
+  process.exit(1);
+}
+const product = productArg;
+if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(product)) {
+  console.error(`✗ --product 非法: ${product}`);
+  process.exit(1);
+}
+const knownChannelRoot = product === 'UniBuddy' ? 'unibuddy_channels' : product === 'Flowy' ? 'channels' : null;
+const channelRootArg = flag('channel-root', knownChannelRoot || 'channels');
+if (typeof channelRootArg !== 'string') {
+  console.error('✗ --channel-root 需要目录名。');
+  process.exit(1);
+}
+const channelRoot = channelRootArg;
+if (!/^[A-Za-z0-9_-]+$/.test(channelRoot)) {
+  console.error(`✗ --channel-root 必须是单一路径段，收到: ${channelRoot}`);
+  process.exit(1);
+}
+if (knownChannelRoot && channelRoot !== knownChannelRoot) {
+  console.error(`✗ ${product} 必须使用 --channel-root ${knownChannelRoot}，收到: ${channelRoot}`);
+  process.exit(1);
+}
 const msApiHost = String(flag('ms-api-host', DEFAULT_MS_API_HOST) || DEFAULT_MS_API_HOST)
   .replace(/^https?:\/\//, '')
   .replace(/^www\./, '')
@@ -400,7 +428,7 @@ if (foundKeys.length === 0) {
 for (const key of foundKeys) {
   const name = basename(collected[key].artifact);
   try {
-    assertFlowyArtifactName(key, name);
+    assertProductArtifactName(key, name, product);
   } catch (err) {
     console.error(`✗ ${err.message}`);
     process.exit(1);
@@ -427,7 +455,7 @@ if (existsSync(out)) {
         if (placeholder) continue;
         const urlName = basename(String(v.url || '').split('?')[0]);
         if (urlName && /^NomiFun/i.test(urlName)) {
-          console.warn(`  ! 丢弃遗留产物名条目 ${k}: ${urlName}（需用 Flowy_* 重建）`);
+          console.warn(`  ! 丢弃遗留产物名条目 ${k}: ${urlName}（需用 ${product}_* 重建）`);
           continue;
         }
         if (host === 'modelscope' && !String(v.url).includes(msApiHost)) continue;
@@ -441,7 +469,8 @@ if (existsSync(out)) {
     console.warn(`  ! 既有 ${rel(out)} 解析失败，将重新生成。`);
   }
 }
-manifest.notes = notes || readChangelogNotes(version) || `Flowy v${version}`;
+const changelogNotes = product === 'Flowy' ? readChangelogNotes(version) : '';
+manifest.notes = notes || changelogNotes || `${product} v${version}`;
 for (const key of foundKeys) {
   manifest.platforms[key] = { signature: collected[key].signature, url: collected[key].url };
 }
@@ -453,7 +482,7 @@ if (rolloutPercent != null && rolloutPercent < 100) {
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(manifest, null, 2) + '\n');
 
-const channelYml = buildChannelYml(manifest, msChannel);
+const channelYml = buildChannelYml(manifest, msChannel, channelRoot, msPrefix);
 if (host === 'modelscope') {
   writeFileSync(channelYmlPath, channelYml);
 }
@@ -473,7 +502,7 @@ console.log(line);
 console.log(`✓ latest.json 已写入: ${rel(out)}`);
 const hostLabel =
   host === 'modelscope'
-    ? `ModelScope ${msRepo}/${msPrefix}/channels/${msChannel}`
+    ? `ModelScope ${msRepo}/${msPrefix}/${channelRoot}/${msChannel}`
     : `GitHub ${repo}`;
 console.log(`  版本: ${version}    渠道: ${msChannel}    托管: ${hostLabel}`);
 console.log('  平台条目:');
@@ -486,7 +515,7 @@ for (const key of reportKeys) {
 console.log('');
 const uploadHint =
   host === 'modelscope'
-    ? `待上传到 ModelScope（python scripts/upload-modelscope-release.py --dist-dir dist/desktop/ --channel ${msChannel}）的本机产物:`
+    ? `待上传到 ModelScope（python scripts/upload-modelscope-release.py --dist-dir dist/desktop/ --channel ${msChannel} --channel-root ${channelRoot}）的本机产物:`
     : `待上传到 GitHub Release（tag v${version}）的本机产物:`;
 console.log(`  ${uploadHint}`);
 for (const f of uploads) console.log(`    ${rel(f)}`);

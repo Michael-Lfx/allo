@@ -10,10 +10,20 @@
       "icons/unibuddy/icon.icns",
       "icons/unibuddy/icon.ico"
     ],
+    "macOS": {
+      "infoPlist": "Info.unibuddy.plist"
+    },
     "windows": {
       "nsis": {
         "installerIcon": "icons/unibuddy/nsis-installer.ico",
         "uninstallerIcon": "icons/unibuddy/nsis-installer.ico"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["unibuddy"]
       }
     }
   }

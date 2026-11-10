@@ -5,15 +5,17 @@ on:
     tags:
       - "v*.*.*"
       - "!v*.*.*-*"
+      - "unibuddy-v*.*.*"
+      - "!unibuddy-v*.*.*-*"
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z tag (builds Windows, macOS, and Linux)
+        description: Existing vX.Y.Z or unibuddy-vX.Y.Z tag (builds Windows, macOS, and Linux)
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 # One release tag runs all platforms; do not cancel a sibling platform mid-upload.
 concurrency:
@@ -41,6 +43,14 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
+      profile: ${{ steps.release.outputs.profile }}
+      product_name: ${{ steps.release.outputs.product_name }}
+      product_config: ${{ steps.release.outputs.product_config }}
+      channel_root: ${{ steps.release.outputs.channel_root }}
+      windows_channel_config: ${{ steps.release.outputs.windows_channel_config }}
+      macos_channel_config: ${{ steps.release.outputs.macos_channel_config }}
+      linux_channel_config: ${{ steps.release.outputs.linux_channel_config }}
+      publish_github: ${{ steps.release.outputs.publish_github }}
     steps:
       - name: Resolve tag
         id: tag
@@ -54,9 +64,10 @@ jobs:
           else
             tag="$PUSH_TAG"
           fi
-          # Accept only vX.Y.Z — reject legacy vX.Y.Z-{windows,macos,linux} tags.
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release tag: $tag (expected vX.Y.Z)" >&2
+          # Accept the Flowy and UniBuddy release families; reject prerelease and
+          # legacy per-platform suffixes before checking out arbitrary refs.
+          if [[ ! "$tag" =~ ^(unibuddy-)?v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $tag (expected vX.Y.Z or unibuddy-vX.Y.Z)" >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -72,11 +83,30 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          if [[ "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            profile="flowy"
+            product_name="Flowy"
+            product_config=""
+            channel_root="channels"
+            windows_channel_config="apps/desktop/tauri.channel.windows.conf.json"
+            macos_channel_config="apps/desktop/tauri.channel.macos.conf.json"
+            linux_channel_config="apps/desktop/tauri.channel.linux.conf.json"
+            publish_github="true"
+          elif [[ "$RELEASE_TAG" =~ ^unibuddy-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            profile="unibuddy"
+            product_name="UniBuddy"
+            product_config="apps/desktop/tauri.unibuddy.conf.json"
+            channel_root="unibuddy_channels"
+            windows_channel_config="apps/desktop/tauri.channel.unibuddy.windows.conf.json"
+            macos_channel_config="apps/desktop/tauri.channel.unibuddy.macos.conf.json"
+            linux_channel_config="apps/desktop/tauri.channel.unibuddy.linux.conf.json"
+            publish_github="false"
+          else
             echo "Invalid release tag: $RELEASE_TAG" >&2
             exit 1
           fi
-          version="${BASH_REMATCH[1]}"
 
           git_tag="$(git describe --tags --exact-match --match "$RELEASE_TAG")"
           if [[ "$git_tag" != "$RELEASE_TAG" ]]; then
@@ -92,6 +122,14 @@ jobs:
 
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "product_name=$product_name" >> "$GITHUB_OUTPUT"
+          echo "product_config=$product_config" >> "$GITHUB_OUTPUT"
+          echo "channel_root=$channel_root" >> "$GITHUB_OUTPUT"
+          echo "windows_channel_config=$windows_channel_config" >> "$GITHUB_OUTPUT"
+          echo "macos_channel_config=$macos_channel_config" >> "$GITHUB_OUTPUT"
+          echo "linux_channel_config=$linux_channel_config" >> "$GITHUB_OUTPUT"
+          echo "publish_github=$publish_github" >> "$GITHUB_OUTPUT"
 
   # ui/dist is platform-independent; build once on a 16GB runner, reuse on Win/macOS/Linux.
   build-ui:
@@ -114,7 +152,13 @@ jobs:
       - name: Build UI
         env:
           NODE_OPTIONS: --max-old-space-size=8192
-        run: bun run build:ui
+          RELEASE_PROFILE: ${{ needs.release-context.outputs.profile }}
+        run: |
+          if [[ "$RELEASE_PROFILE" == "unibuddy" ]]; then
+            bun run --filter=./ui build --mode unibuddy
+          else
+            bun run build:ui
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
@@ -162,7 +206,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: windows-${{ matrix.arch }}-updater
+          shared-key: windows-${{ matrix.arch }}-${{ needs.release-context.outputs.profile }}-updater
           workspaces: ". -> build.noindex"
           cache-on-failure: true
 
@@ -179,18 +223,31 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PRODUCT_NAME: ${{ needs.release-context.outputs.product_name }}
+          PRODUCT_CONFIG: ${{ needs.release-context.outputs.product_config }}
+          CHANNEL_CONFIG: ${{ needs.release-context.outputs.windows_channel_config }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
             throw 'TAURI_SIGNING_PRIVATE_KEY is not configured'
           }
-          bun run build:win ${{ matrix.arch }} `
-            --config apps/desktop/tauri.updater.conf.json `
-            --config apps/desktop/tauri.channel.windows.conf.json `
-            --config apps/desktop/tauri.ci-skip-ui.conf.json
+          if ($env:PRODUCT_CONFIG) {
+            bun run build:win ${{ matrix.arch }} `
+              --config $env:PRODUCT_CONFIG `
+              --config apps/desktop/tauri.updater.conf.json `
+              --config $env:CHANNEL_CONFIG `
+              --config apps/desktop/tauri.ci-skip-ui.conf.json
+          } else {
+            bun run build:win ${{ matrix.arch }} `
+              --config apps/desktop/tauri.updater.conf.json `
+              --config $env:CHANNEL_CONFIG `
+              --config apps/desktop/tauri.ci-skip-ui.conf.json
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run verify:voice-package -- --platform windows --arch ${{ matrix.arch }} --dist dist/desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run make:latest --host modelscope --channel windows --collect
+          bun run make:latest --host modelscope --channel windows `
+            --product $env:PRODUCT_NAME --channel-root $env:CHANNEL_ROOT --collect
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v7
@@ -206,6 +263,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: modelscope-alpha
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -237,11 +296,16 @@ jobs:
           path: staging/windows-arm64
 
       - name: Merge Windows dist and refresh manifest
+        env:
+          PRODUCT_NAME: ${{ needs.release-context.outputs.product_name }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           mkdir -p dist/desktop
           cp -a staging/windows-x64/. dist/desktop/
           cp -a staging/windows-arm64/. dist/desktop/
-          bun run make:latest --host modelscope --channel windows --from-dir dist/desktop --collect
+          bun run make:latest --host modelscope --channel windows \
+            --product "$PRODUCT_NAME" --channel-root "$CHANNEL_ROOT" \
+            --from-dir dist/desktop --collect
           ls -lah dist/desktop
 
       - name: Upload Windows artifacts to ModelScope CN (phase 1)
@@ -250,6 +314,7 @@ jobs:
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "${MODELSCOPE_CN_TOKEN:-${MODELSCOPE_TOKEN:-}}" || {
             echo "MODELSCOPE_CN_TOKEN is not configured" >&2
@@ -258,6 +323,7 @@ jobs:
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel windows \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --token-env MODELSCOPE_CN_TOKEN \
@@ -271,10 +337,12 @@ jobs:
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel windows \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --token-env MODELSCOPE_CN_TOKEN \
@@ -285,9 +353,11 @@ jobs:
       - name: Verify Windows channel on ModelScope CN
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel windows \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --version "$EXPECTED_VERSION" \
@@ -301,6 +371,7 @@ jobs:
           MODELSCOPE_AI_TOKEN: ${{ secrets.MODELSCOPE_AI_TOKEN }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "$MODELSCOPE_AI_TOKEN" || {
             echo "MODELSCOPE_AI_TOKEN is not configured" >&2
@@ -309,6 +380,7 @@ jobs:
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel windows \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --token-env MODELSCOPE_AI_TOKEN \
@@ -321,10 +393,12 @@ jobs:
           MODELSCOPE_AI_TOKEN: ${{ secrets.MODELSCOPE_AI_TOKEN }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel windows \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --token-env MODELSCOPE_AI_TOKEN \
@@ -335,9 +409,11 @@ jobs:
       - name: Verify Windows channel on ModelScope AI
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel windows \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --version "$EXPECTED_VERSION" \
@@ -347,6 +423,7 @@ jobs:
             --metadata dist/desktop/release-metadata.json
 
       - name: Upload Windows artifacts to GitHub Release
+        if: needs.release-context.outputs.publish_github == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/publish-github-ota.sh "${{ needs.release-context.outputs.tag }}" windows dist/desktop
@@ -404,7 +481,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: macos-${{ matrix.arch }}-updater
+          shared-key: macos-${{ matrix.arch }}-${{ needs.release-context.outputs.profile }}-updater
           workspaces: ". -> build.noindex"
           cache-on-failure: true
 
@@ -420,32 +497,39 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PRODUCT_NAME: ${{ needs.release-context.outputs.product_name }}
+          PRODUCT_CONFIG: ${{ needs.release-context.outputs.product_config }}
+          CHANNEL_CONFIG: ${{ needs.release-context.outputs.macos_channel_config }}
         run: |
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
+          product_config_args=()
+          if [[ -n "$PRODUCT_CONFIG" ]]; then
+            product_config_args=(--config "$PRODUCT_CONFIG")
+          fi
           bun run build:mac ${{ matrix.build_arch }} \
+            "${product_config_args[@]}" \
             --config apps/desktop/tauri.updater.conf.json \
-            --config apps/desktop/tauri.channel.macos.conf.json \
+            --config "$CHANNEL_CONFIG" \
             --config apps/desktop/tauri.ci-skip-ui.conf.json
-          test -d "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app"
+          app_path="target/${{ matrix.rust_target }}/release/bundle/macos/${PRODUCT_NAME}.app"
+          test -d "$app_path"
           # Catch host-arch resource sidecars before the merge job (cross-compile
           # on macos-15 must ship x86_64 rg for the intel slice).
-          lipo -archs "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/MacOS/Flowy" \
+          lipo -archs "$app_path/Contents/MacOS/Flowy" \
             | grep -qw "${{ matrix.macho_arch }}"
-          if [[ -f "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/Resources/bin/rg" ]]; then
-            [[ "$(lipo -archs "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/Resources/bin/rg")" == "${{ matrix.macho_arch }}" ]]
+          if [[ -f "$app_path/Contents/Resources/bin/rg" ]]; then
+            [[ "$(lipo -archs "$app_path/Contents/Resources/bin/rg")" == "${{ matrix.macho_arch }}" ]]
           fi
           bun run verify:voice-package -- --platform macos --arch ${{ matrix.macho_arch }} --dist dist/desktop
-          ditto -c -k --keepParent \
-            "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app" \
-            flowy-app.zip
+          ditto -c -k --keepParent "$app_path" desktop-app.zip
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
-          path: flowy-app.zip
+          path: desktop-app.zip
           retention-days: 3
           if-no-files-found: error
 
@@ -478,13 +562,15 @@ jobs:
 
       - name: Unpack slice apps
         run: |
-          ditto -x -k staging/arm64/flowy-app.zip staging/arm64
-          ditto -x -k staging/intel/flowy-app.zip staging/intel
+          ditto -x -k staging/arm64/desktop-app.zip staging/arm64
+          ditto -x -k staging/intel/desktop-app.zip staging/intel
 
       - name: Lipo universal app, DMG, and updater archive
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PRODUCT_NAME: ${{ needs.release-context.outputs.product_name }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
@@ -493,10 +579,13 @@ jobs:
           bash scripts/merge-macos-universal.sh \
             --arm64 staging/arm64 \
             --intel staging/intel \
-            --version "${{ needs.release-context.outputs.version }}"
+            --version "${{ needs.release-context.outputs.version }}" \
+            --product "$PRODUCT_NAME" \
+            --binary Flowy
           bun run verify:voice-package -- --platform macos --arch universal \
-            --artifact target/universal-apple-darwin/release/bundle/macos/Flowy.app
-          bun run make:latest --host modelscope --channel macos --collect
+            --artifact "target/universal-apple-darwin/release/bundle/macos/${PRODUCT_NAME}.app"
+          bun run make:latest --host modelscope --channel macos \
+            --product "$PRODUCT_NAME" --channel-root "$CHANNEL_ROOT" --collect
 
       - uses: actions/upload-artifact@v7
         with:
@@ -511,6 +600,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: modelscope-alpha
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -540,6 +631,7 @@ jobs:
         env:
           MODELSCOPE_CN_TOKEN: ${{ secrets.MODELSCOPE_CN_TOKEN }}
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "${MODELSCOPE_CN_TOKEN:-${MODELSCOPE_TOKEN:-}}" || {
             echo "MODELSCOPE_CN_TOKEN is not configured" >&2
@@ -548,6 +640,7 @@ jobs:
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel macos \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --token-env MODELSCOPE_CN_TOKEN \
@@ -559,10 +652,12 @@ jobs:
         env:
           MODELSCOPE_CN_TOKEN: ${{ secrets.MODELSCOPE_CN_TOKEN }}
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel macos \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --token-env MODELSCOPE_CN_TOKEN \
@@ -573,9 +668,11 @@ jobs:
       - name: Verify macOS channel on ModelScope CN
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel macos \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --version "$EXPECTED_VERSION" \
@@ -587,6 +684,7 @@ jobs:
       - name: Upload macOS artifacts to ModelScope AI (phase 1)
         env:
           MODELSCOPE_AI_TOKEN: ${{ secrets.MODELSCOPE_AI_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "$MODELSCOPE_AI_TOKEN" || {
             echo "MODELSCOPE_AI_TOKEN is not configured" >&2
@@ -595,6 +693,7 @@ jobs:
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel macos \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --token-env MODELSCOPE_AI_TOKEN \
@@ -605,10 +704,12 @@ jobs:
       - name: Publish macOS channel pointer on ModelScope AI (phase 2)
         env:
           MODELSCOPE_AI_TOKEN: ${{ secrets.MODELSCOPE_AI_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel macos \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --token-env MODELSCOPE_AI_TOKEN \
@@ -619,9 +720,11 @@ jobs:
       - name: Verify macOS channel on ModelScope AI
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel macos \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --version "$EXPECTED_VERSION" \
@@ -631,6 +734,7 @@ jobs:
             --metadata dist/desktop/release-metadata.json
 
       - name: Upload macOS artifacts to GitHub Release
+        if: needs.release-context.outputs.publish_github == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/publish-github-ota.sh "${{ needs.release-context.outputs.tag }}" macos dist/desktop
@@ -682,7 +786,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-${{ matrix.arch }}-updater
+          shared-key: linux-${{ matrix.arch }}-${{ needs.release-context.outputs.profile }}-updater
           workspaces: ". -> build.noindex"
           cache-on-failure: true
 
@@ -717,17 +821,27 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PRODUCT_NAME: ${{ needs.release-context.outputs.product_name }}
+          PRODUCT_CONFIG: ${{ needs.release-context.outputs.product_config }}
+          CHANNEL_CONFIG: ${{ needs.release-context.outputs.linux_channel_config }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
             echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
             exit 1
           }
+          product_config_args=()
+          if [[ -n "$PRODUCT_CONFIG" ]]; then
+            product_config_args=(--config "$PRODUCT_CONFIG")
+          fi
           bun run build:linux ${{ matrix.arch }} \
+            "${product_config_args[@]}" \
             --config apps/desktop/tauri.updater.conf.json \
-            --config apps/desktop/tauri.channel.linux.conf.json \
+            --config "$CHANNEL_CONFIG" \
             --config apps/desktop/tauri.ci-skip-ui.conf.json
           bun run verify:voice-package -- --platform linux --arch ${{ matrix.arch }} --dist dist/desktop
-          bun run make:latest --host modelscope --channel linux --collect
+          bun run make:latest --host modelscope --channel linux \
+            --product "$PRODUCT_NAME" --channel-root "$CHANNEL_ROOT" --collect
 
       - uses: actions/upload-artifact@v7
         with:
@@ -742,6 +856,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: modelscope-alpha
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -773,17 +889,23 @@ jobs:
           path: staging/linux-arm64
 
       - name: Merge Linux dist and refresh manifest
+        env:
+          PRODUCT_NAME: ${{ needs.release-context.outputs.product_name }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           mkdir -p dist/desktop
           cp -a staging/linux-x64/. dist/desktop/
           cp -a staging/linux-arm64/. dist/desktop/
-          bun run make:latest --host modelscope --channel linux --from-dir dist/desktop --collect
+          bun run make:latest --host modelscope --channel linux \
+            --product "$PRODUCT_NAME" --channel-root "$CHANNEL_ROOT" \
+            --from-dir dist/desktop --collect
           ls -lah dist/desktop
 
       - name: Upload Linux artifacts to ModelScope CN (phase 1)
         env:
           MODELSCOPE_CN_TOKEN: ${{ secrets.MODELSCOPE_CN_TOKEN }}
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "${MODELSCOPE_CN_TOKEN:-${MODELSCOPE_TOKEN:-}}" || {
             echo "MODELSCOPE_CN_TOKEN is not configured" >&2
@@ -792,6 +914,7 @@ jobs:
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel linux \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --token-env MODELSCOPE_CN_TOKEN \
@@ -803,10 +926,12 @@ jobs:
         env:
           MODELSCOPE_CN_TOKEN: ${{ secrets.MODELSCOPE_CN_TOKEN }}
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel linux \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --token-env MODELSCOPE_CN_TOKEN \
@@ -817,9 +942,11 @@ jobs:
       - name: Verify Linux channel on ModelScope CN
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel linux \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.cn \
             --repo flowy2025/flowyaipc \
             --version "$EXPECTED_VERSION" \
@@ -831,6 +958,7 @@ jobs:
       - name: Upload Linux artifacts to ModelScope AI (phase 1)
         env:
           MODELSCOPE_AI_TOKEN: ${{ secrets.MODELSCOPE_AI_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           test -n "$MODELSCOPE_AI_TOKEN" || {
             echo "MODELSCOPE_AI_TOKEN is not configured" >&2
@@ -839,6 +967,7 @@ jobs:
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel linux \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --token-env MODELSCOPE_AI_TOKEN \
@@ -849,10 +978,12 @@ jobs:
       - name: Publish Linux channel pointer on ModelScope AI (phase 2)
         env:
           MODELSCOPE_AI_TOKEN: ${{ secrets.MODELSCOPE_AI_TOKEN }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           bun scripts/run-upload-modelscope.mjs \
             --dist-dir dist/desktop/ \
             --channel linux \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --token-env MODELSCOPE_AI_TOKEN \
@@ -863,9 +994,11 @@ jobs:
       - name: Verify Linux channel on ModelScope AI
         env:
           EXPECTED_VERSION: ${{ needs.release-context.outputs.version }}
+          CHANNEL_ROOT: ${{ needs.release-context.outputs.channel_root }}
         run: |
           python scripts/verify-modelscope-release.py \
             --channel linux \
+            --channel-root "$CHANNEL_ROOT" \
             --api-host modelscope.ai \
             --repo flowy2025/flowy \
             --version "$EXPECTED_VERSION" \
@@ -875,6 +1008,7 @@ jobs:
             --metadata dist/desktop/release-metadata.json
 
       - name: Upload Linux artifacts to GitHub Release
+        if: needs.release-context.outputs.publish_github == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/publish-github-ota.sh "${{ needs.release-context.outputs.tag }}" linux dist/desktop

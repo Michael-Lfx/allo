@@ -12,6 +12,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PRODUCT="Flowy"
+BINARY=""
 
 ARM64_ROOT=""
 INTEL_ROOT=""
@@ -19,7 +20,7 @@ VERSION=""
 OUT_DIST="$ROOT/dist/desktop"
 
 usage() {
-  echo "usage: merge-macos-universal.sh --arm64 <dir> --intel <dir> --version <x.y.z> [--out-dir <dir>]" >&2
+  echo "usage: merge-macos-universal.sh --arm64 <dir> --intel <dir> --version <x.y.z> [--out-dir <dir>] [--product <name>] [--binary <name>]" >&2
   exit 1
 }
 
@@ -49,6 +50,18 @@ while [[ "$#" -gt 0 ]]; do
       OUT_DIST="$1"
       shift
       ;;
+    --product)
+      shift
+      [[ "$#" -gt 0 ]] || usage
+      PRODUCT="$1"
+      shift
+      ;;
+    --binary)
+      shift
+      [[ "$#" -gt 0 ]] || usage
+      BINARY="$1"
+      shift
+      ;;
     *)
       usage
       ;;
@@ -56,6 +69,9 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 [[ -n "$ARM64_ROOT" && -n "$INTEL_ROOT" && -n "$VERSION" ]] || usage
+if [[ -z "$BINARY" ]]; then
+  BINARY="$PRODUCT"
+fi
 
 if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   echo "TAURI_SIGNING_PRIVATE_KEY is not set" >&2
@@ -95,7 +111,7 @@ require_slice_arch() {
   local label="$1"
   local app="$2"
   local want="$3"
-  local main="$app/Contents/MacOS/$PRODUCT"
+  local main="$app/Contents/MacOS/$BINARY"
   local rg="$app/Contents/Resources/bin/rg"
   if [[ ! -f "$main" ]]; then
     echo "$label missing main binary: $main" >&2
@@ -103,9 +119,9 @@ require_slice_arch() {
   fi
   local main_archs rg_archs
   main_archs="$(lipo -archs "$main")"
-  echo "$label $PRODUCT archs: $main_archs"
+  echo "$label $BINARY archs: $main_archs"
   echo "$main_archs" | grep -qw "$want" || {
-    echo "$label $PRODUCT must include $want (got: $main_archs)" >&2
+    echo "$label $BINARY must include $want (got: $main_archs)" >&2
     exit 1
   }
   # Reject fat/wrong host-arch sidecars from a cross-compile that bundled the
@@ -154,13 +170,13 @@ while IFS= read -r -d '' intel_file; do
   fi
 done < <(find "$INTEL_APP" -type f -print0)
 
-MAIN_BIN="$UNIV_APP/Contents/MacOS/$PRODUCT"
+MAIN_BIN="$UNIV_APP/Contents/MacOS/$BINARY"
 if [[ ! -f "$MAIN_BIN" ]]; then
   echo "missing universal binary $MAIN_BIN" >&2
   exit 1
 fi
 archs="$(lipo -archs "$MAIN_BIN")"
-echo "universal $PRODUCT archs: $archs"
+echo "universal $BINARY archs: $archs"
 echo "$archs" | grep -q 'x86_64' || { echo "x86_64 slice missing" >&2; exit 1; }
 echo "$archs" | grep -q 'arm64' || { echo "arm64 slice missing" >&2; exit 1; }
 

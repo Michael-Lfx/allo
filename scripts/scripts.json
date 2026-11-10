@@ -57,6 +57,10 @@
       "group": "check",
       "desc": "Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide."
     },
+    "check:release-product-profiles": {
+      "group": "check",
+      "desc": "Verify the shared desktop release workflow keeps Flowy and UniBuddy tags, configs, channels, and publication targets isolated."
+    },
     "check:release-voice-preparation": {
       "group": "check",
       "desc": "Verify every release build hook still prepares the production voice daemon and never rebuilds the UI."
