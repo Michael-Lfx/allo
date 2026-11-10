@@ -15,7 +15,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 import type { GrowthPillItem } from '../growthTaskPill';
-import { GrowthTaskPill } from './GrowthTaskPill';
+import { GrowthTaskPill, STEP_KEYS } from './GrowthTaskPill';
 
 const initTestI18n = async (locale: 'zh-CN' | 'en-US') => {
   const instance = createInstance();
@@ -119,5 +119,56 @@ describe('GrowthTaskPill', () => {
     const done = await renderPill('en-US', item({ status: 'done', elapsedSecs: null }));
     expect(done).toContain('Learning graph growth complete');
     expect(done).toContain('Dismiss');
+  });
+
+  test('运行中步骤全档映射：机器 step 一律走词典，不再裸渲染后端 detail（c3）', async () => {
+    const cases: ReadonlyArray<[string, string]> = [
+      ['triage', '正在清点与分诊来源文件…'],
+      ['source_plan', '正在从证据规划章节骨架…'],
+      ['expansion', '正在按章节分批展开课时…'],
+      ['structure', '正在生成知识结构与前置地形…'],
+      ['mount', '正在挂载节点到结构块…'],
+      ['repair', '正在按留痕与观察修补结构…'],
+      ['generate', '正在生成本课时的分节正文与检索练习…'],
+    ];
+    for (const [step, line] of cases) {
+      const html = await renderPill('zh-CN', item({ step, detail: '后端中文诊断句' }));
+      expect(html).toContain(line);
+      expect(html).not.toContain('后端中文诊断句');
+    }
+  });
+
+  test('未知/缺席 step：不出进度行，也不回落后端 detail（宁缺不泄漏）', async () => {
+    const missing = await renderPill('zh-CN', item({ step: null, detail: '后端中文诊断句' }));
+    expect(missing).not.toContain('后端中文诊断句');
+    const unknown = await renderPill('zh-CN', item({ step: 'future_step', detail: '后端中文诊断句' }));
+    expect(unknown).not.toContain('后端中文诊断句');
+  });
+
+  test('en-US 步骤行同样走词典（非 draft 档）', async () => {
+    const structure = await renderPill('en-US', item({ step: 'structure', detail: '后端中文诊断句' }));
+    expect(structure).toContain('Generating knowledge structure');
+    expect(structure).not.toContain('后端中文诊断句');
+  });
+
+  test('步骤全档双语齐备：STEP_KEYS 每一档在 zh-CN / en-US 词典都有非空文案', () => {
+    const zh = learningZh as Record<string, unknown>;
+    const en = learningEn as Record<string, unknown>;
+    const steps = Object.entries(STEP_KEYS);
+    // 映射本身非空（防止映射被清空后循环空转、断言全绿）。
+    expect(steps.length).toBeGreaterThan(0);
+    for (const [step, key] of steps) {
+      const name = key.replace(/^learning\./, '');
+      const zhLine = zh[name];
+      const enLine = en[name];
+      if (typeof zhLine !== 'string' || zhLine.length === 0) {
+        throw new Error(`zh-CN 缺 step「${step}」的文案：${key}`);
+      }
+      if (typeof enLine !== 'string' || enLine.length === 0) {
+        throw new Error(`en-US 缺 step「${step}」的文案：${key}`);
+      }
+      // en-US 不是中文句的照抄（零回落泄漏）。
+      expect(enLine).not.toBe(zhLine);
+    }
   });
 });

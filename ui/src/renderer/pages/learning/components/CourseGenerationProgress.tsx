@@ -7,7 +7,7 @@ import type {
   ILearningGenerationToolCall,
 } from '@/common/adapter/ipcBridge';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
-import type { CourseDetail } from '../types';
+import type { CourseDetail, CourseKind } from '../types';
 import {
   deriveModernStep,
   deriveStep,
@@ -31,12 +31,23 @@ const { Text, Title } = Typography;
  * 终止生成（后台继续，右下角指示条可回到这里）。
  *
  * t5 新管线（知识库流：清点分诊 → 来源结构计划 → 分批展开）观察首帧
- * triage 阶段即切换新步骤条与读数行；描述流/旧客户端走旧五段，零回归。 */
+ * triage 阶段即切换新步骤条与读数行；描述流/旧客户端走旧五段，零回归。
+ *
+ * 学习图流（c1 最小修）：graph 建课 HTTP 秒回、结构生成在后台跑，WS 订阅
+ * 随 status 翻 completed 即停用——v2 步骤条与活动流对该流是永不更新的冻结
+ * 起始帧。running 只渲染单行后台提示（真实结构进度在工作区 structure 徽章/
+ * 声明窗口）；queued 沿用排队提示；终态回到下方卡片/Alert 既有分支。
+ *
+ * 恢复态（c2 收敛出的终态）：failed/cancelled 不提供重发式重试——恢复态的
+ * request 是按快照 topic 合成的（description = 后端 topic 标签），重发会以
+ * 标签为名新建一门课程；改出本地化指引文案。in-session 终态重试不变。 */
 export function CourseGenerationProgress({
   status,
   result,
   error,
   sources = [],
+  courseKind,
+  restored = false,
   onStartLearning,
   onRetry,
   onCancel,
@@ -47,6 +58,11 @@ export function CourseGenerationProgress({
   error: string | null;
   /** 多知识库（t4）：来源库名（「来源：库A、库B」；空 = 不展示） */
   sources?: string[];
+  /** 课程类型（c1）：learning_graph 时呈现最小化（见头注释），缺省 = v2 流。 */
+  courseKind?: CourseKind;
+  /** 恢复态（页面挂载时从快照重建的生成任务）：终态面板只出指引文案，
+   * 不提供重发式重试（见头注释）。缺省 = in-session。 */
+  restored?: boolean;
   /** 建课管线代际（x11）：课程摘要可用时显式传入；生成中从 WS 帧兜底读取。 */
   pipeline?: 'sampling' | 'source_plan';
   onStartLearning: (courseId: string) => void;
@@ -85,6 +101,8 @@ export function CourseGenerationProgress({
   // m7 资源闸排队中：任务已受理、等空闲许可——步骤条停在起点（wait），
   // 活动流无事件（生成循环尚未开跑），展示排队提示而非空转 spinner。
   const queued = status === 'queued';
+  // 学习图流（c1 最小修）：呈现策略见头注释——v2 步骤条/活动流整段不渲染。
+  const graphFlow = courseKind === 'learning_graph';
   // 「无可见事件」的判定不能是 events.length===0：循环开始等事件（如
   // started/generating）会被收进列表但渲染为空行，把等待提示挤掉。
   const visibleCount = events.filter((event) =>
@@ -112,25 +130,27 @@ export function CourseGenerationProgress({
 
   return (
     <div className='flex flex-col gap-16px'>
-      <Steps
-        size='small'
-        current={stepIndex}
-        status={
-          running
-            ? 'process'
-            : queued
-              ? 'wait'
-              : status === 'failed'
-                ? 'error'
-                : status === 'cancelled'
-                  ? 'wait'
-                  : 'finish'
-        }
-      >
-        {steps.map((label) => (
-          <Steps.Step key={label} title={label} />
-        ))}
-      </Steps>
+      {!graphFlow && (
+        <Steps
+          size='small'
+          current={stepIndex}
+          status={
+            running
+              ? 'process'
+              : queued
+                ? 'wait'
+                : status === 'failed'
+                  ? 'error'
+                  : status === 'cancelled'
+                    ? 'wait'
+                    : 'finish'
+          }
+        >
+          {steps.map((label) => (
+            <Steps.Step key={label} title={label} />
+          ))}
+        </Steps>
+      )}
 
       {/* 多知识库（t4）：来源披露——课程从哪几个库生成（首个 = 主来源）。
           分隔符随语言（zh-CN 顿号 / en-US 逗号），不写死中文标点。 */}
@@ -140,185 +160,215 @@ export function CourseGenerationProgress({
         </Text>
       )}
 
-      {/* 实时活动流：round/audit 事件各占一行；无事件时退化为纯 spinner */}
-      <div
-        ref={streamRef}
-        className='flex max-h-260px min-h-120px flex-col gap-6px overflow-y-auto rounded-8px bg-[var(--color-fill-1)] p-12px'
-      >
-        {visibleCount === 0 && running && (
-          <div className='flex items-center justify-center gap-8px py-24px'>
+      {/* 学习图流（c1 最小修）：running / queued 收口为单行——后台提示（真实
+          结构进度在工作区 structure 徽章/声明窗口看）或排队提示，与取消入口
+          同处一行；不叠加下方 v2 提示行（否则同屏双 spinner、排队提示渲染
+          两遍）。终态不渲染本行——下方课程卡片与 Alert 既有分支接管。 */}
+      {graphFlow && (running || queued) && (
+        <div className='flex items-center justify-between gap-8px'>
+          <div className='flex items-center gap-8px'>
             <Spin size={16} />
-            <Text type='secondary'>{t('learning.genWaitingEvents')}</Text>
+            <Text type='secondary'>
+              {running
+                ? t('learning.graphCreateBackgroundNotice')
+                : t('learning.genQueuedNotice')}
+            </Text>
           </div>
-        )}
-        {visibleCount === 0 && queued && (
-          <div className='flex items-center justify-center gap-8px py-24px'>
-            <Spin size={16} />
-            <Text type='secondary'>{t('learning.genQueuedNotice')}</Text>
-          </div>
-        )}
-        {events.map((event, index) => {
-          if (event.phase === PHASE.started) {
-            return (
-              <div key={index} className='text-13px text-t-secondary'>
-                {event.text ?? t('learning.genWaitingEvents')}
-              </div>
-            );
-          }
-          if (event.phase === PHASE.round) {
-            const repair = event.loop === 'repair';
-            const roundLabel = repair
-              ? t('learning.genRepairRoundLabel', {
-                  round: event.round ?? index + 1,
-                  max: event.max_rounds ?? '',
-                })
-              : t('learning.genRoundLabel', { round: event.round ?? index + 1 });
-            const tools = summarizeTools(event.tools);
-            return (
-              <div key={index} className='text-13px leading-20px'>
-                <span className='font-500 text-t-primary'>{roundLabel}</span>
-                {tools && <span className='ml-8px text-t-secondary'>{tools}</span>}
-                {event.text && (
-                  <div className='mt-2px break-all text-t-secondary'>
-                    {event.text.slice(0, 140)}
-                  </div>
-                )}
-              </div>
-            );
-          }
-          if (event.phase === PHASE.audit) {
-            const danger = event.danger ?? 0;
-            return (
-              <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
-                <div className='flex flex-wrap items-center gap-6px'>
-                  <span className='font-500 text-t-primary'>{t('learning.genAuditLabel')}</span>
-                  {danger > 0 && (
-                    <Tag size='small' color='red' className='!mx-0'>
-                      {t('learning.genDangerCount', { count: danger })}
-                    </Tag>
-                  )}
-                  {(event.warning ?? 0) > 0 && (
-                    <Tag size='small' color='orange' className='!mx-0'>
-                      {t('learning.genWarningCount', { count: event.warning })}
-                    </Tag>
-                  )}
-                  {(event.info ?? 0) > 0 && (
-                    <Tag size='small' color='gray' className='!mx-0'>
-                      {t('learning.genInfoCount', { count: event.info })}
-                    </Tag>
+          <Button size='mini' status='danger' onClick={onCancel}>
+            {t('learning.genCancel')}
+          </Button>
+        </div>
+      )}
+
+      {/* 实时活动流：round/audit 事件各占一行；无事件时退化为纯 spinner
+          （学习图流整段不渲染，见上方 c1 注释） */}
+      {!graphFlow && (
+        <div
+          ref={streamRef}
+          className='flex max-h-260px min-h-120px flex-col gap-6px overflow-y-auto rounded-8px bg-[var(--color-fill-1)] p-12px'
+        >
+          {visibleCount === 0 && running && (
+            <div className='flex items-center justify-center gap-8px py-24px'>
+              <Spin size={16} />
+              <Text type='secondary'>{t('learning.genWaitingEvents')}</Text>
+            </div>
+          )}
+          {visibleCount === 0 && queued && (
+            <div className='flex items-center justify-center gap-8px py-24px'>
+              <Spin size={16} />
+              <Text type='secondary'>{t('learning.genQueuedNotice')}</Text>
+            </div>
+          )}
+          {events.map((event, index) => {
+            if (event.phase === PHASE.started) {
+              // c3 防御收口：started 行一律走词典，不读 event.text。started 帧
+              // 带 text 的只有学习图流（后端硬编码文案，整段已随 c1 隐藏）；
+              // v2/课时的 started 帧本就没有 text 字段。round 帧的 text 不同
+              // ——那是模型叙述（nomifun-ai-agent learning_loop 产出的动态
+              // 模型输出，非后端硬编码文案），下方照常渲染。
+              return (
+                <div key={index} className='text-13px text-t-secondary'>
+                  {t('learning.genWaitingEvents')}
+                </div>
+              );
+            }
+            if (event.phase === PHASE.round) {
+              const repair = event.loop === 'repair';
+              const roundLabel = repair
+                ? t('learning.genRepairRoundLabel', {
+                    round: event.round ?? index + 1,
+                    max: event.max_rounds ?? '',
+                  })
+                : t('learning.genRoundLabel', { round: event.round ?? index + 1 });
+              const tools = summarizeTools(event.tools);
+              return (
+                <div key={index} className='text-13px leading-20px'>
+                  <span className='font-500 text-t-primary'>{roundLabel}</span>
+                  {tools && <span className='ml-8px text-t-secondary'>{tools}</span>}
+                  {event.text && (
+                    <div className='mt-2px break-all text-t-secondary'>
+                      {event.text.slice(0, 140)}
+                    </div>
                   )}
                 </div>
-                {(event.top ?? []).map((finding, findingIndex) => (
-                  <div key={findingIndex} className='break-all text-t-secondary'>
-                    {danger > 0 ? (
-                      <span className='text-danger-6'>· {finding}</span>
-                    ) : (
-                      <span>· {finding}</span>
+              );
+            }
+            if (event.phase === PHASE.audit) {
+              const danger = event.danger ?? 0;
+              return (
+                <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
+                  <div className='flex flex-wrap items-center gap-6px'>
+                    <span className='font-500 text-t-primary'>{t('learning.genAuditLabel')}</span>
+                    {danger > 0 && (
+                      <Tag size='small' color='red' className='!mx-0'>
+                        {t('learning.genDangerCount', { count: danger })}
+                      </Tag>
+                    )}
+                    {(event.warning ?? 0) > 0 && (
+                      <Tag size='small' color='orange' className='!mx-0'>
+                        {t('learning.genWarningCount', { count: event.warning })}
+                      </Tag>
+                    )}
+                    {(event.info ?? 0) > 0 && (
+                      <Tag size='small' color='gray' className='!mx-0'>
+                        {t('learning.genInfoCount', { count: event.info })}
+                      </Tag>
                     )}
                   </div>
-                ))}
-              </div>
-            );
-          }
-          if (event.phase === PHASE.triageCompleted && event.counts) {
-            const counts = event.counts;
-            return (
-              <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
-                <span className='font-500 text-t-primary'>{triageCountsLine(counts, t)}</span>
-                {event.degraded && (
-                  <span className='text-warning-6'>· {t('learning.genTriageDegraded')}</span>
-                )}
-                {uncertainTooMany(counts) && (
-                  <span className='text-warning-6'>
-                    · {t('learning.genUncertainTooMany', { count: counts.uncertain })}
+                  {(event.top ?? []).map((finding, findingIndex) => (
+                    <div key={findingIndex} className='break-all text-t-secondary'>
+                      {danger > 0 ? (
+                        <span className='text-danger-6'>· {finding}</span>
+                      ) : (
+                        <span>· {finding}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            }
+            if (event.phase === PHASE.triageCompleted && event.counts) {
+              const counts = event.counts;
+              return (
+                <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
+                  <span className='font-500 text-t-primary'>{triageCountsLine(counts, t)}</span>
+                  {event.degraded && (
+                    <span className='text-warning-6'>· {t('learning.genTriageDegraded')}</span>
+                  )}
+                  {uncertainTooMany(counts) && (
+                    <span className='text-warning-6'>
+                      · {t('learning.genUncertainTooMany', { count: counts.uncertain })}
+                    </span>
+                  )}
+                  {/* 可展开明细：跳过理由 / duplicate_of / uncertain（帧里有界 ≤10） */}
+                  {(event.excluded?.length ?? 0) + (event.duplicates?.length ?? 0) + (event.uncertain?.length ?? 0) > 0 && (
+                    <NomiCollapse bordered={false}>
+                      {(event.excluded?.length ?? 0) > 0 && (
+                        <NomiCollapse.Item
+                          name={`triage-excluded-${index}`}
+                          header={t('learning.genTriageExcludedTitle')}
+                        >
+                          {event.excluded?.map((entry) => (
+                            <Text key={entry.path} type='secondary' className='block break-all text-12px'>
+                              · {entry.path} — {entry.reason}
+                            </Text>
+                          ))}
+                        </NomiCollapse.Item>
+                      )}
+                      {(event.duplicates?.length ?? 0) > 0 && (
+                        <NomiCollapse.Item
+                          name={`triage-duplicates-${index}`}
+                          header={t('learning.genTriageDuplicatesTitle')}
+                        >
+                          {event.duplicates?.map((duplicate) => (
+                            <Text key={duplicate.path} type='secondary' className='block break-all text-12px'>
+                              · {duplicate.path} → {duplicate.duplicate_of}
+                            </Text>
+                          ))}
+                        </NomiCollapse.Item>
+                      )}
+                      {(event.uncertain?.length ?? 0) > 0 && (
+                        <NomiCollapse.Item
+                          name={`triage-uncertain-${index}`}
+                          header={t('learning.genTriageUncertainTitle')}
+                        >
+                          {event.uncertain?.map((entry) => (
+                            <Text key={entry.path} type='secondary' className='block break-all text-12px'>
+                              · {entry.path} — {entry.reason}
+                            </Text>
+                          ))}
+                        </NomiCollapse.Item>
+                      )}
+                    </NomiCollapse>
+                  )}
+                </div>
+              );
+            }
+            if (event.phase === PHASE.sourcePlanReady) {
+              return (
+                <div key={index} className='text-13px leading-20px'>
+                  <span className='font-500 text-t-primary'>
+                    {t('learning.genSourcePlanReady', {
+                      chapters: event.chapters ?? 0,
+                      concepts: event.concepts ?? 0,
+                    })}
                   </span>
-                )}
-                {/* 可展开明细：跳过理由 / duplicate_of / uncertain（帧里有界 ≤10） */}
-                {(event.excluded?.length ?? 0) + (event.duplicates?.length ?? 0) + (event.uncertain?.length ?? 0) > 0 && (
-                  <NomiCollapse bordered={false}>
-                    {(event.excluded?.length ?? 0) > 0 && (
-                      <NomiCollapse.Item
-                        name={`triage-excluded-${index}`}
-                        header={t('learning.genTriageExcludedTitle')}
-                      >
-                        {event.excluded?.map((entry) => (
-                          <Text key={entry.path} type='secondary' className='block break-all text-12px'>
-                            · {entry.path} — {entry.reason}
-                          </Text>
-                        ))}
-                      </NomiCollapse.Item>
-                    )}
-                    {(event.duplicates?.length ?? 0) > 0 && (
-                      <NomiCollapse.Item
-                        name={`triage-duplicates-${index}`}
-                        header={t('learning.genTriageDuplicatesTitle')}
-                      >
-                        {event.duplicates?.map((duplicate) => (
-                          <Text key={duplicate.path} type='secondary' className='block break-all text-12px'>
-                            · {duplicate.path} → {duplicate.duplicate_of}
-                          </Text>
-                        ))}
-                      </NomiCollapse.Item>
-                    )}
-                    {(event.uncertain?.length ?? 0) > 0 && (
-                      <NomiCollapse.Item
-                        name={`triage-uncertain-${index}`}
-                        header={t('learning.genTriageUncertainTitle')}
-                      >
-                        {event.uncertain?.map((entry) => (
-                          <Text key={entry.path} type='secondary' className='block break-all text-12px'>
-                            · {entry.path} — {entry.reason}
-                          </Text>
-                        ))}
-                      </NomiCollapse.Item>
-                    )}
-                  </NomiCollapse>
-                )}
-              </div>
-            );
-          }
-          if (event.phase === PHASE.sourcePlanReady) {
-            return (
-              <div key={index} className='text-13px leading-20px'>
-                <span className='font-500 text-t-primary'>
-                  {t('learning.genSourcePlanReady', {
-                    chapters: event.chapters ?? 0,
-                    concepts: event.concepts ?? 0,
-                  })}
-                </span>
-                {(event.gaps?.length ?? 0) > 0 && (
-                  <span className='ml-8px text-t-secondary'>
-                    · {t('learning.sourceCoverageGaps')} {event.gaps?.length}
+                  {(event.gaps?.length ?? 0) > 0 && (
+                    <span className='ml-8px text-t-secondary'>
+                      · {t('learning.sourceCoverageGaps')} {event.gaps?.length}
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            if (event.phase === PHASE.coverageReady) {
+              return (
+                <div key={index} className='text-13px leading-20px'>
+                  <span className='font-500 text-t-primary'>
+                    {t('learning.genCoverageReady', {
+                      covered: event.topics_covered ?? 0,
+                      skipped: event.topics_skipped ?? 0,
+                      fallback: event.fallback ?? 0,
+                    })}
                   </span>
-                )}
-              </div>
-            );
-          }
-          if (event.phase === PHASE.coverageReady) {
-            return (
-              <div key={index} className='text-13px leading-20px'>
-                <span className='font-500 text-t-primary'>
-                  {t('learning.genCoverageReady', {
-                    covered: event.topics_covered ?? 0,
-                    skipped: event.topics_skipped ?? 0,
-                    fallback: event.fallback ?? 0,
-                  })}
-                </span>
-              </div>
-            );
-          }
-          if (event.phase === PHASE.publishing) {
-            return (
-              <div key={index} className='text-13px text-t-secondary'>
-                {t('learning.genPublishing')}
-              </div>
-            );
-          }
-          return null;
-        })}
-      </div>
+                </div>
+              );
+            }
+            if (event.phase === PHASE.publishing) {
+              return (
+                <div key={index} className='text-13px text-t-secondary'>
+                  {t('learning.genPublishing')}
+                </div>
+              );
+            }
+            return null;
+          })}
+        </div>
+      )}
 
-      {(running || queued) && (
+      {/* v2 流的运行/排队提示行 + 取消入口（学习图流已在上方单行收口，
+          不走这一行） */}
+      {!graphFlow && (running || queued) && (
         <div className='flex items-center justify-between gap-8px'>
           <div className='flex items-center gap-8px'>
             <Spin size={16} />
@@ -371,34 +421,48 @@ export function CourseGenerationProgress({
                   {error}
                 </div>
               )}
-              <div className='flex flex-col gap-4px'>
-                <div>
-                  <Button size='small' type='primary' onClick={onRetry}>
-                    {t('learning.genRetryResume')}
-                  </Button>
-                </div>
+              {/* 恢复态不提供重发式重试（合成请求会以后端 topic 标签为名
+                  新建课程）：只出指引文案 */}
+              {restored ? (
                 <Text type='secondary' className='text-12px'>
-                  {t('learning.genRetryResumeHint')}
+                  {t('learning.restoredRetryGuidance')}
                 </Text>
-              </div>
+              ) : (
+                <div className='flex flex-col gap-4px'>
+                  <div>
+                    <Button size='small' type='primary' onClick={onRetry}>
+                      {t('learning.genRetryResume')}
+                    </Button>
+                  </div>
+                  <Text type='secondary' className='text-12px'>
+                    {t('learning.genRetryResumeHint')}
+                  </Text>
+                </div>
+              )}
             </div>
           }
         />
       )}
 
       {/* 取消是中性终态而非失败：无错误详情；取消不保留草稿，重试即
-          全新生成 */}
+          全新生成。恢复态同样不提供重发（见上），只出中性指引 */}
       {status === 'cancelled' && (
         <Alert
           type='warning'
           content={
             <div className='flex flex-col gap-8px'>
               <span>{t('learning.genCancelled')}</span>
-              <div>
-                <Button size='small' type='primary' onClick={onRetry}>
-                  {t('learning.genRetryFresh')}
-                </Button>
-              </div>
+              {restored ? (
+                <Text type='secondary' className='text-12px'>
+                  {t('learning.restoredRetryGuidance')}
+                </Text>
+              ) : (
+                <div>
+                  <Button size='small' type='primary' onClick={onRetry}>
+                    {t('learning.genRetryFresh')}
+                  </Button>
+                </div>
+              )}
             </div>
           }
         />

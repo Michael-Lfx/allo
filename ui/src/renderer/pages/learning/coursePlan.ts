@@ -4,6 +4,7 @@
  * 通过后由 hook 直接发起生成；这里只负责「校验失败只回 i18n 键，不产生任何
  * 请求」的请求构造。学习图只带目标（程度/基础声明与讲解风格的 UI 已移除，
  * 后端 DTO 全部 serde default：缺省由结构生成扩写、纯零基础、standard）。 */
+import type { Translate } from './utils';
 import type { GenerateCourseRequest } from './types';
 
 export type CreationTab = 'base' | 'description' | 'graph';
@@ -91,4 +92,69 @@ export function buildPlanRequest(
       ...modelFields,
     },
   };
+}
+
+/** 学习图结构类任务的快照 `kind` 机器名（后端 KIND_STRUCTURE /
+ * KIND_STRUCTURE_MOUNT / KIND_STRUCTURE_REPAIR，只在学习图课程上登记）。 */
+const GRAPH_STRUCTURE_TASK_KINDS: readonly string[] = [
+  'structure',
+  'structure_mount',
+  'structure_repair',
+];
+
+/** 恢复态任务快照的机器面（kind + 后端 topic 原文）：请求形状与悬浮 Pill
+ * 显示文案（c3）的组装输入。实时链（本会话提交）不带——描述即用户输入。 */
+export interface RestoredTaskInfo {
+  kind: string;
+  topic: string;
+}
+
+/** 恢复态任务 → 建课请求（c1）：对话框按 `course_kind` 分流呈现（学习图 =
+ * 单行后台提示，v2 = 步骤条/活动流），恢复态不能再一律标 learning_graph。
+ * 只有结构类任务确属学习图流；v2 建课（后端 KIND_OUTLINE）与课时任务不带
+ * `course_kind`——与 v2 表单请求同形，呈现保持 v2 口径。这是**合成请求**，
+ * 只供呈现分流，不可重发：`description` 是后端 topic 标签（如「知识结构
+ * 生成」），重发会以标签为名新建课程（重试守卫见 useCourseCreation 的
+ * `retryableGenerationRequest`）。悬浮 Pill 显示文案走 `restoredTaskTopic`
+ * （c3）。 */
+export function buildRestoredRequest(task: RestoredTaskInfo): GenerateCourseRequest {
+  return {
+    ...(GRAPH_STRUCTURE_TASK_KINDS.includes(task.kind)
+      ? { course_kind: 'learning_graph' as const }
+      : {}),
+    description: task.topic,
+  };
+}
+
+/** 课时任务主题前缀：lesson.rs:612/636 登记时的「课时内容 · {lesson_title}」。
+ * 跨语言镜像——后端措辞若变更，这里剥不出标题，按未知任务兜底（宁缺不泄漏，
+ * 不把中文 chrome 回显给 en-US 用户）；剥前缀本身保留，兼容在网旧快照。 */
+const LESSON_TOPIC_PREFIX = '课时内容 · ';
+
+/** 恢复态任务 → 悬浮 Pill 副行显示文案（c3）：人面由前端词典按 `kind` 组装，
+ * 后端中文 topic 不再直达 UI。结构类任务无标题（topic 是裸 label）；课时
+ * 任务从 topic 剥出课时标题进词典模板（前缀失配按未知兜底）；outline 的
+ * topic 本就是用户自述文本（语言中立）原样返回；未知 kind 的 topic 语义
+ * 不明（可能是后端中文标签），回中性本地化兜底——与 GrowthTaskPill 的
+ * 「宁缺不泄漏」同一口径，不再原样回显。 */
+export function restoredTaskTopic(task: RestoredTaskInfo, t: Translate): string {
+  switch (task.kind) {
+    case 'structure':
+      return t('learning.taskKindStructure');
+    case 'structure_mount':
+      return t('learning.taskKindStructureMount');
+    case 'structure_repair':
+      return t('learning.taskKindStructureRepair');
+    case 'lesson':
+      if (task.topic.startsWith(LESSON_TOPIC_PREFIX)) {
+        return t('learning.taskKindLesson', {
+          title: task.topic.slice(LESSON_TOPIC_PREFIX.length),
+        });
+      }
+      return t('learning.taskKindUnknown');
+    case 'outline':
+      return task.topic;
+    default:
+      return t('learning.taskKindUnknown');
+  }
 }

@@ -54,7 +54,7 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
-  // 同步创建：课程落库即返回；知识结构生成与首生长在后台执行（进度经
+  // 同步创建：课程落库即返回；知识结构生成在后台执行（进度经
   // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),

@@ -12,9 +12,9 @@ import { CourseGenerationProgress } from './CourseGenerationProgress';
 const { Text, Paragraph } = Typography;
 
 /** 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库
- * 参与）/ 方式三（学习图 beta：只留目标输入 → 建课；知识结构生成与首生长在
- * 后台启动）。提交即生成（d5：计划确认页已移除）——校验通过直接切换为生成/
- * 进度视图（结构与生长在后台继续，工作区顶条与悬浮指示条可回看）。 */
+ * 参与）/ 方式三（学习图 beta：只留目标输入 → 建课；知识结构生成在后台启
+ * 动）。提交即生成（d5：计划确认页已移除）——校验通过直接切换为生成/
+ * 进度视图（结构生成在后台继续，工作区顶条与悬浮指示条可回看）。 */
 export function CreateCourseDialog({
   visible,
   busy,
@@ -111,6 +111,11 @@ export function CreateCourseDialog({
           result={generation.result}
           error={generation.error}
           sources={generatingSources}
+          // c1：学习图流呈现最小化（running 单行后台提示），按请求的
+          // course_kind 分流；v2 流不传（缺省）呈现零变化。
+          courseKind={generation.request.course_kind}
+          // 恢复态（restoredTask 在场）终态只出指引文案，不提供重发式重试。
+          restored={generation.restoredTask !== null}
           onStartLearning={onStartLearning}
           onRetry={onRetry}
           onCancel={onCancel}

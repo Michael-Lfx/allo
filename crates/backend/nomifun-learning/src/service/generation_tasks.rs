@@ -44,7 +44,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::completer::LearningCompleter;
 
-/// 任务类别（键的第一段；快照面的机器名，人面文案由 `topic`/`detail` 承担）。
+/// 任务类别（键的第一段；快照面的机器名，UI 进度人面由前端词典按它组装）。
 pub(crate) const KIND_GROWTH: &str = "growth";
 pub(crate) const KIND_STRUCTURE: &str = "structure";
 pub(crate) const KIND_STRUCTURE_MOUNT: &str = "structure_mount";
@@ -80,9 +80,10 @@ pub struct GenerationTaskView {
     pub topic: String,
     /// queued | running | done | failed | cancelled（queued 只在过闸路径出现）。
     pub state: String,
-    /// step 机器面（英文常量；前端不造步骤文案）。
+    /// step 机器面（英文常量；UI 进度人面由前端词典按它组装，c3 起）。
     pub step: Option<String>,
-    /// detail 人面（后端单源的单句中文）。
+    /// detail 诊断面（后端单句中文；UI 进度行不再消费，仅 failed 态作失败
+    /// 原因展示与诊断日志面）。
     pub detail: Option<String>,
     pub elapsed_secs: Option<u64>,
     /// 排队登记时刻（unix ms；非 queued = None，m7 排队可见）。
@@ -187,7 +188,7 @@ impl GenerationTaskGuard {
         self.usage.clone()
     }
 
-    /// 进度叙事（step 机器面 / detail 人面，后端单源）：快照与事件共用。
+    /// 进度叙事（step 机器面 / detail 诊断面，后端单源）：快照与事件共用。
     pub fn set_step(&self, step: &str, detail: &str) {
         self.registry.set_step(&self.key, step, detail);
     }

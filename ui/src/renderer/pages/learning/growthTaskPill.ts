@@ -33,9 +33,9 @@ export interface GrowthPillItem {
   /** 后端主题原文（`学习图生长 · {课程标题}`） */
   topic: string;
   status: GrowthPillStatus;
-  /** 机器面步骤常量（如 `draft`） */
+  /** 机器面步骤常量（如 `draft`；UI 进度人面由词典按它组装，c3） */
   step: string | null;
-  /** 人面单句（后端单源；失败时即失败原因） */
+  /** 后端诊断单句（c3 起进度行不再消费；仅 failed 态作失败原因展示） */
   detail: string | null;
   elapsedSecs: number | null;
   queuePosition: number | null;

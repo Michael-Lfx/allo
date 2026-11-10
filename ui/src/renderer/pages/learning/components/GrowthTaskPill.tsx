@@ -10,6 +10,22 @@ import type { Translate } from '../utils';
 
 const { Text } = Typography;
 
+/** 机器面 step 常量 → 词典 key（c3 全档映射）：后端 `set_step` 只产英文
+ * 机器名，进度人面单句由前端词典承担。覆盖后端全量调用点（generate.rs
+ * triage/source_plan/expansion、learning_graph.rs structure/mount/repair/
+ * draft、lesson.rs generate）；未知 step 不出进度行（宁缺不泄漏 detail）。
+ * 导出供渲染测试逐档断言双语词典对称。 */
+export const STEP_KEYS: Record<string, `learning.growthPillStep${string}`> = {
+  triage: 'learning.growthPillStepTriage',
+  source_plan: 'learning.growthPillStepSourcePlan',
+  expansion: 'learning.growthPillStepExpansion',
+  structure: 'learning.growthPillStepStructure',
+  mount: 'learning.growthPillStepMount',
+  repair: 'learning.growthPillStepRepair',
+  draft: 'learning.growthPillStepDraft',
+  generate: 'learning.growthPillStepGenerate',
+};
+
 function statusLabel(t: Translate, item: GrowthPillItem): string {
   switch (item.status) {
     case 'queued':
@@ -27,8 +43,9 @@ function statusLabel(t: Translate, item: GrowthPillItem): string {
   }
 }
 
-/** 第三行进度读数：打回重起草（WS 增强）> 机器步骤的本地化文案 > 后端
- * 人面单句；排队给位次；失败给原因；完成/取消不赘述。 */
+/** 第三行进度读数：打回重起草（WS 增强）> 机器步骤的词典文案（c3：人面
+ * 由前端按 step 词典承担，未知/缺席 step 不出进度行，不回落后端 detail）；
+ * 排队给位次；失败给原因（诊断面，票面界定保留）；完成/取消不赘述。 */
 function progressLine(t: Translate, item: GrowthPillItem): string | null {
   if (item.status === 'queued') {
     return item.queuePosition === null
@@ -44,8 +61,8 @@ function progressLine(t: Translate, item: GrowthPillItem): string | null {
         { count: item.redraft.count }
       );
     }
-    if (item.step === 'draft') return t('learning.growthPillStepDraft');
-    return item.detail;
+    const stepKey = item.step ? STEP_KEYS[item.step] : undefined;
+    return stepKey ? t(stepKey) : null;
   }
   return item.status === 'failed' ? item.detail : null;
 }
