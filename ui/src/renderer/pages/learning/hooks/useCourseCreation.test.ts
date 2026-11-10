@@ -171,6 +171,8 @@ describe('restoredGenerationFromTask：从快照行重建对话框生成态', ()
     expect(restoredGenerationFromTask(task())).toEqual({
       status: 'running',
       request: { course_kind: 'learning_graph', description: '系统掌握 Rust 所有权' },
+      // c3：快照机器面留存，悬浮 Pill 副行显示文案由词典按 kind 组装
+      restoredTask: { kind: 'structure', topic: '系统掌握 Rust 所有权' },
       result: null,
       error: null,
     });
