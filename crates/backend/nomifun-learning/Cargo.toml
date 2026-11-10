@@ -37,5 +37,10 @@ walkdir.workspace = true
 tokio.workspace = true
 nomifun-realtime.workspace = true
 tempfile.workspace = true
+# p2 生成级 warn 留痕断言（评审修复）：fmt Subscriber + SharedBuf 捕获生成门
+# 的非拒绝 warnings 日志（与 nomifun-ai-agent acp.rs 同款捕获形状）。
+tracing-subscriber.workspace = true
 # kill-switch 测试改进程内 env(serial 互斥,防止与并行跑新管线的测试互扰)。
 serial_test.workspace = true
+# 路由层单测（g1 grow 模型选择）：Router::oneshot 走真实提取器栈。
+tower = { workspace = true, features = ["util"] }

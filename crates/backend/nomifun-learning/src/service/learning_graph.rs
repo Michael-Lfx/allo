@@ -161,6 +161,10 @@ impl LearningService {
         // 显式触发——学习窗口「开始学习」= POST grow；learnhub ADR-0024
         // 语义：生长是学习动作的副作用，不是建课的副作用）。后台任务要求
         // 'static：模型偏好先持有化再入任务。
+        // g3 冲突同步暴露：首结构生成的两把锁在请求生命周期内拿齐（新课程
+        // UUID 实际撞不上冲突，但形状与 regenerate 收口一致，杜绝 spawn 后
+        // Conflict 只 WARN 的静默面）。
+        let (slot, admission_key) = self.admit_structure_generation(user_id, &course_id)?;
         let service = self.clone();
         let owner = user_id.clone();
         let course = course_id.clone();
@@ -172,15 +176,16 @@ impl LearningService {
         let spawn_override = model_override
             .map(|(provider, model)| (provider.clone(), model.to_owned()));
         tokio::spawn(async move {
-            let spawn_override = spawn_override
-                .as_ref()
-                .map(|(provider, model)| (provider, model.as_str()));
-            if let Err(error) = service
-                .run_structure_generation(&course, &owner, spawn_override, &structure_input)
-                .await
-            {
-                tracing::warn!(course = course.as_str(), %error, "structure generation failed");
-            }
+            Self::run_detached_structure_generation(
+                service,
+                slot,
+                admission_key,
+                course,
+                spawn_override,
+                structure_input,
+                "structure generation failed",
+            )
+            .await;
             // e3：不再衔接首生长。零节点时停摆臂本就拦住自动臂（m10 补批
             // 语义不动），首批 = 用户显式动作（POST grow，force 恒过停摆臂）。
         });
@@ -204,15 +209,82 @@ impl LearningService {
         input: &crate::learning_graph::structure_gen::StructureInput,
     ) -> Result<(), AppError> {
         self.require_live_graph_course(course_id).await?;
-        // 每课程一把 slot 锁：进行中的生成让重复触发报冲突。
+        let (_slot, admission_key) = self.admit_structure_generation(user_id, course_id)?;
+        let task = self.generation_tasks.begin_registered(admission_key).await?;
+        self.run_structure_generation_task(course_id, model_override, input, task)
+            .await
+    }
+
+    /// g3 冲突同步暴露：结构生成的两把锁在请求生命周期内拿齐——每课程一把
+    /// slot 锁 + registry 预登记（同键 `queued|running` 在场即 Conflict）。
+    /// 冲突以 409 回路由，不再 spawn 后 WARN 静默（HTTP 恒 200 `kicked=true`
+    /// 的病历面）。slot 锁在 registry 之前拿：registry 冲突时 slot guard
+    /// RAII 自释放、不留半持锁；反序会留下一条永远无人接续准入的 queued
+    /// 记录。返回的 slot guard 必须移交进后台任务（RAII）；task key 经
+    /// `begin_registered` 接续准入（lesson 异步臂同款形状）。
+    fn admit_structure_generation(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<(crate::service::GenerationSlotGuard, String), AppError> {
         let slot_key = format!("learning-structure-{}", course_id.as_str());
-        let _slot = self.acquire_generation_slot(user_id, slot_key)?;
-        let mut task = self.begin_generation_task(
+        let slot = self.acquire_generation_slot(user_id, slot_key)?;
+        let task_key = self.generation_tasks.pre_register(
             crate::service::KIND_STRUCTURE,
             course_id.as_str(),
             None,
             "知识结构生成",
-        ).await?;
+        )?;
+        Ok((slot, task_key))
+    }
+
+    /// spawn 侧共享样板（评审修复：首生长/重生成两处 16 行同形闭包收口）：
+    /// slot guard RAII 移交 + `begin_registered` 接续准入 + 生成体运行。
+    /// `failure_log` 参数化两臂唯一的日志文案差（首生长/重生成）；
+    /// 「detached … never admitted」文案两臂共享。排队期取消 / 记录消失：
+    /// 终态已由取消侧或注册表落账，无可收尾。语义零改动（growth/lesson
+    /// 异步臂各走各自的形状，不在此列）。
+    async fn run_detached_structure_generation(
+        service: Self,
+        slot: crate::service::GenerationSlotGuard,
+        admission_key: String,
+        course: LearningCourseId,
+        model_override: Option<(ProviderId, String)>,
+        input: crate::learning_graph::structure_gen::StructureInput,
+        failure_log: &'static str,
+    ) {
+        let spawn_override = model_override
+            .as_ref()
+            .map(|(provider, model)| (provider, model.as_str()));
+        let _slot = slot; // RAII：任务结束（含 panic）即释放
+        match service.generation_tasks.begin_registered(admission_key).await {
+            Ok(task) => {
+                if let Err(error) = service
+                    .run_structure_generation_task(&course, spawn_override, &input, task)
+                    .await
+                {
+                    tracing::warn!(course = course.as_str(), %error, "{}", failure_log);
+                }
+            }
+            // 排队期取消 / 记录消失：终态已由取消侧或注册表落账，无可收尾。
+            Err(error) => {
+                tracing::warn!(%error, "detached structure generation was never admitted")
+            }
+        }
+    }
+
+    /// 结构生成任务体（g3 拆分）：两把锁已由
+    /// [`Self::admit_structure_generation`] 在请求生命周期内拿齐（冲突同步
+    /// 409），本方法只跑生成体。任务 guard 随调用移交；slot guard 由 spawn
+    /// 侧持有（RAII：任务结束含 panic 即释放）。
+    async fn run_structure_generation_task(
+        &self,
+        course_id: &LearningCourseId,
+        model_override: Option<(&ProviderId, &str)>,
+        input: &crate::learning_graph::structure_gen::StructureInput,
+        mut task: crate::service::GenerationTaskGuard,
+    ) -> Result<(), AppError> {
+        self.require_live_graph_course(course_id).await?;
         let token = task.token();
         task.set_step("structure", "正在生成知识结构与前置地形…");
         self.emit_graph_event(
@@ -404,21 +476,26 @@ impl LearningService {
             proficiency_statement: proficiency,
             learner_basis: basis,
         };
+        // g3 冲突同步暴露：两把锁（slot + registry 预登记）在请求生命周期内
+        // 拿齐，冲突 = 409 回路由——不再 spawn 后 WARN、HTTP 恒 200
+        // `kicked=true`（2026-11-09 病历：1ms 200 + 后台 WARN + UI 零反馈）。
+        let (slot, admission_key) = self.admit_structure_generation(user_id, course_id)?;
         let service = self.clone();
         let owner = user_id.clone();
         let course = course_id.clone();
         let spawn_override =
             model_override.map(|(provider, model)| (provider.clone(), model.to_owned()));
         tokio::spawn(async move {
-            let spawn_override = spawn_override
-                .as_ref()
-                .map(|(provider, model)| (provider, model.as_str()));
-            if let Err(error) = service
-                .run_structure_generation(&course, &owner, spawn_override, &input)
-                .await
-            {
-                tracing::warn!(course = course.as_str(), %error, "structure regeneration failed");
-            }
+            Self::run_detached_structure_generation(
+                service,
+                slot,
+                admission_key,
+                course,
+                spawn_override,
+                input,
+                "structure regeneration failed",
+            )
+            .await;
         });
         Ok(true)
     }

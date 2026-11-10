@@ -20,6 +20,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
+import { BackendHttpError } from '@/common/adapter/httpBridge';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
 import { lessonStatusTagColors } from '../model';
@@ -108,7 +109,7 @@ const LearningGraphWorkspace: React.FC<{
 
   // 自动补批触发②（m10）：工作区加载 → 纯读裁决 → Due 自动补一批（后台）。
   // autoPreparing 是派发窗口的诚实读数，批次运行期仍由 growth_running 表达。
-  const { autoPreparing } = useAutoRefill(detail.course.id, onRefresh);
+  const { autoPreparing } = useAutoRefill(detail.course.id, onRefresh, model.choice);
 
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(
     () => graph?.recommended[0] ?? null
@@ -195,10 +196,17 @@ const LearningGraphWorkspace: React.FC<{
       });
     } catch (actionError) {
       setStructureRunning(false);
-      Modal.error({
-        title: t('learning.learningGraphStructureFailed'),
-        content: errorMessage(t, actionError),
-      });
+      // g3 冲突显性化：生成进行中重复触发 = 后端 409 → 非阻塞 toast 明确
+      // 反馈（此前 200 kicked=true 静默吞掉，「生成中」Tag 卡死到刷新）；
+      // 其余失败保留阻塞 Modal——需要用户看见并处置。
+      if (actionError instanceof BackendHttpError && actionError.status === 409) {
+        Message.warning(t('learning.learningGraphStructureConflict'));
+      } else {
+        Modal.error({
+          title: t('learning.learningGraphStructureFailed'),
+          content: errorMessage(t, actionError),
+        });
+      }
     } finally {
       setRegenerating(false);
     }
@@ -312,7 +320,7 @@ const LearningGraphWorkspace: React.FC<{
     async (doors: string[]) => {
       setDeclaringBasis(true);
       try {
-        const result = await learningApi.declareBasis(detail.course.id, doors);
+        const result = await learningApi.declareBasis(detail.course.id, doors, model.choice);
         setBasisDraftChecked([]);
         // 声明反馈走非阻塞 toast（c2）：阻塞弹窗叠在冻结展示上是二次打断；
         // 失败保持 Modal——需要用户看见并处置。
@@ -342,7 +350,7 @@ const LearningGraphWorkspace: React.FC<{
         setDeclaringBasis(false);
       }
     },
-    [detail.course.id, onRefresh, t]
+    [detail.course.id, model.choice, onRefresh, t]
   );
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
@@ -350,14 +358,14 @@ const LearningGraphWorkspace: React.FC<{
   const grow = useCallback(async () => {
     setGrowing(true);
     try {
-      await learningApi.growGraph(detail.course.id);
+      await learningApi.growGraph(detail.course.id, undefined, model.choice);
       onRefresh();
     } catch (actionError) {
       Modal.error({ title: t('learning.learningGraphGrowFailed'), content: errorMessage(t, actionError) });
     } finally {
       setGrowing(false);
     }
-  }, [detail.course.id, onRefresh, t]);
+  }, [detail.course.id, model.choice, onRefresh, t]);
 
   if (!graph) {
     return <Empty description={t('learning.learningGraphEmpty')} />;

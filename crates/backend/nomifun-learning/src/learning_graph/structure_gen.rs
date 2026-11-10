@@ -294,10 +294,15 @@ async fn attempt_once(
     if vocab_rewrites > 0 {
         tracing::info!(rewrites = vocab_rewrites, "structure vocab normalized to stored codes");
     }
+    // 门前删键（p2，病历 2026-11-09 attempt1）：白名单外的顶层键机械删除
+    // 放行 + 每键一行 warn 留痕（并入下方违约表，随 warnings 透出）——
+    // 不再因多吐键整份两产物打回重烧。
+    let dropped_keys = structure_contract::drop_unknown_top_keys(&mut structure);
 
     // 契约门：双产物逐条款执法 + 门口对账（g2：structure 的门口只准引用
     // 地形门口）。警告级只透出，不触发重试。
     let mut violations = structure_contract::validate_structure(&structure);
+    violations.extend(dropped_keys);
     violations.extend(structure_contract::validate_terrain(&terrain));
     violations.extend(structure_contract::reconcile_doors(&structure, &terrain));
     let warnings: Vec<String> = violations
@@ -589,6 +594,86 @@ mod tests {
             prompts[1]
         );
         assert!(prompts[1].contains("- [G1]（硬前置）"), "{:#}", prompts[1]);
+    }
+
+    /// p2 红绿样（病历 2026-11-09 attempt1）：structure 多吐一个顶层键
+    /// `type` → 门前机械删键放行 + warn 留痕，**一轮过门**不再整份两产物
+    /// 重生成（terrain + structure 白烧 122.7s 的全部来源就此消除）；放行
+    /// 快照不得残留未知键。缺键/类型错等硬伤仍拒（见
+    /// `structure_contract::tests::gd_keys_missing_required_still_red`）。
+    /// 评审修复补盲：warn 留痕在生成级输出直断——留痕只走日志通道
+    /// （返回值仅双产物，`structure_contract` 级已断返回值形态），这里捕获
+    /// tracing 面，票面验收「findings 有行」在生成级点名：非拒绝 warnings
+    /// 行在场，且删键 findings 行（`[gd.keys]` 点名键与「删除」）在场。
+    #[tokio::test]
+    async fn unknown_top_key_passes_in_one_attempt_with_key_dropped() {
+        // 生成级输出捕获（tracing 面）：SharedBuf + fmt Subscriber（与
+        // nomifun-ai-agent acp.rs 同款捕获形状）。线程局部默认订阅跨 .await
+        // 存活（current_thread 测试运行时全程同线程轮询），只覆盖本测试线程，
+        // 不惊扰并行用例。
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let make_writer = {
+            let buffer = Arc::clone(&buffer);
+            move || SharedBuf(Arc::clone(&buffer))
+        };
+        let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(make_writer)
+            .with_ansi(false)
+            .finish();
+        let _log_guard = tracing::subscriber::set_default(subscriber);
+
+        let mut structure = golden_structure();
+        structure.as_object_mut().unwrap().insert("type".into(), json!("quiz"));
+        let completer = scripted(vec![golden_terrain(), structure]);
+        let artifacts = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .expect("unknown top key must be dropped at the door, not rejected");
+        assert!(
+            artifacts.structure.get("type").is_none(),
+            "放行快照不得残留未知键: {:?}",
+            artifacts.structure.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            completer.calls(),
+            2,
+            "一轮过门（terrain + structure 各一次）——不再整份两产物重生成"
+        );
+        // 生成级直断（findings 有行）：warn 留痕必须离开生成管道——删键行随
+        // 非拒绝 warnings 透出，措辞与留痕行同源（code 点名 + 处置点名）。
+        let captured = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        assert!(
+            captured.contains("structure generation warnings (non-rejecting)"),
+            "非拒绝 warnings 的生成级留痕行必须在场: {captured}"
+        );
+        assert!(
+            captured.contains("[gd.keys]") && captured.contains("未知顶层键「type」已删除放行"),
+            "删键 findings 行必须在生成级 warnings 在场（点名键与处置）: {captured}"
+        );
     }
 
     /// 门口清单装配（纯函数）：判据逐字、kind 双档措辞、空清单防御回退。

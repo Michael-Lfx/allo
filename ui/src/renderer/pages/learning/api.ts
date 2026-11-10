@@ -80,13 +80,19 @@ export const learningApi = {
     ),
   // 手动触发一次生长（就绪补到 7；已在生长中报 409）。可选 trigger 只影响
   // 动作簿的触发源标签（缺省 manual；自动补批传 auto_refill），不改变裁决。
-  growGraph: (courseId: string, trigger?: 'manual' | 'auto_refill') =>
+  // modelChoice = 用户的学习模型选择（provider_id + model 成对随 body 发出）；
+  // 缺省/null 时 body 为空，后端回落默认档。
+  growGraph: (
+    courseId: string,
+    trigger?: 'manual' | 'auto_refill',
+    modelChoice?: { provider_id: string; model: string } | null
+  ) =>
     httpRequest<{ kicked: boolean }>(
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow${
         trigger ? `?trigger=${encodeURIComponent(trigger)}` : ''
       }`,
-      {}
+      modelChoice ? { provider_id: modelChoice.provider_id, model: modelChoice.model } : {}
     ),
   // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
   // due 且非停摆才自动调上方 growGraph；disabled/below_threshold 如实不动作
@@ -168,11 +174,16 @@ export const learningApi = {
     ),
   // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点、
   // 不排课、不计 XP）；幂等增量——已声明门口自动剔除，全已声明 = noop
-  declareBasis: (courseId: string, doors: string[]) =>
+  // modelChoice 成对透传 provider_id+model；null/缺省两字段都不带 = 后端默认档
+  declareBasis: (
+    courseId: string,
+    doors: string[],
+    modelChoice?: { provider_id: string; model: string } | null
+  ) =>
     httpRequest<DeclarationResultView>(
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
-      { doors }
+      { doors, provider_id: modelChoice?.provider_id, model: modelChoice?.model }
     ),
   // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露。
   // 撤销（DELETE /basis）不在产品面（c3）：后端接口保留作纠错通道。
@@ -210,6 +221,15 @@ export const learningApi = {
   // 长任务快照（课时异步生成的轮询面；响应体 `poll` 字段同指此处）
   generationTasks: () =>
     httpRequest<LearningGenerationTaskView[]>('GET', `${BASE}/generation-tasks`),
+  // 统一取消（按任务键，真取消）：取消胜出 = `{state: 'cancelled'}`；任务已
+  // 先到终态（竞速落败）= 如实回 done/failed；键不存在 = 404。生长悬浮
+  // Pill（g4）的取消入口——终态仍以随后的快照轮询为准。
+  cancelGenerationTask: (key: string) =>
+    httpRequest<{ state: string }>(
+      'POST',
+      `${BASE}/generation-tasks/${encodeURIComponent(key)}/cancel`,
+      {}
+    ),
   // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
   //（其余节与题目不动）；旧课时（无节清单）返回 400。feedback 为可选
   // 学习建议（ADR-0007），为空即同分布重生成。

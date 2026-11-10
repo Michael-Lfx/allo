@@ -317,11 +317,14 @@ async fn cancel_learning_graph_generation(
 /// 零节点课程的首批触发面：学习窗口「开始学习」调这里（force 恒过停摆臂）。
 /// y04：可选 `?trigger=auto_refill`（缺省 manual）——只改动作簿触发源标签，
 /// 不改变任何裁决；settlement/timer 不接受外部注入。
+/// g1：可选 body `{provider_id, model}` = 用户的学习模型选择（成对，缺一
+/// 400；缺省回落默认档）；手动与自动补批两臂同经此 handler。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Query(query): Query<GrowGraphQuery>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
     let trigger = match query.trigger.as_deref() {
@@ -330,9 +333,18 @@ async fn grow_learning_graph(
             || AppError::BadRequest(format!("unknown growth trigger: {value}")),
         )?,
     };
+    let model_override = paired_model_choice(request)?;
     let kicked = state
         .service
-        .kick_growth_with_trigger(&user.id, &course_id, true, None, trigger)
+        .kick_growth_with_trigger(
+            &user.id,
+            &course_id,
+            true,
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
+            trigger,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
 }
@@ -499,13 +511,32 @@ async fn concept_detail(
     )))
 }
 
-/// 结构重生成请求（可选模型偏好；缺省用实现方的默认 provider）。
+/// 模型选择覆盖（g1/g2/j08/j09 四个生成端点共用：grow / 结构重生成 / 挂载 /
+/// 修补；可选模型偏好，缺省用实现方的默认 provider）。纯 Rust 侧命名——
+/// serde 字段不变，线上负载零影响。
 #[derive(Debug, Default, serde::Deserialize)]
-struct RegenerateStructureRequest {
+struct ModelChoiceOverrideRequest {
     #[serde(default)]
     provider_id: Option<ProviderId>,
     #[serde(default)]
     model: Option<String>,
+}
+
+/// provider_id+model 成对校验收口（评审修复：四端点逐字同形样板收口）。
+/// 单给其一 400（文案与原四处逐字一致）；缺省 / 双缺回落默认档（None）。
+/// 消费整个可选 body（含 axum `Json` 包装），返回持有的 `(ProviderId, String)`。
+fn paired_model_choice(
+    request: Option<Json<ModelChoiceOverrideRequest>>,
+) -> Result<Option<(ProviderId, String)>, AppError> {
+    let Some(Json(request)) = request else {
+        return Ok(None);
+    };
+    if request.provider_id.is_some() != request.model.is_some() {
+        return Err(AppError::BadRequest(
+            "provider_id and model must be provided together".into(),
+        ));
+    }
+    Ok(request.provider_id.zip(request.model))
 }
 
 /// 重跑知识结构生成（g2：重生成 = 换参考地图不换课，快照原子覆盖）；
@@ -514,23 +545,10 @@ async fn regenerate_graph_structure(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    request: Option<Json<RegenerateStructureRequest>>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
-    if request
-        .as_ref()
-        .and_then(|Json(request)| request.provider_id.as_ref())
-        .is_some() != request
-        .as_ref()
-        .and_then(|Json(request)| request.model.as_deref())
-        .is_some()
-    {
-        return Err(AppError::BadRequest(
-            "provider_id and model must be provided together".into(),
-        ));
-    }
-    let model_override = request
-        .and_then(|Json(request)| request.provider_id.zip(request.model));
+    let model_override = paired_model_choice(request)?;
     let kicked = state
         .service
         .regenerate_structure(&user.id, &course_id, model_override.as_ref().map(|(provider, model)| (provider, model.as_str())))
@@ -544,23 +562,10 @@ async fn mount_structure(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    request: Option<Json<RegenerateStructureRequest>>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
 ) -> Result<Json<ApiResponse<MountRoundSummary>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
-    if request
-        .as_ref()
-        .and_then(|Json(request)| request.provider_id.as_ref())
-        .is_some() != request
-        .as_ref()
-        .and_then(|Json(request)| request.model.as_deref())
-        .is_some()
-    {
-        return Err(AppError::BadRequest(
-            "provider_id and model must be provided together".into(),
-        ));
-    }
-    let model_override = request
-        .and_then(|Json(request)| request.provider_id.zip(request.model));
+    let model_override = paired_model_choice(request)?;
     let summary = state
         .service
         .run_structure_mount(
@@ -579,23 +584,10 @@ async fn repair_structure(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    request: Option<Json<RegenerateStructureRequest>>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
 ) -> Result<Json<ApiResponse<StructureRepairSummary>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
-    if request
-        .as_ref()
-        .and_then(|Json(request)| request.provider_id.as_ref())
-        .is_some() != request
-        .as_ref()
-        .and_then(|Json(request)| request.model.as_deref())
-        .is_some()
-    {
-        return Err(AppError::BadRequest(
-            "provider_id and model must be provided together".into(),
-        ));
-    }
-    let model_override = request
-        .and_then(|Json(request)| request.provider_id.zip(request.model));
+    let model_override = paired_model_choice(request)?;
     let summary = state
         .service
         .run_structure_repair(
