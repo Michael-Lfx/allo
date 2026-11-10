@@ -540,15 +540,18 @@ const LearningGraphWorkspace: React.FC<{
         ))}
       </div>
 
-      {/* 内容区确定高链（d1）：arco 默认 .arco-tabs-content overflow:hidden +
-          content-item-active height:auto——超高内容被静默裁掉且全链无滚动条。
-          把激活 item 钉在本 Tab 的剩余槽高并自滚，各 TabPane 在固定视口内自
-          管滚动（学习 Tab 两栏行 h-full 后由内部各自滚）。 */}
+      {/* 内容区确定高链（d1，二轮修正）：arco 默认 .arco-tabs-content
+          overflow:hidden + content-inner 高度 auto + content-item-active
+          height:auto——超高内容被静默裁掉且全链无滚动条。三层都要钉高：
+          content（flex-1 min-h-0，槽高）→ inner（h-full；缺这层时下一层的
+          百分比高度对 auto 父级解析失效，首轮修复即漏于此）→ 激活 item
+          （h-full + 自滚）。各 TabPane 在固定视口内自管滚动（学习 Tab 两栏
+          行 h-full 后由内部各自滚）。 */}
       <Tabs
         activeTab={activeTab}
         onChange={setActiveTab}
         type='line'
-        className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:min-h-0 [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px [&_.arco-tabs-content-item-active]:h-full [&_.arco-tabs-content-item-active]:overflow-y-auto'
+        className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:min-h-0 [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px [&_.arco-tabs-content-inner]:h-full [&_.arco-tabs-content-item-active]:h-full [&_.arco-tabs-content-item-active]:overflow-y-auto'
       >
         <Tabs.TabPane key='study' title={t('learning.learningGraphTabStudy')}>
           {zeroNodes ? (
