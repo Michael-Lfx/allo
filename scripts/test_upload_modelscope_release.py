@@ -129,6 +129,14 @@ class UploadHelpersTest(unittest.TestCase):
         yml = mod.build_channel_yml({"version": "1.0.0", "pub_date": "t", "notes": "n"}, "linux")
         self.assertIn('version: "1.0.0"', yml)
         self.assertIn("channel: linux", yml)
+        self.assertIn("manifest: channels/linux/latest.json", yml)
+        unibuddy = mod.build_channel_yml(
+            {"version": "1.7.0", "pub_date": "t"},
+            "windows",
+            "unibuddy_channels",
+        )
+        self.assertIn("manifest: unibuddy_channels/windows/latest.json", unibuddy)
+        self.assertEqual(mod.normalize_channel_root("unibuddy_channels"), "unibuddy_channels")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "f.bin"
             path.write_bytes(b"abc")

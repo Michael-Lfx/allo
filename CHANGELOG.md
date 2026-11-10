@@ -5,6 +5,7 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Added an isolated UniBuddy desktop OTA channel on ModelScope, triggered by `unibuddy-vX.Y.Z` through the shared three-platform release workflow, with product-specific updater manifests and macOS permission text, strict CN/AI origin verification, no GitHub `releases/latest` coupling, and unchanged Flowy update routing.
 - Optimized computer-use observation with semantic, automatic, text, and visual modes; window-scoped screenshots; isolated per-caller references; richer target selectors; and wait-for-state actions across the stdio and gateway capability surfaces.
 - Aligned voice companion microphone device routing with industry standards: removed virtual device blacklists to ensure reliable capture across remote desktop environments (such as NetEase UU Remote and ToDesk), added explicit microphone device selection in settings with dynamic hot-swapping, and enforced physical microphone stream release for privacy indicator compliance.
 - Upgraded voice companion KWS engine to official 9MB Sherpa-ONNX bilingual Zipformer with dynamic Chinese pinyin and English CMUdict phoneme compilation, enabling real-time hot-reloaded custom wake words without restarting the application.

@@ -302,10 +302,10 @@ export function findExpectedBin(root, platform) {
 
   if (platform === 'windows') {
     // Check if Flowy.exe exists at root or app/
-    if (existsSync(join(root, 'Flowy.exe'))) {
+    if (existsSync(join(root, 'Flowy.exe')) || existsSync(join(root, 'UniBuddy.exe'))) {
       return join(root, 'bin');
     }
-    if (existsSync(join(root, 'app', 'Flowy.exe'))) {
+    if (existsSync(join(root, 'app', 'Flowy.exe')) || existsSync(join(root, 'app', 'UniBuddy.exe'))) {
       return join(root, 'app', 'bin');
     }
     return join(root, 'bin');
@@ -315,7 +315,10 @@ export function findExpectedBin(root, platform) {
   const linuxCandidates = [
     join(root, 'usr', 'lib', 'Flowy', 'bin'),
     join(root, 'usr', 'lib', 'flowy', 'bin'),
+    join(root, 'usr', 'lib', 'UniBuddy', 'bin'),
+    join(root, 'usr', 'lib', 'unibuddy', 'bin'),
     join(root, 'usr', 'share', 'flowy', 'bin'),
+    join(root, 'usr', 'share', 'unibuddy', 'bin'),
     join(root, 'usr', 'bin'),
     join(root, 'bin'),
   ];

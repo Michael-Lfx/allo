@@ -19,8 +19,10 @@ bun run bump 1.2.3            # writes the version + syncs Cargo.lock + package.
 bun run bump 1.2.3 --tag      # also: git commit + git tag v1.2.3 (needs a clean tree)
 ```
 
-Tags use the `vX.Y.Z` form. The decorative `package.json` / `ui/package.json`
-versions are kept in sync by the script but are not read by any build.
+Flowy tags use `vX.Y.Z`; UniBuddy tags use `unibuddy-vX.Y.Z`. In both cases the
+numeric version must match the root workspace version. The decorative
+`package.json` / `ui/package.json` versions are kept in sync by the script but
+are not read by any build.
 
 ## Before Tagging
 
@@ -43,6 +45,13 @@ Desktop releases have two asset groups:
 - **Updater assets**: the Tauri updater package, its `.sig`, and the merged
   `latest.json`. The updater package may also be a manual installer on Windows,
   but macOS still needs a separate `.dmg` for manual install.
+
+UniBuddy uses the same native build and signing jobs through the existing
+release workflow: pushing `unibuddy-vX.Y.Z` selects its Tauri overlays and
+`unibuddy_channels` ModelScope manifest root, while skipping GitHub Release
+publication. Follow the "UniBuddy 独立渠道" runbook in
+[BUILD_RELEASE.zh-CN.md](BUILD_RELEASE.zh-CN.md) for automation and manual
+recovery commands.
 
 Updater signing and OS code signing are separate. The updater private key proves
 that an update package is ours; OS code signing controls Gatekeeper / SmartScreen

@@ -710,8 +710,9 @@ fn ota_region_bucket() -> ota_mirrors::RegionBucket {
     ota_mirrors::region_bucket(tz.as_deref(), locale.as_deref())
 }
 
-fn parse_ota_endpoints() -> Result<Vec<url::Url>, String> {
-    ota_mirrors::check_endpoints(ota_region_bucket(), ota_mirrors::host_channel())
+fn parse_ota_endpoints(app: &tauri::AppHandle) -> Result<Vec<url::Url>, String> {
+    let profile = ota_mirrors::profile_for_identifier(app.config().identifier.as_str());
+    ota_mirrors::check_endpoints(ota_region_bucket(), ota_mirrors::host_channel(), profile)
         .into_iter()
         .map(|endpoint| {
             endpoint
@@ -820,7 +821,7 @@ async fn fetch_manifest_rollout_percent(endpoints: &[url::Url]) -> u8 {
 async fn check_update(app: tauri::AppHandle) -> Result<Option<CheckUpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
 
-    let endpoints = parse_ota_endpoints()?;
+    let endpoints = parse_ota_endpoints(&app)?;
     let updater = app
         .updater_builder()
         .endpoints(endpoints.clone())
@@ -900,7 +901,7 @@ async fn download_update(
     let result = async {
         let updater = app
             .updater_builder()
-            .endpoints(parse_ota_endpoints()?)
+            .endpoints(parse_ota_endpoints(&app)?)
             .map_err(|error| error.to_string())?
             .on_before_exit(move || {
                 let verified = updater_before_exit_until_verified(

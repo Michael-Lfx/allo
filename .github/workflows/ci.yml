@@ -173,6 +173,7 @@ jobs:
           bun run check:market
           bun run check:fingerprint
           bun run check:release-sync
+          bun run check:release-product-profiles
           bun run check:release-voice-preparation
           bun test scripts/verify-voice-release-package.test.mjs
           bun run help --check

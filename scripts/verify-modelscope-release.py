@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify a published Flowy ModelScope updater manifest and artifact payloads."""
+"""Verify a published desktop ModelScope updater manifest and artifact payloads."""
 
 from __future__ import annotations
 
@@ -22,10 +22,40 @@ PLATFORM_FOLDERS = {
 }
 
 PLATFORM_CHANNELS = ("windows", "macos", "linux")
+KNOWN_API_HOSTS = ("modelscope.cn", "modelscope.ai")
 
 
-def channel_manifest_url(channel: str, repo: str = "flowy2025/flowyaipc", api_host: str = "modelscope.cn") -> str:
-    path = f"allo/channels/{channel}/latest.json"
+def normalize_api_host(value: str) -> str:
+    host = value.strip().lower()
+    for scheme in ("https://", "http://"):
+        if host.startswith(scheme):
+            host = host[len(scheme) :]
+    if host.startswith("www."):
+        host = host[4:]
+    host = host.split("/", 1)[0]
+    if host not in KNOWN_API_HOSTS:
+        raise SystemExit(
+            f"ERROR: unsupported ModelScope API host: {value} "
+            f"(expected {' or '.join(KNOWN_API_HOSTS)})"
+        )
+    return host
+
+
+def normalize_channel_root(value: str) -> str:
+    root = value.strip().strip("/")
+    if not root or not all(ch.isalnum() or ch in "-_" for ch in root):
+        raise SystemExit(f"ERROR: invalid --channel-root {value!r}")
+    return root
+
+
+def channel_manifest_url(
+    channel: str,
+    repo: str = "flowy2025/flowyaipc",
+    api_host: str = "modelscope.cn",
+    prefix: str = "allo",
+    channel_root: str = "channels",
+) -> str:
+    path = f"{prefix}/{channel_root}/{channel}/latest.json"
     return (
         f"https://{api_host}/api/v1/models/{repo}/repo"
         f"?Revision=master&FilePath={quote(path, safe='/')}"
@@ -40,6 +70,33 @@ def artifact_basename_from_url(url: str) -> str:
     if file_path:
         return Path(unquote(file_path)).name
     return Path(unquote(parsed.path)).name
+
+
+def validate_artifact_origin(
+    url: str,
+    *,
+    api_host: str,
+    repo: str,
+    prefix: str,
+    folder: str,
+    version_tag: str,
+) -> None:
+    """Require an artifact URL to belong to the ModelScope origin being verified."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != api_host:
+        raise ValueError(f"artifact URL points at the wrong host: {url}")
+
+    expected_api_path = f"/api/v1/models/{repo}/repo"
+    if unquote(parsed.path).rstrip("/") != expected_api_path:
+        raise ValueError(f"artifact URL points at the wrong repo: {url}")
+
+    file_path = parse_qs(parsed.query).get("FilePath", [""])[0].lstrip("/")
+    expected_prefix = f"{prefix}/{folder}/{version_tag}/"
+    if not file_path.startswith(expected_prefix) or not Path(file_path).name:
+        raise ValueError(
+            f"artifact URL must point under {expected_prefix}, got "
+            f"{file_path or '<missing FilePath>'}"
+        )
 
 
 def fetch_json(url: str) -> dict:
@@ -117,7 +174,13 @@ def main() -> None:
     parser.add_argument(
         "--channel",
         choices=PLATFORM_CHANNELS,
-        help="OTA channel (sets default --url to allo/channels/<channel>/latest.json)",
+        help="OTA channel (sets default --url to <prefix>/<channel-root>/<channel>/latest.json)",
+    )
+    parser.add_argument("--prefix", default="allo", help="Repo path prefix (default: allo)")
+    parser.add_argument(
+        "--channel-root",
+        default="channels",
+        help="Manifest directory under --prefix (default: channels; UniBuddy: unibuddy_channels)",
     )
     parser.add_argument("--url", default=None, help="Updater manifest URL")
     parser.add_argument("--repo", default="flowy2025/flowyaipc", help="ModelScope model repo")
@@ -151,15 +214,20 @@ def main() -> None:
     check_artifacts = args.check_artifacts or args.hash_artifacts
     metadata_by_name = load_metadata_hashes(Path(args.metadata)) if args.metadata else {}
 
+    prefix = args.prefix.strip("/")
+    if not prefix:
+        raise SystemExit("ERROR: --prefix must not be empty")
+    api_host = normalize_api_host(args.api_host)
+    channel_root = normalize_channel_root(args.channel_root)
     if args.url:
         url = args.url
     elif args.channel:
-        url = channel_manifest_url(args.channel, args.repo, args.api_host)
+        url = channel_manifest_url(args.channel, args.repo, api_host, prefix, channel_root)
     else:
         folder = PLATFORM_FOLDERS.get(args.platform[0])
         if not folder:
             raise SystemExit(f"ERROR: unsupported platform key: {args.platform[0]}")
-        url = channel_manifest_url(folder, args.repo, args.api_host)
+        url = channel_manifest_url(folder, args.repo, api_host, prefix, channel_root)
 
     last_error = "manifest was not fetched"
     for attempt in range(1, args.attempts + 1):
@@ -182,11 +250,14 @@ def main() -> None:
                     raise ValueError(f"unsupported platform key: {key}")
                 entry = platforms.get(key) or {}
                 entry_url = str(entry.get("url", ""))
-                needle = f"/{folder}/{version_tag}/"
-                if needle not in entry_url:
-                    raise ValueError(
-                        f"{key} url does not use platform path ...{needle}...: {entry_url or '<missing>'}"
-                    )
+                validate_artifact_origin(
+                    entry_url,
+                    api_host=api_host,
+                    repo=args.repo,
+                    prefix=prefix,
+                    folder=folder,
+                    version_tag=version_tag,
+                )
                 if not entry.get("signature"):
                     raise ValueError(f"{key} missing signature")
 

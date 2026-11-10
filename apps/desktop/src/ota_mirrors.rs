@@ -135,11 +135,50 @@ pub fn modelscope_file_url(api_host: &str, repo: &str, path_in_repo: &str) -> St
     )
 }
 
-pub fn modelscope_manifest_url(api_host: &str, repo: &str, channel: &str) -> String {
+pub const FLOWY_CHANNEL_ROOT: &str = "channels";
+pub const UNIBUDDY_CHANNEL_ROOT: &str = "unibuddy_channels";
+pub const UNIBUDDY_IDENTIFIER: &str = "com.unibuddy.desktop";
+
+/// Which ModelScope manifest directory this build checks, and whether the
+/// shared GitHub `releases/latest` manifest is included.
+///
+/// Flowy stays on `allo/channels` plus GitHub latest. UniBuddy uses
+/// `allo/unibuddy_channels` and skips GitHub latest, because that URL always
+/// serves whichever release GitHub currently marks latest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtaProfile {
+    pub channel_root: &'static str,
+    pub include_github_manifest: bool,
+}
+
+pub fn flowy_profile() -> OtaProfile {
+    OtaProfile {
+        channel_root: FLOWY_CHANNEL_ROOT,
+        include_github_manifest: true,
+    }
+}
+
+pub fn profile_for_identifier(identifier: &str) -> OtaProfile {
+    if identifier == UNIBUDDY_IDENTIFIER {
+        OtaProfile {
+            channel_root: UNIBUDDY_CHANNEL_ROOT,
+            include_github_manifest: false,
+        }
+    } else {
+        flowy_profile()
+    }
+}
+
+pub fn modelscope_manifest_url(
+    api_host: &str,
+    repo: &str,
+    channel_root: &str,
+    channel: &str,
+) -> String {
     modelscope_file_url(
         api_host,
         repo,
-        &format!("{MS_PREFIX}/channels/{channel}/latest.json"),
+        &format!("{MS_PREFIX}/{channel_root}/{channel}/latest.json"),
     )
 }
 
@@ -165,12 +204,17 @@ pub fn check_endpoint_order(bucket: RegionBucket) -> [OtaHost; 3] {
     }
 }
 
-pub fn check_endpoints(bucket: RegionBucket, channel: &str) -> Vec<String> {
+pub fn check_endpoints(bucket: RegionBucket, channel: &str, profile: OtaProfile) -> Vec<String> {
     check_endpoint_order(bucket)
         .into_iter()
+        .filter(|host| profile.include_github_manifest || *host != OtaHost::Github)
         .map(|host| match host {
-            OtaHost::ModelscopeCn => modelscope_manifest_url("modelscope.cn", MS_CN_REPO, channel),
-            OtaHost::ModelscopeAi => modelscope_manifest_url("modelscope.ai", MS_AI_REPO, channel),
+            OtaHost::ModelscopeCn => {
+                modelscope_manifest_url("modelscope.cn", MS_CN_REPO, profile.channel_root, channel)
+            }
+            OtaHost::ModelscopeAi => {
+                modelscope_manifest_url("modelscope.ai", MS_AI_REPO, profile.channel_root, channel)
+            }
             OtaHost::Github => github_manifest_url(channel),
         })
         .collect()
@@ -335,6 +379,43 @@ mod tests {
             check_endpoint_order(RegionBucket::Rest)[0],
             OtaHost::Github
         );
+    }
+
+    #[test]
+    fn flowy_checks_channels_and_github_latest() {
+        let urls = check_endpoints(
+            RegionBucket::Rest,
+            "windows",
+            profile_for_identifier("com.flowy.desktop"),
+        );
+        assert_eq!(urls.len(), 3);
+        assert!(urls[0].contains("releases/latest/download/latest-windows.json"));
+        assert!(urls.iter().any(|url| url.contains("FilePath=allo/channels/windows/latest.json")));
+        assert!(urls.iter().all(|url| !url.contains("unibuddy_channels")));
+    }
+
+    #[test]
+    fn unibuddy_checks_unibuddy_channels_without_github_latest() {
+        let urls = check_endpoints(
+            RegionBucket::MainlandChina,
+            "macos",
+            profile_for_identifier(UNIBUDDY_IDENTIFIER),
+        );
+        assert_eq!(
+            urls,
+            vec![
+                modelscope_manifest_url(
+                    "modelscope.cn",
+                    MS_CN_REPO,
+                    UNIBUDDY_CHANNEL_ROOT,
+                    "macos"
+                ),
+                modelscope_manifest_url("modelscope.ai", MS_AI_REPO, UNIBUDDY_CHANNEL_ROOT, "macos"),
+            ]
+        );
+        assert!(urls.iter().all(|url| url.contains("allo/unibuddy_channels/macos/latest.json")));
+        assert!(urls.iter().all(|url| !url.contains("github.com")));
+        assert_eq!(profile_for_identifier("com.nomifun.desktop.dev"), flowy_profile());
     }
 
     #[test]

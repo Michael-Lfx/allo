@@ -15,11 +15,13 @@ that maintainers can review without guessing.
 
 If you only remember one page of rules, remember these:
 
-1. GitHub Actions are strictly forbidden. Do not add, restore, generate, or
-   re-enable any workflow, including disabled or manual-only workflows. Use
-   local scripts and documented manual commands instead. A pull request that
-   introduces `.github/workflows/*.yml` or `.github/workflows/*.yaml` must be
-   rejected.
+1. GitHub Actions may be changed when the CI or release behavior genuinely
+   requires it. Prefer extending an existing workflow over copying it. Adding,
+   deleting, or renaming a workflow requires an explicit rationale and owner
+   review. Changes to triggers, permissions, environments, secrets, signing, or
+   release publication are high-risk and must be called out in the PR, keep
+   least-privilege permissions, preserve required gates, and update
+   `.github/workflows/README.md` plus the relevant release documentation.
 2. Keep pull requests small. One problem, one behavior change, one reviewable
    story.
 3. Ask first before large product changes, new top-level surfaces, database
@@ -295,6 +297,7 @@ PR.
 | Rust behavior | `cargo test -p <crate>` or the focused test target that covers the change. |
 | Database/schema/identifier change | Follow the [Data and Identifier Standards](docs/contributing/data-and-identifier-standards.md); run the affected schema-contract, repository, reset, or restore tests plus `cargo test -p nomifun-db` when practical. |
 | Packaging/release | The relevant build script plus the release docs you changed. |
+| GitHub Actions workflow | Parse the YAML, run every affected local script/gate, inspect trigger and permission diffs, and update `.github/workflows/README.md`; release workflows also require the relevant packaging/release checks. |
 | Security-sensitive path | Focused tests, threat-model notes in the PR, and no public vulnerability details if disclosure is private. |
 
 > `bun run check` runs **repo-level** gates only: error-surface contract, process
