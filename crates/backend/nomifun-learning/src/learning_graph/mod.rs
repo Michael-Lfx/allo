@@ -446,6 +446,14 @@ pub fn validate_batch(
         if let Some(mark) = structure_contract::soft_name_marks(title).into_iter().next() {
             warns.push(name_hint("节点标题", title, mark));
         }
+        // 标题类比句式点名（d4）：提示词已禁「用X认出Y」一类句式，机械提示
+        // 兜模型惯性；warn 不阻断，与 y01 同口径。
+        if let Some(message) = title_template_hint(title) {
+            warns.push(GateError {
+                kind: "ng.title.template",
+                message,
+            });
+        }
     }
     for mint in &batch.mints {
         let canonical = mint.canonical.trim();
@@ -479,6 +487,26 @@ fn name_hint(field: &str, name: &str, mark: char) -> GateError {
         ),
     }
 }
+
+/// 标题类比句式提示（d4）：「用X认出/理解/看懂Y」「从X看Y」命中年病历句式
+/// （真机期权课五节点全中同一模板）→ warn 通道（非阻断）。命中面刻意收窄
+/// （只认以「用/从」开头且带类比动词的组合），学科动作句「用换手率判断热
+/// 度」不误报——用字开头的正常动作句很多，宁可漏报不误报。
+fn title_template_hint(title: &str) -> Option<String> {
+    let trimmed = title.trim();
+    let analogy_hit = if trimmed.starts_with('用') {
+        trimmed.contains("认出") || trimmed.contains("看懂") || trimmed.contains("理解")
+    } else if trimmed.starts_with('从') {
+        trimmed.contains('看')
+    } else {
+        false
+    };
+    analogy_hit.then(|| {
+        format!(
+            "节点标题「{trimmed}」是类比句式（用X认出Y/从X看Y）——标题以学科内容本身命名（主题+动作/角度），类比只写进 purpose 与正文（提示，不阻断）"
+        )
+    })
+}
 /// 档位的中文显示名（提示词与门消息共用这一份，i18n 另有对应键）。
 pub fn tier_zh(tier: ConceptTier) -> &'static str {
     match tier {
@@ -496,7 +524,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 {
   "nodes": [
     {
-      "title": "节点标题（动作句：解/求/证明/推导/构造/比较/应用/辨析…）",
+      "title": "节点标题（动作句：解/求/证明/推导/构造/比较/应用/辨析…；以学科内容本身命名——主题+动作/角度，日常经验类比不得进标题，见【节点纪律】）",
       "purpose": "练什么 + 从哪段课程外日常经验切入（座位表定位/给物品分类/分食物看温度一类生活场景）；找不到日常经验切口的节点不合格",
       "intent": "一句话：为什么有这个学习点、它在课里承担什么角色（衔接哪条线/补哪个缺口）",
       "scope": "一两句：教什么、教到哪、明确不碰什么；「不教 X」是边界声明，照实写",
@@ -525,7 +553,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 慢就是快：横向补实与向下补基同为推进——发现已教概念脚下悬空（教了它，但它依赖的通用语言没人教过）时，补教那个底座也是朝目标的实质推进；坡道的质量与坡道的长度同等重要，不以前进牺牲认知依赖的完整性。
 【节点纪律】
 - 节点是单次学习会话（动作句），est（专注工作量，1 est 分钟 = 1 分钟专注）常规 5-30，极困难最多 60。est 也是后续内容生成的容量预算锚——内容管线按它规划节与题量：按节点行为数与对象域宽度估，估大了内容会铺开，估小了会被迫砍雄心。
-- 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。
+- 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。**切口与类比只出现在 purpose 与正文，不得进标题**：标题以学科内容本身命名（主题 + 动作/角度，如「看涨期权：买方的权利与到期损益」），禁止「用X认出/理解Y」「从X看Y」一类类比句式，也不必套任何统一模板——正常课程的目录里找不到这种名字。
 - 声明面（intent/scope，每个节点出生即必带）：intent 一句话写**为什么有这个学习点**、它在课里承担什么角色（衔接哪条线、补哪个缺口）；scope 一两句写**教什么、教到哪、明确不碰什么**——「不教 X」「X 留待后续」类否定性提及是边界声明，照实写，不是缺陷。两处都写实质内容，不写「教好这个概念」一类空话；各不超过 200 字。拆分或修订被点名的条目时，两字段必须按各自那一半的实际内容**逐半重写**，禁止照抄原条目。intent/scope 的词面与节点标题一并进评审机械点名（四源扫描）——照实写即可，评审按覆盖/边界处置；不必为避免点名而回避具体名词，也不要堆砌同义边界表述。
 - 道位配平：道（本质理解）与术（可执行）是一对标尺——一条线如果只有「怎么做」的操作台阶，要在合适的节点补一个「为什么成立」的台阶（说理、推导或辨析），让学习者不但能做，还能讲出它为什么可靠。
 - 悬空技巧不合格：每批装箱前先问「学习者此刻真正缺什么」——技巧依赖的更一般技能先立地基；只有操作没有理解的地方补「为什么成立」的台阶；学习目标点名而还没开线的能力，尽早开线。
@@ -668,7 +696,7 @@ impl CoachContext {
             text.push_str(&format!(
                 "\n【首批纪律（花名册为空）】\n\
                  - 入口从结构参考的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
-                 - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。\n\
+                 - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。标题以学科内容本身命名，日常经验类比只写进 purpose、不得进标题。\n\
                  {}", ledger_line));
         }
         // u04 课程语境词（w02 起每一批都渲染；service 按开关装配，off 臂恒
@@ -2725,6 +2753,46 @@ mod tests {
         assert_eq!(batch.nodes.len(), 2, "批次照常保留");
         assert_eq!(batch.mints.len(), 1);
         assert_eq!(batch.new_aliases.len(), 1);
+    }
+
+    /// 标题类比句式点名（d4）：「用X认出Y」「从X看Y」命中 `ng.title.template`
+    /// warn（不阻断、批次照常）；学科动作句「用换手率判断热度」与学科命名
+    /// 「看涨期权：买方的权利与到期损益」不误报——命中面收窄，宁可漏报。
+    #[test]
+    fn validate_batch_flags_template_titles_as_warnings_only() {
+        let mut batch = ProposedBatch {
+            new_aliases: vec![],
+            nodes: vec![
+                node("用团购券认出看涨期权：锁定一个买入价", vec![], vec![]),
+                node("从茶叶沉浮看萃取状态", vec![], vec![]),
+                node("用换手率判断热度", vec![], vec![]),
+                node("看涨期权：买方的权利与到期损益", vec![], vec![]),
+            ],
+            mints: vec![],
+            note: String::new(),
+        };
+        let (errors, warns) = validate_batch(
+            &mut batch,
+            &ConceptCoverage::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert!(errors.is_empty(), "提示不阻断: {errors:?}");
+        let hints: Vec<&GateError> = warns
+            .iter()
+            .filter(|warn| warn.kind == "ng.title.template")
+            .collect();
+        assert_eq!(hints.len(), 2, "恰两条类比句式提示: {warns:?}");
+        assert!(
+            hints.iter().any(|hint| hint.message.contains("用团购券认出看涨期权")),
+            "{warns:?}"
+        );
+        assert!(
+            hints.iter().any(|hint| hint.message.contains("从茶叶沉浮看萃取状态")),
+            "{warns:?}"
+        );
+        assert_eq!(batch.nodes.len(), 4, "批次照常保留");
     }
 
     #[test]

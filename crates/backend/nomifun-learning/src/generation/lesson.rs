@@ -764,7 +764,7 @@ pub(crate) static SECTION_TYPE_MENU: LazyLock<String> = LazyLock::new(|| format!
 /// 自己能用什么,才会用).
 pub(crate) const VISUAL_STANDARD_BLOCK: &str = r#"Render palette — everything you may use, all of it renders natively:
 - Inline math: $e^{i\pi} + 1 = 0$; display math: $$\int_0^1 x^2\,dx = \tfrac{1}{3}$$ (KaTeX).
-- Static figure: one self-contained ```svg fenced block — viewBox set (never fixed width/height), every point/segment labeled via <text> at font-size >= 12 in the lesson language, 2-4 restrained colors, no scripts, no external references.
+- Static figure: one self-contained ```svg fenced block — viewBox set (never fixed width/height), every point/segment labeled via <text> at font-size >= 12 in the lesson language, 2-4 restrained colors, no scripts, no external references. Every drawn element and label must fit inside the viewBox — text or shapes past the canvas edge get clipped at render time.
 - Interactive/animated figure: one ```jsxgraph fenced block — the variables `board` (an initialized board; call board.setBoundingBox([xmin, ymax, xmax, ymin]) first when needed) and `JXG` exist. Never call JXG.JSXGraph.initBoard, never touch the DOM outside the board; create labeled points, traces, sliders.
 - Structural diagram: one ```mermaid fenced block (flowchart/sequence/state) for processes, relationships and state machines.
 - Table: a Markdown table whenever two or more things are compared — never compare in prose.

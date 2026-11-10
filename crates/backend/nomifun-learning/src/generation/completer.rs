@@ -74,7 +74,7 @@ its source code, and the error it produced at render time. Reply with ONLY the c
 figure body — no Markdown fences, no commentary. Keep the original intent and layout,
 fix the error, and follow the figure rules:
 - svg: ONE self-contained <svg> element with viewBox, labels via <text>, no scripts or
-  external references.
+  external references. Keep every drawn element and label inside the viewBox.
 - jsxgraph: code that draws on the provided `board` variable (the `JXG` namespace is
   available too). Never call JXG.JSXGraph.initBoard. Element constructors take element
   parents, not raw numbers: board.create('line', [pointA, pointB]) needs two point
