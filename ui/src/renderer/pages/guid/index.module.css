@@ -3774,9 +3774,18 @@
   opacity: 1;
 }
 
+.ambientWall[data-ambient-variant='video'] {
+  opacity: 0.86;
+}
+
+:global([data-theme='light']) .ambientWall[data-ambient-variant='video'] {
+  opacity: 0.58;
+}
+
 /* Let the ambient canvas show behind the composer as well. */
 .guidContainer:has([data-testid='guid-build-ambient']) .guidFixedInputArea,
-.guidContainer:has([data-testid='guid-image-ambient']) .guidFixedInputArea {
+.guidContainer:has([data-testid='guid-image-ambient']) .guidFixedInputArea,
+.guidContainer:has([data-testid='guid-video-ambient']) .guidFixedInputArea {
   background: none;
 }
 

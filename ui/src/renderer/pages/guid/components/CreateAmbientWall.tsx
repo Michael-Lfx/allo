@@ -27,7 +27,20 @@ const IMAGE_LIGHT_PALETTE = {
   colors: ['#ffb27ab0', '#ef8fb5a0', '#8ed8e69e'],
 };
 
-type CreateAmbientVariant = 'create' | 'image';
+/** Cinema light: cool projector beam, warm rim and a restrained rose bloom. */
+const VIDEO_DARK_PALETTE = {
+  colorBack: '#07080e',
+  colorBloom: '#1c1224',
+  colors: ['#ff9b6aa8', '#7dd3fc9a', '#f472b69e'],
+};
+
+const VIDEO_LIGHT_PALETTE = {
+  colorBack: '#f5f1ec',
+  colorBloom: '#fff8f2',
+  colors: ['#ffb27aa0', '#9ac8e6a0', '#ef8fb59e'],
+};
+
+type CreateAmbientVariant = 'create' | 'image' | 'video';
 
 /**
  * Create-directory ambient layer. Paper Shaders' God Rays gives the page one
@@ -43,14 +56,19 @@ const CreateAmbientWall: React.FC<{ variant?: CreateAmbientVariant }> = ({ varia
   const [lowPower, setLowPower] = useState(false);
   const [webglReady, setWebglReady] = useState(false);
   const isDark = theme === 'dark';
+  const isVideo = variant === 'video';
   const palette =
     variant === 'image'
       ? isDark
         ? IMAGE_DARK_PALETTE
         : IMAGE_LIGHT_PALETTE
-      : isDark
-        ? DARK_PALETTE
-        : LIGHT_PALETTE;
+      : isVideo
+        ? isDark
+          ? VIDEO_DARK_PALETTE
+          : VIDEO_LIGHT_PALETTE
+        : isDark
+          ? DARK_PALETTE
+          : LIGHT_PALETTE;
 
   useEffect(() => {
     const probe = document.createElement('canvas');
@@ -139,6 +157,7 @@ const CreateAmbientWall: React.FC<{ variant?: CreateAmbientVariant }> = ({ varia
       ref={rootRef}
       className={styles.wall}
       data-testid='guid-create-ambient'
+      data-variant={variant}
       data-quality={lowPower ? 'low' : undefined}
       aria-hidden='true'
     >
@@ -149,17 +168,27 @@ const CreateAmbientWall: React.FC<{ variant?: CreateAmbientVariant }> = ({ varia
           colors={palette.colors}
           colorBack={palette.colorBack}
           colorBloom={palette.colorBloom}
-          bloom={isDark ? 0.22 : 0.14}
-          intensity={isDark ? 0.36 : 0.27}
-          density={isDark ? 0.18 : 0.22}
-          spotty={isDark ? 0.46 : 0.36}
-          midSize={isDark ? 0.48 : 0.36}
-          midIntensity={isDark ? 0.13 : 0.08}
+          bloom={isVideo ? (isDark ? 0.17 : 0.11) : isDark ? 0.22 : 0.14}
+          intensity={isVideo ? (isDark ? 0.28 : 0.2) : isDark ? 0.36 : 0.27}
+          density={isVideo ? (isDark ? 0.14 : 0.18) : isDark ? 0.18 : 0.22}
+          spotty={isVideo ? (isDark ? 0.3 : 0.24) : isDark ? 0.46 : 0.36}
+          midSize={isVideo ? (isDark ? 0.36 : 0.28) : isDark ? 0.48 : 0.36}
+          midIntensity={isVideo ? (isDark ? 0.09 : 0.06) : isDark ? 0.13 : 0.08}
           offsetX={0.04}
           offsetY={-0.55}
           scale={1.18}
           fit='cover'
-          speed={reducedMotion || !documentVisible ? 0 : lowPower ? 0.35 : 0.55}
+          speed={
+            reducedMotion || !documentVisible
+              ? 0
+              : isVideo
+                ? lowPower
+                  ? 0.25
+                  : 0.4
+                : lowPower
+                  ? 0.35
+                  : 0.55
+          }
           frame={0}
           minPixelRatio={1}
           maxPixelCount={lowPower ? 550_000 : 1_100_000}

@@ -621,13 +621,8 @@ const GuidPage: React.FC = () => {
   }, [homeCapability, openHomeDirectory, switchHomeCapability]);
   /** The single example-application path shared by covers and the dev prep starter. */
   const applyHomeExample = useCallback(
-    (kind: 'app' | 'image' | 'video') => {
-      if (kind === 'app') {
-        setHomeBuildKind('app');
-        switchHomeCapability('develop');
-        guidInput.setInput(t('guid.home.showcaseAppPrompt'));
-        setHomeView('capability');
-      } else if (kind === 'image') {
+    (kind: 'image' | 'video') => {
+      if (kind === 'image') {
         enterImageMode(t('guid.home.showcaseImagePrompt'));
       } else {
         switchHomeCapability('video');
@@ -640,8 +635,8 @@ const GuidPage: React.FC = () => {
     [enterImageMode, guidInput.setInput, switchHomeCapability, t],
   );
   const requestHomeExample = useCallback(
-    (kind: 'app' | 'image' | 'video', title: string) => {
-      const target: HomeCapability = kind === 'app' ? 'develop' : kind === 'image' ? 'image' : 'video';
+    (kind: 'image' | 'video', title: string) => {
+      const target: HomeCapability = kind === 'image' ? 'image' : 'video';
       if (capabilityHasDraft(target)) {
         setPendingExample({ title, run: () => applyHomeExample(kind) });
         return;
@@ -709,10 +704,6 @@ const GuidPage: React.FC = () => {
     setPendingExample(null);
     focusHomeComposer();
   }, [focusHomeComposer]);
-  const handleSelectShowcaseApp = useCallback(
-    () => requestHomeExample('app', t('guid.home.showcaseAppTitle')),
-    [requestHomeExample, t],
-  );
   const handleSelectShowcaseVideo = useCallback(
     () => requestHomeExample('video', t('guid.home.showcaseVideoTitle')),
     [requestHomeExample, t],
@@ -1802,6 +1793,13 @@ const GuidPage: React.FC = () => {
     },
     [switchHomeCapability],
   );
+  const handleSelectShowcaseWebsite = useCallback(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      showBuildExamples('website', false);
+    } else {
+      showBuildExamples('website', true);
+    }
+  }, [showBuildExamples]);
   const selectHomeOption = useCallback(
     (option: HomeStageOption) => {
       if (option.id === 'slides' && !supportsHomeGoalCommand) return;
@@ -2490,6 +2488,17 @@ const GuidPage: React.FC = () => {
               <CreateAmbientWall variant='image' />
             </React.Suspense>
           </div>
+        ) : homeView === 'capability' && homeCapability === 'video' ? (
+          <div
+            className={styles.ambientWall}
+            data-testid='guid-video-ambient'
+            data-ambient-variant='video'
+            aria-hidden='true'
+          >
+            <React.Suspense fallback={null}>
+              <CreateAmbientWall variant='video' />
+            </React.Suspense>
+          </div>
         ) : null}
         <div className={styles.guidScrollArea} data-home-layer={homeView}>
           <div className={styles.guidPrimaryStage}>
@@ -2506,7 +2515,7 @@ const GuidPage: React.FC = () => {
                   <div className={styles.homeGallery}>
                     <ShowcaseCards
                       onSelectVideo={handleSelectShowcaseVideo}
-                      onSelectApp={handleSelectShowcaseApp}
+                      onSelectWebsite={handleSelectShowcaseWebsite}
                       onSelectImage={handleSelectShowcaseImage}
                     />
                   </div>

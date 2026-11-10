@@ -15,4 +15,13 @@ describe('create ambient wall contract', () => {
     expect(guide).toContain('<CreateAmbientWall />');
     expect(guide).toContain("data-ambient-variant={buildAmbientVariant}");
   });
+
+  test('mounts a dedicated video ambient variant without changing the create/image paths', () => {
+    expect(guide).toContain("data-testid='guid-video-ambient'");
+    expect(guide).toContain("<CreateAmbientWall variant='video' />");
+    expect(wall).toContain("type CreateAmbientVariant = 'create' | 'image' | 'video'");
+    expect(wall).toContain('data-variant={variant}');
+    expect(wall).toContain('VIDEO_DARK_PALETTE');
+    expect(wall).toContain('VIDEO_LIGHT_PALETTE');
+  });
 });

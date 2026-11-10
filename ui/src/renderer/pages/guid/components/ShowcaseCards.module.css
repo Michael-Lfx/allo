@@ -22,10 +22,6 @@
   object-position: center;
 }
 
-.coverTop {
-  object-position: top center;
-}
-
 .prompt {
   display: block;
   width: 100%;

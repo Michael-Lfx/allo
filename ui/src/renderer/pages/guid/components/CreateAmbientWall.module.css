@@ -134,3 +134,33 @@
     display: none;
   }
 }
+
+/* Video entry keeps the light field quieter than the create surface; the full
+   composer sits on top of it and must keep its text contrast. */
+.wall[data-variant='video'] {
+  --ambient-opacity: 0.8;
+}
+
+:global([data-theme='light']) .wall[data-variant='video'] {
+  --ambient-opacity: 0.46;
+}
+
+.wall[data-variant='video'] .pointerGlow {
+  opacity: 0.26;
+}
+
+.wall[data-variant='video'] .veil {
+  background:
+    radial-gradient(
+      62% 52% at 50% 42%,
+      transparent 42%,
+      color-mix(in srgb, var(--guid-canvas, var(--color-bg-1)) 28%, transparent) 100%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--guid-canvas, var(--color-bg-1)) 16%, transparent) 0%,
+      transparent 24%,
+      transparent 68%,
+      color-mix(in srgb, var(--guid-canvas, var(--color-bg-1)) 24%, transparent) 100%
+    );
+}
