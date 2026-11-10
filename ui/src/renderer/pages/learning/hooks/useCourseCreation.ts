@@ -152,7 +152,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     ]
   );
 
-  // 学习图建课：目标 → 直接建课（知识结构生成与首生长在后台启动，结构进度
+  // 学习图建课：目标 → 直接建课（知识结构生成在后台启动，结构进度
   // 走工作区 WS structure_* 事件）。
   const confirmGraphCreation = useCallback(() => {
     submitGeneration('graph');
