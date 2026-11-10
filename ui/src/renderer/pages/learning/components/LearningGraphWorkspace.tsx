@@ -108,7 +108,7 @@ const LearningGraphWorkspace: React.FC<{
 
   // 自动补批触发②（m10）：工作区加载 → 纯读裁决 → Due 自动补一批（后台）。
   // autoPreparing 是派发窗口的诚实读数，批次运行期仍由 growth_running 表达。
-  const { autoPreparing } = useAutoRefill(detail.course.id, onRefresh);
+  const { autoPreparing } = useAutoRefill(detail.course.id, onRefresh, model.choice);
 
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(
     () => graph?.recommended[0] ?? null
@@ -350,14 +350,14 @@ const LearningGraphWorkspace: React.FC<{
   const grow = useCallback(async () => {
     setGrowing(true);
     try {
-      await learningApi.growGraph(detail.course.id);
+      await learningApi.growGraph(detail.course.id, undefined, model.choice);
       onRefresh();
     } catch (actionError) {
       Modal.error({ title: t('learning.learningGraphGrowFailed'), content: errorMessage(t, actionError) });
     } finally {
       setGrowing(false);
     }
-  }, [detail.course.id, onRefresh, t]);
+  }, [detail.course.id, model.choice, onRefresh, t]);
 
   if (!graph) {
     return <Empty description={t('learning.learningGraphEmpty')} />;

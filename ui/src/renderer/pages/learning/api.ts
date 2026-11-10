@@ -80,13 +80,19 @@ export const learningApi = {
     ),
   // 手动触发一次生长（就绪补到 7；已在生长中报 409）。可选 trigger 只影响
   // 动作簿的触发源标签（缺省 manual；自动补批传 auto_refill），不改变裁决。
-  growGraph: (courseId: string, trigger?: 'manual' | 'auto_refill') =>
+  // modelChoice = 用户的学习模型选择（provider_id + model 成对随 body 发出）；
+  // 缺省/null 时 body 为空，后端回落默认档。
+  growGraph: (
+    courseId: string,
+    trigger?: 'manual' | 'auto_refill',
+    modelChoice?: { provider_id: string; model: string } | null
+  ) =>
     httpRequest<{ kicked: boolean }>(
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow${
         trigger ? `?trigger=${encodeURIComponent(trigger)}` : ''
       }`,
-      {}
+      modelChoice ? { provider_id: modelChoice.provider_id, model: modelChoice.model } : {}
     ),
   // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
   // due 且非停摆才自动调上方 growGraph；disabled/below_threshold 如实不动作

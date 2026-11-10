@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { learningApi } from '../api';
 import { autoRefillSessionGate, shouldAutoFireGrowth } from '../autoRefill';
+import type { LearningModelChoice } from '../components/LearningModelSelector';
 
 /**
  * 自动补批触发②（m10）：课程工作区加载 → 纯读裁决端点 → Due 自动调既有
@@ -13,11 +14,20 @@ import { autoRefillSessionGate, shouldAutoFireGrowth } from '../autoRefill';
  * 时静默释放配额——自动补批是便利面，不打扰加载；真发了一批后配额即
  * 消耗，同会话不重触发。组件卸载发生在派发前同样释放（下次加载可重试）；
  * 卸载发生在 POST 已发出后保留标记（批次可能已在跑，后端锁兜底重复）。
+ *
+ * 自动臂与手动同样带用户的学习模型选择（持久化 `learning.autogenModel`）：
+ * 派发时读最新值，不进 effect 依赖——选择变化不重新裁决。
  */
-export function useAutoRefill(courseId: string, onFired: () => void) {
+export function useAutoRefill(
+  courseId: string,
+  onFired: () => void,
+  modelChoice: LearningModelChoice
+) {
   const [autoPreparing, setAutoPreparing] = useState(false);
   const firedRef = useRef(onFired);
   firedRef.current = onFired;
+  const modelChoiceRef = useRef(modelChoice);
+  modelChoiceRef.current = modelChoice;
 
   useEffect(() => {
     let cancelled = false;
@@ -36,7 +46,7 @@ export function useAutoRefill(courseId: string, onFired: () => void) {
           setAutoPreparing(false);
           return undefined;
         }
-        return learningApi.growGraph(courseId, 'auto_refill').then(
+        return learningApi.growGraph(courseId, 'auto_refill', modelChoiceRef.current).then(
           (result) => {
             if (cancelled) return; // POST 已发出：保留标记，后端锁兜底。
             setAutoPreparing(false);

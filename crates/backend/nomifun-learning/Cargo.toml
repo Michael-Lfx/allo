@@ -39,3 +39,5 @@ nomifun-realtime.workspace = true
 tempfile.workspace = true
 # kill-switch 测试改进程内 env(serial 互斥,防止与并行跑新管线的测试互扰)。
 serial_test.workspace = true
+# 路由层单测（g1 grow 模型选择）：Router::oneshot 走真实提取器栈。
+tower = { workspace = true, features = ["util"] }
