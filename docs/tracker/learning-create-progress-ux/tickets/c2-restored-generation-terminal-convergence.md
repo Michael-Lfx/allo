@@ -2,7 +2,7 @@
 id: c2
 title: "恢复态 running/queued 终态收敛——指示条与弹窗自动翻到 done/failed/cancelled，完成可进入课程"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -72,3 +72,42 @@ running/queued 态（页面切走再回来、或对话框关闭后回页）目�
 - queued 位次/排队时长的实时精度。
 - in-session（未切页）生成路径——已由 HTTP 回归收敛，本票不动。
 - 恢复态文案本地化（topic 显示归 c3）。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面验收全过，已闭票；真机「切走再切回」与取消路径留待用户实测，FAIL
+按票重开。v2 done 分支受后端契约限制未达全票面，记后置（见下）。**
+
+- 施工 = `e733cac5e`：`startRestoredGenerationConvergence` 5s 快照轮询、按任务
+  键跟踪、终态即停——done → 快照行 `course_id` 拉课程详情 → completed；
+  failed/cancelled 对应翻面；任务从快照消失 → cancelled 兜底；拉取失败不臆造
+  终态、下轮再取。恢复请求形状复用 c1 的 `buildRestoredRequest`（无第二套
+  推导）；in-session 路径仅加「先停恢复轮询 + 幂等写回」。票面三个场景 +
+  取消路径 + 轮询节奏共 15 条单测。
+- 评审修复（`10b2cb636`）：
+  - **恢复态重试守卫（新可达真 bug）**：票面「cancelled → 既有重试面」前提
+    不成立——恢复态能到 failed/cancelled 后「重试」首次对恢复态可达，而
+    `retryGeneration` 重发的是合成请求（description = 后端 topic 标签如
+    「知识结构生成」），后端会据此**新建一门以该标签为名的学习图课程**。修：
+    `retryableGenerationRequest` 恢复态恒 null，终态面板改出本地化指引、
+    不出重试按钮；in-session 重试不变。
+  - 恢复态 failed 的 error 改由词典出（`learning.restoredTaskFailed`），后端
+    中文 detail 不再进弹窗 error 通道，failed ⇒ error 非空。代价（宁缺不
+    泄漏）：恢复态失败不再显示具体原因。
+  - 恢复的 queued 任务开跑后翻 running（原停「排队中」，票面未要求的规格
+    缺口，`onRunning` 可选回调）。
+- 与 d7 的合流（本波合并 feat/learn0928 新尖端 `a2f0d288c` 时生效）：d7 把
+  恢复过滤从「除 growth 外全部」收窄为只认 `outline`/`structure`（审计实锤
+  的存量误判修复），取代票面「kind 过滤沿用 `!== GROWTH_TASK_KIND`」；
+  `buildRestoredRequest`/`restoredTaskTopic` 的 mount/repair/lesson 分支经
+  恢复路径不可达，保留为防御。
+- **已知局限（后置，本波未修）**：v2 outline 任务注册时课程尚不存在，注册表
+  `course_id` 段是会话 id（`generate.rs:129-134` 注释明写刻意为之）→ 恢复的
+  v2 任务翻 done 后按该 id 拉详情 404 → 落地为 failed + 原因，课程实际已
+  建成。「v2 同病同修」在 done 这一支不成立；修复需注册表契约变更（真实课程
+  id 字段或中途改键），待在飞恢复波尘埃落定后另立。图流（结构任务登记真实
+  课程 id）不受影响。
+- 测试缝留痕：仓内无 DOM 测试库，`retryGeneration` 调守卫与 `onRunning` 翻
+  状态两处接线只有纯函数测试 + typecheck 兜底。留痕不修（评审 judgement）：
+  同快照端点的第三处手写轮询（复用生长 Pill 轮询需改其契约与测试，超票面
+  文件面）。

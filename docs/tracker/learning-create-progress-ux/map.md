@@ -7,6 +7,11 @@
       形…」，而后端结构生成 139.7s 即 done（60 块 / 7 门 / 11 标注）。本会话
       逐文件核实呈现链路、恢复链路、文案泄漏面后立票，c1 呈现策略经用户裁决。 -->
 <!-- 基线：feat/learn0928 尖端 498773e15（d5 并回后）。 -->
+<!-- 状态更新：收图（2026-11-10）。c1–c3 施工完毕 + 双轴代码评审（Standards /
+      Spec）+ 评审修复一轮后闭票；集成 = feat/learning-create-progress-ux，
+      并回前已合入 feat/learn0928 新尖端 a2f0d288c（d6–d7 在飞恢复）并在合并
+      树上重跑闸门。真机判据（三票目验项）全部未执行，留待用户实测，FAIL 按
+      票重开。收图记录与后置清单见文末。 -->
 
 ## 用户裁决（2026-11-10）
 
@@ -62,8 +67,11 @@
     结构参考与花名册，起草本批节点…」、`:5901` basis_declared「已会声明
     完成…」、`:6028` basis_revoked「已会声明已撤销…」。消费面：对话框
     活动流 started 行（`CourseGenerationProgress.tsx:164` 原样渲染
-    `event.text`；c1 裁决后学习图流整段隐藏，v2 流无 text 帧 → 该面实际
-    已闭合，c3 仅留一行防御性加固）+ **宠物气泡（`companion/messages/
+    `event.text`；c1 裁决后学习图流整段隐藏，v2 started 帧无 text → 该面
+    实际已闭合，c3 仅留一行防御性加固；**订正（收图时）**：v2 round 帧带
+    模型叙述 text（`crates/backend/nomifun-ai-agent/src/learning_loop.rs:
+    292-299`，立票时扫描只覆盖 nomifun-learning 漏了桥接 crate），属动态
+    模型输出非后端文案，round 行渲染保留）+ **宠物气泡（`companion/messages/
     project.ts:117,134` 原样渲染 `evt.text`）= 唯一跨模块在网消费面，帧
     保留不动（裁决 2），残留归 companion 后置**。
   - `set_step` 中文 detail 9 处：`generate.rs:391/439/508`（v2 三档）、
@@ -100,3 +108,31 @@ c1 与 c3 同触 `CourseGenerationProgress.tsx`（不同面：呈现结构 vs st
 - observation `learning-tasks.jsonl` 诊断日志文案（诊断面，保留中文）。
 - 对话框内 structure_* 订阅 / 自动跳工作区（c1 裁决否决项）。
 - WS 事件名与 phase 常量（机器面，双语无关）。
+
+## 收图记录（2026-11-10）
+
+- 施工：c1 = `1c4e951ea` + `02402fa55`（票外回归修复）；c2 = `e733cac5e`；
+  c3 = `37db88047` + `454775748`。单票一代理并行（worktree 各自分支），merger
+  依次并回集成支；tracker 随 `b5e364d5b` 入 git。
+- 双轴代码评审（Standards/Spec 两子代理并行）→ 修复一轮 `10b2cb636` +
+  `2619cc2e0` + `a8bb2700a`（F1–F8）。评审要点：恢复态重试危险路径（Spec 最
+  重）、双语断言缺口（Standards 硬违规）、round text 前提订正（立票扫描盲区：
+  nomifun-ai-agent 桥接 crate 未在扫描范围）。
+- 并回前合流：feat/learn0928 新尖端 `a2f0d288c`（d6–d7 在飞恢复）先并入集成
+  支（`56d28dae2`，文本零冲突），合并树重跑闸门全绿——learning 156 测试、
+  i18n 11605 keys、typecheck 54 存量零新增、`cargo check -p nomifun-learning`
+  过。d7 的恢复过滤收窄（只认 `outline`/`structure`）与本波 c2 语义互补。
+- 评审留痕不修（judgement call，本波裁决记录）：集成线 merge 提交沿学习线惯例
+  保留（`8f8dfdbdf` 为携带生产代码的 evil merge，hunk 已在评审中显式核对）；
+  `STEP_KEYS` 七档不可达防御映射保留；第三处手写轮询未抽公共；`kind`/`state`
+  裸串与 `index.tsx` prop 下钻未重构。
+- CHANGELOG：Unreleased 三条（弹窗分裂态、恢复态终态收敛、文案本地化）。
+
+## 后置清单（收图时明记，均非本波回归）
+
+1. **v2 outline 任务注册表 `course_id` = 会话 id**（`generate.rs:129-134`）：
+   恢复的 v2 任务翻 done 落地 failed+原因而课程实际建成；修复需注册表契约
+   变更，待在飞恢复波尘埃落定后另立。
+2. **companion 宠物气泡 en-US 中文残留**（`companion/messages/project.ts:117,
+   134` 渲染 `evt.text`）：裁决 2 划出范围，归 companion 侧。
+3. AppError 错误文案 i18n（error-surface contract 管辖）。
