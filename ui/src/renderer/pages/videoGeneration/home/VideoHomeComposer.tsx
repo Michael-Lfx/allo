@@ -140,6 +140,9 @@ interface VideoHomeComposerProps {
   onSubmitGenerate: (draft: VideoCreateDraft) => void;
   onSubmitBriefing: (draft: VideoCreateDraft) => void;
   onCreateBlankCanvas: () => void;
+  /** Embed the composer without the video home hero/campaign chrome. */
+  showHero?: boolean;
+  showCampaign?: boolean;
 }
 
 const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
@@ -151,6 +154,8 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   onSubmitGenerate,
   onSubmitBriefing,
   onCreateBlankCanvas,
+  showHero = true,
+  showCampaign = true,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -706,6 +711,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
   return (
     <section className={styles.hero}>
+      {showHero ? (
       <div className={styles.heroHeading}>
         <h1>
           <HeadlineWithEmphasis
@@ -734,10 +740,13 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                   })}
         </p>
       </div>
+      ) : null}
 
+      {showCampaign ? (
       <Suspense fallback={null}>
         <CampaignCarousel />
       </Suspense>
+      ) : null}
 
       <div
         ref={composerRef}

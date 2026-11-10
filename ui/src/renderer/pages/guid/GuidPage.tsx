@@ -35,7 +35,6 @@ import GuidHomeBrand from './components/GuidHomeBrand';
 import ShowcaseCards from './components/ShowcaseCards';
 import HomeInputDrawer from './components/HomeInputDrawer';
 import BuildAmbientWall, { type BuildAmbientVariant } from './components/BuildAmbientWall';
-import HomeVideoComposer from './components/HomeVideoComposer';
 import ImagePromptPanel from './components/ImagePromptPanel';
 import ImagePromptOptions from './components/ImagePromptOptions';
 import {
@@ -124,95 +123,17 @@ import type { Preset } from '@/common/types/agent/presetTypes';
 import type { TProviderWithModel } from '@/common/config/storage';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
-import {
-  createGenerationTask,
-  deleteCanvasMedia,
-  listGenerationTasks,
-  uploadCanvasMedia,
-  type GenerationTaskView,
-} from '../videoCanvas/api';
-import { isBackendHttpError, isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
-import { clampClipDurationForModel, clipDurationBoundsForModel } from '../videoGeneration/durationBounds';
-import { pickDefaultVideoModel } from '../videoGeneration/components/modelPreferenceDefaults';
-import { refreshMediaModelsCatalog, useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
-import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
-import { isPlanLocked } from '@/renderer/utils/model/planGate';
-import { formatClipOperationError } from '../videoGeneration/clipFailure';
-import { rememberVideoGenerationTask } from '../videoGeneration/routeMemory';
-import { composeClipPrompt } from '../videoGeneration/styleCatalog/looks';
-import { materializeHomeImageMentions } from '../videoGeneration/home/imageMentions';
-import type { CanvasReferenceDraft } from '../videoGeneration/home/types';
-import {
-  DEFAULT_VIDEO_RESOLUTION,
-  normalizeVideoResolution,
-  videoModelCapabilities,
-  type VideoResolution,
-} from '@renderer/services/videoModelCapabilities';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { useHomeVideoSubmit } from './homeVideoSubmit';
+import type { VideoHomeMode } from '../videoGeneration/home/types';
 import styles from './index.module.css';
 
 const CreateAmbientWall = React.lazy(() => import('./components/CreateAmbientWall'));
-const VideoExampleWall = React.lazy(() => import('./components/VideoExampleWall'));
+const VideoExamplePanel = React.lazy(() => import('./components/VideoExamplePanel'));
+const VideoHomeComposer = React.lazy(() => import('../videoGeneration/home/VideoHomeComposer'));
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
 type HomeFlyout = GuidEntryFlyoutMode | 'knowledge';
-
-/** A stuck create POST must not pin the homepage send guard forever. */
-const HOME_VIDEO_CREATE_TIMEOUT_MS = 60_000;
-/** The empty-catalog probe is only a classifier; never let it hang the picker. */
-const HOME_VIDEO_CATALOG_PROBE_TIMEOUT_MS = 15_000;
-const HOME_VIDEO_CLAIM_PAGE_SIZE = 50;
-/** Bound the recovery scan so a huge history cannot turn one check into N requests. */
-const HOME_VIDEO_CLAIM_MAX_TASKS = 500;
-
-function withHomeVideoTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message = 'home video operation timed out',
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      reject(new Error(message));
-    }, timeoutMs);
-    promise.then(
-      (value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-/**
- * A 4xx from the create endpoint is a deterministic rejection: the backend did
- * not accept the task, so this attempt's uploads are safe to clean. 5xx,
- * timeouts, disconnects and parse failures are all ambiguous.
- */
-function isDefinitelyNotCreatedCreateError(error: unknown): boolean {
-  return isBackendHttpError(error) && error.status >= 400 && error.status < 500;
-}
-
-/**
- * Recovery scans the standalone task list in pages so a unique media set is not
- * missed just because newer tasks pushed it past the first page.
- */
-async function listHomeVideoClaimCandidates(): Promise<GenerationTaskView[]> {
-  const tasks: GenerationTaskView[] = [];
-  let offset = 0;
-  while (tasks.length < HOME_VIDEO_CLAIM_MAX_TASKS) {
-    const page = await listGenerationTasks(HOME_VIDEO_CLAIM_PAGE_SIZE, offset, {
-      standalone: true,
-    });
-    const batch = page.tasks ?? [];
-    tasks.push(...batch);
-    offset += batch.length;
-    if (batch.length === 0 || offset >= (page.total ?? 0)) break;
-  }
-  return tasks;
-}
 
 const asHomeFlyout = (key: string | undefined): HomeFlyout | null =>
   key === 'preset' || key === 'skills' || key === 'knowledge' ? key : null;
@@ -423,147 +344,9 @@ const GuidPage: React.FC = () => {
   const [buildTransitionDirection, setBuildTransitionDirection] = useState<'forward' | 'back' | 'home' | null>(null);
   const [buildDirectoryMotion, setBuildDirectoryMotion] = useState<'enter' | 'expand' | 'exit' | 'idle'>('enter');
   const [pendingBuildKind, setPendingBuildKind] = useState<HomeBuildKind | null>(null);
-  // Video capability: local homepage draft parameters. Nothing is uploaded or
-  // created until the user presses send. The prompt, model and explicit
-  // references live with this draft and survive capability switches.
-  const [homeVideoText, setHomeVideoText] = useState('');
-  const [homeVideoRefs, setHomeVideoRefs] = useState<CanvasReferenceDraft[]>([]);
-  const [homeVideoModel, setHomeVideoModel] = useState('');
-  const [homeVideoDuration, setHomeVideoDuration] = useState(6);
-  const [homeVideoResolution, setHomeVideoResolution] = useState<VideoResolution>(DEFAULT_VIDEO_RESOLUTION);
-  const [homeVideoSubmitting, setHomeVideoSubmitting] = useState(false);
-  const effectiveModelTier = useEffectiveModelTier();
-  const videoModelCatalog = useMediaModels({ enabled: homeCapability === 'video' });
-  /**
-   * `useMediaModels` collapses a failed catalog request into an empty list, so an
-   * empty picker alone cannot tell "catalog failed, retry" apart from "no model
-   * available for this plan". Probe the same endpoint once after an empty load to
-   * classify it; the probe only runs in the empty case.
-   */
-  const [homeVideoCatalogProbe, setHomeVideoCatalogProbe] = useState<
-    'idle' | 'checking' | 'ok' | 'failed'
-  >('idle');
-  const homeVideoCatalogProbeSeqRef = useRef(0);
-  // Match the video page contract: never under-grant because one of the two tier
-  // sources is stale or missing (profile/seat tier vs catalog effective tier).
-  const catalogTier = Math.max(
-    effectiveModelTier,
-    typeof videoModelCatalog.effectiveModelTier === 'number'
-      ? videoModelCatalog.effectiveModelTier
-      : 0,
-  );
-  // No fallback to the raw catalog: a model the current plan cannot call must
-  // never become selectable or sendable.
-  const homeVideoOpenModels = useMemo(
-    () =>
-      videoModelCatalog.videoModels.filter(
-        (model) => !isPlanLocked(model.min_tier_level ?? 0, catalogTier),
-      ),
-    [videoModelCatalog.videoModels, catalogTier],
-  );
-  const homeVideoLockedModelCount =
-    videoModelCatalog.videoModels.length - homeVideoOpenModels.length;
-  const homeVideoModelOptions = useMemo(
-    () => homeVideoOpenModels.map((model) => ({ value: model.id, label: model.name || model.id })),
-    [homeVideoOpenModels],
-  );
-  // The submit closure can run for seconds while uploads are in flight; keep the
-  // latest eligibility in a ref so the pre-create re-check sees a catalog refresh.
-  const homeVideoEligibilityRef = useRef({ model: homeVideoModel, openModels: homeVideoOpenModels });
-  homeVideoEligibilityRef.current = { model: homeVideoModel, openModels: homeVideoOpenModels };
-  const homeVideoCatalogLoading =
-    homeCapability === 'video' && (videoModelCatalog.isLoading || homeVideoCatalogProbe === 'checking');
-  const homeVideoCatalogFailed =
-    homeCapability === 'video' &&
-    !homeVideoCatalogLoading &&
-    videoModelCatalog.videoModels.length === 0 &&
-    homeVideoCatalogProbe === 'failed';
-  const homeVideoCatalogState: 'loading' | 'error' | 'no-model' | 'ready' = homeVideoCatalogLoading
-    ? 'loading'
-    : homeVideoCatalogFailed
-      ? 'error'
-      : homeVideoModelOptions.length === 0
-        ? 'no-model'
-        : 'ready';
-  useEffect(() => {
-    if (homeCapability !== 'video') {
-      homeVideoCatalogProbeSeqRef.current += 1;
-      setHomeVideoCatalogProbe('idle');
-      return;
-    }
-    if (videoModelCatalog.isLoading) return;
-    if (videoModelCatalog.videoModels.length > 0) {
-      setHomeVideoCatalogProbe('ok');
-      return;
-    }
-    const seq = ++homeVideoCatalogProbeSeqRef.current;
-    setHomeVideoCatalogProbe('checking');
-    void withHomeVideoTimeout(
-      ipcBridge.media.listModels.invoke(),
-      HOME_VIDEO_CATALOG_PROBE_TIMEOUT_MS,
-      'home video catalog probe timed out',
-    )
-      .then(() => {
-        if (seq === homeVideoCatalogProbeSeqRef.current) setHomeVideoCatalogProbe('ok');
-      })
-      .catch(() => {
-        if (seq === homeVideoCatalogProbeSeqRef.current) setHomeVideoCatalogProbe('failed');
-      });
-  }, [homeCapability, videoModelCatalog.isLoading, videoModelCatalog.videoModels.length]);
-  useEffect(() => {
-    if (homeVideoCatalogLoading) return;
-    if (homeVideoModelOptions.length === 0) {
-      setHomeVideoModel((current) => (current ? '' : current));
-      return;
-    }
-    if (homeVideoModel && homeVideoModelOptions.some((option) => option.value === homeVideoModel)) return;
-    const preferred = pickDefaultVideoModel(homeVideoOpenModels);
-    setHomeVideoModel(preferred ?? '');
-  }, [homeVideoCatalogLoading, homeVideoModel, homeVideoModelOptions, homeVideoOpenModels]);
-  // Model switches clamp duration and normalize resolution to that model's own
-  // table; submit sends these normalized values.
-  useEffect(() => {
-    if (!homeVideoModel) return;
-    setHomeVideoDuration((current) => {
-      const ticks = clipDurationBoundsForModel(homeVideoModel).ticks;
-      const clamped = clampClipDurationForModel(homeVideoModel, current);
-      if (ticks.includes(clamped)) return clamped;
-      return ticks.includes(current) ? current : (ticks[ticks.length - 1] ?? clamped);
-    });
-    setHomeVideoResolution((current) => {
-      const normalized = normalizeVideoResolution(homeVideoModel, current);
-      const caps = videoModelCapabilities(homeVideoModel).resolutions;
-      return caps.includes(normalized) ? normalized : (caps[caps.length - 1] ?? current);
-    });
-  }, [homeVideoModel]);
-  const retryHomeVideoCatalog = useCallback(() => {
-    homeVideoCatalogProbeSeqRef.current += 1;
-    setHomeVideoCatalogProbe('idle');
-    // revalidate() alone can reuse the 120s module cache; a user-triggered retry
-    // must actually re-read the catalog (plan upgrades, tier changes).
-    void refreshMediaModelsCatalog().then(() => videoModelCatalog.revalidate());
-  }, [videoModelCatalog]);
-  // R3: the attempt that owns the in-flight uploads/POST. `postIssued` is the
-  // only switch between "definitely not created" and "outcome unknown".
-  type HomeVideoAttemptSnapshot = {
-    uploadedMediaIds: string[];
-    prompt: string;
-    title: string;
-    model: string;
-    resolution: VideoResolution;
-    durationSecs: number;
-  };
-  type HomeVideoRecovery = HomeVideoAttemptSnapshot & { postIssued: true };
-  const homeVideoAttemptRef = useRef<(HomeVideoAttemptSnapshot & { postIssued: boolean }) | null>(null);
-  const homeVideoSendGuardRef = useRef(false);
-  const homeVideoRecoveryCheckingRef = useRef(false);
-  const homeVideoOpenGuardRef = useRef(false);
-  const [homeVideoRecovery, setHomeVideoRecovery] = useState<HomeVideoRecovery | null>(null);
-  const [homeVideoRecoveryChecking, setHomeVideoRecoveryChecking] = useState(false);
-  const [homeVideoNavFailure, setHomeVideoNavFailure] = useState<{
-    taskId: string;
-    title: string;
-  } | null>(null);
+  const [videoPanelOpen, setVideoPanelOpen] = useState(false);
+  const [homeVideoMode, setHomeVideoMode] = useState<VideoHomeMode>('agent');
+  const homeVideoSubmit = useHomeVideoSubmit();
   // Example cards only replace a visible draft after an explicit confirmation.
   const [pendingExample, setPendingExample] = useState<{ title: string; run: () => void } | null>(null);
   const exampleConfirmCancelRef = useRef<HTMLButtonElement>(null);
@@ -738,6 +521,7 @@ const GuidPage: React.FC = () => {
       // or send a template imported for slides.
       setSlideOptions(next === 'slides' ? (draft.slideOptions ?? DEFAULT_SLIDE_OPTIONS) : null);
       if (next !== 'slides') setSlidePanelOpen(false);
+      if (next !== 'video') setVideoPanelOpen(false);
       setHomeCapability(next);
       focusHomeComposer();
     },
@@ -785,7 +569,9 @@ const GuidPage: React.FC = () => {
   /** A capability draft counts as occupied when it has text, attachments or an imported template. */
   const capabilityHasDraft = useCallback(
     (capability: HomeCapability) => {
-      if (capability === 'video') return homeVideoText.trim().length > 0 || homeVideoRefs.length > 0;
+      // The full video composer owns its draft in session storage; it no longer
+      // maps onto GuidPage input state, so show-case examples never replace it.
+      if (capability === 'video') return false;
       if (capability === 'image') {
         const parameters =
           capability === homeCapability ? imagePromptParameters : homeDraftsRef.current.image.imageParameters;
@@ -799,7 +585,7 @@ const GuidPage: React.FC = () => {
       const draft = homeDraftsRef.current[capability];
       return Boolean(draft.text.trim() || draft.files.length > 0 || draft.slideOptions?.template.kind === 'import');
     },
-    [guidInput.input, guidInput.files, homeCapability, homeVideoText, homeVideoRefs, imagePromptParameters, slideOptions],
+    [guidInput.input, guidInput.files, homeCapability, imagePromptParameters, slideOptions],
   );
   const enterImageMode = useCallback(
     (prompt?: string) => {
@@ -845,8 +631,7 @@ const GuidPage: React.FC = () => {
         enterImageMode(t('guid.home.showcaseImagePrompt'));
       } else {
         switchHomeCapability('video');
-        // The confirmed video example must replace the old body; it used to keep it.
-        setHomeVideoText(t('guid.home.showcaseVideoTitle'));
+        setVideoPanelOpen(true);
         setHomeView('capability');
       }
       setPendingExample(null);
@@ -932,40 +717,10 @@ const GuidPage: React.FC = () => {
     () => requestHomeExample('video', t('guid.home.showcaseVideoTitle')),
     [requestHomeExample, t],
   );
-  const handleSelectVideoExample = useCallback(
-    (video: { title: string; description?: string | null }) => {
-      const prompt = video.description?.trim() || video.title.trim();
-      if (!prompt) return;
-      setHomeVideoText(prompt);
-      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
-    },
-    [],
-  );
   const handleSelectShowcaseImage = useCallback(
     () => requestHomeExample('image', t('guid.home.showcaseImageTitle')),
     [requestHomeExample, t],
   );
-  const handleAddVideoRefs = useCallback((files: File[]) => {
-    if (files.length === 0) return;
-    setHomeVideoRefs((current) => {
-      const room = Math.max(0, 8 - current.length);
-      const added: CanvasReferenceDraft[] = files.slice(0, room).map((file, index) => ({
-        localId: `home_ref_${Date.now().toString(36)}_${current.length + index}_${Math.random()
-          .toString(36)
-          .slice(2, 7)}`,
-        file,
-        previewUrl: URL.createObjectURL(file),
-      }));
-      return [...current, ...added];
-    });
-  }, []);
-  const handleRemoveVideoRef = useCallback((localId: string) => {
-    setHomeVideoRefs((current) => {
-      const target = current.find((item) => item.localId === localId);
-      if (target) URL.revokeObjectURL(target.previewUrl);
-      return current.filter((item) => item.localId !== localId);
-    });
-  }, []);
   useEffect(() => {
     const report = () => { void reportVoiceCandidate(null, guidInput.dir?.trim() || null).catch(() => {}); };
     report();
@@ -1292,14 +1047,6 @@ const GuidPage: React.FC = () => {
 
   // Home directory entries and the per-capability input placeholder. Copy reuses
   // existing bilingual keys only (i18n files stay read-only in this task).
-  const homeVideoDurationOptions = useMemo(
-    () => clipDurationBoundsForModel(homeVideoModel).ticks,
-    [homeVideoModel],
-  );
-  const homeVideoResolutionOptions = useMemo(
-    () => videoModelCapabilities(homeVideoModel).resolutions,
-    [homeVideoModel],
-  );
   const homeDevelopOptions = useMemo<HomeStageOption[]>(
     () =>
       HOME_BUILD_KINDS.map((kind) => ({
@@ -1436,6 +1183,11 @@ const GuidPage: React.FC = () => {
     if (homeCapability === 'slides') switchHomeCapability('office');
     openHomeDirectory('create');
   }, [homeCapability, openHomeDirectory, switchHomeCapability]);
+  const closeVideoPanel = useCallback(() => {
+    setVideoPanelOpen(false);
+    if (homeCapability === 'video') switchHomeCapability('office');
+    openHomeDirectory('create');
+  }, [homeCapability, openHomeDirectory, switchHomeCapability]);
   const closeSlidePanelToDirectory = useCallback(() => {
     if (slidePanelMotion === 'closing') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -1495,6 +1247,8 @@ const GuidPage: React.FC = () => {
         '.arco-select-popup',
         '.arco-dropdown',
         '.arco-trigger-popup',
+        '.arco-modal',
+        '.canvas-overlay:not(.canvas-composer-shell)',
         '[class*="mentionMenu"]',
         '[class*="mention-menu"]',
         '[data-escape-owner]',
@@ -1535,12 +1289,29 @@ const GuidPage: React.FC = () => {
         closeImagePanel();
         return;
       }
+      if (homeCapability === 'video' && videoPanelOpen) {
+        closeVideoPanel();
+        return;
+      }
       if (homeCapability !== 'office') switchHomeCapability('office');
       setHomeView('home');
       focusHomeComposer();
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    // Capture the overlay before its own window listener closes it: otherwise a
+    // mode/preferences/look menu consumes Escape and this page handler sees no
+    // overlay, incorrectly closing the whole video capability.
+    const onKeyDownCapture = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (hasOpenOverlay()) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKeyDownCapture, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keydown', onKeyDownCapture, true);
+    };
   }, [
     homeView,
     homeCapability,
@@ -1550,6 +1321,8 @@ const GuidPage: React.FC = () => {
     dismissPendingExample,
     exitSlideMode,
     closeImagePanel,
+    closeVideoPanel,
+    videoPanelOpen,
     switchHomeCapability,
     focusHomeComposer,
   ]);
@@ -2017,12 +1790,6 @@ const GuidPage: React.FC = () => {
     });
   }, [guidInput.setDir]);
 
-  const homeVideoSendRef = useRef<(() => void) | null>(null);
-  const backFromHomePanel = useCallback(() => {
-    if (homeCapability !== 'office') switchHomeCapability('office');
-    setHomeView('home');
-    focusHomeComposer();
-  }, [focusHomeComposer, homeCapability, switchHomeCapability]);
   const showBuildExamples = useCallback(
     (kind: HomeBuildKind, animated: boolean) => {
       setHomeBuildKind(kind);
@@ -2061,6 +1828,7 @@ const GuidPage: React.FC = () => {
         }
         return;
       }
+      if (option.id === 'video') setVideoPanelOpen(true);
       switchHomeCapability(option.id);
       setHomeView('capability');
     },
@@ -2191,253 +1959,7 @@ const GuidPage: React.FC = () => {
 
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleComposerSend = send.sendMessageHandler;
-  // Homepage send: the video capability owns its own submit path (clip task +
-  // existing video result route); every other capability uses the existing
-  // session send path, so office/develop/slides keep their current behavior.
-  const homeSend = useCallback(() => {
-    if (homeCapability === 'video') {
-      homeVideoSendRef.current?.();
-      return;
-    }
-    handleComposerSend();
-  }, [handleComposerSend, homeCapability]);
-
-  // Video capability submit: the same clip-task contract the video page uses —
-  // upload only explicit material, create the task, register history, then open
-  // the existing clip result route. Failures before the create POST keep the
-  // homepage draft; a confirmed task is never discarded.
-  const clearHomeVideoDraft = useCallback(() => {
-    setHomeVideoText('');
-    setHomeVideoRefs((current) => {
-      current.forEach((reference) => URL.revokeObjectURL(reference.previewUrl));
-      return [];
-    });
-  }, []);
-  const cleanupHomeVideoAttemptMedia = useCallback(async (attempt: { uploadedMediaIds: string[] }) => {
-    if (attempt.uploadedMediaIds.length === 0) return;
-    const results = await Promise.allSettled(
-      attempt.uploadedMediaIds.map((mediaId) => deleteCanvasMedia(mediaId)),
-    );
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        console.warn(
-          'Failed to delete an unconfirmed home-video upload:',
-          attempt.uploadedMediaIds[index],
-          result.reason,
-        );
-      }
-    });
-  }, []);
-  const openHomeVideoTask = useCallback(
-    async (taskId: string, title: string, prompt: string) => {
-      if (homeVideoOpenGuardRef.current) return false;
-      homeVideoOpenGuardRef.current = true;
-      try {
-        // Registering the task in history and opening its route are one guarded
-        // "open the confirmed task" step: either failure keeps the task + media
-        // and surfaces the reopen path instead of discarding the result.
-        rememberVideoGenerationTask(taskId, title);
-        await navigate(`/video-generation/clip/${encodeURIComponent(taskId)}`, {
-          state: { title, prompt, taskId },
-        });
-        setHomeVideoNavFailure(null);
-        return true;
-      } catch (navigationError) {
-        // Confirmed task: keep it and its media, and surface a reopen path.
-        console.error('Failed to open the video task route:', navigationError);
-        setHomeVideoNavFailure({ taskId, title });
-        return false;
-      } finally {
-        homeVideoOpenGuardRef.current = false;
-      }
-    },
-    [navigate],
-  );
-  const resolveHomeVideoUnknownAttempt = useCallback(async () => {
-    const pending = homeVideoRecovery;
-    if (!pending || homeVideoRecoveryCheckingRef.current) return;
-    homeVideoRecoveryCheckingRef.current = true;
-    setHomeVideoRecoveryChecking(true);
-    try {
-      if (pending.uploadedMediaIds.length === 0) {
-        // No media set to attribute a task uniquely: never claim by text/time.
-        Message.warning(t('common.unknownError'));
-        return;
-      }
-      const tasks = await listHomeVideoClaimCandidates();
-      const wanted = [...pending.uploadedMediaIds].sort().join(',');
-      const matches = tasks.filter(
-        (task) => [...(task.reference_media_ids ?? [])].sort().join(',') === wanted,
-      );
-      if (matches.length !== 1) {
-        Message.warning(t('common.unknownError'));
-        return;
-      }
-      const task = matches[0];
-      setHomeVideoRecovery(null);
-      clearHomeVideoDraft();
-      await openHomeVideoTask(task.task_id, pending.title, pending.prompt);
-    } catch (cause) {
-      Message.error(
-        formatClipOperationError(cause, t, {
-          key: 'videoGeneration.list.loadError',
-          defaultValue: '加载失败',
-        }).message,
-      );
-    } finally {
-      homeVideoRecoveryCheckingRef.current = false;
-      setHomeVideoRecoveryChecking(false);
-    }
-  }, [
-    homeVideoRecovery,
-    clearHomeVideoDraft,
-    openHomeVideoTask,
-    t,
-  ]);
-  const submitHomeVideo = useCallback(async () => {
-    if (homeVideoSendGuardRef.current) return;
-    // R3: the same send action can never issue a second POST for an attempt whose
-    // outcome is unproven — it only checks/claims the existing backend task.
-    if (homeVideoRecovery) {
-      void resolveHomeVideoUnknownAttempt();
-      return;
-    }
-    const text = homeVideoText.trim();
-    if (!text) return;
-    if (homeVideoCatalogLoading) {
-      Message.warning(t('videoGeneration.create.preferences.loading'));
-      return;
-    }
-    if (homeVideoCatalogFailed) {
-      Message.error(t('videoGeneration.list.loadError'));
-      return;
-    }
-    // R2: model eligibility is checked before any upload starts.
-    if (!homeVideoModel || !homeVideoOpenModels.some((model) => model.id === homeVideoModel)) {
-      Message.warning(
-        t('videoGeneration.create.modelRequiredAction', {
-          defaultValue: 'A video model is required before generating.',
-        }),
-      );
-      return;
-    }
-    homeVideoSendGuardRef.current = true;
-    setHomeVideoSubmitting(true);
-    const attempt = {
-      uploadedMediaIds: [] as string[],
-      prompt: '',
-      title: '',
-      model: homeVideoModel,
-      resolution: normalizeVideoResolution(homeVideoModel, homeVideoResolution),
-      durationSecs: clampClipDurationForModel(homeVideoModel, homeVideoDuration),
-      postIssued: false,
-    };
-    homeVideoAttemptRef.current = attempt;
-    try {
-      const pendingReferences = homeVideoRefs.filter((reference) => reference.file);
-      if (homeVideoRefs.length > 0 && pendingReferences.length === 0) {
-        throw new Error(
-          t('videoGeneration.create.upload.referenceFileMissing', {
-            defaultValue: 'Reference image files expired; add them again before sending.',
-          }),
-        );
-      }
-      for (const reference of pendingReferences) {
-        const media = await uploadCanvasMedia(
-          reference.file,
-          reference.file.name.replace(/\.[^.]+$/, '').trim() || `reference-${attempt.uploadedMediaIds.length + 1}`,
-        );
-        attempt.uploadedMediaIds.push(media.media_id);
-      }
-      // R2: the catalog can refresh while uploads are in flight, so re-check the
-      // selected model before the create POST. Uploads are this attempt's own.
-      // Read the eligibility REF (not this closure): a running submit keeps its
-      // original render's state values for its whole lifetime.
-      const liveEligibility = homeVideoEligibilityRef.current;
-      if (
-        !attempt.model ||
-        !liveEligibility.openModels.some((model) => model.id === attempt.model)
-      ) {
-        await cleanupHomeVideoAttemptMedia(attempt);
-        homeVideoAttemptRef.current = null;
-        Message.warning(
-          t('videoGeneration.create.modelRequiredAction', {
-            defaultValue: 'A video model is required before generating.',
-          }),
-        );
-        return;
-      }
-      attempt.prompt = composeClipPrompt(materializeHomeImageMentions(text), '');
-      attempt.title =
-        text.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
-        t('videoGeneration.create.generateTitle', { defaultValue: '视频生成' });
-      // Everything before this line is proving "no task exists"; after it the
-      // backend may have created a task even if this page sees a failure.
-      attempt.postIssued = true;
-      const task = await withHomeVideoTimeout(
-        createGenerationTask({
-          mode: 'video',
-          prompt: attempt.prompt,
-          model: attempt.model,
-          resolution: attempt.resolution,
-          duration_secs: attempt.durationSecs,
-          reference_media_ids: attempt.uploadedMediaIds,
-        }),
-        HOME_VIDEO_CREATE_TIMEOUT_MS,
-      );
-      homeVideoAttemptRef.current = null;
-      setHomeVideoNavFailure(null);
-      clearHomeVideoDraft();
-      await openHomeVideoTask(task.task_id, attempt.title, attempt.prompt);
-    } catch (cause) {
-      const pending = homeVideoAttemptRef.current;
-      homeVideoAttemptRef.current = null;
-      if (isInvalidCloudSessionError(cause)) {
-        if (pending) await cleanupHomeVideoAttemptMedia(pending);
-        await navigate('/cloud-login');
-        return;
-      }
-      if (!pending) return;
-      if (!pending.postIssued || isDefinitelyNotCreatedCreateError(cause)) {
-        // Upload-stage failure, or a deterministic 4xx rejection: no task exists,
-        // so only this attempt's uploads are cleaned. Draft stays retryable.
-        await cleanupHomeVideoAttemptMedia(pending);
-        const failure = formatClipOperationError(cause, t, {
-          key: 'videoGeneration.create.generateFailed',
-          defaultValue: '视频生成创建失败',
-        });
-        Message.error(failure.message);
-        return;
-      }
-      // 5xx / timeout / disconnect / unparsable response: the task may exist.
-      // Keep the draft, the uploaded media ids and block this send path until a
-      // unique media set confirms the backend task.
-      setHomeVideoRecovery({ ...pending, postIssued: true });
-      Message.warning(t('common.unknownError'));
-    } finally {
-      homeVideoSendGuardRef.current = false;
-      setHomeVideoSubmitting(false);
-    }
-  }, [
-    homeVideoRecovery,
-    resolveHomeVideoUnknownAttempt,
-    homeVideoText,
-    homeVideoCatalogLoading,
-    homeVideoCatalogFailed,
-    homeVideoModel,
-    homeVideoOpenModels,
-    homeVideoResolution,
-    homeVideoDuration,
-    homeVideoRefs,
-    cleanupHomeVideoAttemptMedia,
-    clearHomeVideoDraft,
-    openHomeVideoTask,
-    navigate,
-    t,
-  ]);
-  homeVideoSendRef.current = () => {
-    void submitHomeVideo();
-  };
+  const homeSend = handleComposerSend;
 
   const handleInputChange = useCallback(
     (value: string) => {
@@ -2938,6 +2460,7 @@ const GuidPage: React.FC = () => {
         data-slide-studio={slideStudioOpen || undefined}
         data-video-gallery={homeView === 'capability' && homeCapability === 'video' ? 'true' : undefined}
       >
+        {homeVideoSubmit.messageHolder}
         {/* Slides owns the slide-card wall. Build has its own lightweight layer. */}
         {slideStudioOpen ? (
           <SlideCardWall />
@@ -2988,14 +2511,6 @@ const GuidPage: React.FC = () => {
                     />
                   </div>
                 </div>
-              ) : null}
-              {homeView === 'capability' && homeCapability === 'video' ? (
-                <React.Suspense fallback={null}>
-                  <VideoExampleWall
-                    onSelect={handleSelectVideoExample}
-                    onOpenAll={() => navigate('/video-generation')}
-                  />
-                </React.Suspense>
               ) : null}
             </div>
           </div>
@@ -3080,6 +2595,11 @@ const GuidPage: React.FC = () => {
                 onMotionEnd={handleDirectoryMotionEnd}
               />
             ) : null}
+            {homeView === 'capability' && homeCapability === 'video' && videoPanelOpen ? (
+              <div className={styles.slidePanelHost} data-testid='guid-home-video-panel-host'>
+                <VideoExamplePanel onClose={closeVideoPanel} />
+              </div>
+            ) : null}
             {homeView === 'capability' && homeCapability === 'slides' && slidePanelOpen && slideOptions !== null ? (
               <div className={styles.slidePanelHost} data-testid='guid-home-slides-panel'>
                 <SlideCreatePanel
@@ -3099,65 +2619,59 @@ const GuidPage: React.FC = () => {
                 <ImagePromptPanel onSelectPrompt={handleSelectImagePrompt} onClose={closeImagePanel} />
               </div>
             ) : null}
+            {homeView === 'capability' && homeCapability === 'video' && homeVideoSubmit.generateRecovery ? (
+              <div
+                className={styles.exampleConfirm}
+                data-testid='guid-home-video-generate-recovery'
+                role='alert'
+              >
+                <span className={styles.exampleConfirmText}>
+                  {t('guid.home.videoRecoveryNotice')}
+                </span>
+                <div className={styles.exampleConfirmActions}>
+                  <button
+                    type='button'
+                    className={styles.exampleConfirmCancel}
+                    disabled={homeVideoSubmit.generateRecoveryChecking}
+                    onClick={() => void homeVideoSubmit.resolveGenerateRecovery()}
+                  >
+                    {t('common.retry')}
+                  </button>
+                  <button
+                    type='button'
+                    className={styles.exampleConfirmApply}
+                    onClick={() => void navigate('/video-generation')}
+                  >
+                    {t('videoGeneration.list.generateRecentTitle')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {homeView === 'capability' && homeCapability === 'video' ? (
-              <HomeVideoComposer
-                text={homeVideoText}
-                onTextChange={setHomeVideoText}
-                references={homeVideoRefs}
-                onAddReferences={handleAddVideoRefs}
-                onRemoveReference={handleRemoveVideoRef}
-                model={homeVideoModel}
-                modelOptions={homeVideoModelOptions}
-                onModelChange={setHomeVideoModel}
-                modelsLoading={homeVideoCatalogState === 'loading'}
-                catalogState={homeVideoCatalogState}
-                lockedModelCount={homeVideoLockedModelCount}
-                onRetryModels={retryHomeVideoCatalog}
-                recovery={
-                  homeVideoRecovery
-                    ? {
-                        kind: 'unknown',
-                        checking: homeVideoRecoveryChecking,
-                        onCheck: () => {
-                          void resolveHomeVideoUnknownAttempt();
-                        },
-                        onOpen: () => {
-                          void navigate('/video-generation');
-                        },
-                      }
-                    : homeVideoNavFailure
-                      ? {
-                          kind: 'navigation-failed',
-                          checking: false,
-                          onCheck: () => {
-                            void openHomeVideoTask(
-                              homeVideoNavFailure.taskId,
-                              homeVideoNavFailure.title,
-                              '',
-                            );
-                          },
-                          onOpen: () => {
-                            void openHomeVideoTask(
-                              homeVideoNavFailure.taskId,
-                              homeVideoNavFailure.title,
-                              '',
-                            );
-                          },
-                        }
-                      : undefined
-                }
-                durationSecs={homeVideoDuration}
-                durationOptions={homeVideoDurationOptions}
-                onDurationChange={setHomeVideoDuration}
-                resolution={homeVideoResolution}
-                resolutionOptions={homeVideoResolutionOptions}
-                onResolutionChange={setHomeVideoResolution}
-                submitting={homeVideoSubmitting}
-                onSend={() => {
-                  void submitHomeVideo();
+              <React.Suspense fallback={null}>
+                <VideoHomeComposer
+                mode={homeVideoMode}
+                loading={homeVideoSubmit.creating}
+                onModeChange={setHomeVideoMode}
+                onSubmitAgent={(draft) => {
+                  void homeVideoSubmit.handleCreate(draft);
                 }}
-                onExit={backFromHomePanel}
-              />
+                onSubmitCreation={(draft) => {
+                  void homeVideoSubmit.handleCreateCanvas(draft);
+                }}
+                onSubmitGenerate={(draft) => {
+                  void homeVideoSubmit.handleCreateGenerate(draft);
+                }}
+                onSubmitBriefing={(draft) => {
+                  void homeVideoSubmit.handleCreateBriefing(draft);
+                }}
+                onCreateBlankCanvas={() => {
+                  void homeVideoSubmit.handleCreateBlankCanvas();
+                }}
+                  showHero={false}
+                  showCampaign={false}
+                />
+              </React.Suspense>
             ) : (
             <GuidInputCard
               containerRef={guidInputCardRef}
