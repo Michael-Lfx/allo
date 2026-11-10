@@ -3627,6 +3627,7 @@ export type I18nKey =
   | 'learning.generateTitle'
   | 'learning.goToLesson'
   | 'learning.goalRequired'
+  | 'learning.graphCreateBackgroundNotice'
   | 'learning.growthPillCancelled'
   | 'learning.growthPillDismiss'
   | 'learning.growthPillDone'
