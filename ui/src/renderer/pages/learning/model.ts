@@ -259,8 +259,9 @@ export function triageViewCounts(view: {
   };
 }
 
-/** 分诊计数行：「扫描 N 文件 → core X / mixed Y / 跳过 Z / 重复 W /
- * 不确定 U」。跳过 = noise + duplicate（两者都不进课程）。 */
+/** 分诊计数行（生成进度视图 triageCompleted 帧用）：「扫描 N 文件 → core X /
+ * mixed Y / 跳过 Z / 重复 W / 不确定 U」。跳过 = noise + duplicate（两者都不
+ * 进课程）。 */
 export function triageCountsLine(counts: TriageCountsLike, t: Translate): string {
   return t('learning.genTriageLine', {
     total: counts.total,
@@ -276,24 +277,6 @@ export function triageCountsLine(counts: TriageCountsLike, t: Translate): string
  * （分诊结果被不确定淹没）——建议先整理知识库，不是硬失败。 */
 export function uncertainTooMany(counts: TriageCountsLike): boolean {
   return counts.uncertain >= 10 || (counts.core > 0 && counts.uncertain > counts.core);
-}
-
-/** 成本门/计划卡的读数行：文件数 / 批数 / 调用数 / 预计耗时。耗时默认按
- * 分钟（成本门旧口径）；计划卡可要求按秒显示（`estimated_seconds` 原值）。 */
-export function estimateLines(
-  estimate: import('./types').CourseGenerationEstimateView,
-  t: Translate,
-  options: { duration?: 'minutes' | 'seconds' } = {}
-): string[] {
-  const minutes = Math.max(1, Math.round(estimate.estimated_seconds / 60));
-  return [
-    t('learning.costGateFiles', { count: estimate.total_files }),
-    t('learning.costGateBatches', { count: estimate.estimated_batches }),
-    t('learning.costGateCalls', { count: estimate.estimated_llm_calls }),
-    options.duration === 'seconds'
-      ? t('learning.planEstimateSeconds', { seconds: estimate.estimated_seconds })
-      : t('learning.costGateDuration', { minutes }),
-  ];
 }
 
 // ── t5 课程详情「来源覆盖」卡（SourceCoverage；不是学习图的 Coverage Gauge）──

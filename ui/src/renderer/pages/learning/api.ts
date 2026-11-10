@@ -58,14 +58,7 @@ export const learningApi = {
   // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
-  // t5 成本门估算：提交前对知识库流做一次规则分诊（零 LLM），读数含
-  // 文件数/批数/调用/耗时与跳过摘要；needs_confirm 由后端按阈值判定。
-  estimateGeneration: (request: GenerateCourseRequest) =>
-    httpRequest<import('./types').CourseGenerationEstimateView>(
-      'POST',
-      `${BASE}/courses/generate/estimate`,
-      request
-    ),
+  // t5 成本门估算已随计划确认页移除（d5）：提交即生成，估算端点后端保留。
   // 学习图生成/生长状态/取消：后台运行对外可发现、可取消。
   generationStatus: () =>
     httpRequest<LearningGraphGenerationStatus>(

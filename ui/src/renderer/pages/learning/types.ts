@@ -250,18 +250,7 @@ export interface CourseSourcePlanDetailView {
   duplicates: CourseSourcePlanDuplicateExampleView[];
 }
 
-/** t5 成本门估算：提交建课前的一次规则分诊读数（零 LLM、degraded=true）。
- * needs_confirm 由后端按 >40 文件或 >20 次预估调用判定（阈值单源）。 */
-export interface CourseGenerationEstimateView {
-  total_files: number;
-  estimated_batches: number;
-  estimated_llm_calls: number;
-  /** 粗估耗时（秒；按调用数 × 经验常数，仅供确认弹窗展示）。 */
-  estimated_seconds: number;
-  needs_confirm: boolean;
-  triage: CourseSourcePlanTriageView;
-  skipped_examples?: CourseSourcePlanExcludedView[];
-}
+/** t5 成本门估算已随计划确认页移除（d5）：端点后端保留，前端读数面删除。 */
 
 export interface CourseSummary {
   id: string;

@@ -425,31 +425,21 @@ const LearningPage: React.FC = () => {
             modelChoice={creation.modelChoice}
             creationTab={creation.creationTab}
             creationDescription={creation.creationDescription}
-            graphProficiency={creation.graphProficiency}
-            graphBasis={creation.graphBasis}
             creationGoal={creation.creationGoal}
-            teachingStyle={creation.teachingStyle}
-            onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
             creationPhase={creation.creationPhase}
-            plan={creation.plan}
-            planEstimate={creation.planEstimate}
             onClose={creation.closeGenerator}
-            onOk={() => void creation.submitGeneration()}
+            onOk={() => void creation.submitGeneration(creation.creationTab)}
             onSelectedBaseChange={creation.setSelectedKnowledgeBaseIds}
             onDomainChange={creation.setGenerationDomain}
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}
-            onGraphProficiencyChange={creation.setGraphProficiency}
-            onGraphBasisChange={creation.setGraphBasis}
             onConfirmGraphCreation={() => void creation.confirmGraphCreation()}
             onGoalChange={creation.setCreationGoal}
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
-            onPlanBack={creation.backToPlanForm}
-            onPlanConfirm={creation.confirmPlan}
           />
         </Suspense>
 
