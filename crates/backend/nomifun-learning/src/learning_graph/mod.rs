@@ -1491,7 +1491,10 @@ pub(crate) async fn concept_review(
     let provenance_on = review_provenance_enabled();
     let fragments_on = review_fragments_enabled();
     let enforce_on = fragment_enforce;
-    let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
+    // p1 紧凑化：评审入参 12-20KB 区间 pretty 空白占 20-30%——紧凑序列化
+    // 对 `from_str` 解析面等价，纯体积优化（重裁通道 :832 的 previous_json
+    // pretty 另票处理）。
+    let batch_json = serde_json::to_string(batch).unwrap_or_default();
     // u04 反循环臂（缺省 on；service 传 `prior_review` = 评审往返记录，
     // off/首轮为空串）：①翻案锁——有状态复审时前轮意见随 user 回灌并锁定
     // 「按前轮意见做出的修改本身不得再判为问题；修改若引入与前轮无关的新
@@ -2985,6 +2988,45 @@ mod tests {
             sys_off,
             "off 臂 system = on 臂减去两条款（基线逐字节钉）"
         );
+    }
+
+    /// 评审 batch_json 紧凑化（p1）：装配进评审 user 的【待审批次】用
+    /// `serde_json::to_string`（紧凑）而非 pretty——真机评审单调用入参
+    /// 12-20KB，pretty 空白占 20-30%；紧凑/pretty 对 `from_str` 解析面等价，
+    /// 纯入参体积优化、评审输出契约零改动。断言双钉：① 头块后紧跟
+    /// `{"nodes":[`（紧凑形，ProposedBatch 字段序 nodes 在首）；② pretty
+    /// 顶层缩进 `{\n  "nodes"` 绝迹。只读 env 不改写：无需 serial。
+    #[tokio::test]
+    async fn review_batch_json_is_compact_not_pretty() {
+        // 回包无所谓（解析必败）——首轮捕获的 user 才是断言对象。
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec!["not json".to_owned()].into_iter(),
+            Vec::new(),
+        )));
+        let _ = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &[],
+            &[],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        let prompts = completer.0.lock().unwrap().1.clone();
+        assert!(!prompts.is_empty(), "首轮已捕获");
+        let user = prompts[0]
+            .split('\x1f')
+            .nth(1)
+            .expect("captured system\\x1fuser");
+        assert!(
+            user.contains("【待审批次】\n{\"nodes\":["),
+            "待审批次应为紧凑 JSON（头块后紧跟 {{\"nodes\":[）：{user}"
+        );
+        assert!(!user.contains("{\n  \"nodes\""), "pretty 顶层缩进绝迹：{user}");
     }
 
     /// w02 候选词元语言碎屑过滤：定义被标点/字母切出的孤立元语言段

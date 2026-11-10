@@ -457,6 +457,7 @@
   "learningGraphStructureTitle": "Knowledge structure",
   "learningGraphStructureGenerating": "Generating…",
   "learningGraphStructureFailed": "Knowledge structure generation failed",
+  "learningGraphStructureConflict": "Structure generation is already in progress; wait for the current run to finish",
   "learningGraphStructureSummary": "{{spines}} spines · {{blocks}} blocks · {{doors}} doors",
   "learningGraphStructureGenerate": "Generate structure",
   "learningGraphStructureRegenerate": "Regenerate",

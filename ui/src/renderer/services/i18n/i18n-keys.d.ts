@@ -3637,6 +3637,7 @@ export type I18nKey =
   | 'learning.learningGraphStructStage_intermediate'
   | 'learning.learningGraphStructTheme'
   | 'learning.learningGraphStructUnregistered'
+  | 'learning.learningGraphStructureConflict'
   | 'learning.learningGraphStructureFailed'
   | 'learning.learningGraphStructureGenerate'
   | 'learning.learningGraphStructureGenerating'
