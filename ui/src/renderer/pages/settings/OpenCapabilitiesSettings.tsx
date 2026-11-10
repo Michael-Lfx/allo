@@ -18,7 +18,7 @@ const OpenCapabilitiesSettings: React.FC = () => {
           </Typography.Title>
           <Typography.Paragraph className='!mb-0 text-t-tertiary text-13px'>
             {t('settings.openCapabilities.subtitle', {
-              defaultValue: '分开管理 WebUI 访问入口，以及 Flowy Remote MCP / REST 对外开放能力。',
+              defaultValue: '分开管理 WebUI 访问入口，以及 {{brandName}} Remote MCP / REST 对外开放能力。',
             })}
           </Typography.Paragraph>
         </div>

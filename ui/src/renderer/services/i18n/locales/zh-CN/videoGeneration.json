@@ -47,14 +47,14 @@
     "briefingKind": "资讯口播",
     "importProject": "导入工程",
     "importCanvas": "导入画布",
-    "importFilter": "Flowy 工程（短剧 / 无限画布）",
+    "importFilter": "{{brandName}} 工程（短剧 / 无限画布）",
     "importDesktopOnly": "导入工程仅桌面端可用。",
     "importOk": "工程已导入",
     "importFailed": "导入失败",
     "importUnsupported": "请选择短剧工程（.nomivimax）或无限画布工程（.nomiccanvas）",
     "empty": {
       "title": "你的第一支影片从上方开始",
-      "desc": "写下一个画面或故事，Flowy 会先给你一版可编辑分镜。"
+      "desc": "写下一个画面或故事，{{brandName}} 会先给你一版可编辑分镜。"
     },
     "generateEmpty": {
       "title": "你的第一个视频从这里开始",
@@ -70,13 +70,13 @@
     },
     "tabs": {
       "recent": "最近创作",
-      "tvShow": "Flowy TV"
+      "tvShow": "{{brandName}} TV"
     }
   },
   "tvShow": {
-    "title": "Flowy TV",
+    "title": "{{brandName}} TV",
     "subtitle": "浏览社区成片，点开就能用同一套工程做一支。",
-    "subtitleMine": "查看审核进度，管理你发布到 Flowy TV 的作品。",
+    "subtitleMine": "查看审核进度，管理你发布到 {{brandName}} TV 的作品。",
     "subtitleChannel": "按创作方式筛选广场成片。",
     "searchPlaceholder": "搜索作品...",
     "featuredTitle": "精选",
@@ -119,16 +119,16 @@
       "channelTitle": "这个频道还没有作品",
       "channelDesc": "换个频道看看，或者自己发一支。",
       "mineTitle": "还没有发布作品",
-      "mineDesc": "完成成片后，在工作区点击「发布到 Flowy TV」。",
+      "mineDesc": "完成成片后，在工作区点击「发布到 {{brandName}} TV」。",
       "create": "去创作"
     },
     "authRequired": {
-      "title": "登录后观看 Flowy TV",
+      "title": "登录后观看 {{brandName}} TV",
       "desc": "点赞、导入和「我的」需要云端账号。",
       "mineTitle": "登录后查看我的发布",
       "mineDesc": "点赞、投稿和导入需要云端账号。",
       "login": "去登录",
-      "publish": "发布到 Flowy TV 需要先登录云端账号。"
+      "publish": "发布到 {{brandName}} TV 需要先登录云端账号。"
     },
     "detail": {
       "title": "作品详情",
@@ -146,11 +146,11 @@
       "importFailed": "导入失败"
     },
     "publish": {
-      "action": "发布到 Flowy TV",
+      "action": "发布到 {{brandName}} TV",
       "needSucceeded": "请先完成成片生成后再发布。",
       "needCover": "缺少封面海报，请完成渲染后再发布。",
       "busy": "规划或渲染进行中，请完成后再发布。",
-      "ok": "已提交审核，通过后会出现在 Flowy TV 广场。",
+      "ok": "已提交审核，通过后会出现在 {{brandName}} TV 广场。",
       "failed": "发布失败"
     }
   },
@@ -223,7 +223,7 @@
     "homeHeadlineCreation": "在无限画布里<em>排镜头</em>",
     "homeHeadlineAction": "让角色跟着视频<em>动起来</em>",
     "homeHeadlineBriefing": "把话题做成<em>可溯源口播</em>",
-    "homeHintAgent": "写下故事或想法，Flowy 帮你变成成片。",
+    "homeHintAgent": "写下故事或想法，{{brandName}} 帮你变成成片。",
     "homeHintAction": "上传角色图和参考视频，让角色模仿动作生成成片。",
     "homeHintCreation": "描述画面与镜头，在无限画布里自由编排生成。",
     "homeHintGenerate": "上传参考图并填写提示词，直接生成视频片段。",
@@ -494,8 +494,8 @@
     "exportBusy": "规划或渲染进行中，请完成后再导出。",
     "exportOk": "工程已导出",
     "exportFailed": "导出失败",
-    "exportFilter": "Flowy 视频工程",
-    "exportCanvasFilter": "Flowy 画布工程",
+    "exportFilter": "{{brandName}} 视频工程",
+    "exportCanvasFilter": "{{brandName}} 画布工程",
     "openInCanvas": "打开到 Canvas",
     "openInCanvasOk": "已打开到 Canvas：{{shots}} 镜 · {{media}} 个媒体",
     "openInCanvasReused": "已打开该工程对应的 Canvas（未新建）",
@@ -710,7 +710,7 @@
       "llmPlanTitle": "规划模型（LLM）调用失败",
       "llmCameraTreeHint": "模型返回的机位父子关系条数与镜头机位数量不一致。已支持自动补齐；请重启后端后点「从断点继续」。若仍失败可换规划模型。",
       "llmChannelRenderHint": "这不是视频生成模型失败。渲染过程中的分镜/参考图选择也需要聊天模型。请更换「规划模型（LLM）」后点击「从断点继续」。",
-      "llmChannelPlanHint": "这不是视频生成模型失败。Flowy 上游表示当前所选聊天模型的通道全部不可用。请更换「规划模型（LLM）」后重新点「开始规划」或「从断点继续」。",
+      "llmChannelPlanHint": "这不是视频生成模型失败。{{brandName}} 上游表示当前所选聊天模型的通道全部不可用。请更换「规划模型（LLM）」后重新点「开始规划」或「从断点继续」。",
       "llmRenderHint": "渲染过程中调用聊天模型失败（如分镜提示、参考图选择）。已保留现场产物，请更换模型或稍后点击「从断点继续」。",
       "llmPlanHint": "文本规划阶段调用聊天模型失败。请更换规划模型，或稍后点击「从断点继续」。",
       "imageTitle": "图片模型调用失败",
@@ -756,7 +756,7 @@
       "cancelled": "已取消"
     },
     "stageStartedAt": "开始于 {{time}}",
-    "briefTitle": "把故事交给 Flowy",
+    "briefTitle": "把故事交给 {{brandName}}",
     "briefHint": "生成的是可修改分镜，不会直接开始高成本渲染。",
     "actionTitle": "上传素材，生成成片",
     "actionHint": "一张角色图 + 一段参考视频。无需提示词，时长跟随参考视频。",

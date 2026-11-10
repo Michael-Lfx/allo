@@ -187,7 +187,7 @@ export const AgentSkillImportContent: React.FC<AgentSkillImportContentProps> = (
         <div className='flex items-start gap-10px rounded-10px bg-fill-2 p-12px'>
           <Info size={16} className='mt-2px flex-shrink-0 text-primary-6' />
           <div className='text-13px leading-20px text-t-secondary'>
-            {t('settings.agentSkillImport.description', { defaultValue: 'Bring reusable skills from Claude, Gemini, Codex-compatible Agent Skills, or custom external folders into Flowy.' })}
+            {t('settings.agentSkillImport.description', { defaultValue: 'Bring reusable skills from Claude, Gemini, Codex-compatible Agent Skills, or custom external folders into {{brandName}}.' })}
           </div>
         </div>
         <div className='flex items-center justify-between gap-10px'>

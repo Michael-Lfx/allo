@@ -1,5 +1,5 @@
 import { resolveLocaleKey } from '@/common/utils/utils';
-import appLogo from '@renderer/assets/logo.svg';
+import BrandLogo from '@renderer/components/brand/BrandLogo';
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -142,7 +142,7 @@ const CloudLoginTransition: React.FC<CloudLoginTransitionProps> = ({
       brandTitle={t('cloudLogin.brand')}
       brandTagline={t('cloudLogin.brandTagline')}
       brandFlow={t('cloudLogin.brandFlow')}
-      brandLogo={<img src={appLogo} alt='' />}
+      brandLogo={<BrandLogo decorative />}
       brandMeta={t('cloudLogin.brandMeta')}
       brandLegal={<CloudLoginLegalLinks />}
       windowControls={
@@ -292,7 +292,7 @@ const CloudLoginFlow: React.FC<CloudLoginFlowProps> = ({ status, whoami, logout,
       brandTitle={t('cloudLogin.brand')}
       brandTagline={t('cloudLogin.brandTagline')}
       brandFlow={t('cloudLogin.brandFlow')}
-      brandLogo={<img src={appLogo} alt='' />}
+      brandLogo={<BrandLogo decorative />}
       brandMeta={t('cloudLogin.brandMeta')}
       brandLegal={<CloudLoginLegalLinks />}
       windowControls={

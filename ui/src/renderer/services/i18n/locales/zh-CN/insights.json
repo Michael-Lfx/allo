@@ -5,7 +5,7 @@
     "uploadReady": "可上传",
     "authConfigured": "已配置认证",
     "endpoint": "上报端点",
-    "endpointPending": "登录 Flowy 云账号后自动配置",
+    "endpointPending": "登录 {{brandName}} 云账号后自动配置",
     "outboxPending": "待发",
     "outboxFailed": "失败",
     "outboxSent": "已发送",
@@ -13,7 +13,7 @@
   },
   "settings": {
     "enabled": "启用贡献",
-    "serverManagedHint": "上报端点与认证令牌由 Flowy 云账号自动管理，无需手动填写。",
+    "serverManagedHint": "上报端点与认证令牌由 {{brandName}} 云账号自动管理，无需手动填写。",
     "onSessionEnd": "会话结束时入队",
     "autoExtractSection": "主动提取",
     "autoExtractHint": "对话进行中按阈值自动构建并入队工作包，无需等待会话结束。",

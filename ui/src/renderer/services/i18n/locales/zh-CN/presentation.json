@@ -2,7 +2,7 @@
   "settings": {
     "nav": "演示文稿",
     "title": "演示文稿",
-    "description": "Nomi 制作 PPT 时使用内置的 ppt-master Skill。它和私有 Python 环境由 Flowy 自动下载和管理，不影响你电脑上的其他 Python。",
+    "description": "Nomi 制作 PPT 时使用内置的 ppt-master Skill。它和私有 Python 环境由 {{brandName}} 自动下载和管理，不影响你电脑上的其他 Python。",
     "capabilityGroup": "安装状态",
     "detailsGroup": "详细信息",
     "statusLabel": "ppt-master",

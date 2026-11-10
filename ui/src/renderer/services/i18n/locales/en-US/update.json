@@ -4,7 +4,7 @@
   "compactProgressTitle": "Version update",
   "checking": "Checking for updates...",
   "checkFailed": "Failed to check for updates",
-  "crossDeviceInstallUnsupported": "Flowy is running from a disk image, external drive, or another volume and cannot safely replace itself. Quit Flowy, move Flowy.app to Applications, eject the installer volume, then reopen and retry, or use the manual download.",
+  "crossDeviceInstallUnsupported": "{{brandName}} is running from a disk image, external drive, or another volume and cannot safely replace itself. Quit {{brandName}}, move {{brandName}}.app to Applications, eject the installer volume, then reopen and retry, or use the manual download.",
   "packageNoLongerReady": "The downloaded update is no longer held in memory (the app restarted, or a different version was fetched). Download it again, then install.",
   "upToDateTitle": "You're up to date",
   "currentVersion": "Current version: {{version}}",

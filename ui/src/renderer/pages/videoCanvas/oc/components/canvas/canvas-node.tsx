@@ -889,8 +889,8 @@ function TvCoverBadge({ theme }: { theme: CanvasTheme }) {
         <span
             className="pointer-events-none inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-1.5 text-[var(--fs-tiny)] font-medium leading-none backdrop-blur-md"
             style={{ background: theme.accent.primarySoft, borderColor: theme.accent.primary, color: theme.accent.primary }}
-            title={canvasT("videoCanvas.nodeUi.tvCoverAria", "Flowy TV 封面")}
-            aria-label={canvasT("videoCanvas.nodeUi.tvCoverAria", "Flowy TV 封面")}
+            title={canvasT("videoCanvas.nodeUi.tvCoverAria", "{{brandName}} TV 封面")}
+            aria-label={canvasT("videoCanvas.nodeUi.tvCoverAria", "{{brandName}} TV 封面")}
         >
             <Bookmark className="size-3 fill-current" />
             {canvasT("videoCanvas.nodeUi.tvCover", "封面")}

@@ -171,7 +171,7 @@ const VideoGenerationListPage: React.FC = () => {
     () => [
       {
         key: 'tvShow' as const,
-        label: t('videoGeneration.list.tabs.tvShow', { defaultValue: 'Flowy TV' }),
+        label: t('videoGeneration.list.tabs.tvShow', { defaultValue: '{{brandName}} TV' }),
       },
       {
         key: 'recent' as const,
@@ -1027,17 +1027,17 @@ const VideoGenerationListPage: React.FC = () => {
       }
       const allFilter = {
         name: t('videoGeneration.list.importFilter', {
-          defaultValue: 'Flowy 工程（短剧 / 无限画布）',
+          defaultValue: '{{brandName}} 工程（短剧 / 无限画布）',
         }),
         extensions: [SESSION_PROJECT_EXTENSION, CANVAS_PROJECT_EXTENSION],
       };
       const sessionFilter = {
-        name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Flowy 视频工程' }),
+        name: t('videoGeneration.actions.exportFilter', { defaultValue: '{{brandName}} 视频工程' }),
         extensions: [SESSION_PROJECT_EXTENSION],
       };
       const canvasFilter = {
         name: t('videoGeneration.actions.exportCanvasFilter', {
-          defaultValue: 'Flowy 画布工程',
+          defaultValue: '{{brandName}} 画布工程',
         }),
         extensions: [CANVAS_PROJECT_EXTENSION],
       };
@@ -1107,7 +1107,7 @@ const VideoGenerationListPage: React.FC = () => {
                         }
                         if (tvTab === 'mine') {
                           return t('videoGeneration.tvShow.subtitleMine', {
-                            defaultValue: '查看审核进度，管理你发布到 Flowy TV 的作品。',
+                            defaultValue: '查看审核进度，管理你发布到 {{brandName}} TV 的作品。',
                           });
                         }
                         return tvTab === 'all'
@@ -1213,7 +1213,7 @@ const VideoGenerationListPage: React.FC = () => {
                     </div>
                     <div className='mt-2px text-12px text-[var(--color-text-3)]'>
                       {t('videoGeneration.list.empty.desc', {
-                        defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                        defaultValue: '写下一个画面或故事，{{brandName}} 会先给你一版可编辑分镜。',
                       })}
                     </div>
                   </div>

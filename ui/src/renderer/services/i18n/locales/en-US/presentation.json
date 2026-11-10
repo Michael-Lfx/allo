@@ -2,7 +2,7 @@
   "settings": {
     "nav": "Presentations",
     "title": "Presentations",
-    "description": "Nomi uses the built-in ppt-master Skill to make PPT decks. Flowy downloads and manages it with a private Python environment that does not touch any other Python on your computer.",
+    "description": "Nomi uses the built-in ppt-master Skill to make PPT decks. {{brandName}} downloads and manages it with a private Python environment that does not touch any other Python on your computer.",
     "capabilityGroup": "Installation",
     "detailsGroup": "Details",
     "statusLabel": "ppt-master",

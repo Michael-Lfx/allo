@@ -47,14 +47,14 @@
     "briefingKind": "Spoken briefing",
     "importProject": "Import project",
     "importCanvas": "Import canvas",
-    "importFilter": "Flowy project (short drama / canvas)",
+    "importFilter": "{{brandName}} project (short drama / canvas)",
     "importDesktopOnly": "Importing a project is only available in the desktop app.",
     "importOk": "Project imported",
     "importFailed": "Import failed",
     "importUnsupported": "Choose a short-drama project (.nomivimax) or an infinite-canvas project (.nomiccanvas).",
     "empty": {
       "title": "Your first film starts above",
-      "desc": "Describe a scene or story and Flowy will create an editable storyboard first."
+      "desc": "Describe a scene or story and {{brandName}} will create an editable storyboard first."
     },
     "generateEmpty": {
       "title": "Your first video starts here",
@@ -70,11 +70,11 @@
     },
     "tabs": {
       "recent": "Recent projects",
-      "tvShow": "Flowy TV"
+      "tvShow": "{{brandName}} TV"
     }
   },
   "tvShow": {
-    "title": "Flowy TV",
+    "title": "{{brandName}} TV",
     "subtitle": "Browse community films and remix the same project.",
     "subtitleMine": "Track review status and manage what you published.",
     "subtitleChannel": "Filter plaza films by how they were made.",
@@ -119,16 +119,16 @@
       "channelTitle": "Nothing in this channel yet",
       "channelDesc": "Try another channel, or publish one of your own.",
       "mineTitle": "You haven’t published yet",
-      "mineDesc": "Publish from a finished workspace with “Publish to Flowy TV”.",
+      "mineDesc": "Publish from a finished workspace with “Publish to {{brandName}} TV”.",
       "create": "Start creating"
     },
     "authRequired": {
-      "title": "Sign in to watch Flowy TV",
+      "title": "Sign in to watch {{brandName}} TV",
       "desc": "Likes, remix, and My posts need a cloud account.",
       "mineTitle": "Sign in to see your posts",
       "mineDesc": "Likes, entries, and remix need a cloud account.",
       "login": "Sign in",
-      "publish": "Sign in to your cloud account before publishing to Flowy TV."
+      "publish": "Sign in to your cloud account before publishing to {{brandName}} TV."
     },
     "detail": {
       "title": "Film details",
@@ -146,11 +146,11 @@
       "importFailed": "Import failed"
     },
     "publish": {
-      "action": "Publish to Flowy TV",
+      "action": "Publish to {{brandName}} TV",
       "needSucceeded": "Finish rendering the film before publishing.",
       "needCover": "A cover poster is required before publishing.",
       "busy": "Finish planning or rendering before publishing.",
-      "ok": "Submitted for review. It will appear on the Flowy TV plaza after approval.",
+      "ok": "Submitted for review. It will appear on the {{brandName}} TV plaza after approval.",
       "failed": "Publish failed"
     }
   },
@@ -223,7 +223,7 @@
     "homeHeadlineCreation": "Direct your shots on the <em>infinite canvas</em>",
     "homeHeadlineAction": "Make the character <em>move with the video</em>",
     "homeHeadlineBriefing": "Turn a topic into a <em>cited briefing</em>",
-    "homeHintAgent": "Type in stories or thoughts — Flowy turns them into a film.",
+    "homeHintAgent": "Type in stories or thoughts — {{brandName}} turns them into a film.",
     "homeHintAction": "Upload a character image and a reference video to imitate the motion.",
     "homeHintCreation": "Describe scenes and shots, then arrange generation on the infinite canvas.",
     "homeHintGenerate": "Upload a reference image and write a prompt to generate a video clip.",
@@ -494,8 +494,8 @@
     "exportBusy": "Finish planning or rendering before exporting.",
     "exportOk": "Project exported",
     "exportFailed": "Export failed",
-    "exportFilter": "Flowy video project",
-    "exportCanvasFilter": "Flowy canvas project",
+    "exportFilter": "{{brandName}} video project",
+    "exportCanvasFilter": "{{brandName}} canvas project",
     "openInCanvas": "Open in Canvas",
     "openInCanvasOk": "Opened in Canvas: {{shots}} shots · {{media}} media",
     "openInCanvasReused": "Opened existing Canvas for this project",
@@ -710,7 +710,7 @@
       "llmPlanTitle": "Planning model (LLM) call failed",
       "llmCameraTreeHint": "The model returned a parent/child count that does not match cameras. Auto-repair is supported; restart the backend and resume. Switch planning model if it still fails.",
       "llmChannelRenderHint": "This is not a video-model failure. Storyboard/reference selection during render also needs a chat model. Switch the planning model (LLM) and resume.",
-      "llmChannelPlanHint": "This is not a video-model failure. Flowy upstream reports all channels for the selected chat model are unavailable. Switch the planning model (LLM) and start planning or resume.",
+      "llmChannelPlanHint": "This is not a video-model failure. {{brandName}} upstream reports all channels for the selected chat model are unavailable. Switch the planning model (LLM) and start planning or resume.",
       "llmRenderHint": "Chat model failed during render (e.g. storyboard prompts, reference selection). Artifacts were kept — switch model or resume later.",
       "llmPlanHint": "Chat model failed during text planning. Switch the planning model, or resume later.",
       "imageTitle": "Image model call failed",
@@ -756,7 +756,7 @@
       "cancelled": "Cancelled"
     },
     "stageStartedAt": "Started at {{time}}",
-    "briefTitle": "Give Flowy your story",
+    "briefTitle": "Give {{brandName}} your story",
     "briefHint": "This creates an editable storyboard before any expensive rendering starts.",
     "actionTitle": "Upload assets, generate the clip",
     "actionHint": "One character still + one reference video. No prompt needed; duration follows the reference.",

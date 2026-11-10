@@ -1,4 +1,5 @@
 import React, { useId } from 'react';
+import { BRAND_NAME } from '@/renderer/config/brand';
 
 type FlowyLogoProps = {
   className?: string;
@@ -14,7 +15,7 @@ const LETTER_PATH =
 
 const ICON_TRANSFORM = 'translate(0,1200) scale(0.1,-0.1)';
 
-const FlowyLogo: React.FC<FlowyLogoProps> = ({ className, size = 64, title = 'Flowy' }) => {
+const FlowyLogo: React.FC<FlowyLogoProps> = ({ className, size = 64, title = BRAND_NAME }) => {
   const clipId = useId();
 
   return (

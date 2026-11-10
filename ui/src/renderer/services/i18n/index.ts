@@ -17,6 +17,7 @@ import {
 // Static imports for all locales to ensure packaged app can always switch language.
 import enUS from './locales/en-US/index';
 import zhCN from './locales/zh-CN/index';
+import { BRAND_I18N_VARIABLES } from '@/renderer/config/brand';
 
 export type { I18nKey, I18nModule } from './i18n-keys';
 
@@ -79,7 +80,10 @@ i18n
     lng: firstPaintLanguage(),
     fallbackLng: DEFAULT_LANGUAGE,
     debug: false,
-    interpolation: { escapeValue: false },
+    interpolation: {
+      escapeValue: false,
+      defaultVariables: BRAND_I18N_VARIABLES,
+    },
   })
   .catch((error: Error) => {
     console.error('Failed to initialize i18n:', error);

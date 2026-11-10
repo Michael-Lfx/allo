@@ -1188,7 +1188,7 @@ const CanvasInner: React.FC<CanvasEditorProps> = ({ canvasId, initialDoc, onSave
     updateNodeData,
     deleteNode: removeNode,
     onApplied: (count) =>
-      message.info(t('workshopAgent.applied.ops', { count, defaultValue: 'Flowy 更新了画布（{{count}} 项操作）' })),
+      message.info(t('workshopAgent.applied.ops', { count, defaultValue: '{{brandName}} 更新了画布（{{count}} 项操作）' })),
   });
 
   // ── Render ──────────────────────────────────────────────────────────────────

@@ -27,6 +27,7 @@ import { isForCompanion } from './eventScope';
 import { injectCompanionCustomCss } from '@/renderer/utils/theme/applyCustomCss';
 import { injectWallpaperTokenSheet, restoreWallpaperTokensFromCache } from '@/renderer/utils/theme/applyWallpaperTokens';
 import { configService } from '@/common/config/configService';
+import { BRAND_NAME } from '@/renderer/config/brand';
 import ChannelDingTalkLogo from '@/renderer/assets/channel-logos/dingtalk.svg';
 import ChannelDiscordLogo from '@/renderer/assets/channel-logos/discord.svg';
 import ChannelLarkLogo from '@/renderer/assets/channel-logos/lark.svg';
@@ -1091,8 +1092,8 @@ const CompanionPage: React.FC = () => {
           setBubbleLoading(false);
           const browser = browserNarrationFor(message.data);
           const hint = browser
-            ? t(browser.key, { name: profileRef.current?.name || 'Flowy', ...browser.params })
-            : t('nomi.companion.usingTools', { name: profileRef.current?.name || 'Flowy' });
+            ? t(browser.key, { name: profileRef.current?.name || BRAND_NAME, ...browser.params })
+            : t('nomi.companion.usingTools', { name: profileRef.current?.name || BRAND_NAME });
           setBubble((prev) => (prev && prev !== '…' ? prev : hint));
           armBubbleDismiss(STREAM_STALL_MS, () => endTurn(''));
           break;
@@ -1935,7 +1936,7 @@ const CompanionPage: React.FC = () => {
   );
 
   const openNativeContextMenu = useCallback(async () => {
-    const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || 'Flowy', t });
+    const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || BRAND_NAME, t });
     try {
       const [{ Menu }, { getCurrentWindow }] = await Promise.all([
         import('@tauri-apps/api/menu'),
@@ -2182,7 +2183,7 @@ const CompanionPage: React.FC = () => {
           <textarea
             className='nomi-companion-composer__input'
             value={composerText}
-            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
+            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || BRAND_NAME })}
             autoFocus
             onChange={(e) => setComposerText(e.target.value)}
             onFocus={onComposerFocus}
@@ -2280,7 +2281,7 @@ const CompanionPage: React.FC = () => {
         >
           <input
             value={input}
-            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
+            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || BRAND_NAME })}
             onChange={(e) => setInput(e.target.value)}
             onPaste={onComposerPaste}
             onCompositionStartCapture={compositionHandlers.onCompositionStartCapture}

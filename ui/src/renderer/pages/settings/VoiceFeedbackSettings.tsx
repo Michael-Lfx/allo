@@ -4,6 +4,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { SettingsList, SettingsRow, SettingsSection } from '@renderer/components/settings/SettingsPagePrimitives';
 import { getVoiceFeedbackSettings, saveVoiceFeedback, getVoiceInputDevices, type VoiceFeedbackConfig, type VoiceFeedbackSettings, type AudioDeviceInfo } from '@common/adapter/voiceCompanion';
+import { BRAND_WAKE_WORD } from '@/renderer/config/brand';
 
 const UnsavedBadge: React.FC<{ text: string }> = ({ text }) => (
   <span className='inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-10px font-medium bg-warning-1 text-warning-6 border border-solid border-warning-3 animate-pulse motion-reduce:animate-none'>
@@ -30,7 +31,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
         setDraft((current) => current ?? {
           ...value.requested,
           wake_enabled: value.requested.wake_enabled ?? true,
-          wake_words: value.requested.wake_words ?? ['Hey Flowy'],
+          wake_words: value.requested.wake_words ?? [BRAND_WAKE_WORD],
           // Backend owns the authoritative product default; this is a display fallback only.
           tts_speed: value.requested.tts_speed ?? 1.1,
           idle_timeout_secs: value.requested.idle_timeout_secs ?? 30,
@@ -104,7 +105,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 placeholder={t('voice.feedback.wakeWordsPlaceholder')}
                 maxLength={12}
                 value={
-                  !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === 'hey flowy'
+                  !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === BRAND_WAKE_WORD.toLowerCase()
                     ? ''
                     : draft.wake_words[0]
                 }

@@ -30,7 +30,7 @@
     "clearWorkspace": "Clear",
     "specifyWorkspace": "Select project folder",
     "searchPlaceholder": "Search projects…",
-    "defaultWorkspace": "Default workspace (managed by Flowy)",
+    "defaultWorkspace": "Default workspace (managed by {{brandName}})",
     "recentWorkspaces": "Recents"
   },
   "scanning": {
@@ -178,7 +178,7 @@
     "showcaseImageBadge": "Image",
     "videoShortcutTitle": "Create your video",
     "videoShortcutSubtitle": "Turn an idea into reality",
-    "cardWordmark": "Flowy:",
+    "cardWordmark": "{{brandName}}:",
     "cardGuest": "Guest",
     "cardSeal": "TODAY IS YOUR DAY",
     "cardQuoteCool": "A private assistant who really knows you,",

@@ -22,6 +22,7 @@ import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adap
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { resolveLocaleKey, uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import { BRAND_NAME } from '@/renderer/config/brand';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
@@ -2346,7 +2347,7 @@ const NomiSendBox: React.FC<{
         placeholder={
           current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {
-                backend: agent_name || 'Flowy',
+                backend: agent_name || BRAND_NAME,
                 defaultValue: `Send message to {{backend}}...`,
               })
             : t('conversation.chat.noModelSelected')

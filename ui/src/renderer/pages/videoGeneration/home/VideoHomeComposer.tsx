@@ -723,7 +723,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
                 })
               : mode === 'agent'
                 ? t('videoGeneration.create.homeHintAgent', {
-                    defaultValue: '写下故事或想法，Flowy 帮你变成成片。',
+                    defaultValue: '写下故事或想法，{{brandName}} 帮你变成成片。',
                   })
                 : mode === 'briefing'
                   ? t('videoGeneration.create.homeHintBriefing', {

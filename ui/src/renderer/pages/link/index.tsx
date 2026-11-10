@@ -20,7 +20,7 @@ const LinkPhonePage: React.FC = () => {
           <BrowserAccessPanel />
         </section>
         <section className='rd-12px border border-solid border-arco-2 bg-fill-0 p-16px'>
-          <div className='text-16px font-600 text-t-primary'>{t('settings.link.appTitle', { defaultValue: '用 Flowy 手机版' })}</div>
+          <div className='text-16px font-600 text-t-primary'>{t('settings.link.appTitle', { defaultValue: '用 {{brandName}} 手机版' })}</div>
           <div className='mt-4px mb-14px text-13px text-t-secondary leading-relaxed'>
             {t('settings.link.appDesc', {
               defaultValue: '安装 App 后扫描配对码。允许之前，手机拿不到登录。对话正文不经过云端。',

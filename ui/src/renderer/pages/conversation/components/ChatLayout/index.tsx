@@ -2,7 +2,7 @@ import type { ConversationId } from '@/common/types/ids';
 import { conversationTarget } from '@/common/types/ids';
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import type { PresetInfo } from '@/renderer/hooks/agent/usePresetInfo';
-import appLogo from '@/renderer/assets/logo.svg';
+import BrandLogo from '@/renderer/components/brand/BrandLogo';
 import FlexFullContainer from '@/renderer/components/layout/FlexFullContainer';
 import PathText from '@/renderer/components/base/PathText';
 import { useDeveloperModeGate } from '@/renderer/hooks/config/useDeveloperModeGate';
@@ -407,7 +407,7 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
           subtitle={titleSubtitle}
           leading={
             props.headerLeading ??
-            (<img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />)
+            (<BrandLogo className='block h-16px w-16px object-contain' />)
           }
         />
       </FlexFullContainer>

@@ -1,8 +1,8 @@
 {
   "title": "Media Generation",
-  "description": "Configure default Flowy image and video models. Media is provided by Flowy Cloud only.",
-  "agentHintLogin": "Sign in to Flowy Cloud and save settings to enable image/video tools in agent chat.",
-  "agentHintReady": "Flowy Cloud is connected. In agent chat you can ask to generate images or videos; the agent will use image_generate / video_generate tools.",
+  "description": "Configure default {{brandName}} image and video models. Media is provided by {{brandName}} Cloud only.",
+  "agentHintLogin": "Sign in to {{brandName}} Cloud and save settings to enable image/video tools in agent chat.",
+  "agentHintReady": "{{brandName}} Cloud is connected. In agent chat you can ask to generate images or videos; the agent will use image_generate / video_generate tools.",
   "credits": {
     "authenticated": "Signed in",
     "notAuthenticated": "Not signed in",

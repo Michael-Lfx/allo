@@ -30,7 +30,7 @@
     "clearWorkspace": "清除",
     "specifyWorkspace": "选择项目文件夹",
     "searchPlaceholder": "搜索项目…",
-    "defaultWorkspace": "默认工作路径（Flowy 管理）",
+    "defaultWorkspace": "默认工作路径（{{brandName}} 管理）",
     "recentWorkspaces": "最近"
   },
   "scanning": {
@@ -178,7 +178,7 @@
     "showcaseImageBadge": "图片",
     "videoShortcutTitle": "创建你的视频",
     "videoShortcutSubtitle": "让想法变为现实",
-    "cardWordmark": "Flowy:",
+    "cardWordmark": "{{brandName}}:",
     "cardGuest": "未登录",
     "cardSeal": "今天是你的一天",
     "cardQuoteCool": "真正了解你的私人助理，总能在你",

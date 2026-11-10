@@ -38,7 +38,7 @@
     "cwdRequired": "请先选择工作目录",
     "modalDesc": "选择 CLI 类型，一键把知识库 MCP 命令合并到配置；现有配置不会被覆盖。",
     "modalTitle": "接入平台知识库",
-    "securityDesc": "配置中不会保存端口或凭据。CLI 启动时通过当前系统用户专属的本地安全通道获取工作区权限；Flowy 需要保持运行。",
+    "securityDesc": "配置中不会保存端口或凭据。CLI 启动时通过当前系统用户专属的本地安全通道获取工作区权限；{{brandName}} 需要保持运行。",
     "codexScope": "写入用户级配置",
     "projectScope": "写入项目配置"
   },
@@ -90,7 +90,7 @@
       "claudeJson": "Claude .mcp.json",
       "claudePowerShellCommand": "Claude PowerShell 命令",
       "codexToml": "Codex config.toml",
-      "description": "模板只包含启动命令，不包含端口或凭据。外部 CLI 启动时通过当前系统用户专属的本地安全通道获取工作区权限；Flowy 需要保持运行。",
+      "description": "模板只包含启动命令，不包含端口或凭据。外部 CLI 启动时通过当前系统用户专属的本地安全通道获取工作区权限；{{brandName}} 需要保持运行。",
       "geminiJson": "Gemini settings.json",
       "loading": "加载中...",
       "title": "高级：手动注册到其它 CLI / 外置终端",

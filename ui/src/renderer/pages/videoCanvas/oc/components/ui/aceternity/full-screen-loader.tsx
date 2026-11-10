@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "motion/react";
 
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { cn } from "@oc/lib/utils";
+import { BRAND_LOGO_URL } from "@renderer/config/brand";
 
 type FullScreenLoaderProps = {
     label?: string;
@@ -56,7 +57,10 @@ export function FullScreenLoader({ label = "正在恢复创作空间", detail = 
                     />
                     <motion.span
                         className="size-10 bg-current"
-                        style={{ mask: "url(/logo.svg) center / contain no-repeat", WebkitMask: "url(/logo.svg) center / contain no-repeat" }}
+                        style={{
+                            mask: `url(${BRAND_LOGO_URL}) center / contain no-repeat`,
+                            WebkitMask: `url(${BRAND_LOGO_URL}) center / contain no-repeat`,
+                        }}
                         animate={reducedMotion ? undefined : { opacity: [0.58, 1, 0.58], scale: [0.96, 1, 0.96] }}
                         transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
                     />

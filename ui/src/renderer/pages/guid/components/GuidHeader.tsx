@@ -3,6 +3,7 @@ import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import styles from './GuidHeader.module.css';
+import { BRAND_NAME } from '@/renderer/config/brand';
 
 const GuidHeader: React.FC = () => {
   const { t } = useTranslation();
@@ -14,7 +15,7 @@ const GuidHeader: React.FC = () => {
         <div className={styles.headerLeft}>
           <div className={styles.logo}>
             <FlowyIcon name="lightning" size={24} />
-            <span className={styles.logoText}>Flowy</span>
+            <span className={styles.logoText}>{BRAND_NAME}</span>
           </div>
         </div>
         <div className={styles.headerRight}>

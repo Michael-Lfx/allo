@@ -13,6 +13,7 @@ import {
 import { Button, Switch } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { BRAND_NAME } from '@/renderer/config/brand';
 
 const ComputerUseSettingsContent: React.FC = () => {
   const { t } = useTranslation();
@@ -58,7 +59,7 @@ const ComputerUseSettingsContent: React.FC = () => {
   }, []);
 
   const isMac = perm?.platform === 'macos';
-  const appLabel = perm?.app_label || 'Flowy';
+  const appLabel = perm?.app_label || BRAND_NAME;
 
   const permRow = (kind: ComputerPermissionKind, granted: boolean | null, label: string, description: string) => (
     <SettingsPermissionRow

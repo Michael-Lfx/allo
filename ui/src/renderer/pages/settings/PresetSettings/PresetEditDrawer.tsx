@@ -400,7 +400,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
                 <span>
                   {t('settings.presetBuiltinReadonlyTip', {
                     defaultValue:
-                      'This preset is maintained by Flowy. To customize it, ',
+                      'This preset is maintained by {{brandName}}. To customize it, ',
                   })}
                 </span>
                 <a
