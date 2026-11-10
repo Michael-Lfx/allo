@@ -2,7 +2,7 @@
 id: d5
 title: "建课流程简化——学习图只留目标输入，删除「生成计划」确认页（提交即生成）"
 type: task
-status: open
+status: closed
 assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
@@ -89,3 +89,35 @@ part_of: ../map.md
 - 后端 DTO/端点改动（estimate 端点保留）；两个非图 tab 的输入面重构（知识库
   选择/领域/描述即目标，本就 minimal）；`teaching_style` 的课程级存档读侧
   （存量课程不受影响）。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面全验收过；真机目验待用户。** 施工 = `46125d745`。
+
+- **学习图表单 = 目标输入 + 模型选择 + 提交按钮**：程度/基础声明输入与讲解风
+  格 Radio 全部移除；请求不再携带（后端 DTO 全 serde default：结构生成扩写 /
+  纯零基础 / standard）。模式说明段（learningGraphCreateHint）保留。
+- **计划页整页移除**：CoursePlanCard + render 测试删除；对话框提交按钮（学习
+  图 = 创建课程并生成知识结构；其余 = 创建课程）校验通过**直接发起生成**，就
+  地进生成进度视图（进度/取消/重试/完成进课程原样保留）；footer 仅生成视图
+  隐藏主按钮。`CreationPhase` 收窄为 'form' | 'generating'。
+- **死面清理**：coursePlan.ts 375→103 行（保留 buildPlanRequest/类型）；hook
+  删计划机器与声明/风格 state；api.ts 删 estimateGeneration；types.ts 删
+  CourseGenerationEstimateView（triage/excluded 类型有 SourceCoverageCard 用
+  户，保留）；model.ts 删 estimateLines（triageViewCounts/uncertainTooMany/
+  triageCountsLine 保留——后两者有 SourceCoverageCard/进度视图活用户）。
+- **i18n 双侧对称删 30 keys**（plan*/teachingStyle/style*/声明 label/
+  Placeholder/costGate*/planEstimateSeconds；11588 keys 收口）。
+- **施工记档**：①首轮误删 `triageCountsLine` + `genTriageLine`——它有活用户
+  （CourseGenerationProgress 的 triageCompleted 事件流），typecheck 当场暴露，
+  即刻回滚并在票面更正删除清单（估算死面的 grep 口径要含 import 面不止 t()
+  调用面）；②测试用例笔误（空简报用例没切 description tab），自测暴露即修。
+- **验收**：typecheck 55 错基线一致（learning/i18n 零错）；`check:i18n` /
+  `check:theme` / `check:css-scope` / `check:motion` / `check:icons` 绿；
+  `check:dead-css` 学习域零命中；学习域前端单测 **115 pass / 0 fail**（重写
+  coursePlan.test.ts 6 例：三入口形状 + 图流不带声明/风格断言 + 校验键 + 上
+  限）；grep `CoursePlanCard|planReadout|reducePlan|estimateGeneration|
+  teachingStyle` 在 learning 页面域归零；`git diff --stat crates/` 为空（后端
+  零改动，estimate 端点保留）。
+- **真机判据**（用户侧）：学习图 tab 只剩目标输入；点提交直接进生成进度；知
+  识库/描述两 tab 照旧直达生成。
