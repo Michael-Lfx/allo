@@ -176,24 +176,16 @@ impl LearningService {
         let spawn_override = model_override
             .map(|(provider, model)| (provider.clone(), model.to_owned()));
         tokio::spawn(async move {
-            let spawn_override = spawn_override
-                .as_ref()
-                .map(|(provider, model)| (provider, model.as_str()));
-            let _slot = slot; // RAII：任务结束（含 panic）即释放
-            match service.generation_tasks.begin_registered(admission_key).await {
-                Ok(task) => {
-                    if let Err(error) = service
-                        .run_structure_generation_task(&course, spawn_override, &structure_input, task)
-                        .await
-                    {
-                        tracing::warn!(course = course.as_str(), %error, "structure generation failed");
-                    }
-                }
-                // 排队期取消 / 记录消失：终态已由取消侧或注册表落账，无可收尾。
-                Err(error) => {
-                    tracing::warn!(%error, "detached structure generation was never admitted")
-                }
-            }
+            Self::run_detached_structure_generation(
+                service,
+                slot,
+                admission_key,
+                course,
+                spawn_override,
+                structure_input,
+                "structure generation failed",
+            )
+            .await;
             // e3：不再衔接首生长。零节点时停摆臂本就拦住自动臂（m10 补批
             // 语义不动），首批 = 用户显式动作（POST grow，force 恒过停摆臂）。
         });
@@ -244,6 +236,41 @@ impl LearningService {
             "知识结构生成",
         )?;
         Ok((slot, task_key))
+    }
+
+    /// spawn 侧共享样板（评审修复：首生长/重生成两处 16 行同形闭包收口）：
+    /// slot guard RAII 移交 + `begin_registered` 接续准入 + 生成体运行。
+    /// `failure_log` 参数化两臂唯一的日志文案差（首生长/重生成）；
+    /// 「detached … never admitted」文案两臂共享。排队期取消 / 记录消失：
+    /// 终态已由取消侧或注册表落账，无可收尾。语义零改动（growth/lesson
+    /// 异步臂各走各自的形状，不在此列）。
+    async fn run_detached_structure_generation(
+        service: Self,
+        slot: crate::service::GenerationSlotGuard,
+        admission_key: String,
+        course: LearningCourseId,
+        model_override: Option<(ProviderId, String)>,
+        input: crate::learning_graph::structure_gen::StructureInput,
+        failure_log: &'static str,
+    ) {
+        let spawn_override = model_override
+            .as_ref()
+            .map(|(provider, model)| (provider, model.as_str()));
+        let _slot = slot; // RAII：任务结束（含 panic）即释放
+        match service.generation_tasks.begin_registered(admission_key).await {
+            Ok(task) => {
+                if let Err(error) = service
+                    .run_structure_generation_task(&course, spawn_override, &input, task)
+                    .await
+                {
+                    tracing::warn!(course = course.as_str(), %error, "{}", failure_log);
+                }
+            }
+            // 排队期取消 / 记录消失：终态已由取消侧或注册表落账，无可收尾。
+            Err(error) => {
+                tracing::warn!(%error, "detached structure generation was never admitted")
+            }
+        }
     }
 
     /// 结构生成任务体（g3 拆分）：两把锁已由
@@ -459,24 +486,16 @@ impl LearningService {
         let spawn_override =
             model_override.map(|(provider, model)| (provider.clone(), model.to_owned()));
         tokio::spawn(async move {
-            let spawn_override = spawn_override
-                .as_ref()
-                .map(|(provider, model)| (provider, model.as_str()));
-            let _slot = slot; // RAII：任务结束（含 panic）即释放
-            match service.generation_tasks.begin_registered(admission_key).await {
-                Ok(task) => {
-                    if let Err(error) = service
-                        .run_structure_generation_task(&course, spawn_override, &input, task)
-                        .await
-                    {
-                        tracing::warn!(course = course.as_str(), %error, "structure regeneration failed");
-                    }
-                }
-                // 排队期取消 / 记录消失：终态已由取消侧或注册表落账，无可收尾。
-                Err(error) => {
-                    tracing::warn!(%error, "detached structure generation was never admitted")
-                }
-            }
+            Self::run_detached_structure_generation(
+                service,
+                slot,
+                admission_key,
+                course,
+                spawn_override,
+                input,
+                "structure regeneration failed",
+            )
+            .await;
         });
         Ok(true)
     }
