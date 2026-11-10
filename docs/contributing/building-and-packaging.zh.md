@@ -81,7 +81,8 @@ OS 的安装包/应用包。
 准备脚本使用 Cargo 返回的目标可执行文件，拒绝 skeleton 产物，也不能在失败后复用旧文件。
 
 Windows 准备步骤还从匹配架构的微软官方 VC++ 可再发行文件中暂存
-`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`。
+`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`。x64 另外暂存
+`vcruntime140_1.dll`；这是 x64 的 FH4 异常运行库，ARM64 安装包不包含它。
 脚本发现已安装的 Visual Studio 可再发行文件目录，或接受构建期
 `VC_REDIST_CRT_DIR` 目录覆盖。NSIS 安装时将这些文件从 `bin/` 复制到应用根目录，
 供 app-local 加载。

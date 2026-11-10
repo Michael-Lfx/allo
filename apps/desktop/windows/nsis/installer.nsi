@@ -832,10 +832,14 @@ Section Install
 
  ; App-local VC++ runtime deployment for main executable (Flowy.exe)
  ; The voice daemon (bin\voice-companion.exe) loads them directly from $INSTDIR\bin.
- IfFileExists "$INSTDIR\bin\msvcp140.dll" 0 +5
+ ; vcruntime140_1.dll is x64-only and is absent from ARM64 packages.
+ IfFileExists "$INSTDIR\bin\msvcp140.dll" 0 +2
  CopyFiles /SILENT "$INSTDIR\bin\msvcp140.dll" "$INSTDIR\msvcp140.dll"
+ IfFileExists "$INSTDIR\bin\msvcp140_1.dll" 0 +2
  CopyFiles /SILENT "$INSTDIR\bin\msvcp140_1.dll" "$INSTDIR\msvcp140_1.dll"
+ IfFileExists "$INSTDIR\bin\vcruntime140.dll" 0 +2
  CopyFiles /SILENT "$INSTDIR\bin\vcruntime140.dll" "$INSTDIR\vcruntime140.dll"
+ IfFileExists "$INSTDIR\bin\vcruntime140_1.dll" 0 +2
  CopyFiles /SILENT "$INSTDIR\bin\vcruntime140_1.dll" "$INSTDIR\vcruntime140_1.dll"
 
  ; Copy external binaries

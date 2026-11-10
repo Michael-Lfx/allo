@@ -6,9 +6,9 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveRgTarget } from './ensure-bundled-rg.mjs';
-import { binaryArchs, normalizeArch, REQUIRED_VC_REDIST_DLLS } from './verify-voice-release-package.mjs';
+import { binaryArchs, normalizeArch, REQUIRED_VC_REDIST_DLLS, requiredVcRedistDlls } from './verify-voice-release-package.mjs';
 
-export { REQUIRED_VC_REDIST_DLLS };
+export { REQUIRED_VC_REDIST_DLLS, requiredVcRedistDlls };
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -51,20 +51,20 @@ function listDirNames(dir) {
   }
 }
 
-function crtDirsInArch(archDir) {
+function crtDirsInArch(archDir, dlls) {
   const named = listDirNames(archDir)
     .filter((name) => VC_CRT_DIR_RE.test(name))
     .map((name) => join(archDir, name));
   if (named.length) return named;
-  // A few installs drop the four CRT DLLs directly in the arch folder.
-  if (REQUIRED_VC_REDIST_DLLS.every((dll) => existsSync(join(archDir, dll)))) return [archDir];
+  // A few installs drop the CRT DLLs directly in the arch folder.
+  if (dlls.every((dll) => existsSync(join(archDir, dll)))) return [archDir];
   return [];
 }
 
-function crtDirsInRedist(msvcRoot, msvcArch) {
+function crtDirsInRedist(msvcRoot, msvcArch, dlls) {
   const found = [];
   for (const ver of listDirNames(msvcRoot)) {
-    found.push(...crtDirsInArch(join(msvcRoot, ver, msvcArch)));
+    found.push(...crtDirsInArch(join(msvcRoot, ver, msvcArch), dlls));
   }
   return found;
 }
@@ -121,14 +121,14 @@ function compareCrtDesc(a, b) {
   return 0;
 }
 
-function collectVcRedistCandidates(msvcArch, env) {
+function collectVcRedistCandidates(msvcArch, env, dlls) {
   const candidates = [];
   if (env.VCToolsRedistDir) {
-    const direct = crtDirsInArch(join(env.VCToolsRedistDir, msvcArch));
-    candidates.push(...(direct.length ? direct : crtDirsInRedist(env.VCToolsRedistDir, msvcArch)));
+    const direct = crtDirsInArch(join(env.VCToolsRedistDir, msvcArch), dlls);
+    candidates.push(...(direct.length ? direct : crtDirsInRedist(env.VCToolsRedistDir, msvcArch, dlls)));
   }
   if (env.VCINSTALLDIR) {
-    candidates.push(...crtDirsInRedist(join(env.VCINSTALLDIR, 'Redist', 'MSVC'), msvcArch));
+    candidates.push(...crtDirsInRedist(join(env.VCINSTALLDIR, 'Redist', 'MSVC'), msvcArch, dlls));
   }
   for (const root of programFileRoots(env)) {
     const vswhere = join(root, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
@@ -137,7 +137,7 @@ function collectVcRedistCandidates(msvcArch, env) {
     for (const product of listDirNames(vsRoot)) {
       if (product.toLowerCase() === 'installer') continue;
       for (const edition of listDirNames(join(vsRoot, product))) {
-        candidates.push(...crtDirsInRedist(join(vsRoot, product, edition, 'VC', 'Redist', 'MSVC'), msvcArch));
+        candidates.push(...crtDirsInRedist(join(vsRoot, product, edition, 'VC', 'Redist', 'MSVC'), msvcArch, dlls));
       }
     }
   }
@@ -153,7 +153,8 @@ function collectVcRedistCandidates(msvcArch, env) {
 export function resolveVcRedistCrt(arch = 'x64', env = process.env) {
   const normalizedArch = normalizeArch(arch);
   const msvcArch = normalizedArch === 'aarch64' ? 'arm64' : 'x64';
-  const candidates = env.VC_REDIST_CRT_DIR ? [env.VC_REDIST_CRT_DIR] : collectVcRedistCandidates(msvcArch, env);
+  const requiredDlls = requiredVcRedistDlls(normalizedArch);
+  const candidates = env.VC_REDIST_CRT_DIR ? [env.VC_REDIST_CRT_DIR] : collectVcRedistCandidates(msvcArch, env, requiredDlls);
 
   let inspected = 0;
   for (const dir of candidates) {
@@ -161,7 +162,7 @@ export function resolveVcRedistCrt(arch = 'x64', env = process.env) {
     inspected += 1;
     const resolved = {};
     let ok = true;
-    for (const dll of REQUIRED_VC_REDIST_DLLS) {
+    for (const dll of requiredDlls) {
       const full = join(dir, dll);
       if (!existsSync(full) || statSync(full).size === 0) {
         ok = false;
@@ -186,7 +187,7 @@ export function resolveVcRedistCrt(arch = 'x64', env = process.env) {
     ? `Checked ${inspected} CRT director${inspected === 1 ? 'y' : 'ies'}; none had a complete ${msvcArch} set.`
     : `No CRT directory was found. Install the Visual Studio ${msvcArch} C++ redistributable, or set VC_REDIST_CRT_DIR.`;
   throw new Error(
-    `Official Microsoft Visual C++ redistributable files not found for ${arch} (expected a Microsoft.VC*.CRT directory containing ${REQUIRED_VC_REDIST_DLLS.join(', ')}). ${checked}`
+    `Official Microsoft Visual C++ redistributable files not found for ${arch} (expected a Microsoft.VC*.CRT directory containing ${requiredDlls.join(', ')}). ${checked}`
   );
 }
 
