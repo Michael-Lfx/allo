@@ -1,8 +1,9 @@
 /** 建课请求构造（d5 简化后）的单测：三入口校验 + 请求装配。计划确认页已
  * 移除——提交即生成，状态机/读数/估算面随 CoursePlanCard 一并删除；这里只
- * 钉「校验失败只回 i18n 键」与各入口的请求形状。 */
+ * 钉「校验失败只回 i18n 键」与各入口的请求形状，以及恢复态任务的请求形状
+ * （c1：只有学习图结构类任务标 learning_graph）。 */
 import { describe, expect, test } from 'bun:test';
-import { buildPlanRequest, type CourseCreationForm } from './coursePlan';
+import { buildPlanRequest, buildRestoredRequest, type CourseCreationForm } from './coursePlan';
 
 const form = (overrides: Partial<CourseCreationForm> = {}): CourseCreationForm => ({
   tab: 'base',
@@ -91,5 +92,24 @@ describe('buildPlanRequest（三入口共用构造）', () => {
       messageKey: 'learning.kbSelectionTooMany',
       messageVars: { count: 5 },
     });
+  });
+});
+
+describe('buildRestoredRequest（恢复态任务 → 建课请求，c1）', () => {
+  test('学习图结构类任务标 learning_graph（对话框走学习图最小呈现）', () => {
+    for (const kind of ['structure', 'structure_mount', 'structure_repair']) {
+      expect(buildRestoredRequest({ kind, topic: '知识结构生成' })).toEqual({
+        course_kind: 'learning_graph',
+        description: '知识结构生成',
+      });
+    }
+  });
+
+  test('v2 建课（outline）与课时任务不带 course_kind——呈现照旧走 v2', () => {
+    for (const kind of ['outline', 'lesson']) {
+      const request = buildRestoredRequest({ kind, topic: '掌握 Rust 异步编程' });
+      expect(request).toEqual({ description: '掌握 Rust 异步编程' });
+      expect('course_kind' in request).toBe(false);
+    }
   });
 });
