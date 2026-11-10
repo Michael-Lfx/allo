@@ -12041,6 +12041,91 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(rows[0].actor_user_id, None);
     }
 
+    /// g1 路由层：grow 端点收用户模型选择（provider_id + model 成对），经真实
+    /// 提取器栈（`Router::oneshot`）进入生长管线。自动补批没有独立端点——前端
+    /// 自动臂复用同一 POST grow（`?trigger=auto_refill`），两臂同 handler。
+    mod grow_route_model_choice {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        const PROVIDER: &str = "0190f5fe-7c00-7a00-8000-000000000201";
+
+        fn app(service: &LearningService, owner: &nomifun_common::UserId) -> axum::Router {
+            crate::routes::learning_routes(crate::state::LearningRouterState::new(Arc::new(
+                service.clone(),
+            )))
+            .layer(axum::Extension(nomifun_auth::CurrentUser {
+                id: owner.clone(),
+                username: "owner".into(),
+            }))
+        }
+
+        fn grow(course_id: &str, query: &str, body: serde_json::Value) -> Request<Body> {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/learning/courses/{course_id}/graph/grow{query}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        }
+
+        /// 成对约束：只给 provider_id 或只给 model 一律 400（与 regenerate /
+        /// mount / repair 同口径）。
+        #[tokio::test]
+        async fn grow_rejects_unpaired_model_choice() {
+            let (service, _knowledge, owner) = job_test_service().await;
+            let (course_id, _a, _b) = seed_graph_course(&service).await;
+            for body in [json!({ "provider_id": PROVIDER }), json!({ "model": "model-a" })] {
+                let response = app(&service, &owner)
+                    .oneshot(grow(&course_id, "", body.clone()))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+            }
+        }
+
+        /// 透传：成对选择到达生长管线的 LLM 调用——手动与自动补批两臂都带所
+        /// 选 provider/model（不再回落默认档），动作簿触发源标签照旧；不带选择
+        /// （`{}`，前端 choice 未解析时的形状）仍回落默认档（None）。
+        #[tokio::test]
+        async fn grow_threads_model_choice_into_growth_calls() {
+            let cases = [
+                ("", Some((PROVIDER, "model-a")), "manual"),
+                ("?trigger=auto_refill", Some((PROVIDER, "model-a")), "auto_refill"),
+                ("", None, "manual"),
+            ];
+            for (query, choice, trigger) in cases {
+                let (service, _knowledge, owner) = job_test_service().await;
+                let (course_id, _a, _b) = seed_graph_course(&service).await;
+                let course = LearningCourseId::parse(&course_id).unwrap();
+                let completer = ScriptedCompleter::new(VALID_BATCH, false);
+                *service.course_completer.write().unwrap() = Some(completer.clone());
+                let body = match choice {
+                    Some((provider, model)) => json!({ "provider_id": provider, "model": model }),
+                    None => json!({}),
+                };
+                let response = app(&service, &owner)
+                    .oneshot(grow(&course_id, query, body))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{query} {choice:?}");
+                assert!(
+                    wait_for_system_action_count(&service, &course, 1).await,
+                    "growth must settle into a ledger row: {query} {choice:?}"
+                );
+                assert_eq!(system_action_rows(&service, &course).await[0].trigger, trigger);
+                assert!(completer.calls.load(AtomicOrdering::SeqCst) > 0, "growth hit the LLM");
+                assert_eq!(
+                    *completer.last_override.lock().unwrap(),
+                    choice.map(|(provider, model)| (provider.to_owned(), model.to_owned())),
+                    "{query} {choice:?}"
+                );
+            }
+        }
+    }
+
     /// 读侧：按课程倒序、limit 截断（上限 200）、不存在/软删 404。
     #[tokio::test]
     async fn system_actions_read_orders_desc_limits_and_404s() {
