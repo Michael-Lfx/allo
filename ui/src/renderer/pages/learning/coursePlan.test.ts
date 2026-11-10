@@ -3,6 +3,8 @@
  * 钉「校验失败只回 i18n 键」与各入口的请求形状，以及恢复态任务的请求形状
  * （c1：只有学习图结构类任务标 learning_graph）。 */
 import { describe, expect, test } from 'bun:test';
+import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
+import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 import {
   buildPlanRequest,
   buildRestoredRequest,
@@ -120,52 +122,58 @@ describe('buildRestoredRequest（恢复态任务 → 建课请求，c1）', () =
   });
 });
 
-/** 词典替身（独立真值 = 与 locale JSON 相同的字面值）：验证 restoredTaskTopic
- * 选了哪个 key、剥了什么标题，插值语义与 i18next {{var}} 同形。断言只关心
- * key 选择与标题剥取，措辞真值由 locale JSON + check:i18n 钉住。 */
-const dict: Record<string, string> = {
-  'learning.taskKindStructure': '知识结构生成',
-  'learning.taskKindStructureMount': '结构挂载',
-  'learning.taskKindStructureRepair': '结构修补',
-  'learning.taskKindLesson': '课时内容 · {{title}}',
-};
-const tStub = ((key: string, vars?: Record<string, unknown>): string => {
-  let out = dict[key] ?? `MISSING:${key}`;
-  if (vars) {
-    for (const [name, value] of Object.entries(vars)) {
-      out = out.replaceAll(`{{${name}}}`, String(value));
+/** 真实词典驱动的 t（双语断言）：取 learning 命名空间的顶层键，插值与
+ * i18next `{{var}}` 同形；缺键回 `MISSING:<key>`——任一语言缺键即断言红。
+ * 期望值是两种语言的人面字面量（独立真值），同时钉住 key 选择与词典对称。 */
+const translatorOf = (dictionary: Record<string, unknown>): Translate =>
+  ((key: string, vars?: Record<string, unknown>): string => {
+    const value = dictionary[key.replace(/^learning\./, '')];
+    let out = typeof value === 'string' ? value : `MISSING:${key}`;
+    for (const [name, replacement] of Object.entries(vars ?? {})) {
+      out = out.replaceAll(`{{${name}}}`, String(replacement));
     }
-  }
-  return out;
-}) as unknown as Translate;
+    return out;
+  }) as unknown as Translate;
+
+const tZh = translatorOf(learningZh);
+const tEn = translatorOf(learningEn);
 
 describe('restoredTaskTopic（恢复态任务 → 悬浮 Pill 显示文案，c3）', () => {
-  test('结构类任务按 kind 出词典 label（后端 topic 不再直达 UI）', () => {
-    expect(restoredTaskTopic({ kind: 'structure', topic: '知识结构生成' }, tStub)).toBe(
-      '知识结构生成'
-    );
-    expect(restoredTaskTopic({ kind: 'structure_mount', topic: '结构挂载' }, tStub)).toBe(
-      '结构挂载'
-    );
-    expect(restoredTaskTopic({ kind: 'structure_repair', topic: '结构修补' }, tStub)).toBe(
-      '结构修补'
-    );
+  test('结构类任务按 kind 出词典 label（双语；后端 topic 不直达 UI）', () => {
+    const structure = { kind: 'structure', topic: '知识结构生成' };
+    expect(restoredTaskTopic(structure, tZh)).toBe('知识结构生成');
+    expect(restoredTaskTopic(structure, tEn)).toBe('Knowledge structure generation');
+
+    const mount = { kind: 'structure_mount', topic: '结构挂载' };
+    expect(restoredTaskTopic(mount, tZh)).toBe('结构挂载');
+    expect(restoredTaskTopic(mount, tEn)).toBe('Structure mounting');
+
+    const repair = { kind: 'structure_repair', topic: '结构修补' };
+    expect(restoredTaskTopic(repair, tZh)).toBe('结构修补');
+    expect(restoredTaskTopic(repair, tEn)).toBe('Structure repair');
   });
 
-  test('课时任务剥「课时内容 · 」前缀取标题，词典模板带 title', () => {
-    expect(restoredTaskTopic({ kind: 'lesson', topic: '课时内容 · 线性代数' }, tStub)).toBe(
-      '课时内容 · 线性代数'
-    );
+  test('课时任务剥「课时内容 · 」前缀取标题进词典模板（双语）', () => {
+    const lesson = { kind: 'lesson', topic: '课时内容 · 线性代数' };
+    expect(restoredTaskTopic(lesson, tZh)).toBe('课时内容 · 线性代数');
+    expect(restoredTaskTopic(lesson, tEn)).toBe('Lesson content · 线性代数');
   });
 
-  test('课时任务前缀对不上（旧快照/措辞变更）：原样展示，不丢信息不双拼前缀', () => {
-    expect(restoredTaskTopic({ kind: 'lesson', topic: '线性代数' }, tStub)).toBe('线性代数');
+  test('课时任务前缀对不上（后端改措辞）：中性本地化兜底，不回显后端 topic', () => {
+    const drifted = { kind: 'lesson', topic: '课时正文：线性代数' };
+    expect(restoredTaskTopic(drifted, tZh)).toBe('后台任务');
+    expect(restoredTaskTopic(drifted, tEn)).toBe('Background task');
   });
 
-  test('outline 与未知 kind：topic 原样（outline 本就是用户自述文本，语言中立）', () => {
-    expect(restoredTaskTopic({ kind: 'outline', topic: '掌握 Rust 异步编程' }, tStub)).toBe(
-      '掌握 Rust 异步编程'
-    );
-    expect(restoredTaskTopic({ kind: 'future_kind', topic: '任意' }, tStub)).toBe('任意');
+  test('outline：topic 即用户自述文本（语言中立），原样返回', () => {
+    const outline = { kind: 'outline', topic: '掌握 Rust 异步编程' };
+    expect(restoredTaskTopic(outline, tZh)).toBe('掌握 Rust 异步编程');
+    expect(restoredTaskTopic(outline, tEn)).toBe('掌握 Rust 异步编程');
+  });
+
+  test('未知 kind：中性本地化兜底，不回显后端 topic（宁缺不泄漏）', () => {
+    const unknown = { kind: 'future_kind', topic: '后端中文标签' };
+    expect(restoredTaskTopic(unknown, tZh)).toBe('后台任务');
+    expect(restoredTaskTopic(unknown, tEn)).toBe('Background task');
   });
 });
