@@ -317,11 +317,14 @@ async fn cancel_learning_graph_generation(
 /// 零节点课程的首批触发面：学习窗口「开始学习」调这里（force 恒过停摆臂）。
 /// y04：可选 `?trigger=auto_refill`（缺省 manual）——只改动作簿触发源标签，
 /// 不改变任何裁决；settlement/timer 不接受外部注入。
+/// g1：可选 body `{provider_id, model}` = 用户的学习模型选择（成对，缺一
+/// 400；缺省回落默认档）；手动与自动补批两臂同经此 handler。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     Query(query): Query<GrowGraphQuery>,
+    request: Option<Json<RegenerateStructureRequest>>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let course_id = parse_id::<LearningCourseId>(id)?;
     let trigger = match query.trigger.as_deref() {
@@ -330,9 +333,31 @@ async fn grow_learning_graph(
             || AppError::BadRequest(format!("unknown growth trigger: {value}")),
         )?,
     };
+    if request
+        .as_ref()
+        .and_then(|Json(request)| request.provider_id.as_ref())
+        .is_some() != request
+        .as_ref()
+        .and_then(|Json(request)| request.model.as_deref())
+        .is_some()
+    {
+        return Err(AppError::BadRequest(
+            "provider_id and model must be provided together".into(),
+        ));
+    }
+    let model_override = request
+        .and_then(|Json(request)| request.provider_id.zip(request.model));
     let kicked = state
         .service
-        .kick_growth_with_trigger(&user.id, &course_id, true, None, trigger)
+        .kick_growth_with_trigger(
+            &user.id,
+            &course_id,
+            true,
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
+            trigger,
+        )
         .await?;
     Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
 }
