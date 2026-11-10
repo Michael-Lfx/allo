@@ -92,3 +92,27 @@ export function buildPlanRequest(
     },
   };
 }
+
+/** 学习图结构类任务的快照 `kind` 机器名（后端 KIND_STRUCTURE /
+ * KIND_STRUCTURE_MOUNT / KIND_STRUCTURE_REPAIR，只在学习图课程上登记）。 */
+const GRAPH_STRUCTURE_TASK_KINDS: readonly string[] = [
+  'structure',
+  'structure_mount',
+  'structure_repair',
+];
+
+/** 恢复态任务 → 建课请求（c1）：对话框按 `course_kind` 分流呈现（学习图 =
+ * 单行后台提示，v2 = 步骤条/活动流），恢复态不能再一律标 learning_graph。
+ * 只有结构类任务确属学习图流；v2 建课（后端 KIND_OUTLINE）与课时任务不带
+ * `course_kind`——与 v2 表单请求同形，呈现保持 v2 口径。 */
+export function buildRestoredRequest(task: {
+  kind: string;
+  topic: string;
+}): GenerateCourseRequest {
+  return {
+    ...(GRAPH_STRUCTURE_TASK_KINDS.includes(task.kind)
+      ? { course_kind: 'learning_graph' as const }
+      : {}),
+    description: task.topic,
+  };
+}

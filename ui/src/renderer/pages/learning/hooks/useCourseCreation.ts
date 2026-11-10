@@ -7,6 +7,7 @@ import { learningApi } from '../api';
 import { GROWTH_TASK_KIND } from '../growthTaskPill';
 import {
   buildPlanRequest,
+  buildRestoredRequest,
   type CreationTab,
 } from '../coursePlan';
 import type {
@@ -184,7 +185,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       if (active?.topic) {
         setGeneration({
           status: active.state === 'running' ? 'running' : 'queued',
-          request: { course_kind: 'learning_graph', description: active.topic },
+          request: buildRestoredRequest(active),
           result: null,
           error: null,
         });
