@@ -735,7 +735,7 @@ const Layout: React.FC<{
                     >
                       <BrandLogo className='absolute inset-0 w-full h-full object-cover' />
                     </div>
-                    <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
+                    <div className='sider-brand-lockup collapsed-hidden'>
                       <div className='sider-wordmark text-t-primary'>
                         <TechText
                           text={BRAND_NAME}

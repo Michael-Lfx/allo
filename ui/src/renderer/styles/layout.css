@@ -284,12 +284,23 @@
   flex-shrink: 0 !important;
 }
 
-/* Wordmark row. Height leaves room for a 22px face so the canvas does not shrink it. */
+/* Keep the wordmark and running version on one optical baseline so the whole
+   brand lockup stays centered against the square logo. */
+.sider-brand-lockup {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--flowy-space-1, 4px);
+}
+
+/* Height leaves room for a 22px face so the canvas does not shrink it. The
+   fixed canvas width follows the rendered word instead of consuming the row. */
 .sider-wordmark {
   position: relative;
-  width: 100%;
-  max-width: 140px;
+  width: 80px;
   height: 40px;
+  flex: 0 0 80px;
   line-height: 0;
 }
 
@@ -301,9 +312,11 @@
 }
 
 .sidebar-app-version {
+  flex: 0 0 auto;
   color: var(--flowy-text-3, var(--color-text-3));
   font-size: var(--flowy-text-micro, 11px);
   line-height: 14px;
+  white-space: nowrap;
 }
 
 /* Persistent update affordance beside the Flowy wordmark. It is rendered
