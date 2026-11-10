@@ -4,6 +4,7 @@ import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
+import { GROWTH_TASK_KIND } from '../growthTaskPill';
 import {
   buildPlanRequest,
   INITIAL_PLAN_STATE,
@@ -245,16 +246,23 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 页面挂载时恢复后台生成状态：对话框状态是易失的（切页即丢），服务端
   // 注册表是事实来源。running 时重建 running 态；m7 资源闸排队中（无在跑、
   // queued>0）重建 queued 态——排队期同样可从指示条回到进度视图并取消。
+  // 生长任务不在此认领（g4）：它们由全局生长 Pill 呈现，建课 Pill 不重复
+  // 展示同一任务——因此读按任务类别可分的快照，而非不分类别的 legacy 状态端点。
   // 完成/失败态无法可靠恢复（进程内会话可能已终结），由用户从课程列表查看
   // 或重新发起。
   const refreshGenerationStatus = useCallback(async () => {
     if (generation) return;
     try {
-      const status = await learningApi.generationStatus();
-      if (status.topic && (status.running || status.queued > 0)) {
+      const tasks = (await learningApi.generationTasks()).filter(
+        (task) => task.kind !== GROWTH_TASK_KIND
+      );
+      const active =
+        tasks.find((task) => task.state === 'running') ??
+        tasks.find((task) => task.state === 'queued');
+      if (active?.topic) {
         setGeneration({
-          status: status.running ? 'running' : 'queued',
-          request: { course_kind: 'learning_graph', description: status.topic },
+          status: active.state === 'running' ? 'running' : 'queued',
+          request: { course_kind: 'learning_graph', description: active.topic },
           result: null,
           error: null,
         });

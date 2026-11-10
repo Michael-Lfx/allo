@@ -16,6 +16,7 @@ import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { tauriEvents } from '@/common/adapter/tauriEvents';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
+import { GrowthTaskPillHost } from '@renderer/pages/learning/components/GrowthTaskPillHost';
 import { loadVideoCanvasProjectPage } from '@renderer/pages/videoCanvas/loadProjectPage';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
 const Guid = React.lazy(() => import('@renderer/pages/guid'));
