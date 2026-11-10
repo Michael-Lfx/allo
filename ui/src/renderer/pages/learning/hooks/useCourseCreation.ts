@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
@@ -14,6 +14,7 @@ import {
 import type {
   CourseDetail,
   GenerateCourseRequest,
+  LearningGenerationTaskView,
 } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
@@ -32,6 +33,110 @@ export interface CourseGenerationState {
   restoredTask: RestoredTaskInfo | null;
   result: CourseDetail | null;
   error: string | null;
+}
+
+/** 从快照行重建对话框生成态（恢复态）：running 原样落位，其余活跃态
+ * （m7 资源闸排队中）落 queued；请求形状由 `buildRestoredRequest` 单源给出
+ * （course_kind 按任务类别标注）。无主题的行不可恢复（null）。
+ * restoredTask（c3）：快照机器面留存——悬浮 Pill 副行按 kind 词典组装
+ * 显示文案，后端中文 topic 不再直达 UI；收敛写回展开 `{ ...current,
+ * ...converged }`，该字段随恢复态全程保留。 */
+export function restoredGenerationFromTask(
+  task: LearningGenerationTaskView
+): CourseGenerationState | null {
+  if (!task.topic) return null;
+  return {
+    status: task.state === 'running' ? 'running' : 'queued',
+    request: buildRestoredRequest(task),
+    restoredTask: { kind: task.kind, topic: task.topic },
+    result: null,
+    error: null,
+  };
+}
+
+/** 恢复态终态收敛的轮询间隔（c2）：running/queued 期间开、终态即停。 */
+export const RESTORED_GENERATION_POLL_MS = 5_000;
+
+/** 恢复态收敛写回的终态面；request 由 hook 侧保留（重试仍用重建的请求）。 */
+export interface RestoredGenerationConvergence {
+  status: 'completed' | 'failed' | 'cancelled';
+  result: CourseDetail | null;
+  error: string | null;
+}
+
+export interface RestoredGenerationConvergenceOptions {
+  /** 被恢复任务的快照键（跟踪它的状态迁移） */
+  taskKey: string;
+  /** 快照读数面（`GET /api/learning/generation-tasks`） */
+  fetchTasks: () => Promise<LearningGenerationTaskView[]>;
+  /** 课程详情读数面：done 时按快照行 `course_id` 拉取 */
+  fetchCourse: (courseId: string) => Promise<CourseDetail>;
+  /** 错误 → 人面文案（i18n 住 hook 侧，循环本身不碰翻译） */
+  describeError: (error: unknown) => string;
+  /** 终态写回：至多调用一次，调用后循环自停 */
+  onConverge: (converged: RestoredGenerationConvergence) => void;
+}
+
+/** 恢复态终态收敛循环（c2）：refreshGenerationStatus 重建出的 running/queued
+ * 态没有挂起的 HTTP 请求可等，改由轻量轮询快照推到终态。返回停止函数。 */
+export function startRestoredGenerationConvergence(
+  options: RestoredGenerationConvergenceOptions
+): () => void {
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const schedule = () => {
+    timer = setTimeout(() => void poll(), RESTORED_GENERATION_POLL_MS);
+  };
+
+  const poll = async () => {
+    timer = null;
+    let tasks: LearningGenerationTaskView[];
+    try {
+      tasks = await options.fetchTasks();
+    } catch {
+      // 快照不可达（后端重启 / 断网）：证据不足不臆造终态，下一轮再取。
+      if (!disposed) schedule();
+      return;
+    }
+    if (disposed) return;
+    const row = tasks.find((task) => task.key === options.taskKey);
+    if (row?.state === 'done') {
+      let detail: CourseDetail;
+      try {
+        detail = await options.fetchCourse(row.course_id);
+      } catch (fetchError) {
+        // 任务已完成但课程详情拉不到：如实按失败收场（带原因），不无限重试。
+        if (!disposed) {
+          options.onConverge({
+            status: 'failed',
+            result: null,
+            error: options.describeError(fetchError),
+          });
+        }
+        return;
+      }
+      if (!disposed) options.onConverge({ status: 'completed', result: detail, error: null });
+      return;
+    }
+    if (row?.state === 'failed') {
+      options.onConverge({ status: 'failed', result: null, error: row.detail });
+      return;
+    }
+    // 取消是中性终态；任务从快照消失（如后端重启清空注册表）同样按取消
+    // 兜底——恢复态没有别的读数面，缺行即再无终态可等，绝不永久挂起。
+    if (!row || row.state === 'cancelled') {
+      options.onConverge({ status: 'cancelled', result: null, error: null });
+      return;
+    }
+    schedule();
+  };
+
+  schedule();
+  return () => {
+    disposed = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 export interface UseCourseCreationOptions {
@@ -64,6 +169,11 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
   // 而非失败。取消动作与终态判定在同一 hook 内闭合，不依赖后端错误码。
   const cancelRequestedRef = useRef(false);
+  // 恢复态终态收敛循环（c2）的停止柄：新恢复 / 进入 in-session 生成 / 卸载
+  // 时作废上一轮，保证写回 generation 的路径任意时刻只有一条在跑。
+  const restoredStopRef = useRef<(() => void) | null>(null);
+  // 卸载标记：恢复读数在途时页面已卸载，读数回来后不得再启动轮询。
+  const unmountedRef = useRef(false);
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -101,6 +211,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
 
   const generateCourse = useCallback(
     async (request: GenerateCourseRequest) => {
+      // in-session 生成的终态以 HTTP 响应为准：先停恢复态收敛轮询，两条
+      // 写回路径不并存（双写幂等）。
+      restoredStopRef.current?.();
+      restoredStopRef.current = null;
       cancelRequestedRef.current = false;
       setBusyId('generate');
       setGeneration({ status: 'running', request, restoredTask: null, result: null, error: null });
@@ -176,8 +290,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // queued>0）重建 queued 态——排队期同样可从指示条回到进度视图并取消。
   // 生长任务不在此认领（g4）：它们由全局生长 Pill 呈现，建课 Pill 不重复
   // 展示同一任务——因此读按任务类别可分的快照，而非不分类别的 legacy 状态端点。
-  // 完成/失败态无法可靠恢复（进程内会话可能已终结），由用户从课程列表查看
-  // 或重新发起。
+  // c2：恢复态没有挂起的 HTTP 请求可等（in-session 的收敛通道不在），启动
+  // 轻量轮询把 running/queued 推到终态——done 按 course_id 拉课程详情交
+  // completed（补齐「完成态无法可靠恢复」的缺口），failed/cancelled 如实
+  // 收场，任务消失按取消兜底，绝不永久挂起。
   const refreshGenerationStatus = useCallback(async () => {
     if (generation) return;
     try {
@@ -187,21 +303,41 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       const active =
         tasks.find((task) => task.state === 'running') ??
         tasks.find((task) => task.state === 'queued');
-      if (active?.topic) {
-        setGeneration({
-          status: active.state === 'running' ? 'running' : 'queued',
-          request: buildRestoredRequest(active),
-          // c3：快照机器面留存——悬浮 Pill 副行按 kind 词典组装显示文案，
-          // 后端中文 topic 不再直达 UI（growthCourseTitle 剥前缀口径保留）。
-          restoredTask: { kind: active.kind, topic: active.topic },
-          result: null,
-          error: null,
-        });
-      }
+      const restored = active ? restoredGenerationFromTask(active) : null;
+      if (!active || !restored || unmountedRef.current) return;
+      setGeneration(restored);
+      restoredStopRef.current?.();
+      restoredStopRef.current = startRestoredGenerationConvergence({
+        taskKey: active.key,
+        fetchTasks: () => learningApi.generationTasks(),
+        fetchCourse: (courseId) => learningApi.getCourse(courseId),
+        describeError: (error) => errorMessage(t, error),
+        onConverge: (converged) => {
+          // 双写幂等：只翻 running/queued 的恢复态；若此刻已另有在跑的
+          // in-session 生成接管，迟到的读数不覆盖它。
+          setGeneration((current) =>
+            current && (current.status === 'running' || current.status === 'queued')
+              ? { ...current, ...converged }
+              : current
+          );
+        },
+      });
     } catch {
       // 状态查询失败不影响主流程（后端不可达等）
     }
-  }, [generation]);
+  }, [generation, t]);
+
+  // 卸载即停恢复态收敛轮询：页面销毁后写回无意义，也不留空转的定时器。
+  // 恢复读数在途时卸载的情形由卸载标记兜住——清理先于启动发生，读数回来
+  // 后凭标记放弃启动（挂载时复位，兼容 StrictMode 的复挂）。
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      restoredStopRef.current?.();
+      restoredStopRef.current = null;
+    };
+  }, []);
 
   // 取消后台生成：置位服务端取消旗标，循环在下一个 LLM 请求边界失败收场
   // （草稿保持存活，失败面板可续建）。挂起的 HTTP 生成请求随后以失败终态
