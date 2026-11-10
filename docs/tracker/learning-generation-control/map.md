@@ -1,11 +1,14 @@
 # Map: 生成任务控制波——模型选择接线、冲突显性化、悬浮进度与性能三小票（g1–g4 · p1–p3）
 
 <!-- wayfinder:map -->
-<!-- 状态：**立票（2026-11-09）**。来源=桌面端真机（bun run dev → Flowy.exe，
-      数据目录 %LOCALAPPDATA%\Flowy\Nomi-dev）建课→生长→课时全链取证 + 用户
-      三项裁决。**票据全部本地**（tickets/ 7 张票面）——不使用 GitHub issue
-      （用户裁决 2026-11-10；此前误建的 #422–#428 已关闭作废待管理员删除）。
-      文档未提交（用户指示「建成本地md文档」）。 -->
+<!-- 状态：**已到达目的地（2026-11-10 关波）**。g1–g4 + p1–p3 全关（Resolution
+      在各票尾）：implement-spec 流程——探察笔记共享目录 → 7 工位并行施工
+      → 逐票 merger → 双轴 code-review（Standards 零硬违规/Spec 零实质缺口）
+      → 单代理修复轮（`136225ede` refactor + `627049614` test）。集成分支
+      feat/learning-generation-control 并回 feat/learn0928：合并 `49f02cd2f`
+      + 文档 `7339a67a3`；全量验证 952 Rust / 133 学习 UI / typecheck 基线
+      持平（55 videoCanvas 存量）。推送被 GitHub 网络阻断，后台重试中。
+      docs/tracker/learning-generation-control/ 已随关波提交。 -->
 <!-- 基线：feat/learn0928 尖端 bffb22b0d（2026-11-09 16:13 +0800）。 -->
 <!-- 真机 run：2026-11-09 16:53–17:31（课程 01a1bf85-3de5-7022-8968-77587b1d2a4c，
       provider=Flowy Cloud server.flowyaipc.com/claw/v1）。 -->
