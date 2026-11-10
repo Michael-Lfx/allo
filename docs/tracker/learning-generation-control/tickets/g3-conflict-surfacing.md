@@ -2,7 +2,7 @@
 id: g3
 title: "生成任务冲突显性化——regenerate 静默吞掉收口"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -28,3 +28,7 @@ part_of: ../map.md
 （pre_register 同步 409 + Message.error）——**只核不改**。③auto_refill 的
 静默降级是正确行为——**勿动**。④施工陷阱：勿在路由层预拿 slot 锁（会与
 run_structure_generation 内部拿锁二次冲突）；冲突链与单测模板见共享笔记 g3.md。
+
+## Resolution
+
+已关（2026-11-10）：commit `526f17767`，并回 feat/learn0928。409 同步准入（slot 先于 registry），generate_course 同款收口，双语 toast `learningGraphStructureConflict`；lesson/auto_refill 只核未动；两冲突单测红绿。修复轮成对校验/spawn 样板已收口。

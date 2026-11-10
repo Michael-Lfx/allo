@@ -2,7 +2,7 @@
 id: g1
 title: "生长链接用户模型选择——grow 路由+前端接线 modelChoice"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -30,3 +30,7 @@ v4-flash 的 reasoning 方差+网关抖动；同选择课时链 v4.1-flash
 `useAutoRefill` 复用同一个 `POST grow?trigger=auto_refill`。前端接线
 时手动与自动两条路都带 modelChoice（自动触发读持久化选择）；
 `kick_growth_with_trigger` 全部调用方清单见共享笔记 g1.md。
+
+## Resolution
+
+已关（2026-11-10）：commit `340f3bc4d`，集成分支经 `c43dae34e` 并回 feat/learn0928（合并 `49f02cd2f`）。手动+自动补批双路携带 modelChoice，路由级成对校验/透传单测在场；修复轮后全量 952 Rust / 133 UI / typecheck 基线持平。

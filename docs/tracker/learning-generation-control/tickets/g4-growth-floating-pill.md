@@ -2,7 +2,7 @@
 id: g4
 title: "生长全局悬浮进度 Pill——推广建课链 CourseGenerationPill 模式"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -28,3 +28,7 @@ part_of: ../map.md
 
 **病历依据：** 用户裁决（2026-11-09）：生成后台执行+悬浮折叠进度随时查看；
 growth 948s 全程单页面干等。
+
+## Resolution
+
+已关（2026-11-10）：commit `e01674fca`，并回 feat/learn0928。全局 Pill（ProtectedLayout 挂载、轮询为准+WS 增强、取消/回跳、结果驻留）；12 条新测试，133 学习 UI 全绿；i18n/theme 零新增失败。票外裁量与遗留已补记本票（见施工记录）。
