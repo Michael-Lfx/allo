@@ -48,6 +48,8 @@ type SlideCreatePanelProps = {
   onSelectSuggestion: (suggestion: SlideSuggestion) => void;
   onImportTemplate: () => void;
   onClose: () => void;
+  motion?: 'open' | 'closing';
+  onMotionEnd?: () => void;
   disabled?: boolean;
 };
 
@@ -62,6 +64,8 @@ const SlideCreatePanel: React.FC<SlideCreatePanelProps> = ({
   onSelectSuggestion,
   onImportTemplate,
   onClose,
+  motion = 'open',
+  onMotionEnd,
   disabled,
 }) => {
   const { t } = useTranslation();
@@ -120,7 +124,16 @@ const SlideCreatePanel: React.FC<SlideCreatePanelProps> = ({
   };
 
   return (
-    <section className={styles.panel} data-testid='guid-slide-create-panel' aria-label={t('presentation.create.title')}>
+    <section
+      className={styles.panel}
+      data-testid='guid-slide-create-panel'
+      data-motion={motion}
+      aria-label={t('presentation.create.title')}
+      aria-hidden={motion === 'closing' ? true : undefined}
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget && motion === 'closing') onMotionEnd?.();
+      }}
+    >
       <header className={styles.header}>
         <h2 className={styles.title}>{t('presentation.create.title')}</h2>
         <span className={styles.headerActions}>

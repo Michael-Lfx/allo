@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react';
-import { Close, Left } from '@icon-park/react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Close, Left, Right } from '@icon-park/react';
+import { useTranslation } from 'react-i18next';
 import type { HomeStageOption } from './homeStage';
 import styles from './HomeInputDrawer.module.css';
 
@@ -20,6 +21,8 @@ type HomeInputDrawerProps = {
   motionDuration?: number;
   /** Fired when the drawer's own CSS transition finishes. */
   onMotionEnd?: (motion: 'enter' | 'expand' | 'exit' | 'idle') => void;
+  /** Render media cards in a fixed-width horizontal rail with arrow controls. */
+  scrollableMedia?: boolean;
 };
 
 /** Low-contrast project tree outline for the "open existing project" item. */
@@ -55,9 +58,13 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
   motion = 'enter',
   motionDuration,
   onMotionEnd,
+  scrollableMedia = false,
 }) => {
+  const { t } = useTranslation();
   const firstOptionRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
+  const mediaRailRef = useRef<HTMLDivElement>(null);
+  const [mediaEdges, setMediaEdges] = useState({ start: true, end: false });
   const hasMedia = options.some((option) => option.cover || option.preview || option.tree);
 
   // Focus the first option when a new drawer layer mounts, not when a
@@ -71,6 +78,29 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
     }
     return undefined;
   }, [options.length, testId]);
+
+  const updateMediaEdges = useCallback(() => {
+    const rail = mediaRailRef.current;
+    if (!rail) return;
+    const start = rail.scrollLeft <= 1;
+    const end = rail.scrollLeft + rail.clientWidth >= rail.scrollWidth - 1;
+    setMediaEdges((current) => (current.start === start && current.end === end ? current : { start, end }));
+  }, []);
+
+  useEffect(() => {
+    const rail = mediaRailRef.current;
+    if (!rail || !scrollableMedia) return;
+    updateMediaEdges();
+    const observer = new ResizeObserver(updateMediaEdges);
+    observer.observe(rail);
+    return () => observer.disconnect();
+  }, [scrollableMedia, updateMediaEdges]);
+
+  const scrollMedia = (direction: -1 | 1) => {
+    const rail = mediaRailRef.current;
+    if (!rail) return;
+    rail.scrollBy({ left: direction * rail.clientWidth * 0.9, behavior: 'smooth' });
+  };
 
   useEffect(() => {
     const drawer = drawerRef.current;
@@ -105,11 +135,43 @@ const HomeInputDrawer: React.FC<HomeInputDrawerProps> = ({
         ) : (
           <h2 className={styles.title}>{title}</h2>
         )}
-        <button type='button' className={styles.close} onClick={onClose} aria-label={closeLabel}>
-          <Close theme='outline' size={16} />
-        </button>
+        <span className={styles.headerActions}>
+          {scrollableMedia ? (
+            <>
+              <button
+                type='button'
+                className={styles.iconButton}
+                aria-label={t('presentation.create.previous')}
+                disabled={mediaEdges.start}
+                onClick={() => scrollMedia(-1)}
+              >
+                <Left theme='outline' size={16} fill='currentColor' />
+              </button>
+              <button
+                type='button'
+                className={styles.iconButton}
+                aria-label={t('presentation.create.next')}
+                disabled={mediaEdges.end}
+                onClick={() => scrollMedia(1)}
+              >
+                <Right theme='outline' size={16} fill='currentColor' />
+              </button>
+            </>
+          ) : null}
+          <button type='button' className={styles.close} onClick={onClose} aria-label={closeLabel}>
+            <Close theme='outline' size={16} />
+          </button>
+        </span>
       </header>
-      <div className={hasMedia ? styles.mediaGrid : styles.options}>
+      <div
+        ref={scrollableMedia ? mediaRailRef : undefined}
+        className={
+          hasMedia
+            ? `${styles.mediaGrid} ${scrollableMedia ? styles.mediaGridScrollable : ''}`
+            : styles.options
+        }
+        onScroll={scrollableMedia ? updateMediaEdges : undefined}
+      >
         {options.map((option, index) => {
           const isFirstEnabled = index === options.findIndex((item) => !item.disabled);
           return (

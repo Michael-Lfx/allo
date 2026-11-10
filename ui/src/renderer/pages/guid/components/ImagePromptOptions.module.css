@@ -1,0 +1,116 @@
+.strip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  flex: 0 0 auto;
+  color: var(--color-text-3);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.select {
+  width: 82px;
+}
+
+.aspectSelect {
+  width: 72px;
+}
+
+.multiSelect {
+  width: 146px;
+}
+
+.multiSelect :global(.arco-select-view-value) {
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.multiSelect :global(.arco-input-tag-view),
+.multiSelect :global(.arco-input-tag-inner) {
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.multiSelect :global(.arco-input-tag-inner) {
+  align-items: center;
+  height: 22px;
+}
+
+.multiSelect :global(.arco-input-tag-tag) {
+  flex: 0 0 auto;
+  max-width: 84px;
+  overflow: hidden;
+}
+
+.multiSelect :global(.arco-input-tag-input) {
+  display: none;
+}
+
+.select :global(.arco-select-view) {
+  border-radius: 7px;
+  background: var(--flowy-raised);
+}
+
+.reset {
+  flex: 0 0 auto;
+  margin-left: 2px;
+  padding: 2px 3px;
+  border: 0;
+  background: transparent;
+  color: rgb(var(--primary-6));
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.reset:hover {
+  text-decoration: underline;
+}
+
+.reset:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 1px;
+}
+
+@media (max-width: 720px) {
+  .strip {
+    gap: 3px;
+  }
+
+  .fieldLabel {
+    display: none;
+  }
+
+  .select {
+    width: 72px;
+  }
+
+  .aspectSelect {
+    width: 64px;
+  }
+
+  .multiSelect {
+    width: 100px;
+  }
+
+  .reset {
+    display: none;
+  }
+}

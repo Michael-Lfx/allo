@@ -9,6 +9,8 @@ const drawer = read('./HomeInputDrawer.tsx');
 const homeStage = read('./homeStage.ts');
 const drawerCss = read('./HomeInputDrawer.module.css');
 const indexCss = read('../index.module.css');
+const slidePanel = read('../presentation/SlideCreatePanel.tsx');
+const slidePanelCss = read('../presentation/SlideCreatePanel.module.css');
 
 describe('build drawer flow contract', () => {
   test('uses the input-adjacent two-level drawer and removes the full-stage controls', () => {
@@ -34,6 +36,12 @@ describe('build drawer flow contract', () => {
     expect(guide).toContain('cover: buildAppSpending');
     expect(guide).toContain('HOME_BUILD_EXAMPLES');
     expect(guide).toContain("promptKey: 'guid.home.buildPrompts.app.second'");
+    expect(guide).toContain('scrollableMedia');
+    expect(guide).toContain('guid.home.buildPrompts.website.fourthLabel');
+    expect(guide).toContain('guid.home.buildPrompts.app.fourthLabel');
+    expect(guide).toContain('guid.home.buildPrompts.game.fourthLabel');
+    expect(drawer).toContain('scrollableMedia');
+    expect(drawerCss).toContain('.mediaGridScrollable');
     expect(guide).not.toContain('requestBuildPrompt');
     expect(guide).not.toContain('guid-home-build-tab');
     expect(guide).not.toContain('guid-home-build-back');
@@ -56,14 +64,27 @@ describe('build drawer flow contract', () => {
     expect(ambientCss).toContain(".wall[data-variant='directory']");
     expect(ambientCss).toContain(".wall[data-variant='game']");
     expect(ambientCss).toContain('background: transparent');
-    expect(ambient).toContain("variant !== 'directory'");
+    expect(ambient).toContain('transparentVariant');
     expect(ambientCss).toContain('.canvas');
     expect(indexCss).toContain('position: absolute');
     expect(indexCss).toContain('data-ambient-variant=\'game\'');
     expect(ambient).not.toContain("fillText('Aa')");
+    expect(ambient).not.toContain('drawCreate');
+    expect(guide).toContain('const CreateAmbientWall = React.lazy');
+    expect(guide).toContain("homeView === 'create-directory'");
+    expect(guide).toContain("? 'create'");
   });
 
-  test('removes the index.html metadata and keeps the nine prompts substantial', () => {
+  test('returns from slides to the create directory with drawer motion', () => {
+    expect(guide).toContain('closeSlidePanelToDirectory');
+    expect(guide).toContain('onMotionEnd={finishCloseSlidePanel}');
+    expect(slidePanel).toContain('onAnimationEnd');
+    expect(slidePanelCss).toContain("data-motion='closing'");
+    expect(slidePanelCss).toContain('panelExit');
+    expect(slidePanelCss).toContain('contain: layout style');
+  });
+
+  test('removes the index.html metadata and keeps the build prompt examples substantial', () => {
     expect(guide).not.toContain("meta: 'index.html'");
     expect(drawer).not.toContain('option.meta');
     expect(drawerCss).toContain("drawer-collapse");

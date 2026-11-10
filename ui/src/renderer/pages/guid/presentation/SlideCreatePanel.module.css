@@ -7,7 +7,14 @@
   border-radius: 20px;
   background: var(--flowy-raised);
   box-shadow: 0 8px 28px color-mix(in srgb, var(--color-text-1) 8%, transparent);
+  contain: layout style;
+  will-change: transform, opacity;
   animation: panelEnter var(--flowy-motion-slow) var(--flowy-ease-enter);
+}
+
+.panel[data-motion='closing'] {
+  pointer-events: none;
+  animation: panelExit 340ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 .header {
@@ -255,8 +262,20 @@
   }
 }
 
+@keyframes panelExit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .panel {
+  .panel,
+  .panel[data-motion] {
     animation: none;
   }
 

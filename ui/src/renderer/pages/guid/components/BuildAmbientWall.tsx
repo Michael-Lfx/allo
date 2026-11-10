@@ -337,7 +337,8 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       if (!width || !height) return;
       if (!force && document.hidden) return;
       context.clearRect(0, 0, width, height);
-      if (variant !== 'directory') {
+      const transparentVariant = variant === 'directory';
+      if (!transparentVariant) {
         const wash = context.createLinearGradient(0, 0, width, height);
         wash.addColorStop(0, rgba(accent, isDark ? 0.13 : 0.075));
         wash.addColorStop(0.5, rgba(ink, isDark ? 0.025 : 0.014));
@@ -349,7 +350,7 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       else if (variant === 'app') drawApp(time);
       else if (variant === 'game') drawGame(time);
       else drawDirectory(time);
-      if (variant !== 'directory') {
+      if (!transparentVariant) {
         const glow = context.createRadialGradient(
           pointer.x * width,
           pointer.y * height,

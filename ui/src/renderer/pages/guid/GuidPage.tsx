@@ -36,16 +36,28 @@ import ShowcaseCards from './components/ShowcaseCards';
 import HomeInputDrawer from './components/HomeInputDrawer';
 import BuildAmbientWall, { type BuildAmbientVariant } from './components/BuildAmbientWall';
 import HomeVideoComposer from './components/HomeVideoComposer';
-import buildWebsiteMain from './components/assets/build/website-main.jpg';
-import buildWebsiteExhibition1 from './components/assets/build/website-exhibition-1.jpg';
-import buildWebsiteExhibition2 from './components/assets/build/website-exhibition-2.jpg';
-import buildAppMain from './components/assets/build/app-main.jpg';
-import buildAppSpending from './components/assets/build/app-spending.jpg';
-import buildAppHabits from './components/assets/build/app-habits.jpg';
-import buildGameMain from './components/assets/build/game-main.jpg';
-import buildGameSokoban from './components/assets/build/game-sokoban.jpg';
-import buildGameNeon from './components/assets/build/game-neon.jpg';
-import showcaseVideoCover from './components/assets/showcase-video-cover.png';
+import ImagePromptPanel from './components/ImagePromptPanel';
+import ImagePromptOptions from './components/ImagePromptOptions';
+import {
+  DEFAULT_IMAGE_PROMPT_PARAMETERS,
+  composeImagePromptInput,
+  isDefaultImagePromptParameters,
+  type ImagePromptParameters,
+} from './components/imagePromptParameters';
+import buildWebsiteMain from './components/assets/build/website-main.webp';
+import buildWebsiteExhibition1 from './components/assets/build/website-exhibition-1.webp';
+import buildWebsiteExhibition2 from './components/assets/build/website-exhibition-2.webp';
+import buildWebsitePortfolio from './components/assets/build/website-portfolio.webp';
+import buildAppMain from './components/assets/build/app-main.webp';
+import buildAppSpending from './components/assets/build/app-spending.webp';
+import buildAppHabits from './components/assets/build/app-habits.webp';
+import buildAppTravel from './components/assets/build/app-travel.webp';
+import buildGameMain from './components/assets/build/game-main.webp';
+import buildGameSokoban from './components/assets/build/game-sokoban.webp';
+import buildGameNeon from './components/assets/build/game-neon.webp';
+import buildGameGomoku from './components/assets/build/game-gomoku.webp';
+import showcaseVideoCover from './components/assets/showcase-video-cover.webp';
+import showcaseImageCover from './components/assets/showcase-image-cover.webp';
 import type { HomeCapability, HomeStageOption } from './components/homeStage';
 import SlideOptionsControls from './presentation/SlideOptionsControls';
 import SlideCreatePanel from './presentation/SlideCreatePanel';
@@ -137,6 +149,9 @@ import {
   type VideoResolution,
 } from '@renderer/services/videoModelCapabilities';
 import styles from './index.module.css';
+
+const CreateAmbientWall = React.lazy(() => import('./components/CreateAmbientWall'));
+const VideoExampleWall = React.lazy(() => import('./components/VideoExampleWall'));
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
 type HomeFlyout = GuidEntryFlyoutMode | 'knowledge';
@@ -241,6 +256,7 @@ const HOME_BUILD_COPY = {
 
 const BUILD_DRAWER_COLLAPSE_MS = 340;
 const BUILD_DRAWER_EXPAND_MS = 420;
+const SLIDE_PANEL_CLOSE_FALLBACK_MS = 380;
 
 type BuildDrawerMotion = 'idle' | 'closing' | 'opening';
 
@@ -250,28 +266,50 @@ type HomeBuildExample = {
   cover: string;
 };
 
-const HOME_BUILD_EXAMPLES: Record<
-  HomeBuildKind,
-  readonly [HomeBuildExample, HomeBuildExample, HomeBuildExample]
-> = {
+/**
+ * Build prompts use role seeds from the CC0 prompt collection
+ * f/awesome-chatgpt-prompts. Each prompt is rewritten as an explicit,
+ * model-agnostic task spec (deliverable + constraints + verification) so
+ * DeepSeek/Qwen/Claude-class models can execute the same task.
+ * The fourth example in each category is a direct community-prompt rewrite.
+ */
+const HOME_BUILD_EXAMPLES: Record<HomeBuildKind, readonly HomeBuildExample[]> = {
   website: [
     { labelKey: 'guid.home.buildPrompts.website.firstLabel', promptKey: 'guid.home.buildPrompts.website.first', cover: buildWebsiteMain },
     { labelKey: 'guid.home.buildPrompts.website.secondLabel', promptKey: 'guid.home.buildPrompts.website.second', cover: buildWebsiteExhibition1 },
     { labelKey: 'guid.home.buildPrompts.website.thirdLabel', promptKey: 'guid.home.buildPrompts.website.third', cover: buildWebsiteExhibition2 },
+    { labelKey: 'guid.home.buildPrompts.website.fourthLabel', promptKey: 'guid.home.buildPrompts.website.fourth', cover: buildWebsitePortfolio },
   ],
   app: [
     { labelKey: 'guid.home.buildPrompts.app.secondLabel', promptKey: 'guid.home.buildPrompts.app.second', cover: buildAppSpending },
     { labelKey: 'guid.home.buildPrompts.app.firstLabel', promptKey: 'guid.home.buildPrompts.app.first', cover: buildAppMain },
     { labelKey: 'guid.home.buildPrompts.app.thirdLabel', promptKey: 'guid.home.buildPrompts.app.third', cover: buildAppHabits },
+    { labelKey: 'guid.home.buildPrompts.app.fourthLabel', promptKey: 'guid.home.buildPrompts.app.fourth', cover: buildAppTravel },
   ],
   game: [
     { labelKey: 'guid.home.buildPrompts.game.firstLabel', promptKey: 'guid.home.buildPrompts.game.first', cover: buildGameMain },
     { labelKey: 'guid.home.buildPrompts.game.secondLabel', promptKey: 'guid.home.buildPrompts.game.second', cover: buildGameSokoban },
     { labelKey: 'guid.home.buildPrompts.game.thirdLabel', promptKey: 'guid.home.buildPrompts.game.third', cover: buildGameNeon },
+    { labelKey: 'guid.home.buildPrompts.game.fourthLabel', promptKey: 'guid.home.buildPrompts.game.fourth', cover: buildGameGomoku },
   ],
 };
 
-const HOME_BUILD_EXAMPLE_SLOTS = ['first', 'second', 'third'] as const;
+const HOME_BUILD_PROMPT_SOURCES: Record<string, string> = {
+  'guid.home.buildPrompts.website.first': 'Web Design Consultant',
+  'guid.home.buildPrompts.website.second': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.website.third': 'Fullstack Software Developer',
+  'guid.home.buildPrompts.website.fourth': 'Web Design Consultant',
+  'guid.home.buildPrompts.app.first': 'UX/UI Developer',
+  'guid.home.buildPrompts.app.second': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.app.third': 'Fullstack Software Developer',
+  'guid.home.buildPrompts.app.fourth': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.game.first': 'Text Based Adventure Game',
+  'guid.home.buildPrompts.game.second': 'Tic-Tac-Toe Game',
+  'guid.home.buildPrompts.game.third': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.game.fourth': 'Gomoku player',
+};
+
+const HOME_BUILD_EXAMPLE_SLOTS = ['first', 'second', 'third', 'fourth'] as const;
 
 const homeBuildKindOfOption = (key: string): HomeBuildKind | null => {
   if (key === 'develop-website') return 'website';
@@ -329,6 +367,8 @@ const GuidPage: React.FC = () => {
   // It opens with slides mode. Dismissing the panel exits slides mode, and
   // leaving slides mode closes the panel.
   const [slidePanelOpen, setSlidePanelOpen] = useState(false);
+  const [slidePanelMotion, setSlidePanelMotion] = useState<'open' | 'closing'>('open');
+  const slidePanelCloseTimerRef = useRef<number | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
   );
@@ -351,17 +391,30 @@ const GuidPage: React.FC = () => {
   // Mirrors data-home-compact so React children (action row) can compact too.
   const [homeCompact, setHomeCompact] = useState(false);
   const [homeCapability, setHomeCapability] = useState<HomeCapability>('office');
+  const [imagePromptParameters, setImagePromptParameters] = useState<ImagePromptParameters>(
+    DEFAULT_IMAGE_PROMPT_PARAMETERS,
+  );
   // Drafts are isolated per capability. Text, workspace, attachments and the
   // slides template/options all travel with their own draft, so an attachment
   // imported for slides never leaks into an office send and returning to a
   // capability restores both its body and its reference files.
   const homeDraftsRef = useRef<
-    Record<HomeCapability, { text: string; dir: string; files: string[]; slideOptions: SlideOptions | null }>
+    Record<
+      HomeCapability,
+      {
+        text: string;
+        dir: string;
+        files: string[];
+        slideOptions: SlideOptions | null;
+        imageParameters: ImagePromptParameters;
+      }
+    >
   >({
-    office: { text: '', dir: '', files: [], slideOptions: null },
-    develop: { text: '', dir: '', files: [], slideOptions: null },
-    slides: { text: '', dir: '', files: [], slideOptions: null },
-    video: { text: '', dir: '', files: [], slideOptions: null },
+    office: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    develop: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    slides: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    video: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    image: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
   });
   // Build directory category; drives the prepared prompts and the preview copy.
   const [homeBuildKind, setHomeBuildKind] = useState<HomeBuildKind | null>(null);
@@ -674,8 +727,10 @@ const GuidPage: React.FC = () => {
         dir: guidInput.dir,
         files: guidInput.files,
         slideOptions: homeCapability === 'slides' ? slideOptions : leaving.slideOptions,
+        imageParameters: homeCapability === 'image' ? imagePromptParameters : leaving.imageParameters,
       };
       const draft = homeDraftsRef.current[next];
+      setImagePromptParameters(draft.imageParameters);
       guidInput.setInput(draft.text);
       guidInput.setDir(draft.dir);
       guidInput.setFiles(draft.files);
@@ -695,19 +750,22 @@ const GuidPage: React.FC = () => {
       guidInput.setDir,
       guidInput.setFiles,
       slideOptions,
+      imagePromptParameters,
       focusHomeComposer,
     ],
   );
   const openHomeDirectory = useCallback((group: 'develop' | 'create') => {
-    setBuildDrawerMotion('idle');
+    const openingCreate = group === 'create';
+    const animateCreate = openingCreate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    setBuildDrawerMotion(animateCreate ? 'opening' : 'idle');
     setBuildTransitionDirection(null);
-    setBuildDirectoryMotion('enter');
+    setBuildDirectoryMotion(openingCreate ? (animateCreate ? 'expand' : 'idle') : 'enter');
     setPendingBuildKind(null);
     setHomeView(group === 'develop' ? 'develop-directory' : 'create-directory');
   }, []);
   const closeHomePanel = useCallback(() => {
     if (
-      homeView === 'develop-directory' &&
+      (homeView === 'develop-directory' || homeView === 'create-directory') &&
       buildDrawerMotion === 'idle' &&
       !window.matchMedia('(prefers-reduced-motion: reduce)').matches
     ) {
@@ -728,6 +786,11 @@ const GuidPage: React.FC = () => {
   const capabilityHasDraft = useCallback(
     (capability: HomeCapability) => {
       if (capability === 'video') return homeVideoText.trim().length > 0 || homeVideoRefs.length > 0;
+      if (capability === 'image') {
+        const parameters =
+          capability === homeCapability ? imagePromptParameters : homeDraftsRef.current.image.imageParameters;
+        if (!isDefaultImagePromptParameters(parameters)) return true;
+      }
       if (capability === homeCapability) {
         return Boolean(
           guidInput.input.trim() || guidInput.files.length > 0 || slideOptions?.template.kind === 'import',
@@ -736,8 +799,40 @@ const GuidPage: React.FC = () => {
       const draft = homeDraftsRef.current[capability];
       return Boolean(draft.text.trim() || draft.files.length > 0 || draft.slideOptions?.template.kind === 'import');
     },
-    [guidInput.input, guidInput.files, homeCapability, homeVideoText, homeVideoRefs, slideOptions],
+    [guidInput.input, guidInput.files, homeCapability, homeVideoText, homeVideoRefs, imagePromptParameters, slideOptions],
   );
+  const enterImageMode = useCallback(
+    (prompt?: string) => {
+      const imageDraft = homeDraftsRef.current.image;
+      const restoreDraft =
+        prompt === undefined &&
+        Boolean(
+          imageDraft.text.trim() ||
+            imageDraft.files.length > 0 ||
+            !isDefaultImagePromptParameters(imageDraft.imageParameters),
+        );
+      switchHomeCapability('image');
+      if (!restoreDraft) {
+        setImagePromptParameters(DEFAULT_IMAGE_PROMPT_PARAMETERS);
+        guidInput.setInput(prompt ?? t('guid.home.imageCustomPrompt'));
+      }
+      setHomeView('capability');
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput, switchHomeCapability, t],
+  );
+  const handleSelectImagePrompt = useCallback(
+    (prompt: string, parameters: ImagePromptParameters) => {
+      setImagePromptParameters(parameters);
+      guidInput.setInput(prompt);
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput],
+  );
+  const closeImagePanel = useCallback(() => {
+    if (homeCapability === 'image') switchHomeCapability('office');
+    openHomeDirectory('create');
+  }, [homeCapability, openHomeDirectory, switchHomeCapability]);
   /** The single example-application path shared by covers and the dev prep starter. */
   const applyHomeExample = useCallback(
     (kind: 'app' | 'image' | 'video') => {
@@ -747,9 +842,7 @@ const GuidPage: React.FC = () => {
         guidInput.setInput(t('guid.home.showcaseAppPrompt'));
         setHomeView('capability');
       } else if (kind === 'image') {
-        switchHomeCapability('office');
-        guidInput.setInput(t('guid.home.showcaseImagePrompt'));
-        setHomeView('home');
+        enterImageMode(t('guid.home.showcaseImagePrompt'));
       } else {
         switchHomeCapability('video');
         // The confirmed video example must replace the old body; it used to keep it.
@@ -759,11 +852,11 @@ const GuidPage: React.FC = () => {
       setPendingExample(null);
       window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
     },
-    [guidInput.setInput, switchHomeCapability, t],
+    [enterImageMode, guidInput.setInput, switchHomeCapability, t],
   );
   const requestHomeExample = useCallback(
     (kind: 'app' | 'image' | 'video', title: string) => {
-      const target: HomeCapability = kind === 'app' ? 'develop' : kind === 'image' ? 'office' : 'video';
+      const target: HomeCapability = kind === 'app' ? 'develop' : kind === 'image' ? 'image' : 'video';
       if (capabilityHasDraft(target)) {
         setPendingExample({ title, run: () => applyHomeExample(kind) });
         return;
@@ -778,7 +871,11 @@ const GuidPage: React.FC = () => {
       // immediately and keep the picker open so another example can be tried.
       setHomeBuildKind(kind);
       switchHomeCapability('develop');
-      guidInput.setInput(t(promptKey));
+      const prompt = t(promptKey);
+      const sourceRole = HOME_BUILD_PROMPT_SOURCES[promptKey];
+      guidInput.setInput(
+        sourceRole ? `${t('guid.home.buildPromptRolePrefix', { role: sourceRole })}\n\n${prompt}` : prompt,
+      );
       setPendingExample(null);
       window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
     },
@@ -834,6 +931,15 @@ const GuidPage: React.FC = () => {
   const handleSelectShowcaseVideo = useCallback(
     () => requestHomeExample('video', t('guid.home.showcaseVideoTitle')),
     [requestHomeExample, t],
+  );
+  const handleSelectVideoExample = useCallback(
+    (video: { title: string; description?: string | null }) => {
+      const prompt = video.description?.trim() || video.title.trim();
+      if (!prompt) return;
+      setHomeVideoText(prompt);
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [],
   );
   const handleSelectShowcaseImage = useCallback(
     () => requestHomeExample('image', t('guid.home.showcaseImageTitle')),
@@ -1225,6 +1331,14 @@ const GuidPage: React.FC = () => {
   const homeCreateOptions = useMemo<HomeStageOption[]>(
     () => [
       {
+        key: 'create-image',
+        id: 'image',
+        title: t('guid.home.imageCustomTitle'),
+        description: t('guid.home.imageDescription'),
+        cover: showcaseImageCover,
+        coverAlt: t('guid.home.imageCustomTitle'),
+      },
+      {
         key: 'create-slides',
         id: 'slides',
         title: t('presentation.home.label'),
@@ -1267,7 +1381,9 @@ const GuidPage: React.FC = () => {
       ? t('presentation.home.placeholder')
       : homeCapability === 'video'
         ? t('videoGeneration.create.composer.generatePlaceholder')
-        : t('conversation.welcome.placeholder');
+        : homeCapability === 'image'
+          ? t('guid.home.imagePlaceholder')
+          : t('conversation.welcome.placeholder');
 
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
   const pickerSkills = useMemo(
@@ -1295,6 +1411,7 @@ const GuidPage: React.FC = () => {
   const enterSlideMode = useCallback(() => {
     setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
     setSlidePanelOpen(true);
+    setSlidePanelMotion('open');
     if (homeCapability !== 'slides') switchHomeCapability('slides');
     setHomeView('capability');
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
@@ -1302,11 +1419,40 @@ const GuidPage: React.FC = () => {
   const exitSlideMode = useCallback(() => {
     setSlideOptions(null);
     setSlidePanelOpen(false);
+    setSlidePanelMotion('open');
     if (homeCapability === 'slides') {
       switchHomeCapability('office');
       setHomeView('home');
     }
   }, [homeCapability, switchHomeCapability]);
+  const finishCloseSlidePanel = useCallback(() => {
+    if (slidePanelCloseTimerRef.current !== null) {
+      window.clearTimeout(slidePanelCloseTimerRef.current);
+      slidePanelCloseTimerRef.current = null;
+    }
+    setSlidePanelOpen(false);
+    setSlideOptions(null);
+    setSlidePanelMotion('open');
+    if (homeCapability === 'slides') switchHomeCapability('office');
+    openHomeDirectory('create');
+  }, [homeCapability, openHomeDirectory, switchHomeCapability]);
+  const closeSlidePanelToDirectory = useCallback(() => {
+    if (slidePanelMotion === 'closing') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finishCloseSlidePanel();
+      return;
+    }
+    setSlidePanelMotion('closing');
+    if (slidePanelCloseTimerRef.current !== null) {
+      window.clearTimeout(slidePanelCloseTimerRef.current);
+    }
+    // animationend is not guaranteed if the panel is interrupted or the
+    // animation is skipped; this timer is the recovery path to the directory.
+    slidePanelCloseTimerRef.current = window.setTimeout(() => {
+      slidePanelCloseTimerRef.current = null;
+      finishCloseSlidePanel();
+    }, SLIDE_PANEL_CLOSE_FALLBACK_MS);
+  }, [finishCloseSlidePanel, slidePanelMotion]);
   const handleSlidesChange = useCallback(
     (active: boolean) => (active ? enterSlideMode() : exitSlideMode()),
     [enterSlideMode, exitSlideMode],
@@ -1320,15 +1466,27 @@ const GuidPage: React.FC = () => {
   useEffect(() => {
     if (slideOptions === null) setSlidePanelOpen(false);
   }, [slideOptions]);
+  useEffect(
+    () => () => {
+      if (slidePanelCloseTimerRef.current !== null) {
+        window.clearTimeout(slidePanelCloseTimerRef.current);
+        slidePanelCloseTimerRef.current = null;
+      }
+    },
+    [],
+  );
   // Entering slides restores the slide-card wall independently of whether the
-  // template panel is expanded; closing the panel keeps the wall and the mode.
+  // template panel is expanded. Closing the panel returns to the create directory.
   const slideStudioOpen = supportsHomeGoalCommand && homeCapability === 'slides';
-  const buildAmbientVariant: BuildAmbientVariant | null =
+  const imageAmbientOpen = homeView === 'capability' && homeCapability === 'image';
+  const buildAmbientVariant: BuildAmbientVariant | 'create' | null =
     homeView === 'develop-directory'
       ? 'directory'
       : homeView === 'build-examples'
         ? (homeBuildKind ?? 'website')
-        : null;
+        : homeView === 'create-directory'
+          ? 'create'
+          : null;
   // ESC: native selectors, dropdown menus and mention popovers keep priority;
   // then the template panel, then the capability layer, then the directory.
   useEffect(() => {
@@ -1366,11 +1524,15 @@ const GuidPage: React.FC = () => {
       if (homeView === 'home') return;
       event.preventDefault();
       if (homeCapability === 'slides' && slidePanelOpen) {
-        setSlidePanelOpen(false);
+        closeSlidePanelToDirectory();
         return;
       }
       if (homeCapability === 'slides') {
         exitSlideMode();
+        return;
+      }
+      if (homeCapability === 'image') {
+        closeImagePanel();
         return;
       }
       if (homeCapability !== 'office') switchHomeCapability('office');
@@ -1383,9 +1545,11 @@ const GuidPage: React.FC = () => {
     homeView,
     homeCapability,
     slidePanelOpen,
+    closeSlidePanelToDirectory,
     pendingExample,
     dismissPendingExample,
     exitSlideMode,
+    closeImagePanel,
     switchHomeCapability,
     focusHomeComposer,
   ]);
@@ -1765,7 +1929,11 @@ const GuidPage: React.FC = () => {
     supportsHomeGoalCommand &&
     slideOptions !== null &&
     guidInput.input.trim().length > 0;
-  const sendInput = slidesBrief ? applySlideHeader(guidInput.input, slideOptions) : guidInput.input;
+  const sendInput =
+    homeCapability === 'image'
+      ? composeImagePromptInput(guidInput.input, imagePromptParameters, t)
+      : guidInput.input;
+  const resolvedSendInput = slidesBrief ? applySlideHeader(sendInput, slideOptions) : sendInput;
   const sendSkillIds = useMemo(
     () =>
       slidesBrief && managedSlidesSkillReady && !homeInitialSkillIds.includes(PRESENTATION_SKILL_ID)
@@ -1871,9 +2039,14 @@ const GuidPage: React.FC = () => {
     (option: HomeStageOption) => {
       if (option.id === 'slides' && !supportsHomeGoalCommand) return;
       setPendingExample(null);
+      if (option.id === 'image') {
+        enterImageMode();
+        return;
+      }
       if (option.id === 'slides') {
         setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
         setSlidePanelOpen(true);
+        setSlidePanelMotion('open');
       }
       const buildKind = homeBuildKindOfOption(option.key);
       if (buildKind) {
@@ -1891,7 +2064,7 @@ const GuidPage: React.FC = () => {
       switchHomeCapability(option.id);
       setHomeView('capability');
     },
-    [buildDrawerMotion, showBuildExamples, supportsHomeGoalCommand, switchHomeCapability],
+    [buildDrawerMotion, enterImageMode, showBuildExamples, supportsHomeGoalCommand, switchHomeCapability],
   );
   const handleDirectoryMotionEnd = useCallback(() => {
     if (buildDirectoryMotion === 'exit') {
@@ -1937,7 +2110,7 @@ const GuidPage: React.FC = () => {
 
   const send = useGuidSend({
     // Input state (slides mode prepends the ppt-master option line here)
-    input: sendInput,
+    input: resolvedSendInput,
     setInput: guidInput.setInput,
     files: guidInput.files,
     setFiles: guidInput.setFiles,
@@ -2726,6 +2899,12 @@ const GuidPage: React.FC = () => {
       onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
       taskProfile={composerProfile}
       onTaskProfileChange={handleHomeTaskProfileChange}
+      hideTaskProfile={homeCapability === 'image'}
+      imageControls={
+        homeCapability === 'image' ? (
+          <ImagePromptOptions value={imagePromptParameters} onChange={setImagePromptParameters} />
+        ) : undefined
+      }
       slideControls={
         homeCapability === 'slides' && slideOptions !== null ? (
           <SlideOptionsControls
@@ -2734,7 +2913,10 @@ const GuidPage: React.FC = () => {
             disabled={guidInput.loading}
             compact={homeCompact}
             templatesOpen={slidePanelOpen}
-            onToggleTemplates={() => setSlidePanelOpen((open) => !open)}
+            onToggleTemplates={() => {
+              setSlidePanelMotion('open');
+              setSlidePanelOpen((open) => !open);
+            }}
           />
         ) : undefined
       }
@@ -2754,6 +2936,7 @@ const GuidPage: React.FC = () => {
         ref={guidContainerRef}
         className={styles.guidContainer}
         data-slide-studio={slideStudioOpen || undefined}
+        data-video-gallery={homeView === 'capability' && homeCapability === 'video' ? 'true' : undefined}
       >
         {/* Slides owns the slide-card wall. Build has its own lightweight layer. */}
         {slideStudioOpen ? (
@@ -2765,7 +2948,24 @@ const GuidPage: React.FC = () => {
             data-ambient-variant={buildAmbientVariant}
             aria-hidden='true'
           >
-            <BuildAmbientWall variant={buildAmbientVariant} />
+            {buildAmbientVariant === 'create' ? (
+              <React.Suspense fallback={null}>
+                <CreateAmbientWall />
+              </React.Suspense>
+            ) : (
+              <BuildAmbientWall variant={buildAmbientVariant} />
+            )}
+          </div>
+        ) : imageAmbientOpen ? (
+          <div
+            className={styles.ambientWall}
+            data-testid='guid-image-ambient'
+            data-ambient-variant='image'
+            aria-hidden='true'
+          >
+            <React.Suspense fallback={null}>
+              <CreateAmbientWall variant='image' />
+            </React.Suspense>
           </div>
         ) : null}
         <div className={styles.guidScrollArea} data-home-layer={homeView}>
@@ -2790,20 +2990,12 @@ const GuidPage: React.FC = () => {
                 </div>
               ) : null}
               {homeView === 'capability' && homeCapability === 'video' ? (
-                <div className={styles.homePrepStage}>
-                  <button
-                    type='button'
-                    className={styles.homePrepHero}
-                    data-testid='guid-home-video-hero'
-                    onClick={() => requestHomeExample('video', t('guid.home.showcaseVideoTitle'))}
-                  >
-                    <img className={styles.homePrepCover} src={showcaseVideoCover} alt='' />
-                    <div className={styles.homePrepCopy}>
-                      <span className={styles.homePrepTitle}>{t('guid.home.showcaseVideoTitle')}</span>
-                      <span className={styles.homePrepText}>{t('guid.home.videoShortcutSubtitle')}</span>
-                    </div>
-                  </button>
-                </div>
+                <React.Suspense fallback={null}>
+                  <VideoExampleWall
+                    onSelect={handleSelectVideoExample}
+                    onOpenAll={() => navigate('/video-generation')}
+                  />
+                </React.Suspense>
               ) : null}
             </div>
           </div>
@@ -2863,6 +3055,7 @@ const GuidPage: React.FC = () => {
                 onClose={backFromBuildExamples}
                 closeLabel={t('common.close', { defaultValue: 'Close' })}
                 testId='guid-home-build-examples'
+                scrollableMedia
                 onMotionEnd={handleExamplesMotionEnd}
                 motion={
                   buildTransitionDirection === 'back' && buildDrawerMotion === 'closing'
@@ -2882,6 +3075,9 @@ const GuidPage: React.FC = () => {
                 onClose={closeHomePanel}
                 closeLabel={t('common.close', { defaultValue: 'Close' })}
                 testId='guid-home-create-directory'
+                motion={buildDirectoryMotion}
+                motionDuration={buildDrawerMotion === 'closing' ? BUILD_DRAWER_COLLAPSE_MS : BUILD_DRAWER_EXPAND_MS}
+                onMotionEnd={handleDirectoryMotionEnd}
               />
             ) : null}
             {homeView === 'capability' && homeCapability === 'slides' && slidePanelOpen && slideOptions !== null ? (
@@ -2891,9 +3087,16 @@ const GuidPage: React.FC = () => {
                   onSelectTemplate={handleSelectSlideTemplate}
                   onSelectSuggestion={handleSelectSlideSuggestion}
                   onImportTemplate={handleImportSlideTemplate}
-                  onClose={() => setSlidePanelOpen(false)}
+                  onClose={closeSlidePanelToDirectory}
+                  motion={slidePanelMotion}
+                  onMotionEnd={finishCloseSlidePanel}
                   disabled={guidInput.loading}
                 />
+              </div>
+            ) : null}
+            {homeView === 'capability' && homeCapability === 'image' ? (
+              <div className={styles.slidePanelHost} data-testid='guid-home-image-panel-host'>
+                <ImagePromptPanel onSelectPrompt={handleSelectImagePrompt} onClose={closeImagePanel} />
               </div>
             ) : null}
             {homeView === 'capability' && homeCapability === 'video' ? (

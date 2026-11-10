@@ -122,6 +122,38 @@
   cursor: pointer;
 }
 
+.headerActions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.iconButton {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--flowy-radius-field, 8px);
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
+  color: var(--color-text-1);
+}
+
+.iconButton:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
 .close:hover {
   background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
   color: var(--color-text-1);
@@ -129,6 +161,7 @@
 
 .back:focus-visible,
 .close:focus-visible,
+.iconButton:focus-visible,
 .option:focus-visible {
   outline: 2px solid var(--flowy-focus);
   outline-offset: 2px;
@@ -197,6 +230,34 @@
      keep one shared, content-driven grid without special-casing the drawer. */
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 8px;
+  max-height: min(42vh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.mediaGridScrollable {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
+  max-height: none;
+  padding-bottom: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mediaGridScrollable::-webkit-scrollbar {
+  display: none;
+}
+
+.mediaGridScrollable .mediaOption {
+  flex: 0 0 200px;
+  scroll-snap-align: start;
 }
 
 .mediaOption {
@@ -230,7 +291,6 @@
   display: grid;
   place-items: center;
   width: 100%;
-  max-height: 120px;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 6px;

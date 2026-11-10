@@ -88,10 +88,15 @@ const GuidHomeBrand: React.FC = () => {
     month: 'long',
   });
   const monthDays = useMemo(() => calendarDays(month), [month]);
+  const englishWeekdays = locale.toLowerCase().startsWith('en');
   const weekdayFormatter = useMemo(
-    () => new Intl.DateTimeFormat(locale, { weekday: 'narrow' }),
-    [locale],
+    () => new Intl.DateTimeFormat(locale, { weekday: englishWeekdays ? 'short' : 'narrow' }),
+    [englishWeekdays, locale],
   );
+  const weekdayLabel = (date: Date) => {
+    const label = weekdayFormatter.format(date);
+    return englishWeekdays ? label.slice(0, 2) : label.replace(/^周/, '');
+  };
 
   useEffect(() => {
     if (!signedIn || !credits?.accountId) {
@@ -195,15 +200,13 @@ const GuidHomeBrand: React.FC = () => {
       <div className={styles.weekdays} aria-hidden='true'>
         {Array.from({ length: 7 }, (_, index) => (
           <span key={index}>
-            {weekdayFormatter
-              .format(
-                new Date(
-                  WEEKDAY_REFERENCE.getFullYear(),
-                  WEEKDAY_REFERENCE.getMonth(),
-                  WEEKDAY_REFERENCE.getDate() + index,
-                ),
-              )
-              .replace(/^周/, '')}
+            {weekdayLabel(
+              new Date(
+                WEEKDAY_REFERENCE.getFullYear(),
+                WEEKDAY_REFERENCE.getMonth(),
+                WEEKDAY_REFERENCE.getDate() + index,
+              ),
+            )}
           </span>
         ))}
       </div>

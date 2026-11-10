@@ -6,7 +6,7 @@
 
 import type React from 'react';
 
-export type HomeCapability = 'office' | 'develop' | 'slides' | 'video';
+export type HomeCapability = 'office' | 'develop' | 'slides' | 'video' | 'image';
 
 export type HomeStageOption = {
   /** Stable React key; a group can expose two entries for the same capability. */

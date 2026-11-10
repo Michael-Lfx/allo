@@ -1,8 +1,8 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import appCover from './assets/showcase-app-cover.jpg';
-import imageCover from './assets/showcase-image-cover.jpg';
-import videoCover from './assets/showcase-video-cover.png';
+import appCover from './assets/showcase-app-cover.webp';
+import imageCover from './assets/showcase-image-cover.webp';
+import videoCover from './assets/showcase-video-cover.webp';
 import styles from './ShowcaseCards.module.css';
 
 export interface ShowcaseCardsProps {

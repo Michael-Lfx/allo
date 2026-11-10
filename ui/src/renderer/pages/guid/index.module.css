@@ -3712,111 +3712,15 @@
 }
 /* --- Third round: preview-led directories and capability heroes --- */
 
+.guidContainer[data-video-gallery] .guidPrimaryStage .guidLayout {
+  width: min(100%, 1120px);
+  max-width: 1120px;
+}
+
 .dirThumbImage {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-}
-
-.homePrepStage {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  padding: 24px 0;
-}
-
-.homePrepHero {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  width: 100%;
-  max-width: 768px;
-  margin: 0 auto;
-  padding: 16px;
-  border: 0;
-  border-radius: 16px;
-  background: var(--flowy-raised);
-  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-}
-
-button.homePrepHero {
-  cursor: pointer;
-}
-
-button.homePrepHero:hover {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 16%, var(--flowy-border-subtle));
-}
-
-button.homePrepHero:focus-visible {
-  outline: 2px solid var(--flowy-focus);
-  outline-offset: 2px;
-}
-
-.homePrepCover {
-  flex: 0 0 auto;
-  width: 220px;
-  aspect-ratio: 16 / 10;
-  border-radius: 10px;
-  object-fit: cover;
-}
-
-.homePrepCopy {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.homePrepTitle {
-  color: var(--color-text-1);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 22px;
-}
-
-.homePrepText {
-  color: var(--color-text-2);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.homePrepMeta {
-  align-self: flex-start;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-1) 6%, transparent);
-  color: var(--color-text-2);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 16px;
-}
-
-:global([data-home-compact='true']) .homePrepStage {
-  padding: 12px 0;
-}
-
-:global([data-home-compact='true']) .homePrepHero {
-  padding: 12px;
-  gap: 10px;
-}
-
-:global([data-home-compact='true']) .homePrepCover {
-  width: 140px;
-}
-
-:global([data-home-compact='true']) .homePrepTitle {
-  font-size: 14px;
-  line-height: 20px;
-}
-
-:global([data-home-compact='true']) .homePrepText {
-  font-size: 12px;
-  line-height: 18px;
+  object-fit: contain;
 }
 
 /* --- First-screen default home: centre the entry/member/cases group in the
@@ -3871,7 +3775,8 @@ button.homePrepHero:focus-visible {
 }
 
 /* Let the ambient canvas show behind the composer as well. */
-.guidContainer:has([data-testid='guid-build-ambient']) .guidFixedInputArea {
+.guidContainer:has([data-testid='guid-build-ambient']) .guidFixedInputArea,
+.guidContainer:has([data-testid='guid-image-ambient']) .guidFixedInputArea {
   background: none;
 }
 
