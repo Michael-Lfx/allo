@@ -446,6 +446,7 @@
   "learningGraphStructureTitle": "知识结构",
   "learningGraphStructureGenerating": "生成中…",
   "learningGraphStructureFailed": "知识结构生成失败",
+  "learningGraphStructureConflict": "结构生成已在进行中，请等待当前生成完成",
   "learningGraphStructureSummary": "{{spines}} 主干 · {{blocks}} 块 · {{doors}} 门口",
   "learningGraphStructureGenerate": "生成知识结构",
   "learningGraphStructureRegenerate": "重新生成",

@@ -20,6 +20,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
+import { BackendHttpError } from '@/common/adapter/httpBridge';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiCollapse from '@/renderer/components/base/NomiCollapse';
 import { lessonStatusTagColors } from '../model';
@@ -195,10 +196,17 @@ const LearningGraphWorkspace: React.FC<{
       });
     } catch (actionError) {
       setStructureRunning(false);
-      Modal.error({
-        title: t('learning.learningGraphStructureFailed'),
-        content: errorMessage(t, actionError),
-      });
+      // g3 冲突显性化：生成进行中重复触发 = 后端 409 → 非阻塞 toast 明确
+      // 反馈（此前 200 kicked=true 静默吞掉，「生成中」Tag 卡死到刷新）；
+      // 其余失败保留阻塞 Modal——需要用户看见并处置。
+      if (actionError instanceof BackendHttpError && actionError.status === 409) {
+        Message.warning(t('learning.learningGraphStructureConflict'));
+      } else {
+        Modal.error({
+          title: t('learning.learningGraphStructureFailed'),
+          content: errorMessage(t, actionError),
+        });
+      }
     } finally {
       setRegenerating(false);
     }
