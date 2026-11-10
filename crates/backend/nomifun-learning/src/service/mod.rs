@@ -588,9 +588,9 @@ pub use open_judge::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLD
 
 pub(crate) use generation_tasks::{
     CANCELLED_MESSAGE, CountingCompleter, CancellationCompleter, GenerationTaskGuard,
-    GenerationTaskRegistry, GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE,
-    KIND_STRUCTURE, KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST,
-    STATE_RUNNING,
+    GenerationTaskRegistry, GenerationTaskView, KIND_BASIS_DECLARE, KIND_GROWTH, KIND_LESSON,
+    KIND_OUTLINE, KIND_STRUCTURE, KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR,
+    OBJECTIVE_KIND_SQL_LIST, STATE_RUNNING,
 };
 
 /// 等待本课程出现 applied 生长批（tests.rs 与 basis_tests.rs 共用的测试

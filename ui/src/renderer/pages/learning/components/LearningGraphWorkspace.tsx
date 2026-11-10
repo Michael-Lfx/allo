@@ -27,7 +27,13 @@ import { lessonStatusTagColors } from '../model';
 import { batchStatusMeta, buildSystemActionRows } from '../systemActions';
 import { overloadedBadgeCount } from '../capacityFeedback';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
-import { statusLabel } from '../utils';
+import { statusLabel, errorMessage, isGenerationConflict } from '../utils';
+import {
+  clearInFlight,
+  inFlightIdsWithPrefix,
+  isInFlight,
+  markInFlight,
+} from '../learningInFlight';
 import {
   loadStructurePresentedWatermark,
   saveStructurePresentedWatermark,
@@ -36,7 +42,6 @@ import {
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
-import { errorMessage } from '../utils';
 import type {
   Activity,
   AttemptRecord,
@@ -283,15 +288,22 @@ const LearningGraphWorkspace: React.FC<{
   // 结构挂载回合（j08）：同步命令，完成后重取投影（挂载三态段随之刷新）。
   const mountStructure = useCallback(async () => {
     setMounting(true);
+    markInFlight(`mount:${detail.course.id}`);
     try {
       await learningApi.mountStructure(detail.course.id);
       await refetchStructure();
     } catch (actionError) {
-      Modal.error({
-        title: t('learning.learningGraphMountFailed'),
-        content: errorMessage(t, actionError),
-      });
+      if (isGenerationConflict(actionError, `learning-mount-${detail.course.id}`)) {
+        Message.info(t('learning.inflightTaskToast'));
+        await refetchStructure();
+      } else {
+        Modal.error({
+          title: t('learning.learningGraphMountFailed'),
+          content: errorMessage(t, actionError),
+        });
+      }
     } finally {
+      clearInFlight(`mount:${detail.course.id}`);
       setMounting(false);
     }
   }, [detail.course.id, refetchStructure, t]);
@@ -299,6 +311,7 @@ const LearningGraphWorkspace: React.FC<{
   // 结构修补回合（j09）：按留痕与观察修补结构；皆空时后端如实 skipped。
   const repairStructure = useCallback(async () => {
     setRepairing(true);
+    markInFlight(`repair:${detail.course.id}`);
     try {
       const summary = await learningApi.repairStructure(detail.course.id);
       if (summary.status === 'noop') {
@@ -306,11 +319,17 @@ const LearningGraphWorkspace: React.FC<{
       }
       await refetchStructure();
     } catch (actionError) {
-      Modal.error({
-        title: t('learning.learningGraphRepairFailed'),
-        content: errorMessage(t, actionError),
-      });
+      if (isGenerationConflict(actionError, `learning-repair-${detail.course.id}`)) {
+        Message.info(t('learning.inflightTaskToast'));
+        await refetchStructure();
+      } else {
+        Modal.error({
+          title: t('learning.learningGraphRepairFailed'),
+          content: errorMessage(t, actionError),
+        });
+      }
     } finally {
+      clearInFlight(`repair:${detail.course.id}`);
       setRepairing(false);
     }
   }, [detail.course.id, refetchStructure, t]);
@@ -338,12 +357,22 @@ const LearningGraphWorkspace: React.FC<{
   const [growing, setGrowing] = useState(false);
   const grow = useCallback(async () => {
     setGrowing(true);
+    markInFlight(`grow:${detail.course.id}`);
     try {
       await learningApi.growGraph(detail.course.id, undefined, model.choice);
       onRefresh();
     } catch (actionError) {
-      Modal.error({ title: t('learning.learningGraphGrowFailed'), content: errorMessage(t, actionError) });
+      if (isGenerationConflict(actionError, `graph-growth-${detail.course.id}`)) {
+        Message.info(t('learning.inflightTaskToast'));
+        onRefresh();
+      } else {
+        Modal.error({
+          title: t('learning.learningGraphGrowFailed'),
+          content: errorMessage(t, actionError),
+        });
+      }
     } finally {
+      clearInFlight(`grow:${detail.course.id}`);
       setGrowing(false);
     }
   }, [detail.course.id, model.choice, onRefresh, t]);
@@ -488,8 +517,10 @@ const LearningGraphWorkspace: React.FC<{
           <Button
             size='small'
             type='primary'
-            loading={growing}
-            disabled={growing || busyId !== null}
+            loading={growing || graph.growth_running}
+            // growth_running 是服务端真相（d7）：切页往返后本地 growing 已丢，
+            // 服务端在跑的生长批次照样禁用补充节点（防槽锁 409 双击）。
+            disabled={growing || graph.growth_running || busyId !== null}
             onClick={() => void grow()}
           >
             {readyStockFull
@@ -541,7 +572,7 @@ const LearningGraphWorkspace: React.FC<{
               structureRunning={structureRunning}
               structureError={structureError}
               basis={basis}
-              declaring={declaringBasis}
+              declaring={basisDeclareBusy}
               basisChecked={basisDraftChecked}
               onBasisCheckedChange={setBasisDraftChecked}
               onDeclare={(doors) => void declareBasis(doors)}
@@ -575,7 +606,10 @@ const LearningGraphWorkspace: React.FC<{
                         <Button
                           type='primary'
                           size='small'
-                          loading={busyId === primaryLesson.id}
+                          loading={
+                            busyId === primaryLesson.id ||
+                            registryBusy.lessons.has(primaryLesson.id)
+                          }
                           onClick={(event) => {
                             event.stopPropagation();
                             onGenerate(primaryLesson);
@@ -659,6 +693,7 @@ const LearningGraphWorkspace: React.FC<{
                       lesson={selectedLesson}
                       sourceKbId={detail.course.source_kb_id}
                       busyId={busyId}
+                      externalBusy={registryBusy.lessons.has(selectedLesson.id)}
                       attemptResults={attemptResults}
                       onProgress={onProgress}
                       onAttempt={onAttempt}
@@ -683,13 +718,13 @@ const LearningGraphWorkspace: React.FC<{
             view={structure}
             basis={basis}
             onMount={() => void mountStructure()}
-            mounting={mounting}
+            mounting={mounting || registryBusy.mount}
             onRepair={() => void repairStructure()}
-            repairing={repairing}
+            repairing={repairing || registryBusy.repair}
             basisChecked={basisDraftChecked}
             onBasisCheckedChange={setBasisDraftChecked}
             onDeclareBasis={(doors) => void declareBasis(doors)}
-            declaringBasis={declaringBasis}
+            declaringBasis={basisDeclareBusy}
           />
         </Tabs.TabPane>
       </Tabs>

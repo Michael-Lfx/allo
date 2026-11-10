@@ -695,6 +695,7 @@ export function LessonBlock({
   lesson,
   sourceKbId,
   busyId,
+  externalBusy = false,
   attemptResults,
   onProgress,
   onAttempt,
@@ -704,6 +705,9 @@ export function LessonBlock({
   lesson: Lesson;
   sourceKbId: string | null;
   busyId: string | null;
+  /** 外部在途（d7）：注册表/会话级派生的「本课时内容生成中」——切页往返后
+   * 本地 busyId 已丢，由工作区从服务端真相注入，防重复点击 409。 */
+  externalBusy?: boolean;
   attemptResults: Record<string, AttemptRecord>;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
@@ -831,7 +835,7 @@ export function LessonBlock({
           <Tag color={lessonStatusTagColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
           <Button
             type='primary'
-            loading={busyId === lesson.id}
+            loading={busyId === lesson.id || externalBusy}
             onClick={() => onGenerate(lesson)}
           >
             {t('learning.generateLessonContent')}

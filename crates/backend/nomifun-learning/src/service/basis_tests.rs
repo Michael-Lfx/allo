@@ -314,6 +314,16 @@ async fn basis_declaration_mints_concepts_and_never_creates_learning_nodes() {
 
     // 恰一次 LLM 调用（一次结构化概念清单调用；机械门零调用）。
     assert_eq!(completer.call_count(), 1);
+
+    // 注册表行（d6）：声明进 generation_tasks 快照——切页重挂载的前端在途
+    // 恢复依赖这条服务端真相（终态 done + course 匹配）。
+    let task_rows = service.generation_task_snapshot();
+    let declared_row = task_rows
+        .iter()
+        .find(|task| task.kind == "basis_declare" && task.course_id == course.as_str())
+        .unwrap_or_else(|| panic!("basis_declare registry row missing: {task_rows:?}"));
+    assert_eq!(declared_row.state, "done");
+    assert_eq!(declared_row.topic, "已会声明");
 }
 
 /// 幂等：同门口重声明 = noop 零 LLM 零写；扩门口只处理新增差集。

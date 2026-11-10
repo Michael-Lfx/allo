@@ -124,6 +124,17 @@ export function errorMessage(t: Translate, error: unknown): string {
   return error instanceof Error ? error.message : t('learning.actionFailed');
 }
 
+/** 槽冲突（409 CONFLICT，d6/d7）：同类长任务已在后台跑。后端错误文本恒含
+ * 槽 key（`course generation for this source is already running (…)`）与
+ * `CONFLICT` 码；keyFragment 用于精确认领（如 `basis-declare-{courseId}`）
+ * ——命中即走非阻塞提示 + 数据重拉，不弹原始 JSON 错误。 */
+export function isGenerationConflict(error: unknown, keyFragment?: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.includes('CONFLICT') && !message.includes('(409)')) return false;
+  if (!message.includes('already running')) return false;
+  return keyFragment ? message.includes(keyFragment) : true;
+}
+
 /** 题目表单校验；返回 i18n 键，校验通过返回 null */
 export function validateQuestionForm(
   prompt: string,

@@ -537,6 +537,8 @@
   "learningGraphBasisDeclareNoop": "All selected doors were already declared: nothing changed this time (idempotent increment).",
   "learningGraphBasisDeclareDone": "Doors {{doors}} are now declared as known, hitting blocks: {{blocks}}; {{minted}} new concept(s) minted, {{reused}} existing reused (zero nodes, zero scheduling, zero XP).",
   "learningGraphBasisDeclareFailed": "Declaration failed",
+  "inflightBasisToast": "The declaration is still running in the background — the latest state has been loaded.",
+  "inflightTaskToast": "A similar task is already running in the background — the latest state has been loaded.",
   "learningGraphBasisOff": "Declared-known channel is disabled",
   "learningGraphBasisUnresolved": "{{count}} declared concept(s) no longer resolve in the registry",
   "learningGraphBasisDoorAria": "Select the gate you already satisfy",
