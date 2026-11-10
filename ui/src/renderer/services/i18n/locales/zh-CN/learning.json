@@ -522,6 +522,8 @@
   "learningGraphBasisDeclareNoop": "勾选的门口均已声明过：本次零改动（幂等增量）。",
   "learningGraphBasisDeclareDone": "门口 {{doors}} 已声明为已会，命中块：{{blocks}}；铸出新概念 {{minted}} 个、复用既有概念 {{reused}} 个（零节点、零排课、零 XP）。",
   "learningGraphBasisDeclareFailed": "已会声明失败",
+  "inflightBasisToast": "已会声明仍在后台进行，已为你同步最新状态。",
+  "inflightTaskToast": "同类任务已在后台进行，已为你同步最新状态。",
   "learningGraphBasisOff": "已会声明通道未开启",
   "learningGraphBasisUnresolved": "{{count}} 条声明概念已不在登记表",
   "learningGraphBasisDoorAria": "勾选已具备的门口",

@@ -5481,6 +5481,18 @@ impl LearningService {
         // 的是 LLM 双烧）。
         let slot_key = format!("basis-declare-{}", course_id.as_str());
         let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+        // 注册表行（d6）：声明是分钟级 LLM 操作，此前是唯一不进注册表的长
+        // 任务——前端切页重挂载后无从发现「本课声明在跑」（快照行是唯一服
+        // 务端真相；挂载回合同款 begin/drop 自动收尾）。
+        let mut task = self
+            .begin_generation_task(
+                crate::service::KIND_BASIS_DECLARE,
+                course_id.as_str(),
+                None,
+                "已会声明",
+            )
+            .await?;
+        task.set_step("declare", "正在按声明铸概念…");
 
         // 快照行读（goal + 结构 + 地形）。
         let row: (String, Option<String>) = sqlx::query_as(
@@ -5547,6 +5559,8 @@ impl LearningService {
                 doors = ?checked,
                 "已会声明幂等空跑：勾选门口全部已声明，零 LLM 零写"
             );
+            // 幂等空跑也是正常收尾（d6）：守卫显式 finish，注册表行不留 failed。
+            task.finish_done("幂等空跑：勾选门口均已声明，零改动");
             return Ok(crate::models::DeclarationResultView {
                 course_id: course_id.clone(),
                 doors: Vec::new(),
@@ -5903,6 +5917,11 @@ impl LearningService {
                 "blocks": block_slugs,
             }),
         );
+        // 注册表收尾（d6）：显式 done（守卫 drop 的兜底语义是 failed）。
+        task.finish_done(format!(
+            "已会声明完成：铸出/复用概念 {} 个（零节点、零排课、零 XP）",
+            minted + reused
+        ));
         Ok(crate::models::DeclarationResultView {
             course_id: course_id.clone(),
             doors: pending,
