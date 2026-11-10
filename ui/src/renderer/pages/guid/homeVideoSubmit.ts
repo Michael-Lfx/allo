@@ -14,9 +14,17 @@ import {
 } from '../videoGeneration/api';
 import { briefingWorkspacePath, createBriefing, runBriefing } from '../videoGeneration/briefing/api';
 import type { VideoCreateDraft } from '../videoGeneration/home/types';
-import { clearVideoHomeDraft } from '../videoGeneration/home/homeDraft';
-import { materializeHomeImageMentions } from '../videoGeneration/home/imageMentions';
+import {
+  buildBriefingCreateInput,
+  buildGenerateTaskPayload,
+  buildHomeVideoGenerateRequest,
+  buildVideoSessionCreateInput,
+} from '../videoGeneration/home/submitDtos';
 import { clampClipDurationForModel } from '../videoGeneration/durationBounds';
+import { lookById } from '../videoGeneration/styleCatalog/looks';
+
+export { buildBriefingCreateInput, buildHomeVideoGenerateRequest, buildVideoSessionCreateInput };
+import { clearVideoHomeDraft } from '../videoGeneration/home/homeDraft';
 import { prefetchCanvasWorkspace } from '../videoGeneration/prefetch';
 import { isInsufficientCreditsError } from '../videoGeneration/creditsError';
 import { formatClipOperationError } from '../videoGeneration/clipFailure';
@@ -28,9 +36,7 @@ import {
   uploadCanvasMedia,
   type GenerationTaskView,
 } from '../videoCanvas/api';
-import { normalizeVideoResolution } from '@renderer/services/videoModelCapabilities';
 import { resolveLookIdentity } from '../videoGeneration/styleCatalog/lookIdentity';
-import { composeClipPrompt, lookById } from '../videoGeneration/styleCatalog/looks';
 import {
   rememberVideoGenerationBriefing,
   rememberVideoGenerationCanvas,
@@ -40,6 +46,8 @@ import {
 
 /** A stuck create POST must not pin the home send guard forever. */
 const HOME_VIDEO_CREATE_TIMEOUT_MS = 60_000;
+/** A stalled reference upload must not leave the composer stuck in `creating`. */
+const HOME_VIDEO_UPLOAD_TIMEOUT_MS = 120_000;
 const HOME_VIDEO_CLAIM_PAGE_SIZE = 50;
 const HOME_VIDEO_CLAIM_MAX_TASKS = 500;
 
@@ -82,20 +90,6 @@ async function listHomeVideoClaimCandidates(): Promise<GenerationTaskView[]> {
   return tasks;
 }
 
-/** Pure payload builder so tests can lock the generate DTO without any network. */
-export function buildHomeVideoGenerateRequest(draft: VideoCreateDraft) {
-  const text = draft.creationPrompt.trim();
-  const model = draft.preferences.models.video_model;
-  return {
-    prompt: composeClipPrompt(materializeHomeImageMentions(text), draft.style),
-    title:
-      text.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) || '',
-    model,
-    resolution: normalizeVideoResolution(model, draft.preferences.resolution),
-    durationSecs: clampClipDurationForModel(model, draft.preferences.targetDurationSecs),
-  };
-}
-
 type HomeVideoGenerateRecovery = ReturnType<typeof buildHomeVideoGenerateRequest> & {
   uploadedMediaIds: string[];
 };
@@ -124,51 +118,6 @@ async function createServerBackedCanvasProject(
   return create(...args);
 }
 
-function firstLineTitle(text: string): string {
-  return text.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
-}
-
-function titleForDraft(draft: VideoCreateDraft): string {
-  if (draft.workflow === 'action2video') {
-    const fromCharacter = draft.actionCharacter?.file.name.replace(/\.[^.]+$/, '').trim();
-    return fromCharacter?.slice(0, 48) || '';
-  }
-  // Short-drama titles are set on the task details page, not from the prompt.
-  return '';
-}
-
-export function buildVideoSessionCreateInput(draft: VideoCreateDraft) {
-  return {
-    workflow: draft.workflow,
-    title: titleForDraft(draft) || undefined,
-  };
-}
-
-export function buildBriefingCreateInput(draft: VideoCreateDraft) {
-  const sourceUrls = draft.sourceUrls
-    .split(/[\s,]+/)
-    .map((row) => row.trim())
-    .filter((url) => /^https?:\/\//i.test(url));
-  return {
-    intent: draft.sourceText.trim(),
-    title: firstLineTitle(draft.sourceText) || undefined,
-    format_secs: draft.briefingFormatSecs,
-    research_depth: draft.researchDepth,
-    time_window_hours: draft.timeWindowHours,
-    source_urls: sourceUrls,
-    tts_provider_id: draft.briefingTts?.provider_id,
-    tts_model: draft.briefingTts?.model,
-    tts_voice: draft.briefingTts?.voice ?? undefined,
-    image_provider_id: draft.briefingImage?.provider_id,
-    image_model: draft.briefingImage?.model,
-  };
-}
-
-/**
- * Shared home-video submission actions. The original video home owns these
- * callbacks; the homepage reuses the same composer and must submit through the
- * same sessions/workspaces instead of maintaining a second clip-only path.
- */
 export function useHomeVideoSubmit() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -535,23 +484,20 @@ export function useHomeVideoSubmit() {
       generateAttemptRef.current = attempt;
       try {
         for (const reference of pendingReferences) {
-          const media = await uploadCanvasMedia(
-            reference.file,
-            reference.file.name.replace(/\.[^.]+$/, '').trim() ||
-              `reference-${attempt.uploadedMediaIds.length + 1}`,
+          const media = await withHomeVideoTimeout(
+            uploadCanvasMedia(
+              reference.file,
+              reference.file.name.replace(/\.[^.]+$/, '').trim() ||
+                `reference-${attempt.uploadedMediaIds.length + 1}`,
+            ),
+            HOME_VIDEO_UPLOAD_TIMEOUT_MS,
+            'home video reference upload timed out',
           );
           attempt.uploadedMediaIds.push(media.media_id);
         }
         attempt.postIssued = true;
         const task = await withHomeVideoTimeout(
-          createGenerationTask({
-            mode: 'video',
-            prompt: attempt.prompt,
-            model: attempt.model,
-            resolution: attempt.resolution,
-            duration_secs: attempt.durationSecs,
-            reference_media_ids: attempt.uploadedMediaIds,
-          }),
+          createGenerationTask(buildGenerateTaskPayload(draft, attempt.uploadedMediaIds)),
           HOME_VIDEO_CREATE_TIMEOUT_MS,
         );
         generateAttemptRef.current = null;

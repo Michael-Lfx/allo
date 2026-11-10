@@ -9,11 +9,11 @@ const styles = readFileSync(new URL('./index.module.css', import.meta.url), 'utf
 describe('guid phase-one visual sample', () => {
   test('keeps the composer as the primary stage without changing its behavior seams', () => {
     expect(page.includes('<HeroSection />')).toBe(false);
-    expect(page.includes('onStartFromLocal={() => void handleLinkWorkspace()}')).toBe(true);
+    expect(page.includes('onOpenLocalDialog={() => void handleLinkWorkspace()}')).toBe(true);
     expect(page.includes("if (next === 'studio')")).toBe(false);
     expect(page.includes('onOpenLocalDialog={() => void handleLinkWorkspace()}')).toBe(true);
     expect(page.includes('onPaste={guidInput.onPaste}')).toBe(true);
-    expect(page.includes('onSend={handleComposerSend}')).toBe(true);
+    expect(page.includes('onSend={homeSend}')).toBe(true);
     expect(page.includes('const handleComposerSend = send.sendMessageHandler;')).toBe(true);
     expect(inputCard.includes('styles.guidInputCardWrapActive')).toBe(true);
     expect(styles.includes('.guidInputCardWrap:focus-within')).toBe(true);

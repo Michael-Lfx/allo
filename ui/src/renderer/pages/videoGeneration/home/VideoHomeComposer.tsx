@@ -526,6 +526,9 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
   };
 
   const submit = () => {
+    // Ctrl/Cmd+Enter calls this directly and bypasses the disabled button.
+    // Keep the in-flight guard for both entry points.
+    if (loading) return;
     if (isAction) {
       if (!draft.actionCharacter?.file || !draft.actionVideo?.file) {
         setUploadError(

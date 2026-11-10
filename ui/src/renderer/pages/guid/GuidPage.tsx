@@ -1793,13 +1793,26 @@ const GuidPage: React.FC = () => {
     },
     [switchHomeCapability],
   );
-  const handleSelectShowcaseWebsite = useCallback(() => {
+  const openWebsiteExamples = useCallback(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       showBuildExamples('website', false);
     } else {
       showBuildExamples('website', true);
     }
   }, [showBuildExamples]);
+  const handleSelectShowcaseWebsite = useCallback(() => {
+    // Opening the picker itself does not overwrite the draft, but selecting an
+    // example does. Keep the same confirmation contract as the video/image
+    // covers when a develop draft already exists.
+    if (capabilityHasDraft('develop')) {
+      setPendingExample({
+        title: t('guid.home.showcaseWebsiteTitle'),
+        run: openWebsiteExamples,
+      });
+      return;
+    }
+    openWebsiteExamples();
+  }, [capabilityHasDraft, openWebsiteExamples, t]);
   const selectHomeOption = useCallback(
     (option: HomeStageOption) => {
       if (option.id === 'slides' && !supportsHomeGoalCommand) return;

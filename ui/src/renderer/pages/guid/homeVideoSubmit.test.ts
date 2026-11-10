@@ -8,6 +8,7 @@ import {
   isDefinitelyNotCreatedCreateError,
   findUniqueClaimTask,
 } from './homeVideoSubmit';
+import { buildGenerateTaskPayload } from '../videoGeneration/home/submitDtos';
 
 const draftWith = (patch: Partial<VideoCreateDraft>): VideoCreateDraft => ({
   ...defaultDraft(),
@@ -77,6 +78,28 @@ describe('home video submit data flow', () => {
     expect(request.tts_voice).toBe('v1');
     expect(request.image_provider_id).toBe('img-p');
     expect(request.image_model).toBe('img-m');
+  });
+
+  test('generate task API payload carries the exact input text and uploaded refs', () => {
+    const draft = draftWith({
+      creationPrompt: '  窗边的猫伸懒腰  ',
+      style: '',
+      preferences: {
+        ...defaultDraft().preferences,
+        models: {
+          ...defaultDraft().preferences.models,
+          video_model: 'minimax-h3',
+        },
+      },
+    });
+    const payload = buildGenerateTaskPayload(draft, ['media-1', 'media-2']);
+    expect(payload.mode).toBe('video');
+    expect(payload.prompt).toContain('窗边的猫伸懒腰');
+    expect(payload.prompt).not.toContain('  窗边');
+    expect(payload.model).toBe('minimax-h3');
+    expect(payload.reference_media_ids).toEqual(['media-1', 'media-2']);
+    expect(payload.duration_secs).toBeGreaterThanOrEqual(4);
+    expect(payload.duration_secs).toBeLessThanOrEqual(15);
   });
 
   test('only deterministic 4xx errors are treated as "task definitely not created"', () => {

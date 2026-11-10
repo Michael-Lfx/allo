@@ -42,12 +42,13 @@ describe('Guid homepage single-screen layout', () => {
     expect(source.includes('<GuidVideoShortcut')).toBe(false);
   });
 
-  test('allows vertical scroll on guidContainer so short viewports can reach editor-host content', () => {
+  test('keeps vertical scrolling inside guidScrollArea on short viewports', () => {
     const css = readSource(new URL('../index.module.css', import.meta.url));
-    const block = css.match(/\.guidContainer\s*\{[^}]*\}/)?.[0] ?? '';
+    const container = css.match(/\.guidContainer\s*\{[^}]*\}/)?.[0] ?? '';
+    const scrollArea = css.match(/\.guidScrollArea\s*\{[^}]*\}/)?.[0] ?? '';
 
-    expect(/overflow-y:\s*(?:auto|scroll)/.test(block)).toBe(true);
-    expect(block.includes('overflow: hidden')).toBe(false);
+    expect(container.includes('overflow: hidden')).toBe(true);
+    expect(/overflow-y:\s*(?:auto|scroll)/.test(scrollArea)).toBe(true);
   });
 
   test('does not retain the retired companion-poster experiment', () => {

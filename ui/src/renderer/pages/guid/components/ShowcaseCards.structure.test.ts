@@ -21,6 +21,9 @@ describe('home showcase entry contract', () => {
     expect(guide).toContain('showBuildExamples(\'website\', false)');
     expect(guide).toContain('showBuildExamples(\'website\', true)');
     expect(guide).toContain('onSelectWebsite={handleSelectShowcaseWebsite}');
+    expect(guide).toContain("capabilityHasDraft('develop')");
+    expect(guide).toContain('openWebsiteExamples');
+    expect(guide).toContain('setPendingExample({');
     expect(guide).not.toContain('handleSelectShowcaseApp');
   });
 });
