@@ -214,7 +214,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   };
 
   return (
-    <div className={styles.actionRow}>
+    <div className={styles.actionRow} data-has-image-controls={imageControls ? 'true' : undefined}>
       <div className={`${styles.actionTools} composer-toolbar-tools`}>
         <div className={styles.actionEntry}>
           <span className='flex items-center gap-4px lh-[1]'>

@@ -3784,3 +3784,54 @@
 .guidContainer:has([data-testid="guid-home-build-examples"] [data-testid^="guid-home-option-"]:hover) .ambientWall {
   opacity: 0.94;
 }
+
+/* Image mode owns a wide parameter strip next to the submit cluster. Keep the
+   cluster fixed and let the toolbar scroll or wrap instead of painting the
+   selectors underneath the send button on narrower layouts. */
+.actionRow[data-has-image-controls='true'] {
+  gap: 12px;
+}
+
+.actionRow[data-has-image-controls='true'] .actionTools {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.actionRow[data-has-image-controls='true'] .actionTools::-webkit-scrollbar {
+  display: none;
+}
+
+.actionRow[data-has-image-controls='true'] .actionSubmit {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+@media (max-width: 1180px) {
+  .actionRow[data-has-image-controls='true'] {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .actionRow[data-has-image-controls='true'] .actionTools {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .actionRow[data-has-image-controls='true'] .actionSubmit {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 768px) {
+  .actionRow[data-has-image-controls='true'] .actionTools {
+    gap: 6px;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    white-space: normal;
+    row-gap: 6px;
+  }
+}

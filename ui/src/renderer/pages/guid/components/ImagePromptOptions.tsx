@@ -2,11 +2,9 @@ import React from 'react';
 import { Select } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import {
-  DEFAULT_IMAGE_PROMPT_PARAMETERS,
   IMAGE_ASPECT_OPTIONS,
   IMAGE_DETAIL_OPTIONS,
   IMAGE_STYLE_OPTIONS,
-  isDefaultImagePromptParameters,
   type ImagePromptParameters,
 } from './imagePromptParameters';
 import styles from './ImagePromptOptions.module.css';
@@ -61,15 +59,6 @@ const ImagePromptOptions: React.FC<ImagePromptOptionsProps> = ({ value, onChange
           onChange={(next) => onChange({ ...value, details: (next as string[]) ?? [] })}
         />
       </label>
-      {!isDefaultImagePromptParameters(value) ? (
-        <button
-          type='button'
-          className={styles.reset}
-          onClick={() => onChange(DEFAULT_IMAGE_PROMPT_PARAMETERS)}
-        >
-          {t('guid.home.imageParamReset')}
-        </button>
-      ) : null}
     </div>
   );
 };

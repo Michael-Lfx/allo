@@ -5,6 +5,9 @@ const read = (relative: string) => readFileSync(new URL(relative, import.meta.ur
 const guide = read('../GuidPage.tsx');
 const panel = read('./ImagePromptPanel.tsx');
 const options = read('./ImagePromptOptions.tsx');
+const actionRow = read('./GuidActionRow.tsx');
+const zhGuid = JSON.parse(read('../../../services/i18n/locales/zh-CN/guid.json'));
+const enGuid = JSON.parse(read('../../../services/i18n/locales/en-US/guid.json'));
 
 describe('image creation entry contract', () => {
   test('keeps image first in the create directory and opens a closable prompt drawer', () => {
@@ -25,5 +28,10 @@ describe('image creation entry contract', () => {
     expect(panel).toContain('guid-home-image-next');
     expect(panel).toContain('scrollBy');
     expect(options).toContain("data-testid='guid-home-image-options'");
+    expect(options).not.toContain('imageParamReset');
+    expect(options).not.toContain('styles.reset');
+    expect(actionRow).toContain('data-has-image-controls');
+    expect(zhGuid.home.imageCustomPrompt.trim().endsWith('：')).toBe(true);
+    expect(enGuid.home.imageCustomPrompt.trim().endsWith(':')).toBe(true);
   });
 });

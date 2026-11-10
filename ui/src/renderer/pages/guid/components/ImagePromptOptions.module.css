@@ -66,51 +66,28 @@
   background: var(--flowy-raised);
 }
 
-.reset {
-  flex: 0 0 auto;
-  margin-left: 2px;
-  padding: 2px 3px;
-  border: 0;
-  background: transparent;
-  color: rgb(var(--primary-6));
-  font-size: 11px;
-  line-height: 16px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.reset:hover {
-  text-decoration: underline;
-}
-
-.reset:focus-visible {
-  border-radius: 4px;
-  outline: 2px solid var(--flowy-focus);
-  outline-offset: 1px;
-}
-
 @media (max-width: 720px) {
   .strip {
-    gap: 3px;
+    flex: 1 1 100%;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .field {
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .fieldLabel {
     display: none;
   }
 
-  .select {
-    width: 72px;
-  }
-
-  .aspectSelect {
-    width: 64px;
-  }
-
+  .select,
+  .aspectSelect,
   .multiSelect {
-    width: 100px;
+    width: 100%;
+    min-width: 0;
   }
 
-  .reset {
-    display: none;
-  }
+
 }
