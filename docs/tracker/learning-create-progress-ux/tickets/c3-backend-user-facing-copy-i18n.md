@@ -2,7 +2,7 @@
 id: c3
 title: "学习模块 UI 文案本地化收口——生长 Pill step 映射、恢复态 topic 组装；text 帧与 companion 零改动"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -82,3 +82,32 @@ part_of: ../map.md
 - observation `learning-tasks.jsonl` 诊断日志（保留中文）。
 - WS 事件名/phase 常量/`step` 机器面常量（双语无关）。
 - 后端多语言能力（人面全在前端词典）。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面验收全过，已闭票；en-US/zh-CN 全链目验留待用户实测，FAIL 按票重开。**
+
+- 施工 = `37db88047`（`STEP_KEYS` 八档 step→词典映射、未知/缺席 step 不回退
+  detail；恢复态 Pill topic 经 `restoredTaskTopic` 按 kind 出 `taskKind*`
+  词典文案；started 行去 `event.text`）+ `454775748`（`generation_tasks.rs:
+  82-85` 契约注释订正）。
+- 评审修复：`2619cc2e0`（未知 kind/课时前缀失配回退中性词典键
+  `taskKindUnknown`，不再原样回退后端中文 topic；`taskKind*`/`growthPillStep*`
+  断言改用真实 zh-CN + en-US 词典、遍历 `STEP_KEYS` 全档——补齐红线 2 双语
+  断言缺口）+ `a8bb2700a`（`generation_tasks.rs:47/190` 残留旧契约注释统一
+  为 detail = 诊断面；`CHANGELOG.md` Unreleased 三条）。
+- **验收「grep 归零」修正**：round 行的 `event.text` **保留**——立票时
+  「v2 流无 text 帧」前提有误（当时扫描只覆盖 `nomifun-learning`，漏了桥接
+  crate）：round 帧的 text 是模型叙述（`crates/backend/nomifun-ai-agent/src/
+  learning_loop.rs:292-299`），属动态模型输出而非后端硬编码文案，不在本票
+  收口范围；错误前提注释已订正。started 行人面渲染归零达成；failed detail
+  诊断展示按票面维持。
+- 实际偏离票面一处（已留痕）：topic 组装为 kind + 剥「课时内容 · 」前缀
+  （跨语言镜像 `lesson.rs:612/636`，已加注释），未用 `course_id` 取标题
+  （需额外拉详情）；outline 的 topic 是用户自己的输入，原样返回。课时前缀
+  失配时丢标题只显「后台任务」，为宁缺不泄漏的直接后果。
+- 留痕：`STEP_KEYS` 八档中七档当前不可达（生长 Pill 只收 growth 行
+  `growthTaskPill.ts:92`，growth 任务只设 `draft`）——按票面保留为防御
+  映射；票面「其余档裸渲染 detail」指代码形状上的泄漏面，非线上可达泄漏。
+- 裁决 2 守住：companion 与后端 4 处 `text` 帧零改动；en-US 下宠物气泡
+  detail 中文残留归 companion 后置（现状保持，非本波回归）。

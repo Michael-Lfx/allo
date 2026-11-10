@@ -2,7 +2,7 @@
 id: c1
 title: "学习图建课弹窗最小修——隐藏 v2 步骤条/活动流，running 单行提示，completed 只留卡片"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -59,3 +59,22 @@ part_of: ../map.md
 - 对话框内 structure_* 订阅 / 学习图专用步骤条（裁决否决）。
 - 提交后自动跳工作区（裁决否决）。
 - 恢复态收敛（c2）、后端文案本地化（c3）。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面验收全过，已闭票；真机一轮与双主题目验留待用户实测，FAIL 按票重开。**
+
+- 施工 = `1c4e951ea`（图流不渲染 v2 步骤条/活动流、running 单行双语提示
+  `learning.graphCreateBackgroundNotice`、三处陈旧注释订正、渲染测试先红后绿）
+  + `02402fa55`（票面外必要回归修复：本票让呈现依赖 `request.course_kind`，
+  而恢复路径原把所有非生长任务一律标 `learning_graph`——恢复的 v2 建课会被
+  渲染成图流单行，违反「v2 呈现零变化」；新增纯函数 `buildRestoredRequest`
+  按任务 kind 标注，c2 复用为恢复请求单源）。
+- 评审修复（`10b2cb636`，F3）：票面「单行」首版未达（running 两行 spinner、
+  queued 同句提示渲染两遍）→ 图流 running/queued 合并为一行（提示 + 取消
+  入口）；以修复前组件对照渲染，v2 五种状态与图流 completed 标记逐字节一致。
+- 验证（集成树 `56d28dae2`，即本波 + d6–d7 合流后，独立复验）：learning
+  156 测试绿；`gen:i18n`/`check:i18n` 绿（11605 keys）；typecheck 54 错 =
+  父分支存量（videoCanvas/conversation/credits 等），learning 零新增。
+- 留痕：恢复态终态指引文案「可在课程工作区重新发起」对 v2 outline 不完全
+  准确（v2 失败时无课程工作区可去），与 c2 后置的 course_id 契约项同源。
