@@ -7,6 +7,7 @@ import { learningApi } from '../api';
 import { GROWTH_TASK_KIND } from '../growthTaskPill';
 import {
   buildPlanRequest,
+  buildRestoredRequest,
   type CreationTab,
 } from '../coursePlan';
 import type {
@@ -152,7 +153,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     ]
   );
 
-  // 学习图建课：目标 → 直接建课（知识结构生成与首生长在后台启动，结构进度
+  // 学习图建课：目标 → 直接建课（知识结构生成在后台启动，结构进度
   // 走工作区 WS structure_* 事件）。
   const confirmGraphCreation = useCallback(() => {
     submitGeneration('graph');
@@ -184,7 +185,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       if (active?.topic) {
         setGeneration({
           status: active.state === 'running' ? 'running' : 'queued',
-          request: { course_kind: 'learning_graph', description: active.topic },
+          request: buildRestoredRequest(active),
           result: null,
           error: null,
         });

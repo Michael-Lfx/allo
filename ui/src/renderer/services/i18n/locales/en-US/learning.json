@@ -56,6 +56,7 @@
   "genBgRunning": "Generating course",
   "genBgQueued": "Course queued",
   "genQueuedNotice": "Task submitted; waiting in the queue for a free slot. You can cancel while queued.",
+  "graphCreateBackgroundNotice": "Structure generation has started in the background; track progress in the course workspace.",
   "genBgFailed": "Generation failed",
   "genBgDone": "Generation complete",
   "genView": "View",

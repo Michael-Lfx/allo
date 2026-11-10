@@ -56,6 +56,7 @@
   "genBgRunning": "课程生成中",
   "genBgQueued": "课程排队中",
   "genQueuedNotice": "任务已提交，正在排队等待空闲资源槽；排队期可取消。",
+  "graphCreateBackgroundNotice": "结构生成已在后台启动，可在课程工作区查看进度",
   "genBgFailed": "生成失败",
   "genBgDone": "生成完成",
   "genView": "查看",
