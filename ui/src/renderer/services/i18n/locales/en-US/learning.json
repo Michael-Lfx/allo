@@ -448,7 +448,6 @@
   "learningGraphStructureFailed": "Knowledge structure generation failed",
   "learningGraphStructureSummary": "{{spines}} spines · {{blocks}} blocks · {{doors}} doors",
   "learningGraphStructureGenerate": "Generate structure",
-  "learningGraphStructureRegenerate": "Regenerate",
   "learningGraphMountTitle": "Structure mounts",
   "learningGraphMountRun": "Run mount",
   "learningGraphMountFailed": "Structure mount failed",

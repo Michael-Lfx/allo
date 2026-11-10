@@ -9,7 +9,6 @@ import {
   Input,
   Modal,
   Spin,
-  Steps,
   Tag,
   Typography,
 } from '@arco-design/web-react';
@@ -480,31 +479,56 @@ function SectionedLessonBody({
       : lesson.activities.filter((activity) => activity.section_key === section.section_key);
   return (
     <div className='flex flex-col gap-12px'>
-      {/* arco Steps 的 current 是 1 基序号(index 从 1 起):传 0 基值会让
-          高亮恒定落后一步;onChange 回调同样是 1 基,换算回 0 基 state */}
-      <Steps
-        size='small'
-        current={stepIndex + 1}
-        onChange={(next) => {
-          if (canGoTo(next - 1)) setCurrent(next - 1);
-        }}
-      >
-        {steps.map((entry, index) => (
-          <Steps.Step
-            key={entry.section ? entry.section.section_key : 'general'}
-            status={entry.section?.status === 'failed' ? 'error' : undefined}
-            title={
-              entry.section
-                ? entry.section.status === 'failed'
-                  ? `${entry.section.title} · ${t('learning.sectionStatusFailed')}`
-                  : entry.section.status === 'pending'
-                    ? `${entry.section.title} · ${t('learning.sectionStatusPending')}`
-                    : entry.section.title
-                : t('learning.sectionGeneralStep')
-            }
-          />
-        ))}
-      </Steps>
+      {/* 自绘节步骤条（d2）：arco Steps 横排长标题窄容器截断（「概念：团购券
+          里藏着「锁…」）——按钮组 flex-wrap 折行、标题完整呈现；点击切节仍走
+          canGoTo 门禁（练习节题目全部作答才放行，上一节随时可回）。 */}
+      <div className='flex flex-wrap items-center gap-6px'>
+        {steps.map((entry, index) => {
+          const status = entry.section?.status;
+          const label = entry.section
+            ? status === 'failed'
+              ? `${entry.section.title} · ${t('learning.sectionStatusFailed')}`
+              : status === 'pending'
+                ? `${entry.section.title} · ${t('learning.sectionStatusPending')}`
+                : entry.section.title
+            : t('learning.sectionGeneralStep');
+          const locked = index > stepIndex && !canGoTo(index);
+          const active = index === stepIndex;
+          return (
+            <button
+              key={entry.section ? entry.section.section_key : 'general'}
+              type='button'
+              disabled={locked}
+              title={locked ? t('learning.practiceGateHint') : undefined}
+              onClick={() => {
+                if (canGoTo(index)) setCurrent(index);
+              }}
+              className={`rd-6px flex max-w-full cursor-pointer items-center gap-6px border-none px-8px py-4px text-left text-12px font-inherit transition-colors ${
+                active
+                  ? 'bg-[var(--color-primary-6)] font-500 text-white'
+                  : status === 'failed'
+                    ? 'bg-[var(--color-danger-light-1)] text-[var(--color-danger-6)] hover:bg-[var(--color-danger-light-2)]'
+                    : 'bg-[var(--color-fill-1)] text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)]'
+              } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
+            >
+              <span
+                className={`inline-flex h-16px w-16px shrink-0 items-center justify-center rounded-full text-11px leading-16px ${
+                  active
+                    ? 'bg-white font-500 text-[var(--color-primary-6)]'
+                    : status === 'failed'
+                      ? 'bg-[var(--color-danger-6)] text-white'
+                      : 'bg-[var(--color-bg-3)] text-[var(--color-text-3)]'
+                }`}
+              >
+                {index + 1}
+              </span>
+              <span className='min-w-0 whitespace-normal break-words leading-18px'>
+                {label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
       {step.section ? (
         step.section.kind === 'practice' ? (
           // 新规范：练习节 = 一等练习轮(learnhub),内容节只读;练习节可穿插
