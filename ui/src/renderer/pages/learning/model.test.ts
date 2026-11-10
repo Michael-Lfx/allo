@@ -5,7 +5,6 @@ import {
   buildSteps,
   coverageTopicTotals,
   deriveModernStep,
-  estimateLines,
   isModernPipeline,
   sourceCoverageState,
   triageCountsLine,
@@ -206,7 +205,7 @@ describe('t5 新管线步骤折叠', () => {
   });
 });
 
-describe('t5 分诊计数行与 uncertain 过多判定', () => {
+describe('t5 uncertain 过多判定与分诊计数适配', () => {
   const counts = {
     total: 8,
     core: 2,
@@ -218,7 +217,7 @@ describe('t5 分诊计数行与 uncertain 过多判定', () => {
     uncertain: 1,
   };
 
-  test('扫描行：总数 + 五个关键角色读数', () => {
+  test('扫描行：总数 + 五个关键角色读数（生成进度视图 triageCompleted 帧用）', () => {
     const line = triageCountsLine(counts, t);
     expect(line).toContain('learning.genTriageLine');
     expect(line).toContain('"total":8');
@@ -236,7 +235,7 @@ describe('t5 分诊计数行与 uncertain 过多判定', () => {
     expect(uncertainTooMany({ ...counts, uncertain: 9, core: 9 })).toBe(false);
   });
 
-  test('DTO 分诊摘要（total_files 字段面）适配成计数行入参', () => {
+  test('DTO 分诊摘要（total_files 字段面）适配成计数入参', () => {
     expect(triageViewCounts({
       total_files: 8,
       core: 2,
@@ -250,39 +249,7 @@ describe('t5 分诊计数行与 uncertain 过多判定', () => {
   });
 });
 
-describe('t5 成本门读数行', () => {
-  test('文件/批数/调用/耗时四行齐全（分钟为粗估）', () => {
-    const estimate = {
-      total_files: 105,
-      estimated_batches: 6,
-      estimated_llm_calls: 10,
-      estimated_seconds: 600,
-      needs_confirm: true,
-      triage: {
-        total_files: 105,
-        core: 90,
-        prerequisite: 0,
-        practice: 0,
-        mixed: 5,
-        noise: 8,
-        duplicate: 2,
-        uncertain: 5,
-        degraded: true,
-        warnings: [],
-      },
-      skipped_examples: [
-        { path: 'license.md', role: 'noise', reason: 'metadata' },
-      ],
-    } as unknown as Parameters<typeof estimateLines>[0];
-    const lines = estimateLines(estimate, t);
-    expect(lines).toHaveLength(4);
-    expect(lines[0]).toContain('learning.costGateFiles');
-    expect(lines[1]).toContain('learning.costGateBatches');
-    expect(lines[2]).toContain('learning.costGateCalls');
-    expect(lines[3]).toContain('learning.costGateDuration');
-    expect(lines[3]).toContain('"minutes":10');
-  });
-});
+// 计数行/成本门读数行（triageCountsLine / estimateLines）已随计划确认页移除（d5）。
 
 // ── t5：课程详情「来源覆盖」卡的三态判定与 topic 总数 ──────────────────────
 
