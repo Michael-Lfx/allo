@@ -12,6 +12,8 @@ import VideoHomeComposer from './VideoHomeComposer';
 import { DRAFT_KEY, defaultDraft, serializeDraft } from './homeDraft';
 import videoZh from '@renderer/services/i18n/locales/zh-CN/videoGeneration.json';
 import { ThemeContext, type ThemeContextValue } from '@renderer/hooks/context/ThemeContext';
+import { CloudAuthContext } from '@renderer/hooks/context/CloudAuthContext';
+import { CreditsContext } from '@renderer/hooks/context/CreditsContext';
 
 const { afterAll, beforeAll, describe, expect, test } = bunTest as unknown as {
   afterAll: (callback: () => void | Promise<void>) => void;
@@ -133,19 +135,23 @@ describe('home video composer input flow', () => {
       root.render(
         <I18nextProvider i18n={i18n}>
           <ThemeContext.Provider value={theme}>
-            <MemoryRouter>
-              <VideoHomeComposer
-                mode='generate'
-                onModeChange={() => undefined}
-                onSubmitAgent={() => undefined}
-                onSubmitCreation={() => undefined}
-                onSubmitGenerate={(draft) => submissions.push(draft)}
-                onSubmitBriefing={() => undefined}
-                onCreateBlankCanvas={() => undefined}
-                showHero={false}
-                showCampaign={false}
-              />
-            </MemoryRouter>
+            <CloudAuthContext.Provider value={{ ready: false, status: 'unauthenticated' } as never}>
+              <CreditsContext.Provider value={{ balance: 100 } as never}>
+                <MemoryRouter>
+                  <VideoHomeComposer
+                    mode='generate'
+                    onModeChange={() => undefined}
+                    onSubmitAgent={() => undefined}
+                    onSubmitCreation={() => undefined}
+                    onSubmitGenerate={(draft) => submissions.push(draft)}
+                    onSubmitBriefing={() => undefined}
+                    onCreateBlankCanvas={() => undefined}
+                    showHero={false}
+                    showCampaign={false}
+                  />
+                </MemoryRouter>
+              </CreditsContext.Provider>
+            </CloudAuthContext.Provider>
           </ThemeContext.Provider>
         </I18nextProvider>,
       );

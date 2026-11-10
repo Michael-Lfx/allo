@@ -11,6 +11,7 @@ import { I18nextProvider } from 'react-i18next';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { getPendingVoiceCallIntent } from '@common/adapter/voiceCompanion';
 import { CloudAuthContext, type CloudAuthContextValue } from '@renderer/hooks/context/CloudAuthContext';
+import { CreditsContext } from '@renderer/hooks/context/CreditsContext';
 import { ThemeContext, type ThemeContextValue } from '@renderer/hooks/context/ThemeContext';
 import { ConversationHistoryProvider } from '@renderer/hooks/context/ConversationHistoryContext';
 import ComposerSubmitCluster from './ComposerSubmitCluster';
@@ -346,12 +347,14 @@ for(const [locale,voice] of [['zh-CN',zh],['en-US',en]] as const){
               <ThemeContext.Provider value={mockThemeContext}>
                 <ConversationHistoryProvider>
                   <CloudAuthContext.Provider value={{ ready: true, status: 'unauthenticated' } as CloudAuthContextValue}>
-                    <RouteWatcher />
-                    <Routes>
-                      <Route path="/" element={<GuidPage />} />
-                      <Route path="/settings/voice" element={<div data-testid="route-settings-voice" />} />
-                      <Route path="/conversation/:id" element={<div data-testid="route-conversation" />} />
-                    </Routes>
+                    <CreditsContext.Provider value={{ balance: 0 } as never}>
+                      <RouteWatcher />
+                      <Routes>
+                        <Route path="/" element={<GuidPage />} />
+                        <Route path="/settings/voice" element={<div data-testid="route-settings-voice" />} />
+                        <Route path="/conversation/:id" element={<div data-testid="route-conversation" />} />
+                      </Routes>
+                    </CreditsContext.Provider>
                   </CloudAuthContext.Provider>
                 </ConversationHistoryProvider>
               </ThemeContext.Provider>

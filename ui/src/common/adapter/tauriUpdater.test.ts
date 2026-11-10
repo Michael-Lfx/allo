@@ -25,7 +25,7 @@ describe('desktop updater security boundary', () => {
     expect(updaterSource.includes("'check_update'")).toBe(true);
     expect(updaterSource.includes("@tauri-apps/plugin-updater")).toBe(false);
     expect(desktopSource.includes('async fn check_update(')).toBe(true);
-    expect(desktopSource.includes('parse_ota_endpoints()')).toBe(true);
+    expect(desktopSource.includes('parse_ota_endpoints(&app)')).toBe(true);
     expect(desktopSource.includes('select_ota_artifact_url(')).toBe(true);
   });
 
