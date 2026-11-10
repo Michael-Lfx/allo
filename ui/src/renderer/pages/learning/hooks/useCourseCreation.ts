@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
@@ -7,18 +7,11 @@ import { learningApi } from '../api';
 import { GROWTH_TASK_KIND } from '../growthTaskPill';
 import {
   buildPlanRequest,
-  INITIAL_PLAN_STATE,
-  planEstimateView,
-  reducePlan,
-  type CoursePlanState,
-  type CreationPhase,
   type CreationTab,
-  type PlanAction,
 } from '../coursePlan';
 import type {
   CourseDetail,
   GenerateCourseRequest,
-  TeachingStyle,
 } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
@@ -42,20 +35,17 @@ export interface UseCourseCreationOptions {
   setBusyId: (id: string | null) => void;
 }
 
-/** 创建课程域：双方式对话框的状态与动作（知识库生成 / 描述生成）。
- * 两种方式都直连同步生成端点：agent loop 在 HTTP 请求内执行，
- * 过程事件经 WS 推送进对话框内的生成视图，终态以 HTTP 响应为准。 */
+/** 创建课程域：三入口对话框（知识库 / 描述 / 学习图）的状态与动作。
+ * 提交即生成（d5：计划确认页已移除）：校验通过直接发起同步生成端点，
+ * agent loop 在 HTTP 请求内执行，过程事件经 WS 推送进对话框内的生成视图，
+ * 终态以 HTTP 响应为准。 */
 export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationOptions) {
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
   // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
-  // 方式三（学习图 beta：目标 + 可选程度/基础声明 → 建课并生成知识结构）；默认描述生成
+  // 方式三（学习图 beta：只留目标输入 → 建课并生成知识结构）；默认描述生成
   const [creationTab, setCreationTab] = useState<'base' | 'description' | 'graph'>('description');
   const [creationDescription, setCreationDescription] = useState('');
-  // 学习图建课的可选声明（g2 输入最小化）：程度声明（缺省由结构生成扩写）、
-  // 基础声明（缺省按纯零基础画地形）。
-  const [graphProficiency, setGraphProficiency] = useState('');
-  const [graphBasis, setGraphBasis] = useState('');
   // 用户目标（知识库流，t1）：整体文本即目标——简单时即课程名，复杂时是目标
   // 描述；课程标题默认即该文本，采样与大范围都以此为主索引。UI 必填。
   const [creationGoal, setCreationGoal] = useState('');
@@ -64,17 +54,11 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 多知识库（t4）：来源库列表（首个 = 主来源），上限与后端同一口径。
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
   const [generationDomain, setGenerationDomain] = useState('');
-  // 讲解风格（ADR-0002，课程级）：创建时选择，随课程存储并驱动节写作变体
-  const [teachingStyle, setTeachingStyle] = useState<TeachingStyle>('standard');
   const [generation, setGeneration] = useState<CourseGenerationState | null>(null);
   // 用户取消标记：cancelGeneration 被服务端受理（cancelled=true）后置位，
   // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
   // 而非失败。取消动作与终态判定在同一 hook 内闭合，不依赖后端错误码。
   const cancelRequestedRef = useRef(false);
-  // 计划态（y05）：提交只构造请求并进入计划；计划卡回显四槽 + 确定性读数
-  // （KB 预取一次零 LLM 估算，图/描述不发估算），「开始生成」才发生成请求。
-  // 返回修改/关闭都是零请求，估算按请求键缓存（重进同一计划不重复预取）。
-  const [planState, setPlanState] = useState<CoursePlanState>(INITIAL_PLAN_STATE);
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -134,50 +118,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [t, setBusyId]
   );
 
-  // 计划态状态机：dispatch 跑纯转移，只执行转移返回的 effects——estimate
-  // （KB 流一次，零 LLM）与 generate（「开始生成」恰一次）。
-  const planStateRef = useRef(planState);
-  const dispatchPlanRef = useRef<(action: PlanAction) => void>(() => {});
-
-  const dispatchPlan = useCallback(
-    (action: PlanAction) => {
-      const transition = reducePlan(planStateRef.current, action);
-      planStateRef.current = transition.state;
-      setPlanState(transition.state);
-      for (const effect of transition.effects) {
-        if (effect.type === 'generate') {
-          void generateCourse(effect.request);
-          continue;
-        }
-        // 估算失败不拦确认（fail-open）：计划卡显示「估算不可得，仍可继续」。
-        void learningApi.estimateGeneration(effect.request).then(
-          (estimate) =>
-            dispatchPlanRef.current({
-              type: 'estimate-loaded',
-              key: effect.key,
-              estimate,
-            }),
-          () => dispatchPlanRef.current({ type: 'estimate-failed', key: effect.key })
-        );
-      }
-    },
-    [generateCourse]
-  );
-
-  useEffect(() => {
-    dispatchPlanRef.current = dispatchPlan;
-  }, [dispatchPlan]);
-
-  // 三入口统一：校验通过只构造请求并进入计划（零生成调用）。
-  const enterPlan = useCallback(
-    (tab: CreationTab, request: GenerateCourseRequest) => {
-      dispatchPlan({ type: 'submit', tab, request });
-    },
-    [dispatchPlan]
-  );
-
-  // 表单校验 + 请求构造（纯函数），校验失败提示并停留表单。
-  const submitPlan = useCallback(
+  // 提交当前 tab（d5：校验通过直接生成，不再进计划确认页）。校验失败提示
+  // 并停留表单；程度/基础声明与讲解风格的 UI 已移除——后端 DTO 全部缺省
+  // （结构生成扩写 / 纯零基础 / standard），请求不再携带。
+  const submitGeneration = useCallback(
     (tab: CreationTab) => {
       const result = buildPlanRequest(
         {
@@ -186,11 +130,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
           description: creationDescription,
           knowledgeBaseIds: selectedKnowledgeBaseIds,
           domain: generationDomain,
-          teachingStyle,
           providerId: modelChoice?.provider_id,
           model: modelChoice?.model,
-          graphProficiency,
-          graphBasis,
         },
         MAX_COURSE_KNOWLEDGE_BASES
       );
@@ -198,43 +139,24 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         Message.warning(t(result.messageKey, result.messageVars));
         return;
       }
-      enterPlan(tab, result.request);
+      void generateCourse(result.request);
     },
     [
       creationDescription,
       creationGoal,
-      enterPlan,
+      generateCourse,
       generationDomain,
-      graphBasis,
-      graphProficiency,
       modelChoice,
       selectedKnowledgeBaseIds,
       t,
-      teachingStyle,
     ]
   );
 
-  // 学习图建课：目标 + 可选程度/基础声明 → 先进入计划确认；确认后才建课
-  // （知识结构生成与首生长在后台启动，结构进度走工作区 WS structure_* 事件）。
+  // 学习图建课：目标 → 直接建课（知识结构生成与首生长在后台启动，结构进度
+  // 走工作区 WS structure_* 事件）。
   const confirmGraphCreation = useCallback(() => {
-    submitPlan('graph');
-  }, [submitPlan]);
-
-  // 提交当前 tab：base 要求已选知识库且填写学习目标，description 要求简报。
-  // 校验失败提示并停留表单；校验通过一律进计划态，不直接生成。
-  const submitGeneration = useCallback(() => {
-    submitPlan(creationTab);
-  }, [creationTab, submitPlan]);
-
-  // 「开始生成」：计划态唯一的生成触发点（reducePlan 消费计划，恰一次）。
-  const confirmPlan = useCallback(() => {
-    dispatchPlan({ type: 'confirm' });
-  }, [dispatchPlan]);
-
-  // 「返回修改」：回表单，原值保留，零请求。
-  const backToPlanForm = useCallback(() => {
-    dispatchPlan({ type: 'back' });
-  }, [dispatchPlan]);
+    submitGeneration('graph');
+  }, [submitGeneration]);
 
   // 重试失败的生成：直接按原请求重新发起（生长是幂等的小批次操作，
   // 失败不残留半成品）。
@@ -305,18 +227,16 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [navigate]
   );
 
-  // 对话框阶段（y05）：生成视图优先（含终态）→ 计划态 → 表单。
-  const plan = planState.plan;
-  const creationPhase: CreationPhase = generation ? 'generating' : plan ? 'plan' : 'form';
-  const planEstimate = planEstimateView(planState, plan);
+  // 对话框阶段（d5 收窄）：生成视图（含终态）→ 表单。
+  const creationPhase: import('../coursePlan').CreationPhase = generation
+    ? 'generating'
+    : 'form';
 
   return {
     generateVisible,
     setGenerateVisible,
     modelChoice,
     setModelChoice,
-    teachingStyle,
-    setTeachingStyle,
     creationTab,
     setCreationTab,
     creationDescription,
@@ -329,16 +249,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setSelectedKnowledgeBaseIds,
     generationDomain,
     setGenerationDomain,
-    graphProficiency,
-    setGraphProficiency,
-    graphBasis,
-    setGraphBasis,
     generation,
     creationPhase,
-    plan,
-    planEstimate,
-    confirmPlan,
-    backToPlanForm,
     openGenerator,
     openCreateForm,
     submitGeneration,

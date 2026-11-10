@@ -1,23 +1,20 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { Button, Input, Message, Modal, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
-import type { TeachingStyle } from '../types';
-import type { CoursePlan, CreationPhase, PlanEstimateView } from '../coursePlan';
+import type { CreationPhase } from '../coursePlan';
 import { MAX_COURSE_KNOWLEDGE_BASES, type CourseGenerationState } from '../hooks/useCourseCreation';
 import { knowledgeBaseNames } from '../utils';
 import LearningModelSelector, {
   type LearningModelChoice,
 } from './LearningModelSelector';
 import { CourseGenerationProgress } from './CourseGenerationProgress';
-import { CoursePlanCard } from './CoursePlanCard';
 
 const { Text, Paragraph } = Typography;
 
-/** 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
- * 方式三（学习图 beta：目标 + 可选程度/基础声明 → 建课；知识结构生成与首生长
- * 在后台启动）。提交后先就地切换为**计划态**（四槽回显 + 确定性读数，零生成
- * 调用）；「开始生成」后才进入生成/进度视图（结构与生长在后台继续，工作区
- * 顶条与悬浮指示条可回看）。 */
+/** 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库
+ * 参与）/ 方式三（学习图 beta：只留目标输入 → 建课；知识结构生成与首生长在
+ * 后台启动）。提交即生成（d5：计划确认页已移除）——校验通过直接切换为生成/
+ * 进度视图（结构与生长在后台继续，工作区顶条与悬浮指示条可回看）。 */
 export function CreateCourseDialog({
   visible,
   busy,
@@ -28,15 +25,9 @@ export function CreateCourseDialog({
   modelChoice,
   creationTab,
   creationDescription,
-  graphProficiency,
-  graphBasis,
   creationGoal,
-  teachingStyle,
-  onTeachingStyleChange,
   generation,
   creationPhase,
-  plan,
-  planEstimate,
   onClose,
   onOk,
   onSelectedBaseChange,
@@ -44,15 +35,11 @@ export function CreateCourseDialog({
   onModelChange,
   onTabChange,
   onDescriptionChange,
-  onGraphProficiencyChange,
-  onGraphBasisChange,
   onConfirmGraphCreation,
   onGoalChange,
   onRetry,
   onCancel,
   onStartLearning,
-  onPlanBack,
-  onPlanConfirm,
 }: {
   visible: boolean;
   busy: boolean;
@@ -64,20 +51,11 @@ export function CreateCourseDialog({
   modelChoice: LearningModelChoice;
   creationTab: 'base' | 'description' | 'graph';
   creationDescription: string;
-  /** 学习图课程的程度声明（可选）：缺省由结构生成依据目标扩写 */
-  graphProficiency: string;
-  /** 学习图课程的基础声明（可选）：缺省按纯零基础画地形 */
-  graphBasis: string;
   /** 用户目标（知识库流，t1）：整体文本即目标，课程名默认即该文本。 */
   creationGoal: string;
-  teachingStyle: TeachingStyle;
-  onTeachingStyleChange: (style: TeachingStyle) => void;
   generation: CourseGenerationState | null;
-  /** 对话框阶段：form → plan → generating（生成视图含终态） */
+  /** 对话框阶段：form → generating（生成视图含终态） */
   creationPhase: CreationPhase;
-  /** 计划态：四槽请求 + 估算读数（generation 优先，plan 仅在 form 后出现） */
-  plan: CoursePlan | null;
-  planEstimate: PlanEstimateView;
   onClose: () => void;
   onOk: () => void;
   onSelectedBaseChange: (values: string[]) => void;
@@ -85,22 +63,15 @@ export function CreateCourseDialog({
   onModelChange: (choice: LearningModelChoice) => void;
   onTabChange: (tab: 'base' | 'description' | 'graph') => void;
   onDescriptionChange: (value: string) => void;
-  onGraphProficiencyChange: (value: string) => void;
-  onGraphBasisChange: (value: string) => void;
   onConfirmGraphCreation: () => void;
   onGoalChange: (value: string) => void;
   onRetry: () => void;
   onCancel: () => void;
   onStartLearning: (courseId: string) => void;
-  /** 计划态：返回修改（回表单，原值保留，零请求） */
-  onPlanBack: () => void;
-  /** 计划态：开始生成（唯一生成触发点，恰一次） */
-  onPlanConfirm: () => void;
 }) {
   const { t } = useTranslation();
   const generating = creationPhase === 'generating';
-  const planning = creationPhase === 'plan' && plan !== null;
-  const graphWizard = creationTab === 'graph' && !generating && !planning;
+  const graphWizard = creationTab === 'graph' && !generating;
 
   // 主按钮语义按 tab 分流：学习图单步向导不走 onOk（默认提交）。
   const handleOk = () => {
@@ -128,14 +99,9 @@ export function CreateCourseDialog({
       onCancel={onClose}
       cancelText={t('learning.genClose')}
       onOk={handleOk}
-      // 生成视图与计划态：隐藏默认主按钮，只保留关闭（生成在后台继续；
-      // 计划态关闭是零请求，重新打开回到计划）。
+      // 生成视图：隐藏默认主按钮，只保留关闭（生成在后台继续）。
       footer={
-        generating || planning ? (
-          <Button onClick={onClose}>{t('learning.genClose')}</Button>
-        ) : (
-          undefined
-        )
+        generating ? <Button onClick={onClose}>{t('learning.genClose')}</Button> : undefined
       }
       style={{ width: 560 }}
     >
@@ -149,19 +115,6 @@ export function CreateCourseDialog({
           onRetry={onRetry}
           onCancel={onCancel}
         />
-      ) : planning && plan ? (
-        // 计划态（y05）：对话框内就地切换，四槽回显 + 确定性读数；确认
-        // 之前零生成调用，成本门并入本卡（needs_confirm 时卡内提示）。
-        <div className='max-h-[calc(100vh-190px)] overflow-y-auto'>
-          <CoursePlanCard
-            plan={plan}
-            sources={knowledgeBaseNames(plan.request.knowledge_base_ids ?? [], knowledgeBases)}
-            estimate={planEstimate}
-            busy={busy}
-            onBack={onPlanBack}
-            onConfirm={onPlanConfirm}
-          />
-        </div>
       ) : (
         <div className='max-h-[calc(100vh-190px)] overflow-y-auto'>
           <Tabs activeTab={creationTab} onChange={(key) => onTabChange(key as 'base' | 'description' | 'graph')}>
@@ -267,50 +220,18 @@ export function CreateCourseDialog({
                     autoSize={{ minRows: 3, maxRows: 6 }}
                   />
                 </div>
-                <div>
-                  <div className='mb-6px font-500'>{t('learning.learningGraphProficiencyLabel')}</div>
-                  <Input
-                    value={graphProficiency}
-                    placeholder={t('learning.learningGraphProficiencyPlaceholder')}
-                    maxLength={200}
-                    onChange={onGraphProficiencyChange}
-                  />
-                </div>
-                <div>
-                  <div className='mb-6px font-500'>{t('learning.learningGraphBasisLabel')}</div>
-                  <Input.TextArea
-                    value={graphBasis}
-                    placeholder={t('learning.learningGraphBasisPlaceholder')}
-                    autoSize={{ minRows: 2, maxRows: 4 }}
-                    onChange={onGraphBasisChange}
-                  />
-                </div>
                 <Paragraph className='mt-0 text-t-secondary'>{t('learning.learningGraphCreateHint')}</Paragraph>
               </div>
             </Tabs.TabPane>
           </Tabs>
-          <div className='mt-20px flex flex-col gap-16px'>
-            <div>
-              <div className='mb-8px font-500'>{t('learning.teachingStyle')}</div>
-              <Radio.Group
-                size='small'
-                value={teachingStyle}
-                onChange={(value) => onTeachingStyleChange(value as TeachingStyle)}
-              >
-                <Radio value='standard'>{t('learning.styleStandard')}</Radio>
-                <Radio value='socratic'>{t('learning.styleSocratic')}</Radio>
-                <Radio value='feynman'>{t('learning.styleFeynman')}</Radio>
-              </Radio.Group>
-            </div>
-            <div>
-              <div className='mb-8px font-500'>{t('learning.model')}</div>
-              <LearningModelSelector
-                choice={modelChoice}
-                disabled={busy}
-                onChange={onModelChange}
-                size='small'
-              />
-            </div>
+          <div className='mt-20px'>
+            <div className='mb-8px font-500'>{t('learning.model')}</div>
+            <LearningModelSelector
+              choice={modelChoice}
+              disabled={busy}
+              onChange={onModelChange}
+              size='small'
+            />
           </div>
         </div>
       )}
