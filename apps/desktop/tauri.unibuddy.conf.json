@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "UniBuddy",
+  "identifier": "com.unibuddy.desktop",
+  "build": {
+    "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun scripts/prepare-voice-companion.mjs && bun run --filter=./ui build --mode unibuddy"
+  },
+  "bundle": {
+    "icon": [
+      "icons/unibuddy/32x32.png",
+      "icons/unibuddy/128x128.png",
+      "icons/unibuddy/128x128@2x.png",
+      "icons/unibuddy/icon.icns",
+      "icons/unibuddy/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/unibuddy/nsis-installer.ico",
+        "uninstallerIcon": "icons/unibuddy/nsis-installer.ico"
+      }
+    }
+  }
+}
