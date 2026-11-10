@@ -2,9 +2,6 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "UniBuddy",
   "identifier": "com.unibuddy.desktop",
-  "build": {
-    "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun scripts/prepare-voice-companion.mjs && bun run --filter=./ui build --mode unibuddy"
-  },
   "bundle": {
     "icon": [
       "icons/unibuddy/32x32.png",
