@@ -112,8 +112,11 @@ export interface RestoredTaskInfo {
 /** 恢复态任务 → 建课请求（c1）：对话框按 `course_kind` 分流呈现（学习图 =
  * 单行后台提示，v2 = 步骤条/活动流），恢复态不能再一律标 learning_graph。
  * 只有结构类任务确属学习图流；v2 建课（后端 KIND_OUTLINE）与课时任务不带
- * `course_kind`——与 v2 表单请求同形，呈现保持 v2 口径。`topic` 只进请求
- * （重试复现用），悬浮 Pill 显示文案走 `restoredTaskTopic`（c3）。 */
+ * `course_kind`——与 v2 表单请求同形，呈现保持 v2 口径。这是**合成请求**，
+ * 只供呈现分流，不可重发：`description` 是后端 topic 标签（如「知识结构
+ * 生成」），重发会以标签为名新建课程（重试守卫见 useCourseCreation 的
+ * `retryableGenerationRequest`）。悬浮 Pill 显示文案走 `restoredTaskTopic`
+ * （c3）。 */
 export function buildRestoredRequest(task: RestoredTaskInfo): GenerateCourseRequest {
   return {
     ...(GRAPH_STRUCTURE_TASK_KINDS.includes(task.kind)
@@ -123,15 +126,17 @@ export function buildRestoredRequest(task: RestoredTaskInfo): GenerateCourseRequ
   };
 }
 
-/** 课时任务主题前缀（lesson.rs 登记时的「课时内容 · {lesson_title}」）：
- * 从后端 topic 数据面剥出课时标题，供词典模板插值。 */
+/** 课时任务主题前缀：lesson.rs:612/636 登记时的「课时内容 · {lesson_title}」。
+ * 跨语言镜像——后端措辞若变更，这里剥不出标题，按未知任务兜底（宁缺不泄漏，
+ * 不把中文 chrome 回显给 en-US 用户）；剥前缀本身保留，兼容在网旧快照。 */
 const LESSON_TOPIC_PREFIX = '课时内容 · ';
 
 /** 恢复态任务 → 悬浮 Pill 副行显示文案（c3）：人面由前端词典按 `kind` 组装，
  * 后端中文 topic 不再直达 UI。结构类任务无标题（topic 是裸 label）；课时
- * 任务从 topic 剥出课时标题进词典模板；outline 的 topic 本就是用户自述
- * 文本（语言中立）原样返回；未知 kind 原样回退（不丢信息，同
- * growthCourseTitle 的兼容口径）。 */
+ * 任务从 topic 剥出课时标题进词典模板（前缀失配按未知兜底）；outline 的
+ * topic 本就是用户自述文本（语言中立）原样返回；未知 kind 的 topic 语义
+ * 不明（可能是后端中文标签），回中性本地化兜底——与 GrowthTaskPill 的
+ * 「宁缺不泄漏」同一口径，不再原样回显。 */
 export function restoredTaskTopic(task: RestoredTaskInfo, t: Translate): string {
   switch (task.kind) {
     case 'structure':
@@ -141,11 +146,15 @@ export function restoredTaskTopic(task: RestoredTaskInfo, t: Translate): string 
     case 'structure_repair':
       return t('learning.taskKindStructureRepair');
     case 'lesson':
-      if (!task.topic.startsWith(LESSON_TOPIC_PREFIX)) return task.topic;
-      return t('learning.taskKindLesson', {
-        title: task.topic.slice(LESSON_TOPIC_PREFIX.length),
-      });
-    default:
+      if (task.topic.startsWith(LESSON_TOPIC_PREFIX)) {
+        return t('learning.taskKindLesson', {
+          title: task.topic.slice(LESSON_TOPIC_PREFIX.length),
+        });
+      }
+      return t('learning.taskKindUnknown');
+    case 'outline':
       return task.topic;
+    default:
+      return t('learning.taskKindUnknown');
   }
 }

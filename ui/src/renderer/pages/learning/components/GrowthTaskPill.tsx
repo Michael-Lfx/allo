@@ -13,8 +13,9 @@ const { Text } = Typography;
 /** 机器面 step 常量 → 词典 key（c3 全档映射）：后端 `set_step` 只产英文
  * 机器名，进度人面单句由前端词典承担。覆盖后端全量调用点（generate.rs
  * triage/source_plan/expansion、learning_graph.rs structure/mount/repair/
- * draft、lesson.rs generate）；未知 step 不出进度行（宁缺不泄漏 detail）。 */
-const STEP_KEYS: Record<string, `learning.growthPillStep${string}`> = {
+ * draft、lesson.rs generate）；未知 step 不出进度行（宁缺不泄漏 detail）。
+ * 导出供渲染测试逐档断言双语词典对称。 */
+export const STEP_KEYS: Record<string, `learning.growthPillStep${string}`> = {
   triage: 'learning.growthPillStepTriage',
   source_plan: 'learning.growthPillStepSourcePlan',
   expansion: 'learning.growthPillStepExpansion',

@@ -15,7 +15,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 import type { GrowthPillItem } from '../growthTaskPill';
-import { GrowthTaskPill } from './GrowthTaskPill';
+import { GrowthTaskPill, STEP_KEYS } from './GrowthTaskPill';
 
 const initTestI18n = async (locale: 'zh-CN' | 'en-US') => {
   const instance = createInstance();
@@ -149,5 +149,26 @@ describe('GrowthTaskPill', () => {
     const structure = await renderPill('en-US', item({ step: 'structure', detail: '后端中文诊断句' }));
     expect(structure).toContain('Generating knowledge structure');
     expect(structure).not.toContain('后端中文诊断句');
+  });
+
+  test('步骤全档双语齐备：STEP_KEYS 每一档在 zh-CN / en-US 词典都有非空文案', () => {
+    const zh = learningZh as Record<string, unknown>;
+    const en = learningEn as Record<string, unknown>;
+    const steps = Object.entries(STEP_KEYS);
+    // 映射本身非空（防止映射被清空后循环空转、断言全绿）。
+    expect(steps.length).toBeGreaterThan(0);
+    for (const [step, key] of steps) {
+      const name = key.replace(/^learning\./, '');
+      const zhLine = zh[name];
+      const enLine = en[name];
+      if (typeof zhLine !== 'string' || zhLine.length === 0) {
+        throw new Error(`zh-CN 缺 step「${step}」的文案：${key}`);
+      }
+      if (typeof enLine !== 'string' || enLine.length === 0) {
+        throw new Error(`en-US 缺 step「${step}」的文案：${key}`);
+      }
+      // en-US 不是中文句的照抄（零回落泄漏）。
+      expect(enLine).not.toBe(zhLine);
+    }
   });
 });
