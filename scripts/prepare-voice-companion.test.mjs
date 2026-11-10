@@ -8,6 +8,7 @@ import {
   builtVoiceExecutable,
   resolveVcRedistCrt,
   REQUIRED_VC_REDIST_DLLS,
+  requiredVcRedistDlls,
 } from './prepare-voice-companion.mjs';
 
 function pe(machine) {
@@ -97,6 +98,24 @@ test('VC++ runtime redistributable resolution finds and validates required CRT D
 
     // Wrong architecture fails
     await writeFile(join(crtDir, 'msvcp140.dll'), pe(0xaa64)); // arm64 DLL for x64 request
+    expect(() => resolveVcRedistCrt('x64', { VC_REDIST_CRT_DIR: crtDir })).toThrow('not found');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('ARM64 CRT resolution accepts a directory without the x64-only vcruntime140_1.dll', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-vc-redist-arm64-'));
+  try {
+    const crtDir = join(root, 'Microsoft.VC143.CRT');
+    await mkdir(crtDir, { recursive: true });
+    for (const dll of requiredVcRedistDlls('arm64')) {
+      await writeFile(join(crtDir, dll), pe(0xaa64));
+    }
+    await writeFile(join(crtDir, 'vcruntime140_1.dll'), pe(0x8664));
+    const resolved = resolveVcRedistCrt('arm64', { VC_REDIST_CRT_DIR: crtDir });
+    expect(Object.keys(resolved).sort()).toEqual([...requiredVcRedistDlls('arm64')].sort());
+    expect(resolved['vcruntime140_1.dll']).toBeUndefined();
     expect(() => resolveVcRedistCrt('x64', { VC_REDIST_CRT_DIR: crtDir })).toThrow('not found');
   } finally {
     await rm(root, { recursive: true, force: true });
