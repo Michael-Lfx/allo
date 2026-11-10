@@ -4,7 +4,6 @@ import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
-import { GROWTH_TASK_KIND } from '../growthTaskPill';
 import {
   buildPlanRequest,
   buildRestoredRequest,
@@ -328,7 +327,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     if (generation) return;
     try {
       const tasks = (await learningApi.generationTasks()).filter(
-        (task) => task.kind !== GROWTH_TASK_KIND
+        // 只认建课管线两段（d7 收窄）：此前「除 growth 外全部」会把正在跑的
+        // 课时内容生成/结构挂载/修补误显成建课进度（审计实锤的存量误判）。
+        (task) => task.kind === 'outline' || task.kind === 'structure'
       );
       const active =
         tasks.find((task) => task.state === 'running') ??

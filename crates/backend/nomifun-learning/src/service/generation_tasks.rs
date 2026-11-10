@@ -49,6 +49,7 @@ pub(crate) const KIND_GROWTH: &str = "growth";
 pub(crate) const KIND_STRUCTURE: &str = "structure";
 pub(crate) const KIND_STRUCTURE_MOUNT: &str = "structure_mount";
 pub(crate) const KIND_STRUCTURE_REPAIR: &str = "structure_repair";
+pub(crate) const KIND_BASIS_DECLARE: &str = "basis_declare";
 pub(crate) const KIND_OUTLINE: &str = "outline";
 pub(crate) const KIND_LESSON: &str = "lesson";
 

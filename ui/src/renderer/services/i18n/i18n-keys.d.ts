@@ -3515,6 +3515,8 @@ export type I18nKey =
   | 'learning.importTitle'
   | 'learning.inProgress'
   | 'learning.incorrect'
+  | 'learning.inflightBasisToast'
+  | 'learning.inflightTaskToast'
   | 'learning.inlineRenderFailed'
   | 'learning.invalidJson'
   | 'learning.kbSelectionTooMany'
