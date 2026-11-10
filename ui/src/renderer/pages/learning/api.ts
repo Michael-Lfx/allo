@@ -168,11 +168,16 @@ export const learningApi = {
     ),
   // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点、
   // 不排课、不计 XP）；幂等增量——已声明门口自动剔除，全已声明 = noop
-  declareBasis: (courseId: string, doors: string[]) =>
+  // modelChoice 成对透传 provider_id+model；null/缺省两字段都不带 = 后端默认档
+  declareBasis: (
+    courseId: string,
+    doors: string[],
+    modelChoice?: { provider_id: string; model: string } | null
+  ) =>
     httpRequest<DeclarationResultView>(
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
-      { doors }
+      { doors, provider_id: modelChoice?.provider_id, model: modelChoice?.model }
     ),
   // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露。
   // 撤销（DELETE /basis）不在产品面（c3）：后端接口保留作纠错通道。
