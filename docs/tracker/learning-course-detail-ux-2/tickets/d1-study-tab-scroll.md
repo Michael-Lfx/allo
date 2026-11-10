@@ -2,8 +2,8 @@
 id: d1
 title: "学习 Tab 课时内容滚动缺失——arco Tabs 裁剪链（内容被静默裁剪、下一节按钮不可达）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -38,24 +38,38 @@ TabPane 在固定内容视口内自滚；学习 Tab 两栏（导航 aside + 课�
 
 ## 实施要点
 
-- [ ] Tabs className 补：`[&_.arco-tabs-content]:min-h-0`（保险）+
+- [x] Tabs className 补：`[&_.arco-tabs-content]:min-h-0`（保险）+
       `[&_.arco-tabs-content-item-active]:h-full` +
       `[&_.arco-tabs-content-item-active]:overflow-y-auto`——item 钉在 content
       槽高并自滚；arco 的 content-inner 高度过渡动画对该面板失效可接受（工作
       台不依赖）。
-- [ ] 学习 Tab 两栏行（:514）补 `h-full`：aside（:515）加
-      `overflow-y-auto`（节点多时自滚）；section 已 `flex-1 overflow-hidden`，
-      内层 `h-full overflow-y-auto` 随链生效（滚动条回到内容区）。
-- [ ] 零节点声明窗口分支（:500-512）：内容短自然流，钉高后无回归。
-- [ ] 四 Tab 自查一遍在固定视口下的行为：history / concepts / structure 均靠
-      item 滚动；概念表 `scroll={{ x: true }}` 横滚与纵向 item 滚共存确认。
+- [x] 学习 Tab 两栏行（:514）补 `h-full`：aside（:515）改
+      `max-h-full overflow-y-auto`（节点多时自滚）；section 已
+      `flex-1 overflow-hidden`，内层 `h-full overflow-y-auto` 随链生效（滚动
+      条回到内容区）。
+- [x] 零节点声明窗口分支（:500-512）：内容短自然流，钉高后无回归。
+- [x] 四 Tab 自查：history / concepts / structure 均靠 item 级滚动兜底（统一
+      钉高 + item 自滚）；概念表 `scroll={{ x: true }}` 横滚与纵向 item 滚共存
+      （overflow-y-auto 只接管纵向）。
 
 ## 验收
 
-- `bun run typecheck` 绿（55 错基线，learning 域零新增）。
+- `bun run typecheck` 绿（55 错基线逐条一致，wave 路径零错误）。
 - 真机目验（用户侧）：长课时滚动到底、「下一节」可达可点；学习记录/概念表/
   结构图三 Tab 在内容超视口时出现滚动条；切 Tab 无布局跳变。
 
 ## 非目标
 
 - 节标题截断与 SVG 截断（d2）；arco 组件面全局覆写（只动本工作区实例）。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面全验收过；真机目验待用户。** 施工 = `c2c7371d5`（与 d2/d3 同笔，文件
+重叠）。
+
+- Tabs 任意变量类补 `[&_.arco-tabs-content]:min-h-0` +
+  `[&_.arco-tabs-content-item-active]:h-full` +
+  `[&_.arco-tabs-content-item-active]:overflow-y-auto`；学习 Tab 两栏行补
+  `h-full`，aside 改 `max-h-full overflow-y-auto`。四个 Tab 在固定内容视口内
+  各自滚动（学习 Tab 内容区/导航列内滚，其余三 Tab item 级滚）。
+- 真机判据（长课时滚到底/下一节可点/三 Tab 滚动条）留用户走查，FAIL 按票重开。
