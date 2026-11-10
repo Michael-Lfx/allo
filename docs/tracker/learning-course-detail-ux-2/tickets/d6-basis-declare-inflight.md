@@ -2,7 +2,7 @@
 id: d6
 title: "已会声明在途恢复——后端注册表行 + 前端会话级 pending + 409 友好化"
 type: task
-status: open
+status: closed
 assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
@@ -74,3 +74,29 @@ part_of: ../map.md
 ## 非目标
 
 - 失败事件的 WS 面（现状极限，记档）；声明可撤（c3 已裁）。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面全验收过；真机判据待用户。** 施工 = `70e38cb61`（与 d7 同笔，14 文件
++385/−30）。
+
+- **后端**：`KIND_BASIS_DECLARE = "basis_declare"` 入注册表 kind 单源
+  （generation_tasks.rs）；`declare_basis` 在槽锁 + 校验后
+  `begin_generation_task`（key `basis_declare:{course}:-`，topic「已会声
+  明」），守卫跨 LLM 调用与写事务。**票外两处必要收尾**：①幂等 noop 早退
+  路径也 `finish_done`（否则空跑被守卫兜底记成 failed）；②成功尾
+  `finish_done`（挂载回合同款——drop 兜底语义是 failed，测试首轮实证）。
+- **前端**：`learningInFlight.ts` 进程级 pending（mark/clear/isInFlight/
+  前缀收集）；工作区 `registryBusy`（basis/mount/repair + lessons 集）=
+  会话 pending ∪ `GET /generation-tasks` 快照（挂载 + 每课程 WS 帧重算）；
+  `basisDeclareBusy` 三路合成下传两个 GateCoverage 挂载点。
+- **409 友好化**：`isGenerationConflict(error, keyFragment)`（utils）——
+  `basis-declare-{course}` 命中 → `Message.info` + 重拉 basis，不再弹原始
+  JSON。
+- **测试**：basis_tests 新增「完成后快照含 basis_declare 行（course 匹配、
+  state=done、topic=已会声明）」；nomifun-learning 全量 **953 passed /
+  0 failed**；typecheck 55 错基线一致；`check:i18n`（新增 inflight 两条 toast
+  双侧对称）绿。
+- **如实记档**：声明失败仍无 WS 失败事件——切页期间失败只在原始请求的
+  response 里（已卸载无处落地）；注册表行会留 failed 痕迹（重挂载可见「跑过
+  且失败」），UI 不主动提示（后置清单）。

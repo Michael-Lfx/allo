@@ -2,7 +2,7 @@
 id: d7
 title: "长任务在途恢复同一纪律——补充节点守卫 / 挂载修补派生 / 课时生成派生 / 建课恢复误判 / 409 统一友好化"
 type: task
-status: open
+status: closed
 assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
@@ -81,3 +81,28 @@ part_of: ../map.md
 - growth_running 全局→按课程口径（badge 跨课程误报，后置清单）；section
   rewrite / activity generate / figure repair 的注册表面（审计确认无槽无
   注册，量大面窄，后置）；后端除 d6 注册行外的改动。
+
+## Resolution（2026-11-10 施工收口）
+
+**代码面全验收过；真机判据待用户。** 施工 = `70e38cb61`（与 d6 同笔）。
+
+- **补充节点**：disabled/loading 纳入 `graph.growth_running`（服务端真相，
+  之前只在「生长中」tag 里展示却不管按钮）；409（`graph-growth-{course}`）
+  → toast + onRefresh。
+- **挂载/修补**：`mounting/repairing` 合成注册表派生（kind
+  structure_mount/structure_repair + course + queued/running）下传
+  StructureGraphTab；409（`learning-mount/repair-{course}`）→ toast +
+  refetchStructure。
+- **课时内容生成**：LessonBlock 新可选 prop `externalBusy`（默认 false，
+  CourseWorkspace 不传零变化）；图工作区按注册表（kind=lesson + node_id，
+  course 过滤）∪ 会话 pending 派生 lessons 集，主推荐卡与 LessonBlock 注
+  入。
+- **建课恢复误判修复**：`refreshGenerationStatus` 过滤收窄为
+  kind ∈ {outline, structure}（建课管线两段）——此前「除 growth 外全部」
+  会把课时生成/挂载/修补误显为建课进度（审计实锤的存量 bug）；顺带清了
+  GROWTH_TASK_KIND 死 import。
+- **统一纪律**：grow/mount/repair/declare 全部 mark/finally clear 会话级
+  pending；注册表派生在挂载与每课程 WS 帧时重算（任一终态帧自动收口）。
+- **验收**：与 d6 同笔全绿（953/0 + typecheck 基线 + i18n/theme/css-scope/
+  motion/icons + dead-css 学习域零命中）；真机判据留用户（切页往返各按钮保
+  持在途态、双击友好提示、建课对话框不再误显课时生成进度）。
