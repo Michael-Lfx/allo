@@ -7,6 +7,7 @@ import {
   REQUIRED_LICENSES,
   REQUIRED_VC_REDIST_DLLS,
   findSquashfsOffset,
+  requiredVcRedistDlls,
   verifyExtractedTree,
 } from './verify-voice-release-package.mjs';
 
@@ -104,6 +105,18 @@ test('a complete Windows resource tree passes with daemon, architecture, license
   try {
     const { problems } = verifyExtractedTree(root, { platform: 'windows', arch });
     expect(problems).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows ARM64 package passes without the x64-only vcruntime140_1.dll', async () => {
+  const { root, arch } = await makeTree({ arch: 'arm64', archBytes: pe(0xaa64), vcArchBytes: pe(0xaa64) });
+  try {
+    await rm(join(root, 'bin', 'vcruntime140_1.dll'));
+    const { problems } = verifyExtractedTree(root, { platform: 'windows', arch });
+    expect(problems).toEqual([]);
+    expect(requiredVcRedistDlls('arm64')).not.toContain('vcruntime140_1.dll');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

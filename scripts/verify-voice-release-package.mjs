@@ -45,6 +45,17 @@ export const REQUIRED_VC_REDIST_DLLS = [
   'vcruntime140_1.dll',
 ];
 
+/**
+ * DLLs that must be staged for one CPU architecture.
+ * vcruntime140_1.dll is the x64 FH4 exception runtime. Native ARM64 images do
+ * not import it, and Windows on ARM keeps that file as an x64 binary.
+ */
+export function requiredVcRedistDlls(arch) {
+  const normalized = normalizeArch(arch);
+  if (normalized === 'aarch64') return REQUIRED_VC_REDIST_DLLS.filter((dll) => dll !== 'vcruntime140_1.dll');
+  return REQUIRED_VC_REDIST_DLLS;
+}
+
 export class UnverifiedError extends Error {}
 
 export function normalizeArch(value) {
@@ -390,7 +401,7 @@ export function verifyExtractedTree(root, { platform, arch }) {
 
   // Windows VC++ Runtime App-Local Deployment Check
   if (platform === 'windows') {
-    for (const dll of REQUIRED_VC_REDIST_DLLS) {
+    for (const dll of requiredVcRedistDlls(expected)) {
       const dllPath = join(expectedBin, dll);
       const safeDll = assertSafePackageFile(root, dllPath, `required VC++ runtime DLL ${dll}`, problems);
       if (safeDll) {
