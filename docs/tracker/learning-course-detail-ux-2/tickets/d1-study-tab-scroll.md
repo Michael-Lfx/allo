@@ -73,3 +73,30 @@ TabPane 在固定内容视口内自滚；学习 Tab 两栏（导航 aside + 课�
   `h-full`，aside 改 `max-h-full overflow-y-auto`。四个 Tab 在固定内容视口内
   各自滚动（学习 Tab 内容区/导航列内滚，其余三 Tab item 级滚）。
 - 真机判据（长课时滚到底/下一节可点/三 Tab 滚动条）留用户走查，FAIL 按票重开。
+
+## Resolution（2026-11-10 二轮修正：真机 FAIL 重开 → 补 inner 层）
+
+**首轮修复无效（用户真机复测滚动仍不工作，截图实证），按票重开。** 根因是
+首轮漏了 arco Tabs 的中间层：
+
+- **漏层**：arco DOM 是 `.arco-tabs-content` → **`.arco-tabs-content-inner`**
+  （arco 默认 `display: flex; width: 100%`，**高度 auto**）→
+  `.arco-tabs-content-item-active`。首轮只钉了 content 与 item——item 的
+  `h-full` 是对 auto 高度的 inner 取百分比，**百分比解析退化为 auto**，item
+  仍是内容自然高，照样溢出 content 槽被 `overflow: hidden` 裁掉。法证当时只
+  枚举了 `.arco-tabs-content*` 的规则、漏了 `-inner` 这条
+  （`.arco-tabs-content .arco-tabs-content-inner { display: flex; width: 100% }`），
+  且未逐层验证百分比高度的解析前提——**教训：改层间高度链必须逐层列出真实
+  DOM（含中间包装层），每一层的高度来源可追溯，不能只对首尾两层施法。**
+- **二轮修复** = `7b0b6df6b`（并回 `d70ea7f5b`）：Tabs 类名补
+  `[&_.arco-tabs-content-inner]:h-full`——三层钉高 content（槽高）→ inner
+  （content 高）→ item（inner 高，自滚）；学习 Tab 两栏行 h-full 已在首轮就
+  位，section 内层滚动随之生效。typecheck 55 错基线一致（learning 零错）。
+- **逐层推演（本轮已完成，替代上轮的半程推演）**：`.layout-content`（flex-1
+  min-h-0，确定）→ 工作区根（h-full + overflow-y-auto，确定）→ 内容列（h-full，
+  确定）→ Tabs（flex-1 min-h-0，确定）→ content（flex-1 min-h-0，确定）→
+  inner（h-full，确定）→ item-active（h-full + overflow-y-auto，滚动）→ 学习
+  Tab 两栏行（h-full）→ section（flex-1 overflow-hidden）→ 内层
+  （h-full overflow-y-auto，滚动）。每一层高度来源均可追溯，无 auto 断点。
+- **真机判据不变**（长课时滚到底/下一节可点/三 Tab 滚动条），待用户复测；
+  再 FAIL 继续重开。
