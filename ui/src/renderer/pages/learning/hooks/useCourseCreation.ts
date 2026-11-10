@@ -9,6 +9,7 @@ import {
   buildPlanRequest,
   buildRestoredRequest,
   type CreationTab,
+  type RestoredTaskInfo,
 } from '../coursePlan';
 import type {
   CourseDetail,
@@ -22,10 +23,13 @@ export const MAX_COURSE_KNOWLEDGE_BASES = 5;
 
 /** 对话框内生成视图的一次完整尝试：排队中（m7 资源闸：提交已受理、
  * 等空闲许可，排队期可取消）/ 运行中 / 已完成（课程入库）/ 失败 /
- * 已取消（用户主动取消，重试即重新发起）。request 保留用于失败后的「重试」。 */
+ * 已取消（用户主动取消，重试即重新发起）。request 保留用于失败后的「重试」。
+ * restoredTask（c3）：仅恢复态带快照机器面（悬浮 Pill 副行按 kind 词典组装
+ * 显示文案）；实时链为 null——description 即用户输入，语言中立。 */
 export interface CourseGenerationState {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   request: GenerateCourseRequest;
+  restoredTask: RestoredTaskInfo | null;
   result: CourseDetail | null;
   error: string | null;
 }
@@ -99,15 +103,16 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     async (request: GenerateCourseRequest) => {
       cancelRequestedRef.current = false;
       setBusyId('generate');
-      setGeneration({ status: 'running', request, result: null, error: null });
+      setGeneration({ status: 'running', request, restoredTask: null, result: null, error: null });
       try {
         const detail = await learningApi.generateCourse(request);
-        setGeneration({ status: 'completed', request, result: detail, error: null });
+        setGeneration({ status: 'completed', request, restoredTask: null, result: detail, error: null });
       } catch (actionError) {
         const cancelled = cancelRequestedRef.current;
         setGeneration({
           status: cancelled ? 'cancelled' : 'failed',
           request,
+          restoredTask: null,
           result: null,
           error: cancelled ? null : errorMessage(t, actionError),
         });
@@ -186,6 +191,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         setGeneration({
           status: active.state === 'running' ? 'running' : 'queued',
           request: buildRestoredRequest(active),
+          // c3：快照机器面留存——悬浮 Pill 副行按 kind 词典组装显示文案，
+          // 后端中文 topic 不再直达 UI（growthCourseTitle 剥前缀口径保留）。
+          restoredTask: { kind: active.kind, topic: active.topic },
           result: null,
           error: null,
         });
