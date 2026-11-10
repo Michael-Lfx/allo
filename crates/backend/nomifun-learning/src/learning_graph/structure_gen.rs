@@ -294,10 +294,15 @@ async fn attempt_once(
     if vocab_rewrites > 0 {
         tracing::info!(rewrites = vocab_rewrites, "structure vocab normalized to stored codes");
     }
+    // 门前删键（p2，病历 2026-11-09 attempt1）：白名单外的顶层键机械删除
+    // 放行 + 每键一行 warn 留痕（并入下方违约表，随 warnings 透出）——
+    // 不再因多吐键整份两产物打回重烧。
+    let dropped_keys = structure_contract::drop_unknown_top_keys(&mut structure);
 
     // 契约门：双产物逐条款执法 + 门口对账（g2：structure 的门口只准引用
     // 地形门口）。警告级只透出，不触发重试。
     let mut violations = structure_contract::validate_structure(&structure);
+    violations.extend(dropped_keys);
     violations.extend(structure_contract::validate_terrain(&terrain));
     violations.extend(structure_contract::reconcile_doors(&structure, &terrain));
     let warnings: Vec<String> = violations
@@ -589,6 +594,40 @@ mod tests {
             prompts[1]
         );
         assert!(prompts[1].contains("- [G1]（硬前置）"), "{:#}", prompts[1]);
+    }
+
+    /// p2 红绿样（病历 2026-11-09 attempt1）：structure 多吐一个顶层键
+    /// `type` → 门前机械删键放行 + warn 留痕，**一轮过门**不再整份两产物
+    /// 重生成（terrain + structure 白烧 122.7s 的全部来源就此消除）；放行
+    /// 快照不得残留未知键。缺键/类型错等硬伤仍拒（见
+    /// `structure_contract::tests::gd_keys_missing_required_still_red`）。
+    #[tokio::test]
+    async fn unknown_top_key_passes_in_one_attempt_with_key_dropped() {
+        let mut structure = golden_structure();
+        structure.as_object_mut().unwrap().insert("type".into(), json!("quiz"));
+        let completer = scripted(vec![golden_terrain(), structure]);
+        let artifacts = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .expect("unknown top key must be dropped at the door, not rejected");
+        assert!(
+            artifacts.structure.get("type").is_none(),
+            "放行快照不得残留未知键: {:?}",
+            artifacts.structure.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            completer.calls(),
+            2,
+            "一轮过门（terrain + structure 各一次）——不再整份两产物重生成"
+        );
     }
 
     /// 门口清单装配（纯函数）：判据逐字、kind 双档措辞、空清单防御回退。

@@ -239,6 +239,35 @@ pub fn normalize_structure_vocab(value: &mut Value) -> usize {
     rewrites
 }
 
+/// 结构产物门前删键（p2，病历 2026-11-09 attempt1）：模型多吐白名单之外的
+/// 顶层键时机械删除放行 + 每键一行 warn 留痕——不再整份两产物打回重烧，
+/// 与条款自述「白名单之外的键一律删除」对齐（现状自述删键、行为整份拒绝
+/// 的自相矛盾就此消除）。缺必填键/类型错等硬伤不在此列，仍由
+/// [`validate_structure`] 红条打回走原重生成路径。返回删键留痕行（全
+/// warn 级，code = `gd.keys`；调用方并入违约表即随 warnings 透出）。
+pub fn drop_unknown_top_keys(value: &mut Value) -> Vec<ContractViolation> {
+    let Some(map) = value.as_object_mut() else {
+        return Vec::new();
+    };
+    let unknown: Vec<String> = map
+        .keys()
+        .filter(|key| !TOP_KEYS.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    for key in &unknown {
+        map.remove(key);
+    }
+    unknown
+        .into_iter()
+        .map(|key| {
+            ContractViolation::warn(
+                "gd.keys",
+                format!("未知顶层键「{key}」已删除放行（白名单之外的键一律删除）"),
+            )
+        })
+        .collect()
+}
+
 /// 块表量级档：硬下限 / 密度参考档（低于即告警）/ 越档线（告警）/ 硬上限。
 /// f2 三档制（A1）：25 以下是结构非法（红）；25–39「低于 40 参考档」只警告
 /// ——小目标课如实精简，密度抽验兜底（E2E 两轮对照 31 条与 51 条内容密度
@@ -409,12 +438,14 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
         return violations;
     };
 
-    // gd.keys：白名单 + 结构五件必填。
+    // gd.keys：白名单 + 结构五件必填。未知键的放行走门前机械删键（p2：
+    // `drop_unknown_top_keys`，删除 + warn 留痕）——这里降为 warn 留痕，只兜
+    // 未经门前的直接调用（修补候选/外部落库面）；缺必填键仍是红条硬伤。
     for key in map.keys() {
         if !TOP_KEYS.contains(&key.as_str()) {
-            violations.push(ContractViolation::red(
+            violations.push(ContractViolation::warn(
                 "gd.keys",
-                format!("未知顶层键「{key}」——白名单之外的键一律删除"),
+                format!("未知顶层键「{key}」在白名单之外——生成门前已机械删除放行，此处仅留痕"),
             ));
         }
     }
@@ -1533,14 +1564,76 @@ mod tests {
         assert_eq!(codes(&violations), vec!["gd.parse"]);
     }
 
+    /// p2：缺必填键仍是硬伤（红条 gd.keys）——宽容只覆盖未知键，缺键/类型
+    /// 错等照旧整份打回走 Rejected 重生成路径。
     #[test]
-    fn gd_keys_enforces_whitelist_and_structural_required() {
+    fn gd_keys_missing_required_still_red() {
         let mut value = golden_structure();
-        value.as_object_mut().unwrap().insert("surprise".into(), json!(1));
         value.as_object_mut().unwrap().remove("gaps");
         let violations = validate_structure(&value);
-        let codes = codes(&violations);
-        assert!(codes.iter().filter(|code| **code == "gd.keys").count() == 2, "{violations:?}");
+        let keys_red: Vec<&ContractViolation> = violations
+            .iter()
+            .filter(|violation| !violation.warning && violation.code == "gd.keys")
+            .collect();
+        // 缺键行（gd.keys）仍红；下游 gd.gaps 级联红不在本判据内（缺键本就
+        // 整份打回，p2 未动）。
+        assert_eq!(keys_red.len(), 1, "{violations:?}");
+        assert!(
+            keys_red[0].message.contains("缺少必填顶层键「gaps」"),
+            "{}",
+            keys_red[0].message
+        );
+    }
+
+    /// p2（病历 2026-11-09 attempt1）：模型多吐一个顶层键 `type` → 门前机械
+    /// 删键放行 + warn 留痕，不再整份两产物打回重烧。删键后产物无该键、
+    /// 契约门零违约（金样本就全绿）；未经门前的直接校验未知键降为 warn
+    /// 留痕（兑现「白名单之外的键一律删除」的自述语义：删键是机械修复动作，
+    /// 不再是拒收条款）。
+    #[test]
+    fn gd_keys_unknown_top_key_deleted_at_the_door_with_warn_trail() {
+        let mut structure = golden_structure();
+        structure.as_object_mut().unwrap().insert("type".into(), json!("quiz"));
+        // 门前删键：键消失 + 每键一行 warn 留痕（措辞点名键与「删除」）。
+        let dropped = drop_unknown_top_keys(&mut structure);
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+        assert!(
+            dropped
+                .iter()
+                .all(|violation| violation.code == "gd.keys" && violation.warning),
+            "删键留痕必须全为 warn 级: {dropped:?}"
+        );
+        assert!(
+            dropped[0].message.contains("type") && dropped[0].message.contains("删除"),
+            "留痕行点名键与处置: {}",
+            dropped[0].message
+        );
+        assert!(structure.get("type").is_none(), "放行产物不得残留未知键");
+        assert!(
+            validate_structure(&structure).is_empty(),
+            "删键后契约门零违约: {:?}",
+            validate_structure(&structure)
+        );
+        // 干净产物零触碰（幂等）；非对象输入防御回退。
+        let mut clean = golden_structure();
+        assert!(drop_unknown_top_keys(&mut clean).is_empty());
+        assert!(drop_unknown_top_keys(&mut json!(["not", "an", "object"])).is_empty());
+
+        // 未经门前的直接校验（修补候选/外部落库面）：未知键 warn 留痕在场、
+        // 不再进红条。
+        let mut raw = golden_structure();
+        raw.as_object_mut().unwrap().insert("surprise".into(), json!(1));
+        let violations = validate_structure(&raw);
+        assert!(
+            violations.iter().all(|violation| violation.warning),
+            "未知键不得再进红条: {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|violation| violation.code == "gd.keys"
+                && violation.warning
+                && violation.message.contains("surprise")),
+            "warn 留痕必须在场: {violations:?}"
+        );
     }
 
     #[test]
