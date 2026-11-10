@@ -247,8 +247,12 @@ export async function exportCanvasTimeline(body: {
 export async function uploadCanvasMedia(
   file: File,
   title?: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<CanvasMediaMeta> {
+  if (signal?.aborted) {
+    throw new DOMException('Upload aborted', 'AbortError');
+  }
   const url = `${getBaseUrl()}/api/video-canvas/media/upload`;
   const form = new FormData();
   form.append('file', file, file.name);
@@ -260,6 +264,19 @@ export async function uploadCanvasMedia(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let finished = false;
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    const settle = (callback: () => void) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = () => {
+      xhr.abort();
+      settle(() => reject(new DOMException('Upload aborted', 'AbortError')));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     xhr.open('POST', url);
     for (const [k, v] of Object.entries(headers)) {
       if (v != null) xhr.setRequestHeader(k, String(v));
@@ -277,15 +294,16 @@ export async function uploadCanvasMedia(
           message?: string;
         };
         if (xhr.status >= 200 && xhr.status < 300 && json.data) {
-          resolve(json.data);
+          settle(() => resolve(json.data as CanvasMediaMeta));
         } else {
-          reject(new Error(json.message || `upload failed (${xhr.status})`));
+          settle(() => reject(new Error(json.message || `upload failed (${xhr.status})`)));
         }
       } catch (e) {
-        reject(e instanceof Error ? e : new Error(String(e)));
+        settle(() => reject(e instanceof Error ? e : new Error(String(e))));
       }
     };
-    xhr.onerror = () => reject(new Error('upload network error'));
+    xhr.onerror = () => settle(() => reject(new Error('upload network error')));
+    xhr.onabort = () => settle(() => reject(new DOMException('Upload aborted', 'AbortError')));
     xhr.send(form);
   });
 }

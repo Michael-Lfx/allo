@@ -50,6 +50,8 @@
     "check:theme": "bun scripts/check-theme-contract.mjs",
     "check:motion": "bun scripts/check-motion.mjs",
     "check:button-layout-contract": "bun scripts/check-button-layout-contract.mjs",
+    "check:example-covers": "bun scripts/optimize-example-covers.mjs --check",
+    "optimize:example-covers": "bun scripts/optimize-example-covers.mjs",
     "check:ux-baseline": "bun scripts/ux-visual-baseline.mjs",
     "check:button-layout": "bun scripts/check-button-layout.mjs",
     "check:error-surface": "bun scripts/check-error-surface.mjs",

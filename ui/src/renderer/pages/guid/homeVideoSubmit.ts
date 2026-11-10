@@ -55,9 +55,13 @@ function withHomeVideoTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   message = 'home video operation timed out',
+  onTimeout?: () => void,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    const timer = window.setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(message));
+    }, timeoutMs);
     promise.then(
       (value) => {
         window.clearTimeout(timer);
@@ -484,14 +488,18 @@ export function useHomeVideoSubmit() {
       generateAttemptRef.current = attempt;
       try {
         for (const reference of pendingReferences) {
+          const controller = new AbortController();
           const media = await withHomeVideoTimeout(
             uploadCanvasMedia(
               reference.file,
               reference.file.name.replace(/\.[^.]+$/, '').trim() ||
                 `reference-${attempt.uploadedMediaIds.length + 1}`,
+              undefined,
+              controller.signal,
             ),
             HOME_VIDEO_UPLOAD_TIMEOUT_MS,
             'home video reference upload timed out',
+            () => controller.abort(),
           );
           attempt.uploadedMediaIds.push(media.media_id);
         }
