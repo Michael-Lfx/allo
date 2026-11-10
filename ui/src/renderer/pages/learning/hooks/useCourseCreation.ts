@@ -24,7 +24,9 @@ export const MAX_COURSE_KNOWLEDGE_BASES = 5;
 
 /** 对话框内生成视图的一次完整尝试：排队中（m7 资源闸：提交已受理、
  * 等空闲许可，排队期可取消）/ 运行中 / 已完成（课程入库）/ 失败 /
- * 已取消（用户主动取消，重试即重新发起）。request 保留用于失败后的「重试」。
+ * 已取消（用户主动取消，重试即重新发起）。request 保留用于失败后的「重试」
+ * （仅 in-session；恢复态终态是合成请求，不可重发，见
+ * `retryableGenerationRequest`）。
  * restoredTask（c3）：仅恢复态带快照机器面（悬浮 Pill 副行按 kind 词典组装
  * 显示文案）；实时链为 null——description 即用户输入，语言中立。 */
 export interface CourseGenerationState {
@@ -57,7 +59,22 @@ export function restoredGenerationFromTask(
 /** 恢复态终态收敛的轮询间隔（c2）：running/queued 期间开、终态即停。 */
 export const RESTORED_GENERATION_POLL_MS = 5_000;
 
-/** 恢复态收敛写回的终态面；request 由 hook 侧保留（重试仍用重建的请求）。 */
+/** 重试守卫：返回可重发的请求，不可重试时返回 null。恢复态（restoredTask
+ * 在场）永不重发——它的 request 是按快照 topic 合成的（description = 后端
+ * topic 标签，如「知识结构生成」），重发会以标签为名新建一门学习图课程；
+ * 终态面板对恢复态只出指引文案（见 CourseGenerationProgress），这里是
+ * retryGeneration 的第二道保险。in-session 终态（request 即用户输入）维持
+ * 「按原请求重试」不变。 */
+export function retryableGenerationRequest(
+  generation: CourseGenerationState | null
+): GenerateCourseRequest | null {
+  if (!generation || generation.restoredTask) return null;
+  if (generation.status !== 'failed' && generation.status !== 'cancelled') return null;
+  return generation.request;
+}
+
+/** 恢复态收敛写回的终态面；request 由 hook 侧保留（合成请求，只供呈现
+ * 分流——恢复态终态不重发，见 `retryableGenerationRequest`）。 */
 export interface RestoredGenerationConvergence {
   status: 'completed' | 'failed' | 'cancelled';
   result: CourseDetail | null;
@@ -73,8 +90,14 @@ export interface RestoredGenerationConvergenceOptions {
   fetchCourse: (courseId: string) => Promise<CourseDetail>;
   /** 错误 → 人面文案（i18n 住 hook 侧，循环本身不碰翻译） */
   describeError: (error: unknown) => string;
+  /** 任务翻 failed 的人面文案：后端 detail 是中文诊断面，不进 error；
+   * 本地化键出文案，保证 failed ⇒ error 非空。 */
+  describeFailed: () => string;
   /** 终态写回：至多调用一次，调用后循环自停 */
   onConverge: (converged: RestoredGenerationConvergence) => void;
+  /** 非终态推进：恢复的 queued 任务在快照里开跑时触发——写回侧把 queued
+   * 翻 running，界面不再停「排队中」；轮询继续等终态。 */
+  onRunning?: () => void;
 }
 
 /** 恢复态终态收敛循环（c2）：refreshGenerationStatus 重建出的 running/queued
@@ -120,7 +143,9 @@ export function startRestoredGenerationConvergence(
       return;
     }
     if (row?.state === 'failed') {
-      options.onConverge({ status: 'failed', result: null, error: row.detail });
+      // 后端 detail 是中文诊断面（宁缺不泄漏，不进 error）：本地化键出文案，
+      // 保证 failed ⇒ error 非空。
+      options.onConverge({ status: 'failed', result: null, error: options.describeFailed() });
       return;
     }
     // 取消是中性终态；任务从快照消失（如后端重启清空注册表）同样按取消
@@ -129,6 +154,9 @@ export function startRestoredGenerationConvergence(
       options.onConverge({ status: 'cancelled', result: null, error: null });
       return;
     }
+    // 恢复的 queued 任务在快照里开跑：报非终态推进（写回侧把 queued 翻
+    // running，重复触发由写回侧按当前态幂等），轮询继续等终态。
+    if (row.state === 'running') options.onRunning?.();
     schedule();
   };
 
@@ -279,10 +307,12 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   }, [submitGeneration]);
 
   // 重试失败的生成：直接按原请求重新发起（生长是幂等的小批次操作，
-  // 失败不残留半成品）。
+  // 失败不残留半成品）。恢复态不可重发（retryableGenerationRequest 守卫：
+  // 合成请求会以后端 topic 标签为名新建课程），终态面板改出指引文案。
   const retryGeneration = useCallback(() => {
-    if (generation?.status !== 'failed' && generation?.status !== 'cancelled') return;
-    void generateCourse(generation.request);
+    const request = retryableGenerationRequest(generation);
+    if (!request) return;
+    void generateCourse(request);
   }, [generateCourse, generation]);
 
   // 页面挂载时恢复后台生成状态：对话框状态是易失的（切页即丢），服务端
@@ -312,12 +342,22 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         fetchTasks: () => learningApi.generationTasks(),
         fetchCourse: (courseId) => learningApi.getCourse(courseId),
         describeError: (error) => errorMessage(t, error),
+        describeFailed: () => t('learning.restoredTaskFailed'),
         onConverge: (converged) => {
           // 双写幂等：只翻 running/queued 的恢复态；若此刻已另有在跑的
           // in-session 生成接管，迟到的读数不覆盖它。
           setGeneration((current) =>
             current && (current.status === 'running' || current.status === 'queued')
               ? { ...current, ...converged }
+              : current
+          );
+        },
+        onRunning: () => {
+          // 非终态推进：恢复的 queued 任务开跑后翻 running（界面不再停
+          // 「排队中」）；只对 queued 生效，重复触发返回原引用即无重渲染。
+          setGeneration((current) =>
+            current && current.status === 'queued'
+              ? { ...current, status: 'running' }
               : current
           );
         },

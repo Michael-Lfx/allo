@@ -36,13 +36,18 @@ const { Text, Title } = Typography;
  * 学习图流（c1 最小修）：graph 建课 HTTP 秒回、结构生成在后台跑，WS 订阅
  * 随 status 翻 completed 即停用——v2 步骤条与活动流对该流是永不更新的冻结
  * 起始帧。running 只渲染单行后台提示（真实结构进度在工作区 structure 徽章/
- * 声明窗口）；queued 沿用排队提示；终态回到下方卡片/Alert 既有分支。 */
+ * 声明窗口）；queued 沿用排队提示；终态回到下方卡片/Alert 既有分支。
+ *
+ * 恢复态（c2 收敛出的终态）：failed/cancelled 不提供重发式重试——恢复态的
+ * request 是按快照 topic 合成的（description = 后端 topic 标签），重发会以
+ * 标签为名新建一门课程；改出本地化指引文案。in-session 终态重试不变。 */
 export function CourseGenerationProgress({
   status,
   result,
   error,
   sources = [],
   courseKind,
+  restored = false,
   onStartLearning,
   onRetry,
   onCancel,
@@ -55,6 +60,9 @@ export function CourseGenerationProgress({
   sources?: string[];
   /** 课程类型（c1）：learning_graph 时呈现最小化（见头注释），缺省 = v2 流。 */
   courseKind?: CourseKind;
+  /** 恢复态（页面挂载时从快照重建的生成任务）：终态面板只出指引文案，
+   * 不提供重发式重试（见头注释）。缺省 = in-session。 */
+  restored?: boolean;
   /** 建课管线代际（x11）：课程摘要可用时显式传入；生成中从 WS 帧兜底读取。 */
   pipeline?: 'sampling' | 'source_plan';
   onStartLearning: (courseId: string) => void;
@@ -152,17 +160,23 @@ export function CourseGenerationProgress({
         </Text>
       )}
 
-      {/* 学习图流（c1 最小修）：running 单行后台提示（真实结构进度在工作区
-          structure 徽章/声明窗口看）/ queued 排队提示；终态不渲染本行——
-          下方课程卡片与 Alert 既有分支接管。 */}
+      {/* 学习图流（c1 最小修）：running / queued 收口为单行——后台提示（真实
+          结构进度在工作区 structure 徽章/声明窗口看）或排队提示，与取消入口
+          同处一行；不叠加下方 v2 提示行（否则同屏双 spinner、排队提示渲染
+          两遍）。终态不渲染本行——下方课程卡片与 Alert 既有分支接管。 */}
       {graphFlow && (running || queued) && (
-        <div className='flex items-center gap-8px'>
-          <Spin size={16} />
-          <Text type='secondary'>
-            {running
-              ? t('learning.graphCreateBackgroundNotice')
-              : t('learning.genQueuedNotice')}
-          </Text>
+        <div className='flex items-center justify-between gap-8px'>
+          <div className='flex items-center gap-8px'>
+            <Spin size={16} />
+            <Text type='secondary'>
+              {running
+                ? t('learning.graphCreateBackgroundNotice')
+                : t('learning.genQueuedNotice')}
+            </Text>
+          </div>
+          <Button size='mini' status='danger' onClick={onCancel}>
+            {t('learning.genCancel')}
+          </Button>
         </div>
       )}
 
@@ -187,8 +201,11 @@ export function CourseGenerationProgress({
           )}
           {events.map((event, index) => {
             if (event.phase === PHASE.started) {
-              // c3 防御收口：started 行一律走词典，不读 event.text——graph 流
-              // 已整段隐藏（c1）、v2 流无 text 帧，防未来新流把后端中文直带入 UI。
+              // c3 防御收口：started 行一律走词典，不读 event.text。started 帧
+              // 带 text 的只有学习图流（后端硬编码文案，整段已随 c1 隐藏）；
+              // v2/课时的 started 帧本就没有 text 字段。round 帧的 text 不同
+              // ——那是模型叙述（nomifun-ai-agent learning_loop 产出的动态
+              // 模型输出，非后端硬编码文案），下方照常渲染。
               return (
                 <div key={index} className='text-13px text-t-secondary'>
                   {t('learning.genWaitingEvents')}
@@ -349,7 +366,9 @@ export function CourseGenerationProgress({
         </div>
       )}
 
-      {(running || queued) && (
+      {/* v2 流的运行/排队提示行 + 取消入口（学习图流已在上方单行收口，
+          不走这一行） */}
+      {!graphFlow && (running || queued) && (
         <div className='flex items-center justify-between gap-8px'>
           <div className='flex items-center gap-8px'>
             <Spin size={16} />
@@ -402,34 +421,48 @@ export function CourseGenerationProgress({
                   {error}
                 </div>
               )}
-              <div className='flex flex-col gap-4px'>
-                <div>
-                  <Button size='small' type='primary' onClick={onRetry}>
-                    {t('learning.genRetryResume')}
-                  </Button>
-                </div>
+              {/* 恢复态不提供重发式重试（合成请求会以后端 topic 标签为名
+                  新建课程）：只出指引文案 */}
+              {restored ? (
                 <Text type='secondary' className='text-12px'>
-                  {t('learning.genRetryResumeHint')}
+                  {t('learning.restoredRetryGuidance')}
                 </Text>
-              </div>
+              ) : (
+                <div className='flex flex-col gap-4px'>
+                  <div>
+                    <Button size='small' type='primary' onClick={onRetry}>
+                      {t('learning.genRetryResume')}
+                    </Button>
+                  </div>
+                  <Text type='secondary' className='text-12px'>
+                    {t('learning.genRetryResumeHint')}
+                  </Text>
+                </div>
+              )}
             </div>
           }
         />
       )}
 
       {/* 取消是中性终态而非失败：无错误详情；取消不保留草稿，重试即
-          全新生成 */}
+          全新生成。恢复态同样不提供重发（见上），只出中性指引 */}
       {status === 'cancelled' && (
         <Alert
           type='warning'
           content={
             <div className='flex flex-col gap-8px'>
               <span>{t('learning.genCancelled')}</span>
-              <div>
-                <Button size='small' type='primary' onClick={onRetry}>
-                  {t('learning.genRetryFresh')}
-                </Button>
-              </div>
+              {restored ? (
+                <Text type='secondary' className='text-12px'>
+                  {t('learning.restoredRetryGuidance')}
+                </Text>
+              ) : (
+                <div>
+                  <Button size='small' type='primary' onClick={onRetry}>
+                    {t('learning.genRetryFresh')}
+                  </Button>
+                </div>
+              )}
             </div>
           }
         />
