@@ -17,6 +17,7 @@ import { useCourseCreation } from './hooks/useCourseCreation';
 import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
+import { structurePillSpec, useStructurePillWatch } from './structurePillWatch';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
 import { errorMessage, knowledgeBaseNames, loadStoredReviewFilters } from './utils';
 
@@ -162,6 +163,42 @@ const LearningPage: React.FC = () => {
     // 依赖首次渲染值，对一次性恢复语义足够。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 图课程流 Pill 真值分流（v3，G1）：HTTP 秒回 completed 后，Pill 不再挂
+  // 「✓ 生成完成」——改绑该课 structure 任务快照（structurePillWatch）。
+  // course id：in-session 取 result.course.id；恢复态收敛完成同样先经
+  // fetchCourse 落入 result——两路统一取 result，restoredTask 无需另带 id。
+  // 轮询只在 Pill 可见且图课程 completed 时开（对话框打开期间 Pill 隐藏，
+  // 不空转）；courseId 缺失（result 异常）时不接管——宁可退场不撒谎。
+  const generation = creation.generation;
+  const pillVisible = generation !== null && !creation.generateVisible;
+  const graphCompletedPill =
+    generation !== null &&
+    generation.request.course_kind === 'learning_graph' &&
+    generation.status === 'completed';
+  const structureWatch = useStructurePillWatch(
+    pillVisible && graphCompletedPill ? generation.result?.course.id ?? null : null
+  );
+  const graphPillSpec =
+    pillVisible && graphCompletedPill ? structurePillSpec(structureWatch, t) : undefined;
+
+  // 图课程流取消（per-key 端点，d7 已暴露）：取消胜出 = cancelled；任务已
+  // 先到终态（竞速落败）= 如实提示。终态以随后的快照轮询为准（Pill 面）。
+  const cancelStructureTask = useCallback(
+    async (key: string) => {
+      try {
+        const result = await learningApi.cancelGenerationTask(key);
+        if (result.state === 'cancelled') {
+          Message.success(t('learning.genCancelRequested'));
+        } else {
+          Message.info(t('learning.genNotRunning'));
+        }
+      } catch (cancelError) {
+        Message.error(errorMessage(t, cancelError));
+      }
+    },
+    [t]
+  );
 
   const importCourse = useCallback(async () => {
     let pack: unknown;
@@ -446,17 +483,39 @@ const LearningPage: React.FC = () => {
 
         {/* 后台生成指示条：对话框关闭后生成仍在继续，从这里查看进度或取消。
             副行文案（c3）：恢复态按快照 kind 走词典组装，后端中文 topic 不
-            直达 UI；实时链 description 即用户输入，原样显示。 */}
-        {creation.generation && !creation.generateVisible && (
+            直达 UI；实时链 description 即用户输入，原样显示。
+            图课程流分流（v3，G1）：HTTP 秒回 completed 后 Pill 绑 structure
+            快照真值——running/queued 换新 label，落库即退场（不显示完成态），
+            failed/cancelled 沿用既有终态语义；v2 描述流/知识库流零变化。 */}
+        {pillVisible && graphPillSpec !== undefined && graphPillSpec !== null && generation !== null && (
           <CourseGenerationPill
-            status={creation.generation.status}
+            status={graphPillSpec.status}
+            label={graphPillSpec.label ?? undefined}
             topic={
-              creation.generation.restoredTask
-                ? restoredTaskTopic(creation.generation.restoredTask, t)
-                : creation.generation.request.description ?? ''
+              generation.restoredTask
+                ? restoredTaskTopic(generation.restoredTask, t)
+                : generation.request.description ?? ''
             }
             sources={knowledgeBaseNames(
-              creation.generation.request.knowledge_base_ids ?? [],
+              generation.request.knowledge_base_ids ?? [],
+              creation.knowledgeBases
+            )}
+            onView={() => void creation.openGenerator()}
+            onCancel={() => {
+              if (graphPillSpec.taskKey) void cancelStructureTask(graphPillSpec.taskKey);
+            }}
+          />
+        )}
+        {pillVisible && graphPillSpec === undefined && generation !== null && (
+          <CourseGenerationPill
+            status={generation.status}
+            topic={
+              generation.restoredTask
+                ? restoredTaskTopic(generation.restoredTask, t)
+                : generation.request.description ?? ''
+            }
+            sources={knowledgeBaseNames(
+              generation.request.knowledge_base_ids ?? [],
               creation.knowledgeBases
             )}
             onView={() => void creation.openGenerator()}

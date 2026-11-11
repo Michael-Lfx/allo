@@ -10,24 +10,30 @@ const { Text } = Typography;
  * 进度视图，排队期与运行中都可取消（排队取消 = 释放排队位，body 零执行）。
  * 多知识库（t4）：sources 非空时展示「来源：库A、库B」（名称由调用方按库 id 解析）。
  * 定位（g4）：全局生长 Pill 宿主在场时 portal 进其右下角停靠栏与生长 Pill
- * 纵向排队（同角不重叠）；宿主缺席时自带 fixed 定位。 */
+ * 纵向排队（同角不重叠）；宿主缺席时自带 fixed 定位。
+ * label 覆盖（v3，图课程流）：传 `label` 时主行原文呈现（structure 快照
+ * 真值新键，见 structurePillWatch），其余布局/取消/查看行为不变；不传
+ * 走既有状态词典——v2 描述流/知识库流零变化。 */
 export function CourseGenerationPill({
   status,
   topic,
   sources = [],
+  label: labelOverride,
   onView,
   onCancel,
 }: {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   topic: string;
   sources?: string[];
+  label?: string;
   onView: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
   const dockSlot = useLearningFloatingSlot();
   const label =
-    status === 'queued'
+    labelOverride ??
+    (status === 'queued'
       ? t('learning.genBgQueued')
       : status === 'running'
         ? t('learning.genBgRunning')
@@ -35,7 +41,7 @@ export function CourseGenerationPill({
           ? t('learning.genBgFailed')
           : status === 'cancelled'
             ? t('learning.genCancelled')
-            : t('learning.genBgDone');
+            : t('learning.genBgDone'));
   const card = (
     <Card size='small' className='shadow-lg'>
       <div className='flex items-center gap-12px'>
