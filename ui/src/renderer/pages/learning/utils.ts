@@ -148,6 +148,20 @@ export function errorMessage(t: Translate, error: unknown): string {
   return t('learning.actionFailed');
 }
 
+/**
+ * quiz 开测 409 的 K 值提取（u5 R2）：due 门 Conflict 报文恒为
+ * `quiz not due: {N}/{K} settlements since last quiz`（quiz.rs 单源格式），
+ * K = 开放阈值——提取后填词典 quizNotDueHint 的 {{trigger}} 槽位，N/K 读数
+ * 本身由 onConflict 触发的进度重拉呈现（读数面不靠报文）。报文是后端散文
+ * 镜像，格式漂移提取不到数时返回 null（调用方回落 conflictBusy 通用句）；
+ * 非 409 或非 BackendHttpError 一律 null。原文不直接上屏。
+ */
+export function quizNotDueTrigger(error: unknown): number | null {
+  if (!isBackendHttpError(error) || error.status !== 409) return null;
+  const match = /quiz not due:\s*\d+\/(\d+)/.exec(error.backendMessage);
+  return match ? Number(match[1]) : null;
+}
+
 /** 槽冲突（409 CONFLICT，d6/d7）：同类长任务已在后台跑。后端错误文本恒含
  * 槽 key（`course generation for this source is already running (…)`）与
  * `CONFLICT` 码；keyFragment 用于精确认领（如 `basis-declare-{courseId}`）

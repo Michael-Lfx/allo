@@ -10,8 +10,10 @@
  *   附「满 K 次开放」提示；K 值一律来自后端 trigger_count（前端不自定 6）；
  * - 刷新时机（R2）：进页挂载拉一次、refreshToken 变化（会话结束回调后）
  *   再拉一次，无令牌变化不再拉（不轮询）；
- * - 409 兜底（R3）：开测回调被拒（BackendHttpError 409）→ conflictBusy
- *   toast（errorMessage 单源映射）+ 重拉进度呈现归零。
+ * - 开测点击（u5 R4 简化）：即同步调 onStartQuiz 打开会话容器（index.tsx
+ *   同步 setState），零 loading 态、零兜底——原「409 兜底（R3）：conflictBusy
+ *   toast + 重拉」用例随职责迁移删除，该路径已由 useQuizSession.test.ts 的
+ *   u5 R2 用例（会话容器冲突闭环）钉死。
  * 组件自身拉进度（props 只有 courseId/refreshToken/onStartQuiz），故用例在
  * jsdom 宿主里跑真实 effects，进度经 learningApi.quizProgress 逐用例打补丁
  * 并还原（learningApi 是 HTTP 边界，useCourseLearning.test 同纪律）；提示经
@@ -33,7 +35,6 @@ import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 import { AppMessage, notificationStore } from '@/renderer/components/notifications';
 import { learningApi } from '../api';
 import type { QuizProgressView } from '../types';
-import type { BackendHttpError } from '@/common/adapter/httpBridge';
 
 // ── jsdom 宿主：组件挂载后 effects 才跑（拉进度、绑定点击），SSR 探针不可用 ──
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -123,11 +124,11 @@ const reset = async () => {
 const mountCard = async (
   locale: 'zh-CN' | 'en-US',
   progressPatch: () => Promise<QuizProgressView> = async () => progress(),
-  props: { refreshToken?: number; onStartQuiz?: () => void | Promise<void> } = {}
+  props: { refreshToken?: number; onStartQuiz?: () => void } = {}
 ): Promise<{
   pulls: () => number;
   html: () => string;
-  rerender: (token: number, onStartQuiz?: () => void | Promise<void>) => Promise<void>;
+  rerender: (token: number, onStartQuiz?: () => void) => Promise<void>;
 }> => {
   await reset();
   let pulls = 0;
@@ -164,7 +165,7 @@ const mountCard = async (
 const rerenderCard = async (
   instance: Awaited<ReturnType<typeof initTestI18n>>,
   refreshToken: number,
-  onStartQuiz: () => void | Promise<void> = () => undefined
+  onStartQuiz: () => void = () => undefined
 ) => {
   await act(async () => {
     root!.render(
@@ -187,8 +188,6 @@ const shownDuring = async (action: () => Promise<void>) => {
     .filter((record) => !before.has(record.key))
     .map((record) => ({ level: record.level, content: record.content }));
 };
-
-const http409 = (error: BackendHttpError | Error): unknown => error;
 
 // 组件引用在 jsdom 宿主就绪后取（import 提升不影响：模块图无 DOM 顶层依赖）。
 import { QuizEntryCard } from './QuizEntryCard';
@@ -309,18 +308,14 @@ describe('QuizEntryCard（u2 测验入口卡）', () => {
     void notDue;
   });
 
-  test('409 兜底（R3）：开测被拒 → conflictBusy toast + 重拉进度读数', async () => {
-    const conflict = new (await import('@/common/adapter/httpBridge')).BackendHttpError({
-      method: 'POST',
-      path: '/api/learning/courses/course-1/quiz/start',
-      status: 409,
-      body: { error: 'quiz not due' },
-    });
+  test('u5 R4 简化形态：开测即同步回调，零 loading 态、零兜底（回调悬挂不改卡片呈现、零 toast、零重拉）', async () => {
     let startCalls = 0;
     const card = await mountCard('zh-CN', undefined, {
-      onStartQuiz: async () => {
+      // 悬挂回调：旧 starting 态会卡 loading（finally 不到来）；简化形态不
+      // 等待回调，卡片呈现与读数零变化（409 兜底已随职责迁至会话容器）
+      onStartQuiz: () => {
         startCalls += 1;
-        throw http409(conflict);
+        return new Promise<void>(() => undefined);
       },
     });
     expect(card.pulls()).toBe(1);
@@ -335,11 +330,10 @@ describe('QuizEntryCard（u2 测验入口卡）', () => {
       });
     });
     expect(startCalls).toBe(1);
-    // 报实情：409 → conflictBusy（errorMessage 单源映射），原始报文不上人面
-    expect(toasts).toEqual([
-      { level: 'error', content: '当前有任务正在进行，请稍后再试' },
-    ]);
-    // 兜底刷新：拒绝后重拉读数（呈现如实归零的通道）
-    expect(card.pulls()).toBe(2);
+    // 零兜底：卡片不再 toast、不再重拉读数（会话容器内 409 闭环，u5 R2）
+    expect(toasts).toEqual([]);
+    expect(card.pulls()).toBe(1);
+    // 零 loading 态：按钮无 loading 呈现
+    expect(container.innerHTML).not.toContain('arco-btn-loading');
   });
 });
