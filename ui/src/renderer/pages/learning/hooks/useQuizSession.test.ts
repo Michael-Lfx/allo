@@ -4,12 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/** quizSessionController 状态机单测（u3）。可测面是控制器公共 seam（hook 的
- * 状态源）：start → 逐题作答判分 → 下一题 → 全卷收集完整 → complete 交报告。
+/** quizSessionController 状态机单测（u3 + u4）。可测面是控制器公共 seam
+ * （hook 的状态源）：start → 逐题作答判分 → 下一题 → 全卷收集完整 →
+ * complete 进报告相（u4：onFinished 延后）→ finish「完成」交报告收口。
  * 假数据源即测试替身（useCourseCreation.test 同纪律）：api/notify/onFinished
  * 全部注入，零 HTTP、零 DOM。持答案红线（R4）与全卷收集门（R5）在本文件
  * 钉死：反馈只随判分出现、只随当前题、推进即弃、关闭全弃；response 原样
- * 回收、全题作答才允许 complete、会话内零 progress 调用。 */
+ * 回收、全题作答才允许 complete、会话内零 progress 调用；报告相封口
+ * （u4：complete 只进 report、finish 才触发 onFinished、折叠 null 原样过）。 */
 import * as bunTest from 'bun:test';
 import { BackendHttpError, BackendRequestError } from '@/common/adapter/httpBridge';
 import type { QuizGradeFeedback, QuizRoundQuestionView, QuizRoundReport, QuizRoundView } from '../types';
@@ -137,8 +139,8 @@ function makeHarness(apiOverrides: Partial<QuizApiStub> = {}): Harness {
   return { controller, api, calls, reports, toasts };
 }
 
-describe('quizSessionController 全旅程（u3 R1/R5）', () => {
-  test('start → 逐题作答判分 → 下一题 → 全卷收集完整 → complete 交报告（漏题不可能）', async () => {
+describe('quizSessionController 全旅程（u3 R1/R5 + u4 报告相）', () => {
+  test('start → 逐题作答判分 → 下一题 → 全卷收集完整 → complete 进报告相 → finish 交报告（漏题不可能）', async () => {
     const { controller, calls, reports, toasts } = makeHarness();
 
     // 初始态：loading，无回合无反馈无收集
@@ -197,7 +199,13 @@ describe('quizSessionController 全旅程（u3 R1/R5）', () => {
     expect(calls.complete[0]?.answers['act-1']).toBe(response1);
     expect(calls.complete[0]?.answers['act-2']).toBe(response2);
     expect(calls.complete[0]?.answers['act-3']).toBe(false);
-    // 会话结束回调携带全卷报告
+    // u4 R4：complete 成功进报告相（报告在容器内呈现），onFinished 未触发
+    const reported = controller.getState();
+    expect(reported.phase).toBe('report');
+    expect(reported.report?.earned_xp).toBe(30);
+    expect(reports).toHaveLength(0);
+    // 「完成」按钮才收口：finish 交全卷报告（集成侧刷新 N/K 并卸载）
+    expect(controller.finish()).toBe(true);
     expect(reports).toHaveLength(1);
     expect(reports[0]?.earned_xp).toBe(30);
     expect(controller.getState().phase).toBe('completed');
@@ -407,9 +415,11 @@ describe('quizSessionController 失败路径（u3 Acceptance：409/网络如实�
     expect(toasts).toEqual(['learning.serviceUnavailable']);
     expect(controller.getState().phase).toBe('ready');
     expect(reports).toHaveLength(0);
-    // 重试结算成功交报告
+    // 重试结算成功进报告相，onFinished 仍待「完成」触发
     expect(await controller.complete()).toBe(true);
     expect(attempts).toBe(2);
+    expect(reports).toHaveLength(0);
+    expect(controller.finish()).toBe(true);
     expect(reports).toHaveLength(1);
   });
 
@@ -431,6 +441,112 @@ describe('quizSessionController 失败路径（u3 Acceptance：409/网络如实�
     expect(await controller.complete()).toBe(false);
     releaseComplete?.(report());
     expect(await pending).toBe(true);
+    expect(controller.getState().phase).toBe('report');
+  });
+});
+
+describe('quizSessionController 报告相与收口时序（u4 R1/R4）', () => {
+  /** 驱到报告相的公共前奏：start → 全题判分推进 → ready → complete。 */
+  async function driveToReport(harness: Harness) {
+    const { controller } = harness;
+    await controller.start();
+    for (let step = 0; step < 3; step += 1) {
+      await controller.grade(`resp-${step}`);
+      controller.next();
+    }
+    expect(await controller.complete()).toBe(true);
+    expect(controller.getState().phase).toBe('report');
+  }
+
+  test('finish 只从 report 相可进：作答/判分/ready 相拒绝且零回调，completed 相幂等拒绝', async () => {
+    const harness = makeHarness();
+    const { controller, reports } = harness;
+    await controller.start();
+    // 作答相 finish：拒绝且零回调
+    expect(controller.finish()).toBe(false);
+    await controller.grade('A');
+    // 判分相 finish：拒绝
+    expect(controller.finish()).toBe(false);
+    controller.next();
+    // 回到作答相（第 2 题）finish：拒绝
+    expect(controller.getState().phase).toBe('answering');
+    expect(controller.finish()).toBe(false);
+    for (let step = 1; step < 3; step += 1) {
+      await controller.grade(`resp-${step}`);
+      controller.next();
+    }
+    // ready 相 finish：拒绝（结算未发生，无报告可交）
+    expect(controller.getState().phase).toBe('ready');
+    expect(controller.finish()).toBe(false);
+    expect(reports).toHaveLength(0);
+    // 结算成功进报告相；「完成」交报告一次；completed 相重复 finish 幂等拒绝
+    expect(await controller.complete()).toBe(true);
+    expect(controller.getState().phase).toBe('report');
+    expect(controller.finish()).toBe(true);
+    expect(reports).toHaveLength(1);
+    expect(controller.finish()).toBe(false);
+    expect(reports).toHaveLength(1);
     expect(controller.getState().phase).toBe('completed');
+  });
+
+  test('折叠 null 直测：earned_xp=null 节点原样入态与回调（不做 0/空归一）', async () => {
+    const foldedReport: QuizRoundReport = {
+      round_id: 'round-1',
+      course_id: 'course-1',
+      earned_xp: 12,
+      covered: [
+        {
+          node_id: 'node-1',
+          node_name: '实数系',
+          answered: 2,
+          correct: 2,
+          earned_xp: null,
+          questions: [],
+        },
+        {
+          node_id: 'node-2',
+          node_name: '虚数系',
+          answered: 1,
+          correct: 1,
+          earned_xp: 12,
+          questions: [],
+        },
+      ],
+    };
+    const harness = makeHarness({ quizComplete: async () => foldedReport });
+    const { controller, reports } = harness;
+    await driveToReport(harness);
+    // 报告相态内：折叠节点 earned_xp 严格 null（不是 0、不是 undefined）
+    const stored = controller.getState().report;
+    expect(stored).not.toBeNull();
+    expect(stored?.covered[0]?.earned_xp).toBeNull();
+    expect(stored?.covered[1]?.earned_xp).toBe(12);
+    expect(stored?.earned_xp).toBe(12);
+    // 「完成」交同一引用：回调侧拿到的折叠行零改写
+    expect(controller.finish()).toBe(true);
+    expect(reports[0]).toBe(foldedReport);
+    expect(reports[0]?.covered[0]?.earned_xp).toBeNull();
+  });
+
+  test('report 相封口：grade/next/complete/start 全拒绝且状态零迁移', async () => {
+    const harness = makeHarness();
+    const { controller } = harness;
+    await driveToReport(harness);
+    const sealed = controller.getState();
+    expect(await controller.grade('x')).toBe(false);
+    expect(controller.next()).toBe(false);
+    expect(await controller.complete()).toBe(false);
+    expect(await controller.start()).toBe(false);
+    // 全部拒绝后状态引用不变（零迁移）
+    expect(controller.getState()).toBe(sealed);
+  });
+
+  test('report 相 close：弃报告回落初始态，零 onFinished（round 已结算不回滚，读数待下次进入刷新）', async () => {
+    const harness = makeHarness();
+    const { controller, reports } = harness;
+    await driveToReport(harness);
+    controller.close();
+    expect(controller.getState()).toEqual(initialQuizSessionState);
+    expect(reports).toHaveLength(0);
   });
 });

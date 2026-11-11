@@ -703,8 +703,13 @@
   "quizExplanationLabel": "Explanation",
   "quizEvidenceLabel": "Evidence",
   "quizGradeExcellent": "Excellent",
+  "quizGradeExcellentHint": "Nearly all correct — you know this material well. Keep the pace.",
   "quizGradePass": "Pass",
+  "quizGradePassHint": "Solid grasp overall. A quick pass over the nodes you missed will make it stick.",
   "quizGradeHalf": "Half credit",
+  "quizGradeHalfHint": "The basics are there, but some nodes are getting fuzzy. Review the nodes behind your misses, then take another round.",
+  "quizGradeLow": "Needs work",
+  "quizGradeLowHint": "This round surfaced real gaps — no rush. Patch the nodes one by one and the next check will feel much steadier.",
   "quizFoldedNoXp": "Already settled today: coverage kept, no duplicate XP",
   "quizNotDueHint": "Not due yet — unlocks after {{trigger}} new-lesson settlements",
   "quizMissingAnswers": "{{count}} question(s) left unanswered — answer every question to settle",
@@ -712,5 +717,11 @@
   "quizNext": "Next question",
   "quizRetry": "Retry",
   "quizReadyToSettle": "All {{count}} questions answered — settle the round to bank your XP",
-  "quizCompleteButton": "Settle round"
+  "quizCompleteButton": "Settle round",
+  "quizReportHeading": "Round settlement",
+  "quizReportTotalXp": "Net XP {{xp}}",
+  "quizReportAccuracy": "Accuracy {{percent}}%",
+  "quizReportRowScore": "{{answered}} answered · {{correct}} correct",
+  "quizReportRowXp": "+{{xp}} XP",
+  "quizReportFinish": "Done"
 }
