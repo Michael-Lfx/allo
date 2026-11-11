@@ -2073,14 +2073,13 @@ impl VoiceCompanionRuntime {
         if self.event_tx.feedback().speak_replies {
             // A manual stop is a user-initiated exit: say the same fixed
             // pre-rendered farewell as every other dismiss path.
-            let locale = self.snapshot().locale.clone();
-            let is_en = nomifun_api_types::voice::is_english_locale(locale.as_deref());
-            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
-            let playback = self.playback.clone();
-            let event_tx = self.event_tx.clone();
-            tokio::spawn(async move {
-                let _ = voice_feedback::play_vocal(&playback, &event_tx, dismiss_bytes, VoiceCueKind::Sleep, generation).await;
-            });
+            let locale = self.snapshot().locale;
+            Self::schedule_preset_farewell(
+                &self.playback,
+                &self.event_tx,
+                locale.as_deref(),
+                generation,
+            );
         } else {
             voice_feedback::schedule(
                 self.playback.clone(),
@@ -2327,6 +2326,32 @@ impl VoiceCompanionRuntime {
             }
         });
         Ok(())
+    }
+
+    /// Plays the bundled, pre-rendered farewell for a user-initiated exit.
+    ///
+    /// The four exit entry points (direct command, LLM Dismiss, confirmation
+    /// stage, UI stop) must stay identical; keep their playback in one place.
+    fn schedule_preset_farewell(
+        playback: &Arc<PlaybackPipeline>,
+        event_tx: &Arc<VoiceEventHub>,
+        locale: Option<&str>,
+        generation: u64,
+    ) {
+        let is_en = nomifun_api_types::voice::is_english_locale(locale);
+        let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+        let playback = Arc::clone(playback);
+        let event_tx = Arc::clone(event_tx);
+        tokio::spawn(async move {
+            let _ = voice_feedback::play_vocal(
+                &playback,
+                &event_tx,
+                dismiss_bytes,
+                VoiceCueKind::Sleep,
+                generation,
+            )
+            .await;
+        });
     }
 
     /// One playback/follow-up path for chat, controls and task results.
@@ -2725,17 +2750,16 @@ impl VoiceCompanionRuntime {
                             },
                         );
                         drop(d);
-                        let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
                         if event_tx.feedback().speak_replies {
                             // Every user-initiated exit speaks the same fixed,
                             // pre-rendered farewell; custom dismiss text no longer
                             // changes the exit voice.
-                            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
-                            let playback_clone = playback.clone();
-                            let event_tx_clone = event_tx.clone();
-                            tokio::spawn(async move {
-                                let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
-                            });
+                            Self::schedule_preset_farewell(
+                                playback,
+                                event_tx,
+                                scope.locale.as_deref(),
+                                sleep_gen,
+                            );
                         } else {
                             voice_feedback::schedule(
                                 playback.clone(),
@@ -3228,14 +3252,13 @@ impl VoiceCompanionRuntime {
                             reason: VoiceSessionEndReason::UserStop,
                         },
                     );
-                    let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
                     if event_tx.feedback().speak_replies {
-                        let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
-                        let playback_clone = playback.clone();
-                        let event_tx_clone = event_tx.clone();
-                        tokio::spawn(async move {
-                            let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
-                        });
+                        Self::schedule_preset_farewell(
+                            playback,
+                            event_tx,
+                            scope.locale.as_deref(),
+                            sleep_gen,
+                        );
                     } else {
                         voice_feedback::schedule(
                             playback.clone(),
@@ -4825,14 +4848,13 @@ impl VoiceCompanionRuntime {
                                                         },
                                                     );
                                                     drop(d);
-                                                    let is_en = nomifun_api_types::voice::is_english_locale(current.locale.as_deref());
                                                     if events.feedback().speak_replies {
-                                                        let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
-                                                        let output_clone = output.clone();
-                                                        let events_clone = events.clone();
-                                                        tokio::spawn(async move {
-                                                            let _ = voice_feedback::play_vocal(&output_clone, &events_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
-                                                        });
+                                                        Self::schedule_preset_farewell(
+                                                            &output,
+                                                            &events,
+                                                            current.locale.as_deref(),
+                                                            sleep_gen,
+                                                        );
                                                     } else {
                                                         voice_feedback::schedule(
                                                             output.clone(),
