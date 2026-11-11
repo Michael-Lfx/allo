@@ -2,7 +2,7 @@
 id: v4
 title: "（可裁）对话框完成卡片结构态披露——「知识结构生成中…」一行接棒"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [v1]
 part_of: ../map.md
@@ -52,3 +52,20 @@ v3 同一快照轮询：
 
 - 卡片落库后的自刷新（本票明确不做，接棒面在 Pill/工作区）。
 - 卡片布局/其它内容改动。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验与欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `3807ce671`：`structureCardLine(watch, t)` 纯函数（在跑 → 文案；
+  queued/终态/idle/missing → null）+ props 链（index → CreateCourseDialog →
+  CourseGenerationProgress，仿 courseKind/restored 形态）；卡片「N 个模块 ·
+  0 个课时」下渲染 secondary 结构态行，仅 graphFlow 渲染（防误传守卫）。
+  13 例测试。
+- **单一轮询源约束达成**：useStructurePillWatch 激活面由「仅 Pill 可见」
+  放宽为「图课程 completed」——对话框打开与 Pill 可见互斥且必居其一，
+  watch 两期连续服务，未新增第二份轮询（组件内 hook 方案被否：静态渲染
+  不跑 effect 不可测，且字面违背约束；留痕）。
+- 票面裁定执行：卡片落库不自刷新（终态行退场，接棒在 Pill/工作区）；
+  queued 态与 attempt 轮次不入卡片文案（真话在 Pill），测试钉住。
+- 评审修复 = `73983597c`（卡片两键入占位符全对称断言）。

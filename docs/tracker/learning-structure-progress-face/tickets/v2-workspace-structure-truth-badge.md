@@ -2,7 +2,7 @@
 id: v2
 title: "工作区结构真话面——徽章实时读数（轮次/耗时）+ 刷新失忆修复 + 生长防呆"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [v1]
 part_of: ../map.md
@@ -71,3 +71,21 @@ part_of: ../map.md
 - 对话框内呈现（v4）与悬浮 Pill（v3）。
 - WS 帧字段变更；后端结构生成行为任何变更（含 terrain 删键）。
 - `regenerateStructure` 重生成路径的呈现语义（d3 已移除产品面，仅纠错通道）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验（刷新失忆/轮次读数/生长防呆）与欠账
+合并执行，FAIL 按票重开。**
+
+- 施工 = `36d9ec8f0`：G3 三源并集（registryBusy 补 structure 类 +
+  hasActiveStructureRow 单源判定，structureRunning 转派生值）；G2 新模块
+  `structureReadout.ts`（5s 收敛轮询照 c2 形状：终态即停、不可达保留现值、
+  假数据源注入；徽章「结构生成中 · 第 {attempt}/3 次 · 已 m:ss」——elapsed
+  用服务端 elapsed_secs 不自算钟，attempt 缺失回退静态「生成中…」）；G5
+  生长按钮守卫（grow() 函数体与后端零变化）。27 例测试。
+- 评审修复 = `73983597c`（F1/F3 相关）：耗时格式器收敛单源
+  （formatGrowthElapsed），悬浮 Pill 与工作区徽章同口径；占位符全对称断言。
+- 基线勘误：票面写「存量 54 错」——实测本波基线（s 波 repo hygiene 后）
+  typecheck 已 0 错，「零新增」按 0 基线执行（更严）。
+- 留痕：`services/i18n/sourcePlanLocales.test.ts` 2 例 HEAD 即红
+  （costGate* 词典缺失）——学习域外存量债，归 o5 顺路修或独立小票。

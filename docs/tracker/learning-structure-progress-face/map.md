@@ -74,3 +74,21 @@ v1 → v2 → v3（v2/v3 消费 v1 的 attempt；v3 理论上可只做 elapsed �
 
 本波真机验收与历史欠账（c1–c3 三票目验项 + s1 键渲染 + s4 恢复态收敛）同批
 执行：建一门新图课程走完全程（含一次切页往返），一次覆盖两波判据。
+
+## 收图记录（2026-11-11）
+
+- 施工：v1 = `4b8ef6466`；v2 = `36d9ec8f0`；v3 = `522ea2323`+`4803a6957`；
+  v4 = `3807ce671`。单票一代理（v1 先行，v2∥v3 并行，v4 收尾），worktree
+  各自分支，merger 依次并回；tracker 随 `1efea86fa` 入 git。
+- 双轴评审（Standards/Spec 并行子代理）：**零硬违规、零越界**——Spec 逐项
+  核实：attempt 仅结构循环（growth/lesson None）、G3/G5 落地、落库退场、
+  per-key 取消接线、恢复态经 buildRestoredRequest 覆盖、v4 单一轮询源。
+- 评审修复 = `e36565525`（F5 attempt 启动初始化）+ `73983597c`（F1 格式器
+  单源 / F2 Pill 单块 + GraphPillFacet 两相 / F3 占位符全对称断言 / F4 装配
+  源断言五钉）。留痕不修：structureLine prop 透传（轻度 Middle Man）、两处
+  同形状轮询不抽公共 hook（均为票面/评审判可接受的 judgement）。
+- 验证（集成树 bb20d5261 会话独立复验）：前端 learning **242 绿**、后端
+  nomifun-learning lib **963 绿**、typecheck 0 错（s 波后基线）、gen:i18n/
+  check:i18n 绿（12372 keys）。
+- 真机欠账合并批：v 波四票目验 + c1–c3 + s1/s4 + 口语化波（o1–o6，已立票
+  待 v 波并回后开动）。
