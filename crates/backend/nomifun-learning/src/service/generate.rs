@@ -335,6 +335,12 @@ impl LearningService {
             .await;
         match &detail {
             Ok(detail) => {
+                // s4 终态契约：课程落库后补挂真实 id + 显式收尾——此前守卫
+                // drop 一律落 failed「任务中断（未收尾即退出）」，且视图课程
+                // 段是会话 id，恢复态翻 done 后拉详情必 404（课程建成却呈现
+                // 失败）。键与原课程段不动（恢复态按 taskKey 匹配）。
+                _task.set_resolved_course_id(detail.course.id.as_str());
+                _task.finish_done("课程已建成");
                 self.emit_course_event(serde_json::json!({
                     "phase": crate::events::phase::COMPLETED,
                     "pipeline": pipeline,
