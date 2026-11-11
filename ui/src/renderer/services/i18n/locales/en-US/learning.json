@@ -708,5 +708,9 @@
   "quizFoldedNoXp": "Already settled today: coverage kept, no duplicate XP",
   "quizNotDueHint": "Not due yet — unlocks after {{trigger}} new-lesson settlements",
   "quizMissingAnswers": "{{count}} question(s) left unanswered — answer every question to settle",
-  "quizLoadFailed": "Failed to load the quiz. Please try again."
+  "quizLoadFailed": "Failed to load the quiz. Please try again.",
+  "quizNext": "Next question",
+  "quizRetry": "Retry",
+  "quizReadyToSettle": "All {{count}} questions answered — settle the round to bank your XP",
+  "quizCompleteButton": "Settle round"
 }
