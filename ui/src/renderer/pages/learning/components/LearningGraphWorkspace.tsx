@@ -39,6 +39,12 @@ import {
   saveStructurePresentedWatermark,
   shouldPresentStructure,
 } from '../structurePresentation';
+import {
+  hasActiveStructureRow,
+  startStructureReadoutPolling,
+  structureBadgeCopy,
+  type StructureReadout,
+} from '../structureReadout';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
@@ -149,10 +155,15 @@ const LearningGraphWorkspace: React.FC<{
   // ── 知识结构状态（读侧投影 + 生成中/失败态）─────────────────────────────
   const [structure, setStructure] = useState<LearningStructureView | null>(null);
   const [structureError, setStructureError] = useState<string | null>(null);
-  const [structureRunning, setStructureRunning] = useState(false);
+  // WS 帧驱动的运行旗（best-effort，不重放——刷新即丢）；对外呈现用下方
+  // 与注册表快照行取并集后的 structureRunning。
+  const [structureRunningWs, setStructureRunningWs] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [mounting, setMounting] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  // 快照轮询终态的接棒柄：指向下方 WS 效应内的 load 闭包（保留课程切换的
+  // cancelled 守卫——装载路径只此一份，快照终态面不另写第二条）。
+  const structureLoadRef = React.useRef<() => void>(() => undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,7 +174,7 @@ const LearningGraphWorkspace: React.FC<{
           if (cancelled) return;
           setStructure(view);
           setStructureError(null);
-          if (view.structure) setStructureRunning(false);
+          if (view.structure) setStructureRunningWs(false);
           presentStructureOnce(view);
         })
         .catch((loadError) => {
@@ -172,16 +183,17 @@ const LearningGraphWorkspace: React.FC<{
           }
         });
     };
+    structureLoadRef.current = load;
     load();
     // 结构生成的开始/终结帧驱动「生成中」状态机，终结即重取投影。
     // 失败必须显式清 running——否则首次生成失败会永久停在「生成中…」
     // （快照仍为 null，load 里无法自行消解）。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
       if (event.course_id !== detail.course.id) return;
-      if (event.event === 'structure_started') setStructureRunning(true);
+      if (event.event === 'structure_started') setStructureRunningWs(true);
       if (event.event === 'structure_completed') load();
       if (event.event === 'structure_failed' || event.event === 'structure_cancelled') {
-        setStructureRunning(false);
+        setStructureRunningWs(false);
         load();
       }
     });
@@ -194,13 +206,13 @@ const LearningGraphWorkspace: React.FC<{
   const regenerateStructure = useCallback(async () => {
     setRegenerating(true);
     try {
-      setStructureRunning(true);
+      setStructureRunningWs(true);
       await learningApi.regenerateGraphStructure(detail.course.id, {
         provider_id: model.choice?.provider_id,
         model: model.choice?.model,
       });
     } catch (actionError) {
-      setStructureRunning(false);
+      setStructureRunningWs(false);
       // g3 冲突显性化：生成进行中重复触发 = 后端 409 → 非阻塞 toast 明确
       // 反馈（此前 200 kicked=true 静默吞掉，「生成中」Tag 卡死到刷新）；
       // 其余失败保留阻塞 Modal——需要用户看见并处置。
@@ -308,10 +320,11 @@ const LearningGraphWorkspace: React.FC<{
   // 生成按 node_id（= lessonId）匹配。
   const [registryBusy, setRegistryBusy] = useState<{
     basis: boolean;
+    structure: boolean;
     mount: boolean;
     repair: boolean;
     lessons: Set<string>;
-  }>({ basis: false, mount: false, repair: false, lessons: new Set() });
+  }>({ basis: false, structure: false, mount: false, repair: false, lessons: new Set() });
   const refreshRegistryBusy = useCallback(async () => {
     const courseId = detail.course.id;
     const sessionBasis = isInFlight(`basis:${courseId}`);
@@ -320,6 +333,7 @@ const LearningGraphWorkspace: React.FC<{
     const sessionLessons = inFlightIdsWithPrefix(`lesson:${courseId}:`);
     setRegistryBusy({
       basis: sessionBasis,
+      structure: false,
       mount: sessionMount,
       repair: sessionRepair,
       lessons: sessionLessons,
@@ -332,6 +346,10 @@ const LearningGraphWorkspace: React.FC<{
       );
       setRegistryBusy({
         basis: sessionBasis || active.some((task) => task.kind === 'basis_declare'),
+        // structure 类补位（G3 失忆面）：d7 的 active 过滤四类恰好漏了本尊
+        // ——刷新后结构明明在跑却呈现「尚未生成 + 可点生成按钮（点了才
+        // 409）」。快照行即服务端真相，用与读数轮询同源的判定。
+        structure: hasActiveStructureRow(tasks, courseId),
         mount: sessionMount || active.some((task) => task.kind === 'structure_mount'),
         repair: sessionRepair || active.some((task) => task.kind === 'structure_repair'),
         lessons: new Set([
@@ -348,6 +366,37 @@ const LearningGraphWorkspace: React.FC<{
   useEffect(() => {
     void refreshRegistryBusy();
   }, [refreshRegistryBusy]);
+
+  // structureRunning 三源并集（G3）：WS 旗（不重放，刷新即丢）∪ 注册表快照
+  // 行（上字段补位）。既有 load() 消解不动（投影非空才清 WS 旗）；快照源
+  // 随终态行出集自然落定（WS 终态帧触发的注册表重算 + 下方轮询终态接棒）。
+  const structureRunning = structureRunningWs || registryBusy.structure;
+
+  // ── 结构生成实时读数（G2 哑巴面修复）：running 期间 5s 轮询任务快照，
+  // attempt/elapsed 全取服务端真相（不自算钟）；快照缺行或 attempt 未回写
+  // → 回退静态「生成中…」；快照不可达保留现值不臆造（c2 收敛轮询纪律）。
+  // 快照终态接棒语义对齐 WS 终态臂：failed/cancelled 显式清旗（快照 null
+  // 无法自行消解），done 由 load 按投影非空消解；注册表并集随终态行出集
+  // 同步重算。
+  const [structureReadout, setStructureReadout] = useState<StructureReadout | null>(null);
+  useEffect(() => {
+    if (!structureRunning) {
+      setStructureReadout(null);
+      return undefined;
+    }
+    return startStructureReadoutPolling({
+      courseId: detail.course.id,
+      fetchTasks: () => learningApi.generationTasks(),
+      onReadout: setStructureReadout,
+      onTerminal: (state) => {
+        if (state === 'failed' || state === 'cancelled') setStructureRunningWs(false);
+        void refreshRegistryBusy();
+        structureLoadRef.current();
+      },
+    });
+  }, [structureRunning, detail.course.id, refreshRegistryBusy]);
+  // 徽章文案机面（c3 契约）：读数在 → 插值键；缺 → 静态「生成中…」。
+  const structureBadge = structureBadgeCopy(structureReadout);
 
   // ── 已会声明（Declared Known，m2）：读数 + 一次性声明（c3 起产品面无撤销
   // 入口；后端 DELETE /basis 留作纠错通道）──────────────────────────────
@@ -559,7 +608,10 @@ const LearningGraphWorkspace: React.FC<{
             <Spin size={12} />
           ) : structureRunning ? (
             <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphStructureGenerating')}
+              {t(
+                structureBadge.key,
+                'vars' in structureBadge ? structureBadge.vars : undefined
+              )}
             </Tag>
           ) : structure.structure ? (
             <Text type='secondary' className='text-12px'>
@@ -608,7 +660,9 @@ const LearningGraphWorkspace: React.FC<{
             loading={growing || graph.growth_running}
             // growth_running 是服务端真相（d7）：切页往返后本地 growing 已丢，
             // 服务端在跑的生长批次照样禁用补充节点（防槽锁 409 双击）。
-            disabled={growing || graph.growth_running || busyId !== null}
+            // structureRunning 同防呆（G5）：结构生成期间显式生长恒过后端
+            // 零节点停摆臂（e3/m10 只拦自动臂），按钮侧先关闸。
+            disabled={growing || graph.growth_running || busyId !== null || structureRunning}
             onClick={() => void grow()}
           >
             {readyStockFull

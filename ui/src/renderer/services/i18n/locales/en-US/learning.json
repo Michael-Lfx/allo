@@ -468,6 +468,7 @@
   "learningGraphCreateHint": "When the topic is complex or open-ended, use a learning graph: enter the goal, the system first generates a knowledge-structure reference map (spines and blocks), then grows study nodes one by one; study order follows the coach.",
   "learningGraphStructureTitle": "Knowledge structure",
   "learningGraphStructureGenerating": "Generating…",
+  "structureBadgeRunning": "Generating structure · attempt {{attempt}}/{{max}} · {{elapsed}} elapsed",
   "learningGraphStructureFailed": "Knowledge structure generation failed",
   "learningGraphStructureConflict": "Structure generation is already in progress; wait for the current run to finish",
   "learningGraphStructureSummary": "{{spines}} spines · {{blocks}} blocks · {{doors}} doors",
