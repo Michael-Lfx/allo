@@ -96,6 +96,10 @@ struct TaskRecord {
     sequence: u64,
     kind: &'static str,
     course_id: String,
+    /// 课程落库后补挂的真实课程 id（s4 终态契约）：outline 任务的键课程
+    /// 段是会话 id（建课时课程尚不存在），快照视图的 course_id 优先取本
+    /// 字段而键保持原课程段——恢复态按 taskKey 匹配的契约面不动。
+    resolved_course_id: Option<String>,
     node_id: Option<String>,
     topic: String,
     state: &'static str,
@@ -191,6 +195,13 @@ impl GenerationTaskGuard {
     /// 进度叙事（step 机器面 / detail 诊断面，后端单源）：快照与事件共用。
     pub fn set_step(&self, step: &str, detail: &str) {
         self.registry.set_step(&self.key, step, detail);
+    }
+
+    /// 补挂真实课程 id（s4 终态契约）：课程落库后由任务体在 `finish_done`
+    /// 之前调用；快照视图的 course_id 优先取它，键与原课程段不变（恢复态
+    /// 按 taskKey 匹配）。
+    pub fn set_resolved_course_id(&self, course_id: &str) {
+        self.registry.set_resolved_course_id(&self.key, course_id);
     }
 
     pub fn finish_done(self, detail: impl Into<String>) {
@@ -372,6 +383,7 @@ impl GenerationTaskRegistry {
                     sequence,
                     kind,
                     course_id: course_id.to_owned(),
+                    resolved_course_id: None,
                     node_id: node_id.map(str::to_owned),
                     topic: topic.to_owned(),
                     state: if gated { STATE_QUEUED } else { STATE_RUNNING },
@@ -486,6 +498,16 @@ impl GenerationTaskRegistry {
                     record.detail = Some(detail.to_owned());
                 }
             }
+        }
+    }
+
+    /// 补挂真实课程 id（s4 终态契约）：见 [`TaskRecord::resolved_course_id`]。
+    /// 键不存在（已清理）则忽略；终态行不拦截——课程落库与 finish 同点
+    /// 顺序发生，先补挂后收尾。
+    pub(crate) fn set_resolved_course_id(&self, key: &str, course_id: &str) {
+        let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
+        if let Some(record) = tasks.get_mut(key) {
+            record.resolved_course_id = Some(course_id.to_owned());
         }
     }
 
@@ -621,6 +643,7 @@ impl GenerationTaskRegistry {
                         sequence: record.sequence,
                         kind: record.kind,
                         course_id: record.course_id.clone(),
+                        resolved_course_id: record.resolved_course_id.clone(),
                         node_id: record.node_id.clone(),
                         topic: record.topic.clone(),
                         state: record.state,
@@ -655,7 +678,10 @@ impl GenerationTaskRegistry {
                 GenerationTaskView {
                     key: Self::key(record.kind, &record.course_id, record.node_id.as_deref()),
                     kind: record.kind.to_owned(),
-                    course_id: record.course_id.clone(),
+                    course_id: record
+                        .resolved_course_id
+                        .clone()
+                        .unwrap_or_else(|| record.course_id.clone()),
                     node_id: record.node_id.clone(),
                     topic: record.topic.clone(),
                     state: record.state.to_owned(),
@@ -710,6 +736,50 @@ mod tests {
     /// m7 闸面测试共用：显式 on 臂构造（不读环境变量，测试互不串扰）。
     fn gated_registry() -> Arc<GenerationTaskRegistry> {
         Arc::new(GenerationTaskRegistry::with_gate(true, TASK_GATE_LIMIT))
+    }
+
+    /// s4 终态契约（绿面）：outline 成功路径补挂真实课程 id + 显式收尾后，
+    /// 快照 state=done、course_id=真实 id，而键保持会话 id 段——恢复态按
+    /// taskKey 匹配不断裂，fetchCourse 拿到的是真实 id。
+    #[tokio::test]
+    async fn resolved_course_id_flows_to_view_without_re_keying() {
+        let registry = gated_registry();
+        let task = registry
+            .begin(KIND_OUTLINE, "sess-1", None, "毕业论文怎么写")
+            .await
+            .unwrap();
+        task.set_resolved_course_id("course-real-1");
+        task.finish_done("课程已建成");
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == format!("{KIND_OUTLINE}:sess-1:-"))
+            .expect("finished outline task must stay in the snapshot");
+        assert_eq!(view.state, "done");
+        assert_eq!(view.course_id, "course-real-1");
+        assert_eq!(view.key, format!("{KIND_OUTLINE}:sess-1:-"));
+    }
+
+    /// s4 契约的参照面（Drop 兜底行为不变）：未收尾的 outline 任务按
+    /// failed「任务中断」留痕，课程段仍是会话 id。
+    #[tokio::test]
+    async fn unfinished_outline_task_still_lands_failed_with_session_segment() {
+        let registry = gated_registry();
+        let key = {
+            let task = registry
+                .begin(KIND_OUTLINE, "sess-2", None, "t")
+                .await
+                .unwrap();
+            task.key().to_owned()
+        }; // 守卫在此 drop（含客户端断连中止路径）。
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == key)
+            .expect("dropped guard must leave a failed row");
+        assert_eq!(view.state, "failed");
+        assert_eq!(view.course_id, "sess-2");
+        assert_eq!(view.detail.as_deref(), Some("任务中断（未收尾即退出）"));
     }
 
     /// 测试闸：占位任务体 arrive 后停在 wait_open，等 open() 放行
