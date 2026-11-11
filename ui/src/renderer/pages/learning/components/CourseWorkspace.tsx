@@ -36,6 +36,7 @@ import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonBlock } from './LessonStudy';
 import { CourseSamplingLine } from './CourseSamplingLine';
+import { QuizEntryCard } from './QuizEntryCard';
 import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
 import { errorMessage, statusLabel } from '../utils';
 import { overloadedBadgeCount } from '../capacityFeedback';
@@ -46,19 +47,25 @@ export function CourseWorkspace({
   detail,
   busyId,
   attemptResults,
+  quizProgressToken,
   onBack,
   onProgress,
   onAttempt,
   onGenerate,
+  onStartQuiz,
   onRefresh,
 }: {
   detail: CourseDetail;
   busyId: string | null;
   attemptResults: Record<string, AttemptRecord>;
+  /** 测验进度刷新令牌（u2）：进页初值；会话结束回调后 index.tsx bump */
+  quizProgressToken: number;
   onBack: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
   onGenerate: (lesson: Lesson, allLessons?: Lesson[]) => void;
+  /** u3 接线位：打开测验会话容器（409 拒测时入口卡兜底 toast + 重拉） */
+  onStartQuiz: () => void;
   onRefresh: () => void;
 }) {
   const { t } = useTranslation();
@@ -268,6 +275,18 @@ export function CourseWorkspace({
               </Button>
             </div>
           </Card>
+        )}
+        {/* 测验入口卡（u2）：N/K 读数 + 开测按钮，固定在推荐课时卡之后
+            （积累循环优先、检测次之，不随 due 摆位）。归档（enabled=0）
+            课程不渲染也不拉读数——跟随课程存在性语义；删除课程（墓碑）
+            详情页本就不挂载工作区。刷新时机：进页 + 会话结束令牌 bump，
+            不轮询（读数非门禁）。 */}
+        {course.enabled && (
+          <QuizEntryCard
+            courseId={course.id}
+            refreshToken={quizProgressToken}
+            onStartQuiz={onStartQuiz}
+          />
         )}
         {/* 左侧独立大纲 + 右侧仅显示当前选中课时内容 */}
         <div className='flex flex-col gap-18px lg:flex-row lg:items-start'>
