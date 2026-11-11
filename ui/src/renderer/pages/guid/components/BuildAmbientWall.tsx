@@ -1,9 +1,9 @@
 import React, { useEffect, useRef } from 'react';
+import { ambientRgba as rgba, mountAmbientCanvas, type AmbientRgb } from './ambientCanvas';
 import styles from './BuildAmbientWall.module.css';
 
 export type BuildAmbientVariant = 'directory' | 'website' | 'app' | 'game';
 
-type Rgb = [number, number, number];
 type Particle = {
   x: number;
   y: number;
@@ -16,26 +16,31 @@ type Particle = {
   previousY: number;
 };
 
-const FALLBACK_ACCENT: Rgb = [124, 108, 255];
-const FALLBACK_INK: Rgb = [180, 174, 210];
-const CODE_GLYPHS = '01<>/{}[]();:=+-*constletfn=>';
 const MATRIX_GLYPHS = '01{}[]<>/\\=+-*;:constletfn=>ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ';
+const GLYPH_WIDTH = 16;
+const GLYPH_HEIGHT = 20;
+const ATLAS_COLUMNS = 16;
+const ATLAS_ROWS = Math.ceil(MATRIX_GLYPHS.length / ATLAS_COLUMNS);
 
-const rgba = (color: Rgb, alpha: number) =>
-  `rgba(${Math.round(color[0])}, ${Math.round(color[1])}, ${Math.round(color[2])}, ${alpha})`;
-
-const readToken = (element: HTMLElement, token: string, fallback: Rgb): Rgb => {
-  const probe = document.createElement('span');
-  probe.style.color = `var(${token})`;
-  probe.style.display = 'none';
-  element.appendChild(probe);
-  const value = getComputedStyle(probe).color;
-  probe.remove();
-  const match = value.match(/rgba?\(([^)]+)\)/);
-  if (!match) return fallback;
-  const parts = match[1].split(/[ ,/]+/).filter(Boolean).map(Number);
-  return parts.length >= 3 ? [parts[0], parts[1], parts[2]] : fallback;
-};
+function createGlyphAtlas(doc: Document, accent: AmbientRgb, ink: AmbientRgb) {
+  const atlas = doc.createElement('canvas');
+  atlas.width = ATLAS_COLUMNS * GLYPH_WIDTH;
+  atlas.height = ATLAS_ROWS * GLYPH_HEIGHT * 2;
+  const context = atlas.getContext('2d');
+  if (!context) return atlas;
+  context.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  context.textAlign = 'center';
+  context.textBaseline = 'top';
+  for (const [layer, color] of [accent, ink].entries()) {
+    context.fillStyle = rgba(color, 1);
+    for (let index = 0; index < MATRIX_GLYPHS.length; index += 1) {
+      const x = (index % ATLAS_COLUMNS) * GLYPH_WIDTH;
+      const y = (Math.floor(index / ATLAS_COLUMNS) + layer * ATLAS_ROWS) * GLYPH_HEIGHT;
+      context.fillText(MATRIX_GLYPHS[index], x + GLYPH_WIDTH / 2, y);
+    }
+  }
+  return atlas;
+}
 
 /**
  * Full-bleed animated canvas for the build picker. It deliberately stays
@@ -47,16 +52,6 @@ const readToken = (element: HTMLElement, token: string, fallback: Rgb): Rgb => {
 const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant }) => {
   const wallRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [themeRevision, setThemeRevision] = React.useState(0);
-
-  // Re-read CSS tokens and rebuild the field when the host theme changes.
-  useEffect(() => {
-    const observer = new MutationObserver(() => setThemeRevision((value) => value + 1));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    observer.observe(document.body, { attributes: true, attributeFilter: ['arco-theme', 'data-theme'] });
-    return () => observer.disconnect();
-  }, []);
-
   useEffect(() => {
     const wall = wallRef.current;
     const canvas = canvasRef.current;
@@ -64,24 +59,19 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
     const context = canvas.getContext('2d', { alpha: true, desynchronized: true });
     if (!context) return;
 
-    const accent = readToken(wall, '--brand', FALLBACK_ACCENT);
-    const ink = readToken(wall, '--color-text-1', FALLBACK_INK);
-    const isDark =
-      document.documentElement.getAttribute('data-theme') === 'dark' ||
-      document.body.getAttribute('arco-theme') === 'dark';
-    const secondary: Rgb = variant === 'game' ? [62, 226, 218] : [103, 187, 255];
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let accent: AmbientRgb = [66, 66, 69];
+    let ink: AmbientRgb = [29, 29, 31];
+    const secondary: AmbientRgb = variant === 'game' ? [62, 226, 218] : [103, 187, 255];
     const pointer = { x: 0.5, y: 0.45, active: false };
     let width = 0;
     let height = 0;
-    let wallRect = { left: 0, top: 0, width: 0, height: 0 };
-    let dpr = 1;
-    let frame = 0;
+    let wallRect: DOMRect;
     let particles: Particle[] = [];
-    let lastTime = 0;
+    let waveStrokes: CanvasGradient[] = [];
+    let glyphAtlas: HTMLCanvasElement;
 
     const seedParticles = () => {
-      const count = variant === 'game' ? 110 : variant === 'app' ? 68 : variant === 'website' ? 38 : 0;
+      const count = variant === 'game' ? 48 : variant === 'app' ? 32 : 0;
       particles = [];
       for (let index = 0; index < count; index += 1) {
         particles.push({
@@ -98,40 +88,31 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       }
     };
 
-    const resize = () => {
-      const rect = wall.getBoundingClientRect();
-      width = Math.max(1, Math.round(rect.width));
-      height = Math.max(1, Math.round(rect.height));
-      wallRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-      dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
-      seedParticles();
-      render(reducedMotion ? 0 : performance.now(), true);
-    };
-
     const drawWebsite = (time: number) => {
       const drift = time * 0.00016;
       context.save();
       context.lineCap = 'round';
-      for (let index = 0; index < 9; index += 1) {
-        const baseY = height * (0.14 + index * 0.085);
+      for (let index = 0; index < 4; index += 1) {
+        const baseY = height * (0.18 + index * 0.16);
         const amplitude = height * (0.035 + (index % 4) * 0.012);
         const phase = index * 0.9 + drift * (0.7 + index * 0.03);
         context.beginPath();
-        for (let x = -36; x <= width + 36; x += 18) {
+        for (let x = -36; x <= width + 36; x += 32) {
           const y = baseY
             + Math.sin(x * 0.004 + phase) * amplitude
             + Math.sin(x * 0.0013 - phase * 1.7) * amplitude * 0.55;
           if (x === -36) context.moveTo(x, y);
           else context.lineTo(x, y);
         }
-        const stroke = context.createLinearGradient(0, 0, width, 0);
-        stroke.addColorStop(0, rgba(accent, 0));
-        stroke.addColorStop(0.28, rgba(accent, 0.3 + (index % 3) * 0.05));
-        stroke.addColorStop(0.62, rgba(accent, 0.38 - (index % 2) * 0.04));
-        stroke.addColorStop(1, rgba(ink, 0));
+        let stroke = waveStrokes[index];
+        if (!stroke) {
+          stroke = context.createLinearGradient(0, 0, width, 0);
+          stroke.addColorStop(0, rgba(accent, 0));
+          stroke.addColorStop(0.28, rgba(accent, 0.3 + (index % 3) * 0.05));
+          stroke.addColorStop(0.62, rgba(accent, 0.38 - (index % 2) * 0.04));
+          stroke.addColorStop(1, rgba(ink, 0));
+          waveStrokes[index] = stroke;
+        }
         context.strokeStyle = stroke;
         context.lineWidth = index % 3 === 0 ? 2.4 : 1;
         context.stroke();
@@ -140,19 +121,20 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       context.restore();
     };
 
-    const drawApp = (time: number) => {
+    const drawApp = (time: number, delta: number) => {
+      const step = delta * 0.03;
       const pointerX = pointer.x * width;
       const pointerY = pointer.y * height;
       const pulse = 0.5 + Math.sin(time * 0.0018) * 0.5;
       for (const particle of particles) {
-        particle.x += particle.vx;
-        particle.y += particle.vy;
+        particle.x += particle.vx * step;
+        particle.y += particle.vy * step;
         if (pointer.active) {
           const dx = pointerX - particle.x;
           const dy = pointerY - particle.y;
           const distance = Math.max(1, Math.hypot(dx, dy));
-          particle.x += (dx / distance) * 0.18;
-          particle.y += (dy / distance) * 0.18;
+          particle.x += (dx / distance) * 0.18 * step;
+          particle.y += (dy / distance) * 0.18 * step;
         }
         if (particle.x < -20) particle.x = width + 20;
         if (particle.x > width + 20) particle.x = -20;
@@ -162,10 +144,15 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       context.save();
       for (let index = 0; index < particles.length; index += 1) {
         const from = particles[index];
-        for (let otherIndex = index + 1; otherIndex < particles.length; otherIndex += 1) {
+        let links = 0;
+        for (let otherIndex = index + 1; otherIndex < particles.length && links < 2; otherIndex += 1) {
           const to = particles[otherIndex];
-          const distance = Math.hypot(from.x - to.x, from.y - to.y);
-          if (distance > 126) continue;
+          const dx = from.x - to.x;
+          const dy = from.y - to.y;
+          const distanceSquared = dx * dx + dy * dy;
+          if (distanceSquared > 126 * 126) continue;
+          const distance = Math.sqrt(distanceSquared);
+          links += 1;
           context.globalAlpha = (1 - distance / 126) * 0.42;
           context.strokeStyle = rgba(accent, 0.95);
           context.lineWidth = 0.7;
@@ -184,14 +171,6 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
         context.arc(particle.x, particle.y, particle.size + (distanceToPointer < 160 ? 1.2 : 0), 0, Math.PI * 2);
         context.fill();
       }
-      context.globalAlpha = 0.12;
-      context.strokeStyle = rgba(ink, 0.7);
-      for (let y = height * 0.1; y < height; y += 96) {
-        context.beginPath();
-        context.moveTo(0, y);
-        context.lineTo(width, y);
-        context.stroke();
-      }
       if (pointer.active) {
         context.globalAlpha = 0.16;
         context.strokeStyle = rgba(accent, 0.9);
@@ -203,26 +182,10 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       context.restore();
     };
 
-    const drawGame = (time: number) => {
+    const drawGame = (delta: number) => {
       const horizon = height * 0.64;
       const vanishX = width * (0.5 + (pointer.x - 0.5) * 0.035);
       context.save();
-      const stage = context.createLinearGradient(0, 0, 0, height);
-      stage.addColorStop(0, isDark ? 'rgba(4, 3, 12, 1)' : 'rgba(8, 5, 20, 1)');
-      stage.addColorStop(0.55, isDark ? 'rgba(10, 5, 24, 1)' : 'rgba(18, 8, 36, 1)');
-      stage.addColorStop(0.68, isDark ? 'rgba(16, 7, 30, 1)' : 'rgba(30, 12, 48, 1)');
-      stage.addColorStop(1, isDark ? 'rgba(2, 2, 6, 1)' : 'rgba(5, 3, 12, 1)');
-      context.fillStyle = stage;
-      context.fillRect(0, 0, width, height);
-      const sky = context.createLinearGradient(0, 0, 0, height);
-      sky.addColorStop(0, rgba(accent, isDark ? 0.035 : 0.055));
-      sky.addColorStop(0.56, rgba(secondary, isDark ? 0.025 : 0.04));
-      sky.addColorStop(0.64, rgba(accent, isDark ? 0.2 : 0.25));
-      sky.addColorStop(0.67, rgba(secondary, isDark ? 0.05 : 0.075));
-      sky.addColorStop(1, rgba(ink, isDark ? 0.02 : 0.035));
-      context.fillStyle = sky;
-      context.fillRect(0, 0, width, height);
-
       context.globalAlpha = 0.72;
       context.strokeStyle = rgba(accent, 1);
       context.lineWidth = 1.3;
@@ -249,7 +212,7 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
       context.stroke();
 
       for (const particle of particles) {
-        particle.z -= 0.0045;
+        particle.z -= 0.0045 * delta * 0.03;
         if (particle.z < 0.18) {
           particle.z = 1.8;
           particle.x = (Math.random() - 0.5) * width * 1.5;
@@ -278,137 +241,78 @@ const BuildAmbientWall: React.FC<{ variant: BuildAmbientVariant }> = ({ variant 
         }
       }
 
-      const glow = context.createRadialGradient(vanishX, horizon, 0, vanishX, horizon, width * 0.54);
-      glow.addColorStop(0, rgba(accent, 0.42));
-      glow.addColorStop(0.45, rgba(accent, 0.1));
-      glow.addColorStop(1, rgba(accent, 0));
-      context.globalAlpha = 1;
-      context.fillStyle = glow;
-      context.fillRect(0, 0, width, height);
       context.restore();
     };
 
     const drawDirectory = (time: number) => {
       const seconds = time * 0.001;
-      const columnWidth = 38;
-      const lineHeight = 20;
+      const columnWidth = Math.max(38, width / 24);
       const columns = Math.ceil(width / columnWidth);
       context.save();
-      context.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
-      context.textAlign = 'center';
-      context.textBaseline = 'top';
-      const headStyle = rgba(accent, 0.52);
-      const trailStyles = new Map<number, string[]>();
-      const styleForRow = (row: number, trail: number) => {
-        if (row === 0) return headStyle;
-        let styles = trailStyles.get(trail);
-        if (!styles) {
-          styles = Array.from({ length: trail }, (_, index) =>
-            rgba(ink, Math.max(0, 1 - index / trail) * 0.22),
-          );
-          trailStyles.set(trail, styles);
-        }
-        return styles[row] ?? rgba(ink, 0.02);
-      };
-
-      // Transparent Matrix-style code rain: no canvas background fill, only
-      // falling glyphs so the picker remains the visual anchor.
       for (let column = 0; column < columns; column += 1) {
         const seed = ((column * 9301 + 49297) % 233280) / 233280;
         const speed = 34 + seed * 62;
         const head = ((seconds * speed + seed * height * 1.8) % (height + 240)) - 120;
-        const trail = 8 + (column % 4);
         const glyphFrame = Math.floor(seconds * (4 + seed * 5));
-        for (let row = 0; row < trail; row += 1) {
-          const y = head - row * lineHeight;
-          if (y < -20 || y > height + 20) continue;
+        for (let row = 0; row < 6; row += 1) {
+          const y = head - row * GLYPH_HEIGHT;
+          if (y < -GLYPH_HEIGHT || y > height) continue;
           const glyphIndex = (column * 7 + row + glyphFrame) % MATRIX_GLYPHS.length;
-          context.fillStyle = styleForRow(row, trail);
-          context.fillText(
-            MATRIX_GLYPHS[glyphIndex],
-            column * columnWidth + columnWidth / 2,
-            y,
+          const sourceX = (glyphIndex % ATLAS_COLUMNS) * GLYPH_WIDTH;
+          const layer = row === 0 ? 0 : ATLAS_ROWS;
+          const sourceY = (Math.floor(glyphIndex / ATLAS_COLUMNS) + layer) * GLYPH_HEIGHT;
+          context.globalAlpha = row === 0 ? 0.52 : (1 - row / 6) * 0.22;
+          context.drawImage(
+            glyphAtlas, sourceX, sourceY, GLYPH_WIDTH, GLYPH_HEIGHT,
+            column * columnWidth + (columnWidth - GLYPH_WIDTH) / 2, y, GLYPH_WIDTH, GLYPH_HEIGHT,
           );
         }
       }
       context.restore();
     };
-    const render = (time: number, force = false) => {
-      if (!width || !height) return;
-      if (!force && document.hidden) return;
-      context.clearRect(0, 0, width, height);
-      const transparentVariant = variant === 'directory';
-      if (!transparentVariant) {
-        const wash = context.createLinearGradient(0, 0, width, height);
-        wash.addColorStop(0, rgba(accent, isDark ? 0.13 : 0.075));
-        wash.addColorStop(0.5, rgba(ink, isDark ? 0.025 : 0.014));
-        wash.addColorStop(1, rgba(variant === 'game' ? secondary : accent, isDark ? 0.055 : 0.032));
-        context.fillStyle = wash;
-        context.fillRect(0, 0, width, height);
-      }
-      if (variant === 'website') drawWebsite(time);
-      else if (variant === 'app') drawApp(time);
-      else if (variant === 'game') drawGame(time);
-      else drawDirectory(time);
-      if (!transparentVariant) {
-        const glow = context.createRadialGradient(
-          pointer.x * width,
-          pointer.y * height,
-          0,
-          pointer.x * width,
-          pointer.y * height,
-          Math.max(width, height) * 0.45,
-        );
-        glow.addColorStop(0, rgba(accent, pointer.active ? 0.16 : 0.08));
-        glow.addColorStop(0.45, rgba(accent, pointer.active ? 0.05 : 0.025));
-        glow.addColorStop(1, rgba(accent, 0));
-        context.fillStyle = glow;
-        context.fillRect(0, 0, width, height);
-      }
-    };
 
+    const pointerMotion = window.matchMedia('(prefers-reduced-motion: no-preference)');
     const onPointerMove = (event: PointerEvent) => {
-      const rect = wallRect;
-      pointer.x = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width)));
-      pointer.y = Math.min(1, Math.max(0, (event.clientY - rect.top) / Math.max(1, rect.height)));
+      if (!wallRect || !pointerMotion.matches || document.hidden) return;
+      pointer.x = Math.min(1, Math.max(0, (event.clientX - wallRect.left) / width));
+      pointer.y = Math.min(1, Math.max(0, (event.clientY - wallRect.top) / height));
       pointer.active = true;
-      if (reducedMotion) render(0, true);
     };
 
-    const onVisibilityChange = () => {
-      if (!document.hidden && !reducedMotion) {
-        if (frame) window.cancelAnimationFrame(frame);
-        lastTime = performance.now();
-        frame = window.requestAnimationFrame(tick);
-      }
-    };
+    const animation = mountAmbientCanvas(wall, canvas, context, {
+      maxPixels: 500_000,
+      fps: 20,
+      resize(rect) {
+        const resized = width !== rect.width || height !== rect.height;
+        width = rect.width;
+        height = rect.height;
+        wallRect = rect;
+        waveStrokes = [];
+        if (resized) seedParticles();
+      },
+      setPalette(palette) {
+        accent = palette.accent;
+        ink = palette.ink;
+        waveStrokes = [];
+        if (variant === 'directory') glyphAtlas = createGlyphAtlas(canvas.ownerDocument, accent, ink);
+      },
+      draw(time, delta) {
+        context.clearRect(0, 0, width, height);
+        if (variant === 'website') drawWebsite(time);
+        else if (variant === 'app') drawApp(time, delta);
+        else if (variant === 'game') drawGame(delta);
+        else drawDirectory(time);
+      },
+    });
 
-    const tick = (time: number) => {
-      if (document.hidden) {
-        frame = 0;
-        return;
-      }
-      if (time - lastTime > 28) {
-        render(time);
-        lastTime = time;
-      }
-      frame = window.requestAnimationFrame(tick);
-    };
-
-    const resizeObserver = new ResizeObserver(resize);
-    resizeObserver.observe(wall);
-    window.addEventListener('pointermove', onPointerMove, { passive: true });
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    resize();
-    if (!reducedMotion) frame = window.requestAnimationFrame(tick);
-
+    if (variant === 'app' || variant === 'game') {
+      window.addEventListener('pointermove', onPointerMove, { passive: true });
+    }
     return () => {
-      resizeObserver.disconnect();
+      animation.dispose();
       window.removeEventListener('pointermove', onPointerMove);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [themeRevision, variant]);
+  }, [variant]);
 
   return (
     <div ref={wallRef} className={styles.wall} data-variant={variant} aria-hidden='true'>

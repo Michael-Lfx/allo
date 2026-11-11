@@ -36,7 +36,6 @@
         "@mediapipe/tasks-vision": "^1.0.1",
         "@monaco-editor/react": "^4.7.0",
         "@napi-rs/canvas": "^0.1.100",
-        "@paper-design/shaders-react": "^0.0.82",
         "@phosphor-icons/react": "^2.1.10",
         "@react-three/drei": "^10.7.8",
         "@react-three/fiber": "^9.7.0",
@@ -604,10 +603,6 @@
     "@oxc-parser/binding-win32-x64-msvc": ["@oxc-parser/binding-win32-x64-msvc@0.131.0", "https://registry.npmmirror.com/@oxc-parser/binding-win32-x64-msvc/-/binding-win32-x64-msvc-0.131.0.tgz", { "os": "win32", "cpu": "x64" }, "sha512-o14Hk8dAyiEUMFEWEgmAwFZvBt1RzAYLM3xeQ+5315JXgVYhoemivgYcbYVRbsFkS71ShMGlAFE0kPnr460rww=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.131.0", "https://registry.npmmirror.com/@oxc-project/types/-/types-0.131.0.tgz", {}, "sha512-PgnWDfV0h+b16XNKbXU7Daib/BFSt/J2mEzfYIBu6JB/wNdlU+kVYXCkGA1A9fWkTbOgbjh4e6NhPeQOYvFhEA=="],
-
-    "@paper-design/shaders": ["@paper-design/shaders@0.0.82", "https://registry.npmmirror.com/@paper-design/shaders/-/shaders-0.0.82.tgz", {}, "sha512-eCxYQrrCxRVc4KG8sLSQecsq8Ymstbaq/FqZjq/fhOa6UiR1ZZfdMO5IJpHmwL0GYmfzvZVQ4l8ZOLux0uLVdg=="],
-
-    "@paper-design/shaders-react": ["@paper-design/shaders-react@0.0.82", "https://registry.npmmirror.com/@paper-design/shaders-react/-/shaders-react-0.0.82.tgz", { "dependencies": { "@paper-design/shaders": "0.0.82" }, "peerDependencies": { "@types/react": "^18 || ^19", "react": "^18 || ^19" }, "optionalPeers": ["@types/react"] }, "sha512-DSPvsCgqagN23sYJP4vB9UpKj0IM6Aq9DOulI8c6ByHdDD6mIKRCNN6tqHK1FDdzCEQNz0dstlRtcdImAWcqqQ=="],
 
     "@phosphor-icons/react": ["@phosphor-icons/react@2.1.10", "https://registry.npmmirror.com/@phosphor-icons/react/-/react-2.1.10.tgz", { "peerDependencies": { "react": ">= 16.8", "react-dom": ">= 16.8" } }, "sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA=="],
 

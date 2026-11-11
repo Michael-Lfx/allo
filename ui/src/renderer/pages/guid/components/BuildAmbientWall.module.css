@@ -1,13 +1,33 @@
 .wall {
+  --ambient-accent: var(--wallpaper-accent, var(--color-primary, var(--brand)));
   position: absolute;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
-  background: var(--guid-canvas, var(--color-bg-1));
+  background:
+    radial-gradient(62% 72% at 50% 36%, color-mix(in srgb, var(--ambient-accent) 12%, transparent), transparent),
+    var(--guid-canvas, var(--color-bg-1));
 }
 
 .wall[data-variant='directory'] {
   background: transparent;
+}
+
+.wall[data-variant='app']::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 95px,
+    color-mix(in srgb, var(--color-text-1) 8%, transparent) 95px 96px
+  );
+}
+
+.wall[data-variant='game'] {
+  background:
+    radial-gradient(48% 30% at 50% 64%, color-mix(in srgb, var(--ambient-accent) 20%, transparent), transparent),
+    linear-gradient(180deg, var(--guid-canvas, var(--color-bg-1)), color-mix(in srgb, #7166c5 24%, var(--color-bg-1)));
 }
 
 .canvas {
@@ -44,6 +64,14 @@
 
 .wall[data-variant='directory'] .veil {
   display: none;
+}
+
+@media (forced-colors: active) {
+  .wall::before,
+  .canvas,
+  .veil {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

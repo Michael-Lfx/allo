@@ -160,6 +160,7 @@ export const buildWallpaperTokenCss = ({ enabled, prefs, analysis, scheme }: Wal
     const primary = analysis.primaryRgb;
     lines.push(`html[data-wallpaper='on'] {`);
     lines.push(`  --color-primary: rgb(${rgb(primary)});`);
+    lines.push(`  --wallpaper-accent: rgb(${rgb(primary)});`);
     lines.push(`  --primary-rgb: ${rgb(primary)};`);
     analysis.primaryScale.slice(0, 7).forEach((triplet, index) => {
       lines.push(`  --primary-${index + 1}: ${rgb(triplet)};`);

@@ -3782,13 +3782,6 @@
   opacity: 0.58;
 }
 
-/* Let the ambient canvas show behind the composer as well. */
-.guidContainer:has([data-testid='guid-build-ambient']) .guidFixedInputArea,
-.guidContainer:has([data-testid='guid-image-ambient']) .guidFixedInputArea,
-.guidContainer:has([data-testid='guid-video-ambient']) .guidFixedInputArea {
-  background: none;
-}
-
 .guidContainer:has([data-testid="guid-home-develop-directory"] [data-testid^="guid-home-option-"]:hover) .ambientWall,
 .guidContainer:has([data-testid="guid-home-build-examples"] [data-testid^="guid-home-option-"]:hover) .ambientWall {
   opacity: 0.94;

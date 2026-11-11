@@ -49,6 +49,7 @@ describe('wallpaper tokens', () => {
     expect(css.includes('--text-primary')).toBe(false);
     expect(css.includes('--color-text-1')).toBe(false);
     expect(css.includes('--primary-6:')).toBe(true);
+    expect(css).toContain('--wallpaper-accent: rgb(20, 80, 180);');
     expect(css.includes('--wallpaper-chrome-alpha: 0')).toBe(true);
     expect(css.includes('.layout-content')).toBe(true);
     expect(css.includes('.layout-sider')).toBe(true);
@@ -62,6 +63,17 @@ describe('wallpaper tokens', () => {
     expect(css.includes('[data-infinite-canvas]')).toBe(true);
     expect(css.includes('--oc-canvas-fill')).toBe(false);
     expect(css.includes('background: transparent !important')).toBe(true);
+  });
+
+  test('leaves the ambient accent to the theme when wallpaper harmonization is off', () => {
+    const css = buildWallpaperTokenCss({
+      enabled: true,
+      prefs: { ...DEFAULT_WALLPAPER_PREFS, enabled: true, harmonizeAccent: false },
+      analysis,
+      scheme: 'dark',
+    });
+    expect(css).toContain('--wallpaper-seed: #112233');
+    expect(css).not.toContain('--wallpaper-accent:');
   });
 
   test('auto dim uses ingest recommendation', () => {
