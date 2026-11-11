@@ -203,11 +203,11 @@ describe('plain language dictionary (o4 group B new keys)', () => {
     expect(outside.zh).toBe('{{count}} 个节点不在结构里');
     expect(outside.en).toBe('Nodes not placed in the structure: {{count}}');
     const emptyBlock = pair('learningGraphMountObsEmpty');
-    expect(emptyBlock.zh).toBe('{{count}} 个知识块还没有节点');
-    expect(emptyBlock.en).toBe('Knowledge blocks without nodes: {{count}}');
+    expect(emptyBlock.zh).toBe('{{count}} 个知识组还没有节点');
+    expect(emptyBlock.en).toBe('Knowledge groups without nodes: {{count}}');
     const overloaded = pair('learningGraphMountObsOverloaded');
-    expect(overloaded.zh).toBe('{{count}} 个知识块节点偏多');
-    expect(overloaded.en).toBe('Knowledge blocks with too many nodes: {{count}}');
+    expect(overloaded.zh).toBe('{{count}} 个知识组节点偏多');
+    expect(overloaded.en).toBe('Knowledge groups with too many nodes: {{count}}');
     const other = pair('learningGraphMountObsOther');
     expect(other.zh).toBe('其他观察 ×{{count}}');
     expect(other.en).toBe('Other observations ×{{count}}');

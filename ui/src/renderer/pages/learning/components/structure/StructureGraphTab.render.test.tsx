@@ -66,8 +66,8 @@ describe('MountObservationSummary render (o4 B6)', () => {
   test('可见面只出 kind 计数标签，后端观察句不再内插（zh）', async () => {
     const html = await renderSummary('zh-CN');
     expect(html).toContain('1 个节点不在结构里');
-    expect(html).toContain('2 个知识块还没有节点');
-    expect(html).toContain('1 个知识块节点偏多');
+    expect(html).toContain('2 个知识组还没有节点');
+    expect(html).toContain('1 个知识组节点偏多');
     expect(html).toContain('其他观察 ×1');
     // detail 是后端中文观察句 + 机器 slug：可见面零直出。
     expect(html).not.toContain('声明在结构外：纯练习');
@@ -81,8 +81,8 @@ describe('MountObservationSummary render (o4 B6)', () => {
   test('en 同口径：计数标签走词典，观察句不上屏', async () => {
     const html = await renderSummary('en-US');
     expect(html).toContain('Nodes not placed in the structure: 1');
-    expect(html).toContain('Knowledge blocks without nodes: 2');
-    expect(html).toContain('Knowledge blocks with too many nodes: 1');
+    expect(html).toContain('Knowledge groups without nodes: 2');
+    expect(html).toContain('Knowledge groups with too many nodes: 1');
     expect(html).toContain('Other observations ×1');
     expect(html).toContain('Observation details');
     expect(html).not.toContain('block-21');
