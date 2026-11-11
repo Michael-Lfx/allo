@@ -9,6 +9,7 @@ import ContentWidthToggle, { useWideContentLayout } from './components/ContentWi
 import { CourseCard, CourseDeleteDialog } from './components/CourseCard';import { CourseGenerationPill } from './components/CourseGenerationPill';
 import { CourseWorkspace } from './components/CourseWorkspace';
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
+import { QuizSession } from './components/QuizSession';
 import { ReviewBanner } from './components/ReviewBanner';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
 import { restoredTaskTopic } from './coursePlan';
@@ -345,18 +346,30 @@ const LearningPage: React.FC = () => {
       );
     }
     return (
-      <CourseWorkspace
-          detail={detail}
-          busyId={busyId}
-          attemptResults={courseLearning.attemptResults}
-          quizProgressToken={quizProgressToken}
-          onBack={() => navigate('/learn')}
-          onProgress={courseLearning.updateProgress}
-          onAttempt={courseLearning.submitAttempt}
-          onGenerate={courseLearning.generateLesson}
-          onStartQuiz={() => setQuizSessionCourseId(detail.course.id)}
-          onRefresh={() => void load()}
-      />
+      <>
+        <CourseWorkspace
+            detail={detail}
+            busyId={busyId}
+            attemptResults={courseLearning.attemptResults}
+            quizProgressToken={quizProgressToken}
+            onBack={() => navigate('/learn')}
+            onProgress={courseLearning.updateProgress}
+            onAttempt={courseLearning.submitAttempt}
+            onGenerate={courseLearning.generateLesson}
+            onStartQuiz={() => setQuizSessionCourseId(detail.course.id)}
+            onRefresh={() => void load()}
+        />
+        {quizSessionCourseId && (
+          <QuizSession
+              courseId={quizSessionCourseId}
+              onFinished={() => {
+                setQuizSessionCourseId(null);
+                setQuizProgressToken((token) => token + 1);
+              }}
+              onClose={() => setQuizSessionCourseId(null)}
+          />
+        )}
+      </>
     );
   }
 
