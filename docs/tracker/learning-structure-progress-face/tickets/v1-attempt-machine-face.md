@@ -2,7 +2,7 @@
 id: v1
 title: "注册表 attempt 机器面——TaskRecord/View 加字段，重生成循环回写（照 s4 三件套形状）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -59,3 +59,22 @@ setter（`:507` 形状）、record 初始化 `None`（`:386` 邻位）；`Genera
 - WS 结构帧加字段（attempt 走快照通道，裁决见 map 非目标）。
 - terrain 删键 / 契约门行为任何变更。
 - v2 outline / growth / lesson 任务的 attempt 语义（它们的循环不在本票面）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验与全模块欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `4b8ef6466`：四件套照 s4 形状 + `generate_structure_artifacts` 回调
+  参数 `&(dyn Fn(u32) + Send + Sync)`（spawn 场景必要界，无界实测 E0277）+
+  主路闭包接 `task.set_attempt` + tests.rs noop；TDD 红绿实录
+  （E0599/E0609/E0061）。
+- 评审修复 = `e36565525`（F5）：票面「任务启动 set_step 处同步初始化」首版
+  落在生成循环入口，begin→循环窗口 running 行 attempt=None——修为
+  `run_structure_generation_task` 在 set_step 处同步 `set_attempt(1)`，循环
+  回调照旧；时序钉子测试（取消先于循环构造：旧实现 None / 新口径
+  Some(1)，循环零回调读数只能来自起步段）。
+- 验证（集成树 bb20d5261 独立复验）：cargo test -p nomifun-learning --lib
+  **963 绿**（含三场景新测试：快照带出与轮次更新、同键重跑重置、拒收路径
+  vec![1,2]）；fmt 过；警告对照基线零新增。
+- 真机（下次结构生成）：快照行 attempt 可见且随轮次更新——与 v2/v3 验收
+  合并执行。
