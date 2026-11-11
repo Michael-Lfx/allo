@@ -95,6 +95,25 @@ pub trait TtsProvider: Send + Sync {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError>;
+
+    /// Synthesis plus the diagnostic captured for this exact stream. The
+    /// default keeps existing providers unchanged; mid-call switching
+    /// providers override it so playback reports the real source per sentence
+    /// instead of racing a shared snapshot.
+    async fn synthesize_stream_with_diagnostic(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<
+        (
+            mpsc::Receiver<Vec<u8>>,
+            Option<nomifun_api_types::voice::VoiceTtsDiagnostic>,
+        ),
+        TtsError,
+    > {
+        let receiver = self.synthesize_stream(text, voice).await?;
+        Ok((receiver, self.diagnostic(voice)))
+    }
     /// Load model resources ahead of the first utterance. Best-effort: callers
     /// treat a failure as "no warm start", never as a call failure.
     async fn warm_up(&self) {}
@@ -179,7 +198,7 @@ impl TtsProvider for EdgeTtsProvider {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
-        let budget = std::time::Duration::from_secs(30);
+        let budget = EDGE_SYNTHESIS_BUDGET;
         let start = tokio::time::Instant::now();
         tokio::time::timeout(
             budget,
@@ -1636,6 +1655,10 @@ impl TtsProvider for SherpaOfflineTtsProvider {
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled_worker = cancelled.clone();
         let (tx, rx) = mpsc::channel::<Vec<u8>>(8);
+        // Shared so the timeout monitor can hard-close the audio channel even
+        // when the blocking engine never yields a progress callback.
+        let tx_slot = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let tx_worker = tx_slot.clone();
 
         let blocking_task = tokio::task::spawn_blocking(move || -> Result<(), TtsError> {
             let mut lock = engines_arc.blocking_lock();
@@ -1712,7 +1735,14 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             }
 
             let wav = nomifun_audio::pcm_to_wav(&all_samples, sample_rate as u32);
-            if tx.blocking_send(wav.clone()).is_err() {
+            let sent = {
+                let slot = tx_worker
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                slot.as_ref()
+                    .is_some_and(|tx| tx.blocking_send(wav.clone()).is_ok())
+            };
+            if !sent {
                 return Err(TtsError::Cancelled);
             }
             wav_cache
@@ -1729,8 +1759,9 @@ impl TtsProvider for SherpaOfflineTtsProvider {
         });
 
         let cancelled_monitor = cancelled.clone();
+        let tx_monitor = tx_slot;
         tokio::spawn(async move {
-            match tokio::time::timeout(std::time::Duration::from_secs(30), blocking_task).await {
+            match tokio::time::timeout(LOCAL_SYNTHESIS_BUDGET, blocking_task).await {
                 Ok(Ok(Ok(()))) => {}
                 Ok(Ok(Err(error))) => {
                     tracing::warn!(error=%error, "sherpa_offline_tts_stream_failed")
@@ -1740,6 +1771,12 @@ impl TtsProvider for SherpaOfflineTtsProvider {
                 }
                 Err(_) => {
                     cancelled_monitor.store(true, std::sync::atomic::Ordering::Relaxed);
+                    // Drop the sender so playback observes a bounded NoAudio
+                    // failure even if the blocking engine never returns.
+                    tx_monitor
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
                     tracing::warn!("sherpa_offline_tts_stream_timeout");
                 }
             }
@@ -1944,6 +1981,258 @@ impl TtsProvider for FallbackTtsProvider {
     }
 }
 
+
+/// Default online budget for the shared Edge provider (self-check, fixtures and
+/// other non-chat callers keep the original 30s allowance).
+pub const EDGE_SYNTHESIS_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+/// Chat replies cap one online attempt so a black-holed call degrades fast.
+pub const CHAT_ONLINE_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
+/// Local engines must either produce audio or report failure within this
+/// window, so a hung ONNX generation cannot block a reply forever.
+pub const LOCAL_SYNTHESIS_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Chat-only provider implementing the user-facing "premium voice" switch.
+///
+/// `edge = Some(...)` means the user opted into the online voice for this call.
+/// The first online failure/timeout degrades the rest of the call to the local
+/// provider, so a streaming reply never pays the online budget once per
+/// sentence. `edge = None` keeps the call strictly local (never touches the
+/// network), which is the default/off behaviour.
+pub struct QualityTtsProvider {
+    local: std::sync::Arc<dyn TtsProvider>,
+    edge: Option<std::sync::Arc<dyn TtsProvider>>,
+    selected: std::sync::Arc<std::sync::Mutex<Option<nomifun_api_types::voice::VoiceTtsDiagnostic>>>,
+    degraded: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    online_budget: std::time::Duration,
+}
+
+impl QualityTtsProvider {
+    pub fn new(
+        local: std::sync::Arc<dyn TtsProvider>,
+        edge: Option<std::sync::Arc<dyn TtsProvider>>,
+    ) -> Self {
+        Self {
+            local,
+            edge,
+            selected: Default::default(),
+            degraded: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            online_budget: CHAT_ONLINE_BUDGET,
+        }
+    }
+
+    /// Test/tuning hook: bound one online attempt without waiting the full
+    /// production budget.
+    pub fn with_online_budget(mut self, budget: std::time::Duration) -> Self {
+        self.online_budget = budget;
+        self
+    }
+
+    /// True once an online attempt failed and the rest of the call stays local.
+    pub fn is_degraded(&self) -> bool {
+        self.degraded.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn record(&self, provider: &dyn TtsProvider, voice: &str) {
+        self.record_with_reason(provider, voice, None);
+    }
+
+    async fn synthesize_inner(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<
+        (
+            mpsc::Receiver<Vec<u8>>,
+            Option<nomifun_api_types::voice::VoiceTtsDiagnostic>,
+        ),
+        TtsError,
+    > {
+        let mut fallback_reason: Option<&'static str> = None;
+        if let Some(edge) = self.edge.as_ref() {
+            if !self.is_degraded() && edge.is_available() {
+                let attempt = tokio::time::timeout(
+                    self.online_budget,
+                    edge.synthesize_stream(text, voice),
+                )
+                .await;
+                match attempt {
+                    Ok(Ok(receiver)) => {
+                        self.record(edge.as_ref(), voice);
+                        return Ok((receiver, self.diagnostic(voice)));
+                    }
+                    Ok(Err(TtsError::RateLimited { .. })) => {
+                        // 429 keeps this call's selection: the Edge provider owns
+                        // retry/cooldown, and a later turn may succeed online again.
+                        fallback_reason = Some("tts_rate_limited");
+                        tracing::warn!("online_voice_rate_limited_keeping_call_selection");
+                    }
+                    Ok(Err(error)) => {
+                        self.degraded
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        fallback_reason = Some("online_voice_failed");
+                        tracing::warn!(
+                            error = %error,
+                            "online_voice_failed_degrading_call_to_local"
+                        );
+                    }
+                    Err(_) => {
+                        self.degraded
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        fallback_reason = Some("online_voice_budget_exceeded");
+                        tracing::warn!(
+                            "online_voice_budget_exceeded_degrading_call_to_local"
+                        );
+                    }
+                }
+            }
+        }
+        let result = self.local.synthesize_stream(text, voice).await;
+        match result {
+            Ok(receiver) => {
+                self.record_with_reason(self.local.as_ref(), voice, fallback_reason);
+                Ok((receiver, self.diagnostic(voice)))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn record_with_reason(
+        &self,
+        provider: &dyn TtsProvider,
+        voice: &str,
+        reason: Option<&str>,
+    ) {
+        let mut diagnostic = provider.diagnostic(voice);
+        if let Some(diagnostic) = diagnostic.as_mut() {
+            diagnostic.fallback_reason = reason.map(str::to_owned);
+        }
+        *self.selected.lock().unwrap_or_else(|error| error.into_inner()) = diagnostic;
+    }
+}
+
+#[async_trait]
+impl TtsProvider for QualityTtsProvider {
+    fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+        self.selected
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn is_available(&self) -> bool {
+        self.local.is_available()
+            || self
+                .edge
+                .as_ref()
+                .is_some_and(|edge| edge.is_available())
+    }
+
+    async fn warm_up(&self) {
+        if self.local.is_available() {
+            self.local.warm_up().await;
+        }
+        if let Some(edge) = self.edge.as_ref() {
+            if edge.is_available() {
+                edge.warm_up().await;
+            }
+        }
+    }
+
+    async fn synthesize_stream(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+        self.synthesize_inner(text, voice)
+            .await
+            .map(|(receiver, _)| receiver)
+    }
+
+    async fn synthesize_stream_with_diagnostic(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<
+        (
+            mpsc::Receiver<Vec<u8>>,
+            Option<nomifun_api_types::voice::VoiceTtsDiagnostic>,
+        ),
+        TtsError,
+    > {
+        self.synthesize_inner(text, voice).await
+    }
+}
+
+/// Per-call switchable chat voice. The runtime swaps the frozen selection when
+/// a new call starts; every chat playback path holds this stable handle, so the
+/// current call keeps the provider selected at wake time.
+pub struct ChatTtsRouter {
+    current: std::sync::RwLock<std::sync::Arc<dyn TtsProvider>>,
+}
+
+impl ChatTtsRouter {
+    pub fn new(initial: std::sync::Arc<dyn TtsProvider>) -> Self {
+        Self {
+            current: std::sync::RwLock::new(initial),
+        }
+    }
+
+    /// Freezes the provider for the call that is about to start.
+    pub fn set(&self, provider: std::sync::Arc<dyn TtsProvider>) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = provider;
+    }
+
+    pub fn snapshot(&self) -> std::sync::Arc<dyn TtsProvider> {
+        self.current
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+#[async_trait]
+impl TtsProvider for ChatTtsRouter {
+    fn diagnostic(&self, voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+        self.snapshot().diagnostic(voice)
+    }
+
+    fn is_available(&self) -> bool {
+        self.snapshot().is_available()
+    }
+
+    async fn warm_up(&self) {
+        self.snapshot().warm_up().await;
+    }
+
+    async fn synthesize_stream(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+        let provider = self.snapshot();
+        provider.synthesize_stream(text, voice).await
+    }
+
+    async fn synthesize_stream_with_diagnostic(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<
+        (
+            mpsc::Receiver<Vec<u8>>,
+            Option<nomifun_api_types::voice::VoiceTtsDiagnostic>,
+        ),
+        TtsError,
+    > {
+        let provider = self.snapshot();
+        provider
+            .synthesize_stream_with_diagnostic(text, voice)
+            .await
+    }
+}
 
 #[cfg(all(test, feature = "local-tts"))]
 mod tts_cache_tests {
@@ -2418,6 +2707,204 @@ mod self_check_fixture_provider_tests {
             chain.self_check_audio_provider().is_none(),
             "offline chains must keep generating fixtures through the normal path"
         );
+    }
+
+    struct FailOnlineMock {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TtsProvider for FailOnlineMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "edge".into(),
+                voice: None,
+                online: true,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(TtsError::Network("black_hole".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn quality_provider_off_never_touches_online() {
+        let provider = QualityTtsProvider::new(std::sync::Arc::new(OfflineMock), None);
+        assert!(provider.synthesize_stream("你好", "0").await.is_ok());
+        assert!(!provider.is_degraded());
+        assert!(provider
+            .diagnostic("")
+            .is_some_and(|diagnostic| !diagnostic.online));
+    }
+
+    #[tokio::test]
+    async fn quality_provider_online_failure_degrades_without_retrying() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = QualityTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            Some(std::sync::Arc::new(FailOnlineMock {
+                calls: calls.clone(),
+            })),
+        );
+        assert!(provider.synthesize_stream("第一句", "0").await.is_ok());
+        assert!(provider.is_degraded());
+        assert!(provider.synthesize_stream("第二句", "0").await.is_ok());
+        assert!(provider.synthesize_stream("第三句", "0").await.is_ok());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a degraded call must not wait on the online budget again"
+        );
+        assert!(
+            provider
+                .diagnostic("")
+                .is_some_and(|diagnostic| !diagnostic.online),
+            "after degrading, diagnostics must report the local voice"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_router_swaps_the_frozen_provider() {
+        let router = ChatTtsRouter::new(std::sync::Arc::new(OfflineMock));
+        assert!(router
+            .snapshot()
+            .diagnostic("")
+            .is_some_and(|diagnostic| !diagnostic.online));
+        router.set(std::sync::Arc::new(OnlineMock));
+        assert!(router
+            .snapshot()
+            .diagnostic("")
+            .is_some_and(|diagnostic| diagnostic.online));
+    }
+
+    struct HangOnlineMock {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TtsProvider for HangOnlineMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "edge".into(),
+                voice: None,
+                online: true,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<Result<mpsc::Receiver<Vec<u8>>, TtsError>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn online_blackhole_degrades_once_and_later_sentences_do_not_wait() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = QualityTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            Some(std::sync::Arc::new(HangOnlineMock {
+                calls: calls.clone(),
+            })),
+        )
+        .with_online_budget(std::time::Duration::from_millis(30));
+        let started = std::time::Instant::now();
+        assert!(provider.synthesize_stream("第一句", "0").await.is_ok());
+        assert!(provider.synthesize_stream("第二句", "0").await.is_ok());
+        assert!(provider.synthesize_stream("第三句", "0").await.is_ok());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a black-holed online attempt must only pay the budget once"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "later sentences must not retry the black-holed online provider"
+        );
+        assert!(provider.is_degraded());
+        assert!(provider
+            .diagnostic("")
+            .is_some_and(|diagnostic| !diagnostic.online));
+    }
+
+    struct RateLimitMock {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TtsProvider for RateLimitMock {
+        fn diagnostic(&self, _voice: &str) -> Option<VoiceTtsDiagnostic> {
+            Some(VoiceTtsDiagnostic {
+                provider: "edge".into(),
+                voice: None,
+                online: true,
+                fallback_reason: None,
+            })
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(TtsError::RateLimited {
+                status: 429,
+                retry_after: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limited_keeps_call_selection_without_degrading() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = QualityTtsProvider::new(
+            std::sync::Arc::new(OfflineMock),
+            Some(std::sync::Arc::new(RateLimitMock {
+                calls: calls.clone(),
+            })),
+        );
+        assert!(provider.synthesize_stream("第一句", "0").await.is_ok());
+        assert!(
+            !provider.is_degraded(),
+            "429 must not degrade the rest of the call"
+        );
+        assert_eq!(
+            provider
+                .diagnostic("")
+                .and_then(|diagnostic| diagnostic.fallback_reason),
+            Some("tts_rate_limited".to_string())
+        );
+        assert!(provider.synthesize_stream("第二句", "0").await.is_ok());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "later turns must be allowed to try online again after cooldown"
+        );
+    }
+
+    #[test]
+    fn chat_online_budget_is_shorter_than_the_shared_edge_budget() {
+        assert_eq!(
+            EDGE_SYNTHESIS_BUDGET,
+            std::time::Duration::from_secs(30),
+            "self-check/fixtures keep the original online allowance"
+        );
+        assert_eq!(CHAT_ONLINE_BUDGET, std::time::Duration::from_secs(8));
     }
 }
 

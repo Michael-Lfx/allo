@@ -511,14 +511,14 @@ impl PlaybackPipeline {
         &self,tts:&dyn crate::tts::TtsProvider,sentences:mpsc::Receiver<String>,expected_gen:u64,
         cancelled:tokio::sync::watch::Receiver<bool>,voice:&str,started:impl FnOnce()+Send,
     )->Result<(),AudioSinkError> {
-        self.speak_sentence_stream_with_reporter(tts, sentences, expected_gen, cancelled, voice, started, |_| {}).await
+        self.speak_sentence_stream_with_reporter(tts, sentences, expected_gen, cancelled, voice, started, |_, _| {}).await
     }
 
     /// Speaks sentence stream with a specific voice selection and reports each sentence as it begins playing.
     pub async fn speak_sentence_stream_with_reporter(
         &self,tts:&dyn crate::tts::TtsProvider,mut sentences:mpsc::Receiver<String>,expected_gen:u64,
         mut cancelled:tokio::sync::watch::Receiver<bool>,voice:&str,started:impl FnOnce()+Send,
-        mut on_sentence_started:impl FnMut(&str)+Send,
+        mut on_sentence_started:impl FnMut(&str, Option<&nomifun_api_types::voice::VoiceTtsDiagnostic>)+Send,
     )->Result<(),AudioSinkError> {
         let (audio,mut ready)=mpsc::channel(1);
         let synthesize=async {
@@ -528,16 +528,20 @@ impl PlaybackPipeline {
                 if failed {continue;}
                 let Ok(permit)=audio.reserve().await else {break;};
                 let began=std::time::Instant::now();
-                let result=tts.synthesize_stream(&text,voice).await.map_err(Self::synthesis_error);
+                let synthesized=tts.synthesize_stream_with_diagnostic(&text,voice).await;
+                let (result,diagnostic)=match synthesized {
+                    Ok((stream,diagnostic))=>(Ok(stream),diagnostic),
+                    Err(error)=>(Err(Self::synthesis_error(error)),None),
+                };
                 tracing::info!(generation=expected_gen,chars=text.chars().count(),elapsed_ms=began.elapsed().as_millis() as u64,ok=result.is_ok(),"voice_sentence_synthesis_finished");
-                failed=result.is_err();permit.send((text, result));
+                failed=result.is_err();permit.send((text, result, diagnostic));
             }
             drop(audio);
         };
         let consume=async {
             let mut started=Some(started);let mut failure=None;let mut has_audio=false;
             let mut output=None;let mut pending=None;
-            while let Some((text, result))=ready.recv().await {
+            while let Some((text, result, diagnostic))=ready.recv().await {
                 let mut stream=match result {Ok(stream)=>stream,Err(error)=>{if failure.is_none(){failure=Some(error);}continue;}};
                 let mut segment_audio=false;
                 let mut sentence_notified=false;
@@ -552,7 +556,7 @@ impl PlaybackPipeline {
                     has_audio=true;
                     if !sentence_notified {
                         sentence_notified = true;
-                        on_sentence_started(&text);
+                        on_sentence_started(&text, diagnostic.as_ref());
                     }
                     if let Some(started)=started.take(){started();}
                 }
@@ -1168,5 +1172,77 @@ mod tests {
             captured.lock().unwrap().as_deref(),
             Some("en-US-JennyNeural")
         );
+    }
+
+    struct DiagnosticTts;
+    #[async_trait]
+    impl crate::tts::TtsProvider for DiagnosticTts {
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, crate::tts::TtsError> {
+            let (tx, rx) = mpsc::channel(1);
+            tx.send(vec![1, 2, 3]).await.unwrap();
+            Ok(rx)
+        }
+
+        async fn synthesize_stream_with_diagnostic(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<
+            (
+                mpsc::Receiver<Vec<u8>>,
+                Option<nomifun_api_types::voice::VoiceTtsDiagnostic>,
+            ),
+            crate::tts::TtsError,
+        > {
+            let (tx, rx) = mpsc::channel(1);
+            tx.send(vec![1, 2, 3]).await.unwrap();
+            Ok((
+                rx,
+                Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
+                    provider: "sherpa".into(),
+                    voice: None,
+                    online: false,
+                    fallback_reason: Some("online_voice_failed".into()),
+                }),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sentence_reporter_receives_exact_sentence_diagnostic() {
+        let sink = Arc::new(TestAudioSink::new());
+        let pipeline = PlaybackPipeline::new(sink);
+        let (tx, rx) = mpsc::channel(1);
+        tx.send("第一句".to_string()).await.unwrap();
+        drop(tx);
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let expected_gen = pipeline.generation_id();
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = reported.clone();
+        pipeline
+            .speak_sentence_stream_with_reporter(
+                &DiagnosticTts,
+                rx,
+                expected_gen,
+                cancel_rx,
+                "",
+                || {},
+                move |text, diagnostic| {
+                    collected.lock().unwrap().push((
+                        text.to_string(),
+                        diagnostic.map(|value| value.fallback_reason.clone()),
+                    ));
+                },
+            )
+            .await
+            .unwrap();
+        let reported = reported.lock().unwrap();
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].0, "第一句");
+        assert_eq!(reported[0].1, Some(Some("online_voice_failed".to_string())));
     }
 }

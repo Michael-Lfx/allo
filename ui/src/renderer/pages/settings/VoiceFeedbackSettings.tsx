@@ -13,7 +13,17 @@ const UnsavedBadge: React.FC<{ text: string }> = ({ text }) => (
   </span>
 );
 
-export default function VoiceFeedbackSettingsSection({ connected }: { connected: boolean }) {
+export default function VoiceFeedbackSettingsSection({
+  connected,
+  localVoiceReady = true,
+  localVoiceNeedsInstall = false,
+  onFixLocalVoice,
+}: {
+  connected: boolean;
+  localVoiceReady?: boolean;
+  localVoiceNeedsInstall?: boolean;
+  onFixLocalVoice?: () => void;
+}) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<VoiceFeedbackSettings | null>(null);
   const [draft, setDraft] = useState<VoiceFeedbackConfig | null>(null);
@@ -77,8 +87,9 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
   const volumeDirty = Boolean(draft && settings && draft.volume !== settings.requested.volume);
   const speedDirty = Boolean(draft && settings && draft.tts_speed !== settings.requested.tts_speed);
   const timeoutDirty = Boolean(draft && settings && draft.idle_timeout_secs !== settings.requested.idle_timeout_secs);
+  const backendDirty = Boolean(draft && settings && draft.tts_backend !== settings.requested.tts_backend);
 
-  const dirty = wakeEnabledDirty || wakeWordsDirty || deviceDirty || volumeDirty || speedDirty || timeoutDirty;
+  const dirty = wakeEnabledDirty || wakeWordsDirty || deviceDirty || volumeDirty || speedDirty || timeoutDirty || backendDirty;
   const applied = Boolean(effective && settings && !dirty);
 
   return (
@@ -124,6 +135,51 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
               />
             </div>
+          </div>
+        </div>
+
+        <div className={`p-4 rounded-8px border border-solid transition-colors ${
+          backendDirty
+            ? 'border-warning-5 bg-warning-1 shadow-[0_0_0_1px_rgba(var(--warning-6),0.2)]'
+            : 'border-[var(--border-base)] bg-fill-1'
+        }`}>
+          <div className='flex items-start justify-between gap-4'>
+            <div className='flex flex-col gap-1 min-w-0 flex-1'>
+              <div className='text-14px font-medium text-t-primary flex items-center gap-2'>
+                <span>{t('voice.feedback.premiumVoice')}</span>
+                {backendDirty && <UnsavedBadge text={t('voice.feedback.unsaved')} />}
+              </div>
+              <div className='text-12px text-t-secondary leading-relaxed'>
+                {t('voice.feedback.premiumVoiceHint')}
+              </div>
+              {draft?.tts_backend === 'edge' && (
+                <div className='text-12px text-warning-6'>
+                  {t('voice.feedback.premiumVoiceNextCall')}
+                </div>
+              )}
+              {!localVoiceReady && (
+                <div className='flex items-center gap-2 text-12px text-warning-6'>
+                  <span>{t('voice.feedback.localVoiceMissing')}</span>
+                  <Button
+                    size='mini'
+                    disabled={busy || !onFixLocalVoice}
+                    onClick={onFixLocalVoice}
+                  >
+                    {t(
+                      localVoiceNeedsInstall
+                        ? 'voice.feedback.localVoiceDownload'
+                        : 'voice.feedback.localVoiceRepair',
+                    )}
+                  </Button>
+                </div>
+              )}
+            </div>
+            <Switch
+              aria-label={t('voice.feedback.premiumVoice')}
+              checked={draft?.tts_backend === 'edge'}
+              disabled={!draft || busy}
+              onChange={(val) => setDraft((prev) => prev && { ...prev, tts_backend: val ? 'edge' : 'local' })}
+            />
           </div>
         </div>
 

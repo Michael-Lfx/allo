@@ -1163,6 +1163,7 @@
             runtime.playback.clone(),
             runtime.event_tx.clone(),
             runtime.tts.clone(),
+            runtime.local_tts.clone(),
             runtime.task_client.clone(),
             &runtime.active_turn,
             runtime.input_generation.clone(),
@@ -1262,6 +1263,7 @@
             runtime.playback.clone(),
             runtime.event_tx.clone(),
             runtime.tts.clone(),
+            runtime.local_tts.clone(),
             runtime.task_client.clone(),
             &runtime.active_turn,
             runtime.input_generation.clone(),
@@ -1374,6 +1376,7 @@
             runtime.playback.clone(),
             runtime.event_tx.clone(),
             runtime.tts.clone(),
+            runtime.local_tts.clone(),
             runtime.task_client.clone(),
             &runtime.active_turn,
             runtime.input_generation.clone(),
@@ -1491,6 +1494,7 @@
             runtime.playback.clone(),
             runtime.event_tx.clone(),
             runtime.tts.clone(),
+            runtime.local_tts.clone(),
             runtime.task_client.clone(),
             &runtime.active_turn,
             runtime.input_generation.clone(),
@@ -1575,6 +1579,7 @@
             runtime.playback.clone(),
             runtime.event_tx.clone(),
             runtime.tts.clone(),
+            runtime.local_tts.clone(),
             runtime.task_client.clone(),
             &runtime.active_turn,
             runtime.input_generation.clone(),
@@ -3332,4 +3337,56 @@
         assert!(!keyword_is_in_text("hey flowy", "The whole flow is completed"));
         assert!(!keyword_is_in_text("hey flowy", "No matching keyword here"));
         assert!(!keyword_is_in_text("荷包蛋", "今天天气不错"));
+    }
+
+    #[tokio::test]
+    async fn tts_only_save_does_not_cancel_pending_wake_word_reload() {
+        let dir = tempdir().unwrap();
+        let model_manager = Arc::new(ModelManager::new(dir.path()));
+        let oobe_manager = Arc::new(OobeManager::new_bypassed());
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            model_manager,
+            oobe_manager,
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        assert!(!runtime.kws_reload_needed.load(Ordering::Acquire));
+
+        let mut wake_words = runtime.feedback().wake_words.clone();
+        wake_words.push("测试唤醒词".into());
+        runtime
+            .update_feedback(nomifun_api_types::voice::VoiceFeedbackPatch {
+                wake_words: Some(wake_words),
+                ..Default::default()
+            })
+            .expect("wake-word save");
+        assert!(
+            runtime.kws_reload_needed.load(Ordering::Acquire),
+            "wake-word change must request a reload"
+        );
+
+        runtime
+            .update_feedback(nomifun_api_types::voice::VoiceFeedbackPatch {
+                tts_backend: Some("edge".into()),
+                ..Default::default()
+            })
+            .expect("voice save");
+        assert!(
+            runtime.kws_reload_needed.load(Ordering::Acquire),
+            "a later voice save must not clear the pending reload"
+        );
+
+        runtime.kws_reload_needed.store(false, Ordering::Release);
+        runtime
+            .update_feedback(nomifun_api_types::voice::VoiceFeedbackPatch {
+                tts_backend: Some("local".into()),
+                ..Default::default()
+            })
+            .expect("voice save");
+        assert!(
+            !runtime.kws_reload_needed.load(Ordering::Acquire),
+            "voice-only saves must not queue a reload on their own"
+        );
     }

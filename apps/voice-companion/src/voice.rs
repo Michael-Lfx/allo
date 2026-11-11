@@ -32,7 +32,8 @@ use nomifun_voice_terminal::playback::ChannelAudioSink;
 use nomifun_voice_terminal::playback::{AudioSinkError, PhysicalAudioSink, PlaybackPipeline};
 use nomifun_voice_terminal::router::QwenVoiceRouter;
 use nomifun_voice_terminal::tts::{
-    EdgeTtsProvider, FallbackTtsProvider, SherpaOfflineTtsProvider, TtsProvider,
+    ChatTtsRouter, EdgeTtsProvider, FallbackTtsProvider, QualityTtsProvider,
+    SherpaOfflineTtsProvider, TtsProvider,
 };
 
 use crate::oobe::OobeManager;
@@ -1327,6 +1328,12 @@ pub struct VoiceCompanionRuntime {
     driver: Arc<Mutex<VoiceSessionDriver>>,
     playback: Arc<PlaybackPipeline>,
     tts: Arc<dyn TtsProvider>,
+    /// Frozen local provider; fixed announcements always speak through it.
+    local_tts: Arc<dyn TtsProvider>,
+    /// Online provider, only reachable when the user opted into premium voice.
+    edge_tts: Arc<dyn TtsProvider>,
+    /// Stable per-call chat handle; swapped when a call is accepted.
+    chat_tts: Arc<ChatTtsRouter>,
     router: Arc<dyn VoiceRouter>,
     transcriber: Option<Arc<dyn SttCallback>>,
     capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
@@ -1478,6 +1485,31 @@ impl VoiceCompanionRuntime {
         let event_tx = Arc::new(VoiceEventHub::new());
         let (engine_check_tx, engine_check_rx) = mpsc::channel(1);
 
+        let model_dir = std::env::var("VOICE_TTS_MODEL_DIR")
+            .or_else(|_| std::env::var("NOMIFUN_VOICE_TTS_MODEL_DIR"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| model_manager.models_dir().join("tts"));
+        let sherpa: Arc<dyn TtsProvider> =
+            Arc::new(SherpaOfflineTtsProvider::from_dir(&model_dir));
+        let edge: Arc<dyn TtsProvider> = Arc::new(EdgeTtsProvider::new());
+        let local_tts = Arc::clone(&sherpa);
+        let edge_tts = Arc::clone(&edge);
+        let tts: Arc<dyn TtsProvider> = if sherpa.is_available() {
+            Arc::new(FallbackTtsProvider::new(
+                Arc::clone(&sherpa),
+                Arc::clone(&edge),
+            ))
+        } else {
+            Arc::new(FallbackTtsProvider::new(
+                Arc::clone(&edge),
+                Arc::clone(&sherpa),
+            ))
+        };
+        let chat_tts = Arc::new(ChatTtsRouter::new(Arc::new(QualityTtsProvider::new(
+            Arc::clone(&local_tts),
+            None,
+        ))));
+
         Self {
             #[cfg(test)]
             confirmation_speech_end_gate: None,
@@ -1495,19 +1527,10 @@ impl VoiceCompanionRuntime {
             oobe_manager,
             driver,
             playback,
-            tts: {
-                let model_dir = std::env::var("VOICE_TTS_MODEL_DIR")
-                    .or_else(|_| std::env::var("NOMIFUN_VOICE_TTS_MODEL_DIR"))
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|_| model_manager.models_dir().join("tts"));
-                let sherpa = Arc::new(SherpaOfflineTtsProvider::from_dir(&model_dir));
-                let edge = Arc::new(EdgeTtsProvider::new());
-                if sherpa.is_available() {
-                    Arc::new(FallbackTtsProvider::new(sherpa, edge))
-                } else {
-                    Arc::new(FallbackTtsProvider::new(edge, sherpa))
-                }
-            },
+            tts,
+            local_tts,
+            edge_tts,
+            chat_tts,
             router,
             transcriber: None,
             capture_pipeline,
@@ -1594,6 +1617,8 @@ impl VoiceCompanionRuntime {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let event_tx = Arc::new(VoiceEventHub::new());
         let (engine_check_tx, engine_check_rx) = mpsc::channel(1);
+        let null_tts: Arc<dyn TtsProvider> =
+            Arc::new(nomifun_voice_terminal::tts::NullTts::new());
         (
             Self {
                 #[cfg(test)]
@@ -1609,7 +1634,10 @@ impl VoiceCompanionRuntime {
                 oobe_manager,
                 driver: Arc::new(Mutex::new(VoiceSessionDriver::new())),
                 playback: Arc::new(PlaybackPipeline::new(Arc::new(ChannelAudioSink::new(tx)))),
-                tts: Arc::new(nomifun_voice_terminal::tts::NullTts::new()),
+                tts: Arc::clone(&null_tts),
+                local_tts: Arc::clone(&null_tts),
+                edge_tts: Arc::clone(&null_tts),
+                chat_tts: Arc::new(ChatTtsRouter::new(null_tts)),
                 router,
                 transcriber: Some(transcriber),
                 capture_pipeline,
@@ -1650,7 +1678,10 @@ impl VoiceCompanionRuntime {
         tts: Arc<dyn TtsProvider>,
     ) -> Self {
         self.playback = playback;
-        self.tts = tts;
+        self.tts = Arc::clone(&tts);
+        self.local_tts = Arc::clone(&tts);
+        self.edge_tts = Arc::clone(&tts);
+        self.chat_tts = Arc::new(ChatTtsRouter::new(tts));
         self
     }
 
@@ -1960,8 +1991,13 @@ impl VoiceCompanionRuntime {
         let config = patch.apply(old.clone());
         config.validate()?;
         let mic_changed = config.input_device != old.input_device;
+        let wake_words_changed = config.wake_words_changed(&old);
         self.event_tx.set_feedback(config);
-        self.kws_reload_needed.store(true, Ordering::Release);
+        if wake_words_changed {
+            // Never clear a pending reload here: the worker consumes the flag
+            // with swap(false), and a later color-only save must not cancel it.
+            self.kws_reload_needed.store(true, Ordering::Release);
+        }
         if mic_changed {
             self.mic_reload_needed.store(true, Ordering::Release);
         }
@@ -2157,13 +2193,34 @@ impl VoiceCompanionRuntime {
         let tts_prewarm = Arc::clone(&self.tts);
         tokio::spawn(async move { tts_prewarm.warm_up().await; });
 
-        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id, locale, true).await
+        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, &self.chat_tts, &self.local_tts, &self.edge_tts, keyword, request_id, locale, true).await
+    }
+
+    /// Picks the chat provider frozen for one call. `local` stays strictly
+    /// local; `edge` keeps the online voice as primary with the local engine as
+    /// its fallback. Extracted so the policy is unit-testable without a daemon.
+    fn select_chat_tts(
+        backend: &str,
+        local_tts: &Arc<dyn TtsProvider>,
+        edge_tts: &Arc<dyn TtsProvider>,
+    ) -> Arc<dyn TtsProvider> {
+        if backend == nomifun_api_types::voice::TTS_BACKEND_EDGE && edge_tts.is_available() {
+            Arc::new(QualityTtsProvider::new(
+                Arc::clone(local_tts),
+                Some(Arc::clone(edge_tts)),
+            ))
+        } else {
+            Arc::new(QualityTtsProvider::new(Arc::clone(local_tts), None))
+        }
     }
 
     async fn accept_wake(
         driver: &Arc<Mutex<VoiceSessionDriver>>,
         playback: &Arc<PlaybackPipeline>,
         events: &Arc<VoiceEventHub>,
+        chat_tts: &Arc<ChatTtsRouter>,
+        local_tts: &Arc<dyn TtsProvider>,
+        edge_tts: &Arc<dyn TtsProvider>,
         keyword: &str,
         request_id: Option<&str>,
         locale: Option<&str>,
@@ -2182,6 +2239,11 @@ impl VoiceCompanionRuntime {
             .await
             .map_err(|_| VoiceWakeError::Busy)?;
         info!(state = ?next, "Wake accepted");
+        // Freeze the voice selection for this call: later setting changes apply
+        // to the next call only, and the in-flight reply list never mixes voices.
+        let backend =
+            nomifun_api_types::voice::normalize_tts_backend(&events.feedback().tts_backend);
+        chat_tts.set(Self::select_chat_tts(&backend, local_tts, edge_tts));
         let _ = events.send(VoiceCompanionEvent::WakeHit {
             keyword: keyword.to_string(),
             request_id: request_id.map(str::to_owned),
@@ -2471,6 +2533,7 @@ impl VoiceCompanionRuntime {
         playback: &Arc<PlaybackPipeline>,
         event_tx: &Arc<VoiceEventHub>,
         tts: &Arc<dyn TtsProvider>,
+        local_tts: &Arc<dyn TtsProvider>,
         task_client: &Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         generation: u64,
         scope: VoiceSessionSnapshot,
@@ -2634,7 +2697,7 @@ impl VoiceCompanionRuntime {
                                     let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
                                 });
                             } else {
-                                let tts_clone = tts.clone();
+                                let tts_clone = local_tts.clone();
                                 let playback_clone = playback.clone();
                                 let reply = goodbye_text.to_string();
                                 let voice_spec = format_voice_spec(scope.locale.as_deref(), feedback.tts_speed);
@@ -2744,29 +2807,44 @@ impl VoiceCompanionRuntime {
                     let tts = tts.clone();
                     let expected_generation = generation;
                     let on_started = {
-                        let event_tx = event_tx.clone();
                         let first_speech_text = first_speech_text.clone();
-                        let source_tts = tts.clone();
                         let stream_start = started;
-                        let control_scope = control_scope.clone();
                         move || {
                             let text = first_speech_text.lock().unwrap().clone().unwrap_or_default();
                             let ttfa_ms = stream_start.elapsed().as_millis() as u64;
                             info!(session_id=?latency_scope.0,turn_id=?latency_scope.1,from_model_start_ms=ttfa_ms,
                                 text_chars = text.chars().count(), "voice_first_audio_started");
-                            if let Some(diagnostic) = source_tts.diagnostic("") {
-                                let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSource {
-                                    session_id: control_scope.session_id.clone(), turn_id: control_scope.turn_id.clone(), diagnostic,
-                                }, &control_scope);
-                            }
                         }
                     };
                     let event_tx_sentence = event_tx.clone();
                     let control_scope_sentence = control_scope.clone();
-                    let on_sentence = move |sentence_text: &str| {
+                    let mut fallback_announced = false;
+                    let on_sentence = move |sentence_text: &str,
+                                            diagnostic: Option<
+                        &nomifun_api_types::voice::VoiceTtsDiagnostic,
+                    >| {
                         let _ = event_tx_sentence.send_scoped(VoiceCompanionEvent::TtsSpeaking {
                             text: sentence_text.to_string(),
                         }, &control_scope_sentence);
+                        // The provider reports the source captured for this exact
+                        // sentence; show the fallback hint at most once per call.
+                        let mut diagnostic = diagnostic.cloned();
+                        if let Some(current) = diagnostic.as_mut() {
+                            if current.fallback_reason.is_some() {
+                                if fallback_announced {
+                                    current.fallback_reason = None;
+                                } else {
+                                    fallback_announced = true;
+                                }
+                            }
+                        }
+                        if let Some(diagnostic) = diagnostic {
+                            let _ = event_tx_sentence.send_scoped(VoiceCompanionEvent::TtsSource {
+                                session_id: control_scope_sentence.session_id.clone(),
+                                turn_id: control_scope_sentence.turn_id.clone(),
+                                diagnostic,
+                            }, &control_scope_sentence);
+                        }
                     };
                     AbortOnDrop(Some(tokio::spawn(async move {
                         playback.speak_sentence_stream_with_reporter(
@@ -3153,7 +3231,7 @@ impl VoiceCompanionRuntime {
                                 let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
                             });
                         } else {
-                            let tts_clone = tts.clone();
+                            let tts_clone = local_tts.clone();
                             let playback_clone = playback.clone();
                             let reply = goodbye_text.to_string();
                             let voice_spec = format_voice_spec(scope.locale.as_deref(), event_tx.feedback().tts_speed);
@@ -3251,7 +3329,7 @@ impl VoiceCompanionRuntime {
                                     VoiceTaskStatus::Failed => format!("任务已结束，执行结果未成功。{}",task.result_text.as_deref().unwrap_or("请查看任务详情了解原因。").chars().take(220).collect::<String>()),
                                 }
                             };
-                            let _ = Self::play_response(&text,driver,playback,event_tx,tts,generation,&control_scope).await;
+                            let _ = Self::play_response(&text,driver,playback,event_tx,local_tts,generation,&control_scope).await;
                         },
                         Err(code) => {
                             let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
@@ -3323,7 +3401,7 @@ impl VoiceCompanionRuntime {
                                         }
                                     }
                                 };
-                                let _ = Self::play_response(text, driver, playback, event_tx, tts, generation, &control_scope).await;
+                                let _ = Self::play_response(text, driver, playback, event_tx, local_tts, generation, &control_scope).await;
                             } else {
                                 let mut driver = driver.lock().await;
                                 if playback.generation_id() != generation { return; }
@@ -3385,7 +3463,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing {text:text.into()}, &control_scope);
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(),text,&voice_name, generation, || {
+                                playback.speak_text_for_generation(local_tts.as_ref(),text,&voice_name, generation, || {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {text:text.into()}, &control_scope);
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
@@ -3396,7 +3474,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing { text: text.into() }, &control_scope);
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(), text, &voice_name, generation, || {
+                                playback.speak_text_for_generation(local_tts.as_ref(), text, &voice_name, generation, || {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text: text.into() }, &control_scope);
                                 }).await.err().map(|error| match error {
                                     AudioSinkError::Synthesis(_) => "tts_failed",
@@ -3595,7 +3673,8 @@ impl VoiceCompanionRuntime {
             Some(stt),
             self.playback.clone(),
             self.event_tx.clone(),
-            self.tts.clone(),
+            self.chat_tts.clone(),
+            self.local_tts.clone(),
             self.task_client.clone(),
             &self.active_turn,
             self.input_generation.clone(),
@@ -3636,6 +3715,7 @@ impl VoiceCompanionRuntime {
         playback: Arc<PlaybackPipeline>,
         events: Arc<VoiceEventHub>,
         tts: Arc<dyn TtsProvider>,
+        local_tts: Arc<dyn TtsProvider>,
         task_client: Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         active_turn: &Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
         input_generation: Arc<AtomicU64>,
@@ -3671,6 +3751,7 @@ impl VoiceCompanionRuntime {
                 &playback,
                 &events,
                 &tts,
+                &local_tts,
                 &task_client,
                 generation,
                 scope,
@@ -3766,6 +3847,7 @@ impl VoiceCompanionRuntime {
                         playback.clone(),
                         events.clone(),
                         tts.clone(),
+                        local_tts.clone(),
                         task_client.clone(),
                         &active_turn_clone,
                         input_generation.clone(),
@@ -3809,7 +3891,11 @@ impl VoiceCompanionRuntime {
         let driver = Arc::clone(&self.driver);
         let mut capture = Arc::clone(&self.capture_pipeline);
         let playback = Arc::clone(&self.playback);
-        let tts = Arc::clone(&self.tts);
+        // Chat replies follow the provider frozen at wake acceptance.
+        let tts: Arc<dyn TtsProvider> = self.chat_tts.clone();
+        let chat_tts = Arc::clone(&self.chat_tts);
+        let local_tts = Arc::clone(&self.local_tts);
+        let edge_tts = Arc::clone(&self.edge_tts);
         // Hide the lazy ONNX engine load (multiple seconds) behind daemon
         // startup instead of the user's first reply.
         let tts_prewarm = Arc::clone(&tts);
@@ -4629,7 +4715,7 @@ impl VoiceCompanionRuntime {
                             {
                                 info!(stage = "host_rejected", reason = "exclusively_owned", "Wake ignored while the runtime is exclusively owned");
                             } else {
-                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None, event_tx.snapshot().locale.as_deref(), wake_command.is_none())
+                                if Self::accept_wake(&driver, &playback, &event_tx, &chat_tts, &local_tts, &edge_tts, &keyword, None, event_tx.snapshot().locale.as_deref(), wake_command.is_none())
                                     .await
                                     .is_ok()
                                 {
@@ -4654,7 +4740,7 @@ impl VoiceCompanionRuntime {
                                             let _ = event_tx.send(VoiceCompanionEvent::Transcribing);
                                             Self::start_utterance(
                                                 Vec::new(), driver.clone(), router.clone(), transcriber.clone(),
-                                                playback.clone(), event_tx.clone(), tts.clone(), task_client.clone(),
+                                                playback.clone(), event_tx.clone(), tts.clone(), local_tts.clone(), task_client.clone(),
                                                 &active_turn, input_generation.clone(), generation,
                                                 pending_utterances.clone(), scope.session_id,
                                                 native_busy.clone(), native_degraded.clone(), native_job_epoch.clone(),
@@ -4688,7 +4774,7 @@ impl VoiceCompanionRuntime {
                             }
                             let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms,pending.approval_id.clone(),pending.session_id.clone())))};
                             if let Some((response,generation,deadline_ms,approval_id,session_id))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();let tts=tts.clone();
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();let local_tts=local_tts.clone();
                                 let reservation = lease_admission.reserve();
                                 let pending_for_turn = pending_confirmation.clone();
                                 let snapshot = events.snapshot();
@@ -4748,7 +4834,7 @@ impl VoiceCompanionRuntime {
                                                         let output_clone = output.clone();
                                                         let reply = goodbye_text.to_string();
                                                         let voice_spec = format_voice_spec(current.locale.as_deref(), events.feedback().tts_speed);
-                                                        let tts_prov = tts.clone();
+                                                        let tts_prov = local_tts.clone();
                                                         tokio::spawn(async move {
                                                             let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
                                                         });
@@ -4850,6 +4936,7 @@ impl VoiceCompanionRuntime {
                                     playback.clone(),
                                     event_tx.clone(),
                                     tts.clone(),
+                                    local_tts.clone(),
                                     task_client.clone(),
                                     &active_turn,
                                     input_generation.clone(),
@@ -4951,6 +5038,7 @@ impl VoiceCompanionRuntime {
                                     playback.clone(),
                                     event_tx.clone(),
                                     tts.clone(),
+                                    local_tts.clone(),
                                     task_client.clone(),
                                     &active_turn,
                                     input_generation.clone(),
@@ -5284,6 +5372,7 @@ impl VoiceCompanionRuntime {
                                         playback.clone(),
                                         event_tx.clone(),
                                         tts.clone(),
+                                        local_tts.clone(),
                                         task_client.clone(),
                                         &active_turn,
                                         input_generation.clone(),
@@ -5340,5 +5429,99 @@ mod stall_guard_tests {
         assert!(first_sentence_stall_due(false, false));
         assert!(!first_sentence_stall_due(true, false));
         assert!(!first_sentence_stall_due(false, true));
+    }
+}
+
+#[cfg(test)]
+mod quality_switch_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use nomifun_voice_terminal::{TtsError, TtsProvider};
+
+    struct CountingTts {
+        name: &'static str,
+        online: bool,
+        available: bool,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingTts {
+        fn new(
+            name: &'static str,
+            online: bool,
+            available: bool,
+        ) -> (Self, Arc<std::sync::atomic::AtomicUsize>) {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Self {
+                    name,
+                    online,
+                    available,
+                    calls: calls.clone(),
+                },
+                calls,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl TtsProvider for CountingTts {
+        fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+            Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
+                provider: self.name.into(),
+                voice: None,
+                online: self.online,
+                fallback_reason: None,
+            })
+        }
+
+        fn is_available(&self) -> bool {
+            self.available
+        }
+
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            _voice: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, TtsError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn select_chat_tts_freezes_local_vs_online_per_call() {
+        let (local, local_calls) = CountingTts::new("sherpa", false, true);
+        let (edge, edge_calls) = CountingTts::new("edge", true, true);
+        let local: Arc<dyn TtsProvider> = Arc::new(local);
+        let edge: Arc<dyn TtsProvider> = Arc::new(edge);
+
+        let offline = VoiceCompanionRuntime::select_chat_tts("local", &local, &edge);
+        assert!(offline.synthesize_stream("你好", "0").await.is_ok());
+        assert_eq!(
+            edge_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "off mode must never touch the online provider"
+        );
+        assert_eq!(local_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let premium = VoiceCompanionRuntime::select_chat_tts("edge", &local, &edge);
+        assert!(premium.synthesize_stream("你好", "0").await.is_ok());
+        assert_eq!(edge_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(local_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn select_chat_tts_uses_local_when_online_is_unavailable() {
+        let (local, local_calls) = CountingTts::new("sherpa", false, true);
+        let (edge, edge_calls) = CountingTts::new("edge", true, false);
+        let local: Arc<dyn TtsProvider> = Arc::new(local);
+        let edge: Arc<dyn TtsProvider> = Arc::new(edge);
+        let selected = VoiceCompanionRuntime::select_chat_tts("edge", &local, &edge);
+        assert!(selected.synthesize_stream("你好", "0").await.is_ok());
+        assert_eq!(edge_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(local_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

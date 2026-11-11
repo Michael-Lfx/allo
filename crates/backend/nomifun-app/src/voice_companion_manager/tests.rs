@@ -1942,6 +1942,73 @@
     }
 
     #[test]
+    fn feedback_resync_only_for_voice_choice_drift() {
+        let local = VoiceFeedbackConfig::default();
+        let mut edge = local.clone();
+        edge.tts_backend = "edge".into();
+        assert!(!VoiceCompanionProcessManager::feedback_needs_resync(
+            &local, None
+        ));
+        assert!(!VoiceCompanionProcessManager::feedback_needs_resync(
+            &local,
+            Some(&local)
+        ));
+        assert!(VoiceCompanionProcessManager::feedback_needs_resync(
+            &edge,
+            Some(&local)
+        ));
+        assert!(VoiceCompanionProcessManager::feedback_needs_resync(
+            &local,
+            Some(&edge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_unmarked_edge_is_read_as_local_without_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        );
+        let raw = r#"{"feedback":{"tts_backend":"edge"},"autostart":true}"#;
+        std::fs::create_dir_all(manager.config_path.parent().unwrap()).unwrap();
+        std::fs::write(&manager.config_path, raw).unwrap();
+        let requested = manager
+            .requested_feedback()
+            .expect("valid legacy config reads");
+        assert_eq!(requested.tts_backend, "local");
+        assert_eq!(
+            std::fs::read_to_string(&manager.config_path).unwrap(),
+            raw,
+            "read paths must not rewrite the legacy config"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_choice_writes_marker_and_feedback_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        );
+        let patch = VoiceFeedbackPatch {
+            tts_backend: Some("edge".into()),
+            ..Default::default()
+        };
+        let _ = manager.update_feedback(patch).await;
+        let requested = manager
+            .requested_feedback()
+            .expect("saved config reads");
+        assert_eq!(requested.tts_backend, "edge");
+        let raw = std::fs::read_to_string(&manager.config_path).unwrap();
+        assert!(
+            raw.contains("\"feedback_tts_backend_migrated\": true"),
+            "marker must be persisted with the choice: {raw}"
+        );
+        assert!(raw.contains("\"tts_backend\": \"edge\""), "choice must persist: {raw}");
+    }
+
+    #[test]
     fn test_resolve_voice_companion_binary_candidate_search() {
         let resolved = VoiceCompanionProcessManager::resolve_voice_companion_binary();
         if let Some(path) = resolved {

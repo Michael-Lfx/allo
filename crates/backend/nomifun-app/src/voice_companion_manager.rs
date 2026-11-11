@@ -2088,6 +2088,9 @@ impl VoiceCompanionProcessManager {
         }
     }
 
+    /// Reads the persisted feedback config. Read paths are side-effect free:
+    /// an unmarked legacy config is interpreted as the fast local backend but
+    /// is only rewritten when the user saves (see `update_feedback`).
     fn requested_feedback(&self) -> Result<VoiceFeedbackConfig, String> {
         if !self.config_path.exists() {
             return Ok(Default::default());
@@ -2097,13 +2100,23 @@ impl VoiceCompanionProcessManager {
         )
         .map_err(|_| "configuration_invalid")?;
         let object = value.as_object().ok_or("configuration_invalid")?;
-        let config: VoiceFeedbackConfig = match object.get("feedback") {
+        let already_migrated = object
+            .get("feedback_tts_backend_migrated")
+            .and_then(|migrated| migrated.as_bool())
+            .unwrap_or(false);
+        let mut config: VoiceFeedbackConfig = match object.get("feedback") {
             Some(value) => {
                 serde_json::from_value(value.clone()).map_err(|_| "configuration_invalid")?
             }
             None => Default::default(),
         };
+        // Invalid persisted configs must fail without being rewritten.
         config.validate()?;
+        if !already_migrated {
+            // Legacy removed-radio value is not an explicit opt-in for the new
+            // switch: interpret it as local until the user saves a choice.
+            config.tts_backend = nomifun_api_types::voice::TTS_BACKEND_LOCAL.into();
+        }
         Ok(config)
     }
 
@@ -2137,12 +2150,37 @@ impl VoiceCompanionProcessManager {
             .map_err(|_| "daemon_unavailable".into())
     }
 
+    /// True when a reconnected daemon still reports a different voice choice
+    /// than the one persisted on disk (offline save never reached it).
+    fn feedback_needs_resync(
+        requested: &VoiceFeedbackConfig,
+        effective: Option<&VoiceFeedbackConfig>,
+    ) -> bool {
+        effective.is_some_and(|current| current.tts_backend != requested.tts_backend)
+    }
+
     async fn feedback_settings(&self) -> Result<VoiceFeedbackSettings, String> {
         let requested = self.requested_feedback()?;
-        let effective = match self.feedback_rpc(reqwest::Method::GET, "", None).await {
+        let mut effective = match self.feedback_rpc(reqwest::Method::GET, "", None).await {
             Ok(response) if response.status().is_success() => response.json().await.ok(),
             _ => None,
         };
+        if Self::feedback_needs_resync(&requested, effective.as_ref()) {
+            // Reconnect resync: an offline save only touched the disk. Keep the
+            // persisted value authoritative and push it to the reconnected daemon
+            // before the UI reports the settings as applied.
+            if let Ok(value) = serde_json::to_value(&requested) {
+                effective = match self
+                    .feedback_rpc(reqwest::Method::POST, "", Some(value))
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {
+                        response.json().await.ok()
+                    }
+                    _ => effective,
+                };
+            }
+        }
         Ok(VoiceFeedbackSettings {
             requested,
             effective,
@@ -2157,7 +2195,15 @@ impl VoiceCompanionProcessManager {
         let requested = patch.apply(self.requested_feedback()?);
         requested.validate()?;
         let value = serde_json::to_value(&requested).map_err(|_| "configuration_invalid")?;
-        self.write_config_entry("feedback", value.clone())?;
+        // Persist the marker and the config in one atomic write: a crash between
+        // two writes could otherwise make a legacy `edge` look migrated.
+        self.write_config_entries(&[
+            (
+                "feedback_tts_backend_migrated",
+                serde_json::Value::Bool(true),
+            ),
+            ("feedback", value.clone()),
+        ])?;
         let effective = match self
             .feedback_rpc(reqwest::Method::POST, "", Some(value))
             .await
@@ -3207,7 +3253,10 @@ impl VoiceCompanionProcessManager {
         self.write_config_entry("autostart", autostart.into())
     }
 
-    fn write_config_entry(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
+    fn write_config_entries(
+        &self,
+        entries: &[(&str, serde_json::Value)],
+    ) -> Result<(), String> {
         let _guard = self
             .config_write_lock
             .lock()
@@ -3224,11 +3273,17 @@ impl VoiceCompanionProcessManager {
         let object = cfg
             .as_object_mut()
             .ok_or_else(|| "configuration_invalid".to_string())?;
-        object.insert(key.into(), value);
+        for (key, value) in entries {
+            object.insert((*key).into(), value.clone());
+        }
         let bytes =
             serde_json::to_vec_pretty(&cfg).map_err(|_| "configuration_invalid".to_string())?;
         nomifun_common::dir_config::write_atomic_replace(&self.config_path, &bytes)
             .map_err(|_| "configuration_write_failed".to_string())
+    }
+
+    fn write_config_entry(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        self.write_config_entries(&[(key, value)])
     }
 
     /// Queries the real running status of the background companion daemon.

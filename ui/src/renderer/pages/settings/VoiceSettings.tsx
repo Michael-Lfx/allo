@@ -1193,12 +1193,15 @@ const VoiceSettings: React.FC = () => {
           </SettingsList>
         </SettingsSection>
 
-        <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
+        <VoiceFeedbackSettingsSection
+          connected={voiceSnapshot?.connection === 'connected'}
+          localVoiceReady={modelStatus === 'Ready'}
+          localVoiceNeedsInstall={modelStatus === 'NotInstalled'}
+          onFixLocalVoice={() => void handleInstall(modelStatus !== 'NotInstalled')}
+        />
 
         <p className='m-0 text-12px text-t-secondary' role='status'>
-          {voiceSnapshot?.tts ? t('voice.presentation.ttsActual', {
-            provider: voiceSnapshot.tts.provider,
-            voice: voiceSnapshot.tts.voice ?? '—',
+          {voiceSnapshot?.tts ? t('voice.presentation.ttsActualNeutral', {
             location: t(voiceSnapshot.tts.online ? 'voice.presentation.online' : 'voice.presentation.local'),
           }) : t('voice.presentation.ttsUnknown')}
           {voiceSnapshot?.tts?.fallback_reason && ` · ${t('voice.presentation.ttsFallback')}`}

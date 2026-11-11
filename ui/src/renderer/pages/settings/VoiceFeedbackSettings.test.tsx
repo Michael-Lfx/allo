@@ -21,6 +21,7 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
       'voicePreferencesDesc',
       'wakeEnabled',
       'wakeWords',
+      'premiumVoice',
       'inputDevice',
       'volume',
       'ttsSpeed',
@@ -32,6 +33,22 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
     expect(html).toContain('disabled');
     expect(html).not.toContain(dictionary.feedback.applied);
     expect(html).not.toContain(dictionary.feedback.unsaved);
+  });
+  test(`${locale}: premium switch surfaces the missing local voice pack`, async () => {
+    const i18n = createInstance();
+    await i18n.init({ lng: locale, resources: { [locale]: { translation: { voice: dictionary } } }, initImmediate: false });
+    const html = renderToStaticMarkup(
+      <I18nextProvider i18n={i18n}>
+        <VoiceFeedbackSettings connected={false} localVoiceReady={false} localVoiceNeedsInstall />
+      </I18nextProvider>,
+    );
+    expect(html).toContain(dictionary.feedback.premiumVoice);
+    expect(html).toContain(dictionary.feedback.localVoiceMissing);
+    expect(html.replace(/&amp;/g, '&')).toContain(dictionary.feedback.localVoiceDownload);
+    expect(html).not.toMatch(/Matcha|Vocos|Kokoro|Microsoft|sherpa/i);
+  });
+  test(`${locale}: voice dictionary never exposes model names`, () => {
+    expect(JSON.stringify(dictionary)).not.toMatch(/Matcha|Vocos|Kokoro|Microsoft|sherpa/i);
   });
   test(`${locale}: cue receipt distinguishes skipped, failed and consumed output`, async () => {
     const i18n = createInstance();

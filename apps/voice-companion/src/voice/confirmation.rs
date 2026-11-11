@@ -147,7 +147,7 @@ impl VoiceCompanionRuntime {
     ) -> Result<bool, AudioSinkError> {
         self
             .playback
-            .speak_text_for_generation(self.tts.as_ref(), &request.text, "", generation, || {})
+            .speak_text_for_generation(self.local_tts.as_ref(), &request.text, "", generation, || {})
             .await?;
         let mut driver = self.driver.lock().await;
         let state = driver.current_state();
@@ -221,7 +221,7 @@ impl VoiceCompanionRuntime {
                     round += 1;
                     let remaining_after = deadline_ms.saturating_sub(chrono::Utc::now().timestamp_millis());
                     if round < 2 && remaining_after > 2500 {
-                        let _ = self.playback.speak_text_for_generation(self.tts.as_ref(), "没听清，请说可以执行或不要执行", "", current_gen, || {}).await;
+                        let _ = self.playback.speak_text_for_generation(self.local_tts.as_ref(), "没听清，请说可以执行或不要执行", "", current_gen, || {}).await;
                         continue;
                     }
                     return Ok(false);

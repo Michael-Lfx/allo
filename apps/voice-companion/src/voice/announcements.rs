@@ -74,7 +74,7 @@ impl VoiceCompanionRuntime {
         drop(driver);
         drop(announced);
         voice_feedback::play(&self.playback, &self.event_tx, VoiceCueKind::Recognized, generation).await;
-        let play_result = Self::play_response(&request.text,&self.driver,&self.playback,&self.event_tx,&self.tts,generation,&playback_scope).await;
+        let play_result = Self::play_response(&request.text,&self.driver,&self.playback,&self.event_tx,&self.local_tts,generation,&playback_scope).await;
         let mut announced = self.announced_tasks.lock().await;
         if let Some(record) = announced.iter_mut().find(|r| r.attempt_id == attempt) {
             match play_result {
