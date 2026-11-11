@@ -66,10 +66,21 @@ N/K 归零回到积累态。九题型作答控件复用复习会话的 ActivityI
 
 ## Decisions so far
 
-- （待裁 u2）due 态入口的呈现形态：进度卡内嵌「开始测验」按钮 vs 课程页
-  顶部独立横幅（类 ReviewBanner）——u2 票面按 CourseWorkspace 现有布局裁决。
-- （待裁 u4）quiz 校准点是否已在 stats 源 bins 中（数据源核对
-  learning_review_log vs quiz 回合落盘）；已含则不接 quiz/calibration 端点。
+- **u2 已裁**：due 态入口 = 独立 Card 区块（照 recommendedLesson 卡「左文案
+  右按钮」既有形态），固定在推荐课时卡之后不随 due 摆位；「进度卡内嵌」无
+  宿主可落（课时进度条已移入左侧大纲栏）。
+- **u4 已裁（记录制）**：quiz 校准点**未进** stats 源 bins——stats/calibration
+  只聚合 learning_review_log（memory.rs:165-176），quiz 链零写入；校准点落
+  `learning_quiz_rounds.report_json`，quiz_calibration 独立端点回放回合行
+  （#89 归因读面设计态）。零面板改动零端点接线；**后置**：quiz 校准呈现
+  并入面板留待后续票（与 #89 归因读面同属 quiz 记录读面范畴）。
+- **u4 补裁**：分级四档而非三档——`<0.3` 如实镜像 settle.rs else 分支为
+  low「需巩固」（票面原列三档系笔漏）。
+
+## 后置（本波不做，留痕）
+
+- 学习页跨课程聚合测验横幅：需新后端端点（每课程 N/K 列表）。
+- quiz 校准呈现并入 MemoryHealthPanel：与 #89 归因读面同范畴（见 u4 Resolution）。
 
 ## Tickets
 
