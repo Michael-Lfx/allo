@@ -3476,6 +3476,8 @@ export type I18nKey =
   | 'learning.genCancel'
   | 'learning.genCancelRequested'
   | 'learning.genCancelled'
+  | 'learning.genCardStructureRunning'
+  | 'learning.genCardStructureRunningElapsed'
   | 'learning.genClose'
   | 'learning.genCompleted'
   | 'learning.genCoverageReady'

@@ -65,6 +65,8 @@
   "genBgStructureRunningElapsed": "Generating structure · {{elapsed}} elapsed",
   "genBgStructureRunningAttempt": "Generating structure · attempt {{attempt}} · {{elapsed}} elapsed",
   "genBgStructureQueued": "Structure generation queued",
+  "genCardStructureRunning": "Knowledge structure generating",
+  "genCardStructureRunningElapsed": "Knowledge structure generating · {{elapsed}} elapsed",
   "genView": "View",
   "genCompleted": "Course generated",
   "genFailed": "Course generation failed",

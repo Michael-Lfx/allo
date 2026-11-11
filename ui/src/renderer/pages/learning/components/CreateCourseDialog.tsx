@@ -28,6 +28,7 @@ export function CreateCourseDialog({
   creationGoal,
   generation,
   creationPhase,
+  structureLine,
   onClose,
   onOk,
   onSelectedBaseChange,
@@ -56,6 +57,10 @@ export function CreateCourseDialog({
   generation: CourseGenerationState | null;
   /** 对话框阶段：form → generating（生成视图含终态） */
   creationPhase: CreationPhase;
+  /** completed 卡片结构态行（v4）：index 由 structurePillWatch 同一快照轮询
+   * 派生的已翻译文案，透传给进度卡片（仅 learning_graph 渲染）；null =
+   * 该行不渲染。形状仿 courseKind/restored 透传面。 */
+  structureLine?: string | null;
   onClose: () => void;
   onOk: () => void;
   onSelectedBaseChange: (values: string[]) => void;
@@ -116,6 +121,9 @@ export function CreateCourseDialog({
           courseKind={generation.request.course_kind}
           // 恢复态（restoredTask 在场）终态只出指引文案，不提供重发式重试。
           restored={generation.restoredTask !== null}
+          // completed 卡片结构态行（v4）：同一 structurePillWatch 快照派生，
+          // 透传面仿 courseKind/restored；卡片本体仅 learning_graph 渲染。
+          structureLine={structureLine}
           onStartLearning={onStartLearning}
           onRetry={onRetry}
           onCancel={onCancel}
