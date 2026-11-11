@@ -29,6 +29,10 @@ import type {
   LessonGenerationAccepted,
   LessonStatus,
   QuestionEntry,
+  QuizGradeFeedback,
+  QuizProgressView,
+  QuizRoundReport,
+  QuizRoundView,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
@@ -374,4 +378,38 @@ export const learningApi = {
   /** 恢复归档课程 */
   restoreCourse: (id: string) =>
     httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/restore`),
+  // --- quiz（u1 接线层，路由实形见 nomifun-learning/src/routes.rs 912–995；
+  // u2–u3 消费。校准读面 GET /api/learning/quiz/calibration 本波不接——
+  // stats 源可能已覆盖校准 bins，呈现走 u4 票面裁决，不接没人消费的端点） ---
+  /** quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K（N = 距上次 quiz
+   * 结算的学新结算数，K = 阈值；due = N ≥ K） */
+  quizProgress: (courseId: string) =>
+    httpRequest<QuizProgressView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/progress`
+    ),
+  /** quiz 开测命令（q2 载体落位）：due 门（Conflict 附 N/K）→ 脱敏题单
+   * （判底零字段）。无请求体；慢路径 = 变式链 LLM 调用（有凭据时内联
+   * 生成，零凭据只出 bank 旧题），调用方需容忍慢响应 */
+  quizStart: (courseId: string) =>
+    httpRequest<QuizRoundView>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/start`
+    ),
+  /** 逐题判分（q2，纯读零落账）：判底（answer/explanation）只随本反馈
+   * 下发；response 形状随题型，与课时作答同约定 */
+  quizGrade: (courseId: string, roundId: string, activityId: string, response: unknown) =>
+    httpRequest<QuizGradeFeedback>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/rounds/${encodeURIComponent(roundId)}/grade`,
+      { activity_id: activityId, response }
+    ),
+  /** 全卷结算（q2）：`answers = {activity_id: response}` 必作答（缺题拒绝）
+   * → 逐覆盖节点分级落账（同日折叠不计薪）+ 回合行首写为终 */
+  quizComplete: (courseId: string, roundId: string, answers: Record<string, unknown>) =>
+    httpRequest<QuizRoundReport>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/rounds/${encodeURIComponent(roundId)}/complete`,
+      { answers }
+    ),
 };
