@@ -2,7 +2,7 @@
 id: s5
 title: "nomi-agent profiler 测试竞态——reset 测试与探测测试串行保护"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -47,3 +47,14 @@ part_of: ../map.md
 - profiler 本体的计数语义（进程级全局 + monotonic 是有意设计，见
   profiler.rs 头注）。
 - 其它 nomi-agent 测试的隔离审计（本票只钉已实锤的这一对）。
+
+## Resolution（2026-11-11 施工收口）
+
+**已闭票。** 施工 = `1e3bfa23a`。
+
+- `profiler.rs` 增 `#[cfg(test)] test_exclusive_lock()`（test-only Mutex，
+  生产 API 零改动）；`reset_zeroes_every_counter` 全程持锁，
+  ledger git 探测测试从读 `before` 起持锁至断言止。
+- 判据对称验证：修复前本机并行全套 3/3 必败 → 修复后并行 3/3 全绿（961 过）。
+- 残余留观：其它不持锁的计数器写入测试与 reset 测试之间存在微秒级窗口
+  （未观测到命中），按票面非目标不扩面。

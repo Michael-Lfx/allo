@@ -99,3 +99,14 @@
    main 侧存量（非本分支改动面），归 main 自身的 i18n 清理，不在本波。
 5. **nomifun-ai-agent acp.rs 同款 tracing 捕获形状**：与 s6 同机制风险，
    未在本波核实是否已有同样断言面，留观。
+
+## 收图验证读数（2026-11-11）
+
+- nomifun-learning 全套并行 ×3：959/0、959/0、959/0（含 s3 四新测试、s4 两新测试；
+  修复前 s6 命中率 1/2~1/3）。单跑绿。
+- nomi-agent --lib 并行 ×3：961/0 ×3（修复前同环境 3/3 必败）。
+- ui 三门：`gen:i18n`（12365 键）/ `check:i18n` / `typecheck` 全绿；
+  `cargo fmt -p nomifun-learning -p nomi-agent --check` 零差异。
+- nomifun-db / nomifun-conversation 本波零改动（合并树当日已全绿，不重跑）。
+- 提交链：fa4000961(s7) → 854ef08ba(s2) → 5f0074283(s1) → 7cfe1927c(s3) →
+  eb0e84bed(s4) → 1e3bfa23a(s5) → bc1e64ee9(s6) → 本文档。

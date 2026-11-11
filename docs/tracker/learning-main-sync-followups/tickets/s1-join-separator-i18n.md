@@ -2,7 +2,7 @@
 id: s1
 title: "8 处 join('、') + 全角括号换 i18n——en-US 不再见中文标点"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -50,3 +50,14 @@ part_of: ../map.md
 
 - EvolutionTab 的 14 处中文 defaultValue（main 侧存量，map 后置 #4）。
 - companion 气泡（map 后置 #2）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票。** 施工 = `5f0074283`。
+
+- 7 处纯 join 全部换 `t('learning.listSeparator')`（各调用点 `t` 均在作用域内）；
+  :1213-1217 别名列换新键 `learningGraphConceptAliasWithDefinition`
+  （zh `{{name}}（{{definition}}）` / en `{{name}} ({{definition}})`）+ listSeparator。
+- `gen:i18n`（12365 键）/ `check:i18n` / `typecheck` 三门全绿；
+  `grep join('、')` 学习页归零（multiSourceDisclosure.test.ts:39 的既有禁令保持）。
+- 目验未做（i18n 键的渲染目验留待真机批次，与 c1–c3 目验同批）。
