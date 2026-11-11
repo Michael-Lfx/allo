@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   applyGrowthEvent,
   dismissGrowthItem,
+  formatGrowthElapsed,
   GROWTH_POLL_ACTIVE_MS,
   GROWTH_POLL_IDLE_MS,
   growthPollDelay,
@@ -25,6 +26,24 @@ const row = (overrides: Partial<LearningGenerationTaskView> = {}): LearningGener
   queued_at_ms: null,
   queue_position: null,
   ...overrides,
+});
+
+/** 耗时格式矩阵（F1 单一格式器收口）：`formatGrowthElapsed` 是全波唯一的
+ * 秒→读数格式器——生长 Pill、工作区徽章（structureReadout）、图课程悬浮
+ * Pill 与 completed 卡片行（structurePillWatch）同用此口径（m:ss 不补零，
+ * 满一小时 h:mm:ss）。同 451s 三面同显「7:31」，不再各有各的表。 */
+describe('formatGrowthElapsed（m:ss 单一格式器，超时进位 h:mm:ss）', () => {
+  test('451 → 7:31（跨面口径锚定示例：Pill 与工作区徽章同显）', () => {
+    expect(formatGrowthElapsed(451)).toBe('7:31');
+  });
+  test('0 → 0:00；59 → 0:59；60 → 1:00（分钟不补零，秒补零）', () => {
+    expect(formatGrowthElapsed(0)).toBe('0:00');
+    expect(formatGrowthElapsed(59)).toBe('0:59');
+    expect(formatGrowthElapsed(60)).toBe('1:00');
+  });
+  test('3661 → 1:01:01（小时不补零）', () => {
+    expect(formatGrowthElapsed(3661)).toBe('1:01:01');
+  });
 });
 
 describe('mergeGrowthSnapshot（轮询为准）', () => {
