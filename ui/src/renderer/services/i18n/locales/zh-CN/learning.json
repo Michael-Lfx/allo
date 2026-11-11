@@ -692,5 +692,21 @@
   "sourceCoverageRoleDuplicate": "重复内容",
   "sourceCoverageRoleUncertain": "存疑内容",
   "sourceCoverageRoleOther": "其他内容",
-  "sourceLibraryDeleted": "来源库已删除"
+  "sourceLibraryDeleted": "来源库已删除",
+  "quizProgressReading": "距上次检测已积累 {{settled}}/{{trigger}} 次学新结算",
+  "quizStartButton": "开始检测",
+  "quizSessionTitle": "知识检测",
+  "quizSourceNodeTag": "题源：{{node}}",
+  "quizFeedbackCorrect": "答对了",
+  "quizFeedbackIncorrect": "答错了",
+  "quizAnswerLabel": "正确答案",
+  "quizExplanationLabel": "解析",
+  "quizEvidenceLabel": "证据",
+  "quizGradeExcellent": "优秀",
+  "quizGradePass": "通过",
+  "quizGradeHalf": "半额入账",
+  "quizFoldedNoXp": "同日已结算，本次覆盖保持但不重复计薪",
+  "quizNotDueHint": "尚未到期，满 {{trigger}} 次学新结算后开放检测",
+  "quizMissingAnswers": "还有 {{count}} 题未作答，全卷作答后才能结算",
+  "quizLoadFailed": "测验加载失败，请重试"
 }

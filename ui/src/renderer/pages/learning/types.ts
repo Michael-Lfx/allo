@@ -1133,3 +1133,105 @@ export interface MemoryHealthStats {
   calibration: MemoryCalibrationBin[];
   forgetting_curve: MemoryCurvePoint[];
 }
+
+// ---------------------------------------------------------------------------
+// quiz 契约镜像（u1）：字段逐一对齐后端单源
+// `crates/backend/nomifun-learning/src/models.rs`（serde 缺省字段在 TS 侧为
+// 可选项）。DTO 实住 learning models 而非 api-types 是 q2/q3 存量形态——
+// 前端按实形镜像，搬家不做；行号/常量名注释防漂移，改后端须回改这里。
+// ---------------------------------------------------------------------------
+
+/** quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K——N = 距该课程上次
+ * quiz 结算后的学新结算数，K = 触发阈值。镜像 models.rs `QuizProgressView`
+ * （3043–3050 行）。 */
+export interface QuizProgressView {
+  /** 学新结算计数 N（quiz 结算即清零重新积累） */
+  settled_count: number;
+  /** 触发阈值 K（settle.rs `QUIZ_TRIGGER_SETTLEMENTS` 起步值 6，待校准） */
+  trigger_count: number;
+  /** N ≥ K = 到期（测量面读数，非门禁） */
+  due: boolean;
+}
+
+/** quiz 回合单题投影（q2，**判底零字段**：无 answer/explanation——答案与
+ * 解析只随 [`QuizGradeFeedback`] 判分后下发，UI 不得缓存或提前展示）。
+ * 镜像 models.rs `QuizRoundQuestionView`（3056–3074 行）。 */
+export interface QuizRoundQuestionView {
+  /** 题 ULID（grade/complete 的引用键） */
+  activity_id: string;
+  kind: ActivityKind;
+  prompt: string;
+  /** 选择题选项（非选择型为空） */
+  options: string[];
+  /** 匹配题右列候选（打乱后；非匹配型为空；serde 缺省 → TS 可选） */
+  matches?: string[];
+  /** 题目所属学习节点（quiz 跨节点会话逐题携带） */
+  node_id: string;
+  node_name: string;
+  /** 难度档 1-3（缺省 = 存量行/变式题未铸值；serde 缺省 → TS 可选） */
+  difficulty?: number | null;
+}
+
+/** quiz 回合视图（q2 start 出参：情境快照 + 脱敏题单）。镜像 models.rs
+ * `QuizRoundView`（3078–3090 行）。 */
+export interface QuizRoundView {
+  /** 回合 ULID（grade/complete 的回合键） */
+  round_id: string;
+  course_id: string;
+  /** active | completed | abandoned */
+  status: 'active' | 'completed' | 'abandoned';
+  /** 触发时刻的 N/K 读数（结算后自然清零，读数面非门禁） */
+  settled_count: number;
+  trigger_count: number;
+  /** 题量上限读数（settle.rs `QUIZ_QUESTION_BUDGET` = 15） */
+  budget: number;
+  questions: QuizRoundQuestionView[];
+}
+
+/** 单题判分反馈（q2：解析与判底揭示的唯一口；确定性判分零 LLM，纯判分不
+ * 落账——结算在 complete 全卷面）。镜像 models.rs `QuizGradeFeedback`
+ * （3095–3106 行）。 */
+export interface QuizGradeFeedback {
+  activity_id: string;
+  /** correct | incorrect */
+  correct: boolean;
+  /** 判底揭示（判分已定，揭示不破持答案红线；形状随题型） */
+  answer: unknown;
+  /** 解析（判分后下发） */
+  explanation: string;
+  /** 题干证据回引（题源未提供则缺省；serde 缺省 → TS 可选） */
+  evidence?: string | null;
+}
+
+/** quiz 回合逐节点对账行（q2；q3 扩逐题校准点）。镜像 models.rs
+ * `QuizRoundNodeReport`（3110–3122 行）。 */
+export interface QuizRoundNodeReport {
+  node_id: string;
+  node_name: string;
+  answered: number;
+  correct: number;
+  /** 本节点净入账；null = 同日已结算折叠（coverage 保持不重复计薪，
+   * learnhub quiz_settled_on_day 语义） */
+  earned_xp: number | null;
+  /** 逐题校准点（q3：预测 R vs 实际对错；serde 缺省容 q2 时代旧档 → TS 可选） */
+  questions?: QuizCalibrationPoint[];
+}
+
+/** 单题校准点（q3，喂校准读面的数据源——无预测面不入预测均值）。镜像
+ * models.rs `QuizCalibrationPoint`（3127–3132 行）。 */
+export interface QuizCalibrationPoint {
+  activity_id: string;
+  correct: boolean;
+  /** 作答时点该题卡的 FSRS 预测可提取性；无卡（变体/未建卡）= null */
+  predicted_r: number | null;
+}
+
+/** quiz 回合结算报告（q2 complete 出参）。镜像 models.rs `QuizRoundReport`
+ * （3136–3142 行）。 */
+export interface QuizRoundReport {
+  round_id: string;
+  course_id: string;
+  /** 全卷净入账（Σ 逐节点；折叠不计薪） */
+  earned_xp: number;
+  covered: QuizRoundNodeReport[];
+}
