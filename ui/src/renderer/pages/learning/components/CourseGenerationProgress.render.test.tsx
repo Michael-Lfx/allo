@@ -201,11 +201,14 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
       error: '后台任务已失败。',
     });
     expect(zh).toContain('课程生成失败');
-    expect(zh).toContain('后台任务已失败。');
+    // o6：错误长文收进「错误详情」折叠 + 「复制详情」按钮——静态渲染下
+    // 原文不再平铺上屏。
+    expect(zh).not.toContain('后台任务已失败。');
+    expect(zh).toContain('错误详情');
+    expect(zh).toContain('复制详情');
     expect(zh).toContain('可在课程工作区重新发起。');
     expect(zh).not.toContain('重试');
     expect(zh).not.toContain('按原请求重新发起');
-    expect(zh).not.toContain('<button');
 
     const en = await renderProgress('en-US', {
       status: 'failed',
@@ -213,10 +216,11 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
       error: 'The background task failed.',
     });
     expect(en).toContain('Course generation failed');
-    expect(en).toContain('The background task failed.');
+    expect(en).not.toContain('The background task failed.');
+    expect(en).toContain('Error details');
+    expect(en).toContain('Copy details');
     expect(en).toContain('You can start a new generation from the course workspace.');
     expect(en).not.toContain('Retry');
-    expect(en).not.toContain('<button');
   });
 
   test('恢复态 cancelled：中性说明，不提供重新生成', async () => {
@@ -233,10 +237,12 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
     expect(en).not.toContain('<button');
   });
 
-  test('in-session failed / cancelled：重试照旧（行为不变）', async () => {
+  test('in-session failed / cancelled：重试照旧，错误长文收进折叠（o6）', async () => {
     const failed = await renderProgress('zh-CN', { status: 'failed', error: '网络错误' });
     expect(failed).toContain('重试');
-    expect(failed).toContain('网络错误');
+    expect(failed).not.toContain('网络错误');
+    expect(failed).toContain('错误详情');
+    expect(failed).toContain('复制详情');
     expect(failed).toContain('接着上次进度继续');
 
     const cancelled = await renderProgress('zh-CN', { status: 'cancelled' });

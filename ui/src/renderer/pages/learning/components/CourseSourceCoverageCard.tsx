@@ -76,6 +76,20 @@ export function CourseSourceCoverageCard({
     ...(plan.plan.warnings ?? []).map((warning) => `[plan] ${warning}`),
     ...(plan.coverage.warnings ?? []).map((warning) => `[coverage] ${warning}`),
   ];
+  // o6 收纳判定：详情折叠在场条件 = 任一警告/例外行或任一明细组非空。
+  const hasDetailGroups =
+    (plan.coverage.skipped_examples?.length ?? 0) > 0 ||
+    (plan.coverage.uncertain?.length ?? 0) > 0 ||
+    (plan.plan.gaps?.length ?? 0) > 0 ||
+    warnings.length > 0 ||
+    plan.plan.chapter_summaries.length > 0 ||
+    (detail?.excluded.length ?? 0) > 0;
+  const hasCoverageExceptions =
+    plan.triage.mixed > 0 ||
+    plan.coverage.anchor_uncertain_topics > 0 ||
+    plan.coverage.fallback_lessons > 0 ||
+    plan.duplicates.count > 0 ||
+    uncertainTooMany(triageCounts);
 
   return (
     <Card size='small'>
@@ -92,7 +106,7 @@ export function CourseSourceCoverageCard({
             </Tooltip>
           )}
         </div>
-        {/* 主读数：topic 覆盖四态 + 前置/练习去向 + mixed 部分进入 */}
+        {/* 主读数：topic 覆盖四态 + 前置/练习去向（o6：默认只留这两行结论） */}
         <Text className='text-13px'>
           {t('learning.sourceCoverageTopics', {
             covered: totals.covered,
@@ -106,122 +120,138 @@ export function CourseSourceCoverageCard({
             practice: plan.coverage.practice_topics,
           })}
         </Text>
-        {plan.triage.mixed > 0 && (
-          <Text className='text-13px'>
-            {t('learning.sourceCoverageMixed', { count: plan.triage.mixed })}
-          </Text>
-        )}
-        {plan.coverage.anchor_uncertain_topics > 0 && (
-          <Text className='text-13px'>
-            {t('learning.sourceCoverageAnchorUncertain', {
-              count: plan.coverage.anchor_uncertain_topics,
-            })}
-          </Text>
-        )}
-        {plan.coverage.fallback_lessons > 0 && (
-          <Text className='text-13px text-warning-6'>
-            {t('learning.sourceCoverageFallback', { count: plan.coverage.fallback_lessons })}
-          </Text>
-        )}
-        {plan.duplicates.count > 0 && (
-          <Text className='text-13px'>
-            {t('learning.sourceCoverageDuplicates', { count: plan.duplicates.count })}
-          </Text>
-        )}
-        {uncertainTooMany(triageCounts) && (
-          <Text className='text-13px text-warning-6'>
-            {t('learning.genUncertainTooMany', { count: plan.triage.uncertain })}
-          </Text>
-        )}
-        {/* 可展开明细：跳过/不确定 topic、证据缺口、警告、章节映射与文件级诊断 */}
-        <NomiCollapse bordered={false}>
-          {(plan.coverage.skipped_examples?.length ?? 0) > 0 && (
+        {/* o6 收纳：mixed / 锚点存疑 / 简化课时 / 重复 / 存疑偏多等例外行
+            与既有明细组（跳过/不确定 topic、证据缺口、警告、章节映射、
+            文件级诊断）全部收进单一「详情」折叠（默认收起）——只收纳
+            不删信息，展开即全部可见。 */}
+        {(hasCoverageExceptions || hasDetailGroups) && (
+          <NomiCollapse bordered={false}>
             <NomiCollapse.Item
-              name='coverage-skipped'
-              header={t('learning.sourceCoverageSkippedTopics')}
+              name='source-coverage-details'
+              header={t('learning.sourceCoverageDetails')}
             >
-              {plan.coverage.skipped_examples?.map((topic) => (
-                <Text
-                  key={topic.label}
-                  type='secondary'
-                  className='block break-all text-12px'
-                >
-                  · {topic.label}
-                  {topic.reason ? ` — ${topic.reason}` : ''}
-                </Text>
-              ))}
+              <div className='flex flex-col gap-4px'>
+                {plan.triage.mixed > 0 && (
+                  <Text className='text-13px'>
+                    {t('learning.sourceCoverageMixed', { count: plan.triage.mixed })}
+                  </Text>
+                )}
+                {plan.coverage.anchor_uncertain_topics > 0 && (
+                  <Text className='text-13px'>
+                    {t('learning.sourceCoverageAnchorUncertain', {
+                      count: plan.coverage.anchor_uncertain_topics,
+                    })}
+                  </Text>
+                )}
+                {plan.coverage.fallback_lessons > 0 && (
+                  <Text className='text-13px text-warning-6'>
+                    {t('learning.sourceCoverageFallback', { count: plan.coverage.fallback_lessons })}
+                  </Text>
+                )}
+                {plan.duplicates.count > 0 && (
+                  <Text className='text-13px'>
+                    {t('learning.sourceCoverageDuplicates', { count: plan.duplicates.count })}
+                  </Text>
+                )}
+                {uncertainTooMany(triageCounts) && (
+                  <Text className='text-13px text-warning-6'>
+                    {t('learning.genUncertainTooMany', { count: plan.triage.uncertain })}
+                  </Text>
+                )}
+                {hasDetailGroups && (
+                  <NomiCollapse bordered={false}>
+                    {(plan.coverage.skipped_examples?.length ?? 0) > 0 && (
+                      <NomiCollapse.Item
+                        name='coverage-skipped'
+                        header={t('learning.sourceCoverageSkippedTopics')}
+                      >
+                        {plan.coverage.skipped_examples?.map((topic) => (
+                          <Text
+                            key={topic.label}
+                            type='secondary'
+                            className='block break-all text-12px'
+                          >
+                            · {topic.label}
+                            {topic.reason ? ` — ${topic.reason}` : ''}
+                          </Text>
+                        ))}
+                      </NomiCollapse.Item>
+                    )}
+                    {(plan.coverage.uncertain?.length ?? 0) > 0 && (
+                      <NomiCollapse.Item
+                        name='coverage-uncertain'
+                        header={t('learning.sourceCoverageUncertainTopics')}
+                      >
+                        {plan.coverage.uncertain?.map((label) => (
+                          <Text key={label} type='secondary' className='block break-all text-12px'>
+                            · {label}
+                          </Text>
+                        ))}
+                      </NomiCollapse.Item>
+                    )}
+                    {(plan.plan.gaps?.length ?? 0) > 0 && (
+                      <NomiCollapse.Item name='coverage-gaps' header={t('learning.sourceCoverageGaps')}>
+                        {plan.plan.gaps?.map((gap) => (
+                          <Text key={gap} type='secondary' className='block break-all text-12px'>
+                            · {gap}
+                          </Text>
+                        ))}
+                      </NomiCollapse.Item>
+                    )}
+                    {warnings.length > 0 && (
+                      <NomiCollapse.Item name='coverage-warnings' header={t('learning.sourceCoverageWarnings')}>
+                        {warnings.map((warning) => (
+                          <Text key={warning} type='secondary' className='block break-all text-12px'>
+                            · {warning}
+                          </Text>
+                        ))}
+                      </NomiCollapse.Item>
+                    )}
+                    {plan.plan.chapter_summaries.length > 0 && (
+                      <NomiCollapse.Item
+                        name='coverage-chapters'
+                        header={t('learning.sourceCoverageChaptersTitle', {
+                          count: plan.plan.chapter_summaries.length,
+                        })}
+                      >
+                        {plan.plan.chapter_summaries.map((chapter) => (
+                          <Text key={chapter.title} type='secondary' className='block break-all text-12px'>
+                            ·{' '}
+                            {t('learning.sourceCoverageChapterLine', {
+                              title: chapter.title,
+                              lessons: chapter.lessons,
+                              sources: chapter.source_files,
+                            })}
+                            {chapter.skipped
+                              ? ` — ${t('learning.sourceCoverageChapterSkipped', {
+                                  reason: chapter.skip_reason ?? '',
+                                })}`
+                              : ''}
+                          </Text>
+                        ))}
+                      </NomiCollapse.Item>
+                    )}
+                    {(detail?.excluded.length ?? 0) > 0 && (
+                      <NomiCollapse.Item
+                        name='coverage-excluded'
+                        header={t('learning.sourceCoverageExcludedFiles', {
+                          count: detail?.excluded.length ?? 0,
+                        })}
+                      >
+                        <SourceExcludedLines
+                          detail={{
+                            excluded: detail?.excluded ?? [],
+                            duplicates: detail?.duplicates ?? [],
+                          }}
+                        />
+                      </NomiCollapse.Item>
+                    )}
+                  </NomiCollapse>
+                )}
+              </div>
             </NomiCollapse.Item>
-          )}
-          {(plan.coverage.uncertain?.length ?? 0) > 0 && (
-            <NomiCollapse.Item
-              name='coverage-uncertain'
-              header={t('learning.sourceCoverageUncertainTopics')}
-            >
-              {plan.coverage.uncertain?.map((label) => (
-                <Text key={label} type='secondary' className='block break-all text-12px'>
-                  · {label}
-                </Text>
-              ))}
-            </NomiCollapse.Item>
-          )}
-          {(plan.plan.gaps?.length ?? 0) > 0 && (
-            <NomiCollapse.Item name='coverage-gaps' header={t('learning.sourceCoverageGaps')}>
-              {plan.plan.gaps?.map((gap) => (
-                <Text key={gap} type='secondary' className='block break-all text-12px'>
-                  · {gap}
-                </Text>
-              ))}
-            </NomiCollapse.Item>
-          )}
-          {warnings.length > 0 && (
-            <NomiCollapse.Item name='coverage-warnings' header={t('learning.sourceCoverageWarnings')}>
-              {warnings.map((warning) => (
-                <Text key={warning} type='secondary' className='block break-all text-12px'>
-                  · {warning}
-                </Text>
-              ))}
-            </NomiCollapse.Item>
-          )}
-          {plan.plan.chapter_summaries.length > 0 && (
-            <NomiCollapse.Item
-              name='coverage-chapters'
-              header={t('learning.sourceCoverageChaptersTitle', {
-                count: plan.plan.chapter_summaries.length,
-              })}
-            >
-              {plan.plan.chapter_summaries.map((chapter) => (
-                <Text key={chapter.title} type='secondary' className='block break-all text-12px'>
-                  ·{' '}
-                  {t('learning.sourceCoverageChapterLine', {
-                    title: chapter.title,
-                    lessons: chapter.lessons,
-                    sources: chapter.source_files,
-                  })}
-                  {chapter.skipped
-                    ? ` — ${t('learning.sourceCoverageChapterSkipped', {
-                        reason: chapter.skip_reason ?? '',
-                      })}`
-                    : ''}
-                </Text>
-              ))}
-            </NomiCollapse.Item>
-          )}
-          {(detail?.excluded.length ?? 0) > 0 && (
-            <NomiCollapse.Item
-              name='coverage-excluded'
-              header={t('learning.sourceCoverageExcludedFiles', {
-                count: detail?.excluded.length ?? 0,
-              })}
-            >
-              <SourceExcludedLines
-                detail={{
-                  excluded: detail?.excluded ?? [],
-                  duplicates: detail?.duplicates ?? [],
-                }}
-              />
-            </NomiCollapse.Item>
-          )}
-        </NomiCollapse>
+          </NomiCollapse>
+        )}
       </div>
     </Card>
   );
