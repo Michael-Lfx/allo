@@ -703,8 +703,13 @@
   "quizExplanationLabel": "解析",
   "quizEvidenceLabel": "证据",
   "quizGradeExcellent": "优秀",
+  "quizGradeExcellentHint": "几乎全对，这套知识点你已经吃得很透，继续保持这个节奏。",
   "quizGradePass": "通过",
+  "quizGradePassHint": "整体掌握得不错，抽空翻看错题所在节点就更稳了。",
   "quizGradeHalf": "半额入账",
+  "quizGradeHalfHint": "基础还在，但部分节点开始模糊，先复习错得多的节点再来一轮会更好。",
+  "quizGradeLow": "需巩固",
+  "quizGradeLowHint": "这轮暴露了不少盲区，别急——按对账行逐个节点补一遍，下次检测会稳很多。",
   "quizFoldedNoXp": "同日已结算，本次覆盖保持但不重复计薪",
   "quizNotDueHint": "尚未到期，满 {{trigger}} 次学新结算后开放检测",
   "quizMissingAnswers": "还有 {{count}} 题未作答，全卷作答后才能结算",
@@ -712,5 +717,11 @@
   "quizNext": "下一题",
   "quizRetry": "重试",
   "quizReadyToSettle": "{{count}} 题已全部作答，交卷结算即可入账",
-  "quizCompleteButton": "交卷结算"
+  "quizCompleteButton": "交卷结算",
+  "quizReportHeading": "本卷结算",
+  "quizReportTotalXp": "净入账 {{xp}} XP",
+  "quizReportAccuracy": "准确率 {{percent}}%",
+  "quizReportRowScore": "作答 {{answered}} · 答对 {{correct}}",
+  "quizReportRowXp": "+{{xp}} XP",
+  "quizReportFinish": "完成"
 }
