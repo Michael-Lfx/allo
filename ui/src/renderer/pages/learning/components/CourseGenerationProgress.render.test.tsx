@@ -14,8 +14,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
+import type { ILearningCourseGenerationEvent } from '@/common/adapter/ipcBridge';
 import type { CourseDetail, CourseKind } from '../types';
-import { CourseGenerationProgress } from './CourseGenerationProgress';
+import { CourseGenerationProgress, TriageCompletedFrame } from './CourseGenerationProgress';
+import { PHASE } from '../phaseMeta';
 
 const initTestI18n = async (locale: 'zh-CN' | 'en-US') => {
   const instance = createInstance();
@@ -96,7 +98,7 @@ describe('CourseGenerationProgress（学习图流，c1）', () => {
 
   test('graph + queued：排队提示只出现一次，取消入口保留', async () => {
     const html = await renderProgress('zh-CN', { status: 'queued', courseKind: 'learning_graph' });
-    expect(count(html, '任务已提交，正在排队等待空闲资源槽；排队期可取消。')).toBe(1);
+    expect(count(html, '任务已提交，正在排队等待空闲算力；排队期间可取消。')).toBe(1);
     expect(count(html, SPINNER)).toBe(1);
     expect(count(html, '取消生成')).toBe(1);
     expect(html).not.toContain('结构生成已在后台启动');
@@ -137,7 +139,7 @@ describe('CourseGenerationProgress（学习图流，c1）', () => {
 
     const queued = await renderProgress('zh-CN', { status: 'queued' });
     expect(queued).toContain('准备');
-    expect(queued).toContain('任务已提交，正在排队等待空闲资源槽；排队期可取消。');
+    expect(queued).toContain('任务已提交，正在排队等待空闲算力；排队期间可取消。');
     expect(count(queued, '取消生成')).toBe(1);
   });
 });
@@ -193,6 +195,53 @@ describe('CourseGenerationProgress（completed 卡片结构态行，v4）', () =
   });
 });
 
+describe('TriageCompletedFrame（F4：混合/重复/不确定残余计数收进明细折叠）', () => {
+  const counts = {
+    total: 8,
+    core: 2,
+    prerequisite: 1,
+    practice: 1,
+    mixed: 3,
+    noise: 1,
+    duplicate: 2,
+    uncertain: 5,
+  };
+
+  const renderFrame = async (
+    locale: 'zh-CN' | 'en-US',
+    event: Partial<ILearningCourseGenerationEvent> = {}
+  ): Promise<string> => {
+    const instance = await initTestI18n(locale);
+    return renderToStaticMarkup(
+      <I18nextProvider i18n={instance}>
+        <TriageCompletedFrame
+          event={{ phase: PHASE.triageCompleted, ...event }}
+          index={0}
+        />
+      </I18nextProvider>
+    );
+  };
+
+  test('mixed > 0 且无文件列表：主行照常，「详情」折叠在场（mixed 计数不再无处呈现）', async () => {
+    const html = await renderFrame('zh-CN', { counts });
+    // 主行读数（跳过 = noise + duplicate = 3，票面句直书）。
+    expect(html).toContain('已整理 8 个来源文件：核心 2、跳过 3');
+    expect(html).toContain('详情');
+  });
+
+  test('计数行收进折叠内，不上主面（o3「其余进明细」口径不回潮）', async () => {
+    const html = await renderFrame('zh-CN', { counts });
+    expect(html).not.toContain('其中：混合 3、重复 2、不确定 5');
+  });
+
+  test('三个计数全为 0 且无文件列表：不出「详情」折叠（无空折叠）', async () => {
+    const zero = { total: 8, core: 8, prerequisite: 0, practice: 0, mixed: 0, noise: 0, duplicate: 0, uncertain: 0 };
+    const html = await renderFrame('zh-CN', { counts: zero });
+    expect(html).toContain('已整理 8 个来源文件：核心 8、跳过 0');
+    expect(html).not.toContain('详情');
+  });
+});
+
 describe('CourseGenerationProgress（恢复态终态面板）', () => {
   test('恢复态 failed：本地化指引，不提供重发式重试（合成请求会以 topic 标签为名新建课程）', async () => {
     const zh = await renderProgress('zh-CN', {
@@ -201,11 +250,14 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
       error: '后台任务已失败。',
     });
     expect(zh).toContain('课程生成失败');
-    expect(zh).toContain('后台任务已失败。');
+    // o6：错误长文收进「错误详情」折叠 + 「复制详情」按钮——静态渲染下
+    // 原文不再平铺上屏。
+    expect(zh).not.toContain('后台任务已失败。');
+    expect(zh).toContain('错误详情');
+    expect(zh).toContain('复制详情');
     expect(zh).toContain('可在课程工作区重新发起。');
     expect(zh).not.toContain('重试');
     expect(zh).not.toContain('按原请求重新发起');
-    expect(zh).not.toContain('<button');
 
     const en = await renderProgress('en-US', {
       status: 'failed',
@@ -213,10 +265,11 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
       error: 'The background task failed.',
     });
     expect(en).toContain('Course generation failed');
-    expect(en).toContain('The background task failed.');
+    expect(en).not.toContain('The background task failed.');
+    expect(en).toContain('Error details');
+    expect(en).toContain('Copy details');
     expect(en).toContain('You can start a new generation from the course workspace.');
     expect(en).not.toContain('Retry');
-    expect(en).not.toContain('<button');
   });
 
   test('恢复态 cancelled：中性说明，不提供重新生成', async () => {
@@ -233,11 +286,13 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
     expect(en).not.toContain('<button');
   });
 
-  test('in-session failed / cancelled：重试照旧（行为不变）', async () => {
+  test('in-session failed / cancelled：重试照旧，错误长文收进折叠（o6）', async () => {
     const failed = await renderProgress('zh-CN', { status: 'failed', error: '网络错误' });
     expect(failed).toContain('重试');
-    expect(failed).toContain('网络错误');
-    expect(failed).toContain('按原请求重新发起');
+    expect(failed).not.toContain('网络错误');
+    expect(failed).toContain('错误详情');
+    expect(failed).toContain('复制详情');
+    expect(failed).toContain('接着上次进度继续');
 
     const cancelled = await renderProgress('zh-CN', { status: 'cancelled' });
     expect(cancelled).toContain('重新生成');

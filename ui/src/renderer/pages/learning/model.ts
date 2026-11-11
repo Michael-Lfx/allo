@@ -249,15 +249,26 @@ export function triageViewCounts(view: {
   };
 }
 
-/** 分诊计数行（生成进度视图 triageCompleted 帧用）：「扫描 N 文件 → core X /
- * mixed Y / 跳过 Z / 重复 W / 不确定 U」。跳过 = noise + duplicate（两者都不
- * 进课程）。 */
+/** 分诊计数行（生成进度视图 triageCompleted 帧用）：「已整理 N 个来源文件：
+ * 核心 X、跳过 Y」。跳过 = noise + duplicate（两者都不进课程）；混合/重复/
+ * 不确定三个残余计数不上主行，收进可展开明细的首行（`triageDetailCountsLine`
+ * ——CourseGenerationProgress 的 triage「详情」折叠），文件级列表走折叠内
+ * 二级分组。 */
 export function triageCountsLine(counts: TriageCountsLike, t: Translate): string {
   return t('learning.genTriageLine', {
     total: counts.total,
     core: counts.core,
-    mixed: counts.mixed,
     skipped: counts.noise + counts.duplicate,
+  });
+}
+
+/** 分诊明细首行（F4）：主行只报 total/core/跳过后被丢弃的三个残余计数
+ * （混合/重复/不确定）收进「详情」折叠首行——单一模板串，计数无处呈现的
+ * mixed 从此有归处。三个计数全为 0 时返回 null（不渲染「0、0、0」噪声行）。 */
+export function triageDetailCountsLine(counts: TriageCountsLike, t: Translate): string | null {
+  if (counts.mixed === 0 && counts.duplicate === 0 && counts.uncertain === 0) return null;
+  return t('learning.genTriageDetailCounts', {
+    mixed: counts.mixed,
     duplicate: counts.duplicate,
     uncertain: counts.uncertain,
   });
@@ -294,4 +305,24 @@ export function coverageTopicTotals(coverage: {
   const covered = coverage.topics_covered;
   const skipped = coverage.topics_skipped;
   return { covered, skipped, total: covered + skipped + (coverage.uncertain?.length ?? 0) };
+}
+
+// ── o4：来源分诊 role 枚举 → 人面角色名（机器枚举不再上屏）──────────────
+
+/** 后端 `KbTriageRole`（triage.rs，serde snake_case）→ 词典 key。七档全覆盖；
+ * 未知档位（后端新增）走 `sourceCoverageRoleOther` 兜底，不落机器名。 */
+export const SOURCE_ROLE_KEYS: Record<string, `learning.sourceCoverageRole${string}`> = {
+  core: 'learning.sourceCoverageRoleCore',
+  prerequisite: 'learning.sourceCoverageRolePrerequisite',
+  practice: 'learning.sourceCoverageRolePractice',
+  mixed: 'learning.sourceCoverageRoleMixed',
+  noise: 'learning.sourceCoverageRoleNoise',
+  duplicate: 'learning.sourceCoverageRoleDuplicate',
+  uncertain: 'learning.sourceCoverageRoleUncertain',
+};
+
+/** role 枚举 → 角色名（被排除/重复文件诊断行共用一份口径）。 */
+export function sourceRoleLabel(role: string, t: Translate): string {
+  const key = SOURCE_ROLE_KEYS[role] ?? 'learning.sourceCoverageRoleOther';
+  return t(key);
 }

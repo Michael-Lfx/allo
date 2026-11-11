@@ -70,6 +70,15 @@ import { DeclarationWindow } from './structure/DeclarationWindow';
 
 const { Text, Title, Paragraph } = Typography;
 
+/** 顶条在跑态徽章（o6 顶条单一状态；F7 去重）：同一枚 processing Tag 渲染
+ * 结构生成（v2 实时读数徽章）/ 生长 / 自动准备三种态——文案由调用方渲染，
+ * 数据源（structureBadge 等）留在调用处，徽章只负责外观。 */
+const ProcessingStateTag: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <Tag size='small' color='processing' className='!mx-0'>
+    {children}
+  </Tag>
+);
+
 /**
  * 学习图课程工作区（beta，概念网 + 生长模型 ADR-0009）：
  * - 顶条：知识结构状态（生成中 / 已生成 / 失败重试）+ 手动补充节点
@@ -179,7 +188,8 @@ const LearningGraphWorkspace: React.FC<{
         })
         .catch((loadError) => {
           if (!cancelled) {
-            setStructureError(loadError instanceof Error ? loadError.message : String(loadError));
+            // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+            setStructureError(errorMessage(t, loadError));
           }
         });
     };
@@ -201,7 +211,7 @@ const LearningGraphWorkspace: React.FC<{
       cancelled = true;
       off();
     };
-  }, [detail.course.id]);
+  }, [detail.course.id, t]);
 
   const regenerateStructure = useCallback(async () => {
     setRegenerating(true);
@@ -215,11 +225,14 @@ const LearningGraphWorkspace: React.FC<{
       setStructureRunningWs(false);
       // g3 冲突显性化：生成进行中重复触发 = 后端 409 → 非阻塞 toast 明确
       // 反馈（此前 200 kicked=true 静默吞掉，「生成中」Tag 卡死到刷新）；
-      // 其余失败保留阻塞 Modal——需要用户看见并处置。
+      // 其余失败同样走非阻塞 toast（c2 口径，o1 收编：错误文案由
+      // errorMessage 单源映射，不再强弹窗打断）。
       if (actionError instanceof BackendHttpError && actionError.status === 409) {
         Message.warning(t('learning.learningGraphStructureConflict'));
       } else {
-        Modal.error({
+        // F2：失败 toast 带各自动作标题（notify 面原生 title 两行），不再
+        // 五处同文分不清哪个动作失败；正文仍是 errorMessage 单源映射句。
+        Message.error({
           title: t('learning.learningGraphStructureFailed'),
           content: errorMessage(t, actionError),
         });
@@ -277,7 +290,9 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         await refetchStructure();
       } else {
-        Modal.error({
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+        // F2：带各自动作标题。
+        Message.error({
           title: t('learning.learningGraphMountFailed'),
           content: errorMessage(t, actionError),
         });
@@ -303,7 +318,9 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         await refetchStructure();
       } else {
-        Modal.error({
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+        // F2：带各自动作标题。
+        Message.error({
           title: t('learning.learningGraphRepairFailed'),
           content: errorMessage(t, actionError),
         });
@@ -454,12 +471,13 @@ const LearningGraphWorkspace: React.FC<{
         if (result.noop) {
           Message.info(t('learning.learningGraphBasisDeclareNoop'));
         } else {
+          // o4：成功 toast 只报数量——门口 id 串与块 slug 串不再内插上屏
+          // （与 GateCoverage 已声明行同口径；铸出/复用计数随 o2 口语化版
+          // 本文退出用户面）。
           Message.success(
             t('learning.learningGraphBasisDeclareDone', {
-              doors: result.doors.join(t('learning.listSeparator')),
-              blocks: result.blocks.join(t('learning.listSeparator')),
-              minted: result.minted,
-              reused: result.reused,
+              doorsCount: result.doors.length,
+              blocksCount: result.blocks.length,
             })
           );
         }
@@ -476,7 +494,9 @@ const LearningGraphWorkspace: React.FC<{
           const view = await learningApi.basisView(detail.course.id).catch(() => null);
           if (view) setBasis(view);
         } else {
-          Modal.error({
+          // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+          // F2：带各自动作标题。
+          Message.error({
             title: t('learning.learningGraphBasisDeclareFailed'),
             content: errorMessage(t, actionError),
           });
@@ -503,7 +523,9 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         onRefresh();
       } else {
-        Modal.error({
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+        // F2：带各自动作标题。
+        Message.error({
           title: t('learning.learningGraphGrowFailed'),
           content: errorMessage(t, actionError),
         });
@@ -522,6 +544,44 @@ const LearningGraphWorkspace: React.FC<{
   // 声明窗口（e3）：零节点（结构完成、首批未生长）时学习 Tab 落在门口
   // 声明画面——生长不再自动抢跑，首批由「开始学习」显式触发。
   const zeroNodes = lessons.length === 0;
+
+  // ── 顶条单一状态徽章（o6 呈现收敛）：结构生成 / 生长 / 自动准备三个
+  // processing 态此前可并排亮三个 Tag——现在按优先级（结构生成 > 生长 >
+  // 自动准备）只亮一个，一行只讲一件事。v2 的实时读数徽章仍是结构态的
+  // 呈现载体；v3 Pill、v4 卡片结构态行零回改。被压后的态与静态结构摘要
+  // 转顶条下方次要行——只收纳不删信息。
+  const processingPrimary: 'structure' | 'growth' | 'auto' | null = structureRunning
+    ? 'structure'
+    : graph.growth_running
+      ? 'growth'
+      : autoPreparing
+        ? 'auto'
+        : null;
+  const structureSummaryText = structure?.structure
+    ? t('learning.learningGraphStructureSummary', {
+        spines: structure.structure.spines.length,
+        blocks: structure.structure.blocks.length,
+        doors: structure.terrain?.doors.length ?? 0,
+      }) +
+      (structure.generated_at
+        ? ` · ${new Date(structure.generated_at).toLocaleString()}`
+        : '')
+    : null;
+  const processingSecondaryParts: string[] = [];
+  if (processingPrimary !== null) {
+    if (graph.growth_running && processingPrimary !== 'growth') {
+      processingSecondaryParts.push(t('learning.learningGraphGrowing'));
+    }
+    if (autoPreparing && processingPrimary !== 'auto') {
+      processingSecondaryParts.push(t('learning.learningGraphAutoPreparing'));
+    }
+    // 处理徽章在场时加载失败句让位降级为次要行（仍可见，不丢）。
+    if (structureError) {
+      processingSecondaryParts.push(t('learning.learningGraphStructureLoadFailed'));
+    }
+    if (structureSummaryText) processingSecondaryParts.push(structureSummaryText);
+  }
+  const processingSecondaryLine = processingSecondaryParts.join(' · ');
 
   // 离场兜底臂挂载（零节点 + 拉到新结构 → 呈现一次；见 presentStructureOnce）。
   const zeroNodesAutoPresentedRef = React.useRef(false);
@@ -600,29 +660,27 @@ const LearningGraphWorkspace: React.FC<{
           <Text bold className='text-13px'>
             {t('learning.learningGraphStructureTitle')}
           </Text>
-          {structureError ? (
+          {processingPrimary === 'structure' ? (
+            // v2 实时读数徽章：文案与插值仍出自 structureBadge（数据源不动）。
+            <ProcessingStateTag>
+              {t(
+                structureBadge.key,
+                'vars' in structureBadge ? structureBadge.vars : undefined
+              )}
+            </ProcessingStateTag>
+          ) : processingPrimary === 'growth' ? (
+            <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
+          ) : processingPrimary === 'auto' ? (
+            <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
+          ) : structureError ? (
             <Text type='secondary' className='text-12px'>
               {t('learning.learningGraphStructureLoadFailed')}
             </Text>
           ) : structure === null ? (
             <Spin size={12} />
-          ) : structureRunning ? (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t(
-                structureBadge.key,
-                'vars' in structureBadge ? structureBadge.vars : undefined
-              )}
-            </Tag>
           ) : structure.structure ? (
             <Text type='secondary' className='text-12px'>
-              {t('learning.learningGraphStructureSummary', {
-                spines: structure.structure.spines.length,
-                blocks: structure.structure.blocks.length,
-                doors: structure.terrain?.doors.length ?? 0,
-              })}
-              {structure.generated_at
-                ? ` · ${new Date(structure.generated_at).toLocaleString()}`
-                : ''}
+              {structureSummaryText}
             </Text>
           ) : (
             <Text type='secondary' className='text-12px'>
@@ -644,16 +702,6 @@ const LearningGraphWorkspace: React.FC<{
             </Button>
           )}
           <span className='flex-1' />
-          {autoPreparing && (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphAutoPreparing')}
-            </Tag>
-          )}
-          {graph.growth_running && (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphGrowing')}
-            </Tag>
-          )}
           <Button
             size='small'
             type='primary'
@@ -673,6 +721,13 @@ const LearningGraphWorkspace: React.FC<{
                 })}
           </Button>
         </div>
+        {/* o6 次要行：主徽章占用顶条后，被压后的 processing 态与静态结构
+            摘要转纯文字次要行——信息不丢，但不再与主徽章抢一行。 */}
+        {processingSecondaryLine !== '' && (
+          <Text type='secondary' className='text-12px'>
+            {processingSecondaryLine}
+          </Text>
+        )}
         {/* 尚未生成时的说明（生成按钮在上一行；生成中不显示） */}
         {!structureRunning && structure !== null && !structure.structure && !structureError && (
           <Text type='secondary' className='text-12px'>
@@ -893,7 +948,8 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
           if (!cancelled) setBatches(view.batches);
         })
         .catch((loadError) => {
-          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+          // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+          if (!cancelled) setError(errorMessage(t, loadError));
         });
     };
     load();
@@ -908,10 +964,10 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
       cancelled = true;
       off();
     };
-  }, [courseId]);
+  }, [courseId, t]);
 
   if (error) {
-    return <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
+    return <Alert type='error' content={error} />;
   }
   if (batches === null) {
     return (
@@ -985,7 +1041,8 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
 };
 
 /** 系统动作（y04）：折叠节的读侧。行 = 时间 + 类型 + 触发源 + basis + 结果
- * 徽标；失败红色 role=alert 带 reason；空态「暂无系统动作」。 */
+ * 徽标；失败红色 role=alert 带原因分类句（原文悬停 Tooltip 可见）；空态
+ * 「暂无系统动作」。 */
 const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
   const [actions, setActions] = useState<SystemActionView[] | null>(null);
@@ -1000,8 +1057,8 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
           if (!cancelled) setActions(view);
         })
         .catch((loadError) => {
-          if (!cancelled)
-            setError(loadError instanceof Error ? loadError.message : String(loadError));
+          // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+          if (!cancelled) setError(errorMessage(t, loadError));
         });
     };
     load();
@@ -1019,7 +1076,7 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
       cancelled = true;
       off();
     };
-  }, [courseId]);
+  }, [courseId, t]);
 
   const model = actions ? buildSystemActionRows(actions) : null;
   return (
@@ -1029,7 +1086,7 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
         header={<span className='text-12px'>{t('learning.learningGraphSystemActions')}</span>}
       >
         {error ? (
-          <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />
+          <Alert type='error' content={error} />
         ) : !model ? (
           <div className='flex justify-center py-16px'>
             <Spin />
@@ -1038,31 +1095,42 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
           <Empty description={t('learning.learningGraphSystemActionsEmpty')} />
         ) : (
           <div className='flex flex-col'>
-            {model.rows.map((row) => (
-              <div
-                key={row.key}
-                role={row.resultRole}
-                className='flex flex-wrap items-baseline gap-8px border-b border-b-solid border-b-[var(--color-border-1)] px-4px py-6px last:border-b-0'
-              >
-                <span className='text-11px text-t-tertiary'>{new Date(row.at).toLocaleString()}</span>
-                <Tag size='small' className='!mx-0'>
-                  {t(row.kindKey)}
-                </Tag>
-                <span className='text-11px text-t-tertiary'>{t(row.triggerKey)}</span>
-                {row.basis.trim() !== '' && (
-                  <span className='text-11px text-t-tertiary'>{row.basis}</span>
-                )}
-                <span className='flex-1' />
-                <Tag size='small' color={row.resultColor} className='!mx-0'>
-                  {t(row.resultKey)}
-                </Tag>
-                {row.reason.trim() !== '' && (
+            {model.rows.map((row) => {
+              // 失败原因：分类句为主显示；诊断原文只经 Tooltip 收纳（同波
+              // GrowthTaskPill failed detail 先例——收纳不删信息），无原文
+              // 不出 Tooltip。
+              const reasonLine =
+                row.reasonKey.trim() !== '' ? (
                   <Text type='error' className='min-w-0 basis-full truncate text-11px'>
-                    {row.reason}
+                    {t(row.reasonKey)}
                   </Text>
-                )}
-              </div>
-            ))}
+                ) : null;
+              return (
+                <div
+                  key={row.key}
+                  role={row.resultRole}
+                  className='flex flex-wrap items-baseline gap-8px border-b border-b-solid border-b-[var(--color-border-1)] px-4px py-6px last:border-b-0'
+                >
+                  <span className='text-11px text-t-tertiary'>{new Date(row.at).toLocaleString()}</span>
+                  <Tag size='small' className='!mx-0'>
+                    {t(row.kindKey)}
+                  </Tag>
+                  <span className='text-11px text-t-tertiary'>{t(row.triggerKey)}</span>
+                  {row.basis.trim() !== '' && (
+                    <span className='text-11px text-t-tertiary'>{row.basis}</span>
+                  )}
+                  <span className='flex-1' />
+                  <Tag size='small' color={row.resultColor} className='!mx-0'>
+                    {t(row.resultKey)}
+                  </Tag>
+                  {reasonLine && row.reasonDetail !== '' ? (
+                    <Tooltip content={row.reasonDetail}>{reasonLine}</Tooltip>
+                  ) : (
+                    reasonLine
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </NomiCollapse.Item>
@@ -1093,7 +1161,8 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           }
         })
         .catch((loadError) => {
-          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+          // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+          if (!cancelled) setError(errorMessage(t, loadError));
         });
       // 定义审计（m9 只读）：与行表并行拉取；失败只降级审计列并明示
       // （审计缺席是静默误导——缺口看不见不等于没有缺口），不打翻概念表。
@@ -1123,7 +1192,7 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
       cancelled = true;
       off();
     };
-  }, [courseId]);
+  }, [courseId, t]);
 
   // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名——互指可多组，
   // 收集全部而不是只剩最后一个 partner（c6 修覆盖写 bug））。
@@ -1147,7 +1216,7 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   }, [audit]);
 
   if (error) {
-    return <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
+    return <Alert type='error' content={error} />;
   }
   if (rows === null) {
     return (

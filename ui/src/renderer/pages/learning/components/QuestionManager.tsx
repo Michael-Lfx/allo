@@ -382,7 +382,12 @@ export function QuestionManager({
           </Button>
         </div>
       </div>
-      <Alert type='info' content={t('learning.questionQueueLegend')} />
+      <Alert
+        type='info'
+        content={
+          <span className='whitespace-pre-line'>{t('learning.questionQueueLegend')}</span>
+        }
+      />
       <Table
         rowKey={(entry: QuestionEntry) =>
           `${entry.source}:${entry.question_id}`

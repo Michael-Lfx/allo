@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Card, Spin, Tag, Typography } from '@arco-design/web-react';
+import { Button, Card, Spin, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import {
   formatGrowthElapsed,
   growthCourseTitle,
@@ -64,7 +64,12 @@ function progressLine(t: Translate, item: GrowthPillItem): string | null {
     const stepKey = item.step ? STEP_KEYS[item.step] : undefined;
     return stepKey ? t(stepKey) : null;
   }
-  return item.status === 'failed' ? item.detail : null;
+  // 失败行不再直出后端 detail（o1）：人面出通用失败句，原文收进 Tooltip
+  // 悬停可见（诊断不丢）。没有 detail 时宁缺不泄漏，不出提示行。
+  if (item.status === 'failed') {
+    return item.detail ? t('learning.growthPillFailedHint') : null;
+  }
+  return null;
 }
 
 /** 学习图生长悬浮指示条（g4）：复用建课链 CourseGenerationPill 骨架。
@@ -86,8 +91,18 @@ export function GrowthTaskPill({
 }) {
   const { t } = useTranslation();
   const active = isGrowthActive(item.status);
-  const title = growthCourseTitle(item.topic);
+  // o4：主题前缀失配（后端改措辞）时不再回显整句后端串——出词典兜底文案，
+  // 与 restoredTaskTopic 的 taskKindUnknown 同水位（宁缺不泄漏）。
+  const title = growthCourseTitle(item.topic) ?? t('learning.growthPillTopicFallback');
   const progress = progressLine(t, item);
+  // F7 去重：进度行 Text 只写一次，Tooltip 仅失败诊断在场时包一层（arco
+  // Trigger 克隆单子节点挂事件，不引入包裹 DOM，排版不变）。
+  const progressNode = progress ? (
+    <Text type='secondary' className='block truncate text-12px'>
+      {progress}
+    </Text>
+  ) : null;
+  const shouldFoldDetail = item.status === 'failed' && item.detail;
   return (
     <Card size='small' className='shadow-lg'>
       <div className='flex items-center gap-12px'>
@@ -109,10 +124,11 @@ export function GrowthTaskPill({
               {title}
             </Text>
           )}
-          {progress && (
-            <Text type='secondary' className='block truncate text-12px'>
-              {progress}
-            </Text>
+          {progressNode && shouldFoldDetail ? (
+            // 失败原因原文收纳进 Tooltip（o1：人面通用句 + 悬停诊断不丢）。
+            <Tooltip content={item.detail}>{progressNode}</Tooltip>
+          ) : (
+            progressNode
           )}
         </div>
         {onView && (

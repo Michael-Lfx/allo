@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, Empty, Input, Modal, Spin, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { Button, Empty, Input, Modal, Spin, Tabs, Tag, Typography } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
@@ -62,7 +62,6 @@ const LearningPage: React.FC = () => {
   const [detail, setDetail] = useState<CourseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [importVisible, setImportVisible] = useState(false);
   const [packJson, setPackJson] = useState(EMPTY_PACK);
   const [deletingCourse, setDeletingCourse] = useState<CourseSummary | null>(null);
@@ -90,7 +89,6 @@ const LearningPage: React.FC = () => {
   const load = useCallback(async () => {
     // 只有首次加载才进入全屏加载态，避免刷新时卸载重建整棵页面子树（包括复习弹窗）
     if (!initialLoaded.current) setLoading(true);
-    setError(null);
     try {
       const isOrphan = reviewCourseFilter.includes(ORPHAN_COURSE_FILTER);
       const courseIds = reviewCourseFilter.filter((value) => value !== ORPHAN_COURSE_FILTER);
@@ -123,12 +121,14 @@ const LearningPage: React.FC = () => {
         setReviewTagFilter(nextTagFilter);
       }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      // o1/o6：加载失败走非阻塞 toast（errorMessage 单源映射句），不再以
+      // 常驻 Alert 占学习页顶区——原始报文不进人面。
+      Message.error(errorMessage(t, loadError));
     } finally {
       initialLoaded.current = true;
       setLoading(false);
     }
-  }, [id, reviewCourseFilter, reviewTagFilter, reviewSessionLimit]);
+  }, [id, reviewCourseFilter, reviewTagFilter, reviewSessionLimit, t]);
 
   useEffect(() => {
     void load();
@@ -356,7 +356,7 @@ const LearningPage: React.FC = () => {
   return (
     <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
       <div
-        className={`mx-auto flex w-full flex-col gap-20px ${contentColumnWidth(wideContent, STANDARD_LIST_MAX_WIDTH)}`}
+        className={`mx-auto flex w-full flex-col gap-16px ${contentColumnWidth(wideContent, STANDARD_LIST_MAX_WIDTH)}`}
       >
         <div className='flex flex-wrap items-start justify-between gap-16px'>
           <div>
@@ -381,8 +381,9 @@ const LearningPage: React.FC = () => {
             </Button>
           </div>
         </div>
-        {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
-        <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
+        {/* o6：首屏只留复习横幅与课程列表——load 失败改走 toast（上方），
+            常驻的 packContract 架构词 Alert 已移除（对用户零价值，架构
+            说明归开发者文档）。 */}
 
         {/* 复习横幅始终可见：队列为空时也保留“开始复习”入口，
             点击后由 startReviewSession 提示暂无到期题目，避免按钮凭空消失 */}
@@ -537,7 +538,8 @@ const LearningPage: React.FC = () => {
             }
             sources={knowledgeBaseNames(
               generation.request.knowledge_base_ids ?? [],
-              creation.knowledgeBases
+              creation.knowledgeBases,
+              t
             )}
             onView={() => void creation.openGenerator()}
             onCancel={() => {

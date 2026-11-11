@@ -1,9 +1,19 @@
-import { Alert, Button, Modal, Tag, Typography } from '@arco-design/web-react';
+import { Alert, Button, Modal, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BasisView, StructureView, TerrainView } from '../../types';
 
 const { Text } = Typography;
+
+/**
+ * 门口 Tag 的人面摘要（o4）：判据句过长时按 Unicode 码点截断加省略号（不劈
+ * 代理对）；完整判据同行直出，机器 id（G1…）退到 aria 与 Tooltip，不再上屏。
+ * 导出供渲染测试断言截断口径。
+ */
+export function criterionSummary(criterion: string, max = 20): string {
+  const chars = Array.from(criterion);
+  return chars.length <= max ? criterion : `${chars.slice(0, max).join('')}…`;
+}
 
 /**
  * 过门自检读侧（m1，learnhub #165 契约 v2.14）+ 已会声明写侧（m2，ADR-0032
@@ -57,9 +67,10 @@ export function GateCoverage({
     if (pendingSelection.length === 0 || !onDeclare) return;
     Modal.confirm({
       title: t('learning.learningGraphBasisConfirmTitle'),
+      // o4：确认弹窗只报数量——门口 id 串不再内插上屏（id 在 aria/Tag Tooltip
+      // 可查，声明读数以计数为准）。
       content: t('learning.learningGraphBasisConfirmContent', {
         count: pendingSelection.length,
-        doors: pendingSelection.join(t('learning.listSeparator')),
       }),
       okText: t('learning.learningGraphBasisConfirmOk'),
       cancelText: t('learning.learningGraphBasisCancel'),
@@ -125,9 +136,17 @@ export function GateCoverage({
                   readOnly
                 />
               ) : null}
-              <Tag size='small' color={door.kind === 'hard' ? 'orangered' : 'green'} className='!mx-0'>
-                {door.id}
-              </Tag>
+              {/* o4：门口机器 id 不再直出——Tag 出判据摘要句，完整判据同行
+                  可读，id 退到 aria（勾选框）与 Tooltip（悬停诊断可查）。 */}
+              <Tooltip content={door.id}>
+                <Tag
+                  size='small'
+                  color={door.kind === 'hard' ? 'orangered' : 'green'}
+                  className='!mx-0'
+                >
+                  {criterionSummary(door.criterion)}
+                </Tag>
+              </Tooltip>
               <Tag size='small' className='!mx-0'>
                 {door.kind === 'hard'
                   ? t('learning.learningGraphGateKindHard')
@@ -189,8 +208,9 @@ export function GateCoverage({
       )}
       {basis !== null && basis.doors.length > 0 && (
         <Text type='secondary' className='text-11px leading-16px'>
+          {/* o4：只报数量——已声明门口的 id 串不再拼接上屏。 */}
           {t('learning.learningGraphBasisDeclaredDoors', {
-            doors: basis.doors.join(t('learning.listSeparator')),
+            doorsCount: basis.doors.length,
             count: basis.concepts.length,
           })}
         </Text>
