@@ -61,6 +61,8 @@ export function validateReleaseProductProfiles(workflowText) {
     ['macos_channel_config="apps/desktop/tauri.channel.unibuddy.macos.conf.json"', 'UniBuddy macOS channel config'],
     ['linux_channel_config="apps/desktop/tauri.channel.unibuddy.linux.conf.json"', 'UniBuddy Linux channel config'],
     ['publish_github="false"', 'UniBuddy GitHub isolation'],
+    ['Contents/MacOS/$PRODUCT_NAME', 'product macOS binary check'],
+    ['--binary "$PRODUCT_NAME"', 'product macOS universal binary'],
     ['permissions:\n  contents: read', 'read-only workflow default permission'],
   ]) {
     requireText(problems, workflowText, needle, label);
@@ -84,6 +86,12 @@ export function validateReleaseProductProfiles(workflowText) {
   requireStepArgs(problems, blocks, 'artifacts to GitHub Release', [
     "if: needs.release-context.outputs.publish_github == 'true'",
   ]);
+
+  for (const hardcoded of ['Contents/MacOS/Flowy', '--binary Flowy']) {
+    if (workflowText.includes(hardcoded)) {
+      problems.push(`macOS bundle step still hardcodes the Flowy binary: ${hardcoded}`);
+    }
+  }
 
   return problems;
 }

@@ -518,7 +518,7 @@ jobs:
           test -d "$app_path"
           # Catch host-arch resource sidecars before the merge job (cross-compile
           # on macos-15 must ship x86_64 rg for the intel slice).
-          lipo -archs "$app_path/Contents/MacOS/Flowy" \
+          lipo -archs "$app_path/Contents/MacOS/$PRODUCT_NAME" \
             | grep -qw "${{ matrix.macho_arch }}"
           if [[ -f "$app_path/Contents/Resources/bin/rg" ]]; then
             [[ "$(lipo -archs "$app_path/Contents/Resources/bin/rg")" == "${{ matrix.macho_arch }}" ]]
@@ -581,7 +581,7 @@ jobs:
             --intel staging/intel \
             --version "${{ needs.release-context.outputs.version }}" \
             --product "$PRODUCT_NAME" \
-            --binary Flowy
+            --binary "$PRODUCT_NAME"
           bun run verify:voice-package -- --platform macos --arch universal \
             --artifact "target/universal-apple-darwin/release/bundle/macos/${PRODUCT_NAME}.app"
           bun run make:latest --host modelscope --channel macos \
