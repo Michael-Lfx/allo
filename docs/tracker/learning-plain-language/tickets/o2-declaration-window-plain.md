@@ -2,7 +2,7 @@
 id: o2
 title: "已会声明区口语化——门口/铸出/幂等/读侧/通道五连清（E2 重灾区）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -52,3 +52,12 @@ door.id Tag、basis.doors id 串直出的口语化归 o4；本票只管词典措
 
 - 结构区其余术语（o4）、布局重构（o6）、后端 WS text 帧（c3 裁决保留）。
 - 「已会声明」功能名本身（产品名保留）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验（声明窗口 + GateCoverage 两语读一遍）与欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `9ab13389a`：票面 9 key 双语改写 + **同域新发现 5 处**（`learningGraphGateTitle` 过门自检→入门检查、`learningGraphBasisFrozenHint` 仅 en 侧 gates 清零、`learningGraphBasisDeclaredDoors` 标签、`learningGraphStructureReadyToast` 声明邀请句、`learningGraphGateDoorCoversNone`→「暂无对应知识块」）。
+- **防回潮栅栏**：新测试 `declarationPlainLanguage.test.ts` 做声明区 key 家族负向扫描——zh 门口/铸出/登记表/幂等/读侧/过门、en mint/registry/idempotent/gate/criteria/read-only 归零 + 家族 key 双语对称断言（后续塞回实现词直接红灯）。
+- 与 o4 的合并裁定（已落在集成树）：DeclareDone/DeclaredDoors **措辞归 o2、占位契约归 o4**（`{{doorsCount}}/{{blocksCount}}` 计数占位替代 id 串；o2 原期望同步到合并值，minted/reused 退出用户面、组件死参数删除）；`learningGraphAuditUnavailable` 归 o2 口径。
+- zh 剩余 2 处「门口」（StructureSummary/StructDoorRefsLabel）归 o4（已在 o4 落地）；`learningGraphStructureReadyToast` 与 o4 的潜在同行冲突以 o2 改写为准合并。257 绿（施工时）→ 316（全波终态）绿。

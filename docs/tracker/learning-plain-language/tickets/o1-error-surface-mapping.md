@@ -2,7 +2,7 @@
 id: o1
 title: "错误呈现统一映射——errorMessage 单源改造，25 个直泄点收口（E1 根因）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -72,3 +72,13 @@ part_of: ../map.md
 - 后端错误 message 构造（消费侧映射兜底，map 非目标）。
 - error-surface 契约本身变更。
 - v2 流（知识库/描述流）与图课程流的差异化错误文案（统一映射即可）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验（人为触发 404/5xx/409）与全模块欠账合并执行，FAIL 按票重开。**
+
+- 前置核查结论：①`check-error-surface.mjs` 是 Edge 无头 DOM 探针（渲染夹具页），**不做源码扫描**——本票不触闸；`check` 链里的 `check:error-surface-contract.mjs` 只保护探针脚本自身，零触碰。②`BackendHttpError` **已暴露**只读 `status/code/backendMessage/details/body`——common 层零改动（map 允许的例外未动用）。
+- 施工 = `f5aff2084`（16 文件 +393/−93）：errorMessage 单源映射（409/404/≥500/网络超时/未知 → 词典句；409 的 d7 友好路径零改动；原文只进 console.debug）+ 五组绕过点收编（Modal.error×5 降 Message、LessonStudy/QuestionDialog/useCourseCreation 直用点、GrowthTaskPill failed detail Tooltip 化、系统动作簿 reason 分类映射、首屏拼接点 ×7）+ **票外发现 2 处**（概念详情/总览页 loadFailed 拼接）一并收编。
+- 评审修复 = `276ca3b78`：**F2** 五动作标题 key 恢复（o1 降级时误删——修复后所有失败 toast 分得清动作；`learningGraphMountFailed` 措辞按本波口径对齐「结构对齐」）；**F3** `loadBasesFailed` 语境句复活（Error 恒走通用句使其死路的实现修正）；**F6** 系统动作簿映射语义修正（not implemented→暂不支持的操作、internal error→服务暂时不可用；Bad gateway 按顶层归繁忙档，matcher 顺序即优先级，REASON_MATCHERS 注释列明后端文案清单与「改措辞静默降级」脆弱面）。
+- 环境留痕：`check:error-surface` 浏览器探针在本机跑不了（Edge build 对管道 stdout 不回吐 `--dump-dom`，最小复现与仓库无关）——探针页/夹具零触碰，环境正常时补跑。
+- 测试：errorSurface.test.ts 映射矩阵 + 负向栅栏（Modal.error/`x.message`/loadFailed 拼接/row.reason 在 learning 源面归零）；learning 套件 253（施工时）→ 316（全波终态）绿。
