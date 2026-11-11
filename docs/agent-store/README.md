@@ -311,6 +311,19 @@ flowchart TD
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-11-12 发布 `0.1.0-beta.15`）
+
+`0.1.0-beta.15` 三出口发布完成（npm 四包 / GitHub Release / 站点），**加法版本**：协议指纹保持 `fp-21`，方法总数与 HTTP 路由映射数保持 **83 / 56**。
+
+1. **版本锁步**：PR #439（SDK 导出原地更新 + 市场版本同步，merge `737d6c598`）+ PR #440（版本锁步，merge `bb3b7ab81`）；四包 `dist-tags.beta` = `0.1.0-beta.15`，`latest` 不动（仍 `0.1.0-beta.2`）。
+2. **SDK 变更**：`ExportOptions.replaceExisting`（staging + 换入，失败保留旧版）、`syncToMarketVersion`（导出前按 `marketplaceId + entryName` 对齐已安装条目）。协议无变化，宿主无需同批升级。
+3. **市场发布守卫**：`workbuddy-market-collect` 分支 `feat/market-version-guard`（commit `04ace02`，已推送）：build 逐条内容摘要、upload 对比上次 state，同 version 内容变化拒绝发布。WMC 属工具链，不在 npm 四包内。
+4. **npm 发布时间（UTC）**：sdk `2026-11-11T16:29:42.189Z`、protocol `16:30:15.177Z`、client `16:30:51.757Z`、runtime `16:32:36.698Z`；四包均 `dist-tags.beta = 0.1.0-beta.15`。
+5. **GitHub Release**：`v0.1.0-beta.15` prerelease（`draft=false`），资产 `flowy-agent-store-v0.1.0-beta.15-windows-x86_64.zip`（86,350,301 B，sha256 `58D01197…`）；EXE `EE09D98E…`（222,450,176 B，`agent-store:build` + static-webui）。资产 HEAD 200。
+6. **站点上线**：site PR #19（文档，merge `19bf91f`）+ PR #20（release 文档，merge `b99e548`）；`changelog` §2.1 / 版本表 / JSON / §4、`upgrade` §2 / §3 / §6.13 / §8、`release.json` 同值；EdgeOne deployment `dpmkm01p86dg` **Success / usedInProd=true**；生产页 `agent-store.flowyaipc.cn` 中英 changelog / upgrade / typescript-sdk 均 200 且含 `0.1.0-beta.15` / `syncToMarketVersion` / `§6.13`。
+7. **门禁读数**：`check:fingerprint`（fp-21）/ `check:release-sync`（beta.15）绿；`cd web && bun run typecheck` + `bun run test`：**598 passed / 3 skipped**；`cargo test -p nomifun-app-server --lib`：**192 passed**；site `check:release` 绿；`check:market` 24/24。
+8. **已知边界**：`0.1.0-beta.13` 历史 stray runtime 包仍在、无 dist-tag，beta.15 不使用；GitHub Actions 的 Cargo job 在本轮发布窗口被 runner `apt-get` 卡住未完成，本地等价门禁已通过。
+
 ## 本轮（2026-11-09 发布 `0.1.0-beta.14`）
 
 `0.1.0-beta.14` 三出口发布完成（npm 四包 / GitHub Release / 站点）。内容 = `51` 导出面图标（`fp-18 → fp-19`，`pack_format 4`）+ `30` §6.1 索引市场源（`fp-19 → fp-20`）+ `52` 技能→连接器依赖（`fp-20 → fp-21`）+ 索引市场消费兼容修复（共享 payload 安装 / 连接器 `auth_mode` / 图标 512 KiB），指纹一次跨三级（`fp-18 → fp-21`），方法总数与 HTTP 路由映射数保持 **83 / 56**：
