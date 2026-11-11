@@ -73,12 +73,18 @@ bun scripts/seed-learning-triggers.mjs --dry-run  # 只打印计划
    课复习（8×3=24）+ 一轮 quiz（≈13–15）≈ 39 上下贴线——差一点时再真学任
    何真实课的一个节点（+27）即过线。**注意**：造数不给今日结算——同卡同日
    幂等锚会吞掉真实推进，今天必须由真实复习/测验落账。
-6. **测验 API**（dev:web 免鉴权；SPA 尚无 quiz 面）：
-   - `GET /api/learning/courses/<course_id>/quiz/progress` → `settled 8/6,
-     due=true`（course_id 见脚本收尾打印）；
-   - `POST .../quiz/start` → 开测（8 道 bank 题，预算 15 内；dev 库有凭据
-     时带 LLM 变式）→ `grade` → `complete` → 再查 progress：settled 翻为
-     0/6、不再 due。
+6. **测验点击级走查**（quiz-ui 波 u1–u5 已落地，原 API 级清单升级）：
+   - 课程工作区「知识检测」卡：未 due 显「距上次检测 N/K 次学新结算」+
+     禁用态；due（8/6）显「开始检测」可点；
+   - 开测 → Modal「正在组卷，请稍候…」等待文案（有凭据时变式链 LLM 在跑，
+     等待窗口如实呈现；零凭据 = bank 旧题直接出）→ 逐题作答（题面带题源
+     节点标注）→ 提交即判分（对/错 + 判底 + 解析 + 证据）→「下一题」；
+   - 全卷作答 →「交卷结算」→ 结算报告：总净入账 + 逐节点对账行 +
+     分级（excellent/pass/half/low 四档）→「完成」回课程页 →
+     知识检测卡 N/K 归零（0/6 积累态）+ XP 日历出现 quiz 入账；
+   - API 级复核（可选）：`GET /api/learning/courses/<course_id>/quiz/
+     progress` → due=true → start/grade/complete 全链（course_id 见脚本
+     收尾打印）。
 7. **收尾**：验证完可 UI 删课（账本按设计保留日历史）或 `--fresh` 重建。
 
 ### 已知偏离（如实）
