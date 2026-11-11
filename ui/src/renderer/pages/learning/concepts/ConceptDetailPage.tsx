@@ -106,7 +106,8 @@ const ConceptDetailPage: React.FC = () => {
 
   let body: React.ReactNode;
   if (error) {
-    body = <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
+    // error 已是 errorMessage 单源映射句（o1）：不再拼接原始报文。
+    body = <Alert type='error' content={error} />;
   } else if (detail === null) {
     body = (
       <div className='flex justify-center py-32px'>

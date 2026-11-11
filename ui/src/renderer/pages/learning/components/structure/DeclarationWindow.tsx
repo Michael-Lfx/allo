@@ -41,12 +41,8 @@ export function DeclarationWindow({
 
   let body;
   if (structureError) {
-    body = (
-      <Alert
-        type='error'
-        content={`${t('learning.loadFailed')}: ${structureError}`}
-      />
-    );
+    // structureError 已是 errorMessage 单源映射句（o1）：不再拼接原始报文。
+    body = <Alert type='error' content={structureError} />;
   } else if (view === null) {
     body = (
       <div className='flex items-center gap-8px'>
