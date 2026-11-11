@@ -80,6 +80,11 @@ const LearningPage: React.FC = () => {
   );
   const checkin = useCheckinStatus();
   const [reviewSessionLimit] = useConfig('learning.reviewSessionLimit');
+  // quiz 会话容器状态位（u2 占位）：u3 合入后在此挂载 QuizSession——
+  // onStartQuiz 置 quizSessionCourseId 打开容器；onQuizFinished 清位并
+  // bump quizProgressToken 让入口卡重拉 N/K（进度刷新不轮询的另一半）。
+  const [quizSessionCourseId, setQuizSessionCourseId] = useState<string | null>(null);
+  const [quizProgressToken, setQuizProgressToken] = useState(0);
   // 学习页统一的 AI 模型偏好：反思题评分、课程生成、任务重试均使用该选择
   const learningModel = useLearningAutogenModel();
   // 内容宽度偏好：三个渲染面（列表 / 大纲工作区 / 学习图）共用同一个键
@@ -344,10 +349,12 @@ const LearningPage: React.FC = () => {
           detail={detail}
           busyId={busyId}
           attemptResults={courseLearning.attemptResults}
+          quizProgressToken={quizProgressToken}
           onBack={() => navigate('/learn')}
           onProgress={courseLearning.updateProgress}
           onAttempt={courseLearning.submitAttempt}
           onGenerate={courseLearning.generateLesson}
+          onStartQuiz={() => setQuizSessionCourseId(detail.course.id)}
           onRefresh={() => void load()}
       />
     );
