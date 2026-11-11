@@ -1,0 +1,86 @@
+/**
+ * @license
+ * Copyright 2025-2026 NomiFun (nomifun.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/** quiz i18n 词典基座（u1）的单测：quiz* 词条 zh-CN / en-US 双语对称且
+ * 非空、插值占位两侧保留、两侧 quiz* 键集合一致（capacityFeedback.test.ts
+ * 同款纪律）。覆盖票面文案面清单：进度读数 / 开测按钮 / 会话标题 /
+ * 题源节点标注 / 判分反馈（对·错·判底·解析·证据）/ 结算分级三档 /
+ * 折叠不计薪 / 边界态（未 due·缺题·加载失败）。u2–u4 只消费不新增——
+ * 集合断言同时防两侧漂移。零渲染——纯词典断言。 */
+import { describe, expect, test } from 'bun:test';
+
+import enLearning from '@/renderer/services/i18n/locales/en-US/learning.json';
+import zhLearning from '@/renderer/services/i18n/locales/zh-CN/learning.json';
+
+/** 票面文案面清单逐面落键（u1 R3；键序 = 面清单序）。 */
+const QUIZ_KEYS = [
+  // 进度读数：「距上次检测 N/K 次学新结算」形态
+  'quizProgressReading',
+  // 开测按钮
+  'quizStartButton',
+  // 会话标题
+  'quizSessionTitle',
+  // 题源节点标注
+  'quizSourceNodeTag',
+  // 判分反馈：对 / 错 / 判底 / 解析 / 证据标签
+  'quizFeedbackCorrect',
+  'quizFeedbackIncorrect',
+  'quizAnswerLabel',
+  'quizExplanationLabel',
+  'quizEvidenceLabel',
+  // 结算分级三档（settle.rs QUIZ_EXCELLENT/PASS/HALF_RATIO；前端只镜像）
+  'quizGradeExcellent',
+  'quizGradePass',
+  'quizGradeHalf',
+  // 折叠不计薪（earned_xp = null：同日已结算，coverage 保持不重复计薪）
+  'quizFoldedNoXp',
+  // 边界态：未 due / 缺题 / 加载失败
+  'quizNotDueHint',
+  'quizMissingAnswers',
+  'quizLoadFailed',
+] as const;
+
+const placeholderNames = (text: string): string[] =>
+  [...text.matchAll(/\{\{(\w+)\}\}/g)].map((match) => match[1] as string);
+
+const quizKeysOf = (dict: Record<string, unknown>): string[] =>
+  Object.keys(dict).filter((key) => key.startsWith('quiz'));
+
+describe('quiz 词典基座（u1）', () => {
+  test('票面全部文案面 zh-CN / en-US 对称且非空', () => {
+    for (const key of QUIZ_KEYS) {
+      const zh = (zhLearning as Record<string, unknown>)[key];
+      const en = (enLearning as Record<string, unknown>)[key];
+      expect(typeof zh).toBe('string');
+      expect(typeof en).toBe('string');
+      expect((zh as string).trim().length).toBeGreaterThan(0);
+      expect((en as string).trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  test('插值占位在两侧逐键对称保留', () => {
+    for (const key of QUIZ_KEYS) {
+      expect(placeholderNames(zhLearning[key])).toEqual(placeholderNames(enLearning[key]));
+    }
+  });
+
+  test('两侧 quiz* 键集合一致（防未来单侧增删漂移）', () => {
+    expect([...quizKeysOf(zhLearning)].sort()).toEqual([...quizKeysOf(enLearning)].sort());
+  });
+
+  test('票面关键读数占位齐备：N/K 读数、缺题计数', () => {
+    expect(zhLearning.quizProgressReading).toContain('{{settled}}');
+    expect(zhLearning.quizProgressReading).toContain('{{trigger}}');
+    expect(enLearning.quizProgressReading).toContain('{{settled}}');
+    expect(enLearning.quizProgressReading).toContain('{{trigger}}');
+    expect(zhLearning.quizMissingAnswers).toContain('{{count}}');
+    expect(enLearning.quizMissingAnswers).toContain('{{count}}');
+    expect(zhLearning.quizSourceNodeTag).toContain('{{node}}');
+    expect(enLearning.quizSourceNodeTag).toContain('{{node}}');
+    expect(zhLearning.quizNotDueHint).toContain('{{trigger}}');
+    expect(enLearning.quizNotDueHint).toContain('{{trigger}}');
+  });
+});

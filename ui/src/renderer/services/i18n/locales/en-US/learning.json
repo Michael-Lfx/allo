@@ -692,5 +692,21 @@
   "sourceCoverageRoleDuplicate": "Duplicate content",
   "sourceCoverageRoleUncertain": "Uncertain content",
   "sourceCoverageRoleOther": "Other content",
-  "sourceLibraryDeleted": "Source library deleted"
+  "sourceLibraryDeleted": "Source library deleted",
+  "quizProgressReading": "{{settled}}/{{trigger}} new-lesson settlements since the last quiz",
+  "quizStartButton": "Start quiz",
+  "quizSessionTitle": "Knowledge check",
+  "quizSourceNodeTag": "Source: {{node}}",
+  "quizFeedbackCorrect": "Correct",
+  "quizFeedbackIncorrect": "Incorrect",
+  "quizAnswerLabel": "Correct answer",
+  "quizExplanationLabel": "Explanation",
+  "quizEvidenceLabel": "Evidence",
+  "quizGradeExcellent": "Excellent",
+  "quizGradePass": "Pass",
+  "quizGradeHalf": "Half credit",
+  "quizFoldedNoXp": "Already settled today: coverage kept, no duplicate XP",
+  "quizNotDueHint": "Not due yet — unlocks after {{trigger}} new-lesson settlements",
+  "quizMissingAnswers": "{{count}} question(s) left unanswered — answer every question to settle",
+  "quizLoadFailed": "Failed to load the quiz. Please try again."
 }
