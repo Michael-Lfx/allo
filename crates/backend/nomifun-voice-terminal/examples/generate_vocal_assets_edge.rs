@@ -31,6 +31,9 @@ async fn main() {
         }
     }
     let out_dir = out_dir.expect("--out-dir is required");
+    if !speed.is_finite() || !(0.5..=2.0).contains(&speed) {
+        panic!("--speed must be a finite value within 0.5..=2.0");
+    }
     std::fs::create_dir_all(&out_dir).expect("create output directory");
 
     let provider = EdgeTtsProvider::new();
