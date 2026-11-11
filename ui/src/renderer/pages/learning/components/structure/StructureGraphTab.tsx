@@ -177,41 +177,85 @@ export function StructureGraphTab({
               </Button>
             )}
           </div>
-          {mounts.stale && (
-            <Text type='warning' className='text-11px leading-16px'>
-              {t('learning.learningGraphRepairStaleBanner')}
-            </Text>
-          )}
-          {mounts.index.length > 0 && (
-            <div className='flex flex-col gap-2px'>
-              {mounts.index.map((entry) => (
-                <Text key={entry.block} type='secondary' className='text-11px leading-16px'>
-                  {t('learning.learningGraphMountIndexEntry', {
-                    block: entry.block_name ?? entry.block,
-                    count: entry.nodes.length,
-                    nodes: entry.nodes.join(t('learning.listSeparator')),
-                  })}
-                </Text>
-              ))}
-            </div>
-          )}
-          {mounts.observations.length > 0 && (
-            // o4：观察可见面只报计数，后端观察句收进折叠详情。
-            <MountObservationSummary observations={mounts.observations} />
+          {/* o6 明细收纳：stale 修补指引 / 挂载索引逐行 / 挂载观察（o4 计数
+              Tags + 观察详情二级折叠，组件原样保留）收进单一「详情」折叠
+              （默认收起）——顶条只留结论（o5 计数口径 + stale 徽标 + 动作）。 */}
+          {(mounts.stale || mounts.index.length > 0 || mounts.observations.length > 0) && (
+            <NomiCollapse bordered={false}>
+              <NomiCollapse.Item
+                name='mount-details'
+                header={t('learning.learningGraphMountDetails')}
+              >
+                <div className='flex flex-col gap-6px'>
+                  {mounts.stale && (
+                    <Text type='warning' className='text-11px leading-16px'>
+                      {t('learning.learningGraphRepairStaleBanner')}
+                    </Text>
+                  )}
+                  {mounts.index.length > 0 && (
+                    <div className='flex flex-col gap-2px'>
+                      {mounts.index.map((entry) => (
+                        <Text key={entry.block} type='secondary' className='text-11px leading-16px'>
+                          {t('learning.learningGraphMountIndexEntry', {
+                            block: entry.block_name ?? entry.block,
+                            count: entry.nodes.length,
+                            nodes: entry.nodes.join(t('learning.listSeparator')),
+                          })}
+                        </Text>
+                      ))}
+                    </div>
+                  )}
+                  {mounts.observations.length > 0 && (
+                    // o4：观察可见面只报计数，后端观察句收进折叠详情。
+                    <MountObservationSummary observations={mounts.observations} />
+                  )}
+                </div>
+              </NomiCollapse.Item>
+            </NomiCollapse>
           )}
         </div>
       )}
 
       {view.terrain && (
-        <GateCoverage
-          structure={structure}
-          terrain={view.terrain}
-          basis={basis ?? null}
-          checked={basisChecked}
-          onCheckedChange={onBasisCheckedChange}
-          declaring={declaringBasis}
-          onDeclare={onDeclareBasis}
-        />
+        // o6 双挂载去重：学习 Tab（声明窗口）保留整卡为主挂载点；结构图
+        // Tab 降为默认收起的摘要入口（标题 + 门口计数 + 已声明读数），
+        // 展开即整卡（勾选/声明功能不丢）——不做两份默认整卡渲染。
+        <NomiCollapse>
+          <NomiCollapse.Item
+            name='gate-coverage'
+            header={
+              <span className='flex flex-wrap items-center gap-8px'>
+                <Text bold className='text-13px'>
+                  {t('learning.learningGraphGateTitle')}
+                </Text>
+                <Tag size='small' color='arcoblue' className='!mx-0'>
+                  {t('learning.learningGraphGateCounts', {
+                    doors: view.terrain.doors.length,
+                  })}
+                </Tag>
+                {basis != null && basis.doors.length > 0 && (
+                  <Text type='secondary' className='text-11px'>
+                    {/* o4 口径：只报数量，不拼门口 id 串。 */}
+                    {t('learning.learningGraphBasisDeclaredDoors', {
+                      doorsCount: basis.doors.length,
+                      count: basis.concepts.length,
+                    })}
+                  </Text>
+                )}
+              </span>
+            }
+          >
+            <GateCoverage
+              structure={structure}
+              terrain={view.terrain}
+              basis={basis ?? null}
+              checked={basisChecked}
+              onCheckedChange={onBasisCheckedChange}
+              declaring={declaringBasis}
+              onDeclare={onDeclareBasis}
+            />
+          </NomiCollapse.Item>
+        </NomiCollapse>
       )}
     </div>
   );

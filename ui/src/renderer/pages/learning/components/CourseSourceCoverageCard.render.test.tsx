@@ -15,8 +15,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
-import type { CourseSourcePlanDetailView } from '../types';
-import { SourceExcludedLines } from './CourseSourceCoverageCard';
+import type { CourseSourcePlanDetailView, CourseSourcePlanView } from '../types';
+import { CourseSourceCoverageCard, SourceExcludedLines } from './CourseSourceCoverageCard';
 
 const initTestI18n = async (locale: 'zh-CN' | 'en-US') => {
   const instance = createInstance();
@@ -92,5 +92,95 @@ describe('SourceExcludedLines render (o4 B3)', () => {
     const html = await renderLines('zh-CN');
     expect(html).toContain('重复内容 notes/copy.md → notes/origin.md');
     expect(html).toContain('内容更完整');
+  });
+});
+
+/** ── o6 呈现密度：卡面收纳 ──────────────────────────────────────────────
+ * 默认只留结论句（标题 + 主读数两行），混合/锚点存疑/简化课时/重复/存疑
+ * 偏多等警告行与既有明细折叠组全部收进单一「详情」折叠（默认收起，静态
+ * 渲染不出现）。 */
+
+const PLAN: CourseSourcePlanView = {
+  snapshot: { version: 1, available: true },
+  triage: {
+    total_files: 10,
+    core: 4,
+    prerequisite: 2,
+    practice: 2,
+    mixed: 1,
+    noise: 1,
+    duplicate: 1,
+    uncertain: 9,
+    degraded: false,
+  },
+  plan: {
+    chapters: 2,
+    concepts: 5,
+    edges: 3,
+    gaps: [],
+    chapter_summaries: [
+      { title: '第一章', concepts: 2, lessons: 3, skipped: false, skip_reason: null, source_files: 2 },
+    ],
+    warnings: ['计划面警告原文'],
+  },
+  coverage: {
+    topics_covered: 6,
+    topics_skipped: 1,
+    prerequisite_topics: 2,
+    practice_topics: 2,
+    anchor_uncertain_topics: 1,
+    fallback_lessons: 3,
+    warnings: [],
+    skipped_examples: [{ label: '跳过主题甲', reason: '与目标无关' }],
+  },
+  duplicates: { count: 2, examples: [] },
+};
+
+const renderCard = async (
+  locale: 'zh-CN' | 'en-US',
+  current: CourseSourcePlanView
+): Promise<string> => {
+  const instance = await initTestI18n(locale);
+  return renderToStaticMarkup(
+    <I18nextProvider i18n={instance}>
+      <CourseSourceCoverageCard sourcePlan={current} />
+    </I18nextProvider>
+  );
+};
+
+describe('CourseSourceCoverageCard 收纳（o6）', () => {
+  test('默认只留结论：标题 + 覆盖/去向两行，其余全部收进「详情」折叠（zh）', async () => {
+    const html = await renderCard('zh-CN', PLAN);
+    // 结论句在场。
+    expect(html).toContain('来源覆盖');
+    expect(html).toContain('主题覆盖 6/7');
+    expect(html).toContain('显式跳过 1 个');
+    expect(html).toContain('前置主题入课 2 个');
+    expect(html).toContain('练习主题入课 2 个');
+    // 单一「详情」折叠入口在场。
+    expect(html).toContain('详情');
+    // 警告行 / fallback / 重复 / mixed / 锚点存疑 / 存疑偏多：全部折叠不出现。
+    expect(html).not.toContain('个混合文件');
+    expect(html).not.toContain('只能定位到文件');
+    expect(html).not.toContain('简化课时');
+    expect(html).not.toContain('重复 / 翻译副本');
+    expect(html).not.toContain('不确定文件过多');
+    // 既有明细折叠组（随收纳进入「详情」内部）：静态渲染不出现。
+    expect(html).not.toContain('显式跳过的主题');
+    expect(html).not.toContain('章节来源映射');
+    expect(html).not.toContain('被排除的文件');
+    expect(html).not.toContain('计划面警告原文');
+    expect(html).not.toContain('跳过主题甲');
+  });
+
+  test('en 同口径：结论两行 + 详情折叠（en）', async () => {
+    const html = await renderCard('en-US', PLAN);
+    expect(html).toContain('Source coverage');
+    expect(html).toContain('6/7 topics covered');
+    expect(html).toContain('Details');
+    expect(html).not.toContain('mixed files');
+    expect(html).not.toContain('simplified lessons');
+    expect(html).not.toContain('duplicates / translated copies');
+    expect(html).not.toContain('Too many uncertain files');
   });
 });

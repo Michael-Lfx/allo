@@ -515,6 +515,44 @@ const LearningGraphWorkspace: React.FC<{
   // 声明画面——生长不再自动抢跑，首批由「开始学习」显式触发。
   const zeroNodes = lessons.length === 0;
 
+  // ── 顶条单一状态徽章（o6 呈现收敛）：结构生成 / 生长 / 自动准备三个
+  // processing 态此前可并排亮三个 Tag——现在按优先级（结构生成 > 生长 >
+  // 自动准备）只亮一个，一行只讲一件事。v2 的实时读数徽章仍是结构态的
+  // 呈现载体；v3 Pill、v4 卡片结构态行零回改。被压后的态与静态结构摘要
+  // 转顶条下方次要行——只收纳不删信息。
+  const processingPrimary: 'structure' | 'growth' | 'auto' | null = structureRunning
+    ? 'structure'
+    : graph.growth_running
+      ? 'growth'
+      : autoPreparing
+        ? 'auto'
+        : null;
+  const structureSummaryText = structure?.structure
+    ? t('learning.learningGraphStructureSummary', {
+        spines: structure.structure.spines.length,
+        blocks: structure.structure.blocks.length,
+        doors: structure.terrain?.doors.length ?? 0,
+      }) +
+      (structure.generated_at
+        ? ` · ${new Date(structure.generated_at).toLocaleString()}`
+        : '')
+    : null;
+  const processingSecondaryParts: string[] = [];
+  if (processingPrimary !== null) {
+    if (graph.growth_running && processingPrimary !== 'growth') {
+      processingSecondaryParts.push(t('learning.learningGraphGrowing'));
+    }
+    if (autoPreparing && processingPrimary !== 'auto') {
+      processingSecondaryParts.push(t('learning.learningGraphAutoPreparing'));
+    }
+    // 处理徽章在场时加载失败句让位降级为次要行（仍可见，不丢）。
+    if (structureError) {
+      processingSecondaryParts.push(t('learning.learningGraphStructureLoadFailed'));
+    }
+    if (structureSummaryText) processingSecondaryParts.push(structureSummaryText);
+  }
+  const processingSecondaryLine = processingSecondaryParts.join(' · ');
+
   // 离场兜底臂挂载（零节点 + 拉到新结构 → 呈现一次；见 presentStructureOnce）。
   const zeroNodesAutoPresentedRef = React.useRef(false);
   useEffect(() => {
@@ -592,29 +630,30 @@ const LearningGraphWorkspace: React.FC<{
           <Text bold className='text-13px'>
             {t('learning.learningGraphStructureTitle')}
           </Text>
-          {structureError ? (
-            <Text type='secondary' className='text-12px'>
-              {t('learning.learningGraphStructureLoadFailed')}
-            </Text>
-          ) : structure === null ? (
-            <Spin size={12} />
-          ) : structureRunning ? (
+          {processingPrimary === 'structure' ? (
             <Tag size='small' color='processing' className='!mx-0'>
               {t(
                 structureBadge.key,
                 'vars' in structureBadge ? structureBadge.vars : undefined
               )}
             </Tag>
+          ) : processingPrimary === 'growth' ? (
+            <Tag size='small' color='processing' className='!mx-0'>
+              {t('learning.learningGraphGrowing')}
+            </Tag>
+          ) : processingPrimary === 'auto' ? (
+            <Tag size='small' color='processing' className='!mx-0'>
+              {t('learning.learningGraphAutoPreparing')}
+            </Tag>
+          ) : structureError ? (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.learningGraphStructureLoadFailed')}
+            </Text>
+          ) : structure === null ? (
+            <Spin size={12} />
           ) : structure.structure ? (
             <Text type='secondary' className='text-12px'>
-              {t('learning.learningGraphStructureSummary', {
-                spines: structure.structure.spines.length,
-                blocks: structure.structure.blocks.length,
-                doors: structure.terrain?.doors.length ?? 0,
-              })}
-              {structure.generated_at
-                ? ` · ${new Date(structure.generated_at).toLocaleString()}`
-                : ''}
+              {structureSummaryText}
             </Text>
           ) : (
             <Text type='secondary' className='text-12px'>
@@ -636,16 +675,6 @@ const LearningGraphWorkspace: React.FC<{
             </Button>
           )}
           <span className='flex-1' />
-          {autoPreparing && (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphAutoPreparing')}
-            </Tag>
-          )}
-          {graph.growth_running && (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphGrowing')}
-            </Tag>
-          )}
           <Button
             size='small'
             type='primary'
@@ -665,6 +694,13 @@ const LearningGraphWorkspace: React.FC<{
                 })}
           </Button>
         </div>
+        {/* o6 次要行：主徽章占用顶条后，被压后的 processing 态与静态结构
+            摘要转纯文字次要行——信息不丢，但不再与主徽章抢一行。 */}
+        {processingSecondaryLine !== '' && (
+          <Text type='secondary' className='text-12px'>
+            {processingSecondaryLine}
+          </Text>
+        )}
         {/* 尚未生成时的说明（生成按钮在上一行；生成中不显示） */}
         {!structureRunning && structure !== null && !structure.structure && !structureError && (
           <Text type='secondary' className='text-12px'>
