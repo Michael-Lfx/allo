@@ -27,16 +27,6 @@ export const sectionStatusTagColors: Record<SectionStatus, string> = {
   failed: 'red',
 };
 
-/** 节状态标签（stepper/重写入口共用；pending = 尚未生成到该节） */
-export function sectionStatusLabel(status: SectionStatus, t: Translate): string {
-  const labels: Record<SectionStatus, string> = {
-    pending: t('learning.sectionStatusPending'),
-    ready: t('learning.sectionStatusReady'),
-    failed: t('learning.sectionStatusFailed'),
-  };
-  return labels[status];
-}
-
 // ── 分节 stepper（新规范：练习节 = 一等练习轮；旧清单回退综合步）──────
 
 /** 分节交付的一步：节正文 + 该节绑定的练习题；null = 综合题收尾步 */
