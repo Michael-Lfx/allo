@@ -65,11 +65,17 @@ pub(crate) struct StructureArtifacts {
 /// 回灌已无法改变结果」，立即耗尽（LLM 调用数 2 非 3）。真取消（三轮 t2）：
 /// `cancel` 令牌在循环头检查、并与两次 LLM 调用 `select!` 竞速（中断 =
 /// 断 HTTP）；快照落列前的取消检查在 service 层（写前取消 = 零快照）。
+/// attempt 回调（v1 机器面）：每轮开始时以轮次（1 起，含首轮）调用——
+/// 调用侧经它把轮次回写注册表（`task.set_attempt`），UI 快照面据此读数。
+/// `Send + Sync` 约束非装饰：本函数是 async fn，future 持有该引用跨
+/// `.await`，调用面经 `tokio::spawn` 派生——无界 `&dyn Fn` 会让 future
+/// 变 `!Send`，spawn 点全数炸开。
 pub(crate) async fn generate_structure_artifacts(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     input: &StructureInput,
     cancel: Option<&tokio_util::sync::CancellationToken>,
+    on_attempt: &(dyn Fn(u32) + Send + Sync),
 ) -> Result<StructureArtifacts, AppError> {
     let cancellation = cancel
         .map(|token| crate::service::CancellationCompleter::new(completer, token.clone()));
@@ -92,6 +98,9 @@ pub(crate) async fn generate_structure_artifacts(
                 crate::service::CANCELLED_MESSAGE.to_owned(),
             ));
         }
+        // 轮次回写（v1 机器面）：每轮（含首轮 1）开始即上报——取消检查之后，
+        // 被取消的轮次不上报（任务随即终态，读数冻结在最后完整轮）。
+        on_attempt(attempt as u32);
         match attempt_once(
             completer,
             model_override,
@@ -574,6 +583,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("golden artifacts pass");
@@ -666,6 +676,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("unknown top key must be dropped at the door, not rejected");
@@ -735,10 +746,40 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("second attempt aligns the doors");
         assert_eq!(artifacts.structure["domain"]["prerequisite_doors"], json!(["G1"]));
+    }
+
+    /// v1 attempt 回调（红绿样）：每轮回调且携带轮次（含首轮 1）——拒收重试
+    /// 路径逐轮上报 1→2，注册表据此 `set_attempt`（UI 机器面的数据源）。
+    #[tokio::test]
+    async fn attempt_callback_fires_each_round_with_the_round_number() {
+        let mut bad_structure = golden_structure();
+        bad_structure["domain"]["prerequisite_doors"] = json!(["G1", "G9"]); // 门口对账红 → 首轮拒收
+        let completer = scripted(vec![
+            golden_terrain(),
+            bad_structure, // 第 1 轮（拒收）
+            golden_terrain(),
+            golden_structure(), // 第 2 轮（过门）
+        ]);
+        let attempts: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+        generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+            &|attempt| attempts.lock().unwrap().push(attempt),
+        )
+        .await
+        .expect("second attempt aligns the doors");
+        assert_eq!(*attempts.lock().unwrap(), vec![1, 2], "每轮回调（含首轮 1），拒收重试路径 1→2");
     }
 
     /// m1 叉积核验走既有反馈重试回路（零新机制）：块 door_refs 引用了地形
@@ -765,6 +806,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("second attempt aligns the block door refs");
@@ -795,6 +837,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .unwrap_err();
@@ -825,6 +868,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .unwrap_err();
@@ -867,6 +911,7 @@ mod tests {
                     learner_basis: None,
                 },
                 None,
+                &|_| {},
             )
             .await
             .unwrap_err();
@@ -899,6 +944,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .unwrap_err();
@@ -932,6 +978,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("second attempt passes");
@@ -1024,6 +1071,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("single-topic term is released by L2");
@@ -1068,6 +1116,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .expect("second attempt renames the bundled block");
@@ -1102,6 +1151,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .unwrap_err();
@@ -1165,6 +1215,7 @@ mod tests {
                     learner_basis: None,
                 },
                 None,
+                &|_| {},
             )
             .await
             .unwrap_or_else(|error| panic!("{label}: 降级必须放行: {error}"));
@@ -1200,6 +1251,7 @@ mod tests {
                 learner_basis: None,
             },
             None,
+            &|_| {},
         )
         .await
         .unwrap_err();
