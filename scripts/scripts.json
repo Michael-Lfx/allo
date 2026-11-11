@@ -59,7 +59,7 @@
     },
     "check:release-product-profiles": {
       "group": "check",
-      "desc": "Verify the shared desktop release workflow keeps Flowy and UniBuddy tags, configs, channels, and publication targets isolated."
+      "desc": "Verify the shared desktop release workflow keeps Flowy and UniBuddy tags, configs, channels, publication targets, and NSIS installer bitmaps isolated."
     },
     "check:release-voice-preparation": {
       "group": "check",

@@ -5,6 +5,7 @@ import {
   ROOT,
   WORKFLOW,
   validateReleaseProductProfiles,
+  validateUnibuddyInstallerBitmaps,
 } from './check-release-product-profiles.mjs';
 
 const workflow = readFileSync(`${ROOT}/${WORKFLOW}`, 'utf8');
@@ -22,6 +23,10 @@ describe('release product profile contract', () => {
   test('a ModelScope step without channel root fails', () => {
     const changed = workflow.replace('            --channel-root "$CHANNEL_ROOT" \\\n', '');
     expect(validateReleaseProductProfiles(changed).some((item) => item.includes('missing --channel-root'))).toBe(true);
+  });
+
+  test('UniBuddy installer images and main executable are not Flowy', () => {
+    expect(validateUnibuddyInstallerBitmaps(ROOT)).toEqual([]);
   });
 
   test('an unconditional GitHub upload fails', () => {
