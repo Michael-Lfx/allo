@@ -113,6 +113,10 @@ export interface LearningGenerationTaskView {
   elapsed_secs: number | null;
   queued_at_ms: number | null;
   queue_position: number | null;
+  /** 当前重试轮次（v1 attempt 机器面，1 起）：结构生成任务逐轮回写，其余
+   * 任务为 null；可选字段兼容旧后端缺省（undefined 与 null 同判——读数面
+   * 一律回退静态）。 */
+  attempt?: number | null;
 }
 
 /** 手动编辑节正文请求（ADR-0007）：仅覆盖 body_md */

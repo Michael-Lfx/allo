@@ -3976,6 +3976,7 @@ export type I18nKey =
   | 'learning.start'
   | 'learning.startDiagnostic'
   | 'learning.startReview'
+  | 'learning.structureBadgeRunning'
   | 'learning.submit'
   | 'learning.subtitle'
   | 'learning.tagsApplyToChildren'
