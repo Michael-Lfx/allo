@@ -27,20 +27,39 @@ describe('buildSystemActionRow', () => {
     const row = buildSystemActionRow(action());
     expect(row.resultColor).toBe('green');
     expect(row.resultRole).toBeUndefined();
-    expect(row.reason).toBe('');
+    expect(row.reasonKey).toBe('');
     expect(row.basis).toBe('unconsumed=2 observations=0');
     expect(row.kindKey).toBe(typeLabelKeys.kind.maintenance_repair);
     expect(row.triggerKey).toBe(typeLabelKeys.trigger.timer);
   });
 
-  test('failed 行：红色失败徽标 + role=alert + reason 如实', () => {
+  test('failed 行：红色失败徽标 + role=alert + reason 走分类映射 key（原文不直出）', () => {
     const row = buildSystemActionRow(
-      action({ result: 'failed', reason: 'model unavailable' })
+      action({ result: 'failed', reason: 'Request timeout: json coach call exceeded 480s' })
     );
     expect(row.resultColor).toBe('red');
     expect(row.resultRole).toBe('alert');
-    expect(row.reason).toBe('model unavailable');
+    expect(row.reasonKey).toBe('learning.systemActionReasonTimeout');
+    expect(row.reasonKey).not.toContain('480s');
     expect(row.resultKey).toBe(typeLabelKeys.result.failed);
+  });
+
+  test('failed 行 reason 分类：冲突/产物未过校验/服务繁忙/未知原因兜底', () => {
+    const cases: ReadonlyArray<[string, string]> = [
+      [
+        'Conflict: course generation for this source is already running',
+        'learning.systemActionReasonConflict',
+      ],
+      ['Unprocessable entity: - [gd.terrain.keys] 未知顶层键「type」', 'learning.systemActionReasonInvalidOutput'],
+      ['Rate limited', 'learning.systemActionReasonBusy'],
+      ['Bad gateway: upstream closed', 'learning.systemActionReasonBusy'],
+      ['something entirely new', 'learning.systemActionReasonUnknown'],
+      ['   ', 'learning.systemActionReasonUnknown'],
+    ];
+    for (const [reason, expected] of cases) {
+      const row = buildSystemActionRow(action({ result: 'failed', reason }));
+      expect(row.reasonKey).toBe(expected);
+    }
   });
 
   test('未知 kind/trigger/result 走宽容兜底 key（读侧不落错）', () => {

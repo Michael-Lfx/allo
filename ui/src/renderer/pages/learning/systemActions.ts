@@ -32,6 +32,29 @@ function labelKey(map: Record<string, string>, machineName: string, unknownKey: 
   return map[machineName] ?? unknownKey;
 }
 
+/**
+ * 失败原因分类（o1）：后端 reason 是 AppError 诊断原文（如
+ * `Request timeout: …` / `Unprocessable entity: [gd.*] …`），直出会把契约门
+ * 报文和机器文本摆上人面。这里按稳定错误前缀归类成词典 key，无匹配落中性
+ * 「未知原因」——完整诊断留在后端日志，动作簿人面只出类别句。
+ */
+const REASON_MATCHERS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/conflict|already running/i, 'learning.systemActionReasonConflict'],
+  [/timeout/i, 'learning.systemActionReasonTimeout'],
+  [/unprocessable entity|not implemented/i, 'learning.systemActionReasonInvalidOutput'],
+  [/rate limited|bad gateway|provider unavailable|no usable model|internal error/i, 'learning.systemActionReasonBusy'],
+];
+
+/** reason 原文 → 分类词典 key；空串/无匹配一律「未知原因」。导出供测试。 */
+export function systemActionReasonKey(reason: string): string {
+  const trimmed = reason.trim();
+  if (trimmed === '') return 'learning.systemActionReasonUnknown';
+  for (const [pattern, key] of REASON_MATCHERS) {
+    if (pattern.test(trimmed)) return key;
+  }
+  return 'learning.systemActionReasonUnknown';
+}
+
 /** 一条动作行的展示模型。 */
 export interface SystemActionRowModel {
   key: string;
@@ -42,11 +65,12 @@ export interface SystemActionRowModel {
   resultColor: 'green' | 'red' | 'gray';
   /** 失败行 = 'alert'（读屏播报）；done/未知 = undefined。 */
   resultRole: 'alert' | undefined;
-  reason: string;
+  /** 失败原因的分类词典 key（原文不直出）；done 行 = ''（不渲染）。 */
+  reasonKey: string;
   at: number;
 }
 
-/** 动作行投影：failed = 红 + role=alert + reason；done = 绿；未知 = 中性。 */
+/** 动作行投影：failed = 红 + role=alert + reason 分类映射；done = 绿；未知 = 中性。 */
 export function buildSystemActionRow(action: SystemActionView): SystemActionRowModel {
   const failed = action.result === 'failed';
   const done = action.result === 'done';
@@ -58,7 +82,7 @@ export function buildSystemActionRow(action: SystemActionView): SystemActionRowM
     resultKey: labelKey(resultKeys, action.result, typeLabelKeys.result.unknown),
     resultColor: failed ? 'red' : done ? 'green' : 'gray',
     resultRole: failed ? 'alert' : undefined,
-    reason: failed ? action.reason : '',
+    reasonKey: failed ? systemActionReasonKey(action.reason) : '',
     at: action.at,
   };
 }

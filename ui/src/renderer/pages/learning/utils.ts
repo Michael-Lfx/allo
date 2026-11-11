@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { isBackendHttpError, isBackendRequestError } from '@/common/adapter/httpBridge';
 import {
   ARCHIVE_STABLE_DAYS,
   ARCHIVE_STABLE_REVIEW_COUNT,
@@ -119,9 +120,27 @@ export function loadVisibleQuestionColumns(): string[] {
   return [...QUESTION_SELECTABLE_COLUMNS];
 }
 
-/** 统一的异步错误文案：Error 取 message，其余回退到通用失败提示 */
+/**
+ * 统一的异步错误文案单源（o1）：`BackendHttpError` 按 status 映射学习域
+ * 词典（409 冲突 / 404 内容缺失 / 5xx 服务不可用），传输层故障（超时/断网）
+ * 映射网络句，其余一律通用失败句。后端错误原文（含契约门报文）一律不上
+ * UI，只在 console.debug 留诊断。语义与 d7 的 409 拦截路径（inflightTaskToast
+ * 同水位）对齐——d7 拦截先行命中时根本不会走到这里，零改动保留。
+ */
 export function errorMessage(t: Translate, error: unknown): string {
-  return error instanceof Error ? error.message : t('learning.actionFailed');
+  // 诊断原文只进 console；UI 面永远是词典整句。
+  console.debug('[learning:errorMessage] mapped to friendly copy, raw:', error);
+  if (isBackendHttpError(error)) {
+    if (error.status === 409) return t('learning.conflictBusy');
+    if (error.status === 404) return t('learning.contentMissing');
+    if (error.status >= 500) return t('learning.serviceUnavailable');
+    return t('learning.actionFailed');
+  }
+  if (isBackendRequestError(error)) {
+    // timeout / network / aborted 都是传输面故障，人面同一句。
+    return t('learning.networkUnstable');
+  }
+  return t('learning.actionFailed');
 }
 
 /** 槽冲突（409 CONFLICT，d6/d7）：同类长任务已在后台跑。后端错误文本恒含

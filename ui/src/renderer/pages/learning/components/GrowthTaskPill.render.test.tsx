@@ -93,16 +93,26 @@ describe('GrowthTaskPill', () => {
     expect(queued).toContain('取消生成');
   });
 
-  test('终态失败：✕ + 失败原因 + 关闭，不再可取消', async () => {
+  test('终态失败：✕ + 通用失败句 + 关闭，不再可取消；detail 收纳进 Tooltip 不直出', async () => {
     const html = await renderPill(
       'zh-CN',
       item({ status: 'failed', step: null, detail: '模型调用超时', elapsedSecs: null })
     );
     expect(html).toContain('✕');
     expect(html).toContain('学习图生长失败');
-    expect(html).toContain('模型调用超时');
+    expect(html).toContain('执行失败，悬停可查看详情');
+    expect(html).not.toContain('模型调用超时');
     expect(html).toContain('关闭');
     expect(html).not.toContain('取消生成');
+  });
+
+  test('终态失败无 detail：不出提示行（宁缺不泄漏）', async () => {
+    const html = await renderPill(
+      'zh-CN',
+      item({ status: 'failed', step: null, detail: null, elapsedSecs: null })
+    );
+    expect(html).toContain('学习图生长失败');
+    expect(html).not.toContain('执行失败，悬停可查看详情');
   });
 
   test('已在该课程图工作区时不出「回到图工作区」', async () => {

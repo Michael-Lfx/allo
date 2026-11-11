@@ -95,7 +95,8 @@ const ConceptsOverviewPage: React.FC = () => {
         </div>
 
         {error ? (
-          <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />
+          // error 已是 errorMessage 单源映射句（o1）：不再拼接原始报文。
+          <Alert type='error' content={error} />
         ) : rows === null ? (
           <div className='flex justify-center py-32px'>
             <Spin />

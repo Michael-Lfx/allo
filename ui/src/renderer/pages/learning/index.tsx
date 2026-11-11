@@ -123,12 +123,13 @@ const LearningPage: React.FC = () => {
         setReviewTagFilter(nextTagFilter);
       }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+      setError(errorMessage(t, loadError));
     } finally {
       initialLoaded.current = true;
       setLoading(false);
     }
-  }, [id, reviewCourseFilter, reviewTagFilter, reviewSessionLimit]);
+  }, [id, reviewCourseFilter, reviewTagFilter, reviewSessionLimit, t]);
 
   useEffect(() => {
     void load();
@@ -381,7 +382,7 @@ const LearningPage: React.FC = () => {
             </Button>
           </div>
         </div>
-        {error && <Alert key='load-error' type='error' content={`${t('learning.loadFailed')}: ${error}`} />}
+        {error && <Alert key='load-error' type='error' content={error} />}
         <Alert key='pack-contract' type='info' content={t('learning.packContract')} />
 
         {/* 复习横幅始终可见：队列为空时也保留“开始复习”入口，

@@ -40,7 +40,7 @@ import type {
   LessonStatus,
   Section,
 } from '../types';
-import { sliceSourceContent, statusLabel } from '../utils';
+import { errorMessage, sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
 import { QuestionExplanation } from './QuestionExplanation';
 import { useLearningAutogenModel } from './LearningModelSelector';
@@ -173,7 +173,8 @@ function LessonSourcePanel({
       })
       .then((file) => setContent(sliceSourceContent(file.content, source.start, source.end)))
       .catch((loadError) => {
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
+        // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+        setError(errorMessage(t, loadError));
       })
       .finally(() => setLoading(false));
   };
@@ -219,7 +220,7 @@ function LessonSourcePanel({
               <Spin tip={t('learning.sourceLoading')} />
             </div>
           )}
-          {error && <Alert type='error' content={`${t('learning.sourceLoadFailed')}: ${error}`} />}
+          {error && <Alert type='error' content={error} />}
           {!loading && !error && content !== null && (
             <div className='max-h-420px overflow-auto rounded-8px bg-[var(--color-fill-1)] p-12px'>
               <Markdown>{content}</Markdown>
@@ -792,7 +793,8 @@ export function LessonBlock({
       Message.success(t('learning.sectionRewriteDone'));
       setRewriteDialogSection(null);
     } catch (rewriteError) {
-      Message.error(rewriteError instanceof Error ? rewriteError.message : t('learning.actionFailed'));
+      // o1：错误文案走 errorMessage 单源映射，原始报文不进人面。
+      Message.error(errorMessage(t, rewriteError));
     } finally {
       setsectionBusyKey(null);
     }
@@ -808,7 +810,8 @@ export function LessonBlock({
       Message.success(t('learning.sectionEditDone'));
       setEditDialogSection(null);
     } catch (editError) {
-      Message.error(editError instanceof Error ? editError.message : t('learning.actionFailed'));
+      // o1：错误文案走 errorMessage 单源映射，原始报文不进人面。
+      Message.error(errorMessage(t, editError));
     } finally {
       setsectionBusyKey(null);
     }
