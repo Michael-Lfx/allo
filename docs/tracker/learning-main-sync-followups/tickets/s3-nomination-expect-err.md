@@ -2,7 +2,7 @@
 id: s3
 title: "提名装配 expect(\"just pushed\") → Err 化"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -47,3 +47,14 @@ find 落空 panic。上游 parse 已挡空名（目前不可达），但按模�
 
 - parse 层措辞与红线（growth_contract.rs 不动）。
 - push_nomination 的静默早退语义本身（重名早退是既有行为）。
+
+## Resolution（2026-11-11 施工收口）
+
+**已闭票。** 施工 = `7cfe1927c`。
+
+- 装配面抽纯函数 `assemble_nominations`（自 `gate_batch` 抽出以便直测），
+  `expect("just pushed")` 换 let-else → 门级错误 `ng.aliases.empty_name`。
+- 红绿样四测试全绿：正常提名 / 重名去重 / 零近邻 / 空白名不 panic。
+- 测试修正一处预期：重名去重路径在空登记表下候选为零，`no_neighbor`
+  门错误照发——这是修复前既有语义，测试如实钉住（初版误写为无错误，红后修正）。
+- 非 test 代码 expect 归零（残留 2 处为测试注释里的历史引用）。

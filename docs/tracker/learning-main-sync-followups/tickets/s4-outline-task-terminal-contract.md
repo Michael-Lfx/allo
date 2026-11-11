@@ -2,7 +2,7 @@
 id: s4
 title: "v2 outline 任务终态契约——成功路径 finish_done + 补挂真实 course_id"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -59,3 +59,16 @@ failed**，且注册表行的 course_id 是会话 id——恢复态翻 done 后�
 - 注册表键 re-key（键格式 `{kind}:{course}:{node}` 不动，仅 DTO 显式字段）。
 - 恢复态 UI 其它行为（c2 已收敛的重试守卫等不动）。
 - lesson/growth/structure 各 kind 的收尾（它们已有显式 finish）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；恢复态收敛的用户可见目验留待真机批次。**
+施工 = `eb0e84bed`。
+
+- 设计要点：不改 `record.course_id`（视图 key 由它现算，改动会打断恢复态
+  按 taskKey 匹配），新增独立字段 `resolved_course_id: Option<String>`，
+  快照视图 `course_id` 优先取它、键保持会话 id 段。
+- `generate.rs` 成功臂：`set_resolved_course_id(真实 id)` + `finish_done("课程已建成")`；
+  Drop 兜底（failed「任务中断」）与 cancel 首写语义保持不变。
+- 注册表 21 测试全绿（含 2 新：done+真实 id 不 re-key；未收尾仍 failed+会话段）。
+- 观测面副作用一并修正：成功 outline 的 finish 行不再记 failed。

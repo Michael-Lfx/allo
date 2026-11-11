@@ -2,7 +2,7 @@
 id: s7
 title: ".zcode 会话文件出库 + gitignore 补规则"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -40,3 +40,11 @@ part_of: ../map.md
 
 - 清理工作树里的本地 plan 文件内容（工具自己管理）。
 - docs/superpowers、docs/research 等有意入库的产物（不动）。
+
+## Resolution（2026-11-11 施工收口）
+
+**已闭票。** 施工 = `fa4000961`。
+
+- `git rm --cached` 已提交的 plan 文件（工作树副本保留）；
+  `.gitignore` 增 `.zcode/`（紧邻既有 `.zcodeignore` 行）。
+- `git ls-files .zcode` 归零；`git check-ignore` 对两个 plan 文件均命中。

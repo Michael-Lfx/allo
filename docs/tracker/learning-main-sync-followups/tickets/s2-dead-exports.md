@@ -2,7 +2,7 @@
 id: s2
 title: "5 个零引用导出清理"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -39,3 +39,11 @@ part_of: ../map.md
 
 - 仅文件内自用的多余 export（palette/layout/growthTaskPill/mindmapLayout
   6 处，非死代码，不动）。
+
+## Resolution（2026-11-11 施工收口）
+
+**已闭票。** 施工 = `854ef08ba`。
+
+- 五处导出删除；BlockDetail.tsx 的孤儿 `Empty` import 一并清掉；
+  `Translate`/`sectionStatus*` i18n 键经查仍有 LessonStudy.tsx 消费，保留。
+- `grep` 五符号归零；`typecheck` 绿。
