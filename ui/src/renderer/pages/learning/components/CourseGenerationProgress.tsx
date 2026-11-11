@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Card, Spin, Steps, Tag, Typography } from '@arco-design/web-react';
 import { ipcBridge } from '@/common';
+import { AppMessage as Message } from '@/renderer/components/notifications';
+import { copyText } from '@/renderer/utils/ui/clipboard';
 import type {
   ILearningCourseGenerationEvent,
   ILearningGenerationToolCall,
@@ -431,11 +433,32 @@ export function CourseGenerationProgress({
           content={
             <div className='flex flex-col gap-8px'>
               <span>{t('learning.genFailed')}</span>
-              {/* 失败详情可能携带后端附加的草稿审计长文，而 Modal 内容区
-                  不可滚动：限高滚动保证「重试」按钮始终首屏可见 */}
+              {/* o6 收纳（与 o1 收纳同向）：失败详情携带的后端长文不再平铺
+                  在 Alert 里——「错误详情」折叠看原文（限高滚动保证展开后
+                  不撑爆 Modal），「复制详情」按钮复用仓内 clipboard 基建
+                  （copyText + 既有 toast 词典）。 */}
               {error && (
-                <div className='max-h-160px overflow-y-auto whitespace-pre-wrap break-all rounded-8px bg-[var(--color-fill-1)] p-8px text-13px'>
-                  {error}
+                <div className='flex flex-wrap items-center gap-8px'>
+                  <NomiCollapse bordered={false} className='min-w-0 flex-1'>
+                    <NomiCollapse.Item
+                      name='gen-failed-details'
+                      header={t('learning.genFailedDetails')}
+                    >
+                      <div className='max-h-160px overflow-y-auto whitespace-pre-wrap break-all rounded-8px bg-[var(--color-fill-1)] p-8px text-13px'>
+                        {error}
+                      </div>
+                    </NomiCollapse.Item>
+                  </NomiCollapse>
+                  <Button
+                    size='mini'
+                    onClick={() => {
+                      copyText(error)
+                        .then(() => Message.success(t('common.copySuccess')))
+                        .catch(() => Message.error(t('common.copyFailed')));
+                    }}
+                  >
+                    {t('learning.genFailedCopyDetails')}
+                  </Button>
                 </div>
               )}
               {/* 恢复态不提供重发式重试（合成请求会以后端 topic 标签为名
