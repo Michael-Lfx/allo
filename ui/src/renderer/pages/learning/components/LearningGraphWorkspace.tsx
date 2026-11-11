@@ -70,6 +70,15 @@ import { DeclarationWindow } from './structure/DeclarationWindow';
 
 const { Text, Title, Paragraph } = Typography;
 
+/** 顶条在跑态徽章（o6 顶条单一状态；F7 去重）：同一枚 processing Tag 渲染
+ * 结构生成（v2 实时读数徽章）/ 生长 / 自动准备三种态——文案由调用方渲染，
+ * 数据源（structureBadge 等）留在调用处，徽章只负责外观。 */
+const ProcessingStateTag: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <Tag size='small' color='processing' className='!mx-0'>
+    {children}
+  </Tag>
+);
+
 /**
  * 学习图课程工作区（beta，概念网 + 生长模型 ADR-0009）：
  * - 顶条：知识结构状态（生成中 / 已生成 / 失败重试）+ 手动补充节点
@@ -221,7 +230,12 @@ const LearningGraphWorkspace: React.FC<{
       if (actionError instanceof BackendHttpError && actionError.status === 409) {
         Message.warning(t('learning.learningGraphStructureConflict'));
       } else {
-        Message.error(errorMessage(t, actionError));
+        // F2：失败 toast 带各自动作标题（notify 面原生 title 两行），不再
+        // 五处同文分不清哪个动作失败；正文仍是 errorMessage 单源映射句。
+        Message.error({
+          title: t('learning.learningGraphStructureFailed'),
+          content: errorMessage(t, actionError),
+        });
       }
     } finally {
       setRegenerating(false);
@@ -276,8 +290,12 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         await refetchStructure();
       } else {
-        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
-        Message.error(errorMessage(t, actionError));
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+        // F2：带各自动作标题。
+        Message.error({
+          title: t('learning.learningGraphMountFailed'),
+          content: errorMessage(t, actionError),
+        });
       }
     } finally {
       clearInFlight(`mount:${detail.course.id}`);
@@ -300,8 +318,12 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         await refetchStructure();
       } else {
-        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
-        Message.error(errorMessage(t, actionError));
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+        // F2：带各自动作标题。
+        Message.error({
+          title: t('learning.learningGraphRepairFailed'),
+          content: errorMessage(t, actionError),
+        });
       }
     } finally {
       clearInFlight(`repair:${detail.course.id}`);
@@ -472,8 +494,12 @@ const LearningGraphWorkspace: React.FC<{
           const view = await learningApi.basisView(detail.course.id).catch(() => null);
           if (view) setBasis(view);
         } else {
-          // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
-          Message.error(errorMessage(t, actionError));
+          // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+          // F2：带各自动作标题。
+          Message.error({
+            title: t('learning.learningGraphBasisDeclareFailed'),
+            content: errorMessage(t, actionError),
+          });
         }
       } finally {
         clearInFlight(`basis:${detail.course.id}`);
@@ -497,8 +523,12 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         onRefresh();
       } else {
-        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
-        Message.error(errorMessage(t, actionError));
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+        // F2：带各自动作标题。
+        Message.error({
+          title: t('learning.learningGraphGrowFailed'),
+          content: errorMessage(t, actionError),
+        });
       }
     } finally {
       clearInFlight(`grow:${detail.course.id}`);
@@ -631,20 +661,17 @@ const LearningGraphWorkspace: React.FC<{
             {t('learning.learningGraphStructureTitle')}
           </Text>
           {processingPrimary === 'structure' ? (
-            <Tag size='small' color='processing' className='!mx-0'>
+            // v2 实时读数徽章：文案与插值仍出自 structureBadge（数据源不动）。
+            <ProcessingStateTag>
               {t(
                 structureBadge.key,
                 'vars' in structureBadge ? structureBadge.vars : undefined
               )}
-            </Tag>
+            </ProcessingStateTag>
           ) : processingPrimary === 'growth' ? (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphGrowing')}
-            </Tag>
+            <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
           ) : processingPrimary === 'auto' ? (
-            <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphAutoPreparing')}
-            </Tag>
+            <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
           ) : structureError ? (
             <Text type='secondary' className='text-12px'>
               {t('learning.learningGraphStructureLoadFailed')}
@@ -1014,7 +1041,8 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
 };
 
 /** 系统动作（y04）：折叠节的读侧。行 = 时间 + 类型 + 触发源 + basis + 结果
- * 徽标；失败红色 role=alert 带 reason；空态「暂无系统动作」。 */
+ * 徽标；失败红色 role=alert 带原因分类句（原文悬停 Tooltip 可见）；空态
+ * 「暂无系统动作」。 */
 const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
   const [actions, setActions] = useState<SystemActionView[] | null>(null);
@@ -1067,31 +1095,42 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
           <Empty description={t('learning.learningGraphSystemActionsEmpty')} />
         ) : (
           <div className='flex flex-col'>
-            {model.rows.map((row) => (
-              <div
-                key={row.key}
-                role={row.resultRole}
-                className='flex flex-wrap items-baseline gap-8px border-b border-b-solid border-b-[var(--color-border-1)] px-4px py-6px last:border-b-0'
-              >
-                <span className='text-11px text-t-tertiary'>{new Date(row.at).toLocaleString()}</span>
-                <Tag size='small' className='!mx-0'>
-                  {t(row.kindKey)}
-                </Tag>
-                <span className='text-11px text-t-tertiary'>{t(row.triggerKey)}</span>
-                {row.basis.trim() !== '' && (
-                  <span className='text-11px text-t-tertiary'>{row.basis}</span>
-                )}
-                <span className='flex-1' />
-                <Tag size='small' color={row.resultColor} className='!mx-0'>
-                  {t(row.resultKey)}
-                </Tag>
-                {row.reasonKey.trim() !== '' && (
+            {model.rows.map((row) => {
+              // 失败原因：分类句为主显示；诊断原文只经 Tooltip 收纳（同波
+              // GrowthTaskPill failed detail 先例——收纳不删信息），无原文
+              // 不出 Tooltip。
+              const reasonLine =
+                row.reasonKey.trim() !== '' ? (
                   <Text type='error' className='min-w-0 basis-full truncate text-11px'>
                     {t(row.reasonKey)}
                   </Text>
-                )}
-              </div>
-            ))}
+                ) : null;
+              return (
+                <div
+                  key={row.key}
+                  role={row.resultRole}
+                  className='flex flex-wrap items-baseline gap-8px border-b border-b-solid border-b-[var(--color-border-1)] px-4px py-6px last:border-b-0'
+                >
+                  <span className='text-11px text-t-tertiary'>{new Date(row.at).toLocaleString()}</span>
+                  <Tag size='small' className='!mx-0'>
+                    {t(row.kindKey)}
+                  </Tag>
+                  <span className='text-11px text-t-tertiary'>{t(row.triggerKey)}</span>
+                  {row.basis.trim() !== '' && (
+                    <span className='text-11px text-t-tertiary'>{row.basis}</span>
+                  )}
+                  <span className='flex-1' />
+                  <Tag size='small' color={row.resultColor} className='!mx-0'>
+                    {t(row.resultKey)}
+                  </Tag>
+                  {reasonLine && row.reasonDetail !== '' ? (
+                    <Tooltip content={row.reasonDetail}>{reasonLine}</Tooltip>
+                  ) : (
+                    reasonLine
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </NomiCollapse.Item>

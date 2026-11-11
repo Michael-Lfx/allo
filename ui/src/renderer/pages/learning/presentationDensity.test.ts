@@ -29,10 +29,12 @@ describe('o6 呈现密度词典断言', () => {
   });
 
   test('新增收纳面 key 双语对称、非空、无插值占位（折叠头为纯词）', () => {
-    // 三个收纳面折叠头：挂载条（结构图 Tab）、来源覆盖卡、失败错误详情。
+    // 三个收纳面折叠头：挂载条（结构图 Tab）、来源覆盖卡、失败错误详情、
+    // triage 明细（F4 收进残余计数的折叠，同「详情」口径）。
     const keys = [
       'learningGraphMountDetails',
       'sourceCoverageDetails',
+      'genTriageDetails',
       'genFailedDetails',
       'genFailedCopyDetails',
     ];
