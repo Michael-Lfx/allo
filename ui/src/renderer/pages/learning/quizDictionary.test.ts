@@ -4,12 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/** quiz i18n 词典基座（u1，u4 扩）的单测：quiz* 词条 zh-CN / en-US 双语对称
- * 且非空、插值占位两侧保留、两侧 quiz* 键集合一致（capacityFeedback.test.ts
- * 同款纪律）。覆盖票面文案面清单：进度读数 / 开测按钮 / 会话标题 /
- * 题源节点标注 / 判分反馈（对·错·判底·解析·证据）/ 结算分级三档 + 分级
- * 语境句（u4 对称追加）+ low 兜底档 / 折叠不计薪 / 边界态（未 due·缺题·
- * 加载失败）/ 结算报告面（u4：总净入账·准确率·逐节点行·完成按钮）。
+/** quiz i18n 词典基座（u1，u4 扩 + u5 边界态扩）的单测：quiz* 词条 zh-CN /
+ * en-US 双语对称且非空、插值占位两侧保留、两侧 quiz* 键集合一致
+ * （capacityFeedback.test.ts 同款纪律）。覆盖票面文案面清单：进度读数 /
+ * 开测按钮 / 会话标题 / 题源节点标注 / 判分反馈（对·错·判底·解析·证据）/
+ * 结算分级三档 + 分级语境句（u4 对称追加）+ low 兜底档 / 折叠不计薪 /
+ * 边界态（未 due·缺题·加载失败·组卷等待[u5 R1]·异常回合[u5 R3]）/
+ * 结算报告面（u4：总净入账·准确率·逐节点行·完成按钮）。
  * 集合断言防两侧漂移。零渲染——纯词典断言。 */
 import { describe, expect, test } from 'bun:test';
 
@@ -49,6 +50,9 @@ const QUIZ_KEYS = [
   'quizNotDueHint',
   'quizMissingAnswers',
   'quizLoadFailed',
+  // u5 R1/R3：组卷等待文案（开测慢路径诚实等待）/ 异常回合如实呈现
+  'quizPreparing',
+  'quizRoundNotActive',
   // 结算报告面（u4 R1：总净入账 / 准确率 / 逐节点对账行 / 完成）
   'quizReportHeading',
   'quizReportTotalXp',

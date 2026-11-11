@@ -24,7 +24,15 @@ import type {
   QuizRoundQuestionView,
   QuizRoundReport,
 } from '../types';
-import { QuizCard, QuizReport, quizReportGrade, quizReportScore } from './QuizSession';
+import {
+  QUIZ_EXCELLENT_RATIO,
+  QUIZ_HALF_RATIO,
+  QUIZ_PASS_RATIO,
+  QuizCard,
+  QuizReport,
+  quizReportGrade,
+  quizReportScore,
+} from './QuizSession';
 
 const initTestI18n = async (locale: 'zh-CN' | 'en-US') => {
   const instance = createInstance();
@@ -325,5 +333,23 @@ describe('QuizReport 分级边界（u4 R2：镜像 settle.rs 0.9/0.6/0.3，恰�
       'en-US'
     );
     expect(half).toContain('Half credit');
+  });
+});
+
+// ── u5 修复：分级阈值钉值（R5）。容器级呈现（u5 R1 loading 相 / R2 冲突
+// 接线 / R3 异常回合面）在 QuizSession.container.render.test.tsx——Arco
+// Modal 走 Portal，renderToStaticMarkup 渲染不出内容（零字节），须 jsdom
+// 宿主。 ──────────────────────────────────────────────────────────────
+
+describe('分级阈值钉值（u5 R5：与 settle.rs 单源注释双保险防漂移）', () => {
+  test('QUIZ_EXCELLENT/PASS/HALF_RATIO 钉 0.9/0.6/0.3，quizReportGrade 与钉值联动', () => {
+    expect(QUIZ_EXCELLENT_RATIO).toBe(0.9);
+    expect(QUIZ_PASS_RATIO).toBe(0.6);
+    expect(QUIZ_HALF_RATIO).toBe(0.3);
+    // 联动钉值：档位判定消费的就是这三个 export 常量（镜像 settle.rs）
+    expect(quizReportGrade(QUIZ_EXCELLENT_RATIO * 10, 10)).toBe('excellent');
+    expect(quizReportGrade(QUIZ_PASS_RATIO * 10, 10)).toBe('pass');
+    expect(quizReportGrade(QUIZ_HALF_RATIO * 10, 10)).toBe('half');
+    expect(quizReportGrade(QUIZ_HALF_RATIO * 10 - 1, 10)).toBe('low');
   });
 });

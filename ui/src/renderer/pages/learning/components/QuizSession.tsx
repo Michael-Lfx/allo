@@ -149,10 +149,10 @@ export function QuizCard({
 
 /** 分级阈值镜像 settle.rs `QUIZ_EXCELLENT_RATIO`/`QUIZ_PASS_RATIO`/
  *  `QUIZ_HALF_RATIO`（0.9/0.6/0.3），单源勿改——前端不自定阈值（map 契约：
- *  前端只镜像呈现）。 */
-const QUIZ_EXCELLENT_RATIO = 0.9;
-const QUIZ_PASS_RATIO = 0.6;
-const QUIZ_HALF_RATIO = 0.3;
+ *  前端只镜像呈现）。u5 R5：export 供测试钉值防漂移（与注释双保险）。 */
+export const QUIZ_EXCELLENT_RATIO = 0.9;
+export const QUIZ_PASS_RATIO = 0.6;
+export const QUIZ_HALF_RATIO = 0.3;
 
 /** 分级档位（R2）：前三档照票面镜像 settle.rs；`low` = settle.rs else 分支
  *  （< 0.3 四分之一额）的如实呈现——不把 quarter 档说成 half。 */
@@ -282,22 +282,30 @@ export interface QuizSessionProps {
    * 清位 + bump quizProgressToken 刷新 N/K 归零读数并卸载本组件；N/K 读数
    * 在会话内不刷新（R6，会话内零 progress）。 */
   onFinished: (report: QuizRoundReport) => void;
+  /** u5 R2：会话内 start 409（due 门竞态）的进度刷新通道——集成侧 bump
+   * quizProgressToken 让入口卡重拉 N/K（与 onFinished 同款令牌）。 */
+  onConflict?: () => void;
   /** 用户中途关闭会话（含报告相直接关窗，放弃报告视图零刷新）：已结算回合
    * 不回滚（后端无取消端点，abandoned 语义由下次 start supersede 收口），
-   * 集成侧据此卸载本组件。 */
+   * 集成侧据此卸载本组件。u5 R2：start 409 后控制器经 onRequestClose 复用
+   * 本回调关闭会话（关闭语义单出口）。 */
   onClose: () => void;
 }
 
-/** 测验会话容器（u3 R1 + u4 报告相）：挂载即 quizStart（useQuizSession 开
- * 测），回合态机 `{ round, index, answers, feedback, report }` 全在 hook；
- * 本组件只做 Modal 壳与相分流——complete 成功进报告相（结算报告在容器内
- * 呈现），「完成」按钮才触发 onFinished（u4 R4 收口链路）。挂载接线由集成
- * 收口（u2 独立票）——本组件不自触发开测以外的入口。 */
-export function QuizSession({ courseId, onFinished, onClose }: QuizSessionProps) {
+/** 测验会话容器（u3 R1 + u4 报告相 + u5 边界门）：挂载即 quizStart
+ * （useQuizSession 开测），回合态机 `{ round, index, answers, feedback,
+ * report }` 全在 hook；本组件只做 Modal 壳与相分流——complete 成功进报告
+ * 相（结算报告在容器内呈现），「完成」按钮才触发 onFinished（u4 R4 收口
+ * 链路）。u5：loading 相呈现组卷等待文案（R1）；409（R2）与异常回合
+ * （R3）的分流在控制器，容器只透传 onConflict/onRequestClose。挂载接线由
+ * 集成收口（u2 独立票）——本组件不自触发开测以外的入口。 */
+export function QuizSession({ courseId, onFinished, onConflict, onClose }: QuizSessionProps) {
   const { t } = useTranslation();
   const { state, start, grade, next, complete, finish, close } = useQuizSession({
     courseId,
     onFinished,
+    onConflict,
+    onRequestClose: onClose,
   });
   const [response, setResponse] = useState<unknown>();
   const current = state.round?.questions[state.index] ?? null;
@@ -321,9 +329,11 @@ export function QuizSession({ courseId, onFinished, onClose }: QuizSessionProps)
       onCancel={cancel}
     >
       {state.phase === 'loading' && (
-        <div className='flex items-center justify-center py-32px'>
-          {/* 开测慢路径 = 变式链 LLM 调用，诚实呈现加载态（api.ts 注释口径） */}
+        <div className='flex items-center justify-center gap-12px py-32px'>
+          {/* 开测慢路径 = 变式链 LLM 调用，诚实呈现加载态（api.ts 注释口径）；
+           * u5 R1：等待文案注明「正在组卷」 */}
           <Spin />
+          <Text type='secondary'>{t('learning.quizPreparing')}</Text>
         </div>
       )}
       {state.phase === 'error' && (

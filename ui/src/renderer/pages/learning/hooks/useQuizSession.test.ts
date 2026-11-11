@@ -4,18 +4,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/** quizSessionController 状态机单测（u3 + u4）。可测面是控制器公共 seam
- * （hook 的状态源）：start → 逐题作答判分 → 下一题 → 全卷收集完整 →
+/** quizSessionController 状态机单测（u3 + u4 + u5 修复）。可测面是控制器公共
+ * seam（hook 的状态源）：start → 逐题作答判分 → 下一题 → 全卷收集完整 →
  * complete 进报告相（u4：onFinished 延后）→ finish「完成」交报告收口。
  * 假数据源即测试替身（useCourseCreation.test 同纪律）：api/notify/onFinished
  * 全部注入，零 HTTP、零 DOM。持答案红线（R4）与全卷收集门（R5）在本文件
  * 钉死：反馈只随判分出现、只随当前题、推进即弃、关闭全弃；response 原样
  * 回收、全题作答才允许 complete、会话内零 progress 调用；报告相封口
- * （u4：complete 只进 report、finish 才触发 onFinished、折叠 null 原样过）。 */
+ * （u4：complete 只进 report、finish 才触发 onFinished、折叠 null 原样过）。
+ * u5 边界门（双轴评审修复）：start 409（due 门竞态）→ quizNotDueHint
+ * （K 提取自 Conflict 报文）toast + onConflict 进度刷新 + onRequestClose
+ * 关闭会话（不走 error 重试相；网络错误维持重试路径不动）；
+ * `status !== 'active'` 的异常回合不进作答流（R3，error 相如实呈现）。 */
 import * as bunTest from 'bun:test';
 import { BackendHttpError, BackendRequestError } from '@/common/adapter/httpBridge';
 import type { QuizGradeFeedback, QuizRoundQuestionView, QuizRoundReport, QuizRoundView } from '../types';
-import type { Translate } from '../utils';
+import { quizNotDueTrigger, type Translate } from '../utils';
 
 const { describe, expect, test } = bunTest;
 
@@ -122,12 +126,18 @@ interface Harness {
   calls: ReturnType<typeof makeApi>['calls'];
   reports: QuizRoundReport[];
   toasts: string[];
+  /** u5 R2：onConflict（进度刷新通道）调用次数 */
+  conflicts: number[];
+  /** u5 R2：onRequestClose（onClose 语义关闭）调用次数 */
+  closeRequests: number[];
 }
 
 function makeHarness(apiOverrides: Partial<QuizApiStub> = {}): Harness {
   const { api, calls } = makeApi(apiOverrides);
   const reports: QuizRoundReport[] = [];
   const toasts: string[] = [];
+  const conflicts: number[] = [];
+  const closeRequests: number[] = [];
   const controller = createQuizSessionController({
     courseId: 'course-1',
     t,
@@ -135,8 +145,10 @@ function makeHarness(apiOverrides: Partial<QuizApiStub> = {}): Harness {
     onChange: () => undefined,
     api,
     notify: (message) => toasts.push(message),
+    onConflict: () => conflicts.push(conflicts.length + 1),
+    onRequestClose: () => closeRequests.push(closeRequests.length + 1),
   });
-  return { controller, api, calls, reports, toasts };
+  return { controller, api, calls, reports, toasts, conflicts, closeRequests };
 }
 
 describe('quizSessionController 全旅程（u3 R1/R5 + u4 报告相）', () => {
@@ -314,31 +326,56 @@ describe('quizSessionController 持答案红线与动作门（u3 R4）', () => {
   });
 });
 
-describe('quizSessionController 失败路径（u3 Acceptance：409/网络如实落错误态）', () => {
-  test('start 409（due 门冲突）→ error 相 + errorMessage 单源 conflictBusy 文案，回合零残留', async () => {
-    const { controller, calls } = makeHarness({
+describe('quizSessionController 失败路径（u3 + u5 R2/R3：409 冲突通道 / 网络重试相 / 异常回合门）', () => {
+  // u5 修复迁移（原 u3 钉的「start 409 → error 相 + conflictBusy + 重试」
+  // 路径按票面改为冲突通道闭环：未到期文案 + 进度刷新 + 关闭会话）
+  test('u5 R2：start 409（due 门竞态）→ quizNotDueHint（K 提取）toast + onConflict 进度刷新 + 关闭会话，不走 error 重试相', async () => {
+    const { controller, calls, toasts, conflicts, closeRequests } = makeHarness({
       quizStart: async () => {
         throw new BackendHttpError({
           method: 'POST',
           path: '/api/learning/courses/course-1/quiz/start',
           status: 409,
-          body: {},
+          body: { error: 'quiz not due: 4/6 settlements since last quiz' },
         });
       },
     });
     expect(await controller.start()).toBe(false);
     const state = controller.getState();
-    expect(state.phase).toBe('error');
-    expect(state.error).toBe('learning.conflictBusy');
+    // 关闭语义：状态回落初始态（容器随 onRequestClose → onClose 卸载），零回合残留
+    expect(state).toEqual(initialQuizSessionState);
+    expect(state.phase).toBe('loading');
     expect(state.round).toBeNull();
-    expect(state.feedback).toBeNull();
-    expect(state.answers).toEqual({});
     expect(state.busy).toBe(false);
+    // N/K 未到期文案：K = 6 从 Conflict 报文提取，填 quizNotDueHint 的 {{trigger}} 槽
+    expect(toasts).toEqual(['learning.quizNotDueHint:{"trigger":6}']);
+    // 进度刷新通道 + 关闭通道各恰一次
+    expect(conflicts).toHaveLength(1);
+    expect(closeRequests).toHaveLength(1);
+    // 不走重试相：判分零调用
     expect(calls.grade).toHaveLength(0);
   });
 
-  test('start 网络故障（传输面）→ error 相 + networkUnstable 文案', async () => {
-    const { controller } = makeHarness({
+  test('u5 R2：409 报文漂移（提不到 K）→ 回落 conflictBusy 通用句，刷新与关闭通道照走', async () => {
+    const { controller, toasts, conflicts, closeRequests } = makeHarness({
+      quizStart: async () => {
+        throw new BackendHttpError({
+          method: 'POST',
+          path: '/api/learning/courses/course-1/quiz/start',
+          status: 409,
+          body: { error: 'quiz not due' },
+        });
+      },
+    });
+    expect(await controller.start()).toBe(false);
+    expect(controller.getState()).toEqual(initialQuizSessionState);
+    expect(toasts).toEqual(['learning.conflictBusy']);
+    expect(conflicts).toHaveLength(1);
+    expect(closeRequests).toHaveLength(1);
+  });
+
+  test('start 网络故障（传输面）→ error 相 + networkUnstable 文案，不触发冲突通道与自关（重试路径保留）', async () => {
+    const { controller, conflicts, closeRequests } = makeHarness({
       quizStart: async () => {
         throw new BackendRequestError('network', 'socket hang up');
       },
@@ -346,6 +383,9 @@ describe('quizSessionController 失败路径（u3 Acceptance：409/网络如实�
     expect(await controller.start()).toBe(false);
     expect(controller.getState().phase).toBe('error');
     expect(controller.getState().error).toBe('learning.networkUnstable');
+    // u5 R2 区分度：网络错误维持 error 相 + 重试，不走冲突通道、不关闭会话
+    expect(conflicts).toHaveLength(0);
+    expect(closeRequests).toHaveLength(0);
   });
 
   test('error 相重试同入口：第二次 start 成功回到 answering', async () => {
@@ -442,6 +482,84 @@ describe('quizSessionController 失败路径（u3 Acceptance：409/网络如实�
     releaseComplete?.(report());
     expect(await pending).toBe(true);
     expect(controller.getState().phase).toBe('report');
+  });
+});
+
+describe('quizSessionController 异常回合状态门（u5 R3）', () => {
+  test('completed/abandoned 回合不进作答流：error 相如实呈现 quizRoundNotActive，出口走关闭（零冲突通道）', async () => {
+    for (const status of ['completed', 'abandoned'] as const) {
+      const { controller, conflicts, closeRequests } = makeHarness({
+        quizStart: async () => ({ ...round([question()]), status }),
+      });
+      expect(await controller.start()).toBe(false);
+      const state = controller.getState();
+      // 不进作答流：error 相 + 专用文案（如实呈现并引导回课程页）
+      expect(state.phase).toBe('error');
+      expect(state.error).toBe('learning.quizRoundNotActive');
+      expect(state.round).toBeNull();
+      expect(state.busy).toBe(false);
+      // 呈现相拒绝判分（作答流不可达）
+      expect(await controller.grade('A')).toBe(false);
+      // 与 R2 的区分：不自动关窗、不触发进度刷新（呈现先可见，出口是关闭按钮 = onClose）
+      expect(conflicts).toHaveLength(0);
+      expect(closeRequests).toHaveLength(0);
+    }
+  });
+
+  test('状态门对照：active 回合照常进作答流（门只拦非 active）', async () => {
+    const { controller } = makeHarness({
+      quizStart: async () => ({ ...round([question()]), status: 'active' }),
+    });
+    expect(await controller.start()).toBe(true);
+    expect(controller.getState().phase).toBe('answering');
+  });
+
+  test('异常回合 error 相可重试：再次 start 后端改发 active 回合即进作答流', async () => {
+    let attempts = 0;
+    const { controller } = makeHarness({
+      quizStart: async () => {
+        attempts += 1;
+        if (attempts === 1) return { ...round([question()]), status: 'abandoned' };
+        return round([question()]);
+      },
+    });
+    expect(await controller.start()).toBe(false);
+    expect(controller.getState().error).toBe('learning.quizRoundNotActive');
+    expect(await controller.start()).toBe(true);
+    expect(controller.getState().phase).toBe('answering');
+    expect(attempts).toBe(2);
+  });
+});
+
+describe('quizNotDueTrigger（u5 R2：409 报文 K 值提取）', () => {
+  const http409 = (message: string) =>
+    new BackendHttpError({
+      method: 'POST',
+      path: '/api/learning/courses/course-1/quiz/start',
+      status: 409,
+      body: { error: message },
+    });
+
+  test('标准报文提取 K；漂移/非 409/非 HTTP 错误返回 null（调用方回落 conflictBusy）', () => {
+    expect(quizNotDueTrigger(http409('quiz not due: 0/6 settlements since last quiz'))).toBe(6);
+    expect(quizNotDueTrigger(http409('quiz not due: 12/6 settlements since last quiz'))).toBe(6);
+    // 报文格式漂移：提不到数返回 null
+    expect(quizNotDueTrigger(http409('quiz not due'))).toBeNull();
+    // 非 409：null（读数面只认 due 门 Conflict）
+    expect(
+      quizNotDueTrigger(
+        new BackendHttpError({
+          method: 'POST',
+          path: '/x',
+          status: 500,
+          body: { error: 'quiz not due: 4/6 settlements' },
+        })
+      )
+    ).toBeNull();
+    // 非 HTTP 错误 / 非错误值：null
+    expect(quizNotDueTrigger(new Error('quiz not due: 4/6 settlements'))).toBeNull();
+    expect(quizNotDueTrigger(null)).toBeNull();
+    expect(quizNotDueTrigger(undefined)).toBeNull();
   });
 });
 

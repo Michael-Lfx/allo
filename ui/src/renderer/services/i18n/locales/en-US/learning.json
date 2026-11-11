@@ -714,6 +714,8 @@
   "quizNotDueHint": "Not due yet — unlocks after {{trigger}} new-lesson settlements",
   "quizMissingAnswers": "{{count}} question(s) left unanswered — answer every question to settle",
   "quizLoadFailed": "Failed to load the quiz. Please try again.",
+  "quizPreparing": "Preparing your quiz, please wait…",
+  "quizRoundNotActive": "This round has ended or been replaced by a newer one — closing returns to the course page to start again.",
   "quizNext": "Next question",
   "quizRetry": "Retry",
   "quizReadyToSettle": "All {{count}} questions answered — settle the round to bank your XP",

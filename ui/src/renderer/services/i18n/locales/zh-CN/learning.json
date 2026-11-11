@@ -714,6 +714,8 @@
   "quizNotDueHint": "尚未到期，满 {{trigger}} 次学新结算后开放检测",
   "quizMissingAnswers": "还有 {{count}} 题未作答，全卷作答后才能结算",
   "quizLoadFailed": "测验加载失败，请重试",
+  "quizPreparing": "正在组卷，请稍候…",
+  "quizRoundNotActive": "该轮检测已结束或已被新一轮取代，关闭后会回到课程页，可重新开始",
   "quizNext": "下一题",
   "quizRetry": "重试",
   "quizReadyToSettle": "{{count}} 题已全部作答，交卷结算即可入账",
