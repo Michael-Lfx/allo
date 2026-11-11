@@ -1,7 +1,8 @@
 import { Button, Empty, Tag, Typography } from '@arco-design/web-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { BasisView, LearningStructureView } from '../../types';
+import NomiCollapse from '@/renderer/components/base/NomiCollapse';
+import type { BasisView, LearningStructureView, MountObservationView } from '../../types';
 import { GateCoverage } from './GateCoverage';
 import { MatrixView } from './MatrixView';
 import { Mindmap } from './Mindmap';
@@ -18,6 +19,56 @@ const TABS = [
 ] as const;
 
 type TabKey = (typeof TABS)[number][0];
+
+/** 挂载观察 kind → 词典 key（o4 B6）：三档机器 kind（mounting.rs 单源）+
+ * 未知档兜底。可见面只报计数，后端观察句不内插。 */
+function mountObservationKey(kind: string): `learning.learningGraphMountObs${string}` {
+  if (kind === 'outside-node') return 'learning.learningGraphMountObsOutside';
+  if (kind === 'empty-block') return 'learning.learningGraphMountObsEmpty';
+  if (kind === 'overloaded-block') return 'learning.learningGraphMountObsOverloaded';
+  return 'learning.learningGraphMountObsOther';
+}
+
+/** 挂载观察行（o4 B6）：后端观察 detail 是中文模板句内嵌 slug/节点串，
+ * 不再内插 Tag 上屏——可见面只出按 kind 的计数（词典模板，三档按固定序）；
+ * 原始观察句收进「观察详情」折叠（诊断面如实保留）。独立成组件供渲染
+ * 测试直接断言。 */
+export function MountObservationSummary({ observations }: { observations: MountObservationView[] }) {
+  const { t } = useTranslation();
+  if (observations.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const observation of observations) {
+    counts.set(observation.kind, (counts.get(observation.kind) ?? 0) + 1);
+  }
+  const knownOrder = ['outside-node', 'empty-block', 'overloaded-block'];
+  const kinds = [
+    ...knownOrder.filter((kind) => counts.has(kind)),
+    ...[...counts.keys()].filter((kind) => !knownOrder.includes(kind)),
+  ];
+  return (
+    <div className='flex flex-col gap-4px'>
+      <div className='flex flex-wrap items-center gap-4px'>
+        {kinds.map((kind) => (
+          <Tag key={kind} size='small' color='gray' className='!mx-0'>
+            {t(mountObservationKey(kind), { count: counts.get(kind) })}
+          </Tag>
+        ))}
+      </div>
+      <NomiCollapse bordered={false}>
+        <NomiCollapse.Item
+          name='mount-observation-details'
+          header={t('learning.learningGraphMountObsDetails')}
+        >
+          {observations.map((observation, index) => (
+            <Text key={index} type='secondary' className='block break-all text-12px'>
+              · {observation.detail}
+            </Text>
+          ))}
+        </NomiCollapse.Item>
+      </NomiCollapse>
+    </div>
+  );
+}
 
 /**
  * 结构图 Tab（wayfinder 票 p1 裁决）：思维导图 / 关系图谱 / 学习路线三图 +
@@ -146,20 +197,8 @@ export function StructureGraphTab({
             </div>
           )}
           {mounts.observations.length > 0 && (
-            <div className='flex flex-wrap items-center gap-4px'>
-              {mounts.observations.map((observation, index) => (
-                <Tag key={index} size='small' color='gray' className='!mx-0'>
-                  {t(
-                    observation.kind === 'outside-node'
-                      ? 'learning.learningGraphMountObsOutside'
-                      : observation.kind === 'empty-block'
-                        ? 'learning.learningGraphMountObsEmpty'
-                        : 'learning.learningGraphMountObsOverloaded',
-                    { detail: observation.detail }
-                  )}
-                </Tag>
-              ))}
-            </div>
+            // o4：观察可见面只报计数，后端观察句收进折叠详情。
+            <MountObservationSummary observations={mounts.observations} />
           )}
         </div>
       )}

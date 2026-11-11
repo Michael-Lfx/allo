@@ -92,7 +92,8 @@ export function CreateCourseDialog({
   // 指示条共用 `knowledgeBaseNames`）。
   const generatingSources: string[] = knowledgeBaseNames(
     generation?.request.knowledge_base_ids ?? [],
-    knowledgeBases
+    knowledgeBases,
+    t
   );
 
   return (

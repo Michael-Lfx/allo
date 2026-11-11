@@ -449,10 +449,12 @@ const LearningGraphWorkspace: React.FC<{
         if (result.noop) {
           Message.info(t('learning.learningGraphBasisDeclareNoop'));
         } else {
+          // o4：成功 toast 只报数量——门口 id 串与块 slug 串不再内插上屏
+          // （与 GateCoverage 已声明行同口径）。
           Message.success(
             t('learning.learningGraphBasisDeclareDone', {
-              doors: result.doors.join(t('learning.listSeparator')),
-              blocks: result.blocks.join(t('learning.listSeparator')),
+              doorsCount: result.doors.length,
+              blocksCount: result.blocks.length,
               minted: result.minted,
               reused: result.reused,
             })
