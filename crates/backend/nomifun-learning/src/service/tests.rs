@@ -5205,6 +5205,7 @@ async fn structure_generation_stops_early_on_repeated_violations() {
         None,
         &input,
         None,
+        &|_| {}, // attempt 回调 noop（无注册表 guard 可回写）
     )
     .await
     .unwrap_err();
