@@ -25,13 +25,18 @@ export function formatReviewTime(value: number | null): string {
   return value === null ? '—' : new Date(value).toLocaleString();
 }
 
-/** 库 id → 库名（t4 来源披露共用；解析不到回退 id 本身——如实显示缺失，
- * 不隐藏也不猜名）。生成视图与悬浮指示条两处共用，口径一份。 */
+/** 库 id → 库名（t4 来源披露共用；解析不到回退「来源库已删除」的人面词典
+ * 文案——裸 UUID 不再上屏（o4）；不猜名也不静默）。生成视图与悬浮指示条
+ * 两处共用，口径一份。 */
 export function knowledgeBaseNames(
   ids: string[],
-  bases: { knowledge_base_id: string; name: string }[]
+  bases: { knowledge_base_id: string; name: string }[],
+  t: Translate
 ): string[] {
-  return ids.map((id) => bases.find((base) => base.knowledge_base_id === id)?.name ?? id);
+  return ids.map(
+    (id) =>
+      bases.find((base) => base.knowledge_base_id === id)?.name ?? t('learning.sourceLibraryDeleted')
+  );
 }
 
 export function questionStateMeta(

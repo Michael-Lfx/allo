@@ -5,11 +5,38 @@ import type { CourseSourcePlanDetailView, CourseSourcePlanView } from '../types'
 import {
   coverageTopicTotals,
   sourceCoverageState,
+  sourceRoleLabel,
   triageViewCounts,
   uncertainTooMany,
 } from '../model';
 
 const { Text, Title } = Typography;
+
+/** 被排除/重复文件的诊断行（o4 B3）：role 枚举走词典映射（core/practice/…
+ * 机器名不再上屏，未知档位回「其他内容」）；路径与理由是诊断原文，如实
+ * 保留。独立成组件供渲染测试直接断言行内容。 */
+export function SourceExcludedLines({ detail }: { detail: CourseSourcePlanDetailView }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {detail.excluded.map((entry) => (
+        <Text key={entry.path} type='secondary' className='block break-all text-12px'>
+          · {sourceRoleLabel(entry.role, t)} {entry.path} — {entry.reason}
+        </Text>
+      ))}
+      {detail.duplicates.map((duplicate) => (
+        <Text
+          key={`dup-${duplicate.path}`}
+          type='secondary'
+          className='block break-all text-12px'
+        >
+          · {sourceRoleLabel('duplicate', t)} {duplicate.path} → {duplicate.duplicate_of}（
+          {duplicate.canonical_reason}）
+        </Text>
+      ))}
+    </>
+  );
+}
 
 /** 课程详情「来源覆盖」卡（t5）：SourcePlan/SourceCoverage 快照的读侧披露
  * ——topic 覆盖、mixed 部分进入、prerequisite/practice 去向、duplicate
@@ -186,21 +213,12 @@ export function CourseSourceCoverageCard({
                 count: detail?.excluded.length ?? 0,
               })}
             >
-              {detail?.excluded.map((entry) => (
-                <Text key={entry.path} type='secondary' className='block break-all text-12px'>
-                  · [{entry.role}] {entry.path} — {entry.reason}
-                </Text>
-              ))}
-              {detail?.duplicates.map((duplicate) => (
-                <Text
-                  key={`dup-${duplicate.path}`}
-                  type='secondary'
-                  className='block break-all text-12px'
-                >
-                  · [duplicate] {duplicate.path} → {duplicate.duplicate_of}（
-                  {duplicate.canonical_reason}）
-                </Text>
-              ))}
+              <SourceExcludedLines
+                detail={{
+                  excluded: detail?.excluded ?? [],
+                  duplicates: detail?.duplicates ?? [],
+                }}
+              />
             </NomiCollapse.Item>
           )}
         </NomiCollapse>

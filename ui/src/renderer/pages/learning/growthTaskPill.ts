@@ -152,9 +152,11 @@ export function growthPollDelay(tracked: readonly GrowthPillItem[]): number {
 const GROWTH_TOPIC_PREFIX = '学习图生长 · ';
 
 /** 主题 → 课程名：Pill 主行已说明「学习图生长」，副行只留课程名；前缀
- * 对不上（后端改了措辞）就原样展示，不丢信息。 */
-export function growthCourseTitle(topic: string): string {
-  return topic.startsWith(GROWTH_TOPIC_PREFIX) ? topic.slice(GROWTH_TOPIC_PREFIX.length) : topic;
+ * 对不上（后端改了措辞）返回 null——整句后端串不再回显上屏（o4，与
+ * coursePlan `restoredTaskTopic` 的「宁缺不泄漏」同口径），由组件出词典
+ * 兜底文案（`growthPillTopicFallback`）。 */
+export function growthCourseTitle(topic: string): string | null {
+  return topic.startsWith(GROWTH_TOPIC_PREFIX) ? topic.slice(GROWTH_TOPIC_PREFIX.length) : null;
 }
 
 /** 已运行时长：`m:ss`，满一小时 `h:mm:ss`（语言无关读数）。 */

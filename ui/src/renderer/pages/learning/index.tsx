@@ -538,7 +538,8 @@ const LearningPage: React.FC = () => {
             }
             sources={knowledgeBaseNames(
               generation.request.knowledge_base_ids ?? [],
-              creation.knowledgeBases
+              creation.knowledgeBases,
+              t
             )}
             onView={() => void creation.openGenerator()}
             onCancel={() => {
