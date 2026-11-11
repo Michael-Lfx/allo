@@ -18,6 +18,7 @@ pub enum VoiceFeedbackMode {
 /// Stable wire values for the user-facing "premium voice" switch.
 pub const TTS_BACKEND_LOCAL: &str = "local";
 pub const TTS_BACKEND_EDGE: &str = "edge";
+pub const VOICE_FEEDBACK_CONFIG_PATH_ENV: &str = "VOICE_COMPANION_FEEDBACK_CONFIG_PATH";
 
 /// Normalizes any persisted or patched value to the two supported backends.
 /// Unknown or blank values fall back to the fast local backend.
@@ -89,6 +90,27 @@ impl Default for VoiceFeedbackConfig {
 }
 
 impl VoiceFeedbackConfig {
+    /// Reads the feedback section of the host's atomically replaced settings.
+    pub fn from_persisted_host_config(bytes: &[u8]) -> Result<Self, &'static str> {
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| "configuration_invalid")?;
+        let object = value.as_object().ok_or("configuration_invalid")?;
+        let mut feedback: Self = match object.get("feedback") {
+            Some(value) => {
+                serde_json::from_value(value.clone()).map_err(|_| "configuration_invalid")?
+            }
+            None => Self::default(),
+        };
+        feedback.validate()?;
+        if object.get("feedback_tts_backend_migrated").and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            // The retired radio's value is not an opt-in to premium voice.
+            feedback.tts_backend = TTS_BACKEND_LOCAL.into();
+        }
+        Ok(feedback)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.volume > 100 {
             return Err("feedback_volume_invalid");

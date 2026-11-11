@@ -13,6 +13,37 @@ const UnsavedBadge: React.FC<{ text: string }> = ({ text }) => (
   </span>
 );
 
+export function isVoiceChoiceSynced(settings: VoiceFeedbackSettings): boolean {
+  return Boolean(
+    settings.effective &&
+    (settings.effective.tts_backend ?? 'local') === (settings.requested.tts_backend ?? 'local'),
+  );
+}
+
+function editableVoiceFeedback(config: VoiceFeedbackConfig) {
+  return {
+    wake_enabled: config.wake_enabled ?? true,
+    wake_words: config.wake_words ?? [BRAND_WAKE_WORD],
+    tts_backend: config.tts_backend ?? 'local',
+    input_device: config.input_device || 'default',
+    volume: config.volume,
+    tts_speed: config.tts_speed ?? 1.1,
+    idle_timeout_secs: config.idle_timeout_secs ?? 30,
+  };
+}
+
+type VoiceFeedbackEdits = Partial<ReturnType<typeof editableVoiceFeedback>>;
+
+export function buildVoiceFeedbackPatch(
+  requested: VoiceFeedbackConfig,
+  edits: VoiceFeedbackEdits,
+): VoiceFeedbackEdits {
+  const saved: Record<string, unknown> = editableVoiceFeedback(requested);
+  return Object.fromEntries(
+    Object.entries(edits).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(saved[key])),
+  );
+}
+
 export default function VoiceFeedbackSettingsSection({
   connected,
   localVoiceReady = true,
@@ -26,7 +57,7 @@ export default function VoiceFeedbackSettingsSection({
 }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<VoiceFeedbackSettings | null>(null);
-  const [draft, setDraft] = useState<VoiceFeedbackConfig | null>(null);
+  const [edits, setEdits] = useState<VoiceFeedbackEdits>({});
   const [devices, setDevices] = useState<AudioDeviceInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -38,15 +69,7 @@ export default function VoiceFeedbackSettingsSection({
     void getVoiceFeedbackSettings().then((value) => {
       if (alive && revision === loadRevision.current) {
         setSettings(value);
-        setDraft((current) => current ?? {
-          ...value.requested,
-          wake_enabled: value.requested.wake_enabled ?? true,
-          wake_words: value.requested.wake_words ?? [BRAND_WAKE_WORD],
-          // Backend owns the authoritative product default; this is a display fallback only.
-          tts_speed: value.requested.tts_speed ?? 1.1,
-          idle_timeout_secs: value.requested.idle_timeout_secs ?? 30,
-          input_device: value.requested.input_device,
-        });
+        setEdits((current) => buildVoiceFeedbackPatch(value.requested, current));
         setError(false);
       }
     }).catch(() => { if (alive && revision === loadRevision.current) setError(true); });
@@ -58,20 +81,38 @@ export default function VoiceFeedbackSettingsSection({
     return () => { alive = false; };
   }, [connected]);
 
+  const draft = settings && { ...editableVoiceFeedback(settings.requested), ...edits };
+  const patch: VoiceFeedbackEdits = settings ? buildVoiceFeedbackPatch(settings.requested, edits) : {};
+  const wakeEnabledDirty = patch.wake_enabled !== undefined;
+  const wakeWordsDirty = patch.wake_words !== undefined;
+  const deviceDirty = patch.input_device !== undefined;
+  const volumeDirty = patch.volume !== undefined;
+  const speedDirty = patch.tts_speed !== undefined;
+  const timeoutDirty = patch.idle_timeout_secs !== undefined;
+  const backendDirty = patch.tts_backend !== undefined;
+  const dirty = Object.keys(patch).length > 0;
+  const applied = Boolean(settings && !dirty && isVoiceChoiceSynced(settings));
+  const canRetrySync = Boolean(connected && settings && !dirty && !applied);
+
+  const edit = (changes: VoiceFeedbackEdits) => {
+    if (!settings) return;
+    setEdits((current) => buildVoiceFeedbackPatch(settings.requested, { ...current, ...changes }));
+  };
+
   const save = async () => {
-    if (!draft) return;
+    if (!settings || busy || (!dirty && !canRetrySync)) return;
     ++loadRevision.current;
     setBusy(true);
     try {
-      const payload = {
-        ...draft,
-        input_device: draft.input_device && draft.input_device !== 'default' ? draft.input_device : 'default',
-      };
-      const res = await saveVoiceFeedback(payload);
+      const res = await saveVoiceFeedback(patch);
       setSettings(res);
-      setDraft(res.requested);
+      setEdits({});
       setError(false);
-      Message.success(t('voice.feedback.saveSuccess'));
+      if (isVoiceChoiceSynced(res)) {
+        Message.success(t('voice.feedback.saveSuccess'));
+      } else {
+        Message.info(t('voice.feedback.pending'));
+      }
     } catch {
       setError(true);
       Message.error(t('voice.feedback.failed'));
@@ -79,18 +120,6 @@ export default function VoiceFeedbackSettingsSection({
       setBusy(false);
     }
   };
-
-  const effective = settings?.effective;
-  const wakeEnabledDirty = Boolean(draft && settings && draft.wake_enabled !== settings.requested.wake_enabled);
-  const wakeWordsDirty = Boolean(draft && settings && JSON.stringify(draft.wake_words ?? []) !== JSON.stringify(settings.requested.wake_words ?? []));
-  const deviceDirty = Boolean(draft && settings && (draft.input_device || '') !== (settings.requested.input_device || ''));
-  const volumeDirty = Boolean(draft && settings && draft.volume !== settings.requested.volume);
-  const speedDirty = Boolean(draft && settings && draft.tts_speed !== settings.requested.tts_speed);
-  const timeoutDirty = Boolean(draft && settings && draft.idle_timeout_secs !== settings.requested.idle_timeout_secs);
-  const backendDirty = Boolean(draft && settings && draft.tts_backend !== settings.requested.tts_backend);
-
-  const dirty = wakeEnabledDirty || wakeWordsDirty || deviceDirty || volumeDirty || speedDirty || timeoutDirty || backendDirty;
-  const applied = Boolean(effective && settings && !dirty);
 
   return (
     <SettingsSection title={t('voice.feedback.voicePreferencesTitle')} description={t('voice.feedback.voicePreferencesDesc')}>
@@ -125,14 +154,14 @@ export default function VoiceFeedbackSettingsSection({
                 className={`w-160px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
                 onChange={(val) => {
                   const word = val.trim();
-                  setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
+                  edit({ wake_words: word ? [word] : [] });
                 }}
               />
               <Switch
                 aria-label={t('voice.feedback.wakeEnabled')}
                 checked={draft?.wake_enabled ?? true}
                 disabled={!draft || busy}
-                onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
+                onChange={(val) => edit({ wake_enabled: val })}
               />
             </div>
           </div>
@@ -152,11 +181,9 @@ export default function VoiceFeedbackSettingsSection({
               <div className='text-12px text-t-secondary leading-relaxed'>
                 {t('voice.feedback.premiumVoiceHint')}
               </div>
-              {draft?.tts_backend === 'edge' && (
-                <div className='text-12px text-warning-6'>
-                  {t('voice.feedback.premiumVoiceNextCall')}
-                </div>
-              )}
+              <div className='text-12px text-t-secondary'>
+                {t('voice.feedback.premiumVoiceNextCall')}
+              </div>
               {!localVoiceReady && (
                 <div className='flex items-center gap-2 text-12px text-warning-6'>
                   <span>{t('voice.feedback.localVoiceMissing')}</span>
@@ -178,7 +205,7 @@ export default function VoiceFeedbackSettingsSection({
               aria-label={t('voice.feedback.premiumVoice')}
               checked={draft?.tts_backend === 'edge'}
               disabled={!draft || busy}
-              onChange={(val) => setDraft((prev) => prev && { ...prev, tts_backend: val ? 'edge' : 'local' })}
+              onChange={(val) => edit({ tts_backend: val ? 'edge' : 'local' })}
             />
           </div>
         </div>
@@ -196,12 +223,7 @@ export default function VoiceFeedbackSettingsSection({
               aria-label={t('voice.feedback.inputDevice')}
               value={draft?.input_device || 'default'}
               disabled={!draft || busy}
-              onChange={(val: string) => {
-                setDraft((prev) => prev && {
-                  ...prev,
-                  input_device: val === 'default' ? undefined : val,
-                });
-              }}
+              onChange={(val: string) => edit({ input_device: val })}
               className={`min-w-240px transition-all ${deviceDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)]' : ''}`}
             >
               <Select.Option value='default'>{t('voice.feedback.inputDeviceDefault')}</Select.Option>
@@ -230,7 +252,7 @@ export default function VoiceFeedbackSettingsSection({
                 max={100}
                 value={draft?.volume ?? 50}
                 disabled={!draft || busy}
-                onChange={(volume) => setDraft((value) => value && { ...value, volume: Number(volume) })}
+                onChange={(volume) => edit({ volume: Number(volume) })}
               />
               <span className='text-t-secondary tabular-nums'>{draft ? `${draft.volume}%` : '—'}</span>
             </div>
@@ -254,7 +276,7 @@ export default function VoiceFeedbackSettingsSection({
                 step={0.1}
                 value={draft?.tts_speed ?? 1.1}
                 disabled={!draft || busy}
-                onChange={(speed) => setDraft((value) => value && { ...value, tts_speed: Number(speed) })}
+                onChange={(speed) => edit({ tts_speed: Number(speed) })}
               />
               <span className='text-t-secondary tabular-nums'>{draft?.tts_speed ? `${draft.tts_speed.toFixed(1)}x` : '1.1x'}</span>
             </div>
@@ -273,7 +295,7 @@ export default function VoiceFeedbackSettingsSection({
               aria-label={t('voice.feedback.idleTimeout')}
               value={draft?.idle_timeout_secs ?? 30}
               disabled={!draft || busy}
-              onChange={(secs: number) => setDraft((value) => value && { ...value, idle_timeout_secs: Number(secs) })}
+              onChange={(secs: number) => edit({ idle_timeout_secs: Number(secs) })}
               className={`min-w-160px transition-all ${timeoutDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)]' : ''}`}
             >
               <Select.Option value={15}>{t('voice.feedback.idle15')}</Select.Option>
@@ -312,7 +334,7 @@ export default function VoiceFeedbackSettingsSection({
               <Button
                 type='primary'
                 loading={busy}
-                disabled={!draft || !dirty}
+                disabled={!draft || (!dirty && !canRetrySync)}
                 onClick={() => void save()}
                 className={
                   dirty

@@ -27,6 +27,8 @@ pub enum TtsError {
     },
     #[error("TTS request cancelled")]
     Cancelled,
+    #[error("TTS synthesis timed out")]
+    Timeout,
 }
 
 pub fn parse_retry_after(
@@ -95,6 +97,17 @@ pub trait TtsProvider: Send + Sync {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError>;
+
+    async fn synthesize_stream_with_budget(
+        &self,
+        text: &str,
+        voice: &str,
+        budget: std::time::Duration,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+        tokio::time::timeout(budget, self.synthesize_stream(text, voice))
+            .await
+            .map_err(|_| TtsError::Timeout)?
+    }
 
     /// Synthesis plus the diagnostic captured for this exact stream. The
     /// default keeps existing providers unchanged; mid-call switching
@@ -198,14 +211,23 @@ impl TtsProvider for EdgeTtsProvider {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
-        let budget = EDGE_SYNTHESIS_BUDGET;
+        self.synthesize_stream_with_budget(text, voice, EDGE_SYNTHESIS_BUDGET)
+            .await
+    }
+
+    async fn synthesize_stream_with_budget(
+        &self,
+        text: &str,
+        voice: &str,
+        budget: std::time::Duration,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
         let start = tokio::time::Instant::now();
         tokio::time::timeout(
             budget,
             self.synthesize_with_budget(text, voice, start, budget),
         )
         .await
-        .map_err(|_| TtsError::Network("synthesis_timeout".into()))?
+        .map_err(|_| TtsError::Timeout)?
     }
 }
 
@@ -738,6 +760,34 @@ mod transport_tests {
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retry_after_beyond_chat_budget_preserves_online_choice() {
+        let pcm = vec![0.1; 2400];
+        let wav = nomifun_audio::pcm_to_wav(&pcm, 24000);
+        let (endpoint, server) = fixture_429_then_audio(wav, Some("12")).await;
+        let edge = std::sync::Arc::new(EdgeTtsProvider::new().with_endpoint(endpoint));
+        let provider = QualityTtsProvider::new(
+            std::sync::Arc::new(NullTts::new()),
+            Some(edge.clone()),
+        );
+
+        let mut fallback = provider.synthesize_stream("第一句", "").await.unwrap();
+        assert!(fallback.recv().await.is_some());
+        assert!(!provider.is_degraded(), "12s Retry-After exceeds the 8s chat budget");
+        {
+            let mut state = edge.state.lock().await;
+            assert!(state.cooldown_until.is_some_and(|until| until > tokio::time::Instant::now()));
+            state.cooldown_until = Some(tokio::time::Instant::now());
+        }
+        let (mut online, diagnostic) = provider
+            .synthesize_stream_with_diagnostic("第二句", "")
+            .await
+            .unwrap();
+        assert!(online.recv().await.is_some());
+        assert!(diagnostic.is_some_and(|diagnostic| diagnostic.online));
         server.await.unwrap();
     }
 
@@ -2002,7 +2052,7 @@ pub struct QualityTtsProvider {
     local: std::sync::Arc<dyn TtsProvider>,
     edge: Option<std::sync::Arc<dyn TtsProvider>>,
     selected: std::sync::Arc<std::sync::Mutex<Option<nomifun_api_types::voice::VoiceTtsDiagnostic>>>,
-    degraded: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    degraded_reason: std::sync::OnceLock<&'static str>,
     online_budget: std::time::Duration,
 }
 
@@ -2015,7 +2065,7 @@ impl QualityTtsProvider {
             local,
             edge,
             selected: Default::default(),
-            degraded: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            degraded_reason: std::sync::OnceLock::new(),
             online_budget: CHAT_ONLINE_BUDGET,
         }
     }
@@ -2029,11 +2079,7 @@ impl QualityTtsProvider {
 
     /// True once an online attempt failed and the rest of the call stays local.
     pub fn is_degraded(&self) -> bool {
-        self.degraded.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    fn record(&self, provider: &dyn TtsProvider, voice: &str) {
-        self.record_with_reason(provider, voice, None);
+        self.degraded_reason.get().is_some()
     }
 
     async fn synthesize_inner(
@@ -2047,66 +2093,59 @@ impl QualityTtsProvider {
         ),
         TtsError,
     > {
-        let mut fallback_reason: Option<&'static str> = None;
+        let mut fallback_reason = self.degraded_reason.get().copied();
         if let Some(edge) = self.edge.as_ref() {
-            if !self.is_degraded() && edge.is_available() {
-                let attempt = tokio::time::timeout(
-                    self.online_budget,
-                    edge.synthesize_stream(text, voice),
-                )
-                .await;
+            if fallback_reason.is_none() && edge.is_available() {
+                let attempt = edge
+                    .synthesize_stream_with_budget(text, voice, self.online_budget)
+                    .await;
                 match attempt {
-                    Ok(Ok(receiver)) => {
-                        self.record(edge.as_ref(), voice);
-                        return Ok((receiver, self.diagnostic(voice)));
+                    Ok(receiver) => {
+                        let diagnostic = self.record_source(edge.as_ref(), voice, None);
+                        return Ok((receiver, diagnostic));
                     }
-                    Ok(Err(TtsError::RateLimited { .. })) => {
+                    Err(TtsError::RateLimited { .. }) => {
                         // 429 keeps this call's selection: the Edge provider owns
                         // retry/cooldown, and a later turn may succeed online again.
                         fallback_reason = Some("tts_rate_limited");
                         tracing::warn!("online_voice_rate_limited_keeping_call_selection");
                     }
-                    Ok(Err(error)) => {
-                        self.degraded
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        fallback_reason = Some("online_voice_failed");
+                    Err(TtsError::Timeout) => {
+                        fallback_reason = Some(
+                            *self.degraded_reason.get_or_init(|| "online_voice_budget_exceeded"),
+                        );
+                        tracing::warn!(
+                            "online_voice_budget_exceeded_degrading_call_to_local"
+                        );
+                    }
+                    Err(error) => {
+                        fallback_reason =
+                            Some(*self.degraded_reason.get_or_init(|| "online_voice_failed"));
                         tracing::warn!(
                             error = %error,
                             "online_voice_failed_degrading_call_to_local"
                         );
                     }
-                    Err(_) => {
-                        self.degraded
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        fallback_reason = Some("online_voice_budget_exceeded");
-                        tracing::warn!(
-                            "online_voice_budget_exceeded_degrading_call_to_local"
-                        );
-                    }
                 }
             }
         }
-        let result = self.local.synthesize_stream(text, voice).await;
-        match result {
-            Ok(receiver) => {
-                self.record_with_reason(self.local.as_ref(), voice, fallback_reason);
-                Ok((receiver, self.diagnostic(voice)))
-            }
-            Err(error) => Err(error),
-        }
+        let receiver = self.local.synthesize_stream(text, voice).await?;
+        let diagnostic = self.record_source(self.local.as_ref(), voice, fallback_reason);
+        Ok((receiver, diagnostic))
     }
 
-    fn record_with_reason(
+    fn record_source(
         &self,
         provider: &dyn TtsProvider,
         voice: &str,
         reason: Option<&str>,
-    ) {
+    ) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
         let mut diagnostic = provider.diagnostic(voice);
         if let Some(diagnostic) = diagnostic.as_mut() {
             diagnostic.fallback_reason = reason.map(str::to_owned);
         }
-        *self.selected.lock().unwrap_or_else(|error| error.into_inner()) = diagnostic;
+        *self.selected.lock().unwrap_or_else(|error| error.into_inner()) = diagnostic.clone();
+        diagnostic
     }
 }
 
@@ -2754,9 +2793,17 @@ mod self_check_fixture_provider_tests {
                 calls: calls.clone(),
             })),
         );
-        assert!(provider.synthesize_stream("第一句", "0").await.is_ok());
+        let interrupted = provider.synthesize_stream("第一句", "0").await.unwrap();
+        drop(interrupted);
         assert!(provider.is_degraded());
-        assert!(provider.synthesize_stream("第二句", "0").await.is_ok());
+        let (_, diagnostic) = provider
+            .synthesize_stream_with_diagnostic("第二句", "0")
+            .await
+            .unwrap();
+        assert_eq!(
+            diagnostic.and_then(|value| value.fallback_reason).as_deref(),
+            Some("online_voice_failed"),
+        );
         assert!(provider.synthesize_stream("第三句", "0").await.is_ok());
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),

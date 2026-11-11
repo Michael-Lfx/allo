@@ -1941,26 +1941,79 @@
         }
     }
 
-    #[test]
-    fn feedback_resync_only_for_voice_choice_drift() {
-        let local = VoiceFeedbackConfig::default();
-        let mut edge = local.clone();
-        edge.tts_backend = "edge".into();
-        assert!(!VoiceCompanionProcessManager::feedback_needs_resync(
-            &local, None
-        ));
-        assert!(!VoiceCompanionProcessManager::feedback_needs_resync(
-            &local,
-            Some(&local)
-        ));
-        assert!(VoiceCompanionProcessManager::feedback_needs_resync(
-            &edge,
-            Some(&local)
-        ));
-        assert!(VoiceCompanionProcessManager::feedback_needs_resync(
-            &local,
-            Some(&edge)
-        ));
+    #[tokio::test]
+    async fn delayed_feedback_read_cannot_reenable_online_voice_after_save() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let get_started = Arc::new(tokio::sync::Notify::new());
+        let finish_get = Arc::new(tokio::sync::Notify::new());
+        let (sent, mut posts) = tokio::sync::mpsc::unbounded_channel();
+        let router = axum::Router::new().route(
+            "/api/voice/feedback",
+            axum::routing::get({
+                let get_started = get_started.clone();
+                let finish_get = finish_get.clone();
+                move || async move {
+                    get_started.notify_one();
+                    finish_get.notified().await;
+                    axum::Json(VoiceFeedbackConfig::default())
+                }
+            })
+            .post(move |axum::Json(value): axum::Json<serde_json::Value>| async move {
+                let config = serde_json::from_value::<VoiceFeedbackPatch>(value.clone())
+                    .unwrap()
+                    .apply(VoiceFeedbackConfig::default());
+                sent.send(value).unwrap();
+                axum::Json(config)
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+                dir.path(),
+            )
+            .with_replay_daemon(origin),
+        );
+        manager
+            .write_config_entries(&[
+                ("feedback_tts_backend_migrated", serde_json::json!(true)),
+                ("feedback", serde_json::json!({ "tts_backend": "edge" })),
+            ])
+            .unwrap();
+        manager.snapshot.write().unwrap().connection = VoiceConnectionState::Connected;
+        let get = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.feedback_settings().await.unwrap() }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), get_started.notified())
+            .await
+            .expect("the settings read reached the daemon");
+
+        let saved = manager.update_feedback(VoiceFeedbackPatch {
+            tts_backend: Some("local".into()),
+            ..Default::default()
+        }).await.unwrap();
+        assert_eq!(saved.effective.unwrap().tts_backend, "local");
+        assert_eq!(posts.try_recv().unwrap()["tts_backend"], "local");
+        finish_get.notify_one();
+        get.await.unwrap();
+        assert!(posts.try_recv().is_err(), "settings reads must never write");
+
+        let saved_bytes = std::fs::read_to_string(&manager.config_path).unwrap() + "\n";
+        std::fs::write(&manager.config_path, &saved_bytes).unwrap();
+        let retried = manager.update_feedback(VoiceFeedbackPatch::default()).await.unwrap();
+        assert_eq!(retried.effective.unwrap().tts_backend, "local");
+        assert_eq!(posts.try_recv().unwrap()["tts_backend"], "local");
+        assert_eq!(std::fs::read_to_string(&manager.config_path).unwrap(), saved_bytes);
+
+        manager.disconnected();
+        let generation = manager.generation.load(Ordering::Acquire);
+        manager.reconcile_tts_feedback(generation).await;
+        assert_eq!(posts.try_recv().unwrap(), serde_json::json!({ "tts_backend": "local" }));
+        assert!(!manager.tts_feedback_pending.load(Ordering::Acquire));
+        server.abort();
     }
 
     #[tokio::test]

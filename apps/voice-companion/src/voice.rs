@@ -1443,10 +1443,16 @@ fn first_sentence_stall_due(saw_sentence: bool, already_warned: bool) -> bool {
 }
 
 impl VoiceCompanionRuntime {
-    fn report_tts_source(events: &VoiceEventHub, tts: &dyn TtsProvider, scope: &VoiceSessionControlRequest) {
-        if let Some(diagnostic) = tts.diagnostic("") {
+    fn report_tts_source(
+        events: &VoiceEventHub,
+        diagnostic: Option<&nomifun_api_types::voice::VoiceTtsDiagnostic>,
+        scope: &VoiceSessionControlRequest,
+    ) {
+        if let Some(diagnostic) = diagnostic {
             let _ = events.send_scoped(VoiceCompanionEvent::TtsSource {
-                session_id: scope.session_id.clone(), turn_id: scope.turn_id.clone(), diagnostic,
+                session_id: scope.session_id.clone(),
+                turn_id: scope.turn_id.clone(),
+                diagnostic: diagnostic.clone(),
             }, scope);
         }
     }
@@ -2214,6 +2220,30 @@ impl VoiceCompanionRuntime {
         }
     }
 
+    async fn chat_backend_at_wake(
+        effective_backend: &str,
+        supervised: bool,
+        saved_config_path: Option<&std::path::Path>,
+    ) -> &'static str {
+        use nomifun_api_types::voice::{TTS_BACKEND_EDGE, TTS_BACKEND_LOCAL, VoiceFeedbackConfig, normalize_tts_backend};
+        let backend = normalize_tts_backend(effective_backend);
+        if backend != TTS_BACKEND_EDGE || !supervised {
+            return backend;
+        }
+        // The host saves before its daemon RPC. A saved opt-out must apply
+        // to new calls even when the RPC is unavailable.
+        let Some(path) = saved_config_path else {
+            return TTS_BACKEND_LOCAL;
+        };
+        let Ok(Ok(bytes)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), tokio::fs::read(path)).await
+        else {
+            return TTS_BACKEND_LOCAL;
+        };
+        VoiceFeedbackConfig::from_persisted_host_config(&bytes)
+            .map_or(TTS_BACKEND_LOCAL, |feedback| normalize_tts_backend(&feedback.tts_backend))
+    }
+
     async fn accept_wake(
         driver: &Arc<Mutex<VoiceSessionDriver>>,
         playback: &Arc<PlaybackPipeline>,
@@ -2241,8 +2271,14 @@ impl VoiceCompanionRuntime {
         info!(state = ?next, "Wake accepted");
         // Freeze the voice selection for this call: later setting changes apply
         // to the next call only, and the in-flight reply list never mixes voices.
-        let backend =
-            nomifun_api_types::voice::normalize_tts_backend(&events.feedback().tts_backend);
+        let supervised = std::env::var_os("VOICE_COMPANION_SUPERVISED").is_some_and(|value| value == "1");
+        let saved_path = std::env::var_os(nomifun_api_types::voice::VOICE_FEEDBACK_CONFIG_PATH_ENV);
+        let backend = Self::chat_backend_at_wake(
+            &events.feedback().tts_backend,
+            supervised,
+            saved_path.as_deref().map(std::path::Path::new),
+        )
+        .await;
         chat_tts.set(Self::select_chat_tts(&backend, local_tts, edge_tts));
         let _ = events.send(VoiceCompanionEvent::WakeHit {
             keyword: keyword.to_string(),
@@ -2311,8 +2347,8 @@ impl VoiceCompanionRuntime {
         let started = std::time::Instant::now();
         let voice_name = format_voice_spec(event_tx.snapshot().locale.as_deref(), event_tx.feedback().tts_speed);
         let result = playback
-            .speak_text_for_generation(tts.as_ref(), reply_text, &voice_name, generation, || {
-                Self::report_tts_source(event_tx, tts.as_ref(), scope);
+            .speak_text_for_generation_with_diagnostic(tts.as_ref(), reply_text, &voice_name, generation, |diagnostic| {
+                Self::report_tts_source(event_tx, diagnostic, scope);
                 let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
                 }, scope);
@@ -2818,7 +2854,6 @@ impl VoiceCompanionRuntime {
                     };
                     let event_tx_sentence = event_tx.clone();
                     let control_scope_sentence = control_scope.clone();
-                    let mut fallback_announced = false;
                     let on_sentence = move |sentence_text: &str,
                                             diagnostic: Option<
                         &nomifun_api_types::voice::VoiceTtsDiagnostic,
@@ -2826,25 +2861,7 @@ impl VoiceCompanionRuntime {
                         let _ = event_tx_sentence.send_scoped(VoiceCompanionEvent::TtsSpeaking {
                             text: sentence_text.to_string(),
                         }, &control_scope_sentence);
-                        // The provider reports the source captured for this exact
-                        // sentence; show the fallback hint at most once per call.
-                        let mut diagnostic = diagnostic.cloned();
-                        if let Some(current) = diagnostic.as_mut() {
-                            if current.fallback_reason.is_some() {
-                                if fallback_announced {
-                                    current.fallback_reason = None;
-                                } else {
-                                    fallback_announced = true;
-                                }
-                            }
-                        }
-                        if let Some(diagnostic) = diagnostic {
-                            let _ = event_tx_sentence.send_scoped(VoiceCompanionEvent::TtsSource {
-                                session_id: control_scope_sentence.session_id.clone(),
-                                turn_id: control_scope_sentence.turn_id.clone(),
-                                diagnostic,
-                            }, &control_scope_sentence);
-                        }
+                        Self::report_tts_source(&event_tx_sentence, diagnostic, &control_scope_sentence);
                     };
                     AbortOnDrop(Some(tokio::spawn(async move {
                         playback.speak_sentence_stream_with_reporter(
@@ -5523,5 +5540,34 @@ mod quality_switch_tests {
         assert!(selected.synthesize_stream("你好", "0").await.is_ok());
         assert_eq!(edge_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(local_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn supervised_wake_requires_persisted_and_effective_online_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voice_companion.json");
+        for (config, expected) in [
+            (r#"{"feedback":{"tts_backend":"edge"}}"#, "local"),
+            (r#"{"feedback_tts_backend_migrated":true,"feedback":{"tts_backend":"local"}}"#, "local"),
+            (r#"{"feedback_tts_backend_migrated":true,"feedback":{"tts_backend":"edge"}}"#, "edge"),
+            ("invalid JSON", "local"),
+        ] {
+            tokio::fs::write(&path, config).await.unwrap();
+            assert_eq!(
+                VoiceCompanionRuntime::chat_backend_at_wake("edge", true, Some(&path)).await,
+                expected,
+            );
+            assert_eq!(
+                VoiceCompanionRuntime::chat_backend_at_wake("local", true, Some(&path)).await,
+                "local",
+            );
+        }
+        assert_eq!(VoiceCompanionRuntime::chat_backend_at_wake("edge", true, None).await, "local");
+        let missing = dir.path().join("missing.json");
+        assert_eq!(
+            VoiceCompanionRuntime::chat_backend_at_wake("edge", true, Some(&missing)).await,
+            "local",
+        );
+        assert_eq!(VoiceCompanionRuntime::chat_backend_at_wake("edge", false, None).await, "edge");
     }
 }

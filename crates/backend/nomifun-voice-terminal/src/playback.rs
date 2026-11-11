@@ -597,6 +597,20 @@ impl PlaybackPipeline {
         expected_gen: u64,
         started: impl FnOnce() + Send,
     ) -> Result<(), AudioSinkError> {
+        self.speak_text_for_generation_with_diagnostic(
+            tts, text, voice, expected_gen, |_| started(),
+        )
+        .await
+    }
+
+    pub async fn speak_text_for_generation_with_diagnostic(
+        &self,
+        tts: &dyn crate::tts::TtsProvider,
+        text: &str,
+        voice: &str,
+        expected_gen: u64,
+        started: impl FnOnce(Option<&nomifun_api_types::voice::VoiceTtsDiagnostic>) + Send,
+    ) -> Result<(), AudioSinkError> {
         tokio::select! {
             biased;
             _ = self.interrupted(expected_gen) => Ok(()),
@@ -610,13 +624,13 @@ impl PlaybackPipeline {
         text: &str,
         voice: &str,
         expected_gen: u64,
-        started: impl FnOnce() + Send,
+        started: impl FnOnce(Option<&nomifun_api_types::voice::VoiceTtsDiagnostic>) + Send,
     ) -> Result<(), AudioSinkError> {
         if !self.sink.is_available() {
             return Err(AudioSinkError::Write("speaker_unavailable".into()));
         }
-        let mut stream = tts
-            .synthesize_stream(text, voice)
+        let (mut stream, diagnostic) = tts
+            .synthesize_stream_with_diagnostic(text, voice)
             .await
             .map_err(Self::synthesis_error)?;
         let mut has_audio = false;
@@ -644,7 +658,7 @@ impl PlaybackPipeline {
                     return Ok(());
                 }
                 if let Some(started) = started.take() {
-                    started();
+                    started(diagnostic.as_ref());
                 }
             }
         }

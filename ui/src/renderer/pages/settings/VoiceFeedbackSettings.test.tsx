@@ -3,11 +3,29 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createInstance } from 'i18next';
 import { I18nextProvider } from 'react-i18next';
-import VoiceFeedbackSettings from './VoiceFeedbackSettings';
+import VoiceFeedbackSettings, { buildVoiceFeedbackPatch, isVoiceChoiceSynced } from './VoiceFeedbackSettings';
 import VoiceAudioStatus from '../voiceSession/VoiceAudioStatus';
 import zh from '@renderer/services/i18n/locales/zh-CN/voice.json';
 import en from '@renderer/services/i18n/locales/en-US/voice.json';
 import type { VoiceSnapshot } from '@common/adapter/voiceCompanion';
+
+test('saved voice choice stays pending until the daemon confirms the same backend', () => {
+  const requested = { mode: 'light', volume: 100, speak_replies: true, tts_backend: 'local' } as const;
+  expect(isVoiceChoiceSynced({ requested, effective: null })).toBe(false);
+  expect(isVoiceChoiceSynced({ requested, effective: { ...requested, tts_backend: 'edge' } })).toBe(false);
+  expect(isVoiceChoiceSynced({ requested, effective: requested })).toBe(true);
+});
+
+test('an older settings window only sends explicit edits and retries without a voice choice', () => {
+  const old = { mode: 'light', volume: 100, speak_replies: true, tts_backend: 'edge' } as const;
+  const latest = { ...old, tts_backend: 'local' };
+  const volumePatch = buildVoiceFeedbackPatch(old, { volume: 40 });
+  expect(volumePatch).toEqual({ volume: 40 });
+  expect({ ...latest, ...volumePatch }.tts_backend).toBe('local');
+  expect(buildVoiceFeedbackPatch(old, {})).toEqual({});
+  expect(buildVoiceFeedbackPatch(latest, { tts_backend: 'edge' })).toEqual({ tts_backend: 'edge' });
+  expect(buildVoiceFeedbackPatch(old, { tts_backend: 'edge' })).toEqual({});
+});
 
 for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
   test(`${locale}: sound controls remain disabled until real settings arrive`, async () => {
@@ -22,6 +40,7 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
       'wakeEnabled',
       'wakeWords',
       'premiumVoice',
+      'premiumVoiceNextCall',
       'inputDevice',
       'volume',
       'ttsSpeed',
