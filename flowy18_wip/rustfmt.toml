@@ -1,0 +1,8 @@
+# House style follows omatrack's .clang-format: 4-space indent, 80 columns.
+# Only stable rustfmt options are set, because the lint gate must run on a
+# stable toolchain: `wrap_comments` and friends are nightly-only and would
+# silently not apply.
+edition = "2024"
+max_width = 80
+use_field_init_shorthand = true
+use_try_shorthand = true

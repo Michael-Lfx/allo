@@ -1,0 +1,28 @@
+[package]
+name = "flowy-app"
+description = "Flowy desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+directories = { workspace = true }
+flowy-core = { workspace = true }
+flowy-obs = { workspace = true }
+flowy-ota = { workspace = true }
+tracing = { workspace = true }
+getrandom = { workspace = true }
+gpui = { workspace = true }
+gpui_ce_elements = { workspace = true }
+gpui_platform = { workspace = true }
+gpui-tray = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "dsh-plugin-contract"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/redoop/dsh-rs"
+keywords = ["plugin", "cdylib", "ffi", "abi", "contract"]
+categories = ["development-tools"]
+description = "Zero-dependency C-ABI contract between the dsh-rs host and dynamically loaded plugins."
+
+[lib]
+# Shared by the host (via dlopen) and cdylib plugins; the contract crate
+# itself is pure Rust with no cordis/tokio so plugin libraries never
+# duplicate a runtime.
+crate-type = ["lib"]

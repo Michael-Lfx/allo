@@ -1,0 +1,27 @@
+[package]
+name = "flowy-obs"
+description = "Logging, crash reporting, and product telemetry for Flowy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+directories = { workspace = true }
+flowy-core = { workspace = true }
+flowy-net = { workspace = true }
+getrandom = { workspace = true }
+reqwest = { workspace = true }
+sentry = { workspace = true }
+sentry-tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

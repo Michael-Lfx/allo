@@ -1,0 +1,18 @@
+[package]
+name = "flowy-net"
+description = "Shared outbound HTTP transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+reqwest = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+
+[lints]
+workspace = true

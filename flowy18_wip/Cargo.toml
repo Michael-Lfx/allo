@@ -1,0 +1,145 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/flowy-core",
+    "crates/flowy-app",
+    "crates/flowy-net",
+    "crates/flowy-ota",
+    "crates/flowy-obs",
+    "crates/dsh-rs",
+    "crates/dsh-rs/crates/dsh-plugin-contract",
+    "crates/dsh-rs/crates/dsh-plugin-hello",
+]
+# dsh-rs is copied source we will keep editing. It is not on the Flowy clippy
+# gate yet, so a bare `cargo clippy` stays on the app crates.
+default-members = [
+    "crates/flowy-core",
+    "crates/flowy-app",
+    "crates/flowy-net",
+    "crates/flowy-ota",
+    "crates/flowy-obs",
+]
+
+[workspace.package]
+version = "1.8.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/flowy-app/flowy"
+
+[workspace.dependencies]
+flowy-core = { path = "crates/flowy-core" }
+flowy-net = { path = "crates/flowy-net" }
+flowy-ota = { path = "crates/flowy-ota" }
+flowy-obs = { path = "crates/flowy-obs" }
+dsh-rs = { path = "crates/dsh-rs" }
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+    "socks",
+] }
+anyhow = "1"
+directories = "6"
+getrandom = "0.3"
+sha2 = "0.10"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "json",
+    "registry",
+] }
+sentry = { version = "0.38", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "reqwest",
+    "rustls",
+] }
+sentry-tracing = "0.38"
+gpui = { package = "gpui-ce", version = "0.3.0" }
+gpui_platform = { package = "gpui_ce_platform", version = "0.3.0" }
+gpui_ce_elements = "0.3.0"
+gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Lint gates follow omatrack's policy: the checks that catch real defects are
+# errors, and every deliberate omission is written down instead of silently
+# tolerated. Run them through `cargo clippy --all-targets -- -D warnings`.
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# Deliberate omissions. Each one is a place where the pedantic default would
+# force a rewrite that makes the code less direct without making it safer.
+#   module_name_repetitions    - `canvas::CanvasState` reads better than
+#                                inventing a second vocabulary for one concept.
+#   missing_errors_doc         - this is an application; its error types are
+#   missing_panics_doc           reachable from the caller in one screen.
+#   must_use_candidate         - noise on small private helpers.
+#   struct_excessive_bools     - view options are bool flags by nature.
+#   cast_precision_loss        - logical pixels are f32 by definition.
+#   cast_possible_truncation     Layout math is bounded by the viewport and the
+#   cast_sign_loss               document bounds; explicit `as` is clearer than
+#                                a chain of fallible conversions.
+#   similar_names              - (x, y), (w, h), (from, to).
+#   too_many_lines             - render functions are linear on purpose.
+#   option_if_let_else         - `if let` keeps ownership visible.
+#   multiple_crate_versions    - the dependency graph is not ours to fix.
+#   cast_lossless              - explicit `as` in layout math is clearer than
+#                                From chains.
+#   needless_pass_by_value     - gpui element builders take ownership.
+#   items_after_statements     - small lookup tables live next to their use.
+#   float_cmp                  - document coordinates are user-authored values
+#                                and dirty checking is intentionally exact.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+struct_excessive_bools = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+option_if_let_else = "allow"
+multiple_crate_versions = "allow"
+needless_pass_by_value = "allow"
+items_after_statements = "allow"
+float_cmp = "allow"
+
+[profile.dev]
+debug = "limited"
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+
+# gpui-pre-macros leaves a helper ungated in release builds while its module is
+# gated on debug_assertions; enable it for the host proc-macro only.
+[profile.release.package.gpui-pre-macros]
+debug-assertions = true
+
+# Local fix for a self-deadlock in gpui-ce 0.3.0: the macOS launch callback
+# kept the platform mutex locked, so the first open_window never returned.
+[patch.crates-io]
+gpui_ce_macos = { path = ".scratch/gpui_ce_macos-0.3.0" }
