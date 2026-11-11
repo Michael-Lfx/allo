@@ -3770,16 +3770,13 @@
   opacity: 0.72;
 }
 
-.ambientWall[data-ambient-variant='game'] {
+.ambientWall:is(
+  [data-ambient-variant='game'],
+  [data-ambient-variant='create'],
+  [data-ambient-variant='image'],
+  [data-ambient-variant='video']
+) {
   opacity: 1;
-}
-
-.ambientWall[data-ambient-variant='video'] {
-  opacity: 0.86;
-}
-
-:global([data-theme='light']) .ambientWall[data-ambient-variant='video'] {
-  opacity: 0.58;
 }
 
 .guidContainer:has([data-testid="guid-home-develop-directory"] [data-testid^="guid-home-option-"]:hover) .ambientWall,

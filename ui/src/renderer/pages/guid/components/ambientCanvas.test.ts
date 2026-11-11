@@ -151,7 +151,7 @@ function setup(fps: number, maxPixels: number) {
 }
 
 describe('homepage ambient canvas', () => {
-  test.each([{ fps: 15, maxPixels: 300_000 }, { fps: 20, maxPixels: 500_000 }])('caps actual draws and backing pixels at high refresh rates', ({ fps, maxPixels }) => {
+  test.each([{ fps: 10, maxPixels: 48_000 }, { fps: 20, maxPixels: 500_000 }])('caps actual draws and backing pixels at high refresh rates', ({ fps, maxPixels }) => {
     const fixture = setup(fps, maxPixels);
     try {
       fixture.step(0);

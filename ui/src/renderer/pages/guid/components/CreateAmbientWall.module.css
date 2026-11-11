@@ -3,19 +3,15 @@
   inset: 0;
   overflow: hidden;
   pointer-events: none;
-  background: var(--guid-canvas, var(--color-bg-1));
 }
 
 .canvas {
   display: block;
   position: absolute;
-  inset: 0 0 auto;
-  width: 100%;
-  height: min(58%, 540px);
-}
-
-.wall[data-variant='video'] .canvas {
-  height: min(48%, 440px);
+  inset: clamp(16px, 5%, 48px) 0 auto;
+  width: min(100%, 720px);
+  height: clamp(64px, 14vh, 112px);
+  margin-inline: auto;
 }
 
 @media (forced-colors: active) {

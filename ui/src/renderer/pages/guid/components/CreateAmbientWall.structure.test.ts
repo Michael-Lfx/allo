@@ -4,14 +4,17 @@ import { describe, expect, test } from 'bun:test';
 const read = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8');
 const guide = read('../GuidPage.tsx');
 const wall = read('./CreateAmbientWall.tsx');
+const styles = read('./CreateAmbientWall.module.css');
 
 describe('create ambient wall contract', () => {
-  test('uses a bounded Canvas 2D light field across the homepage stages', () => {
+  test('draws sparse Canvas 2D patterns in a bounded surface', () => {
     expect(wall).toContain("getContext('2d')");
-    expect(wall).not.toMatch(/webgl|GodRays/i);
+    expect(wall).not.toMatch(/webgl|GodRays|drawImage|createRadialGradient/i);
     expect(wall).toContain('mountAmbientCanvas');
-    expect(wall).toContain('maxPixels: 300_000');
-    expect(wall).toContain('fps: 15');
+    expect(wall).toContain('maxPixels: 48_000');
+    expect(wall).toContain('fps: 10');
+    expect(styles).toContain('width: min(100%, 720px)');
+    expect(styles).toContain('height: clamp(64px, 14vh, 112px)');
     expect(guide).toContain('<CreateAmbientWall />');
     expect(guide).toContain("data-ambient-variant={buildAmbientVariant}");
   });
