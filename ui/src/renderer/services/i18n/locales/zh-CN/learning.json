@@ -422,6 +422,7 @@
   "learningGraphConceptCanonical": "概念",
   "learningGraphConceptRefs": "教 / 假定",
   "learningGraphConceptOtherCourses": "其他课程也在教",
+  "learningGraphConceptAliasWithDefinition": "{{name}}（{{definition}}）",
   "learningGraphRoleTeaches": "教·{{tier}}",
   "learningGraphRoleAssumes": "假定·{{tier}}",
   "learningGraphRefAs": "以「{{name}}」引用",

@@ -139,7 +139,7 @@ export function StructureGraphTab({
                   {t('learning.learningGraphMountIndexEntry', {
                     block: entry.block_name ?? entry.block,
                     count: entry.nodes.length,
-                    nodes: entry.nodes.join('、'),
+                    nodes: entry.nodes.join(t('learning.listSeparator')),
                   })}
                 </Text>
               ))}

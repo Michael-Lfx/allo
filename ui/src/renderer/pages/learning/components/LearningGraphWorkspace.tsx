@@ -1064,7 +1064,7 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
         {fragments.length > 0 && (
           <Tooltip
             content={t('learning.learningGraphAuditFragmentsTooltip', {
-              fragments: fragments.join('、'),
+              fragments: fragments.join(t('learning.listSeparator')),
             })}
           >
             <Tag size='small' color='orange' className='!mx-0'>
@@ -1124,9 +1124,14 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
                 <div className='truncate text-11px text-t-tertiary'>
                   {row.aliases
                     .map((alias) =>
-                      alias.definition ? `${alias.name}（${alias.definition}）` : alias.name
+                      alias.definition
+                        ? t('learning.learningGraphConceptAliasWithDefinition', {
+                            name: alias.name,
+                            definition: alias.definition,
+                          })
+                        : alias.name
                     )
-                    .join('、')}
+                    .join(t('learning.listSeparator'))}
                 </div>
               )}
             </div>

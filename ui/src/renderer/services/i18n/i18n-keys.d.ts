@@ -3698,6 +3698,7 @@ export type I18nKey =
   | 'learning.learningGraphBatchPending'
   | 'learning.learningGraphBeta'
   | 'learning.learningGraphBlockedAdvice'
+  | 'learning.learningGraphConceptAliasWithDefinition'
   | 'learning.learningGraphConceptAudit'
   | 'learning.learningGraphConceptCanonical'
   | 'learning.learningGraphConceptDeclaredOnly'
