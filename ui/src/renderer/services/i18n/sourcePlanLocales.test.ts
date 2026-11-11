@@ -59,7 +59,7 @@ const SOURCE_PLAN_KEYS = [
 
 /** Interpolations each string must keep in BOTH locales. */
 const PLACEHOLDERS: readonly [string, readonly string[]][] = [
-  ['genTriageLine', ['{{total}}', '{{core}}', '{{mixed}}', '{{skipped}}', '{{duplicate}}', '{{uncertain}}']],
+  ['genTriageLine', ['{{total}}', '{{core}}', '{{skipped}}']],
   ['genUncertainTooMany', ['{{count}}']],
   ['genSourcePlanReady', ['{{chapters}}', '{{concepts}}']],
   ['genCoverageReady', ['{{covered}}', '{{skipped}}', '{{fallback}}']],

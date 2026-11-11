@@ -96,7 +96,7 @@ describe('CourseGenerationProgress（学习图流，c1）', () => {
 
   test('graph + queued：排队提示只出现一次，取消入口保留', async () => {
     const html = await renderProgress('zh-CN', { status: 'queued', courseKind: 'learning_graph' });
-    expect(count(html, '任务已提交，正在排队等待空闲资源槽；排队期可取消。')).toBe(1);
+    expect(count(html, '任务已提交，正在排队等待空闲算力；排队期间可取消。')).toBe(1);
     expect(count(html, SPINNER)).toBe(1);
     expect(count(html, '取消生成')).toBe(1);
     expect(html).not.toContain('结构生成已在后台启动');
@@ -137,7 +137,7 @@ describe('CourseGenerationProgress（学习图流，c1）', () => {
 
     const queued = await renderProgress('zh-CN', { status: 'queued' });
     expect(queued).toContain('准备');
-    expect(queued).toContain('任务已提交，正在排队等待空闲资源槽；排队期可取消。');
+    expect(queued).toContain('任务已提交，正在排队等待空闲算力；排队期间可取消。');
     expect(count(queued, '取消生成')).toBe(1);
   });
 });
@@ -237,7 +237,7 @@ describe('CourseGenerationProgress（恢复态终态面板）', () => {
     const failed = await renderProgress('zh-CN', { status: 'failed', error: '网络错误' });
     expect(failed).toContain('重试');
     expect(failed).toContain('网络错误');
-    expect(failed).toContain('按原请求重新发起');
+    expect(failed).toContain('接着上次进度继续');
 
     const cancelled = await renderProgress('zh-CN', { status: 'cancelled' });
     expect(cancelled).toContain('重新生成');

@@ -249,17 +249,15 @@ export function triageViewCounts(view: {
   };
 }
 
-/** 分诊计数行（生成进度视图 triageCompleted 帧用）：「扫描 N 文件 → core X /
- * mixed Y / 跳过 Z / 重复 W / 不确定 U」。跳过 = noise + duplicate（两者都不
- * 进课程）。 */
+/** 分诊计数行（生成进度视图 triageCompleted 帧用）：「已整理 N 个来源文件：
+ * 核心 X、跳过 Y」。跳过 = noise + duplicate（两者都不进课程）；混合/重复/
+ * 不确定等其余读数不上主行，走可展开明细（CourseGenerationProgress 的
+ * triage 明细折叠）。 */
 export function triageCountsLine(counts: TriageCountsLike, t: Translate): string {
   return t('learning.genTriageLine', {
     total: counts.total,
     core: counts.core,
-    mixed: counts.mixed,
     skipped: counts.noise + counts.duplicate,
-    duplicate: counts.duplicate,
-    uncertain: counts.uncertain,
   });
 }
 
