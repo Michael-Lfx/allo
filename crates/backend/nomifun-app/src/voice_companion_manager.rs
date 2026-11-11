@@ -503,6 +503,7 @@ pub struct VoiceCompanionProcessManager {
     config_write_lock: std::sync::Mutex<()>,
     lifecycle_lock: Mutex<()>,
     feedback_update_lock: Mutex<()>,
+    tts_feedback_pending: AtomicBool,
     child: Arc<Mutex<Option<ManagedChildProcess>>>,
     models_manager: Arc<nomifun_voice_models::ModelManager>,
     config_path: PathBuf,
@@ -1250,6 +1251,7 @@ impl VoiceCompanionProcessManager {
             config_write_lock: std::sync::Mutex::new(()),
             lifecycle_lock: Mutex::new(()),
             feedback_update_lock: Mutex::new(()),
+            tts_feedback_pending: AtomicBool::new(false),
             call_start_lock: tokio::sync::Mutex::new(()),
             handled_start_requests: std::sync::RwLock::new(std::collections::HashMap::new()),
             viewed_conversation: RwLock::new((0, None)),
@@ -2088,23 +2090,15 @@ impl VoiceCompanionProcessManager {
         }
     }
 
+    /// Reads the persisted feedback config. Read paths are side-effect free:
+    /// an unmarked legacy config is interpreted as the fast local backend but
+    /// is only rewritten when the user saves (see `update_feedback`).
     fn requested_feedback(&self) -> Result<VoiceFeedbackConfig, String> {
-        if !self.config_path.exists() {
-            return Ok(Default::default());
+        match std::fs::read(&self.config_path) {
+            Ok(bytes) => Ok(VoiceFeedbackConfig::from_persisted_host_config(&bytes)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(_) => Err("configuration_read_failed".into()),
         }
-        let value: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&self.config_path).map_err(|_| "configuration_read_failed")?,
-        )
-        .map_err(|_| "configuration_invalid")?;
-        let object = value.as_object().ok_or("configuration_invalid")?;
-        let config: VoiceFeedbackConfig = match object.get("feedback") {
-            Some(value) => {
-                serde_json::from_value(value.clone()).map_err(|_| "configuration_invalid")?
-            }
-            None => Default::default(),
-        };
-        config.validate()?;
-        Ok(config)
     }
 
     async fn feedback_rpc(
@@ -2116,6 +2110,15 @@ impl VoiceCompanionProcessManager {
         if self.snapshot().connection != VoiceConnectionState::Connected {
             return Err("daemon_unavailable".into());
         }
+        self.request_daemon_feedback(method, suffix, body).await
+    }
+
+    async fn request_daemon_feedback(
+        &self,
+        method: reqwest::Method,
+        suffix: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<reqwest::Response, String> {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -2149,22 +2152,68 @@ impl VoiceCompanionProcessManager {
         })
     }
 
+    async fn send_feedback(&self, patch: serde_json::Value) -> Option<VoiceFeedbackConfig> {
+        let response = self
+            .request_daemon_feedback(reqwest::Method::POST, "", Some(patch))
+            .await
+            .ok()?;
+        response.error_for_status().ok()?.json().await.ok()
+    }
+
+    /// The reconnect and save paths share a lock. Read the saved value only
+    /// after acquiring it, so recovery can never replay an older choice.
+    async fn reconcile_tts_feedback(&self, generation: u64) {
+        let _guard = self.feedback_update_lock.lock().await;
+        if generation != self.generation.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(requested) = self.requested_feedback() else {
+            return;
+        };
+        let effective = self
+            .send_feedback(serde_json::json!({ "tts_backend": requested.tts_backend }))
+            .await;
+        if generation == self.generation.load(Ordering::Acquire) {
+            self.note_tts_feedback_sync(&requested, effective.as_ref());
+        }
+    }
+
+    fn note_tts_feedback_sync(
+        &self,
+        requested: &VoiceFeedbackConfig,
+        effective: Option<&VoiceFeedbackConfig>,
+    ) {
+        self.tts_feedback_pending.store(
+            !effective.is_some_and(|current| current.tts_backend == requested.tts_backend),
+            Ordering::Release,
+        );
+    }
+
     async fn update_feedback(
         &self,
         patch: VoiceFeedbackPatch,
     ) -> Result<VoiceFeedbackSettings, String> {
         let _guard = self.feedback_update_lock.lock().await;
-        let requested = patch.apply(self.requested_feedback()?);
+        let saved = self.requested_feedback()?;
+        let requested = patch.apply(saved.clone());
         requested.validate()?;
-        let value = serde_json::to_value(&requested).map_err(|_| "configuration_invalid")?;
-        self.write_config_entry("feedback", value.clone())?;
-        let effective = match self
-            .feedback_rpc(reqwest::Method::POST, "", Some(value))
-            .await
-        {
-            Ok(response) if response.status().is_success() => response.json().await.ok(),
-            _ => None,
-        };
+        let mut value = serde_json::to_value(&requested).map_err(|_| "configuration_invalid")?;
+        // An empty PATCH retries the latest saved preferences without a disk write.
+        if requested != saved {
+            // Keep the opt-in marker and the choice in the same atomic write.
+            self.write_config_entries(&[
+                ("feedback_tts_backend_migrated", serde_json::Value::Bool(true)),
+                ("feedback", value.clone()),
+            ])?;
+        }
+        if requested.input_device.is_none() {
+            // Null in the persisted config means default. A PATCH must send
+            // the explicit reset sentinel because null leaves the device alone.
+            value["input_device"] = serde_json::Value::String("default".into());
+        }
+        // HTTP may already be usable before the first reconnected snapshot.
+        let effective = self.send_feedback(value).await;
+        self.note_tts_feedback_sync(&requested, effective.as_ref());
         Ok(VoiceFeedbackSettings {
             requested,
             effective,
@@ -2507,6 +2556,10 @@ impl VoiceCompanionProcessManager {
                 if let Ok(response) = response
                     && response.status().is_success()
                 {
+                    manager.reconcile_tts_feedback(generation).await;
+                    if generation != manager.generation.load(Ordering::Acquire) {
+                        continue;
+                    }
                     let mut stream = response.bytes_stream();
                     let mut buffer = Vec::new();
                     let mut recovery_tick=tokio::time::interval(std::time::Duration::from_secs(1));
@@ -2530,6 +2583,9 @@ impl VoiceCompanionProcessManager {
                                     let maintenance_generation = generation;
                                     tokio::spawn(async move {
                                         if !maintenance.shutdown_requested.load(Ordering::Acquire) {
+                                            if maintenance.tts_feedback_pending.load(Ordering::Acquire) {
+                                                maintenance.reconcile_tts_feedback(maintenance_generation).await;
+                                            }
                                             let _ = maintenance.recover_audio_if_needed().await;
                                             if maintenance.shutdown_requested.load(Ordering::Acquire)
                                                 || maintenance_generation
@@ -3207,7 +3263,10 @@ impl VoiceCompanionProcessManager {
         self.write_config_entry("autostart", autostart.into())
     }
 
-    fn write_config_entry(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
+    fn write_config_entries(
+        &self,
+        entries: &[(&str, serde_json::Value)],
+    ) -> Result<(), String> {
         let _guard = self
             .config_write_lock
             .lock()
@@ -3224,11 +3283,17 @@ impl VoiceCompanionProcessManager {
         let object = cfg
             .as_object_mut()
             .ok_or_else(|| "configuration_invalid".to_string())?;
-        object.insert(key.into(), value);
+        for (key, value) in entries {
+            object.insert((*key).into(), value.clone());
+        }
         let bytes =
             serde_json::to_vec_pretty(&cfg).map_err(|_| "configuration_invalid".to_string())?;
         nomifun_common::dir_config::write_atomic_replace(&self.config_path, &bytes)
             .map_err(|_| "configuration_write_failed".to_string())
+    }
+
+    fn write_config_entry(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        self.write_config_entries(&[(key, value)])
     }
 
     /// Queries the real running status of the background companion daemon.
@@ -3355,6 +3420,10 @@ impl VoiceCompanionProcessManager {
         }
         builder.env("VOICE_COMPANION_CONTROL_TOKEN", &self.control_token);
         builder.env("VOICE_COMPANION_FEEDBACK_CONFIG", &feedback_config);
+        builder.env(
+            nomifun_api_types::voice::VOICE_FEEDBACK_CONFIG_PATH_ENV,
+            &self.config_path,
+        );
         if self.dialogue_completer.is_some() {
             let mut bridge = self.dialogue_bridge.lock().await;
             if bridge.is_none() {

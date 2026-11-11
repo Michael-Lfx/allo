@@ -15,6 +15,36 @@ pub enum VoiceFeedbackMode {
     Off,
 }
 
+/// Stable wire values for the user-facing "premium voice" switch.
+pub const TTS_BACKEND_LOCAL: &str = "local";
+pub const TTS_BACKEND_EDGE: &str = "edge";
+pub const VOICE_FEEDBACK_CONFIG_PATH_ENV: &str = "VOICE_COMPANION_FEEDBACK_CONFIG_PATH";
+
+/// Normalizes any persisted or patched value to the two supported backends.
+/// Unknown or blank values fall back to the fast local backend.
+pub fn normalize_tts_backend(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        TTS_BACKEND_EDGE => TTS_BACKEND_EDGE,
+        _ => TTS_BACKEND_LOCAL,
+    }
+}
+
+fn default_tts_backend() -> String {
+    TTS_BACKEND_LOCAL.into()
+}
+
+/// Keeps older or hand-edited JSON from smuggling a third backend string into
+/// the daemon: every deserialize normalizes to the allowlist.
+fn deserialize_tts_backend<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw
+        .map(|value| normalize_tts_backend(&value).to_string())
+        .unwrap_or_else(default_tts_backend))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceFeedbackConfig {
@@ -28,6 +58,10 @@ pub struct VoiceFeedbackConfig {
     pub interject_keyword: String,
     pub dismiss_phrases: Vec<String>,
     pub dismiss_reply: String,
+    #[serde(
+        default = "default_tts_backend",
+        deserialize_with = "deserialize_tts_backend"
+    )]
     pub tts_backend: String,
     pub tts_speed: f32,
     pub idle_timeout_secs: u32,
@@ -56,6 +90,27 @@ impl Default for VoiceFeedbackConfig {
 }
 
 impl VoiceFeedbackConfig {
+    /// Reads the feedback section of the host's atomically replaced settings.
+    pub fn from_persisted_host_config(bytes: &[u8]) -> Result<Self, &'static str> {
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| "configuration_invalid")?;
+        let object = value.as_object().ok_or("configuration_invalid")?;
+        let mut feedback: Self = match object.get("feedback") {
+            Some(value) => {
+                serde_json::from_value(value.clone()).map_err(|_| "configuration_invalid")?
+            }
+            None => Self::default(),
+        };
+        feedback.validate()?;
+        if object.get("feedback_tts_backend_migrated").and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            // The retired radio's value is not an opt-in to premium voice.
+            feedback.tts_backend = TTS_BACKEND_LOCAL.into();
+        }
+        Ok(feedback)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.volume > 100 {
             return Err("feedback_volume_invalid");
@@ -87,6 +142,12 @@ impl VoiceFeedbackConfig {
             }
         }
         Ok(())
+    }
+
+    /// The capture worker only needs to rebuild KWS when the effective wake
+    /// words change; synthesis or volume edits must not pause audio frames.
+    pub fn wake_words_changed(&self, other: &Self) -> bool {
+        self.wake_words != other.wake_words
     }
 }
 
@@ -131,7 +192,12 @@ impl VoiceFeedbackPatch {
             interject_keyword: self.interject_keyword.unwrap_or(current.interject_keyword),
             dismiss_phrases: self.dismiss_phrases.unwrap_or(current.dismiss_phrases),
             dismiss_reply: self.dismiss_reply.unwrap_or(current.dismiss_reply),
-            tts_backend: self.tts_backend.unwrap_or(current.tts_backend),
+            tts_backend: normalize_tts_backend(
+                self.tts_backend
+                    .as_deref()
+                    .unwrap_or(current.tts_backend.as_str()),
+            )
+            .to_string(),
             tts_speed: self.tts_speed.unwrap_or(current.tts_speed),
             idle_timeout_secs: self.idle_timeout_secs.unwrap_or(current.idle_timeout_secs),
             input_device,
@@ -151,7 +217,7 @@ impl From<VoiceFeedbackConfig> for VoiceFeedbackPatch {
             interject_keyword: Some(c.interject_keyword),
             dismiss_phrases: Some(c.dismiss_phrases),
             dismiss_reply: Some(c.dismiss_reply),
-            tts_backend: Some(c.tts_backend),
+            tts_backend: Some(normalize_tts_backend(&c.tts_backend).to_string()),
             tts_speed: Some(c.tts_speed),
             idle_timeout_secs: Some(c.idle_timeout_secs),
             input_device: c.input_device,
@@ -2184,5 +2250,76 @@ mod task_control_classifier_tests {
         // Missing reply_tts must fail validation for dismiss
         let invalid_json = r#"{"intent_type": "dismiss", "understood_request": "用户请求退出通话"}"#;
         assert!(parse_voice_decision(invalid_json).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tts_backend_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_tts_backend_allowlist() {
+        assert_eq!(normalize_tts_backend("edge"), TTS_BACKEND_EDGE);
+        assert_eq!(normalize_tts_backend(" EDGE "), TTS_BACKEND_EDGE);
+        assert_eq!(normalize_tts_backend("local"), TTS_BACKEND_LOCAL);
+        assert_eq!(normalize_tts_backend("sherpa"), TTS_BACKEND_LOCAL);
+        assert_eq!(normalize_tts_backend(""), TTS_BACKEND_LOCAL);
+    }
+
+    #[test]
+    fn config_deserialize_normalizes_backend() {
+        let unknown: VoiceFeedbackConfig =
+            serde_json::from_str(r#"{"tts_backend":"sherpa"}"#).unwrap();
+        assert_eq!(unknown.tts_backend, TTS_BACKEND_LOCAL);
+        let edge: VoiceFeedbackConfig =
+            serde_json::from_str(r#"{"tts_backend":"EDGE"}"#).unwrap();
+        assert_eq!(edge.tts_backend, TTS_BACKEND_EDGE);
+        let missing: VoiceFeedbackConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.tts_backend, TTS_BACKEND_LOCAL);
+    }
+
+    #[test]
+    fn patch_apply_normalizes_backend() {
+        let base = VoiceFeedbackConfig::default();
+        let edge = VoiceFeedbackPatch {
+            tts_backend: Some("EDGE".into()),
+            ..Default::default()
+        }
+        .apply(base.clone());
+        assert_eq!(edge.tts_backend, TTS_BACKEND_EDGE);
+        let unknown = VoiceFeedbackPatch {
+            tts_backend: Some("bogus".into()),
+            ..Default::default()
+        }
+        .apply(base.clone());
+        assert_eq!(unknown.tts_backend, TTS_BACKEND_LOCAL);
+        let unchanged = VoiceFeedbackPatch::default().apply(base);
+        assert_eq!(unchanged.tts_backend, TTS_BACKEND_LOCAL);
+    }
+
+    #[test]
+    fn config_into_patch_normalizes_backend() {
+        let config = VoiceFeedbackConfig {
+            tts_backend: "sherpa".into(),
+            ..Default::default()
+        };
+        let patch: VoiceFeedbackPatch = config.into();
+        assert_eq!(patch.tts_backend.as_deref(), Some(TTS_BACKEND_LOCAL));
+    }
+
+    #[test]
+    fn wake_words_change_detection_only_tracks_wake_words() {
+        let base = VoiceFeedbackConfig::default();
+        assert!(!base.wake_words_changed(&base));
+        let mut voice_only = base.clone();
+        voice_only.tts_backend = TTS_BACKEND_EDGE.into();
+        voice_only.volume = 90;
+        assert!(
+            !voice_only.wake_words_changed(&base),
+            "voice/volume edits must not trigger a KWS rebuild"
+        );
+        let mut wake_words = base.clone();
+        wake_words.wake_words = vec!["Hey Flowy".into(), "小助手".into()];
+        assert!(wake_words.wake_words_changed(&base));
     }
 }

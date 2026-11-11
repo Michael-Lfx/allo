@@ -11,6 +11,7 @@ pub(crate) struct VoiceEventHub {
     state: Mutex<VoiceSessionSnapshot>,
     feedback: Mutex<nomifun_api_types::voice::VoiceFeedbackConfig>,
     context: Mutex<Vec<nomifun_voice_terminal::router::ChatMessage>>,
+    tts_fallback_announced: std::sync::atomic::AtomicBool,
     last_task_seq: std::sync::atomic::AtomicU64,
     worker_epoch: std::sync::atomic::AtomicU64,
 }
@@ -27,6 +28,7 @@ impl VoiceEventHub {
             tx,
             feedback: Mutex::new(Default::default()),
             context: Mutex::new(Vec::new()),
+            tts_fallback_announced: std::sync::atomic::AtomicBool::new(false),
             last_task_seq: std::sync::atomic::AtomicU64::new(0),
             worker_epoch: std::sync::atomic::AtomicU64::new(0),
             state: Mutex::new(VoiceSessionSnapshot {
@@ -146,7 +148,7 @@ impl VoiceEventHub {
 
     fn send_inner(
         &self,
-        event: VoiceCompanionEvent,
+        mut event: VoiceCompanionEvent,
         scope: Option<&VoiceSessionControlRequest>,
     ) -> Result<usize, broadcast::error::SendError<VoiceCompanionEvent>> {
         use VoiceSessionPhase as Phase;
@@ -161,9 +163,14 @@ impl VoiceEventHub {
         if epoch > 0 {
             state.worker_epoch = Some(epoch);
         }
-        if let VoiceCompanionEvent::TtsSource {session_id, turn_id, ..} = &event {
+        if let VoiceCompanionEvent::TtsSource {session_id, turn_id, diagnostic} = &mut event {
             if state.session_id != *session_id || state.turn_id != *turn_id || state.ended_reason.is_some() {
                 return Ok(0);
+            }
+            if diagnostic.fallback_reason.is_some()
+                && self.tts_fallback_announced.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                diagnostic.fallback_reason = None;
             }
         }
         if let VoiceCompanionEvent::Feedback { diagnostic } = &event {
@@ -189,7 +196,17 @@ impl VoiceEventHub {
             }
         }
         match &event {
-            VoiceCompanionEvent::TtsSource {diagnostic, ..} => { state.tts = Some(diagnostic.clone()); }
+            VoiceCompanionEvent::TtsSource { diagnostic, .. } => {
+                let mut latest = diagnostic.clone();
+                // Keep the status readable across consecutive local sentences.
+                // A later online frame clears it without rearming the notice.
+                if !latest.online && latest.fallback_reason.is_none() {
+                    latest.fallback_reason = state.tts.as_ref()
+                        .filter(|previous| !previous.online)
+                        .and_then(|previous| previous.fallback_reason.clone());
+                }
+                state.tts = Some(latest);
+            }
             VoiceCompanionEvent::SessionEnded { reason } => {
                 self.context
                     .lock()
@@ -232,6 +249,7 @@ impl VoiceEventHub {
                 state.locale = locale.clone();
                 state.feedback = None;
                 state.tts = None;
+                self.tts_fallback_announced.store(false, std::sync::atomic::Ordering::Relaxed);
                 state.session_id = Some(nomifun_common::generate_id());
                 state.turn_id = None;
                 state.user_text = None;
@@ -471,6 +489,49 @@ impl VoiceEventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tts_fallback_hint_is_published_once_per_session() {
+        let hub = VoiceEventHub::new();
+        let mut events = hub.sender().subscribe();
+        let wake = || {
+            hub.send(VoiceCompanionEvent::WakeHit {
+                keyword: "Hey Flowy".into(),
+                request_id: None,
+                locale: None,
+            }).unwrap();
+        };
+        let source = |online: bool, fallback: bool| {
+            let snapshot = hub.snapshot();
+            hub.send(VoiceCompanionEvent::TtsSource {
+                session_id: snapshot.session_id,
+                turn_id: snapshot.turn_id,
+                diagnostic: nomifun_api_types::voice::VoiceTtsDiagnostic {
+                    provider: if online { "edge" } else { "local" }.into(),
+                    voice: None,
+                    online,
+                    fallback_reason: fallback.then(|| "tts_rate_limited".into()),
+                },
+            }).unwrap();
+        };
+        wake();
+        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+        source(false, true);
+        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+        source(false, true);
+        assert!(hub.snapshot().tts.unwrap().fallback_reason.is_some());
+        source(true, false);
+        source(false, true);
+        assert!(hub.snapshot().tts.unwrap().fallback_reason.is_none());
+        wake();
+        source(false, true);
+
+        let hints = std::iter::from_fn(|| events.try_recv().ok()).filter(|event| {
+            matches!(event, VoiceCompanionEvent::TtsSource { diagnostic, .. }
+                if diagnostic.fallback_reason.is_some())
+        }).count();
+        assert_eq!(hints, 2, "each wake permits exactly one fallback hint");
+    }
 
     #[test]
     fn stale_asr_failure_cannot_change_a_new_turn_or_an_ended_session() {
