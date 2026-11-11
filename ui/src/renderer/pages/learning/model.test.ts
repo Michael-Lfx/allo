@@ -217,15 +217,15 @@ describe('t5 uncertain 过多判定与分诊计数适配', () => {
     uncertain: 1,
   };
 
-  test('扫描行：总数 + 五个关键角色读数（生成进度视图 triageCompleted 帧用）', () => {
+  test('扫描行：总数 + 核心/跳过读数（混合/重复/不确定进明细，不上主行）', () => {
     const line = triageCountsLine(counts, t);
     expect(line).toContain('learning.genTriageLine');
     expect(line).toContain('"total":8');
     expect(line).toContain('"core":2');
-    expect(line).toContain('"mixed":1');
     expect(line).toContain('"skipped":2');
-    expect(line).toContain('"duplicate":1');
-    expect(line).toContain('"uncertain":1');
+    expect(line).not.toContain('"mixed"');
+    expect(line).not.toContain('"duplicate"');
+    expect(line).not.toContain('"uncertain"');
   });
 
   test('uncertain 过多：数量 ≥10 或超过 core 时提醒整理知识库', () => {

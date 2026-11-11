@@ -81,7 +81,7 @@ describe('GrowthTaskPill', () => {
       'zh-CN',
       item({ redraft: { stage: 'concept_review', count: 2 } })
     );
-    expect(redraft).toContain('概念评审打回，正在重新起草（第 2 次）');
+    expect(redraft).toContain('概念检查未通过，正在重写（第 2 次）');
     expect(redraft).not.toContain('教练正在起草本批节点…');
 
     const queued = await renderPill(
@@ -142,12 +142,12 @@ describe('GrowthTaskPill', () => {
 
   test('运行中步骤全档映射：机器 step 一律走词典，不再裸渲染后端 detail（c3）', async () => {
     const cases: ReadonlyArray<[string, string]> = [
-      ['triage', '正在清点与分诊来源文件…'],
+      ['triage', '正在清点来源文件…'],
       ['source_plan', '正在从证据规划章节骨架…'],
       ['expansion', '正在按章节分批展开课时…'],
       ['structure', '正在生成知识结构与前置地形…'],
-      ['mount', '正在挂载节点到结构块…'],
-      ['repair', '正在按留痕与观察修补结构…'],
+      ['mount', '正在对齐内容与目录…'],
+      ['repair', '正在根据生成记录微调课程结构…'],
       ['generate', '正在生成本课时的分节正文与检索练习…'],
     ];
     for (const [step, line] of cases) {

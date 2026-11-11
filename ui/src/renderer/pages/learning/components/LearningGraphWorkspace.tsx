@@ -450,13 +450,12 @@ const LearningGraphWorkspace: React.FC<{
           Message.info(t('learning.learningGraphBasisDeclareNoop'));
         } else {
           // o4：成功 toast 只报数量——门口 id 串与块 slug 串不再内插上屏
-          // （与 GateCoverage 已声明行同口径）。
+          // （与 GateCoverage 已声明行同口径；铸出/复用计数随 o2 口语化版
+          // 本文退出用户面）。
           Message.success(
             t('learning.learningGraphBasisDeclareDone', {
               doorsCount: result.doors.length,
               blocksCount: result.blocks.length,
-              minted: result.minted,
-              reused: result.reused,
             })
           );
         }

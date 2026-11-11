@@ -67,7 +67,7 @@ describe('CapacityFeedbackCard', () => {
     expect(await renderCard('zh-CN', lesson({ capacity_note: '   ' }))).toBe('');
   });
 
-  test('有自报：原因 + 三选项 + 留痕说明都在，初始无错误行', async () => {
+  test('有自报：原因 + 三选项 + 偏好说明都在，初始无错误行', async () => {
     const html = await renderCard(
       'zh-CN',
       lesson({ capacity_note: '保覆盖就必超：第三节推导超出 25 分钟预算' })
@@ -77,7 +77,7 @@ describe('CapacityFeedbackCard', () => {
     expect(html).toContain('接受现状');
     expect(html).toContain('预算加长');
     expect(html).toContain('拆成两节');
-    expect(html).toContain('只记录你的选择');
+    expect(html).toContain('记录你的偏好');
     expect(html).not.toContain('role="alert"');
   });
 
