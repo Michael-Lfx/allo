@@ -422,6 +422,7 @@
   "learningGraphConceptCanonical": "Concept",
   "learningGraphConceptRefs": "Taught / assumed",
   "learningGraphConceptOtherCourses": "Also taught in",
+  "learningGraphConceptAliasWithDefinition": "{{name}} ({{definition}})",
   "learningGraphRoleTeaches": "teaches · {{tier}}",
   "learningGraphRoleAssumes": "assumes · {{tier}}",
   "learningGraphRefAs": "referenced as \"{{name}}\"",

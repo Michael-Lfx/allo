@@ -59,7 +59,7 @@ export function GateCoverage({
       title: t('learning.learningGraphBasisConfirmTitle'),
       content: t('learning.learningGraphBasisConfirmContent', {
         count: pendingSelection.length,
-        doors: pendingSelection.join('、'),
+        doors: pendingSelection.join(t('learning.listSeparator')),
       }),
       okText: t('learning.learningGraphBasisConfirmOk'),
       cancelText: t('learning.learningGraphBasisCancel'),
@@ -150,7 +150,7 @@ export function GateCoverage({
                 {blocks.length > 0
                   ? t('learning.learningGraphGateDoorCovers', {
                       count: blocks.length,
-                      blocks: blocks.join('、'),
+                      blocks: blocks.join(t('learning.listSeparator')),
                     })
                   : t('learning.learningGraphGateDoorCoversNone')}
               </Text>
@@ -190,7 +190,7 @@ export function GateCoverage({
       {basis !== null && basis.doors.length > 0 && (
         <Text type='secondary' className='text-11px leading-16px'>
           {t('learning.learningGraphBasisDeclaredDoors', {
-            doors: basis.doors.join('、'),
+            doors: basis.doors.join(t('learning.listSeparator')),
             count: basis.concepts.length,
           })}
         </Text>

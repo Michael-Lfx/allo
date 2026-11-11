@@ -1,4 +1,4 @@
-import { Empty, Tag, Typography } from '@arco-design/web-react';
+import { Tag, Typography } from '@arco-design/web-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockView, StructureEdgeView, StructureView } from '../../types';
@@ -136,9 +136,4 @@ export function BlockDetail({
       </div>
     </div>
   );
-}
-
-/** 未生成/空结构的统一空态。 */
-export function StructureEmpty({ hint }: { hint: string }) {
-  return <Empty description={hint} />;
 }

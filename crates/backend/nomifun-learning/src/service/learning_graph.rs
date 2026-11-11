@@ -3423,54 +3423,9 @@ impl LearningService {
 
         // 提名候选集装配（j04 复用通道的机械面）：每条 mints canonical 与
         // new_aliases 提名各装配一份；定义归一化直定宿主在此定案（不送裁
-        // 决）；new_aliases 无近邻 = 门级打回（登记表空/无近邻）。
-        let mut nominations: Vec<crate::learning_graph::NominationPlan> = Vec::new();
-        let mut push_nomination = |nominations: &mut Vec<crate::learning_graph::NominationPlan>,
-                                   name: &str,
-                                   definition: &str| {
-            let name = name.trim();
-            if name.is_empty() || nominations.iter().any(|plan| plan.name == name) {
-                return;
-            }
-            let nomination = crate::learning_graph::defnear::Nomination {
-                name: name.to_owned(),
-                definition: definition.to_owned(),
-            };
-            let direct_host = crate::learning_graph::defnear::definition_exact_host(
-                &nomination,
-                &registry_entries,
-            )
-            .map(|entry| entry.concept_id.clone());
-            let candidates =
-                crate::learning_graph::defnear::assemble_neighbors(&nomination, &registry_entries);
-            nominations.push(crate::learning_graph::NominationPlan {
-                name: name.to_owned(),
-                direct_host,
-                candidates,
-                evidence: Vec::new(),
-            });
-        };
-        for mint in &batch.mints {
-            push_nomination(&mut nominations, &mint.canonical, &mint.definition);
-        }
-        for nomination in &batch.new_aliases {
-            push_nomination(&mut nominations, &nomination.name, &nomination.definition);
-            // 无近邻 = 门级打回（登记表空或机械面找不到任何候选）。
-            let plan = nominations
-                .iter()
-                .find(|plan| plan.name == nomination.name.trim())
-                .expect("just pushed");
-            if plan.candidates.is_empty() {
-                errors.push(crate::learning_graph::GateError {
-                    kind: "ng.aliases.no_neighbor",
-                    message: format!(
-                        "别名提名「{}」在登记表找不到任何近邻候选（登记表为空或无近邻）——\
-                         别名提名必须指向既有概念；这是新概念就改走 mints 铸名",
-                        nomination.name.trim()
-                    ),
-                });
-            }
-        }
+        // 决）；空白名/无近邻 = 门级错误点名（见 `assemble_nominations`）。
+        let (nominations, nomination_errors) = assemble_nominations(batch, &registry_entries);
+        errors.extend(nomination_errors);
         // 深度水位门已退役（g3：档位比较是精度剧场）——难度诚实性由 AI 概念
         // 评审门作语义兜底。
         let registry_concept_ids: HashSet<String> = registry_entries
@@ -6197,6 +6152,177 @@ fn concept_relation_index(
         }
     }
     index
+}
+
+/// 提名候选集装配（j04 复用通道的机械面，自 `gate_batch` 抽成纯函数以便
+/// 红绿样直测）：每条 mints canonical 与 new_aliases 提名各装配一份；定义
+/// 归一化直定宿主在此定案（不送裁决）。
+///
+/// 空白名 = push 静默早退（重名早退是既有行为）——此时装配集里没有对应
+/// 计划，按门级错误点名（`ng.aliases.empty_name`），不做 expect 炸整批
+/// （图模块生产代码零 panic 红线；上游 parse 已 trim+拒空，这是绕过面的
+/// 兜底，m1 同款）。new_aliases 无近邻 = 门级打回（`ng.aliases.no_neighbor`：
+/// 登记表空或机械面找不到任何候选）。
+fn assemble_nominations(
+    batch: &crate::learning_graph::ProposedBatch,
+    registry_entries: &[crate::learning_graph::defnear::RegistryEntry],
+) -> (
+    Vec<crate::learning_graph::NominationPlan>,
+    Vec<crate::learning_graph::GateError>,
+) {
+    let mut nominations: Vec<crate::learning_graph::NominationPlan> = Vec::new();
+    let mut errors: Vec<crate::learning_graph::GateError> = Vec::new();
+    let mut push_nomination = |nominations: &mut Vec<crate::learning_graph::NominationPlan>,
+                               name: &str,
+                               definition: &str| {
+        let name = name.trim();
+        if name.is_empty() || nominations.iter().any(|plan| plan.name == name) {
+            return;
+        }
+        let nomination = crate::learning_graph::defnear::Nomination {
+            name: name.to_owned(),
+            definition: definition.to_owned(),
+        };
+        let direct_host = crate::learning_graph::defnear::definition_exact_host(
+            &nomination,
+            registry_entries,
+        )
+        .map(|entry| entry.concept_id.clone());
+        let candidates =
+            crate::learning_graph::defnear::assemble_neighbors(&nomination, registry_entries);
+        nominations.push(crate::learning_graph::NominationPlan {
+            name: name.to_owned(),
+            direct_host,
+            candidates,
+            evidence: Vec::new(),
+        });
+    };
+    for mint in &batch.mints {
+        push_nomination(&mut nominations, &mint.canonical, &mint.definition);
+    }
+    for nomination in &batch.new_aliases {
+        push_nomination(&mut nominations, &nomination.name, &nomination.definition);
+        // 空白名 = push 静默早退，装配集里没有对应计划——门级点名而非
+        // expect（零 panic 红线）。
+        let Some(plan) = nominations
+            .iter()
+            .find(|plan| plan.name == nomination.name.trim())
+        else {
+            errors.push(crate::learning_graph::GateError {
+                kind: "ng.aliases.empty_name",
+                message: format!(
+                    "别名提名「{}」名字为空白，装配被跳过——别名字段全必填\
+                     （parse 红线 ng.aliases.required 的绕过面兜底）",
+                    nomination.name.trim()
+                ),
+            });
+            continue;
+        };
+        // 无近邻 = 门级打回（登记表空或机械面找不到任何候选）。
+        if plan.candidates.is_empty() {
+            errors.push(crate::learning_graph::GateError {
+                kind: "ng.aliases.no_neighbor",
+                message: format!(
+                    "别名提名「{}」在登记表找不到任何近邻候选（登记表为空或无近邻）——\
+                     别名提名必须指向既有概念；这是新概念就改走 mints 铸名",
+                    nomination.name.trim()
+                ),
+            });
+        }
+    }
+    (nominations, errors)
+}
+
+/// 提名候选集装配的红绿样（s3 票面验收）：绿面 = 正常提名/重名去重路径
+/// 行为不变；红面 = 绕过 parse 直灌空白名 → 不 panic 且门级错误点名
+/// （修复前此路径 `expect("just pushed")` 必炸）。
+#[cfg(test)]
+mod nomination_assembly_tests {
+    use super::assemble_nominations;
+    use crate::learning_graph::defnear::RegistryEntry;
+    use crate::learning_graph::{ConceptMint, ConceptNewAlias, ProposedBatch};
+
+    fn registry(concept: &str, aliases: &[&str]) -> RegistryEntry {
+        RegistryEntry {
+            concept_id: format!("cpt-{concept}"),
+            canonical: concept.to_owned(),
+            definition: format!("{concept} 的定义"),
+            active_aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+        }
+    }
+
+    fn alias(name: &str) -> ConceptNewAlias {
+        ConceptNewAlias {
+            name: name.to_owned(),
+            definition: "别名的定义".to_owned(),
+            source: "test".to_owned(),
+        }
+    }
+
+    fn mint(canonical: &str) -> ConceptMint {
+        ConceptMint {
+            canonical: canonical.to_owned(),
+            aliases: Vec::new(),
+            definition: format!("{canonical} 的定义"),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn normal_alias_assembles_with_neighbors_and_no_errors() {
+        let batch = ProposedBatch {
+            mints: vec![mint("闭包")],
+            new_aliases: vec![alias("FP")],
+            ..Default::default()
+        };
+        let entries = vec![registry("函数式编程", &["FP"])];
+        let (plans, errors) = assemble_nominations(&batch, &entries);
+        assert_eq!(plans.iter().map(|plan| plan.name.as_str()).collect::<Vec<_>>(), ["闭包", "FP"]);
+        // FP 精确占用登记表活跃别名 → 候选非空，无门级错误。
+        assert!(plans[1].direct_host.as_deref() == Some("cpt-函数式编程") || !plans[1].candidates.is_empty());
+        assert!(errors.is_empty(), "正常提名不得产生门级错误: {errors:?}");
+    }
+
+    #[test]
+    fn alias_matching_a_mint_name_dedupes_onto_the_mint_plan() {
+        let batch = ProposedBatch {
+            mints: vec![mint("闭包")],
+            new_aliases: vec![alias("闭包")],
+            ..Default::default()
+        };
+        let (plans, errors) = assemble_nominations(&batch, &[]);
+        // 重名早退是既有行为：find 命中 mint 的计划，不 panic；候选检查
+        // 照发——空登记表下该计划零候选，no_neighbor 门错误如实出现。
+        assert_eq!(plans.len(), 1);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, "ng.aliases.no_neighbor");
+    }
+
+    #[test]
+    fn neighborless_alias_is_gate_rejected() {
+        let batch = ProposedBatch {
+            new_aliases: vec![alias("量子纠缠")],
+            ..Default::default()
+        };
+        let (plans, errors) = assemble_nominations(&batch, &[]);
+        assert_eq!(plans.len(), 1);
+        assert!(plans[0].candidates.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, "ng.aliases.no_neighbor");
+    }
+
+    #[test]
+    fn blank_alias_name_yields_gate_error_instead_of_panicking() {
+        let batch = ProposedBatch {
+            new_aliases: vec![alias("   ")],
+            ..Default::default()
+        };
+        // 修复前：push 静默早退 → find 落空 → expect("just pushed") panic。
+        let (plans, errors) = assemble_nominations(&batch, &[]);
+        assert!(plans.is_empty(), "空白名不得进装配集: {plans:?}");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, "ng.aliases.empty_name");
+    }
 }
 
 /// 提名候选集渲染的空省略单测（p03 票面验收）：真机 grow-review-user L147-155
