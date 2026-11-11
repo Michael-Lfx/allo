@@ -145,8 +145,8 @@ describe('restoredTaskTopic（恢复态任务 → 悬浮 Pill 显示文案，c3�
     expect(restoredTaskTopic(structure, tEn)).toBe('Knowledge structure generation');
 
     const mount = { kind: 'structure_mount', topic: '结构挂载' };
-    expect(restoredTaskTopic(mount, tZh)).toBe('结构挂载');
-    expect(restoredTaskTopic(mount, tEn)).toBe('Structure mounting');
+    expect(restoredTaskTopic(mount, tZh)).toBe('结构对齐');
+    expect(restoredTaskTopic(mount, tEn)).toBe('Structure alignment');
 
     const repair = { kind: 'structure_repair', topic: '结构修补' };
     expect(restoredTaskTopic(repair, tZh)).toBe('结构修补');
