@@ -305,6 +305,8 @@ impl LearningService {
             model_override,
             input,
             Some(&token),
+            // 轮次回写（v1 机器面）：门面每轮回调 → 注册表快照行 attempt。
+            &|n| task.set_attempt(n),
         )
         .await;
         match result {

@@ -90,6 +90,9 @@ pub struct GenerationTaskView {
     pub queued_at_ms: Option<i64>,
     /// 排队位次（1 起，注册序升序 = FIFO 提交序；非 queued = None）。
     pub queue_position: Option<u32>,
+    /// 当前重试轮次（v1 attempt 机器面，1 起）：结构生成任务逐轮回写；未接
+    /// 回调的任务 = None（serde 序列化为 null，旧消费者零感知）。
+    pub attempt: Option<u32>,
 }
 
 struct TaskRecord {
@@ -100,6 +103,9 @@ struct TaskRecord {
     /// 段是会话 id（建课时课程尚不存在），快照视图的 course_id 优先取本
     /// 字段而键保持原课程段——恢复态按 taskKey 匹配的契约面不动。
     resolved_course_id: Option<String>,
+    /// 当前重试轮次（v1 attempt 机器面，1 起）：结构生成门面逐轮回写，未接
+    /// 回调的任务（growth/lesson 等）保持 None——快照面只如实反映回写。
+    attempt: Option<u32>,
     node_id: Option<String>,
     topic: String,
     state: &'static str,
@@ -202,6 +208,12 @@ impl GenerationTaskGuard {
     /// 按 taskKey 匹配）。
     pub fn set_resolved_course_id(&self, course_id: &str) {
         self.registry.set_resolved_course_id(&self.key, course_id);
+    }
+
+    /// 回写当前重试轮次（v1 attempt 机器面）：结构生成任务体经 attempt 回调
+    /// 每轮调用（含首轮 1）；快照行如实带出（未回写 = None → null）。
+    pub fn set_attempt(&self, n: u32) {
+        self.registry.set_attempt(&self.key, n);
     }
 
     pub fn finish_done(self, detail: impl Into<String>) {
@@ -384,6 +396,7 @@ impl GenerationTaskRegistry {
                     kind,
                     course_id: course_id.to_owned(),
                     resolved_course_id: None,
+                    attempt: None,
                     node_id: node_id.map(str::to_owned),
                     topic: topic.to_owned(),
                     state: if gated { STATE_QUEUED } else { STATE_RUNNING },
@@ -508,6 +521,16 @@ impl GenerationTaskRegistry {
         let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
         if let Some(record) = tasks.get_mut(key) {
             record.resolved_course_id = Some(course_id.to_owned());
+        }
+    }
+
+    /// 回写当前重试轮次（v1 attempt 机器面）：见 [`TaskRecord::attempt`]。
+    /// 键不存在（已清理）则忽略；任意状态均可写——轮次回写发生在 running
+    /// 全程（首轮在任务启动后立即触发）。
+    pub(crate) fn set_attempt(&self, key: &str, n: u32) {
+        let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
+        if let Some(record) = tasks.get_mut(key) {
+            record.attempt = Some(n);
         }
     }
 
@@ -644,6 +667,7 @@ impl GenerationTaskRegistry {
                         kind: record.kind,
                         course_id: record.course_id.clone(),
                         resolved_course_id: record.resolved_course_id.clone(),
+                        attempt: record.attempt,
                         node_id: record.node_id.clone(),
                         topic: record.topic.clone(),
                         state: record.state,
@@ -692,6 +716,7 @@ impl GenerationTaskRegistry {
                     queued_at_ms: queued.then(|| record.queued_at_ms.unwrap_or_default()),
                     queue_position: queued.then(|| queue_position(record.sequence))
                         .flatten(),
+                    attempt: record.attempt,
                 }
             })
             .collect()
@@ -780,6 +805,70 @@ mod tests {
         assert_eq!(view.state, "failed");
         assert_eq!(view.course_id, "sess-2");
         assert_eq!(view.detail.as_deref(), Some("任务中断（未收尾即退出）"));
+    }
+
+    /// v1 attempt 机器面（绿面）：任务体逐轮回写轮次 → 快照行如实带出且随
+    /// 轮次更新；未接回调的 kind（growth/lesson 等）不回写 → view 行
+    /// attempt = None（serde 序列化为 null，旧消费者零感知）。
+    #[tokio::test]
+    async fn set_attempt_flows_to_snapshot_and_defaults_to_none() {
+        let registry = gated_registry();
+        let task = registry
+            .begin(KIND_STRUCTURE, "course-att-1", None, "知识结构生成")
+            .await
+            .unwrap();
+        task.set_attempt(1);
+        let key = format!("{KIND_STRUCTURE}:course-att-1:-");
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == key)
+            .expect("structure task row");
+        assert_eq!(view.attempt, Some(1), "首轮回写即见");
+        task.set_attempt(2);
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == key)
+            .expect("structure task row");
+        assert_eq!(view.attempt, Some(2), "attempt 随轮次更新");
+        task.finish_done("ok");
+        // 未接回调的 kind：不回写 = None。
+        let growth = registry
+            .begin(KIND_GROWTH, "course-att-2", None, "生长")
+            .await
+            .unwrap();
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == format!("{KIND_GROWTH}:course-att-2:-"))
+            .expect("growth task row");
+        assert_eq!(view.attempt, None, "未回写任务的 attempt 保持 None");
+        growth.finish_done("ok");
+    }
+
+    /// v1 attempt 机器面（重置面）：同键重跑替换终态记录，attempt 不继承
+    /// 上一轮——新任务从首轮（回写前 None）重新开始。
+    #[tokio::test]
+    async fn fresh_task_resets_attempt() {
+        let registry = gated_registry();
+        let task = registry
+            .begin(KIND_STRUCTURE, "course-att-3", None, "t")
+            .await
+            .unwrap();
+        task.set_attempt(3);
+        task.finish_failed("预算耗尽");
+        let task = registry
+            .begin(KIND_STRUCTURE, "course-att-3", None, "t")
+            .await
+            .unwrap();
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|row| row.key == format!("{KIND_STRUCTURE}:course-att-3:-"))
+            .expect("replacement task row");
+        assert_eq!(view.attempt, None, "新任务不得继承上一轮的 attempt");
+        task.finish_done("ok");
     }
 
     /// 测试闸：占位任务体 arrive 后停在 wait_open，等 open() 放行
