@@ -34,42 +34,6 @@ export const PHASE = {
 
 export type Phase = (typeof PHASE)[keyof typeof PHASE];
 
-/** 课程流可出现的 phase（与 Rust `phase::CORE + phase::COURSE + phase::LOOP` 对齐）。 */
-export const COURSE_PHASES: readonly string[] = [
-  PHASE.started,
-  PHASE.completed,
-  PHASE.failed,
-  PHASE.cancelled,
-  PHASE.publishing,
-  PHASE.triageStarted,
-  PHASE.triageCompleted,
-  PHASE.sourcePlanStarted,
-  PHASE.sourcePlanReady,
-  PHASE.coverageReady,
-  PHASE.basisDeclared,
-  PHASE.basisRevoked,
-  PHASE.round,
-  PHASE.audit,
-  PHASE.generate,
-  PHASE.repair,
-];
-
-/** 课时流可出现的 phase（与 Rust `phase::CORE + phase::LESSON + phase::LOOP` 对齐）。 */
-export const LESSON_PHASES: readonly string[] = [
-  PHASE.started,
-  PHASE.completed,
-  PHASE.failed,
-  PHASE.cancelled,
-  PHASE.resumed,
-  PHASE.retry,
-  PHASE.grounding,
-  PHASE.degraded,
-  PHASE.round,
-  PHASE.audit,
-  PHASE.generate,
-  PHASE.repair,
-];
-
 /** 新管线帧里算「可见活动」的 phase（triage/source_plan 阶段有读数行或
  * 至少推进步骤条——不能让等待提示把它们挤掉）。 */
 export const MODERN_VISIBLE_PHASES: readonly string[] = [
@@ -108,6 +72,3 @@ export const PET_PHASE_ALIAS: Record<string, string> = {
   [PHASE.repair]: PHASE.round,
   [PHASE.cancelled]: PHASE.failed,
 };
-
-export const isKnownPhase = (phases: readonly string[], phase: string): boolean =>
-  phases.includes(phase);
