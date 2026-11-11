@@ -637,6 +637,22 @@ mod tests {
             .with_ansi(false)
             .finish();
         let _log_guard = tracing::subscriber::set_default(subscriber);
+        // 捕获面免疫（s6 票）：tracing 的 callsite interest 是**进程级**缓存，
+        // 且在「首个触发该 callsite 的线程」的可见分发面上计算——那个线程若
+        // 没有存活的 set_default 守卫（多数测试不设守卫），interest 按全局
+        // 空表算成 Never 并永久缓存（tracing-core `NoSubscriber::
+        // register_callsite` 返回 never），此后连本用例自己的订阅者也收不到
+        // 该行——全套并行偶发挂捕获断言的根因。进程级一次性垫一个写进
+        // `io::sink` 的 TRACE 全局订阅者（set_global_default 首个成功者定，
+        // 后续调用 Err 被忽略）：此后任何线程注册任何 callsite 都算出
+        // Always；事件有守卫走线程局部订阅（捕获成立），无守卫落 sink
+        // （与原 no-dispatcher 同为丢弃，其它用例零行为变化）。
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt::Subscriber::builder()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(std::io::sink)
+                .finish(),
+        );
 
         let mut structure = golden_structure();
         structure.as_object_mut().unwrap().insert("type".into(), json!("quiz"));
