@@ -3956,6 +3956,7 @@ export type I18nKey =
   | 'learning.settings.saved'
   | 'learning.settings.title'
   | 'learning.settings.wideContent'
+  | 'learning.settings.wideContentDetail'
   | 'learning.settings.wideContentHint'
   | 'learning.source'
   | 'learning.sourceCountHint'

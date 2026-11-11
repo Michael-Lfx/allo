@@ -105,9 +105,8 @@ export function StructureGraphTab({
             </Text>
             <Tag size='small' color='arcoblue' className='!mx-0'>
               {t('learning.learningGraphMountCounts', {
-                mounted_count: mounts.mounted_count,
-                outside_count: mounts.outside_count,
-                not_evaluated_count: mounts.not_evaluated_count,
+                mounted: mounts.mounted_count,
+                rest: mounts.outside_count + mounts.not_evaluated_count,
               })}
             </Tag>
             {mounts.stale && (
