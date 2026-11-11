@@ -95,6 +95,14 @@ export function GrowthTaskPill({
   // 与 restoredTaskTopic 的 taskKindUnknown 同水位（宁缺不泄漏）。
   const title = growthCourseTitle(item.topic) ?? t('learning.growthPillTopicFallback');
   const progress = progressLine(t, item);
+  // F7 去重：进度行 Text 只写一次，Tooltip 仅失败诊断在场时包一层（arco
+  // Trigger 克隆单子节点挂事件，不引入包裹 DOM，排版不变）。
+  const progressNode = progress ? (
+    <Text type='secondary' className='block truncate text-12px'>
+      {progress}
+    </Text>
+  ) : null;
+  const shouldFoldDetail = item.status === 'failed' && item.detail;
   return (
     <Card size='small' className='shadow-lg'>
       <div className='flex items-center gap-12px'>
@@ -116,19 +124,11 @@ export function GrowthTaskPill({
               {title}
             </Text>
           )}
-          {progress && item.status === 'failed' && item.detail ? (
+          {progressNode && shouldFoldDetail ? (
             // 失败原因原文收纳进 Tooltip（o1：人面通用句 + 悬停诊断不丢）。
-            <Tooltip content={item.detail}>
-              <Text type='secondary' className='block truncate text-12px'>
-                {progress}
-              </Text>
-            </Tooltip>
+            <Tooltip content={item.detail}>{progressNode}</Tooltip>
           ) : (
-            progress && (
-              <Text type='secondary' className='block truncate text-12px'>
-                {progress}
-              </Text>
-            )
+            progressNode
           )}
         </div>
         {onView && (

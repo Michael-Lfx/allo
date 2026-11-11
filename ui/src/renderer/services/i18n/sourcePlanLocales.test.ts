@@ -25,6 +25,9 @@ const SOURCE_PLAN_KEYS = [
   // triage_completed 帧的读数与可展开明细
   'genTriageLine',
   'genTriageDegraded',
+  // F4：混合/重复/不确定三个残余计数收进「详情」折叠首行（模板串）
+  'genTriageDetails',
+  'genTriageDetailCounts',
   'genTriageExcludedTitle',
   'genTriageDuplicatesTitle',
   'genTriageUncertainTitle',
@@ -54,6 +57,7 @@ const SOURCE_PLAN_KEYS = [
 /** Interpolations each string must keep in BOTH locales. */
 const PLACEHOLDERS: readonly [string, readonly string[]][] = [
   ['genTriageLine', ['{{total}}', '{{core}}', '{{skipped}}']],
+  ['genTriageDetailCounts', ['{{mixed}}', '{{duplicate}}', '{{uncertain}}']],
   ['genUncertainTooMany', ['{{count}}']],
   ['genSourcePlanReady', ['{{chapters}}', '{{concepts}}']],
   ['genCoverageReady', ['{{covered}}', '{{skipped}}', '{{fallback}}']],

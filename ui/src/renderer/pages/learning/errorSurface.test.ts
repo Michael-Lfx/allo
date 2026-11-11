@@ -60,6 +60,15 @@ const NEW_KEYS: Record<string, { zh: string; en: string }> = {
     en: 'The generated result failed validation.',
   },
   systemActionReasonBusy: { zh: '服务繁忙', en: 'The service is busy.' },
+  // F6 语义修正新增两档：not implemented / internal error 不再借用上面两档。
+  systemActionReasonUnsupported: {
+    zh: '暂不支持的操作',
+    en: "This action isn't supported yet.",
+  },
+  systemActionReasonServiceUnavailable: {
+    zh: '服务暂时不可用',
+    en: 'The service is temporarily unavailable.',
+  },
   systemActionReasonUnknown: { zh: '未知原因', en: 'Unknown reason.' },
 };
 
@@ -149,6 +158,29 @@ describe('新词典 key 双语对称（红线 2，真实词典 JSON 遍历）', 
     }
   });
 
+  test('F2：五个动作失败 toast 标题 key 双语在场且 zh 侧两两可分辨', () => {
+    // o1 降级强弹窗时删了标题 key，五处失败 toast 同文分不清动作；F2 恢复。
+    const titleKeys = [
+      'learningGraphStructureFailed',
+      'learningGraphMountFailed',
+      'learningGraphRepairFailed',
+      'learningGraphBasisDeclareFailed',
+      'learningGraphGrowFailed',
+    ] as const;
+    const zh = learningZh as Record<string, unknown>;
+    const en = learningEn as Record<string, unknown>;
+    const zhValues: string[] = [];
+    for (const name of titleKeys) {
+      expect(typeof zh[name]).toBe('string');
+      expect((zh[name] as string).length).toBeGreaterThan(0);
+      expect(typeof en[name]).toBe('string');
+      expect((en[name] as string).length).toBeGreaterThan(0);
+      zhValues.push(zh[name] as string);
+    }
+    // 可分辨性：zh 标题两两不同（同文 = 评审裁决点名的病）。
+    expect(new Set(zhValues).size).toBe(titleKeys.length);
+  });
+
   test('zh-CN 与 en-US 的 learning 词典 key 集合完全一致', () => {
     const zh = Object.keys(learningZh as Record<string, unknown>).sort();
     const en = Object.keys(learningEn as Record<string, unknown>).sort();
@@ -168,7 +200,9 @@ const FORBIDDEN: Array<{ pattern: RegExp; why: string }> = [
   },
   // 首屏拼接：`loadFailed: ${error}` 把原始报文接进 Alert。
   { pattern: /loadFailed'\)}: /, why: 'loadFailed 拼接原始 error' },
-  // 系统动作簿失败原因原文直出（改走 reasonKey 分类映射）。
+  // 系统动作簿失败原因原文直出（主显示改走 reasonKey 分类映射）。原文现以
+  // `reasonDetail` 字段随行模型下传、只经 Tooltip 收纳（接线契约见
+  // systemActions.test.ts）——裸 `row.reason` 仍是被禁的旧直出惯用法。
   { pattern: /\brow\.reason\b/, why: 'row.reason 原文直出' },
 ];
 const EXEMPT_SOURCE_PATTERNS = new Set<string>(['utils.ts']);

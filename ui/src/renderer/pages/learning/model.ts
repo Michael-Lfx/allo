@@ -251,13 +251,26 @@ export function triageViewCounts(view: {
 
 /** 分诊计数行（生成进度视图 triageCompleted 帧用）：「已整理 N 个来源文件：
  * 核心 X、跳过 Y」。跳过 = noise + duplicate（两者都不进课程）；混合/重复/
- * 不确定等其余读数不上主行，走可展开明细（CourseGenerationProgress 的
- * triage 明细折叠）。 */
+ * 不确定三个残余计数不上主行，收进可展开明细的首行（`triageDetailCountsLine`
+ * ——CourseGenerationProgress 的 triage「详情」折叠），文件级列表走折叠内
+ * 二级分组。 */
 export function triageCountsLine(counts: TriageCountsLike, t: Translate): string {
   return t('learning.genTriageLine', {
     total: counts.total,
     core: counts.core,
     skipped: counts.noise + counts.duplicate,
+  });
+}
+
+/** 分诊明细首行（F4）：主行只报 total/core/跳过后被丢弃的三个残余计数
+ * （混合/重复/不确定）收进「详情」折叠首行——单一模板串，计数无处呈现的
+ * mixed 从此有归处。三个计数全为 0 时返回 null（不渲染「0、0、0」噪声行）。 */
+export function triageDetailCountsLine(counts: TriageCountsLike, t: Translate): string | null {
+  if (counts.mixed === 0 && counts.duplicate === 0 && counts.uncertain === 0) return null;
+  return t('learning.genTriageDetailCounts', {
+    mixed: counts.mixed,
+    duplicate: counts.duplicate,
+    uncertain: counts.uncertain,
   });
 }
 

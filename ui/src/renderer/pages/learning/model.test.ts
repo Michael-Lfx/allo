@@ -8,6 +8,7 @@ import {
   isModernPipeline,
   sourceCoverageState,
   triageCountsLine,
+  triageDetailCountsLine,
   triageViewCounts,
   uncertainTooMany,
   canGoToStep,
@@ -226,6 +227,19 @@ describe('t5 uncertain 过多判定与分诊计数适配', () => {
     expect(line).not.toContain('"mixed"');
     expect(line).not.toContain('"duplicate"');
     expect(line).not.toContain('"uncertain"');
+  });
+
+  test('明细首行（F4）：混合/重复/不确定三个残余计数收进 triage 明细折叠', () => {
+    // 三个计数互不相同：交错接线（mixed↔uncertain 换位等）当场红。
+    const line = triageDetailCountsLine({ ...counts, mixed: 3, duplicate: 2, uncertain: 5 }, t);
+    expect(line).toContain('learning.genTriageDetailCounts');
+    expect(line).toContain('"mixed":3');
+    expect(line).toContain('"duplicate":2');
+    expect(line).toContain('"uncertain":5');
+  });
+
+  test('明细首行（F4）：三个计数全为 0 时不出行（不渲染「0、0、0」噪声行）', () => {
+    expect(triageDetailCountsLine({ ...counts, mixed: 0, duplicate: 0, uncertain: 0 }, t)).toBeNull();
   });
 
   test('uncertain 过多：数量 ≥10 或超过 core 时提醒整理知识库', () => {
