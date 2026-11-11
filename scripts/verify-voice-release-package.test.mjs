@@ -312,6 +312,37 @@ test('findSquashfsOffset detects raw squashfs and AppImage with ELF prefix', asy
   }
 });
 
+test('Linux UniBuddy resources are accepted under usr/lib/UniBuddy/bin, including a nested RPM payload', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-linux-unibuddy-'));
+  try {
+    const bin = join(root, 'payload.cpio.contents', 'usr', 'lib', 'UniBuddy', 'bin');
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, 'voice-companion'), elf(0x3e));
+    await writeFile(join(bin, 'rg'), elf(0x3e));
+    await mkdir(join(bin, 'voice-licenses'), { recursive: true });
+    for (const name of REQUIRED_LICENSES) await writeFile(join(bin, 'voice-licenses', name), 'valid license\n');
+
+    const { problems } = verifyExtractedTree(root, { platform: 'linux', arch: 'x64' });
+    expect(problems).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Linux daemon outside usr/lib or usr/share is rejected', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-linux-misplaced-'));
+  try {
+    const bin = join(root, 'unrelated', 'bin');
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, 'voice-companion'), elf(0x3e));
+    await writeFile(join(bin, 'rg'), elf(0x3e));
+    const { problems } = verifyExtractedTree(root, { platform: 'linux', arch: 'x64' });
+    expect(problems.some((problem) => problem.includes('missing voice-companion'))).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('live Linux SquashFS AppImage unpacking integration test (when tools available)', async () => {
   const probeMk = spawnSync('mksquashfs', ['-version'], { stdio: 'ignore' });
   const probeUn = spawnSync('unsquashfs', ['-v'], { stdio: 'ignore' });

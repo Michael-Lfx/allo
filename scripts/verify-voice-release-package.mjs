@@ -322,21 +322,33 @@ export function findExpectedBin(root, platform) {
     return join(root, 'bin');
   }
 
-  // Linux: standard layout under usr/lib/Flowy/bin or bin/
+  const discovered = findPackagedDaemonBin(root, 'voice-companion');
+  if (discovered) return discovered;
   const linuxCandidates = [
-    join(root, 'usr', 'lib', 'Flowy', 'bin'),
-    join(root, 'usr', 'lib', 'flowy', 'bin'),
     join(root, 'usr', 'lib', 'UniBuddy', 'bin'),
     join(root, 'usr', 'lib', 'unibuddy', 'bin'),
-    join(root, 'usr', 'share', 'flowy', 'bin'),
-    join(root, 'usr', 'share', 'unibuddy', 'bin'),
-    join(root, 'usr', 'bin'),
+    join(root, 'usr', 'lib', 'Flowy', 'bin'),
+    join(root, 'usr', 'lib', 'flowy', 'bin'),
     join(root, 'bin'),
   ];
-  for (const cand of linuxCandidates) {
-    if (existsSync(cand)) return cand;
-  }
-  return linuxCandidates[0];
+  return linuxCandidates.find((candidate) => existsSync(candidate)) ?? linuxCandidates[0];
+}
+
+/** Directory names that hold the packaged voice daemon, not an arbitrary bin/. */
+function isPackagedDaemonBin(root, binDir) {
+  if (basename(binDir) !== 'bin') return false;
+  const parts = relative(root, binDir).split(/[\\/]/).filter(Boolean);
+  if (parts.length === 1) return true;
+  return parts.includes('lib') || parts.includes('share');
+}
+
+function findPackagedDaemonBin(root, daemonName) {
+  const matches = safeWalk(root).filter(
+    (file) => basename(file) === daemonName && isPackagedDaemonBin(root, dirname(file)),
+  );
+  if (!matches.length) return null;
+  matches.sort((left, right) => relative(root, left).length - relative(root, right).length);
+  return dirname(matches[0]);
 }
 
 /**
@@ -530,9 +542,22 @@ function extractWith7z(sevenZip, archive, destination) {
 }
 
 /** Pull nested archives (NSIS payload, updater archives, rpm cpio payloads) out of the first extraction. */
+function isNestedPayloadArchive(path) {
+  const name = basename(path).toLowerCase();
+  return (
+    name.endsWith('.7z') ||
+    name.endsWith('.zip') ||
+    name.endsWith('.cpio') ||
+    name.endsWith('.cpio.gz') ||
+    name.endsWith('.cpio.xz') ||
+    name.endsWith('.cpio.zst') ||
+    name.endsWith('.cpio.zstd')
+  );
+}
+
 function extractNestedArchives(sevenZip, root, notes) {
   for (let depth = 0; depth < 3; depth += 1) {
-    const archives = safeWalk(root).filter((path) => ['.7z', '.zip', '.cpio'].includes(extname(path).toLowerCase()));
+    const archives = safeWalk(root).filter((path) => isNestedPayloadArchive(path));
     let extracted = 0;
     for (const archive of archives) {
       const destination = `${archive}.contents`;

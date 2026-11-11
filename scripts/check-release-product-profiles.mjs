@@ -4,7 +4,9 @@
  *
  * The two products intentionally share one platform pipeline. This checker
  * prevents a later edit from accepting the UniBuddy tag while silently using
- * Flowy branding, channel pointers, or GitHub publication behavior.
+ * Flowy branding, channel pointers, or GitHub publication behavior. It also
+ * checks that the UniBuddy NSIS welcome sidebar and header bitmaps are the
+ * UniBuddy mark, not the Flowy images inherited from the base Tauri config.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -86,6 +88,52 @@ export function validateReleaseProductProfiles(workflowText) {
   return problems;
 }
 
+const UNIBUDDY_NSIS_BITMAPS = [
+  ['sidebarImage', 'icons/unibuddy/nsis-sidebar.bmp', 'icons/nsis-sidebar.bmp', 164, 314],
+  ['headerImage', 'icons/unibuddy/nsis-header.bmp', 'icons/nsis-header.bmp', 150, 57],
+];
+
+function readBmpInfo(bytes) {
+  return {
+    signature: bytes.toString('ascii', 0, 2),
+    width: bytes.readInt32LE(18),
+    height: bytes.readInt32LE(22),
+    bpp: bytes.readUInt16LE(28),
+    compression: bytes.readUInt32LE(30),
+  };
+}
+
+export function validateUnibuddyInstallerBitmaps(root = ROOT) {
+  const problems = [];
+  const configPath = join(root, 'apps/desktop/tauri.unibuddy.conf.json');
+  if (!existsSync(configPath)) return ['apps/desktop/tauri.unibuddy.conf.json: missing'];
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  if (config.mainBinaryName !== 'UniBuddy') {
+    problems.push('UniBuddy mainBinaryName must be UniBuddy so the installer extracts UniBuddy.exe');
+  }
+  const nsis = config.bundle?.windows?.nsis ?? {};
+  for (const [key, relativePath, flowyRelativePath, width, height] of UNIBUDDY_NSIS_BITMAPS) {
+    if (nsis[key] !== relativePath) {
+      problems.push(`UniBuddy nsis.${key} must be ${relativePath}`);
+    }
+    const filePath = join(root, 'apps/desktop', relativePath);
+    if (!existsSync(filePath)) {
+      problems.push(`${relativePath}: missing`);
+      continue;
+    }
+    const bytes = readFileSync(filePath);
+    const info = readBmpInfo(bytes);
+    if (info.signature !== 'BM' || info.width !== width || info.height !== height || info.bpp !== 24 || info.compression !== 0) {
+      problems.push(`${relativePath}: expected ${width}x${height} 24-bit uncompressed BMP`);
+    }
+    const flowyPath = join(root, 'apps/desktop', flowyRelativePath);
+    if (existsSync(flowyPath) && bytes.equals(readFileSync(flowyPath))) {
+      problems.push(`${relativePath}: still identical to the Flowy installer bitmap`);
+    }
+  }
+  return problems;
+}
+
 export function validateCheckedInReleaseProfiles(root = ROOT) {
   const workflowPath = join(root, WORKFLOW);
   const problems = [];
@@ -93,7 +141,10 @@ export function validateCheckedInReleaseProfiles(root = ROOT) {
   if (existsSync(join(root, FORBIDDEN_DUPLICATE))) {
     problems.push(`${FORBIDDEN_DUPLICATE}: duplicate product workflow must not exist`);
   }
-  return problems.concat(validateReleaseProductProfiles(readFileSync(workflowPath, 'utf8')));
+  return problems.concat(
+    validateReleaseProductProfiles(readFileSync(workflowPath, 'utf8')),
+    validateUnibuddyInstallerBitmaps(root),
+  );
 }
 
 function main() {
