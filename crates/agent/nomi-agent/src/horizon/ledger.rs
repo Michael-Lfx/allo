@@ -426,6 +426,10 @@ mod tests {
     /// per EndTurn. It must still be a real fingerprint, and it must be reported.
     #[tokio::test]
     async fn git_workspace_probe_tracks_a_new_file_and_reports_itself() {
+        // before→assert 之间要起两次 git 子进程（Windows 上窗口极宽），期间
+        // profiler 的 reset 测试若并行清零全局计数器，本断言必挂（s5 票）——
+        // 与 reset 测试互斥。纯 cfg(test) 面。
+        let _exclusive = crate::profiler::test_exclusive_lock();
         if std::process::Command::new("git")
             .arg("--version")
             .output()
