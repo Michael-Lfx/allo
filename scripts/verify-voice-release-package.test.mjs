@@ -7,6 +7,7 @@ import {
   REQUIRED_LICENSES,
   REQUIRED_VC_REDIST_DLLS,
   findSquashfsOffset,
+  requiredVcRedistDlls,
   verifyExtractedTree,
 } from './verify-voice-release-package.mjs';
 
@@ -104,6 +105,18 @@ test('a complete Windows resource tree passes with daemon, architecture, license
   try {
     const { problems } = verifyExtractedTree(root, { platform: 'windows', arch });
     expect(problems).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows ARM64 package passes without the x64-only vcruntime140_1.dll', async () => {
+  const { root, arch } = await makeTree({ arch: 'arm64', archBytes: pe(0xaa64), vcArchBytes: pe(0xaa64) });
+  try {
+    await rm(join(root, 'bin', 'vcruntime140_1.dll'));
+    const { problems } = verifyExtractedTree(root, { platform: 'windows', arch });
+    expect(problems).toEqual([]);
+    expect(requiredVcRedistDlls('arm64')).not.toContain('vcruntime140_1.dll');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -294,6 +307,37 @@ test('findSquashfsOffset detects raw squashfs and AppImage with ELF prefix', asy
     const truncatedPath = join(root, 'truncated.AppImage');
     await writeFile(truncatedPath, Buffer.from('too short'));
     expect(findSquashfsOffset(truncatedPath)).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Linux UniBuddy resources are accepted under usr/lib/UniBuddy/bin, including a nested RPM payload', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-linux-unibuddy-'));
+  try {
+    const bin = join(root, 'payload.cpio.contents', 'usr', 'lib', 'UniBuddy', 'bin');
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, 'voice-companion'), elf(0x3e));
+    await writeFile(join(bin, 'rg'), elf(0x3e));
+    await mkdir(join(bin, 'voice-licenses'), { recursive: true });
+    for (const name of REQUIRED_LICENSES) await writeFile(join(bin, 'voice-licenses', name), 'valid license\n');
+
+    const { problems } = verifyExtractedTree(root, { platform: 'linux', arch: 'x64' });
+    expect(problems).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Linux daemon outside usr/lib or usr/share is rejected', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-linux-misplaced-'));
+  try {
+    const bin = join(root, 'unrelated', 'bin');
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, 'voice-companion'), elf(0x3e));
+    await writeFile(join(bin, 'rg'), elf(0x3e));
+    const { problems } = verifyExtractedTree(root, { platform: 'linux', arch: 'x64' });
+    expect(problems.some((problem) => problem.includes('missing voice-companion'))).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

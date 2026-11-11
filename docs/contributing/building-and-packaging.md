@@ -87,9 +87,10 @@ the skip-UI overlay skips only the SPA rebuild, not native resource preparation.
 The preparation script uses Cargo's reported executable for the selected target
 and refuses skeleton artifacts or reuse of a stale executable after failure.
 
-Windows preparation also stages `msvcp140.dll`, `msvcp140_1.dll`,
-`vcruntime140.dll`, and `vcruntime140_1.dll` from the matching official Microsoft
-VC++ redistributable. It discovers the installed Visual Studio redistributable
+Windows preparation also stages `msvcp140.dll`, `msvcp140_1.dll`, and
+`vcruntime140.dll` from the matching official Microsoft VC++ redistributable.
+x64 packages also stage `vcruntime140_1.dll`, the x64 FH4 exception runtime.
+ARM64 packages omit it. It discovers the installed Visual Studio redistributable
 or accepts `VC_REDIST_CRT_DIR` as a build-time directory override. NSIS installs
 these files from `bin/` into the application's root for app-local loading.
 
