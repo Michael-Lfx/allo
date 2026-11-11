@@ -25,8 +25,8 @@ const PLAIN_KEYS: Record<string, { zh: string; en: string }> = {
     en: 'Each self-check question maps to a group of knowledge: if you can answer it, you already know that part.',
   },
   learningGraphGateDoorCoversNone: {
-    zh: '暂无对应知识块',
-    en: 'No knowledge blocks mapped yet',
+    zh: '暂无对应知识组',
+    en: 'No knowledge groups mapped yet',
   },
   learningGraphBasisConfirmContent: {
     zh: '确认后，勾选的 {{count}} 项内容视为你已掌握：不再生成或安排这部分学习，也不计 XP。声明只能进行一次，确认后不可修改。',
@@ -43,8 +43,8 @@ const PLAIN_KEYS: Record<string, { zh: string; en: string }> = {
     en: 'These were already declared before — nothing changed this time.',
   },
   learningGraphBasisDeclareDone: {
-    zh: '已记录 {{doorsCount}} 项内容你已会；不再安排学习，也不计 XP。对应知识块：{{blocksCount}} 个。',
-    en: "Saved as already known: {{doorsCount}} item(s); they won't be scheduled and no XP is awarded. Knowledge blocks covered: {{blocksCount}}.",
+    zh: '已记录 {{doorsCount}} 项内容你已会；不再安排学习，也不计 XP。对应知识组：{{blocksCount}} 个。',
+    en: "Saved as already known: {{doorsCount}} item(s); they won't be scheduled and no XP is awarded. Knowledge groups covered: {{blocksCount}}.",
   },
   learningGraphBasisOff: {
     zh: '此课程暂不支持声明已会',
