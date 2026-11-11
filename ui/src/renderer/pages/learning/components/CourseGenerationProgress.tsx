@@ -64,7 +64,7 @@ export function CourseGenerationProgress({
   /** 恢复态（页面挂载时从快照重建的生成任务）：终态面板只出指引文案，
    * 不提供重发式重试（见头注释）。缺省 = in-session。 */
   restored?: boolean;
-  /** completed 卡片结构态行（v4）：结构在跑时「知识结构生成中 · 已 mm:ss」
+  /** completed 卡片结构态行（v4）：结构在跑时「知识结构生成中 · 已 m:ss」
    * 的已翻译文案（index 由 structurePillWatch 同一快照轮询派生，非本组件
    * 自建轮询）。null/缺省 = 不渲染（终态/排队/未接管都无行——卡片是 HTTP
    * 响应快照，本票不刷新它）；仅 learning_graph 卡片渲染。 */

@@ -126,9 +126,9 @@ describe('CourseGenerationPill（v3 图课程流：label 覆盖 = structure 快�
   test('label 覆盖替换状态词典：新键文本进主行，既有 genBg 文案不出现', async () => {
     const html = await renderPill('zh-CN', {
       status: 'running',
-      label: '结构生成中 · 已 07:31',
+      label: '结构生成中 · 已 7:31',
     });
-    expect(html).toContain('结构生成中 · 已 07:31');
+    expect(html).toContain('结构生成中 · 已 7:31');
     expect(html).not.toContain('课程生成中');
     expect(html).not.toContain('生成完成');
     expect(count(html, SPINNER)).toBe(1);
@@ -168,9 +168,9 @@ describe('CourseGenerationPill（en-US 文案 + 定位分支）', () => {
   test('en-US：label 覆盖文本原样进主行', async () => {
     const html = await renderPill('en-US', {
       status: 'running',
-      label: 'Generating structure · 07:31 elapsed',
+      label: 'Generating structure · 7:31 elapsed',
     });
-    expect(html).toContain('Generating structure · 07:31 elapsed');
+    expect(html).toContain('Generating structure · 7:31 elapsed');
     expect(html).not.toContain('Generating course');
   });
 
