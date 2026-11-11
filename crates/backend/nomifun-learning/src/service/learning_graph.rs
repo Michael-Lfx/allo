@@ -287,6 +287,12 @@ impl LearningService {
         self.require_live_graph_course(course_id).await?;
         let token = task.token();
         task.set_step("structure", "正在生成知识结构与前置地形…");
+        // attempt 起步同步初始化（v1 spec「任务启动 set_step 处同步初始化，
+        // running 全程 attempt 非空」对齐）：首轮回写原本在生成循环入口——
+        // begin 到循环之间（require_live await + set_step + completer 解析）
+        // running 行 attempt=None。此处先置 1，循环回调照旧（首轮重复置 1
+        // 无害，拒收重试按轮次覆盖）。
+        task.set_attempt(1);
         self.emit_graph_event(
             course_id,
             "structure_started",
@@ -6396,5 +6402,65 @@ mod nomination_candidate_render_tests {
     fn no_nominations_renders_empty_string() {
         let text = LearningService::render_nomination_candidates(&[]);
         assert_eq!(text, "", "零提名 = 空串（块级省略，面前行为）");
+    }
+}
+
+/// F5（v1 spec「任务启动 set_step 处同步初始化，running 全程 attempt 非空」
+/// 的时机对齐）红绿样：attempt 在任务体起步（set_step 处）即同步置 1，不
+/// 依赖生成循环的首轮回写。取证构造：取消先于循环——loop 头的取消检查
+/// （`generate_structure_artifacts` 首行）先于首轮 `on_attempt` 回调，任务体
+/// 照常起步（require_live + set_step）并以 cancelled 收口。旧实现（生成循环
+/// 入口才初始化）此行 attempt = None；规格口径此行 attempt = Some(1)——
+/// 「启动后、循环前」的注册表快照时序钉子。测试住本文件：任务体方法对本
+/// 模块私有，tests.rs 夹具经 `pub(super)` 复用。
+#[cfg(test)]
+mod structure_attempt_init_tests {
+    use crate::service::tests::{job_test_service, seed_graph_course};
+
+    /// 启动后、循环前：取消先于生成循环 → 快照行 state=cancelled 且
+    /// attempt=Some(1)（循环零回调，轮次读数只能来自起步段）。
+    #[tokio::test]
+    async fn attempt_initializes_at_task_body_start_not_at_the_generation_loop() {
+        let (service, _knowledge, _owner) = job_test_service().await;
+        let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        let task = service
+            .generation_tasks
+            .begin(
+                crate::service::KIND_STRUCTURE,
+                course.as_str(),
+                None,
+                "知识结构生成",
+            )
+            .await
+            .expect("structure task registered");
+        // 循环前取消：任务体起步后，loop 头取消检查即退出——生成循环零回调，
+        // 快照行的 attempt 只能来自任务体起步段（set_step 同步初始化）。
+        let token = task.token();
+        token.cancel();
+        let result = service
+            .run_structure_generation_task(
+                &course,
+                None,
+                &crate::learning_graph::structure_gen::StructureInput::new("目标", None, None),
+                task,
+            )
+            .await;
+        assert!(result.is_err(), "循环前取消以 Conflict 收口");
+        let key = format!("{}:{}:-", crate::service::KIND_STRUCTURE, course.as_str());
+        let view = service
+            .generation_task_snapshot()
+            .into_iter()
+            .find(|row| row.key == key)
+            .expect("structure task row stays in the snapshot");
+        // state=cancelled 只能出自任务体 Err 臂的 finish_cancelled——它证明
+        // 任务体已起步跑过 set_step（guard drop 兜底是 failed，非 cancelled；
+        // finish 收尾会清 step，故 step 无从断言，终态本身即起步凭证）。
+        assert_eq!(view.state, "cancelled", "任务体起步且按取消终态收口");
+        assert_eq!(
+            view.attempt,
+            Some(1),
+            "启动后、循环前 attempt 已在场（set_step 处同步初始化，非循环回写）"
+        );
     }
 }
