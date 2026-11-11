@@ -5,6 +5,33 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Added an isolated UniBuddy desktop OTA channel on ModelScope, triggered by `unibuddy-vX.Y.Z` through the shared three-platform release workflow, with product-specific updater manifests and macOS permission text, strict CN/AI origin verification, no GitHub `releases/latest` coupling, and unchanged Flowy update routing.
+- Optimized computer-use observation with semantic, automatic, text, and visual modes; window-scoped screenshots; isolated per-caller references; richer target selectors; and wait-for-state actions across the stdio and gateway capability surfaces.
+- Aligned voice companion microphone device routing with industry standards: removed virtual device blacklists to ensure reliable capture across remote desktop environments (such as NetEase UU Remote and ToDesk), added explicit microphone device selection in settings with dynamic hot-swapping, and enforced physical microphone stream release for privacy indicator compliance.
+- Upgraded voice companion KWS engine to official 9MB Sherpa-ONNX bilingual Zipformer with dynamic Chinese pinyin and English CMUdict phoneme compilation, enabling real-time hot-reloaded custom wake words without restarting the application.
+- Overhauled offline TTS pipeline to bundle all 10 Matcha-TTS and Vocos acoustic assets into ModelManager's 17-file SHA-256 verification and download pipeline, prioritizing ModelScope and hf-mirror to prevent silent Edge-TTS fallbacks upon reinstallation.
+- Redesigned voice settings page into a unified, minimalist preferences card with single-line clearable wake words, automatic dirty pulse animations, and merged capability diagnostics.
+- Added locale-adaptive preset voice responses for standalone wake ("我在" / "I'm here") and session dismiss ("好的，再见" / "Goodbye") with punctuation-tolerant ASR prefix stripping.
+- Enhanced desktop pet window geometry with 6px edge docking and 36px threshold-buffered hover undocking, preventing bezel-jumping and re-docking loops across multi-monitor setups.
+- Voice companion runtime and host manager are physically modularized into dedicated submodules (`tests`, `announcements`, `diagnostics`, `recorder`), reducing single-file complexity by over 50% while strictly preserving all lock lifecycles, states, and function token signatures.
+- Fixed the voice session failure chain where task A completion dropped utterance B and caused utterance C to fail with `binding_invalid`. Added atomic lock-guarded ownership checks, accurate epoch advance reconciliation, and isolation of stale callbacks.
+- Prioritized ModelScope mirror across all network environments for local voice acoustic models and hardened download failover with HTTP Range chunk resumption and relaxed speed gate timeouts.
+- Added automated end-to-end joint trace pipeline (`bun run test:voice-joint-trace`) with built-in sanitized fixtures and cryptographic SHA-256 verification.
+- Hardened Windows process tree lifecycle management in test runners using native `CREATE_SUSPENDED` and Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), eliminating pre-assignment descendant escape windows and ensuring clean subtree termination.
+
+- Renamed the voice companion end to end: the daemon, its environment variables, control header, log files and the voice capability row in settings now use `voice-companion` only. The retired `ai-mate` names, environment fallbacks and packaging lookups were removed, and the settings row no longer borrows the old product name.
+- Fixed the voice self-check crash after reinstalling the voice suite: the English Matcha TTS download now includes the required espeak-ng voice definitions, an incomplete suite is detected as repairable instead of crashing the daemon, and self-check fixtures prefer the online voice that the English wake-word model was validated against. The voice settings page no longer repeats the verification title/count and its capability chain wraps without orphan arrows or overflow. Rows now stack by their own container width instead of a viewport media query (high-DPI desktop windows no longer collapse the row layout), and releasing disk space is a named "Uninstall voice suite" action that asks for confirmation in a dialog before deleting.
+## v1.7.0 - 2026-10-30
+
+- Windows installers include the voice companion daemon and app-local VC++ runtime. Hey Flowy wake aliases are expanded; a command spoken with a wake phrase follows the normal conversation route without a second transcription.
+- The home Experts catalog pages in, shows avatars, and can install an expert as a local preset. Marketplace cards and details use the same expert-style layout.
+- Vimax can pack multiple cameras of the same scene into one clip and plans duration against the model limit. The session skill bar above the composer is removed.
+- The login page opens Chinese and English privacy policy and terms of service.
+
+## v1.6.9 - 2026-10-29
+
+- Added local voice calling with model installation checks, conversation transcripts, queued tasks and one-time tool confirmations. Cancelling a task, interrupting speech and ending a call remain separate controls.
+- Voice task results now distinguish execution ending from goal completion, keep the original result text, and use the call language for result announcements. The home call entry opens setup when prerequisites are missing and prepares an expired readiness check before starting.
 - Fixed delegated Agents in non-YOLO sessions failing repeatedly on write tools. A task that needs a write tool but has no approval channel now fails before the child Agent starts instead of advertising the tool and retrying denied calls. Denied steps are reported as failed, and the denial message names the remedy (`[tools].allow_list`, auto-approve/YOLO, or running the write in the parent Agent).
 - Delegating from a Default or Auto-Accept Edits session now asks the user to approve the execution plan before any sub-Agent starts, instead of silently running the sub-Agents as YOLO. YOLO sessions, and hosts that never recorded a session mode (App Server, cron, IM channels, tests), keep starting immediately.
 - Fixed a read-only execution step being reported as failed for a missing artifact it was explicitly forbidden to create. A negated action list ("do not create/read/write any files") no longer counts as a promise to deliver those files.

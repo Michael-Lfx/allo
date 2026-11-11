@@ -49,6 +49,7 @@ use nomifun_shell::shell_routes;
 use nomifun_system::{connection_test_routes, system_routes};
 use nomifun_terminal::terminal_routes;
 use nomifun_webhook::webhook_routes;
+use nomifun_presentation::presentation_routes;
 
 use nomifun_secret::secret_routes;
 
@@ -395,6 +396,7 @@ pub async fn create_router(services: &AppServices) -> Router {
         // REST, model tools and boot recovery share the same public facade and
         // therefore one scheduler handle map and one durable state machine.
         agent_execution_engine: states.agent_execution.clone(),
+        presentation_service: states.presentation.service.clone(),
         // Gateway is only an adapter to the one process-wide browser hub. An
         // unsupported/degraded host leaves this as `None`; it never creates a
         // fallback BrowserTool/Chromium owner inside the Gateway.
@@ -865,6 +867,64 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    // Voice models management (desktop settings & voice companion model distribution)
+    let voice_models_dir = std::env::var("VOICE_COMPANION_MODEL_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| services.data_dir.join("models"));
+    nomifun_audio::register_active_model_dir(voice_models_dir.clone());
+    let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(voice_models_dir.clone()));
+    let voice_dialogue = Arc::new(crate::voice_dialogue::ProviderVoiceDialogue{
+        provider_repo:services.provider_repo.clone(),provider_model_repo:services.provider_model_repo.clone(),encryption_key:services.encryption_key,workspace:services.work_dir.clone(),
+    });
+    let voice_companion_mgr_builder = crate::voice_companion_manager::VoiceCompanionProcessManager::new(
+        voice_models_manager.clone(),
+        &services.data_dir,
+    )
+    .with_companion_service(services.companion_service.clone())
+    .with_dialogue(voice_dialogue.clone());
+
+    let voice_runtime:Arc<dyn crate::voice_tasks::VoiceTaskRuntime>=Arc::new(crate::voice_task_runtime::ConversationVoiceRuntime {
+        conversation:app_server_conversation.service.clone(),registry:services.agent_runtime_registry.clone(),models:voice_dialogue,
+        presets:Some(states.preset.service.clone()),
+    });
+    let dialogue_recorder=Arc::new(crate::voice_companion_manager::ConversationVoiceDialogueRecorder::new(
+        Arc::new(app_server_conversation.service.clone()),services.authoritative_user_id.to_string(),&services.data_dir,
+    ).with_companion_service(services.companion_service.clone()).with_target_config(voice_companion_mgr_builder.target_selection())
+        .with_active_window_candidate(voice_companion_mgr_builder.active_window_candidate()).with_execution_runtime(voice_runtime.clone()));
+    let voice_companion_manager=Arc::new(voice_companion_mgr_builder.with_recorder(dialogue_recorder)
+        .with_tasks(services.authoritative_user_id.to_string(),voice_runtime));
+    crate::voice_companion_manager::VoiceCompanionProcessManager::register_global(
+        voice_companion_manager.clone(),
+    );
+    {
+        let weak_companion = Arc::downgrade(&voice_companion_manager);
+        voice_models_manager.set_in_use_guard(Arc::new(move || {
+            weak_companion
+                .upgrade()
+                .is_some_and(|manager| manager.voice_suite_in_use())
+        }));
+    }
+    let companion_mgr_clone = voice_companion_manager.clone();
+    tokio::spawn(async move {
+        companion_mgr_clone.auto_start_if_enabled().await;
+    });
+
+    let voice_model_routes = nomifun_voice_models::voice_model_routes(voice_models_manager).layer(
+        axum::middleware::from_fn_with_state(
+            voice_companion_manager.clone(),
+            crate::voice_companion_manager::model_write_guard_middleware,
+        ),
+    );
+    let voice_all_routes = voice_model_routes
+        .merge(nomifun_audio::voice_diagnostics_routes_with_dir(Some(voice_models_dir)))
+        .merge(crate::voice_companion_manager::voice_companion_routes(voice_companion_manager));
+
+    let voice_models_authenticated = protect_instance_owner(
+        voice_all_routes,
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     // Unified agent listing/refresh/test routes + developer-mode eval lab.
     let agent_authenticated = protect_instance_owner(
         agent_routes(states.agent.clone()).merge(eval_routes(states.agent)),
@@ -930,6 +990,14 @@ pub fn create_router_with_all_state(
     // Skill avatars are referenced by plain `<img>` tags and must not sit
     // behind the owner auth middleware.
     let skill_icon_public = skill_icon_routes(states.skill.clone());
+
+    // Presentation capability: host-managed ppt-master install + readiness
+    // (same service instance the gateway presentation tools use).
+    let presentation_authenticated = protect_instance_owner(
+        presentation_routes(states.presentation.clone()),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
 
     // Channel routes protected by auth middleware
     let channel_authenticated = protect_instance_owner(
@@ -1032,6 +1100,16 @@ pub fn create_router_with_all_state(
         &auth_mw_state,
         &instance_owner_state,
     );
+
+    let expert_install_authenticated = crate::expert_package_install::expert_install_routes(
+        crate::expert_package_install::ExpertInstallState::new(
+            states.cloud.service.clone(),
+            states.preset.service.clone(),
+            states.skill.skill_paths.clone(),
+            services.data_dir.clone(),
+        ),
+    )
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     let cloud_authenticated = cloud_routes(states.cloud)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -1559,6 +1637,7 @@ pub fn create_router_with_all_state(
         .merge(remote_agent_authenticated)
         .merge(ssh_host_authenticated)
         .merge(meeting_authenticated)
+        .merge(voice_models_authenticated)
         .merge(agent_authenticated)
         .merge(model_failover_authenticated)
         .merge(connection_test_authenticated)
@@ -1567,6 +1646,7 @@ pub fn create_router_with_all_state(
         .merge(extension_authenticated)
         .merge(hub_authenticated)
         .merge(skill_authenticated)
+        .merge(presentation_authenticated)
         .merge(channel_authenticated)
         .merge(cron_authenticated)
         .merge(requirement_authenticated)
@@ -1585,6 +1665,7 @@ pub fn create_router_with_all_state(
         .merge(briefing_authenticated)
         .merge(video_canvas_authenticated)
         .merge(cloud_authenticated)
+        .merge(expert_install_authenticated)
         .merge(webhook_authenticated)
         .merge(agent_execution_authenticated)
         .merge(agent_execution_template_authenticated)

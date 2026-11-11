@@ -28,11 +28,10 @@ pub mod terminal_proof;
 
 pub use response_middleware::{
     CronCommand, CronCommandResult, CronCreateParams, CronUpdateParams, ICronService, MessageMiddleware,
-    MiddlewareResult, detect_cron_commands, has_cron_commands, strip_cron_commands, strip_mem_citations,
-    strip_think_tags,
+    MiddlewareResult, detect_cron_commands, has_cron_commands, strip_cron_commands, strip_media_delivery_tags,
+    strip_mem_citations, strip_think_tags,
 };
 pub use effective_model::{EffectiveModelLayers, resolve_effective_model};
-pub use boot::reconcile_running_conversations_on_boot;
 pub use failover_seam::FailoverSwitch;
 pub use agent_execution_port::AgentExecutionConversationPort;
 pub use execution_conversation_boundary::{

@@ -19,6 +19,8 @@ type TagManagementModalProps = {
   onClose: () => void;
   audienceTags: PresetTag[];
   scenarioTags: PresetTag[];
+  /** Skills no longer organize by audience. Presets keep both columns. */
+  hideAudience?: boolean;
   localeKey: string;
   onCreate: (req: CreatePresetTagRequest) => Promise<unknown>;
   onRename: (presetTagId: PresetTagId, label: string) => Promise<void>;
@@ -248,6 +250,7 @@ const TagManagementModal: React.FC<TagManagementModalProps> = ({
   onClose,
   audienceTags,
   scenarioTags,
+  hideAudience = false,
   localeKey,
   onCreate,
   onRename,
@@ -325,25 +328,31 @@ const TagManagementModal: React.FC<TagManagementModalProps> = ({
       data-testid='tag-management-modal'
     >
       <p className='mt-0 mb-12px text-12px leading-18px text-[var(--color-text-3)]'>
-        {t('settings.presetTagModalDesc', {
-          defaultValue:
-            'Organize presets by audience and skill scenario. Built-in tags are locked; your own tags can be renamed or deleted.',
-        })}
+        {hideAudience
+          ? t('settings.skillsHub.manageTagsDesc', {
+              defaultValue: 'Organize skills by scenario. Built-in tags are locked; your own tags can be renamed or deleted.',
+            })
+          : t('settings.presetTagModalDesc', {
+              defaultValue:
+                'Organize presets by audience and skill scenario. Built-in tags are locked; your own tags can be renamed or deleted.',
+            })}
       </p>
       <div
         className='grid gap-18px'
-        style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(240px, 100%), 1fr))' }}
+        style={{ gridTemplateColumns: hideAudience ? '1fr' : 'repeat(auto-fit, minmax(min(240px, 100%), 1fr))' }}
       >
-        <TagColumn
-          title={t('settings.presetTagAudience', { defaultValue: 'Audience' })}
-          dimension='audience'
-          tags={audienceTags}
-          localeKey={localeKey}
-          busy={busy}
-          onCreate={(label) => void handleCreate('audience', label)}
-          onRename={(key, label) => void handleRename(key, label)}
-          onDelete={handleDelete}
-        />
+        {hideAudience ? null : (
+          <TagColumn
+            title={t('settings.presetTagAudience', { defaultValue: 'Audience' })}
+            dimension='audience'
+            tags={audienceTags}
+            localeKey={localeKey}
+            busy={busy}
+            onCreate={(label) => void handleCreate('audience', label)}
+            onRename={(key, label) => void handleRename(key, label)}
+            onDelete={handleDelete}
+          />
+        )}
         <TagColumn
           title={t('settings.presetTagScenario', { defaultValue: 'Skill Scenario' })}
           dimension='scenario'

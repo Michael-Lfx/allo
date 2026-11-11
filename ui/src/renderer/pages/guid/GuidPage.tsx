@@ -1,5 +1,4 @@
-
-
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import type { IMcpServer } from '@/common/config/storage';
@@ -12,21 +11,41 @@ import {
   type TExecutionModelRef,
 } from '@/common/types/agentExecution/agentExecutionTypes';
 import { resolveLocaleKey } from '@/common/utils';
+import { abandonPendingVoiceCallIntent, discardPendingVoiceCallIntent, getVoiceCapabilities, getVoiceCompanionStatus, prepareVoiceSession, retryAbandonedVoiceCallIntent, startVoiceCallIntent, voiceStartNeedsPrepare, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
+import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
+import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';
+import type { DictationActivationResult, DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
+import { consumeDictationIntent, revokeDictationIntent, subscribeDictationIntent, type DictationIntent } from './dictationIntent';
+import { GUID_DRAFT_KEY, useComposerDraftStore } from '@/renderer/stores/composerDraftStore';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
 import { useSlashLauncherController } from '@/renderer/hooks/chat/useSlashLauncherController';
 import { useOpenFileSelector } from '@/renderer/hooks/file/useOpenFileSelector';
-import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
+import { installedPickerSkills, useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { appendSpeechTranscript } from '@/renderer/hooks/system/useSpeechInput';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
-import { CUSTOM_AVATAR_IMAGE_MAP } from './constants';
-import ComposerEntryStrip from './components/ComposerEntryStrip';
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
+import FeatureCards from './components/FeatureCards';
+import GuidHomeBrand from './components/GuidHomeBrand';
+import GuidVideoShortcut from './components/GuidVideoShortcut';
+import ShowcaseCards from './components/ShowcaseCards';
+import SlideOptionsControls from './presentation/SlideOptionsControls';
+import SlideCreatePanel from './presentation/SlideCreatePanel';
+import SlideCardWall from './presentation/SlideCardWall';
+import type { SlideSuggestion } from './presentation/slideGallery';
+import {
+  DEFAULT_SLIDE_OPTIONS,
+  SLIDE_TEMPLATE_IMPORT_EXTENSIONS,
+  applySlideHeader,
+  type SlideOptions,
+  type SlideTemplate,
+} from './presentation/slideOptions';
+import { PRESENTATION_SKILL_ID } from '@/common/adapter/ipcBridge';
 import { composerChipFromCatalog, type ComposerSkillChip } from '@/renderer/components/chat/composerSkill';
 import SkillAvatar from '@/renderer/pages/settings/skill/SkillAvatar';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
@@ -37,11 +56,10 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
-import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
 import { useTaskProfileStore } from '@/renderer/stores/taskProfileStore';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
-import PresetPickerDrawer from './components/PresetPickerDrawer';
+import GuidEntryFlyout, { GuidAnchoredFlyout, type GuidEntryFlyoutMode } from './components/GuidEntryFlyout';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import {
   catalogReasoningEffortForModel,
@@ -73,7 +91,6 @@ import { markLaunchInteractive } from '@/renderer/utils/analytics/launchTelemetr
 import { resolveGuidReadiness } from './readiness/guidReadiness';
 import { ConfigProvider } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { Aiming, Paperclip } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -85,6 +102,10 @@ import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
 import styles from './index.module.css';
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
+type HomeFlyout = GuidEntryFlyoutMode | 'knowledge';
+
+const asHomeFlyout = (key: string | undefined): HomeFlyout | null =>
+  key === 'preset' || key === 'skills' || key === 'knowledge' ? key : null;
 
 const GuidPage: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -114,9 +135,11 @@ const GuidPage: React.FC = () => {
 
   const localeKey = resolveLocaleKey(i18n.language);
 
-  // --- Drawer state ---
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerMode, setDrawerMode] = useState<'preset' | 'skills'>('preset');
+  const [entryFlyout, setEntryFlyout] = useState<HomeFlyout | null>(null);
+  const homeAddMenuPopoverRef = useRef<HTMLDivElement>(null);
+  const homeEntryFlyoutRef = useRef<HTMLDivElement>(null);
+  const entryFlyoutSuppressedKeyRef = useRef<string | null>(null);
+  const entryFlyoutPausedKeyRef = useRef<string | null>(null);
   const delegationPolicy: TDelegationPolicy = 'automatic';
   const decisionPolicy: TDecisionPolicy = 'automatic';
   const [collaborationModels, setCollaborationModels] = useState<TExecutionModelRef[]>(
@@ -125,6 +148,14 @@ const GuidPage: React.FC = () => {
   // `/goal` arms the first message as the conversation goal. The state is
   // intentionally command-driven rather than exposed as a persistent toolbar toggle.
   const [goalMode, setGoalMode] = useState(false);
+  // "Slides" work mode (Nomi only, home page only): the composer keeps the
+  // user's own text; the ppt-master option line and the managed Skill are
+  // added when the first message is sent.
+  const [slideOptions, setSlideOptions] = useState<SlideOptions | null>(null);
+  // "Create presentation" panel above the composer (topics + templates).
+  // It opens with slides mode. Dismissing the panel exits slides mode, and
+  // leaving slides mode closes the panel.
+  const [slidePanelOpen, setSlidePanelOpen] = useState(false);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
   );
@@ -150,7 +181,33 @@ const GuidPage: React.FC = () => {
 
   // Explicit Skill selections are scoped to this draft. Preset bindings are
   // resolved separately by the backend when the conversation is created.
-  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>([]);
+  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>(() => {
+    const raw = useComposerDraftStore.getState().drafts[GUID_DRAFT_KEY]?.skillChips;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((s): s is { skillId: string; name: string; source?: string; avatar?: string } =>
+        Boolean(s && typeof s.skillId === 'string' && typeof s.name === 'string')
+      )
+      .map((s) => ({
+        skillId: s.skillId,
+        name: s.name,
+        source: s.source || '',
+        ...(s.avatar ? { avatar: s.avatar } : {}),
+      }));
+  });
+
+  const homeSkillChipsRef = useRef(homeSkillChips);
+  useEffect(() => {
+    homeSkillChipsRef.current = homeSkillChips;
+    useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, {
+      skillChips: homeSkillChips.map((s) => ({
+        skillId: s.skillId,
+        name: s.name,
+        source: s.source,
+        avatar: s.avatar,
+      })),
+    });
+  }, [homeSkillChips]);
   const homeTokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
   const [homeTokenInputState, setHomeTokenInputState] = useState<ComposerTokenInputState>({
     projection: '',
@@ -257,6 +314,262 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
+  const handleSelectShowcaseApp = useCallback(() => {
+    guidInput.setInput(t('guid.home.showcaseAppPrompt'));
+    useTaskProfileStore.getState().setTaskProfile('coding');
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, [guidInput.setInput, t]);
+  const handleSelectShowcaseImage = useCallback(() => {
+    guidInput.setInput(t('guid.home.showcaseImagePrompt'));
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, [guidInput.setInput, t]);
+  useEffect(() => {
+    const report = () => { void reportVoiceCandidate(null, guidInput.dir?.trim() || null).catch(() => {}); };
+    report();
+    window.addEventListener('focus', report);
+    return () => window.removeEventListener('focus', report);
+  }, [guidInput.dir]);
+
+  // --- Voice Call entry state & handler ---
+  const { snapshot: voiceSnapshot } = useVoiceSnapshot();
+  const asrAvailability = useClawAsrAvailable();
+  const allowedDictationIntentId = (location.state as { dictationIntentId?: string } | null)?.dictationIntentId;
+  const [dictationIntent, setDictationIntent] = useState<DictationIntent | null>(null);
+  const dictationIntentRef = useRef<DictationIntent | null>(null);
+  const claimDictationIntent = useCallback((id: string) => {
+    const claimed = consumeDictationIntent('/', id);
+    if (claimed && dictationIntentRef.current?.id === id) {
+      dictationIntentRef.current = null;
+      setDictationIntent(null);
+    }
+    return claimed;
+  }, []);
+  const finishDictationIntent = useCallback((id: string, result: DictationActivationResult) => {
+    consumeDictationIntent('/', id);
+    dictationIntentRef.current = null;
+    setDictationIntent(null);
+    if (result === 'unavailable') {
+      Message.warning(t('voice.capabilities.textReplyUnavailable'));
+    } else if (result === 'stale') {
+      Message.warning(t('voice.capabilities.textReplyExpired'));
+    } else if (result === 'already-recording') {
+      Message.info(t('voice.capabilities.textReplyAlreadyRecording'));
+    }
+  }, [t]);
+  useEffect(() => {
+    const unsubscribe = subscribeDictationIntent((intent) => {
+      const next = intent?.route === '/' && intent.id === allowedDictationIntentId ? intent : null;
+      dictationIntentRef.current = next;
+      setDictationIntent(next);
+    });
+    return () => {
+      unsubscribe();
+      const pending = dictationIntentRef.current;
+      if (pending) revokeDictationIntent(pending.id);
+      dictationIntentRef.current = null;
+    };
+  }, [allowedDictationIntentId]);
+  useEffect(() => {
+    const pending = dictationIntentRef.current;
+    if (pending && asrAvailability.ready && !asrAvailability.available) {
+      finishDictationIntent(pending.id, 'unavailable');
+    }
+  }, [asrAvailability.available, asrAvailability.ready, finishDictationIntent]);
+  const dictationActivation = useMemo<DictationActivationRequest | undefined>(
+    () => dictationIntent
+      ? { id: dictationIntent.id, claim: () => claimDictationIntent(dictationIntent.id), onResult: (result) => finishDictationIntent(dictationIntent.id, result) }
+      : undefined,
+    [dictationIntent, claimDictationIntent, finishDictationIntent],
+  );
+  const isVoiceActive =
+    Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle';
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
+  const [voicePrerequisite, setVoicePrerequisite] = useState<'loading' | 'ready' | 'setup' | 'failed' | 'unavailable'>('loading');
+  const [voiceFailureReason, setVoiceFailureReason] = useState<string | null>(null);
+  const inFlightVoiceCallRef = useRef(false);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (inFlightVoiceCallRef.current) void abandonPendingVoiceCallIntent();
+    };
+  }, []);
+  const refreshVoicePrerequisite = useCallback(async () => {
+    try {
+      const [status, report] = await Promise.all([getVoiceCompanionStatus(), getVoiceCapabilities()]);
+      setVoiceFailureReason(report?.reason_code ?? null);
+      if (!status.models_ready || !status.autostart) {
+        setVoicePrerequisite('unavailable');
+      } else if (report?.can_start_full_call) {
+        setVoicePrerequisite('ready');
+      } else if (!report || report.reason_code === 'self_check_required') {
+        setVoicePrerequisite('setup');
+      } else {
+        setVoicePrerequisite('failed');
+      }
+    } catch {
+      setVoicePrerequisite('unavailable');
+    }
+  }, []);
+  useEffect(() => {
+    void refreshVoicePrerequisite();
+    const onFocus = () => { void refreshVoicePrerequisite(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshVoicePrerequisite]);
+
+  const handleStartVoiceCall = useCallback(async () => {
+    if (inFlightVoiceCallRef.current) return;
+    if (isVoiceConnecting) return;
+    if (isVoiceActive && voiceSnapshot?.binding?.conversation_id) {
+      await navigate(`/conversation/${encodeURIComponent(voiceSnapshot.binding.conversation_id)}`);
+      return;
+    }
+
+    // Own the whole async preparation/start lifecycle, not only the final fetch.
+    inFlightVoiceCallRef.current = true;
+    setIsVoiceConnecting(true);
+    const releaseGate = () => {
+      inFlightVoiceCallRef.current = false;
+      if (isMountedRef.current) setIsVoiceConnecting(false);
+    };
+
+    if (voicePrerequisite === 'loading') {
+      Message.info(t('voice.entry.checking'));
+      releaseGate();
+      return;
+    }
+    if (voicePrerequisite === 'unavailable') {
+      Message.warning(t('voice.entry.setupRequired'));
+      releaseGate();
+      await navigate('/settings/voice');
+      return;
+    }
+    if (voicePrerequisite === 'failed') {
+      const reason = voiceFailureReason ? t(`voice.capabilities.reason.${voiceFailureReason}`, { defaultValue: voiceFailureReason }) : '';
+      Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      releaseGate();
+      await navigate('/settings/voice');
+      return;
+    }
+    let prerequisiteReady = voicePrerequisite === 'ready';
+    if (!prerequisiteReady) {
+      try {
+        const report = await prepareVoiceSession(true, localeKey, 'preparing');
+        if (!isMountedRef.current) {
+          releaseGate();
+          return;
+        }
+        prerequisiteReady = report.can_start_full_call;
+        setVoiceFailureReason(report.reason_code ?? null);
+        setVoicePrerequisite(prerequisiteReady ? 'ready' : 'failed');
+      } catch (error) {
+        if (!isMountedRef.current) {
+          releaseGate();
+          return;
+        }
+        const failure = error as { code?: string };
+        Message.warning(
+          failure.code === 'models_not_installed'
+            ? t('voice.errors.modelMissing')
+            : t('voice.capabilities.notReady'),
+        );
+        releaseGate();
+        await navigate('/settings/voice');
+        return;
+      }
+      if (!prerequisiteReady) {
+        releaseGate();
+        await navigate('/settings/voice');
+        return;
+      }
+    }
+
+    const target: VoiceCallTarget = {
+      kind: 'new_voice_conversation',
+      workspace: guidInput.dir?.trim() || null,
+      model: isNomiAgent ? mainModelRef : undefined,
+      preset_id: isNomiAgent && agentSelection.is_presetAgent ? agentSelection.selectedAgentInfo?.preset_id : undefined,
+    };
+    const sessionMode = isNomiAgent
+      ? (agentSelection.selectedMode as 'default' | 'auto_edit' | 'yolo')
+      : undefined;
+    try {
+      const currentSkills = homeSkillChipsRef.current;
+      useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, {
+        text: guidInput.input,
+        files: guidInput.files,
+        dir: guidInput.dir,
+        skillChips: currentSkills.map((s) => ({
+          skillId: s.skillId,
+          name: s.name,
+          source: s.source,
+          avatar: s.avatar,
+        })),
+      });
+
+      const res = await startVoiceCallIntent(target, sessionMode, localeKey);
+      if (!isMountedRef.current) return;
+      await navigate(`/conversation/${encodeURIComponent(res.conversation_id)}`);
+    } catch (err: unknown) {
+      if (!isMountedRef.current) return;
+      const errorObj = err as { status?: number; code?: string; active_conversation_id?: string; reason_code?: string; requires_check?: boolean; degraded_text_only?: boolean; call_request_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_superseded') return;
+      if (errorObj?.code === 'voice_call_cancel_unknown') {
+        const recovered = await retryAbandonedVoiceCallIntent();
+        if (!isMountedRef.current) return;
+        Message.warning(t(recovered ? 'voice.entry.cancelRecovered' : 'voice.entry.cancelUnknown'));
+        return;
+      }
+      const needsPrepare = voiceStartNeedsPrepare(errorObj);
+      if (errorObj?.code === 'voice_call_starting') {
+        Message.warning(t('voice.entry.callConflictStarting', { defaultValue: '上一通通话正在清理释放，请稍候重试' }));
+        return;
+      } else if (errorObj?.code === 'voice_call_conflict') {
+        Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，请先挂断' }));
+        return;
+      } else if (needsPrepare) {
+        try {
+          const report = await prepareVoiceSession(true, localeKey, 'preparing');
+          if (!isMountedRef.current) return;
+          if (!report.can_start_full_call) {
+            discardPendingVoiceCallIntent(errorObj?.call_request_id);
+            const reason = report.reason_code
+              ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
+              : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
+            Message.warning(
+              `${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}${report.degraded_text_only ? ` ${t('voice.capabilities.textOnly')}` : ''}`
+            );
+            return;
+          }
+          const retry = await startVoiceCallIntent(target, sessionMode, localeKey);
+          if (!isMountedRef.current) return;
+          await navigate(`/conversation/${encodeURIComponent(retry.conversation_id)}`);
+        } catch (prepareError) {
+          if (!isMountedRef.current) return;
+          const failure = prepareError as { code?: string; message?: string };
+          if (failure.code === 'voice_call_superseded') return;
+          discardPendingVoiceCallIntent(errorObj?.call_request_id);
+          Message.error(
+            failure.code === 'models_not_installed'
+              ? t('voice.errors.modelMissing')
+              : failure.message || t('voice.capabilities.checkFailed'),
+          );
+        }
+      } else if (errorObj?.code === 'voice_suite_not_ready') {
+        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
+        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      } else {
+        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+      }
+    } finally {
+      inFlightVoiceCallRef.current = false;
+      if (isMountedRef.current) {
+        setIsVoiceConnecting(false);
+      }
+    }
+  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, voicePrerequisite, voiceFailureReason, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, mainModelRef, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id, agentSelection.selectedMode, navigate, t, localeKey]);
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
@@ -314,9 +627,13 @@ const GuidPage: React.FC = () => {
   );
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
+  const pickerSkills = useMemo(
+    () => installedPickerSkills(catalogSkills),
+    [catalogSkills],
+  );
   const handleToggleHomeSkill = useCallback(
     (skillId: string) => {
-      const skill = catalogSkills.find((candidate) => candidate.skillId === skillId);
+      const skill = pickerSkills.find((candidate) => candidate.skillId === skillId);
       if (!skill) return;
       const chip = composerChipFromCatalog(
         skill,
@@ -330,13 +647,80 @@ const GuidPage: React.FC = () => {
         return [...current, chip];
       });
     },
-    [catalogSkills, localeKey, t],
+    [pickerSkills, localeKey, t],
+  );
+  const enterSlideMode = useCallback(() => {
+    setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
+    setSlidePanelOpen(true);
+    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+  }, []);
+  const exitSlideMode = useCallback(() => {
+    setSlideOptions(null);
+  }, []);
+  const handleSlidesChange = useCallback(
+    (active: boolean) => (active ? enterSlideMode() : exitSlideMode()),
+    [enterSlideMode, exitSlideMode],
   );
   useEffect(() => {
     if (!supportsHomeGoalCommand) {
       setGoalMode(false);
+      setSlideOptions(null);
     }
   }, [supportsHomeGoalCommand]);
+  useEffect(() => {
+    if (slideOptions === null) setSlidePanelOpen(false);
+  }, [slideOptions]);
+  const slideStudioOpen = supportsHomeGoalCommand && slideOptions !== null && slidePanelOpen;
+  // An imported template is the attached reference file: removing the chip (or
+  // a draft reset) drops the template choice too.
+  const importedTemplatePath = slideOptions?.template.kind === 'import' ? slideOptions.template.path : null;
+  useEffect(() => {
+    if (importedTemplatePath !== null && !guidInput.files.includes(importedTemplatePath)) {
+      setSlideOptions((current) => (current ? { ...current, template: DEFAULT_SLIDE_OPTIONS.template } : current));
+    }
+  }, [guidInput.files, importedTemplatePath]);
+  const handleSelectSlideTemplate = useCallback(
+    (template: SlideTemplate) => {
+      // Leaving an imported template detaches the reference file it added.
+      if (importedTemplatePath !== null && (template.kind !== 'import' || template.path !== importedTemplatePath)) {
+        guidInput.handleRemoveFile(importedTemplatePath);
+      }
+      setSlideOptions((current) => ({ ...(current ?? DEFAULT_SLIDE_OPTIONS), template }));
+    },
+    [guidInput.handleRemoveFile, importedTemplatePath],
+  );
+  const handleSelectSlideSuggestion = useCallback(
+    (suggestion: SlideSuggestion) => {
+      guidInput.setInput(t(`presentation.create.suggestions.${suggestion.id}.prompt`));
+      // A topic brings its matching theme only while no template was chosen.
+      if (slideOptions?.template.kind === 'free') {
+        setSlideOptions({ ...slideOptions, template: { kind: 'theme', id: suggestion.theme } });
+      }
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput, slideOptions, t],
+  );
+  const handleImportSlideTemplate = useCallback(() => {
+    void ipcBridge.dialog.showOpen
+      .invoke({
+        properties: ['openFile'],
+        filters: [{ name: t('presentation.create.importFilter'), extensions: [...SLIDE_TEMPLATE_IMPORT_EXTENSIONS] }],
+      })
+      .then((paths) => {
+        const path = paths?.[0];
+        if (!path) return;
+        // Same admission as any attachment (image limit); a rejected file
+        // never shows up in `files`, so the effect above reverts the choice.
+        guidInput.handleFilesUploaded([path]);
+        handleSelectSlideTemplate({ kind: 'import', path });
+      })
+      .catch((error) => {
+        console.warn('[GuidPage] Failed to open template file selector:', error);
+      });
+  }, [guidInput.handleFilesUploaded, handleSelectSlideTemplate, t]);
+  // The managed ppt-master is in the catalog only while it is installed; before
+  // that the option line tells Nomi to check and install it first.
+  const managedSlidesSkillReady = pickerSkills.some((skill) => skill.skillId === PRESENTATION_SKILL_ID);
   const homeLauncherItems = useMemo<SlashLauncherItem[]>(
     () =>
       [
@@ -352,10 +736,15 @@ const GuidPage: React.FC = () => {
               kind: 'system' as const,
               name: 'goal',
               description: t('guid.goalMode.tooltip'),
+            }, {
+              id: 'system:ppt',
+              kind: 'system' as const,
+              name: 'ppt',
+              description: t('presentation.home.slashDescription'),
             }]
           : []),
         ...(supportsHomeSkillLoading
-          ? catalogSkills.map((skill) => {
+          ? pickerSkills.map((skill) => {
               const display = resolveSkillDisplay(
                 {
                   name: skill.name,
@@ -372,11 +761,12 @@ const GuidPage: React.FC = () => {
                 description: display.description,
                 source: t(`conversation.skills.sources.${skill.source}`, { defaultValue: skill.source }),
                 avatar: skill.avatar ?? undefined,
+                tags: [skill.name],
               };
             })
           : []),
       ],
-    [catalogSkills, localeKey, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
+    [pickerSkills, localeKey, supportsHomeGoalCommand, supportsHomeSkillLoading, t]
   );
   const homeSlashController = useSlashLauncherController({
     input: homeTokenInputState.projection,
@@ -396,6 +786,15 @@ const GuidPage: React.FC = () => {
         }
         return;
       }
+      if (item.name === 'ppt') {
+        enterSlideMode();
+        if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
+          guidInput.setInput(
+            replaceActiveSlashToken(guidInput.input, '', homeTokenInputState.textSelection.end),
+          );
+        }
+        return;
+      }
       if (item.name === 'goal') {
         setGoalMode(true);
         if (!homeTokenInputRef.current?.replaceActiveSlashToken()) {
@@ -410,7 +809,7 @@ const GuidPage: React.FC = () => {
       }
     },
     onSelectSkill: (item) => {
-      const skill = catalogSkills.find((candidate) => candidate.skillId === item.id);
+      const skill = pickerSkills.find((candidate) => candidate.skillId === item.id);
       if (!skill) {
         return;
       }
@@ -464,29 +863,70 @@ const GuidPage: React.FC = () => {
       {
         key: 'files',
         label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
-        section: t('common.add'),
-        icon: <Paperclip theme='outline' size='17' />,
+        icon: <FlowyIcon name='paperclip' size={16} />,
+      },
+      {
+        key: 'preset',
+        label: t('guid.drawer.presetTab', { defaultValue: '专家' }),
+        icon: <FlowyIcon name='graduationCap' size={16} />,
+        trailing: <FlowyIcon name='right' size={14} />,
+      },
+      ...(supportsHomeSkillLoading
+        ? [
+            {
+              key: 'skills',
+              label: t('guid.entry.skills', { defaultValue: 'Use skills' }),
+              icon: <FlowyIcon name='puzzle' size={16} />,
+              trailing: <FlowyIcon name='right' size={14} />,
+            },
+          ]
+        : []),
+      {
+        key: 'knowledge',
+        label: t('knowledge.control.label', { defaultValue: '知识库' }),
+        icon: <FlowyIcon name='book' size={16} />,
+        trailing: <FlowyIcon name='right' size={14} />,
       },
       ...(supportsHomeGoalCommand
         ? [
             {
               key: 'goal',
               label: t('conversation.goal.chip.label', { defaultValue: 'Goal' }),
-              description: t('guid.goalMode.tooltip'),
-              icon: <Aiming theme='outline' size='17' />,
+              icon: <FlowyIcon name='aiming' size={16} />,
             },
           ]
         : []),
     ],
-    [supportsHomeGoalCommand, t],
+    [supportsHomeGoalCommand, supportsHomeSkillLoading, t],
   );
   const handleOpenHomeAddMenu = useCallback(() => {
     setHomeAddMenuActiveIndex(0);
     setIsHomeAddMenuOpen(true);
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
   }, []);
+  const closeEntryFlyout = useCallback((suppressKey?: string | null) => {
+    entryFlyoutSuppressedKeyRef.current = suppressKey ?? entryFlyout;
+    setEntryFlyout(null);
+  }, [entryFlyout]);
   const handleHomeAddMenuSelect = useCallback(
     (item: SlashCommandMenuItem) => {
+      const flyoutKey = asHomeFlyout(item.key);
+      if (flyoutKey) {
+        const nextIndex = homeAddMenuItems.findIndex((candidate) => candidate.key === flyoutKey);
+        if (nextIndex >= 0) setHomeAddMenuActiveIndex(nextIndex);
+        entryFlyoutPausedKeyRef.current = null;
+        setEntryFlyout((current) => {
+          if (current === flyoutKey) {
+            entryFlyoutSuppressedKeyRef.current = flyoutKey;
+            return null;
+          }
+          entryFlyoutSuppressedKeyRef.current = null;
+          return flyoutKey;
+        });
+        return;
+      }
+      setEntryFlyout(null);
+      entryFlyoutSuppressedKeyRef.current = null;
       setIsHomeAddMenuOpen(false);
       if (item.key === 'files') {
         openHomeFileSelector();
@@ -494,17 +934,37 @@ const GuidPage: React.FC = () => {
         setGoalMode(true);
       }
     },
-    [openHomeFileSelector],
+    [homeAddMenuItems, openHomeFileSelector],
   );
   const handleHomeAddMenuKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (!isHomeAddMenuOpen || homeAddMenuItems.length === 0) {
         return false;
       }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setIsHomeAddMenuOpen(false);
-        return true;
+      if (event.key === 'Escape' || event.key === 'ArrowLeft') {
+        if (entryFlyout) {
+          event.preventDefault();
+          closeEntryFlyout(entryFlyout);
+          return true;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setIsHomeAddMenuOpen(false);
+          return true;
+        }
+        return false;
+      }
+      if (event.key === 'ArrowRight') {
+        const activeItem = homeAddMenuItems[homeAddMenuActiveIndex];
+        const flyoutKey = asHomeFlyout(activeItem?.key);
+        if (flyoutKey) {
+          event.preventDefault();
+          entryFlyoutSuppressedKeyRef.current = null;
+          entryFlyoutPausedKeyRef.current = null;
+          setEntryFlyout(flyoutKey);
+          return true;
+        }
+        return false;
       }
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -519,15 +979,58 @@ const GuidPage: React.FC = () => {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         const activeItem = homeAddMenuItems[homeAddMenuActiveIndex];
-        if (activeItem) {
-          handleHomeAddMenuSelect(activeItem);
+        if (!activeItem) return true;
+        const flyoutKey = asHomeFlyout(activeItem.key);
+        if (flyoutKey) {
+          entryFlyoutSuppressedKeyRef.current = null;
+          entryFlyoutPausedKeyRef.current = null;
+          setEntryFlyout(flyoutKey);
+          return true;
         }
+        handleHomeAddMenuSelect(activeItem);
         return true;
       }
       return false;
     },
-    [handleHomeAddMenuSelect, homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen],
+    [closeEntryFlyout, entryFlyout, handleHomeAddMenuSelect, homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen],
   );
+  const handleAddMenuEscape = useCallback(
+    (event: KeyboardEvent) => {
+      if (!entryFlyout) return false;
+      event.preventDefault();
+      closeEntryFlyout(entryFlyout);
+      return true;
+    },
+    [closeEntryFlyout, entryFlyout],
+  );
+  useEffect(() => {
+    if (!isHomeAddMenuOpen) {
+      entryFlyoutSuppressedKeyRef.current = null;
+      entryFlyoutPausedKeyRef.current = null;
+      setEntryFlyout(null);
+      return;
+    }
+    const item = homeAddMenuItems[homeAddMenuActiveIndex];
+    if (entryFlyoutPausedKeyRef.current && entryFlyoutPausedKeyRef.current !== item?.key) {
+      entryFlyoutPausedKeyRef.current = null;
+    }
+    const flyoutKey = asHomeFlyout(item?.key);
+    if (!flyoutKey) {
+      entryFlyoutSuppressedKeyRef.current = null;
+      setEntryFlyout(null);
+      return;
+    }
+    if (entryFlyoutSuppressedKeyRef.current === flyoutKey || entryFlyoutPausedKeyRef.current === flyoutKey) return;
+    const key = flyoutKey;
+    // Wait briefly so the click that enters the row opens the flyout instead
+    // of toggling a panel the pointer movement just revealed.
+    const timer = window.setTimeout(() => {
+      if (entryFlyoutPausedKeyRef.current === key || entryFlyoutSuppressedKeyRef.current === key) return;
+      entryFlyoutSuppressedKeyRef.current = null;
+      setEntryFlyout(key);
+    }, 160);
+    return () => window.clearTimeout(timer);
+  }, [homeAddMenuActiveIndex, homeAddMenuItems, isHomeAddMenuOpen]);
   useEffect(() => {
     if (homeSlashController.isOpen) {
       setIsHomeAddMenuOpen(false);
@@ -536,6 +1039,17 @@ const GuidPage: React.FC = () => {
   const homeInitialSkillIds = useMemo(
     () => (supportsHomeSkillLoading ? homeSkillChips.map((skill) => skill.skillId) : []),
     [homeSkillChips, supportsHomeSkillLoading],
+  );
+  // Slides mode applies only to a real brief: an empty composer stays empty
+  // (the send button stays disabled), and nothing is added to it visibly.
+  const slidesBrief = supportsHomeGoalCommand && slideOptions !== null && guidInput.input.trim().length > 0;
+  const sendInput = slidesBrief ? applySlideHeader(guidInput.input, slideOptions) : guidInput.input;
+  const sendSkillIds = useMemo(
+    () =>
+      slidesBrief && managedSlidesSkillReady && !homeInitialSkillIds.includes(PRESENTATION_SKILL_ID)
+        ? [...homeInitialSkillIds, PRESENTATION_SKILL_ID]
+        : homeInitialSkillIds,
+    [homeInitialSkillIds, managedSlidesSkillReady, slidesBrief],
   );
 
   // Advanced per-conversation drafts (knowledge mounts / AutoWork / IDMM) —
@@ -581,10 +1095,6 @@ const GuidPage: React.FC = () => {
     agentSelection.selectedAgent,
   ]);
 
-  const showTaskProfile =
-    agentSelection.selectedAgent === 'nomi' ||
-    agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
-
   const readiness = useMemo(
     () =>
       resolveGuidReadiness({
@@ -618,8 +1128,8 @@ const GuidPage: React.FC = () => {
   }, [guidInput.setDir]);
 
   const send = useGuidSend({
-    // Input state
-    input: guidInput.input,
+    // Input state (slides mode prepends the ppt-master option line here)
+    input: sendInput,
     setInput: guidInput.setInput,
     files: guidInput.files,
     setFiles: guidInput.setFiles,
@@ -644,7 +1154,7 @@ const GuidPage: React.FC = () => {
     findAgentByKey: agentSelection.findAgentByKey,
     getEffectiveAgentType: agentSelection.getEffectiveAgentType,
     onStalePreset: handleStalePreset,
-    initialSkillIds: homeInitialSkillIds,
+    initialSkillIds: sendSkillIds,
     onInitialSkillsSent: () => setHomeSkillChips([]),
     availableMcpServers,
     selectedMcpServerIds: guidSelectedMcpServerIds,
@@ -833,38 +1343,6 @@ const GuidPage: React.FC = () => {
       (item) => item.preset_id === agentSelection.selectedAgentInfo?.preset_id,
     );
   }, [agentSelection.presets, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id]);
-
-  const heroTitle = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return t('conversation.welcome.title');
-    const i18nName = selectedPresetRecord?.name_i18n?.[localeKey];
-    if (i18nName) return i18nName;
-    return mention.selectedAgentLabel || t('conversation.welcome.title');
-  }, [agentSelection.is_presetAgent, selectedPresetRecord, localeKey, mention.selectedAgentLabel, t]);
-
-  const selectedPresetAvatar = useMemo(() => {
-    if (!agentSelection.is_presetAgent) return null;
-    const selectedPreset = agentSelection.presets.find(
-      (item) => item.preset_id === agentSelection.selectedAgentInfo?.preset_id,
-    );
-    const avatarValue = selectedPreset?.avatar?.trim() || agentSelection.selectedAgentInfo?.avatar?.trim();
-    if (!avatarValue) return { kind: 'icon' as const };
-    const mappedAvatar = CUSTOM_AVATAR_IMAGE_MAP[avatarValue];
-    const resolvedAvatar = resolveExtensionAssetUrl(avatarValue);
-    const avatarImage = mappedAvatar || resolvedAvatar;
-    const isImageAvatar = Boolean(
-      avatarImage &&
-      (/\.(svg|png|jpe?g|webp|gif)$/i.test(avatarImage) || /^(https?:|file:\/\/|data:|\/)/i.test(avatarImage)),
-    );
-    if (isImageAvatar && avatarImage) {
-      return { kind: 'image' as const, value: avatarImage };
-    }
-    return { kind: 'emoji' as const, value: avatarValue };
-  }, [
-    agentSelection.presets,
-    agentSelection.is_presetAgent,
-    agentSelection.selectedAgentInfo?.avatar,
-    agentSelection.selectedAgentInfo?.preset_id,
-  ]);
 
   // Reset guid-local UI state before paint so same-route navigations do not
   // briefly show the previous draft or preset preset layout.
@@ -1073,10 +1551,93 @@ const GuidPage: React.FC = () => {
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
-  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds);
+  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds) || guidInput.files.length > 0;
   const actionRowNode = (
     <GuidActionRow
+      onStartVoiceCall={isNomiAgent ? handleStartVoiceCall : undefined}
+      isVoiceConnecting={isVoiceConnecting || (!isVoiceActive && voicePrerequisite === 'loading')}
+      isVoiceActive={isVoiceActive}
+      voiceCallLabel={t(
+        isVoiceActive
+          ? 'voice.entry.openActive'
+          : voicePrerequisite === 'loading'
+            ? 'voice.entry.checking'
+            : (voicePrerequisite === 'ready' || voicePrerequisite === 'setup')
+              ? 'voice.entry.start'
+              : 'voice.entry.setup'
+      )}
       onOpenAddMenu={handleOpenHomeAddMenu}
+      addMenuOpen={isHomeAddMenuOpen}
+      onAddMenuOpenChange={setIsHomeAddMenuOpen}
+      addMenuActiveIndex={homeAddMenuActiveIndex}
+      addMenuPopoverRef={homeAddMenuPopoverRef}
+      entryFlyoutRef={homeEntryFlyoutRef}
+      onAddMenuEscape={handleAddMenuEscape}
+      onDismissEntryFlyout={() => {
+        entryFlyoutPausedKeyRef.current = entryFlyout ?? homeAddMenuItems[homeAddMenuActiveIndex]?.key ?? '*';
+        setEntryFlyout(null);
+        setHomeAddMenuActiveIndex(-1);
+      }}
+      entryFlyout={
+        entryFlyout === 'knowledge' ? (
+          <GuidAnchoredFlyout
+            ref={homeEntryFlyoutRef}
+            anchorRef={homeAddMenuPopoverRef}
+            label={t('knowledge.control.label', { defaultValue: '知识库' })}
+            testId='guid-knowledge-control'
+          >
+            <KnowledgeControl
+              presentation='panel'
+              draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}
+              applyNote={t('guid.advanced.applyNote')}
+            />
+          </GuidAnchoredFlyout>
+        ) : entryFlyout ? (
+          <GuidEntryFlyout
+            ref={homeEntryFlyoutRef}
+            mode={entryFlyout}
+            anchorRef={homeAddMenuPopoverRef}
+            presets={agentSelection.presets}
+            localeKey={localeKey}
+            selectedPresetId={selectedPresetRecord?.preset_id}
+            skills={supportsHomeSkillLoading ? pickerSkills : []}
+            selectedSkillIds={homeSkillChips.map((skill) => skill.skillId)}
+            onToggleSkill={supportsHomeSkillLoading ? handleToggleHomeSkill : undefined}
+            skillsLoading={catalogSkillsLoading}
+            skillsError={catalogSkillsError}
+            onSelectPreset={(id) => {
+              handleSelectPresetKey(`preset:${id}`);
+              setEntryFlyout(null);
+              entryFlyoutSuppressedKeyRef.current = null;
+              setIsHomeAddMenuOpen(false);
+            }}
+            onFree={() => {
+              agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
+              setEntryFlyout(null);
+              entryFlyoutSuppressedKeyRef.current = null;
+              setIsHomeAddMenuOpen(false);
+            }}
+            onManage={() => {
+              const target = entryFlyout === 'skills' ? '/skills' : '/settings/presets';
+              setEntryFlyout(null);
+              entryFlyoutSuppressedKeyRef.current = null;
+              setIsHomeAddMenuOpen(false);
+              void navigate(target);
+            }}
+          />
+        ) : null
+      }
+      addMenu={
+        <SlashCommandMenu
+          title={t('common.add')}
+          compact
+          items={homeAddMenuItems}
+          activeIndex={homeAddMenuActiveIndex}
+          onHoverItem={setHomeAddMenuActiveIndex}
+          onSelectItem={handleHomeAddMenuSelect}
+          emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+        />
+      }
       modelSelectorNode={modelSelectorNode}
       modelSelectorIsChat={isGeminiMode}
       activeChatPopup={activeChatPopup}
@@ -1106,43 +1667,71 @@ const GuidPage: React.FC = () => {
       autoWorkDraft={advancedConfig.autoWork}
       goalMode={supportsHomeGoalCommand && goalMode}
       onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
+      slidesActive={supportsHomeGoalCommand && slideOptions !== null}
+      onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
+      slideControls={
+        slideOptions !== null ? (
+          <SlideOptionsControls
+            options={slideOptions}
+            onChange={setSlideOptions}
+            disabled={guidInput.loading}
+            templatesOpen={slidePanelOpen}
+            onToggleTemplates={() => setSlidePanelOpen((open) => !open)}
+          />
+        ) : undefined
+      }
       hasDraft={hasDraft}
       speechLocale={i18n.language}
       onSpeechTranscript={(transcript) => {
         guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
       }}
+      dictationActivation={dictationActivation}
       onSend={handleComposerSend}
     />
   );
 
   return (
     <ConfigProvider getPopupContainer={() => guidContainerRef.current || document.body}>
-      <div ref={guidContainerRef} className={styles.guidContainer}>
-        <div className={styles.guidCornerActions} data-testid='guid-knowledge-control'>
-          <KnowledgeControl
-            draft={{ value: advancedConfig.knowledge, onChange: advancedConfig.setKnowledge }}
-            applyNote={t('guid.advanced.applyNote')}
-          />
-        </div>
-        <div className={styles.guidPrimaryStage}>
-          <div className={styles.guidLayout}>
-            <div className={styles.heroHeader}>
-              <p className={styles.heroTitlePrimary}>
-                {t('conversation.welcome.title', { defaultValue: '告诉 Flowy 你要的结果' })}
-              </p>
-              <p className={styles.heroDescription}>
-                {t('conversation.welcome.description', {
-                  defaultValue: '描述成果即可。Flowy 会自行组织执行过程，只在需要时询问你。',
-                })}
-              </p>
-            </div>
-
-            {showTaskProfile ? (
-              <div className={styles.guidTaskProfile}>
-                <TaskProfileSelector />
+      <div
+        ref={guidContainerRef}
+        className={styles.guidContainer}
+        data-slide-studio={slideStudioOpen || undefined}
+      >
+        {/* Slides studio: a wall of slide cards replaces the home content behind the create panel. */}
+        {slideStudioOpen && <SlideCardWall />}
+        <div className={styles.guidScrollArea}>
+          <div className={styles.guidPrimaryStage}>
+            <div className={styles.guidLayout}>
+              <div className={styles.homeMasthead}>
+                <GuidHomeBrand />
+                <div className={styles.homeVideo} data-testid='guid-home-video'>
+                  <GuidVideoShortcut />
+                </div>
               </div>
-            ) : null}
+              <FeatureCards
+                onStartFromLocal={() => void handleLinkWorkspace()}
+                onCreate={supportsHomeGoalCommand ? enterSlideMode : undefined}
+              />
 
+              <div className={styles.homeGallery}>
+                <ShowcaseCards onSelectApp={handleSelectShowcaseApp} onSelectImage={handleSelectShowcaseImage} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={styles.guidFixedInputArea}>
+          <div className={styles.guidLayout}>
+            {slideStudioOpen && slideOptions !== null && (
+              <SlideCreatePanel
+                template={slideOptions.template}
+                onSelectTemplate={handleSelectSlideTemplate}
+                onSelectSuggestion={handleSelectSlideSuggestion}
+                onImportTemplate={handleImportSlideTemplate}
+                onClose={exitSlideMode}
+                disabled={guidInput.loading}
+              />
+            )}
             <GuidInputCard
               containerRef={guidInputCardRef}
               input={guidInput.input}
@@ -1151,7 +1740,11 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={t('conversation.welcome.placeholder')}
+              placeholder={
+                supportsHomeGoalCommand && slideOptions !== null
+                  ? t('presentation.home.placeholder')
+                  : t('conversation.welcome.placeholder')
+              }
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
@@ -1169,37 +1762,25 @@ const GuidPage: React.FC = () => {
                 />
               }
               mentionDropdown={mentionDropdownNode}
-              slashMenuOpen={isHomeAddMenuOpen || homeSlashController.isOpen}
+              slashMenuOpen={homeSlashController.isOpen}
               slashMenu={
-                isHomeAddMenuOpen ? (
-                  <SlashCommandMenu
-                    title={t('common.add')}
-                    compact
-                    items={homeAddMenuItems}
-                    activeIndex={homeAddMenuActiveIndex}
-                    onHoverItem={setHomeAddMenuActiveIndex}
-                    onSelectItem={handleHomeAddMenuSelect}
-                    emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-                  />
-                ) : (
-                  <SlashCommandMenu
-                    title={t('messages.slash.title', { defaultValue: 'Commands' })}
-                    hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
-                    compact
-                    items={homeSlashMenuItems}
-                    activeIndex={homeSlashController.activeIndex}
-                    onHoverItem={homeSlashController.setActiveIndex}
-                    onSelectItem={(item) => {
-                      const targetIndex = homeSlashController.filteredItems.findIndex(
-                        (launcherItem) => launcherItem.id === item.key
-                      );
-                      if (targetIndex >= 0) {
-                        homeSlashController.onSelectByIndex(targetIndex);
-                      }
-                    }}
-                    emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
-                  />
-                )
+                <SlashCommandMenu
+                  title={t('messages.slash.title', { defaultValue: 'Commands' })}
+                  hint={t('messages.slash.hint', { defaultValue: 'Type / to open command menu' })}
+                  compact
+                  items={homeSlashMenuItems}
+                  activeIndex={homeSlashController.activeIndex}
+                  onHoverItem={homeSlashController.setActiveIndex}
+                  onSelectItem={(item) => {
+                    const targetIndex = homeSlashController.filteredItems.findIndex(
+                      (launcherItem) => launcherItem.id === item.key
+                    );
+                    if (targetIndex >= 0) {
+                      homeSlashController.onSelectByIndex(targetIndex);
+                    }
+                  }}
+                  emptyText={t('messages.slash.empty', { defaultValue: 'No commands found' })}
+                />
               }
               skillChips={supportsHomeSkillLoading ? homeSkillChips : []}
               onSkillChipsChange={supportsHomeSkillLoading ? setHomeSkillChips : undefined}
@@ -1211,25 +1792,7 @@ const GuidPage: React.FC = () => {
               workspaceDir={guidInput.dir}
               onSelectWorkspace={(dir) => guidInput.setDir(dir)}
               onClearWorkspace={() => guidInput.setDir('')}
-              entryStrip={
-                <ComposerEntryStrip
-                  isPresetAgent={agentSelection.is_presetAgent}
-                  presetLabel={heroTitle !== t('conversation.welcome.title') ? heroTitle : undefined}
-                  presetAvatar={selectedPresetAvatar ?? undefined}
-                  onChoosePreset={() => {
-                    setDrawerMode('preset');
-                    setDrawerOpen(true);
-                  }}
-                  onAdjustSkills={supportsHomeSkillLoading ? () => {
-                    setDrawerMode('skills');
-                    setDrawerOpen(true);
-                  } : undefined}
-                  activeSkillCount={homeSkillChips.length}
-                  onFree={() => {
-                    agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-                  }}
-                />
-              }
+              onOpenLocalDialog={() => void handleLinkWorkspace()}
             />
 
             {/* Editor host (modals + fallback notice) */}
@@ -1239,30 +1802,6 @@ const GuidPage: React.FC = () => {
             />
           </div>
         </div>
-
-        {/* PresetPickerDrawer (right-side) */}
-        <PresetPickerDrawer
-          visible={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-          presets={agentSelection.presets}
-          localeKey={localeKey}
-          mode={drawerMode}
-          onModeChange={setDrawerMode}
-          selectedPresetId={selectedPresetRecord?.preset_id}
-          skills={supportsHomeSkillLoading ? catalogSkills : []}
-          selectedSkillIds={homeSkillChips.map((skill) => skill.skillId)}
-          onToggleSkill={supportsHomeSkillLoading ? handleToggleHomeSkill : undefined}
-          skillsLoading={catalogSkillsLoading}
-          skillsError={catalogSkillsError}
-          onSelectPreset={(id) => {
-            handleSelectPresetKey(`preset:${id}`);
-            setDrawerOpen(false);
-          }}
-          onFree={() => {
-            agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
-            setDrawerOpen(false);
-          }}
-        />
 
         <GuidAddProviderModal
           ref={addProviderRef}

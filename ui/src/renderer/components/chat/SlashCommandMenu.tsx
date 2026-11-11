@@ -10,6 +10,7 @@ export interface SlashCommandMenuItem {
   badge?: string;
   section?: string;
   icon?: React.ReactNode;
+  trailing?: React.ReactNode;
 }
 
 interface SlashCommandMenuProps {
@@ -200,6 +201,9 @@ const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
                     >
                       {item.badge}
                     </span>
+                  )}
+                  {item.trailing && (
+                    <span className='flex shrink-0 items-center text-t-tertiary'>{item.trailing}</span>
                   )}
                 </div>
               </button>

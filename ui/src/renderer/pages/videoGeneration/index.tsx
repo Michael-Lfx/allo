@@ -19,7 +19,7 @@ import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, Upload, VideoOne } from '@icon-park/react';
 import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
 import '@oc/styles/quiet-chrome.css';
-import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
+import GooeyNav from '@renderer/components/base/GooeyNav';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -71,6 +71,11 @@ import { isInsufficientCreditsError } from './creditsError';
 import { formatClipOperationError } from './clipFailure';
 import type { CanvasProjectMeta, GenerationTaskView } from '../videoCanvas/api';
 import { isStandaloneClipTask, toUpdatedAtMs } from './recentCreations';
+import {
+  CANVAS_PROJECT_EXTENSION,
+  SESSION_PROJECT_EXTENSION,
+  classifyVideoProjectArchive,
+} from './projectArchiveKind';
 import styles from './index.module.css';
 
 /**
@@ -162,14 +167,14 @@ const VideoGenerationListPage: React.FC = () => {
     page.scrollTop = savedPageScrollTopRef.current;
   }, [listTab]);
 
-  const listTabItems: SegmentedTabItem[] = useMemo(
+  const listTabItems = useMemo(
     () => [
       {
-        key: 'tvShow',
-        label: t('videoGeneration.list.tabs.tvShow', { defaultValue: 'Flowy TV' }),
+        key: 'tvShow' as const,
+        label: t('videoGeneration.list.tabs.tvShow', { defaultValue: '{{brandName}} TV' }),
       },
       {
-        key: 'recent',
+        key: 'recent' as const,
         label: t('videoGeneration.list.tabs.recent', { defaultValue: '最近创作' }),
       },
     ],
@@ -960,97 +965,100 @@ const VideoGenerationListPage: React.FC = () => {
     void handleDeleteBriefingRef.current(session);
   }, []);
 
-  const handleImportProject = useCallback(async () => {
-    if (importing || creating) return;
-    if (!isDesktopShell()) {
-      message.info(
-        t('videoGeneration.list.importDesktopOnly', {
-          defaultValue: '导入工程仅桌面端可用。',
-        })
-      );
-      return;
-    }
-    const { dialog } = await import('@/common/adapter/ipcBridge');
-    const paths = await dialog.showOpen.invoke({
-      properties: ['openFile'],
-      filters: [
-        {
-          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Flowy 视频工程' }),
-          extensions: ['nomivimax'],
-        },
-      ],
-    });
-    const source = paths?.[0];
-    if (!source) return;
-    setImporting(true);
-    try {
-      const imported = await importSession(source);
-      trackFunnelEvent('task_accepted', {
-        feature: 'video_generation',
-        workflow: imported.workflow,
-        session_id: imported.id,
-        source: 'project_import',
-      });
-      message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
-      navigate(`/video-generation/${imported.id}`);
-    } catch (e) {
-      message.error(
-        `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
-      );
-    } finally {
-      setImporting(false);
-    }
-  }, [creating, importing, message, navigate, t]);
+  const importProjectArchive = useCallback(
+    async (source: string) => {
+      const kind = classifyVideoProjectArchive(source);
+      if (!kind) {
+        message.error(
+          t('videoGeneration.list.importUnsupported', {
+            defaultValue: '请选择短剧工程（.nomivimax）或无限画布工程（.nomiccanvas）',
+          })
+        );
+        return;
+      }
+      setImporting(true);
+      try {
+        if (kind === 'canvas') {
+          const { importCanvasProject } = await import('../videoCanvas/api');
+          const imported = await importCanvasProject(source);
+          trackFunnelEvent('task_accepted', {
+            feature: 'video_generation',
+            workflow: 'canvas',
+            session_id: imported.project_id,
+            source: 'project_import',
+          });
+          message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
+          rememberVideoGenerationCanvas(imported.project_id, imported.title);
+          navigate(videoCanvasProjectPath(imported.project_id));
+          return;
+        }
+        const imported = await importSession(source);
+        trackFunnelEvent('task_accepted', {
+          feature: 'video_generation',
+          workflow: imported.workflow,
+          session_id: imported.id,
+          source: 'project_import',
+        });
+        message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
+        navigate(`/video-generation/${imported.id}`);
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setImporting(false);
+      }
+    },
+    [message, navigate, t]
+  );
 
-  const handleImportCanvasProject = useCallback(async () => {
-    if (importing || creating) return;
-    if (!isDesktopShell()) {
-      message.info(
-        t('videoGeneration.list.importDesktopOnly', {
-          defaultValue: '导入工程仅桌面端可用。',
-        })
-      );
-      return;
-    }
-    const { dialog } = await import('@/common/adapter/ipcBridge');
-    const paths = await dialog.showOpen.invoke({
-      properties: ['openFile'],
-      filters: [
-        {
-          name: t('videoGeneration.actions.exportCanvasFilter', {
-            defaultValue: 'Flowy 画布工程',
-          }),
-          extensions: ['nomiccanvas'],
-        },
-      ],
-    });
-    const source = paths?.[0];
-    if (!source) return;
-    setImporting(true);
-    try {
-      const { importCanvasProject } = await import('../videoCanvas/api');
-      const imported = await importCanvasProject(source);
-      trackFunnelEvent('task_accepted', {
-        feature: 'video_generation',
-        workflow: 'canvas',
-        session_id: imported.project_id,
-        source: 'project_import',
+  const pickProjectArchive = useCallback(
+    async (prefer: 'any' | 'canvas') => {
+      if (importing || creating) return;
+      if (!isDesktopShell()) {
+        message.info(
+          t('videoGeneration.list.importDesktopOnly', {
+            defaultValue: '导入工程仅桌面端可用。',
+          })
+        );
+        return;
+      }
+      const allFilter = {
+        name: t('videoGeneration.list.importFilter', {
+          defaultValue: '{{brandName}} 工程（短剧 / 无限画布）',
+        }),
+        extensions: [SESSION_PROJECT_EXTENSION, CANVAS_PROJECT_EXTENSION],
+      };
+      const sessionFilter = {
+        name: t('videoGeneration.actions.exportFilter', { defaultValue: '{{brandName}} 视频工程' }),
+        extensions: [SESSION_PROJECT_EXTENSION],
+      };
+      const canvasFilter = {
+        name: t('videoGeneration.actions.exportCanvasFilter', {
+          defaultValue: '{{brandName}} 画布工程',
+        }),
+        extensions: [CANVAS_PROJECT_EXTENSION],
+      };
+      const { dialog } = await import('@/common/adapter/ipcBridge');
+      const paths = await dialog.showOpen.invoke({
+        properties: ['openFile'],
+        filters:
+          prefer === 'canvas'
+            ? [canvasFilter, allFilter, sessionFilter]
+            : [allFilter, sessionFilter, canvasFilter],
       });
-      message.success(t('videoGeneration.list.importOk', { defaultValue: '工程已导入' }));
-      rememberVideoGenerationCanvas(imported.project_id, imported.title);
-      navigate(videoCanvasProjectPath(imported.project_id));
-    } catch (e) {
-      message.error(
-        `${t('videoGeneration.list.importFailed', { defaultValue: '导入失败' })}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
-      );
-    } finally {
-      setImporting(false);
-    }
-  }, [creating, importing, message, navigate, t]);
+      const source = paths?.[0];
+      if (!source) return;
+      await importProjectArchive(source);
+    },
+    [creating, importProjectArchive, importing, message, t]
+  );
+
+  const handleImportProject = useCallback(() => {
+    void pickProjectArchive('any');
+  }, [pickProjectArchive]);
 
   return (
     <div
@@ -1078,11 +1086,12 @@ const VideoGenerationListPage: React.FC = () => {
         <section className='flex flex-col gap-12px'>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
-                <SegmentedTabs
+                <GooeyNav
+                  selection='tab'
                   size='sm'
-                  items={listTabItems}
-                  activeKey={listTab}
-                  onChange={handleListTabChange}
+                  items={listTabItems.map((item) => ({ label: item.label }))}
+                  activeIndex={Math.max(0, listTabItems.findIndex((item) => item.key === listTab))}
+                  onChange={(index) => handleListTabChange(listTabItems[index].key)}
                 />
                 <p className='m-0 mt-8px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
@@ -1098,7 +1107,7 @@ const VideoGenerationListPage: React.FC = () => {
                         }
                         if (tvTab === 'mine') {
                           return t('videoGeneration.tvShow.subtitleMine', {
-                            defaultValue: '查看审核进度，管理你发布到 Flowy TV 的作品。',
+                            defaultValue: '查看审核进度，管理你发布到 {{brandName}} TV 的作品。',
                           });
                         }
                         return tvTab === 'all'
@@ -1138,7 +1147,7 @@ const VideoGenerationListPage: React.FC = () => {
                     aria-label={t('videoGeneration.list.importCanvas', {
                       defaultValue: '导入画布',
                     })}
-                    onClick={() => void handleImportCanvasProject()}
+                    onClick={() => void pickProjectArchive('canvas')}
                   >
                     <VideoOne theme='outline' size={14} />
                   </CanvasChromeButton>
@@ -1204,7 +1213,7 @@ const VideoGenerationListPage: React.FC = () => {
                     </div>
                     <div className='mt-2px text-12px text-[var(--color-text-3)]'>
                       {t('videoGeneration.list.empty.desc', {
-                        defaultValue: '写下一个画面或故事，Flowy 会先给你一版可编辑分镜。',
+                        defaultValue: '写下一个画面或故事，{{brandName}} 会先给你一版可编辑分镜。',
                       })}
                     </div>
                   </div>

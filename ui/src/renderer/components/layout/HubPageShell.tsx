@@ -15,6 +15,8 @@ interface HubPageShellProps {
   className?: string;
   /** Tailwind max-width class for the centered content column. */
   maxWidthClass?: string;
+  /** Rendered on the title row, aligned to the top-right (e.g. a page search). */
+  headerAside?: React.ReactNode;
   /** Rendered between the header and the body (e.g. a segmented tab bar). */
   toolbar?: React.ReactNode;
   /** Optional class for the toolbar wrapper so hub pages can tighten spacing. */
@@ -35,6 +37,7 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
   subtitle,
   className,
   maxWidthClass = 'md:max-w-1100px',
+  headerAside,
   toolbar,
   toolbarClassName = 'mb-20px',
   hideHeader = false,
@@ -54,9 +57,12 @@ const HubPageShell: React.FC<HubPageShellProps> = ({
       >
         <div className={classNames('mx-auto w-full', maxWidthClass)}>
           {!hideHeader && title && (
-            <div className='mb-18px'>
-              <div className={HUB_PAGE_TITLE_CLASS}>{title}</div>
-              {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}
+            <div className='mb-18px flex flex-wrap items-start justify-between gap-12px'>
+              <div className='min-w-0 flex-1'>
+                <div className={HUB_PAGE_TITLE_CLASS}>{title}</div>
+                {subtitle && <div className='mt-6px text-13px leading-18px text-t-tertiary'>{subtitle}</div>}
+              </div>
+              {headerAside ? <div className='ml-auto flex shrink-0 items-start'>{headerAside}</div> : null}
             </div>
           )}
           {toolbar && <div className={toolbarClassName}>{toolbar}</div>}

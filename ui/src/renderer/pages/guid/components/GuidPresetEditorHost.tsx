@@ -41,7 +41,7 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
   // Internal usePresetList owns the drawer editor's working state.
   const { setActivePresetId, activePreset, isExtensionPreset, loadPresets } =
     usePresetList();
-  const { availableBackends, refreshAgentDetection } = useDetectedAgents();
+  const { refreshAgentDetection } = useDetectedAgents();
   const tags = usePresetTags();
 
   const editor = usePresetEditor({
@@ -87,11 +87,8 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
       <PresetEditDrawer
         editor={editor}
         editAvatarImage={editAvatarImage}
-        editAudienceTags={editor.editAudienceTags}
-        setEditAudienceTags={editor.setEditAudienceTags}
         editScenarioTags={editor.editScenarioTags}
         setEditScenarioTags={editor.setEditScenarioTags}
-        audienceTags={tags.audienceTags}
         scenarioTags={tags.scenarioTags}
         onCreateTag={tags.createTag}
         readOnly={
@@ -100,7 +97,6 @@ const GuidPresetEditorHost: React.FC<GuidPresetEditorHostProps> = ({
         localeKey={localeKey}
         activePreset={activePreset}
         isExtensionPreset={isExtensionPreset}
-        availableBackends={availableBackends}
         onImportAgentSkills={editor.handleImportAgentSkills}
         handleDeleteClick={editor.handleDeleteClick}
         handleDuplicate={(preset) => void editor.handleDuplicate(preset)}

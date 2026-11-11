@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { toImportableMcpServersFromConfig } from './mcpImportUtils';
+import { attachMcpMarketOrigin, stripMcpMarketOrigin, toImportableMcpServersFromConfig } from './mcpImportUtils';
 
 describe('MCP import utils', () => {
   test('converts market MCP config into importable servers', () => {
@@ -104,5 +104,26 @@ describe('MCP import utils', () => {
     expect(servers).toHaveLength(1);
     expect(servers[0].enabled).toBe(true);
     expect(servers[0].market_needs_configuration).toBe(false);
+  });
+
+  test('hides market provenance from the editor and restores it unchanged on save', () => {
+    const marketItemId = 'mcpworld:20ef2b339076e8eeb57138fa23d15dcb';
+    const stored = attachMcpMarketOrigin(
+      JSON.stringify({ mcpServers: { fetch: { command: 'uvx', args: ['mcp-server-fetch'] } } }, null, 2),
+      marketItemId
+    );
+
+    const shown = stripMcpMarketOrigin(stored);
+
+    expect(shown).not.toContain('_nomifun_market');
+    expect(JSON.parse(shown).mcpServers.fetch.command).toBe('uvx');
+    expect(attachMcpMarketOrigin(shown, marketItemId)).toBe(stored);
+  });
+
+  test('leaves configs without market provenance untouched', () => {
+    const json = JSON.stringify({ mcpServers: { local: { command: 'node' } } }, null, 2);
+
+    expect(stripMcpMarketOrigin(json)).toBe(json);
+    expect(stripMcpMarketOrigin('{')).toBe('{');
   });
 });

@@ -1,8 +1,8 @@
 {
-  "pageTitle": "Flowy - Sign In",
+  "pageTitle": "{{brandName}} - Sign In",
   "title": "Cloud sign-in",
   "description": "Connect your workspace and reviewable results with an email code",
-  "brand": "Flowy",
+  "brand": "{{brandName}}",
   "brandTagline": "Hand off an intent. Get a reviewable result.",
   "brandFlow": "Intent → Work → Result",
   "brandMeta": "Cloud workspace · Traceable execution",
@@ -71,7 +71,7 @@
   },
   "settings": {
     "title": "Server connection",
-    "enabled": "Enable Flowy server",
+    "enabled": "Enable {{brandName}} server",
     "baseUrl": "Server base URL",
     "websiteUrl": "Website URL",
     "channel": "Channel",

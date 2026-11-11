@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId } from "@oc/lib/canvas/canvas-generation-task-sync";
+import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, pickRecoveredGenerationTask } from "@oc/lib/canvas/canvas-generation-task-sync";
 import { ensureCanvasNodeAsset } from "@oc/services/project-asset-sync";
 import { cancelGenerationTask, listGenerationTasks, listTaskLogs, queryGenerationTask, waitForGenerationTask, type GenerationTask, type TaskLog } from "@oc/services/api/task-center";
 import { CanvasNodeType, type CanvasNodeData } from "@oc/types/canvas";
@@ -31,6 +31,12 @@ const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+const LOST_GENERATION_TASK_ERROR = "页面刷新后找不到对应任务，请重新生成。";
+const INTERRUPTED_GENERATION_ERROR = "页面刷新后生成已中断，请重新生成。";
+
+function isMissingGenerationTask(error: unknown): boolean {
+    return typeof error === "object" && error !== null && "status" in error && (error as { status: unknown }).status === 404;
+}
 
 export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded, nodes, nodesRef, setNodes }: UseCanvasGenerationOptions) {
     const { message, modal } = App.useApp();
@@ -188,27 +194,43 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             if (generationRequestsRef.current.has(node.id)) return false;
             const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length && !node.metadata.taskId;
             if (aggregateBatchRoot) return false;
-            return node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);
+            const details = node.metadata?.errorDetails;
+            return node.metadata?.status === NODE_STATUS_LOADING
+                || details === INTERRUPTED_GENERATION_ERROR
+                || details === LOST_GENERATION_TASK_ERROR
+                || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);
         });
-        const taskIds = Array.from(new Set(recoveryNodes.map((node) => node.metadata?.taskId).filter((id): id is string => Boolean(id))));
-        const tasks = (await Promise.all(taskIds.map((id) => queryGenerationTask(id).catch(() => undefined)))).filter((task): task is GenerationTask => Boolean(task));
-        if (recoveryNodes.some((node) => !node.metadata?.taskId)) {
-            const recentTasks = await listGenerationTasks(30, { projectId }).catch(() => []);
-            tasks.push(...recentTasks.filter((task) => !tasks.some((item) => item.id === task.id)));
+        if (!recoveryNodes.length) return;
+        // The page-local task cache is empty after refresh. The server list is
+        // keyed by project and node, so a document that was saved before taskId
+        // landed can still reattach the running job.
+        let listedTasks: GenerationTask[] = [];
+        let listedOk = false;
+        try {
+            listedTasks = (await listGenerationTasks(100, { projectId })).filter((task) => task.type.startsWith("canvas_") || task.type === "agent_storyboard_rows");
+            listedOk = true;
+        } catch {
+            listedOk = false;
         }
-        const projectTasks = tasks.filter((task) => task.projectId === projectId && (task.type.startsWith("canvas_") || task.type === "agent_storyboard_rows"));
         await Promise.all(recoveryNodes.map(async (node) => {
             // Re-check: retry may have started while we were listing tasks.
             if (generationRequestsRef.current.has(node.id)) return;
-            let task = projectTasks.find((item) => item.id === node.metadata?.taskId) || projectTasks.find((item) => generationTaskNodeId(item) === node.id);
-            if (!task && node.metadata?.taskId) task = await queryGenerationTask(node.metadata.taskId).catch(() => undefined);
+            let task = pickRecoveredGenerationTask(node.id, node.metadata?.taskId, listedTasks);
+            if (!task && node.metadata?.taskId) {
+                try {
+                    task = await queryGenerationTask(node.metadata.taskId);
+                } catch (error) {
+                    if (!isMissingGenerationTask(error)) return;
+                }
+            }
             if (generationRequestsRef.current.has(node.id)) return;
             if (!task) {
+                if (!listedOk) return;
                 setNodes((current) => current.map((item) => {
                     if (item.id !== node.id) return item;
                     if (generationRequestsRef.current.has(item.id)) return item;
                     if (item.metadata?.status === NODE_STATUS_SUCCESS && item.metadata?.content) return item;
-                    return { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: "页面刷新后找不到对应任务，请重新生成。" } };
+                    return { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: LOST_GENERATION_TASK_ERROR } };
                 }));
                 return;
             }

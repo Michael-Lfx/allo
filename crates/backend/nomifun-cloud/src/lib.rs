@@ -55,6 +55,7 @@ pub use llm::ServerLlmProvider;
 pub use profile::ProfileStore;
 pub use session::{SERVER_TOKEN_PROVIDER, ServerSession, ServerTokens, TokenSource};
 pub use http_routes::{CloudRouterState, cloud_routes};
+pub use flowy::prepare_expert_slug;
 pub use http_service::CloudService;
 pub use telemetry::{set_link_revocation_hook, start_cloud_telemetry};
 pub use transport::HttpTransport;

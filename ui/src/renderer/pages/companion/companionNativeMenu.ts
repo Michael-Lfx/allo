@@ -1,6 +1,12 @@
 
 
-export type CompanionMenuAction = 'open-chat' | 'open-memories' | 'open-config' | 'clear-unread' | 'hide';
+export type CompanionMenuAction =
+  | 'open-chat'
+  | 'open-voice'
+  | 'open-memories'
+  | 'open-config'
+  | 'clear-unread'
+  | 'hide';
 
 export interface CompanionMenuEntry {
   action: CompanionMenuAction;
@@ -12,6 +18,7 @@ type Translate = (key: string, params?: Record<string, string>) => string;
 export function buildCompanionMenuEntries(opts: { name: string; t: Translate }): CompanionMenuEntry[] {
   return [
     { action: 'open-chat', text: opts.t('nomi.companion.menuOpenChat') },
+    { action: 'open-voice', text: opts.t('nomi.companion.menuOpenVoice') },
     { action: 'open-memories', text: opts.t('nomi.companion.menuOpenMemories') },
     { action: 'open-config', text: opts.t('nomi.companion.menuOpenConfig', { name: opts.name }) },
     { action: 'clear-unread', text: opts.t('nomi.companion.menuClearUnread') },

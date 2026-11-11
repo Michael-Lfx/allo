@@ -72,6 +72,7 @@ pub use repository::SqliteCustomerServiceRepository;
 pub use repository::conversation::{
     is_resumable_source_error_code, ConversationDeliveryReceiptClaim, ConversationFilters,
     ConversationMessageProjection,
+    ConversationPairProjection,
     ConversationSkillLoadCommit, EditResubmitStateSnapshot,
     ConversationTurnAdmissionState,
     ConversationRowUpdate, MessageDayBucket, MessageRowUpdate, MessageSearchRow, SortOrder,
@@ -91,7 +92,9 @@ pub use repository::oauth_token::UpsertOAuthTokenParams;
 pub use repository::provider::{
     CreateProviderParams, FLOWY_CATALOG_AUTO_TIER_PARAM, FLOWY_CATALOG_CREDIT_RATE_PARAM,
     FLOWY_CATALOG_FAMILY_PARAM, FLOWY_CATALOG_MAX_TOKENS_PARAM,
-    FLOWY_CATALOG_REASONING_EFFORT_PARAM, ProviderModelProfileSeed, UpdateProviderParams,
+    FLOWY_CATALOG_MIN_TIER_PARAM, FLOWY_CATALOG_REASONING_EFFORT_PARAM,
+    FLOWY_CATALOG_REQUIRED_PLAN_CODE_PARAM, FLOWY_CATALOG_REQUIRED_PLAN_NAME_PARAM,
+    CatalogPlanGate, ProviderModelProfileSeed, UpdateProviderParams,
 };
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};
 pub use repository::ssh_host::{

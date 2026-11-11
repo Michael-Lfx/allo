@@ -1,0 +1,32 @@
+/* Shared reset for 1280x720 cover pages rendered by render.mjs. */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 1280px;
+  height: 720px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+.slide {
+  position: relative;
+  width: 1280px;
+  height: 720px;
+  overflow: hidden;
+}
+
+.slide > *,
+.abs {
+  position: absolute;
+}
+
+svg {
+  display: block;
+  overflow: visible;
+}

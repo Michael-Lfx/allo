@@ -7,8 +7,12 @@ import { parseCompanionId, type CompanionId, type ConversationId } from '@/commo
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { openVoiceTask, startVoiceConversation, stopVoiceSession } from '@/common/adapter/voiceCompanion';
+import VoicePetInput from './VoicePetInput';
+import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import type { ICompanionProfile, ICompanionSuggestion, IResponseMessage } from '@/common/adapter/ipcBridge';
 import { extractResponseTextChunk } from '@/common/chat/displayText';
+import { stripMediaDeliveryTags } from '@renderer/utils/chat/mediaDeliveryFilter';
 import MarkdownView from '@/renderer/components/Markdown';
 import LocalImageView from '@/renderer/components/media/LocalImageView';
 import { usePasteService } from '@/renderer/hooks/file/usePasteService';
@@ -23,6 +27,7 @@ import { isForCompanion } from './eventScope';
 import { injectCompanionCustomCss } from '@/renderer/utils/theme/applyCustomCss';
 import { injectWallpaperTokenSheet, restoreWallpaperTokensFromCache } from '@/renderer/utils/theme/applyWallpaperTokens';
 import { configService } from '@/common/config/configService';
+import { BRAND_NAME } from '@/renderer/config/brand';
 import ChannelDingTalkLogo from '@/renderer/assets/channel-logos/dingtalk.svg';
 import ChannelDiscordLogo from '@/renderer/assets/channel-logos/discord.svg';
 import ChannelLarkLogo from '@/renderer/assets/channel-logos/lark.svg';
@@ -30,6 +35,7 @@ import ChannelSlackLogo from '@/renderer/assets/channel-logos/slack.svg';
 import ChannelTelegramLogo from '@/renderer/assets/channel-logos/telegram.svg';
 import ChannelWecomLogo from '@/renderer/assets/channel-logos/wecom.svg';
 import ChannelWeixinLogo from '@/renderer/assets/channel-logos/weixin.svg';
+import { Headset } from '@icon-park/react';
 import CompanionAvatar from './CompanionAvatar';
 import { browserNarrationFor } from './browserNarration';
 import { getDeskSpecFor } from './characters';
@@ -43,7 +49,12 @@ import {
 } from './memoryPanelGeometry';
 import { useDetachedMemoryPanel } from './useDetachedMemoryPanel';
 import { placeResizedWindow, type GeomRect } from './windowGeometry';
-import { clampSavedCompanionPosition, snapCompanionWindow, workAreasFromMonitors } from './companionScreenClamp';
+import {
+  clampSavedCompanionPosition,
+  snapCompanionWindow,
+  undockCompanionWindow,
+  workAreasFromMonitors,
+} from './companionScreenClamp';
 import { useCompanionPetFeed } from './messages/useCompanionPetFeed';
 import PetStatusToast from './messages/PetStatusToast';
 import { buildCompanionMenuEntries, type CompanionMenuAction } from './companionNativeMenu';
@@ -62,6 +73,12 @@ import {
 import { classifyPublicMessageDelivery } from '../conversation/platforms/publicMessageDelivery';
 import { reconcileConversationTurnAfterAcceptedReplay } from '../conversation/platforms/reconcileConversationTurnAfterStreamTerminal';
 import { getConversationOrNull } from '../conversation/utils/conversationCache';
+import {
+  dismissVoiceSession,
+  isVoiceSessionDismissed,
+  resolveVoiceOwnerCompanionId,
+  VOICE_DISMISSED_SESSIONS_EVENT,
+} from '@/renderer/services/voice/voiceCallPresence';
 import './companion.css';
 
 const BUBBLE_MS = 12_000;
@@ -136,7 +153,8 @@ const parseCompanionIdFromHash = (): CompanionId | null => {
  * falls back to the first enabled companion in the registry.
  */
 const CompanionPage: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const activeLocale = i18n.language || i18n.resolvedLanguage || 'zh-CN';
   const { isImeActive, compositionHandlers } = useCompositionInput();
   const [companionId, setCompanionId] = useState<CompanionId | null>(parseCompanionIdFromHash);
   const [profile, setProfile] = useState<ICompanionProfile | null>(null);
@@ -147,6 +165,49 @@ const CompanionPage: React.FC = () => {
   const [unread, setUnread] = useState(0);
   const [suggestions, setSuggestions] = useState<ICompanionSuggestion[]>([]);
   const [input, setInput] = useState('');
+  const {snapshot:voiceSnapshot}=useVoiceSnapshot();
+  const [voiceEntryFailed,setVoiceEntryFailed]=useState(false);
+  const [voiceStopFailed, setVoiceStopFailed] = useState(false);
+  const voiceTargetId = resolveVoiceOwnerCompanionId(voiceSnapshot?.binding?.memory_owner_companion_id);
+  const voiceOwned = Boolean(companionId && voiceTargetId && companionId === voiceTargetId);
+  const [, setDismissedVersion] = useState(0);
+  useEffect(() => {
+    const handleDismissChange = () => setDismissedVersion((v) => v + 1);
+    window.addEventListener('storage', handleDismissChange);
+    window.addEventListener(VOICE_DISMISSED_SESSIONS_EVENT, handleDismissChange);
+    return () => {
+      window.removeEventListener('storage', handleDismissChange);
+      window.removeEventListener(VOICE_DISMISSED_SESSIONS_EVENT, handleDismissChange);
+    };
+  }, []);
+  const currentSessionDismissed = isVoiceSessionDismissed(voiceSnapshot?.session_id);
+  const voiceActive = voiceOwned && Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle' && !currentSessionDismissed;
+  const voiceActiveRef = useRef(voiceActive);
+  voiceActiveRef.current = voiceActive;
+  const activeVoiceScopeRef = useRef<string | null>(null);
+  const voiceSessionRevisionRef = useRef(0);
+  const currentVoiceScope = voiceActive && voiceSnapshot?.session_id ? `${voiceSnapshot.instance_id}:${voiceSnapshot.session_id}` : null;
+  if (activeVoiceScopeRef.current !== currentVoiceScope) {
+    activeVoiceScopeRef.current = currentVoiceScope;
+    voiceSessionRevisionRef.current += 1;
+  }
+  useEffect(() => {
+    setVoiceStopFailed(false);
+    if (currentVoiceScope) setVoiceEntryFailed(false);
+  }, [currentVoiceScope]);
+  const enterVoice = useCallback(async () => {
+    setVoiceEntryFailed(false);
+    const revision = voiceSessionRevisionRef.current;
+    try {
+      if (voiceActive && voiceSnapshot) {
+        await openVoiceTask(voiceSnapshot.binding!.conversation_id);
+      } else {
+        await startVoiceConversation(activeLocale);
+      }
+    } catch {
+      if (voiceSessionRevisionRef.current === revision && !voiceActiveRef.current) setVoiceEntryFailed(true);
+    }
+  }, [voiceActive, voiceSnapshot, activeLocale]);
   const deliveryPendingRef = useRef(false);
   /** 光标是否停在伙伴交互区（由 useCompanionClickThrough 上报）：驱动「悬停才出现」的
    *  迷你输入条显隐 + 进出点击穿透命中集。替代纯 CSS :hover（穿透态下 webview 收不到
@@ -166,7 +227,7 @@ const CompanionPage: React.FC = () => {
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
   const quiet = Boolean(profile && inQuietHours(profile.appearance.quiet_start, profile.appearance.quiet_end));
-  const petFeed = useCompanionPetFeed({ companionId, mood, activity, quiet });
+  const petFeed = useCompanionPetFeed({ companionId, mood, activity, quiet, voice:voiceSnapshot });
   /** 立绘命中元素 ref：传给 CompanionAvatar→CustomFigure 挂 alpha 掩码。 */
   const figureHitRef = useRef<HTMLDivElement | null>(null);
   const unreadBadgeRef = useRef<HTMLButtonElement | null>(null);
@@ -294,12 +355,13 @@ const CompanionPage: React.FC = () => {
   );
 
   // Apply native window visibility/position from the companion's profile (desktop shell only).
-  const applyWindowState = useCallback(async (cfg: ICompanionProfile, opts?: { skipPosition?: boolean }) => {
+  const applyWindowState = useCallback(async (cfg: ICompanionProfile, opts?: { skipPosition?: boolean; strict?: boolean }) => {
     if (!isTauriRuntime()) return;
     try {
       const { getCurrentWindow, PhysicalPosition, availableMonitors } = await import('@tauri-apps/api/window');
       const win = getCurrentWindow();
-      if (!cfg.appearance.companion_enabled) {
+      const effectiveVisible = Boolean(cfg.appearance.companion_enabled) || voiceActiveRef.current;
+      if (!effectiveVisible) {
         await win.hide();
         return;
       }
@@ -345,6 +407,7 @@ const CompanionPage: React.FC = () => {
       }
     } catch (e) {
       console.error('companion window state apply failed:', e);
+      if (opts?.strict) throw e;
     }
   }, []);
 
@@ -354,8 +417,9 @@ const CompanionPage: React.FC = () => {
   // ordinary restores do not fight a live drag. Must run AFTER
   // applyWindowState's show(): before the first orderFront macOS reports
   // scaleFactor 1.0 and every physical-px computation here would be wrong.
-  const applyDeskSize = useCallback(async (cfg: ICompanionProfile, opts?: { anchor?: 'bottom' | 'top-left' }) => {
-    if (!isTauriRuntime() || !cfg.appearance.companion_enabled) return;
+  const applyDeskSize = useCallback(async (cfg: ICompanionProfile, opts?: { anchor?: 'bottom' | 'top-left'; strict?: boolean }) => {
+    const effectiveVisible = Boolean(cfg.appearance.companion_enabled) || voiceActiveRef.current;
+    if (!isTauriRuntime() || !effectiveVisible) return;
     // An expanded surface owns the native rectangle until it closes. Config
     // echoes must not shrink it or turn its temporary top-left into desk state.
     if (expandedWindowSessionRef.current) return;
@@ -398,6 +462,7 @@ const CompanionPage: React.FC = () => {
       lastLocalMoveAt.current = Date.now();
     } catch (e) {
       console.error('companion desk size apply failed:', e);
+      if (opts?.strict) throw e;
     }
   }, []);
 
@@ -675,22 +740,32 @@ const CompanionPage: React.FC = () => {
     }
     const init = async (attempt: number) => {
       try {
-        const [withStatus, news] = await Promise.all([
-          ipcBridge.companion.getCompanion.invoke({ companion_id: companionId }),
-          ipcBridge.companion.listSuggestions.invoke({ status: 'new', limit: 50 }),
-        ]);
+        const withStatus = await ipcBridge.companion.getCompanion.invoke({ companion_id: companionId });
+        void ipcBridge.companion.listSuggestions.invoke({ status:'new', limit:50 }).then(news => {
+          if(!disposed){setUnread(news.total);setSuggestions(news.items);}
+        }).catch(() => {});
         if (disposed) return;
         setProfile(withStatus);
         setMood((withStatus.status?.mood as RabbitMood) || 'content');
-        setUnread(news.total);
-        setSuggestions(news.items);
-        await applyWindowState(withStatus);
-        await applyDeskSize(withStatus, { anchor: 'top-left' });
+        await applyWindowState(withStatus, {strict:true});
+        await applyDeskSize(withStatus, { anchor: 'top-left', strict:true });
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        if (!disposed) {
+          await Promise.race([
+            Promise.all(Array.from(document.images).map(image => image.decode?.().catch(() => {}))),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('pet_asset_timeout')), 3000)),
+          ]);
+          if (disposed) return;
+          document.documentElement.dataset.flowyPetReady = 'true';
+          document.getElementById('flowy-pet-boot')?.remove();
+        }
       } catch (e) {
         console.error('companion init failed:', e);
         // Without a loaded profile the companion stays invisible forever — retry.
         if (!disposed && attempt < INIT_MAX_RETRIES) {
           retryTimer = setTimeout(() => void init(attempt + 1), INIT_RETRY_MS);
+        } else if (!disposed && isTauriRuntime()) {
+          void import('@tauri-apps/api/event').then(({emitTo}) => emitTo('main','companion-boot-error',companionId)).catch(() => {});
         }
       }
     };
@@ -1017,8 +1092,8 @@ const CompanionPage: React.FC = () => {
           setBubbleLoading(false);
           const browser = browserNarrationFor(message.data);
           const hint = browser
-            ? t(browser.key, { name: profileRef.current?.name || 'Flowy', ...browser.params })
-            : t('nomi.companion.usingTools', { name: profileRef.current?.name || 'Flowy' });
+            ? t(browser.key, { name: profileRef.current?.name || BRAND_NAME, ...browser.params })
+            : t('nomi.companion.usingTools', { name: profileRef.current?.name || BRAND_NAME });
           setBubble((prev) => (prev && prev !== '…' ? prev : hint));
           armBubbleDismiss(STREAM_STALL_MS, () => endTurn(''));
           break;
@@ -1073,6 +1148,12 @@ const CompanionPage: React.FC = () => {
       if (bubbleTimer.current) clearTimeout(bubbleTimer.current);
     };
   }, [applyDeskSize, applyWindowState, companionId, popBubble, t]);
+
+  useEffect(() => {
+    if (profile) {
+      void applyWindowState(profile).then(() => applyDeskSize(profile));
+    }
+  }, [voiceActive, applyWindowState, applyDeskSize, profile]);
 
   // Persist the window position after drags (debounced onMoved).
   useEffect(() => {
@@ -1173,7 +1254,7 @@ const CompanionPage: React.FC = () => {
   // 还在拉取时窗口已可见，此刻就该穿透——否则启动数秒内整窗仍挡点击。停用→窗口 hide()→
   // companion_enabled=false→停轮询。
   useCompanionClickThrough({
-    enabled: isTauriRuntime() && profile?.appearance.companion_enabled !== false,
+    enabled: isTauriRuntime() && (profile?.appearance.companion_enabled !== false || voiceActive),
     onHoverChange: handleCompanionHoverChange,
     // 明确交互态整窗捕获：建议/展开 composer，以及迷你输入条已显露或有草稿时，
     // 优先保证控件可点可聚焦；离开后由 bar reveal 延迟和状态清空恢复按区域穿透。
@@ -1773,6 +1854,9 @@ const CompanionPage: React.FC = () => {
   const hideCompanion = useCallback(async () => {
     if (!companionId) return;
     memoryPanel.close('owner-invalid');
+    if (voiceSnapshot?.session_id) {
+      dismissVoiceSession(voiceSnapshot.session_id);
+    }
     const next = await ipcBridge.companion.patchCompanion
       .invoke({ companion_id: companionId, patch: { appearance: { companion_enabled: false } } })
       .catch(() => null);
@@ -1783,7 +1867,7 @@ const CompanionPage: React.FC = () => {
       // through the config-updated path; kept for call-site symmetry.
       await applyDeskSize(next);
     }
-  }, [applyDeskSize, applyWindowState, companionId, memoryPanel]);
+  }, [applyDeskSize, applyWindowState, companionId, memoryPanel, voiceSnapshot?.session_id]);
 
   const clearUnreadSuggestions = useCallback(() => {
     setUnread(0);
@@ -1820,6 +1904,16 @@ const CompanionPage: React.FC = () => {
         })();
         return;
       }
+      if (action === 'open-voice') {
+        void (async () => {
+          try {
+            await enterVoice();
+          } catch (e) {
+            console.error('companion open voice session failed:', e);
+          }
+        })();
+        return;
+      }
       if (action === 'open-memories') {
         // Lands on the scope-aware Memories tab for this companion (shared +
         // its own private). Memories live in the companion domain now.
@@ -1838,11 +1932,11 @@ const CompanionPage: React.FC = () => {
       }
       void hideCompanion();
     },
-    [clearUnreadSuggestions, companionId, ensureThread, hideCompanion, openMainAt]
+    [clearUnreadSuggestions, companionId, ensureThread, hideCompanion, openMainAt, enterVoice]
   );
 
   const openNativeContextMenu = useCallback(async () => {
-    const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || 'Flowy', t });
+    const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || BRAND_NAME, t });
     try {
       const [{ Menu }, { getCurrentWindow }] = await Promise.all([
         import('@tauri-apps/api/menu'),
@@ -1924,6 +2018,11 @@ const CompanionPage: React.FC = () => {
       className='nomi-companion-window'
       // 气泡可用高度 = 100vh − 预留（立绘高 + 输入条/边距）。让正文吃满窗口剩余空间又不压到立绘。
       style={{ '--companion-reserve': `${desk.figureHeight + 84}px` } as React.CSSProperties}
+      onMouseEnter={() => {
+        if (!draggingRef.current && isTauriRuntime()) {
+          void undockCompanionWindow();
+        }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         // 同步捕获：不等下个轮询 tick，先确保这次右键不会被透明穿透状态影响。
@@ -1972,7 +2071,7 @@ const CompanionPage: React.FC = () => {
                   <i />
                 </span>
               ) : (
-                <MarkdownView hiddenCodeCopyButton>{bubble}</MarkdownView>
+                <MarkdownView hiddenCodeCopyButton>{stripMediaDeliveryTags(bubble)}</MarkdownView>
               )}
             </div>
           </div>
@@ -1997,13 +2096,54 @@ const CompanionPage: React.FC = () => {
               {unread > 99 ? '99+' : unread}
             </button>
           )}
-          <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
+          <div className='nomi-companion-status-slot'>
+            {(voiceStopFailed || (voiceEntryFailed && !voiceActive)) ? (
+              <p role='alert' className='nomi-companion-voice-error'>{t('voice.session.unavailable')}</p>
+            ) : (
+              <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
+            )}
+            {voiceActive && (
+              <button
+                type='button'
+                className='nomi-companion-voice-stop'
+                data-companion-hit
+                aria-label={t('voice.session.stop')}
+                title={t('voice.session.stop')}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const targetScope = voiceSnapshot?.session_id ? `${voiceSnapshot.instance_id}:${voiceSnapshot.session_id}` : null;
+                  setVoiceStopFailed(false);
+                  void stopVoiceSession(voiceSnapshot!).catch(() => {
+                    if (targetScope && activeVoiceScopeRef.current === targetScope) setVoiceStopFailed(true);
+                  });
+                }}
+              >
+                ■
+              </button>
+            )}
+          </div>
           <div
             ref={figureHitRef}
             className='nomi-companion-figure-hit'
             data-companion-hit
             onMouseDown={(e) => void startDrag(e)}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              void enterVoice();
+            }}
           >
+            {voiceActive && (
+              <div
+                className='nomi-companion-voice-badge'
+                data-companion-hit
+                data-testid='companion-voice-active-badge'
+                title={t('voice.session.voiceCallActive')}
+                aria-label={t('voice.session.voiceCallActive')}
+                role='status'
+              >
+                <Headset theme='filled' size='12' fill='currentColor' />
+              </div>
+            )}
             <CompanionAvatar
               character={profile?.character}
               mood={mood}
@@ -2017,7 +2157,7 @@ const CompanionPage: React.FC = () => {
           </div>
         </div>
       </div>
-      {composerOpen ? (
+      {voiceActive&&voiceSnapshot?.binding ? <VoicePetInput key={voiceSnapshot.binding.conversation_id} conversationId={voiceSnapshot.binding.conversation_id} workspace={voiceSnapshot.binding.workspace}/> : composerOpen ? (
         <div
           className={`nomi-companion-composer ${dragOver ? 'is-dragover' : ''}`}
           data-companion-hit
@@ -2043,7 +2183,7 @@ const CompanionPage: React.FC = () => {
           <textarea
             className='nomi-companion-composer__input'
             value={composerText}
-            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
+            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || BRAND_NAME })}
             autoFocus
             onChange={(e) => setComposerText(e.target.value)}
             onFocus={onComposerFocus}
@@ -2083,6 +2223,33 @@ const CompanionPage: React.FC = () => {
                 </svg>
               )}
             </button>
+            <button
+              type='button'
+              className='nomi-companion-composer__voice'
+              title={t('nomi.companion.menuOpenVoice')}
+              aria-label={t('nomi.companion.menuOpenVoice')}
+              aria-pressed={voiceActive}
+              onClick={(e) => {
+                e.stopPropagation();
+                void enterVoice();
+              }}
+            >
+              <svg
+                width='16'
+                height='16'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                strokeLinecap='round'
+                strokeLinejoin='round'
+              >
+                <path d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z' />
+                <path d='M19 10v2a7 7 0 0 1-14 0v-2' />
+                <line x1='12' y1='19' x2='12' y2='23' />
+                <line x1='8' y1='23' x2='16' y2='23' />
+              </svg>
+            </button>
             <div className='spacer' />
             <button
               data-button-shape='pill'
@@ -2114,7 +2281,7 @@ const CompanionPage: React.FC = () => {
         >
           <input
             value={input}
-            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
+            placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || BRAND_NAME })}
             onChange={(e) => setInput(e.target.value)}
             onPaste={onComposerPaste}
             onCompositionStartCapture={compositionHandlers.onCompositionStartCapture}
@@ -2123,6 +2290,33 @@ const CompanionPage: React.FC = () => {
               if (e.key === 'Enter' && !isImeActive(e)) void sendChat();
             }}
           />
+          <button
+            type='button'
+            className='nomi-companion-iconbtn'
+            title={t('nomi.companion.menuOpenVoice')}
+            aria-label={t('nomi.companion.menuOpenVoice')}
+            aria-pressed={voiceActive}
+            onClick={(e) => {
+              e.stopPropagation();
+              void enterVoice();
+            }}
+          >
+            <svg
+              width='14'
+              height='14'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              strokeLinecap='round'
+              strokeLinejoin='round'
+            >
+              <path d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z' />
+              <path d='M19 10v2a7 7 0 0 1-14 0v-2' />
+              <line x1='12' y1='19' x2='12' y2='23' />
+              <line x1='8' y1='23' x2='16' y2='23' />
+            </svg>
+          </button>
           <div className='nomi-companion-iconbtn' title={t('nomi.companion.expand')} onClick={openComposer}>
             <svg
               width='14'

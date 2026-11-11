@@ -48,7 +48,7 @@
 
 .body {
   color: var(--color-text-1, #1d2129);
-  font-size: var(--conversation-message-font-size, 14px);
+  font-size: var(--conversation-message-font-size, 15px);
   line-height: var(--conversation-message-line-height, 22px);
   padding: 8px 10px;
   margin-top: 6px;
@@ -73,7 +73,7 @@
 
 @media (max-width: 767px) {
   .body {
-    font-size: var(--conversation-message-font-size, 14px);
+    font-size: var(--conversation-message-font-size, 15px);
     line-height: var(--conversation-message-line-height, 22px);
   }
 }

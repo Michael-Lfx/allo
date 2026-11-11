@@ -1,0 +1,120 @@
+.root {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  line-height: 1;
+  white-space: nowrap;
+  direction: ltr;
+  unicode-bidi: isolate;
+  vertical-align: baseline;
+}
+
+.sr {
+  position: absolute;
+  margin: -1px;
+  height: 1px;
+  width: 1px;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.row {
+  display: inline-flex;
+  align-items: baseline;
+  user-select: none;
+  margin-left: calc(var(--counter-gap, 0px) / -2);
+  margin-right: calc(var(--counter-gap, 0px) / -2);
+}
+
+.affix {
+  margin-left: calc(var(--counter-gap, 0px) / 2 * var(--counter-shown, 1));
+  margin-right: calc(var(--counter-gap, 0px) / 2 * var(--counter-shown, 1));
+  opacity: var(--counter-shown, 1);
+  white-space: pre;
+}
+
+.digit {
+  position: relative;
+  box-sizing: content-box;
+  display: inline-block;
+  margin-left: calc(var(--counter-gap, 0px) / 2 * var(--counter-shown, 1));
+  margin-right: calc(var(--counter-gap, 0px) / 2 * var(--counter-shown, 1));
+  opacity: var(--counter-shown, 1);
+  text-align: center;
+  line-height: calc(1em + var(--counter-padding, 0px));
+}
+
+.sizer {
+  visibility: hidden;
+}
+
+.window {
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--counter-fade, 0em) * -1);
+  right: 0;
+  bottom: calc(var(--counter-fade, 0em) * -1);
+  left: 0;
+  overflow: hidden;
+}
+
+.strip {
+  position: absolute;
+  inset: 0;
+}
+
+.numeral {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+
+.symbol {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+  margin-left: calc(var(--counter-gap, 0px) / 2 * var(--counter-shown, 1));
+  margin-right: calc(var(--counter-gap, 0px) / 2 * var(--counter-shown, 1));
+  opacity: var(--counter-shown, 1);
+  clip-path: inset(-0.5em 0);
+}
+
+.symbolText {
+  display: inline-block;
+  white-space: pre;
+}
+
+.blur {
+  position: absolute;
+  height: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+.measure {
+  pointer-events: none;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.measure > * {
+  display: inline-block;
+}
+
+.clock {
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
+  vertical-align: baseline;
+}

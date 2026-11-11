@@ -1,4 +1,5 @@
 import type { ConversationId } from '@/common/types/ids';
+import { RollingDuration, TimedPhrase, timerSlot } from '@renderer/components/base/Counter';
 import { goalContractEntries, useGoalCommand, useGoalStatus } from '@/renderer/hooks/chat/useGoalCommand';
 import { Button, Popconfirm } from '@arco-design/web-react';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -18,16 +19,6 @@ const ACTIVE_POLL_INTERVAL_MS = 15_000;
 // line forever.
 const CLEARED_AUTO_DISMISS_MS = 5_000;
 
-/** h:mm:ss above one hour, m:ss otherwise. */
-function formatRemaining(ms: number): string {
-  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
-}
-
 /**
  * Goal status + progress rail for the conversation surface, mirroring
  * TurnStatusRail's visual language (dot + 12px secondary text). Beyond the
@@ -39,7 +30,7 @@ function formatRemaining(ms: number): string {
  * nothing when the conversation has no goal snapshot.
  */
 const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conversation_id }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { goal, refresh } = useGoalStatus(conversation_id);
   const [subgoalsExpanded, setSubgoalsExpanded] = useState(false);
   const [contractExpanded, setContractExpanded] = useState(false);
@@ -147,7 +138,7 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
   const subgoals = goal.subgoals ?? [];
   // 屏障可能并存；主行按 session > pid > time 优先级展示，其余并列在同一行。
   const isWaiting = goal.status === 'waiting';
-  const barrierLines: string[] = [];
+  const barrierLines: React.ReactNode[] = [];
   if (isWaiting) {
     if (goal.waiting_on_session) {
       barrierLines.push(t('conversation.goal.notice.waitingOnSession', { session: goal.waiting_on_session }));
@@ -157,9 +148,18 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
     }
     if (remainingMs != null) {
       barrierLines.push(
-        remainingMs > 0
-          ? t('conversation.goal.notice.waitingCountdown', { time: formatRemaining(remainingMs) })
-          : t('conversation.goal.notice.waitElapsed')
+        remainingMs > 0 ? (
+          <TimedPhrase
+            text={t('conversation.goal.notice.waitingCountdown', { time: timerSlot.time })}
+            slots={{
+              [timerSlot.time]: (
+                <RollingDuration seconds={Math.ceil(remainingMs / 1000)} locale={i18n.language} />
+              ),
+            }}
+          />
+        ) : (
+          t('conversation.goal.notice.waitElapsed')
+        )
       );
     }
   }
@@ -227,7 +227,16 @@ const GoalStatusNotice: React.FC<{ conversation_id: ConversationId }> = ({ conve
         )}
       {isWaiting && (
         <div className='flex items-center gap-8px text-t-tertiary' data-testid='goal-wait-barrier'>
-          {barrierLines.length > 0 && <span className='truncate'>{barrierLines.join(' · ')}</span>}
+          {barrierLines.length > 0 && (
+            <span className='truncate'>
+              {barrierLines.map((line, index) => (
+                <React.Fragment key={index}>
+                  {index > 0 ? ' · ' : null}
+                  {line}
+                </React.Fragment>
+              ))}
+            </span>
+          )}
           {goal.waiting_reason && (
             <span className='truncate'>{t('conversation.goal.notice.reason', { reason: goal.waiting_reason })}</span>
           )}

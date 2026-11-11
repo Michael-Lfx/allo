@@ -1,12 +1,28 @@
 
 
+import { useNavigate } from 'react-router-dom';
 import { conversationTarget, type ConversationId, type MessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
+import type { TChatConversation } from '@/common/config/storage';
+import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession, voiceStartNeedsPrepare, type VoiceTaskSnapshot } from '@common/adapter/voiceCompanion';
+import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
+import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
+import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
+import {stopDisplayedVoiceTask} from '@renderer/pages/voiceSession/stopVoiceTask';
+import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import {isVoiceConversation as classifyVoiceConversation} from '../../utils/isVoiceConversation';
+import { useSWRConfig } from 'swr';
+import {
+  dispatchNomiSend,
+  resolveVoiceConversationKind,
+  type ConversationVoiceKind,
+} from './nomiSendDispatch';
 import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
-import { uuid, uuidv7 } from '@/common/utils';
+import { resolveLocaleKey, uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import { BRAND_NAME } from '@/renderer/config/brand';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
@@ -20,6 +36,7 @@ import MobileActionSheet, {
 import SendBox from '@/renderer/components/chat/SendBox';
 import ModelBrandIcon from '@/renderer/components/model/ModelBrandIcon';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
+import { ConversationExpertChip } from '@/renderer/pages/guid/components/SelectedExpertChip';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -87,6 +104,10 @@ import {
   warmupConversation,
   warmupConversationForPassiveMount,
 } from '@/renderer/pages/conversation/utils/warmupConversation';
+import {
+  initialMessageMustWaitForModelCatalog,
+  readNomiInitialHandoff,
+} from '@/renderer/pages/conversation/platforms/nomi/initialUserPreview';
 import { preconnectConversation } from '@/renderer/pages/conversation/utils/preconnectConversation';
 import { usePreviewContext } from '@/renderer/pages/conversation/Preview';
 import { allSupportedExts, type FileMetadata } from '@/renderer/services/FileService';
@@ -105,8 +126,11 @@ import {
   allChatModelOptions,
   defaultAutoOption,
   findChatModelOption,
+  isChatModelPlanLocked,
   type AutoTier,
 } from '@/renderer/utils/model/chatModelPicker';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import type { AgentModeOption } from '@/renderer/utils/model/agentModes';
 import {
   clearEditingMessageByOperation,
@@ -222,6 +246,20 @@ const NomiSendBox: React.FC<{
    */
   hideModeSelector?: boolean;
   hideModelSelector?: boolean;
+  voiceHistoryFailed?: boolean;
+  onRetryVoiceHistory?: () => Promise<void>;
+  voiceKind?: ConversationVoiceKind;
+  onVoiceKeyboardWait?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    text: string;
+  }) => void;
+  onVoiceKeyboardResult?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    task?: VoiceTaskSnapshot;
+    error?: unknown;
+  }) => void;
 }> = ({
   conversation_id,
   modelSelection,
@@ -232,8 +270,40 @@ const NomiSendBox: React.FC<{
   turnActivity,
   hideModeSelector,
   hideModelSelector = false,
+  voiceHistoryFailed = false,
+  onRetryVoiceHistory,
+  voiceKind,
+  onVoiceKeyboardWait,
+  onVoiceKeyboardResult,
 }) => {
+  const navigate = useNavigate();
+  const effectiveModelTier = useEffectiveModelTier();
   const [workspacePath, setWorkspacePath] = useState('');
+  const [voiceConversation, setVoiceConversation] = useState<{
+    id: string;
+    kind: ConversationVoiceKind;
+  }>({ id: conversation_id, kind: 'unknown' });
+  const conversationVoiceKind =
+    voiceKind ?? (voiceConversation.id === conversation_id ? voiceConversation.kind : 'unknown');
+  const isVoiceConversation = conversationVoiceKind === 'voice';
+  const { snapshot: voiceSnapshot, failed: voiceFailed } = useVoiceSnapshot(isVoiceConversation);
+  const activeVoiceConversationId = voiceSnapshot?.binding?.conversation_id;
+  const isCallActiveGlobally =
+    Boolean(voiceSnapshot?.session_id) &&
+    !voiceSnapshot?.ended_reason &&
+    voiceSnapshot?.phase !== 'idle';
+  const isVoiceActive =
+    isVoiceConversation &&
+    isCallActiveGlobally &&
+    activeVoiceConversationId === conversation_id;
+  const isVoiceActiveElsewhere =
+    isCallActiveGlobally &&
+    Boolean(activeVoiceConversationId) &&
+    activeVoiceConversationId !== conversation_id;
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
+  const pendingCallConversationId=usePendingVoiceCallConversationId();
+  const isVoiceStartUncertain=Boolean(!isVoiceActive && pendingCallConversationId===conversation_id);
+  const voiceSendAttempts = useRef(new Map<string, string>());
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const [currentReasoningEffort, setCurrentReasoningEffort] = useState<string | undefined>(
     reasoning_effort
@@ -287,7 +357,9 @@ const NomiSendBox: React.FC<{
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const localeKey = resolveLocaleKey(i18n.language);
+  const { cache } = useSWRConfig();
   const providerLabel = useModelSelectorProviderLabel();
   const { current_model } = modelSelection;
 
@@ -335,6 +407,83 @@ const NomiSendBox: React.FC<{
     [handleChatPopupVisibleChange]
   );
 
+  const handleStartVoiceCall = useCallback(async () => {
+    if (isVoiceActiveElsewhere && activeVoiceConversationId) {
+      Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
+      await navigate(`/conversation/${encodeURIComponent(activeVoiceConversationId)}`);
+      return;
+    }
+    const activeLocale = localeKey;
+
+    setIsVoiceConnecting(true);
+    const generation=lifecycleGenerationRef.current;
+    try {
+      await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
+    } catch (err: unknown) {
+      if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+      const errorObj = err as { status?: number; code?: string; active_conversation_id?: string; reason_code?: string; requires_check?: boolean; degraded_text_only?: boolean; call_request_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_superseded') return;
+      if (errorObj?.code === 'voice_call_cancel_unknown') {
+        const recovered = await retryAbandonedVoiceCallIntent();
+        if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+        Message.warning(t(recovered ? 'voice.entry.cancelRecovered' : 'voice.entry.cancelUnknown'));
+        return;
+      }
+      const needsPrepare = voiceStartNeedsPrepare(errorObj);
+      if (errorObj?.code === 'voice_call_conflict') {
+        Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
+        if (errorObj.active_conversation_id && errorObj.active_conversation_id !== conversation_id) {
+          await navigate(`/conversation/${encodeURIComponent(errorObj.active_conversation_id)}`);
+        }
+      } else if (needsPrepare) {
+        try {
+          const report = await prepareVoiceSession(true, activeLocale, 'preparing');
+          if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+          if (!report.can_start_full_call) {
+            discardPendingVoiceCallIntent(errorObj?.call_request_id);
+            const reason = report.reason_code
+              ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
+              : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
+            Message.warning(
+              `${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}${report.degraded_text_only ? ` ${t('voice.capabilities.textOnly')}` : ''}`
+            );
+            return;
+          }
+          await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
+        } catch (prepareError) {
+          if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+          const failure = prepareError as { code?: string; message?: string };
+          if (failure.code === 'voice_call_superseded') return;
+          discardPendingVoiceCallIntent(errorObj?.call_request_id);
+          Message.error(
+            failure.code === 'models_not_installed'
+              ? t('voice.errors.modelMissing')
+              : failure.message || t('voice.capabilities.checkFailed'),
+          );
+        }
+      } else if (errorObj?.code === 'voice_suite_not_ready') {
+        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
+        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      } else {
+        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+      }
+    } finally {
+      if (mountedRef.current && lifecycleGenerationRef.current===generation) setIsVoiceConnecting(false);
+    }
+  }, [conversation_id, isVoiceActiveElsewhere, activeVoiceConversationId, navigate, t, localeKey]);
+
+  const handleStopVoiceCall = useCallback(async () => {
+    if (!voiceSnapshot) return;
+    if (voiceSnapshot.binding?.conversation_id !== conversation_id) {
+      return;
+    }
+    try {
+      await stopVoiceSession(voiceSnapshot);
+    } catch {
+      Message.error(t('voice.session.stopFailed', { defaultValue: '挂断语音通话失败' }));
+    }
+  }, [conversation_id, voiceSnapshot, t]);
+
   const displayContextWindow = useMemo(
     () =>
       resolveDisplayContextWindow(
@@ -348,6 +497,7 @@ const NomiSendBox: React.FC<{
   }, [reasoning_effort]);
 
   useEffect(() => {
+    if (isVoiceConversation) return;
     if (modelSelection.isModelCatalogLoading || !current_model?.use_model || !selectedChatModelOption) return;
     if (currentReasoningEffort === effectiveReasoningEffort) return;
     setCurrentReasoningEffort(effectiveReasoningEffort);
@@ -435,6 +585,64 @@ const NomiSendBox: React.FC<{
     await warmupConversationForPassiveMount(conversation_id);
   }, [conversation_id]);
 
+  const resolveConversationKind = useCallback(
+    async (targetId: ConversationId): Promise<'voice' | 'ordinary'> => {
+      const { kind, workspace } = await resolveVoiceConversationKind({
+        targetId,
+        fetchConversation: getConversationOrNull,
+        getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
+      });
+      setVoiceConversation({ id: targetId, kind });
+      if (workspace) setWorkspacePath(workspace);
+      return kind;
+    },
+    [cache]
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    if (voiceKind && voiceKind !== 'unknown') return;
+    const cached = cache.get(`conversation/${conversation_id}`)?.data as TChatConversation | undefined;
+    if (cached && cached.id === conversation_id) {
+      const isVoice = classifyVoiceConversation(cached);
+      setVoiceConversation({ id: conversation_id, kind: isVoice ? 'voice' : 'ordinary' });
+      if (cached.extra?.workspace) {
+        setWorkspacePath(cached.extra.workspace);
+      }
+      return;
+    }
+    setVoiceConversation({ id: conversation_id, kind: 'unknown' });
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const loadKind = (): void => {
+      void resolveVoiceConversationKind({
+        targetId: conversation_id,
+        fetchConversation: getConversationOrNull,
+        getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
+      })
+        .then(({ kind, workspace }) => {
+          if (disposed) return;
+          setVoiceConversation({ id: conversation_id, kind });
+          if (workspace) setWorkspacePath(workspace);
+        })
+        .catch(() => {
+          if (disposed) return;
+          setVoiceConversation({ id: conversation_id, kind: 'unknown' });
+          // A transient classifier failure must not defer ordinary composer
+          // warmup forever; retry a bounded number of times.
+          attempts += 1;
+          if (attempts < 3) {
+            retryTimer = setTimeout(loadKind, 1_000);
+          }
+        });
+    };
+    loadKind();
+    return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [conversation_id, cache, voiceKind]);
+
   useEffect(() => {
     if (!conversationContext?.workspace) return;
     setWorkspacePath(conversationContext.workspace);
@@ -443,6 +651,13 @@ const NomiSendBox: React.FC<{
   useEffect(() => {
     if (!conversation_id) return;
     setAgentWarmed(false);
+    // Wait for classification: a voice call must not build a chat runtime on
+    // mount (that build holds the preparation gate and blocks the projection).
+    if (conversationVoiceKind === 'unknown') return;
+    if (conversationVoiceKind === 'voice') {
+      setAgentWarmed(true);
+      return;
+    }
     void warmupConversationForPassiveMount(conversation_id)
       .then(() => {
         setAgentWarmed(true);
@@ -450,7 +665,7 @@ const NomiSendBox: React.FC<{
       .catch((error) => {
         Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
       });
-  }, [conversation_id, t]);
+  }, [conversation_id, conversationVoiceKind, t]);
 
   const slash_commands = useSlashCommands(conversation_id, {
     conversation_type: 'nomi',
@@ -465,11 +680,21 @@ const NomiSendBox: React.FC<{
   const updateMessageList = useUpdateMessageList();
   const { setSendBoxHandler } = usePreviewContext();
   const [isStopping, setIsStopping] = useState(false);
+  const [voiceStopTarget,setVoiceStopTarget]=useState<{command:string;instance:string;seq:number}|null>(null);
+  const voiceTask = voiceSnapshot?.task?.conversation_id===conversation_id ? voiceSnapshot.task : null;
+  useEffect(()=>{
+    if(!voiceStopTarget || !voiceSnapshot)return;
+    const observed=voiceSnapshot.task;
+    if(voiceSnapshot.instance_id!==voiceStopTarget.instance || (voiceSnapshot.seq>voiceStopTarget.seq && observed &&
+      (observed.command_id!==voiceStopTarget.command || observed.status==='completed'||observed.status==='failed'))){setVoiceStopTarget(null);}
+  },[voiceStopTarget,voiceSnapshot]);
+  const voiceStopPending=isVoiceConversation && (voiceStopTarget!==null || voiceTask?.status==='cancelling');
   const [editTargetChangedNotice, setEditTargetChangedNotice] = useState(false);
   const showStrongBusy =
     running ||
     presentation.showStop ||
     isStopping ||
+    voiceStopPending ||
     presentation.phase === 'local_pending' ||
     presentation.phase === 'accepted';
   const isBusy = showStrongBusy;
@@ -498,6 +723,7 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setIsStopping(false);
+    setVoiceStopTarget(null);
     setEditTargetChangedNotice(false);
   }, [conversation_id]);
 
@@ -726,15 +952,83 @@ const NomiSendBox: React.FC<{
     resetActiveExecution,
   } = useConversationCommandQueue({
     conversation_id: conversation_id,
-    enabled: true,
+    enabled: conversationVoiceKind === 'ordinary',
     isBusy,
     isHydrated: hasHydratedRunningState,
     onExecute: executeCommand,
   });
 
+  const pendingOrdinaryQueueDrainRef = useRef<Array<{
+    item: { input: string; files: string[]; workspace_path?: string };
+    resolve: (result: ConversationCommandQueueItem | null) => void;
+    reject: (err: unknown) => void;
+  }>>([]);
+
+  const safeEnqueue = useCallback(
+    async (item: { input: string; files: string[]; workspace_path?: string }) => {
+      if (conversationVoiceKind === 'ordinary') {
+        const directResult = enqueue(item);
+        if (directResult) return directResult;
+      }
+      return new Promise<ConversationCommandQueueItem | null>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          const index = pendingOrdinaryQueueDrainRef.current.findIndex((entry) => entry.item === item);
+          if (index !== -1) {
+            pendingOrdinaryQueueDrainRef.current.splice(index, 1);
+            reject(new Error('conversation command was not queued'));
+          }
+        }, 10000);
+
+        pendingOrdinaryQueueDrainRef.current.push({
+          item,
+          resolve: (result) => {
+            clearTimeout(timeoutId);
+            resolve(result);
+          },
+          reject: (err) => {
+            clearTimeout(timeoutId);
+            reject(err);
+          },
+        });
+      });
+    },
+    [conversationVoiceKind, enqueue]
+  );
+
+  useEffect(() => {
+    if (conversationVoiceKind !== 'ordinary') return;
+    if (pendingOrdinaryQueueDrainRef.current.length === 0) return;
+
+    const pending = [...pendingOrdinaryQueueDrainRef.current];
+    pendingOrdinaryQueueDrainRef.current = [];
+
+    for (const { item, resolve, reject } of pending) {
+      try {
+        const queuedItem = enqueue(item);
+        resolve(queuedItem);
+      } catch (err) {
+        reject(err);
+      }
+    }
+  }, [conversationVoiceKind, enqueue]);
+
+  useEffect(() => {
+    return () => {
+      for (const { reject } of pendingOrdinaryQueueDrainRef.current) {
+        reject(new Error('SendBox unmounted before queue was enabled'));
+      }
+      pendingOrdinaryQueueDrainRef.current = [];
+    };
+  }, []);
+
   // Handle initial message from Guid page — wait until model is ready
   useEffect(() => {
     if (!conversation_id || !current_model?.use_model) return;
+    if (conversationVoiceKind === 'unknown') return;
+    if (isVoiceConversation) {
+      emitter.emit('conversation.transition.reveal', { conversation_id });
+      return;
+    }
 
     const target = conversationTarget(conversation_id);
     const draftStorageKey = sessionStorageKey('draft', target);
@@ -764,14 +1058,17 @@ const NomiSendBox: React.FC<{
 
     const storageKey = sessionStorageKey('initial-message-nomi', target);
     const processedKey = sessionStorageKey('initial-message-processed-nomi', target);
-    // The handoff may contain image attachments. Do not claim it until the
-    // catalog has identified the active model family; otherwise an Auto model
-    // can win the race against catalog hydration and receive the files.
-    if (
-      sessionStorage.getItem(storageKey) &&
-      (modelSelection.isModelCatalogLoading || !selectedChatModelOption)
-    ) {
-      return;
+    // Image attachments must wait until the catalog identifies the model
+    // family. A text handoff already has its model from the home page and
+    // sends immediately, instead of sitting blank while the catalog loads.
+    if (sessionStorage.getItem(storageKey)) {
+      const handoff = readNomiInitialHandoff(sessionStorage, conversation_id);
+      if (
+        initialMessageMustWaitForModelCatalog(handoff?.files) &&
+        (modelSelection.isModelCatalogLoading || !selectedChatModelOption)
+      ) {
+        return;
+      }
     }
 
     const processInitialMessage = async () => {
@@ -854,6 +1151,8 @@ const NomiSendBox: React.FC<{
     void processInitialMessage();
   }, [
     conversation_id,
+    voiceConversation,
+    isVoiceConversation,
     current_model?.use_model,
     executeCommand,
     modelSelection.isModelCatalogLoading,
@@ -864,20 +1163,39 @@ const NomiSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
-
-    const queued = enqueue({ input: message, files: filesToSend, workspace_path: workspacePath });
-    if (!queued) {
-      // Queue validation/storage failure must reject the composer send so the
-      // SendBox restores the text while the attachment draft stays intact.
-      throw new Error('conversation command was not queued');
-    }
-    clearFiles();
-    emitter.emit('nomi.selected.file.clear');
+    await dispatchNomiSend({
+      conversationId: conversation_id,
+      conversationVoiceKind,
+      workspacePath,
+      filesToSend,
+      message,
+      voiceSendAttempts: voiceSendAttempts.current,
+      resolveConversationKind,
+      sendVoiceKeyboardMessage,
+      onVoiceCommand: onVoiceKeyboardWait,
+      onVoiceCommandResult: onVoiceKeyboardResult,
+      enqueue: safeEnqueue,
+      clearFiles,
+      emitFileClear: () => emitter.emit('nomi.selected.file.clear'),
+      notifyError: (msg) => Message.error(msg),
+      plainTextOnlyError: t('voice.queue.plainTextOnly'),
+      loadFailedError: t('conversation.loadFailed', '加载会话失败，请重试'),
+    });
   };
 
   const onSendWithSkillsHandler = useCallback(
     async (message: string, injectSkills: string[]) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
+      let kind = conversationVoiceKind;
+      if (kind === 'unknown') {
+        try {
+          kind = await resolveConversationKind(conversation_id);
+        } catch (err) {
+          Message.error(t('conversation.loadFailed', '加载会话失败，请重试'));
+          throw err;
+        }
+      }
+      if (kind === 'voice') throw new Error(t('voice.queue.plainTextOnly'));
 
       // The queue stores plain commands only. A selected Skill is an atomic
       // snapshot load for this turn, so reject it while a turn is busy and let
@@ -897,7 +1215,18 @@ const NomiSendBox: React.FC<{
       clearFiles();
       emitter.emit('nomi.selected.file.clear');
     },
-    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
+    [
+      atPath,
+      clearFiles,
+      conversation_id,
+      conversationVoiceKind,
+      executeCommand,
+      hasPendingCommands,
+      isBusy,
+      resolveConversationKind,
+      t,
+      uploadFile,
+    ]
   );
 
   // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
@@ -1452,7 +1781,7 @@ const NomiSendBox: React.FC<{
         value === 'flowy-auto-family'
           ? defaultAutoOption(modelSelection.modelPicker.autoModels, findChatModelOption(modelSelection.modelPicker, modelSelection.current_model?.id, modelSelection.current_model?.use_model))
           : catalogOptions.find((option) => option.key === value);
-      if (!selected) {
+      if (!selected || isChatModelPlanLocked(selected, effectiveModelTier)) {
         if (value === 'flowy-auto-family') Message.warning(t('billing.autoEconomyUnavailable'));
         return;
       }
@@ -1464,6 +1793,7 @@ const NomiSendBox: React.FC<{
       modelSelection.handleSelectModel,
       modelSelection.modelPicker,
       modelSelectionDisabled,
+      effectiveModelTier,
       t,
     ]
   );
@@ -1519,20 +1849,34 @@ const NomiSendBox: React.FC<{
       const providerName = providerLabel(option.provider);
       const creditRate = formatCreditRateMultiplier(option.creditRate);
       const tagline = option.showcase.taglineKey ? t(option.showcase.taglineKey) : undefined;
+      const planLocked = isChatModelPlanLocked(option, effectiveModelTier);
+      const planBadge = requiredPlanBadgeLabel(
+        option.minTierLevel,
+        option.requiredPlanName,
+        t('conversation.modelPicker.member', { defaultValue: '会员' }),
+      );
+      const upgradeHint = planLocked && planBadge
+        ? t('conversation.modelPicker.planRequired', {
+            plan: planBadge,
+            defaultValue: 'Available after upgrading to {{plan}}',
+          })
+        : undefined;
       return {
         key: option.key,
+        disabled: planLocked,
         icon: option.showcase.icon ? <ModelBrandIcon src={option.showcase.icon} /> : undefined,
-        label: option.showcase.recommended ? (
+        label: (
           <span className='flex min-w-0 items-center gap-6px'>
             <span className='min-w-0 truncate'>{option.label}</span>
-            <span className='chat-model-recommended-badge shrink-0'>
-              {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
-            </span>
+            {option.showcase.recommended && (
+              <span className='chat-model-recommended-badge shrink-0'>
+                {t('conversation.modelPicker.recommended', { defaultValue: 'Recommended' })}
+              </span>
+            )}
+            {planBadge && <span className='chat-model-plan-badge shrink-0'>{planBadge}</span>}
           </span>
-        ) : (
-          option.label
         ),
-        description: [tagline ?? providerName, creditRate].filter(Boolean).join(' · '),
+        description: upgradeHint ?? [tagline ?? providerName, creditRate].filter(Boolean).join(' · '),
         active:
           modelSelection.current_model?.id === option.provider.id &&
           modelSelection.current_model?.use_model === option.model,
@@ -1723,6 +2067,7 @@ const NomiSendBox: React.FC<{
     modelSelection,
     reasoningEffortLevels,
     effectiveReasoningEffort,
+    effectiveModelTier,
     providerLabel,
     setContent,
     t,
@@ -1739,6 +2084,21 @@ const NomiSendBox: React.FC<{
   // Stop conversation handler
   const handleStop = async (): Promise<void> => {
     if (isStopping) return;
+    if(isVoiceConversation){
+      const generation=lifecycleGenerationRef.current;
+      const snapshot=voiceSnapshot;
+      if(!snapshot?.task || snapshot.task.conversation_id!==conversation_id){Message.error(t('voice.task.scopeChanged'));return;}
+      setIsStopping(true);
+      if(snapshot.task.status==='accepted')setVoiceStopTarget({command:snapshot.task.command_id,instance:snapshot.instance_id,seq:snapshot.seq});
+      try {
+        const result=await stopDisplayedVoiceTask(conversation_id,snapshot);
+        if(mountedRef.current && lifecycleGenerationRef.current===generation)emitter.emit('voice.keyboard.wait.clear',conversation_id);
+        if(mountedRef.current && lifecycleGenerationRef.current===generation && (result.status==='completed'||result.status==='failed'))setVoiceStopTarget(null);
+      } catch {
+        if(mountedRef.current && lifecycleGenerationRef.current===generation){setVoiceStopTarget(null);Message.error(t('voice.task.controlUnknown'));}
+      } finally {if(mountedRef.current && lifecycleGenerationRef.current===generation)setIsStopping(false);}
+      return;
+    }
     const stopAttempt = beginStopAttempt();
     setIsStopping(true);
     resetState();
@@ -1769,12 +2129,21 @@ const NomiSendBox: React.FC<{
 
   // Clear conversation context (release model context); keeps message records.
   const handleClearContext = async (): Promise<void> => {
-    // Keep queued work behind the post-reset authority read. A clear-context
-    // response must not race a late send and reopen the old turn locally.
-    pause();
-    resetActiveExecution('external-reset');
+    const generation = lifecycleGenerationRef.current;
     try {
-      await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      const clearContext = async () => {
+        // Keep queued work behind the post-reset authority read.
+        pause();
+        resetActiveExecution('external-reset');
+        await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      };
+      if (isVoiceConversation) await resetVoiceHistory(voiceSnapshot, conversation_id, clearContext);
+      else await clearContext();
+      if (isVoiceConversation) {
+        emitter.emit('voice.keyboard.wait.clear', conversation_id);
+        emitter.emit('conversation.messages.refresh', {conversationId: conversation_id, reason: 'reset'});
+      }
+      if (!mountedRef.current || lifecycleGenerationRef.current !== generation) return;
       resume();
       Message.success({
         content: t('conversation.clearContext.success', { defaultValue: 'Context cleared' }),
@@ -1782,6 +2151,11 @@ const NomiSendBox: React.FC<{
         closable: true,
       });
     } catch (error) {
+      if (!mountedRef.current || lifecycleGenerationRef.current !== generation) return;
+      if (error instanceof Error && error.message === 'voice_reset_scope_unavailable') {
+        Message.info(t('voice.composer.resetScopeUnavailable'));
+        return;
+      }
       console.warn('[NomiSendBox] clear context failed', error);
       // Preserve the messages and leave the queue paused until the user
       // explicitly resumes after the reset outcome is known.
@@ -1797,7 +2171,9 @@ const NomiSendBox: React.FC<{
     await runConversationResetSingleFlight({
       inFlightRef: resetInFlightRef,
       conversationId: conversation_id,
-      invokeReset: (params) => ipcBridge.conversation.reset.invoke(params),
+      invokeReset: (params) => isVoiceConversation
+        ? resetVoiceHistory(voiceSnapshot, conversation_id, () => ipcBridge.conversation.reset.invoke(params))
+        : ipcBridge.conversation.reset.invoke(params),
       onStart: () => {
         setIsResettingConversation(true);
       },
@@ -1808,7 +2184,7 @@ const NomiSendBox: React.FC<{
         ) {
           return;
         }
-        commitAuthoritativeConversationReset(conversation_id);
+        if (!isVoiceConversation) commitAuthoritativeConversationReset(conversation_id);
         const operation = getEditResubmitOperation(conversation_id);
         if (operation) {
           clearEditingMessageByOperation(conversation_id, operation.operationId);
@@ -1831,6 +2207,10 @@ const NomiSendBox: React.FC<{
         ) {
           return;
         }
+        if (error instanceof Error && error.message === 'voice_reset_scope_unavailable') {
+          Message.info(t('voice.composer.resetScopeUnavailable'));
+          return;
+        }
         console.warn('[NomiSendBox] explicit conversation reset failed', error);
         Message.error(t('conversation.editMessage.resetFailed'));
       },
@@ -1843,7 +2223,7 @@ const NomiSendBox: React.FC<{
         }
       },
     });
-  }, [conversation_id, t]);
+  }, [conversation_id, t, isVoiceConversation, voiceSnapshot]);
 
   const modelUnavailable =
     !hideModelSelector &&
@@ -1852,7 +2232,7 @@ const NomiSendBox: React.FC<{
 
   return (
     <div className={CHAT_COMPOSER_WRAPPER_CLASSES}>
-      <CommandQueuePanel
+      {!isVoiceConversation&&<CommandQueuePanel
         items={queuedCommands}
         paused={isQueuePaused}
         interactionLocked={isQueueInteractionLocked}
@@ -1865,7 +2245,7 @@ const NomiSendBox: React.FC<{
         onReorder={reorder}
         onRemove={remove}
         onClear={clear}
-      />
+      />}
       {requiresConversationReset && (
         <Alert
           className='mb-8px'
@@ -1907,22 +2287,54 @@ const NomiSendBox: React.FC<{
           type='warning'
           content={
             <div className='flex flex-wrap items-center gap-8px'>
-              <span>{t('conversation.chat.modelUnavailableHint')}</span>
-              <Button type='text' size='small' onClick={modelSelection.refreshModelCatalog}>
-                {t('common.retry')}
-              </Button>
-              <a className='text-primary-6 text-12px' href='#/models?section=models'>
-                {t('conversation.chat.openModelSettings')}
-              </a>
+              <span>
+                {modelSelection.currentModelPlanLabel !== undefined
+                  ? t('conversation.chat.modelPlanRequiredHint', {
+                      plan:
+                        modelSelection.currentModelPlanLabel ||
+                        t('conversation.modelPicker.member', { defaultValue: 'Member' }),
+                      defaultValue: 'Upgrade to {{plan}} to use the current model.',
+                    })
+                  : t('conversation.chat.modelUnavailableHint')}
+              </span>
             </div>
+          }
+        />
+      )}
+      {isVoiceConversation && (
+        <VoiceCallDock
+          conversationId={conversation_id}
+          snapshot={voiceSnapshot}
+          failed={voiceFailed}
+          historyFailed={voiceHistoryFailed}
+          historyMessages={messageList}
+          isConnecting={isVoiceConnecting}
+          isActiveElsewhere={isVoiceActiveElsewhere}
+          onRetryHistory={onRetryVoiceHistory}
+          onReturnToCall={
+            activeVoiceConversationId
+              ? () => {
+                  void navigate(
+                    `/conversation/${encodeURIComponent(activeVoiceConversationId)}`
+                  );
+                }
+              : undefined
           }
         />
       )}
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
+        isVoiceConversation={isVoiceConversation}
+        voiceConversationKind={conversationVoiceKind}
+        isVoiceActive={isVoiceActive}
+        isVoiceActiveElsewhere={isVoiceActiveElsewhere}
+        isVoiceConnecting={isVoiceConnecting}
+        isVoiceStartUncertain={isVoiceStartUncertain}
+        onStartVoiceCall={handleStartVoiceCall}
+        onStopVoiceCall={handleStopVoiceCall}
         showPinnedPlan
-        onMobilePlusClick={isMobile ? () => setIsMobileSheetOpen(true) : undefined}
+        onMobilePlusClick={isMobile && !isVoiceConversation ? () => setIsMobileSheetOpen(true) : undefined}
         value={content}
         onChange={handleContentChange}
         selectedWorkspaceItems={atPath}
@@ -1935,26 +2347,28 @@ const NomiSendBox: React.FC<{
         placeholder={
           current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {
-                backend: agent_name || 'Flowy',
+                backend: agent_name || BRAND_NAME,
                 defaultValue: `Send message to {{backend}}...`,
               })
             : t('conversation.chat.noModelSelected')
         }
         onStop={handleStop}
+        stopPending={voiceStopPending}
         onClearContext={handleClearContext}
         className='z-10'
-        onFilesAdded={handleNomiFilesAdded}
+        onFilesAdded={isVoiceConversation?undefined:handleNomiFilesAdded}
         hasPendingAttachments={uploadFile.length > 0 || atPath.length > 0}
         supportedExts={allSupportedExts}
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
           <div className='composer-toolbar-tools flex items-center min-w-0'>
-            <FileAttachButton
+            {!isVoiceConversation&&<FileAttachButton
               openFileSelector={openFileSelector}
               onLocalFilesAdded={handleNomiFilesAdded}
               loadedMcpStatuses={loadedMcpStatuses}
-            />
+            />}
+            {!isVoiceConversation && <ConversationExpertChip />}
             {!hideModeSelector && (
               <AgentModeSelector
                 backend='nomi'
@@ -1968,7 +2382,7 @@ const NomiSendBox: React.FC<{
                 beforeRuntimeMutation={prepareRuntimeSync}
               />
             )}
-            <GoalModeChip conversation_id={conversation_id} armed={goalModeArmed} onArmedChange={setGoalModeArmed} />
+            {!isVoiceConversation&&<GoalModeChip conversation_id={conversation_id} armed={goalModeArmed} onArmedChange={setGoalModeArmed} />}
           </div>
         }
         rightTools={
@@ -2094,16 +2508,16 @@ const NomiSendBox: React.FC<{
           ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
         ]}
         onSend={onSendHandler}
-        onSendWithSkills={onSendWithSkillsHandler}
-        skillChips={skillChips}
-        onSkillChipsChange={setSkillChips}
+        onSendWithSkills={isVoiceConversation?undefined:onSendWithSkillsHandler}
+        skillChips={isVoiceConversation?[]:skillChips}
+        onSkillChipsChange={isVoiceConversation?undefined:setSkillChips}
         onSteer={onSteerHandler}
         steerAvailable
         onEditResubmit={handleEditResubmit}
         slash_commands={slash_commands}
-        onSlashBuiltinCommand={onSlashBuiltinCommand}
-        onAddFiles={openFileSelector}
-        enableGoalMenu
+        onSlashBuiltinCommand={isVoiceConversation?undefined:onSlashBuiltinCommand}
+        onAddFiles={isVoiceConversation?undefined:openFileSelector}
+        enableGoalMenu={!isVoiceConversation}
         goalModeArmed={goalModeArmed}
         onGoalModeChange={setGoalModeArmed}
         allowSendWhileLoading

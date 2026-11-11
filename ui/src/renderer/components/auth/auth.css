@@ -486,10 +486,15 @@ body[arco-theme='dark'] .flowy-auth-brand {
 }
 
 .flowy-auth-brand__legal-link {
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--flowy-text-secondary);
+  font: inherit;
   text-underline-offset: 3px;
   text-decoration: underline;
   text-decoration-color: var(--flowy-border-structural);
+  cursor: pointer;
   transition: color 120ms var(--flowy-ease-move, ease-out), text-decoration-color 120ms var(--flowy-ease-move, ease-out);
 }
 
@@ -497,10 +502,6 @@ body[arco-theme='dark'] .flowy-auth-brand {
 .flowy-auth-brand__legal-link:focus-visible {
   color: var(--flowy-accent);
   text-decoration-color: currentColor;
-}
-
-.flowy-auth-brand__legal-link[aria-disabled='true'] {
-  cursor: default;
 }
 
 .flowy-auth-brand__legal-separator {

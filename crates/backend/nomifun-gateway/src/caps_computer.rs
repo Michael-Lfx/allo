@@ -25,9 +25,21 @@ fn registry(deps: &GatewayDeps) -> Result<&ComputerRegistry, Value> {
         .ok_or_else(|| json!({ "error": "computer-use is not available on this host" }))
 }
 
-async fn run(deps: &GatewayDeps, input: Value) -> Value {
+fn caller_session_id(ctx: &CallerCtx) -> String {
+    if let Some(conversation_id) = &ctx.conversation_id {
+        return format!("conversation:{conversation_id}");
+    }
+    if let Some(companion_id) = &ctx.companion_id {
+        return format!("companion:{companion_id}");
+    }
+    format!("user:{}", ctx.user_id)
+}
+
+async fn run(deps: &GatewayDeps, ctx: &CallerCtx, input: Value) -> Value {
     match registry(deps) {
-        Ok(reg) => tool_result_to_value(reg.execute(input).await),
+        Ok(reg) => {
+            tool_result_to_value(reg.execute_for_session(&caller_session_id(ctx), input).await)
+        }
         Err(e) => e,
     }
 }
@@ -42,16 +54,74 @@ struct NoParams {}
 #[serde(deny_unknown_fields)]
 struct RefParams {
     /// Element number `[ref]` from the most recent `nomi_computer_snapshot`.
-    r#ref: u32,
+    #[serde(default)]
+    r#ref: Option<u32>,
+    /// Exact accessibility role, e.g. button or edit.
+    #[serde(default)]
+    role: Option<String>,
+    /// Exact case-insensitive accessible name or value.
+    #[serde(default)]
+    name: Option<String>,
+    /// Case-insensitive accessible name/value substring.
+    #[serde(default)]
+    name_contains: Option<String>,
+    /// Restrict to one source: a11y, ocr, or vision.
+    #[serde(default)]
+    source: Option<String>,
+    /// 1-based match when multiple elements match the selector.
+    #[serde(default)]
+    nth: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SetValueParams {
     /// Element number `[ref]` from the most recent snapshot.
-    r#ref: u32,
+    #[serde(default)]
+    r#ref: Option<u32>,
+    /// Exact accessibility role, e.g. button or edit.
+    #[serde(default)]
+    role: Option<String>,
+    /// Exact case-insensitive accessible name or value.
+    #[serde(default)]
+    name: Option<String>,
+    /// Case-insensitive accessible name/value substring.
+    #[serde(default)]
+    name_contains: Option<String>,
+    /// Restrict to one source: a11y, ocr, or vision.
+    #[serde(default)]
+    source: Option<String>,
+    /// 1-based match when multiple elements match the selector.
+    #[serde(default)]
+    nth: Option<u64>,
     /// The text to set into the element.
     text: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_target_fields(
+    input: &mut Value,
+    ref_id: Option<u32>,
+    role: Option<&str>,
+    name: Option<&str>,
+    name_contains: Option<&str>,
+    source: Option<&str>,
+    nth: Option<u64>,
+) {
+    if let Some(ref_id) = ref_id {
+        input["ref"] = json!(ref_id);
+    }
+    for (key, value) in [
+        ("role", role.map(|value| json!(value))),
+        ("name", name.map(|value| json!(value))),
+        ("name_contains", name_contains.map(|value| json!(value))),
+        ("source", source.map(|value| json!(value))),
+        ("nth", nth.map(|value| json!(value))),
+    ] {
+        if let Some(value) = value {
+            input[key] = value;
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -122,64 +192,177 @@ struct WaitParams {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct WaitForParams {
+    /// Condition: element_present, element_absent, text_present, text_absent, changed.
+    condition: String,
+    /// Optional window id from `list_windows`.
+    #[serde(default)]
+    window_id: Option<u64>,
+    /// Element selector: exact accessibility role.
+    #[serde(default)]
+    role: Option<String>,
+    /// Element selector: exact accessible name or value.
+    #[serde(default)]
+    name: Option<String>,
+    /// Element selector: case-insensitive name/value substring.
+    #[serde(default)]
+    name_contains: Option<String>,
+    /// Element selector: a11y, ocr, or vision.
+    #[serde(default)]
+    source: Option<String>,
+    /// Element selector: 1-based match when several elements match.
+    #[serde(default)]
+    nth: Option<u64>,
+    /// Text to look for in text_present/text_absent.
+    #[serde(default)]
+    text: Option<String>,
+    /// Maximum wait in milliseconds (default 5000, max 15000).
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    /// Polling interval in milliseconds (default 200).
+    #[serde(default)]
+    interval_ms: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SnapshotParams {
     /// Optional window id from `list_windows`. When set, snapshot that window
     /// without raising it.
     #[serde(default)]
     window_id: Option<u64>,
+    /// Observe mode: auto, semantic, visual, or text.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Maximum interactable elements (default 120).
+    #[serde(default)]
+    node_budget: Option<u64>,
+    /// Maximum accessibility tree depth (default 12).
+    #[serde(default)]
+    max_depth: Option<u64>,
 }
 
 // ---- handlers (forward to the shared tool's action dispatcher) --------------
 
-async fn snapshot(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: SnapshotParams) -> Value {
+async fn snapshot(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: SnapshotParams) -> Value {
     let mut input = json!({ "action": "observe" });
     if let Some(window_id) = p.window_id {
         input["window_id"] = json!(window_id);
     }
-    run(&deps, input).await
+    if let Some(mode) = p.mode {
+        input["mode"] = json!(mode);
+    }
+    if let Some(node_budget) = p.node_budget {
+        input["node_budget"] = json!(node_budget);
+    }
+    if let Some(max_depth) = p.max_depth {
+        input["max_depth"] = json!(max_depth);
+    }
+    run(&deps, &ctx, input).await
 }
-async fn screenshot(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: ScreenshotParams) -> Value {
-    run(&deps, json!({ "action": "screenshot", "display": p.display })).await
+async fn screenshot(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: ScreenshotParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "screenshot", "display": p.display })).await
 }
-async fn click(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: RefParams) -> Value {
-    run(&deps, json!({ "action": "click_element", "ref": p.r#ref })).await
+async fn click(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: RefParams) -> Value {
+    let mut input = json!({ "action": "click_element" });
+    apply_target_fields(
+        &mut input,
+        p.r#ref,
+        p.role.as_deref(),
+        p.name.as_deref(),
+        p.name_contains.as_deref(),
+        p.source.as_deref(),
+        p.nth,
+    );
+    run(&deps, &ctx, input).await
 }
-async fn right_click(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: RefParams) -> Value {
-    run(&deps, json!({ "action": "right_click_element", "ref": p.r#ref })).await
+async fn right_click(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: RefParams) -> Value {
+    let mut input = json!({ "action": "right_click_element" });
+    apply_target_fields(
+        &mut input,
+        p.r#ref,
+        p.role.as_deref(),
+        p.name.as_deref(),
+        p.name_contains.as_deref(),
+        p.source.as_deref(),
+        p.nth,
+    );
+    run(&deps, &ctx, input).await
 }
-async fn double_click(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: RefParams) -> Value {
-    run(&deps, json!({ "action": "double_click_element", "ref": p.r#ref })).await
+async fn double_click(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: RefParams) -> Value {
+    let mut input = json!({ "action": "double_click_element" });
+    apply_target_fields(
+        &mut input,
+        p.r#ref,
+        p.role.as_deref(),
+        p.name.as_deref(),
+        p.name_contains.as_deref(),
+        p.source.as_deref(),
+        p.nth,
+    );
+    run(&deps, &ctx, input).await
 }
-async fn set_value(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: SetValueParams) -> Value {
-    run(&deps, json!({ "action": "set_element_value", "ref": p.r#ref, "text": p.text })).await
+async fn set_value(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: SetValueParams) -> Value {
+    let mut input = json!({ "action": "set_element_value", "text": p.text });
+    apply_target_fields(
+        &mut input,
+        p.r#ref,
+        p.role.as_deref(),
+        p.name.as_deref(),
+        p.name_contains.as_deref(),
+        p.source.as_deref(),
+        p.nth,
+    );
+    run(&deps, &ctx, input).await
 }
-async fn click_xy(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: XyParams) -> Value {
-    run(&deps, json!({ "action": "left_click", "x": p.x, "y": p.y })).await
+async fn click_xy(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: XyParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "left_click", "x": p.x, "y": p.y })).await
 }
-async fn type_text(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: TypeParams) -> Value {
-    run(&deps, json!({ "action": "type", "text": p.text })).await
+async fn type_text(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: TypeParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "type", "text": p.text })).await
 }
-async fn key(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: KeyParams) -> Value {
-    run(&deps, json!({ "action": "key", "key": p.key })).await
+async fn key(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: KeyParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "key", "key": p.key })).await
 }
-async fn scroll(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: ScrollParams) -> Value {
+async fn scroll(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: ScrollParams) -> Value {
     run(
         &deps,
+        &ctx,
         json!({ "action": "scroll", "direction": p.direction, "amount": p.amount, "x": p.x, "y": p.y }),
     )
     .await
 }
-async fn launch(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: LaunchParams) -> Value {
-    run(&deps, json!({ "action": "launch", "target": p.target, "app": p.app })).await
+async fn launch(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: LaunchParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "launch", "target": p.target, "app": p.app })).await
 }
-async fn list_windows(deps: Arc<GatewayDeps>, _ctx: CallerCtx, _p: NoParams) -> Value {
-    run(&deps, json!({ "action": "list_windows" })).await
+async fn list_windows(deps: Arc<GatewayDeps>, ctx: CallerCtx, _p: NoParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "list_windows" })).await
 }
-async fn cursor_position(deps: Arc<GatewayDeps>, _ctx: CallerCtx, _p: NoParams) -> Value {
-    run(&deps, json!({ "action": "cursor_position" })).await
+async fn cursor_position(deps: Arc<GatewayDeps>, ctx: CallerCtx, _p: NoParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "cursor_position" })).await
 }
-async fn wait(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: WaitParams) -> Value {
-    run(&deps, json!({ "action": "wait", "seconds": p.seconds })).await
+async fn wait(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: WaitParams) -> Value {
+    run(&deps, &ctx, json!({ "action": "wait", "seconds": p.seconds })).await
+}
+
+async fn wait_for(deps: Arc<GatewayDeps>, ctx: CallerCtx, p: WaitForParams) -> Value {
+    let mut input = json!({ "action": "wait_for", "condition": p.condition });
+    for (key, value) in [
+        ("window_id", p.window_id.map(|v| json!(v))),
+        ("role", p.role.map(|v| json!(v))),
+        ("name", p.name.map(|v| json!(v))),
+        ("name_contains", p.name_contains.map(|v| json!(v))),
+        ("source", p.source.map(|v| json!(v))),
+        ("nth", p.nth.map(|v| json!(v))),
+        ("text", p.text.map(|v| json!(v))),
+        ("timeout_ms", p.timeout_ms.map(|v| json!(v))),
+        ("interval_ms", p.interval_ms.map(|v| json!(v))),
+    ] {
+        if let Some(value) = value {
+            input[key] = value;
+        }
+    }
+    run(&deps, &ctx, input).await
 }
 
 pub(crate) fn register(out: &mut Vec<Capability>) {
@@ -187,7 +370,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
         CapabilityMeta::new(
             "nomi_computer_snapshot",
             "computer",
-            "Read the accessibility tree (windows → controls, numbered [ref] + Set-of-Marks overlay). Optional `window_id` snapshots that window without raising it. Do this first, then act on a [ref]. Re-run after any UI change. Read-only.",
+            "Read the accessibility tree (windows → controls, numbered [ref]). Optional `window_id` observes that window without raising it. `mode=auto|semantic|visual|text`; `node_budget`/`max_depth` tune complex trees. Re-run after any UI change. Read-only.",
             DangerTier::Read,
         ),
         snapshot,
@@ -308,5 +491,14 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
             DangerTier::Read,
         ),
         wait,
+    ));
+    out.push(Capability::new::<WaitForParams, _, _>(
+        CapabilityMeta::new(
+            "nomi_computer_wait_for",
+            "computer",
+            "Poll the accessibility tree until an element/text condition is met or the UI changes. Prefer this over repeated snapshot + fixed wait loops.",
+            DangerTier::Read,
+        ),
+        wait_for,
     ));
 }

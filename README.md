@@ -457,6 +457,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run dev` | 启动桌面应用开发（tauri dev，热重载） |
 | `bun run dev:web` | 启动 Web 全栈开发（后端 API + 前端 vite） |
 | `bun run dev:ui` | 仅启动前端开发服务器（纯 vite，无后端） |
+| `bun run ensure:voice-companion` | 为源码检出构建/校验本地 voice-companion 守护进程（缺失或过期时自动构建，失败只告警） |
 | `bun run agent-store:dev` | Agent Store 单二进制开发：构建 web/dist + cargo run --features static-webui（debug 从磁盘读前端） |
 | **构建（出制品）** | |
 | `bun run build` | 为当前操作系统打桌面安装包 |
@@ -482,6 +483,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | **测试** | |
 | `bun run test:git-attribution` | Validate the repository-local human-only Git attribution policy. |
 | `bun run test:market` | Unit-test the Agent Store marketplace manifest checker. |
+| `bun run test:voice-joint-trace` | Run end-to-end Rust to Bun voice joint trace integration test. |
 | `bun run test` | 运行全部 Rust 测试（含 doctest） |
 | `bun run test:fast` | 用 nextest 快速跑 Rust 测试（日常） |
 | `bun run test:crate` | 运行单个 Rust crate：bun run test:crate <crate> [cargo 参数] |
@@ -499,6 +501,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run check:market` | Self-test the Agent Store marketplace manifest checker against the invalid samples it must reject. |
 | `bun run check:fingerprint` | Verify the App Server protocol fingerprint is identical at every landing point, here and in the docs site. |
 | `bun run check:release-sync` | Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide. |
+| `bun run check:release-voice-preparation` | Verify every release build hook still prepares the production voice daemon and never rebuilds the UI. |
 | `bun run release:check` | Agent Store release gate: repo gates + web typecheck/tests + App Server protocol tests (docs/agent-store/25). |
 | `bun run release:check:site` | Agent Store release gate, docs-site half: docs-sync + market gates + typecheck in the sibling agent-store-site checkout. |
 | `bun run check:ux-baseline` | 校验商业化切片的 UX 视觉基线（漏斗事件与关键页面基线） |
@@ -523,6 +526,7 @@ fails on the webkit2gtk link — build on the target architecture's machine/cont
 | `bun run setup:git-hooks` | Enable this repository's human-only Git attribution hooks without changing global Git config. |
 | `bun run rollback:modelscope` | 回滚 ModelScope 上的桌面发布指针（需 MODELSCOPE_TOKEN） |
 | `bun run verify:modelscope` | 校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN） |
+| `bun run verify:voice-package` | Verify final release installers contain the voice daemon, target architecture, licenses, and bundled rg. |
 | `bun run clean` | 深度回收构建空间（debug 产物 + flycheck + 旧安装包） |
 | `bun run seed:dev` | 用生产数据目录播种 dev 数据目录 |
 | `bun run reset:dev` | 为 dev 数据目录写入显式 factory reset 请求（迁移校验失败无法启动时一键恢复，下次启动重建空数据集） |

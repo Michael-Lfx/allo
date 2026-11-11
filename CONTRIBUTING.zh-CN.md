@@ -8,11 +8,11 @@ English: [CONTRIBUTING.md](CONTRIBUTING.md)
 > 依赖后请运行 `bun run setup:git-hooks`；该命令只配置当前仓库，不修改全局 Git
 > 配置。不得使用 `--no-verify` 绕过检查。
 
-> **强制规则：本仓库绝对禁止使用 GitHub Actions。** 不得新增、恢复、生成、
-> 重命名或重新启用任何 workflow；已禁用、仅手动触发、临时、发布专用的
-> workflow 也不例外。构建、测试、打包和发布必须使用本地脚本及文档化的手动
-> 命令。任何包含 `.github/workflows/*.yml` 或 `.github/workflows/*.yaml` 的
-> 提交或 PR 都必须拒绝并移除。
+> **GitHub Actions 修改规则：** 当 CI 或发布行为确有需要时，可以修改 workflow；
+> 优先扩展现有 workflow，避免复制整套编排。新增、删除或重命名 workflow 必须
+> 写明理由并由仓库 Owner 审查。修改 trigger、permissions、environment、secret、
+> 签名或发布步骤属于高风险改动，必须在 PR 中显式说明，保持最小权限，不得绕过
+> 必需门禁，并同步更新 `.github/workflows/README.md` 与相关发布文档。
 
 NomiFun 是一个 Rust + Tauri + React monorepo，也是一套本地优先的高权限自动化系统：它可以驱动 shell、文件、浏览器、桌面应用、智能体、MCP server 和远程能力 API。我们非常欢迎贡献，但贡献必须让维护者能快速理解、快速验证，并且不伤害用户数据与本地安全承诺。
 
@@ -223,6 +223,7 @@ build(mac): generate updater latest.json after signed bundle
 | Rust 行为 | `cargo test -p <crate>` 或覆盖改动的聚焦测试。 |
 | 数据库/schema/ID 改动 | 遵守[数据与标识符规范](docs/contributing/data-and-identifier-standards.zh.md)，运行受影响的 schema contract、repository、reset 或 restore 聚焦测试；可行时跑 `cargo test -p nomifun-db`。 |
 | 打包/发布 | 相关 build script 加你修改过的 release docs。 |
+| GitHub Actions workflow | 解析 YAML，运行所有受影响的本地脚本/门禁，检查 trigger 与 permissions diff，并更新 `.github/workflows/README.md`；发布 workflow 还要执行相关打包/发布检查。 |
 | 安全敏感路径 | 聚焦测试、PR 中写 threat-model 备注；私密漏洞不要公开细节。 |
 
 > 如果改动的路径全部是文档，CI 会跳过两个 Rust job（`Cargo check (workspace + tests)`

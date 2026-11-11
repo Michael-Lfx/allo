@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import Counter, { TimedPhrase, tickingCounterProps, timerSlot } from '@renderer/components/base/Counter';
 import type { TurnDisclosureProcessState } from '../turnDisclosureModel';
 import { TaskGroup } from '@renderer/components/beautifulUi/taskRows/TaskRows';
 import { resolveTaskGroupStatus } from '@renderer/components/beautifulUi/taskRows/taskRowModel';
@@ -92,30 +93,16 @@ export function stabilizeTurnProcessDisclosureKeys(
   return areSameStringLists(previous, next) ? previous : next;
 }
 
-const formatTurnDuration = (ms: number, t: ReturnType<typeof useTranslation>['t']): string => {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000));
-  const sUnit = t('common.unit.second_short', { defaultValue: 's' });
-  const mUnit = t('common.unit.minute_short', { defaultValue: 'm' });
-  const hUnit = t('common.unit.hour_short', { defaultValue: 'h' });
-
-  if (totalSeconds < 60) return `${totalSeconds}${sUnit}`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes < 60) return `${minutes}${mUnit} ${seconds}${sUnit}`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}${hUnit} ${remainingMinutes}${mUnit}`;
-};
-
 const TurnProcessDurationLabel: React.FC<{
   state: TurnDisclosureProcessState;
   startAt: number;
   endAt: number;
   running: boolean;
 }> = ({ state, startAt, endAt, running }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
 
+  // useEffect必要性：window.setInterval；目的：回合进行中时每秒刷新已处理时长。allo 未依赖 ahooks。
   useEffect(() => {
     if (!running) return;
     setNow(Date.now());
@@ -127,10 +114,41 @@ const TurnProcessDurationLabel: React.FC<{
 
   const durationEndAt = running ? now : endAt;
   const displayState = state === 'failed' ? 'completed' : state;
-  return t(labelKeyByState[displayState], {
-    duration: formatTurnDuration(durationEndAt - startAt, t),
-    defaultValue: defaultLabelByState[displayState],
-  });
+  const totalSeconds = Math.max(0, Math.round((durationEndAt - startAt) / 1000));
+  const sUnit = t('common.unit.second_short', { defaultValue: 's' });
+  const mUnit = t('common.unit.minute_short', { defaultValue: 'm' });
+  const hUnit = t('common.unit.hour_short', { defaultValue: 'h' });
+  const digit = (value: number) => (
+    <Counter value={value} locale={i18n.language} {...tickingCounterProps} />
+  );
+  const duration =
+    totalSeconds < 60 ? (
+      <>
+        {digit(totalSeconds)}
+        {sUnit}
+      </>
+    ) : totalSeconds < 3600 ? (
+      <>
+        {digit(Math.floor(totalSeconds / 60))}
+        {mUnit} {digit(totalSeconds % 60)}
+        {sUnit}
+      </>
+    ) : (
+      <>
+        {digit(Math.floor(totalSeconds / 3600))}
+        {hUnit} {digit(Math.floor((totalSeconds % 3600) / 60))}
+        {mUnit}
+      </>
+    );
+  return (
+    <TimedPhrase
+      text={t(labelKeyByState[displayState], {
+        duration: timerSlot.time,
+        defaultValue: defaultLabelByState[displayState],
+      })}
+      slots={{ [timerSlot.time]: duration }}
+    />
+  );
 };
 
 function TurnProcessDisclosure<T>({

@@ -26,7 +26,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Button, Input, Popover, Switch, Tooltip } from '@arco-design/web-react';
+import { Button, Input, Popover, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { BookOne } from '@icon-park/react';
 import { useNavigate } from 'react-router-dom';
@@ -37,7 +37,6 @@ import type {
   IKnowledgeBinding,
   IKnowledgeTag,
   KnowledgeBindingKind,
-  KnowledgeWritebackEagerness,
 } from '@/common/adapter/ipcBridge';
 import { useConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
 import { useTerminalSessions } from '@/renderer/pages/terminal/useTerminalSessions';
@@ -76,11 +75,14 @@ type KnowledgeControlProps = {
   disabledReason?: string;
   applyNote?: string;
   footer?: React.ReactNode;
+  /** `panel` renders the body alone so a parent flyout can host it. */
+  presentation?: 'popover' | 'panel';
 };
 
 export const defaultKnowledgeBinding = (): IKnowledgeBinding => ({
   enabled: false,
-  writeback: false,
+  // Write-back stays on by default and is not a visible control.
+  writeback: true,
   writeback_eagerness: 'manual',
   channel_write_enabled: false,
   kb_ids: [],
@@ -91,7 +93,6 @@ export const defaultKnowledgeBinding = (): IKnowledgeBinding => ({
 /** Rounded card section — identical token to IdmmControl's `sectionClass`. */
 const sectionClass =
   'flex flex-col gap-8px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-12px py-10px';
-const fieldStackClass = 'min-w-0 flex flex-col gap-4px';
 const fieldLabelClass = 'text-[var(--color-text-1)] text-11px font-600 leading-15px';
 const subtleInsetClass =
   'rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-10px py-8px';
@@ -147,7 +148,14 @@ function kindLabel(kind: IKnowledgeBase['kind'], t: TFunction): string {
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
-const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disabledReason, applyNote, footer }) => {
+const KnowledgeControl: React.FC<KnowledgeControlProps> = ({
+  target,
+  draft,
+  disabledReason,
+  applyNote,
+  footer,
+  presentation = 'popover',
+}) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { conversations } = useConversationHistoryContext();
@@ -325,17 +333,21 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
   const handleToggleBase = (baseId: KnowledgeBaseId) => {
     const isSelected = binding.kb_ids.includes(baseId);
     const nextIds = isSelected ? binding.kb_ids.filter((x) => x !== baseId) : [...binding.kb_ids, baseId];
-    // Auto-enable when first base selected; auto-disable when last removed
+    // Auto-enable when first base selected; auto-disable when last removed.
+    // Write-back stays on; the control is no longer shown.
     const nextEnabled = nextIds.length > 0 ? true : false;
-    void persist({ ...binding, kb_ids: nextIds, enabled: nextEnabled });
+    void persist({ ...binding, kb_ids: nextIds, enabled: nextEnabled, writeback: true });
   };
 
-  const handleWritebackToggle = (v: boolean) => {
-    void persist({ ...binding, writeback: v });
-  };
-
-  const handleWritebackEagerness = (eagerness: KnowledgeWritebackEagerness) => {
-    void persist({ ...binding, writeback_eagerness: eagerness });
+  const handleSelectBase = (baseId: KnowledgeBaseId) => {
+    const sole = binding.kb_ids.length === 1 && binding.kb_ids[0] === baseId;
+    const nextIds = sole ? [] : [baseId];
+    void persist({
+      ...binding,
+      kb_ids: nextIds,
+      enabled: nextIds.length > 0,
+      writeback: true,
+    });
   };
 
   const mountedCount = binding.enabled ? binding.kb_ids.length : 0;
@@ -356,42 +368,6 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
     : binding.enabled
       ? t('knowledge.control.mounted', { count: mountedCount })
       : t('knowledge.control.off');
-
-  // Compact segmented control (writeback disposition) — tinted track with a
-  // primary active pill, sitting on the section's bg-fill-1 surface.
-  const renderSegment = (
-    current: string,
-    options: Array<{ value: string; label: string }>,
-    onPick: (v: string) => void
-  ) => (
-    <div className='inline-flex w-fit gap-2px rounded-8px bg-fill-2 p-2px'>
-      {options.map((o) => {
-        const activeSeg = current === o.value;
-        return (
-          <div
-            key={o.value}
-            className={[
-              'cursor-pointer rounded-6px px-10px py-4px text-11px leading-none',
-              activeSeg
-                ? 'border border-solid border-[rgba(var(--primary-6),0.28)] bg-[rgba(var(--primary-6),0.12)] text-primary-6 font-600'
-                : 'border border-solid border-transparent text-[var(--color-text-1)] hover:bg-[var(--color-fill-3)]',
-              targetUnresolved && 'cursor-not-allowed opacity-60',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            onClick={() => !targetUnresolved && onPick(o.value)}
-          >
-            {o.label}
-          </div>
-        );
-      })}
-    </div>
-  );
-
-  const writebackEagernessHint =
-    binding.writeback_eagerness === 'manual'
-      ? t('knowledge.control.eagernessManualHint')
-      : t('knowledge.control.eagernessAutoHint');
 
   // One mounted base row.
   const renderBaseRow = (base: IKnowledgeBase) => {
@@ -469,6 +445,63 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
       </div>
     );
   };
+
+  if (presentation === 'panel') {
+    const selectedId = binding.kb_ids.length === 1 ? binding.kb_ids[0] : undefined;
+    return (
+      <div className='box-border w-full p-6px' role='radiogroup' aria-label={t('knowledge.control.label')}>
+        {basesLoaded && bases.length === 0 ? (
+          <div className='flex flex-col items-center gap-8px px-12px py-16px text-center'>
+            <p className='m-0 text-12px leading-17px text-[var(--color-text-2)]'>{t('knowledge.control.noBases')}</p>
+            <Button type='primary' size='small' shape='round' onClick={() => navigate('/knowledge')}>
+              {t('knowledge.mount.createFirst', { defaultValue: '＋ 新建第一个知识库' })}
+            </Button>
+          </div>
+        ) : (
+          bases.map((base) => {
+            const isSelected = selectedId === base.knowledge_base_id;
+            const rootMissing = !base.root_exists;
+            const cannotSelect = rootMissing && !isSelected;
+            return (
+              <button
+                key={base.knowledge_base_id}
+                type='button'
+                role='radio'
+                aria-checked={isSelected}
+                disabled={targetUnresolved || cannotSelect}
+                className={[
+                  'flex w-full items-center gap-8px rounded-8px border-0 bg-transparent px-8px py-8px text-left',
+                  targetUnresolved || cannotSelect ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-fill-2',
+                ].join(' ')}
+                onClick={() => {
+                  if (targetUnresolved || cannotSelect) return;
+                  handleSelectBase(base.knowledge_base_id);
+                }}
+              >
+                <span
+                  aria-hidden
+                  className={[
+                    'grid h-17px w-17px flex-none place-items-center rounded-5px border border-solid text-10px leading-none',
+                    isSelected
+                      ? 'border-[rgba(var(--primary-6),0.48)] bg-[rgba(var(--primary-6),0.12)] text-primary-6'
+                      : 'border-[var(--color-text-3)] bg-[var(--color-bg-1)] text-transparent',
+                  ].join(' ')}
+                >
+                  ✓
+                </span>
+                <span className='min-w-0 flex-1 truncate text-14px text-[var(--color-text-1)]'>{base.name}</span>
+                {rootMissing ? (
+                  <span className='shrink-0 text-11px text-danger-6'>
+                    {t('knowledge.mount.rootMissing', { defaultValue: '目录不可用' })}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })
+        )}
+      </div>
+    );
+  }
 
   // ─── Panel content ────────────────────────────────────────────────────────
   const showSearch = shouldShowKnowledgeBaseSearch(bases.length);
@@ -561,49 +594,6 @@ const KnowledgeControl: React.FC<KnowledgeControlProps> = ({ target, draft, disa
                   filteredBases.map(renderBaseRow)
                 )}
               </div>
-            </div>
-
-            {/* Writeback section */}
-            <div className={sectionClass}>
-              <div className='flex items-center justify-between gap-10px'>
-                <span className='min-w-0 flex flex-col gap-2px'>
-                  <span className='text-[var(--color-text-1)] text-13px font-600'>
-                    {t('knowledge.control.writeback', { defaultValue: '回血知识库' })}
-                  </span>
-                  <span className='text-[var(--color-text-2)] text-11px leading-15px'>
-                    {t('knowledge.mount.writebackDesc', { defaultValue: '让本会话把新学到的知识写回知识库' })}
-                  </span>
-                </span>
-                <Switch
-                  size='small'
-                  checked={binding.writeback}
-                  disabled={targetUnresolved}
-                  onChange={handleWritebackToggle}
-                />
-              </div>
-
-              {binding.writeback && (
-                <div className={fieldStackClass}>
-                  <span className={fieldLabelClass}>
-                    {t('knowledge.control.writebackEagerness', { defaultValue: '回写意识' })}
-                  </span>
-                  {renderSegment(
-                    binding.writeback_eagerness,
-                    [
-                      {
-                        value: 'manual',
-                        label: t('knowledge.control.eagernessManual', { defaultValue: '手动型（推荐）' }),
-                      },
-                      {
-                        value: 'auto',
-                        label: t('knowledge.control.eagernessAuto', { defaultValue: '自动型' }),
-                      },
-                    ],
-                    (v) => handleWritebackEagerness(v as KnowledgeWritebackEagerness)
-                  )}
-                  <span className='text-[var(--color-text-2)] text-11px leading-15px'>{writebackEagernessHint}</span>
-                </div>
-              )}
             </div>
 
             {applyNote && <div className='text-[var(--color-text-2)] text-11px leading-15px'>{applyNote}</div>}

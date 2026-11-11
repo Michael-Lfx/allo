@@ -509,3 +509,117 @@ async fn legacy_conversation_is_not_renamed() {
     assert_eq!(source, None);
     assert_eq!(completer.calls().len(), 0);
 }
+
+#[tokio::test]
+async fn voice_call_default_titles_are_auto_title_eligible() {
+    for default_title in ["语音通话", "Voice Call"] {
+        let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+        let completer = Arc::new(FakeTitleCompleter::new("title-"));
+        svc.with_title_completer(completer.clone());
+        let conversation_id = seed_title_conversation(&repo, default_title, json!({ "voice": true })).await;
+        repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "Check weather in Tokyo", 10))
+            .await
+            .unwrap();
+
+        svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "Check weather in Tokyo".to_owned(), title_session_model())
+            .await;
+
+        let (name, state, source) = title_state(&repo, &conversation_id).await;
+        assert_eq!(name, "title-0", "default voice title '{default_title}' must be replaced by auto-title");
+        assert_eq!(state.as_deref(), Some("done"));
+        assert_eq!(source.as_deref(), Some("auto"));
+        assert_eq!(completer.calls(), vec!["Check weather in Tokyo"]);
+    }
+}
+
+#[tokio::test]
+async fn nonvoice_explicit_voice_call_title_is_not_overwritten() {
+    for explicit_name in ["语音通话", "Voice Call"] {
+        let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+        let completer = Arc::new(FakeTitleCompleter::new("title-"));
+        svc.with_title_completer(completer.clone());
+        let conversation_id = seed_title_conversation(&repo, explicit_name, json!({})).await;
+        repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "Please inspect my project", 10))
+            .await
+            .unwrap();
+
+        svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "Please inspect my project".to_owned(), title_session_model())
+            .await;
+
+        let (name, state, source) = title_state(&repo, &conversation_id).await;
+        assert_eq!(name, explicit_name, "An explicitly named ordinary conversation must not be treated as a voice placeholder");
+        assert_eq!(state.as_deref(), None);
+        assert_eq!(source.as_deref(), None);
+        assert_eq!(completer.calls().len(), 0);
+    }
+}
+
+#[tokio::test]
+async fn provisional_voice_conversation_unicode_locale_does_not_panic() {
+    let (svc, _broadcaster, _repo, _runtime_registry) = make_service();
+    let res = svc.create_provisional_voice_conversation_with_locale(
+        TEST_USER_1, None, None, None, "req-unicode", None, None, Some("中")
+    ).await;
+    assert!(res.is_ok());
+    let conv = res.unwrap();
+    assert_eq!(conv.name, "语音通话");
+}
+
+#[tokio::test]
+async fn voice_call_failed_title_generation_retains_default_title() {
+    for default_title in ["语音通话", "Voice Call"] {
+        // Case 1: No completer configured
+        {
+            let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+            let conversation_id = seed_title_conversation(&repo, default_title, json!({ "voice": true })).await;
+            repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "What is the capital of France?", 10))
+                .await
+                .unwrap();
+
+            svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "What is the capital of France?".to_owned(), title_session_model())
+                .await;
+
+            let (name, state, source) = title_state(&repo, &conversation_id).await;
+            assert_eq!(name, default_title, "Failed autotitle must retain default voice title '{default_title}' instead of truncating user text");
+            assert_eq!(state.as_deref(), Some("failed"));
+            assert_eq!(source.as_deref(), Some("auto"));
+        }
+
+        // Case 2: Completer returns empty / invalid
+        {
+            let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+            let completer = Arc::new(FakeTitleCompleter::empty());
+            svc.with_title_completer(completer.clone());
+            let conversation_id = seed_title_conversation(&repo, default_title, json!({ "voice": true })).await;
+            repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "What is the capital of France?", 10))
+                .await
+                .unwrap();
+
+            svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "What is the capital of France?".to_owned(), title_session_model())
+                .await;
+
+            let (name, state, source) = title_state(&repo, &conversation_id).await;
+            assert_eq!(name, default_title, "Empty autotitle result must retain default voice title '{default_title}'");
+            assert_eq!(state.as_deref(), Some("failed"));
+            assert_eq!(source.as_deref(), Some("auto"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn normal_conversation_failed_title_retains_provisional_truncated_input() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    // No completer configured
+    let conversation_id = seed_title_conversation(&repo, "", json!({})).await;
+    repo.insert_message(&title_message_row(&conversation_id, MESSAGE_ID_1, "right", "What is the capital of France?", 10))
+        .await
+        .unwrap();
+
+    svc.maybe_autotitle(&conversation_id, MESSAGE_ID_1, "What is the capital of France?".to_owned(), title_session_model())
+        .await;
+
+    let (name, state, source) = title_state(&repo, &conversation_id).await;
+    assert_eq!(name, "What is the capital of", "Normal conversation should retain truncated first sentence on failure");
+    assert_eq!(state.as_deref(), Some("failed"));
+    assert_eq!(source.as_deref(), Some("auto"));
+}

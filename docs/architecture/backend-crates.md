@@ -120,6 +120,9 @@ identifiers remain opaque.
 | [`nomifun-poi`](../../crates/backend/nomifun-poi/) | Local user-interest (POI) topic management API (engine in `nomi-poi`). |
 | [`nomifun-insights`](../../crates/backend/nomifun-insights/) | HTTP surface for insights contribution management (engine in `nomi-insights-core`). |
 | [`nomifun-robot`](../../crates/backend/nomifun-robot/) | Robot gateway for LAN xiaozhi-firmware robots acting as a companion embodiment; documented direct-`nomi-*` exception above. |
+| [`nomifun-audio`](../../crates/backend/nomifun-audio/) | Audio decoding, PCM/WAV conversions, SPSC 20ms audio chunk ring-buffer pipelines, and resampling utilities. |
+| [`nomifun-voice-models`](../../crates/backend/nomifun-voice-models/) | Local acoustic model suite asset management, SHA256 integrity verification, and resilient multi-mirror download failover (ModelScope / HuggingFace). |
+| [`nomifun-voice-terminal`](../../crates/backend/nomifun-voice-terminal/) | Voice acoustic state machine driver (`VoiceSessionDriver`), VAD and KWS trait boundaries, and speech completion client. |
 
 ## Infrastructure features
 

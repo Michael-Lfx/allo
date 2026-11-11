@@ -6,7 +6,8 @@
 
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Empty, Input, Modal, Switch } from '@arco-design/web-react';
+import { Empty, Modal, Switch } from '@arco-design/web-react';
+import FlowySearch from '@/renderer/components/base/FlowySearch';
 import type { ICompanionSkillConfig } from '@/common/adapter/ipcBridge';
 import { NomiSettingList, NomiSettingRow } from '@/renderer/components/base/NomiSettingLayout';
 import { resolveSkillDisplay } from '@/renderer/pages/settings/skill/skillDisplay';
@@ -83,8 +84,7 @@ const CatalogPickerModal: React.FC<CatalogPickerModalProps> = ({
             defaultValue: '从技能库里挑选要授予这个伙伴的能力，改动会在下一条消息生效。',
           })}
         </div>
-        <Input.Search
-          allowClear
+        <FlowySearch
           value={query}
           onChange={setQuery}
           placeholder={t('nomi.skills.configSearch', { defaultValue: '搜索 Skill' })}

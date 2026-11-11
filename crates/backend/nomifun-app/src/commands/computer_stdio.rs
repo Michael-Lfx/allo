@@ -79,15 +79,73 @@ fn to_mcp(tr: ToolResult) -> CallToolResult {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RefParams {
     /// Element number `[ref]` from the most recent `snapshot`.
-    r#ref: u32,
+    #[serde(default)]
+    r#ref: Option<u32>,
+    /// Exact accessibility role, e.g. button or edit.
+    #[serde(default)]
+    role: Option<String>,
+    /// Exact case-insensitive accessible name or value.
+    #[serde(default)]
+    name: Option<String>,
+    /// Case-insensitive accessible name/value substring.
+    #[serde(default)]
+    name_contains: Option<String>,
+    /// Restrict to one source: a11y, ocr, or vision.
+    #[serde(default)]
+    source: Option<String>,
+    /// 1-based match when multiple elements match the selector.
+    #[serde(default)]
+    nth: Option<u64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SetValueParams {
     /// Element number `[ref]` from the most recent `snapshot`.
-    r#ref: u32,
+    #[serde(default)]
+    r#ref: Option<u32>,
+    /// Exact accessibility role, e.g. button or edit.
+    #[serde(default)]
+    role: Option<String>,
+    /// Exact case-insensitive accessible name or value.
+    #[serde(default)]
+    name: Option<String>,
+    /// Case-insensitive accessible name/value substring.
+    #[serde(default)]
+    name_contains: Option<String>,
+    /// Restrict to one source: a11y, ocr, or vision.
+    #[serde(default)]
+    source: Option<String>,
+    /// 1-based match when multiple elements match the selector.
+    #[serde(default)]
+    nth: Option<u64>,
     /// The text to set into the element.
     text: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_target_fields(
+    input: &mut Value,
+    ref_id: Option<u32>,
+    role: Option<&str>,
+    name: Option<&str>,
+    name_contains: Option<&str>,
+    source: Option<&str>,
+    nth: Option<u64>,
+) {
+    if let Some(ref_id) = ref_id {
+        input["ref"] = json!(ref_id);
+    }
+    for (key, value) in [
+        ("role", role.map(|value| json!(value))),
+        ("name", name.map(|value| json!(value))),
+        ("name_contains", name_contains.map(|value| json!(value))),
+        ("source", source.map(|value| json!(value))),
+        ("nth", nth.map(|value| json!(value))),
+    ] {
+        if let Some(value) = value {
+            input[key] = value;
+        }
+    }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -152,12 +210,54 @@ struct WaitParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+struct WaitForParams {
+    /// Condition: element_present, element_absent, text_present, text_absent, changed.
+    condition: String,
+    /// Optional window id from `list_windows`.
+    #[serde(default)]
+    window_id: Option<u64>,
+    /// Element selector: exact accessibility role.
+    #[serde(default)]
+    role: Option<String>,
+    /// Element selector: exact accessible name or value.
+    #[serde(default)]
+    name: Option<String>,
+    /// Element selector: case-insensitive name/value substring.
+    #[serde(default)]
+    name_contains: Option<String>,
+    /// Element selector: a11y, ocr, or vision.
+    #[serde(default)]
+    source: Option<String>,
+    /// Element selector: 1-based match when several elements match.
+    #[serde(default)]
+    nth: Option<u64>,
+    /// Text to look for in text_present/text_absent.
+    #[serde(default)]
+    text: Option<String>,
+    /// Maximum wait in milliseconds (default 5000, max 15000).
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    /// Polling interval in milliseconds (default 200).
+    #[serde(default)]
+    interval_ms: Option<u64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SnapshotParams {
     /// Optional window id from `list_windows`. When set, snapshot that window
     /// without raising it. Omit to read the foreground window plus other open
     /// windows.
     #[serde(default)]
     window_id: Option<u64>,
+    /// Observe mode: auto, semantic, visual, or text.
+    #[serde(default)]
+    mode: Option<String>,
+    /// Maximum interactable elements (default 120).
+    #[serde(default)]
+    node_budget: Option<u64>,
+    /// Maximum accessibility tree depth (default 12).
+    #[serde(default)]
+    max_depth: Option<u64>,
 }
 
 #[tool_router(server_handler)]
@@ -168,12 +268,21 @@ impl ComputerStdioServer {
 
     #[tool(
         name = "snapshot",
-        description = "Read the accessibility tree as a hierarchical `desktop → window → controls` tree with numbered [ref] elements and a Set-of-Marks overlay. Pass optional `window_id` from `list_windows` to snapshot that window without raising it. Do this FIRST, then act on a control with `click`/`type` and its [ref]. Re-run after any UI change — a [ref] is only valid for the latest snapshot."
+        description = "Read the accessibility tree as a hierarchical `desktop → window → controls` tree with numbered [ref] elements. Optional `window_id` observes that window without raising it. `mode`: auto (default fast semantic path with screenshot fallback), semantic (no pixels), visual (screenshot + Set-of-Marks), text (OCR refs, no image). `node_budget`/`max_depth` tune complex trees. Re-run after any UI change."
     )]
     async fn snapshot(&self, Parameters(p): Parameters<SnapshotParams>) -> CallToolResult {
         let mut input = json!({"action": "observe"});
         if let Some(window_id) = p.window_id {
             input["window_id"] = json!(window_id);
+        }
+        if let Some(mode) = p.mode {
+            input["mode"] = json!(mode);
+        }
+        if let Some(node_budget) = p.node_budget {
+            input["node_budget"] = json!(node_budget);
+        }
+        if let Some(max_depth) = p.max_depth {
+            input["max_depth"] = json!(max_depth);
         }
         self.run(input).await
     }
@@ -191,7 +300,17 @@ impl ComputerStdioServer {
         description = "Activate the element with the given `ref` from the latest `snapshot` (accessibility action with an automatic pixel-click fallback)."
     )]
     async fn click(&self, Parameters(p): Parameters<RefParams>) -> CallToolResult {
-        self.run(json!({"action": "click_element", "ref": p.r#ref})).await
+        let mut input = json!({"action": "click_element"});
+        apply_target_fields(
+            &mut input,
+            p.r#ref,
+            p.role.as_deref(),
+            p.name.as_deref(),
+            p.name_contains.as_deref(),
+            p.source.as_deref(),
+            p.nth,
+        );
+        self.run(input).await
     }
 
     #[tool(
@@ -199,7 +318,17 @@ impl ComputerStdioServer {
         description = "Right-click the element with the given `ref` from the latest `snapshot` (opens its context menu)."
     )]
     async fn right_click(&self, Parameters(p): Parameters<RefParams>) -> CallToolResult {
-        self.run(json!({"action": "right_click_element", "ref": p.r#ref})).await
+        let mut input = json!({"action": "right_click_element"});
+        apply_target_fields(
+            &mut input,
+            p.r#ref,
+            p.role.as_deref(),
+            p.name.as_deref(),
+            p.name_contains.as_deref(),
+            p.source.as_deref(),
+            p.nth,
+        );
+        self.run(input).await
     }
 
     #[tool(
@@ -207,7 +336,17 @@ impl ComputerStdioServer {
         description = "Double-click the element with the given `ref` from the latest `snapshot`."
     )]
     async fn double_click(&self, Parameters(p): Parameters<RefParams>) -> CallToolResult {
-        self.run(json!({"action": "double_click_element", "ref": p.r#ref})).await
+        let mut input = json!({"action": "double_click_element"});
+        apply_target_fields(
+            &mut input,
+            p.r#ref,
+            p.role.as_deref(),
+            p.name.as_deref(),
+            p.name_contains.as_deref(),
+            p.source.as_deref(),
+            p.nth,
+        );
+        self.run(input).await
     }
 
     #[tool(
@@ -215,7 +354,17 @@ impl ComputerStdioServer {
         description = "Set the `text` value of the element with the given `ref` (accessibility set-value with a focus-and-type fallback). Good for text fields."
     )]
     async fn set_value(&self, Parameters(p): Parameters<SetValueParams>) -> CallToolResult {
-        self.run(json!({"action": "set_element_value", "ref": p.r#ref, "text": p.text})).await
+        let mut input = json!({"action": "set_element_value", "text": p.text});
+        apply_target_fields(
+            &mut input,
+            p.r#ref,
+            p.role.as_deref(),
+            p.name.as_deref(),
+            p.name_contains.as_deref(),
+            p.source.as_deref(),
+            p.nth,
+        );
+        self.run(input).await
     }
 
     #[tool(
@@ -276,6 +425,30 @@ impl ComputerStdioServer {
     async fn wait(&self, Parameters(p): Parameters<WaitParams>) -> CallToolResult {
         self.run(json!({"action": "wait", "seconds": p.seconds})).await
     }
+
+    #[tool(
+        name = "wait_for",
+        description = "Poll the accessibility tree until an element/text condition is met or the UI changes. Prefer this over repeated snapshot + fixed wait loops."
+    )]
+    async fn wait_for(&self, Parameters(p): Parameters<WaitForParams>) -> CallToolResult {
+        let mut input = json!({"action": "wait_for", "condition": p.condition});
+        for (key, value) in [
+            ("window_id", p.window_id.map(|v| json!(v))),
+            ("role", p.role.map(|v| json!(v))),
+            ("name", p.name.map(|v| json!(v))),
+            ("name_contains", p.name_contains.map(|v| json!(v))),
+            ("source", p.source.map(|v| json!(v))),
+            ("nth", p.nth.map(|v| json!(v))),
+            ("text", p.text.map(|v| json!(v))),
+            ("timeout_ms", p.timeout_ms.map(|v| json!(v))),
+            ("interval_ms", p.interval_ms.map(|v| json!(v))),
+        ] {
+            if let Some(value) = value {
+                input[key] = value;
+            }
+        }
+        self.run(input).await
+    }
 }
 
 #[cfg(test)]
@@ -304,7 +477,7 @@ mod tests {
         for expected in [
             "snapshot", "screenshot", "click", "right_click", "double_click", "set_value",
             "click_xy", "type", "key", "scroll", "launch", "list_windows", "cursor_position",
-            "wait",
+            "wait", "wait_for",
         ] {
             assert!(names.contains(&expected.to_string()), "missing tool {expected}; got {names:?}");
         }

@@ -4,9 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { Tooltip } from '@arco-design/web-react';
-import { WebPage } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import { useTranslation } from 'react-i18next';
@@ -47,13 +47,7 @@ const SiderBrowserEntry: React.FC<SiderBrowserEntryProps> = ({
           {...navRowProps(onClick, label)}
           onClick={onClick}
         >
-          <WebPage
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='web' size={20} className='block leading-none shrink-0' />
           {runningCount + queuedCount > 0 && (
             <span className='absolute right-5px top-4px min-w-12px h-12px px-2px rd-full bg-primary-6 text-white text-8px leading-12px text-center'>
               {Math.min(99, runningCount + queuedCount)}
@@ -76,13 +70,7 @@ const SiderBrowserEntry: React.FC<SiderBrowserEntryProps> = ({
           onClick={onClick}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <WebPage
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='web' size={16} className='block leading-none' />
         </span>
         <span className='collapsed-hidden min-w-0 flex-1 truncate text-14px font-[500] leading-24px'>
           {label}

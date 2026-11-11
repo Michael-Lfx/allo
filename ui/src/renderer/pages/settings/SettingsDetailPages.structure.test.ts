@@ -39,10 +39,14 @@ describe('settings detail-page visual contracts', () => {
     const mcp = read('../mcp/index.tsx');
     const tools = read('../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
 
-    for (const source of [skills, presets, mcp]) {
+    for (const source of [presets, mcp]) {
       expect(source).toContain('CapabilityHubShell');
       expect(source).not.toContain('flowy-settings-tabs');
     }
+    expect(skills).toContain('HubPageShell');
+    expect(skills).toContain('settings.skillsMarket.title');
+    expect(skills).not.toContain('<CapabilityHubShell');
+    expect(skills).not.toContain('flowy-settings-tabs');
     expect(presets).not.toContain('NomiScrollArea');
     expect(tools).not.toContain('NomiScrollArea');
   });

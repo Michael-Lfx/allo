@@ -13,6 +13,7 @@ import {
   shouldReuseCachedTurnCredits,
   TURN_CREDIT_LATE_REFRESH_MS,
   TURN_CREDIT_SETTLE_MS,
+  isFlowyCloudConversation,
 } from './fetchTurnCredits';
 
 const usage = (creditsConsumed: number, callCount: number): TurnCreditUsageData => ({
@@ -26,6 +27,29 @@ const usage = (creditsConsumed: number, callCount: number): TurnCreditUsageData 
 });
 
 describe('turn credit cache', () => {
+  test('ordinary cloud eligibility depends only on the task model provider', () => {
+    const local = { type: 'nomi', model: { id: '0190f5fe-7c00-7a00-8000-000000000901' }, extra: {} };
+    const cloud = { ...local, model: { id: '0190f5fe-7c00-7a00-8000-000000000201' } };
+    expect(isFlowyCloudConversation(local)).toBe(false);
+    expect(isFlowyCloudConversation(cloud)).toBe(true);
+    expect(isFlowyCloudConversation({ ...local, extra: { voice: true } })).toBe(false);
+    expect(isFlowyCloudConversation({ ...cloud, extra: { voice: true } })).toBe(true);
+    expect(isFlowyCloudConversation(null)).toBe(false);
+  });
+
+  test('the generic query module has no voice-specific dependency', () => {
+    const source = readFileSync(new URL('./fetchTurnCredits.ts', import.meta.url), 'utf8');
+    expect(source.includes('isVoiceConversation')).toBe(false);
+    expect(source.includes('voiceCompanion')).toBe(false);
+    expect(source.includes('kws_ready')).toBe(false);
+    expect(source.includes('acoustic_ready')).toBe(false);
+    expect(source.includes('barge_in_ready')).toBe(false);
+    const messageText = readFileSync(new URL('../../Messages/components/MessageText.tsx', import.meta.url), 'utf8');
+    expect(messageText.includes('isVoiceConversation')).toBe(false);
+    expect(messageText.includes('kws_ready')).toBe(false);
+    expect(messageText.includes('acoustic_ready')).toBe(false);
+    expect(messageText.includes('barge_in_ready')).toBe(false);
+  });
   test('reuses a positive snapshot unless force-refresh or settle is requested', () => {
     expect(shouldReuseCachedTurnCredits(usage(250, 1), false)).toBe(true);
     expect(shouldReuseCachedTurnCredits(usage(250, 1), true)).toBe(false);

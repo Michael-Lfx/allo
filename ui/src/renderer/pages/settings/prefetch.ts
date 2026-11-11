@@ -11,6 +11,11 @@
  * click (looking like "nav highlighted but page never rendered"). Keep this
  * module free of page-level imports so the sider stays out of those chunks.
  */
+/** Warm the skill store before a primary-rail click. */
+export function prefetchSkillsStore(): void {
+  void import('./SkillsSettingsPage').catch(() => undefined);
+}
+
 export function prefetchSettingsPages(): void {
   void import('./SystemSettings').catch(() => undefined);
   void import('./components/SettingsSider').catch(() => undefined);
@@ -24,4 +29,6 @@ export function prefetchSettingsPages(): void {
   void import('./PresetSettings').catch(() => undefined);
   void import('./SkillsSettingsPage').catch(() => undefined);
   void import('@/renderer/pages/mcp').catch(() => undefined);
+  void import('./VoiceSettings').catch(() => undefined);
+  void import('./PresentationSettings').catch(() => undefined);
 }

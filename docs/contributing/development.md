@@ -73,6 +73,19 @@ shell links `nomifun-app`, starts the backend in-process on a free localhost
 port, injects `window.__backendPort` and `window.__nomiLocalTrust`, and the
 renderer presents that per-boot trust secret on every request.
 
+The desktop loop also needs the **voice companion daemon** for voice features.
+`voice-companion` is a dev-dependency (library only), so `cargo run -p
+nomifun-app` does not build it; `bun run dev` therefore runs
+`bun run ensure:voice-companion` first. It reuses an existing build from
+`target/debug`, `build.noindex/**`, `<target>/<triple>/<profile>` or
+`apps/desktop/resources/bin`, rebuilds with `cargo build -p voice-companion
+--bin voice-companion --no-default-features` when the binary is missing or older
+than the crate sources, and only warns when the build fails. Set
+`NOMIFUN_SKIP_VOICE_COMPANION=1` to skip the step, or run
+`bun run ensure:voice-companion --check` to inspect readiness without building.
+Only the current `voice-companion` name is accepted; the legacy `ai-mate` name
+is no longer read.
+
 ## Verification
 
 | Command | Coverage |
@@ -240,3 +253,6 @@ or pass `--log-level` to `nomicore` / `nomifun-web` directly. The value is a
 - [`../architecture/frontend.md`](../architecture/frontend.md) for routes and host adapters.
 - [`../architecture/agent-observability-and-eval.zh.md`](../architecture/agent-observability-and-eval.zh.md) for Session Logs and Agent Eval.
 - [`building-and-packaging.md`](building-and-packaging.md) for release artifacts.
+- [`windows-low-integrity-dev-loop.md`](windows-low-integrity-dev-loop.md) when
+  `bun run dev` fails on Windows with `LNK1104`, a `PermissionDenied` log-file
+  panic, or a WebView2 `0x8000FFFF` / `0x800700AA` window failure.

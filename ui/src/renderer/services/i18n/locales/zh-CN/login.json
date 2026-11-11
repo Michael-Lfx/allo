@@ -1,6 +1,6 @@
 {
-  "pageTitle": "Flowy - 登录",
-  "brand": "Flowy",
+  "pageTitle": "{{brandName}} - 登录",
+  "brand": "{{brandName}}",
   "brandTagline": "让受信设备成为工作的起点。",
   "brandFlow": "设备 → 工作区 → 结果",
   "welcomeTitle": "登录 WebUI",

@@ -5,7 +5,7 @@
  */
 
 /** Settings tabs that stay hidden until developer mode is unlocked. */
-export const DEVELOPER_GATED_TAB_IDS = ['cloud-login'] as const;
+export const DEVELOPER_GATED_TAB_IDS = ['cloud-login', 'presentation'] as const;
 
 export type DeveloperGatedTabId = (typeof DEVELOPER_GATED_TAB_IDS)[number];
 

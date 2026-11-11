@@ -9,6 +9,7 @@ import { getRecentWorkspaces } from '@/renderer/components/workspace/recentWorks
 import { WorkspacePickerPopover } from '@/renderer/components/workspace';
 import { useConversationHistoryContext } from '@/renderer/hooks/context/ConversationHistoryContext';
 import { useCronJobsMap } from '@/renderer/pages/cron';
+import { useActiveVoiceConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { emitter } from '@/renderer/utils/emitter';
 import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
 import { scrollSidebarItemIntoView } from '@/renderer/utils/ui/scrollIntoView';
@@ -224,6 +225,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
   // Active session from the route — used for row selected state and drawer expansion.
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
   const activeConversationId = activeRoute?.kind === 'conversation' ? activeRoute.id : null;
+  const activeVoiceCallId = useActiveVoiceConversationId();
 
   // Cron bookkeeping + scroll the row into view on route change (carried over
   // from GroupedHistory / useConversations). The conversation-list active id is
@@ -464,6 +466,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
       autoworkState: capabilities.autowork.get(capabilityKey('conversation', conversation.id)),
       idmmState: capabilities.idmm.get(capabilityKey('conversation', conversation.id)),
       showSessionAge: displayPreferences.sessionMetaMode === 'age',
+      isCallActive: activeVoiceCallId === conversation.id,
     }),
     [
       collapsed,
@@ -473,6 +476,7 @@ const WorkpathSessionList: React.FC<WorkpathSessionListProps> = ({
       hasCompletionUnread,
       selectedConversationIds,
       activeConversationId,
+      activeVoiceCallId,
       dropdownVisibleId,
       toggleSelectedConversation,
       handleConversationClick,

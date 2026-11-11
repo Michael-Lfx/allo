@@ -410,18 +410,74 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
     transform var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out) !important;
 }
 
+.arco-btn {
+  font-family: var(--flowy-font-sans, -apple-system, 'Segoe UI Variable Text', 'PingFang SC', sans-serif) !important;
+  font-size: var(--flowy-text-control, 13px) !important;
+  font-weight: var(--flowy-weight-medium, 500) !important;
+}
+
+.arco-btn-size-default:not(.send-button-custom):not(.arco-btn-shape-circle),
+.arco-btn-size-small:not(.send-button-custom):not(.arco-btn-shape-circle) {
+  height: var(--flowy-control-height, 28px) !important;
+}
+
+.arco-btn-icon-only.arco-btn-size-default:not(.send-button-custom):not(.arco-btn-shape-circle),
+.arco-btn-icon-only.arco-btn-size-small:not(.send-button-custom):not(.arco-btn-shape-circle),
+.flowy-btn-icon {
+  width: var(--flowy-control-height, 28px) !important;
+  height: var(--flowy-control-height, 28px) !important;
+  padding: 0 !important;
+}
+
 .arco-btn:not(.arco-btn-disabled):hover {
-  filter: brightness(1.02);
+  filter: none;
 }
 
 .arco-btn:not(.arco-btn-disabled):active {
-  transform: translateY(0.5px) scale(0.985);
+  transform: none;
 }
 
-.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
-  background-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
-  border-color: var(--flowy-accent, var(--control-selected-bg, var(--color-primary))) !important;
-  color: var(--flowy-accent-fg, var(--control-selected-fg, #fff)) !important;
+.arco-btn-text:not(.arco-btn-disabled):not(.arco-btn-status-danger):hover,
+.flowy-btn-quiet:not(.arco-btn-disabled):hover,
+.flowy-btn-icon:not(.arco-btn-disabled):hover {
+  background-color: var(--flowy-quiet-hover, rgba(29, 29, 31, 0.06)) !important;
+  color: var(--flowy-text-primary, var(--color-text-1)) !important;
+}
+
+.arco-btn-text:not(.arco-btn-disabled):active,
+.flowy-btn-quiet:not(.arco-btn-disabled):active,
+.flowy-btn-icon:not(.arco-btn-disabled):active {
+  background-color: var(--flowy-quiet-pressed, rgba(29, 29, 31, 0.1)) !important;
+}
+
+.flowy-btn-bezel:not(.arco-btn-disabled) {
+  background-color: var(--flowy-raised, var(--color-bg-2)) !important;
+  border-color: var(--flowy-border-subtle, var(--color-border-2)) !important;
+  color: var(--flowy-text-primary, var(--color-text-1)) !important;
+}
+
+.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.send-button-custom):not(.flowy-btn-send):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
+  background-color: var(--color-primary, var(--flowy-ink-button, #1d1d1f)) !important;
+  border-color: var(--color-primary, var(--flowy-ink-button, #1d1d1f)) !important;
+  color: var(--button-primary-text, var(--flowy-ink-button-fg, #f5f5f7)) !important;
+}
+
+.arco-btn-primary:not(.arco-btn-disabled):not(.arco-btn-loading):not(.send-button-custom):not(.flowy-btn-send):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success):hover {
+  background-color: color-mix(in srgb, var(--color-primary, var(--flowy-ink-button, #1d1d1f)) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--color-primary, var(--flowy-ink-button, #1d1d1f)) 88%, #ffffff) !important;
+}
+
+.arco-btn-primary.send-button-custom:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success),
+.arco-btn-primary.flowy-btn-send:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success) {
+  background-color: var(--flowy-accent, #0f766e) !important;
+  border-color: var(--flowy-accent, #0f766e) !important;
+  color: var(--flowy-accent-fg, #ffffff) !important;
+}
+
+.arco-btn-primary.send-button-custom:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success):hover,
+.arco-btn-primary.flowy-btn-send:not(.arco-btn-disabled):not(.arco-btn-loading):not(.arco-btn-status-danger):not(.arco-btn-status-warning):not(.arco-btn-status-success):hover {
+  background-color: color-mix(in srgb, var(--flowy-accent, #0f766e) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--flowy-accent, #0f766e) 88%, #ffffff) !important;
 }
 
 .arco-btn-primary.arco-btn-status-danger:not(.arco-btn-disabled):not(.arco-btn-loading) {
@@ -469,12 +525,66 @@ body[arco-theme='dark'] .arco-switch-checked .arco-switch-text {
   box-shadow: 0 0 0 3px var(--flowy-focus-ring, var(--control-focus-ring, var(--color-primary-light-3))) !important;
 }
 
+.arco-input,
+.arco-textarea,
+.arco-select-view-value {
+  font-size: var(--flowy-text-control, 13px) !important;
+  font-weight: var(--flowy-weight-regular, 400) !important;
+}
+
+.arco-input::placeholder,
+.arco-textarea::placeholder {
+  font-weight: var(--flowy-weight-regular, 400) !important;
+  color: var(--color-text-3, var(--flowy-text-3)) !important;
+}
+
+.flowy-search.arco-input-inner-wrapper,
+.flowy-search .arco-input-inner-wrapper {
+  box-sizing: border-box !important;
+  height: var(--flowy-search-height, 32px) !important;
+  border-radius: var(--flowy-radius-field, 8px) !important;
+  border: 1px solid transparent !important;
+  background: var(--color-fill-2, var(--flowy-surface-2)) !important;
+  box-shadow: none !important;
+}
+
+.flowy-search--compact.arco-input-inner-wrapper,
+.flowy-search--compact .arco-input-inner-wrapper {
+  height: var(--flowy-search-height-compact, 28px) !important;
+}
+
+.flowy-search .arco-input-inner-wrapper:hover,
+.flowy-search.arco-input-inner-wrapper:hover {
+  border-color: var(--flowy-border-subtle, var(--color-border-2)) !important;
+}
+
+.flowy-search .arco-input-inner-wrapper-focus,
+.flowy-search .arco-input-inner-wrapper:focus-within,
+.flowy-search.arco-input-inner-wrapper-focus,
+.flowy-search.arco-input-inner-wrapper:focus-within {
+  border-color: var(--flowy-accent, var(--color-primary)) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--flowy-accent, var(--color-primary)) 16%, transparent) !important;
+}
+
+.flowy-search .arco-input,
+.flowy-search.arco-input-inner-wrapper .arco-input {
+  height: 100% !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.flowy-search .arco-input-group-prefix,
+.flowy-search .arco-input-prefix {
+  color: var(--color-text-3) !important;
+}
+
 .arco-input-wrapper,
 .arco-select-view,
 .arco-textarea-wrapper {
   background-color: var(--flowy-surface-1, var(--color-bg-2)) !important;
   border-color: var(--flowy-border, var(--control-idle-border, var(--color-border-3))) !important;
-  border-radius: var(--flowy-radius-md, 8px) !important;
+  border-radius: var(--flowy-radius-field, 8px) !important;
   transition:
     border-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out),
     box-shadow var(--flowy-motion-fast, 120ms) var(--flowy-ease-exit, ease-out) !important;

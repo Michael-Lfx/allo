@@ -1,24 +1,40 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import type { IMcpServer } from '@/common/config/storage';
 import type { McpServerId } from '@/common/types/ids';
+import { entryFlyoutPositionStyle, useEntryFlyoutBox } from './entryFlyoutPlacement';
+import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
+import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { AvailableAgent } from '../types';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
+import SelectedExpertChip from './SelectedExpertChip';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
+import type { DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
-import { Button, Checkbox, Dropdown, Menu } from '@arco-design/web-react';
-import { Aiming, CloseSmall, Plus, Shield, Tool } from '@icon-park/react';
-import React from 'react';
+import WorkspacePickerPopover from '@/renderer/components/workspace/WorkspacePickerPopover';
+import { Button, Checkbox } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import styles from '../index.module.css';
 
 type GuidActionRowProps = {
   onOpenAddMenu: () => void;
+  addMenuOpen: boolean;
+  onAddMenuOpenChange: (open: boolean) => void;
+  addMenu: React.ReactNode;
+  /** -1 while the MCP row owns the highlight. Any real row closes the MCP flyout. */
+  addMenuActiveIndex?: number;
+  addMenuPopoverRef?: React.RefObject<HTMLDivElement | null>;
+  entryFlyout?: React.ReactNode;
+  entryFlyoutRef?: React.RefObject<HTMLDivElement | null>;
+  onAddMenuEscape?: (event: KeyboardEvent) => boolean;
+  onDismissEntryFlyout?: () => void;
 
   // Model selector node (rendered by parent)
   modelSelectorNode: React.ReactNode;
@@ -58,13 +74,23 @@ type GuidActionRowProps = {
   // Send button
   loading: boolean;
   hasDraft: boolean;
+  onStartVoiceCall?: () => void;
+  isVoiceConnecting?: boolean;
+  isVoiceActive?: boolean;
+  voiceCallLabel?: string;
   speechLocale?: string;
   onSpeechTranscript: (text: string) => void;
+  dictationActivation?: DictationActivationRequest;
   autoWorkDraft?: AutoWorkDraftValue;
   onSend: () => void;
   /** Arms the first message as a `/goal` objective. */
   goalMode?: boolean;
   onGoalModeChange?: (enabled: boolean) => void;
+  /** Home "Slides" work mode (Nomi only); omitted hides the entry. */
+  slidesActive?: boolean;
+  onSlidesChange?: (active: boolean) => void;
+  /** ppt-master option pills, rendered after the work-mode selector in slides mode. */
+  slideControls?: React.ReactNode;
   /** When true the primary button starts an AutoWork session (no chat send):
    * it shows a robot icon + "Start AutoWork" tooltip. Disabled/onClick are
    * still driven by the parent. */
@@ -73,6 +99,15 @@ type GuidActionRowProps = {
 
 const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onOpenAddMenu,
+  addMenuOpen,
+  onAddMenuOpenChange,
+  addMenu,
+  addMenuActiveIndex = -1,
+  addMenuPopoverRef,
+  entryFlyout,
+  entryFlyoutRef,
+  onAddMenuEscape,
+  onDismissEntryFlyout,
   modelSelectorNode,
   modelSelectorIsChat = false,
   activeChatPopup = null,
@@ -95,15 +130,28 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   hidePresetTag = false,
   loading,
   hasDraft,
+  isVoiceActive = false,
+  onStartVoiceCall,
+  isVoiceConnecting = false,
+  voiceCallLabel,
   speechLocale,
   onSpeechTranscript,
+  dictationActivation,
   autoWorkDraft,
   onSend,
   goalMode = false,
   onGoalModeChange,
+  slidesActive = false,
+  onSlidesChange,
+  slideControls,
   autoWorkMode = false,
 }) => {
   const { t } = useTranslation();
+  const addMenuTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const mcpFlyoutRef = React.useRef<HTMLDivElement>(null);
+  const [mcpFlyoutOpen, setMcpFlyoutOpen] = useState(false);
+  const mcpFlyoutBox = useEntryFlyoutBox(addMenuPopoverRef, mcpFlyoutOpen, '[data-testid="guid-mcp-menu-btn"]');
+  const mcpOpenedAtRef = React.useRef(0);
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
   const modeBackend = effectiveModeAgent || selectedAgent;
@@ -128,32 +176,31 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
 
   const activeMcpCount = selectedMcpServerIds.length;
   const mcpTriggerLabel = `${t('mcp.label')} (${activeMcpCount}/${mcpServers.length})`;
+  const selectedExpert = is_presetAgent
+    ? presets.find((item) => item.preset_id === selectedAgentInfo?.preset_id)
+    : undefined;
+  const expertName =
+    selectedExpert?.name_i18n?.[localeKey] || selectedExpert?.name || selectedAgentInfo?.name || '';
+  const expertAvatarValue = selectedExpert?.avatar || selectedAgentInfo?.avatar;
+  const showSelectedExpert = Boolean(is_presetAgent && selectedAgentInfo && expertName);
 
-  const mcpMenuContent = (
-    <Menu className='min-w-200px'>
-      {mcpServers.map((server) => (
-        <Menu.Item
-          key={`mcp-${server.mcp_server_id}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleMcpServer(server.mcp_server_id);
-          }}
-        >
-          <Checkbox
-            checked={selectedMcpServerIds.includes(server.mcp_server_id)}
-            className='guid-mcp-selection-checkbox'
-            onClick={(e: React.MouseEvent) => e.stopPropagation()}
-            onChange={() => onToggleMcpServer(server.mcp_server_id)}
-          >
-            <span className='text-13px'>
-              {server.name}
-              {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
-            </span>
-          </Checkbox>
-        </Menu.Item>
-      ))}
-    </Menu>
-  );
+  React.useEffect(() => {
+    if (!addMenuOpen) setMcpFlyoutOpen(false);
+  }, [addMenuOpen]);
+
+  React.useEffect(() => {
+    if (entryFlyout) setMcpFlyoutOpen(false);
+  }, [entryFlyout]);
+
+  React.useEffect(() => {
+    if (addMenuActiveIndex >= 0) setMcpFlyoutOpen(false);
+  }, [addMenuActiveIndex]);
+
+  const openMcpFlyout = () => {
+    mcpOpenedAtRef.current = Date.now();
+    onDismissEntryFlyout?.();
+    setMcpFlyoutOpen(true);
+  };
 
   return (
     <div className={styles.actionRow}>
@@ -161,40 +208,123 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         <div className={styles.actionEntry}>
           <span className='flex items-center gap-4px lh-[1]'>
             <Button
+              ref={addMenuTriggerRef}
               type='secondary'
               shape='circle'
               size='small'
               className='sendbox-composer-plus-btn flowy-button-icon'
-              icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+              icon={<FlowyIcon name='plus' size={16} />}
               onClick={onOpenAddMenu}
               data-testid='file-upload-btn'
               aria-label={t('common.add')}
             />
+            {showSelectedExpert ? (
+              <SelectedExpertChip
+                name={expertName}
+                avatar={expertAvatarValue}
+                onClear={onClosePresetTag}
+                testId='guid-selected-expert'
+              />
+            ) : null}
           </span>
+          <WorkspacePickerPopover
+            className={styles.addMenuPopover}
+            open={addMenuOpen}
+            onOpenChange={onAddMenuOpenChange}
+            triggerRef={addMenuTriggerRef}
+            preferredPlacement='above'
+            minWidth={200}
+            maxWidth={200}
+            contentRef={addMenuPopoverRef}
+            accessoryRef={entryFlyoutRef}
+            extraAccessoryRef={mcpFlyoutRef}
+            onEscape={(event) => {
+              if (mcpFlyoutOpen) {
+                event.preventDefault();
+                setMcpFlyoutOpen(false);
+                return true;
+              }
+              return onAddMenuEscape?.(event) ?? false;
+            }}
+          >
+            {addMenu}
+            {mcpServers.length > 0 && (
+              <button
+                type='button'
+                className={[styles.addMenuSheetRow, mcpFlyoutOpen ? styles.addMenuSheetRowActive : ''].filter(Boolean).join(' ')}
+                onPointerEnter={openMcpFlyout}
+                onClick={() => {
+                  if (mcpFlyoutOpen && Date.now() - mcpOpenedAtRef.current > 250) {
+                    setMcpFlyoutOpen(false);
+                    return;
+                  }
+                  openMcpFlyout();
+                }}
+                aria-label={mcpTriggerLabel}
+                aria-expanded={mcpFlyoutOpen}
+                aria-haspopup='dialog'
+                data-testid='guid-mcp-menu-btn'
+              >
+                <FlowyIcon name='tool' size={16} />
+                <span className={`${styles.addMenuSheetLabel} text-13px`}>{t('mcp.label')}</span>
+                <FlowyIcon name='right' size={14} />
+              </button>
+            )}
+          </WorkspacePickerPopover>
+          {entryFlyout}
+          {mcpFlyoutOpen && typeof document !== 'undefined'
+            ? createPortal(
+                <div
+                  ref={mcpFlyoutRef}
+                  className={styles.entryFlyout}
+                  data-testid='guid-mcp-menu'
+                  role='dialog'
+                  aria-label={t('mcp.label')}
+                  style={entryFlyoutPositionStyle(mcpFlyoutBox)}
+                >
+                  <div className={styles.entryFlyoutList}>
+                    {mcpServers.map((server) => (
+                      <button
+                        key={`mcp-${server.mcp_server_id}`}
+                        type='button'
+                        className={styles.entryFlyoutAction}
+                        onClick={() => onToggleMcpServer(server.mcp_server_id)}
+                      >
+                        <Checkbox
+                          checked={selectedMcpServerIds.includes(server.mcp_server_id)}
+                          className='guid-mcp-selection-checkbox'
+                          onClick={(event: React.MouseEvent) => event.stopPropagation()}
+                          onChange={() => onToggleMcpServer(server.mcp_server_id)}
+                        />
+                        <span className={styles.entryFlyoutActionLabel}>
+                          {server.name}
+                          {server.tools?.length ? ` (${server.tools.length} ${t('mcp.tools')})` : ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
         </div>
-        {mcpServers.length > 0 && (
-          <Dropdown trigger='click' droplist={mcpMenuContent}>
-            <Button
-              type='text'
-              shape='circle'
-              size='small'
-              icon={<Tool theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
-              title={mcpTriggerLabel}
-              aria-label={mcpTriggerLabel}
-              data-testid='guid-mcp-menu-btn'
-            />
-          </Dropdown>
-        )}
         {showModeSwitch && (
           <AgentModeSelector
             backend={modeBackend}
             compact
             initialMode={selectedMode}
             onModeSelect={onModeSelect}
-            compactLeadingIcon={<Shield theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+            compactLeadingIcon={<FlowyIcon name='shield' size={16} />}
             modeLabelFormatter={getModeDisplayLabel}
           />
         )}
+        <TaskProfileSelector
+          compact
+          className={styles.composerTaskProfile}
+          slidesActive={slidesActive}
+          onSlidesChange={onSlidesChange}
+        />
+        {slidesActive && slideControls}
         {goalMode && onGoalModeChange && (
           <Button
             type='text'
@@ -208,10 +338,10 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             <span className={`${styles.actionGoalButtonContent} flowy-button-inline-content`}>
               <span className={styles.actionGoalChipIcon} aria-hidden='true'>
                 <span className={styles.actionGoalChipMark}>
-                  <Aiming theme='outline' size='14' strokeWidth={3} fill='currentColor' />
+                  <FlowyIcon name='aiming' size={14} />
                 </span>
                 <span className={styles.actionGoalChipClose}>
-                  <CloseSmall theme='outline' size='12' strokeWidth={5} fill='currentColor' />
+                  <FlowyIcon name='close' size={12} />
                 </span>
               </span>
               <span className={styles.actionGoalChipLabel}>
@@ -258,6 +388,11 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         )}
 
         <ComposerSubmitCluster
+          isVoiceConversation={Boolean(onStartVoiceCall) && !autoWorkMode}
+          isVoiceConnecting={isVoiceConnecting}
+          isVoiceActiveElsewhere={isVoiceActive}
+          voiceCallLabel={voiceCallLabel}
+          onStartVoiceCall={onStartVoiceCall}
           hasDraft={hasDraft}
           loading={loading}
           autoWorkMode={autoWorkMode}
@@ -265,6 +400,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           speechLocale={speechLocale}
           onSend={onSend}
           onSpeechTranscript={onSpeechTranscript}
+          dictationActivation={dictationActivation}
           sendTestId='guid-send-btn'
         />
       </div>

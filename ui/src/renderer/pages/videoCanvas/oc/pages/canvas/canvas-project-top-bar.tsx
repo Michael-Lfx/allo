@@ -262,7 +262,7 @@ export function CanvasTopBar({
                     <CanvasChromeButton className="is-icon" disabled={exporting} style={{ color: theme.node.text }} onClick={onExportProject} title={canvasT("videoCanvas.chrome.exportProject", "导出工程")} aria-label={canvasT("videoCanvas.chrome.exportProject", "导出工程")}>
                         <Download className="size-3.5" />
                     </CanvasChromeButton>
-                    <CanvasChromeButton className="is-icon" disabled={publishing} style={{ color: theme.node.text }} onClick={onPublishTvShow} title={canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")} aria-label={canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")}>
+                    <CanvasChromeButton className="is-icon" disabled={publishing} style={{ color: theme.node.text }} onClick={onPublishTvShow} title={canvasT("videoCanvas.chrome.publishTv", "发布到 {{brandName}} TV")} aria-label={canvasT("videoCanvas.chrome.publishTv", "发布到 {{brandName}} TV")}>
                         <Share2 className="size-3.5" />
                     </CanvasChromeButton>
                     <CanvasChromeButton aria-pressed={agentOpen} style={{ color: theme.node.text }} onClick={onToggleAgent} title="Agent" aria-label="Agent">
@@ -346,7 +346,7 @@ function TopBarOverflowMenu({
                         <CanvasMenuSeparator />
                         <CanvasMenuRow icon={<Upload className="size-3.5" />} label={canvasT("videoCanvas.chrome.importMedia", "导入素材")} onClick={() => run(onImportImage)} />
                         <CanvasMenuRow icon={<Download className="size-3.5" />} label={canvasT("videoCanvas.chrome.exportProject", "导出工程")} disabled={exporting} onClick={() => run(onExportProject)} />
-                        <CanvasMenuRow icon={<Share2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.publishTv", "发布到 Flowy TV")} disabled={publishing} onClick={() => run(onPublishTvShow)} />
+                        <CanvasMenuRow icon={<Share2 className="size-3.5" />} label={canvasT("videoCanvas.chrome.publishTv", "发布到 {{brandName}} TV")} disabled={publishing} onClick={() => run(onPublishTvShow)} />
                         <CanvasMenuRow icon={<Search className="size-3.5" />} label={canvasT("videoCanvas.chrome.searchNodes", "搜索节点")} shortcut={canvasAccel.search()} onClick={() => run(onOpenSearch)} />
                         <CanvasMenuSeparator />
                         <CanvasMenuRow icon={<Gauge className="size-3.5" />} label={canvasT("videoCanvas.chrome.perfAuto", "自动性能")} active={mediaPerformanceMode === "auto"} onClick={() => run(() => onMediaPerformanceModeChange("auto"))} />

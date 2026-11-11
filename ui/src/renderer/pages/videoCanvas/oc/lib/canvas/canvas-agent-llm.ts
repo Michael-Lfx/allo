@@ -22,11 +22,12 @@ export type CanvasAgentToolCall = {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  thoughtSignature?: string;
 };
 
 export type CanvasAgentInputMessage =
   | CanvasAgentTextMessage
-  | { type: "function_call"; call_id: string; name: string; arguments: string }
+  | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
   | { role: "tool"; tool_call_id: string; content: string };
 
 export type CanvasAgentFunctionTool = {

@@ -33,6 +33,12 @@ export type BrowserStorageFeature =
 const KEY_ROOT = 'nomifun';
 let storageGeneration: string | null = null;
 
+export const UNINITIALIZED_STORAGE_GENERATION = '01900000-0000-7000-8000-000000000000' as const;
+
+export function hasBrowserStorageGeneration(): boolean {
+  return storageGeneration !== null;
+}
+
 /**
  * Sets the identity of the currently mounted backend dataset.
  *
@@ -50,10 +56,7 @@ export function setBrowserStorageGeneration(value: string): void {
 }
 
 export function getBrowserStorageGeneration(): string {
-  if (!storageGeneration) {
-    throw new Error('browser storage generation has not been initialized');
-  }
-  return storageGeneration;
+  return storageGeneration ?? UNINITIALIZED_STORAGE_GENERATION;
 }
 
 /** A generation-scoped key for UI state that is not owned by one entity. */

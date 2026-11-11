@@ -19,7 +19,7 @@ use std::sync::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::capture::AudioCaptureSource;
+use crate::capture::{AudioCaptureSource, CaptureReadResult};
 use crate::frame::{AudioChannel, TaggedFrame};
 
 /// Concurrently reads from a mic source and a loopback source, producing a
@@ -86,7 +86,7 @@ impl DualTrackMixer {
         tokio::spawn(async move {
             loop {
                 match mic.read_chunk().await {
-                    Some(samples) => {
+                    CaptureReadResult::Chunk(samples) => {
                         // Drop frame silently when muted
                         if mic_muted.load(Ordering::Relaxed) {
                             continue;
@@ -98,8 +98,15 @@ impl DualTrackMixer {
                             break;
                         }
                     }
-                    None => {
+                    CaptureReadResult::TemporarilyEmpty => {
+                        tokio::task::yield_now().await;
+                    }
+                    CaptureReadResult::StreamClosed => {
                         debug!("DualTrackMixer: mic source exhausted");
+                        break;
+                    }
+                    CaptureReadResult::DeviceError(e) => {
+                        debug!("DualTrackMixer: mic device error: {e}");
                         break;
                     }
                 }
@@ -111,7 +118,7 @@ impl DualTrackMixer {
         tokio::spawn(async move {
             loop {
                 match loopback.read_chunk().await {
-                    Some(samples) => {
+                    CaptureReadResult::Chunk(samples) => {
                         let sr = loopback.sample_rate();
                         let frame = TaggedFrame::new(AudioChannel::Loopback, samples, sr);
                         if tx_lb.send(frame).await.is_err() {
@@ -121,8 +128,15 @@ impl DualTrackMixer {
                             break;
                         }
                     }
-                    None => {
+                    CaptureReadResult::TemporarilyEmpty => {
+                        tokio::task::yield_now().await;
+                    }
+                    CaptureReadResult::StreamClosed => {
                         debug!("DualTrackMixer: loopback source exhausted");
+                        break;
+                    }
+                    CaptureReadResult::DeviceError(e) => {
+                        debug!("DualTrackMixer: loopback device error: {e}");
                         break;
                     }
                 }
@@ -160,13 +174,11 @@ impl SilentSource {
 
 #[async_trait::async_trait]
 impl AudioCaptureSource for SilentSource {
-    async fn read_chunk(&self) -> Option<Vec<f32>> {
+    async fn read_chunk(&self) -> CaptureReadResult {
         // Never produce frames — the mixer will keep running on mic alone.
         // Sleep briefly to avoid busy-looping.
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        // Return an empty slice so we don't terminate the loopback task
-        // (returning None would drop that half of the sender).
-        Some(vec![])
+        CaptureReadResult::TemporarilyEmpty
     }
 
     fn sample_rate(&self) -> u32 {

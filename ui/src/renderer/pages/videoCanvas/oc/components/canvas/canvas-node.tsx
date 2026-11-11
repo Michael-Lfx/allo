@@ -3,6 +3,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import type { ReactNode } from "react";
 import { AlertCircle, BookOpenCheck, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, RefreshCw, ScanSearch, Settings2, Square, Star, Type, Video } from "lucide-react";
 
+import Counter, { TimedPhrase, tickingCounterProps, timerSlot } from "@renderer/components/base/Counter";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { craftCover, PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
 import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
@@ -21,7 +22,7 @@ import { hydrateCanvasVideoPreview } from "@oc/services/canvas-video-preview";
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { storyboardMinNodeHeight } from "./canvas-script-node";
-import { CanvasNodeType, type CanvasNodeData, type Position } from "@oc/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeStatus, type Position } from "@oc/types/canvas";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
 import { getNodeMinSize, shouldKeepAspectRatio } from "@oc/lib/canvas/node-registry";
@@ -650,7 +651,7 @@ function LoadingContent({ node, theme, onCancelTask, onOpenTaskDetails }: Pick<N
     const taskId = node.metadata?.taskId;
     const progress = typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
     const statusLabel = taskStatusLabel(node.metadata?.taskStatus);
-    const elapsed = useTaskElapsed(node.metadata?.taskCreatedAt);
+    const elapsed = <TaskElapsed createdAt={node.metadata?.taskCreatedAt} />;
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
@@ -679,18 +680,55 @@ function LoadingContent({ node, theme, onCancelTask, onOpenTaskDetails }: Pick<N
     );
 }
 
-function useTaskElapsed(createdAt?: string) {
+function TaskElapsed({ createdAt }: { createdAt?: string }) {
+    const { i18n } = useTranslation();
     const [, setTick] = useState(0);
+    // useEffect必要性：window.setInterval；目的：生成任务进行中时每秒刷新已等待时间。allo 未依赖 ahooks。
     useEffect(() => {
         if (!createdAt) return;
         const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
         return () => window.clearInterval(timer);
     }, [createdAt]);
-    if (!createdAt) return canvasT("videoCanvas.nodeUi.justNow", "刚刚");
+    const digit = (value: number) => (
+        <Counter value={value} locale={i18n.language} {...tickingCounterProps} />
+    );
+    if (!createdAt) return <>{canvasT("videoCanvas.nodeUi.justNow", "刚刚")}</>;
     const seconds = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
-    if (seconds < 60) return canvasT("videoCanvas.nodeUi.seconds", "{{n}}秒", { n: seconds });
+    if (seconds < 60) {
+        return (
+            <TimedPhrase
+                text={canvasT("videoCanvas.nodeUi.seconds", "{{n}}秒", { n: timerSlot.seconds })}
+                slots={{ [timerSlot.seconds]: digit(seconds) }}
+            />
+        );
+    }
     const minutes = Math.floor(seconds / 60);
-    return minutes < 60 ? canvasT("videoCanvas.nodeUi.minutesSeconds", "{{m}}分{{s}}秒", { m: minutes, s: seconds % 60 }) : canvasT("videoCanvas.nodeUi.hoursMinutes", "{{h}}时{{m}}分", { h: Math.floor(minutes / 60), m: minutes % 60 });
+    if (minutes < 60) {
+        return (
+            <TimedPhrase
+                text={canvasT("videoCanvas.nodeUi.minutesSeconds", "{{m}}分{{s}}秒", {
+                    m: timerSlot.minutes,
+                    s: timerSlot.seconds,
+                })}
+                slots={{
+                    [timerSlot.minutes]: digit(minutes),
+                    [timerSlot.seconds]: digit(seconds % 60),
+                }}
+            />
+        );
+    }
+    return (
+        <TimedPhrase
+            text={canvasT("videoCanvas.nodeUi.hoursMinutes", "{{h}}时{{m}}分", {
+                h: timerSlot.hours,
+                m: timerSlot.minutes,
+            })}
+            slots={{
+                [timerSlot.hours]: digit(Math.floor(minutes / 60)),
+                [timerSlot.minutes]: digit(minutes % 60),
+            }}
+        />
+    );
 }
 
 function taskStatusLabel(status?: string) {
@@ -851,8 +889,8 @@ function TvCoverBadge({ theme }: { theme: CanvasTheme }) {
         <span
             className="pointer-events-none inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-1.5 text-[var(--fs-tiny)] font-medium leading-none backdrop-blur-md"
             style={{ background: theme.accent.primarySoft, borderColor: theme.accent.primary, color: theme.accent.primary }}
-            title={canvasT("videoCanvas.nodeUi.tvCoverAria", "Flowy TV 封面")}
-            aria-label={canvasT("videoCanvas.nodeUi.tvCoverAria", "Flowy TV 封面")}
+            title={canvasT("videoCanvas.nodeUi.tvCoverAria", "{{brandName}} TV 封面")}
+            aria-label={canvasT("videoCanvas.nodeUi.tvCoverAria", "{{brandName}} TV 封面")}
         >
             <Bookmark className="size-3 fill-current" />
             {canvasT("videoCanvas.nodeUi.tvCover", "封面")}
@@ -1465,8 +1503,8 @@ function nodeTypeIcon(type: CanvasNodeType) {
 }
 
 // 节点状态徽章（对应 #97 决策2：左上角状态指示，loading/success/error）
-function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }) {
-    if (status === "loading") {
+function NodeStatusBadge({ status }: { status: CanvasNodeStatus }) {
+    if (status !== "success" && status !== "error") {
         return (
             <div
                 className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"

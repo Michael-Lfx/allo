@@ -759,33 +759,16 @@ pub fn normalize_target_duration_secs(raw: Option<u32>) -> u32 {
 
 /// Suggested shot count for a **single scene budget** (not the whole film).
 ///
-/// Soft hint only: `ideal` prices beats near the typical spoken beat (~12s), so a
-/// budget maps to a plausible number of full beats. Clip length still follows
-/// each clip's content, so this never asks for padding. The
-/// storyboard LLM still chooses count from beats — this is not a minimum quota.
-/// `max_shots` is a hard cap for post-LLM truncation, with slack for speech
-/// that cannot fit one clip (吞字).
+/// `ideal` is the fewest clips that can carry the budget at the model's maximum
+/// length. The storyboard model still divides by meaning and aims each clip at
+/// that maximum. `max_shots` leaves two extra slots so a line that cannot fit
+/// one clip can split instead of 吞字. Neither number is a quota to pad.
 pub fn suggested_shot_count(bounds: ClipBounds, budget_secs: u32) -> (u32, u32) {
     let budget = budget_secs.max(bounds.min_secs());
-    let min_to_fill = budget.div_ceil(bounds.max_secs());
-    let beat = bounds.typical_beat_secs().max(1);
-    // Floor, not round-up: a clip is never padded to use up leftover seconds.
-    // `min_to_fill` still raises the count when even max-length clips cannot
-    // reach the budget.
-    let ideal = (budget / beat).max(min_to_fill).clamp(1, 6);
-    // Slack: two extra shots so a long line can still split instead of 吞字.
-    // Cap stays tight so the count never invites filler cuts.
-    let max_shots = min_to_fill
-        .max(ideal)
-        .saturating_add(2)
-        .min(budget / bounds.min_secs())
-        .clamp(1, 6);
-    let ideal = if ideal.saturating_mul(bounds.max_secs()) < budget {
-        min_to_fill.min(max_shots)
-    } else {
-        ideal.min(max_shots)
-    };
-    (ideal.max(1), max_shots)
+    let ideal = budget.div_ceil(bounds.max_secs()).max(1).clamp(1, 6);
+    let room = (budget / bounds.min_secs().max(1)).max(ideal);
+    let max_shots = ideal.saturating_add(2).min(room).max(ideal).clamp(1, 6);
+    (ideal, max_shots)
 }
 
 /// Normalize a scene-level BGM brief into a Seedance `(music)` caption.
@@ -951,10 +934,13 @@ pub fn allocate_scene_budgets(
 }
 
 /// Suggested scene count for a whole film (idea/novel multi-scene).
+///
+/// A scene is one place and time, sized for about two clips at the model's
+/// maximum, so the script is not a stack of ten-second rooms.
 pub fn suggested_scene_count(bounds: ClipBounds, total_secs: u32) -> (u32, u32) {
     let total = normalize_target_duration_secs(Some(total_secs));
-    // ~10–12s per scene for short drama.
-    let ideal = ((total + 10) / 12).clamp(1, 5);
+    let per_scene = bounds.max_secs().saturating_mul(2).max(1);
+    let ideal = total.div_ceil(per_scene).clamp(1, 5);
     let max_scenes = (total / bounds.min_secs()).clamp(1, 6);
     (ideal.min(max_scenes), max_scenes)
 }
@@ -1131,17 +1117,14 @@ pub fn speech_budget_line(bounds: ClipBounds) -> String {
     let speak_window = clip_max.saturating_sub(SPEECH_LEAD_SECS + SPEECH_TAIL_SECS);
     let max_cjk_chars = (speak_window as f32 * SPEECH_CJK_CHARS_PER_SEC).floor() as u32;
     let max_en_words = (speak_window as f32 * SPEECH_EN_WORDS_PER_SEC).floor() as u32;
-    let action_max = bounds.glance_secs();
-    let pack = bounds.pack_target_secs();
     format!(
         "Dialogue MUST finish inside the same shot's {clip_min}–{clip_max}s clip: \
 Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec or English ~{SPEECH_EN_WORDS_PER_SEC} words/sec, \
-leave ~{SPEECH_LEAD_SECS}s lead-in and ~{SPEECH_TAIL_SECS}s tail after the last word, then land on a \
-visible reaction/action beat (no empty hold); hard max ≲{max_cjk_chars} Chinese chars / \
-≲{max_en_words} English words. Prefer packing a line + reaction into one ~{pack}s clip when the \
-spoken payload still fits. A single sit/stand/glance stays {clip_min}–{action_max}s \
-(do not pad it to {clip_max}s). If the line cannot be spoken clearly inside {clip_max}s, SPLIT \
-or shorten — never rush (吞字)."
+leave ~{SPEECH_LEAD_SECS}s lead-in and ~{SPEECH_TAIL_SECS}s tail after the last word. \
+Hard max ≲{max_cjk_chars} Chinese chars / ≲{max_en_words} English words. \
+Fill that budget with the lines of one semantic beat, not with a single short sentence while the rest of the exchange waits in later files. \
+A reaction shorter than {clip_min}s is written into that beat. \
+If the beat cannot be spoken clearly inside {clip_max}s, SPLIT at a dialogue boundary — never rush (吞字)."
     )
 }
 
@@ -1160,9 +1143,8 @@ paraphrase, or skip a script line. Voice identity is the written voice descripti
 speaking characters consistent by the written voice description (e.g. 李薇：「…」 / Alice: \"…\"). \
 Do not request or rely on reference audio. Silent on-screen people do not count. If more people \
 speak, emit ANOTHER row in story order and keep EVERY line — never drop, summarize, or merge \
-distinct script lines to squeeze them in. Reverse / insert / push-in of the SAME speakers stays \
-in one row as CUT TO (continuity). Pack related beats into one row when speakers AND speech still \
-fit; split only so each speaker's written voice stays distinct or to avoid 吞字."
+distinct script lines to squeeze them in. Keep one exchange in this file, cameras included, until it approaches the model maximum. \
+A new file starts when the place changes, the speech will not fit, or the file already has 4 cameras. Split a row that would 吞字 at a dialogue boundary."
     )
 }
 
@@ -1188,17 +1170,27 @@ pub fn unclamped_speech_need_secs(audio_desc: Option<&str>) -> u32 {
 pub fn clip_length_rules(bounds: ClipBounds) -> String {
     let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
     format!(
-        "Each shot renders as ONE clip of {clip_min}–{clip_max}s. ONE ROW = ONE VIDEO: each storyboard JSON object is one generated file. \
-Slice rows by NARRATIVE (a dramatic unit: line+reaction, a turn, a payoff), never by tripod position. \
-A reverse-angle / insert / push-in is coverage of the SAME beat — write CUT TO inside that row, do not \
-open a new row because the camera moved. Pack a line + reaction + a small action into the SAME row when \
-they are the same story unit and the spoken payload still fits. Silent actions are priced by what they \
-show: each action (a turn, a look, a gesture) plays in about {SILENT_ACTION_SECS}s, so a silent row holds \
-1–{SILENT_ACTION_MAX_CLAUSES} actions joined by ；然后 or CUT TO. Use a new row only when the story itself moves on, or the next events cannot fit \
-without rushing speech (吞字). NEVER write absolute seconds or timecodes (no \"0-4s:\", no \"4-7s\", no \
-\"前3秒\"): the renderer decides the clip length and would contradict them. When a clip contains \
-consecutive events, write them in order (\"…；然后…\" / \"…, then …\", and \"CUT TO\" on a camera \
-change) and let the renderer pace them. Do not pad. Do not rush speech (吞字)."
+        "Each shot renders as ONE clip of {clip_min}–{clip_max}s. ONE ROW = ONE VIDEO: each storyboard JSON object is one generated file of one place, and it may hold several cameras. \
+{} \
+Do not write an internal timeline (no \"0-4s:\", no \"4-7s\", no \"前3秒\"). \
+Geography is written once per file, not once per camera, and it is not duration. \
+A silent action plays in about {SILENT_ACTION_SECS}s inside the camera it belongs to; do not give it a file of its own and do not rush speech (吞字).",
+        prefer_model_maximum(bounds)
+    )
+}
+
+/// The planner's length bias. The model authors the cut. Nothing after the
+/// fact glues short rows into a longer file.
+fn prefer_model_maximum(bounds: ClipBounds) -> String {
+    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
+    format!(
+        "PREFER THE MODEL MAXIMUM ({clip_max}s). One file is one place. Its natural play approaches {clip_max}s \
+(the selected model accepts {clip_min}–{clip_max}s) and holds the cameras of one exchange, decision, or reveal: write them in order as 镜头1 / 镜头2 / 镜头3 (English: Shot 1 / Shot 2 / Shot 3), at most 4. \
+No timestamps. One shot size and one camera move per 镜头. \
+State the room and the master blocking ONCE before 镜头1. Later cameras in this file do not repeat the floor, the walls, or the furniture. A same-axis cut names the new shot size, who stays in frame, and the new action. A reverse says 反打 and restates only the people in that frame, with the swapped sides. \
+A reaction shorter than {clip_min}s stays inside the camera it answers. \
+Do not pad with empty holds, slow looks, or repeated geography to reach {clip_max}s. \
+Do not open a new file just because the camera changed. The next row is a new video: it starts when the place changes, this file already has 4 cameras, or the speech will not fit in {clip_max}s. Split that overflow at a dialogue boundary — never rush (吞字). That next file restates blocking once, because it does not see this picture, then opens the action already in progress."
     )
 }
 
@@ -1208,11 +1200,9 @@ fn film_pacing_model_decides_block(bounds: ClipBounds) -> String {
         "[VIDEO_PACING — MUST FOLLOW]\n\
          - Do NOT target a fixed finished runtime. Let scene count and story length follow the idea \
 (ViMax-style: the model decides duration).\n\
-         - Shot count follows story beats — do not pad or split to hit a quota. Prefer fewer clips, each one \
-complete story unit, over many short fragments. Honor an explicit user duration/scene/shot count.\n\
+         - Shot count follows semantic beats sized to the model maximum. Do not pad a clip with empty time, and do not cut one beat into several short files. Honor an explicit user duration/scene/shot count.\n\
          - Each rendered shot clip is {clip_min}–{clip_max}s (hard range of the selected video model). \
-Pack 2–3 related story beats into one clip when they are the same narrative unit and speech still fits; \
-{clip_max}s only when speech or a continuous action needs it. Do not start a new clip because the camera moved.\n\
+{}\n\
          - Speech pacing (clear, language-aware): Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
 ~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold). \
@@ -1225,33 +1215,26 @@ at least one concrete conflict beat and one filmable visual motif that can recur
          - Prefer show-don't-tell actions over long explanatory dialogue; keep spoken lines short and punchy.\n\
          [MUSIC_ARC — MUST FOLLOW]\n\
          - Plan one continuous underscore mood for the film (motif / tempo / intensity arc). \
-Adjacent shots must feel like one soundtrack, not a new track per cut."
+Adjacent shots must feel like one soundtrack, not a new track per cut.",
+        prefer_model_maximum(bounds)
     )
 }
 
-/// Beat-matched clip guidance: length follows content, neither a max-length pad
-/// nor a cut quota.
+/// Length bias for one scene: semantic beats that approach the model maximum.
 fn beat_matched_pacing_lines(bounds: ClipBounds) -> String {
-    let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
-    let typical = bounds.typical_beat_secs();
+    let clip_max = bounds.max_secs();
     format!(
         "         - **BEAT-MATCHED PACING** (not a shot-count quota):\n\
-           * Clip length follows the beats it holds — a glance/reaction may be {clip_min}s; \
-a spoken line plus its reaction typically ~{typical}s; related beats share one clip while the \
-spoken payload still fits and the silent actions stay under ~{SILENT_PACK_CAP_SECS}s.\n\
-           * Prefer fewer clips. Never pad a clip to fill time, and never add a shot just to use up seconds.\n\
-           * Do NOT stretch thin content to {clip_max}s. Do NOT split one story beat into \
-micro-cuts just to raise shot count, and do NOT start a new clip because the camera \
-moved (reverse / insert / push-in belong inside the same row as CUT TO).\n\
+           * {}\n\
            * Empty holds, slow pans, and \"character looks around\" are FORBIDDEN.\n\
-           * A single silent action (a sit, stand, walk, turn or look) plays in about {SILENT_ACTION_SECS}s — \
-do not pad it to {clip_max}s.\n\
+           * A silent action (a sit, stand, walk, turn or look) plays in about {SILENT_ACTION_SECS}s inside the beat it belongs to — \
+do not give it a file of its own and do not pad it with waiting.\n\
            * Never write absolute seconds or timecodes into a shot description \
-(no \"0-3s:\" / \"前3秒\"): the renderer allocates each clip's length and lays consecutive \
-beats on that timeline itself. Order the beats instead.\n\
+(no \"0-3s:\" / \"前3秒\"). The renderer asks for this row's content seconds, clamped into the window.\n\
            * Language-aware delivery: Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec (clear — not rushed, not drawn-out). \
-If a line cannot finish clearly inside {clip_max}s, SPLIT or shorten — never 吞字.\n"
+If a line cannot finish clearly inside {clip_max}s, SPLIT at a dialogue boundary — never 吞字.\n",
+        prefer_model_maximum(bounds)
     )
 }
 
@@ -1271,8 +1254,8 @@ fn scene_pacing_model_decides_block(
     let density = director_density_lines();
     format!(
         "[VIDEO_PACING — MUST FOLLOW]\n\
-         - This is scene {scene_num}/{scene_count}. Shot count follows the scene script — do NOT pad or \
-truncate to hit a runtime quota. Prefer packing related beats into fewer clips.\n\
+         - This is scene {scene_num}/{scene_count}. Shot count follows the scene's meaning — do NOT pad or \
+truncate to hit a runtime quota. One row is one video of one place. Its cameras share that file and the clip approaches the model maximum.\n\
          - Each shot clip is {clip_min}–{clip_max}s (selected video model).\n\
 {beat_pacing}\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
@@ -1285,14 +1268,8 @@ If a speech beat is longer, you MUST SPLIT into another shot (or shorten the lin
 the {clip_max}s model limit.\n\
          - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
 do NOT pad with empty static holds or \"磨叽\" waiting.\n\
-         - Prefer purposeful coverage that raises information density. A silent action beat plays at natural speed (about {SILENT_ACTION_SECS}s per \
-action, at most {SILENT_ACTION_MAX_CLAUSES} actions per row): give it rich in-shot motion, never a \
-stretched one. For dialogue, pack the line and its reaction \
-into the SAME row when they are one conversation beat and the spoken payload still fits.\n\
-         - NARRATIVE FIRST: a new storyboard row is a new story unit (turn, time jump, new conflict), \
-never a new tripod position. Reverse / insert / angle change that still belongs to this beat stays \
-in this row as CUT TO (one row = one generated video). cam_idx is the opening setup of the row, not \
-a reason to emit another object.\n\
+         - Prefer purposeful coverage that raises information density. A silent action plays at natural speed (about {SILENT_ACTION_SECS}s) inside the camera it belongs to: write the motion, never a stretched hold. A reaction shorter than the clip minimum stays in that camera. A wide, a close-up, and a reverse of the same exchange stay in this file as 镜头1 / 镜头2 / 镜头3.\n\
+         - NARRATIVE FIRST: one row approaches the model maximum and may hold several cameras of one place. cam_idx is the camera the file opens on. The next row is a new video and restates blocking once.\n\
 {continuity}\
          {cross_scene}\
 {density}\
@@ -1309,32 +1286,30 @@ Do NOT invent a new music style per shot — abrupt BGM changes between cuts are
 /// previous clip's last frame. Identity, screen axis, and prop exit state are
 /// restated in that row's own blocking sentence.
 fn shot_continuity_lines() -> String {
-    "         - SHOT CONTINUITY — these rules apply BETWEEN storyboard rows (file splices), \
-not as a reason to add a row. Camera moves inside a row are CUT TO in that row's visual_desc.\n\
+    "         - SHOT CONTINUITY — these rules apply BETWEEN storyboard rows (file splices). \
+Each row is one video of one place and may hold several cameras, up to 4, written as 镜头1 / 镜头2. The room is stated once. A later camera inside the file does not repeat it. The next row is a new file and restates blocking once.\n\
            * IDENTITY (always): cast faces, wardrobe, hair, props, set dressing, time of day, \
 weather, and lighting mood carry over unchanged between adjacent shots unless the story explicitly \
 changes them. A plot prop named in visual_desc must have a start state and an exit state; the next \
 row restates that exit in its own blocking sentence unless the story changes it.\n\
-           * BLOCKING (every row, self-contained): the first sentence re-establishes space against \
-the empty location plate. For each visible person and each person who speaks write screen side (画面左侧 / 画面右侧 / 画面中央), \
+           * BLOCKING (every row, self-contained): the first sentence places people in the room the \
+location plate shows. The plate is the room at the start of the scene. For each visible person and \
+each person who speaks write screen side (画面左侧 / 画面右侧 / 画面中央), \
 facing (面向左 / 面向右 / 面向镜头 / 背对镜头), posture, who is closer to camera, and one fixed set \
 anchor (门内一步、柜台左侧、床尾、窗前). Name foreground / midground / background for the subject and \
 the nearest furnishing. Do NOT write 同上, 接上一帧, 从上一镜末尾接着, or \"same as the previous shot\". \
-When the axis has not changed, the next row rewrites the geography in full \
+Inside this file, 镜头2 and later do not repeat the room. The next file, when the axis has not changed, rewrites the geography once \
 (\"仍在画面左侧、面向右、站在铁门内侧\").\n\
            * AXIS: who is screen-left vs screen-right stays the same across a file splice unless THIS \
-row explicitly writes 反打 / 过肩 / reverse as an in-file CUT TO. Flipping left/right across a file \
-splice looks like a teleport.\n\
+row is a reverse and says 反打 / 过肩 / reverse. That row restates every screen side. Flipping \
+left/right without saying so looks like a teleport.\n\
            * ACTION: open with the action already in progress. Do NOT replay or re-describe the \
 previous row's ending pose, and do NOT copy this row's 「」 line into the next audio_desc.\n\
-           * IN-FILE AXIS: beats inside one row share one generated video. A later beat that is not \
-反打/过肩 repeats the same screen side, facing, depth, and who is closer, and the cut is hard \
-(no dissolve, nobody walks or flashes to a new spot). A reverse writes 反打 and restates the new \
-sides; the left/right swap is the new camera, not a person running across the set. When the people \
-in frame change, restate who enters and who leaves, each with their own screen side; do not keep \
-the previous beat's sides. One reference face is one body, and a person who speaks in the beat \
-must be placed, not left as an unnamed extra.\n\
-           * A reverse angle of the SAME beat is NOT a new row — pack it in this row as CUT TO.\n"
+           * ROSTER: one reference face is one body. A person who speaks in the row is placed in that \
+row, not left as an unnamed extra. A close-up names only the people in frame. The next wide restates \
+everyone still in the room, including one fixed group reference for unnamed companions, and says who left.\n\
+           * PROP: the state a prop has at the end of this row (头顶 / 桌上 / 手里) is the first state \
+of that prop in the next row, unless this row's action changes it.\n"
         .to_string()
 }
 
@@ -1353,14 +1328,11 @@ fn director_density_lines() -> String {
     "         [DIRECTOR_DENSITY — MUST FOLLOW]\n\
          - Each clip must change something the audience can see or hear (new info, new emotion, new action). \
 Ban back-to-back redundant wide establishes and repeated \"looks around slowly\" beats.\n\
-         - **NARRATIVE FIRST / ONE ROW = ONE VIDEO**: Slice JSON objects by story unit, not by camera. \
-Each object is one generated file. Pack 2–3 *related* story beats into that SAME object when they are \
-one dramatic unit AND the spoken payload still fits:\n\
-           * She opens the door, sees him, and the line lands — one row (even if you CUT TO his face)\n\
-           * Line + the other person's reaction, reverse included — one row, write CUT TO\n\
-           * A glance that is the whole beat stays its own short row\n\
-           A new row is a new story beat (turn, time jump, new conflict) or a line that would 吞字. \
-Never emit a new row because the camera moved. Never emit a micro-shot the renderer would delete.\n"
+         - **NARRATIVE FIRST / ONE ROW = ONE VIDEO**: one JSON object is one place whose cameras share the file, and the clip approaches the model maximum.\n\
+           * One exchange, decision, or reveal, including its wide, close-up, and reverse — one row, marked 镜头1 / 镜头2 / 镜头3\n\
+           * A glance, a gasp, or a one-line answer — written into the camera it answers, not a second file\n\
+           * The room is written once. A reverse inside the file restates only the people in that frame\n\
+           A line that would 吞字, a place change, or a fifth camera is the next row. Do not pad empty time.\n"
         .into()
 }
 
@@ -1393,22 +1365,23 @@ pub fn enrich_requirement_for_film(
         return format!("{base}\n\n{}", film_pacing_model_decides_block(bounds));
     }
     let (clip_min, clip_max) = (bounds.min_secs(), bounds.max_secs());
-    let pack = bounds.pack_target_secs();
     let target = normalize_target_duration_secs(target_secs);
     let (ideal_scenes, max_scenes) = suggested_scene_count(bounds, target);
     let per_scene = (target / ideal_scenes.max(1)).max(clip_min);
+    let prefer = prefer_model_maximum(bounds);
     let block = format!(
         "[VIDEO_DURATION_CONSTRAINTS — MUST FOLLOW]\n\
          - Target finished film length ≈ {target} seconds TOTAL (hard planning budget).\n\
          - Prefer about {ideal_scenes} scenes (hard upper bound {max_scenes}); ~{per_scene}s per scene.\n\
          - Each rendered shot clip is {clip_min}–{clip_max}s (hard range of the selected video model).\n\
-         - Keep the whole story compact so total scenes × shots × {clip_min}s stays near {target}s.\n\
+         - {prefer}\n\
+         - Keep the whole story compact so total scenes × clips × {clip_max}s stays near {target}s. Prefer clips that approach {clip_max}s.\n\
          - Do NOT write more plot/dialogue than can be spoken and shown inside that total runtime.\n\
          - Speech pacing (clear, language-aware): Chinese ~{SPEECH_CJK_CHARS_PER_SEC} chars/sec, \
 English ~{SPEECH_EN_WORDS_PER_SEC} words/sec; leave ~{SPEECH_LEAD_SECS}s before speech starts and \
 ~{SPEECH_TAIL_SECS}s after the last word — then land on a visible reaction/action beat (no empty hold).\n\
          [DIRECTOR_DENSITY — MUST FOLLOW]\n\
-         - Short-film information density: every clip (typically ~{pack}s, packing 2–3 related beats) must advance plot, \
+         - Short-film information density: every clip approaches {clip_max}s and may hold several cameras of one place, and it must advance plot, \
 relationship, OR a distinct visual surprise. Forbid repeated establishing shots and filler pauses.\n\
          - Write a mental beat sheet before prose: hook → escalation → turn → payoff. Each scene needs \
 at least one concrete conflict beat and one filmable visual motif that can recur.\n\
@@ -1459,9 +1432,11 @@ pub fn enrich_requirement_for_scene(
          - THIS SCENE budget ≈ {budget} seconds of finished video (NOT the whole film).\n\
          - Each shot clip is {clip_min}–{clip_max}s (selected video model).\n\
 {beat_pacing}\
-         - Follow the scene's beats; a budget this size often lands around {ideal} shots \
-(~{pack}s each). HARD UPPER BOUND: {max_shots} shots — merge if you would exceed it. Do not invent \
-filler shots to hit {ideal}; the budget caps runtime, it is not a quota to fill.\n\
+         - Follow the scene's meaning. A budget this size often lands around {ideal} clips, each approaching {clip_max}s. \
+HARD UPPER BOUND: one clip is {clip_max}s. Divide where the meaning changes, at a dialogue boundary. \
+Do not cut one beat into several short files, and do not invent filler to hit {ideal}. \
+The budget caps runtime. You write the join: the next row restates blocking and continues the same plot. \
+{max_shots} is only slack for a line that must split.\n\
          - Plan visual beats AND audio beats together: dialogue/SFX in audio_desc MUST finish inside the \
 same shot's duration — no unfinished lines, mid-sentence cuts, swallowed syllables (吞字), or \
 \"and then…\" requiring another clip.\n\
@@ -1473,24 +1448,17 @@ If a speech beat is longer, you MUST SPLIT into another shot (or shorten the lin
 the {clip_max}s model limit.\n\
          - After the last spoken word, land on a clear reaction/action beat within ~{SPEECH_TAIL_SECS}s — \
 do NOT pad with empty static holds or \"磨叽\" waiting.\n\
-         - Prefer purposeful coverage that raises information density. A silent action beat plays at natural speed (about {SILENT_ACTION_SECS}s per \
-action, at most {SILENT_ACTION_MAX_CLAUSES} actions per row): give it rich in-shot motion, never a \
-stretched one. For dialogue, pack the line and its reaction \
-into the SAME row when they are one conversation beat and the spoken payload still fits.\n\
-         - NARRATIVE FIRST: a new storyboard row is a new story unit (turn, time jump, new conflict), \
-never a new tripod position. Reverse / insert / angle change that still belongs to this beat stays \
-in this row as CUT TO (one row = one generated video). cam_idx is the opening setup of the row, not \
-a reason to emit another object.\n\
+         - Prefer purposeful coverage that raises information density. A silent action plays at natural speed (about {SILENT_ACTION_SECS}s) inside the camera it belongs to: write the motion, never a stretched hold. A reaction shorter than the clip minimum stays in that camera. A wide, a close-up, and a reverse of the same exchange stay in this file as 镜头1 / 镜头2 / 镜头3.\n\
+         - NARRATIVE FIRST: one row approaches the model maximum and may hold several cameras of one place. cam_idx is the camera the file opens on. The next row is a new video and restates blocking once.\n\
 {continuity}\
          {cross_scene}\
-         - If you would create more than {max_shots} shots, merge beats instead.\n\
+         - {max_shots} is a planning hint. Cameras of the same place already share a file; do not add a row to spend the hint.\n\
 {density}\
          [BGM_CONTINUITY — MUST FOLLOW]\n\
          - All shots in THIS SCENE share ONE continuous underscore: same motif, tempo feel, instrumentation, \
 and volume intention. Write the same BGM phrase into every audio_desc (or a clear \"same underscore as prior shot\"). \
 Do NOT invent a new music style per shot — abrupt BGM changes between cuts are forbidden.",
         scene_num = scene_idx + 1,
-        pack = bounds.pack_target_secs(),
         cross_scene = cross_scene,
         beat_pacing = beat_pacing,
         continuity = continuity,
@@ -1851,6 +1819,24 @@ pub(crate) fn beat_is_spoken(audio_desc: Option<&str>, motion_desc: &str) -> boo
     beat_content(audio_desc, motion_desc, "small").1
 }
 
+/// True when a storyboard is a pile of short rows the selected model could
+/// have carried as fewer clips near [`ClipBounds::max_secs`].
+///
+/// One row, or a board whose rows already fill that maximum, stays as written.
+pub fn shots_are_fragmented(bounds: ClipBounds, needs: &[u32]) -> bool {
+    if needs.len() < 2 {
+        return false;
+    }
+    let max = bounds.max_secs().max(1);
+    let short = needs.iter().filter(|need| need.saturating_add(4) < max).count();
+    if short * 2 < needs.len() {
+        return false;
+    }
+    let sum = needs.iter().copied().sum::<u32>();
+    let fit = sum.div_ceil(max).max(1);
+    (needs.len() as u32) > fit
+}
+
 /// Requested clip length for one beat: its content ([`estimate_shot_content_secs`])
 /// clamped into the selected model's window.
 ///
@@ -1896,8 +1882,8 @@ pub(crate) fn shot_need_visual<'a>(visual: &'a str, motion: &'a str) -> &'a str 
 
 /// Extra seconds for action clauses that cannot overlap the spoken line.
 ///
-/// One clause (a CU + 开口) shares the speech lead-in. Extra `。` / CUT TO
-/// beats (天雷 → 踏出 → 御剑 → 开口) play first, then the words.
+/// Blocking (where the table is, who faces where) is not an action and adds
+/// no time. One action shares the speech lead-in. Further actions play first.
 fn visual_preamble_secs(visual: &str) -> u32 {
     let clauses = visual_action_clause_count(visual);
     clauses
@@ -1906,6 +1892,8 @@ fn visual_preamble_secs(visual: &str) -> u32 {
         .min(VISUAL_PREAMBLE_MAX_SECS)
 }
 
+/// Action clauses only. A sentence that only places people or furniture counts
+/// as zero, so a long blocking paragraph cannot stretch the clip.
 fn visual_action_clause_count(visual: &str) -> u32 {
     let t = visual.trim();
     if t.is_empty() {
@@ -1920,12 +1908,71 @@ fn visual_action_clause_count(visual: &str) -> u32 {
         matches!(c, '。' | '！' | '？' | '!' | '?' | '；' | ';')
     }) {
         let part = part.trim();
-        if part.is_empty() || is_visual_speech_cue_only(part) {
+        if part.is_empty() || is_visual_speech_cue_only(part) || !text_has_state_change(part) {
             continue;
         }
         n += 1;
     }
-    n.max(1)
+    n
+}
+
+/// True when the text changes something the audience can see: a body, a prop,
+/// or a look. Placement words (画面左, 面向, 前景) are not a change.
+pub(crate) fn text_has_state_change(text: &str) -> bool {
+    const CJK: &[&str] = &[
+        "站起", "起身", "坐下", "走开", "走来", "走向", "走出", "跑", "冲", "扑", "推开", "拉开",
+        "砸", "拍", "踢", "抓", "握", "攥", "举", "扔", "摔", "递", "抽出", "掏",
+        "吹", "喝", "咬", "撕", "打开", "关上", "转身", "回头", "抬头", "低头", "跪下", "倒下",
+        "撞", "抱", "抽出", "点燃", "泼", "迈", "挡", "夺", "塞", "挥", "指着", "按住", "顶住",
+        "顶在", "看向", "盯", "喊", "哭", "笑", "点头", "摇头", "弯腰", "伸手", "松手", "松开",
+        "咬紧", "发抖", "颤抖", "瞪", "倒吸", "踏出", "劈下", "炸裂", "睁眼", "抬手", "飞溅",
+        "汇聚", "御剑",
+    ];
+    const EN: &[&str] = &[
+        "sit", "stand", "walk", "run", "turn", "grab", "push", "pull", "throw", "slam", "hit",
+        "open", "close", "reach", "drop", "look",
+    ];
+    if CJK.iter().any(|marker| cjk_marker_hits(text, marker)) {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    EN.iter().any(|verb| {
+        lower
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .any(|word| word.starts_with(verb) && word != "return")
+    })
+}
+
+fn cjk_marker_hits(text: &str, marker: &str) -> bool {
+    text.contains(marker)
+}
+
+/// When the action changes something and the exit snapshot copies the opening,
+/// append the last change so the next row has an exit state to restate.
+pub(crate) fn with_distinct_exit(ff: &str, lf: &str, motion: &str) -> String {
+    let ff_t = ff.trim();
+    let lf_t = lf.trim();
+    if ff_t != lf_t || !text_has_state_change(motion) {
+        return lf.to_string();
+    }
+    let clause = motion
+        .split(['。', '！', '？', '.', '!', '?'])
+        .map(str::trim)
+        .filter(|part| text_has_state_change(part))
+        .next_back()
+        .unwrap_or("");
+    if clause.is_empty() || lf_t.contains(clause) {
+        return lf.to_string();
+    }
+    let mut out = lf_t.to_string();
+    if !out.is_empty() && !out.ends_with(['。', '.', '！', '!', '？', '?']) {
+        out.push('。');
+    }
+    out.push_str(clause);
+    if !clause.ends_with(['。', '.', '！', '!', '？', '?']) {
+        out.push('。');
+    }
+    out
 }
 
 fn is_visual_speech_cue_only(part: &str) -> bool {
@@ -2390,6 +2437,31 @@ mod tests {
     }
 
     #[test]
+    fn blocking_sentences_do_not_buy_extra_seconds() {
+        let geography = "全景平视固定。前景是圆桌，红窗帘在画面左侧，吊灯在画面中央。地毯是牡丹纹。画面右侧一张椅子。";
+        assert_eq!(
+            visual_action_clause_count(geography),
+            0,
+            "where the furniture sits is not an action"
+        );
+        let spoken = estimate_shot_content_secs(Some("刘华强：「别动。」"), geography, "small");
+        let speech_only = estimate_shot_content_secs(Some("刘华强：「别动。」"), "", "small");
+        assert_eq!(spoken, speech_only);
+        let action = "他猛地站起身。他一把推开椅子。";
+        assert!(visual_action_clause_count(action) >= 2);
+    }
+
+    #[test]
+    fn copied_exit_gains_the_action_that_changed_it() {
+        let ff = "中景。<刘华强>在画面左侧，面向右，站着，香蕉在手里。";
+        let motion = "他把香蕉顶在对方后脑。";
+        let lf = with_distinct_exit(ff, ff, motion);
+        assert_ne!(lf, ff);
+        assert!(lf.contains("顶在"));
+        assert_eq!(with_distinct_exit(ff, "香蕉已经在后脑。", motion), "香蕉已经在后脑。");
+    }
+
+    #[test]
     fn clip_at_break_avoids_mid_clause_garbage() {
         let s = clip_at_break("鹅蛋脸，下颌线清晰，鼻梁高而挺直，嘴唇偏薄。身着战甲。", 18);
         assert!(!s.ends_with("小"), "{s}");
@@ -2438,7 +2510,9 @@ mod tests {
         );
         assert!(s.contains("ONE ROW = ONE VIDEO"), "{s}");
         assert!(s.contains("NARRATIVE FIRST"), "{s}");
-        assert!(s.contains("2–3") || s.contains("2-3"), "{s}");
+        assert!(s.contains("镜头1"), "{s}");
+        assert!(s.contains("next row"), "{s}");
+        assert!(s.contains("PREFER THE MODEL MAXIMUM"), "{s}");
         assert!(
             !s.contains("the packer folds"),
             "merge belongs in the storyboard row, not a later packer: {s}"
@@ -2483,6 +2557,17 @@ mod tests {
     }
 
     #[test]
+    fn fragmented_board_is_a_pile_of_short_rows() {
+        let wan = ClipBounds::new(2, 30);
+        let short = vec![8u32; 6];
+        assert!(shots_are_fragmented(wan, &short));
+        let filled = vec![28u32, 26];
+        assert!(!shots_are_fragmented(wan, &filled));
+        assert!(!shots_are_fragmented(wan, &[8]));
+        let seedance_pair = vec![8u32, 8];
+        assert!(!shots_are_fragmented(SEEDANCE, &seedance_pair));
+    }
+
     fn short_budget_allows_only_one_or_two_shots() {
         let (ideal, max) = suggested_shot_count(SEEDANCE, 8);
         assert!(ideal <= 2);
@@ -2501,7 +2586,7 @@ mod tests {
     #[test]
     fn forty_second_budget_prefers_fewer_longer_clips() {
         let (ideal, max) = suggested_shot_count(SEEDANCE, 40);
-        // 40 / 12s drama beat = 3 clips (~13s each), not 5×8s fragments.
+        // ceil(40 / 15) = 3 clips at the model maximum, not 5×8s fragments.
         assert_eq!(ideal, 3, "ideal={ideal}");
         assert!(max >= 3 && max <= 6, "max={max}");
         assert!(ideal * SEEDANCE.max_secs() >= 40);
@@ -2692,9 +2777,17 @@ mod tests {
             estimate_shot_content_secs(None, "她转身。她抬头。她走向窗边", "small"),
             3 * SILENT_ACTION_SECS
         );
-        // Clauses past the per-row cap do not add time.
+        // Blocking sentences are not actions. Extra action clauses stop at the cap.
         assert_eq!(
-            estimate_shot_content_secs(None, "a。b。c。d。e。f", "small"),
+            estimate_shot_content_secs(None, "画面左侧一张桌子。画面右侧一扇门。", "small"),
+            SILENT_ACTION_SECS
+        );
+        assert_eq!(
+            estimate_shot_content_secs(
+                None,
+                "她转身。她回头。她抬头。她点头。她挥手。她走向门口",
+                "small"
+            ),
             SILENT_ACTION_MAX_CLAUSES * SILENT_ACTION_SECS
         );
         // A large move still adds its travel time on top of the actions.
@@ -2836,6 +2929,7 @@ mod tests {
     fn enrich_film_without_budget_lets_model_decide() {
         let s = enrich_requirement_for_film(SEEDANCE, "雨夜重逢", None);
         assert!(s.contains("VIDEO_PACING"));
+        assert!(s.contains("PREFER THE MODEL MAXIMUM"));
         assert!(s.contains("beats") || s.contains("BEAT"));
         assert!(!s.contains("hard planning budget"));
         assert!(!s.contains("VIDEO_DURATION_CONSTRAINTS"));

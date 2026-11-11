@@ -15,12 +15,16 @@ silero-vad = ["dep:ort"]
 local-stt = ["dep:sherpa-onnx"]
 # Offline speaker diarization / voiceprint via sherpa-onnx (same native dep as local-stt).
 diarization = ["dep:sherpa-onnx"]
+# Wave 0 skeleton feature flag
+voice-skeleton = []
 
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 cpal = { workspace = true }
 dashmap = { workspace = true }
+dirs = { workspace = true }
 nomifun-api-types = { workspace = true }
 nomifun-auth = { workspace = true }
 nomifun-common = { workspace = true }
@@ -47,6 +51,7 @@ windows = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+nomifun-audio = { path = ".", features = ["voice-skeleton"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }

@@ -7,7 +7,7 @@
 import DOMPurify from 'dompurify';
 
 import { copyText } from '@/renderer/utils/ui/clipboard';
-import { Message } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';

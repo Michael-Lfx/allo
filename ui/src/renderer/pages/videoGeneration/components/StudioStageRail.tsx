@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Spin } from '@arco-design/web-react';
 import type { VimaxRunStatus } from '../types';
+import { RollingDuration } from '@renderer/components/base/Counter';
 import { formatElapsedClock } from '../progressEventElapsed';
 import {
   buildStudioStageTimeline,
@@ -109,7 +110,7 @@ const StudioStageRail: React.FC<StudioStageRailProps> = ({
   hasFinalVideo,
   variant = 'film',
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const runStatus = useRunStatusFull();
   const hidden = useDocumentHidden();
   const status: VimaxRunStatus | null = runStatus?.status ?? null;
@@ -184,7 +185,10 @@ const StudioStageRail: React.FC<StudioStageRailProps> = ({
                   className={styles.stageClock}
                   aria-live={segment.live ? 'polite' : undefined}
                 >
-                  {clock}
+                  <RollingDuration
+                    seconds={(segment.durationMs ?? 0) / 1000}
+                    locale={i18n.language}
+                  />
                 </span>
               ) : null}
             </div>

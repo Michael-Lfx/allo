@@ -312,6 +312,7 @@ export const shell = {
     file_path,
   })),
   showItemInFolder: httpPost<void, string>('/api/shell/show-item-in-folder', (file_path) => ({ file_path })),
+  copyFile: httpPost<void, { source_path: string; destination_path: string }>('/api/shell/copy-file'),
   openExternal: httpPost<void, string>('/api/shell/open-external', (url) => ({
     url,
   })),
@@ -1644,7 +1645,7 @@ export const fs = {
         skill_id: string;
         name: string;
         description: string;
-        source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy';
+        source: 'builtin' | 'user' | 'project' | 'extension' | 'mcp' | 'legacy' | 'capability';
         source_key?: string;
         market_id?: string;
         name_i18n?: Record<string, string>;
@@ -3934,6 +3935,8 @@ export type IWorkspaceFlatFile = {
 export interface IResponseMessage {
   type: string;
   data: unknown;
+  /** Persisted projections preserve the sender's side, including voice user rows. */
+  position?: 'left' | 'right' | 'center' | 'pop';
   status?: 'finish' | 'pending' | 'error' | 'work';
   /** Stable backend message UUIDv7. */
   msg_id: MessageId;
@@ -7879,6 +7882,12 @@ export interface IMediaModelOption {
   name: string;
   /** Optional catalog icon URL from Flowy (`icon` field). */
   icon?: string;
+  /** Minimum plan tier required to call this model. `0` or absent is unrestricted. */
+  min_tier_level?: number;
+  /** Published plan name at `min_tier_level`, when the catalog has one. */
+  required_plan_name?: string;
+  /** Plan code paired with `required_plan_name`. */
+  required_plan_code?: string;
 }
 
 export interface IMediaModelList {
@@ -7886,6 +7895,8 @@ export interface IMediaModelList {
   video_models: IMediaModelOption[];
   /** TTS models from Flowy `availableListClaw?category=8`. */
   audio_models?: IMediaModelOption[];
+  /** Caller's effective plan tier from the same catalog request. */
+  effective_model_tier?: number;
 }
 
 export interface IMediaWorkflowHistoryItem {
@@ -7946,6 +7957,8 @@ export interface ICloudWhoami {
   planCode?: string;
   /** Cloud nickname from `/user/me` when set. */
   nickname?: string;
+  /** Highest unexpired personal or team-seat plan tier. `0` means no paid tier. */
+  effectiveModelTier?: number;
 }
 
 export interface ICloudDeviceActivationStatus {
@@ -8128,6 +8141,59 @@ export type ICloudNetworkDiagnoseReport = {
   summary: string;
 };
 
+export interface IExpertText {
+  zh?: string;
+  en?: string;
+}
+
+export interface IExpertSummary {
+  id?: string;
+  slug: string;
+  expertType?: string;
+  name?: string;
+  nameEn?: string;
+  profession?: string;
+  professionEn?: string;
+  summary?: string;
+  summaryEn?: string;
+  tags?: IExpertText[];
+  version?: string;
+  downloadUrl?: string;
+  sha256?: string;
+  fileCount?: number;
+  downloadCount?: number;
+  zipSizeBytes?: number;
+  avatarPath?: string;
+  avatarUrl?: string;
+  hasDetail?: boolean;
+  sort?: number;
+}
+
+export interface IExpertListResponse {
+  list?: IExpertSummary[];
+  total?: number | null;
+  page?: number | null;
+  pageSize?: number | null;
+}
+
+export interface IExpertDetail extends IExpertSummary {
+  description?: string;
+  detailMarkdown?: string;
+  agentName?: string;
+  defaultInitPrompt?: IExpertText | null;
+  quickPrompts?: unknown[];
+  teamInfo?: unknown;
+  members?: unknown[];
+}
+
+export interface IExpertListQuery {
+  page?: number;
+  pageSize?: number;
+  keyword?: string;
+  expertType?: 'agent' | 'team';
+  categoryId?: string;
+}
+
 export const cloud = {
   getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
   updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
@@ -8160,6 +8226,30 @@ export const cloud = {
   ),
   /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
   syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
+  /** Full expert catalog from Flowy `GET /experts`. */
+  listExperts: httpGet<IExpertListResponse, IExpertListQuery>((p) => {
+    const params = new URLSearchParams();
+    if (p?.page != null) params.set('page', String(p.page));
+    if (p?.pageSize != null) params.set('pageSize', String(p.pageSize));
+    const keyword = p?.keyword?.trim();
+    if (keyword) params.set('keyword', keyword);
+    if (p?.expertType) params.set('expertType', p.expertType);
+    const categoryId = p?.categoryId?.trim();
+    if (categoryId) params.set('categoryId', categoryId);
+    const query = params.toString();
+    return query ? `/api/cloud/experts?${query}` : '/api/cloud/experts';
+  }),
+  getExpert: httpGet<IExpertDetail, { slug: string }>(
+    (p) => `/api/cloud/experts/${encodeURIComponent(p.slug)}`
+  ),
+  installedExperts: httpGet<{ slugs: string[] }, void>('/api/cloud/expert-installs'),
+  installExpert: httpPost<
+    { presetId: string; name: string; alreadyInstalled: boolean; installedSkills?: string[]; warnings?: string[] },
+    { slug: string; id?: string }
+  >(
+    (p) => `/api/cloud/experts/${encodeURIComponent(p.slug)}/install`,
+    (p) => ({ id: p.id ?? '' })
+  ),
   listPlans: httpGet<ICloudBillingPlan[], { currency: ICloudBillingCurrency }>(
     (p) => `/api/cloud/plans?currency=${encodeURIComponent(p.currency)}`
   ),
@@ -8555,4 +8645,80 @@ export const meeting = {
     (p) => `/api/meetings/voiceprints/${p.voiceprint_id}`
   ),
   onEvent: wsEmitter<MeetingEvent>('meeting:event'),
+};
+
+// ---------------------------------------------------------------------------
+// Presentation capability — host-managed ppt-master Skill + private Python.
+// Wire contract: `nomifun-api-types/src/presentation.rs`. Instance scoped: the
+// install lives in the data dir and is shared by every conversation.
+// ---------------------------------------------------------------------------
+
+export type PresentationCapabilityStatus = 'not_installed' | 'installing' | 'ready' | 'failed';
+export type PresentationInstallStage =
+  | 'fetching_skill'
+  | 'preparing_python'
+  | 'installing_dependencies'
+  | 'self_test'
+  | 'committing';
+
+export interface IPresentationInstallProgress {
+  received_bytes: number;
+  /** Known size of the current download; `0` while fetching the Skill over git. */
+  total_bytes: number;
+  received_objects: number;
+  total_objects: number;
+}
+
+export interface IPresentationInstallFailure {
+  stage?: PresentationInstallStage | null;
+  message: string;
+  at_ms: number;
+}
+
+export interface IPresentationCapability {
+  capability_id: string;
+  version: string;
+  source_commit: string;
+  license: string;
+  sources: string[];
+  estimated_download_bytes: number;
+  status: PresentationCapabilityStatus;
+  stage?: PresentationInstallStage;
+  progress?: IPresentationInstallProgress;
+  skill_dir?: string;
+  python?: string;
+  installed_from?: string;
+  installed_at_ms?: number;
+  failure?: IPresentationInstallFailure;
+}
+
+export interface IPresentationInstallResponse {
+  accepted: boolean;
+  capability: IPresentationCapability;
+}
+
+export interface IPresentationCancelResponse {
+  cancelled: boolean;
+  capability: IPresentationCapability;
+}
+
+export interface IPresentationUninstallResponse {
+  capability: IPresentationCapability;
+}
+
+/** Catalog id of the managed ppt-master Skill (listed only while ready). */
+export const PRESENTATION_SKILL_ID = 'capability:presentation:ppt-master';
+
+export const presentation = {
+  status: httpGet<IPresentationCapability, void>('/api/presentation/capability/status'),
+  /** Starts a background install; `force` repairs a ready install. */
+  install: httpPost<IPresentationInstallResponse, { force?: boolean }>(
+    '/api/presentation/capability/install',
+    (p) => ({ force: Boolean(p?.force) })
+  ),
+  cancel: httpPost<IPresentationCancelResponse, void>('/api/presentation/capability/cancel', () => ({})),
+  /** 409 `PRESENTATION_CAPABILITY_BUSY` while an install runs. */
+  uninstall: httpDelete<IPresentationUninstallResponse, void>('/api/presentation/capability'),
+  /** Same payload as `status`, pushed on every change. */
+  onStatus: wsEmitter<IPresentationCapability>('presentationCapability.status'),
 };

@@ -7,6 +7,7 @@ type AppLoaderProps = {
 };
 
 const AppLoader: React.FC<AppLoaderProps> = ({ fill = false }) => {
+  if (typeof window !== 'undefined' && window.location.hash.startsWith('#/companion')) return null;
   return (
     <div
       style={{

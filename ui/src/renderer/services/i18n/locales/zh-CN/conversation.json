@@ -1,7 +1,7 @@
 {
   "welcome": {
-    "title": "告诉 Flowy 你要的结果",
-    "description": "描述成果即可。Flowy 会自行组织执行过程，只在需要时询问你。",
+    "title": "告诉 {{brandName}} 你要的结果",
+    "description": "描述成果即可。{{brandName}} 会自行组织执行过程，只在需要时询问你。",
     "placeholder": "描述你想得到的成果…",
     "linkFolder": "打开文件夹",
     "newConversation": "新会话",
@@ -13,11 +13,11 @@
     "clearWorkspace": "移除项目",
     "openFolder": "打开文件夹",
     "none": "无",
-    "quickActionsTitle": "Flowy 能做什么？",
+    "quickActionsTitle": "{{brandName}} 能做什么？",
     "quickActionFeedback": "反馈问题",
     "quickActionCheckUpdate": "检查更新",
     "quickActionStar": "喜欢我们？点个星吧",
-    "skillsMarket": "Flowy Skills Market",
+    "skillsMarket": "{{brandName}} Skills Market",
     "skillsMarketDesc": "按需搜索并调用社区 Skills，一次配置，所有Agent通用。",
     "skillsMarketDetails": "详情 >>"
   },
@@ -123,7 +123,7 @@
     "docsDescription": "查看安装、项目、会话、设置和常见工作流说明。",
     "docsAction": "打开文档",
     "videoTitle": "宣传视频",
-    "videoDescription": "用一个短视频了解 Flowy 如何组织你的工作台。",
+    "videoDescription": "用一个短视频了解 {{brandName}} 如何组织你的工作台。",
     "videoAction": "观看视频",
     "feedbackTitle": "反馈与社区",
     "feedbackDescription": "遇到问题、想提建议或参与共建，可以通过官网联系页反馈。",
@@ -136,6 +136,7 @@
   "noAgentsAvailable": "没有可用的 Agent",
   "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
   "createFailed": "创建会话失败",
+  "loadFailed": "加载会话失败，请重试",
   "skeleton": {
     "opening": "正在打开对话"
   },
@@ -472,7 +473,8 @@
   },
   "chat": {
     "noModelSelected": "当前会话未选择模型，无法发送消息",
-    "modelUnavailableHint": "当前模型不可用，请重试模型恢复或重新选择模型。",
+    "modelUnavailableHint": "当前模型不可用，请重新选择模型。",
+    "modelPlanRequiredHint": "升级到 {{plan}} 后可使用当前模型。",
     "openModelSettings": "前往模型设置",
     "defaultModelUnavailable": "原默认模型不可用，请重新选择模型",
     "modelHealedToDefault": "已回退到默认模型 {{model}}",
@@ -667,7 +669,7 @@
   "sessionMetrics": {
     "tab": "指标",
     "title": "会话指标",
-    "subtitle": "基于 Flowy 引擎已上报的使用数据",
+    "subtitle": "基于 {{brandName}} 引擎已上报的使用数据",
     "notice": "因数据采集手段问题，数据仅供参考，不可作为定论",
     "emptyTitle": "暂无指标",
     "emptyDesc": "模型每次请求结束后会刷新耗时、token、上下文和缓存数据。",
@@ -746,7 +748,6 @@
     "loaded": "已加载技能",
     "selected": "已选择的技能",
     "remove": "移除 {{name}}",
-    "modeBar": "本会话技能",
     "autoLoaded": "自动",
     "pin": "钉住",
     "unpin": "取消钉住",
@@ -757,7 +758,8 @@
       "project": "项目",
       "extension": "扩展",
       "mcp": "MCP",
-      "legacy": "兼容"
+      "legacy": "兼容",
+      "capability": "{{brandName}} 托管"
     }
   },
   "slashLauncher": {
@@ -843,7 +845,7 @@
     "stepCompanion": "1. 选择伙伴",
     "stepSkills": "2. 技能（默认全选 active，去勾即排除）",
     "stepMemories": "3. 挑选记忆（每回合实时注入，只读）",
-    "noCompanions": "还没有伙伴——先去 Flowy 页创建一个",
+    "noCompanions": "还没有伙伴——先去 {{brandName}} 页创建一个",
     "noSkills": "该伙伴暂无可装载技能",
     "noMemories": "没有匹配的记忆",
     "searchMemories": "搜索记忆（全文检索）…",
@@ -1166,6 +1168,8 @@
       "unknown": "自动"
     },
     "recommended": "推荐",
+    "member": "会员",
+    "planRequired": "升级到 {{plan}} 后可用",
     "tagline": {
       "auto-intelligence": "强力推理 · 复杂任务",
       "auto-balance": "日常首选 · 均衡省心",

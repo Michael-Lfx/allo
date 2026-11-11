@@ -1,28 +1,15 @@
 /**
- * SkillCard — A grid item for the Skills Hub. Mirrors the PresetCard visual
- * language (rounded-12px bordered surface on bg-2, quiet hover, fixed 2-line
- * description clamp, resolved tag-chip row capped at MAX_VISIBLE_TAGS + "+N", and
- * a hover-revealed action footer) but is tuned for skills:
- *   - a skill avatar image when the list API provides one, else a Lightning
- *     glyph for auto-injected skills or a deterministic letter avatar
- *   - a source badge: Built-in / Custom / Extension / Auto-injected
- *   - NO enable switch (skills aren't toggled here)
- *   - hover footer: Edit Tags (every source) + Delete (custom only)
- * The whole card is clickable → onOpenDetails. Tag editing stays an explicit
- * footer action so inspecting a skill never mutates its organization.
- *
- * Theme variables only (the avatar hex palette is the documented exception);
- * `<div onClick>` for clickables (no <button>, to dodge the WebView2 black box).
+ * Installed-skill tile. Uses the same ExpertTile as the skill market so
+ * "My skills" and the catalog share one card.
  */
-import type { PresetTag } from '@/common/types/agent/presetTypes';
-import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
-import SkillAvatar from './SkillAvatar';
-import { resolveSkillDisplay } from './skillDisplay';
-import { normalizeTestId } from './skillPresentation';
-import { Tag } from '@arco-design/web-react';
-import { Delete, SettingOne } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { getBaseUrl } from '@/common/adapter/httpBridge';
+import type { PresetTag } from '@/common/types/agent/presetTypes';
+import ExpertTile from '@/renderer/pages/settings/PresetSettings/ExpertTile';
+import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
+import { resolveSkillDisplay } from './skillDisplay';
+import { normalizeTestId, resolveSkillAvatarSrc } from './skillPresentation';
 
 type SkillCardProps = {
   skill: SkillInfo;
@@ -33,59 +20,8 @@ type SkillCardProps = {
   isAutoInjected: boolean;
   onOpenDetails: (skill: SkillInfo) => void;
   onEditTags: (skill: SkillInfo) => void;
-  onDelete: (skill: SkillInfo) => void;
   highlighted?: boolean;
   cardRef?: (el: HTMLDivElement | null) => void;
-};
-
-const MAX_VISIBLE_TAGS = 3;
-
-/** Source badge — one quiet pill per source, color-coded by semantic. */
-const SourceBadge: React.FC<{ skill: SkillInfo; isAutoInjected: boolean }> = ({ skill, isAutoInjected }) => {
-  const { t } = useTranslation();
-
-  if (isAutoInjected) {
-    return (
-      <Tag
-        size='small'
-        bordered={false}
-        className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-[rgba(var(--success-6),0.1)] !text-[rgb(var(--success-6))]'
-      >
-        {t('settings.skillsHub.sourceAuto', { defaultValue: 'Auto' })}
-      </Tag>
-    );
-  }
-  if (skill.source === 'custom') {
-    return (
-      <Tag
-        size='small'
-        bordered={false}
-        className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-[rgba(var(--orange-6),0.1)] !text-[rgb(var(--orange-6))]'
-      >
-        {t('settings.skillsHub.custom', { defaultValue: 'Custom' })}
-      </Tag>
-    );
-  }
-  if (skill.source === 'extension') {
-    return (
-      <Tag
-        size='small'
-        bordered={false}
-        className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-fill-2 !text-t-secondary'
-      >
-        {t('settings.skillsHub.sourceExtension', { defaultValue: 'Extension' })}
-      </Tag>
-    );
-  }
-  return (
-    <Tag
-      size='small'
-      bordered={false}
-      className='!flex-shrink-0 !text-10px !leading-14px !px-6px !py-0 !rounded-6px !bg-primary-1 !text-primary-6'
-    >
-      {t('settings.skillsHub.builtin', { defaultValue: 'Built-in' })}
-    </Tag>
-  );
 };
 
 const SkillCard: React.FC<SkillCardProps> = ({
@@ -95,141 +31,41 @@ const SkillCard: React.FC<SkillCardProps> = ({
   isAutoInjected,
   onOpenDetails,
   onEditTags,
-  onDelete,
   highlighted = false,
   cardRef,
 }) => {
   const { t } = useTranslation();
   const testId = normalizeTestId(skill.name);
   const display = resolveSkillDisplay(skill, localeKey);
-
-  // Resolve tag keys → labels via the shared vocabulary; drop unknown keys.
-  const resolvedTags = [...(skill.audience_tags ?? []), ...(skill.scenario_tags ?? [])]
-    .map((key) => tagByKey.get(key))
-    .filter((tag): tag is PresetTag => Boolean(tag));
-  const visibleTags = resolvedTags.slice(0, MAX_VISIBLE_TAGS);
-  const overflowCount = resolvedTags.length - visibleTags.length;
-
-  const canDelete = skill.source === 'custom';
+  const sourceLabel = isAutoInjected
+    ? t('settings.skillsHub.sourceAuto', { defaultValue: 'Auto' })
+    : skill.source === 'custom'
+      ? t('settings.skillsHub.custom', { defaultValue: 'Custom' })
+      : skill.source === 'extension'
+        ? t('settings.skillsHub.sourceExtension', { defaultValue: 'Extension' })
+        : t('settings.skillsHub.builtin', { defaultValue: 'Built-in' });
+  const tagLabels = [
+    sourceLabel,
+    ...[...(skill.audience_tags ?? []), ...(skill.scenario_tags ?? [])]
+      .map((key) => tagByKey.get(key))
+      .filter((tag): tag is PresetTag => Boolean(tag))
+      .map((tag) => tag.label_i18n?.[localeKey] || tag.label),
+  ];
 
   return (
-    <div
-      ref={cardRef}
-      data-testid={`skill-card-${testId}`}
-      onClick={() => onOpenDetails(skill)}
-      role='button'
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpenDetails(skill);
-        }
-      }}
-      className={[
-        'group relative flex flex-col rounded-12px border border-solid p-16px pb-42px cursor-pointer outline-none',
-        'transition-[background-color,border-color] duration-180',
-        highlighted
-          ? 'border-[rgb(var(--primary-5))] bg-[color-mix(in_srgb,rgb(var(--primary-6))_8%,var(--color-bg-2))]'
-          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] hover:border-[var(--color-border-3)]',
-      ].join(' ')}
-    >
-      {/* Header: avatar + name/badge */}
-      <div className='grid grid-cols-[36px_minmax(0,1fr)] items-start gap-10px'>
-        <SkillAvatar skill={skill} isAutoInjected={isAutoInjected} size={36} />
-        <div className='min-w-0 flex-1 pt-2px'>
-          <div className='min-w-0'>
-            <span
-              className='block overflow-hidden text-14px font-medium leading-20px text-[var(--color-text-1)]'
-              title={display.name}
-              style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
-            >
-              {display.name}
-            </span>
-            <div className='mt-4px'><SourceBadge skill={skill} isAutoInjected={isAutoInjected} /></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Description — fixed 2-line clamp so cards stay even-height */}
-      <div
-        className='mt-10px text-12px leading-18px text-[var(--color-text-3)]'
-        title={display.description || undefined}
-        style={{
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-        }}
-      >
-        {display.description || t('settings.skillsHub.noDescription', { defaultValue: 'No description provided.' })}
-      </div>
-
-      {/* Tag chips — static pills resolved from the shared vocabulary */}
-      {visibleTags.length > 0 && (
-        <div className='mt-12px flex flex-wrap items-center gap-6px'>
-          {visibleTags.map((tag) => (
-            <span
-              key={tag.key}
-              className={[
-                'inline-flex max-w-[156px] items-center truncate rounded-[12px] px-8px py-1px text-11px leading-16px',
-                'bg-[var(--color-fill-2)] text-[var(--color-text-2)] border border-solid border-[var(--color-border-2)]',
-            ].join(' ')}
-              title={tag.label_i18n?.[localeKey] || tag.label}
-            >
-              {tag.label_i18n?.[localeKey] || tag.label}
-            </span>
-          ))}
-          {overflowCount > 0 && (
-            <span className='inline-flex items-center rounded-[12px] px-7px py-1px text-11px leading-16px text-[var(--color-text-3)]'>
-              +{overflowCount}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Hover footer — quiet action links, revealed on card hover */}
-      <div
-        className='absolute bottom-14px right-14px flex items-center justify-end gap-14px opacity-0 group-hover:opacity-100 transition-opacity duration-180'
-        onClick={(e) => e.stopPropagation()}
-      >
-        {canDelete && (
-          <span
-            role='button'
-            tabIndex={0}
-            data-testid={`btn-delete-${testId}`}
-            onClick={() => onDelete(skill)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                e.stopPropagation();
-                onDelete(skill);
-              }
-            }}
-            className='inline-flex items-center gap-4px text-12px text-[var(--color-text-3)] cursor-pointer hover:text-[rgb(var(--danger-6))] transition-colors'
-          >
-            <Delete theme='outline' size={13} strokeWidth={3} />
-            {t('common.delete', { defaultValue: 'Delete' })}
-          </span>
-        )}
-        <span
-          role='button'
-          tabIndex={0}
-          data-testid={`btn-edit-tags-${testId}`}
-          onClick={() => onEditTags(skill)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              e.stopPropagation();
-              onEditTags(skill);
-            }
-          }}
-          className='inline-flex items-center gap-4px text-12px leading-none text-[var(--color-text-3)] cursor-pointer hover:text-[var(--color-text-2)] transition-colors'
-        >
-          <SettingOne theme='outline' size={13} strokeWidth={3} fill='currentColor' className='relative top-px shrink-0' />
-          <span className='leading-none'>{t('settings.skillsHub.editTags', { defaultValue: 'Edit Tags' })}</span>
-        </span>
-      </div>
-    </div>
+    <ExpertTile
+      rootRef={cardRef}
+      testId={`skill-card-${testId}`}
+      name={display.name}
+      avatarUrl={resolveSkillAvatarSrc(skill.avatar, getBaseUrl())}
+      summary={display.description || t('settings.skillsHub.noDescription', { defaultValue: 'No description provided.' })}
+      tags={tagLabels}
+      actionLabel={t('settings.skillsHub.editTags', { defaultValue: 'Edit Tags' })}
+      actionTestId={`btn-edit-tags-${testId}`}
+      onOpen={() => onOpenDetails(skill)}
+      onAction={() => onEditTags(skill)}
+      className={highlighted ? 'ring-2 ring-[rgba(var(--primary-6),0.45)]' : undefined}
+    />
   );
 };
 

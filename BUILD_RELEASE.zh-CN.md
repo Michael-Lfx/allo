@@ -150,6 +150,98 @@ bun run upload:modelscope -- --channel windows
 
 ---
 
+## UniBuddy 独立渠道（tag 自动发布；本地手动兜底）
+
+UniBuddy 复用 `.github/workflows/release-modelscope.yml` 的同一套三平台 job，不单独
+维护重复 workflow。推送 `unibuddy-vX.Y.Z` tag 后，release profile 会选择 UniBuddy
+UI/Tauri 配置和独立 channel root；tag 中的版本必须与该 commit 的根 `Cargo.toml`
+一致：
+
+```bash
+git tag unibuddy-v1.7.1
+git push origin unibuddy-v1.7.1
+```
+
+UniBuddy 与 Flowy 共用版本号和签名密钥，但清单
+必须发布到 `allo/unibuddy_channels/{platform}/latest.json`；客户端不会读取 GitHub
+`releases/latest`。安装包仍放在 `allo/{platform}/v{version}/`，依靠 `UniBuddy_*`
+文件名与 Flowy 产物隔离。
+
+以下步骤保留为本地调试、故障恢复和无法使用 Actions 时的手动兜底流程。
+
+先构建一次 UniBuddy SPA；随后在对应操作系统执行构建（只选当前平台的一条）。
+`tauri.ci-skip-ui.conf.json` 只跳过重复的 Vite 构建，仍会执行 `prune-build`、
+打包 `rg` 和准备 voice companion，不能省略。
+
+```bash
+bun run --filter=./ui build --mode unibuddy
+```
+
+```powershell
+# Windows
+bun run build:win x64 arm64 `
+  --config apps/desktop/tauri.unibuddy.conf.json `
+  --config apps/desktop/tauri.updater.conf.json `
+  --config apps/desktop/tauri.channel.unibuddy.windows.conf.json `
+  --config apps/desktop/tauri.ci-skip-ui.conf.json
+```
+
+```bash
+# macOS
+bun run build:mac universal \
+  --config apps/desktop/tauri.unibuddy.conf.json \
+  --config apps/desktop/tauri.updater.conf.json \
+  --config apps/desktop/tauri.channel.unibuddy.macos.conf.json \
+  --config apps/desktop/tauri.ci-skip-ui.conf.json
+
+# Linux（按构建机能力选择 x64 / arm64）
+bun run build:linux x64 \
+  --config apps/desktop/tauri.unibuddy.conf.json \
+  --config apps/desktop/tauri.updater.conf.json \
+  --config apps/desktop/tauri.channel.unibuddy.linux.conf.json \
+  --config apps/desktop/tauri.ci-skip-ui.conf.json
+```
+
+生成清单时必须同时指定产品和独立 channel root；脚本会拒绝把已知产品写入错误
+目录。发布说明建议通过 `--notes-file` 显式提供，未提供时 UniBuddy 使用
+`UniBuddy v{version}`，不会读取 Flowy 的 changelog 条目。
+
+```bash
+bun run make:latest --host modelscope \
+  --channel <windows|macos|linux> \
+  --product UniBuddy \
+  --channel-root unibuddy_channels \
+  --from-dir dist/desktop \
+  --collect
+```
+
+两个 ModelScope 源都必须按“先产物、后指针”的顺序发布。下面命令中的 `<channel>`
+替换为当前平台：
+
+```bash
+# ModelScope CN
+bun run upload:modelscope -- --channel <channel> --channel-root unibuddy_channels \
+  --api-host modelscope.cn --repo flowy2025/flowyaipc \
+  --token-env MODELSCOPE_CN_TOKEN --artifacts-only
+bun run upload:modelscope -- --channel <channel> --channel-root unibuddy_channels \
+  --api-host modelscope.cn --repo flowy2025/flowyaipc \
+  --token-env MODELSCOPE_CN_TOKEN --manifest-only
+
+# ModelScope AI
+bun run upload:modelscope -- --channel <channel> --channel-root unibuddy_channels \
+  --api-host modelscope.ai --repo flowy2025/flowy \
+  --token-env MODELSCOPE_AI_TOKEN --artifacts-only
+bun run upload:modelscope -- --channel <channel> --channel-root unibuddy_channels \
+  --api-host modelscope.ai --repo flowy2025/flowy \
+  --token-env MODELSCOPE_AI_TOKEN --manifest-only
+```
+
+最后分别运行 `bun run verify:modelscope`，传入相同的 `--channel-root`、`--api-host`、
+`--repo`、`--version` 和该渠道的平台键。校验器会拒绝清单指向另一个 ModelScope
+域名、仓库或版本目录，避免 AI 校验误读 CN 产物。
+
+---
+
 ## Windows 一键示例
 
 ```powershell
@@ -164,7 +256,8 @@ bun run upload:modelscope -- --channel windows
 
 ## CI：一个 tag 打三端
 
-打 **一个** `vX.Y.Z` tag 即可并行构建并上传 Windows / macOS / Linux 渠道。
+打 **一个**产品 tag 即可并行构建并上传 Windows / macOS / Linux 渠道：Flowy 使用
+`vX.Y.Z`，UniBuddy 使用 `unibuddy-vX.Y.Z`。
 不要再使用 `vX.Y.Z-windows` / `-macos` / `-linux` 这类分平台 tag。
 
 ```text
@@ -202,6 +295,7 @@ bump 1.0.6 → commit → tag v1.0.6 → push tag
 | `--repo` | `flowy2025/flowyaipc` | ModelScope 模型仓库 |
 | `--prefix` | `allo` | 仓库内路径前缀 |
 | `--channel` | 从清单推断 | `windows` \| `macos` \| `linux` |
+| `--channel-root` | `channels` | 清单目录；UniBuddy 使用 `unibuddy_channels` |
 | `--dist-dir` | （必填） | 含 `latest.json` 与签名产物的目录 |
 | `--merge-remote` | — | 仅合并同渠道、同版本的缺失平台键 |
 | `--dry-run` | — | 预检，不上传 |
@@ -214,12 +308,13 @@ bump 1.0.6 → commit → tag v1.0.6 → push tag
 
 | tag | 触发 | 发布平台键 |
 |------|------|-----------|
-| `v1.0.6` | Windows + macOS + Linux 三 job 并行 | `windows-x86_64`、`windows-aarch64`、`darwin-aarch64`、`darwin-x86_64`、`linux-x86_64` |
+| `v1.0.6` | Windows + macOS + Linux 三 job 并行 | `windows-x86_64`、`windows-aarch64`、`darwin-aarch64`、`darwin-x86_64`、`linux-x86_64`、`linux-aarch64` |
+| `unibuddy-v1.0.6` | 复用相同三平台 job；发布 `unibuddy_channels`，跳过 GitHub Release | 同上 |
 
-tag 必须是 `vX.Y.Z`（无平台后缀），且版本与**该 tag 指向 commit** 的
-`Cargo.toml` `[workspace.package].version` 一致。
+tag 必须是 `vX.Y.Z` 或 `unibuddy-vX.Y.Z`（均无平台后缀），且版本与**该 tag
+指向 commit** 的 `Cargo.toml` `[workspace.package].version` 一致。
 
-也可在 Actions 里 `workflow_dispatch`，填同一个 `vX.Y.Z` tag 重跑。
+也可在 Actions 里 `workflow_dispatch`，填对应产品的完整 tag 重跑。
 
 ```bash
 bun run bump 1.0.6
@@ -244,6 +339,10 @@ git push origin v1.0.6
   再叠加 `tauri.ci-skip-ui.conf.json` 让 beforeBuildCommand 不再重跑 Vite。
   Intel 切片不链接 Silero/ort，robot VAD 回退 energy。
 - Linux：当前 CI 只打 `linux-x86_64`。
+
+语音伴侣与 Windows VC++ 运行库也必须由 skip-UI 构建准备并纳入安装包，
+不能因已下载模型就认为安装包包含 daemon。分享/上传前的包门禁命令及验证边界见
+[Windows 语音伴侣打包](docs/contributing/building-and-packaging.zh.md#windows-语音伴侣打包)。
 
 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、
 `MODELSCOPE_TOKEN`（推荐放在 `modelscope-alpha` environment）。

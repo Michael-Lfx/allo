@@ -1150,6 +1150,7 @@ async fn tc_cat_010_skill_payload_carries_the_market_index_tags() {
                 description: Some(LocalizedText { zh: Some("索引行简介".into()), en: None }),
                 prompts: vec![LocalizedText { zh: Some("帮我做一件事".into()), en: None }],
                 tags: tags.clone(),
+                ..DisplayFields::default()
             })),
         )
         .await

@@ -9,8 +9,15 @@ import { useTranslation } from 'react-i18next';
 import { Select, Spin } from '@arco-design/web-react';
 import type { IMediaModelOption } from '@/common/adapter/ipcBridge';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import { isPlanLocked, requiredPlanBadgeLabel } from '@/renderer/utils/model/planGate';
 import { useMediaModels } from '@/renderer/hooks/agent/useMediaModels';
 import { useGeneratorModels } from '@renderer/pages/workshop/generation/useGeneratorModels';
+import {
+  VideoModelOptionLabel,
+  videoModelSelectClassName,
+  videoModelSelectFilter,
+} from '@/renderer/components/model/VideoModelOptionLabel';
 import {
   filterAllowedImageModels,
   pickDefaultLlmModel,
@@ -50,8 +57,15 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
   popupContainer,
 }) => {
   const { t } = useTranslation();
+  const profileTier = useEffectiveModelTier();
   const llmModels = useGeneratorModels('text');
-  const { imageModels, videoModels, isLoading: mediaLoading } = useMediaModels();
+  const { imageModels, videoModels, effectiveModelTier: mediaTier, isLoading: mediaLoading } = useMediaModels();
+  const effectiveTier = Math.max(profileTier, mediaTier ?? 0);
+  const memberLabel = t('conversation.modelPicker.member', { defaultValue: '会员' });
+  const planBadge = (minTierLevel: number | undefined, name: string | undefined) => {
+    const label = requiredPlanBadgeLabel(minTierLevel, name, memberLabel);
+    return label ? <span className='chat-model-plan-badge shrink-0'>{label}</span> : null;
+  };
   const resolvePopupContainer =
     typeof popupContainer === 'function'
       ? popupContainer
@@ -67,59 +81,102 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
 
   const llmOptions = useMemo(() => {
     const seen = new Set<string>();
-    const opts: { label: string; value: string }[] = [];
+    const opts: { label: React.ReactNode; value: string; disabled?: boolean; locked?: boolean }[] = [];
     for (const m of llmModels.flat) {
       if (seen.has(m.model)) continue;
       seen.add(m.model);
+      const locked = isPlanLocked(m.minTierLevel ?? 0, effectiveTier);
       opts.push({
         value: m.model,
-        label: `${formatCloudModelLabel(m.model)} · ${m.providerName}`,
+        disabled: locked,
+        locked,
+        label: (
+          <span className='flex min-w-0 items-center gap-6px'>
+            <span className='min-w-0 truncate'>{`${formatCloudModelLabel(m.model)} · ${m.providerName}`}</span>
+            {planBadge(m.minTierLevel, m.requiredPlanName)}
+          </span>
+        ),
       });
     }
-    return opts;
-  }, [llmModels.flat]);
+    return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
+  }, [effectiveTier, llmModels.flat, memberLabel]);
 
   const imageOptions = useMemo(() => {
-    return filterAllowedImageModels(imageModels).map((m) => ({
-      value: m.id,
-      label: mediaModelLabel(m),
-    }));
-  }, [imageModels]);
+    const opts = filterAllowedImageModels(imageModels).map((m) => {
+      const locked = isPlanLocked(m.min_tier_level ?? 0, effectiveTier);
+      return {
+        value: m.id,
+        disabled: locked,
+        locked,
+        label: (
+          <span className='flex min-w-0 items-center gap-6px'>
+            <span className='min-w-0 truncate'>{mediaModelLabel(m)}</span>
+            {planBadge(m.min_tier_level, m.required_plan_name)}
+          </span>
+        ),
+      };
+    });
+    return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
+  }, [effectiveTier, imageModels, memberLabel]);
 
   const videoOptions = useMemo(() => {
-    return videoModels.map((m) => ({
-      value: m.id,
-      label: mediaModelLabel(m),
-    }));
-  }, [videoModels]);
+    const opts = videoModels.map((m) => {
+      const locked = isPlanLocked(m.min_tier_level ?? 0, effectiveTier);
+      return {
+        value: m.id,
+        label: mediaModelLabel(m),
+        locked,
+        planBadge: planBadge(m.min_tier_level, m.required_plan_name),
+      };
+    });
+    return [...opts.filter((option) => !option.locked), ...opts.filter((option) => option.locked)];
+  }, [effectiveTier, memberLabel, videoModels]);
+
+  const videoSelectOptions = useMemo(
+    () =>
+      videoOptions.map((option) => ({
+        value: option.value,
+        disabled: option.locked,
+        extra: option.label,
+        label: (
+          <span className='flex min-w-0 items-center gap-6px'>
+            <VideoModelOptionLabel name={option.label} model={option.value} />
+            {option.planBadge}
+          </span>
+        ),
+      })),
+    [videoOptions]
+  );
 
   // Prefer first available model when session has none yet.
   useEffect(() => {
     const patch: Partial<VimaxModelSelection> = {};
+    const openLlm = llmOptions.filter((option) => !option.locked);
+    const openImage = imageOptions.filter((option) => !option.locked);
+    const openVideo = videoModels.filter((model) => !isPlanLocked(model.min_tier_level ?? 0, effectiveTier));
     if (mode !== 'action' && mode !== 'video' && mode !== 'image') {
-      if (!value.llm_model && llmOptions[0]) {
-        patch.llm_model =
-          pickDefaultLlmModel(llmOptions.map((o) => o.value)) ?? llmOptions[0].value;
+      if (!value.llm_model && openLlm[0]) {
+        patch.llm_model = pickDefaultLlmModel(openLlm.map((o) => o.value)) ?? openLlm[0].value;
       }
     }
     if (mode !== 'action' && mode !== 'video') {
-      if (!value.image_model && imageOptions[0]) patch.image_model = imageOptions[0].value;
+      if (!value.image_model && openImage[0]) patch.image_model = openImage[0].value;
       if (
         value.image_model &&
         imageOptions.length > 0 &&
         !imageOptions.some((o) => o.value === value.image_model)
       ) {
-        patch.image_model = imageOptions[0].value;
+        if (openImage[0]) patch.image_model = openImage[0].value;
       }
     }
     if (!value.video_model) {
-      const preferred = pickDefaultVideoModel(videoModels);
+      const preferred = pickDefaultVideoModel(openVideo);
       if (preferred) patch.video_model = preferred;
     } else if (
       videoOptions.length > 0 &&
       !videoOptions.some((o) => o.value === value.video_model)
     ) {
-      const preferred = pickDefaultVideoModel(videoModels);
+      const preferred = pickDefaultVideoModel(openVideo);
       if (preferred) patch.video_model = preferred;
     }
     if (Object.keys(patch).length > 0) {
@@ -127,7 +184,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
     }
     // Only seed once catalogs load / when empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [llmOptions, imageOptions, videoModels, videoOptions, mode]);
+  }, [effectiveTier, llmOptions, imageOptions, videoModels, videoOptions, mode]);
 
   const showLlm = mode === 'all' || mode === 'agent' || mode === 'llm';
   const showImage = mode === 'all' || mode === 'agent' || mode === 'image';
@@ -214,7 +271,9 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
             <Spin size={16} />
           ) : (
             <Select
+              className={videoModelSelectClassName}
               showSearch
+              filterOption={videoModelSelectFilter}
               allowClear
               disabled={disabled}
               placeholder={t('videoGeneration.workspace.models.videoPlaceholder', {
@@ -224,7 +283,7 @@ const ModelSelectors: React.FC<ModelSelectorsProps> = ({
               onChange={(v) =>
                 onChange({ ...value, video_model: (v as string) || '' })
               }
-              options={videoOptions}
+              options={videoSelectOptions}
               notFoundContent={t('videoGeneration.workspace.models.empty', {
                 defaultValue: '暂无可用模型',
               })}

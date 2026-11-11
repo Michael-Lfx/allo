@@ -50,5 +50,8 @@ export const getDeskSpec = (id?: string | null): CharacterDeskSpec => getCharact
 export const CUSTOM_CHARACTER_ID = 'custom';
 
 /** Desk spec resolution that understands DIY custom figures. */
-export const getDeskSpecFor = (id?: string | null, meta?: CustomFigureMeta | null): CharacterDeskSpec =>
-  id === CUSTOM_CHARACTER_ID && meta ? customDeskSpec(meta) : getDeskSpec(id);
+export const getDeskSpecFor = (id?: string | null, meta?: CustomFigureMeta | null): CharacterDeskSpec => {
+  const desk = id === CUSTOM_CHARACTER_ID && meta ? customDeskSpec(meta) : getDeskSpec(id);
+  // Reserve a stable status lane above the figure instead of painting over it.
+  return { ...desk, windowHeight: desk.windowHeight + 64 };
+};

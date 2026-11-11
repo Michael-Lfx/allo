@@ -176,6 +176,12 @@ export interface StoreOperationOutcome {
  * exact surface the store layer is allowed to lean on.
  */
 export interface StoreHost {
+  /**
+   * Root URL of the App Server (e.g. `http://127.0.0.1:54211`). Used only to
+   * absolutize a relative `avatar_url`; an absolute market `icon_url` needs no
+   * base. Optional so a structural fake host remains valid.
+   */
+  readonly baseUrl?: string;
   listStore(): Promise<StoreList>;
   listStoreCategories(): Promise<StoreCategories>;
   installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
@@ -242,6 +248,22 @@ export class StoreClient {
   async list(): Promise<StoreItem[]> {
     const store = await this.host.listStore();
     return store.items;
+  }
+
+  /**
+   * Resolve an item's display avatar to an absolute URL.
+   *
+   * Since `fp-20` an `index` market declares an absolute `icon_url`; older
+   * markets expose the relative host asset route. The helper returns whichever
+   * applies, and `null` when the item has no avatar or a relative URL is given
+   * without a known {@link StoreHost.baseUrl}.
+   */
+  avatarUrl(item: Pick<StoreItem, "icon_url" | "avatar_url">): string | null {
+    const declared = item.icon_url ?? item.avatar_url;
+    if (!declared) return null;
+    if (/^https?:\/\//i.test(declared)) return declared;
+    if (!this.host.baseUrl) return null;
+    return `${this.host.baseUrl.replace(/\/+$/, "")}/${declared.replace(/^\/+/, "")}`;
   }
 
   /**
@@ -351,6 +373,38 @@ export class StoreClient {
       if (ownsConnector) return item;
     }
     return null;
+  }
+
+  /**
+   * The connector catalogue entries an item depends on (doc `52`).
+   *
+   * `StoreItem.required_connectors` names connector **entry** names, not MCP
+   * server names — the two differ in practice (the entry
+   * `fenbi-baokao-decision` installs a server called `fenbi_mcp`), and install
+   * state only exists per entry. So this is an exact `entry_name` match over
+   * items of kind `connector`, across every loaded market; the skill market and
+   * the connector market are separate, which is why the lookup is not scoped to
+   * the item's own marketplace.
+   *
+   * Order follows the declaration. A name the catalogue does not resolve (the
+   * connector market is not synced yet) is skipped instead of throwing: the
+   * dependency is a display/route fact, and a partial answer beats an error.
+   *
+   * Pass `items` to reuse one {@link list} result — a caller rendering the whole
+   * skill catalogue must not issue one request per item.
+   */
+  async dependencies(item: StoreItem, items?: StoreItem[]): Promise<StoreItem[]> {
+    const declared = item.required_connectors ?? [];
+    if (declared.length === 0) return [];
+    const catalogue = items ?? (await this.list());
+    const byEntryName = new Map(
+      catalogue
+        .filter((candidate) => candidate.kind === "connector")
+        .map((candidate) => [candidate.entry_name, candidate] as const),
+    );
+    return declared
+      .map((name) => byEntryName.get(name))
+      .filter((candidate): candidate is StoreItem => candidate !== undefined);
   }
 
   /**

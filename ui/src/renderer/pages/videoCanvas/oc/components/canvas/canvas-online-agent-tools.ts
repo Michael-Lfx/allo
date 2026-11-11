@@ -22,7 +22,7 @@ export const ONLINE_AGENT_MAX_STEPS = CANVAS_AGENT_MAX_STEPS;
 export const ONLINE_AGENT_PROMPT = CANVAS_AGENT_CONSTITUTION;
 export const ONLINE_READ_TOOLS = CANVAS_AGENT_READ_TOOLS;
 
-export type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
+export type OnlineToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string; data?: unknown };
 
 const JSON_RECORD_SCHEMA = { type: "object", additionalProperties: true };
 const POSITION_SCHEMA = { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"], additionalProperties: false };

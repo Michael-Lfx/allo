@@ -17,6 +17,7 @@ Flowy 是一套基于 Rust + Tauri + React 的本地优先（local-first）自�
 | --- | --- |
 | `apps/web/` | 独立 `nomifun-web` 服务器（包含 API + SPA）。 |
 | `apps/desktop/` | 内嵌后端的 Tauri 桌面端外壳。 |
+| `apps/voice-companion/` | 独立的语音伴侣守护进程（负责音频采集、唤醒词、VAD、ASR 离线识别与 TTS 回放）。 |
 | `crates/agent/` | 独立的 AI Agent 引擎（包含 24 个 crate：23 个 `nomi-*` + `flowy-web`；包含用于会话日志的 `nomi-agent-trace`）。高度内聚自洽；对后端基础工具 crate 仅有少量明确文档记录的依赖。 |
 | `crates/backend/` | 45 个 `nomifun-*` crate：负责 HTTP/WS 服务、数据存储、鉴权与各项业务特性。 |
 | `crates/shared/` | 5 个跨层通用工具 crate（`flowy-ssh`、`nomi-process-runtime`、`nomi-redact`、`nomifun-models-dev`、`nomifun-net`）。新增 shared crate 须极为审慎。 |

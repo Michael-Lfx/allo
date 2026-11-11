@@ -17,10 +17,17 @@ import {
 } from './developerMode';
 
 describe('developerMode', () => {
-  test('cloud-login is the only developer-gated tab', () => {
-    expect(DEVELOPER_GATED_TAB_IDS).toEqual(['cloud-login']);
+  test('cloud-login and presentation are the developer-gated tabs', () => {
+    expect(DEVELOPER_GATED_TAB_IDS).toEqual(['cloud-login', 'presentation']);
     expect(isDeveloperGatedTabId('cloud-login')).toBe(true);
+    expect(isDeveloperGatedTabId('presentation')).toBe(true);
     expect(isDeveloperGatedTabId('system')).toBe(false);
+  });
+
+  test('filterDeveloperGatedTabs hides presentation until developer mode is enabled', () => {
+    const tabs = ['voice', 'presentation', 'about'] as const;
+    expect(filterDeveloperGatedTabs(tabs, false)).toEqual(['voice', 'about']);
+    expect(filterDeveloperGatedTabs(tabs, true)).toEqual(['voice', 'presentation', 'about']);
   });
 
   test('filterDeveloperGatedTabs hides cloud-login until developer mode is enabled', () => {

@@ -1,7 +1,7 @@
 
-
 import classNames from 'classnames';
 import React from 'react';
+import GooeyNav from './GooeyNav';
 
 export interface SegmentedTabItem {
   key: string;
@@ -28,63 +28,97 @@ interface SegmentedTabsProps {
    * cards) so the bar fills the row rather than leaving empty space on the right.
    */
   block?: boolean;
+  /**
+   * Canvas cards keep the flat segmented bar. Every other surface uses the
+   * gooey pill.
+   */
+  variant?: 'gooey' | 'classic';
 }
 
 /**
- * SegmentedTabs — a polished pill/segmented control for primary-level tab
- * switching. The active segment lifts onto a card surface with a soft shadow;
- * inactive segments are quiet text that brightens on hover. Themed entirely
- * through CSS variables so it tracks light/dark and the preset palettes.
- *
- * Content-width by default (overflows horizontally with a hidden scrollbar as
- * more sections are added); pass `block` to fill the container width evenly
- * without introducing an inner horizontal scroller.
+ * SegmentedTabs — primary tab switching. The default variant is a gooey pill.
+ * `classic` is the flat bar used inside canvas cards, where the droplet canvas
+ * would be clipped by the node.
  */
-const SegmentedTabs: React.FC<SegmentedTabsProps> = ({ items, activeKey, onChange, className, size = 'md', block = false }) => {
-  const heightClass = size === 'sm' ? 'h-30px px-12px text-13px' : 'h-36px px-16px text-14px';
+const SegmentedTabs: React.FC<SegmentedTabsProps> = ({
+  items,
+  activeKey,
+  onChange,
+  className,
+  size = 'md',
+  block = false,
+  variant = 'gooey',
+}) => {
+  if (variant === 'classic') {
+    const heightClass = size === 'sm' ? 'h-30px px-12px text-13px' : 'h-36px px-16px text-14px';
+    return (
+      <div
+        role='tablist'
+        className={classNames(
+          'items-center gap-2px p-4px rounded-12px bg-[var(--color-fill-2)]',
+          block ? 'flex w-full box-border overflow-visible' : 'inline-flex max-w-full box-border overflow-x-auto scrollbar-hide',
+          className
+        )}
+      >
+        {items.map((item) => {
+          const active = item.key === activeKey;
+          return (
+            <button
+              key={item.key}
+              type='button'
+              role='tab'
+              aria-selected={active}
+              onClick={() => onChange(item.key)}
+              className={classNames(
+                'group relative inline-flex box-border items-center justify-center gap-6px rounded-9px font-[500] leading-none cursor-pointer transition-all duration-200 select-none border-none outline-none bg-transparent',
+                block ? 'flex-1 min-w-0' : 'shrink-0',
+                heightClass,
+                active
+                  ? '!bg-[var(--color-bg-2)] !text-[var(--color-text-1)] border border-solid border-[var(--color-border-3)] shadow-[0_1px_2px_rgba(0,0,0,0.08),0_2px_8px_rgba(0,0,0,0.12)]'
+                  : 'text-t-secondary hover:text-t-primary'
+              )}
+            >
+              {item.icon && (
+                <span
+                  className={classNames(
+                    'flex items-center justify-center transition-colors line-height-0',
+                    active ? 'text-[var(--color-text-1)]' : 'text-t-tertiary group-hover:text-t-secondary'
+                  )}
+                >
+                  {item.icon}
+                </span>
+              )}
+              <span className='whitespace-nowrap'>{item.label}</span>
+              {item.dot && <span aria-hidden className='shrink-0 w-6px h-6px rd-full bg-primary-6' />}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  const activeIndex = items.findIndex((item) => item.key === activeKey);
   return (
-    <div
-      role='tablist'
-      className={classNames(
-        'items-center gap-2px p-4px rounded-12px bg-[var(--color-fill-2)]',
-        block ? 'flex w-full box-border overflow-visible' : 'inline-flex max-w-full box-border overflow-x-auto scrollbar-hide',
-        className
-      )}
-    >
-      {items.map((item) => {
-        const active = item.key === activeKey;
-        return (
-          <button
-            key={item.key}
-            type='button'
-            role='tab'
-            aria-selected={active}
-            onClick={() => onChange(item.key)}
-            className={classNames(
-              'group relative inline-flex box-border items-center justify-center gap-6px rounded-9px font-[500] leading-none cursor-pointer transition-all duration-200 select-none border-none outline-none bg-transparent',
-              block ? 'flex-1 min-w-0' : 'shrink-0',
-              heightClass,
-              active
-                ? '!bg-[var(--color-bg-2)] !text-[var(--color-text-1)] border border-solid border-[var(--color-border-3)] shadow-[0_1px_2px_rgba(0,0,0,0.08),0_2px_8px_rgba(0,0,0,0.12)]'
-                : 'text-t-secondary hover:text-t-primary'
-            )}
-          >
-            {item.icon && (
-              <span
-                className={classNames(
-                  'flex items-center justify-center transition-colors line-height-0',
-                  active ? 'text-[var(--color-text-1)]' : 'text-t-tertiary group-hover:text-t-secondary'
-                )}
-              >
-                {item.icon}
-              </span>
-            )}
-            <span className='whitespace-nowrap'>{item.label}</span>
-            {item.dot && <span aria-hidden className='shrink-0 w-6px h-6px rd-full bg-primary-6' />}
-          </button>
-        );
-      })}
-    </div>
+    <GooeyNav
+      className={className}
+      selection='tab'
+      size={size}
+      block={block}
+      activeIndex={activeIndex}
+      items={items.map((item) => ({
+        icon: item.icon,
+        label: (
+          <>
+            {item.label}
+            {item.dot ? <span aria-hidden className='shrink-0 w-6px h-6px rd-full bg-primary-6' /> : null}
+          </>
+        ),
+      }))}
+      onChange={(index) => {
+        const next = items[index];
+        if (next) onChange(next.key);
+      }}
+    />
   );
 };
 

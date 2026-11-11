@@ -151,6 +151,11 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
+      - name: Install Linux tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools 7zip
+
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
@@ -168,6 +173,9 @@ jobs:
           bun run check:market
           bun run check:fingerprint
           bun run check:release-sync
+          bun run check:release-product-profiles
+          bun run check:release-voice-preparation
+          bun test scripts/verify-voice-release-package.test.mjs
           bun run help --check
 
       # Full `ui/` typecheck is still red on main (see README). Auth login is the
@@ -250,3 +258,18 @@ jobs:
       # await, so that test is un-skipped and the crate is gated in full.
       - name: cargo test -p nomifun-conversation --lib
         run: cargo test -p nomifun-conversation --lib --locked
+
+      # Core voice crates and streaming test suites are deterministic,
+      # run in memory without physical audio hardware, and gate the core acoustic
+      # barge-in, dismiss classifier, and audio assets against regression.
+      - name: cargo test -p nomifun-api-types --lib
+        run: cargo test -p nomifun-api-types --lib --locked
+
+      - name: cargo test -p nomifun-audio --lib
+        run: cargo test -p nomifun-audio --lib --locked
+
+      - name: cargo test -p voice-companion --lib
+        run: cargo test -p voice-companion --lib --locked
+
+      - name: cargo test -p voice-companion --features voice-skeleton --test voice_streaming
+        run: cargo test -p voice-companion --features voice-skeleton --test voice_streaming --locked

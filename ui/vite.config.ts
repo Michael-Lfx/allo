@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'path';
 import { viteOptimizeDepDiskNames } from '../scripts/run-dev-vite-deps.mjs';
@@ -80,6 +80,15 @@ function uiBuildManifestPlugin(): Plugin {
   };
 }
 
+function brandHtmlPlugin(brandName: string): Plugin {
+  return {
+    name: 'nomifun-brand-html',
+    transformIndexHtml(html) {
+      return html.replaceAll('__BRAND_NAME__', brandName);
+    },
+  };
+}
+
 // Ported from the original electron.vite.config.ts: rewrites named imports from
 // '@icon-park/react' into HOC-wrapped components (replaces the old webpack loader).
 function iconParkPlugin() {
@@ -131,6 +140,8 @@ const codeMirrorRuntimeVersions = Object.fromEntries(
 );
 
 export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, 'VITE_');
+  const brandName = env.VITE_BRAND_NAME?.trim() || 'Flowy';
   // WebUI dev mode (`vite --mode webdev`, driven by the UI `dev:web` script and
   // the root `dev:webui` one-click). The SPA is served by Vite (with HMR) but the
   // auth backend + API + WebSocket live in the separate `nomifun-web` host. The
@@ -148,7 +159,12 @@ export default defineConfig(({ mode }) => {
   const wsTarget = `ws://127.0.0.1:${apiPort}`;
   // Same loopback host on both sides — keep the original Host header so the
   // backend's host-only session cookie maps cleanly back onto 127.0.0.1:5173.
-  const httpProxy = { target: apiTarget, changeOrigin: false };
+  const handleProxyError = (proxy: any) => {
+    proxy.on('error', (_err: any) => {
+      // Gracefully swallow proxy errors when backend is not listening or restarting
+    });
+  };
+  const httpProxy = { target: apiTarget, changeOrigin: false, configure: handleProxyError };
   const proxy = webdev
     ? {
         '/api': httpProxy,
@@ -156,7 +172,7 @@ export default defineConfig(({ mode }) => {
         '/logout': httpProxy,
         '/qr-login': httpProxy,
         '/health': httpProxy,
-        '/ws': { target: wsTarget, ws: true, changeOrigin: false },
+        '/ws': { target: wsTarget, ws: true, changeOrigin: false, configure: handleProxyError },
       }
     : undefined;
 
@@ -212,6 +228,7 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       UnoCSS({ ...unoConfig }),
       uiBuildManifestPlugin(),
+      brandHtmlPlugin(brandName),
     ],
     define: {
       __NOMI_BUILD_ID__: JSON.stringify(buildId),

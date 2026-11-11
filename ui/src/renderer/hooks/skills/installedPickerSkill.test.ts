@@ -1,0 +1,47 @@
+import { describe, expect, test } from 'bun:test';
+import { installedPickerSkills, isInstalledPickerSkill, type SkillCatalogEntry } from './useSkillCatalog';
+
+const skill = (
+  source: SkillCatalogEntry['source'],
+  sourceKey?: string,
+): Pick<SkillCatalogEntry, 'source' | 'sourceKey'> => ({ source, sourceKey });
+
+describe('isInstalledPickerSkill', () => {
+  test('keeps the Flowy library, including shipped builtins', () => {
+    expect(isInstalledPickerSkill(skill('user'))).toBe(true);
+    expect(isInstalledPickerSkill(skill('builtin'))).toBe(true);
+    expect(isInstalledPickerSkill(skill('extension', 'pack'))).toBe(true);
+    expect(isInstalledPickerSkill(skill('mcp', 'server'))).toBe(true);
+  });
+
+  test('keeps Flowy-managed capability skills (listed by the backend only when installed)', () => {
+    expect(isInstalledPickerSkill(skill('capability', 'presentation'))).toBe(true);
+    const catalog = [
+      { name: 'ppt-master', source: 'capability' as const, sourceKey: 'presentation' },
+      { name: 'guizang-ppt-skill', source: 'builtin' as const },
+    ];
+    expect(installedPickerSkills(catalog).map((entry) => `${entry.source}:${entry.name}`)).toEqual([
+      'capability:ppt-master',
+      'builtin:guizang-ppt-skill',
+    ]);
+  });
+
+  test('hides skills that were only discovered on disk', () => {
+    expect(isInstalledPickerSkill(skill('legacy'))).toBe(false);
+    expect(isInstalledPickerSkill(skill('project', 'workspace'))).toBe(false);
+    expect(isInstalledPickerSkill(skill('user', 'agents'))).toBe(false);
+  });
+
+  test('lets an installed copy replace the shipped skill of the same name', () => {
+    const catalog = [
+      { name: 'deep-research-pro', source: 'builtin' as const },
+      { name: 'guizang-ppt-skill', source: 'builtin' as const },
+      { name: 'deep-research-pro', source: 'user' as const },
+    ];
+
+    expect(installedPickerSkills(catalog).map((entry) => `${entry.source}:${entry.name}`)).toEqual([
+      'builtin:guizang-ppt-skill',
+      'user:deep-research-pro',
+    ]);
+  });
+});

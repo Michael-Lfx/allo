@@ -1,6 +1,7 @@
 
 
 import type { IConversationMcpStatusKind, TChatConversation, TokenUsageData } from '@/common/config/storage';
+import Counter, { RollingDuration, tickingCounterProps } from '@renderer/components/base/Counter';
 import { useSkillCatalog } from '@/renderer/hooks/skills/useSkillCatalog';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { addEventListener } from '@/renderer/utils/emitter';
@@ -21,7 +22,6 @@ import {
   calculateContextUsageSegments,
   formatPercent,
   formatTokenCount,
-  formatTurnDuration,
 } from './turnMetrics';
 
 const fallback = '—';
@@ -46,11 +46,6 @@ const hasUsageData = (usage: TokenUsageData | null): usage is TokenUsageData =>
         (usage.cache_creation_tokens ?? 0) > 0)
   );
 
-const formatSessionSpan = (createdAt?: number, modifiedAt?: number): string => {
-  if (!createdAt || !modifiedAt || modifiedAt <= createdAt) return fallback;
-  return formatTurnDuration(modifiedAt - createdAt);
-};
-
 const getContextTone = (percent: number | null): { labelKey: string; color: string } => {
   if (percent == null) {
     return { labelKey: 'conversation.sessionMetrics.status.unknown', color: 'var(--color-text-3)' };
@@ -64,9 +59,30 @@ const getContextTone = (percent: number | null): { labelKey: string; color: stri
   return { labelKey: 'conversation.sessionMetrics.status.healthy', color: 'rgb(var(--success-6))' };
 };
 
+const MetricDuration: React.FC<{ ms: number }> = ({ ms }) => {
+  const { i18n } = useTranslation();
+  if (ms < 1000) {
+    return <Counter {...tickingCounterProps} value={ms} suffix='ms' locale={i18n.language} fontWeight={600} intro />;
+  }
+  if (ms < 60_000) {
+    return (
+      <Counter
+        {...tickingCounterProps}
+        value={ms / 1000}
+        decimals={1}
+        suffix='s'
+        locale={i18n.language}
+        fontWeight={600}
+        intro
+      />
+    );
+  }
+  return <RollingDuration seconds={Math.floor(ms / 1000)} locale={i18n.language} fontWeight={600} intro />;
+};
+
 const MetricTile: React.FC<{
   label: string;
-  value: string;
+  value: React.ReactNode;
   caption?: string;
   icon?: React.ReactNode;
 }> = ({ label, value, caption, icon }) => {
@@ -259,10 +275,12 @@ const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = (
   const cachedContextColor = 'rgb(var(--primary-6))';
   const freshContextColor = contextTone.color;
   const remainingContextColor = 'var(--color-fill-3)';
-  const sessionSpan = useMemo(
-    () => formatSessionSpan(conversation.created_at, conversation.modified_at),
-    [conversation.created_at, conversation.modified_at]
-  );
+  const sessionSpanMs = useMemo(() => {
+    const createdAt = conversation.created_at;
+    const modifiedAt = conversation.modified_at;
+    if (!createdAt || !modifiedAt || modifiedAt <= createdAt) return null;
+    return modifiedAt - createdAt;
+  }, [conversation.created_at, conversation.modified_at]);
   const mounted = useMemo(() => getMountedCapabilities(conversation), [conversation]);
   const usageData = hasUsageData(usage) ? usage : null;
 
@@ -301,13 +319,13 @@ const NomiSessionMetricsPanel: React.FC<{ conversation: TChatConversation }> = (
         <div className='grid grid-cols-2 gap-8px'>
           <MetricTile
             label={t('conversation.sessionMetrics.elapsed')}
-            value={typeof usageData.elapsed_ms === 'number' ? formatTurnDuration(usageData.elapsed_ms) : fallback}
+            value={typeof usageData.elapsed_ms === 'number' ? <MetricDuration ms={usageData.elapsed_ms} /> : fallback}
             caption={t('conversation.sessionMetrics.elapsedCaption')}
             icon={<Time theme='outline' size='14' />}
           />
           <MetricTile
             label={t('conversation.sessionMetrics.sessionSpan')}
-            value={sessionSpan}
+            value={sessionSpanMs != null ? <MetricDuration ms={sessionSpanMs} /> : fallback}
             caption={t('conversation.sessionMetrics.sessionSpanCaption')}
             icon={<Dashboard theme='outline' size='14' />}
           />

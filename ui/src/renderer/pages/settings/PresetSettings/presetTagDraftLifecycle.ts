@@ -6,14 +6,12 @@ type PendingTagPickerRef = {
 
 /** Coordinates unfinished tag drafts at the preset drawer boundary. */
 export const createPresetTagDraftLifecycle = (
-  audiencePickerRef: PendingTagPickerRef,
-  scenarioPickerRef: PendingTagPickerRef,
+  tagPickerRef: PendingTagPickerRef,
   setEditVisible: (visible: boolean) => void,
   handleSave: () => Promise<string | null>
 ) => {
   const resetPendingTagDrafts = () => {
-    audiencePickerRef.current?.resetPendingTag();
-    scenarioPickerRef.current?.resetPendingTag();
+    tagPickerRef.current?.resetPendingTag();
   };
 
   return {

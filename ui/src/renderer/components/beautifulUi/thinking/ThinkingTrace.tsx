@@ -1,3 +1,4 @@
+import Counter, { tickingCounterProps } from '@renderer/components/base/Counter';
 import { ChevronRight, Code2, Search, Sparkle } from 'lucide-react';
 import React, { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -96,7 +97,7 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
   bodyRef,
   showElapsed,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isSettled = isThinkingTraceSettled(status);
   const isProcess = layout === 'process';
   const liveWindow = isLiveProcessThinkingWindow(layout, status);
@@ -175,8 +176,13 @@ const ThinkingTrace: React.FC<ThinkingTraceProps> = ({
         </span>
         {!isSettled && shouldShowElapsed ? (
           <span className={styles.elapsed}>
-            {Number.isInteger(elapsedSeconds) ? String(elapsedSeconds) : elapsedSeconds.toFixed(1)}
-            {sUnit}
+            <Counter
+              value={elapsedSeconds}
+              decimals={Number.isInteger(elapsedSeconds) ? undefined : 1}
+              suffix={sUnit}
+              locale={i18n.language}
+              {...tickingCounterProps}
+            />
           </span>
         ) : null}
         <span className={`${styles.arrow} ${resolvedExpanded ? styles.arrowExpanded : ''}`} aria-hidden='true'>

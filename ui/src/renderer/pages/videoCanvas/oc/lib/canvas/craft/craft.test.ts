@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 
 import { CRAFT_RECIPES } from "./recipes";
@@ -29,7 +30,7 @@ describe("craft catalog", () => {
     });
 
     test("dedicated still files exist for every catalog cover id", () => {
-        const dir = join(import.meta.dir, "../../../../../../../../public/craft");
+        const dir = fileURLToPath(new URL("../../../../../../../../public/craft", import.meta.url));
         const ids = [
             ...CRAFT_RECIPES.map((item) => item.coverLookId),
             ...BUILTIN_PLAYBOOKS.map((item) => item.coverLookId),
@@ -37,7 +38,7 @@ describe("craft catalog", () => {
             "cinematic",
         ];
         for (const id of ids) {
-            expect(existsSync(join(dir, `${id}.png`)), id).toBe(true);
+            if (!existsSync(join(dir, `${id}.png`))) throw new Error(`missing craft cover: ${id}`);
         }
     });
 

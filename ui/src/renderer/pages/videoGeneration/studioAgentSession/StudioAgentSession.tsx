@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Spin, Tag } from '@arco-design/web-react';
 import { Down, Robot, Up } from '@icon-park/react';
 import { classifyFailure, type FailureKind } from '../classifyFailure';
-import { formatElapsedClock } from '../progressEventElapsed';
+import Counter, { RollingDuration, TimedPhrase, tickingCounterProps, timerSlot } from '@renderer/components/base/Counter';
 import { stageLabel } from '../stageI18n';
 import { statusLabel, statusTagColor } from '../components/SessionCard';
 import {
@@ -259,7 +259,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   cameoEpoch = 0,
   sourceDocumentName = null,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const runStatus = useRunStatusFull();
   const hidden = useDocumentHidden();
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -410,7 +410,7 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
     (item: (typeof messages)[number]): {
       title: string;
       body?: string;
-      meta?: string;
+      meta?: React.ReactNode;
       detail?: string;
       issueKind?: FailureKind;
     } => {
@@ -494,28 +494,50 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         };
       }
       const label = stageLabel(item.stage, t);
-      const parts: string[] = [];
+      const parts: React.ReactNode[] = [];
       if (item.live) {
         parts.push(t('videoGeneration.agentSession.working', { defaultValue: '正在推进…' }));
       }
       if (item.stage === 'video_poll' && typeof item.pollWaitSecs === 'number') {
         parts.push(
-          t('videoGeneration.workspace.progress.pollWait', {
-            secs: item.pollWaitSecs,
-            defaultValue: '已等待 {{secs}} 秒',
-          })
+          <TimedPhrase
+            text={t('videoGeneration.workspace.progress.pollWait', {
+              secs: timerSlot.seconds,
+              defaultValue: '已等待 {{secs}} 秒',
+            })}
+            slots={{
+              [timerSlot.seconds]: (
+                <Counter value={item.pollWaitSecs} locale={i18n.language} {...tickingCounterProps} />
+              ),
+            }}
+          />
         );
       }
       if (item.live && item.at) {
         const start = Date.parse(item.at);
         if (!Number.isNaN(start)) {
-          parts.push(formatElapsedClock((nowMs - start) / 1000));
+          parts.push(<RollingDuration seconds={(nowMs - start) / 1000} locale={i18n.language} />);
         }
       }
-      return { title: label, body: '', meta: parts.join(' · ') };
+      return {
+        title: label,
+        body: '',
+        meta:
+          parts.length > 0 ? (
+            <>
+              {parts.map((part, index) => (
+                <React.Fragment key={index}>
+                  {index > 0 ? ' · ' : null}
+                  {part}
+                </React.Fragment>
+              ))}
+            </>
+          ) : undefined,
+      };
     },
     [
       failure,
+      i18n.language,
       nowMs,
       pendingReviewNumber,
       relatedModel,

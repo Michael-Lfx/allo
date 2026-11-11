@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { Theme } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import SiderThemePanel from './SiderThemePanel';
@@ -40,7 +40,7 @@ const SiderThemeControl: React.FC<SiderThemeControlProps> = ({ isMobile, collaps
     >
       <Tooltip {...siderTooltipProps} content={t('settings.theme')} position='right'>
         <div className={footerButtonClass(collapsed, isMobile, popupVisible)} aria-label={t('settings.theme')}>
-          <Theme theme='outline' size='18' fill='currentColor' className='block leading-none' style={{ lineHeight: 0 }} />
+          <FlowyIcon name='swatches' size={18} className='block leading-none' />
         </div>
       </Tooltip>
     </Popover>

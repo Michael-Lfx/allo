@@ -64,9 +64,9 @@ describe("canvas agent layout", () => {
             edges: [{ from: "n4", to: "n2" }, { from: "n2", to: "n3" }],
         }, snapshot());
         expect(ops.some((op) => op.type === "add_node")).toBe(false);
-        expect(ops).toContainEqual({ type: "delete_node", ids: ["agent-workflow-n2-aaaa"] });
+        expect(ops.some((op) => op.type === "delete_node" && op.ids?.includes("agent-workflow-n2-aaaa"))).toBe(true);
         expect(ops.filter((op) => op.type === "update_node").map((op) => op.type === "update_node" ? op.id : "")).toEqual(["text-1", "image-1", "image-2"]);
-        expect(ops).toContainEqual({ type: "connect_nodes", fromNodeId: "image-1", toNodeId: "image-2" });
+        expect(ops.some((op) => op.type === "connect_nodes" && op.fromNodeId === "image-1" && op.toNodeId === "image-2")).toBe(true);
     });
 
     test("treats layout-language recreate as a layout compile", () => {

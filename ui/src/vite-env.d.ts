@@ -13,8 +13,16 @@ interface ImportMetaEnv {
   readonly VITE_POSTHOG_KEY?: string;
   readonly VITE_SENTRY_DSN?: string;
   readonly VITE_TLDRAW_LICENSE_KEY?: string;
+  readonly VITE_BRAND_NAME?: string;
+  readonly VITE_BRAND_LOGO_URL?: string;
+  readonly VITE_BRAND_COPYRIGHT_NAME?: string;
+  readonly VITE_BRAND_WAKE_WORD?: string;
 }
 
 interface ImportMeta {
   readonly env: ImportMetaEnv;
+}
+
+declare module '*run-dev-vite-deps.mjs' {
+  export function viteOptimizeDepDiskNames(file: string): string[];
 }

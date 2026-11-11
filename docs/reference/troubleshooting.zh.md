@@ -4,6 +4,36 @@
 问题不在本表里，源码就是最快的参考——本页描述的每一个行为都对应
 `crates/backend/` 下的某个具体文件。
 
+## Windows 语音已启用但进程未连接
+
+`voice_companion_missing` 表示宿主没有找到伴侣可执行文件；重新下载或校验声学模型
+不能补回安装包缺少的程序。最终用户应安装修正后的应用包，不应要求用户安装 Cargo
+或自行编译。维护者请按[语音打包检查](../contributing/building-and-packaging.zh.md#windows-语音伴侣打包)
+核验实际安装包。
+
+若程序存在但连接前退出，检查启动日志、app-local VC++ 运行库及目标架构，
+不要把下游“服务不可达”直接归因于模型损坏。安装实测须关联具体制品 SHA-256；
+开发环境能启动不能代替发布安装验证。进程已连接却不能唤醒时，分别检查 KWS、
+断句结束、最终 ASR 匹配和宿主就绪拒绝。包门禁不证明这些运行阶段已通过，
+扩大转写别名也不等于已经提高声学召回率。
+
+## 源码检出提示缺少语音服务组件
+
+源码检出里的这条提示属于**构建缺口**，不是安装包问题：`bun run dev` 只构建
+Flowy 本体，而 `voice-companion` 是 dev-dependency（仅 library），默认不会产出
+守护进程。用下面命令构建或检查：
+
+```bash
+bun run ensure:voice-companion          # 缺失或过期时自动构建
+bun run ensure:voice-companion --check  # 只检查，未就绪时 exit 1
+```
+
+`bun run dev` 会自动执行该步骤；可用 `NOMIFUN_SKIP_VOICE_COMPANION=1` 跳过。
+守护进程默认产物在 `target/debug`，解析器还会查 `build.noindex/**`、
+`<target>/<triple>/<profile>` 与 `apps/desktop/resources/bin`。只认当前
+`voice-companion` 名称，旧检出里的 `ai-mate` 残留请删除。开发构建会上报
+`voice_companion_missing_dev`，直接提示构建命令；正式安装包仍保留重装提示。
+
 ## 后端端口 / 连接问题
 
 ### `nomifun-web: invalid --host '<value>'`
@@ -313,6 +343,16 @@ docker compose up -d --build
 Dockerfile 已为 apt 与 Cargo 启用重试，并使用更小的 Rust slim 基础镜像；
 上述参数仍应指向部署者信任且实际可达的镜像。
 
+#### 本地开发首次编译停滞在 `sherpa-...`（进度长久不增加）
+
+若在包含本地语音能力的分支上运行 `bun run dev` 或 `cargo build` 时，界面卡在 `Building [====> ] ...: sherpa-...`：
+这是因为 `sherpa-onnx-sys` 正在后台下载约 88.7 MB 的原生 C++ 预编译库压缩包。由于 Cargo 默认在编译脚本执行期间静默输出，界面会表现为静止。
+
+排查与处理：
+- 检查 `build.noindex/sherpa-onnx-prebuilt/` 目录中的 `.part` 文件大小是否在增长；若在增长则属正常下载中，耐心等待其完成（只需下载一次，后续编译永久缓存）。
+- 若网络受限极慢，可使用环境变量加速：配置 `SHERPA_ONNX_BASE_URL` 指向国内镜像，或将下载好的压缩包放入 `SHERPA_ONNX_ARCHIVE_DIR` 指定目录。详情参见 [语音伴侣实战避坑与经验总结](../architecture/voice-agent/execution/voice-agent-pitfalls-and-lessons.zh.md)。
+- 如需校验预编译归档，设置 `SHERPA_ONNX_ARCHIVE_SHA256=<sha256>`；未设置时按镜像信任边界处理。
+
 ## 日志
 
 后端**同时**写入 stdout 与 `<log-dir>/nomicore.log` 上的按日滚动文件
@@ -341,3 +381,4 @@ Dockerfile 已为 apt 与 Cargo 启用重试，并使用更小的 Rust slim 基�
 - [配置参考](./configuration.zh.md) —— 每个参数与环境变量。
 - [API 概览](./api-overview.zh.md) —— 路由、鉴权与 WebSocket 模型导览。
 - [常见问题](./faq.zh.md) —— 那些最常见的"X 是这样吗？"的简短回答。
+- [Windows 开发循环无法写入仓库外](../contributing/windows-low-integrity-dev-loop.zh.md) —— `LNK1104`、日志文件 `PermissionDenied` panic，或 WebView2 `0x8000FFFF` / `0x800700AA` 窗口失败，原因是检出目录残留了 Low 完整性标签。

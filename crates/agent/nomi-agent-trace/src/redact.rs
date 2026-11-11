@@ -65,6 +65,7 @@ fn redact_json_value(value: &Value) -> Value {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn should_omit_bulky(key: &str, value: &Value) -> bool {
     // Message `content` is an array of blocks and must be walked (media lives there).
     if matches!(key, "content" | "contents") && matches!(value, Value::Array(_)) {
@@ -73,6 +74,7 @@ pub(crate) fn should_omit_bulky(key: &str, value: &Value) -> bool {
     is_bulky_tool_arg_key(key)
 }
 
+#[cfg(test)]
 pub(crate) fn is_bulky_tool_arg_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
@@ -107,6 +109,7 @@ pub(crate) fn event_size_limit_placeholder(original_bytes: usize, captured_bytes
     })
 }
 
+#[cfg(test)]
 pub(crate) fn bulky_placeholder(value: &Value) -> Value {
     let chars = match value {
         Value::String(s) => s.chars().count(),

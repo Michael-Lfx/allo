@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Puzzle } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -31,7 +31,7 @@ const SiderSkillsEntry: React.FC<SiderSkillsEntryProps> = ({
   const { t } = useTranslation();
   const label = t('settings.skillsHub.railTitle', { defaultValue: 'Skills' });
   const icon = (size: number) => (
-    <Puzzle theme='outline' size={size} fill='currentColor' className='block leading-none shrink-0' style={{ lineHeight: 0 }} />
+    <FlowyIcon name='puzzle' size={size} className='block leading-none shrink-0' />
   );
 
   if (collapsed) {

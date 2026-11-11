@@ -41,6 +41,20 @@ export const parseConfirmationCorrelationId = (value: unknown): ConfirmationCorr
   return value as ConfirmationCorrelationId;
 };
 
+/** Voice approvals carry the exact pending registration in the existing opaque id. */
+export const confirmationSubmissionScope = (id: string, messageId: string | undefined, value: string) => {
+  const scoped = id.startsWith('voice:');
+  const parts = scoped ? id.split(':') : [];
+  if (scoped && (parts.length !== 4 || !parts[3] || !['proceed_once', 'cancel'].includes(value))) {
+    throw new TypeError('invalid scoped tool approval');
+  }
+  return {
+    msg_id: parseConfirmationCorrelationId(messageId ?? (scoped ? parts[3] : id)),
+    data: { value, ...(scoped ? { approval_id: id } : {}) },
+    always_allow: !scoped && value === 'proceed_always',
+  };
+};
+
 /**
  * @description 跟对话相关的消息类型申明 及相关处理
  */
@@ -1476,7 +1490,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         type: 'text',
         msg_id: message.msg_id,
         ...turnIdentity,
-        position: message.type === 'user_content' ? 'right' : 'left',
+        position: message.type === 'user_content' ? 'right' : (message.position ?? 'left'),
         conversation_id: message.conversation_id,
         created_at,
         content: isRichData
@@ -1633,6 +1647,10 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       if (!content) return undefined;
       return {
         id: uuid(),
+        // The stream frame's msg_id is the durable skill_load row. Keeping it
+        // as message_id lets a later history fetch replace this live card
+        // instead of appending a second one.
+        message_id: message.msg_id,
         type: 'skill_load',
         msg_id: message.msg_id,
         ...turnIdentity,

@@ -1,7 +1,7 @@
 {
   "welcome": {
-    "title": "Tell Flowy the outcome you want",
-    "description": "Describe the result. Flowy organizes the work and only asks when needed.",
+    "title": "Tell {{brandName}} the outcome you want",
+    "description": "Describe the result. {{brandName}} organizes the work and only asks when needed.",
     "placeholder": "Describe the result you want…",
     "linkFolder": "Open Folder",
     "newConversation": "New Chat",
@@ -13,11 +13,11 @@
     "clearWorkspace": "Remove project",
     "openFolder": "Open Folder",
     "none": "None",
-    "quickActionsTitle": "What can Flowy do?",
+    "quickActionsTitle": "What can {{brandName}} do?",
     "quickActionFeedback": "Report Issue",
     "quickActionCheckUpdate": "Check updates",
     "quickActionStar": "Like us? Give us a star!",
-    "skillsMarket": "Flowy Skills Market",
+    "skillsMarket": "{{brandName}} Skills Market",
     "skillsMarketDesc": "Search and activate community Skills on demand. Configure once, available for all agents.",
     "skillsMarketDetails": "View More >>"
   },
@@ -123,10 +123,10 @@
     "docsDescription": "Read setup, project, conversation, settings, and common workflow docs.",
     "docsAction": "Open docs",
     "videoTitle": "Intro Video",
-    "videoDescription": "Watch a short tour of how Flowy organizes your workspace.",
+    "videoDescription": "Watch a short tour of how {{brandName}} organizes your workspace.",
     "videoAction": "Watch video",
     "feedbackTitle": "Feedback & Community",
-    "feedbackDescription": "Report issues, suggest improvements, or help build Flowy through the official contact page.",
+    "feedbackDescription": "Report issues, suggest improvements, or help build {{brandName}} through the official contact page.",
     "feedbackAction": "Contact us"
   },
   "dropdown": {
@@ -136,6 +136,7 @@
   "noAgentsAvailable": "No agents available",
   "noModelConfigured": "No model configured yet. Add a provider in the dialog, then send again.",
   "createFailed": "Failed to create conversation",
+  "loadFailed": "Failed to load conversation, please try again.",
   "skeleton": {
     "opening": "Opening conversation"
   },
@@ -472,7 +473,8 @@
   },
   "chat": {
     "noModelSelected": "No model selected for current session, cannot send message",
-    "modelUnavailableHint": "The current model is unavailable. Retry recovery or choose another model.",
+    "modelUnavailableHint": "The current model is unavailable. Please choose another model.",
+    "modelPlanRequiredHint": "Upgrade to {{plan}} to use the current model.",
     "openModelSettings": "Open model settings",
     "defaultModelUnavailable": "Your saved default model is unavailable. Choose a model again.",
     "modelHealedToDefault": "Switched to your default model {{model}}",
@@ -667,7 +669,7 @@
   "sessionMetrics": {
     "tab": "Metrics",
     "title": "Session metrics",
-    "subtitle": "Based on usage data reported by the Flowy engine",
+    "subtitle": "Based on usage data reported by the {{brandName}} engine",
     "notice": "Due to limitations in data collection, these metrics are for reference only and should not be treated as conclusive.",
     "emptyTitle": "No metrics yet",
     "emptyDesc": "Duration, tokens, context, and cache data refresh after each model request.",
@@ -746,7 +748,6 @@
     "loaded": "Loaded Skills",
     "selected": "Selected Skills",
     "remove": "Remove {{name}}",
-    "modeBar": "Session skills",
     "autoLoaded": "Auto",
     "pin": "Pin",
     "unpin": "Unpin",
@@ -757,7 +758,8 @@
       "project": "Project",
       "extension": "Extension",
       "mcp": "MCP",
-      "legacy": "Legacy"
+      "legacy": "Legacy",
+      "capability": "Managed by {{brandName}}"
     }
   },
   "slashLauncher": {
@@ -843,7 +845,7 @@
     "stepCompanion": "1. Pick a companion",
     "stepSkills": "2. Skills (all active loaded by default; uncheck to exclude)",
     "stepMemories": "3. Pick memories (injected live each turn, read-only)",
-    "noCompanions": "No companions yet — create one on the Flowy page first",
+    "noCompanions": "No companions yet — create one on the {{brandName}} page first",
     "noSkills": "This companion has no loadable skills",
     "noMemories": "No matching memories",
     "searchMemories": "Search memories (full-text)...",
@@ -1166,6 +1168,8 @@
       "unknown": "Auto"
     },
     "recommended": "Recommended",
+    "member": "Member",
+    "planRequired": "Available after upgrading to {{plan}}",
     "tagline": {
       "auto-intelligence": "Powerful reasoning for hard tasks",
       "auto-balance": "Everyday pick, balanced",

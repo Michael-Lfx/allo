@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Result, Spin, Tag } from '@arco-design/web-react';
 import { ArrowLeft } from '@icon-park/react';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import Counter, { TimedPhrase, tickingCounterProps, timerSlot } from '@renderer/components/base/Counter';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
@@ -355,12 +356,25 @@ const CampaignDetailPage: React.FC = () => {
             {countdown && (countdown.days > 0 || countdown.hours > 0 || countdown.minutes > 0) ? (
               <span>
                 {' · '}
-                {t('videoGeneration.campaign.countdown', {
-                  days: countdown.days,
-                  hours: countdown.hours,
-                  minutes: countdown.minutes,
-                  defaultValue: '{{days}} 天 {{hours}} 小时后开始',
-                })}
+                <TimedPhrase
+                  text={t('videoGeneration.campaign.countdown', {
+                    days: timerSlot.days,
+                    hours: timerSlot.hours,
+                    minutes: timerSlot.minutes,
+                    defaultValue: '{{days}} 天 {{hours}} 小时后开始',
+                  })}
+                  slots={{
+                    [timerSlot.days]: (
+                      <Counter value={countdown.days} locale={i18n.language} {...tickingCounterProps} />
+                    ),
+                    [timerSlot.hours]: (
+                      <Counter value={countdown.hours} locale={i18n.language} {...tickingCounterProps} />
+                    ),
+                    [timerSlot.minutes]: (
+                      <Counter value={countdown.minutes} locale={i18n.language} {...tickingCounterProps} />
+                    ),
+                  }}
+                />
               </span>
             ) : null}
           </div>

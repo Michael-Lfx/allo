@@ -569,6 +569,7 @@ async fn sync_inferred_profiles_tx(
             seed.catalog_credit_rate,
             seed.catalog_family.as_deref(),
             seed.catalog_auto_tier.as_deref(),
+            seed.catalog_plan_gate.as_ref(),
         );
         let promote_catalog_source = seed.catalog_vision.is_some() && source == "inferred";
         let traits = seed
@@ -1123,6 +1124,7 @@ mod tests {
             catalog_vision: None,
             catalog_family: None,
             catalog_auto_tier: None,
+            catalog_plan_gate: None,
         }];
         let result = repo
             .update_with_model_profiles(
@@ -1183,6 +1185,7 @@ mod tests {
                 catalog_vision: None,
                 catalog_family: None,
                 catalog_auto_tier: None,
+                catalog_plan_gate: None,
             },
             ProviderModelProfileSeed {
                 model: "new-model-2".into(),
@@ -1194,6 +1197,7 @@ mod tests {
                 catalog_vision: None,
                 catalog_family: None,
                 catalog_auto_tier: None,
+                catalog_plan_gate: None,
             },
         ];
         let result = repo

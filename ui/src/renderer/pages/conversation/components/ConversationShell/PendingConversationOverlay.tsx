@@ -17,7 +17,8 @@ import {
 } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import PathText from '@/renderer/components/base/PathText';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
-import appLogo from '@/renderer/assets/logo.svg';
+import BrandLogo from '@/renderer/components/brand/BrandLogo';
+import { BRAND_NAME } from '@/renderer/config/brand';
 import { usePendingConversation } from './PendingConversationContext';
 import styles from './PendingConversationOverlay.module.css';
 
@@ -58,7 +59,7 @@ const PendingConversationOverlay: React.FC = () => {
   // word during the ~140ms crossfade. The defaultValue uses the same {{backend}}
   // template so the missing-key fallback still interpolates.
   const composerPlaceholder = t('acp.sendbox.placeholder', {
-    backend: 'Flowy',
+    backend: BRAND_NAME,
     defaultValue: 'Send message to {{backend}}...',
   });
 
@@ -87,7 +88,7 @@ const PendingConversationOverlay: React.FC = () => {
         >
           <div className='flex items-center min-w-0'>
             <div className='shrink-0 flex items-center pl-8px'>
-              <img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />
+              <BrandLogo className='block h-16px w-16px object-contain' />
             </div>
             <div className='min-w-0 flex-1 flex flex-col justify-center px-8px'>
               <span className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-16px font-bold text-t-primary'>

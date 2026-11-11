@@ -4,7 +4,9 @@ import NomiModal from '@/renderer/components/base/NomiModal';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
-const COPYRIGHT = '© 2025-2026 Flowy';
+import { BRAND_COPYRIGHT_NAME } from '@/renderer/config/brand';
+
+const COPYRIGHT = `© 2025-2026 ${BRAND_COPYRIGHT_NAME}`;
 
 type FeedbackReportModalProps = {
   visible: boolean;

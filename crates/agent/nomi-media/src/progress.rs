@@ -31,11 +31,7 @@ impl MediaProgressEvent {
             .pct
             .map(|p| format!(" [{}]", progress_bar(p)))
             .unwrap_or_default();
-        if let Some(path) = &self.artifact_preview {
-            format!("{}{} · 预览 MEDIA:{path}", self.message, bar)
-        } else {
-            format!("{}{}", self.message, bar)
-        }
+        format!("{}{}", self.message, bar)
     }
 }
 

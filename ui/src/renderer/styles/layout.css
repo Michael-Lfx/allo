@@ -72,6 +72,13 @@
   border-right: 1px solid var(--flowy-border-subtle);
 }
 
+.layout-sider button[role='tab'] .collapsed-hidden,
+.layout-sider [role='button'] .collapsed-hidden {
+  font-size: var(--flowy-text-control, 13px);
+  font-weight: var(--flowy-weight-medium, 500);
+  line-height: var(--flowy-leading-control, 18px);
+}
+
 /* Arco animates sider width. That reflows the conversation pane every frame.
    Width snaps; labels fade in flowy-motion.css / base.css instead.
    Mobile still slides with an inline transform transition, which wins here. */
@@ -102,8 +109,8 @@
   background: transparent;
   color: var(--flowy-text-secondary, var(--color-text-2));
   font: inherit;
-  font-size: 12px;
-  line-height: 20px;
+  font-size: var(--flowy-text-control, 13px);
+  line-height: var(--flowy-leading-control, 18px);
   text-align: left;
   cursor: pointer;
   transition:
@@ -162,7 +169,7 @@
 }
 
 .flowy-workspace-section-action:active {
-  transform: scale(0.94);
+  background: var(--flowy-interactive-pressed, var(--color-fill-3));
 }
 
 .flowy-workspace-section-action:focus-visible {
@@ -187,7 +194,6 @@
 
 .session-overflow-button:active {
   background: var(--flowy-interactive-pressed, var(--color-fill-3));
-  transform: scale(0.985);
 }
 
 .session-overflow-button:focus-visible {
@@ -251,6 +257,9 @@
 .layout-content {
   background: var(--flowy-canvas);
   color: var(--flowy-text-primary);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 @media (max-width: 767px) {
@@ -268,16 +277,46 @@
   flex: 1 !important;
   min-height: 0 !important;
   height: 100% !important;
+  overflow-x: hidden;
 }
 
 .layout-sider-header {
   flex-shrink: 0 !important;
 }
 
+/* Keep the wordmark and running version on one optical baseline so the whole
+   brand lockup stays centered against the square logo. */
+.sider-brand-lockup {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--flowy-space-1, 4px);
+}
+
+/* Height leaves room for a 22px face so the canvas does not shrink it. The
+   fixed canvas width follows the rendered word instead of consuming the row. */
+.sider-wordmark {
+  position: relative;
+  width: 80px;
+  height: 40px;
+  flex: 0 0 80px;
+  line-height: 0;
+}
+
+.sider-wordmark > div,
+.sider-wordmark canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .sidebar-app-version {
+  flex: 0 0 auto;
   color: var(--flowy-text-3, var(--color-text-3));
   font-size: var(--flowy-text-micro, 11px);
   line-height: 14px;
+  white-space: nowrap;
 }
 
 /* Persistent update affordance beside the Flowy wordmark. It is rendered

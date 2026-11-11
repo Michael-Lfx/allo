@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Input, Modal, Popover, Tooltip } from '@arco-design/web-react';
-import { Check, Edit, Iphone, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
@@ -233,14 +233,14 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
 
       {onOpenCompanion && (
         <button type='button' className={menuRowClass} onClick={handleOpenCompanion}>
-          <Peoples theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <FlowyIcon name='users' size={14} className='shrink-0 text-t-secondary' />
           <span className='flex-1 text-12px text-t-primary'>{t('nomi.siderTitle')}</span>
         </button>
       )}
 
       {onOpenLink && (
         <button type='button' className={menuRowClass} onClick={handleOpenLink}>
-          <Iphone theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <FlowyIcon name='mobile' size={14} className='shrink-0 text-t-secondary' />
           <span className='flex-1 text-12px text-t-primary'>
             {t('common.userMenu.connectPhone', { defaultValue: '连接手机' })}
           </span>
@@ -274,7 +274,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
                     {LANGUAGE_LABELS[language] ?? language}
                   </span>
                   {active ? (
-                    <Check theme='outline' size='14' fill='currentColor' className='shrink-0 text-primary-6' />
+                    <FlowyIcon name='check' size={14} className='shrink-0 text-primary-6' />
                   ) : null}
                 </button>
               );
@@ -284,12 +284,12 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         unmountOnExit={false}
       >
         <button type='button' className={classNames(menuRowClass, languageVisible && '!bg-fill-2')}>
-          <Translate theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <FlowyIcon name='translate' size={14} className='shrink-0 text-t-secondary' />
           <span className='flex-1 text-12px text-t-primary'>
             {t('common.userMenu.language', { defaultValue: '语言' })}
           </span>
           <span className='text-11px text-t-tertiary'>{LANGUAGE_LABELS[currentLanguage] ?? currentLanguage}</span>
-          <Right theme='outline' size='12' fill='currentColor' className='shrink-0 text-t-tertiary' />
+          <FlowyIcon name='right' size={12} className='shrink-0 text-t-tertiary' />
         </button>
       </Popover>
 
@@ -316,9 +316,9 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         unmountOnExit={false}
       >
         <button type='button' className={classNames(menuRowClass, skinVisible && '!bg-fill-2')}>
-          <Theme theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <FlowyIcon name='swatches' size={14} className='shrink-0 text-t-secondary' />
           <span className='flex-1 text-12px text-t-primary'>{t('common.userMenu.changeSkin', { defaultValue: '换肤' })}</span>
-          <Right theme='outline' size='12' fill='currentColor' className='shrink-0 text-t-tertiary' />
+          <FlowyIcon name='right' size={12} className='shrink-0 text-t-tertiary' />
         </button>
       </Popover>
 
@@ -328,7 +328,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         aria-label={supportLabel}
         onClick={handleOpenSupportChat}
       >
-        <Message theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+        <FlowyIcon name='message' size={14} className='shrink-0 text-t-secondary' />
         <span className='flex-1 text-12px text-t-primary'>
           {t('common.userMenu.contactSupport', { defaultValue: '联系客服' })}
         </span>
@@ -341,7 +341,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
 
       {showEditNickname && (
         <button type='button' className={menuRowClass} onClick={handleOpenNickname}>
-          <Edit theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <FlowyIcon name='edit' size={14} className='shrink-0 text-t-secondary' />
           <span className='flex-1 text-12px text-t-primary'>
             {t('common.userMenu.editNickname', { defaultValue: '修改昵称' })}
           </span>
@@ -352,7 +352,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         <>
           <div className='mx-4px mt-8px h-1px bg-[var(--color-border-2)]' />
           <button type='button' className={menuRowClass} onClick={handleLogout}>
-            <Logout theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+            <FlowyIcon name='signOut' size={14} className='shrink-0 text-t-secondary' />
             <span className='flex-1 text-12px text-t-primary'>
               {t('common.userMenu.logout', { defaultValue: '退出登录' })}
             </span>
@@ -385,13 +385,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
           collapsed ? 'size-22px rd-6px' : 'size-28px rd-full'
         )}
       >
-        <User
-          theme='outline'
-          size={collapsed ? '16' : '15'}
-          fill='currentColor'
-          className='block leading-none'
-          style={{ lineHeight: 0 }}
-        />
+        <FlowyIcon name='user' size={collapsed ? 16 : 15} className='block leading-none' />
         {hasUnread ? (
           <span
             className='absolute top-0 right-0 size-8px rd-full bg-[var(--flowy-attention)] border-2 border-solid border-[var(--color-bg-1)]'

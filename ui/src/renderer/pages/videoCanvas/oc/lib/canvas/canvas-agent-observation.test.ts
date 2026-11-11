@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { CanvasNodeType } from "@oc/types/canvas";
+import { createStoryboardRow } from "./canvas-project-domain";
 import { applyCanvasAgentOps, type CanvasAgentSnapshot } from "./canvas-agent-ops";
 import { buildCanvasAgentObservation, observationPromptBlock } from "./canvas-agent-observation";
 
@@ -65,7 +66,7 @@ describe("canvas agent observation", () => {
                     position: { x: 0, y: 0 },
                     width: 280,
                     height: 200,
-                    metadata: { storyboard: { rows: [{ id: "shot-1", plot: "大闹天宫开场" }] } },
+                    metadata: { storyboard: { rows: [createStoryboardRow(1, { plotDescription: "大闹天宫开场" })], visibleColumns: ["plotDescription"], referenceNodeIds: [] } },
                 },
                 {
                     id: "img-1",
@@ -112,7 +113,7 @@ describe("canvas agent observation", () => {
                 position: { x: 0, y: 0 },
                 width: 280,
                 height: 200,
-                metadata: { storyboard: { rows: [{ id: "shot-1", plot: "大闹天宫开场" }] } },
+                metadata: { storyboard: { rows: [createStoryboardRow(1, { plotDescription: "大闹天宫开场" })], visibleColumns: ["plotDescription"], referenceNodeIds: [] } },
             }],
         };
         const observation = buildCanvasAgentObservation(boarded, null, { production: true, generation: false, layoutOnly: false });

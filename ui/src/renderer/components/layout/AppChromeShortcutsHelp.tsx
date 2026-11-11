@@ -1,5 +1,5 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useMemo } from 'react';
-import { CloseSmall, Keyboard } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import {
   formatAppChromeShortcut,
@@ -60,13 +60,7 @@ const AppChromeShortcutsHelp: React.FC<AppChromeShortcutsHelpProps> = ({ onClose
             className='grid size-26px place-items-center rounded-8px leading-none text-primary-6 [&_.i-icon]:block [&_.i-icon]:leading-none [&_svg]:block'
             style={{ background: 'rgba(var(--primary-6),0.12)' }}
           >
-            <Keyboard
-              theme='outline'
-              size={16}
-              strokeWidth={3}
-              className='block leading-none'
-              style={{ display: 'block', lineHeight: 0 }}
-            />
+            <FlowyIcon name='keyboard' size={16} className='block leading-none' />
           </span>
           <span id='app-chrome-shortcuts-title' className='text-15px font-700 text-[var(--color-text-1)]'>
             {t('common.shortcuts.title', { defaultValue: '快捷键' })}
@@ -84,7 +78,7 @@ const AppChromeShortcutsHelp: React.FC<AppChromeShortcutsHelpProps> = ({ onClose
             }}
             className='ml-auto grid h-28px w-28px place-items-center rounded-7px cursor-pointer text-[var(--color-text-3)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]'
           >
-            <CloseSmall theme='outline' size={20} strokeWidth={3} />
+            <FlowyIcon name='close' size={20} />
           </div>
         </div>
 

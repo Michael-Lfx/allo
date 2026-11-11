@@ -26,7 +26,7 @@ describe('TurnProcessDisclosure stream handoff', () => {
     expect(cssSource.includes('padding-bottom: 16px')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure [data-testid=\'beautiful-ui-tool-chip\']')).toBe(true);
     expect(cssSource.includes('.turn-process-disclosure [data-testid=\'beautiful-ui-tool-chip\']:hover')).toBe(true);
-    expect(cssSource.includes('font-size: var(--conversation-message-font-size, 14px)')).toBe(true);
+    expect(cssSource.includes('font-size: var(--conversation-message-font-size, 15px)')).toBe(true);
     expect(cssSource.includes('line-height: var(--conversation-message-line-height, 22px)')).toBe(true);
   });
 });

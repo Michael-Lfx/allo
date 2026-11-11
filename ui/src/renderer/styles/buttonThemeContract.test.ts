@@ -15,7 +15,7 @@ describe('button theme contract', () => {
     expect(arcoOverrides).toContain(
       "button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']):not(.arco-btn-shape-circle):not(.arco-btn-shape-round):not([class~='rd-full']),\n.arco-btn:not(.arco-btn-shape-circle):not(.arco-btn-shape-round),\n[role='button']:not([data-button-shape='pill']):not([data-button-shape='circle']):not([class~='rd-full']) {"
     );
-    expect(arcoOverrides).toContain('border-radius: 6px !important;');
+    expect(arcoOverrides).toContain('border-radius: var(--flowy-radius-control, 6px) !important;');
   });
 
   test('explicitly circular native and Arco icon buttons retain their round shape', () => {

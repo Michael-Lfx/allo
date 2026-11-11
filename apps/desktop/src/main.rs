@@ -97,6 +97,7 @@ mod companion_pointer;
 mod completion_toast;
 mod meeting_captions;
 mod meeting_tray;
+mod voice_session_bridge;
 mod system_notify;
 mod taskbar_badge;
 #[cfg(windows)]
@@ -709,8 +710,9 @@ fn ota_region_bucket() -> ota_mirrors::RegionBucket {
     ota_mirrors::region_bucket(tz.as_deref(), locale.as_deref())
 }
 
-fn parse_ota_endpoints() -> Result<Vec<url::Url>, String> {
-    ota_mirrors::check_endpoints(ota_region_bucket(), ota_mirrors::host_channel())
+fn parse_ota_endpoints(app: &tauri::AppHandle) -> Result<Vec<url::Url>, String> {
+    let profile = ota_mirrors::profile_for_identifier(app.config().identifier.as_str());
+    ota_mirrors::check_endpoints(ota_region_bucket(), ota_mirrors::host_channel(), profile)
         .into_iter()
         .map(|endpoint| {
             endpoint
@@ -819,7 +821,7 @@ async fn fetch_manifest_rollout_percent(endpoints: &[url::Url]) -> u8 {
 async fn check_update(app: tauri::AppHandle) -> Result<Option<CheckUpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
 
-    let endpoints = parse_ota_endpoints()?;
+    let endpoints = parse_ota_endpoints(&app)?;
     let updater = app
         .updater_builder()
         .endpoints(endpoints.clone())
@@ -899,7 +901,7 @@ async fn download_update(
     let result = async {
         let updater = app
             .updater_builder()
-            .endpoints(parse_ota_endpoints()?)
+            .endpoints(parse_ota_endpoints(&app)?)
             .map_err(|error| error.to_string())?
             .on_before_exit(move || {
                 let verified = updater_before_exit_until_verified(
@@ -2696,6 +2698,7 @@ fn complete_main_thread_setup(
     // window HIDES it (CloseRequested) instead of quitting; capture continues
     // while the process lives. Process exits only via tray Quit.
     meeting_tray::install_tray_and_shortcuts(&app)?;
+    voice_session_bridge::install(app.clone());
 
     // Desktop-companion windows are NOT created here anymore. They are
     // multi-companion and dynamic: the main window's useCompanionWindowsSync hook
@@ -2861,6 +2864,15 @@ fn reconcile_companion_windows(
     hide_memory_panel: bool,
     memory_panel: memory_panel_window::MemoryPanelWindowState,
 ) -> Result<(), String> {
+    // The window may show for liveness, but its content stays transparent until profile/geometry paint.
+    let init_script = format!("{init_script}\n{}", r#"
+      const petBootStyle = document.createElement('style');
+      petBootStyle.id = 'flowy-pet-boot';
+      petBootStyle.textContent = 'html,body,#root{background:transparent!important}#root{opacity:0}';
+      const mountPetBootStyle = () => { if (document.documentElement?.dataset.flowyPetReady !== 'true' && !petBootStyle.isConnected) document.documentElement?.appendChild(petBootStyle); };
+      mountPetBootStyle();
+      document.addEventListener('DOMContentLoaded', mountPetBootStyle, {once:true});
+    "#);
     use std::collections::HashSet;
 
     if hide_memory_panel {
@@ -3398,6 +3410,7 @@ fn main() -> std::process::ExitCode {
         .manage(taskbar_badge::TaskCompletionBadge::default())
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            voice_session_bridge::report_voice_context,
             download_update,
             check_update,
             install_update,

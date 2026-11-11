@@ -117,6 +117,7 @@ fn make_nomi_config() -> NomiResolvedConfig {
         compat_overrides: Default::default(),
         session_directory: std::env::temp_dir().join("nomi-test-sessions"),
         session_mode: None,
+        voice_workspace: None,
         extra_mcp_servers: Default::default(),
         loopback_capability_leases: Default::default(),
         bedrock_config: None,

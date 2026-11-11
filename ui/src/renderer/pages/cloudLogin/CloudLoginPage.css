@@ -209,7 +209,7 @@
 
 .cloud-login-diagnose__ok {
   margin: 0;
-  color: var(--text-success, var(--color-success-6, #00b42a));
+  color: rgb(var(--success-6));
   font-size: 13px;
 }
 
@@ -225,7 +225,7 @@
   padding: 10px 12px;
   border: 1px solid var(--border-base, rgba(0, 0, 0, 0.08));
   border-radius: 8px;
-  background: var(--bg-fill-1, rgba(0, 0, 0, 0.03));
+  background: var(--color-fill-1);
   color: var(--text-t-secondary, inherit);
   font-size: 12px;
   line-height: 1.45;
@@ -263,4 +263,34 @@
   .cloud-login-transition__spinner {
     animation: none;
   }
+}
+
+/* Login page locks body scroll. Keep a single scrollport on the document itself
+   so the dialog mask and the other agreement do not share its position. */
+.arco-modal-wrapper:has(.flowy-legal-modal) {
+  overflow: hidden;
+}
+
+.flowy-legal-modal.nomifun-modal {
+  height: auto;
+}
+
+.flowy-legal-modal .nomifun-modal-wrapper {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.flowy-legal-modal .nomifun-modal-body-content {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.flowy-legal-document {
+  max-height: calc(100vh - 148px);
+  padding: 0 24px 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }

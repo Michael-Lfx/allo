@@ -1,8 +1,13 @@
-import React, { Suspense, useEffect, useLayoutEffect } from 'react';
+import React, { Suspense, useEffect, useLayoutEffect, useRef } from 'react';
+import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
+import {AppMessage as Message} from '@renderer/components/notifications';
+import {nextVoiceWakeNavigation} from '@renderer/components/layout/voiceWakeNavigation';
+import {useTranslation} from 'react-i18next';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
+import { DictationIntentRouteGuard } from '@renderer/components/layout/DictationIntentRouteGuard';
 import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
 import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -76,6 +81,8 @@ const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/Clo
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const LinkPhonePage = React.lazy(() => import('@renderer/pages/link'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
+const VoiceSettings = React.lazy(() => import('@renderer/pages/settings/VoiceSettings'));
+const PresentationSettings = React.lazy(() => import('@renderer/pages/settings/PresentationSettings'));
 const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
@@ -88,7 +95,7 @@ type RouteFallbackProps = {
   fullscreen?: boolean;
 };
 
-const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp'];
+const SETTINGS_CAPABILITY_PATHS = ['/presets', '/mcp'];
 
 const isSettingsSurfacePath = (pathname: string): boolean =>
   pathname === '/settings' ||
@@ -135,6 +142,7 @@ const withRouteFallback = (
 ) => <RouteFallback Component={Component} fullscreen={options?.fullscreen} />;
 
 const SessionShellRoute: React.FC = () => {
+  useVoiceContext();
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
@@ -172,6 +180,12 @@ const LegacyExtensionsRedirect: React.FC = () => {
 
 /** Plugin management is retired from the user-facing capability surface. */
 const DisabledPluginsRedirect: React.FC = () => <Navigate to='/settings/presets' replace />;
+
+/** The skill store moved to the primary rail; keep old settings links working. */
+const LegacySettingsSkillsRedirect: React.FC = () => {
+  const { search } = useLocation();
+  return <Navigate to={`/skills${search}`} replace />;
+};
 
 // Legacy `/requirements/:id/edit` deep links → open the workspace with the
 // requirement pre-selected in edit mode (the new shell hosts editing in a
@@ -216,6 +230,7 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
           page while a growth task is queued/running — view progress, jump
           back to the graph workspace, or cancel. */}
       <GrowthTaskPillHost />
+      <GlobalVoiceWakeListener />
       {React.cloneElement(layout)}
     </>
   );
@@ -241,6 +256,15 @@ const TrayLabelsMount: React.FC = () => {
 // Inert outside the Tauri desktop shell.
 const CompanionNavigateListener: React.FC = () => {
   const navigate = useNavigate();
+  const {t}=useTranslation();
+  useEffect(()=>{
+    if(!isTauriRuntime())return;
+    let disposed=false;let off:(()=>void)|undefined;
+    void import('@tauri-apps/api/event').then(({listen})=>listen('companion-boot-error',()=>{
+      Message.error(t('voice.presentation.petBootFailed'));
+    })).then(stop=>{if(disposed)stop();else off=stop;}).catch(()=>{});
+    return()=>{disposed=true;off?.();};
+  },[t]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
@@ -300,6 +324,73 @@ const MeetingOpenListener: React.FC = () => {
   return null;
 };
 
+// Global voice companion wake listener: when wake word is detected from any idle page
+// (e.g. Home / Guid / New Conversation), navigates seamlessly to the bound active voice session.
+const isVoiceWakeRouteProtected = (pathname: string): boolean => {
+  if (typeof window === 'undefined') return true;
+  return (
+    window.location.hash.startsWith('#/companion') ||
+    pathname.startsWith('/settings') ||
+    pathname.startsWith('/models')
+  );
+};
+
+export const GlobalVoiceWakeListener: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t } = useTranslation();
+  // Tracks the call session we already followed. A different conversation must
+  // stay where the user put it while the call is still active; only a new
+  // call activation (wake / incoming call) may take the route.
+  const followedSessionRef = useRef<string | null>(null);
+  // Keep the subscription stable across route changes; rebuilding it for every
+  // navigation resets the consumer sequence watermark used to drop stale
+  // snapshots. The callback reads the latest path through this ref instead.
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
+
+  useEffect(() => {
+    const onModelFallback = (event: Event) => {
+      const detail = (event as CustomEvent<{ actual?: { model?: string } }>).detail;
+      if (!detail?.actual?.model) return;
+      Message.warning(t('voice.modelFallback', { model: detail.actual.model }));
+    };
+    window.addEventListener('voice:model-fallback', onModelFallback);
+    return () => window.removeEventListener('voice:model-fallback', onModelFallback);
+  }, [t]);
+
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+
+    void import('@common/adapter/voiceCompanion').then(({ subscribeVoiceSession }) => {
+      if (disposed) return;
+      void subscribeVoiceSession((snapshot) => {
+        if (disposed || isVoiceWakeRouteProtected(pathnameRef.current)) return;
+        const next = nextVoiceWakeNavigation(
+          followedSessionRef.current,
+          snapshot,
+          pathnameRef.current,
+        );
+        followedSessionRef.current = next.followedSessionId;
+        if (next.target) {
+          void navigate(next.target);
+        }
+      }).then((unsub) => {
+        if (disposed) unsub();
+        else cleanup = unsub;
+      });
+    });
+
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }, [navigate]);
+
+  return null;
+};
+
 const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
   const { status: cloudStatus } = useCloudAuth();
   const hashRouteRedirectUrl = getHashRouteRedirectUrl();
@@ -311,6 +402,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
 
   return (
     <HashRouter>
+      <DictationIntentRouteGuard />
       <Routes>
         <Route
           path='/login'
@@ -365,7 +457,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
           <Route path='/settings/webui' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
-          <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
+          <Route path='/settings/skills' element={<LegacySettingsSkillsRedirect />} />
           <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/settings/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />
@@ -381,6 +473,8 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/moa' element={withRouteFallback(MoaSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
+          <Route path='/settings/voice' element={withRouteFallback(VoiceSettings)} />
+          <Route path='/settings/presentation' element={withRouteFallback(PresentationSettings)} />
           <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           {/* Feature pages embedded inside Settings */}

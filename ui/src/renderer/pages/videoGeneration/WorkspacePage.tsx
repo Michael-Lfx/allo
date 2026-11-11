@@ -1101,7 +1101,7 @@ const WorkspacePage: React.FC = () => {
       defaultPath: `${safeTitle}.nomivimax`,
       filters: [
         {
-          name: t('videoGeneration.actions.exportFilter', { defaultValue: 'Flowy 视频工程' }),
+          name: t('videoGeneration.actions.exportFilter', { defaultValue: '{{brandName}} 视频工程' }),
           extensions: ['nomivimax'],
         },
       ],
@@ -1147,7 +1147,7 @@ const WorkspacePage: React.FC = () => {
     if (cloudStatus !== 'authenticated') {
       message.warning(
         t('videoGeneration.tvShow.authRequired.publish', {
-          defaultValue: '发布到 Flowy TV 需要先登录云端账号。',
+          defaultValue: '发布到 {{brandName}} TV 需要先登录云端账号。',
         })
       );
       navigate('/cloud-login');
@@ -1190,7 +1190,7 @@ const WorkspacePage: React.FC = () => {
       });
       message.success(
         t('videoGeneration.tvShow.publish.ok', {
-          defaultValue: '已提交审核，通过后会出现在 Flowy TV 广场。',
+          defaultValue: '已提交审核，通过后会出现在 {{brandName}} TV 广场。',
         })
       );
     } catch (e) {
@@ -1506,8 +1506,8 @@ const WorkspacePage: React.FC = () => {
             <CanvasChromeButton
               className='is-icon'
               disabled={!canPublishTvShow || publishing}
-              title={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
-              aria-label={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 Flowy TV' })}
+              title={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 {{brandName}} TV' })}
+              aria-label={t('videoGeneration.tvShow.publish.action', { defaultValue: '发布到 {{brandName}} TV' })}
               onClick={() => void handlePublishToTvShow()}
             >
               <Share theme='outline' size={14} fill='currentColor' />
@@ -1578,7 +1578,7 @@ const WorkspacePage: React.FC = () => {
           <section className={`${styles.studioPanel} p-16px md:p-20px`}>
             <div className='mb-14px'>
               <h2 className='m-0 text-16px font-650 text-[var(--color-text-1)]'>
-                {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 Flowy' })}
+                {t('videoGeneration.studio.briefTitle', { defaultValue: '把故事交给 {{brandName}}' })}
               </h2>
               <p className='m-0 mt-3px text-12px text-[var(--color-text-3)]'>
                 {t('videoGeneration.studio.briefHint', {

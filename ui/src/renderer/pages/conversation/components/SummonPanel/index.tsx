@@ -22,7 +22,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Checkbox, Drawer, Empty, Input, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import { Button, Checkbox, Drawer, Empty, Select, Spin, Tag, Tooltip } from '@arco-design/web-react';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { EveryUser } from '@icon-park/react';
 import useSWR from 'swr';
@@ -306,10 +307,9 @@ export const SummonDrawer: React.FC<SummonDrawerProps> = ({ visible, onCancel, i
       {/* Step 3 — 记忆多选 + 预算字数条 */}
       <div className='text-13px font-500 mb-8px'>{t('conversation.summon.stepMemories')}</div>
       <div className='flex gap-8px mb-8px'>
-        <Input.Search
-          allowClear
+        <FlowySearch
           placeholder={t('conversation.summon.searchMemories')}
-          onSearch={(value) => setMemoryQuery(value)}
+          onPressEnter={(event) => setMemoryQuery(event.currentTarget.value)}
           onClear={() => setMemoryQuery('')}
           style={{ flex: 1 }}
         />

@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-10-19T05:19:35.196Z",
+  "tempBackupDir": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-dev-backup-1792387170429",
+  "backups": [
+    {
+      "name": "Flowy.exe",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.exe",
+      "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-dev-backup-1792387170429\\Flowy.exe",
+      "sha256": "AC6C0238265E161DDB33BC8F9B1F5AA5B43B3CE25C8E6922FC31A2F07B6727F7"
+    },
+    {
+      "name": "Flowy.pdb",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.pdb",
+      "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-dev-backup-1792387170429\\Flowy.pdb",
+      "sha256": "FB2B8E4750AACF6E3916E36DA465BBD19E26651FDFC5A091BF807A738158B7B1"
+    },
+    {
+      "name": "ai-mate.exe",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai-mate.exe",
+      "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-dev-backup-1792387170429\\ai-mate.exe",
+      "sha256": "17FC4BE3B0242FAB3103280833C4D3572243577A82DD47A6C5C6A4F9F7A93656"
+    },
+    {
+      "name": "ai_mate.pdb",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai_mate.pdb",
+      "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-dev-backup-1792387170429\\ai_mate.pdb",
+      "sha256": "A1D3EC65061D8B36FC1B636D34B42C1148458F0DCAE99815364BC61D2CD6999C"
+    }
+  ],
+  "updates": [
+    {
+      "name": "Flowy.exe",
+      "installed": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.exe",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\Flowy.exe",
+      "sha256": "3FF6DBB4548AAE2185EE0DDE40D478D6C112631EEEB237186522A60398CB3EC2"
+    },
+    {
+      "name": "Flowy.pdb",
+      "installed": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.pdb",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\Flowy.pdb",
+      "sha256": "40516C4247F1343B26893C70E1740A8F0DC00FFFADD932504F9F964BB20ECDF3"
+    },
+    {
+      "name": "ai-mate.exe",
+      "installed": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai-mate.exe",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\ai-mate.exe",
+      "sha256": "5E936985C3C42F8D43C0814F14A825FB789AFCC175EDCA063988D2F6AB9218B5"
+    },
+    {
+      "name": "ai_mate.pdb",
+      "installed": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai_mate.pdb",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\ai_mate.pdb",
+      "sha256": "EEBD0015FD8A3E143298DF3B65471D19D8D3710E0048B43449068067544603CA"
+    }
+  ]
+}

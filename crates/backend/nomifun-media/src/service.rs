@@ -27,6 +27,7 @@ struct ModelsCatalogCache {
     image: Vec<nomifun_api_types::MediaModelOption>,
     video: Vec<nomifun_api_types::MediaModelOption>,
     audio: Vec<nomifun_api_types::MediaModelOption>,
+    effective_model_tier: i32,
 }
 
 pub struct MediaApiService {
@@ -333,6 +334,7 @@ impl MediaApiService {
                         image_models: cached.image.clone(),
                         video_models: cached.video.clone(),
                         audio_models: cached.audio.clone(),
+                        effective_model_tier: cached.effective_model_tier,
                     });
                 }
             }
@@ -349,6 +351,7 @@ impl MediaApiService {
                 image_models: Vec::new(),
                 video_models: Vec::new(),
                 audio_models: Vec::new(),
+                effective_model_tier: 0,
             });
         }
         let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -371,6 +374,10 @@ impl MediaApiService {
             .into_iter()
             .map(|entry| to_media_model_option(entry, &server_base))
             .collect();
+        let tts_tier = tts_res
+            .as_ref()
+            .map(|tts| tts.effective_model_tier)
+            .unwrap_or(0);
         let audio_models: Vec<_> = match tts_res {
             Ok(tts) => tts
                 .cloud
@@ -384,18 +391,24 @@ impl MediaApiService {
                 Vec::new()
             }
         };
+        let effective_model_tier = image
+            .effective_model_tier
+            .max(video.effective_model_tier)
+            .max(tts_tier);
         if let Ok(mut guard) = self.models_cache.lock() {
             *guard = Some(ModelsCatalogCache {
                 fetched_at: Instant::now(),
                 image: image_models.clone(),
                 video: video_models.clone(),
                 audio: audio_models.clone(),
+                effective_model_tier,
             });
         }
         Ok(MediaModelListResponse {
             image_models,
             video_models,
             audio_models,
+            effective_model_tier,
         })
     }
 
@@ -461,6 +474,9 @@ fn to_media_model_option(
         id,
         name,
         icon: rewrite_catalog_icon_url(&entry.icon, server_base),
+        min_tier_level: entry.min_tier_level.max(0),
+        required_plan_name: entry.required_plan_name,
+        required_plan_code: entry.required_plan_code,
     }
 }
 

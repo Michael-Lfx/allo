@@ -1,0 +1,41 @@
+{
+  "updated_at": "2026-10-14T22:57:01.1954273+08:00",
+  "branch": "feat/xiaozhi-voice",
+  "app_was_stopped": true,
+  "launched": false,
+  "production_build": "Q-production-build.log",
+  "artifacts": [
+    {
+      "name": "Flowy.exe",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\Flowy.exe",
+      "destination": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.exe",
+      "bytes": 347864576,
+      "sha256": "187A11A30C34ED7F5553B4AB64179B3771BB9FF4F5F53A7241A328315DC9231A",
+      "verified": true
+    },
+    {
+      "name": "ai-mate.exe",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\ai-mate.exe",
+      "destination": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai-mate.exe",
+      "bytes": 63288320,
+      "sha256": "30B2891600AD5B592C7003E90E0583EABF46062E449712CBA467B2EACED69B13",
+      "verified": true
+    },
+    {
+      "name": "Flowy.pdb",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\Flowy.pdb",
+      "destination": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.pdb",
+      "bytes": 889352192,
+      "sha256": "7BBF83199A10C550820A31E4481B50649262BCAFE798B7D1E4C7109B85BC4FC5",
+      "verified": true
+    },
+    {
+      "name": "ai_mate.pdb",
+      "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\ai_mate.pdb",
+      "destination": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai_mate.pdb",
+      "bytes": 76394496,
+      "sha256": "133E2F24C77B4A2C5C7F33CD5FCCA4414369BAA7D2BE91360E9F35FFF5A8B395",
+      "verified": true
+    }
+  ]
+}

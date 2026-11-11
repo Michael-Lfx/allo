@@ -35,6 +35,11 @@ import './styles/canvas-utility-shield.css';
 import './styles/wallpaperScene.css';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import './styles/themes/index.css';
+import { hostOs } from './utils/platform';
+
+if (typeof document !== 'undefined') {
+  document.documentElement.classList.add(`platform-${hostOs()}`);
+}
 
 // Config service — kick off initialization before i18n / theme modules load,
 // so their startup paths (which await configService.whenReady()) observe the
@@ -43,7 +48,7 @@ import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
 import * as ipcBridgeModule from '@/common/adapter/ipcBridge';
 import { getBaseUrl, isHandledAuthExpiredHttpError, probeBackendTransport } from '@/common/adapter/httpBridge';
-import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
+import { getBrowserStorageGeneration, hasBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
 });
@@ -294,7 +299,9 @@ const Main = () => {
       .then(async ([info]) => {
         let generationChanged = false;
         try {
-          generationChanged = getBrowserStorageGeneration() !== info.storageGeneration;
+          if (hasBrowserStorageGeneration()) {
+            generationChanged = getBrowserStorageGeneration() !== info.storageGeneration;
+          }
         } catch {
           // The first authenticated bootstrap has no prior generation.
         }

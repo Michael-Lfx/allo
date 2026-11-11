@@ -1,36 +1,35 @@
-//! Beats of a clip: packing adjacent **narrative** events into one generation,
-//! pricing the result, and laying its beats out on the clip's timeline.
+//! Beats of a clip: one published row is one video, priced and checked against
+//! the selected model's window.
 //!
-//! A storyboard row is a story unit, not a tripod position. Reverse angles,
-//! inserts, and push-ins that still belong to the same beat live *inside* one
-//! file as CUT TO — the model window ([`ClipBounds`]) is the only hard split
-//! (speech that would 吞字, or a run that no longer fits). Camera changes never
-//! start a new row by themselves.
+//! The storyboard model authors each row as one video that approaches
+//! [`ClipBounds::max_secs`]: one place, and the lines, actions, and cameras of
+//! the same exchange. A wide, a close-up, and a reverse stay inside that file
+//! (at most [`MAX_CAMERAS_PER_CLIP`]). This module does not glue separate rows
+//! together and does not pad them. It splits a draft that overruns the window
+//! or piles on more cameras than one generation can hold. The only join is a
+//! reaction shorter than the model minimum, written into the adjacent spoken row.
 //!
-//! Packing belongs to **planning**, not render: the storyboard the user sees
-//! must be the same list the renderer submits. [`pack_scene_briefs`] collapses
-//! leftover micro-shots before publish. [`shots_from_packed_briefs`] maps that
-//! list 1:1 onto clips — persist/load must not pack again or align-shrink the
-//! board. [`pack_scene_clips`] / [`align_storyboard_and_clips`] stay as the
-//! pack-rule tests (and as a last-resort densify of idx holes). The LLM draft
-//! never becomes `storyboard.json` — only the packed list is published.
-//! [`densify_aligned_indices`] renumbers surviving clips `0..n` so shot
-//! directories and the filmstrip do not keep absorbed holes.
+//! That pass belongs to **planning**, not render: the storyboard the user sees
+//! is the list the renderer submits. [`pack_scene_briefs`] is that normalizer.
+//! [`shots_from_packed_briefs`] maps the list 1:1 onto clips — persist/load
+//! must not pack again or align-shrink the board. [`pack_scene_clips`] /
+//! [`align_storyboard_and_clips`] stay for idx alignment. The LLM draft never
+//! becomes `storyboard.json`. [`densify_aligned_indices`] renumbers surviving
+//! clips `0..n` so shot directories and the filmstrip do not keep holes.
 //!
-//! What is left after packing (a run too long for one clip) is handled by the
-//! seam machinery in [`crate::media_local`]: head trim plus de-click fade for a
-//! continued take, a match-cut otherwise.
+//! What is left after a row still overruns the window is another row, cut at a
+//! dialogue boundary. The seam machinery in [`crate::media_local`] only joins
+//! files at playback: head trim plus de-click fade, or a match-cut.
 //!
-//! The packed shape is decided at plan time and cached with the plan, so
-//! switching to a video model with a different window keeps the old shape until
+//! The published shape is decided at plan time and cached with the plan, so
+//! switching to a video model with a different window keeps the old rows until
 //! the plan is re-derived. Clip length is always re-clamped to the *current*
-//! window at render time, so a stale shape can only pace beats tighter than
+//! window at render time, so a stale row can only be requested shorter than
 //! planned — it can never ask the model for a duration it rejects.
 //!
-//! Timing is the renderer's, not the planner's: clip length is allocated from
-//! the scene budget long after a shot was described, so [`clip_timeline`] is the
-//! only thing allowed to put seconds in front of the model, and
-//! [`strip_authored_timecodes`] removes any a planner wrote anyway.
+//! Timing is the renderer's, not the planner's. [`strip_authored_timecodes`]
+//! removes `0-4s:` windows before they reach the model. The prompt does not
+//! print an internal clock.
 
 #![allow(dead_code)]
 
@@ -65,12 +64,17 @@ impl Default for PackOpts {
     }
 }
 
-/// Pack maximal runs of adjacent **storyboard rows** into single clips.
+/// How many hard cuts one generated file is asked to hold.
 ///
-/// Same join rule as [`pack_scene_clips`], applied before publish so the
-/// storyboard the user sees is already the render list: one row, one video.
-/// Packed rows are reindexed `0..n` — absorbed micro-shots must not keep a
-/// card in 「故事分镜」.
+/// Wan, Seedance, and Kling multi-shot examples stay at three or four cameras.
+/// A fifth cut is the next file: past that, identity and screen direction slip.
+pub(crate) const MAX_CAMERAS_PER_CLIP: usize = 4;
+
+/// Publish one video per row, inside the model window.
+///
+/// Cameras already written into a draft stay in that file, up to
+/// [`MAX_CAMERAS_PER_CLIP`]. A reaction shorter than the model minimum joins
+/// the previous spoken row. Rows are reindexed `0..n`.
 pub(crate) fn pack_scene_briefs(
     bounds: ClipBounds,
     briefs: Vec<ShotBriefDescription>,
@@ -83,6 +87,7 @@ pub(crate) fn pack_scene_briefs_with(
     briefs: Vec<ShotBriefDescription>,
     opts: PackOpts,
 ) -> Vec<ShotBriefDescription> {
+    let briefs = expand_one_camera_per_row(briefs);
     let mut out: Vec<ShotBriefDescription> = Vec::with_capacity(briefs.len());
     let mut run: Vec<ShotBriefDescription> = Vec::new();
     let mut run_need = 0u32;
@@ -146,30 +151,21 @@ pub(crate) fn pack_briefs_for_publish(
     out
 }
 
-/// After packing: fold overflow into the last kept clip, extend, or truncate.
+/// Apply a shot-count budget without gluing performances together.
+///
+/// [`OverBudget::Truncate`] drops the tail. Fold and extend both keep every
+/// row: stuffing the tail into the last clip was the hard merge that turned
+/// several performances into one long file.
 pub(crate) fn apply_shot_budget(
     mut briefs: Vec<ShotBriefDescription>,
     max_shots: usize,
     over_budget: OverBudget,
 ) -> Vec<ShotBriefDescription> {
     let max_shots = max_shots.max(1);
-    if briefs.len() <= max_shots || over_budget == OverBudget::Extend {
+    if briefs.len() <= max_shots || over_budget != OverBudget::Truncate {
         return briefs;
     }
-    if over_budget == OverBudget::Truncate {
-        briefs.truncate(max_shots);
-        reindex_briefs(&mut briefs);
-        return briefs;
-    }
-    let overflow = briefs.split_off(max_shots.saturating_sub(1));
-    if overflow.is_empty() {
-        return briefs;
-    }
-    briefs.push(if overflow.len() == 1 {
-        overflow.into_iter().next().expect("len checked")
-    } else {
-        collapse_briefs(overflow)
-    });
+    briefs.truncate(max_shots);
     reindex_briefs(&mut briefs);
     briefs
 }
@@ -447,15 +443,10 @@ pub(crate) fn shot_from_brief(brief: &ShotBriefDescription) -> ShotDescription {
     }
 }
 
-/// Pack maximal runs of adjacent shots into single multi-beat clips.
+/// Join only a sub-minimum reaction onto the previous spoken shot.
 ///
-/// `shots` is consumed in timeline order (callers sort by `idx`). The packed clip
-/// keeps the run's **first** `idx`, so shot directories and concat order stay
-/// stable; the absorbed indices disappear from the plan.
-///
-/// A run continues while none of the shots is already packed and the summed
-/// content need still fits [`ClipBounds::max_secs`]. Camera is coverage inside
-/// the file (CUT TO), never a reason to start a new clip.
+/// `shots` is consumed in timeline order (callers sort by `idx`). Two spoken
+/// performances stay two clips even when both would fit in the model window.
 pub(crate) fn pack_scene_clips(
     bounds: ClipBounds,
     shots: Vec<ShotDescription>,
@@ -502,20 +493,27 @@ fn can_pack_onto(
     if crate::domain::location_changed(&prev.location_id, &shot.location_id) {
         return false;
     }
-    if swapped_screen_blocking(&prev.visual_desc, &shot.visual_desc)
+    if !same_shot_size(&prev.visual_desc, &shot.visual_desc)
+        || swapped_screen_blocking(&prev.visual_desc, &shot.visual_desc)
         || swapped_screen_blocking(&prev.lf_desc, &shot.ff_desc)
     {
-        return coverage_fits(
-            bounds,
-            run_need,
-            need,
-            prev.audio_desc.as_deref(),
-            shot.audio_desc.as_deref(),
-        );
+        return false;
     }
-    // Narrative-adjacent and still inside one generation. Angle changes are
-    // CUT TO inside the file, not a new splice.
-    pack_fits(bounds, run_need + need, silent_beat(prev) && silent_beat(shot))
+    if !shot_is_submin_reaction(shot, bounds) {
+        return false;
+    }
+    if named_dialogue_speakers(&shot_audio_blob(prev)).is_empty() {
+        return false;
+    }
+    pack_fits(bounds, run_need + need, false)
+}
+
+fn shot_is_submin_reaction(shot: &ShotDescription, bounds: ClipBounds) -> bool {
+    let audio = shot.audio_desc.as_deref().unwrap_or("");
+    if !named_dialogue_speakers(audio).is_empty() || !audio_is_reaction_or_sfx(audio) {
+        return false;
+    }
+    beat_content_secs(&shot.variation_type, shot) <= bounds.min_secs()
 }
 
 /// Whether a run may grow to `content` seconds. A spoken run fills the model
@@ -541,49 +539,36 @@ fn can_pack_briefs(
     run_need: u32,
     need: u32,
     bounds: ClipBounds,
-    opts: &PackOpts,
+    _opts: &PackOpts,
+) -> bool {
+    reaction_joins_line(prev, brief, bounds, run_need.saturating_add(need))
+}
+
+/// A following row joins the previous spoken row only when it is the same
+/// camera, the same place, and a reaction no longer than the model minimum.
+/// Two spoken performances stay two rows. A reverse stays its own row.
+fn reaction_joins_line(
+    prev: &ShotBriefDescription,
+    brief: &ShotBriefDescription,
+    bounds: ClipBounds,
+    combined: u32,
 ) -> bool {
     if crate::domain::location_changed(&prev.location_id, &brief.location_id) {
         return false;
     }
-    // A gasp / point / glance that the LLM (or overflow-split) parked as its
-    // own row still belongs on the previous spoken beat. Do not let turn/payoff
-    // needles or an already-merged prev keep it as a 2s orphan.
-    if is_reaction_leftover_brief(brief)
-        && !named_dialogue_speakers(&brief_audio_blob(prev)).is_empty()
-    {
-        return pack_fits(bounds, run_need + need, false);
-    }
-    if prev.is_merged() || brief.is_merged() {
+    if !same_shot_size(&prev.visual_desc, &brief.visual_desc) {
         return false;
-    }
-    if crosses_split(prev, brief, &opts.split_needles) {
-        return false;
-    }
-    if opts.policy == PackPolicy::Coverage {
-        return swapped_screen_blocking(&prev.visual_desc, &brief.visual_desc)
-            && coverage_fits(
-                bounds,
-                run_need,
-                need,
-                prev.audio_desc.as_deref(),
-                brief.audio_desc.as_deref(),
-            );
     }
     if swapped_screen_blocking(&prev.visual_desc, &brief.visual_desc) {
-        return coverage_fits(
-            bounds,
-            run_need,
-            need,
-            prev.audio_desc.as_deref(),
-            brief.audio_desc.as_deref(),
-        );
+        return false;
     }
-    pack_fits(
-        bounds,
-        run_need + need,
-        brief_is_silent(prev) && brief_is_silent(brief),
-    )
+    if !is_reaction_leftover_brief(brief) || brief_content_secs(brief) > bounds.min_secs() {
+        return false;
+    }
+    if named_dialogue_speakers(&brief_audio_blob(prev)).is_empty() {
+        return false;
+    }
+    pack_fits(bounds, combined, false)
 }
 
 fn brief_is_silent(brief: &ShotBriefDescription) -> bool {
@@ -660,6 +645,219 @@ struct SpokenTurn {
     text: String,
 }
 
+/// First shot size written in `visual`. `画面中景` is depth, not a shot size.
+pub(crate) fn shot_size_label(visual: &str) -> Option<&'static str> {
+    const TOKENS: &[(&str, &str)] = &[
+        ("大特写", "ecu"),
+        ("特写", "cu"),
+        ("近景", "ms"),
+        ("中景", "m"),
+        ("全景", "ws"),
+        ("远景", "ews"),
+        ("close-up", "cu"),
+        ("close up", "cu"),
+        ("wide shot", "ws"),
+        ("medium shot", "m"),
+    ];
+    let lower = visual.to_ascii_lowercase();
+    let mut best: Option<(usize, &'static str)> = None;
+    for (token, label) in TOKENS {
+        let hay = if token.is_ascii() { lower.as_str() } else { visual };
+        let mut from = 0;
+        while let Some(rel) = hay[from..].find(*token) {
+            let at = from + rel;
+            let depth_word = matches!(*token, "中景" | "近景") && visual[..at].ends_with("画面");
+            if !depth_word && best.map(|(pos, _)| at < pos).unwrap_or(true) {
+                best = Some((at, *label));
+            }
+            from = at + token.len();
+        }
+    }
+    best.map(|(_, label)| label)
+}
+
+pub(crate) fn is_close_up_text(visual: &str) -> bool {
+    matches!(shot_size_label(visual), Some("cu" | "ecu"))
+}
+
+/// A wide or medium shows the room, so a fixed extras reference belongs on it.
+pub(crate) fn shows_the_room(visual: &str) -> bool {
+    matches!(shot_size_label(visual), Some("m" | "ws" | "ews"))
+}
+
+fn same_shot_size(a: &str, b: &str) -> bool {
+    match (shot_size_label(a), shot_size_label(b)) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    }
+}
+
+fn atom_opens_new_camera(visual: &str) -> bool {
+    let t = visual.trim();
+    t.contains("反打")
+        || t.contains("过肩")
+        || t.contains("切到")
+        || t.to_ascii_lowercase().contains("reverse")
+}
+
+/// Keep a draft's cameras inside one video. More than [`MAX_CAMERAS_PER_CLIP`]
+/// spills into the next file. A same-camera beat list with no cut is flattened
+/// so the renderer does not invent a second clock.
+fn expand_one_camera_per_row(briefs: Vec<ShotBriefDescription>) -> Vec<ShotBriefDescription> {
+    let mut out = Vec::with_capacity(briefs.len());
+    for brief in briefs {
+        if brief.beats.len() >= 2
+            && !cameras_differ(&brief.beats)
+            && split_visual_on_cuts(&brief.visual_desc).len() < 2
+        {
+            out.push(flatten_same_camera(brief));
+            continue;
+        }
+        let cuts = if brief.beats.len() >= 2 && cameras_differ(&brief.beats) {
+            brief.beats.clone()
+        } else {
+            let atoms = cut_atoms(
+                &brief.visual_desc,
+                brief.audio_desc.as_deref(),
+                brief.cam_idx,
+            );
+            if atoms.len() >= 2 { atoms } else { Vec::new() }
+        };
+        if cuts.len() <= 1 {
+            out.push(flatten_same_camera(brief));
+            continue;
+        }
+        if cuts.len() <= MAX_CAMERAS_PER_CLIP {
+            let mut row = brief;
+            row.beats = cuts;
+            out.push(row);
+            continue;
+        }
+        for chunk in cuts.chunks(MAX_CAMERAS_PER_CLIP) {
+            out.push(brief_from_atoms(&brief, chunk.to_vec()));
+        }
+    }
+    out
+}
+
+fn cameras_differ(atoms: &[ShotBriefBeat]) -> bool {
+    atoms.len() >= 2
+        && atoms.windows(2).any(|pair| {
+            pair[0].cam_idx != pair[1].cam_idx
+                || !same_shot_size(&pair[0].visual_desc, &pair[1].visual_desc)
+                || atom_opens_new_camera(&pair[1].visual_desc)
+        })
+}
+
+fn flatten_same_camera(mut brief: ShotBriefDescription) -> ShotBriefDescription {
+    if brief.beats.len() < 2 {
+        return brief;
+    }
+    if camera_pieces_from_beats(&brief).len() > 1 {
+        return brief;
+    }
+    let extra = join_distinct(brief.beats.iter().filter_map(|b| b.audio_desc.as_deref()), " ");
+    if brief.audio_desc.as_deref().unwrap_or("").trim().is_empty() && !extra.is_empty() {
+        brief.audio_desc = Some(extra);
+    }
+    let joined = join_distinct(brief.beats.iter().map(|b| b.visual_desc.as_str()), "；然后");
+    if joined.chars().count() > brief.visual_desc.chars().count() {
+        brief.visual_desc = joined;
+    }
+    brief.beats.clear();
+    brief
+}
+
+fn camera_pieces(brief: &ShotBriefDescription) -> Vec<ShotBriefDescription> {
+    let mut atoms = if brief.beats.len() >= 2 {
+        camera_pieces_from_beats(brief)
+    } else {
+        Vec::new()
+    };
+    if atoms.len() <= 1 {
+        atoms = cut_atoms(
+            &brief.visual_desc,
+            brief.audio_desc.as_deref(),
+            brief.cam_idx,
+        );
+    }
+    if atoms.len() <= 1 {
+        return Vec::new();
+    }
+    atoms
+        .into_iter()
+        .map(|atom| ShotBriefDescription {
+            idx: brief.idx,
+            is_last: false,
+            cam_idx: atom.cam_idx,
+            visual_desc: atom.visual_desc,
+            audio_desc: atom.audio_desc,
+            location_id: brief.location_id.clone(),
+            beats: Vec::new(),
+        })
+        .collect()
+}
+
+fn camera_pieces_from_beats(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
+    let mut atoms = Vec::new();
+    for beat in &brief.beats {
+        let cuts = cut_atoms(&beat.visual_desc, beat.audio_desc.as_deref(), beat.cam_idx);
+        if cuts.len() <= 1
+            && atoms.last().is_some_and(|prev: &ShotBriefBeat| {
+                prev.cam_idx == beat.cam_idx && same_shot_size(&prev.visual_desc, &beat.visual_desc)
+            })
+        {
+            atoms.push(beat.clone());
+            continue;
+        }
+        if cuts.len() <= 1 {
+            atoms.push(beat.clone());
+        } else {
+            atoms.extend(cuts);
+        }
+    }
+    let split = atoms.len() >= 2
+        && (atoms.windows(2).any(|pair| pair[0].cam_idx != pair[1].cam_idx)
+            || atoms.windows(2).any(|pair| !same_shot_size(&pair[0].visual_desc, &pair[1].visual_desc))
+            || brief.beats.iter().any(|beat| split_visual_on_cuts(&beat.visual_desc).len() >= 2)
+            || split_visual_on_cuts(&brief.visual_desc).len() >= 2);
+    if split {
+        atoms
+    } else {
+        Vec::new()
+    }
+}
+
+fn cut_atoms(visual: &str, audio: Option<&str>, cam_idx: i32) -> Vec<ShotBriefBeat> {
+    let parts = split_visual_on_cuts(visual);
+    if parts.len() < 2 {
+        return vec![ShotBriefBeat {
+            visual_desc: visual.to_string(),
+            audio_desc: audio.map(str::to_string),
+            cam_idx,
+        }];
+    }
+    let mut lenses: Vec<PromptLens> = parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, visual)| PromptLens {
+            visual,
+            audio: None,
+            cut: i > 0,
+            secs_hint: None,
+        })
+        .collect();
+    bind_audio_to_lenses(&mut lenses, audio);
+    lenses
+        .into_iter()
+        .map(|lens| ShotBriefBeat {
+            visual_desc: lens.visual,
+            audio_desc: lens.audio,
+            cam_idx,
+        })
+        .collect()
+}
+
 /// Split a planner visual on in-file camera cuts. One part if there is no cut.
 pub(crate) fn split_visual_on_cuts(visual: &str) -> Vec<String> {
     let t = visual.trim();
@@ -672,10 +870,72 @@ pub(crate) fn split_visual_on_cuts(visual: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect();
-    if parts.len() >= 2 {
+    let parts = if parts.len() >= 2 {
         parts
     } else {
         vec![t.to_string()]
+    };
+    let mut finer = Vec::new();
+    for part in parts {
+        finer.extend(split_then_new_shot_size(&part));
+    }
+    if finer.len() >= 2 {
+        finer
+    } else {
+        vec![t.to_string()]
+    }
+}
+
+/// A shot-size *change* after `；然后` / `。然后` is the next row.
+/// `；然后特写` after a medium splits. `；然后中景` after a medium stays: that
+/// is the same performance restated, including a reaction joined onto its line.
+/// `；然后他站起来` stays in this row.
+fn split_then_new_shot_size(visual: &str) -> Vec<String> {
+    const SIZES: &[&str] = &["大特写", "特写", "近景", "中景", "全景", "远景"];
+    const MARKERS: &[&str] = &["；然后", "。然后"];
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < visual.len() {
+        let mut step = visual[i..]
+            .chars()
+            .next()
+            .map(|ch| ch.len_utf8())
+            .unwrap_or(1);
+        for marker in MARKERS {
+            if visual[i..].starts_with(marker) {
+                let after = visual[i + marker.len()..].trim_start();
+                let opens_on_size = SIZES.iter().any(|size| after.starts_with(size));
+                let next_size = shot_size_label(after);
+                let prev_size = shot_size_label(&visual[..i]);
+                if opens_on_size && next_size.is_some() && prev_size != next_size {
+                    cuts.push((i, marker.len()));
+                    step = marker.len();
+                }
+                break;
+            }
+        }
+        i += step;
+    }
+    if cuts.is_empty() {
+        return vec![visual.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut prev = 0;
+    for (at, marker_len) in cuts {
+        let head = visual[prev..at].trim();
+        if !head.is_empty() {
+            out.push(head.to_string());
+        }
+        prev = at + marker_len;
+    }
+    let tail = visual[prev..].trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    if out.is_empty() {
+        vec![visual.to_string()]
+    } else {
+        out
     }
 }
 
@@ -1177,6 +1437,13 @@ fn can_add_atom(
     if run.is_empty() {
         return true;
     }
+    let prev = run.last().expect("run checked");
+    if prev.cam_idx != next.cam_idx
+        || !same_shot_size(&prev.visual_desc, &next.visual_desc)
+        || atom_opens_new_camera(&next.visual_desc)
+    {
+        return false;
+    }
     let mut speakers = HashSet::new();
     let mut content = 0u32;
     for beat in run {
@@ -1202,16 +1469,34 @@ fn brief_from_atoms(
     atoms: Vec<ShotBriefBeat>,
 ) -> ShotBriefDescription {
     let cam_idx = atoms.first().map(|a| a.cam_idx).unwrap_or(template.cam_idx);
-    let visual_desc = join_visual_with_cuts(atoms.iter().map(|a| (a.cam_idx, a.visual_desc.as_str())));
+    let multi = cameras_differ(&atoms);
+    let visual_desc = if multi {
+        let cjk = atoms.iter().any(|atom| {
+            atom.visual_desc.chars().any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
+        });
+        atoms
+            .iter()
+            .enumerate()
+            .map(|(i, atom)| {
+                let label = if cjk {
+                    format!("镜头{}", i + 1)
+                } else {
+                    format!("Shot {}", i + 1)
+                };
+                format!("{label}：{}", atom.visual_desc.trim())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        join_visual_with_cuts(atoms.iter().map(|a| (a.cam_idx, a.visual_desc.as_str())))
+    };
     let audio_desc = {
         let joined = join_distinct(atoms.iter().filter_map(|a| a.audio_desc.as_deref()), " ");
         (!joined.is_empty()).then_some(joined)
     };
-    let beats = if atoms.len() >= 2 {
-        atoms
-    } else {
-        Vec::new()
-    };
+    // Several cameras stay on `beats` so the prompt can play 镜头1 / 镜头2
+    // inside this file. A same-camera speech split does not: numbering it
+    // would look like a cut.
     ShotBriefDescription {
         idx: template.idx,
         is_last: false,
@@ -1219,7 +1504,7 @@ fn brief_from_atoms(
         visual_desc,
         audio_desc,
         location_id: template.location_id.clone(),
-        beats,
+        beats: if multi { atoms } else { Vec::new() },
     }
 }
 
@@ -1454,14 +1739,12 @@ fn absorb_reaction_leftovers(
     let mut out: Vec<ShotBriefDescription> = Vec::with_capacity(briefs.len());
     for brief in briefs {
         let joins = out.last().is_some_and(|prev| {
-            !crate::domain::location_changed(&prev.location_id, &brief.location_id)
-                && is_reaction_leftover_brief(&brief)
-                && !named_dialogue_speakers(&brief_audio_blob(prev)).is_empty()
-                && pack_fits(
-                    bounds,
-                    brief_content_secs(prev).saturating_add(brief_content_secs(&brief)),
-                    false,
-                )
+            reaction_joins_line(
+                prev,
+                &brief,
+                bounds,
+                brief_content_secs(prev).saturating_add(brief_content_secs(&brief)),
+            )
         });
         if joins {
             let prev = out.pop().expect("len checked");
@@ -1603,8 +1886,8 @@ enum ScreenSide {
 
 /// True when adjacent rows flip who stands screen-left vs screen-right.
 ///
-/// That is almost always a reverse-angle of the same blocking, which must live
-/// inside one generated file (CUT TO) — splicing two files reads as a teleport.
+/// That flip is a reverse. It is the next row, with its own blocking, and must
+/// not be glued into the previous performance.
 pub(crate) fn swapped_screen_blocking(a: &str, b: &str) -> bool {
     let Some((a_left, a_right)) = primary_screen_pair(a) else {
         return explicit_reverse_cut(b);
@@ -1636,7 +1919,7 @@ fn names_overlap(a: &str, b: &str) -> bool {
 
 fn normalize_subject(s: &str) -> String {
     s.chars()
-        .filter(|c| !c.is_whitespace() && *c != '<' && *c != '>')
+        .filter(|c| !c.is_whitespace() && !matches!(*c, '<' | '>' | '〈' | '〉'))
         .collect::<String>()
         .to_ascii_lowercase()
 }
@@ -1764,12 +2047,9 @@ pub(crate) struct TimedBeat {
 /// Lay a clip's beats on its **actual** `duration_secs`, or return empty when the
 /// clip plays a single beat.
 ///
-/// The beats are the prompt lenses the model reads, so every window labels the
-/// lens it belongs to. Two kinds of clip need a timeline, and both are measured
-/// against the duration the render requests, never against seconds a planner
-/// guessed before that duration existed:
-/// - a clip that absorbed adjacent rows ([`pack_scene_clips`]);
-/// - a single row with several CUT TO parts or authored `0-4s:` segments.
+/// Windows for a legacy multi-beat clip or an in-file CUT TO, measured against
+/// the duration the render requests. A published row has one performance, so
+/// this is empty. Authored `0-4s:` text is not a timeline.
 pub(crate) fn clip_timeline(shot: &ShotDescription, duration_secs: u32) -> Vec<TimedBeat> {
     lens_timeline(&prompt_lenses(shot), &shot.variation_type, duration_secs)
 }
@@ -1856,59 +2136,8 @@ static AUTHORED_TIMECODE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("authored timecode regex")
 });
 
-struct AuthoredBeat {
-    text: String,
-    /// Length the planner asked for, kept only as a relative weight.
-    secs: u32,
-}
-
-/// Beats a planner wrote as timed segments inside one motion line.
-///
-/// Empty unless at least two segments are present: one lone timecode carries no
-/// pacing information, only a wrong number.
-fn authored_beats(motion: &str) -> Vec<AuthoredBeat> {
-    let marks: Vec<(usize, usize, u32)> = AUTHORED_TIMECODE
-        .captures_iter(motion)
-        .map(|caps| {
-            let whole = caps.get(0).expect("group 0 always matches");
-            let secs = |i: usize| caps[i].parse::<u32>().unwrap_or(0);
-            (
-                whole.start(),
-                whole.end(),
-                secs(2).saturating_sub(secs(1)).max(1),
-            )
-        })
-        .collect();
-    if marks.len() < 2 {
-        return Vec::new();
-    }
-    // Prose before the first timecode applies to the whole clip; it reads as the
-    // opening of the first beat.
-    let lead = motion[..marks[0].0].trim();
-    let mut out: Vec<AuthoredBeat> = Vec::with_capacity(marks.len());
-    for (i, &(_, body_start, secs)) in marks.iter().enumerate() {
-        let body_end = marks.get(i + 1).map_or(motion.len(), |next| next.0);
-        let body = motion[body_start..body_end]
-            .trim()
-            .trim_end_matches([';', '；', ',', '，']);
-        let text = match i {
-            0 if !lead.is_empty() => format!("{lead} {body}"),
-            _ => body.to_string(),
-        };
-        out.push(AuthoredBeat {
-            text: text.trim().to_string(),
-            secs,
-        });
-    }
-    out.retain(|beat| !beat.text.is_empty());
-    match out.len() {
-        0 | 1 => Vec::new(),
-        _ => out,
-    }
-}
-
-/// Packed `shot.beats` win; otherwise in-file CUT TO parts in `visual_desc`,
-/// then authored `0-4s:` segments in `motion_desc`.
+/// Legacy `shot.beats` win; otherwise in-file CUT TO parts in `visual_desc`.
+/// Authored `0-4s:` windows are not lenses — the single-lens path strips them.
 /// Empty means the compiler should use the clip's single `visual_desc` / `motion_desc`.
 pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
     if shot.beats.len() >= 2 {
@@ -1920,7 +2149,13 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
                 continue;
             }
             let cam = beat.cam_idx.or(Some(shot.cam_idx));
-            let cut = matches!((prev_cam, cam), (Some(a), Some(b)) if a != b);
+            let prev_visual = out.last().map(|lens: &PromptLens| lens.visual.clone());
+            let cut = !out.is_empty()
+                && (matches!((prev_cam, cam), (Some(a), Some(b)) if a != b)
+                    || atom_opens_new_camera(&visual)
+                    || prev_visual
+                        .as_deref()
+                        .is_some_and(|prev| !same_shot_size(prev, &visual)));
             if cam.is_some() {
                 prev_cam = cam;
             }
@@ -1954,20 +2189,7 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
         bind_audio_to_lenses(&mut out, shot.audio_desc.as_deref());
         return out;
     }
-    let mut authored: Vec<PromptLens> = authored_beats(&shot.motion_desc)
-        .into_iter()
-        .map(|beat| PromptLens {
-            visual: beat.text,
-            audio: None,
-            cut: false,
-            secs_hint: Some(beat.secs),
-        })
-        .collect();
-    if authored.len() < 2 {
-        return Vec::new();
-    }
-    bind_audio_to_lenses(&mut authored, shot.audio_desc.as_deref());
-    authored
+    Vec::new()
 }
 
 /// Drop planner-authored timecodes from a motion line, keeping the prose.
@@ -2031,14 +2253,6 @@ fn flush(out: &mut Vec<ShotDescription>, mut run: Vec<ShotDescription>) {
 fn collapse(run: Vec<ShotDescription>) -> ShotDescription {
     let absorbed: Vec<i32> = run.iter().skip(1).map(|s| s.idx).collect();
     let same_camera = run.windows(2).all(|pair| pair[0].cam_idx == pair[1].cam_idx);
-    let beats: Vec<ShotBeat> = run
-        .iter()
-        .map(|s| ShotBeat {
-            motion_desc: beat_text_for_pack(&s.visual_desc, &s.motion_desc),
-            audio_desc: s.audio_desc.clone(),
-            cam_idx: Some(s.cam_idx),
-        })
-        .collect();
     let variation_type = run
         .iter()
         .max_by_key(|s| variation_rank(&s.variation_type))
@@ -2048,34 +2262,21 @@ fn collapse(run: Vec<ShotDescription>) -> ShotDescription {
     let is_last = last.is_last;
     let lf_desc = last.lf_desc.clone();
     let lf_vis_char_idxs = last.lf_vis_char_idxs.clone();
-    let exit_camera = last.cam_idx;
-    let motion_desc = join_distinct(run.iter().map(|s| s.motion_desc.as_str()), ", then ");
-    let visual_desc =
-        join_visual_with_cuts(run.iter().map(|s| (s.cam_idx, s.visual_desc.as_str())));
+    let motion_desc = join_distinct(run.iter().map(|s| s.motion_desc.as_str()), "；然后");
+    let visual_desc = join_distinct(run.iter().map(|s| s.visual_desc.as_str()), "；然后");
     let audio_desc = {
         let joined = join_distinct(run.iter().filter_map(|s| s.audio_desc.as_deref()), " ");
         (!joined.is_empty()).then_some(joined)
     };
 
     let mut head = run.into_iter().next().expect("len >= 2");
-    if same_camera {
-        tracing::info!(
-            clip = head.idx,
-            camera = head.cam_idx,
-            absorbed = ?absorbed,
-            beats = beats.len(),
-            "merged adjacent same-camera shots into one clip (one splice fewer)"
-        );
-    } else {
-        tracing::info!(
-            clip = head.idx,
-            entry_camera = head.cam_idx,
-            exit_camera,
-            absorbed = ?absorbed,
-            beats = beats.len(),
-            "packed adjacent shots into one native multi-shot clip (camera cuts inside the generation)"
-        );
-    }
+    tracing::info!(
+        clip = head.idx,
+        camera = head.cam_idx,
+        absorbed = ?absorbed,
+        same_camera,
+        "joined a sub-minimum reaction into the spoken shot"
+    );
     head.is_last = is_last;
     head.variation_type = variation_type;
     head.lf_desc = lf_desc;
@@ -2083,7 +2284,7 @@ fn collapse(run: Vec<ShotDescription>) -> ShotDescription {
     head.visual_desc = visual_desc;
     head.motion_desc = motion_desc;
     head.audio_desc = audio_desc;
-    head.beats = beats;
+    head.beats.clear();
     head
 }
 
@@ -2096,9 +2297,7 @@ fn flush_briefs(out: &mut Vec<ShotBriefDescription>, mut run: Vec<ShotBriefDescr
 }
 
 fn collapse_briefs(run: Vec<ShotBriefDescription>) -> ShotBriefDescription {
-    let beats: Vec<ShotBriefBeat> = run.iter().flat_map(brief_as_beats).collect();
-    let visual_desc =
-        join_visual_with_cuts(beats.iter().map(|b| (b.cam_idx, b.visual_desc.as_str())));
+    let visual_desc = join_distinct(run.iter().map(|s| s.visual_desc.as_str()), "；然后");
     let audio_desc = {
         let joined = join_distinct(run.iter().filter_map(|s| s.audio_desc.as_deref()), " ");
         (!joined.is_empty()).then_some(joined)
@@ -2108,13 +2307,12 @@ fn collapse_briefs(run: Vec<ShotBriefDescription>) -> ShotBriefDescription {
     tracing::info!(
         clip = head.idx,
         entry_camera = head.cam_idx,
-        beats = beats.len(),
-        "packed storyboard rows into one renderable clip (one row = one video)"
+        "joined a sub-minimum reaction into the spoken row"
     );
     head.is_last = is_last;
     head.visual_desc = visual_desc;
     head.audio_desc = audio_desc;
-    head.beats = beats;
+    head.beats.clear();
     head
 }
 
@@ -2765,7 +2963,7 @@ mod tests {
     }
 
     #[test]
-    fn three_silent_adjacent_rows_pack_into_one_clip() {
+    fn three_silent_adjacent_rows_stay_three_performances() {
         let briefs = vec![
             brief(0, 0, "she turns", None),
             brief(1, 0, "she steps closer", None),
@@ -2778,13 +2976,19 @@ mod tests {
             None,
             OverBudget::Fold,
         );
-        assert_eq!(packed.len(), 1);
-        assert!(packed[0].is_merged());
-        assert_eq!(packed[0].beats.len(), 3);
+        assert_eq!(packed.len(), 3);
+        assert!(packed.iter().all(|row| !row.is_merged()));
+        assert_eq!(
+            packed
+                .iter()
+                .map(|row| row.visual_desc.as_str())
+                .collect::<Vec<_>>(),
+            vec!["she turns", "she steps closer", "she sees him"]
+        );
     }
 
     #[test]
-    fn adjacent_same_camera_shots_become_one_clip() {
+    fn adjacent_same_camera_shots_stay_separate_performances() {
         let shots = vec![
             shot(0, 0, "she turns", Some("door creaks")),
             shot(1, 0, "she steps closer", Some("footsteps")),
@@ -2792,38 +2996,29 @@ mod tests {
         ];
         let merged = pack_scene_clips(SEEDANCE, shots);
 
-        // 5+5+5s fits the 15s ceiling, so the reverse packs into the same
-        // generation instead of becoming a splice.
-        assert_eq!(merged.len(), 1);
-        let clip = &merged[0];
-        assert_eq!(clip.idx, 0);
-        assert!(clip.is_merged());
-        assert!(clip.has_camera_cuts());
-        assert_eq!(clip.exit_cam_idx(), 1);
-        assert_eq!(
-            clip.motion_desc,
-            "she turns, then she steps closer, then reverse angle"
-        );
-        assert_eq!(
-            clip.audio_desc.as_deref(),
-            Some("door creaks footsteps room tone")
-        );
-        assert_eq!(clip.ff_desc, "ff0");
-        assert_eq!(clip.lf_desc, "lf2");
-        assert_eq!(clip.lf_vis_char_idxs, vec![2]);
+        // The window has room for all three. They stay three videos: a reverse
+        // is the next row, and two actions are two performances.
+        assert_eq!(merged.len(), 3);
+        assert!(merged.iter().all(|clip| !clip.is_merged()));
+        assert!(merged.iter().all(|clip| !clip.has_camera_cuts()));
+        assert_eq!(merged[0].motion_desc, "she turns");
+        assert_eq!(merged[0].audio_desc.as_deref(), Some("door creaks"));
+        assert_eq!(merged[2].cam_idx, 1);
+        assert_eq!(merged[2].motion_desc, "reverse angle");
+        assert_eq!(merged[0].ff_desc, "ff0");
+        assert_eq!(merged[2].lf_desc, "lf2");
     }
 
     #[test]
-    fn a_reverse_angle_that_fits_is_packed_as_native_multishot() {
+    fn a_reverse_angle_is_the_next_row() {
         let shots = vec![shot(0, 0, "she speaks", None), shot(1, 1, "he answers", None)];
         let merged = pack_scene_clips(SEEDANCE, shots);
-        assert_eq!(merged.len(), 1);
-        assert!(merged[0].is_merged());
-        assert!(merged[0].has_camera_cuts());
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().all(|clip| !clip.is_merged()));
+        assert!(merged.iter().all(|clip| !clip.has_camera_cuts()));
         assert_eq!(merged[0].cam_idx, 0);
-        assert_eq!(merged[0].exit_cam_idx(), 1);
-        assert_eq!(merged[0].beats[0].cam_idx, Some(0));
-        assert_eq!(merged[0].beats[1].cam_idx, Some(1));
+        assert_eq!(merged[1].cam_idx, 1);
+        assert_eq!(merged[1].motion_desc, "he answers");
     }
 
     #[test]
@@ -2839,31 +3034,30 @@ mod tests {
         assert!(merged.iter().all(|s| !s.is_merged()));
     }
 
-    /// Silent actions are priced at their content (2s each), so five of them
-    /// reach the 10s silent cap; the sixth opens a new clip. Different cameras
-    /// do not themselves cause the split.
+    /// Each silent hold is its own performance. The window caps the request for
+    /// that row; it does not collect holds until the ceiling is full.
     #[test]
-    fn a_silent_run_stops_at_its_content_cap() {
+    fn a_silent_run_stays_one_row_per_performance() {
         let shots: Vec<ShotDescription> = (0..6).map(|i| shot(i, i, "hold", None)).collect();
         let merged = pack_scene_clips(SEEDANCE, shots);
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].beats.len(), 5);
-        assert!(merged[0].has_camera_cuts());
-        assert_eq!(merged[1].idx, 5);
-        assert!(!merged[1].is_merged());
+        assert_eq!(merged.len(), 6);
+        assert!(merged.iter().all(|clip| !clip.is_merged()));
+        assert_eq!(merged[5].idx, 5);
+        for clip in &merged {
+            assert!(clip_need_secs(SEEDANCE, clip) <= SEEDANCE.max_secs());
+        }
     }
 
-    /// The model maximum binds before the silent cap when the window is narrow:
-    /// under a 5–8s window four 2s actions fill the clip, the fifth starts another.
+    /// A narrow window still does not glue silent holds. Each request stays
+    /// inside the model maximum.
     #[test]
     fn a_silent_run_never_exceeds_the_model_maximum() {
         let window = ClipBounds::new(5, 8);
         let shots: Vec<ShotDescription> = (0..5).map(|i| shot(i, 0, "hold", None)).collect();
         let merged = pack_scene_clips(window, shots);
 
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].beats.len(), 4);
-        assert!(!merged[1].is_merged());
+        assert_eq!(merged.len(), 5);
+        assert!(merged.iter().all(|clip| !clip.is_merged()));
         for clip in &merged {
             assert!(clip_need_secs(window, clip) <= window.max_secs());
         }
@@ -2898,7 +3092,7 @@ mod tests {
     }
 
     #[test]
-    fn the_last_shot_flag_and_busiest_variation_survive_the_merge() {
+    fn the_last_shot_flag_and_its_variation_stay_on_that_row() {
         let mut shots = vec![
             shot(0, 0, "a", None),
             shot(1, 0, "b", None),
@@ -2906,9 +3100,11 @@ mod tests {
         shots[1].is_last = true;
         shots[1].variation_type = "large".into();
         let merged = pack_scene_clips(SEEDANCE, shots);
-        assert_eq!(merged.len(), 1);
-        assert!(merged[0].is_last);
-        assert_eq!(merged[0].variation_type, "large");
+        assert_eq!(merged.len(), 2);
+        assert!(!merged[0].is_last);
+        assert!(merged[1].is_last);
+        assert_eq!(merged[1].variation_type, "large");
+        assert_eq!(merged[0].variation_type, "small");
     }
 
     #[test]
@@ -2923,7 +3119,7 @@ mod tests {
     }
 
     #[test]
-    fn a_merged_clip_is_priced_for_every_beat() {
+    fn every_spoken_row_is_priced_for_its_own_line() {
         let line = format!("她：「{}」", "中".repeat(12));
         let shots = vec![
             shot(0, 0, "she speaks", Some(&line)),
@@ -2931,7 +3127,12 @@ mod tests {
         ];
         let one_beat = clip_need_secs(SEEDANCE, &shots[0]);
         let merged = pack_scene_clips(SEEDANCE, shots);
-        assert!(clip_need_secs(SEEDANCE, &merged[0]) > one_beat);
+        assert_eq!(merged.len(), 2);
+        let priced: u32 = merged.iter().map(|clip| clip_need_secs(SEEDANCE, clip)).sum();
+        assert!(priced > one_beat, "priced={priced} one={one_beat}");
+        for clip in &merged {
+            assert!(clip_need_secs(SEEDANCE, clip) <= SEEDANCE.max_secs());
+        }
     }
 
     #[test]
@@ -2949,17 +3150,25 @@ mod tests {
         assert!(need >= 10, "need={need}");
     }
 
-    /// A spoken beat (17 CJK ⇒ ~8s) next to a silent one (model min 5s): 13s of
-    /// content, still inside the 15s ceiling, so they merge.
+    /// A legacy two-beat clip. Published rows no longer merge; the timeline
+    /// helper still has to give the spoken beat the longer window when an old
+    /// artifact still carries both.
     fn spoken_then_silent() -> ShotDescription {
         let line: String = "中".chars().cycle().take(17).collect();
-        let shots = vec![
-            shot(0, 0, "she speaks", Some(&line)),
-            shot(1, 0, "he nods", None),
+        let mut clip = shot(0, 0, "she speaks", Some(&line));
+        clip.beats = vec![
+            ShotBeat {
+                motion_desc: "she speaks".into(),
+                audio_desc: Some(line),
+                cam_idx: Some(0),
+            },
+            ShotBeat {
+                motion_desc: "he nods".into(),
+                audio_desc: None,
+                cam_idx: Some(0),
+            },
         ];
-        let mut merged = pack_scene_clips(SEEDANCE, shots);
-        assert_eq!(merged.len(), 1, "the run must merge for this fixture to mean anything");
-        merged.remove(0)
+        clip
     }
 
     fn lens(timeline: &[TimedBeat]) -> Vec<u32> {
@@ -3025,46 +3234,48 @@ mod tests {
 
     #[test]
     fn the_timeline_bails_out_when_the_clip_is_shorter_than_its_beat_count() {
-        let shots: Vec<ShotDescription> = (0..3).map(|i| shot(i, 0, "hold", None)).collect();
-        let merged = pack_scene_clips(SEEDANCE, shots);
-        assert_eq!(merged[0].beats.len(), 3);
-        assert!(clip_timeline(&merged[0], 2).is_empty());
+        let mut clip = shot(0, 0, "hold", None);
+        clip.beats = (0..3)
+            .map(|i| ShotBeat {
+                motion_desc: format!("hold {i}"),
+                audio_desc: None,
+                cam_idx: Some(0),
+            })
+            .collect();
+        assert_eq!(clip.beats.len(), 3);
+        assert!(clip_timeline(&clip, 2).is_empty());
     }
 
-    /// Regression: the storyboard LLM writes `0-4s / 4-7s` before the clip length
-    /// is allocated, so its seconds (7s here) contradicted the rendered clip (5s).
-    /// The renderer owns time — the authored pacing survives only as a ratio.
+    /// A planner's `0-4s / 4-7s` is not a second clock. The prose of both
+    /// actions survives; the numbers do not become lenses.
     #[test]
-    fn authored_timecodes_are_relaid_on_the_real_duration() {
+    fn authored_timecodes_are_stripped_and_do_not_open_a_timeline() {
         let mut s = shot(0, 0, "", None);
         s.motion_desc = "0-4s:男生骑车从左向右横贯画面;4-7s:他继续向右骑行,落叶被风吹卷而起。".into();
+        s.visual_desc.clear();
 
-        let timeline = clip_timeline(&s, 5);
-        assert_eq!(timeline.len(), 2);
-        assert_eq!(timeline[0].start_secs, 0);
-        assert_eq!(timeline.last().expect("two beats").end_secs, 5);
-        // 4:3 authored ratio over a 5s clip → 3s then 2s.
-        assert_eq!(lens(&timeline), vec![3, 2]);
-        // No authored second survives into the beat text.
-        for beat in &timeline {
-            assert!(!beat.text.contains('s'), "{beat:?}");
-            assert!(!beat.text.contains("4-7"), "{beat:?}");
-        }
-        assert!(timeline[0].text.starts_with("男生骑车"), "{timeline:?}");
-        assert!(timeline[1].text.starts_with("他继续"), "{timeline:?}");
+        assert!(clip_timeline(&s, 5).is_empty());
+        let prose = strip_authored_timecodes(&s.motion_desc);
+        assert!(!prose.contains("0-4"));
+        assert!(!prose.contains("4-7"));
+        assert!(prose.contains("男生骑车"), "{prose}");
+        assert!(prose.contains("他继续向右骑行"), "{prose}");
     }
 
-    /// Prose before the first timecode belongs to the first beat, not to nobody.
+    /// Prose before the first timecode stays with the action. It is not dropped
+    /// and it does not open its own lens.
     #[test]
-    fn a_lead_in_before_the_first_timecode_opens_the_first_beat() {
+    fn a_lead_in_before_the_first_timecode_stays_in_the_prose() {
         let mut s = shot(0, 0, "", None);
         s.motion_desc = "固定机位。[0-3s] 她抬头; [3-8s] 她起身离开".into();
+        s.visual_desc.clear();
 
-        let timeline = clip_timeline(&s, 11);
-        assert_eq!(timeline.len(), 2);
-        assert!(timeline[0].text.starts_with("固定机位。"), "{timeline:?}");
-        assert!(timeline[0].text.contains("她抬头"), "{timeline:?}");
-        assert_eq!(lens(&timeline), vec![4, 7], "3:5 over 11s");
+        assert!(clip_timeline(&s, 11).is_empty());
+        let prose = strip_authored_timecodes(&s.motion_desc);
+        assert!(prose.starts_with("固定机位"), "{prose}");
+        assert!(prose.contains("她抬头"), "{prose}");
+        assert!(prose.contains("她起身离开"), "{prose}");
+        assert!(!prose.contains("0-3"), "{prose}");
     }
 
     /// One timecode is not a pacing plan, just a wrong number: strip it and keep
@@ -3085,25 +3296,35 @@ mod tests {
         assert_eq!(strip_authored_timecodes("  spaced  "), "spaced");
     }
 
-    /// A merged clip whose absorbed beats carry authored timecodes must not leak
-    /// them: the merged clip's own windows are the only truth.
+    /// A legacy beat list that still carries authored timecodes must not leak
+    /// the numbers into the lens text.
     #[test]
-    fn a_merged_clip_drops_the_timecodes_of_the_beats_it_absorbed() {
-        let mut a = shot(0, 0, "", None);
-        a.motion_desc = "0-4s:她转身;4-7s:她走近".into();
-        let b = shot(1, 0, "他抬头", None);
-        let merged = pack_scene_clips(SEEDANCE, vec![a, b]);
-        assert_eq!(merged.len(), 1);
+    fn a_legacy_beat_list_drops_authored_timecodes() {
+        let mut clip = shot(0, 0, "", None);
+        clip.visual_desc.clear();
+        clip.beats = vec![
+            ShotBeat {
+                motion_desc: "0-4s:她转身;4-7s:她走近".into(),
+                audio_desc: None,
+                cam_idx: Some(0),
+            },
+            ShotBeat {
+                motion_desc: "他抬头".into(),
+                audio_desc: None,
+                cam_idx: Some(0),
+            },
+        ];
 
-        let timeline = clip_timeline(&merged[0], 12);
+        let timeline = clip_timeline(&clip, 12);
         assert_eq!(timeline.len(), 2);
         assert!(!timeline[0].text.contains("0-4s"), "{timeline:?}");
         assert!(!timeline[0].text.contains("4-7s"), "{timeline:?}");
+        assert!(timeline[0].text.contains("她转身"), "{timeline:?}");
         assert_eq!(timeline.last().expect("two beats").end_secs, 12);
     }
 
     #[test]
-    fn pack_scene_briefs_collapses_micro_shots_and_reindexes() {
+    fn each_micro_shot_stays_its_own_row_and_reindexes() {
         let briefs = vec![
             brief(0, 0, "她转身开门", None),
             brief(1, 0, "她看见他", None),
@@ -3111,15 +3332,16 @@ mod tests {
             brief(3, 2, "窗外雨", None),
         ];
         let packed = pack_scene_briefs(SEEDANCE, briefs);
-        // Four 2s single actions are 8s of content, under the 10s silent cap, so
-        // they play as one clip; the camera changes are CUT TO parts inside it.
-        assert_eq!(packed.len(), 1);
-        assert_eq!(packed[0].idx, 0);
-        assert!(packed[0].is_merged());
-        assert_eq!(packed[0].beats.len(), 4);
-        assert!(packed[0].visual_desc.contains("切到新机位"), "{}", packed[0].visual_desc);
-        assert!(packed[0].is_last);
-        assert_eq!(packed[0].exit_cam_idx(), 2);
+        assert_eq!(packed.len(), 4);
+        assert_eq!(
+            packed.iter().map(|row| row.idx).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert!(packed.iter().all(|row| !row.is_merged()));
+        assert!(!packed.iter().any(|row| row.visual_desc.contains("切到新机位")));
+        assert!(packed[3].is_last);
+        assert_eq!(packed[2].cam_idx, 1);
+        assert_eq!(packed[3].cam_idx, 2);
     }
 
     #[test]
@@ -3178,19 +3400,25 @@ mod tests {
     }
 
     #[test]
-    fn three_named_speakers_can_still_pack_on_wan_window() {
+    fn three_named_speakers_stay_three_rows_on_a_wide_window() {
         let briefs = vec![
             brief(0, 0, "a", Some("李薇：「走。」")),
             brief(1, 0, "b", Some("阿琳：「等。」")),
             brief(2, 0, "c", Some("赵无极：「听。」")),
         ];
         let packed = pack_scene_briefs(WAN3, briefs);
-        assert_eq!(packed.len(), 1);
-        assert!(packed[0].is_merged());
+        assert_eq!(packed.len(), 3, "{packed:?}");
+        assert!(packed.iter().all(|row| !row.is_merged()));
+        let audio = packed
+            .iter()
+            .filter_map(|row| row.audio_desc.as_deref())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(audio.contains("走") && audio.contains("等") && audio.contains("听"), "{audio}");
     }
 
     #[test]
-    fn sync_storyboard_drops_absorbed_rows() {
+    fn sync_storyboard_keeps_one_row_per_clip() {
         let briefs = vec![
             brief(0, 0, "她转身", None),
             brief(1, 0, "她走近", None),
@@ -3204,13 +3432,14 @@ mod tests {
                 shot(2, 1, "他抬头", None),
             ],
         );
-        assert_eq!(clips.len(), 1);
+        assert_eq!(clips.len(), 3);
         let synced = sync_storyboard_to_clips(&briefs, &clips);
-        assert_eq!(synced.len(), 1);
-        assert_eq!(synced[0].idx, 0);
-        assert!(synced[0].is_merged());
-        assert_eq!(synced[0].beats.len(), 3);
-        assert!(synced[0].is_last);
+        assert_eq!(synced.len(), 3);
+        assert!(synced.iter().all(|row| !row.is_merged()));
+        assert!(synced[2].is_last);
+        let dropped = sync_storyboard_to_clips(&briefs, &clips[..2]);
+        assert_eq!(dropped.len(), 2);
+        assert!(dropped.iter().all(|row| row.idx != 2));
     }
 
     #[test]
@@ -3222,7 +3451,7 @@ mod tests {
     }
 
     #[test]
-    fn pack_scene_briefs_collapses_screen_direction_reverse() {
+    fn a_screen_direction_reverse_stays_the_next_row() {
         let briefs = vec![
             brief(
                 0,
@@ -3238,9 +3467,12 @@ mod tests {
             ),
         ];
         let packed = pack_scene_briefs(SEEDANCE, briefs);
-        assert_eq!(packed.len(), 1, "{packed:?}");
-        assert!(packed[0].is_merged());
-        assert_eq!(packed[0].beats.len(), 2);
+        assert_eq!(packed.len(), 2, "{packed:?}");
+        assert!(packed.iter().all(|row| !row.is_merged()));
+        assert!(packed[0].visual_desc.contains("画面左侧"));
+        assert!(packed[1].visual_desc.contains("画面右侧"));
+        assert_eq!(packed[1].cam_idx, 1);
+        assert_eq!(packed[1].audio_desc.as_deref(), Some("书本落地"));
     }
 
     #[test]
@@ -3349,28 +3581,32 @@ mod tests {
     }
 
     #[test]
-    fn fold_budget_keeps_overflow_as_beats() {
+    fn fold_budget_keeps_every_performance() {
         let briefs = vec![
             brief(0, 0, "a", None),
             brief(1, 0, "b", None),
             brief(2, 0, "c", None),
             brief(3, 0, "d", None),
         ];
-        let folded = apply_shot_budget(briefs, 2, OverBudget::Fold);
-        assert_eq!(folded.len(), 2);
-        assert_eq!(folded[1].beats.len(), 3);
-        assert!(folded[1].visual_desc.contains("b"));
-        assert!(folded[1].visual_desc.contains("d"));
+        let folded = apply_shot_budget(briefs.clone(), 2, OverBudget::Fold);
+        assert_eq!(folded.len(), 4);
+        assert!(folded.iter().all(|row| !row.is_merged()));
+        assert!(folded.iter().any(|row| row.visual_desc.contains('d')));
+        let truncated = apply_shot_budget(briefs, 2, OverBudget::Truncate);
+        assert_eq!(truncated.len(), 2);
+        assert!(truncated[0].visual_desc.contains('a'));
+        assert!(truncated[1].visual_desc.contains('b'));
+        assert!(!truncated.iter().any(|row| row.visual_desc.contains('d')));
     }
 
     #[test]
-    fn pack_does_not_join_across_turn_needles() {
+    fn two_performances_stay_two_rows_with_or_without_needles() {
         let briefs = vec![
             brief(0, 0, "她攥紧通知书", None),
             brief(1, 0, "父亲推来自行车，车筐里是录取副本", None),
         ];
         let joined = pack_scene_briefs(SEEDANCE, briefs.clone());
-        assert_eq!(joined.len(), 1);
+        assert_eq!(joined.len(), 2);
         let packed = pack_scene_briefs_with(
             SEEDANCE,
             briefs,
@@ -3381,6 +3617,7 @@ mod tests {
             },
         );
         assert_eq!(packed.len(), 2);
+        assert!(packed[1].visual_desc.contains("自行车"));
     }
 
     const SIX_SPEAKER_VISUAL: &str =
@@ -3426,19 +3663,21 @@ mod tests {
         let audio = "罗子君：「……陈俊生。」陈俊生：「不是我！」唐晶：「你别装了。」";
         let packed = pack_scene_briefs(
             SEEDANCE,
-            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(audio))],
+            vec![brief(0, 0, "近景，三个人围坐。", Some(audio))],
         );
         assert_eq!(packed.len(), 1, "{packed:?}");
+        assert!(!packed[0].is_merged());
         assert_eq!(quote_blob(&packed), quoted_payloads(audio).join(""));
     }
 
     #[test]
     fn wan_five_voice_slots_keep_five_speakers_together() {
+        let visual = "近景，众人围坐。";
         let audio = "\
 罗子君：「一。」陈俊生：「二。」唐晶：「三。」凌玲：「四。」贺建军：「五。」";
         let packed = pack_scene_briefs_with(
             WAN3,
-            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(audio))],
+            vec![brief(0, 0, visual, Some(audio))],
             PackOpts {
                 policy: PackPolicy::Dense,
                 split_needles: Vec::new(),
@@ -3446,9 +3685,10 @@ mod tests {
             },
         );
         assert_eq!(packed.len(), 1, "{packed:?}");
+        assert_eq!(quote_blob(&packed), quoted_payloads(audio).join(""));
         let six = pack_scene_briefs_with(
             WAN3,
-            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO))],
+            vec![brief(0, 0, visual, Some(SIX_SPEAKER_AUDIO))],
             PackOpts {
                 policy: PackPolicy::Dense,
                 split_needles: Vec::new(),
@@ -3460,14 +3700,35 @@ mod tests {
             quote_blob(&six),
             quoted_payloads(SIX_SPEAKER_AUDIO).join("")
         );
+        for row in &six {
+            let n = named_dialogue_speakers(&brief_audio_blob(row)).len();
+            assert!(n <= 5, "row {} has {n} speakers", row.idx);
+        }
     }
 
     /// No voice-slot limit means speaker count never splits a row. The window
-    /// still does: this row runs past 15s of content, and the old packer kept
-    /// it whole, so the renderer dropped its tail.
+    /// still does, at a dialogue boundary, and every quoted line survives.
     #[test]
     fn minimax_zero_voice_slots_does_not_split_on_speaker_count() {
-        let input = brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO));
+        let short = "罗子君：「一。」陈俊生：「二。」唐晶：「三。」凌玲：「四。」贺建军：「五。」康总：「六。」";
+        let fits = pack_scene_briefs_with(
+            SEEDANCE,
+            vec![brief(0, 0, "近景，六个人围着桌子。", Some(short))],
+            PackOpts {
+                policy: PackPolicy::Dense,
+                split_needles: Vec::new(),
+                max_voice_ref_speakers: 0,
+            },
+        );
+        assert_eq!(fits.len(), 1, "{fits:?}");
+        assert_eq!(quote_blob(&fits), quoted_payloads(short).join(""));
+
+        let long = format!(
+            "罗子君：「{}」陈俊生：「{}」",
+            "中".repeat(40),
+            "乙".repeat(40)
+        );
+        let input = brief(0, 0, "近景，两人对峙。", Some(&long));
         assert!(
             brief_content_secs(&input) > SEEDANCE.max_secs(),
             "fixture must overrun the window on content alone"
@@ -3481,16 +3742,14 @@ mod tests {
                 max_voice_ref_speakers: 0,
             },
         );
+        assert!(packed.len() >= 2, "{packed:?}");
         for clip in &packed {
             assert!(
                 brief_content_secs(clip) <= SEEDANCE.max_secs(),
                 "{clip:?}"
             );
         }
-        assert_eq!(
-            quote_blob(&packed),
-            quoted_payloads(SIX_SPEAKER_AUDIO).join("")
-        );
+        assert_eq!(quote_blob(&packed), quoted_payloads(&long).join(""));
     }
 
     #[test]
@@ -3747,5 +4006,72 @@ mod tests {
             !audio.contains("别抖"),
             "generation must not re-send the previous line: {audio}"
         );
+    }
+
+    #[test]
+    fn two_spoken_rows_stay_two_videos_inside_the_window() {
+        let rows = vec![
+            brief(
+                0,
+                0,
+                "中景。<刘华强>在画面左侧、门内一步，面向右，站着。他按住对方的肩。",
+                Some("刘华强：「别动。」"),
+            ),
+            brief(
+                1,
+                0,
+                "中景。<刘华强>在画面左侧、门内一步，面向右，站着。他低头看了一眼桌上的酒。",
+                Some("刘华强：「把头低下。」"),
+            ),
+        ];
+        let packed = pack_scene_briefs(WAN3, rows);
+        assert_eq!(packed.len(), 2, "fitting in 30s is not a reason to merge: {packed:?}");
+    }
+
+    #[test]
+    fn cameras_inside_one_draft_stay_one_video() {
+        let visual = "全景平视固定。<刘华强>在画面左侧、门内一步，面向右，站着，抬手按住肩。CUT TO 特写：<刘华强>在画面中央，面向镜头，咬紧下颌。";
+        let packed = pack_scene_briefs(
+            WAN3,
+            vec![brief(0, 0, visual, Some("刘华强：「别动。」"))],
+        );
+        assert_eq!(packed.len(), 1, "a cut inside the window stays one file: {packed:?}");
+        assert!(packed[0].is_merged(), "{packed:?}");
+        assert!(packed[0].beats.len() >= 2, "{packed:?}");
+        let blob = format!(
+            "{} {}",
+            packed[0].visual_desc,
+            packed[0]
+                .beats
+                .iter()
+                .map(|beat| beat.visual_desc.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert!(blob.contains("全景") && blob.contains("特写"), "{blob}");
+    }
+
+    #[test]
+    fn subminimum_reaction_joins_the_spoken_row() {
+        let rows = vec![
+            brief(
+                0,
+                0,
+                "中景。<玄霄老祖>在画面左侧，面向右，站着，手里掂着开光手链。",
+                Some("玄霄老祖：「通关者，本座亲自为他挡一道雷。」"),
+            ),
+            brief(
+                1,
+                0,
+                "中景。<王胖子>在画面右侧，面向左，站着。",
+                Some("(倒吸一口凉气)"),
+            ),
+        ];
+        let packed = pack_scene_briefs(WAN3, rows);
+        assert_eq!(packed.len(), 1, "{packed:?}");
+        let audio = packed[0].audio_desc.as_deref().unwrap_or("");
+        assert!(audio.contains("挡一道雷"), "{audio}");
+        assert!(audio.contains("倒吸一口凉气"), "{audio}");
+        assert!(packed[0].beats.is_empty(), "a joined reaction is not an inner timeline");
     }
 }

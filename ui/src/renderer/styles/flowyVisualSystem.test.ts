@@ -57,6 +57,16 @@ describe('flowy visual system', () => {
   });
 
 
+  test('uses the system font stack and concentric control radii', () => {
+    expect(css.includes("-apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text'")).toBe(true);
+    expect(css.includes('--flowy-text-display: 22px')).toBe(true);
+    expect(css.includes('--flowy-text-body: 15px')).toBe(true);
+    expect(css.includes('--flowy-text-control: 13px')).toBe(true);
+    expect(css.includes('--flowy-radius-control: 6px')).toBe(true);
+    expect(css.includes('--flowy-radius-field: 8px')).toBe(true);
+    expect(css.includes('html.platform-macos')).toBe(true);
+  });
+
   test('keeps semantic surfaces mapped to the established theme contract', () => {
     expect(css.includes('--flowy-canvas: var(--bg-base')).toBe(true);
     expect(css.includes('--flowy-panel: var(--bg-1')).toBe(true);

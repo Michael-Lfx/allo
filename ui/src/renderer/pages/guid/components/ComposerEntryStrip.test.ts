@@ -13,7 +13,7 @@ describe('Guid composer entry strip', () => {
     expect(source.includes('ComposerSkill')).toBe(false);
     expect(source.includes('activeSkillCount')).toBe(true);
     expect(source.includes('onAdjustSkills')).toBe(true);
-    expect(source.includes('Puzzle')).toBe(true);
+    expect(source.includes("name='puzzle'")).toBe(true);
     expect(source.includes('TaskProfileSelector')).toBe(false);
     expect(source.includes('taskProfile')).toBe(false);
   });
@@ -21,7 +21,7 @@ describe('Guid composer entry strip', () => {
   test('uses an icon button to leave a preset without nesting buttons', () => {
     const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
 
-    expect(source.includes('CloseSmall')).toBe(true);
+    expect(source.includes("name='close'")).toBe(true);
     expect(source.includes('aria-label={t(\'guid.entry.backToFree\'')).toBe(true);
     expect(source.includes('entryDismiss}>')).toBe(false);
   });
@@ -31,5 +31,14 @@ describe('Guid composer entry strip', () => {
 
     expect(styles.includes('min-height: 32px')).toBe(true);
     expect(styles.includes('height: 28px')).toBe(true);
+  });
+
+  test('moves voice entry to the shared primary action instead of a duplicate pill', () => {
+    const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
+    const actions = readSource(new URL('./GuidActionRow.tsx', import.meta.url));
+    expect(source.includes('onStartVoiceCall')).toBe(false);
+    expect(actions.includes('onStartVoiceCall={onStartVoiceCall}')).toBe(true);
+    expect(actions.includes('isVoiceConnecting={isVoiceConnecting}')).toBe(true);
+    expect(actions.includes('voiceCallLabel={voiceCallLabel}')).toBe(true);
   });
 });

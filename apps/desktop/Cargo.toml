@@ -26,7 +26,7 @@ serde_json.workspace = true
 nomifun-app = { workspace = true, features = [
     "telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix",
     "mattermost", "slack", "twitch", "nostr", "qqbot",
-    "bedrock", "silero-vad",
+    "bedrock", "silero-vad", "local-stt",
     "computer-use", "browser-use", "managed-search",
 ] }
 nomifun-common.workspace = true

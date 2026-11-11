@@ -69,6 +69,7 @@ type GuidInputCardProps = {
   workspaceDir: string;
   onSelectWorkspace: (dir: string) => void;
   onClearWorkspace: () => void;
+  onOpenLocalDialog: () => void;
 };
 
 const GuidInputCard: React.FC<GuidInputCardProps> = ({
@@ -101,6 +102,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
   workspaceDir,
   onSelectWorkspace,
   onClearWorkspace,
+  onOpenLocalDialog,
 }) => {
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
@@ -162,14 +164,13 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
           </div>
         ) : null
       }
-      afterPanel={
+    >
         <GuidWorkspaceFootnote
           workspaceDir={workspaceDir}
           onSelectWorkspace={onSelectWorkspace}
           onClearWorkspace={onClearWorkspace}
+          onOpenLocalDialog={onOpenLocalDialog}
         />
-      }
-    >
         {entryStrip}
         {mentionSelectorBadge}
         {files.length > 0 && (

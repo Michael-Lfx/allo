@@ -27,6 +27,8 @@ describe('Markdown table chrome', () => {
     const css = tableCss();
     expect(css.includes('overflow-x: auto')).toBe(true);
     expect(css.includes('border-radius: 12px')).toBe(true);
+    expect(css.includes('background: var(--markdown-table-bg, var(--color-bg-1, var(--bg-1)))')).toBe(true);
+    expect(css.includes('background: var(--markdown-table-head-bg, var(--color-fill-1, var(--bg-1)))')).toBe(true);
     expect(css.includes('position: sticky')).toBe(true);
     expect(css.includes('left: 0')).toBe(true);
     expect(css.includes('min-width: 120px')).toBe(false);

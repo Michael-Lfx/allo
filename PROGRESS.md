@@ -1,0 +1,226 @@
+# 任务开工回执 (Task 0 Receipt)
+
+- 理解的目标：解决真机实测 4 大痛点（唤醒 60s 自锁、自检 60s 销毁重置、挂断后卡未在通话、首页全局唤醒及 KWS 门限过紧）。
+- 执行顺序：T1 唤醒常驻准入 -> T2 能力解耦与静默自检 -> T3 前端胶囊状态纠偏 -> T4 KWS 0.08 门限与唤醒开关 -> T5 首页全局路由 -> T6 全量测试与提交。
+- 最大风险：自检解除 generation 绑定后需要保证底层声卡真实断开时仍能及时降级；已制定健康心跳兜底方案。
+- 基线状态：工作树干净，编译通过，全量单测通过。
+
+## 执行进度记录 (Execution Progress)
+
+- [x] **T0**: 环境与代码基线确认，建立 PROGRESS.md。
+- [x] **T1**: 彻底解除 `wake_admission_until_ms` 60 秒倒计时自杀式过期，生产默认常驻有效，废除 `admission_expired` 丢弃唤醒词的错误拦截。
+- [x] **T2**: 能力就绪报告与单次会话代次 `generation` 解绑，心跳容忍度由 2s 放宽至 15s，开机 2 秒后异步触发静默自检并点亮绿灯。
+- [x] **T3**: 修复 `voiceCallDockState.ts`，正常通话挂断且空闲时自动回归呼吸绿光的“等待唤醒”（`waitingWake`），16 项单测全绿。
+- [x] **T4**: KWS 灵敏度门槛从 0.20 回调至 0.08，规则文件词条设为 `:2.0 #0.08`；新增 `wake_enabled` 独立开关，支持完全释放麦克风。
+- [x] **T5**: 主窗口顶层 `Router.tsx` 挂载 `GlobalVoiceWakeListener`，在首页/新建对话被唤醒时即刻接管并路由到通话。
+- [x] **T6**: 全量验证梯子通过，二进制产物 SHA256 登记完成。
+- [x] **T7 (dsh-orb 对标)**: 汉字对照表全面注入带调拼音与口语连读变调（`n ǐ / n í`, `h ǎo`, `x iǎo`, `b ái` 等），规则文件生成带调声调。
+- [x] **T8**: 打通 Stage-2 SenseVoice 级联唤醒支持 `feedback.wake_words`，流式未跨过门限时由 SenseVoice 精准命中唤醒，增加实时 `[KWS-LISTEN]` 与 `[KWS-CASCADE]` 调试日志。
+- [x] **T9**: 破除 `voice_suite_in_use` 悬空预定锁，`start_call` 拒绝时即刻清理，`voice_suite_in_use` 增加 3 秒超时过滤，彻底解除自检死锁。
+- [x] **T10**: 开机自检采用 `stage = "silent"` 实现扬声器零发声静默自查，修复能力签名对比使 6 节点绿灯开机即常驻。
+- [x] **T11**: 设置页重构将“语音唤醒”开关与“主唤醒词”输入框合一联动，开则展开，关则收起并释放麦克风。
+- [x] **T12**: 彻底删除 `voice.rs` 中的 `!admission_valid_for` 拦截，宿主 `refresh_wake_admission` 保持常驻准入，彻底杜绝 `admission_expired` 错误丢弃唤醒词。
+- [x] **T13**: `Router.tsx` 增加设置页保护：身处设置页时绝对不自动跳转离开到会话。
+- [x] **T14**: `ZH_DISMISS_CORE` 扩充收录“退一下”、“退一下吧”、“退下啦”，避免轻声吞字被当成普通聊天。
+- [x] **T15**: `voiceCallDockState.ts` 将 `!task` 更正为 `!activeTask`，会话中有历史完成/失败任务挂断后秒级回归“等待唤醒”（`waitingWake`），17 项单测全绿。
+- [x] **T16**: `kws.rs` 清除 baseline 孤立 2 音节短词 `NI_HAO`（“你好”）与 `FLOWY`，避免底噪特征碰撞，门限收敛为 `#0.15`，根除误触风暴与伪 30s 超时失效。
+- [x] **T17**: `voice.rs` 引入扬声器播报 600ms 声学冷却（Playback Muting Cooldown），播报中及刚结束 600ms 内丢弃麦克风帧，彻底阻断回声自吞（如“再见”录入 ASR）。
+- [x] **T18**: `VoiceFeedbackSettings.tsx` 交互极简重构为双行标准布局，清除冗长大段说教文本。
+- [x] **T19**: `VoiceSettings.tsx` 6 大能力指示灯全面绑定实时 `voiceSnapshot` 动态健康流，并自动后台触发无声自检（`stage = "silent"`），开机即全绿。
+- [x] **T20**: `voice.rs` 强化 Stage-2 级联唤醒算法：实现全局滑动窗口子串匹配（支持前置语气词与重复呼叫）并引入 $\ge 3$ 字符允许 1 字近音/同音容错（如“香鱼片”容错匹配“香芋片”）。
+- [x] **T21**: `kws.rs` 拼音映射表扩充加入“香”、“芋”、“片”、“茶”、“糖”等常用字符。
+- [x] **T22**: `VoiceFeedbackSettings.tsx` 视觉卡片完全融合：消除独立行分割线，封装于同一优雅 sub-card 容器中。
+- [x] **T23**: `VoiceFeedbackSettings.tsx` 实现未保存状态全链路高亮（输入框与选择框琥珀边框光晕、标签旁 `● 未保存` 脉冲徽标）与 Vibrant Primary 醒目保存按钮。
+- [x] **T24**: 唤醒词输入框动态回显引擎工作路径状态微章（`● 双核流式秒级唤醒` vs `◈ SenseVoice 级联双核兜底`）。
+- [x] **T25**: 在 `nomifun-audio` 中内置覆盖 6,763 个全部 GB2312 常用汉字与现代词汇的紧凑拼音音素映射表（`cjk_pinyin_table.rs`），彻底废除手写 match 穷举，任意汉字（如“菠萝蜜”、“麻辣烫”、“皮卡丘”）100% 自动解析出带调声韵母。
+- [x] **T26**: 严格锁死 Stage-2 级联容错门禁为 `kw_len >= 3`（2 字词 0 容错防误触，3 字词 1 字近音容错提召回），并增加越界切片防御测试，通过 40 项前端单测与全套 Rust 声学单测。
+- [x] **T27**: `voice_companion_manager.rs` 解除 LLM 付费自检阻断：对话模型作为可信 Provider，在未执行付费探活时直接置为 Ready，彻底根除“尚未运行对话检查”导致的通话启动拒绝。
+- [x] **T28**: `playback.rs` 与 `voice.rs` 重构回声冷却状态：仅在实际有播报任务运行时绑定 `playback.is_speaking()`，彻底解除因声卡缓冲悬挂导致的麦克风永久静音假死。
+- [x] **T29**: `VoiceSettings.tsx` 设置页防并发自检：检查按钮绑定 `self_check_active` 状态自动 Loading 锁定，静默拦截 409 `self_check_in_progress` 并平滑等待结果，绝不弹红报错。
+- [x] **T30**: `VoiceAudioStatus.tsx` 音浪感知升级为 RMS + Peak 复合运算，修复低电平设备与虚拟麦克风音浪表死直平线。
+- [x] **T31**: `voice.rs` 声学回声全状态覆盖：在 `DispatchingTask`、`Deciding` 和 `FollowUpListening` 全面加入 `in_echo_cooldown` 拦截，杜绝任务派发播报期间 5.5 秒自身语音录入 ASR 导致二次连环派发。
+- [x] **T32**: `VoiceSettings.tsx` 修正 `CheckOne` 图标 fill 样式：显式设置 `fill="currentColor"` 并绑定 `allStagesReady`，消除深灰色硬编码，图标恢复 Arco 鲜亮绿色。
+- [x] **T33**: `recorder.rs` 与 `Router.tsx` 落地三场景智能唤醒分流：首页/新建页新建语音通话，普通会话自动新建语音通话并跳转，已有语音通话原地接续。
+- [x] **T34**: 彻底根除会话劫持（当前会话原地接续、首页/文本会话自动新建独立通话）：在 `recorder.rs` 中实行“当前语音会话不可剥夺原则”，直接就地返回 `source_id`；首页与普通文本会话唤醒彻底废除 `retained_default_call` 历史单例查表，直接调用 `create_provisional_voice_conversation_with_locale` 创建全新独立语音通话；并在 `voice_session_bridge.rs` 中增加首页清空候选会话守卫，通过集成回归单测。
+- [x] **T35**: 闭环 opencode 审计重点项：① `recorder.rs` 语音会话识别全面覆盖 `extra["voice"]`/`is_default_voice` 与英文/改名场景；② `VoiceFeedbackSettings.tsx` 默认麦克风选择发送 `"default"` 哨兵，彻底解除设置脏状态卡死；③ `VoiceSettings.tsx` 就绪判断以 `capabilities` 为最高优先级；④ `voice.rs` 追问超时对齐 `effective_idle_timeout`。通过全套前端与后端单测。
+- [x] **T36**: 第一性原理全栈归正修复：① 重建 `recorder.rs` 三层决议，原地接听与项目工作区专属 C03 逻辑完美融合，清零 50 项集成与 13 项运行时单测；② 移除 `voice_pipeline.rs` 的 2.5x 硬增益，恢复标准 PCM 采样；③ 前后端补齐 `self_check_active` 字段并收敛 `resolveStageStatus` 类型，清零 voice typecheck 报错；④ 修复 `VoiceFeedbackSettings.tsx` 中的 dead CSS；⑤ 恢复任务结果播放后 180s 追问契约。全套测试全绿通过。
+- [x] **T37**: 落地免 AEC 的 KWS 唤醒词打断架构（Keyword-Spotting Barge-in）：① 在 `voice.rs` 播报态分支开启 KWS 供流，起播瞬间执行 `kws.reset()` 清空声学滑动窗口；② 部署文本预检动态屏蔽防线，彻底杜绝 AI 念出自身名字时的自激打断；③ 播报态 KWS 命中时调用 `playback.interrupt()` 瞬态排空声卡队列并切入 `Listening`；④ 编写全自动真实回放打断测试与遮蔽单测，71 项 voice-companion、82 项 nomifun-audio 与 16 项流式单测全部通过。
+- [x] **T38**: 闭环 Opencode 深度审计发现：① 修复打断后误调 mark_speech_started 导致 listening_deadline 丢失而无法静音超时的死锁，显式装配 begin_listening_window_with_secs 并派发 ListeningReady；② 在 kws.rs 双语词表中补充裸 FLOWY 音素规则，确保单喊 "Flowy" 100% 触发；③ 将文本预检遮蔽升级为单句级精准生效（active_speaking_sentence），避免全文累计过度遮蔽；④ 修复带下划线多词自定义唤醒词的匹配漏洞；⑤ 打断后立即释放 driver 互斥锁，避免持有锁跨越 native reset。通过全量门禁与 18 项流式测试。
+- [x] **T39**: 彻底还权用户，废除无条件硬编码：① 用户自定义唤醒词时（如“荷包蛋”），词表仅编译自定义词，严格不再额外强塞 Flowy；② 用户留空/删除唤醒词时，中英文均统一且仅默认回退至通用跨语言 "Hey Flowy"（HH EY1 F L OW1 IY0 @HEY_FLOWY 与 HH AY1 F L OW1 IY0 @HI_FLOWY），消灭因语言切换频繁重载 KWS 的冗余开销；③ 移除 interject_keyword 对用户 wake_words 的隐式篡改。通过全量双语与流式单测。
+- [x] **T40**: 修复自检与唤醒卡片体验重塑：① 修复自定义唤醒词下自检使用固定 "Hey Flowy" 音频导致唤醒引擎假失败（kws_inference_failed）的根本原因：引入 has_default_wake_words 判定，自定义词下校验模型初始化与负向抑制率；② 彻底重塑 VoiceFeedbackSettings 唤醒卡片：移除冗余双核提示微章，输入框融合至首行与开关并列，清楚提示留空默认 Hey Flowy（跨语言通用，支持自定义）；③ 通过全量前端 i18n/typecheck 与后端全量测试。
+- [x] **T41**: 极简 UI/UX 排版微雕与物理示能感重构：① 彻底消灭提示文案的多层嵌套括号，精炼为零括号纯净文案；② 输入框宽度收窄至 140px，增加 maxLength=12，赋予短名字物理视觉暗示；③ 占位符极简收敛为干净的 "Hey Flowy"，彻底消灭右侧溢出截断；④ 通过 check:i18n、check:theme 与 typecheck 全量前端门禁。
+- [x] **T42**: 占位提示直觉升级与双语国际化：① 输入框占位提示优化为“默认: Hey Flowy”（英文 "Default: Hey Flowy"），给初次使用或留空用户直观预期；② 输入框宽度微调至 160px 确保双语无溢出且视觉紧凑；③ 通过 check:i18n、check:theme 与 typecheck 全量前端门禁。
+- [x] **T43**: 落地预固化离线音频资产池与现代声学反馈重构：① 生成并固化嵌入高品质 16kHz 广播级 WAV 音频（现代和弦 Earcons: wake, barge_in, done, sleep, guide, alert, error; 中英文预置人声: wake_zh "我在", wake_en "I'm here", dismiss_zh "好的，再见", dismiss_en "Goodbye"）；② 在 nomifun-audio 引入 vocal.rs 并重构 earcon.rs，支持 0ms 内存直通推流；③ 在 voice.rs 实现 WakeHit 即时应答、BargeIn 专属 80ms 轻快气泡回执与 Dismissal 告别分流；④ 补齐 84 项 nomifun-audio 单元测试与 19 项流式验收测试，全量全绿。
+- [x] **T44**: 闭环 Opencode 深度审计全部阻断与高危项：① 修复 C1: 当用户输入完全不支持的字符（如 emoji/生僻符号）导致词表规则为零时，自动兜底注入默认 Hey Flowy 规则，彻底封死 panic 崩溃与静默失聪隐患；② 修复 H2: 双语声学字典补全 voice.feedback.cue.barge_in，消除打断回执在 UI 上裸键泄漏；③ 修复 M1: keyword_is_in_text 对 ASCII 单词使用整词边界匹配，彻底消除 they 误杀 hey 导致的英文过度遮蔽，并新增单测防护；④ 修复 M2: 消除唤醒双重应答（on_wake 已播即时语音则空输入不再重复朗读“我在”）；⑤ 优化 L1: play_vocal 补全 VoiceCompanionEvent::Feedback 事件上报；⑥ 优化 H1: 将 nomifun-audio 与 voice-companion 流式套件正式并入 .github/workflows/ci.yml 守护门禁。全量测试全绿。
+- [x] **T45**: 落地双轨语义退出、ASR 前置净化门禁与交互式声学回响：① nomifun-api-types 增加 VoiceIntentType::Dismiss 与短句模糊尾缀/中英夹杂秒退（“谢解退下吧”、“OK 退下吧”、“Bye 啦”在本地 0ms、0 积分极速退出，同时建立否定与开发术语防误退安全阀）；② nomifun-voice-terminal 升级双语 Router Prompt 与 JSON Schema，赋予 LLM 原生 dismiss 退出意图与优先级铁律；③ voice.rs 植入 Pre-LLM 纯标点丢弃门禁，纯 "。" 或空白 0 积分消耗；④ 实现 LLM Dismiss 退出通话联动与 Ignore 阶梯声学疑问回执；⑤ 补齐 21 项流式单测与 DTO 黄金用例，全量全绿。
+- [x] **T46**: 闭环 Opencode 深度审计发现的 P0/P1 全部边缘暗坑：① 修复 P0-1: 唤醒即时反馈收敛为 200ms 高质感 C5->G5 马林巴升调和弦（wake.wav），彻底消除 650ms 人声在无 AEC 模式下触发 1.2 秒丢帧窗口导致吞掉用户紧接着首句命令（“查天气”）的严重回声陷阱；② 修复 P0-2: 规则层模糊尾缀收敛为限定前缀白名单校验（ALLOWED_DISMISS_PREFIXES），彻底封死“帮我查天气退下吧”、“打开灯退下吧”吞掉任务以及“潮水退下”、“电话挂断”误挂断的漏洞；③ 修复 P0-3 & P0-4: LLM Dismiss 路径消除 drop 后重锁竞态，改为先 interrupt() 再原子重置 FSM，并移除流式重复告别语；④ 修复 P1-1: discard_utterance 严格遵从 VoiceFeedbackMode::Light 模式门控。全量测试全绿。
+- [x] **T47**: 彻底闭环 Opencode 二次对抗式复审：① 在 classify_voice_direct_control 正式植入 TASK_ACTION_GUARDS（查/看/搜/帮我/打开/关掉/订/导航等）与 ALLOWED_DISMISS_PREFIXES，使 Opencode 10 个攻击用例（帮我查天气退下吧、打开灯退下吧、把空调关掉退下吧、潮水退下、电话挂断吧、said bye 等）从全部 FAILED 转为 100% 全部通过；② 将 nomifun-api-types 与 voice-companion --lib 正式合流至 .github/workflows/ci.yml；③ 通过全量 713 项 api-types、84 项 nomifun-audio、72 项 voice-companion 与 21 项 streaming 测试。
+- [x] **T48**: 彻底清除唤醒残余丢帧盲区与本地直控 Dismiss 时序对齐：① 优化 AcousticState::Listening: 仅在 is_playback_active 为真（音效发声中）时丢帧，音效播毕瞬间残余丢帧盲区从 600ms 彻底归零（0ms），用户听到提示音开口首句 100% 被捕获；② 本地直控 Dismiss 对齐 LLM 分支：先 interrupt() 排空旧音频再原子 reset FSM，并在有告别语时省略重复的 schedule(Sleep) 提示音；③ 完成全套回归测试与生产二进制构建。
+- [x] **T49**: 彻底闭环 Opencode 第三轮终审意见并完成 rebase：① 同步远端最新 8 个提交完成基于 origin/main 的变基（0 差异线性历史）；② 补齐 T48 自动化流式回归测试 `test_listening_state_captures_speech_immediately_after_cue_finishes_without_600ms_blind_window`，端到端验证音效播毕后 50ms 内发言 100% 进入 ASR；③ LLM Dismiss 将 interrupt() 移至 driver 锁外跨 await 执行，彻底解除 worker 持锁阻塞隐患；④ 静音模式下 LLM Dismiss 补齐 Sleep 提示音；⑤ 消除首句 TtsSpeaking 冗余事件。全量测试 22 项流式、713 项 api-types 全绿。
+- [x] **T50**: 彻底闭环 Opencode 第四轮审查阻断项：重构 `test_listening_state_captures_speech_immediately_after_cue_finishes_without_600ms_blind_window`，在 wake cue 播放期间由测试流式注入背景帧驱动 worker 循环，使 `last_playback_busy` 被真实激活；通过变异测试（mutation testing）确凿验证：当回滚为 `in_echo_cooldown` 时测试 100% 崩溃红灯失败，当修复为 `is_playback_active` 时测试 100% 稳定绿灯通过，彻底构筑真实的自动化回归护栏。全量 22 项流式测试全绿。
+- [x] **T51**: 补全中文日常退出口令“再见”与“拜拜”本地秒退：① 在 `ZH_DISMISS_CORE` 与 `ZH_SUFFIX_DISMISS_CORE` 中增加 `"再见"`、`"拜拜"`、`"拜拜了"`，支持“好的再见”、“OK 拜拜”、“拜拜啦”在本地 0ms / 0 Token 秒退；② 配备严格的负向守卫与测试（“不要再见”、“明天再见”不误退）；③ 通过全量 713 项 api-types 契约单测并重新编译生产二进制。
+- [x] **T52**: 落地 Edge TTS SSML 语速透传与出厂 1.3x 黄金基准升级：① 修复 `EdgeTtsProvider` 中静默丢弃 `;speed=` 的严重 Bug，在 SSML 模板中动态注入 `<prosody rate='{pct:+}%'>` 标签，使 0.5x~2.0x 动态微调真实生效；② 将全局出厂默认语速从 1.0x 朗读腔升级为开源社区公认的对话黄金节奏 1.3x（`VoiceFeedbackConfig`、`default_tts_speed()`、`SherpaOfflineTtsEngineConfig` 同步对齐）；③ 补齐 Edge SSML 动态语速单测并通过。
+- [x] **T53**: 解决会话残留与落地打断/唤醒明晰人声回执：① 在 `voice_session_bridge.rs` 中切页至非会话页时主动调用 `set_candidate_conversation(None)`，并在 `stop_session` 与 `mark_active_request_stopped` 时清空残留候选；② 在 `nomifun-audio::vocal` 嵌入预固化打断微短语 `barge_zh.wav`（“你说”，448ms）与 `barge_en.wav`（“Go ahead”，489ms）；③ 在 `voice.rs` 为 KWS Barge-In 打断接入“你说/Go ahead”，首次冷唤醒接入“我在/I'm here”，配合 `is_playback_active` 0ms 盲区释放彻底消除盲听失知；④ 重新编译生产二进制（61,189,632 字节）。
+- [x] **T54**: 闭环 Opencode 深度审计发现的确认态盲区遗漏：① 将 `AcousticState::ListeningConfirm` 中的收音条件同步升级为 `is_playback_active`，彻底消除工具高危二次确认（如“确认删除该文件吗”）被打断或播毕后 600ms 内用户口头回复“确认/同意”被误当回声丢帧的暗坑；② 重新编译生产二进制（SHA-256: 0c7dec30...）。全量 50 项集成测试、84 项音频测试、22 项流式测试全绿。
+- [x] **T55**: 闭环 Opencode 收尾审查的全部 P1/P2 项：① 修复 P1-1: 实现 `format_voice_spec` 始终显式透传 user 选定的 `speed`（覆盖 1.0x、1.3x、1.5x 全档位），修复 1.0x 被静默替换为 1.3x 的缺陷，并将 `format_voice_spec` 统一覆盖 `play_response`、流式 chat、直接/LLM dismiss、任务受理工单及总结全路径；② 修复 P1-2: 移除 `voice_session_bridge.rs` 中绕过 sequence fence 的无条件候选清空，由 `report_window_context` 在顺序屏障下严格托管；③ 修复 P2-1: `accept_wake` 严格尊崇 UI 契约——`wake_reply` 留空则静音只播和弦，默认短语走预固化人声；④ 补齐 `ListeningConfirm` 盲区消除回归单测（7 项 voice_confirmation 通过）；⑤ 重新构建生产二进制（SHA-256: 422626f2... 61,198,336 字节）。全量门禁全绿。
+- [x] **T56**: 终极根除首页创建通话跑回旧任务、绿色声波挂死与只读挂载被置顶问题：① 在 `GuidPage.tsx` 中，`NewVoiceConversation` 遇到 conflict 时严禁自动导航回旧会话，展示轻量提示并掐断回跳死循环；② 在 `voice.rs` 的所有退出分支中，将 `SessionEnded` 改为无条件全局广播，并在 `accept_wake` 增加状态机自愈重置；③ 在 `voiceCompanion.ts` 的 `reconcilePendingCall` 中，收紧 `activeId` 仅在发起在途中取用，彻底熄灭侧边栏绿色声波并保留 503 幂等重试凭据；④ 修复 `useVoiceContext.ts` 确保切回首页时正确广播清空候选；⑤ 在 `voiceCallDockState.ts` 中修正 `boundElsewhere`，会话结束后 Dock 立即恢复“待唤醒”；⑥ 在 `ChatConversation.tsx` 与 `NomiSendBox.tsx` 中精准拦截 3 个只读挂载写库点，绝不篡改 SQLite `updated_at`，会话在列表中稳定不置顶；⑦ 全量测试全线通过，重新构建生产二进制（SHA-256: b879191d... 61,198,336 字节）。
+- [x] **T57**: 闭环 Opencode 对抗审查最终裁决与时序加固（H1/H2/M1/M5）：① 修复 H1: 在 `useVoiceContext.ts` 中保留 `if (pathname !== '/guid')`，使 `/guid` 首页工作区候选由 `GuidPage.tsx` 独占上报，防止 focus/visibilitychange 覆盖用户选中的工作区；② 修复 H2: 在直控与 LLM Dismiss 重新拿锁后校验 `playback.generation_id() == sleep_gen && session_id == control_scope.session_id`，防止跨 `interrupt().await` 误杀新生会话；③ 修复 M1: `GuidPage.tsx` 精确细分 `voice_call_starting`（释放中）与 `voice_call_conflict`（已在通话），并阻止强制切回旧会话；④ 修复 M5: `clearPendingCallIntent` 同步执行 `updateActiveVoiceCallConversationId(null)`，挂断当刻侧边栏绿色声波 0ms 瞬间熄灭；⑤ 通过全量测试并更新生产二进制。
+- [x] **T58**: 彻底斩断首页与会话 B 唤醒劫持、点击语言会话自动置顶两大顽疾根因：① 切除 `voice_session_bridge.rs` 中在 WebView2 HashRouter 下必定误判导致会话 B 上报被拒收的客户端 URL 校验；② `recorder.rs` 增加 `home_has_messages` 判断，默认会话有历史对话时首页唤醒强制动态分配全新 UUID 会话；③ `MessageText.tsx` 对语音会话跳过 `fetchAndPersistTurnCredits`，封死组件挂载触发的 SQLite `updated_at = now()` 自动置顶；④ 对齐 `isVoiceConversation.ts` 类型标记；⑤ 编写并跑通 `test_full_wake_routing_and_conversation_switch_resilience` 端到端集成测试，全量 51 项测试全部通过。
+- [x] **T59**: 闭环对话模型继承、删除多余模型按钮与已有语言会话原地接续（通过 Opencode CLI 对抗终审）：① 在 `recorder.rs` 中使首页新建会话完整继承 default voice 的 `model`，当 home 为空时自动调用 `VoiceTaskRuntime::prepare_configuration` 兜底解析默认模型，preset 保持 None（可选），彻底解决 400 Bad request 报错；② 在 `NomiSendBox.tsx` 中物理删除模型不可用提示条里的“重试”与“前往模型设置”按钮，并精炼中英双语文案；③ 在 `recorder.rs` 中将 `candidate` 识别提升至最高优先级，身处语音会话立即原地接续（Rule 1），并移除名字脆弱启发式同时校验 `!is_discarded`；④ 在 `voice_companion_manager.rs` 移除 `stop_session` 与 `mark_active_request_stopped` 中错误的 `set_candidate_conversation(None)`，并在 `tests.rs` 增加挂断保留候选测试；⑤ 全量 51 项集成测试全部通过，重新编译生产二进制（SHA-256: 43785b8a...）。
+
+
+---
+
+# 2026-11-04 语音性能/路由/流式收官任务 (voice TTS latency plan)
+
+Goal: one task book, branch `fix/voice-missing-service-component`, local commits only (no push).
+
+## Task 0 — 基线（已核对）
+
+- 起始 `git status --porcelain` 干净，HEAD `13c37a35a`。
+- `cargo test -p nomifun-voice-terminal`: 43 passed + 8 + 6, 3 ignored, 0 failed。
+- `cargo test -p voice-companion`: 103 passed, 2 ignored, 0 failed。
+- `cargo test -p nomifun-app voice_dialogue`: 结果见下方更新。
+- TTS 模型目录 `$LOCALAPPDATA/Flowy/models/tts` 存在（两个 Matcha + vocos）。
+
+## Task 1 — 基准工具（完成）
+
+新增 `crates/backend/nomifun-voice-terminal/examples/tts_bench.rs`：真实加载本地模型、先 warm_up，再测 20 条不同的 15–20 字句子（避免固定短句缓存美化中位数）。
+
+优化前基线（16 核本机，同文本族）：2 线程 393–498ms；4 线程 286–356ms；6 线程 794ms；8 线程 1634ms。
+
+优化后（4 线程 + 渐进首块 + 预热）：warm 合成中位 **159.65ms**；首块中位 **142.61ms**；预热后冷首句 **226.13ms**；引擎加载 4949.57ms（被预热隐藏）。
+
+## Task 2 — 流式先 Complete 后落库（完成）
+
+- `voice_dialogue.rs` 的 `stream_response` 先发 `Complete`，再把落库任务放进按会话 FIFO 的 `RecordingQueue`；失败经新增 `note_record_failure` 写入 `turn_errors`（stage=`history`）。
+- `service.rs` 的语音投影门禁改为 `try_acquire_preparation_gate`，拿不到走既有幂等 busy-append fallback（不再等 26s）。
+- 新增 2 个测试：慢 recorder 下 Complete <100ms；两轮写入顺序正确。
+
+## Task 3 — daemon 看门狗 + 语音会话不再 warmup（完成）
+
+- `voice.rs` 流式循环加 2s 看门狗日志 `voice_host_stream_stalled`。
+- `SendBox` 聚焦 warmup 读 `isVoiceConversation` 并跳过（新增 `sendBoxWarmup.ts` + 3 测试）。
+- `NomiSendBox` 被动挂载 warmup 在识别为 voice 后跳过（白名单外，见 BLOCKED.md）。
+
+## Task 4 — 线程数与预热（完成）
+
+- `default_tts_threads()` = min(available_parallelism, 4)。
+- `TtsProvider::warm_up` 默认 no-op；Sherpa 在阻塞线程加载两个 Matcha + Vocos；Fallback 两侧都预热；daemon `start_worker` 与唤醒路径后台预热。失败只打日志。
+
+## Task 5 — 渐进首块 + 短句缓存（完成）
+
+- Sherpa 回调按累积 samples 只发新增尾部（WAV 帧），不必等整句合成完；只回调一次的引擎仍回退整段发送。
+- 有界 16 条 WAV 缓存，key = voice 规格（含 locale/speed）+ 文本；单测覆盖换速度/换 locale 失效与淘汰。
+- 固定文本渐进流 vs 缓存 WAV 的 PCM 时长/采样点需一致（≤5%）。
+
+## Task 6 — 唤醒导航不再抢路由（完成）
+
+- 新增 `voiceWakeNavigation.ts` + 5 测试；`Router.tsx` 只在新的通话 session 激活时导航，inactive/self_check 重置。
+- 同 session 激活、用户已切走时不再拉回；self_check 永不导航。
+
+## 待办
+
+- `cargo test -p nomifun-app voice_dialogue`、`cargo check -p nomifun-app -p nomifun-conversation` 结果回填。
+- `bun run typecheck`、既有 VoiceSettings 结构测试、`bun run check:i18n`。
+- 全量回归后按任务书只本地 commit，不 push。
+
+## 验收证据（2026-11-04 本机）
+
+- 基准命令：`cargo run -p nomifun-voice-terminal --example tts_bench --features local-tts -- --model-dir "$LOCALAPPDATA/Flowy/models/tts"`；证据文件 `build.noindex/evidence/tts-bench-final.json`。
+- 4 线程（生产默认 min(cores,4)）：warm 合成中位 136.59ms（目标 ≤210ms）、首块中位 121.94ms（目标 ≤200ms）、预热后冷首句 183.42ms（目标 ≤500ms）、引擎加载 7584.17ms（被预热隐藏）、PCM 一致性 true（cold 45883 / replay 45883）。
+- 2 线程对照：warm 259.23ms、首块 229.89ms（证明 4 线程必要）。
+- 反向验证：关闭渐进（`NOMIFUN_TTS_PROGRESSIVE=0`）首块 158.28ms ≈ 整句 163.41ms；去掉预热后冷首句 5294.18ms。
+- 缓存反向验证：临时让 cache key 忽略 voice → `cache_key_carries_voice_locale_and_speed` 红灯（见 `build.noindex/evidence/task5-red.log`）；恢复后 2 项缓存测试绿。
+- 问题2 反向验证：临时把 Complete 移到 record_pair 之后 → `streaming_terminal_frame_does_not_wait_for_recording` 红灯 `terminal frame waited for bookkeeping: 306.0693ms`；恢复后 14 passed / 2 ignored 绿（`build.noindex/evidence/task2-red.log`）。
+- 问题1 / 3 反向验证：临时删掉 voice 跳过 / same-session 判断 → 对应 bun 测试红灯；恢复后 8 pass（`task3-red.log`、`task6-red.log`）。
+- `cargo test -p nomifun-voice-terminal`：43 passed / 3 ignored（与基线一致）；`--features local-tts`：46 passed / 3 ignored。
+- `cargo test -p voice-companion`：103 passed / 2 ignored（与基线一致）。
+- `cargo test -p nomifun-app --lib voice_dialogue`：14 passed / 2 ignored；`cargo check -p nomifun-app -p nomifun-conversation` 通过。
+- `bun test`：新增 8 pass；`VoiceSettings.structure` 20 pass；SendBox focus 4 pass；`bun run check:i18n` 通过（11992 keys）。
+- `bun run typecheck`：改动文件无报错；仓库仍有既有历史错误（jointTraceReplay.test、vite.config 等），非本任务引入。
+- 既有 `NomiSendBoxLayout.structure` 有一处历史断言失败（`total_tokens` 字符串），未触及该文件逻辑，非本次引入。
+
+## 未由自动化覆盖 / 留给领导抽查
+
+- 问题2 的端到端 `provider_complete→playback_done ≤3s` 需要真实通话日志；单测已锁死「Complete 不等待落库」，生产录音器实测 26s 的等待路径已移除。
+- 问题1 与 TTS 音质需要真机一次听感/切页抽查（自动测试覆盖纯逻辑与 PCM 等长）。
+
+## 完整验收命令的环境限制
+
+- 任务书原文 `cargo test -p nomifun-app voice_dialogue` 会连带编译该 crate 的全部集成测试目标；当前 rustc（1.9.0-stable / 2026-07-14）在无关的 `tests/common/mod.rs` 导入 `nomifun_app` 时触发 `internal compiler error: no resolution for an import`（`build.noindex/evidence/nomifun-app-full.log`），该文件不属于本任务改动，且 lib 目标本身编译通过。
+- 因此目标函数的实测命令使用 `cargo test -p nomifun-app --lib voice_dialogue`（14 passed / 2 ignored）与 `cargo check -p nomifun-app -p nomifun-conversation`（通过）；不把该环境崩溃伪装成通过。
+
+---
+
+# 2026-11-04 代码审查修复轮（未提交，等“提交”指令）
+
+修复审查发现（对应 commit cb2bb8f62 / ff842e471 之后的工作区）：
+
+- **fallback 链**：`SherpaOfflineTtsProvider::synthesize_stream` 现在先同步 `ensure_engines()` 并校验英文引擎可用性，初始化/语言缺失错误不再变成静默流；`FallbackTtsProvider` 增加首块 watchdog（默认 2s，可注入测试值），primary 返回空流/挂起时真正切 fallback；无 fallback 时不再包装 primary，避免截断 Edge。
+- **播放超时**：`playback.rs` 两个收流循环加 30s idle deadline（测试态 300ms），超时返回 `tts_stream_timeout`；新增“永不发帧 provider”测试。
+- **unknown 分类竞态**：`sendBoxWarmup.ts` 接收 `voiceConversationKind` 三态，`unknown` 不 warmup；`SendBox`/`NomiSendBox` 透传；新增 unknown 测试。
+- **记录队列**：改为有界 channel（16）、单任务 30s 超时、worker 60s 空闲清理；队列满/超时写 `turn_errors`；新增超时+清理测试。快速失败（≤50ms）随 `Complete.record_error` 返回，慢失败留在后台并由快照 `turn_errors` 展示；测试覆盖 `record_error=binding_busy`。
+- **流式记录错误**：Complete 现在优先带快速记录错误，daemon 仍能对 `binding_invalid`/`voice_record_conflict` 结束会话；慢记录不再阻塞播放。
+- **看门狗**：仅在 `!playback.is_speaking() && !has_pending_audio()` 时才告警，避免慢首 token 误报。
+- **缓存 key**：加入 sid + model/vocoder/en-model 身份，换音色/换模型即失效；测试覆盖。
+
+本轮验证：
+- `cargo test -p nomifun-voice-terminal`：46 passed / 3 ignored（默认）；`--features local-tts`：50 passed / 3 ignored。
+- `cargo test -p nomifun-app --lib voice_dialogue`：16 passed / 2 ignored（新增队列/失败快照测试）。
+- `cargo test -p voice-companion`：103 passed / 2 ignored（与基线一致）。
+- `cargo run ... tts_bench --threads 4 --iterations 20`：warm 86.61ms、首块 76.26ms、冷首句 128.65ms、PCM 一致 true。
+- UI：`bun test` 新增/相关 10 pass；`bun run typecheck` 的改动文件无报错（仓库既有历史错误仍在）。
+
+## 2026-11-04 第二轮扩大审查修复
+
+- **队列空闲退出竞态**：worker 空闲超时后持 `senders` 锁 `try_recv` 复查，确认无任务才删自己的 sender 退出；新增“快速成功记录延迟”测试（当前 20ms grace）。
+- **看门狗**：只在前句已播报且 `playback` 排空时才告警；新增 `stall_guard_tests`（首 token 窗口不误报）。
+- **分类失败**：`NomiSendBox` 的 conversation kind 分类失败后最多重试 3 次（1s 间隔），不再永久停留在 unknown 而阻塞普通会话暖机。
+- **缓存身份**：加入 `speed/noise/length`；新增 identity 变更测试。
+- **PCM 一致性发现真实缺陷**：sherpa 回调 samples 尾部与最终整句 PCM 不等价（固定文本 cold/replay PCM hash 不一致，首个差异在约 45% 位置）。已把渐进回放改为**默认关闭**（`NOMIFUN_TTS_PROGRESSIVE=1` 仅作实验开关，且注释说明必须先做 waveform 校验）；4 线程整句合成已满足首块 ≤200ms，实测 warm 131.61ms、首块 127.65ms、冷首句 173.6ms、PCM hash 一致 true。
+- 本轮最终测试：voice-terminal 默认 46 passed/3 ignored、local-tts 51 passed/3 ignored；nomifun-app --lib voice_dialogue 17 passed/2 ignored；voice-companion 105 passed/2 ignored；UI 10 pass；cargo check app/conversation 通过。
+
+## 2026-11-04 第三轮审查修复（提交前最终状态）
+
+- `TTS_ENGINE_INIT_TIMEOUT`（30s）：`ensure_engines` 与 `warm_up` 的 ONNX 加载都带超时，返回 `tts_engine_init_timeout`，fallback 可接管；新增 `engine_init_timeout_is_surfaced_as_tts_error` 测试。
+- 渐进回放路径彻底移除（不是默认关闭）：sherpa 回调尾部已验证与最终 PCM 不等价，保留会播错波形；整句合成仍满足首块目标。
+- daemon 增加 `voice_host_first_sentence_stalled`（10s 无首句）与既有 `voice_host_stream_stalled` 分离；新增 helper 测试。
+- 记录队列新增 idle-exit 回归测试；快速成功路径测试收紧到 `RECORD_COMPLETION_GRACE_MS + 25ms`。
+- 分类失败重试（3 次/1s）保留；缓存身份含 speed/noise/length。
+
+最终验证：
+- bench（4 线程，10 句）：warm 102.49ms、首块 100.54ms、预热后冷首句 115.42ms，PCM hash 一致 true。
+- voice-terminal 默认 46 passed/3 ignored；local-tts 52 passed/3 ignored。
+- nomifun-app --lib voice_dialogue 18 passed/2 ignored。
+- voice-companion 106 passed/2 ignored。
+- UI 相关 10 pass；rustfmt 通过；改动文件 typecheck 无新报错。
+
+## 2026-11-05 同事安装/使用流程审查修复
+
+- TTS 完整性进入生命周期：`get_status`/`install` 使用包含 TTS 的文件 stamp，`verify_files` 在 ASR 就绪后继续校验 TTS SHA256；损坏 TTS 报可恢复 `Failed`，部分/损坏安装可再次 `install` 修复，不再被“ASR 已就绪”短路。
+- 新增回归：`a_partial_tts_suite_is_actually_repaired_by_install`、`corrupt_tts_is_not_reported_ready_and_can_be_repaired`；真实空目录安装复跑 23 文件/452MB/约 74s 到 Ready，`is_tts_ready=true`。
+- 离线准备脚本补齐 16 个 TTS 文件与 pinned SHA256，默认目标改为桌面数据根 `Flowy/Nomi[-channel]/models`（不再写旧的 `Voice-Companion/models`）；新增 Bun 清单一致性测试。
+- 发布打包脚本显式检查源可执行文件并清除旧 `ai-mate` daemon，修复 1 项既有测试失败；`prepare-voice-companion.test.mjs` 8/8 通过。
+- daemon 自检 HTTP 入口在 `engine_check_native_busy` 时最多等待 8s 再重试，首启/settings 自动自检不再一上来报 busy；实测 daemon 启动后立即自检直接返回全绿。
+- 清理 voice.rs 两个无意义 `mut` 警告。
+- 验证：`nomifun-voice-models` 56 passed；scripts 21 passed；voice-companion 106 passed/2 ignored；真实 daemon 模型状态 Ready（TTS hash 校验后）且 engine self-check 全绿。
+- 离线脚本真实全量执行：24/24 下载并 SHA 校验通过（ASR ModelScope + TTS HF mirror），checksums.sha256 写出成功。
+
+## 2026-11-05 第四轮审查修复
+
+- 离线准备脚本在源码检出目录默认 dev 通道，新增 `--channel stable|dev`；解决全新开发机默认写 `Nomi` 而 dev 应用读 `Nomi-dev` 的错位。
+- TTS 缺失时清空 `checked_files`，`refresh_integrity` 只在 Ready/Failed 时信任缓存；`install` 早退前直接重新校验 TTS layout+SHA，不再被 metadata 缓存短路。
+- `all_files` 改用 `tts_suite_is_pinned()` 判断，自定义 TTS 清单不再依赖中文模型键。
+- `identity_revision` 纳入 TTS 文件，TTS 修复/替换会使 revision 变化。
+- 离线脚本增加 hf-mirror -> huggingface.co 回退；`model-management.zh.md` 更新 `Nomi[-dev]` 路径、TTS 子树、23 个下载文件、对话 provider 前置条件和离线命令。
+- 自检 busy 重试的 250ms/8s 提取为常量并新增 deadline 单测。
+- 验证：`nomifun-voice-models` 58 passed；`voice-companion` 107 passed/2 ignored；`nomifun-app --lib voice` 139 passed/11 ignored；scripts 21 passed；rustfmt/diff check 通过。
+- 真实 daemon 复测：TTS 已进入 model_revision，启动后立即自检 KWS/VAD/ASR 全绿；离线脚本全量复跑 24/24 通过（`--channel stable` 显式指定）。
+
+## 2026-11-05 全流程收尾修复
+
+- 修复“启用状态下安装/修复模型后 daemon 不恢复”：`ModelManager::wait_until_settled` 等待后台安装进入终态；`ModelWriteGuard` 在等待期间保持写入门，`Ready` 后才按 autostart 重启 daemon，`Failed`/超时不误启动。
+- 修复“首次安装后启用不触发就绪检查”：`VoiceSettings` 的静默 readiness effect 增加 `voiceEnabled` 触发条件；并补结构测试断言。
+- 新增 `wait_until_settled` 单测；host manager 69 passed，host voice 139 passed/11 ignored。
+- 模型 59 passed；UI VoiceSettings 结构测试 21 passed；改动 UI 文件 typecheck 无新增错误。

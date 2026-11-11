@@ -453,6 +453,7 @@ pub struct CompanionProfileConfig {
     pub persona: PersonaConfig,
     /// Per-companion companion-chat model (定时学习 / 进化 carry their own).
     #[serde(
+        default,
         deserialize_with = "deserialize_optional_model",
         serialize_with = "serialize_optional_model"
     )]

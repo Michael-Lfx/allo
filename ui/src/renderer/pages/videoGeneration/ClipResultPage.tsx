@@ -13,6 +13,7 @@ import React, {
 } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { RollingDuration } from '@renderer/components/base/Counter';
 import { Button } from '@arco-design/web-react';
 import {
   ArrowLeft,
@@ -65,12 +66,6 @@ type LocationState = {
   prompt?: string;
   taskId?: string;
 };
-
-function formatDuration(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
 
 function ClipFailurePanel({
   view,
@@ -140,7 +135,7 @@ function ClipFailurePanel({
 }
 
 const ClipResultPage: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { taskId: urlTaskId } = useParams<{ taskId: string }>();
@@ -759,7 +754,19 @@ const ClipResultPage: React.FC = () => {
                         </div>
 
                         <span className={styles.timeDisplay}>
-                          {formatDuration(currentTime)} / {formatDuration(duration)}
+                          <RollingDuration
+                            seconds={currentTime}
+                            hours='never'
+                            padMinutes={false}
+                            locale={i18n.language}
+                          />
+                          {' / '}
+                          <RollingDuration
+                            seconds={duration}
+                            hours='never'
+                            padMinutes={false}
+                            locale={i18n.language}
+                          />
                         </span>
                       </div>
 

@@ -52,24 +52,34 @@ function surfaces() {
 }
 
 function mockAnimationFrame() {
-  const raf = globalThis.requestAnimationFrame;
-  const caf = globalThis.cancelAnimationFrame;
+  const raf = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+  const caf = Object.getOwnPropertyDescriptor(globalThis, 'cancelAnimationFrame');
   let callback: FrameRequestCallback | undefined;
   let cancelled = false;
-  globalThis.requestAnimationFrame = (fn) => {
-    callback = fn;
-    return 1;
-  };
-  globalThis.cancelAnimationFrame = () => {
-    cancelled = true;
-    callback = undefined;
-  };
+  Object.defineProperty(globalThis, 'requestAnimationFrame', {
+    configurable: true,
+    writable: true,
+    value: (fn: FrameRequestCallback) => {
+      callback = fn;
+      return 1;
+    },
+  });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+    configurable: true,
+    writable: true,
+    value: () => {
+      cancelled = true;
+      callback = undefined;
+    },
+  });
   return {
     isCancelled: () => cancelled,
     callback: () => callback,
     restore: () => {
-      globalThis.requestAnimationFrame = raf;
-      globalThis.cancelAnimationFrame = caf;
+      if (raf) Object.defineProperty(globalThis, 'requestAnimationFrame', raf);
+      else Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
+      if (caf) Object.defineProperty(globalThis, 'cancelAnimationFrame', caf);
+      else Reflect.deleteProperty(globalThis, 'cancelAnimationFrame');
     },
   };
 }

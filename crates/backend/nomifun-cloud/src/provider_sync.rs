@@ -15,8 +15,8 @@ use nomifun_api_types::{ModelTask, ModelTrait, derive_tasks_and_traits};
 use nomi_config::ServerConfig;
 use nomifun_common::encrypt_string;
 use nomifun_db::{
-    CreateProviderParams, IProviderModelRepository, IProviderRepository, ProviderModelProfileSeed,
-    UpdateProviderParams,
+    CatalogPlanGate, CreateProviderParams, IProviderModelRepository, IProviderRepository,
+    ProviderModelProfileSeed, UpdateProviderParams,
 };
 use tracing::{info, warn};
 
@@ -311,10 +311,22 @@ fn build_profile_seeds(
             } else {
                 None
             },
+            catalog_plan_gate: catalog_plan_gate(entry),
         });
     }
 
     Ok(profiles)
+}
+
+fn catalog_plan_gate(entry: &ClawModelEntry) -> Option<CatalogPlanGate> {
+    if entry.min_tier_level <= 0 {
+        return None;
+    }
+    Some(CatalogPlanGate {
+        min_tier_level: entry.min_tier_level,
+        required_plan_name: entry.required_plan_name.clone(),
+        required_plan_code: entry.required_plan_code.clone(),
+    })
 }
 
 async fn fetch_catalog_models(

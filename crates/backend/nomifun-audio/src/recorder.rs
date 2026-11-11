@@ -163,6 +163,16 @@ pub trait SttCallback: Send + Sync + 'static {
         pcm: Vec<f32>,
         sample_rate: u32,
     ) -> Option<String>;
+
+    /// Preserve the legacy optional transcript API while allowing engines to report failures.
+    async fn transcribe_checked(
+        &self,
+        channel: AudioChannel,
+        pcm: Vec<f32>,
+        sample_rate: u32,
+    ) -> Result<Option<String>, String> {
+        Ok(self.transcribe(channel, pcm, sample_rate).await)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -608,10 +618,16 @@ impl MeetingRecorder {
         tokio::spawn(async move {
             let t0 = Instant::now();
             let speaker = ch.speaker_label().to_string();
-            let text = stt.transcribe(ch, pcm, sample_rate).await;
+            let text = stt.transcribe_checked(ch, pcm, sample_rate).await;
             stats.with(|s| s.stt.record(t0.elapsed()));
+            let final_text = match text {
+                Ok(text) => text.unwrap_or_default(),
+                Err(error) => {
+                    warn!(error, segment_id, "MeetingRecorder: STT failed");
+                    return;
+                }
+            };
 
-            let final_text = text.unwrap_or_default();
             if !final_text.is_empty() {
                 // Character-by-character streaming feel for batch STT results.
                 let mut acc = String::new();
@@ -661,6 +677,36 @@ mod tests {
         async fn transcribe(&self, _ch: AudioChannel, _pcm: Vec<f32>, _sr: u32) -> Option<String> {
             Some("test".to_string())
         }
+    }
+
+    #[tokio::test]
+    async fn stt_engine_failure_does_not_emit_an_empty_final_segment() {
+        struct FailingStt;
+        #[async_trait::async_trait]
+        impl SttCallback for FailingStt {
+            async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> {
+                None
+            }
+
+            async fn transcribe_checked(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Result<Option<String>, String> {
+                Err("controlled_stt_failure".into())
+            }
+        }
+
+        let (tx, mut rx) = mpsc::channel(2);
+        MeetingRecorder::spawn_stt(
+            AudioChannel::Mic,
+            vec![0.1; 160],
+            16_000,
+            0.0,
+            0.1,
+            "failed-segment".into(),
+            Arc::new(FailingStt),
+            tx,
+            StatsHandle::default(),
+        );
+        let emitted = rx.recv().await;
+        assert!(emitted.is_none(), "engine failure was emitted as a normal transcript: {emitted:?}");
     }
 
     #[tokio::test]

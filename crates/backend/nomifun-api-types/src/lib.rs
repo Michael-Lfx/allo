@@ -12,6 +12,7 @@ mod channel;
 mod cloud;
 mod cloud_billing;
 mod cloud_im;
+mod expert_catalog;
 mod campaign;
 mod tv_show;
 mod vimax_skill_hub;
@@ -45,6 +46,7 @@ mod provider;
 mod provider_connection;
 mod provider_model;
 mod preset;
+mod presentation;
 mod remote_agent;
 mod requirement;
 mod response;
@@ -59,6 +61,7 @@ mod terminal;
 mod tool_policy;
 mod webhook;
 mod websocket;
+pub mod voice;
 
 pub use agent_eval::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
@@ -151,6 +154,12 @@ pub use preset::{
     PresetTagResponse, PresetTarget, ResolvePresetRequest, ResolvedPresetSnapshot,
     SetPresetStateRequest, SkillBinding, UpdatePresetRequest, UpdatePresetTagRequest,
 };
+pub use presentation::{
+    PRESENTATION_CAPABILITY_STATUS_EVENT, PresentationCancelResponse, PresentationCapabilityStatus,
+    PresentationCapabilityView, PresentationInstallFailure, PresentationInstallProgress,
+    PresentationInstallRequest, PresentationInstallResponse, PresentationInstallStage,
+    PresentationUninstallResponse,
+};
 pub use auth::{
     AuthStatusResponse, ChangePasswordRequest, ChangeUsernameRequest, ChangeUsernameResponse, LoginRequest,
     LoginResponse, PublicUser, QrLoginRequest, RefreshResponse, RefreshTokenRequest, UserInfoResponse,
@@ -185,6 +194,9 @@ pub use cloud_billing::{
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
     CloudImMessageList, CloudImReadRequest, CloudImSendMessageRequest,
+};
+pub use expert_catalog::{
+    ExpertDetail, ExpertInstallIndex, ExpertInstallResponse, ExpertListResponse, ExpertSummary, ExpertText,
 };
 pub use campaign::{
     CampaignCarouselItem, CampaignCarouselResponse, CampaignDetail, CampaignListResponse,
@@ -222,7 +234,7 @@ pub use conversation::{
     EditResubmitReceiptState, EditResubmitStateResponse, CodingTurnRollbackAvailability,
     CodingTurnRollbackResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
     MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
-    UpdateConversationArtifactRequest, UpdateConversationRequest,
+    UpdateConversationArtifactRequest, UpdateConversationRequest, VoiceBoundMessageRequest,
 };
 pub use cron::{
     CreateCronJobRequest, CronAgentConfigDto, CronJobExecutedEvent, CronJobMetadataDto,
@@ -358,7 +370,8 @@ pub use secret::{RegisterSecretRequest, SecretListItem};
 pub use shell::{
     CheckToolInstalledRequest, CheckToolInstalledResponse, DeepgramSpeechToTextConfig,
     OpenAISpeechToTextConfig, OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest,
-    ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider, SpeechToTextResult,
+    CopyFileRequest, ShowItemInFolderRequest, SpeechToTextConfig, SpeechToTextProvider,
+    SpeechToTextResult,
     TEXT_TO_SPEECH_PREFERENCE_KEY, TextToSpeechConfig, ToolType, TtsApiRequest,
 };
 pub use session_observation::{
@@ -417,6 +430,11 @@ pub use webhook::{
     UpsertTagSettingRequest, Webhook, WebhookId, WebhookPlatform,
 };
 pub use websocket::WebSocketMessage;
+pub use voice::{
+    ModelInstallState, VoiceModelDeleteRequest, VoiceModelDeleteResponse, VoiceModelFileDetail,
+    VoiceModelInstallRequest, VoiceModelInstallResponse, VoiceModelProgressEvent,
+    VoiceModelStatusResponse,
+};
 
 #[cfg(test)]
 mod public_contract_tests {

@@ -1,8 +1,8 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Ghost, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
@@ -42,6 +42,8 @@ import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
 import { prefetchNomiPage } from '@renderer/pages/nomi/prefetch';
 import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
+import { prefetchSkillsStore } from '@renderer/pages/settings/prefetch';
+import GooeyNav, { type GooeyNavItem } from '@renderer/components/base/GooeyNav';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
 
@@ -268,6 +270,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
   const isVideoRoute = pathname.startsWith('/video-generation');
   const isCompanionRoute = pathname.startsWith('/nomi');
+  const isSkillStoreRoute = pathname === '/skills' || pathname.startsWith('/skills/');
 
   const activeBar2Module: SiderHistoryTab | null = useMemo(
     () => activeHistoryTabForRoute(pathname, activeHistoryTab),
@@ -409,6 +412,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     navTo('/nomi');
   };
   const handleLearningClick = () => {
+    prefetchLearningPage();
     setOptimisticBar2Module(null);
     navTo('/learn');
   };
@@ -423,6 +427,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       prefetchLearningPage();
       prefetchNomiPage();
       prefetchVideoGenerationHome();
+      prefetchSkillsStore();
     };
     if (typeof idleWindow.requestIdleCallback === 'function') {
       const idleId = idleWindow.requestIdleCallback(warmIdleRoutes, {
@@ -440,7 +445,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   };
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
-  const handleSkillsClick = () => navTo('/skills');
+  const handleSkillsClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/skills');
+  };
   const handleMcpClick = () => navTo('/mcp');
   
   const handleSettingsClick = () => {
@@ -493,6 +501,46 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     };
   }, [handleLogout, showLogout]);
 
+  const resourceDock: { item: GooeyNavItem; active: boolean; select: () => void; prefetch?: () => void }[] = [
+    {
+      item: {
+        label: t('knowledge.title'),
+        icon: <FlowyIcon name='book' size={15} />,
+      },
+      active: !effectiveBar2Module && pathname.startsWith('/knowledge'),
+      select: handleKnowledgeClick,
+    },
+    {
+      item: {
+        label: t('learning.title'),
+        icon: <FlowyIcon name='bookOpen' size={15} />,
+      },
+      active: !effectiveBar2Module && pathname.startsWith('/learn'),
+      select: handleLearningClick,
+      prefetch: prefetchLearningPage,
+    },
+    {
+      item: {
+        label: t('cron.scheduledTasks'),
+        icon: <FlowyIcon name='alarm' size={15} />,
+      },
+      active: !effectiveBar2Module && pathname === '/scheduled',
+      select: handleScheduledClick,
+    },
+  ];
+  if (developerMode === true) {
+    resourceDock.push({
+      item: {
+        label: t('eval.title'),
+        title: t('eval.dev.navTooltip'),
+        icon: <FlowyIcon name='experiment' size={15} />,
+      },
+      active: !effectiveBar2Module && pathname.startsWith('/eval'),
+      select: handleEvalClick,
+    });
+  }
+  const resourceDockActiveIndex = resourceDock.findIndex((entry) => entry.active);
+
   const tooltipEnabled = collapsed && !isMobile;
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
 
@@ -528,7 +576,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
             data-testid='sider-primary-nav'
             className={`${styles.primaryNav} shrink-0 flex flex-col gap-2px`}
           >
-            {/* 新建任务、视频、桌宠各占一整行，样式与新建任务按钮一致 */}
+            {/* 新建任务、视频、技能、桌宠各占一整行，样式与新建任务按钮一致 */}
             <div className='flex flex-col gap-4px mb-4px' role='tablist'>
               <SiderNewConversationEntry
                 isMobile={isMobile}
@@ -547,13 +595,19 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('video')}
                     onPointerEnter={() => prefetchVideoGenerationHome()}
                     icon={
-                      <VideoOne
-                        theme='outline'
-                        size='16'
-                        fill='currentColor'
-                        className='block leading-none shrink-0'
-                        style={{ lineHeight: 0 }}
-                      />
+                      <FlowyIcon name='video' size={16} className='block leading-none shrink-0' />
+                    }
+                  />
+                  <SiderModuleRow
+                    collapsed={false}
+                    active={isSkillStoreRoute}
+                    label={t('settings.skillsMarket.title', { defaultValue: '技能' })}
+                    testId='sider-skill-store-row'
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleSkillsClick}
+                    onPointerEnter={() => prefetchSkillsStore()}
+                    icon={
+                      <FlowyIcon name='puzzle' size={16} className='block leading-none shrink-0' />
                     }
                   />
                   <SiderModuleRow
@@ -565,29 +619,15 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('companions')}
                     onPointerEnter={() => prefetchNomiPage()}
                     icon={
-                      <Ghost
-                        theme='outline'
-                        size='16'
-                        fill='currentColor'
-                        className='block leading-none shrink-0'
-                        style={{ lineHeight: 0 }}
-                      />
+                      <FlowyIcon name='ghost' size={16} className='block leading-none shrink-0' />
                     }
                   />
                 </>
               )}
             </div>
 
-            {/* 业务功能横向 Dock 栏（展开态下高度仅 34px，容纳 5 个无历史纯功能模块；收起态下恢复纵向一列） */}
-            <div
-              role={collapsed ? undefined : 'toolbar'}
-              aria-label={t('common.titlebar.sections.work', { defaultValue: '功能导航' })}
-              className={classNames(
-                collapsed
-                  ? 'flex flex-col gap-2px'
-                  : 'flex items-center gap-2px p-2px my-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
-              )}
-            >
+            {/* 展开态用液滴导航切换知识库 / 学习 / 定时任务；收起态恢复纵向图标列 */}
+            <div className={classNames(collapsed ? 'flex flex-col gap-2px' : 'my-2px')}>
               <SiderSectionHeader label={t('common.titlebar.sections.work')} collapsed={collapsed} compact hidden />
               {collapsed && (
                 <>
@@ -613,6 +653,18 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onOpenCanvasProject={handleOpenRecentCanvasProject}
                     onOpenBriefing={handleOpenRecentBriefing}
                   />
+                  <SiderModuleRow
+                    collapsed
+                    active={isSkillStoreRoute}
+                    label={t('settings.skillsMarket.title', { defaultValue: '技能' })}
+                    testId='sider-skill-store-row'
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleSkillsClick}
+                    onPointerEnter={() => prefetchSkillsStore()}
+                    icon={
+                      <FlowyIcon name='puzzle' size={16} className='block leading-none shrink-0' />
+                    }
+                  />
                 </>
               )}
 
@@ -622,45 +674,66 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 compact
                 hidden
               />
-              <SiderKnowledgeEntry
-                isMobile={isMobile}
-                isActive={!effectiveBar2Module && pathname.startsWith('/knowledge')}
-                collapsed={collapsed}
-                dock={!collapsed}
-                siderTooltipProps={siderTooltipProps}
-                onClick={handleKnowledgeClick}
-              />
-              <SiderLearningEntry
-                isMobile={isMobile}
-                isActive={!effectiveBar2Module && pathname.startsWith('/learn')}
-                collapsed={collapsed}
-                dock={!collapsed}
-                siderTooltipProps={siderTooltipProps}
-                onClick={handleLearningClick}
-              />
+              {collapsed ? (
+                <>
+                  <SiderKnowledgeEntry
+                    isMobile={isMobile}
+                    isActive={!effectiveBar2Module && pathname.startsWith('/knowledge')}
+                    collapsed={collapsed}
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleKnowledgeClick}
+                  />
+                  <SiderLearningEntry
+                    isMobile={isMobile}
+                    isActive={!effectiveBar2Module && pathname.startsWith('/learn')}
+                    collapsed={collapsed}
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleLearningClick}
+                  />
 
-              <SiderSectionHeader
-                label={t('common.titlebar.sections.automation')}
-                collapsed={collapsed}
-                compact
-                hidden
-              />
-              <SiderScheduledEntry
-                isMobile={isMobile}
-                isActive={!effectiveBar2Module && pathname === '/scheduled'}
-                collapsed={collapsed}
-                dock={!collapsed}
-                siderTooltipProps={siderTooltipProps}
-                onClick={handleScheduledClick}
-              />
-              {developerMode === true && (
-                <SiderEvalEntry
-                  isMobile={isMobile}
-                  isActive={!effectiveBar2Module && pathname.startsWith('/eval')}
-                  collapsed={collapsed}
-                  dock={!collapsed}
-                  siderTooltipProps={siderTooltipProps}
-                  onClick={handleEvalClick}
+                  <SiderSectionHeader
+                    label={t('common.titlebar.sections.automation')}
+                    collapsed={collapsed}
+                    compact
+                    hidden
+                  />
+                  <SiderScheduledEntry
+                    isMobile={isMobile}
+                    isActive={!effectiveBar2Module && pathname === '/scheduled'}
+                    collapsed={collapsed}
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleScheduledClick}
+                  />
+                  {developerMode === true && (
+                    <SiderEvalEntry
+                      isMobile={isMobile}
+                      isActive={!effectiveBar2Module && pathname.startsWith('/eval')}
+                      collapsed={collapsed}
+                      siderTooltipProps={siderTooltipProps}
+                      onClick={handleEvalClick}
+                    />
+                  )}
+                </>
+              ) : (
+                <GooeyNav
+                  testId='sider-resource-nav'
+                  ariaLabel={t('common.titlebar.sections.resources', { defaultValue: '资源' })}
+                  size='sm'
+                  block
+                  hideLabels
+                  spread={20}
+                  particleCount={8}
+                  animationTime={480}
+                  activeIndex={resourceDockActiveIndex}
+                  items={resourceDock.map((entry) => entry.item)}
+                  onChange={(index) => resourceDock[index]?.select()}
+                  onItemPointerEnter={(index) => resourceDock[index]?.prefetch?.()}
+                  style={{
+                    ['--gn-pad' as string]: '3px',
+                    ['--gn-y' as string]: '4px',
+                    ['--gn-x' as string]: '8px',
+                    ['--gn-gap' as string]: '0px',
+                  }}
                 />
               )}
             </div>

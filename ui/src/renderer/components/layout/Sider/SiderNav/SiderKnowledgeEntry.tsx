@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { BookOne } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
@@ -63,15 +63,10 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
           aria-current={isActive ? 'page' : undefined}
         >
           <span className='relative block leading-none shrink-0' style={{ lineHeight: 0 }}>
-            <BookOne
-              theme='outline'
-              size='15'
-              fill='currentColor'
-              className={classNames(
+            <FlowyIcon name='book' size={15} className={classNames(
                 'block leading-none transition-colors duration-180',
                 isActive ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
-              )}
-            />
+              )} />
             {dot && <RedDot />}
           </span>
         </div>
@@ -94,7 +89,7 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
           data-active={isActive ? 'true' : 'false'}
         >
           <span className='relative block leading-none shrink-0' style={{ lineHeight: 0 }}>
-            <BookOne theme='outline' size='20' fill='currentColor' className='block leading-none' />
+            <FlowyIcon name='book' size={20} className='block leading-none' />
             {dot && <RedDot />}
           </span>
         </div>
@@ -117,13 +112,7 @@ const SiderKnowledgeEntry: React.FC<SiderKnowledgeEntryProps> = ({
         data-active={isActive ? 'true' : 'false'}
       >
         <span className='relative size-22px flex items-center justify-center shrink-0'>
-          <BookOne
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='book' size={16} className='block leading-none' />
           {dot && <RedDot />}
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>

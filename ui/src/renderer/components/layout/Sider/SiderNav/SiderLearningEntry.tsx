@@ -1,7 +1,7 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { BookOpen } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
@@ -28,13 +28,7 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
   const { t } = useTranslation();
   const label = t('learning.title');
   const icon = (
-    <BookOpen
-      theme='outline'
-      size={collapsed ? '20' : '16'}
-      fill='currentColor'
-      className='block leading-none'
-      style={{ lineHeight: 0 }}
-    />
+    <FlowyIcon name='bookOpen' size={collapsed ? 20 : 16} className='block leading-none' />
   );
 
   if (dock) {
@@ -60,16 +54,10 @@ const SiderLearningEntry: React.FC<SiderLearningEntryProps> = ({
           aria-label={label}
           aria-current={isActive ? 'page' : undefined}
         >
-          <BookOpen
-            theme='outline'
-            size='15'
-            fill='currentColor'
-            className={classNames(
+          <FlowyIcon name='bookOpen' size={15} className={classNames(
               'block leading-none transition-colors duration-180',
               isActive ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
-            )}
-            style={{ lineHeight: 0 }}
-          />
+            )} />
         </div>
       </InstantHoverTooltip>
     );

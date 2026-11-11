@@ -11,17 +11,23 @@ describe('Guid Skill launcher integration', () => {
     expect(source.includes('skillChips={')).toBe(true);
     expect(source.includes('tokenInputRef={homeTokenInputRef}')).toBe(true);
     expect(source.includes('activeSkills={')).toBe(false);
-    expect(source.includes('onAdjustSkills=')).toBe(true);
-    expect(source.includes("setDrawerMode('skills')")).toBe(true);
+    expect(source.includes('<GuidEntryFlyout')).toBe(true);
     expect(source.includes('selectedSkillIds=')).toBe(true);
+    expect(source.includes('PresetPickerDrawer')).toBe(false);
   });
 
-  test('does not use a preset binding to pre-filter the slash catalog', () => {
+  test('lists installed skills in the slash catalog without a preset binding filter', () => {
     const source = readSource(new URL('../GuidPage.tsx', import.meta.url));
+    const sendBox = readSource(new URL('../../../components/chat/SendBox/index.tsx', import.meta.url));
 
     expect(source.includes('selectedPresetRecord.included_skills')).toBe(false);
     expect(source.includes('selectedPresetRecord.excluded_auto_skills')).toBe(false);
-    expect(source.includes('catalogSkills.map')).toBe(true);
+    expect(source.includes('installedPickerSkills(catalogSkills)')).toBe(true);
+    expect(source.includes('pickerSkills.map')).toBe(true);
+    expect(source.includes('skills={supportsHomeSkillLoading ? pickerSkills : []}')).toBe(true);
+    expect(sendBox.includes('installedPickerSkills(catalogSkills)')).toBe(true);
+    expect(sendBox.includes('pickerSkills.map')).toBe(true);
+    expect(sendBox.includes('skills={pickerSkills}')).toBe(true);
   });
 
   test('keeps source-qualified Skill IDs through the ACP first-turn handoff', () => {

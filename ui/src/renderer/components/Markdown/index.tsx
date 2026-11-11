@@ -1,7 +1,7 @@
 
 
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import type { Components, ExtraProps, UrlTransform } from 'react-markdown';
+import type { Components, ExtraProps, Options, UrlTransform } from 'react-markdown';
 
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
@@ -24,6 +24,7 @@ import CollapsibleBlockquote from './CollapsibleBlockquote';
 import ShadowView from './ShadowView';
 import { shouldCollapseMarkdownBlockquote } from './blockquoteCollapse';
 import type { MarkdownViewProps } from './markdownViewProps';
+import { rehypeIdeographTracking } from './ideographTracking';
 import { remarkSafeBreaks } from './remarkSafeBreaks';
 
 export type { MarkdownViewProps } from './markdownViewProps';
@@ -59,6 +60,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
     allowUnverifiedImages = true,
     isStreaming = false,
     collapsibleBlockquotes = false,
+    trackIdeographs = false,
     children: childrenProp,
   }) => {
     const { t } = useTranslation();
@@ -143,7 +145,13 @@ const MarkdownView: React.FC<MarkdownViewProps> = React.memo(
       [allowUnverifiedImages, codeStyle, collapsibleBlockquotes, hiddenCodeCopyButton, handleLinkClick, isStreaming]
     );
 
-    const rehypePlugins = useMemo(() => (allowHtml ? [rehypeRaw, rehypeKatex] : [rehypeKatex]), [allowHtml]);
+    const rehypePlugins = useMemo(() => {
+      const plugins: NonNullable<Options['rehypePlugins']> = [];
+      if (allowHtml) plugins.push(rehypeRaw);
+      if (trackIdeographs) plugins.push(rehypeIdeographTracking);
+      plugins.push(rehypeKatex);
+      return plugins;
+    }, [allowHtml, trackIdeographs]);
 
     return (
       <div className={classNames('relative w-full', className)}>

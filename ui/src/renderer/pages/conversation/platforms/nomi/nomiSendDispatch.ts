@@ -1,0 +1,139 @@
+import type { ConversationId } from '@/common/types/ids';
+import type { TChatConversation } from '@/common/config/storage';
+import type { VoiceTaskSnapshot } from '@/common/adapter/voiceCompanion';
+import type { ConversationCommandQueueItem } from '@/renderer/pages/conversation/platforms/useConversationCommandQueue';
+import { uuid } from '@/common/utils';
+import {isVoiceConversation} from '../../utils/isVoiceConversation';
+
+export type ConversationVoiceKind = 'unknown' | 'voice' | 'ordinary';
+
+export interface ResolveVoiceKindOptions {
+  targetId: ConversationId;
+  fetchConversation: (id: ConversationId) => Promise<TChatConversation | null>;
+  getCachedConversation?: (id: ConversationId) => TChatConversation | undefined;
+}
+
+export async function resolveVoiceConversationKind(
+  options: ResolveVoiceKindOptions
+): Promise<{ kind: 'voice' | 'ordinary'; workspace?: string }> {
+  const { targetId, fetchConversation, getCachedConversation } = options;
+
+  const cached = getCachedConversation?.(targetId);
+  if (cached && cached.id === targetId) {
+    const isVoice = isVoiceConversation(cached);
+    return {
+      kind: isVoice ? 'voice' : 'ordinary',
+      workspace: cached.extra?.workspace,
+    };
+  }
+
+  const res = await fetchConversation(targetId);
+  if (!res) {
+    throw new Error(`Conversation ${targetId} not found`);
+  }
+  const isVoice = isVoiceConversation(res);
+  return {
+    kind: isVoice ? 'voice' : 'ordinary',
+    workspace: res.extra?.workspace,
+  };
+}
+
+export interface NomiSendDispatchDependencies {
+  conversationId: ConversationId;
+  conversationVoiceKind: ConversationVoiceKind;
+  workspacePath: string;
+  filesToSend: string[];
+  message: string;
+  voiceSendAttempts: Map<string, string>;
+  resolveConversationKind: (conversationId: ConversationId) => Promise<'voice' | 'ordinary'>;
+  sendVoiceKeyboardMessage: (
+    conversationId: ConversationId,
+    commandId: string,
+    message: string
+  ) => Promise<{ task: VoiceTaskSnapshot }>;
+  /** Fired immediately after the stable command identity exists, before the host await. */
+  onVoiceCommand?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    text: string;
+  }) => void;
+  /** Fired after the host returns a receipt/failure for that exact command. */
+  onVoiceCommandResult?: (info: {
+    conversationId: ConversationId;
+    commandId: string;
+    task?: VoiceTaskSnapshot;
+    error?: unknown;
+  }) => void;
+  enqueue: (
+    item: { input: string; files: string[]; workspace_path?: string }
+  ) => Promise<ConversationCommandQueueItem | null> | ConversationCommandQueueItem | null;
+  clearFiles: () => void;
+  emitFileClear: () => void;
+  notifyError: (message: string) => void;
+  plainTextOnlyError: string;
+  loadFailedError: string;
+  generateId?: () => string;
+}
+
+export async function dispatchNomiSend(deps: NomiSendDispatchDependencies): Promise<void> {
+  let kind = deps.conversationVoiceKind;
+  if (kind === 'unknown') {
+    try {
+      kind = await deps.resolveConversationKind(deps.conversationId);
+    } catch (err) {
+      deps.notifyError(deps.loadFailedError);
+      throw err;
+    }
+  }
+
+  if (kind === 'voice') {
+    if (deps.filesToSend.length > 0) {
+      throw new Error(deps.plainTextOnlyError);
+    }
+    const key = JSON.stringify([deps.conversationId, deps.message]);
+    let commandId = deps.voiceSendAttempts.get(key);
+    if (!commandId) {
+      commandId = (deps.generateId ?? uuid)();
+      deps.voiceSendAttempts.set(key, commandId);
+    }
+    deps.onVoiceCommand?.({
+      conversationId: deps.conversationId,
+      commandId,
+      text: deps.message,
+    });
+    try {
+      const { task } = await deps.sendVoiceKeyboardMessage(
+        deps.conversationId,
+        commandId,
+        deps.message
+      );
+      deps.onVoiceCommandResult?.({
+        conversationId: deps.conversationId,
+        commandId,
+        task,
+      });
+    } catch (error) {
+      deps.onVoiceCommandResult?.({
+        conversationId: deps.conversationId,
+        commandId,
+        error,
+      });
+      throw error;
+    }
+    if (deps.voiceSendAttempts.get(key) === commandId) {
+      deps.voiceSendAttempts.delete(key);
+    }
+    return;
+  }
+
+  const queued = await deps.enqueue({
+    input: deps.message,
+    files: deps.filesToSend,
+    workspace_path: deps.workspacePath,
+  });
+  if (!queued) {
+    throw new Error('conversation command was not queued');
+  }
+  deps.clearFiles();
+  deps.emitFileClear();
+}

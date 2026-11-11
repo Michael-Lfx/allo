@@ -150,6 +150,30 @@
   border-color: #71717a !important;
 }
 
+/* Phone call action: green circle */
+.send-button-custom.sendbox-phone-call-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: var(--flowy-success) !important;
+  border-color: var(--flowy-success) !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-phone-call-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: color-mix(in srgb, var(--flowy-success) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--flowy-success) 88%, #ffffff) !important;
+}
+
+/* Phone hangup action: red circle */
+.send-button-custom.sendbox-phone-hangup-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: var(--flowy-danger) !important;
+  border-color: var(--flowy-danger) !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-phone-hangup-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: color-mix(in srgb, var(--flowy-danger) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--flowy-danger) 88%, #ffffff) !important;
+}
+
 [data-theme='dark'] .send-button-custom:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn-primary:disabled,
@@ -920,6 +944,19 @@
   line-height: 1;
   color: rgb(var(--primary-6, 22, 93, 255));
   background: rgba(var(--primary-6, 22, 93, 255), 0.12);
+}
+
+.chat-model-plan-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--color-text-2);
+  background: var(--color-fill-2);
 }
 
 .chat-model-picker-menu-status {

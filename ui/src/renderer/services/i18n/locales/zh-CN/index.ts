@@ -57,6 +57,8 @@ import beautifulUiPreview from './beautifulUiPreview.json';
 import colorLab from './colorLab.json';
 import capabilityHubPreview from './capabilityHubPreview.json';
 import notifications from './notifications.json';
+import voice from './voice.json';
+import presentation from './presentation.json';
 
 export default {
   common,
@@ -113,4 +115,6 @@ export default {
   colorLab,
   capabilityHubPreview,
   notifications,
+  voice,
+  presentation,
 };

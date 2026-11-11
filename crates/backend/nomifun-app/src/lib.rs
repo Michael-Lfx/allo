@@ -40,6 +40,7 @@ mod services;
 mod workshop_bridge;
 mod channel_asset_resolver;
 mod eval_quality_sink;
+mod expert_package_install;
 mod observation_telemetry;
 
 // Promoted from the `nomicore` bin so in-process hosts (Tauri desktop, web)
@@ -50,6 +51,10 @@ pub mod cli;
 pub mod commands;
 pub mod desktop;
 pub mod meeting_tray;
+pub mod voice_companion_manager;
+pub(crate) mod voice_tasks;
+pub(crate) mod voice_task_runtime;
+pub mod voice_dialogue;
 // Public because a non-desktop host (`nomifun-web`) has to publish its own
 // LAN-reachable address to the robot endpoint advertiser.
 pub mod lan_endpoint;

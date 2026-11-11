@@ -1,4 +1,6 @@
 import React from 'react';
+import type { CSSProperties } from 'react';
+import GooeyNav from '@renderer/components/base/GooeyNav';
 
 interface FilterPillsProps<K extends string> {
   items: { key: K; label: string }[];
@@ -7,36 +9,32 @@ interface FilterPillsProps<K extends string> {
   ariaLabel?: string;
 }
 
+const compact: CSSProperties = {
+  ['--gn-pad' as string]: '3px',
+  ['--gn-y' as string]: '5px',
+  ['--gn-x' as string]: '12px',
+  ['--gn-font' as string]: '12px',
+};
+
 export default function FilterPills<K extends string>({
   items,
   active,
   onChange,
   ariaLabel,
 }: FilterPillsProps<K>) {
+  const activeIndex = items.findIndex((item) => item.key === active);
   return (
-    <div className='flex flex-wrap gap-6px' role='tablist' aria-label={ariaLabel}>
-      {items.map((item) => {
-        const on = item.key === active;
-        return (
-          <button
-            key={item.key}
-            type='button'
-            role='tab'
-            aria-selected={on}
-            className={[
-              'm-0 cursor-pointer border border-solid px-12px py-5px text-12px leading-18px transition-colors rd-999px',
-              on
-                ? 'border-[rgb(var(--primary-6))] bg-[rgb(var(--primary-1))] text-[rgb(var(--primary-6))] font-600'
-                : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] text-[var(--color-text-2)] hover:border-[rgb(var(--primary-5))]',
-            ].join(' ')}
-            onClick={() => {
-              if (!on) onChange(item.key);
-            }}
-          >
-            {item.label}
-          </button>
-        );
-      })}
-    </div>
+    <GooeyNav
+      ariaLabel={ariaLabel}
+      selection='tab'
+      size='sm'
+      style={compact}
+      items={items.map((item) => ({ label: item.label }))}
+      activeIndex={activeIndex}
+      onChange={(index) => {
+        const next = items[index];
+        if (next && next.key !== active) onChange(next.key);
+      }}
+    />
   );
 }

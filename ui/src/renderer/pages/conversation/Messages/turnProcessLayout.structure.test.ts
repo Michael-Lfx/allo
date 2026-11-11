@@ -214,7 +214,7 @@ describe('turn process disclosure content layout', () => {
   test('defines the shared conversation body typography token once', () => {
     const itemRule = cssRuleFor('.message-item');
 
-    expect(itemRule.includes('--conversation-message-font-size: 14px')).toBe(true);
+    expect(itemRule.includes('--conversation-message-font-size: 15px')).toBe(true);
     expect(itemRule.includes('--conversation-message-line-height: 22px')).toBe(true);
     expect(cssSource.includes('.message-item .markdown-shadow p')).toBe(false);
     expect(cssSource.includes('.message-item .whitespace-pre-wrap')).toBe(false);

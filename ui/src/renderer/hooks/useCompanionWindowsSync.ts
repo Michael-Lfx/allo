@@ -3,6 +3,12 @@
 import { useEffect } from 'react';
 import { ipcBridge } from '@/common';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
+import {
+  isVoiceSessionDismissed,
+  resolveVoiceOwnerCompanionId,
+  VOICE_DISMISSED_SESSIONS_EVENT,
+} from '@/renderer/services/voice/voiceCallPresence';
 
 /** Collapse event bursts (e.g. drag-save config-updated echoes) into one sync. */
 const SYNC_DEBOUNCE_MS = 500;
@@ -26,6 +32,11 @@ export function requestCompanionWindowSync(): void {
  * command. No-op outside the Tauri desktop shell (WebUI browser).
  */
 export function useCompanionWindowsSync(): void {
+  const { snapshot: voiceSnapshot } = useVoiceSnapshot();
+  const isVoiceActive =
+    Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle';
+  const memoryOwnerId = voiceSnapshot?.binding?.memory_owner_companion_id;
+
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let disposed = false;
@@ -35,10 +46,19 @@ export function useCompanionWindowsSync(): void {
       try {
         const companions = await ipcBridge.companion.listCompanions.invoke();
         if (disposed) return;
-        const specs = companions.map((p) => ({
-          companion_id: p.companion_id,
-          enabled: Boolean(p.appearance.companion_enabled),
-        }));
+        const isSessionDismissed = isVoiceSessionDismissed(voiceSnapshot?.session_id);
+        const effectiveVoiceActive = isVoiceActive && !isSessionDismissed;
+        const targetVoiceId = resolveVoiceOwnerCompanionId(memoryOwnerId);
+        const specs = companions.map((p) => {
+          const isVoiceTarget =
+            effectiveVoiceActive &&
+            targetVoiceId != null &&
+            p.companion_id === targetVoiceId;
+          return {
+            companion_id: p.companion_id,
+            enabled: Boolean(p.appearance.companion_enabled) || isVoiceTarget,
+          };
+        });
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('sync_companion_windows', { specs });
       } catch (e) {
@@ -63,6 +83,8 @@ export function useCompanionWindowsSync(): void {
     };
     immediateSyncListeners.add(syncNow);
     window.addEventListener('focus', schedule);
+    window.addEventListener('storage', schedule);
+    window.addEventListener(VOICE_DISMISSED_SESSIONS_EVENT, schedule);
     const unsubs = [
       ipcBridge.companion.onCompanionCreated.on(schedule),
       ipcBridge.companion.onCompanionDeleted.on(schedule),
@@ -73,9 +95,11 @@ export function useCompanionWindowsSync(): void {
       if (timer) clearTimeout(timer);
       immediateSyncListeners.delete(syncNow);
       window.removeEventListener('focus', schedule);
+      window.removeEventListener('storage', schedule);
+      window.removeEventListener(VOICE_DISMISSED_SESSIONS_EVENT, schedule);
       for (const unsub of unsubs) unsub();
     };
-  }, []);
+  }, [isVoiceActive, memoryOwnerId, voiceSnapshot?.session_id]);
 }
 
 export default useCompanionWindowsSync;

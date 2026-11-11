@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('capability hub navigation', () => {
-  test('keeps presets, skills, and MCP out of the primary rail', () => {
+  test('keeps presets and MCP in settings, and puts the skill store on the primary rail', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
     const settingsNavigationSource = readSource(
       new URL('../../../pages/settings/components/settingsNavigation.ts', import.meta.url)
@@ -17,8 +17,16 @@ describe('capability hub navigation', () => {
     expect(siderSource.includes('<SiderMcpEntry')).toBe(false);
     expect(siderSource.includes('<SiderConfigGroup')).toBe(false);
     expect(siderSource.includes('SiderExtensionsEntry')).toBe(false);
+    expect(siderSource.includes("testId='sider-skill-store-row'")).toBe(true);
+    const videoRow = siderSource.indexOf("testId='sider-video-module-row'");
+    const skillStoreRow = siderSource.indexOf("testId='sider-skill-store-row'");
+    const companionRow = siderSource.indexOf("testId='sider-companion-module-row'");
+    expect(videoRow).toBeGreaterThan(-1);
+    expect(videoRow).toBeLessThan(skillStoreRow);
+    expect(skillStoreRow).toBeLessThan(companionRow);
 
     expect(settingsNavigationSource.includes("id: 'capability-hub'")).toBe(true);
+    expect(settingsNavigationSource.includes("activePaths: ['presets', 'mcp']")).toBe(true);
     expect(settingsNavigationSource.includes("id: 'presets'")).toBe(false);
     expect(settingsNavigationSource.includes("id: 'skills'")).toBe(false);
     expect(settingsNavigationSource.includes("id: 'mcp'")).toBe(false);

@@ -15,6 +15,7 @@ describe('buildCompanionMenuEntries', () => {
 
     expect(entries).toEqual([
       { action: 'open-chat', text: 'nomi.companion.menuOpenChat' },
+      { action: 'open-voice', text: 'nomi.companion.menuOpenVoice' },
       { action: 'open-memories', text: 'nomi.companion.menuOpenMemories' },
       { action: 'open-config', text: '打开 团团 的设置' },
       { action: 'clear-unread', text: 'nomi.companion.menuClearUnread' },

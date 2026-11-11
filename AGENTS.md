@@ -20,6 +20,7 @@ web) and one React 19 SPA.
 | --- | --- |
 | `apps/web/` | Standalone `nomifun-web` server (API + SPA). |
 | `apps/desktop/` | Tauri desktop shell with embedded backend. |
+| `apps/voice-companion/` | Dedicated voice companion daemon (capture, KWS, VAD, ASR, TTS). |
 | `crates/agent/` | Independent AI agent engine (24 crates: 23 `nomi-*` + `flowy-web`; includes `nomi-agent-trace` for Session Logs). Largely self-contained; a few documented deps on backend utility crates. |
 | `crates/backend/` | 45 `nomifun-*` crates: HTTP/WS server, data, auth, features. |
 | `crates/shared/` | 5 cross-layer utility crates (`flowy-ssh`, `nomi-process-runtime`, `nomi-redact`, `nomifun-models-dev`, `nomifun-net`). Keep new shared crates rare. |
@@ -72,6 +73,11 @@ Run the smallest check that covers your change. See
 | Root scripts | `bun run help --check` |
 
 Broad pre-PR pass: `cargo check --workspace && bun run check`
+
+> For large or cross-layer changes, batch the edits first. While editing, run
+> only the minimum check for the affected crate/module plus the focused UI test;
+> run the broad matrix and desktop/daemon/UI builds once after the code is
+> frozen, and do not run cargo builds/tests concurrently.
 
 > `bun run check` is the aggregate gate. It runs the `ui/` frontend checks
 > (typecheck · i18n · theme · button-layout · icons · dead-css · codemirror),

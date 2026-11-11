@@ -1,7 +1,7 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Slider, Switch } from '@arco-design/web-react';
-import { Plus, Delete } from '@icon-park/react';
 import classNames from 'classnames';
 import { useWallpaper } from '@renderer/hooks/ui/useWallpaper';
 import { wallpaperThumbUrl } from '@renderer/utils/theme/wallpaperUrls';
@@ -46,13 +46,12 @@ const WallpaperSection: React.FC = () => {
       void setPrefs({ enabled: false });
       return;
     }
-    const fallback =
-      (prefs.id && library.some((item) => item.wallpaperId === prefs.id) ? prefs.id : library[0]?.wallpaperId) ?? null;
+    const fallback = library.find((item) => item.wallpaperId === prefs.id) ?? library[0];
     if (!fallback) {
       fileRef.current?.click();
       return;
     }
-    applyLibraryItem(fallback);
+    applyLibraryItem(fallback.wallpaperId);
   };
 
   return (
@@ -77,7 +76,7 @@ const WallpaperSection: React.FC = () => {
                 }}
                 className={classNames(
                   'size-36px rd-6px border-solid cursor-pointer overflow-hidden p-0',
-                  active ? 'border-2 border-primary-6' : 'border border-border-2'
+                  active ? 'border-2 border-solid border-primary-6' : 'border border-solid border-[var(--border-base)]'
                 )}
               >
                 <img
@@ -97,7 +96,7 @@ const WallpaperSection: React.FC = () => {
                 }}
                 className='absolute -top-4px -right-4px size-14px rd-full border-none bg-fill-3 text-t-secondary cursor-pointer flex items-center justify-center'
               >
-                <Delete theme='outline' size='10' fill='currentColor' />
+                <FlowyIcon name='delete' size={10} />
               </button>
             </div>
           );
@@ -105,10 +104,10 @@ const WallpaperSection: React.FC = () => {
         <button
           type='button'
           onClick={() => fileRef.current?.click()}
-          className='shrink-0 size-36px rd-6px border border-dashed border-border-2 bg-transparent text-t-tertiary cursor-pointer flex items-center justify-center'
+          className='shrink-0 size-36px rd-6px border border-dashed border-[var(--border-base)] bg-transparent text-t-tertiary cursor-pointer flex items-center justify-center'
           title={t('settings.wallpaper.upload')}
         >
-          <Plus theme='outline' size='14' fill='currentColor' />
+          <FlowyIcon name='plus' size={14} />
         </button>
         <input
           ref={fileRef}
@@ -127,7 +126,7 @@ const WallpaperSection: React.FC = () => {
       ) : null}
 
       <div
-        className='rd-8px border border-solid border-border-2 overflow-hidden h-72px relative'
+        className='rd-8px border border-solid border-[var(--border-base)] overflow-hidden h-72px relative'
         style={{
           background: analysis ? analysis.seedHex : 'var(--color-fill-2)',
         }}

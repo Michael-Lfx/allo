@@ -72,6 +72,32 @@ OS 的安装包/应用包。
 
 桌面包应在目标 OS 上构建。跨 OS 桌面打包不是当前支持流程。
 
+### Windows 语音伴侣打包
+
+语音模型下载提供声学资产，不提供伴侣可执行文件。安装包必须另外包含
+`bin/voice-companion.exe`、`bin/rg.exe` 和 `bin/voice-licenses/` 中的两份许可证。
+默认 Tauri 构建钩子与 `tauri.ci-skip-ui.conf.json` 都运行
+`scripts/prepare-voice-companion.mjs`；skip-UI 仅跳过 SPA 重建，不能跳过原生资源准备。
+准备脚本使用 Cargo 返回的目标可执行文件，拒绝 skeleton 产物，也不能在失败后复用旧文件。
+
+Windows 准备步骤还从匹配架构的微软官方 VC++ 可再发行文件中暂存
+`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`。
+脚本发现已安装的 Visual Studio 可再发行文件目录，或接受构建期
+`VC_REDIST_CRT_DIR` 目录覆盖。NSIS 安装时将这些文件从 `bin/` 复制到应用根目录，
+供 app-local 加载。
+
+分享或上传安装包前运行：
+
+```bash
+bun run check:release-voice-preparation
+bun run verify:voice-package -- --platform windows --arch x64 --dist dist/desktop
+```
+
+ARM64 安装包使用 `--arch arm64`。包门禁解开实际制品，验证必需文件、目标架构和
+包根路径边界，并输出安装包及 daemon 的 SHA-256。缺件会失败；缺解包工具会明确报告
+无法完成验证。它证明包内物料，不证明进程启动、设备就绪或唤醒效果。
+每次安装实测必须关联具体制品哈希；源码测试不能证明旧安装包包含新修复，纯文档变更不要求重打包。
+
 ## macOS 签名与公证
 
 ad-hoc 签名产物只适合本地测试，不适合发给别人。生成 Developer ID 签名并公证的 DMG：

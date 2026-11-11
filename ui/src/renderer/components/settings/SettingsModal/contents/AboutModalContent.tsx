@@ -15,6 +15,7 @@ import {
   SettingsRow,
   SettingsStatus,
 } from '@/renderer/components/settings/SettingsPagePrimitives';
+import { BRAND_NAME } from '@/renderer/config/brand';
 
 // Real app version from the backend `/health` endpoint (public, no auth). The
 // version there is `CARGO_PKG_VERSION`, which follows the single-source
@@ -60,7 +61,7 @@ const AboutModalContent: React.FC = () => {
   return (
     <div className='w-full space-y-24px pb-16px'>
       <SettingsPageHeader
-        title='Flowy'
+        title={BRAND_NAME}
         description={t('settings.appDescription')}
         meta={<SettingsStatus>{`v${appVersion || '—'}`}</SettingsStatus>}
       />

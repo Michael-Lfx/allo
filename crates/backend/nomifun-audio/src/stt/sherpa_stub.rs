@@ -42,6 +42,14 @@ impl SttCallback for SherpaSttCallback {
     }
 }
 
+/// Stub for registering active model directory.
+pub fn register_active_model_dir(_dir: std::path::PathBuf) {}
+
+/// Stub for retrieving active model directory.
+pub fn active_model_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Always `Ok(None)` when the feature is off (Auto/cloud still work).
 pub fn try_load_sherpa(_model_dir: Option<&Path>) -> Result<Option<SherpaSttCallback>, SherpaSttError> {
     Ok(None)

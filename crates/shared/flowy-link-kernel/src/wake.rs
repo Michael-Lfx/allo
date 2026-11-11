@@ -35,6 +35,7 @@ pub enum WakePayloadError {
     Fingerprint,
 }
 
+#[cfg(test)]
 pub fn parse_wake_payload(bytes: &[u8]) -> Result<WakePayload, WakePayloadError> {
     let payload: WakePayload = serde_json::from_slice(bytes).map_err(|_| WakePayloadError::Schema)?;
     if payload.v != 1 {

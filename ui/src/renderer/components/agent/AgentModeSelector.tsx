@@ -146,7 +146,7 @@ const AgentModeSelector: React.FC<AgentModeSelectorProps> = ({
     if (cachedModes.length > 0) return cachedModes;
     return getAgentModes(backend);
   }, [dynamicModes, cachedModes, backend]);
-  const defaultMode = modes[0]?.value ?? 'default';
+  const defaultMode = backend === 'nomi' ? 'yolo' : modes[0]?.value ?? 'default';
   // Validate initialMode against available modes; fall back to backend's default
   // when the provided value doesn't match (e.g. opencode has 'build'/'plan', not 'default')
   const validInitialMode = initialMode && modes.some((m) => m.value === initialMode) ? initialMode : defaultMode;

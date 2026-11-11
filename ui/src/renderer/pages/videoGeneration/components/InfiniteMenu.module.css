@@ -1,0 +1,199 @@
+.stage {
+  position: relative;
+  height: min(720px, calc(100dvh - 280px));
+  min-height: 460px;
+}
+
+.root {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  outline: none;
+  container-type: inline-size;
+  color: var(--infinite-menu-text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.root:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--infinite-menu-text);
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  height: 100%;
+  width: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.canvas:active {
+  cursor: grabbing;
+}
+
+.previewPlate {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--infinite-menu-tile, 160px) * 2);
+  height: calc(var(--infinite-menu-tile, 160px) * 2);
+  translate: -50% calc(-50% + var(--infinite-menu-shift, 0px));
+  scale: 1.06;
+  background: var(--infinite-menu-preview-bg, #141216);
+  pointer-events: none;
+}
+
+.preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  background: var(--infinite-menu-preview-bg, #141216);
+}
+
+.layer,
+.custom {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  pointer-events: none;
+}
+
+.title,
+.description,
+.action {
+  transition:
+    opacity 450ms cubic-bezier(0.22, 1, 0.36, 1),
+    translate 450ms cubic-bezier(0.22, 1, 0.36, 1),
+    scale 450ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.title {
+  position: absolute;
+  top: 50%;
+  right: calc(50% + var(--infinite-menu-tile, 160px) + 28px);
+  left: 16px;
+  margin: 0;
+  translate: 0 -50%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-size: clamp(1rem, calc((50cqw - var(--infinite-menu-tile, 160px)) * 0.14), 2.15rem);
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-shadow: var(--infinite-menu-shadow);
+}
+
+.description {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + var(--infinite-menu-tile, 160px) + 28px);
+  right: 16px;
+  margin: 0;
+  translate: 0 -50%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow-wrap: anywhere;
+  font-size: clamp(0.85rem, 1.5cqw, 1.05rem);
+  line-height: 1.55;
+  opacity: 0.72;
+  text-shadow: var(--infinite-menu-shadow);
+}
+
+.action {
+  position: absolute;
+  bottom: 7%;
+  left: 50%;
+  display: grid;
+  height: 52px;
+  width: 52px;
+  translate: -50% 0;
+  cursor: pointer;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--infinite-menu-accent);
+  padding: 0;
+  color: var(--infinite-menu-on-accent);
+  font: inherit;
+  pointer-events: auto;
+}
+
+.action:hover {
+  scale: 1.06;
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--infinite-menu-accent);
+  outline-offset: 3px;
+}
+
+.layer[data-moving='true'] .title,
+.layer[data-moving='true'] .description,
+.layer[data-moving='true'] .action {
+  opacity: 0;
+  transition-duration: 180ms;
+  pointer-events: none;
+}
+
+.layer[data-moving='true'] .title {
+  translate: 16px -50%;
+}
+
+.layer[data-moving='true'] .description {
+  translate: -16px -50%;
+}
+
+.layer[data-moving='true'] .action {
+  translate: -50% 16px;
+  scale: 0.6;
+}
+
+.layer[data-layout='stacked'] .title {
+  top: auto;
+  right: 88px;
+  bottom: 52px;
+  left: 16px;
+  max-width: none;
+  translate: 0 0;
+  -webkit-line-clamp: 2;
+  text-align: left;
+  font-size: clamp(1.15rem, 5cqw, 1.6rem);
+}
+
+.layer[data-layout='stacked'] .description {
+  top: auto;
+  right: 88px;
+  bottom: 22px;
+  left: 16px;
+  max-width: none;
+  translate: 0 0;
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer[data-layout='stacked'] .action {
+  right: 20px;
+  bottom: 22px;
+  left: auto;
+  translate: 0 0;
+}
+
+.layer[data-layout='stacked'][data-moving='true'] .title,
+.layer[data-layout='stacked'][data-moving='true'] .description,
+.layer[data-layout='stacked'][data-moving='true'] .action {
+  translate: 0 12px;
+}

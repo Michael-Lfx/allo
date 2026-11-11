@@ -391,7 +391,7 @@ interface StudioSessionMessageViewProps {
   item: StudioSessionMessage;
   title: string;
   body?: string;
-  meta?: string;
+  meta?: React.ReactNode;
   detail?: string;
   issueKind?: FailureKind;
   onOpenMedia?: (item: StudioSessionMedia, gallery: StudioSessionMedia[]) => void;

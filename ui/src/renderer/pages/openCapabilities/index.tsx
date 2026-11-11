@@ -49,7 +49,7 @@ const MCP_DOMAIN_OPTIONS: McpDomainOption[] = [
     titleKey: 'settings.openCapabilities.domainConversationTitle',
     defaultTitle: '会话',
     descKey: 'settings.openCapabilities.domainConversationDesc',
-    defaultDesc: '创建、读取、发送和管理 Flowy 会话。',
+    defaultDesc: '创建、读取、发送和管理 {{brandName}} 会话。',
   },
   {
     id: 'browser',
@@ -70,7 +70,7 @@ const MCP_DOMAIN_OPTIONS: McpDomainOption[] = [
     titleKey: 'settings.openCapabilities.domainKnowledgeTitle',
     defaultTitle: '知识库',
     descKey: 'settings.openCapabilities.domainKnowledgeDesc',
-    defaultDesc: '读取、写入、绑定和维护 Flowy 知识库内容。',
+    defaultDesc: '读取、写入、绑定和维护 {{brandName}} 知识库内容。',
   },
   {
     id: 'files',
@@ -261,7 +261,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                 icon={<WebPage theme='outline' size='18' fill='currentColor' />}
                 title={t('settings.openCapabilities.webuiTitle', { defaultValue: 'WebUI 远程访问' })}
                 description={t('settings.openCapabilities.webuiDesc', {
-                  defaultValue: '启用后，手机、平板或远程浏览器可以打开 Flowy。二维码登录和账号密码都在这里处理。',
+                  defaultValue: '启用后，手机、平板或远程浏览器可以打开 {{brandName}}。二维码登录和账号密码都在这里处理。',
                 })}
               />
               <div className='mt-14px'>
@@ -275,7 +275,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                 title={t('settings.openCapabilities.addressStrategyTitle', { defaultValue: '访问地址策略' })}
                 body={t('settings.openCapabilities.addressStrategyDesc', {
                   defaultValue:
-                    'Flowy 只展示更可能被手机和局域网设备访问的地址；回环、链路本地、基准测试网段等地址不会进入二维码候选。',
+                    '{{brandName}} 只展示更可能被手机和局域网设备访问的地址；回环、链路本地、基准测试网段等地址不会进入二维码候选。',
                 })}
               />
               <EndpointBlock
@@ -296,7 +296,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
           <section className='max-w-640px rd-12px border border-solid border-arco-2 bg-fill-0 p-16px'>
             <SectionHeader
               icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
-              title={t('settings.openCapabilities.linkTitle', { defaultValue: 'Flowy 手机版' })}
+              title={t('settings.openCapabilities.linkTitle', { defaultValue: '{{brandName}} 手机版' })}
               description={t('settings.openCapabilities.linkDesc', {
                 defaultValue: '不安装 App 时用微信或其他扫码工具打开网页。安装手机版时扫配对码，允许之前手机拿不到登录。',
               })}
@@ -305,7 +305,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
               <BrowserAccessPanel />
               <div className='border-t border-t-solid border-arco-2' />
               <div>
-                <div className='text-16px font-600 text-t-primary'>{t('settings.link.appTitle', { defaultValue: '用 Flowy 手机版' })}</div>
+                <div className='text-16px font-600 text-t-primary'>{t('settings.link.appTitle', { defaultValue: '用 {{brandName}} 手机版' })}</div>
                 <div className='mt-4px mb-14px text-13px text-t-secondary leading-relaxed'>
                   {t('settings.link.appDesc', {
                     defaultValue: '安装 App 后扫描配对码。允许之前，手机拿不到登录。对话正文不经过云端。',
@@ -323,10 +323,10 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
               <div className='rd-12px border border-solid border-arco-2 bg-fill-0 p-16px'>
                 <SectionHeader
                   icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
-                  title={t('settings.openCapabilities.remoteTitle', { defaultValue: 'Flowy Remote MCP 能力范围' })}
+                  title={t('settings.openCapabilities.remoteTitle', { defaultValue: '{{brandName}} Remote MCP 能力范围' })}
                   description={t('settings.openCapabilities.remoteDesc', {
                     defaultValue:
-                      '勾选外部 Agent 通过 Flowy Remote MCP / REST 能看到和调用的平台能力。配置会体现在生成的接入 URL 中。',
+                      '勾选外部 Agent 通过 {{brandName}} Remote MCP / REST 能看到和调用的平台能力。配置会体现在生成的接入 URL 中。',
                   })}
                 />
 
@@ -490,7 +490,7 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
     <HubPageShell
       title={t('settings.openCapabilities.title', { defaultValue: '远程&开放能力' })}
       subtitle={t('settings.openCapabilities.subtitle', {
-        defaultValue: '分开管理 WebUI 访问入口，以及 Flowy Remote MCP / REST 对外开放能力。',
+        defaultValue: '分开管理 WebUI 访问入口，以及 {{brandName}} Remote MCP / REST 对外开放能力。',
       })}
       maxWidthClass='md:max-w-1180px'
     >

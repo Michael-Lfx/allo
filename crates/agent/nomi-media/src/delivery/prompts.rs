@@ -161,7 +161,7 @@ pub fn workflow_prompt_json(record: &WorkflowRunRecord) -> Value {
         "user_prompt_block": user_prompt_block,
         "delivery_note": user_prompt_block.as_ref().map(|_| {
             "Include user_prompt_block verbatim when replying so the user sees the final API prompts. \
-             Also include MEDIA: tags for generated files."
+             Do not paste MEDIA: paths; the app shows generated files."
         }),
     })
 }
@@ -184,7 +184,7 @@ pub fn enrich_tool_response_with_prompts(mut value: Value, provenance: &MediaPro
         obj.insert(
             "delivery_note".into(),
             json!("Share user_prompt_block with the user so they see the final prompt sent to the API. \
-                   Include MEDIA: path when delivering the file."),
+                   Do not paste MEDIA: paths; the app shows the file."),
         );
     }
     value

@@ -308,6 +308,55 @@ describe("StoreClient · catalog reads", () => {
     });
   });
 
+  describe("dependencies", () => {
+    const connector = item({
+      id: "connectors/adc-sandbox",
+      marketplace_id: "connectors",
+      entry_name: "adc-sandbox",
+      kind: "connector",
+      name: "ADC 专区",
+      installed: false,
+    });
+    const bundled = item({
+      id: "skills/adc-sandbox-usage",
+      marketplace_id: "skills",
+      entry_name: "adc-sandbox-usage",
+      kind: "skill",
+      name: "adc-sandbox-usage",
+      required_connectors: ["adc-sandbox"],
+      blocked_reason: 'requires connector adc-sandbox; install it from the connectors market',
+    });
+
+    it("resolves a declared entry name across markets", async () => {
+      const { host } = fakeHost({ store: [bundled, connector], marketsPending: false });
+      const client = new StoreClient(host);
+      const found = await client.dependencies(bundled);
+      expect(found.map((entry) => entry.entry_name)).toEqual(["adc-sandbox"]);
+    });
+
+    it("skips declarations the catalogue cannot resolve instead of throwing", async () => {
+      const orphan = item({ ...bundled, required_connectors: ["gone-connector"] });
+      const { host } = fakeHost({ store: [orphan, connector] });
+      expect(await new StoreClient(host).dependencies(orphan)).toEqual([]);
+    });
+
+    it("asks nothing for an item without declarations", async () => {
+      const { host, calls } = fakeHost({ store: [connector] });
+      const client = new StoreClient(host);
+      expect(await client.dependencies(item())).toEqual([]);
+      expect(calls).toEqual([]);
+    });
+
+    it("reuses a caller-provided catalogue instead of issuing a second list", async () => {
+      const { host, calls } = fakeHost({ store: [bundled, connector] });
+      const client = new StoreClient(host);
+      const catalogue = await client.list();
+      calls.length = 0;
+      await client.dependencies(bundled, catalogue);
+      expect(calls).toEqual([]);
+    });
+  });
+
   it("checkUpdates() requires installed AND update_available", async () => {
     const { host } = fakeHost({
       store: [
@@ -773,5 +822,24 @@ describe("StoreClient · search semantics", () => {
 
     expect(match.hits).toContainEqual({ field: "name", ranges: [[2, 4]] });
     expect(match.offLanguage).toBe(false);
+  });
+});
+
+describe("StoreClient.avatarUrl", () => {
+  it("prefers the absolute index icon and resolves relative routes against the host base", () => {
+    const { host } = fakeHost();
+    const client = new StoreClient(host);
+    expect(
+      client.avatarUrl({ icon_url: "https://cdn.example/icons/a.webp", avatar_url: null }),
+    ).toBe("https://cdn.example/icons/a.webp");
+
+    const relative = "/api/app-server/store/m/entries/e/assets/icons/a.webp";
+    expect(client.avatarUrl({ icon_url: null, avatar_url: relative })).toBeNull();
+
+    const withBase = new StoreClient({ ...host, baseUrl: "http://127.0.0.1:54211/" });
+    expect(withBase.avatarUrl({ icon_url: null, avatar_url: relative })).toBe(
+      `http://127.0.0.1:54211${relative}`,
+    );
+    expect(withBase.avatarUrl({ icon_url: null, avatar_url: null })).toBeNull();
   });
 });

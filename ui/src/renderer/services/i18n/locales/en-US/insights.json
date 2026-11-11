@@ -5,7 +5,7 @@
     "uploadReady": "Upload ready",
     "authConfigured": "Auth configured",
     "endpoint": "Ingest endpoint",
-    "endpointPending": "Configured automatically after Flowy cloud sign-in",
+    "endpointPending": "Configured automatically after {{brandName}} cloud sign-in",
     "outboxPending": "Outbox pending",
     "outboxFailed": "Outbox failed",
     "outboxSent": "Outbox sent",
@@ -13,7 +13,7 @@
   },
   "settings": {
     "enabled": "Enable contribution",
-    "serverManagedHint": "Ingest endpoint and auth token are managed automatically by your Flowy cloud account.",
+    "serverManagedHint": "Ingest endpoint and auth token are managed automatically by your {{brandName}} cloud account.",
     "onSessionEnd": "Enqueue on session end",
     "autoExtractSection": "Proactive extraction",
     "autoExtractHint": "Build and enqueue work packages during conversations when thresholds are met — no need to wait for session end.",

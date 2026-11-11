@@ -329,6 +329,19 @@ impl RegistrationPolicy {
     }
 }
 
+/// Host-owned restrictions evaluated on the canonical invocation before dispatch.
+/// This grants no permission: ordinary runtime approval remains an independent gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvocationDecision {
+    Allow,
+    RequireApproval { reason: String, timeout: std::time::Duration },
+    Deny(String),
+}
+
+pub trait ToolInvocationPolicy: Send + Sync {
+    fn evaluate(&self, name: &str, input: &Value) -> InvocationDecision;
+}
+
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
     input_contracts: BTreeMap<String, ToolInputContract>,
@@ -345,6 +358,7 @@ pub struct ToolRegistry {
     /// removes exactly the tools a working entry matched, so a live check would
     /// report every *successful* entry as unmatched too.
     disabled_unmatched: Vec<String>,
+    invocation_policy: Option<Arc<dyn ToolInvocationPolicy>>,
 }
 
 /// The exact schema advertised for a registered route and its compiled
@@ -370,7 +384,16 @@ impl ToolRegistry {
             registration_policy: RegistrationPolicy::Unrestricted,
             disabled: Vec::new(),
             disabled_unmatched: Vec::new(),
+            invocation_policy: None,
         }
+    }
+
+    pub fn set_invocation_policy(&mut self, policy: Arc<dyn ToolInvocationPolicy>) {
+        self.invocation_policy = Some(policy);
+    }
+
+    pub fn invocation_decision(&self, name: &str, input: &Value) -> InvocationDecision {
+        self.invocation_policy.as_ref().map(|policy| policy.evaluate(name, input)).unwrap_or(InvocationDecision::Allow)
     }
 
     /// Register a tool, returning `true` only when this exact call inserted it.

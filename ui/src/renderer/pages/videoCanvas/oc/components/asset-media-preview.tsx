@@ -36,7 +36,11 @@ export function AssetMediaPreview({ asset, alt, className = "", fallback = null 
         );
     }
 
-    const imageUrl = asset.kind === "audio" ? usableCanvasSessionUrl(asset.coverUrl) : canvasAssetDisplayUrl(asset);
+    const imageUrl = asset.kind === "audio"
+        ? usableCanvasSessionUrl(asset.coverUrl)
+        : asset.kind === "image" || asset.kind === "model"
+          ? canvasAssetDisplayUrl(asset)
+          : "";
     if (!imageUrl) return fallback;
     return <img src={imageUrl} alt={alt} loading="lazy" decoding="async" className={className} />;
 }

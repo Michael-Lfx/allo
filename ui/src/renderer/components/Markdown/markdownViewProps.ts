@@ -18,4 +18,6 @@ export type MarkdownViewProps = {
   isStreaming?: boolean;
   /** Collapse long blockquotes only when the caller explicitly opts in. */
   collapsibleBlockquotes?: boolean;
+  /** Add ideograph tracking without stretching Latin words. */
+  trackIdeographs?: boolean;
 };

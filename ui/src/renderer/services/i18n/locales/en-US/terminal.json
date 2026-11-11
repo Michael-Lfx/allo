@@ -38,7 +38,7 @@
     "cwdRequired": "Please select a working directory first",
     "modalDesc": "Choose a CLI and merge the knowledge MCP command into its config without overwriting existing settings.",
     "modalTitle": "Connect Platform Knowledge",
-    "securityDesc": "No port or credential is stored. At startup, the CLI receives workspace-scoped access through a local channel protected for the current OS user; Flowy must be running.",
+    "securityDesc": "No port or credential is stored. At startup, the CLI receives workspace-scoped access through a local channel protected for the current OS user; {{brandName}} must be running.",
     "codexScope": "Writes user-level config",
     "projectScope": "Writes project config"
   },
@@ -90,7 +90,7 @@
       "claudeJson": "Claude .mcp.json",
       "claudePowerShellCommand": "Claude PowerShell command",
       "codexToml": "Codex config.toml",
-      "description": "Templates contain only the launch command, never a port or credential. At startup, external CLIs receive workspace-scoped access through a local channel protected for the current OS user; Flowy must be running.",
+      "description": "Templates contain only the launch command, never a port or credential. At startup, external CLIs receive workspace-scoped access through a local channel protected for the current OS user; {{brandName}} must be running.",
       "geminiJson": "Gemini settings.json",
       "loading": "Loading...",
       "title": "Advanced: manual registration for other CLIs / external terminals",

@@ -46,7 +46,7 @@ describe("canvas hydrate persistence wiring", () => {
 
     test("doc and viewport persistence effects consult the gate", () => {
         const docEffect =
-            "if (!projectLoaded || historyPausedRef.current || persistPausedRef.current.paused) return";
+            "if (!projectLoaded || !persistReady || historyPausedRef.current || persistPausedRef.current.paused) return";
         expect(lifecycle.includes(docEffect)).toBe(true);
         expect(
             lifecycle.includes("if (!projectLoaded || persistPausedRef.current.paused) return")

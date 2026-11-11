@@ -20,30 +20,65 @@ pub fn get_char_budget(context_window_tokens: Option<usize>) -> usize {
     }
 }
 
-/// Format a skill's combined description string (description + when_to_use),
-/// truncated to MAX_LISTING_DESC_CHARS.
+/// Format the L1 routing line for one skill, capped at `MAX_LISTING_DESC_CHARS`.
+///
+/// `when_to_use` is the match rule, so it is kept whole and placed first.
+/// `description` fills whatever width remains and is the only part truncated.
 pub fn format_skill_description(skill: &SkillMetadata) -> String {
-    let desc = match &skill.when_to_use {
-        Some(wtu) if !wtu.is_empty() => format!("{} - {}", skill.description, wtu),
-        _ => skill.description.clone(),
+    let route = skill
+        .when_to_use
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let Some(route) = route else {
+        return truncate_listing(&skill.description, MAX_LISTING_DESC_CHARS);
     };
 
-    if UnicodeWidthStr::width(desc.as_str()) > MAX_LISTING_DESC_CHARS {
-        let mut truncated = String::new();
-        let mut width = 0usize;
-        for ch in desc.chars() {
-            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + cw >= MAX_LISTING_DESC_CHARS {
-                break;
-            }
-            truncated.push(ch);
-            width += cw;
-        }
-        truncated.push('\u{2026}');
-        truncated
-    } else {
-        desc
+    let route_width = UnicodeWidthStr::width(route);
+    if route_width >= MAX_LISTING_DESC_CHARS {
+        return truncate_listing(route, MAX_LISTING_DESC_CHARS);
     }
+
+    let description = skill.description.trim();
+    if description.is_empty() {
+        return route.to_owned();
+    }
+
+    const SEPARATOR: &str = " - ";
+    let remaining = MAX_LISTING_DESC_CHARS
+        .saturating_sub(route_width)
+        .saturating_sub(UnicodeWidthStr::width(SEPARATOR));
+    if remaining == 0 {
+        return route.to_owned();
+    }
+
+    let description = truncate_listing(description, remaining);
+    if description.is_empty() {
+        return route.to_owned();
+    }
+    format!("{route}{SEPARATOR}{description}")
+}
+
+fn truncate_listing(text: &str, max_width: usize) -> String {
+    if max_width == 0 || text.is_empty() {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_owned();
+    }
+
+    let mut truncated = String::new();
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cw >= max_width {
+            break;
+        }
+        truncated.push(ch);
+        width += cw;
+    }
+    truncated.push('\u{2026}');
+    truncated
 }
 
 /// Format a single skill entry for the listing: `- name (id): description`.
@@ -265,7 +300,7 @@ mod tests {
     #[test]
     fn test_format_skill_description_with_when_to_use() {
         let skill = make_skill("s", "Does X", Some("Use when Y"), false, false);
-        assert_eq!(format_skill_description(&skill), "Does X - Use when Y");
+        assert_eq!(format_skill_description(&skill), "Use when Y - Does X");
     }
 
     #[test]
@@ -287,14 +322,38 @@ mod tests {
 
     #[test]
     fn test_format_skill_description_truncates_combined_over_limit() {
-        // description 200 chars + " - " + when_to_use 100 chars = 303 > 250
+        // A 100-char routing clause stays intact; the 200-char description is what gets cut.
         let desc = "a".repeat(200);
         let wtu = "b".repeat(100);
         let skill = make_skill("s", &desc, Some(&wtu), false, false);
         let result = format_skill_description(&skill);
         assert!(
+            result.starts_with(&wtu),
+            "routing clause must survive a long description"
+        );
+        assert!(
             result.ends_with('\u{2026}'),
             "should be truncated with ellipsis"
+        );
+        assert!(
+            UnicodeWidthStr::width(result.as_str()) <= MAX_LISTING_DESC_CHARS,
+            "combined listing line must stay inside the width cap"
+        );
+    }
+
+    #[test]
+    fn test_format_skill_description_keeps_chinese_route_ahead_of_long_english_description() {
+        let route = "用户要调研、深入研究、多来源对比或带引用的报告时使用。单个事实、一次查询就能回答的问题不用。";
+        let description = "Multi-source deep research. ".repeat(20);
+        let skill = make_skill("deep-research-pro", &description, Some(route), true, false);
+        let result = format_skill_description(&skill);
+        assert!(
+            result.starts_with(route),
+            "Chinese routing clause must stay intact, got {result}"
+        );
+        assert!(
+            UnicodeWidthStr::width(result.as_str()) <= MAX_LISTING_DESC_CHARS,
+            "listing line must stay inside the width cap"
         );
     }
 
@@ -344,7 +403,7 @@ mod tests {
         let skill = make_skill("my-skill", "Does things", Some("When needed"), false, false);
         assert_eq!(
             format_skill_entry(&skill),
-            "- my-skill: Does things - When needed"
+            "- my-skill: When needed - Does things"
         );
     }
 

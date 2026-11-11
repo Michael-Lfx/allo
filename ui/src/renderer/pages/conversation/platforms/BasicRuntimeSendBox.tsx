@@ -13,6 +13,7 @@ import type { SlashCommandItem } from '@/common/chat/slash/types';
 import CommandQueuePanel from '@/renderer/components/chat/CommandQueuePanel';
 import SendBox from '@/renderer/components/chat/SendBox';
 import FileAttachButton from '@/renderer/components/media/FileAttachButton';
+import { ConversationExpertChip } from '@/renderer/pages/guid/components/SelectedExpertChip';
 import FilePreview from '@/renderer/components/media/FilePreview';
 import HorizontalFileList from '@/renderer/components/media/HorizontalFileList';
 import type { FileOrFolderItem } from '@/renderer/hooks/chat/useSendBoxDraft';
@@ -882,7 +883,12 @@ const BasicRuntimeSendBox: React.FC<{
         supportedExts={allSupportedExts}
         defaultMultiLine={config.defaultMultiLine}
         lockMultiLine={config.lockMultiLine}
-        tools={<FileAttachButton openFileSelector={openFileSelector} onLocalFilesAdded={handleFilesAdded} />}
+        tools={
+          <span className='inline-flex items-center gap-4px min-w-0'>
+            <FileAttachButton openFileSelector={openFileSelector} onLocalFilesAdded={handleFilesAdded} />
+            <ConversationExpertChip />
+          </span>
+        }
         prefix={
           <>
             {uploadPreviews}

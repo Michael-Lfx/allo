@@ -20,6 +20,9 @@ use nomi_tools::{
     phase_trace::{self, PhaseClock, ToolAttr, ToolPhase},
     registry::ToolRegistry, truncate_middle,
 };
+pub use nomi_tools::registry::{InvocationDecision, ToolInvocationPolicy};
+pub use nomi_tools::path_guard::is_within_root as is_path_within_invocation_root;
+pub use nomi_tools::apply_patch::affected_paths as patch_invocation_paths;
 
 pub(crate) const SKIPPED_AFTER_PRIOR_ERROR: &str = "\
 Skipped because a previous tool call in this assistant turn failed. Inspect the failed result first, then decide whether to retry with a larger timeout, use exec_command/write_stdin for long-running commands, or choose a different next step. Do not assume this step ran.";
@@ -122,6 +125,9 @@ fn call_needs_interactive_approval(
     let ContentBlock::ToolUse { name, input, .. } = call else {
         return false;
     };
+    if matches!(registry.invocation_decision(name, input), InvocationDecision::RequireApproval { .. }) {
+        return true;
+    }
     if auto_approve {
         return false;
     }
@@ -708,10 +714,11 @@ fn invocation_gate_result(
             images: Vec::new(),
         });
     }
-    registry
-        .validate_input(name, input)
-        .err()
-        .map(|content| ContentBlock::ToolResult {
+    let error = registry.validate_input(name, input).err().or_else(|| match registry.invocation_decision(name, input) {
+        InvocationDecision::Deny(reason) => Some(reason),
+        _ => None,
+    });
+    error.map(|content| ContentBlock::ToolResult {
             tool_use_id: id.clone(),
             content,
             is_error: true,
@@ -760,12 +767,30 @@ async fn execute_single_with_authority(
     compaction_level: nomi_compact::CompactionLevel,
     toon_enabled: bool,
 ) -> (ContentBlock, Option<ContextModifier>) {
+    execute_single_with_approval_authority(registry, call, authority, execution_scope, hooks, compaction_level, toon_enabled, false).await
+}
+
+async fn execute_single_with_approval_authority(
+    registry: &ToolRegistry,
+    call: &ContentBlock,
+    authority: &ProviderToolAuthority,
+    execution_scope: &str,
+    hooks: Option<&HookEngine>,
+    compaction_level: nomi_compact::CompactionLevel,
+    toon_enabled: bool,
+    invocation_approved: bool,
+) -> (ContentBlock, Option<ContextModifier>) {
     let ContentBlock::ToolUse { name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
     };
 
     if let Some(gated) = invocation_gate_result(registry, call, authority) {
         return (gated, None);
+    }
+
+    if !invocation_approved && matches!(registry.invocation_decision(name,input), InvocationDecision::RequireApproval { .. }) {
+        let ContentBlock::ToolUse {id,..}=call else {unreachable!()};
+        return (ContentBlock::ToolResult {tool_use_id:id.clone(),content:"Host policy requires an explicit approval for this exact tool invocation. The tool was not executed.".into(),is_error:true,images:Vec::new()},None);
     }
 
     let timeout = registry
@@ -1183,18 +1208,19 @@ async fn execute_tool_calls_with_approval_timeout(
                 .map(|t| t.category_for(input))
                 .unwrap_or(ToolCategory::Exec);
             let description = tool.map(|t| t.describe(input)).unwrap_or_default();
-            let tool_auto_approve = tool
-                .map(|t| t.auto_approve_invocation(input, category))
-                .unwrap_or(false);
-
-            let needs_approval = !auto_approve
-                && !tool_auto_approve
-                && !allow_list.iter().any(|allowed| allowed == name)
-                && !approval_manager.is_auto_approved(category.as_str());
+            let needs_approval = call_needs_interactive_approval(registry,call,auto_approve,allow_list,approval_manager);
+            let approval_timeout = match registry.invocation_decision(name,input) {
+                InvocationDecision::RequireApproval {timeout,..} => approval_timeout.min(timeout),
+                _ => approval_timeout,
+            };
+            let mut invocation_approved = false;
 
             if needs_approval {
-                let (rx, approval_token) =
-                    approval_manager.request_approval_with_token(id, &category);
+                let (rx, approval_token) = if matches!(registry.invocation_decision(name,input), InvocationDecision::RequireApproval {..}) {
+                    approval_manager.request_scoped_approval_with_token(id,&category,msg_id,name,input.clone(),approval_timeout)
+                } else {
+                    approval_manager.request_approval_with_token(id, &category)
+                };
                 let _ = writer.emit(&ProtocolEvent::ToolRequest {
                     msg_id: msg_id.to_string(),
                     call_id: id.clone(),
@@ -1215,7 +1241,7 @@ async fn execute_tool_calls_with_approval_timeout(
                 )
                 .await
                 {
-                    Ok(ToolApprovalResult::Approved) => { /* continue to execute */ }
+                    Ok(ToolApprovalResult::Approved) => { invocation_approved = true; }
                     Ok(ToolApprovalResult::Denied { reason }) => {
                         let _ = writer.emit(&ProtocolEvent::ToolCancelled {
                             msg_id: msg_id.to_string(),
@@ -1274,7 +1300,7 @@ async fn execute_tool_calls_with_approval_timeout(
             {
                 let hooks_shared: Option<&HookEngine> = hooks.as_deref();
                 let timing;
-                ((result, modifier), timing) = timed(execute_single_with_authority(
+                ((result, modifier), timing) = timed(execute_single_with_approval_authority(
                     registry,
                     call,
                     authority,
@@ -1282,6 +1308,7 @@ async fn execute_tool_calls_with_approval_timeout(
                     hooks_shared,
                     compaction_level,
                     toon_enabled,
+                    invocation_approved,
                 ))
                 .await;
                 record_timing(&mut timings, call, timing);
@@ -1582,6 +1609,42 @@ fn group_batches(batchable: &[bool]) -> Vec<std::ops::Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixedInvocationPolicy(nomi_tools::registry::InvocationDecision);
+    impl nomi_tools::registry::ToolInvocationPolicy for FixedInvocationPolicy {
+        fn evaluate(&self, _: &str, _: &serde_json::Value) -> nomi_tools::registry::InvocationDecision { self.0.clone() }
+    }
+
+    #[tokio::test]
+    async fn host_invocation_denial_prevents_a_real_write_even_in_yolo() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("owned.txt");std::fs::write(&path,"before").unwrap();
+        let mut registry=ToolRegistry::new();registry.register(Box::new(nomi_tools::write::WriteTool::new(None)));
+        registry.set_invocation_policy(Arc::new(FixedInvocationPolicy(nomi_tools::registry::InvocationDecision::Deny("voice_scope_denied".into()))));
+        let calls=[ContentBlock::ToolUse {id:"guarded-write".into(),name:"Write".into(),input:serde_json::json!({"file_path":path,"content":"after"}),extra:None}];
+        let approvals=Arc::new(ToolApprovalManager::new());approvals.set_mode(nomi_protocol::commands::SessionMode::Yolo);
+        let capture=Arc::new(CapturingEmitter::default());let writer:Arc<dyn ProtocolEmitter>=capture.clone();
+        let result=execute_tool_calls_with_approval(&registry,&calls,&ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),&approvals,&writer,"message",true,&["Write".into()],None,nomi_compact::CompactionLevel::Off,false,Default::default()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(),"before","host denial must precede the real file mutation");
+        assert!(result_pair(&result.results[0]).1);assert!(!capture.has_tool_request());
+        assert!(!capture.events.lock().unwrap().iter().any(|event| event.contains("tool_running")));
+    }
+
+    #[tokio::test]
+    async fn host_required_confirmation_cannot_be_bypassed_by_yolo_or_allowlist() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("owned.txt");std::fs::write(&path,"before").unwrap();
+        let mut registry=ToolRegistry::new();registry.register(Box::new(nomi_tools::write::WriteTool::new(None)));
+        registry.set_invocation_policy(Arc::new(FixedInvocationPolicy(nomi_tools::registry::InvocationDecision::RequireApproval {reason:"voice confirmation required".into(),timeout:Duration::from_secs(1)})));
+        let calls=[ContentBlock::ToolUse {id:"guarded-write".into(),name:"Write".into(),input:serde_json::json!({"file_path":path,"content":"after"}),extra:None}];
+        let approvals=Arc::new(ToolApprovalManager::new());approvals.set_mode(nomi_protocol::commands::SessionMode::Yolo);approvals.add_auto_approve("edit");
+        let capture=Arc::new(CapturingEmitter::default());let writer:Arc<dyn ProtocolEmitter>=capture.clone();
+        let am=approvals.clone();let events=capture.clone();let untouched=path.clone();
+        let reject=tokio::spawn(async move {
+            loop { if events.has_tool_request() { assert_eq!(std::fs::read_to_string(untouched).unwrap(),"before"); am.resolve("guarded-write",ToolApprovalResult::Denied {reason:"test declined".into()});break; } tokio::time::sleep(Duration::from_millis(2)).await; }
+        });
+        let result=execute_tool_calls_with_approval(&registry,&calls,&ProviderToolAuthority::from_request_tools(&registry.to_tool_defs()),&approvals,&writer,"message",true,&["Write".into()],None,nomi_compact::CompactionLevel::Off,false,Default::default()).await.unwrap();
+        reject.abort();assert!(capture.has_tool_request(),"host requirement must prompt even with every ordinary auto-approval switch enabled");
+        assert_eq!(std::fs::read_to_string(path).unwrap(),"before");assert!(result_pair(&result.results[0]).1);
+    }
 
     #[test]
     fn group_batches_groups_consecutive_batchable_and_isolates_rest() {

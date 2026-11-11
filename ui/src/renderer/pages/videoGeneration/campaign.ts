@@ -7,6 +7,16 @@ import type { CampaignCarouselItem, TvShowVideo } from './types';
 
 export type CampaignCarouselAction = 'detail' | 'link' | 'none';
 
+/**
+ * Fewer campaigns should read as wide banners. A full ring of many faces
+ * stays narrower so they still fit around the cylinder.
+ */
+export function campaignCarouselCard(count: number): { cardWidth: number; aspectRatio: number; gap: number } {
+  if (count <= 2) return { cardWidth: 620, aspectRatio: 3.35, gap: 28 };
+  if (count <= 4) return { cardWidth: 360, aspectRatio: 2.05, gap: 20 };
+  return { cardWidth: 230, aspectRatio: 1.62, gap: 18 };
+}
+
 export function campaignCarouselAction(
   item: Pick<CampaignCarouselItem, 'showInList' | 'linkUrl'>
 ): CampaignCarouselAction {

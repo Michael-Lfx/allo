@@ -2,13 +2,64 @@
 
 use nomifun_common::now_ms;
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::error::DbError;
 use crate::models::AcpSessionRow;
 use crate::repository::acp_session::{
     CreateAcpSessionParams, IAcpSessionRepository, PersistedSessionState, SaveRuntimeStateParams,
 };
+
+/// NULL the resumable session id and drop cached context usage inside an
+/// existing transaction.
+///
+/// Restart-orphan healing settles the Conversation lifecycle, transcript and
+/// this session row in one commit: if this update fails (or the process dies
+/// before commit), the whole recovery rolls back so a later boot can retry the
+/// still-enumerable `running` generation. Returns `false` when no ACP row
+/// exists for the Conversation.
+pub(crate) async fn clear_session_id_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    conversation_id: &str,
+) -> Result<bool, DbError> {
+    // Read-modify-write the JSON blob to drop the cached usage while
+    // leaving the user's mode/model/config selections intact (those are
+    // preferences, not context). Same RMW rationale as `save_runtime_state`;
+    // the caller's transaction serialises writes per conversation_id.
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT session_config FROM acp_session WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+
+    let mut parsed: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| Value::Object(Default::default()));
+    if let Some(runtime) = parsed
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut("runtime"))
+        .and_then(Value::as_object_mut)
+    {
+        runtime.remove("context_usage");
+    }
+    let new_config = serde_json::to_string(&parsed)
+        .map_err(|e| DbError::Init(format!("encode session_config: {e}")))?;
+
+    let now = now_ms();
+    let result = sqlx::query(
+        "UPDATE acp_session SET acp_session_id = NULL, session_status = 'idle', \
+         session_config = ?, last_active_at = ? WHERE conversation_id = ?",
+    )
+    .bind(new_config)
+    .bind(now)
+    .bind(conversation_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
 
 #[derive(Clone, Debug)]
 pub struct SqliteAcpSessionRepository {
@@ -128,42 +179,10 @@ impl IAcpSessionRepository for SqliteAcpSessionRepository {
     }
 
     async fn clear_session_id(&self, conversation_id: &str) -> Result<bool, DbError> {
-        // Read-modify-write the JSON blob to drop the cached usage while
-        // leaving the user's mode/model/config selections intact (those are
-        // preferences, not context). Same RMW rationale as
-        // `save_runtime_state`: writes per conversation_id are serialised.
-        let raw: Option<String> =
-            sqlx::query_scalar("SELECT session_config FROM acp_session WHERE conversation_id = ?")
-                .bind(conversation_id)
-                .fetch_optional(&self.pool)
-                .await?;
-
-        let Some(raw) = raw else {
-            return Ok(false);
-        };
-
-        let mut parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| Value::Object(Default::default()));
-        if let Some(runtime) = parsed
-            .as_object_mut()
-            .and_then(|obj| obj.get_mut("runtime"))
-            .and_then(Value::as_object_mut)
-        {
-            runtime.remove("context_usage");
-        }
-        let new_config =
-            serde_json::to_string(&parsed).map_err(|e| DbError::Init(format!("encode session_config: {e}")))?;
-
-        let now = now_ms();
-        let result = sqlx::query(
-            "UPDATE acp_session SET acp_session_id = NULL, session_status = 'idle', \
-             session_config = ?, last_active_at = ? WHERE conversation_id = ?",
-        )
-        .bind(new_config)
-        .bind(now)
-        .bind(conversation_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
+        let mut tx = self.pool.begin().await?;
+        let cleared = clear_session_id_in_tx(&mut tx, conversation_id).await?;
+        tx.commit().await?;
+        Ok(cleared)
     }
 
     async fn delete(&self, conversation_id: &str) -> Result<bool, DbError> {

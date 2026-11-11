@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import {
   campaignCarouselAction,
+  campaignCarouselCard,
   campaignCountdownMs,
   campaignHomeSearch,
   formatCountdown,
@@ -18,6 +20,30 @@ import {
   pickCampaignLocalizedText,
 } from './campaign';
 import type { TvShowVideo } from './types';
+
+describe('campaign carousel presentation', () => {
+  test('uses the circular ring above the composer and keeps click routing', () => {
+    const source = readFileSync(new URL('./components/CampaignCarousel.tsx', import.meta.url), 'utf8');
+    const composer = readFileSync(new URL('./home/VideoHomeComposer.tsx', import.meta.url), 'utf8');
+    expect(source.includes('<CircularCarousel')).toBe(true);
+    expect(source.includes("preset='cylinder'")).toBe(true);
+    expect(source.includes('campaignCarouselAction')).toBe(true);
+    expect(source.includes('openItem(item)')).toBe(true);
+    expect(composer.includes("lazy(() => import('../components/CampaignCarousel'))")).toBe(true);
+  });
+});
+
+describe('campaign carousel card size', () => {
+  test('widens faces when only a couple of campaigns are on the ring', () => {
+    const few = campaignCarouselCard(2);
+    const many = campaignCarouselCard(8);
+    expect(few.cardWidth).toBeGreaterThan(many.cardWidth);
+    expect(few.aspectRatio).toBeGreaterThan(many.aspectRatio);
+    expect(campaignCarouselCard(1).cardWidth).toBe(few.cardWidth);
+    expect(campaignCarouselCard(4).cardWidth).toBeLessThan(few.cardWidth);
+    expect(campaignCarouselCard(4).cardWidth).toBeGreaterThan(many.cardWidth);
+  });
+});
 
 describe('campaign carousel click rules', () => {
   test('list campaigns open the detail page first', () => {

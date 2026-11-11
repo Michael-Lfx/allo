@@ -37,7 +37,7 @@ impl Novel2VideoPipeline {
         Self {
             compressor: NovelCompressor::new(Arc::clone(&backends.chat)),
             events: EventExtractor::new(Arc::clone(&backends.chat)),
-            scenes: SceneExtractor::new(Arc::clone(&backends.chat)),
+            scenes: SceneExtractor::new(Arc::clone(&backends.chat), backends.clip),
             global: GlobalInformationPlanner::new(Arc::clone(&backends.chat)),
             backends,
             working_dir,

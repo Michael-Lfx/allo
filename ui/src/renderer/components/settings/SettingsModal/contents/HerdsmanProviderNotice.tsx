@@ -14,8 +14,8 @@ type HerdsmanPresence = 'searching' | 'connected' | 'disconnected';
 
 const presenceTone: Record<HerdsmanPresence, string> = {
   searching: 'bg-[var(--color-text-3)]',
-  connected: 'bg-[rgb(var(--success-6))]',
-  disconnected: 'bg-[rgb(var(--warning-6))]',
+  connected: 'bg-success-6',
+  disconnected: 'bg-warning-6',
 };
 
 const presenceCopy = {

@@ -13,13 +13,12 @@ import { useAsidePortal } from '../../AsideHost';
 import type { WorkspaceTabProps } from '../../types';
 import AppearanceSection from './AppearanceSection';
 import FigurePanel from './FigurePanel';
-import ModelsSection from './ModelsSection';
+import CompanionModelControl from '@renderer/pages/nomi/CompanionModelControl';
 import PersonaSection from './PersonaSection';
 
 /**
- * 总览 — the companion's identity and brains, in three titled sections:
- * 伙伴形象 (name / look / desktop visibility / growth), 伙伴设定 (persona) and
- * 模型配置 (chat model + a pointer to the app-level voice settings).
+ * Overview owns appearance and persona. Model selection belongs to companion chat;
+ * only missing-model onboarding remains here so a fresh companion is recoverable.
  *
  * Everything that used to be piled on here — the self-evolution disclosure
  * banner, the weekly digest card, the shared-store counters, the data-collection
@@ -76,7 +75,10 @@ const OverviewTab: React.FC<WorkspaceTabProps> = ({ companionId, companion, onAt
           onEditFigure={() => setFigurePaneOpen((open) => !open)}
         />
         <PersonaSection profile={profile} patchCompanion={patchCompanion} />
-        <ModelsSection companion={companion} status={status} companionName={profile.name} />
+        {modelMissing&&<div className='flex flex-wrap items-center gap-8px text-13px text-t-secondary'>
+          <span>{t('nomi.overview.modelMissing',{companionName:profile.name})}</span>
+          <CompanionModelControl companion={companion} showLabel={false} hideProvider/>
+        </div>}
       </div>
     );
 

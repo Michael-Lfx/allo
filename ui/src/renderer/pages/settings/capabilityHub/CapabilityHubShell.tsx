@@ -10,6 +10,8 @@ type CapabilityHubShellProps = {
   hub: CapabilityHubId;
   /** Whether this hub exposes a remote market/discover view. */
   marketEnabled?: boolean;
+  /** Hide the discover/installed switch. The expert catalog is one list. */
+  showViewSwitch?: boolean;
   installedCount?: number;
   extraActions?: React.ReactNode;
   children: React.ReactNode;
@@ -28,6 +30,7 @@ export const useCapabilityHubSearch = () => React.useContext(CapabilityHubSearch
 const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
   hub,
   marketEnabled = true,
+  showViewSwitch = true,
   installedCount,
   extraActions,
   children,
@@ -55,6 +58,7 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
           <CapabilityHubHeader
             hub={activeHub}
             marketEnabled={marketEnabled}
+            showViewSwitch={showViewSwitch}
             view={marketEnabled ? view : 'installed'}
             installedCount={installedCount}
             searchQuery={searchQuery}

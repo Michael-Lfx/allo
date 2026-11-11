@@ -1,4 +1,4 @@
-import { requestCanvasAgentTurn, type CanvasAgentTurnResult, type ResponseFunctionTool, type ResponseInputMessage } from "@oc/lib/canvas/canvas-agent-llm";
+import { requestCanvasAgentTurn, type CanvasAgentTextMessage, type CanvasAgentTurnResult, type ResponseFunctionTool } from "@oc/lib/canvas/canvas-agent-llm";
 import type { AiConfig } from "@oc/stores/use-config-store";
 
 import {
@@ -103,7 +103,7 @@ export async function reviewArtCritiqueImage(config: AiConfig, input: ArtCritiqu
     return parseArtCritiqueResponse(response, input);
 }
 
-export function artCritiqueMessages(input: ArtCritiqueReviewInput): ResponseInputMessage[] {
+export function artCritiqueMessages(input: ArtCritiqueReviewInput): CanvasAgentTextMessage[] {
     const rubricPrompt = buildArtCritiqueRubricPrompt();
     return [
         {

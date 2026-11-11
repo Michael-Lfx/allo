@@ -92,7 +92,7 @@ pub fn video_tool_response_from_workflow(record: &WorkflowRunRecord) -> Result<S
                 );
                 obj.insert(
                     "delivery_note".into(),
-                    json!("Long video assembled from multiple Seedance clips. Deliver with MEDIA: when local_path is available."),
+                    json!("Long video assembled from multiple Seedance clips. Do not paste MEDIA: paths; the app shows the file."),
                 );
             }
             return Ok(body.to_string());

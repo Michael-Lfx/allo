@@ -7,13 +7,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { TFunction } from 'i18next';
 import {
   Alert,
   Button,
   Empty,
   InputNumber,
-  Message,
   Progress,
   Radio,
   Select,
@@ -382,7 +382,7 @@ const EvalPage: React.FC = () => {
       <div className='mx-auto flex h-full min-h-0 w-full max-w-1280px flex-col gap-16px'>
         <header className='flex shrink-0 flex-wrap items-start justify-between gap-12px'>
           <div className='min-w-0'>
-            <Title heading={3} className='!m-0 text-wrap-balance'>
+            <Title heading={3} className='!m-0 text-balance'>
               {t('eval.title')}
             </Title>
             <Text type='secondary' className='mt-4px block'>
@@ -472,7 +472,7 @@ const EvalPage: React.FC = () => {
                               'outline-none focus-visible:ring-1 focus-visible:ring-[rgba(var(--primary-6),1)]',
                               'disabled:opacity-60 disabled:cursor-not-allowed',
                               active
-                                ? 'border-[rgb(var(--primary-6))] bg-[rgba(var(--primary-6),0.08)]'
+                                ? 'border-primary-6 bg-[rgba(var(--primary-6),0.08)]'
                                 : 'border-transparent bg-transparent hover:bg-[var(--color-fill-2)]',
                             ].join(' ')}
                           >

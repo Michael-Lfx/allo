@@ -14,7 +14,7 @@
   isolation: isolate;
   pointer-events: none;
   color: var(--flowy-text-primary, var(--color-text-1));
-  font-family: var(--font-family, 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif);
+  font-family: var(--flowy-font-sans, -apple-system, 'Segoe UI Variable Text', 'PingFang SC', sans-serif);
 }
 
 .flowy-notification-stack {

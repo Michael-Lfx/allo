@@ -66,6 +66,17 @@ describe('KnowledgeControl search helpers', () => {
     expect(source.includes("t('knowledge.mount.rootMissing'")).toBe(true);
   });
 
+  test('guid panel is a single-select list and keeps write-back on without showing it', () => {
+    const source = readFileSync(new URL('./KnowledgeControl.tsx', import.meta.url), 'utf8');
+
+    expect(source.includes('writeback: true')).toBe(true);
+    expect(source.includes("role='radio'")).toBe(true);
+    expect(source.includes('rounded-5px border border-solid text-10px leading-none')).toBe(true);
+    expect(source.includes('handleSelectBase')).toBe(true);
+    expect(source.includes("t('knowledge.control.writeback'")).toBe(false);
+    expect(source.includes('<Switch')).toBe(false);
+  });
+
   test('refreshes the mounted binding when another surface changes the same target', () => {
     const source = readFileSync(new URL('./KnowledgeControl.tsx', import.meta.url), 'utf8');
 

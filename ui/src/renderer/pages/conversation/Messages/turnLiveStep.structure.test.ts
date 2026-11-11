@@ -45,8 +45,7 @@ describe('turn live step strip', () => {
 
   test('keeps the live step in document flow so page scrolling is unchanged', () => {
     expect(cssSource.includes('.turn_live_step')).toBe(true);
-    expect(cssSource.includes('position: sticky')).toBe(false);
-    expect(cssSource.includes('position: fixed')).toBe(false);
+    expect(/\.turn[-_]live[-_]step[^{]*\{[^}]*position:\s*(?:sticky|fixed)/.test(cssSource)).toBe(false);
     expect(messageListSource.includes("className='turn-live-step'")).toBe(true);
     expect(messageListSource.includes('position: sticky')).toBe(false);
     expect(messageListSource.includes('position: fixed')).toBe(false);

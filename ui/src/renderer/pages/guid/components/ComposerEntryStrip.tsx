@@ -1,4 +1,4 @@
-import { CloseSmall, Puzzle, Robot } from '@icon-park/react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
@@ -38,7 +38,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   const { t } = useTranslation();
 
   const renderAvatar = () => {
-    if (!presetAvatar) return <Robot theme='outline' size={16} fill='currentColor' />;
+    if (!presetAvatar) return <FlowyIcon name='robot' size={16} />;
     switch (presetAvatar.kind) {
       case 'image':
         return <img src={presetAvatar.value} alt='' className='w-20px h-20px rounded-6px object-contain' />;
@@ -46,7 +46,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         return <span className='text-14px leading-none'>{presetAvatar.value}</span>;
       case 'icon':
       default:
-        return <Robot theme='outline' size={16} fill='currentColor' />;
+        return <FlowyIcon name='robot' size={16} />;
     }
   };
 
@@ -59,8 +59,8 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       aria-label={t('guid.entry.adjustSkills', { defaultValue: 'Adjust Skills' })}
       title={t('guid.entry.adjustSkills', { defaultValue: 'Adjust Skills' })}
     >
-      <Puzzle theme='outline' size={15} fill='currentColor' />
-      <span className={styles.entryButtonText}>{t('guid.entry.skills', { defaultValue: 'Skills' })}</span>
+      <FlowyIcon name='puzzle' size={15} />
+      <span className={styles.entryButtonText}>{t('guid.entry.skills', { defaultValue: 'Use skills' })}</span>
       {activeSkillCount > 0 && (
         <span className={styles.entryCountBadge} aria-label={t('guid.entry.skillCount', { count: activeSkillCount })}>
           <span className={styles.entryCountBadgeDigit}>{activeSkillCount}</span>
@@ -68,6 +68,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       )}
     </button>
   ) : null;
+
 
   if (hidePreset) {
     if (!skillButton) return null;
@@ -83,11 +84,11 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
       <div className={styles.entryStrip}>
         <span
           className={`${styles.entryButton} ${styles.entryButtonActive} ${styles.entryPersonaButton}`}
-          title={presetLabel || t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
+          title={presetLabel || t('guid.entry.usePreset', { defaultValue: 'Experts' })}
         >
           <span className={styles.entryAvatar}>{renderAvatar()}</span>
           <span className={styles.entryButtonText}>
-            {presetLabel || t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
+            {presetLabel || t('guid.entry.usePreset', { defaultValue: 'Experts' })}
           </span>
         </span>
         <button
@@ -97,7 +98,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
           aria-label={t('guid.entry.backToFree', { defaultValue: 'Freeform' })}
           title={t('guid.entry.backToFree', { defaultValue: 'Freeform' })}
         >
-          <CloseSmall theme='outline' size={14} />
+          <FlowyIcon name='close' size={14} />
         </button>
         {skillButton}
       </div>
@@ -111,11 +112,11 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         data-button-shape='pill'
         className={`${styles.entryButton} ${styles.entryButtonInteractive}`}
         onClick={onChoosePreset}
-        aria-label={t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
-        title={t('guid.entry.usePreset', { defaultValue: 'Use preset' })}
+        aria-label={t('guid.entry.usePreset', { defaultValue: 'Experts' })}
+        title={t('guid.entry.usePreset', { defaultValue: 'Experts' })}
       >
-        <Robot theme='outline' size={15} fill='currentColor' />
-        <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>
+        <FlowyIcon name='robot' size={15} />
+        <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Experts' })}</span>
       </button>
       {skillButton}
     </div>

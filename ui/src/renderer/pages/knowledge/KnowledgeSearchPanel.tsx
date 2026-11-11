@@ -1,8 +1,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Empty, Input, Modal, Spin } from '@arco-design/web-react';
-import { Search } from '@icon-park/react';
+import { Empty, Modal, Spin } from '@arco-design/web-react';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import { ipcBridge } from '@/common';
 import type { IKnowledgeSearchHit } from '@/common/adapter/ipcBridge';
 import type { KnowledgeBaseId } from '@/common/types/ids';
@@ -76,10 +76,8 @@ const KnowledgeSearchPanel: React.FC<KnowledgeSearchPanelProps> = ({
       style={{ width: 560 }}
     >
       <div className='flex flex-col gap-12px'>
-        <Input
-          allowClear
+        <FlowySearch
           autoFocus
-          prefix={<Search theme='outline' size='14' />}
           placeholder={t('knowledge.detail.searchInputPlaceholder', {
             defaultValue: '输入关键词，检索标题与正文…',
           })}

@@ -1,0 +1,110 @@
+.root {
+  --fc-w: 300px;
+  --fc-h: 400px;
+  --fc-ratio: 300 / 400;
+  --fc-radius: 22px;
+  --fc-bg: transparent;
+  --fc-ink: #17171a;
+  --fc-shadow: #7f93b8;
+  --fc-shadow-o: 0.2;
+  --fc-glare: 0.2;
+  --fc-gx: 50%;
+  --fc-gy: 50%;
+  --fc-sheen: 0;
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: var(--fc-w);
+  aspect-ratio: var(--fc-ratio);
+  border-radius: var(--fc-radius);
+  cursor: pointer;
+  user-select: none;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+.root[data-axis='x'] {
+  touch-action: pan-x;
+}
+
+.root[data-draggable] {
+  cursor: grab;
+}
+
+.root[data-dragging] {
+  cursor: grabbing;
+}
+
+.root[data-disabled] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.root:focus-visible {
+  outline: 2px solid color-mix(in srgb, #7ea0d4 75%, transparent);
+  outline-offset: 4px;
+}
+
+:global([data-theme='dark']) .root {
+  --fc-shadow: #000000 !important;
+  --fc-shadow-o: 0.55 !important;
+}
+
+.shadow {
+  position: absolute;
+  inset: 14% 10% -7%;
+  border-radius: var(--fc-radius);
+  background: color-mix(in srgb, var(--fc-shadow) calc(var(--fc-shadow-o) * 100%), transparent);
+  filter: blur(26px);
+  pointer-events: none;
+}
+
+.rotor {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  clip-path: inset(0 round var(--fc-radius));
+  transform-style: preserve-3d;
+}
+
+.face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--fc-bg);
+  color: var(--fc-ink);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.root[data-fade] .face {
+  backface-visibility: visible;
+  -webkit-backface-visibility: visible;
+  opacity: 0;
+  transform: none;
+  transition: opacity var(--flowy-motion-base) var(--flowy-ease-move);
+}
+
+.root[data-fade='front'] .faceFront,
+.root[data-fade='back'] .faceBack {
+  opacity: 1;
+}
+
+.glare {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--fc-sheen, 0);
+  background: radial-gradient(
+    circle farthest-side at var(--fc-gx, 50%) var(--fc-gy, 50%),
+    rgba(255, 255, 255, var(--fc-glare)) 0%,
+    rgba(255, 255, 255, calc(var(--fc-glare) * 0.76)) 12%,
+    rgba(255, 255, 255, calc(var(--fc-glare) * 0.5)) 26%,
+    rgba(255, 255, 255, calc(var(--fc-glare) * 0.28)) 42%,
+    rgba(255, 255, 255, calc(var(--fc-glare) * 0.12)) 60%,
+    rgba(255, 255, 255, calc(var(--fc-glare) * 0.04)) 78%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}

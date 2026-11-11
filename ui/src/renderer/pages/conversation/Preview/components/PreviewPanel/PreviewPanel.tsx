@@ -1,7 +1,8 @@
 
 
 import { ipcBridge } from '@/common';
-import { downloadFileFromPath, downloadTextContent } from '@/renderer/utils/file/download';
+import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { downloadBlob, downloadDataUrl, downloadFileFromPath, downloadTextContent } from '@/renderer/utils/file/download';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { PreviewToolbarExtrasProvider, type PreviewToolbarExtras } from '../../context/PreviewToolbarExtrasContext';
 import { usePreviewContext } from '../../context/PreviewContext';
@@ -48,7 +49,6 @@ import {
   useThemeDetection,
 } from '../../hooks';
 import { inferPreviewTabKind, type WorkspacePreviewTabDefinition } from '../../previewTabKind';
-import { previewPathSegments } from '../../previewPathBreadcrumb';
 import type { PreviewContentType } from '@/common/types/office/preview';
 import { useTranslation } from 'react-i18next';
 import './preview.css';
@@ -430,12 +430,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   ) : null;
 
   const { content, content_type, metadata } = resolvedActiveTab;
-  const pathSegments = (() => {
-    const fromPath = previewPathSegments(metadata?.file_path, metadata?.workspace ?? workspacePath);
-    if (fromPath.length > 0) return fromPath;
-    const fallback = metadata?.file_name || resolvedActiveTab.title;
-    return fallback ? [fallback] : [];
-  })();
   const isMarkdown = content_type === 'markdown';
   const isHTML = content_type === 'html';
   const isEditable = metadata?.editable !== false; // 默认可编辑 / Default editable
@@ -453,6 +447,30 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   const handleDownload = useCallback(async () => {
     try {
       const rawFileName = metadata?.file_name || `${content_type}-${Date.now()}`;
+
+      // Desktop WebView2 drops a scripted blob download. Ask for a save path
+      // in this click, then copy the file that is already on disk.
+      if (metadata?.file_path && isTauriRuntime()) {
+        const ext = rawFileName.includes('.') ? rawFileName.split('.').pop() || 'bin' : 'bin';
+        const destination = await ipcBridge.dialog.showSave.invoke({
+          defaultPath: rawFileName,
+          filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+        });
+        if (!destination) return;
+        await ipcBridge.shell.copyFile.invoke({
+          source_path: metadata.file_path,
+          destination_path: destination,
+        });
+        return;
+      }
+
+      // The preview tab already holds the image bytes. Saving them here stays
+      // inside the click, instead of waiting on another disk read that lets
+      // the browser drop the download.
+      if (content_type === 'image' && content.startsWith('data:')) {
+        downloadDataUrl(content, rawFileName);
+        return;
+      }
 
       if (metadata?.file_path) {
         // All files with a disk path (binary, image, zip, etc.) — unified path
@@ -473,14 +491,7 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
         const normalizedExt = ext.toLowerCase();
         const hasSameExt = rawFileName.toLowerCase().endsWith(`.${normalizedExt}`);
         const file_name = hasSameExt ? rawFileName : `${rawFileName}.${ext}`;
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = file_name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        downloadBlob(blob, file_name);
         return;
       }
 
@@ -547,6 +558,19 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
       }
     }
   }, [metadata?.file_path, messageApi, t]);
+
+  const handleRevealInFolder = useCallback(async () => {
+    if (!metadata?.file_path) return;
+    try {
+      await ipcBridge.shell.showItemInFolder.invoke(metadata.file_path);
+    } catch {
+      try {
+        messageApi.error(t('preview.openFileLocationFailed'));
+      } catch {
+        // Context holder may be unmounted after async operation
+      }
+    }
+  }, [messageApi, metadata?.file_path, t]);
 
   // 渲染历史下拉菜单 / Render history dropdown
   const renderHistoryDropdown = () => {
@@ -821,14 +845,14 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
   if (!isOpen || !activeTab) {
     return (
       <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-        <div className='preview-panel-shell h-full flex flex-col bg-1'>{workspaceHost}</div>
+        <div className='preview-panel-shell h-full flex flex-col'>{workspaceHost}</div>
       </PreviewToolbarExtrasProvider>
     );
   }
 
   return (
     <PreviewToolbarExtrasProvider value={toolbarExtrasContextValue}>
-      <div className='preview-panel-shell h-full flex flex-col bg-1'>
+      <div className='preview-panel-shell h-full flex flex-col'>
         {messageContextHolder}
 
         {/* 确认对话框 / Confirmation modals */}
@@ -872,7 +896,6 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
             viewMode={viewMode}
             isSplitScreenEnabled={isSplitScreenEnabled}
             file_name={metadata?.file_name || activeTab.title}
-            pathSegments={pathSegments}
             showOpenInSystemButton={showOpenInSystemButton}
             historyTarget={historyTarget}
             snapshotSaving={snapshotSaving}
@@ -894,6 +917,8 @@ const PreviewPanel: React.FC<PreviewPanelProps> = ({
             renderHistoryDropdown={renderHistoryDropdown}
             onOpenInSystem={handleOpenInSystem}
             onDownload={handleDownload}
+            showRevealInFolder={content_type === 'image' && Boolean(metadata?.file_path)}
+            onRevealInFolder={() => void handleRevealInFolder()}
             onClose={closePreview}
             leftExtra={toolbarExtras?.left}
             rightExtra={toolbarExtras?.right}

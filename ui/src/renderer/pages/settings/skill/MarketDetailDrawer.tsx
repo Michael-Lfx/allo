@@ -1,11 +1,13 @@
 import { Button, Drawer, Tag } from '@arco-design/web-react';
 import { LinkOne } from '@icon-park/react';
+import classNames from 'classnames';
 import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { MarketActionState, MarketPrimaryActionConfig } from './marketContracts';
 import { marketSourceLabel } from './skillMarket';
 import { formatSkillHubMarketCount } from './marketViewModel';
 import type { MarketItemViewModel } from './marketViewModel';
+import styles from './MarketDetailDrawer.module.css';
 
 type MarketDetailDrawerProps = {
   item: MarketItemViewModel | null;
@@ -39,12 +41,14 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
   const { t } = useTranslation();
   const headingRef = useRef<HTMLDivElement>(null);
 
+  // useEffect必要性：DOM 焦点；目的：抽屉打开后把焦点交给标题，渲染阶段不能调用 focus
   useEffect(() => {
     if (!visible) return;
     const frame = requestAnimationFrame(() => headingRef.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, [visible, item?.id]);
 
+  // useEffect必要性：DOM 焦点；目的：抽屉关闭后把焦点还给打开它的按钮
   useEffect(() => {
     if (visible || !restoreFocusRef?.current) return;
     restoreFocusRef.current.focus();
@@ -57,7 +61,7 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
       width={Math.min(640, typeof window === 'undefined' ? 640 : window.innerWidth)}
       placement='right'
       title={
-        <div ref={headingRef} tabIndex={-1} className='min-w-0 outline-none'>
+        <div key={item?.id ?? 'detail'} ref={headingRef} tabIndex={-1} className={classNames('min-w-0 outline-none', visible && styles.play)}>
           <div className='flex min-w-0 items-center gap-10px'>
             {item?.avatar ? (
               <img
@@ -79,7 +83,7 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
       onCancel={onClose}
       footer={
         item ? (
-          <div className='flex flex-wrap items-center justify-end gap-8px'>
+          <div key={item.id} className={classNames('flex flex-wrap items-center justify-end gap-8px', visible && styles.play, visible && styles.footer)}>
             {showInstallCommand && (
               <Button className='!h-36px !rounded-8px' onClick={() => onCopyInstallCommand(item)}>
                 {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
@@ -108,7 +112,7 @@ const MarketDetailDrawer: React.FC<MarketDetailDrawerProps> = ({
       }
     >
       {item && (
-        <div className='space-y-20px overflow-y-auto pb-8px'>
+        <div key={item.id} className={classNames('space-y-20px overflow-y-auto pb-8px', visible && styles.stack)}>
           <p className='m-0 text-14px leading-22px text-t-secondary'>{item.fullDescription}</p>
           <div className='grid grid-cols-2 gap-16px text-12px'>
             <div>

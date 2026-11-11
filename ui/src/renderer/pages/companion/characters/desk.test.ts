@@ -1,9 +1,15 @@
 
 
 import { describe, expect, test } from 'bun:test';
-import { CHARACTERS, DEFAULT_CHARACTER_ID, DEFAULT_DESK, getCharacter, getDeskSpec } from './index';
+import { CHARACTERS, DEFAULT_CHARACTER_ID, DEFAULT_DESK, getCharacter, getDeskSpec, getDeskSpecFor } from './index';
 
 describe('getDeskSpec', () => {
+  test('native desk reserves status space without shrinking the figure',()=>{
+    for(const character of CHARACTERS){
+      expect(getDeskSpecFor(character.id).windowHeight-getDeskSpec(character.id).windowHeight).toBe(64);
+      expect(getDeskSpecFor(character.id).figureHeight).toBe(getDeskSpec(character.id).figureHeight);
+    }
+  });
   test('falls back to DEFAULT_DESK for unknown / missing ids', () => {
     expect(getDeskSpec('no-such-character')).toBe(DEFAULT_DESK);
     expect(getDeskSpec(null)).toBe(DEFAULT_DESK);

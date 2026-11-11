@@ -4,10 +4,10 @@
  * Recent rows show a spinning loader when planning / rendering.
  */
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popover, Tooltip } from '@arco-design/web-react';
-import { FolderClose, FolderOpen, Loading, VideoOne } from '@icon-park/react';
 import classNames from 'classnames';
 import SiderEmptyPlaceholder from '@renderer/components/layout/Sider/SiderEmptyPlaceholder';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -266,13 +266,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
           data-active={moduleActive ? 'true' : 'false'}
           data-sider-selection-static='true'
         >
-          <VideoOne
-            theme='outline'
-            size='15'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='video' size={15} className='block leading-none shrink-0' />
           {items.length > 0 && (
             <span
               className='absolute -top-1px -right-1px min-w-10px h-10px px-2px bg-primary text-white text-8px rd-full flex items-center justify-center font-bold leading-none select-none'
@@ -301,13 +295,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
           data-active={moduleActive ? 'true' : 'false'}
           data-testid='sider-video-generation-collapsed'
         >
-          <VideoOne
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='video' size={20} className='block leading-none shrink-0' />
         </div>
       </Tooltip>
     );
@@ -334,13 +322,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
           ) : (
             <SiderEmptyPlaceholder
               icon={
-                <VideoOne
-                  theme='outline'
-                  size={18}
-                  fill='currentColor'
-                  className='block leading-none text-t-tertiary'
-                  style={{ lineHeight: 0 }}
-                />
+                <FlowyIcon name='video' size={18} className='block leading-none text-t-tertiary' />
               }
               title={t('videoGeneration.nav.recentEmpty', { defaultValue: '暂无创作记录' })}
               action={{
@@ -435,37 +417,18 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                       active && '!text-primary-6'
                     )}
                   >
-                    <VideoOne
-                      theme='outline'
-                      size={14}
-                      fill='currentColor'
-                      className='block leading-none'
-                      style={{ lineHeight: 0 }}
-                    />
+                    <FlowyIcon name='video' size={14} className='block leading-none' />
                   </span>
                   <span className='chat-history__item-name min-w-0 flex-1 truncate text-13px font-[450] leading-20px text-t-primary text-left'>
                     {short}
                   </span>
                   {busy ? (
                     <span className='shrink-0 flex items-center gap-2px text-10px text-primary-6 bg-primary-1 px-4px py-1px rd-4px font-normal'>
-                      <Loading
-                        theme='outline'
-                        size={11}
-                        fill='currentColor'
-                        className='block shrink-0 animate-spin text-primary-6'
-                        style={{ lineHeight: 0 }}
-                        aria-label={busyHint}
-                      />
+                      <FlowyIcon name='loading' size={11} className='block shrink-0 animate-spin text-primary-6' />
                       <span>{busyHint || t('videoGeneration.status.rendering', { defaultValue: '生成中' })}</span>
                     </span>
                   ) : isPending ? (
-                    <Loading
-                      theme='outline'
-                      size={12}
-                      fill='currentColor'
-                      className='block shrink-0 animate-spin text-primary-6'
-                      style={{ lineHeight: 0 }}
-                    />
+                    <FlowyIcon name='loading' size={12} className='block shrink-0 animate-spin text-primary-6' />
                   ) : null}
                 </div>
               );
@@ -518,21 +481,9 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
           {expanded ? (
-            <FolderOpen
-              theme='outline'
-              size={16}
-              fill='currentColor'
-              className='block leading-none'
-              style={{ lineHeight: 0 }}
-            />
+            <FlowyIcon name='folderOpen' size={16} className='block leading-none' />
           ) : (
-            <FolderClose
-              theme='outline'
-              size={16}
-              fill='currentColor'
-              className='block leading-none'
-              style={{ lineHeight: 0 }}
-            />
+            <FlowyIcon name='folder' size={16} className='block leading-none' />
           )}
         </span>
 
@@ -633,14 +584,7 @@ const SiderVideoGenerationGroup: React.FC<SiderVideoGenerationGroupProps> = ({
                   }}
                 >
                   {busy || isPending ? (
-                    <Loading
-                      theme='outline'
-                      size={14}
-                      fill='currentColor'
-                      className='block shrink-0 animate-spin text-primary-6'
-                      style={{ lineHeight: 0 }}
-                      aria-label={busy ? busyHint : undefined}
-                    />
+                    <FlowyIcon name='loading' size={14} className='block shrink-0 animate-spin text-primary-6' />
                   ) : null}
                   <span className='chat-history__item-name min-w-0 flex-1 truncate text-14px font-[500] leading-24px text-t-primary'>
                     {short}

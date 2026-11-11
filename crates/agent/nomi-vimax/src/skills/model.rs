@@ -252,14 +252,18 @@ pub struct SkillOverlay {
     pub director: DirectorSpec,
 }
 
-/// How adjacent storyboard rows become video jobs.
+/// Kept so existing skill files still parse.
+///
+/// Publishing no longer packs rows up to the model ceiling. Dense and
+/// Coverage both emit one camera and one performance per row. A reaction
+/// shorter than the model minimum joins the adjacent spoken row while writing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PackPolicy {
-    /// Pack adjacent rows that fit the model window (current default).
+    /// One performance per row. The historical name is the skill-file value.
     #[default]
     Dense,
-    /// Only pack reverse / over-shoulder coverage; every other row is a clip.
+    /// Same publish rule as [`PackPolicy::Dense`]. A reverse is its own row.
     Coverage,
 }
 
@@ -276,12 +280,13 @@ impl PackPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum OverBudget {
-    /// Keep overflow text by folding it into the last kept unit. Never drop the tail.
+    /// Keep every performance. Stuffing the tail into the last clip glued
+    /// several cameras into one file, so fold now means the same as extend.
     #[default]
     Fold,
     /// Keep every unit; the film may run longer than the target.
     Extend,
-    /// Drop the tail (legacy). Skills must opt in.
+    /// Drop the tail. Skills must opt in.
     Truncate,
 }
 

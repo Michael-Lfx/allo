@@ -12,6 +12,7 @@ mod model_resolve;
 mod oss;
 mod response;
 mod campaign;
+mod experts;
 mod skills;
 mod generation_templates;
 mod tv_show;
@@ -35,6 +36,8 @@ pub use media_types::{
 pub use model_resolve::resolve_model_in_catalog;
 pub use oss::OssUploadResult;
 pub use response::{FlowyEnvelope, handle_http_and_envelope};
+pub use experts::prepare_expert_slug;
+pub(crate) use experts::{is_expert_not_found, prepare_expert_list_query, ExpertListParams};
 pub use types::*;
 
 use nomi_config::ServerConfig;

@@ -37,27 +37,38 @@ describe('TurnDeliverablesCard structure', () => {
     expect(cardSource.includes('messages.turnDeliverables.showLess')).toBe(true);
   });
 
-  test('uses compact padding across the card header, file rows and reveal control', () => {
-    expect(cardSource.includes('gap-8px px-12px py-8px select-none')).toBe(true);
-    expect(cardSource.includes('min-w-0 box-border items-center gap-8px px-8px py-6px hover:bg-3 transition-colors')).toBe(true);
-    expect(cardSource.includes('w-full box-border flex items-center gap-8px px-12px py-6px text-13px text-t-secondary')).toBe(true);
+  test('lays file cards out two-up and collapses to one column when the row is narrow', () => {
+    const cardCss = readFileSync(new URL('./TurnDeliverablesCard.module.css', import.meta.url), 'utf8');
+    expect(cardSource.includes('data-testid=\'turn-deliverables-grid\'')).toBe(true);
+    expect(cardSource.includes('styles.grid')).toBe(true);
+    expect(cardCss.includes('grid-template-columns: repeat(2, minmax(0, 1fr));')).toBe(true);
+    expect(cardCss.includes('@container turn-deliverables (max-width: 520px)')).toBe(true);
+    expect(cardCss.includes('grid-template-columns: minmax(0, 1fr);')).toBe(true);
+    expect(cardCss.includes('repeat(3')).toBe(false);
+    expect(cardSource.includes("title={t('preview.preview')}")).toBe(true);
   });
 
-  test('renders one relative path with muted directories and a primary filename', () => {
-    expect(cardSource.includes("className='flex min-w-0 flex-1 items-center gap-6px'")).toBe(true);
-    expect(cardSource.includes("className='block w-520px min-w-0 shrink truncate text-14px leading-20px'")).toBe(true);
-    expect(cardSource.includes("className='mr-10px w-3.5rem shrink-0 text-right text-12px text-t-secondary tabular-nums'")).toBe(true);
-    expect(cardSource.includes("className='ml-auto flex shrink-0 items-center gap-2px'")).toBe(true);
-    expect(cardSource.includes("className='flex shrink-0 items-center gap-6px'")).toBe(true);
-    expect(cardSource.includes("title={t('preview.preview')}")).toBe(true);
+  test('uses supplied file-type artwork while preserving the custom Markdown glyph', () => {
+    expect(cardSource.includes("from '@/renderer/assets/file-types/CODE.svg'")).toBe(true);
+    expect(cardSource.includes("from '@/renderer/assets/file-types/JAVA.svg'")).toBe(true);
+    expect(cardSource.includes("from '@/renderer/assets/file-types/JPG.svg'")).toBe(true);
+    expect(cardSource.includes("from '@/renderer/assets/file-types/ZIP.svg'")).toBe(true);
+    expect(cardSource.includes('const FILE_ICON_BY_KIND')).toBe(true);
+    expect(cardSource.includes("kind === 'code' && extension === 'java'")).toBe(true);
+    expect(cardSource.includes('styles.assetGlyph')).toBe(true);
+    expect(cardSource.includes('const CUSTOM_FILE_MARK_BY_KIND')).toBe(true);
+    expect(cardSource.includes('{CUSTOM_FILE_MARK_BY_KIND[kind]}')).toBe(true);
+    expect(cardSource.includes("kind === 'markdown' ? 32 : 28")).toBe(true);
+    expect(cardSource.includes('GLYPH_BY_KIND')).toBe(false);
+    expect(cardSource.includes('styles.glyphMarkdown')).toBe(false);
+  });
+
+  test('renders a filename title with a kind and size meta line', () => {
     expect(cardSource.includes('splitFileDisplayPath(item.relativePath, item.fileName)')).toBe(true);
-    expect(
-      cardSource.includes(
-        "const DIRECTORY_PATH_COLOR = 'color-mix(in srgb, var(--text-secondary) 82%, var(--bg-base))'"
-      )
-    ).toBe(true);
-    expect(cardSource.includes("style={{ color: DIRECTORY_PATH_COLOR }}>{displayPath.directoryPath}")).toBe(true);
-    expect(cardSource.includes("className='text-t-primary'")).toBe(true);
+    expect(cardSource.includes('fileTitle(displayPath.fileName)')).toBe(true);
+    expect(cardSource.includes('messages.turnDeliverables.meta')).toBe(true);
+    expect(cardSource.includes('messages.turnDeliverables.kind.')).toBe(true);
+    expect(cardSource.includes('title={displayPath.fullPath}')).toBe(true);
     expect(cardSource.includes('secondaryPath')).toBe(false);
     expect(cardSource.includes('key={item.absolutePath ?? item.relativePath}')).toBe(true);
   });

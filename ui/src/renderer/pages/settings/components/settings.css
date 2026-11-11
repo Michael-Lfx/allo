@@ -31,7 +31,7 @@
 }
 
 .settings-sider__item:active {
-  transform: scale(0.985);
+  background-color: var(--flowy-quiet-pressed);
 }
 
 .settings-sider__item:focus-visible {
@@ -172,6 +172,27 @@
   flex: 0 0 auto;
 }
 
+/* Single-line capability chain: scrolling replaces wrapping so the pipeline
+   never leaves one pill alone on a second row with a large empty gap. */
+.voice-stage-chain {
+  scrollbar-width: thin;
+  scrollbar-color: var(--flowy-border-subtle) transparent;
+  overscroll-behavior-x: contain;
+}
+
+.voice-stage-chain::-webkit-scrollbar {
+  height: 4px;
+}
+
+.voice-stage-chain::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--flowy-border-subtle);
+}
+
+.voice-stage-chain::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .flowy-settings-row__status {
   margin-top: 6px;
 }
@@ -202,8 +223,11 @@
   color: var(--flowy-selected-fg);
 }
 
+/* Action groups are compact by nature (switch, icon button, one or two short
+   verbs), so they keep the row's right-hand column down to 640px; only wide
+   compound editors stack earlier. A stacked action group keeps its right edge
+   alignment instead of stretching left into dead space. */
 @container (max-width: 760px) {
-  .flowy-settings-row__control--actions,
   .flowy-settings-row__control--compound {
     grid-column: 1 / -1;
     width: 100%;
@@ -212,10 +236,18 @@
 }
 
 @container (max-width: 640px) {
+  .flowy-settings-row__control--actions,
   .flowy-settings-row__control--field {
     grid-column: 1 / -1;
     width: 100%;
     justify-self: stretch;
+  }
+
+  .flowy-settings-row__control--actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
   }
 }
 
@@ -395,18 +427,6 @@
     font-weight: 500;
   }
 
-  .flowy-settings-row {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .flowy-settings-row__control {
-    grid-column: 1 / -1;
-    width: 100%;
-    justify-self: stretch;
-  }
-
   .flowy-settings-action-bar {
     align-items: stretch;
     flex-direction: column;
@@ -445,10 +465,9 @@
   padding: 0 10px;
   border: 0;
   border-radius: 0;
-  border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--flowy-text-secondary);
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
@@ -460,7 +479,6 @@
 }
 
 .capability-hub-tab--active {
-  border-bottom-color: var(--flowy-accent, rgb(var(--primary-6)));
   color: var(--flowy-text-primary);
   font-weight: 600;
 }
@@ -487,9 +505,9 @@
 .capability-hub-search.nomi-input,
 .capability-hub-search.arco-input-group {
   display: flex !important;
-  flex: 1 1 auto;
+  flex: 0 1 260px;
   min-width: 0;
-  width: 100% !important;
+  width: 260px !important;
 }
 
 .capability-hub-search .arco-input-inner-wrapper {
@@ -497,10 +515,10 @@
   flex: 1 1 auto;
   width: 100% !important;
   min-width: 0;
-  height: 36px !important;
-  border: 1px solid var(--color-border-2) !important;
-  border-radius: 10px !important;
-  background: var(--flowy-raised, var(--color-bg-2)) !important;
+  height: var(--flowy-search-height, 32px) !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--flowy-radius-field, 8px) !important;
+  background: var(--color-fill-2, var(--flowy-raised)) !important;
   box-shadow: none !important;
 }
 
@@ -582,8 +600,8 @@
 
 .capability-hub-action-btn.arco-btn {
   box-sizing: border-box !important;
-  height: 36px !important;
-  min-height: 36px !important;
+  height: 32px !important;
+  min-height: 32px !important;
   padding: 0 12px !important;
   border-radius: 10px !important;
   font-size: 13px !important;
@@ -608,6 +626,16 @@
   background: var(--flowy-interactive-hover) !important;
   border-color: var(--color-border-3) !important;
   color: var(--flowy-text-primary) !important;
+}
+
+.capability-hub-action-btn.capability-hub-action-btn--plain.arco-btn,
+.capability-hub-action-btn.capability-hub-action-btn--plain.arco-btn:hover,
+.capability-hub-action-btn.capability-hub-action-btn--plain.arco-btn:focus {
+  border: 1px solid var(--color-border-2) !important;
+  background: var(--color-bg-1) !important;
+  color: var(--flowy-text-primary) !important;
+  font-weight: 400 !important;
+  box-shadow: none !important;
 }
 
 .capability-hub-action-btn--active.arco-btn,
@@ -664,4 +692,14 @@
     width: 100%;
     justify-content: stretch;
   }
+}
+
+.skill-detail-modal .arco-switch-checked,
+body[arco-theme='dark'] .skill-detail-modal .arco-switch-checked {
+  background-color: var(--color-text-1) !important;
+}
+
+.skill-detail-modal .arco-switch-checked .arco-switch-dot,
+body[arco-theme='dark'] .skill-detail-modal .arco-switch-checked .arco-switch-dot {
+  color: var(--color-text-1) !important;
 }

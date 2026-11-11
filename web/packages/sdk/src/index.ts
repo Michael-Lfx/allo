@@ -77,6 +77,11 @@ export interface Harness extends AppServerClient {
   /** The child process: `readiness` / `dataDir` / `exited` / `close`. */
   readonly server: SpawnedServer;
   /**
+   * Root URL of the spawned App Server (`http://host:port`), for resolving
+   * relative store asset routes via `harness.store.avatarUrl(item)`.
+   */
+  readonly serverRootUrl: string;
+  /**
    * The handshake response captured at launch (**never null**).
    *
    * Not named `initializeResult`: that is a private field of the base class
@@ -105,6 +110,7 @@ export interface Harness extends AppServerClient {
  */
 export async function launchHarness(options: HarnessOptions): Promise<Harness> {
   const server = await spawnAppServer(options);
+  const serverRootUrl = `http://${server.readiness.host}:${server.readiness.port}`;
   const wsUrl = `ws://${server.readiness.host}:${server.readiness.port}/api/app-server/ws`;
   if (!isLoopbackUrl(wsUrl)) {
     await server.close();
@@ -117,6 +123,7 @@ export async function launchHarness(options: HarnessOptions): Promise<Harness> {
     }),
     client: options.client,
     capabilities: options.capabilities,
+    baseUrl: serverRootUrl,
   });
   // Capture the base method **before** the assignment below shadows it:
   // `client.close` resolves through the own property afterwards, so calling it
@@ -127,6 +134,7 @@ export async function launchHarness(options: HarnessOptions): Promise<Harness> {
     let closed = false;
     return Object.assign(client, {
       server,
+      serverRootUrl,
       handshake,
       close: async (): Promise<void> => {
         if (closed) return;

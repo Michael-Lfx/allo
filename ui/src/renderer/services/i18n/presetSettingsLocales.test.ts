@@ -33,8 +33,9 @@ describe('preset settings locale coverage', () => {
   });
 
   test('zh-CN keeps Presets and Skills as independent destinations', () => {
-    expect(zhSettings.presetsHub.title).toBe('设定');
-    expect(zhSettings.presetsHub.railTitle).toBe('设定');
+    expect(zhSettings.presetsHub.title).toBe('专家');
+    expect(zhSettings.presetsHub.railTitle).toBe('专家');
+    expect(enSettings.presetsHub.railTitle).toBe('Experts');
     expect(zhSettings.skillsHub.railTitle).toBe('技能');
     expect(zhSettings.capabilityHub.navLabel).toBe('能力中心');
     expect(zhSettings.capabilityHub.navLabel).not.toContain('插件');

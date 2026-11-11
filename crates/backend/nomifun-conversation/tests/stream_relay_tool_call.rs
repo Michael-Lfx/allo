@@ -106,10 +106,11 @@ async fn retry_identity_is_persisted_with_the_tool_call_receipt() {
         message_id: root_turn_id.clone(),
         conversation_id: conversation_id.clone(),
         msg_id: Some(root_turn_id.clone()),
-        r#type: "system".into(),
-        content: r#"{"kind":"turn_root"}"#.into(),
-        position: Some("center".into()),
-        status: Some("finish".into()),
+        // Use the same primary root placeholder as the production relay.
+        r#type: "text".into(),
+        content: json!({ "content": "", "turn_id": &root_turn_id }).to_string(),
+        position: Some("left".into()),
+        status: Some("work".into()),
         hidden: true,
         created_at: now_ms(),
     })

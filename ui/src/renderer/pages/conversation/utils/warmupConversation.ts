@@ -3,6 +3,7 @@ import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
 import { getConversationOrNull } from './conversationCache';
 import { getConversationRuntimeAuthority } from './conversationRuntime';
+import { isVoiceConversation } from './isVoiceConversation';
 
 const warmupByConversation = new Map<ConversationId, Promise<void>>();
 
@@ -17,11 +18,18 @@ export function warmupConversation(conversation_id: ConversationId): Promise<voi
   return promise;
 }
 
+/**
+ * A voice conversation is owned by its acoustic binding, never by the chat
+ * warmup path: it must stay read-only even when its durable status is Pending
+ * and its runtime projection looks idle. Idle projections are not authority to
+ * open a text turn there.
+ */
 export const shouldWarmupConversationOnPassiveMount = (
-  conversation: Pick<TChatConversation, 'status' | 'runtime'> | null
+  conversation: Pick<TChatConversation, 'status' | 'runtime' | 'type' | 'extra'> | null
 ): boolean =>
   conversation?.status === 'pending' &&
-  getConversationRuntimeAuthority(conversation) === 'idle';
+  getConversationRuntimeAuthority(conversation) === 'idle' &&
+  !isVoiceConversation(conversation);
 
 type PassiveWarmupDependencies = {
   getConversation: (conversationId: ConversationId) => Promise<TChatConversation | null>;

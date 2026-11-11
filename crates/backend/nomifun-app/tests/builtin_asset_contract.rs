@@ -129,6 +129,58 @@ fn builtin_skill_display_metadata_matches_the_packaged_corpus() {
 }
 
 #[test]
+fn guizang_ppt_skill_is_bundled_with_templates_and_license() {
+    let root = builtin_skills_root().join("guizang-ppt-skill");
+    let skill = read_to_string(root.join("SKILL.md"));
+    assert!(
+        skill.trim_start().starts_with("---"),
+        "must start with YAML frontmatter"
+    );
+    assert!(skill.contains("name: guizang-ppt-skill"));
+    assert!(skill.contains("assets/template.html"));
+    assert!(skill.contains("assets/template-swiss.html"));
+    assert!(
+        !skill.contains("git -C \"<SKILL_ROOT>\" fetch"),
+        "bundled copy must not require an upstream git fetch before use"
+    );
+    assert!(root.join("assets/template.html").is_file());
+    assert!(root.join("assets/template-swiss.html").is_file());
+    assert!(root.join("assets/motion.min.js").is_file());
+    assert!(root.join("LICENSE").is_file());
+    let license = read_to_string(root.join("LICENSE"));
+    assert!(license.contains("GNU AFFERO GENERAL PUBLIC LICENSE"));
+    assert!(root.join("assets/icon.png").is_file());
+}
+
+#[test]
+fn deep_research_pro_is_bundled_and_uses_host_web_tools() {
+    let skill = read_to_string(
+        builtin_skills_root()
+            .join("deep-research-pro")
+            .join("SKILL.md"),
+    );
+    assert!(skill.starts_with("---\n"), "must start with YAML frontmatter");
+    assert!(skill.contains("name: deep-research-pro"));
+    assert!(
+        skill.contains("用户要调研、深入研究、多来源对比或带引用的报告时使用"),
+        "L1 routing clause must name 调研 so polite paraphrases stay on the same side"
+    );
+    assert!(skill.contains("web_search"));
+    assert!(skill.contains("web_extract"));
+    assert!(
+        !skill.contains("/home/clawdbot") && !skill.contains("ddg-search"),
+        "bundled research must not depend on the Clawdbot search script"
+    );
+    assert!(
+        builtin_skills_root()
+            .join("deep-research-pro")
+            .join("assets/icon.png")
+            .is_file(),
+        "deep-research-pro must ship an icon"
+    );
+}
+
+#[test]
 fn nomifun_skills_guide_is_bundled_and_does_not_require_remote_fetch() {
     let skill = read_to_string(
         builtin_skills_root()

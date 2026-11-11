@@ -5,7 +5,17 @@ Two workflows live here:
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
 | `ci.yml` | every pull request, every push to `main` | compile every crate + test target, run the repo gates that are green; a documentation-only change skips the two Rust jobs |
-| `release-modelscope.yml` | tag `vX.Y.Z` (or `workflow_dispatch`) | publish per-OS OTA to ModelScope CN, ModelScope AI, and GitHub Releases |
+| `release-modelscope.yml` | tag `vX.Y.Z` / `unibuddy-vX.Y.Z` (or `workflow_dispatch`) | publish the selected product's per-OS OTA channels |
+
+## Workflow change policy
+
+Workflow changes are allowed when CI or release behavior requires them. Extend
+an existing workflow where practical instead of duplicating its jobs. A PR that
+changes triggers, permissions, environments, secrets, signing, or publication
+must describe those changes explicitly, retain least-privilege permissions and
+required gates, run the affected local scripts, and update this file plus the
+relevant release documentation. Adding, deleting, or renaming a workflow needs
+an explicit rationale and owner review.
 
 ## PR CI (`ci.yml`)
 
@@ -31,7 +41,8 @@ workflow uses (`oven-sh/setup-bun`, `dtolnay/rust-toolchain`, `Swatinem/rust-cac
   `check:codemirror-runtime`, `check:error-surface-contract`,
   `check:support-surface-contract`, `check:windows-console-hide`,
   `check:process-runtime-boundary`, `check:browser-platform-boundary`,
-  `check:market`, `check:fingerprint`, `check:release-sync`, `bun run help --check`.
+  `check:market`, `check:fingerprint`, `check:release-sync`,
+  `check:release-product-profiles`, `bun run help --check`.
   Plus, only when `web/package.json` exists, the Agent Store frontend's
   `typecheck` + `test`. This job is never skipped: the fingerprint and cross-repo
   gates read the docs and the docs site.
@@ -120,17 +131,26 @@ would only make every pull request red without fixing anything. Add each one to
 
 ## ModelScope platform release workflow (`release-modelscope.yml`)
 
-`release-modelscope.yml` publishes the same `allo/` tree to three OTA origins:
+`release-modelscope.yml` contains two release profiles that share the same
+Windows, macOS, and Linux jobs:
+
+- **Flowy** (`vX.Y.Z`): `allo/channels/<os>/latest.json` on ModelScope CN and
+  AI, plus GitHub Releases on this repo (including `latest-{channel}.json`).
+- **UniBuddy** (`unibuddy-vX.Y.Z`): `allo/unibuddy_channels/<os>/latest.json`
+  on ModelScope CN and AI only. It uses UniBuddy UI/Tauri overlays and never
+  publishes or consumes GitHub `releases/latest`.
+
+Both profiles store versioned artifacts under `allo/<os>/vX.Y.Z/`; product-
+specific filenames keep the payloads distinct. The two ModelScope origins are:
 
 - CN: `modelscope.cn` model `flowy2025/flowyaipc`
 - AI: `modelscope.ai` model `flowy2025/flowy`
-- GitHub Releases on this repo (`Michael-Lfx/allo`), including `latest-{channel}.json`
 
 Python upload deps are installed with `uv pip`, not `pip`.
 
 ### Trigger
 
-- Push tag `vX.Y.Z` (no platform suffix), or
+- Push tag `vX.Y.Z` for Flowy or `unibuddy-vX.Y.Z` for UniBuddy, or
 - `workflow_dispatch` with the same tag
 
 Tag version must match `[workspace.package].version` on that commit.
@@ -146,14 +166,16 @@ release-context
 ```
 
 - **Build jobs** use `TAURI_SIGNING_*` only and upload `dist/desktop/` as GitHub
-  Artifacts. They do **not** receive ModelScope tokens.
+  Artifacts. They do **not** receive ModelScope tokens. The release-context job
+  resolves a fixed product profile (UI mode, Tauri config, channel overlays,
+  manifest root, and GitHub publication policy) from the validated tag.
 - **Publish jobs** run in the `modelscope-alpha` environment, download build
   artifacts, then for CN and AI:
   1. `--artifacts-only` (binaries + `.sig`, per-file retry / skip-existing)
   2. `--manifest-only` (`latest.json` + `channel.yml` + `history/vX.Y.Z.json`)
   3. verify that host
-  Then `scripts/publish-github-ota.sh` appends updater assets to the GitHub
-  Release for the tag.
+  For the Flowy profile only, `scripts/publish-github-ota.sh` then appends
+  updater assets to the GitHub Release for the tag. UniBuddy skips these steps.
 - **release-status** fails unless all three publishes succeeded.
 
 ### Secrets
@@ -161,7 +183,9 @@ release-context
 - `TAURI_SIGNING_PRIVATE_KEY` (+ optional password): build jobs
 - `MODELSCOPE_CN_TOKEN`: CN uploads (`MODELSCOPE_TOKEN` is a CN-only fallback)
 - `MODELSCOPE_AI_TOKEN`: AI uploads
-- `GITHUB_TOKEN`: provided by Actions (`contents: write`) for Release upload
+- `GITHUB_TOKEN`: provided by Actions for Flowy Release upload. The workflow
+  defaults to `contents: read`; only the three shared publish jobs request
+  `contents: write`, and their GitHub steps are gated to the Flowy profile.
 
 ### Ops
 

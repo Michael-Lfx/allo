@@ -1,9 +1,9 @@
 
 
-import { iconColors } from '@/renderer/styles/colors';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import { isDesktopShell } from '@/renderer/utils/platform';
-import { Dropdown, Input, Menu, Tooltip } from '@arco-design/web-react';
-import { Down, Plus, Refresh, Search } from '@icon-park/react';
+import { Dropdown, Menu, Tooltip } from '@arco-design/web-react';
 import React from 'react';
 import UploadProgressBar from '@/renderer/components/media/UploadProgressBar';
 import type { TFunction } from 'i18next';
@@ -71,7 +71,8 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
       {/* Search Input */}
       {(showSearch || searchText) && (
         <div className='workspace-toolbar-search'>
-          <Input
+          <FlowySearch
+            density='compact'
             className='w-full workspace-search-input'
             ref={searchInputRef}
             placeholder={t('conversation.workspace.searchPlaceholder')}
@@ -81,8 +82,6 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
               setSearchText(value);
               onSearch(value);
             }}
-            allowClear
-            prefix={<Search theme='outline' size='14' fill={iconColors.primary} />}
           />
         </div>
       )}
@@ -99,9 +98,9 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
           aria-label={t(isWorkspaceCollapsed ? 'common.expand' : 'common.collapse')}
           onClick={() => setIsWorkspaceCollapsed(!isWorkspaceCollapsed)}
         >
-          <Down
+          <FlowyIcon
+            name='down'
             size={16}
-            fill={iconColors.primary}
             className={`line-height-0 transition-transform duration-200 flex-shrink-0 ${isWorkspaceCollapsed ? '-rotate-90' : 'rotate-0'}`}
           />
           <span className='workspace-title-label font-bold text-14px text-t-primary overflow-hidden text-ellipsis whitespace-nowrap'>
@@ -116,7 +115,7 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
                 className='workspace-toolbar-icon-btn'
                 aria-label={t('common.fileAttach.addFiles')}
               >
-                <Plus theme='outline' size='16' fill={iconColors.secondary} />
+                <FlowyIcon name='plus' size={16} />
               </button>
             </Dropdown>
           )}
@@ -128,12 +127,7 @@ const WorkspaceToolbar: React.FC<WorkspaceToolbarProps> = ({
               aria-busy={loading}
               onClick={() => refreshWorkspace()}
             >
-              <Refresh
-                className={loading ? 'loading' : undefined}
-                theme='outline'
-                size='16'
-                fill={iconColors.secondary}
-              />
+              <FlowyIcon name='refresh' size={16} className={loading ? 'loading' : undefined} />
             </button>
           </Tooltip>
         </div>

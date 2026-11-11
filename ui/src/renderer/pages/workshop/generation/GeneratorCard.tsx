@@ -217,7 +217,14 @@ const GeneratorCard: React.FC<GeneratorCardProps> = ({ id, data }) => {
           )}
         </div>
         <div className='nodrag mb-8px'>
-          <SegmentedTabs items={modeItems} activeKey={mode} onChange={(k) => setMode(k as WorkshopGeneratorMode)} size='sm' block />
+          <SegmentedTabs
+            items={modeItems}
+            activeKey={mode}
+            onChange={(k) => setMode(k as WorkshopGeneratorMode)}
+            size='sm'
+            block
+            variant='classic'
+          />
         </div>
         {mode === 'tts' ? (
           // Unified task-scoped selector: TTS candidates come straight from

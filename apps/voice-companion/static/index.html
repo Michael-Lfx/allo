@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Flowy AI Mate 无屏伴侣主机配对与状态就绪投影">
+  <title>Flowy AI Mate 配对设置</title>
+  <style>
+    /* --- Flowy Semantic Design Tokens & Theme Variables --- */
+    :root {
+      --bg-base: #ffffff;
+      --bg-fill-1: #f7f8fa;
+      --bg-fill-2: #f2f3f5;
+      --text-t-primary: #1d2129;
+      --text-t-secondary: #4e5969;
+      --text-t-tertiary: #86909c;
+      --border-base: #e5e6eb;
+      --border-focus: #165dff;
+      --brand-color: #165dff;
+      --danger-color: #cb272d;
+      --success-color: #008736;
+      --warning-color: #b76400;
+
+      /* Motion Tokens per ui-motion §2 */
+      --motion-feedback-duration: 120ms;
+      --motion-state-duration: 180ms;
+      --motion-spatial-duration: 240ms;
+      --motion-curve: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-base: #17171a;
+        --bg-fill-1: #232324;
+        --bg-fill-2: #2e2e30;
+        --text-t-primary: #f2f3f5;
+        --text-t-secondary: #c9cdd4;
+        --text-t-tertiary: #86909c;
+        --border-base: #303030;
+        --border-focus: #4080ff;
+        --brand-color: #4080ff;
+        --danger-color: #f76560;
+        --success-color: #23c343;
+        --warning-color: #f99c1d;
+      }
+    }
+
+    /* Accessibility: Reduced Motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-t-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 24px 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 400px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* Tabular numbers to avoid layout jitter */
+    .tabular-nums {
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 1. Small Brand Header */
+    .brand-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 0;
+    }
+
+    .brand-logo {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background-color: var(--brand-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .brand-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text-t-primary);
+    }
+
+    /* 2. Device Status Row */
+    .device-status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background-color: var(--bg-fill-1);
+      border: 1px solid var(--border-base);
+      border-radius: 8px;
+    }
+
+    .status-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--success-color);
+      box-shadow: 0 0 0 2px rgba(0, 135, 54, 0.2);
+    }
+
+    .status-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-t-primary);
+    }
+
+    .device-id {
+      font-size: 12px;
+      color: var(--text-t-tertiary);
+      font-family: monospace;
+    }
+
+    /* 3. Pairing Code Zone (OtpCodeInput contract) */
+    .pairing-section {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 20px 16px;
+      background-color: var(--bg-fill-1);
+      border: 1px solid var(--border-base);
+      border-radius: 12px;
+    }
+
+    .pairing-header {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .pairing-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-t-primary);
+    }
+
+    .pairing-subtitle {
+      font-size: 13px;
+      color: var(--text-t-secondary);
+      line-height: 1.4;
+    }
+
+    .otp-wrapper {
+      position: relative;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      margin: 8px 0;
+    }
+
+    /* Single real input covering the interactive area */
+    .otp-real-input {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      z-index: 2;
+      font-size: 24px;
+    }
+
+    .otp-boxes-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 1;
+    }
+
+    .otp-subgroup {
+      display: flex;
+      gap: 6px;
+    }
+
+    .otp-box {
+      width: 44px;
+      height: 48px;
+      min-width: 44px;
+      min-height: 48px;
+      background-color: var(--bg-base);
+      border: 1px solid var(--border-base);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text-t-primary);
+      transition: border-color var(--motion-feedback-duration) var(--motion-curve),
+                  box-shadow var(--motion-feedback-duration) var(--motion-curve);
+    }
+
+    .otp-real-input:focus ~ .otp-boxes-group .otp-box.active {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px rgba(22, 93, 255, 0.2);
+    }
+
+    .otp-divider {
+      width: 10px;
+      height: 2px;
+      background-color: var(--border-base);
+      border-radius: 1px;
+    }
+
+    /* Non-layout-shifting error alert slot */
+    .otp-error-slot {
+      min-height: 22px;
+      font-size: 13px;
+      color: var(--danger-color);
+      display: flex;
+      align-items: center;
+      transition: opacity var(--motion-state-duration) var(--motion-curve);
+    }
+
+    /* Lockout countdown */
+    .otp-lockout-slot {
+      display: none;
+      padding: 10px 12px;
+      background-color: rgba(203, 39, 45, 0.08);
+      border: 1px solid var(--danger-color);
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--danger-color);
+      text-align: center;
+    }
+
+    /* 4. Model Readiness Projection Zone */
+    .models-projection-section {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      background-color: var(--bg-fill-1);
+      border: 1px solid var(--border-base);
+      border-radius: 12px;
+    }
+
+    .models-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .models-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-t-primary);
+    }
+
+    .models-status-badge {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background-color: var(--bg-fill-2);
+      color: var(--text-t-secondary);
+    }
+
+    /* 2px Hairline Progress Track */
+    .hairline-progress-track {
+      width: 100%;
+      height: 2px;
+      background-color: var(--border-base);
+      border-radius: 1px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hairline-progress-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: var(--brand-color);
+      transform-origin: left center;
+      transform: scaleX(0);
+      transition: transform var(--motion-state-duration) var(--motion-curve);
+    }
+
+    .models-meta-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-t-secondary);
+    }
+
+    /* 5. Completion State Section */
+    .completion-section {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 24px 16px;
+      background-color: var(--bg-fill-1);
+      border: 1px solid var(--border-base);
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .completion-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background-color: var(--success-color);
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+    }
+
+    .completion-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-t-primary);
+    }
+
+    .completion-subtitle {
+      font-size: 13px;
+      color: var(--text-t-secondary);
+    }
+
+    /* Language Switcher Button (>= 44px touch target) */
+    .lang-switcher-container {
+      display: flex;
+      justify-content: center;
+      padding-top: 12px;
+    }
+
+    .lang-btn {
+      min-height: 44px;
+      min-width: 80px;
+      background: none;
+      border: none;
+      font-size: 12px;
+      color: var(--text-t-tertiary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: underline;
+      padding: 8px 12px;
+    }
+
+    .lang-btn:focus {
+      outline: 2px solid var(--border-focus);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Section 1: Small Brand Header -->
+    <header class="brand-header" role="banner">
+      <div class="brand-logo" aria-hidden="true">F</div>
+      <h1 class="brand-title">Flowy AI Mate</h1>
+    </header>
+
+    <!-- Section 2: Device Status Row -->
+    <section class="device-status-row" aria-label="Device Status">
+      <div class="status-left">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text" id="deviceStatusText">在线等待配对</span>
+      </div>
+      <span class="device-id" id="deviceIdText">ai-mate.local</span>
+    </section>
+
+    <!-- Section 3: Pairing Code Zone (OtpCodeInput contract) -->
+    <section class="pairing-section" aria-label="Pairing Code Verification">
+      <div class="pairing-header">
+        <h2 class="pairing-title" id="pairingTitle">输入配对码</h2>
+        <p class="pairing-subtitle" id="pairingSubtitle">请输入伴侣主机正在播报的 6 位数字配对码</p>
+      </div>
+
+      <div class="otp-wrapper">
+        <input
+          type="text"
+          id="otpRealInput"
+          class="otp-real-input"
+          inputmode="numeric"
+          maxlength="6"
+          pattern="[0-9]*"
+          autocomplete="one-time-code"
+          aria-label="6 位数字配对码"
+          autofocus
+        />
+        <div class="otp-boxes-group" aria-hidden="true">
+          <div class="otp-subgroup">
+            <div class="otp-box active" data-index="0"></div>
+            <div class="otp-box" data-index="1"></div>
+            <div class="otp-box" data-index="2"></div>
+          </div>
+          <div class="otp-divider"></div>
+          <div class="otp-subgroup">
+            <div class="otp-box" data-index="3"></div>
+            <div class="otp-box" data-index="4"></div>
+            <div class="otp-box" data-index="5"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="otp-error-slot" id="otpErrorSlot" role="alert" aria-live="assertive"></div>
+      <div class="otp-lockout-slot" id="otpLockoutSlot"></div>
+    </section>
+
+    <!-- Section 4: Model Readiness Projection Zone -->
+    <section class="models-projection-section" aria-live="polite" aria-label="Model Readiness Status">
+      <div class="models-header">
+        <h2 class="models-title" id="modelsTitle">语音引擎就绪状态</h2>
+        <span class="models-status-badge" id="modelsStatusBadge">自检中</span>
+      </div>
+
+      <div class="hairline-progress-track">
+        <div class="hairline-progress-fill" id="progressFill"></div>
+      </div>
+
+      <div class="models-meta-row">
+        <span id="modelsStageText">正在检查本地模型完整性...</span>
+        <span id="modelsMetricsText" class="tabular-nums">-</span>
+      </div>
+    </section>
+
+    <!-- Section 5: Completion State Zone -->
+    <section class="completion-section" id="completionSection" aria-label="Ready Completion Status">
+      <div class="completion-icon" aria-hidden="true">✓</div>
+      <h2 class="completion-title" id="completionTitle">AI Mate 准备就绪</h2>
+      <p class="completion-subtitle" id="completionSubtitle">请对设备说「Hey Flowy」唤醒体验</p>
+    </section>
+
+    <!-- Language Negotiator Toggle -->
+    <footer class="lang-switcher-container">
+      <button class="lang-btn" id="langSwitchBtn" type="button" aria-label="Switch Language / 切换语言">English</button>
+    </footer>
+  </div>
+
+  <script>
+    (function() {
+      // i18n Dictionary
+      const i18n = {
+        'zh-CN': {
+          brand: 'Flowy AI Mate',
+          statusOnline: '在线等待配对',
+          statusReady: '在线已就绪',
+          pairingTitle: '输入配对码',
+          pairingSubtitle: '请输入伴侣主机正在播报的 6 位数字配对码',
+          modelsTitle: '语音引擎就绪状态',
+          modelsChecking: '正在检查本地模型完整性...',
+          modelsReady: '完全就绪',
+          completionTitle: 'AI Mate 准备就绪',
+          completionSubtitle: '请对设备说「Hey Flowy」唤醒体验',
+          errorWrongCode: '配对码错误，请重新输入',
+          lockoutMessage: '连续错误超限，已锁定，请在 15 分钟后重试',
+          langSwitch: 'English'
+        },
+        'en-US': {
+          brand: 'Flowy AI Mate',
+          statusOnline: 'Online, awaiting pairing',
+          statusReady: 'Online, ready',
+          pairingTitle: 'Enter Pairing Code',
+          pairingSubtitle: 'Please enter the 6-digit code announced by the companion host',
+          modelsTitle: 'Voice Engine Readiness',
+          modelsChecking: 'Verifying local models integrity...',
+          modelsReady: 'Ready',
+          completionTitle: 'AI Mate is Ready',
+          completionSubtitle: 'Say "Hey Flowy" to start interacting',
+          errorWrongCode: 'Incorrect pairing code, please try again',
+          lockoutMessage: 'Too many attempts. Locked for 15 minutes',
+          langSwitch: '中文'
+        }
+      };
+
+      let currentLang = (navigator.language && navigator.language.startsWith('en')) ? 'en-US' : 'zh-CN';
+      let isPaired = false;
+
+      function applyLanguage(lang) {
+        currentLang = lang;
+        const dict = i18n[lang] || i18n['zh-CN'];
+        document.documentElement.lang = lang;
+        document.getElementById('deviceStatusText').textContent = isPaired ? dict.statusReady : dict.statusOnline;
+        document.getElementById('pairingTitle').textContent = dict.pairingTitle;
+        document.getElementById('pairingSubtitle').textContent = dict.pairingSubtitle;
+        document.getElementById('modelsTitle').textContent = dict.modelsTitle;
+        document.getElementById('modelsStageText').textContent = dict.modelsChecking;
+        document.getElementById('completionTitle').textContent = dict.completionTitle;
+        document.getElementById('completionSubtitle').textContent = dict.completionSubtitle;
+        document.getElementById('langSwitchBtn').textContent = dict.langSwitch;
+      }
+
+      applyLanguage(currentLang);
+
+      document.getElementById('langSwitchBtn').addEventListener('click', function() {
+        applyLanguage(currentLang === 'zh-CN' ? 'en-US' : 'zh-CN');
+      });
+
+      // OTP Input Handling
+      const realInput = document.getElementById('otpRealInput');
+      const boxes = document.querySelectorAll('.otp-box');
+      const errorSlot = document.getElementById('otpErrorSlot');
+
+      function updateBoxes(val) {
+        boxes.forEach((box, idx) => {
+          box.textContent = val[idx] || '';
+          if (idx === val.length) {
+            box.classList.add('active');
+          } else {
+            box.classList.remove('active');
+          }
+        });
+      }
+
+      var lockoutTimer = null;
+
+      function startLockoutCountdown(seconds) {
+        var dict = i18n[currentLang] || i18n['zh-CN'];
+        var lockoutSlot = document.getElementById('otpLockoutSlot');
+        lockoutSlot.style.display = 'block';
+        realInput.disabled = true;
+        realInput.value = '';
+        updateBoxes('');
+        if (lockoutTimer) clearInterval(lockoutTimer);
+
+        var remaining = seconds;
+        function updateLockoutText() {
+          var mins = Math.floor(remaining / 60);
+          var secs = remaining % 60;
+          var timeStr = mins + ':' + (secs < 10 ? '0' : '') + secs;
+          lockoutSlot.textContent = dict.lockoutMessage + ' (' + timeStr + ')';
+        }
+        updateLockoutText();
+        lockoutTimer = setInterval(function() {
+          remaining -= 1;
+          if (remaining <= 0) {
+            clearInterval(lockoutTimer);
+            lockoutTimer = null;
+            lockoutSlot.style.display = 'none';
+            lockoutSlot.textContent = '';
+            realInput.disabled = false;
+          } else {
+            updateLockoutText();
+          }
+        }, 1000);
+      }
+
+      realInput.addEventListener('input', function(e) {
+        const cleaned = this.value.replace(/[^0-9]/g, '').slice(0, 6);
+        this.value = cleaned;
+        updateBoxes(cleaned);
+        errorSlot.textContent = '';
+
+        if (cleaned.length === 6) {
+          fetch('/api/oobe/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: cleaned })
+          })
+          .then(function(res) {
+            return res.json().then(function(data) {
+              return { status: res.status, data: data };
+            });
+          })
+          .then(function(result) {
+            var data = result.data;
+            if (result.status === 200 && data.status === 'success') {
+              isPaired = true;
+              var pairingSection = document.querySelector('.pairing-section');
+              if (pairingSection) pairingSection.style.display = 'none';
+              var completionSection = document.getElementById('completionSection');
+              if (completionSection) {
+                completionSection.style.display = 'flex';
+              }
+              var statusText = document.getElementById('deviceStatusText');
+              if (statusText) statusText.textContent = (currentLang === 'zh-CN') ? i18n['zh-CN'].statusReady : i18n['en-US'].statusReady;
+            } else if (result.status === 429 || data.status === 'locked') {
+              var remainingSecs = data.lockout_remaining_secs || 900;
+              startLockoutCountdown(remainingSecs);
+            } else {
+              var dict = i18n[currentLang] || i18n['zh-CN'];
+              var attemptsMsg = data.attempts_remaining !== undefined ? ' (' + (currentLang === 'zh-CN' ? '剩余尝试: ' : 'Attempts left: ') + data.attempts_remaining + ')' : '';
+              errorSlot.textContent = dict.errorWrongCode + attemptsMsg;
+              realInput.value = '';
+              updateBoxes('');
+            }
+          })
+          .catch(function() {
+            errorSlot.textContent = (currentLang === 'zh-CN') ? '网络错误，请重试' : 'Network error, please retry';
+          });
+        }
+      });
+
+      realInput.addEventListener('focus', function() {
+        updateBoxes(this.value);
+      });
+
+      // Check OOBE paired status
+      function checkOobeStatus() {
+        fetch('/api/oobe/status')
+          .then(function(res) { return res.json(); })
+          .then(function(data) {
+            if (data && data.paired) {
+              isPaired = true;
+              var pairingSection = document.querySelector('.pairing-section');
+              if (pairingSection) pairingSection.style.display = 'none';
+              var completionSection = document.getElementById('completionSection');
+              if (completionSection) completionSection.style.display = 'flex';
+              var statusText = document.getElementById('deviceStatusText');
+              if (statusText) statusText.textContent = (currentLang === 'zh-CN') ? '在线已就绪' : 'Online, ready';
+            }
+          })
+          .catch(function() {});
+      }
+      checkOobeStatus();
+
+      // Subscribe to model progress SSE stream
+      function subscribeProgress() {
+        var evtSource = new EventSource('/api/voice/models/progress');
+        evtSource.onmessage = function(e) {
+          try {
+            var data = JSON.parse(e.data);
+            var fill = document.getElementById('progressFill');
+            var stageText = document.getElementById('modelsStageText');
+            var metricsText = document.getElementById('modelsMetricsText');
+            var badge = document.getElementById('modelsStatusBadge');
+
+            if (data.progress_percent !== undefined) {
+              var pct = Math.min(Math.max(data.progress_percent, 0), 100);
+              fill.style.transform = 'scaleX(' + (pct / 100) + ')';
+            }
+            if (data.file_index !== undefined && data.total_files !== undefined) {
+              metricsText.textContent = (data.file_index + 1) + '/' + data.total_files;
+            }
+            if (data.current_file) {
+              stageText.textContent = (currentLang === 'zh-CN' ? '正在下载: ' : 'Downloading: ') + data.current_file;
+            }
+            if (data.status === 'Ready' || data.state === 'Ready') {
+              fill.style.transform = 'scaleX(1.0)';
+              var dict = i18n[currentLang] || i18n['zh-CN'];
+              stageText.textContent = dict.modelsReady;
+              badge.textContent = dict.modelsReady;
+            }
+          } catch(err) {}
+        };
+      }
+      subscribeProgress();
+    })();
+  </script>
+</body>
+</html>

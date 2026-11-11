@@ -61,6 +61,42 @@ pub fn strip_mem_citations(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Generated-media delivery tags
+// ---------------------------------------------------------------------------
+
+/// `MEDIA:<absolute path>` is a tool delivery tag, not answer text. The
+/// conversation shows the image from the committed artifact.
+static MEDIA_DELIVERY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)(?:^[ \t]*|[ \t])MEDIA:(?:[A-Za-z]:[\\/]|\\\\|/)\S*")
+        .expect("valid media-delivery regex")
+});
+
+pub fn strip_media_delivery_tags(text: &str) -> String {
+    if !text.contains("MEDIA:") {
+        return text.to_owned();
+    }
+    let stripped = MEDIA_DELIVERY_RE.replace_all(text, "");
+    if stripped == text {
+        return text.to_owned();
+    }
+    let mut collapsed = String::with_capacity(stripped.len());
+    let mut blank_run = 0u8;
+    for line in stripped.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        if body.trim().is_empty() {
+            blank_run = blank_run.saturating_add(1);
+            if blank_run <= 1 {
+                collapsed.push_str(line);
+            }
+            continue;
+        }
+        blank_run = 0;
+        collapsed.push_str(line);
+    }
+    collapsed
+}
+
+// ---------------------------------------------------------------------------
 // Cron command detection
 // ---------------------------------------------------------------------------
 
@@ -333,10 +369,9 @@ impl MessageMiddleware {
         conversation_id: &str,
         cancellation: Option<&CancellationToken>,
     ) -> MiddlewareResult {
-        // Step 1: Strip think tags and memory-citation protocol blocks.
-        // Citations are an internal reflow contract (`<nomi-mem-citation>`),
-        // not answer text — same role as think tags.
-        let cleaned = strip_mem_citations(&strip_think_tags(message));
+        // Step 1: Strip think tags, memory-citation blocks, and MEDIA: path
+        // tags. All three are internal contracts, not answer text.
+        let cleaned = strip_media_delivery_tags(&strip_mem_citations(&strip_think_tags(message)));
 
         // Step 2: Detect cron commands
         if !has_cron_commands(&cleaned) {
@@ -541,6 +576,21 @@ mod tests {
     fn strip_mem_citations_drops_unclosed_block() {
         let input = "answer\n<nomi-mem-citation>\nuser_role.md|note=[x]";
         assert_eq!(strip_mem_citations(input), "answer\n");
+    }
+
+    #[test]
+    fn strip_media_delivery_tags_removes_generated_path_lines() {
+        let input = "画面已经完成。\n\nMEDIA:C:\\Users\\38788\\AppData\\Local\\Flowy\\Nomi-dev\\media\\generated\\2026-11-02\\6202a5d6-b555-4442-bf22-2f6ecbce472a.jpg\nMEDIA:C:\\Users\\38788\\AppData\\Local\\Flowy\\Nomi-dev\\media\\generated\\2026-11-02\\2af6d896-8edf-43c0-a783-87f8b03abc3d.jpg\n\n要我直接开工哪一个？";
+        assert_eq!(
+            strip_media_delivery_tags(input),
+            "画面已经完成。\n\n要我直接开工哪一个？"
+        );
+    }
+
+    #[test]
+    fn strip_media_delivery_tags_keeps_prose_that_mentions_the_word() {
+        let input = "Deliver with MEDIA: when local_path is available.";
+        assert_eq!(strip_media_delivery_tags(input), input);
     }
 
     // -----------------------------------------------------------------------

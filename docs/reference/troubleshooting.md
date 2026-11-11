@@ -2,6 +2,42 @@
 
 Symptoms you might hit running NomiFun, and the actual mechanism behind each one. If you find a problem that is not on this list, the source is the fastest reference — every behaviour described below is grounded in a specific file in `crates/backend/`.
 
+## Windows voice enabled but the process does not connect
+
+`voice_companion_missing` means the host could not resolve the companion
+executable; downloading or verifying acoustic models cannot restore a missing
+installer component. End users should install a corrected application package,
+not install Cargo or compile the companion themselves. For maintainers, verify
+the actual installer using the [voice packaging checks](../contributing/building-and-packaging.md#windows-voice-companion-packaging).
+
+If the executable exists but exits before connecting, inspect the startup log
+and the app-local VC++ runtime files as well as architecture. Do not infer a
+model failure from downstream unreachable-service checks. Compare the installed
+package's SHA-256 with the artifact that was tested; a successful development
+launch does not validate an installed release. If the process connects but wake
+detection fails, distinguish KWS, sentence-end detection, final ASR matching and
+host readiness rejection. Package validation alone does not prove any of these
+runtime stages, and expanding text aliases does not prove acoustic recall.
+
+## A source checkout says the voice service component is missing
+
+In a source checkout this is a build gap, not a packaging bug: `bun run dev`
+builds only the Flowy binary, and `voice-companion` is a dev-dependency (library
+only), so nothing produces the daemon by default. Build or verify it with:
+
+```bash
+bun run ensure:voice-companion          # builds when missing or stale
+bun run ensure:voice-companion --check  # inspect only, exit 1 when not ready
+```
+
+`bun run dev` runs that step automatically; skip it with
+`NOMIFUN_SKIP_VOICE_COMPANION=1`. The daemon lands in `target/debug` and is also
+resolved from `build.noindex/**`, `<target>/<triple>/<profile>` and
+`apps/desktop/resources/bin`. Only the current `voice-companion` name is
+accepted — delete stale `ai-mate` artifacts if an old checkout still has them.
+Development builds report `voice_companion_missing_dev`, which points at the
+build command; packaged builds keep the installer guidance.
+
 ## Backend port / connection problems
 
 ### `nomifun-web: invalid --host '<value>'`
@@ -190,3 +226,4 @@ Read the source. Every route handler is in the `routes.rs` (or `routes/`) file o
 - [Configuration Reference](./configuration.md) — every flag and env var.
 - [API Overview](./api-overview.md) — orientation to routes, auth, and the WebSocket model.
 - [FAQ](./faq.md) — short answers to the most common "is X true?" questions.
+- [Windows dev loop: cannot write outside the repo](../contributing/windows-low-integrity-dev-loop.md) — `LNK1104`, a `PermissionDenied` log-file panic, or a WebView2 `0x8000FFFF` / `0x800700AA` window failure caused by a leftover Low integrity label on the checkout.

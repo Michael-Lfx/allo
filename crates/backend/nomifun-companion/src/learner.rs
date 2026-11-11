@@ -331,6 +331,13 @@ impl Learner {
         let events: Vec<_> = events
             .into_iter()
             .filter(|event| event.name != "companion.reply")
+            .filter(|event| {
+                if let Some(id) = event.data.get("companion_id").and_then(|v| v.as_str()) {
+                    id == owner.as_str()
+                } else {
+                    true
+                }
+            })
             .collect();
         if events.is_empty() {
             // Nothing but stale replies. Advance anyway — leaving the cursor here
@@ -943,7 +950,7 @@ mod tests {
         let (learner, id) = make_learner(dir.path(), "{}").await;
         learner
             .registry
-            .patch(&id, serde_json::json!({"learn": {"model": null}}))
+            .patch(&id, serde_json::json!({"learn": {"model": null}, "model": null}))
             .await
             .unwrap();
         let run = learner.run_for(&id).await.unwrap();

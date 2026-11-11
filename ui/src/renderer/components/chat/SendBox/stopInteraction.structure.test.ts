@@ -26,7 +26,8 @@ describe('SendBox stop interaction', () => {
     expect(source.includes('if (isUploading || isStopping) return;')).toBe(true);
     expect(source.includes('if (!onSteer || isUploading || isStopping) return;')).toBe(true);
     expect(source.includes("stopTestId='sendbox-stop-btn'")).toBe(true);
-    expect(source.includes('stopPending={isStopping}')).toBe(true);
+    expect(source.includes('stopPending={isStopping || stopPending}')).toBe(true);
+    expect(source.includes('stopPending = false')).toBe(true);
     expect(submitClusterSource.includes('pending={stopPending}')).toBe(true);
     expect(submitClusterSource.includes('testId={stopTestId}')).toBe(true);
     expect(submitClusterSource.includes('data-testid={testId}')).toBe(true);
@@ -38,6 +39,17 @@ describe('SendBox stop interaction', () => {
     for (const platform of platformSendBoxes) {
       expect(/<SendBox\r?\n\s+key=\{conversation_id\}/.test(platform.source)).toBe(true);
     }
+  });
+
+  test('voice primary stop returns before ordinary stop and releases only its page-local wait on navigation', () => {
+    const nomi = platformSendBoxes.find((platform) => platform.path.endsWith('/nomi/NomiSendBox.tsx'))!.source;
+    const handler = nomi.slice(nomi.indexOf('const handleStop = async'));
+    const boundStop = handler.indexOf('await stopDisplayedVoiceTask(conversation_id,snapshot)');
+    const ordinaryStop = handler.indexOf('const stopAttempt = beginStopAttempt();');
+    expect(boundStop).toBeGreaterThan(0);
+    expect(handler.slice(boundStop, ordinaryStop)).toContain('return;');
+    expect(nomi).toContain('stopPending={voiceStopPending}');
+    expect(nomi).toMatch(/setIsStopping\(false\);\s+setVoiceStopTarget\(null\);\s+setEditTargetChangedNotice\(false\);\s+}, \[conversation_id\]/);
   });
 
   test('checks authoritative start and completion generations before applying a stop result', () => {

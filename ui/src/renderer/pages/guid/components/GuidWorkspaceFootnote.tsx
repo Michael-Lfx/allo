@@ -1,10 +1,10 @@
 
 
-import { ipcBridge } from '@/common';
 import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import PathText from '@/renderer/components/base/PathText';
 import { addRecentWorkspace, getRecentWorkspaces, WorkspacePickerPopover } from '@/renderer/components/workspace';
 import { Tooltip } from '@arco-design/web-react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { Close, Down } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +14,7 @@ type GuidWorkspaceFootnoteProps = {
   workspaceDir: string;
   onSelectWorkspace: (dir: string) => void;
   onClearWorkspace: () => void;
+  onOpenLocalDialog: () => void;
 };
 
 const FolderIcon = ({ size = 12 }: { size?: number }) => (
@@ -48,6 +49,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
   workspaceDir,
   onSelectWorkspace,
   onClearWorkspace,
+  onOpenLocalDialog,
 }) => {
   const { t } = useTranslation();
   const recentWorkspaces = getRecentWorkspaces();
@@ -58,18 +60,8 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
 
   const handleBrowseWorkspace = useCallback(() => {
     setOpen(false);
-    ipcBridge.dialog.showOpen
-      .invoke({ properties: ['openDirectory', 'createDirectory'] })
-      .then((dirs) => {
-        if (dirs && dirs[0]) {
-          addRecentWorkspace(dirs[0]);
-          onSelectWorkspace(dirs[0]);
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to open directory dialog:', error);
-      });
-  }, [onSelectWorkspace]);
+    onOpenLocalDialog();
+  }, [onOpenLocalDialog]);
 
   const handleSelectPath = useCallback(
     (path: string) => {
@@ -120,18 +112,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
       testId='guid-workspace-picker-popover'
     >
           <div className={styles.wsDropdownSearch}>
-            <svg
-              width='12'
-              height='12'
-              fill='none'
-              stroke='currentColor'
-              strokeWidth='2'
-              viewBox='0 0 24 24'
-              style={{ flexShrink: 0, color: 'var(--color-text-3)' }}
-            >
-              <circle cx='11' cy='11' r='8' />
-              <path d='M21 21l-4.35-4.35' />
-            </svg>
+            <FlowyIcon name='search' size={14} className='text-t-tertiary' />
             <input
               ref={searchRef}
               className={styles.wsDropdownSearchInput}
@@ -261,18 +242,10 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
             ref={triggerRef}
             className={styles.workspaceSelector}
             data-testid='workspace-selector-btn'
-            onClick={recentWorkspaces.length > 0 ? toggleOpen : handleBrowseWorkspace}
+            onClick={handleBrowseWorkspace}
           >
             <FolderIcon size={16} />
             <span>{t('guid.workspace.workInProject')}</span>
-            {recentWorkspaces.length > 0 && (
-              <Down
-                theme='outline'
-                size='12'
-                fill='currentColor'
-                style={{ flexShrink: 0, transform: 'translateY(1px)' }}
-              />
-            )}
           </button>
           {dropdownEl}
         </>

@@ -30,7 +30,9 @@ export type SettingsNavIcon =
   | 'skills'
   | 'mcp'
   | 'cloud-login'
-  | 'about';
+  | 'about'
+  | 'voice'
+  | 'presentation';
 
 export type SettingsNavItem = {
   id: string;
@@ -92,7 +94,21 @@ const BUILTIN_NAVIGATION: SettingsNavBuiltin[] = [
     groupId: 'capabilities',
     icon: 'presets',
     labelKey: 'settings.capabilityHub.navLabel',
-    activePaths: ['presets', 'skills', 'mcp'],
+    activePaths: ['presets', 'mcp'],
+  },
+  {
+    id: 'voice',
+    path: 'voice',
+    groupId: 'capabilities',
+    icon: 'voice',
+    labelKey: 'voice.settings.nav',
+  },
+  {
+    id: 'presentation',
+    path: 'presentation',
+    groupId: 'capabilities',
+    icon: 'presentation',
+    labelKey: 'presentation.settings.nav',
   },
   { id: 'cloud-login', path: 'cloud-login', groupId: 'account', icon: 'cloud-login', labelKey: 'settings.cloudLoginNav' },
   { id: 'telemetry', path: 'telemetry', groupId: 'account', icon: 'telemetry', labelKey: 'settings.telemetryNav' },

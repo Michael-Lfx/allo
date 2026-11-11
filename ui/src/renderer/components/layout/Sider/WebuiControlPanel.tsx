@@ -1,5 +1,6 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { WEBUI_DEFAULT_PORT } from '@/common/config/constants';
 import { shell, webui } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
@@ -8,7 +9,6 @@ import { useWebuiServer } from '@/renderer/hooks/context/WebuiServerContext';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { Button, Form, Input, Select, Switch, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { Copy, Earth, EditTwo, Info, Refresh } from '@icon-park/react';
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { buildWebuiQrLoginUrl, getWebuiQrBaseUrls } from './webuiQrLinks';
@@ -280,7 +280,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
     <div className={containerClass}>
       {/* 标题 / Title */}
       <div className='flex items-center gap-8px px-2px'>
-        <Earth theme='outline' size='16' className='text-[rgb(var(--primary-6))] shrink-0' />
+        <FlowyIcon name='globe' size={16} className='text-[rgb(var(--primary-6))] shrink-0' />
         <span className='text-14px font-500 text-t-primary'>{t('settings.webui')}</span>
       </div>
 
@@ -329,7 +329,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
               content={<div className='max-w-260px text-12px leading-relaxed'>{t('settings.webui.cacheHint')}</div>}
             >
               <span className='inline-flex items-center text-t-tertiary hover:text-t-primary cursor-help leading-none'>
-                <Info theme='outline' size='13' fill='currentColor' />
+                <FlowyIcon name='info' size={13} />
               </span>
             </Tooltip>
           </div>
@@ -347,7 +347,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                     className='p-4px text-t-tertiary hover:text-t-primary cursor-pointer bg-transparent border-none'
                     onClick={() => handleCopy(url)}
                   >
-                    <Copy size={15} />
+                    <FlowyIcon name='copy' size={15} />
                   </button>
                 </Tooltip>
               </div>
@@ -369,7 +369,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                 className='rd-100px !px-6px inline-flex items-center !h-24px'
                 onClick={() => handleCopy(initialPassword)}
               >
-                <Copy size={14} />
+                <FlowyIcon name='copy' size={14} />
               </Button>
             </Tooltip>
           </div>
@@ -392,7 +392,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                 className='rd-100px !px-6px inline-flex items-center !h-24px'
                 onClick={() => handleCopy(displayUsername)}
               >
-                <Copy size={14} />
+                <FlowyIcon name='copy' size={14} />
               </Button>
             </Tooltip>
             <Tooltip content={t('settings.webui.editUsernameTooltip')}>
@@ -402,7 +402,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                 className='rd-100px !px-6px inline-flex items-center !h-24px'
                 onClick={handleResetUsername}
               >
-                <EditTwo size={14} />
+                <FlowyIcon name='edit' size={14} />
               </Button>
             </Tooltip>
           </div>
@@ -420,7 +420,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                 className='rd-100px !px-6px inline-flex items-center !h-24px'
                 onClick={handleResetPassword}
               >
-                <EditTwo size={14} />
+                <FlowyIcon name='edit' size={14} />
               </Button>
             </Tooltip>
           </div>
@@ -439,7 +439,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
               <div className='qr-address-picker w-full rd-12px border border-solid border-[rgba(var(--primary-6),0.30)] bg-[rgba(var(--primary-6),0.07)] p-10px shadow-[0_8px_22px_rgba(var(--primary-6),0.08)]'>
                 <div className='flex items-start gap-8px'>
                   <span className='mt-1px flex size-24px shrink-0 items-center justify-center rd-8px bg-primary-1 text-primary-6'>
-                    <Earth size={14} />
+                    <FlowyIcon name='globe' size={14} />
                   </span>
                   <div className='min-w-0 flex-1'>
                     <div className='text-12px font-600 leading-18px text-t-primary'>
@@ -509,7 +509,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                     className='p-4px bg-transparent border-none text-t-tertiary hover:text-t-primary cursor-pointer'
                     onClick={() => handleCopy(qrUrl)}
                   >
-                    <Copy size={15} />
+                    <FlowyIcon name='copy' size={15} />
                   </button>
                 </Tooltip>
               )}
@@ -519,7 +519,7 @@ const WebuiControlPanel: React.FC<WebuiControlPanelProps> = ({ mode = 'popover' 
                   onClick={() => void generateQRCode()}
                   disabled={qrLoading}
                 >
-                  <Refresh size={15} className={qrLoading ? 'animate-spin' : ''} />
+                  <FlowyIcon name='refresh' size={15} className={qrLoading ? 'animate-spin' : ''} />
                 </button>
               </Tooltip>
             </div>

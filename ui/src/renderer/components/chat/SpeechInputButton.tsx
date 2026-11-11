@@ -2,17 +2,28 @@
 
 import { Button, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { RollingDuration } from '@renderer/components/base/Counter';
 import {
   useSpeechInput,
   type SpeechInputAvailability,
   type SpeechInputErrorCode,
 } from '@/renderer/hooks/system/useSpeechInput';
 
+export type DictationActivationResult = 'started' | 'already-recording' | 'unavailable' | 'stale';
+
+export type DictationActivationRequest = {
+  id: string;
+  /** Atomically consumes the route-owned intent; false means expired/revoked. */
+  claim: () => boolean;
+  onResult: (result: DictationActivationResult) => void;
+};
+
 type SpeechInputButtonProps = {
   disabled?: boolean;
   hidden?: boolean;
+  activationRequest?: DictationActivationRequest;
   /** `filled` = black circle (empty composer); `inline` = gray icon beside send */
   variant?: 'filled' | 'inline';
   locale?: string;
@@ -66,14 +77,6 @@ const getErrorMessageKey = (errorCode: SpeechInputErrorCode) => {
   }
 };
 
-const formatSpeechDuration = (durationMs: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-};
-
 const getTooltipKey = (availability: SpeechInputAvailability, isListening: boolean, isProcessing: boolean) => {
   if (isProcessing) {
     return 'conversation.chat.speech.processing';
@@ -93,8 +96,9 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
   variant = 'filled',
   locale,
   onTranscript,
+  activationRequest,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const {
     availability,
     clearError,
@@ -110,6 +114,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     onTranscript,
   });
 
+  const handledActivation = useRef<string | null>(null);
   const isRecording = status === 'recording';
   const isProcessing = status === 'transcribing';
   const showSpeechFeedback = isRecording || isProcessing;
@@ -119,6 +124,28 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     }
     return [0.08, 0.12, 0.1, 0.16, 0.09, 0.14];
   }, [recordingLevels]);
+
+  useEffect(() => {
+    if (!activationRequest || handledActivation.current === activationRequest.id) return;
+    const finish = (result: DictationActivationResult) => {
+      handledActivation.current = activationRequest.id;
+      activationRequest.onResult(result);
+    };
+    if (hidden || disabled || availability !== 'record' || status === 'transcribing') {
+      finish('unavailable');
+      return;
+    }
+    if (status === 'recording') {
+      finish('already-recording');
+      return;
+    }
+    if (!activationRequest.claim()) {
+      finish('stale');
+      return;
+    }
+    finish('started');
+    void startRecording();
+  }, [activationRequest, availability, disabled, hidden, startRecording, status]);
 
   useEffect(() => {
     if (!errorCode) {
@@ -206,7 +233,14 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
           <span className='speech-input-feedback__label'>
             {isProcessing
               ? t('conversation.chat.speech.transcribingShort')
-              : formatSpeechDuration(recordingDurationMs)}
+              : (
+                  <RollingDuration
+                    seconds={recordingDurationMs / 1000}
+                    hours='never'
+                    padMinutes={false}
+                    locale={locale || i18n.language}
+                  />
+                )}
           </span>
         </div>
       )}

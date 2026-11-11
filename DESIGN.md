@@ -4,38 +4,40 @@ description: A restrained, precise, and alive workspace for agent-driven work.
 colors:
   ink-accent-light: "#0f766e"
   ink-accent-dark: "#2dd4bf"
-  canvas-light: "#f8fafc"
+  canvas-light: "#f5f5f7"
   panel-light: "#ffffff"
-  text-light: "#0f172a"
-  canvas-dark: "#0b1220"
-  panel-dark: "#111827"
-  text-dark: "#f8fafc"
+  text-light: "#1d1d1f"
+  canvas-dark: "#1c1c1e"
+  panel-dark: "#2c2c2e"
+  text-dark: "#f5f5f7"
   success-light: "#15803d"
   warning-light: "#b45309"
   danger-light: "#b91c1c"
 typography:
+  fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI Variable Text, Segoe UI, PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif"
   display:
-    fontFamily: "Segoe UI Variable, Segoe UI, PingFang SC, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "28px"
+    fontSize: "22px"
     fontWeight: 600
-    lineHeight: 1.25
+    lineHeight: "28px"
   title:
-    fontFamily: "Segoe UI Variable, Segoe UI, PingFang SC, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "20px"
+    fontSize: "17px"
     fontWeight: 600
-    lineHeight: 1.25
+    lineHeight: "22px"
   body:
-    fontFamily: "Segoe UI Variable, Segoe UI, PingFang SC, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "14px"
+    fontSize: "15px"
     fontWeight: 400
-    lineHeight: 1.5
-  label:
-    fontFamily: "Segoe UI Variable, Segoe UI, PingFang SC, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "12px"
-    fontWeight: 500
-    lineHeight: 1.4
+    lineHeight: "22px"
+  control:
+    fontSize: "13px"
+    fontWeight: 400
+    lineHeight: "18px"
+  caption:
+    fontSize: "11px"
+    fontWeight: 400
+    lineHeight: "16px"
 rounded:
-  control: "8px"
+  control: "6px"
+  field: "8px"
   panel: "12px"
   focal: "16px"
   pill: "999px"
@@ -48,10 +50,14 @@ spacing:
   xxl: "32px"
 components:
   button-primary:
-    backgroundColor: "{colors.ink-accent-light}"
-    textColor: "{colors.panel-light}"
+    backgroundColor: "{colors.text-light}"
+    textColor: "{colors.canvas-light}"
     rounded: "{rounded.control}"
-    height: "36px"
+    height: "28px"
+  button-send:
+    backgroundColor: "{colors.ink-accent-light}"
+    textColor: "#ffffff"
+    rounded: "{rounded.pill}"
   surface-panel:
     backgroundColor: "{colors.panel-light}"
     textColor: "{colors.text-light}"
@@ -87,8 +93,9 @@ spatial layers, compact familiar controls, and short directional motion.
 
 Flowy uses a restrained strategy. Themes own hue and atmosphere; semantic roles
 own meaning. Canvas, panel, raised, and interactive surfaces must remain
-distinguishable in every built-in theme. Accent color is reserved for primary
-actions, current selection, keyboard focus, and live state.
+distinguishable in every built-in theme. The default button is ink, taken from
+the active theme primary. Teal is the signal color: keyboard focus, an 8%
+selection tint, live state, links, and the send control.
 
 Built-in themes define paired light and dark values. Primary text on the
 canvas, panel, and raised surfaces must retain at least 4.5:1 contrast. Status
@@ -101,11 +108,13 @@ translucency only when their resulting readability matches an opaque surface.
 
 ## Typography
 
-Use the system-oriented sans stack throughout product UI. Hierarchy comes from
-size, weight, and spacing rather than decorative typefaces. Body copy stays at
-14px with a 1.5 line height; prose is capped near 70 characters per line.
-Labels and metadata remain compact but must not be reduced until contrast or
-scanability suffers.
+Use one system sans stack throughout product UI. macOS resolves San Francisco
+through `-apple-system`; Windows resolves Segoe UI Variable Text; Chinese falls
+through to PingFang SC and Microsoft YaHei. Do not bundle a webfont and do not
+set letter-spacing. Hierarchy comes from size and weight: display 22/28 at 600,
+title 17/22 at 600, body 15/22 at 400, controls 13/18 at 400 (500 when
+selected), captions 11. Prose stays near 70 characters per line. Metrics use
+tabular figures.
 
 ## Elevation
 
@@ -124,9 +133,14 @@ opacity and transform only: 120ms for feedback, 180ms for state changes, and
 ## Components
 
 Every interactive control implements default, hover, focus, active, disabled,
-loading, and error where applicable. Controls use 8px corners, structural
-panels 12px, and the task composer 16px. Pills are limited to short status and
-filter labels.
+loading, and error where applicable. Controls use 6px corners and a 28px
+height, fields 8px, structural panels 12px, and the task composer 16px. Pills
+are limited to short status, the circular send control, and existing segmented
+switches. Pressed controls use a quiet fill. Search is one field: 32px in
+toolbars, 28px in sidebars and lists, an 8px corner, 13px regular type, a 14px
+magnifier, and a clear control once the field has text. Chrome icons use
+Phosphor regular on a 12 / 14 / 16 / 20 grid; a filled weight is only for a
+selected state or an icon sitting on a filled action.
 
 The sidebar uses one spatial selection indicator shared across entries.
 Hover and press feedback must not reflow labels or action slots. The home

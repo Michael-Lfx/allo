@@ -1,12 +1,12 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { companion as companionApi, webui } from '@/common/adapter/ipcBridge';
 import type { ICompanionWithStatus } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { Alert, Button, Popconfirm, Select, Spin, Tooltip } from '@arco-design/web-react';
-import { Caution, CheckOne, Copy, Delete, Key, Robot } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CompanionId } from '@/common/types/ids';
@@ -161,7 +161,7 @@ const CompanionAccessTokenPanel: React.FC<{
 
       {/* 标题 / Section header */}
       <div className='flex items-center gap-6px px-2px'>
-        <Key theme='outline' size='14' className='text-[rgb(var(--primary-6))] shrink-0' />
+        <FlowyIcon name='key' size={14} className='text-[rgb(var(--primary-6))] shrink-0' />
         <span className='text-12px font-500 text-t-tertiary'>{t('settings.webui.companionToken.title')}</span>
       </div>
       <div className='text-12px text-t-tertiary px-2px leading-relaxed'>
@@ -187,7 +187,7 @@ const CompanionAccessTokenPanel: React.FC<{
               {companions.map((c) => (
                 <Select.Option key={c.companion_id} value={c.companion_id}>
                   <span className='inline-flex items-center gap-6px'>
-                    <Robot theme='outline' size='13' className='text-t-tertiary shrink-0' />
+                    <FlowyIcon name='robot' size={13} className='text-t-tertiary shrink-0' />
                     <span className='truncate'>{c.name}</span>
                   </span>
                 </Select.Option>
@@ -198,7 +198,7 @@ const CompanionAccessTokenPanel: React.FC<{
                 <Spin size={14} />
               ) : configured ? (
                 <span className='inline-flex items-center gap-3px text-12px text-success whitespace-nowrap'>
-                  <CheckOne theme='filled' size='13' fill='currentColor' />
+                  <FlowyIcon name='checkCircle' size={13} weight='fill' />
                   {t('settings.webui.companionToken.statusActive')}
                 </span>
               ) : (
@@ -213,7 +213,7 @@ const CompanionAccessTokenPanel: React.FC<{
           {plaintext && (
             <div className='flex flex-col gap-4px'>
               <div className='inline-flex items-center gap-8px rd-100px border border-solid border-[rgba(var(--primary-6),0.4)] bg-primary-1 px-10px py-4px min-w-0'>
-                <Key theme='outline' size='14' className='text-primary-6 shrink-0' />
+                <FlowyIcon name='key' size={14} className='text-primary-6 shrink-0' />
                 <span className='text-13px text-t-primary font-mono truncate flex-1'>{plaintext}</span>
                 <Tooltip content={t('common.copy')}>
                   <Button
@@ -222,7 +222,7 @@ const CompanionAccessTokenPanel: React.FC<{
                     className='rd-100px !px-6px inline-flex items-center !h-24px'
                     onClick={() => handleCopy(plaintext)}
                   >
-                    <Copy size={14} />
+                    <FlowyIcon name='copy' size={14} />
                   </Button>
                 </Tooltip>
               </div>
@@ -237,7 +237,7 @@ const CompanionAccessTokenPanel: React.FC<{
             <Alert
               type='warning'
               showIcon
-              icon={<Caution theme='outline' size='15' fill='currentColor' />}
+              icon={<FlowyIcon name='caution' size={15} />}
               content={<span className='text-12px leading-relaxed'>{warning}</span>}
               className='!rd-10px !py-6px'
             />
@@ -255,7 +255,7 @@ const CompanionAccessTokenPanel: React.FC<{
               onClick={() => void handleMint()}
             >
               <span className='flowy-button-inline-content inline-flex items-center gap-4px'>
-                <Key theme='outline' size='14' fill='currentColor' />
+                <FlowyIcon name='key' size={14} />
                 {configured
                   ? t('settings.webui.companionToken.regenerate')
                   : t('settings.webui.companionToken.generate')}
@@ -278,7 +278,7 @@ const CompanionAccessTokenPanel: React.FC<{
                   className='flowy-icon-text-btn'
                 >
                   <span className='flowy-button-inline-content inline-flex items-center gap-4px'>
-                    <Delete theme='outline' size='14' fill='currentColor' />
+                    <FlowyIcon name='delete' size={14} />
                     {t('settings.webui.companionToken.revoke')}
                   </span>
                 </Button>

@@ -9,7 +9,13 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { useModelProviderList } from '@/renderer/hooks/agent/useModelProviderList';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
-import { buildChatModelPickerViewModel, type ChatModelPickerViewModel } from '@/renderer/utils/model/chatModelPicker';
+import { useEffectiveModelTier } from '@renderer/hooks/cloud/useEffectiveModelTier';
+import {
+  buildChatModelPickerViewModel,
+  findChatModelOption,
+  isChatModelPlanLocked,
+  type ChatModelPickerViewModel,
+} from '@/renderer/utils/model/chatModelPicker';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -17,6 +23,8 @@ import { useTranslation } from 'react-i18next';
 export type NomiModelSelection = {
   current_model?: TProviderWithModel;
   isCurrentModelAvailable: boolean;
+  /** Set when the current model is listed but locked behind a higher plan. */
+  currentModelPlanLabel?: string;
   isModelCatalogLoading: boolean;
   modelCatalogError?: Error;
   refreshModelCatalog: () => void;
@@ -82,7 +90,11 @@ export const useNomiModelSelection = ({
     [groups]
   );
 
-  const modelPicker = useMemo(() => buildChatModelPickerViewModel(visibleGroups), [visibleGroups]);
+  const effectiveModelTier = useEffectiveModelTier();
+  const modelPicker = useMemo(
+    () => buildChatModelPickerViewModel(visibleGroups, effectiveModelTier),
+    [visibleGroups, effectiveModelTier]
+  );
 
   const modelsByProvider = useMemo(
     () => new Map(groups.map((group) => [group.provider.id, group.models])),
@@ -94,10 +106,18 @@ export const useNomiModelSelection = ({
     [modelsByProvider]
   );
 
+  const currentModelPlanLabel = useMemo(() => {
+    if (!current_model?.id || !current_model.use_model) return undefined;
+    const option = findChatModelOption(modelPicker, current_model.id, current_model.use_model);
+    if (!option || !isChatModelPlanLocked(option, effectiveModelTier)) return undefined;
+    return option.requiredPlanName?.trim() || '';
+  }, [current_model?.id, current_model?.use_model, effectiveModelTier, modelPicker]);
+
   const isCurrentModelAvailable = useMemo(() => {
     if (!current_model?.id || !current_model.use_model) return false;
-    return modelsByProvider.get(current_model.id)?.includes(current_model.use_model) ?? false;
-  }, [current_model?.id, current_model?.use_model, modelsByProvider]);
+    const listed = modelsByProvider.get(current_model.id)?.includes(current_model.use_model) ?? false;
+    return listed && currentModelPlanLabel === undefined;
+  }, [currentModelPlanLabel, current_model?.id, current_model?.use_model, modelsByProvider]);
 
   const handleSelectModel = useCallback(
     async (provider: IProvider, modelName: string): Promise<boolean> => {
@@ -158,6 +178,7 @@ export const useNomiModelSelection = ({
   return {
     current_model,
     isCurrentModelAvailable,
+    currentModelPlanLabel,
     isModelCatalogLoading,
     modelCatalogError,
     refreshModelCatalog,

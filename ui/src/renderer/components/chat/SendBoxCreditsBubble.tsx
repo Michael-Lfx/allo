@@ -44,7 +44,7 @@ const SendBoxCreditsBubble: React.FC<SendBoxCreditsBubbleProps> = ({
     lastRefreshAt,
   });
 
-  const userId = whoami?.id;
+  const userId = whoami?.userId;
 
   // If user clicked send while exhausted, un-dismiss and force bubble visibility
   useEffect(() => {

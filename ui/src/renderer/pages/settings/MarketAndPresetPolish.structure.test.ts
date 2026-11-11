@@ -45,12 +45,14 @@ describe('market and preset-editor polish contracts', () => {
     expect(catalog).toContain('Date.now() - cachedFetchedAt < MARKET_CACHE_TTL_MS');
   });
 
-  test('keeps preset editing in one drawer with a dirty guard', () => {
+  test('keeps preset editing in one modal with a dirty guard', () => {
     const drawer = read('./PresetSettings/PresetEditDrawer.tsx');
     const importer = read('./skill/AgentSkillImportDrawer.tsx');
     const draft = read('./PresetSettings/presetDraft.ts');
     const editor = read('../../hooks/preset/usePresetEditor.ts');
 
+    expect(drawer).toContain('<Modal');
+    expect(drawer).not.toContain('<Drawer');
     expect(drawer).toContain('editor.dirty');
     expect(drawer).toContain('const requestClose = () =>');
     expect(drawer).toContain('<AgentSkillImportEmbedded');

@@ -81,6 +81,7 @@
     "catalogSourceBuiltin": "Built-in",
     "catalogSourceCustom": "Custom",
     "catalogSourceExtension": "Extension",
+    "catalogSourceCapability": "Managed by {{brandName}}",
     "filterAll": "All",
     "filterEmpty": "No skills match this filter",
     "sourceCatalog": "Granted",
@@ -217,9 +218,9 @@
     "visionSlot": "Vision model",
     "visionSlotHint": "Called on its own to look at images and camera frames.",
     "visionFallback": "Not set. Uses the main chat model when that model can see images.",
-    "ttsSlot": "Speech synthesis",
-    "ttsSlotHint": "The model and voice that read replies out loud.",
-    "ttsFallback": "Not set. Uses the global speech-synthesis model and voice from Model Management → Voice."
+    "ttsSlot": "Voice tone",
+    "ttsSlotHint": "Voice tone used when reading replies out loud.",
+    "ttsFallback": "Not set. Uses the global default voice from Model Management → Voice."
   },
   "memories": {
     "kindAll": "All kinds",
@@ -447,7 +448,7 @@
     "filterAccepted": "Accepted",
     "filterDismissed": "Dismissed",
     "filterAll": "All",
-    "empty": "No suggestions yet — Flowy will speak up once it has learned more.",
+    "empty": "No suggestions yet — {{brandName}} will speak up once it has learned more.",
     "accept": "Accept",
     "dismiss": "Dismiss",
     "status_accepted": "Accepted",
@@ -602,6 +603,7 @@
     "needsConfirm": "Action needs confirmation — open the chat tab",
     "done": "Done!",
     "menuOpenChat": "Open chat",
+    "menuOpenVoice": "Open voice",
     "expand": "Expand input",
     "collapse": "Collapse",
     "dismiss": "Dismiss",

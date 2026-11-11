@@ -73,17 +73,10 @@ test('keeps desktop table surfaces transparent', () => {
   expect(desktopListClass.includes('md:divide-y')).toBe(true);
 });
 
-test('styles the scheduled task search as a bordered pill', () => {
-  const searchClass =
-    pageSource.match(/<Input\.Search[\s\S]*?className='([^']+)'[\s\S]*?\/>/)?.[1] ?? '';
-  const searchClasses = searchClass.split(/\s+/);
-
-  expect(searchClasses.includes('[&_.arco-input-inner-wrapper]:!rounded-full')).toBe(true);
-  expect(searchClasses.includes('[&_.arco-input-inner-wrapper]:!border')).toBe(true);
-  expect(searchClasses.includes('[&_.arco-input-inner-wrapper]:!border-solid')).toBe(true);
-  expect(searchClasses.includes('[&_.arco-input-inner-wrapper]:!border-[var(--color-border-2)]')).toBe(true);
-  expect(searchClasses.includes('[&_.arco-input-inner-wrapper:hover]:!border-[var(--color-border-3)]')).toBe(true);
-  expect(searchClasses.includes('[&_.arco-input-inner-wrapper-focus]:!border-[rgb(var(--primary-6))]')).toBe(true);
+test('uses the shared search field for scheduled tasks', () => {
+  expect(pageSource.includes('<FlowySearch')).toBe(true);
+  expect(pageSource.includes('[&_.arco-input-inner-wrapper]:!rounded-full')).toBe(false);
+  expect(pageSource.includes('handleSearchChange')).toBe(true);
 });
 
 test('places localized status filters below the search input', () => {

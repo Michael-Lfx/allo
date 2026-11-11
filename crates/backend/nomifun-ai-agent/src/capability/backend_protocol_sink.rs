@@ -18,6 +18,7 @@ use crate::protocol::events::{AcpPermissionEventData, AgentStreamEvent};
 pub struct BackendProtocolSink {
     event_tx: broadcast::Sender<AgentStreamEvent>,
     confirmations: Arc<RwLock<Vec<Confirmation>>>,
+    approval_manager: Option<Arc<nomi_protocol::ToolApprovalManager>>,
 }
 
 impl BackendProtocolSink {
@@ -25,7 +26,13 @@ impl BackendProtocolSink {
         Self {
             event_tx,
             confirmations,
+            approval_manager: None,
         }
+    }
+
+    pub fn with_approval_manager(mut self, manager:Arc<nomi_protocol::ToolApprovalManager>)->Self {
+        self.approval_manager=Some(manager);
+        self
     }
 
     fn build_confirmation(call_id: &str, tool_name: &str, category: &ToolCategory, description: &str) -> Confirmation {
@@ -65,8 +72,12 @@ impl BackendProtocolSink {
 impl ProtocolEmitter for BackendProtocolSink {
     fn emit(&self, event: &ProtocolEvent) -> std::io::Result<()> {
         match event {
-            ProtocolEvent::ToolRequest { call_id, tool, .. } => {
-                let confirmation = Self::build_confirmation(call_id, &tool.name, &tool.category, &tool.description);
+            ProtocolEvent::ToolRequest { call_id, tool, msg_id } => {
+                let mut confirmation = Self::build_confirmation(call_id, &tool.name, &tool.category, &tool.description);
+                if let Some(scope)=self.approval_manager.as_ref().and_then(|manager| manager.pending_scoped_approvals().into_iter().find(|scope|scope.call_id==*call_id && scope.msg_id==*msg_id)) {
+                    confirmation.id=scope.approval_id;
+                    confirmation.options.retain(|option| option.value!=json!("proceed_always"));
+                }
 
                 if let Ok(mut confs) = self.confirmations.write() {
                     confs.push(confirmation.clone());

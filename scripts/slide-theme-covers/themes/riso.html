@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Mono:wght@400;700&display=block">
+<link rel="stylesheet" href="../base.css">
+<style>
+  .slide { background: #F6F1E7; color: #1D3557; font-family: 'Space Mono', monospace; }
+  .dots { left: 690px; top: 40px; width: 640px; height: 640px; border-radius: 50%; background-image: radial-gradient(#FF477E 38%, transparent 40%); background-size: 14px 14px; opacity: .9; }
+  .disc { left: 780px; top: 150px; width: 400px; height: 400px; border-radius: 50%; background: #1D3557; mix-blend-mode: multiply; opacity: .9; }
+  .title { left: 72px; top: 110px; font-family: 'Anton', sans-serif; font-size: 236px; line-height: .86; letter-spacing: -0.01em; text-transform: uppercase; }
+  .t1 { color: #FF477E; mix-blend-mode: multiply; transform: translate(9px, 6px); }
+  .t2 { color: #1D3557; mix-blend-mode: multiply; }
+  .tape { left: 84px; top: 70px; width: 210px; height: 44px; background: rgba(255,71,126,.55); transform: rotate(-5deg); mix-blend-mode: multiply; }
+  .tapeText { left: 104px; top: 80px; font-size: 16px; font-weight: 700; letter-spacing: .1em; transform: rotate(-5deg); }
+  .sub { left: 80px; top: 548px; width: 520px; font-size: 18px; line-height: 1.5; }
+  .meta { left: 80px; top: 636px; font-size: 15px; }
+  .meta b { margin-right: 12px; background: #1D3557; color: #F6F1E7; padding: 2px 8px; }
+  .grain { inset: 0; mix-blend-mode: multiply; opacity: .55; }
+</style>
+</head>
+<body>
+<main class="slide">
+  <div class="dots"></div>
+  <div class="disc"></div>
+  <div class="tape"></div>
+  <div class="tapeText">ISSUE #04</div>
+  <div class="title t1">Make<br>Noise</div>
+  <div class="title t2">Make<br>Noise</div>
+  <p class="sub">A zine about loud ideas, small presses and making things by hand.</p>
+  <div class="meta"><b>ZINE FEST 2026</b>printed in 2 colours</div>
+  <svg class="grain" width="1280" height="720"><filter id="g"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" seed="2"/><feColorMatrix values="0 0 0 0 .3  0 0 0 0 .25  0 0 0 0 .2  0 0 0 .22 0"/></filter><rect width="1280" height="720" filter="url(#g)"/></svg>
+</main>
+</body>
+</html>

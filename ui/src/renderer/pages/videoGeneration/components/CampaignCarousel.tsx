@@ -1,32 +1,31 @@
-
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '@renderer/utils/platform';
+import { ThemeContext } from '@renderer/hooks/context/ThemeContext';
 import { listCampaignCarousel } from '../api';
 import {
   campaignCarouselAction,
+  campaignCarouselCard,
   inAppNavigatePath,
   isHttpUrl,
   isInAppCampaignPath,
   pickCampaignLocalizedText,
 } from '../campaign';
 import type { CampaignCarouselItem } from '../types';
+import CircularCarousel, { type CircularCarouselItem } from './CircularCarousel';
 import styles from '../campaign.module.css';
-
-const ROTATE_MS = 4500;
 
 const CampaignCarousel: React.FC = () => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const theme = useContext(ThemeContext);
   const [items, setItems] = useState<CampaignCarouselItem[]>([]);
-  const [index, setIndex] = useState(0);
-  const [hoverPaused, setHoverPaused] = useState(false);
-  const [inView, setInView] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const videoRefs = useRef<Array<HTMLVideoElement | null>>([]);
+  const [fadeColor, setFadeColor] = useState(theme?.theme === 'dark' ? '#141418' : '#f6f7f8');
 
+  // useEffect必要性：活动轮播接口；目的：拉取输入框上方的活动封面。
+  // 未使用 ahooks：只在挂载时请求一次，失败时清空而不是重试弹错。
   useEffect(() => {
     let cancelled = false;
     void listCampaignCarousel()
@@ -42,41 +41,32 @@ const CampaignCarousel: React.FC = () => {
     };
   }, []);
 
+  // useEffect必要性：页面背景色；目的：让远处的卡片淡入当前背景，而不是一块纯黑。
   useEffect(() => {
-    const node = rootRef.current;
-    if (!node) return;
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        setInView(Boolean(entry?.isIntersecting && (entry.intersectionRatio ?? 0) >= 0.55));
-      },
-      { threshold: [0, 0.55, 1] }
-    );
-    io.observe(node);
-    return () => io.disconnect();
-  }, [items.length]);
+    const probe = document.querySelector('.app-shell') ?? document.body;
+    const color = getComputedStyle(probe).backgroundColor;
+    if (color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') {
+      setFadeColor(color);
+      return;
+    }
+    setFadeColor(theme?.theme === 'dark' ? '#141418' : '#f6f7f8');
+  }, [theme?.theme]);
 
-  useEffect(() => {
-    videoRefs.current.forEach((video, i) => {
-      if (!video) return;
-      if (i === index && inView) {
-        void video.play().catch(() => undefined);
-      } else {
-        video.pause();
-      }
-    });
-  }, [index, inView, items]);
-
-  useEffect(() => {
-    if (items.length <= 1) return;
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (reduced) return;
-    const timer = window.setInterval(() => {
-      if (hoverPaused || !inView) return;
-      if (document.visibilityState !== 'visible') return;
-      setIndex((prev) => (prev + 1) % items.length);
-    }, ROTATE_MS);
-    return () => window.clearInterval(timer);
-  }, [hoverPaused, inView, items.length]);
+  const slides = useMemo<CircularCarouselItem[]>(
+    () =>
+      items.map((item) => {
+        const title = pickCampaignLocalizedText(item.title, item.titleEn, i18n.language);
+        const video = item.mediaType === 'video';
+        const poster = item.posterUrl?.trim() || '';
+        return {
+          src: video ? poster || item.mediaUrl : item.mediaUrl,
+          videoSrc: video ? item.mediaUrl : undefined,
+          alt: title,
+          title,
+        };
+      }),
+    [i18n.language, items]
+  );
 
   const openItem = useCallback(
     (item: CampaignCarouselItem) => {
@@ -104,77 +94,29 @@ const CampaignCarousel: React.FC = () => {
 
   if (items.length === 0) return null;
 
+  const card = campaignCarouselCard(slides.length);
+
   return (
-    <div
-      ref={rootRef}
-      className={styles.carousel}
-      onMouseEnter={() => setHoverPaused(true)}
-      onMouseLeave={() => setHoverPaused(false)}
-    >
-      <div className={styles.carouselViewport}>
-        <div
-          className={styles.carouselTrack}
-          style={{ transform: `translateX(-${index * 100}%)` }}
-        >
-          {items.map((item, i) => {
-            const clickable = campaignCarouselAction(item) !== 'none';
-            const title = pickCampaignLocalizedText(item.title, item.titleEn, i18n.language);
-            return (
-              <button
-                key={item.id}
-                type='button'
-                className={`${styles.carouselSlide} ${
-                  clickable ? styles.carouselSlideClickable : ''
-                }`}
-                disabled={!clickable}
-                aria-label={title}
-                onClick={() => openItem(item)}
-              >
-                {item.mediaType === 'video' ? (
-                  <video
-                    ref={(el) => {
-                      videoRefs.current[i] = el;
-                    }}
-                    className={styles.carouselVideo}
-                    src={item.mediaUrl}
-                    poster={item.posterUrl || undefined}
-                    muted
-                    loop
-                    playsInline
-                    preload={i === index ? 'metadata' : 'none'}
-                  />
-                ) : (
-                  <img
-                    className={styles.carouselMedia}
-                    src={item.mediaUrl}
-                    alt=''
-                    draggable={false}
-                  />
-                )}
-                <div className={styles.carouselGradient} />
-                {title ? <div className={styles.carouselTitle}>{title}</div> : null}
-              </button>
-            );
-          })}
-        </div>
-        {items.length > 1 ? (
-          <div className={styles.carouselDots} role='tablist' aria-label={t('videoGeneration.campaign.carouselDots', { defaultValue: '活动轮播' })}>
-            {items.map((item, i) => (
-              <button
-                key={item.id}
-                type='button'
-                role='tab'
-                aria-selected={i === index}
-                className={`${styles.carouselDot} ${i === index ? styles.carouselDotActive : ''}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setIndex(i);
-                }}
-              />
-            ))}
-          </div>
-        ) : null}
-      </div>
+    <div className={styles.carousel}>
+      <CircularCarousel
+        items={slides}
+        preset='cylinder'
+        intro='rise'
+        cardWidth={card.cardWidth}
+        aspectRatio={card.aspectRatio}
+        gap={card.gap}
+        curve={0}
+        speed={11}
+        captions
+        fadeColor={fadeColor}
+        depthFade={0.62}
+        autoplay={slides.length > 1 ? 'drift' : 'off'}
+        ariaLabel={t('videoGeneration.campaign.carouselDots', { defaultValue: '活动轮播' })}
+        onItemClick={(_item, index) => {
+          const item = items[index];
+          if (item) openItem(item);
+        }}
+      />
     </div>
   );
 };

@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::clip_bounds::ClipBounds;
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, StoryboardArtist, VoiceProfileGenerator,
     bind_location_ids, ensure_film_cover, environment_sluglines_from_dir, has_usable_portrait,
     resolve_environment_plate, world_asset_pairs,
 };
-use crate::domain::{Camera, CharacterInScene, ShotBeat, ShotBriefDescription, ShotDescription};
+use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::drama::{lint_script_promise_coverage, load_drama_engine, pack_split_needles};
 use crate::error::{VimaxError, VimaxResult};
 use crate::media_local;
@@ -343,8 +344,13 @@ impl Script2VideoPipeline {
         }
         write_json_artifact(&wd.join("shot_descriptions.json"), &shot_descriptions).await?;
         let session_root = resolve_session_root(wd);
-        let _ = crate::shot_packet::seed_packets_from_shots(wd, &session_root, &shot_descriptions)
-            .await;
+        let _ = crate::shot_packet::seed_packets_from_shots(
+            wd,
+            &session_root,
+            &shot_descriptions,
+            self.backends.clip,
+        )
+        .await;
         let mut camera_tree = camera_tree;
         if remap_camera_tree_shot_idxs(&mut camera_tree, &idx_map) {
             write_json_artifact(&wd.join("camera_tree.json"), &camera_tree).await?;
@@ -666,7 +672,7 @@ impl Script2VideoPipeline {
             tracing::info!(
                 before = draft_len,
                 after = packed.len(),
-                "packed storyboard into renderable clips (one row = one video)"
+                "normalized storyboard rows to one performance per clip"
             );
         }
         persist_published_storyboard(&self.working_dir, &path, &packed, plan_fp).await?;
@@ -698,6 +704,7 @@ impl Script2VideoPipeline {
             &self.working_dir,
             &session_root,
             &packed,
+            self.backends.clip,
         )
         .await;
         Ok(packed)
@@ -1674,6 +1681,7 @@ pub(crate) async fn refresh_shot_packet_from_disk(
     scene_dir: &Path,
     shot_idx: i32,
     max_reference_audio: usize,
+    clip: ClipBounds,
 ) -> VimaxResult<ShotPacket> {
     let film_root = resolve_film_root(scene_dir);
     let shot = load_shot_for_packet(scene_dir, shot_idx).await?;
@@ -1708,12 +1716,10 @@ pub(crate) async fn refresh_shot_packet_from_disk(
     } else {
         SpliceSeam::Cut
     };
-    let duration = load_packet(scene_dir, shot_idx)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|p| p.duration_secs)
-        .unwrap_or(8);
+    // A missing duration is this shot's own speech and action, inside the
+    // selected model's window. A fixed 8s fallback made every Wan clip look
+    // like 8s even though that model accepts up to 30s.
+    let duration = super::clip_beats::clip_need_secs(clip, &shot);
     refresh_shot_packet(
         scene_dir,
         &shot,
@@ -1914,14 +1920,12 @@ fn pick_video_assets(
     continuity: Option<&Path>,
     keep_env: bool,
 ) -> Vec<(PathBuf, String)> {
-    let mut continuity_pair = None;
     let mut portraits = Vec::new();
     let mut envs = Vec::new();
     let mut props = Vec::new();
     let mut rest = Vec::new();
     for (p, t) in pairs {
-        if continuity.is_some_and(|c| p == c) {
-            continuity_pair = Some((p, t));
+        if is_last_frame_ref_path(&p) || continuity.is_some_and(|c| p == c) {
             continue;
         }
         if is_portrait_ref_path(&p) {
@@ -1943,9 +1947,6 @@ fn pick_video_assets(
         }
     });
     let mut out = Vec::new();
-    if let Some(c) = continuity_pair {
-        out.push(c);
-    }
     let remaining = |n: usize| MAX_SEEDANCE_REF_IMAGES.saturating_sub(n);
     let env_reserve = if keep_env && !envs.is_empty() { 1usize } else { 0 };
     let budget = remaining(out.len()).saturating_sub(env_reserve);
@@ -2367,11 +2368,20 @@ fn is_prop_ref_path(p: &Path) -> bool {
 }
 
 fn extract_bracket_name(text: &str) -> Option<&str> {
-    let start = text.find('<')?;
-    let rest = &text[start + 1..];
-    let end = rest.find('>')?;
-    let name = rest[..end].trim();
-    (!name.is_empty()).then_some(name)
+    for (open, close) in [('<', '>'), ('〈', '〉')] {
+        let Some(start) = text.find(open) else {
+            continue;
+        };
+        let rest = &text[start + open.len_utf8()..];
+        let Some(end) = rest.find(close) else {
+            continue;
+        };
+        let name = rest[..end].trim();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn shot_world_query(shot: &ShotDescription) -> String {
@@ -2510,7 +2520,77 @@ fn shot_cast_idxs(shot: &ShotDescription, characters: &[CharacterInScene]) -> Ve
             push(ch.idx);
         }
     }
+    let picture = format!(
+        "{} {} {} {}",
+        shot.visual_desc, shot.motion_desc, shot.ff_desc, shot.lf_desc
+    );
+    if super::clip_beats::is_close_up_text(&picture) {
+        let placed: Vec<i32> = characters
+            .iter()
+            .filter(|ch| crate::drama::name_has_own_screen_side(&picture, &ch.identifier_in_scene))
+            .map(|ch| ch.idx)
+            .collect();
+        if !placed.is_empty() {
+            idxs.retain(|idx| placed.contains(idx));
+        }
+    } else if super::clip_beats::shows_the_room(&picture) && text_mentions_group(&picture) {
+        for ch in characters {
+            if is_group_character(ch) {
+                push(ch.idx);
+            }
+        }
+    }
     idxs
+}
+
+fn text_mentions_group(text: &str) -> bool {
+    const MARKS: &[&str] = &[
+        "同伴", "众人", "群演", "几个人", "三四个", "打手", "随从", "伙计",
+    ];
+    MARKS.iter().any(|mark| text.contains(mark))
+}
+
+fn is_group_character(ch: &crate::domain::CharacterInScene) -> bool {
+    const MARKS: &[&str] = &["同伴", "众人", "群演", "打手", "随从", "extras", "crowd"];
+    let id = ch.identifier_in_scene.as_str();
+    MARKS.iter().any(|mark| id.contains(mark))
+        || ch.static_features.contains("群像")
+        || ch.static_features.to_ascii_lowercase().contains("group of")
+}
+
+/// A white-background catalog shot shows the prop in the hand. When this row
+/// puts that prop on a head, a table, or a temple, the catalog pulls it back
+/// into the hand, so the row keeps the state in text and drops the catalog.
+fn prop_catalog_conflicts(query: &str, path: &Path, label: &str) -> bool {
+    const OFF_HAND: &[&str] = &[
+        "头顶", "后脑", "头上", "太阳穴", "桌上", "桌面", "顶住", "顶在", "口袋", "地上", "椅背",
+    ];
+    prop_name_needles(path, label)
+        .iter()
+        .any(|name| char_window_contains(query, name, OFF_HAND))
+}
+
+fn char_window_contains(text: &str, name: &str, markers: &[&str]) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let name_chars: Vec<char> = name.chars().collect();
+    if name_chars.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i + name_chars.len() <= chars.len() {
+        if chars[i..i + name_chars.len()] == name_chars[..] {
+            let start = i.saturating_sub(16);
+            let end = (i + name_chars.len() + 16).min(chars.len());
+            let window: String = chars[start..end].iter().collect();
+            if markers.iter().any(|marker| window.contains(marker)) {
+                return true;
+            }
+            i += name_chars.len();
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 fn looks_cjk(text: &str) -> bool {
@@ -2586,9 +2666,9 @@ fn video_ref_role(path: &Path, text: &str, cjk: bool) -> String {
     }
     if is_environment_ref_path(path) {
         return if cjk {
-            "地点圣经（建筑体积，不是构图）".into()
+            "这间房的环境板，按本条站位把人放进去".into()
         } else {
-            "location bible (architecture, not composition)".into()
+            "room plate; place people from this shot's blocking".into()
         };
     }
     if is_prop_ref_path(path) {
@@ -2913,16 +2993,28 @@ pub(crate) fn i2v_motion_prompt(
     let scene_lbl = if cjk { "画面：" } else { "Scene: " };
     let line_lbl = if cjk { "台词：" } else { "Line: " };
     let sfx_lbl = if cjk { "音效：" } else { "SFX: " };
-    let shot_lbl = if cjk { "镜头" } else { "Shot " };
-    let inner_cut = if cjk {
-        "切到新机位。"
-    } else {
-        "Cut to a new camera."
-    };
+    // Several cameras share one file. Number them in event order and lock the
+    // room once. Wan accepts "Shot 1 / Shot 2" without timestamps; Seedance's
+    // guide says exact seconds (0–3s) are unstable, so the duration stays a
+    // parameter and the prompt never prints a clock.
+    let multi = lenses.len() >= 2;
+    if multi {
+        if let Some(placed) = lenses.iter().find_map(|lens| {
+            let placed = blocking_clauses(lens.visual.trim());
+            (!placed.is_empty()).then_some(placed)
+        }) {
+            parts.push(if cjk {
+                format!(
+                    "空间站位：{placed}。环境板就是这间房，房间里没有人。后续机位不再重复房间、地面和家具。反打才对调左右。硬切，不要叠化，不要在切点之间走动或闪现。"
+                )
+            } else {
+                format!(
+                    "Blocking: {placed}. The room plate is the empty room. Later shots do not repeat the room, floor, or furniture. Only a reverse swaps screen sides. Hard cuts, no dissolve, and nobody walks or flashes across a cut."
+                )
+            });
+        }
+    }
 
-    // Windows are the renderer's, cut from the same lens list the prompt prints:
-    // a multi-beat clip says when each lens plays, and the seconds stay soft.
-    let timeline = super::clip_beats::lens_timeline(&lenses, &shot.variation_type, duration_secs);
     let mut bgm_emitted = false;
     let mut prev_visual = String::new();
     let mut prev_placed: Vec<String> = Vec::new();
@@ -2937,54 +3029,19 @@ pub(crate) fn i2v_motion_prompt(
             emit_bgm,
         );
         let mut block = String::new();
-        if lenses.len() > 1 {
-            block.push_str(&lens_header(shot_lbl, i + 1, timeline.get(i), cjk));
-            block.push('\n');
-        }
-        if lens.cut {
-            block.push_str(inner_cut);
-            block.push('\n');
-        }
         let placed_now = names_with_screen_side(lens.visual.trim(), &identities);
-        // A new roster is a new composition. Holding the previous sides is what
-        // lets a reference face fill every seat the new beat forgot to name.
-        let cast_changed = i > 0
-            && !placed_now.is_empty()
-            && !prev_placed.is_empty()
-            && !same_name_set(&prev_placed, &placed_now);
-        if i > 0 {
-            let reverse =
-                super::clip_beats::swapped_screen_blocking(&prev_visual, lens.visual.trim());
-            block.push_str(&intra_clip_axis_line(reverse, lens.cut, cast_changed && !reverse, cjk));
+        if multi {
+            let reverse = i > 0
+                && super::clip_beats::swapped_screen_blocking(&prev_visual, lens.visual.trim());
+            let cast_changed = i > 0
+                && !placed_now.is_empty()
+                && !prev_placed.is_empty()
+                && !same_name_set(&prev_placed, &placed_now);
+            block.push_str(&camera_shot_header(i, lens.cut || reverse, reverse, cjk));
             block.push('\n');
-            if !reverse && !cast_changed {
-                let held = blocking_clauses(&prev_visual);
-                let current = blocking_clauses(lens.visual.trim());
-                if current.is_empty() && !held.is_empty() {
-                    if cjk {
-                        block.push_str("站位保持：");
-                        block.push_str(&held);
-                        block.push_str("。\n");
-                    } else {
-                        block.push_str("Hold blocking: ");
-                        block.push_str(&held);
-                        block.push_str(".\n");
-                    }
-                }
-            }
-        }
-        if i == 0 || lens.cut || cast_changed {
-            let placed = blocking_clauses(lens.visual.trim());
-            if !placed.is_empty() {
-                if cjk {
-                    block.push_str("空间站位：");
-                    block.push_str(&placed);
-                    block.push_str("。空镜参考图没有人，按这段摆位，不要复刻上一镜姿势。\n");
-                } else {
-                    block.push_str("Blocking: ");
-                    block.push_str(&placed);
-                    block.push_str(". The empty-set plate has no people; place them like this and do not copy a previous pose.\n");
-                }
+            if i > 0 {
+                block.push_str(&camera_join_line(reverse, cast_changed, lens.cut, cjk));
+                block.push('\n');
             }
         }
         let roster = identity_roster_line(
@@ -3045,17 +3102,48 @@ pub(crate) fn i2v_motion_prompt(
     parts.join("\n")
 }
 
-/// `镜头2（约3–6秒）` / `Shot 2 (about 3–6s)`: the window the renderer gave this lens.
-fn lens_header(
-    shot_lbl: &str,
-    n: usize,
-    window: Option<&super::clip_beats::TimedBeat>,
-    cjk: bool,
-) -> String {
-    match (window, cjk) {
-        (Some(w), true) => format!("{shot_lbl}{n}（约{}–{}秒）", w.start_secs, w.end_secs),
-        (Some(w), false) => format!("{shot_lbl}{n} (about {}–{}s)", w.start_secs, w.end_secs),
-        (None, _) => format!("{shot_lbl}{n}"),
+fn camera_join_line(reverse: bool, cast_changed: bool, cut: bool, cjk: bool) -> String {
+    if cjk {
+        if reverse {
+            "左右对调只属于这一镜，不要让人在切点之间走动。".into()
+        } else if cast_changed {
+            "换了入画的人，按这一镜自己的站位摆，不要沿用上一镜的身体。".into()
+        } else if cut {
+            "换景别，站位不变。".into()
+        } else {
+            "同一机位，站位不变。".into()
+        }
+    } else if reverse {
+        "The left/right swap belongs to this shot. Nobody walks across the cut.".into()
+    } else if cast_changed {
+        "The people in frame changed. Place this shot's own bodies. Do not keep the previous ones.".into()
+    } else if cut {
+        "New shot size, same blocking.".into()
+    } else {
+        "Same camera, same blocking.".into()
+    }
+}
+
+fn camera_shot_header(index: usize, cut: bool, reverse: bool, cjk: bool) -> String {
+    let n = index + 1;
+    if cjk {
+        if index == 0 {
+            format!("镜头{n}")
+        } else if reverse {
+            format!("镜头{n} 硬切到反打")
+        } else if cut {
+            format!("镜头{n} 硬切到新机位")
+        } else {
+            format!("镜头{n}")
+        }
+    } else if index == 0 {
+        format!("Shot {n}")
+    } else if reverse {
+        format!("Shot {n} hard cut to the reverse")
+    } else if cut {
+        format!("Shot {n} hard cut")
+    } else {
+        format!("Shot {n}")
     }
 }
 
@@ -3066,28 +3154,6 @@ fn visual_has_speech_cue(visual: &str) -> bool {
     }
     let lower = visual.to_ascii_lowercase();
     lower.contains("speaks") || lower.contains("speaking") || lower.contains("mouth open")
-}
-
-fn intra_clip_axis_line(reverse: bool, cut: bool, cast_changed: bool, cjk: bool) -> String {
-    if cjk {
-        if reverse {
-            "硬切到反打，不要叠化，不要让人物在切点之间走动、换边或闪现。左右对调只属于新机位，这一拍重写每个人的画面左右、朝向、谁更靠近镜头。".into()
-        } else if cast_changed {
-            "本拍换了入画的人，按这一拍自己的站位硬切摆位，不要沿用上一拍的身体，不要叠化，不要闪现。离开画面的人不要再出现，每个人只出现一次。".into()
-        } else if cut {
-            "硬切换景别，不要叠化，不要让人物走动换位或闪现。画面左右、朝向、前后层次与上一拍相同。".into()
-        } else {
-            "同一机位，只推进动作。画面左右、朝向、前后层次与上一拍相同，不要换边，不要闪现，不要突然前后对调。".into()
-        }
-    } else if reverse {
-        "Hard cut to the reverse angle. No dissolve, and nobody walks, swaps sides, or flashes across the cut. The left/right swap belongs to the new camera; restate each person's screen side, facing, and who is closer.".into()
-    } else if cast_changed {
-        "This beat changes who is in frame. Hard-cut to this beat's own blocking; do not keep the previous bodies, no dissolve, no flash. Anyone who left stays out, and each person appears once.".into()
-    } else if cut {
-        "Hard cut to a new shot size. No dissolve, and nobody walks or flashes to a new spot. Screen side, facing, and depth stay as in the previous beat.".into()
-    } else {
-        "Same camera, action only. Keep each person's screen side, facing, and depth. Do not swap sides, flash, or change who is closer.".into()
-    }
 }
 
 fn one_body_rule(cjk: bool) -> String {
@@ -3105,7 +3171,9 @@ fn clip_identity_names(
 ) -> Vec<String> {
     let mut names = Vec::new();
     let mut push = |raw: &str| {
-        let name = raw.trim().trim_matches(|c: char| c == '<' || c == '>');
+        let name = raw
+            .trim()
+            .trim_matches(|c: char| matches!(c, '<' | '>' | '〈' | '〉'));
         if name.chars().count() < 2 || names.iter().any(|n| n == name) {
             return;
         }
@@ -3340,10 +3408,14 @@ fn collapse_ws(s: &str) -> String {
     out
 }
 
-/// Pass through a caller-supplied continuity still. The sequential renderer
-/// passes `None`; a shot packet may still pin one.
-pub(crate) fn continuity_still_for_seam(_seam: SpliceSeam, still: Option<&Path>) -> Option<&Path> {
-    still
+/// Video generation stays multi-reference. A previous clip's pixels are not
+/// submitted: some models reject a frame role mixed with references, and a
+/// generated frame trips face checks. The filmstrip may still store the still.
+pub(crate) fn continuity_still_for_seam(
+    _seam: SpliceSeam,
+    _still: Option<&Path>,
+) -> Option<&Path> {
+    None
 }
 
 /// Multi-ref strip for Seedance R2V: optional caller still, then in-shot
@@ -3357,15 +3429,8 @@ pub(crate) fn shot_video_ref_pairs(
     film_root: &Path,
     keep_env: bool,
 ) -> Vec<(PathBuf, String)> {
+    let _ = continuity;
     let mut pairs: Vec<(PathBuf, String)> = Vec::new();
-    if let Some(path) = continuity.filter(|p| media_local::is_usable_image_file(p)) {
-        pairs.push((
-            path.to_path_buf(),
-            "Optional previous ending still. Do not copy its pose; blocking comes from this shot's text."
-                .into(),
-        ));
-    }
-
     let vis = shot_cast_idxs(shot, characters);
     pairs.extend(
         portrait_pairs(characters, &vis, registry, film_root)
@@ -3384,6 +3449,9 @@ pub(crate) fn shot_video_ref_pairs(
     }
     for (p, t) in mentioned_prop_pairs(&world_query, world_pairs) {
         if prop_duplicates_visible_cast(&p, &t, characters, &vis) {
+            continue;
+        }
+        if prop_catalog_conflicts(&world_query, &p, &t) {
             continue;
         }
         if pairs.iter().any(|(have, _)| have == &p) {
@@ -3717,7 +3785,7 @@ mod continuity_tests {
     use super::*;
     use super::super::privacy_face::content_index_to_image_slot;
     use crate::clip_bounds::ClipBounds;
-    use crate::domain::VoiceProfile;
+    use crate::domain::{ShotBeat, VoiceProfile};
 
     /// Window of the models integrated today (Seedance 2.0, MiniMax-H3 ⊂ 4–15s).
     const SEEDANCE: ClipBounds = ClipBounds::new(5, 15);
@@ -3881,12 +3949,16 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         let first = prompt.find("空间站位：").expect(&prompt);
         let picture = prompt.find("画面：").expect(&prompt);
         assert!(first < picture, "{prompt}");
+        assert_eq!(prompt.matches("空间站位：").count(), 1, "{prompt}");
+        assert_eq!(prompt.matches("环境板就是这间房").count(), 1, "{prompt}");
+        assert!(prompt.contains("镜头1"), "{prompt}");
+        assert!(prompt.contains("镜头2"), "{prompt}");
         assert!(prompt.contains("画面左侧"), "{prompt}");
         assert!(prompt.contains("面向右"), "{prompt}");
         assert!(prompt.contains("铁门内侧一步"), "{prompt}");
-        assert!(prompt.contains("空镜参考图没有人"), "{prompt}");
-        assert!(prompt.contains("切到新机位"), "{prompt}");
+        assert!(prompt.contains("硬切到新机位"), "{prompt}");
         assert!(prompt.contains("画面右侧"), "{prompt}");
+        assert!(!prompt.contains("0-"), "{prompt}");
         assert!(!prompt.contains("接着演"), "{prompt}");
         assert!(!prompt.contains("接上一帧"), "{prompt}");
     }
@@ -4033,10 +4105,10 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert_not_english_runbook(&prompt);
     }
 
-    /// A clip that absorbed a same-camera neighbour lists each beat as its own
-    /// lens — never a second-window clock.
+    /// Two same-camera performances stay two videos. Neither prompt invents a
+    /// second clock or holds the other row's action.
     #[test]
-    fn a_merged_clip_prompt_lists_each_lens() {
+    fn same_camera_rows_prompt_as_two_performances() {
         let line: String = "中".chars().cycle().take(17).collect();
         let mut a = shot(0, 0);
         a.motion_desc = "她转身".into();
@@ -4044,86 +4116,114 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         let mut b = shot(1, 0);
         b.motion_desc = "她走近窗边".into();
         let merged = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![a, b]);
-        assert_eq!(merged.len(), 1, "same camera must merge");
+        assert_eq!(merged.len(), 2, "same camera stays two performances");
 
-        let prompt = i2v_motion_prompt(
+        let first = i2v_motion_prompt(
             &merged[0],
             &[],
             "cinematic",
             &[],
-            13,
+            8,
             SpliceSeam::Cut,
             "",
             false,
             &[],
             "",
         );
-        assert!(prompt.contains("镜头1（约"), "{prompt}");
-        assert!(prompt.contains("镜头2（约"), "{prompt}");
-        assert!(prompt.contains("同一机位"), "{prompt}");
-        // The windows tile the requested 13s: the last lens ends on the clip's end.
-        assert!(prompt.contains("–13秒）"), "{prompt}");
-        assert!(prompt.contains("她转身"), "{prompt}");
-        assert!(prompt.contains("她走近窗边"), "{prompt}");
-        assert_not_english_runbook(&prompt);
+        let second = i2v_motion_prompt(
+            &merged[1],
+            &[],
+            "cinematic",
+            &[],
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(first.contains("她转身"), "{first}");
+        assert!(!first.contains("她走近窗边"), "{first}");
+        assert!(second.contains("她走近窗边"), "{second}");
+        assert!(!second.contains("她转身"), "{second}");
+        for prompt in [&first, &second] {
+            assert!(!prompt.contains("镜头1"), "{prompt}");
+            assert!(!prompt.contains("同一机位"), "{prompt}");
+            assert!(prompt.contains("约8秒"), "{prompt}");
+            assert_not_english_runbook(prompt);
+        }
     }
 
     #[test]
-    fn a_packed_reverse_prompt_asks_for_a_cut_inside_the_clip() {
+    fn a_reverse_is_its_own_prompt_not_a_cut_inside_the_clip() {
         let mut first = shot(0, 0);
         first.motion_desc = "她说话".into();
         let mut second = shot(1, 1);
         second.motion_desc = "他回答".into();
         let packed = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![first, second]);
-        assert_eq!(packed.len(), 1);
-        assert!(packed[0].has_camera_cuts());
+        assert_eq!(packed.len(), 2);
+        assert!(!packed[0].has_camera_cuts());
+        assert!(!packed[1].has_camera_cuts());
 
-        let prompt = i2v_motion_prompt(
+        let opening = i2v_motion_prompt(
             &packed[0],
             &[],
             "cinematic",
             &[],
-            10,
+            8,
             SpliceSeam::Cut,
             "",
             false,
             &[],
             "",
         );
-        assert!(prompt.contains("切到新机位"), "{prompt}");
-        assert!(prompt.contains("硬切"), "{prompt}");
-        assert!(prompt.contains("不要叠化"), "{prompt}");
-        assert!(prompt.contains("镜头1"), "{prompt}");
-        assert!(prompt.contains("镜头2"), "{prompt}");
-        assert!(prompt.contains("她说话"), "{prompt}");
-        assert!(prompt.contains("他回答"), "{prompt}");
-        assert_not_english_runbook(&prompt);
+        let reverse = i2v_motion_prompt(
+            &packed[1],
+            &[],
+            "cinematic",
+            &[],
+            8,
+            SpliceSeam::Cut,
+            "",
+            false,
+            &[],
+            "",
+        );
+        assert!(opening.contains("她说话"), "{opening}");
+        assert!(!opening.contains("他回答"), "{opening}");
+        assert!(reverse.contains("他回答"), "{reverse}");
+        assert!(!reverse.contains("切到新机位"), "{reverse}");
+        assert!(!reverse.contains("镜头1"), "{reverse}");
+        assert_not_english_runbook(&reverse);
     }
 
     #[test]
-    fn a_swapped_axis_inside_one_clip_is_a_hard_reverse_not_a_walk() {
+    fn a_swapped_axis_is_the_next_row_and_restates_its_own_sides() {
         let mut first = shot(0, 0);
         first.visual_desc = "<林夏>在画面左侧、铁门内侧，面向右，站着。<周野>在画面右侧、柜台前，面向左，坐着。".into();
         let mut second = shot(1, 1);
         second.visual_desc = "反打。<周野>在画面左侧，面向右。<林夏>在画面右侧，面向左。".into();
         let packed = super::super::clip_beats::pack_scene_clips(SEEDANCE, vec![first, second]);
-        assert_eq!(packed.len(), 1, "{packed:?}");
+        assert_eq!(packed.len(), 2, "{packed:?}");
         let prompt = i2v_motion_prompt(
-            &packed[0],
+            &packed[1],
             &[],
             "cinematic",
             &[],
-            10,
+            8,
             SpliceSeam::Cut,
             "",
             false,
             &[],
             "9:16",
         );
-        assert!(prompt.contains("硬切到反打"), "{prompt}");
-        assert!(prompt.contains("不要叠化"), "{prompt}");
-        assert!(prompt.contains("不是人跑") || prompt.contains("只属于新机位"), "{prompt}");
+        assert!(prompt.contains("周野"), "{prompt}");
+        assert!(prompt.contains("画面左侧"), "{prompt}");
+        assert!(prompt.contains("林夏"), "{prompt}");
+        assert!(prompt.contains("画面右侧"), "{prompt}");
+        assert!(!prompt.contains("同一机位"), "{prompt}");
         assert!(!prompt.contains("站位保持"), "{prompt}");
+        assert!(!prompt.contains("硬切到反打"), "{prompt}");
         assert!(!prompt.contains("@Audio"), "{prompt}");
     }
 
@@ -4239,8 +4339,9 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         );
         assert!(!prompt.contains("0-4s"), "{prompt}");
         assert!(!prompt.contains("4-7s"), "{prompt}");
-        assert!(prompt.contains("镜头1"), "{prompt}");
-        assert!(prompt.contains("镜头2"), "{prompt}");
+        assert!(!prompt.contains("镜头1"), "{prompt}");
+        assert!(!prompt.contains("同一机位"), "{prompt}");
+        assert_eq!(prompt.matches("画面：").count(), 1, "{prompt}");
         assert!(prompt.contains("约5秒"), "{prompt}");
         assert!(prompt.contains("摄影机固定"), "{prompt}");
         assert!(prompt.contains("他继续向右骑行"), "{prompt}");
@@ -4609,10 +4710,10 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert!(prompt.contains("镜头1"), "{prompt}");
         assert!(prompt.contains("镜头2"), "{prompt}");
         assert!(prompt.contains("镜头3"), "{prompt}");
-        let line1 = prompt
-            .split("镜头2")
-            .next()
-            .unwrap_or("");
+        assert!(!prompt.contains("0-"), "{prompt}");
+        let parts: Vec<&str> = prompt.split("镜头").collect();
+        assert!(parts.len() >= 4, "{prompt}");
+        let line1 = parts[1];
         assert!(line1.contains("……陈俊生"), "lens 1 must speak first: {prompt}");
         assert!(
             !line1.contains("不是我"),
@@ -4823,25 +4924,26 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert!(blob.contains("token_prop"), "{blob}");
         assert!(
             !blob.contains("environments"),
-            "continuity already carries the set: {blob}"
+            "keep_env false drops the plate: {blob}"
         );
-        assert_eq!(out[0].0, cont);
+        assert!(
+            !blob.contains("video_last_frame"),
+            "a previous frame is not a video reference: {blob}"
+        );
+        assert!(out[0].0.to_string_lossy().contains("three_view"));
     }
 
     #[test]
-    fn later_shot_keeps_the_last_frame_on_the_strip() {
+    fn video_refs_are_multi_reference_only() {
         let still = PathBuf::from("shots/0/video_last_frame.png");
         assert_eq!(
             continuity_still_for_seam(SpliceSeam::MatchCut, Some(&still)),
-            Some(still.as_path())
+            None
         );
-        assert_eq!(
-            continuity_still_for_seam(SpliceSeam::Cut, Some(&still)),
-            Some(still.as_path())
-        );
+        assert_eq!(continuity_still_for_seam(SpliceSeam::Cut, Some(&still)), None);
         assert_eq!(
             continuity_still_for_seam(SpliceSeam::SameTake, Some(&still)),
-            Some(still.as_path())
+            None
         );
 
         let pairs = vec![
@@ -4854,11 +4956,15 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             (PathBuf::from("environments/hall.png"), "hall".into()),
         ];
         let out = pick_video_assets(pairs, Some(&still), true);
-        assert_eq!(out[0].0, still);
+        assert!(
+            out.iter()
+                .all(|(p, _)| !p.to_string_lossy().contains("video_last_frame")),
+            "frames stay off the reference strip: {out:?}"
+        );
         assert!(
             out.iter()
                 .any(|(p, _)| p.to_string_lossy().contains("environments")),
-            "MatchCut / cut still feeds the location bible: {out:?}"
+            "the room plate stays on the strip: {out:?}"
         );
     }
 
@@ -5017,7 +5123,11 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
         assert_eq!(out.len(), MAX_SEEDANCE_REF_IMAGES, "{blob}");
         let face_n = out.iter().filter(|(p, _)| is_portrait_ref_path(p)).count();
         assert!(face_n > 2, "no hardcoded 2-face cap: {face_n} in {blob}");
-        assert_eq!(out[0].0, cont);
+        assert!(
+            !blob.contains("video_last_frame"),
+            "a previous clip's pixels are not a reference: {blob}"
+        );
+        assert!(is_portrait_ref_path(&out[0].0), "{out:?}");
     }
 
     #[test]
@@ -5239,7 +5349,8 @@ mod storyboard_publish_tests {
         let path = wd.join("storyboard.json");
         let draft = micro_draft();
         let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, draft);
-        assert!(packed.len() < 4, "draft must collapse so this tests publish");
+        assert_eq!(packed.len(), 4, "one performance stays one published row");
+        assert!(packed.iter().all(|row| !row.is_merged()));
         assert!(!path.exists());
         let wrote = persist_published_storyboard(wd, &path, &packed, "plan-fp")
             .await
@@ -5260,11 +5371,13 @@ mod storyboard_publish_tests {
         let dir = tempfile::tempdir().unwrap();
         let wd = dir.path();
         let path = wd.join("storyboard.json");
-        let draft = micro_draft();
-        write_json_artifact(&path, &draft).await.unwrap();
+        let mut stale = micro_draft();
+        stale.push(brief(9, 0, "幽灵镜头"));
+        write_json_artifact(&path, &stale).await.unwrap();
         write_sidecar(&path, "plan-fp").await.unwrap();
-        let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, draft.clone());
-        assert!(packed.len() < draft.len());
+        let packed = super::super::clip_beats::pack_scene_briefs(SEEDANCE, micro_draft());
+        assert!(packed.len() < stale.len());
+        assert_eq!(packed.len(), 4);
         let wrote = persist_published_storyboard(wd, &path, &packed, "plan-fp")
             .await
             .unwrap();
@@ -5321,7 +5434,12 @@ mod packet_seed_tests {
             .await
             .unwrap();
 
-        let packet = refresh_shot_packet_from_disk(&scene, 2, 3).await.unwrap();
+        let packet = refresh_shot_packet_from_disk(&scene, 2, 3, ClipBounds::new(2, 30))
+            .await
+            .unwrap();
+        assert_ne!(packet.duration_secs, Some(8), "a missing duration must not become a fixed 8s");
+        let secs = packet.duration_secs.expect("planned duration");
+        assert!((2..=30).contains(&secs), "secs={secs}");
         assert_eq!(packet.shot_idx, 2);
         assert_eq!(packet.visual_desc, "packed row");
         assert!(packet.beats.len() >= 2);
@@ -5338,7 +5456,9 @@ mod packet_seed_tests {
         write_json_artifact(&scene.join("storyboard.json"), &vec![brief(0, true)])
             .await
             .unwrap();
-        let err = refresh_shot_packet_from_disk(&scene, 2, 3).await.unwrap_err();
+        let err = refresh_shot_packet_from_disk(&scene, 2, 3, ClipBounds::new(2, 30))
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("shot 2 not found"),
             "unexpected error: {err}"

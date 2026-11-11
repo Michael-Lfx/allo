@@ -13,6 +13,10 @@ Model repo layout (root = ``allo/`` under flowy2025/flowyaipc):
     ├── macos/v{version}/...
     └── linux/v{version}/...
 
+UniBuddy keeps that artifact layout and passes ``--channel-root unibuddy_channels``
+so the pointer is ``allo/unibuddy_channels/{platform}/latest.json``. The default
+root remains ``channels``.
+
 Industrial publish flow:
 
   1) ``--artifacts-only`` — upload binaries + .sig only (no channel pointer)
@@ -39,6 +43,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 DEFAULT_REPO = "flowy2025/flowyaipc"
 DEFAULT_PREFIX = "allo"
+DEFAULT_CHANNEL_ROOT = "channels"
 DEFAULT_API_HOST = "modelscope.cn"
 KNOWN_API_HOSTS = ("modelscope.cn", "modelscope.ai")
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / "apps/desktop/signing/.env.modelscope"
@@ -113,6 +118,14 @@ def resolve_modelscope_token(token_env: str, api_host: str) -> str:
             )
         )
     return token
+
+
+def normalize_channel_root(value: str) -> str:
+    """Single path segment under the repo prefix. Default is ``channels``."""
+    root = value.strip().strip("/")
+    if not root or not all(ch.isalnum() or ch in "-_" for ch in root):
+        raise ValueError(f"invalid channel root: {value}")
+    return root
 
 
 def modelscope_file_url(repo: str, path_in_repo: str, api_host: str = DEFAULT_API_HOST) -> str:
@@ -259,9 +272,15 @@ def merge_remote_same_channel(manifest: dict, remote: dict, channel: str) -> dic
     return merged
 
 
-def fetch_remote_latest(repo: str, prefix: str, channel: str, api_host: str = DEFAULT_API_HOST) -> dict | None:
+def fetch_remote_latest(
+    repo: str,
+    prefix: str,
+    channel: str,
+    api_host: str = DEFAULT_API_HOST,
+    channel_root: str = DEFAULT_CHANNEL_ROOT,
+) -> dict | None:
     """Best-effort download of the current channel manifest from ModelScope."""
-    url = modelscope_file_url(repo, f"{prefix}/channels/{channel}/latest.json", api_host)
+    url = modelscope_file_url(repo, f"{prefix}/{channel_root}/{channel}/latest.json", api_host)
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -329,13 +348,13 @@ def collect_updater_artifacts(dist_dir: Path) -> list[Path]:
     return found
 
 
-def build_channel_yml(manifest: dict, channel: str) -> str:
-    """Minimal channel pointer — clients read channels/{channel}/latest.json."""
+def build_channel_yml(manifest: dict, channel: str, channel_root: str = DEFAULT_CHANNEL_ROOT) -> str:
+    """Minimal channel pointer — clients read {channel_root}/{channel}/latest.json."""
     lines = [
         f'version: "{manifest.get("version", "")}"',
         f"channel: {channel}",
         f'pub_date: "{manifest.get("pub_date", "")}"',
-        f"manifest: channels/{channel}/latest.json",
+        f"manifest: {channel_root}/{channel}/latest.json",
     ]
     notes = manifest.get("notes")
     if isinstance(notes, str) and notes.strip():
@@ -459,6 +478,11 @@ def main() -> None:
         help="OTA channel: windows | macos | linux (inferred from latest.json when omitted)",
     )
     parser.add_argument(
+        "--channel-root",
+        default=DEFAULT_CHANNEL_ROOT,
+        help="Manifest directory under --prefix (default: channels; UniBuddy: unibuddy_channels)",
+    )
+    parser.add_argument(
         "--api-host",
         default=DEFAULT_API_HOST,
         help="Public ModelScope host: modelscope.cn or modelscope.ai (default: modelscope.cn)",
@@ -570,6 +594,10 @@ def main() -> None:
 
     version_tag = version if version.startswith("v") else f"v{version}"
     prefix: str = args.prefix.strip("/")
+    try:
+        channel_root = normalize_channel_root(args.channel_root)
+    except ValueError as exc:
+        raise SystemExit(f"ERROR: {exc}") from exc
     repo: str = args.repo
     do_artifacts = not args.manifest_only
     do_manifests = not args.artifacts_only
@@ -598,11 +626,11 @@ def main() -> None:
         pass
 
     if args.merge_remote:
-        remote = fetch_remote_latest(repo, prefix, channel, api_host)
+        remote = fetch_remote_latest(repo, prefix, channel, api_host, channel_root)
         if remote is None:
             raise SystemExit(
                 f"ERROR: --merge-remote set but could not fetch "
-                f"{prefix}/channels/{channel}/latest.json from {repo}"
+                f"{prefix}/{channel_root}/{channel}/latest.json from {repo}"
             )
         before = set((manifest.get("platforms") or {}).keys())
         manifest = merge_remote_same_channel(manifest, remote, channel)
@@ -625,9 +653,9 @@ def main() -> None:
     )
     latest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    remote_latest = f"{prefix}/channels/{channel}/latest.json"
-    remote_channel_yml = f"{prefix}/channels/{channel}/channel.yml"
-    remote_history = f"{prefix}/channels/{channel}/history/{version_tag}.json"
+    remote_latest = f"{prefix}/{channel_root}/{channel}/latest.json"
+    remote_channel_yml = f"{prefix}/{channel_root}/{channel}/channel.yml"
+    remote_history = f"{prefix}/{channel_root}/{channel}/history/{version_tag}.json"
 
     artifact_remotes = [
         (
@@ -637,7 +665,7 @@ def main() -> None:
         for artifact in artifacts
     ]
 
-    channel_yml = build_channel_yml(manifest, channel)
+    channel_yml = build_channel_yml(manifest, channel, channel_root)
     channel_local = dist_dir / "channel.yml"
     channel_local.write_text(channel_yml, encoding="utf-8")
 
@@ -659,7 +687,9 @@ def main() -> None:
         if args.manifest_only
         else "artifacts+manifest"
     )
-    print(f"Release {version_tag} -> ModelScope {api_host}/{repo}/{prefix}/channels/{channel}/ ({phase_label})")
+    print(
+        f"Release {version_tag} -> ModelScope {api_host}/{repo}/{prefix}/{channel_root}/{channel}/ ({phase_label})"
+    )
     print(f"  Endpoint: {modelscope_file_url(repo, remote_latest, api_host)}")
     if artifact_remotes:
         print(f"  Artifacts ({len(artifact_remotes)}):")

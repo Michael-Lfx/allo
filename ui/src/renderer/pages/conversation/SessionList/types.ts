@@ -42,4 +42,6 @@ export type ConversationRowProps = {
   dimIcon?: boolean;
   /** Sidebar display preference: show/hide the compact age marker on the right. */
   showSessionAge?: boolean;
+  /** Whether this conversation is actively in a voice call. */
+  isCallActive?: boolean;
 };

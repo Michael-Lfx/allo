@@ -36,10 +36,9 @@ describe('settings capability hubs responsive layout', () => {
     const marketCard = read('./skill/SkillMarketCard.tsx');
     const presetCard = read('./PresetSettings/PresetCard.tsx');
 
-    for (const source of [skillCard, presetCard]) {
-      expect(source).toContain('const MAX_VISIBLE_TAGS = 3');
-      expect(source).toContain('max-w-[156px]');
-    }
+    expect(skillCard).toContain('<ExpertTile');
+    expect(presetCard).toContain('const MAX_VISIBLE_TAGS = 3');
+    expect(presetCard).toContain('max-w-[156px]');
     expect(marketCard).toContain('const MAX_VISIBLE_TAGS = 2');
     expect(marketCard).toContain('max-w-[156px]');
     expect(marketCard).toContain('!whitespace-nowrap');

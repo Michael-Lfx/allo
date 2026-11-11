@@ -1,7 +1,7 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Voice } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
@@ -66,16 +66,10 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
           aria-label={label}
           aria-current={isActive ? 'page' : undefined}
         >
-          <Voice
-            theme='outline'
-            size='15'
-            fill='currentColor'
-            className={classNames(
+          <FlowyIcon name='voice' size={15} className={classNames(
               'block leading-none shrink-0 transition-colors duration-180',
               isActive ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
-            )}
-            style={{ lineHeight: 0 }}
-          />
+            )} />
         </div>
       </InstantHoverTooltip>
     );
@@ -96,13 +90,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
         >
-          <Voice
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='voice' size={20} className='block leading-none shrink-0' />
         </div>
       </Tooltip>
     );
@@ -124,13 +112,7 @@ const SiderMeetingEntry: React.FC<SiderMeetingEntryProps> = ({
         data-active={isActive ? 'true' : 'false'}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <Voice
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='voice' size={16} className='block leading-none' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>

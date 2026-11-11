@@ -29,10 +29,81 @@ pub enum ToolApprovalResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ToolApprovalToken(u64);
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScopedToolApproval {
+    pub approval_id: String,
+    pub msg_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub expires_at_ms: i64,
+}
+
+#[cfg(test)]
+mod scoped_approval_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn exact_message_and_call_are_required_and_the_approval_is_single_use() {
+        let manager=ToolApprovalManager::new();
+        let (mut rx,_)=manager.request_scoped_approval_with_token("call",&ToolCategory::Edit,"actual-message","Write",serde_json::json!({"file_path":"owned"}),Duration::from_secs(8));
+        let id=manager.pending_scoped_approvals()[0].approval_id.clone();
+        assert!(!manager.resolve_scoped_once("old-message","call",&id,true));
+        assert!(!manager.resolve_scoped_once("actual-message","old-call",&id,true));
+        assert!(matches!(rx.try_recv(),Err(oneshot::error::TryRecvError::Empty)));
+        manager.approve("call",ApprovalScope::Always);
+        manager.resolve("call",ToolApprovalResult::Approved);
+        assert!(matches!(rx.try_recv(),Err(oneshot::error::TryRecvError::Empty)),"unscoped approval must not bypass the host scope");
+        assert!(manager.resolve_scoped_once("actual-message","call",&id,true));
+        assert!(matches!(rx.await,Ok(ToolApprovalResult::Approved)));
+        assert!(!manager.resolve_scoped_once("actual-message","call",&id,true));
+        assert!(!manager.is_auto_approved("edit"));
+    }
+
+    #[tokio::test]
+    async fn expiry_refuses_execution_and_does_not_publish_a_live_approval() {
+        let manager=ToolApprovalManager::new();
+        let (rx,_)=manager.request_scoped_approval_with_token("call",&ToolCategory::Exec,"message","Bash",serde_json::json!({"command":"test"}),Duration::from_millis(10));
+        let id=manager.pending_scoped_approvals()[0].approval_id.clone();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(manager.pending_scoped_approvals().is_empty());
+        assert!(!manager.resolve_scoped_once("message","call",&id,true));
+        assert!(matches!(rx.await,Ok(ToolApprovalResult::Denied {..})));
+    }
+
+    #[tokio::test]
+    async fn a_reused_call_id_cannot_consume_the_new_messages_approval() {
+        let manager=ToolApprovalManager::new();
+        let (old,_)=manager.request_scoped_approval_with_token("reused",&ToolCategory::Edit,"message-a","Write",serde_json::json!({}),Duration::from_secs(8));
+        let (new,_)=manager.request_scoped_approval_with_token("reused",&ToolCategory::Edit,"message-b","Write",serde_json::json!({}),Duration::from_secs(8));
+        let id=manager.pending_scoped_approvals()[0].approval_id.clone();
+        assert!(old.await.is_err());
+        assert!(!manager.resolve_scoped_once("message-a","reused",&id,true));
+        assert!(manager.resolve_scoped_once("message-b","reused",&id,false));
+        assert!(matches!(new.await,Ok(ToolApprovalResult::Denied {..})));
+    }
+
+    #[tokio::test]
+    async fn a_reused_call_with_the_same_message_still_requires_the_new_registration() {
+        let manager=ToolApprovalManager::new();
+        let (old,_)=manager.request_scoped_approval_with_token("call",&ToolCategory::Edit,"same-message","Write",serde_json::json!({}),Duration::from_secs(8));
+        let old_id=manager.pending_scoped_approvals()[0].approval_id.clone();
+        let (new,_)=manager.request_scoped_approval_with_token("call",&ToolCategory::Edit,"same-message","Write",serde_json::json!({}),Duration::from_secs(8));
+        let new_id=manager.pending_scoped_approvals()[0].approval_id.clone();
+        assert_ne!(old_id,new_id);assert!(old.await.is_err());
+        assert!(!manager.resolve_scoped_once("same-message","call",&old_id,true));
+        assert!(manager.resolve_scoped_once("same-message","call",&new_id,false));
+        assert!(matches!(new.await,Ok(ToolApprovalResult::Denied {..})));
+    }
+}
+
 struct PendingApproval {
     tx: oneshot::Sender<ToolApprovalResult>,
     category: String,
     token: ToolApprovalToken,
+    scope: Option<ScopedToolApproval>,
+    expires: Option<std::time::Instant>,
 }
 
 /// Manages pending tool approval requests using oneshot channels.
@@ -48,15 +119,20 @@ pub struct ToolApprovalManager {
     auto_approved: Mutex<HashSet<String>>,
     session_mode: Mutex<SessionMode>,
     next_token: Mutex<u64>,
+    scope_instance: String,
 }
 
 impl ToolApprovalManager {
     pub fn new() -> Self {
+        static INSTANCES: std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+        let epoch=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let instance=INSTANCES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         Self {
             pending: Mutex::new(HashMap::new()),
             auto_approved: Mutex::new(HashSet::new()),
             session_mode: Mutex::new(SessionMode::Default),
             next_token: Mutex::new(0),
+            scope_instance: format!("{epoch}-{instance}"),
         }
     }
 
@@ -78,6 +154,10 @@ impl ToolApprovalManager {
         oneshot::Receiver<ToolApprovalResult>,
         ToolApprovalToken,
     ) {
+        self.insert_approval(call_id, category, None, None)
+    }
+
+    fn insert_approval(&self, call_id: &str, category: &ToolCategory, mut scope: Option<ScopedToolApproval>, expires: Option<std::time::Instant>) -> (oneshot::Receiver<ToolApprovalResult>, ToolApprovalToken) {
         let (tx, rx) = oneshot::channel();
         let token = {
             let mut next = self.next_token.lock().unwrap_or_else(|e| e.into_inner());
@@ -85,16 +165,54 @@ impl ToolApprovalManager {
             ToolApprovalToken(*next)
         };
         if let Ok(mut pending) = self.pending.lock() {
+            if let Some(scope)=&mut scope {scope.approval_id=format!("voice:{}:{}:{}",self.scope_instance,token.0,scope.msg_id);}
             pending.insert(
                 call_id.to_string(),
                 PendingApproval {
                     tx,
                     category: category.to_string(),
                     token,
+                    scope,
+                    expires,
                 },
             );
         }
         (rx, token)
+    }
+
+    pub fn request_scoped_approval_with_token(&self, call_id: &str, category: &ToolCategory, msg_id: &str, tool_name: &str, arguments: serde_json::Value, timeout: std::time::Duration) -> (oneshot::Receiver<ToolApprovalResult>, ToolApprovalToken) {
+        let expires=std::time::Instant::now()+timeout;
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+        let scope=ScopedToolApproval {approval_id:String::new(),msg_id:msg_id.into(),call_id:call_id.into(),tool_name:tool_name.into(),arguments,expires_at_ms:(now+timeout.as_millis()).min(i64::MAX as u128) as i64};
+        self.insert_approval(call_id,category,Some(scope),Some(expires))
+    }
+
+    pub fn pending_scoped_approvals(&self) -> Vec<ScopedToolApproval> {
+        self.pending.lock().map(|pending| pending.values().filter(|entry| entry.expires.is_some_and(|expires| expires>std::time::Instant::now())).filter_map(|entry| entry.scope.clone()).collect()).unwrap_or_default()
+    }
+
+    pub fn has_pending(&self, call_id: &str) -> bool {
+        self.pending.lock().is_ok_and(|pending| pending.contains_key(call_id))
+    }
+
+    pub fn is_scoped(&self, call_id: &str) -> bool {
+        self.pending.lock().is_ok_and(|pending| pending.get(call_id).is_some_and(|entry| entry.scope.is_some()))
+    }
+
+    pub fn resolve_scoped_once(&self, msg_id: &str, call_id: &str, approval_id: &str, approved: bool) -> bool {
+        let entry = self.pending.lock().ok().and_then(|mut pending| {
+            let entry=pending.get(call_id)?;
+            let scope=entry.scope.as_ref()?;
+            if scope.msg_id != msg_id || scope.approval_id != approval_id { return None; }
+            pending.remove(call_id)
+        });
+        let Some(entry)=entry else {return false;};
+        if entry.expires.is_none_or(|expires| expires<=std::time::Instant::now()) {
+            let _=entry.tx.send(ToolApprovalResult::Denied {reason:"approval_expired".into()});
+            return false;
+        }
+        let _=entry.tx.send(if approved {ToolApprovalResult::Approved} else {ToolApprovalResult::Denied {reason:"user_denied".into()}});
+        true
     }
 
     pub fn approve(&self, call_id: &str, scope: ApprovalScope) {
@@ -102,7 +220,10 @@ impl ToolApprovalManager {
             .pending
             .lock()
             .ok()
-            .and_then(|mut pending| pending.remove(call_id));
+            .and_then(|mut pending| {
+                if pending.get(call_id).is_some_and(|entry| entry.scope.is_some()) {return None;}
+                pending.remove(call_id)
+            });
 
         if let Some(pending) = pending {
             if matches!(scope, ApprovalScope::Always) {
@@ -113,11 +234,10 @@ impl ToolApprovalManager {
     }
 
     pub fn resolve(&self, call_id: &str, result: ToolApprovalResult) {
-        if let Some(pending) = self
-            .pending
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.remove(call_id))
+        if let Some(pending) = self.pending.lock().ok().and_then(|mut pending| {
+            if matches!(&result,ToolApprovalResult::Approved) && pending.get(call_id).is_some_and(|entry| entry.scope.is_some()) {return None;}
+            pending.remove(call_id)
+        })
         {
             let _ = pending.tx.send(result);
         }

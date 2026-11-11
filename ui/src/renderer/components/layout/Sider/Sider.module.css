@@ -47,7 +47,7 @@
 }
 
 :global([data-sider-nav-entry]:active) {
-  transform: scale(0.985);
+  background-color: var(--flowy-quiet-pressed);
 }
 
 :global([data-sider-nav-entry]:focus-visible) {
@@ -62,12 +62,7 @@
 }
 
 .newChatIcon {
-  transform: translateZ(0);
-  transition: transform var(--flowy-motion-fast) var(--flowy-ease-move);
-}
-
-.newChatTrigger:hover .newChatIcon {
-  transform: scale(0.92) translateZ(0);
+  transition: color var(--flowy-motion-fast) var(--flowy-ease-move);
 }
 
 .shortcutBadge {
@@ -81,7 +76,7 @@
 }
 
 .newChatTrigger:active .newChatIcon {
-  transform: scale(0.84) translateZ(0);
+  color: var(--flowy-text-primary);
 }
 
 @media (prefers-reduced-motion: reduce) {

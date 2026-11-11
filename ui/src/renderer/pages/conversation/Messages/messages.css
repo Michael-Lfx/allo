@@ -52,13 +52,23 @@
 }
 
 .message-item {
-  --conversation-message-font-size: 14px;
+  --conversation-message-font-size: 15px;
   --conversation-message-line-height: 22px;
+  --conversation-message-letter-spacing: 0.1em;
+  --markdown-table-bg: transparent;
+  --markdown-table-head-bg: transparent;
+  --markdown-table-sticky-bg: transparent;
+  --markdown-table-hover-bg: transparent;
 }
 
 .message-text-body {
   font-size: var(--conversation-message-font-size);
   line-height: var(--conversation-message-line-height);
+}
+
+/* Tracking is for ideographs only. Latin words stay at the font's own spacing. */
+.message-cjk {
+  letter-spacing: var(--conversation-message-letter-spacing);
 }
 
 .message-streaming-body {
@@ -658,7 +668,7 @@ body[arco-theme='dark'] .message-error-note {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  font-size: var(--conversation-message-font-size, 14px);
+  font-size: var(--conversation-message-font-size, 15px);
   line-height: var(--conversation-message-line-height, 22px);
 }
 
@@ -997,14 +1007,14 @@ body[arco-theme='dark'] .message-error-note {
 
 .turn-process-disclosure__body .turn-process-trace__paragraph {
   color: var(--color-text-2, #4e5969);
-  font-size: var(--conversation-message-font-size, 14px);
+  font-size: var(--conversation-message-font-size, 15px);
   line-height: var(--conversation-message-line-height, 22px);
 }
 
 .turn-process-disclosure__body .turn-process-trace__row {
   min-height: 22px;
   color: var(--color-text-2, #4e5969);
-  font-size: var(--conversation-message-font-size, 14px);
+  font-size: var(--conversation-message-font-size, 15px);
   line-height: var(--conversation-message-line-height, 22px);
 }
 
@@ -1212,7 +1222,7 @@ body[arco-theme='dark'] .message-error-note {
   background: transparent;
   color: var(--color-text-2, #4e5969);
   font: inherit;
-  font-size: var(--conversation-message-font-size, 14px);
+  font-size: var(--conversation-message-font-size, 15px);
   font-weight: 400;
   line-height: var(--conversation-message-line-height, 22px);
   padding: 0;
@@ -1290,7 +1300,7 @@ button.turn-process-trace__row:focus-visible {
 .turn-process-trace__paragraph {
   min-width: 0;
   color: var(--color-text-2, #4e5969);
-  font-size: var(--conversation-message-font-size, 14px);
+  font-size: var(--conversation-message-font-size, 15px);
   line-height: var(--conversation-message-line-height, 22px);
   white-space: pre-wrap;
   word-break: break-word;

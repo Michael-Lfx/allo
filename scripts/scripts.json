@@ -21,6 +21,10 @@
       "group": "test",
       "desc": "Unit-test the Agent Store marketplace manifest checker."
     },
+    "test:voice-joint-trace": {
+      "group": "test",
+      "desc": "Run end-to-end Rust to Bun voice joint trace integration test."
+    },
     "check:process-runtime-boundary": {
       "group": "check",
       "desc": "Enforce the supervised process runtime boundary and exact hand-off allowlist."
@@ -52,6 +56,14 @@
     "check:release-sync": {
       "group": "check",
       "desc": "Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide."
+    },
+    "check:release-product-profiles": {
+      "group": "check",
+      "desc": "Verify the shared desktop release workflow keeps Flowy and UniBuddy tags, configs, channels, and publication targets isolated."
+    },
+    "check:release-voice-preparation": {
+      "group": "check",
+      "desc": "Verify every release build hook still prepares the production voice daemon and never rebuilds the UI."
     },
     "release:check": {
       "group": "check",
@@ -96,6 +108,7 @@
     "dev":           { "group": "dev",   "desc": "启动桌面应用开发（tauri dev，热重载）" },
     "dev:web":       { "group": "dev",   "desc": "启动 Web 全栈开发（后端 API + 前端 vite）" },
     "dev:ui":        { "group": "dev",   "desc": "仅启动前端开发服务器（纯 vite，无后端）" },
+    "ensure:voice-companion": { "group": "dev", "desc": "为源码检出构建/校验本地 voice-companion 守护进程（缺失或过期时自动构建，失败只告警）" },
     "build":         { "group": "build", "desc": "为当前操作系统打桌面安装包" },
     "build:fast":    { "group": "build", "desc": "快速构建可直接运行的 debug 桌面二进制（不打安装包）" },
     "build:win":     { "group": "build", "desc": "打 Windows 安装包（NSIS），汇总到 dist/desktop/" },
@@ -103,6 +116,7 @@
     "build:linux":   { "group": "build", "desc": "打 Linux 安装包（.deb/.AppImage/.rpm），汇总到 dist/desktop/" },
     "build:signed":  { "group": "build", "desc": "打桌面包并签名+公证（仅 macOS）" },
     "build:updater": { "group": "build", "desc": "打桌面包并产出自更新 .sig 制品" },
+    "build:unibuddy": { "group": "build", "desc": "构建 UniBuddy 品牌 UI，并为当前操作系统打桌面安装包" },
     "build:inspect": { "group": "build", "desc": "只读检查构建目录占用与活跃开发会话" },
     "build:gc": { "group": "build", "desc": "显式回收可证明不再使用的历史构建产物" },
     "build:clean": { "group": "build", "desc": "显式清理构建缓存并提示下一次会冷编译" },
@@ -110,6 +124,7 @@
     "upload:modelscope": { "group": "build", "desc": "上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN）" },
     "rollback:modelscope": { "group": "maint", "desc": "回滚 ModelScope 上的桌面发布指针（需 MODELSCOPE_TOKEN）" },
     "verify:modelscope": { "group": "maint", "desc": "校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN）" },
+    "verify:voice-package": { "group": "maint", "desc": "Verify final release installers contain the voice daemon, target architecture, licenses, and bundled rg." },
     "release:mac":   { "group": "build", "desc": "一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },
     "release:win":   { "group": "build", "desc": "一键 Windows 发版：自动判定追加/首发；指纹可用时自动 Authenticode；-Signed/-NoSigned；-DryRun 只预检" },
     "release:linux": { "group": "build", "desc": "一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },

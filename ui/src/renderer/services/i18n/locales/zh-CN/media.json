@@ -1,8 +1,8 @@
 {
   "title": "媒体生成",
-  "description": "配置 Flowy 图像与视频生成的默认模型与选项。媒体服务由 Flowy 云端提供。",
-  "agentHintLogin": "登录 Flowy 云账号并保存设置后，Agent 对话中可直接使用生图、生视频工具。",
-  "agentHintReady": "已连接 Flowy 云服务。在 Agent 对话中可直接说「帮我生成一张…」或「生成一段视频…」，Agent 会调用 image_generate / video_generate 等工具。",
+  "description": "配置 {{brandName}} 图像与视频生成的默认模型与选项。媒体服务由 {{brandName}} 云端提供。",
+  "agentHintLogin": "登录 {{brandName}} 云账号并保存设置后，Agent 对话中可直接使用生图、生视频工具。",
+  "agentHintReady": "已连接 {{brandName}} 云服务。在 Agent 对话中可直接说「帮我生成一张…」或「生成一段视频…」，Agent 会调用 image_generate / video_generate 等工具。",
   "credits": {
     "authenticated": "已登录",
     "notAuthenticated": "未登录",

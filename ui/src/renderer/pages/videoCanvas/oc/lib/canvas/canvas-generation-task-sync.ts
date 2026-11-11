@@ -22,7 +22,16 @@ export function generationTaskInput(task: GenerationTask) {
 }
 
 export function generationTaskNodeId(task: GenerationTask) {
-    return generationTaskInput(task)?.metadata?.nodeId || "";
+    return task.nodeId || generationTaskInput(task)?.metadata?.nodeId || "";
+}
+
+/** Newest-first task list. Prefer the id stored on the node, then the server node binding. */
+export function pickRecoveredGenerationTask(nodeId: string, taskId: string | undefined, tasks: GenerationTask[]): GenerationTask | undefined {
+    if (taskId) {
+        const bound = tasks.find((task) => task.id === taskId);
+        if (bound) return bound;
+    }
+    return tasks.find((task) => generationTaskNodeId(task) === nodeId);
 }
 
 export function generationTaskMode(task: GenerationTask, fallback?: CanvasGenerationMode): CanvasGenerationMode {

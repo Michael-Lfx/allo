@@ -43,4 +43,8 @@ declare module 'bun:test' {
   export function afterEach(fn: TestFn): void;
   export const test: Test;
   export const expect: Expect;
+
+  export const mock: {
+    module(specifier: string, factory: () => unknown): void;
+  };
 }

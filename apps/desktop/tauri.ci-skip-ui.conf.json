@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs"
+    "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun scripts/prepare-voice-companion.mjs"
   }
 }

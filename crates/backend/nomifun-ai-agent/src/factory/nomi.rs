@@ -221,12 +221,27 @@ pub(super) async fn build(
         .get(APP_SERVER_CHAT_EXTRA_KEY)
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let mut overrides: NomiBuildExtra = serde_json::from_value(options.extra)
+    let mut build_extra = options.extra;
+    let voice_workspace = match build_extra.as_object_mut().and_then(|extra| extra.remove("voice_task_workspace")) {
+        Some(serde_json::Value::String(path)) => Some(std::path::PathBuf::from(path)),
+        Some(_) => return Err(AppError::BadRequest("voice_workspace_invalid".into())),
+        None => None,
+    };
+    let mut overrides: NomiBuildExtra = serde_json::from_value(build_extra)
         .map_err(|error| AppError::BadRequest(format!("Invalid Nomi build options: {error}")))?;
     overrides.user_id = Some(options.user_id.clone());
     // The first-class conversation field is authoritative. Never let an
     // open-ended extra payload override execution policy.
     overrides.delegation_policy = options.delegation_policy;
+    if let Some(root) = &voice_workspace {
+        if root.canonicalize().ok() != std::path::Path::new(&ctx.workspace).canonicalize().ok() {
+            return Err(AppError::BadRequest("voice_workspace_changed".into()));
+        }
+        overrides.delegation_policy = DelegationPolicy::Disabled;
+        if overrides.session_mode.is_none() {
+            overrides.session_mode = Some("default".into());
+        }
+    }
     let is_instance_owner = authority.controls_host();
     if is_app_server_chat {
         apply_app_server_chat_ceiling(&mut overrides);
@@ -908,6 +923,7 @@ pub(super) async fn build(
     // Host composition was decided once near the top of this function (it also
     // shapes the delegation prompt); nothing recomputes it here.
     let config = NomiResolvedConfig {
+        voice_workspace,
         // provider_id was validated as a canonical UUID just above.
         provider_id: ProviderId::parse(&model_selection.provider_id).expect(
             "session provider id already validated as a canonical ProviderId",

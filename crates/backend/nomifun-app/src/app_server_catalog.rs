@@ -116,7 +116,10 @@ fn skill_summary(
         writable,
         compatibility_status: compatibility,
         enabled: true,
-        required_connectors: Vec::new(),
+        // Doc `52` §3.5: the connector entry names this skill needs. Empty for
+        // builtin/user skills and for a skill copied out of a connector package
+        // (its dependency was satisfied by the same snapshot).
+        required_connectors: display.required_connectors.clone(),
         avatar_url,
         tags: display
             .tags

@@ -56,6 +56,8 @@ export interface AppServerClientOptions {
   capabilities?: ClientCapabilities;
   /** Readiness tuning for the `store` sub-client (`store.install`). */
   store?: StoreClientOptions;
+  /** Root URL used by `store.avatarUrl` to absolutize relative asset routes. */
+  baseUrl?: string;
 }
 
 export class AppServerClient {
@@ -84,6 +86,8 @@ export class AppServerClient {
   readonly store: StoreClient;
   readonly clientInfo: ClientInfo;
   readonly capabilities?: ClientCapabilities;
+  /** Root URL passed by the launcher; see `StoreHost.baseUrl`. */
+  readonly baseUrl?: string;
 
   private initializeResult: InitializeResult | null = null;
   private notificationListeners = new Set<NotificationListener>();
@@ -93,6 +97,7 @@ export class AppServerClient {
   constructor(options: AppServerClientOptions) {
     this.clientInfo = options.client;
     this.capabilities = options.capabilities;
+    this.baseUrl = options.baseUrl;
     this.transport = options.transport;
     this.runs = new RunClient(this.transport);
     this.conversations = new ConversationClient(this.transport);

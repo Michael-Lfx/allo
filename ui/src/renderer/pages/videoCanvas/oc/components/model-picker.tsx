@@ -10,9 +10,12 @@ import { anchoredOverlayStyle } from "@oc/lib/canvas/canvas-overlay";
 import { canvasThemes, type CanvasTheme } from "@oc/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@oc/lib/model-capabilities";
 import { cn } from "@oc/lib/utils";
-import { modelDisplayName, modelIconUrl, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
+import { modelDisplayName, modelIconUrl, modelOptionName, modelPlanRequirement, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@oc/stores/use-config-store";
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
 import { useUserStore } from "@oc/stores/use-user-store";
+import { VideoModelOptionLabel } from "@renderer/components/model/VideoModelOptionLabel";
+import { useEffectiveModelTier } from "@renderer/hooks/cloud/useEffectiveModelTier";
+import { isPlanLocked, requiredPlanBadgeLabel } from "@/renderer/utils/model/planGate";
 import { isMonochromeLogo, resolveModelFallbackIcon } from "@renderer/utils/model/modelLogos";
 
 type ModelPickerProps = {
@@ -29,7 +32,9 @@ type ModelPickerProps = {
 };
 
 export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig, showSelectedPrice = true, variant = "default" }: ModelPickerProps) {
-    useTranslation();
+    const { t } = useTranslation();
+    const effectiveModelTier = useEffectiveModelTier();
+    const memberLabel = t("conversation.modelPicker.member", { defaultValue: "会员" });
     const resolvedPlaceholder = placeholder ?? canvasT("videoCanvas.model.placeholder", "选择模型");
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const pickerId = useId();
@@ -58,6 +63,8 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
         return ungroupedModels.length ? [...channelGroups, { key: "ungrouped", label: canvasT("videoCanvas.model.otherModels", "其他模型"), models: ungroupedModels }] : channelGroups;
     }, [config, options]);
     const current = value || "";
+    const currentPlan = current ? modelPlanRequirement(config, current) : undefined;
+    const currentPlanLabel = requiredPlanBadgeLabel(currentPlan?.minTierLevel, currentPlan?.requiredPlanName, memberLabel);
     const currentPrice = modelMenuPrice(config, current);
     const creationVariant = variant === "creation";
     const close = useCallback(() => setOpen(false), []);
@@ -131,21 +138,28 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                         <div className="grid min-w-0 gap-1">
                             {group.models.map((model) => {
                                 const selected = model === current;
+                                const plan = modelPlanRequirement(config, model);
+                                const locked = isPlanLocked(plan.minTierLevel, effectiveModelTier);
+                                const planLabel = requiredPlanBadgeLabel(plan.minTierLevel, plan.requiredPlanName, memberLabel);
                                 return (
                                     <button
                                         key={model}
                                         type="button"
                                         role="option"
                                         aria-selected={selected}
+                                        aria-disabled={locked}
+                                        disabled={locked}
+                                        title={locked && planLabel ? t("conversation.modelPicker.planRequired", { plan: planLabel, defaultValue: "升级到 {{plan}} 后可用" }) : undefined}
                                         className="canvas-model-picker-option"
-                                        style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text }}
+                                        style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, opacity: locked ? 0.55 : undefined }}
                                         onClick={() => {
+                                            if (locked) return;
                                             onChange(model);
                                             setOpen(false);
                                             window.requestAnimationFrame(() => triggerRef.current?.focus());
                                         }}
                                     >
-                                        <ModelLabel config={config} model={model} capability={capability} theme={theme} showPrice={creditsEnabled} />
+                                        <ModelLabel config={config} model={model} capability={capability} theme={theme} showPrice={creditsEnabled} planLabel={planLabel} />
                                         {selected ? <Check className="canvas-model-picker-option-check" style={{ color: theme.node.activeStroke }} /> : null}
                                     </button>
                                 );
@@ -179,7 +193,14 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
                         <ModelIcon config={config} model={current} />
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{current ? modelDisplayName(config, current) : resolvedPlaceholder}</span>
+                    <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                        {capability === "video" && current ? (
+                            <VideoModelOptionLabel className="min-w-0 flex-1" name={modelDisplayName(config, current)} model={current} />
+                        ) : (
+                            <span className="min-w-0 flex-1 truncate">{current ? modelDisplayName(config, current) : resolvedPlaceholder}</span>
+                        )}
+                        <PlanChip label={currentPlanLabel} />
+                    </span>
                     {showSelectedPrice && creditsEnabled ? <ModelPrice compact price={currentPrice} /> : null}
                 </span>
                 <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
@@ -209,18 +230,25 @@ function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
     return config.models.length ? canvasT("videoCanvas.model.noMatch", "暂无匹配的{{label}}模型", { label }) : canvasT("videoCanvas.model.addChannelFirst", "请先到配置里添加渠道和模型");
 }
 
+function PlanChip({ label }: { label?: string }) {
+    if (!label) return null;
+    return <span className="chat-model-plan-badge shrink-0">{label}</span>;
+}
+
 function ModelLabel({
     config,
     model,
     capability,
     theme,
     showPrice,
+    planLabel,
 }: {
     config: AiConfig;
     model: string;
     capability?: ModelCapability;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     showPrice: boolean;
+    planLabel?: string;
 }) {
     const meta = modelMenuMeta(model, capability);
     const videoProfile = capability === "video" ? modelCapabilityConfigFor(config, model).video : undefined;
@@ -231,7 +259,18 @@ function ModelLabel({
                 <ModelIcon config={config} model={model} />
             </span>
             <span className="min-w-0 flex-1 overflow-hidden">
-                <span className="block min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">{modelDisplayName(config, model)}</span>
+                <span className="flex min-w-0 items-center gap-1">
+                    {capability === "video" ? (
+                        <VideoModelOptionLabel
+                            className="text-[var(--fs-label)] font-medium leading-none"
+                            name={modelDisplayName(config, model)}
+                            model={model}
+                        />
+                    ) : (
+                        <span className="block min-w-0 truncate text-[var(--fs-label)] font-medium leading-none">{modelDisplayName(config, model)}</span>
+                    )}
+                    <PlanChip label={planLabel} />
+                </span>
                 <span className="mt-1 block truncate text-[var(--fs-tiny)]" style={{ color: theme.node.muted }} title={capabilitySummary}>
                     {capabilitySummary}
                 </span>

@@ -1,11 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { IMcpServer } from '@/common/config/storage';
-import {
-  attachMcpMarketOrigin,
-  getMcpMarketOrigin,
-  isMcpMarketItemInstalled,
-} from './McpMarketSettings';
+import { isMcpMarketItemInstalled } from './McpMarketSettings';
+import { attachMcpMarketOrigin, getMcpMarketOrigin } from '@/renderer/pages/settings/ToolsSettings/mcpImportUtils';
 
 const marketItem = {
   id: 'skillhub_mcp:playwright',

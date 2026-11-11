@@ -336,25 +336,30 @@ export const useGuidAgentSelection = ({
     // useLayoutEffect's preselect remains the authoritative pick.
     if (preselectAgentKey && availableAgents.some((a) => getAgentKey(a) === preselectAgentKey)) return;
 
+    if (initialRestoreDoneRef.current) return;
+
     let cancelled = false;
-    initialRestoreDoneRef.current = true;
 
     const restoreSavedSelection = async () => {
       try {
         const savedKey = configService.get('guid.lastSelectedAgent');
-        if (cancelled) return;
+        if (cancelled || initialRestoreDoneRef.current) return;
 
         if (savedKey) {
           if (savedKey.startsWith('preset:')) {
             if (!presetsLoaded) return;
             const presetId = savedKey.slice('preset:'.length);
             if (presets.some((preset) => preset.preset_id === presetId)) {
+              if (cancelled || initialRestoreDoneRef.current) return;
+              initialRestoreDoneRef.current = true;
               _setSelectedAgentKey(savedKey);
               return;
             }
           }
           // Plain row key — verify it still exists in detected engines
           if (availableAgents.some((agent) => getAgentKey(agent) === savedKey)) {
+            if (cancelled || initialRestoreDoneRef.current) return;
+            initialRestoreDoneRef.current = true;
             _setSelectedAgentKey(savedKey);
             return;
           }
@@ -363,7 +368,9 @@ export const useGuidAgentSelection = ({
         // No saved preference or stale key — default to first detected engine
         const firstAgent = availableAgents[0];
         if (firstAgent) {
+          if (cancelled || initialRestoreDoneRef.current) return;
           const fallbackKey = getAgentKey(firstAgent);
+          initialRestoreDoneRef.current = true;
           _setSelectedAgentKey(fallbackKey);
           if (savedKey && savedKey !== fallbackKey) {
             void configService.set('guid.lastSelectedAgent', fallbackKey);

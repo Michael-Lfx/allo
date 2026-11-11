@@ -23,11 +23,11 @@ pub struct ClipBounds {
     max_secs: u32,
     /// Lower end of the short-drama beat length.
     preferred_min_secs: u32,
-    /// Upper end of the short-drama beat length; above this a clip needs a
-    /// reason (long spoken line, continuous camera move).
+    /// Upper end of a guessed beat. Prompts aim at `max_secs`; this only caps
+    /// the guess used before the lines exist.
     preferred_max_secs: u32,
-    /// Beat length planning assumes when it has to guess before seeing content
-    /// (shot-count hints). Sits in the lower part of the beat window.
+    /// Beat length used when content duration is guessed before the lines exist.
+    /// Shot-count hints use [`Self::max_secs`], not this guess.
     typical_beat_secs: u32,
 }
 
@@ -43,18 +43,16 @@ const fn clamp_u32(v: u32, lo: u32, hi: u32) -> u32 {
 }
 
 impl ClipBounds {
-    /// A glance, a line, or one action — the beat length short drama lands on
-    /// regardless of how high the model's ceiling is. 5–15s is what every
-    /// mainstream video model covers today, so planning is free to use the whole
-    /// range; a higher model ceiling only buys headroom beyond it (very long
-    /// speech, a merged same-camera run).
+    /// Floor and cap of a guessed beat when the lines are not known yet.
+    /// Storyboard and script prompts aim each semantic beat at [`Self::max_secs`].
+    /// These constants are not a merge quota and not a reason to pad.
     const BEAT_MIN_SECS: u32 = 5;
     const BEAT_MAX_SECS: u32 = 15;
-    /// Everyday short-drama clip: rich enough for 2–3 related beats, short
-    /// enough that spoken lines still finish inside a 15s model ceiling.
+    /// Everyday short-drama clip when the line needs the room. Empty holds stay
+    /// forbidden; the number is not a quota.
     const DRAMA_BEAT_SECS: u32 = 12;
-    /// Pack related beats toward this length when speech and motion actually
-    /// need it. Not a pad — empty holds stay forbidden.
+    /// Legacy pack hint kept for tests. Prompts aim at `max_secs`. Not a quota,
+    /// and not a reason to glue rows.
     const DRAMA_PACK_SECS: u32 = 14;
 
     /// Window used when the model id matches no known family. 5–12s is accepted

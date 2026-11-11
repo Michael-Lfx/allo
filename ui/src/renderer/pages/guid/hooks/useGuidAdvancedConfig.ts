@@ -49,13 +49,13 @@ export const useGuidAdvancedConfig = (): GuidAdvancedConfig => {
       const { knowledge: kb, autoWork: aw, idmm: idm } = draftsRef.current;
       const tasks: Array<{ label: string; run: () => Promise<unknown> }> = [];
 
-      // Persist any non-default binding so the conversation header shows the
-      // same picks the user made here.
+      // Persist only an explicit mount. Write-back defaults on, so a still-empty
+      // draft must not replace the workpath's existing binding.
       const kbTouched =
         kb.enabled ||
-        kb.writeback ||
         kb.kb_ids.length > 0 ||
-        kb.writeback_eagerness !== 'manual';
+        kb.writeback_eagerness !== 'manual' ||
+        kb.channel_write_enabled;
       if (kbTouched) {
         tasks.push({
           label: t('knowledge.control.label'),

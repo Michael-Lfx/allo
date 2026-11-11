@@ -121,7 +121,7 @@ export function compileCanvasApplyOps(input: CanvasApplyInput, snapshot: CanvasA
     return meaningful;
 }
 
-export function compileCanvasRunOps(snapshot: CanvasAgentSnapshot, nodeIds?: string[]): CanvasAgentOp[] {
+export function compileCanvasRunOps(snapshot: CanvasAgentSnapshot, nodeIds?: string[]): Array<Extract<CanvasAgentOp, { type: "run_generation" }>> {
     const targets = resolveRunTargets(snapshot, nodeIds);
     if (!targets.length) throw new Error("没有可生成的节点。请指定 nodeIds，或先 apply 带 prompt 的图片/视频节点。");
     return targets.map((node) => ({
@@ -330,7 +330,7 @@ function rewireReferenceOps(snapshot: CanvasAgentSnapshot, nodeIds?: string[]): 
                 videoEditOperation: videoEditOperationForKeyframeCount(inboundIds.length),
                 videoStartFrameNodeId: inboundIds[0],
                 videoEndFrameNodeId: inboundIds[inboundIds.length - 1],
-                referenceNodeIds: inboundIds,
+                referenceAssetNodeIds: inboundIds,
             },
         });
     }

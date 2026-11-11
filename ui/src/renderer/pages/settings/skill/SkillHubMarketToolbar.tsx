@@ -1,6 +1,9 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowyButton from '@renderer/components/base/FlowyButton';
 import { Button, Select } from '@arco-design/web-react';
 import React from 'react';
 import type { SkillHubMarketSort } from '@/common/adapter/ipcBridge';
+import FilterPills from '@/renderer/pages/videoGeneration/components/FilterPills';
 import type { SkillHubMarketSourceFilter } from './useSkillHubMarket';
 
 type SkillHubMarketToolbarProps = {
@@ -15,6 +18,9 @@ type SkillHubMarketToolbarProps = {
   onSortChange: (value: SkillHubMarketSort) => void;
   viewMode: 'list' | 'grid';
   onViewModeChange: (value: 'list' | 'grid') => void;
+  resultCount?: number;
+  refreshing?: boolean;
+  onRefresh?: () => void;
   categoriesLoading?: boolean;
   categoriesError?: boolean;
   onRetryCategories?: () => void;
@@ -38,12 +44,15 @@ const SkillHubMarketToolbar: React.FC<SkillHubMarketToolbarProps> = ({
   onSortChange,
   viewMode,
   onViewModeChange,
+  resultCount = 0,
+  refreshing = false,
+  onRefresh,
   categoriesLoading = false,
   categoriesError = false,
   onRetryCategories,
   t,
 }) => {
-  const selectClass = '!w-auto min-w-136px max-w-full flex-[0_1_auto]';
+  const selectClass = '!w-auto min-w-128px max-w-full flex-[0_1_auto]';
   const sortOptions: Array<{ value: SkillHubMarketSort; label: string }> = [
     { value: 'score', label: t('settings.skillsMarket.sortPopular', { defaultValue: '热门' }) },
     { value: 'downloads', label: t('settings.skillsMarket.sortDownloads', { defaultValue: '下载量' }) },
@@ -52,27 +61,23 @@ const SkillHubMarketToolbar: React.FC<SkillHubMarketToolbarProps> = ({
 
   return (
     <div
-      className='sticky top-0 z-10 -mx-4px border-b border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-4px py-10px'
+      className='sticky top-0 z-10 mb-16px flex flex-wrap items-center gap-8px border-b border-b-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] py-10px'
       data-testid='skillhub-market-toolbar'
     >
-      <div className='flex flex-wrap items-center gap-8px' role='toolbar' aria-label={t('settings.skillsMarket.filters', { defaultValue: '市场筛选' })}>
-        <div className='flex shrink-0 flex-wrap items-center gap-4px' role='tablist' aria-label={t('settings.skillsMarket.sort', { defaultValue: '排序' })}>
-          {sortOptions.map((option) => (
-            <Button
-              key={option.value}
-              type={sortBy === option.value ? 'secondary' : 'text'}
-              size='small'
-              className='!h-30px !rounded-8px !px-12px !text-12px'
-              role='tab'
-              aria-selected={sortBy === option.value}
-              onClick={() => onSortChange(option.value)}
-            >
-              {option.label}
-            </Button>
-          ))}
-        </div>
+      <FilterPills
+        ariaLabel={t('settings.skillsMarket.sort', { defaultValue: '排序' })}
+        active={sortBy}
+        onChange={onSortChange}
+        items={sortOptions.map((option) => ({ key: option.value, label: option.label }))}
+      />
 
-        <div className='ml-auto flex min-w-0 flex-wrap items-center justify-end gap-8px'>
+      {resultCount > 0 && (
+        <span className='text-12px text-t-tertiary'>
+          {t('settings.market.skillsCount', { count: resultCount, defaultValue: '{{count}} 个技能' })}
+        </span>
+      )}
+
+      <div className='ml-auto flex min-w-0 flex-wrap items-center justify-end gap-8px'>
         <Select
           size='small'
           className={selectClass}
@@ -120,29 +125,33 @@ const SkillHubMarketToolbar: React.FC<SkillHubMarketToolbarProps> = ({
           <Select.Option value='false'>{t('settings.skillsMarket.noApi', { defaultValue: '无需 API Key' })}</Select.Option>
         </Select>
 
-        <div className='ml-auto flex shrink-0 items-center rounded-8px border border-solid border-[var(--color-border-2)] p-2px' role='group' aria-label={t('settings.skillsMarket.viewMode', { defaultValue: '展示方式' })}>
-          {(['list', 'grid'] as const).map((mode) => (
-            <Button
-              key={mode}
-              type={viewMode === mode ? 'secondary' : 'text'}
-              size='small'
-              className='!h-28px !rounded-6px !px-10px !text-12px'
-              aria-pressed={viewMode === mode}
-              onClick={() => onViewModeChange(mode)}
-            >
-              {mode === 'list'
-                ? t('settings.skillsMarket.listView', { defaultValue: '列表' })
-                : t('settings.skillsMarket.cardView', { defaultValue: '卡片' })}
-            </Button>
-          ))}
-        </div>
+        <FilterPills
+          ariaLabel={t('settings.skillsMarket.viewMode', { defaultValue: '展示方式' })}
+          active={viewMode}
+          onChange={onViewModeChange}
+          items={[
+            { key: 'grid', label: t('settings.skillsMarket.cardView', { defaultValue: '卡片' }) },
+            { key: 'list', label: t('settings.skillsMarket.listView', { defaultValue: '列表' }) },
+          ]}
+        />
+
+        {onRefresh && (
+          <FlowyButton
+            role='icon'
+            size='small'
+            data-testid='btn-sync-skill-market'
+            className='!text-t-secondary'
+            icon={<FlowyIcon name='refresh' size={16} className={refreshing ? 'animate-spin' : ''} />}
+            onClick={onRefresh}
+            title={t('common.refresh', { defaultValue: '刷新' })}
+          />
+        )}
 
         {categoriesError && onRetryCategories && (
           <Button type='text' size='small' onClick={onRetryCategories}>
             {t('common.retry', { defaultValue: '重试分类' })}
           </Button>
         )}
-        </div>
       </div>
     </div>
   );

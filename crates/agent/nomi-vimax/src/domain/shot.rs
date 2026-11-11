@@ -65,13 +65,11 @@ impl ShotBriefDescription {
     }
 }
 
-/// One beat inside a clip: a spoken line, a visual event, or a native camera cut.
+/// One beat inside a legacy multi-beat clip.
 ///
-/// A clip normally renders exactly one beat, so [`ShotDescription::beats`] stays
-/// empty. When planning packs adjacent events into one storyboard row — one clip
-/// instead of two means one splice fewer to stutter on — the absorbed beats are
-/// preserved here in timeline order so the prompt can lay them out against the
-/// clip's final duration and duration estimation can price the whole run.
+/// A published row leaves [`ShotDescription::beats`] empty: one row is one
+/// camera and one performance. A non-empty list is an old artifact the prompt
+/// still plays in order so a line is not dropped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShotBeat {
     pub motion_desc: String,
@@ -105,31 +103,28 @@ pub struct ShotDescription {
     /// the renderer will not guess the first environment plate.
     #[serde(default)]
     pub location_id: String,
-    /// Timeline-ordered beats this clip plays in one generation.
+    /// Legacy beats played in order inside one generation.
     ///
-    /// Empty for the usual one-beat clip. Two or more marks a packed clip, which
-    /// must never be packed again (see [`ShotDescription::is_merged`]). Same
-    /// camera → one continuous take; different [`ShotBeat::cam_idx`] → native
-    /// multi-shot (CUT inside the file).
+    /// Empty on a published row. Two or more marks an old packed clip, which
+    /// must not be packed again (see [`ShotDescription::is_merged`]). A camera
+    /// change belongs in the next row, not in this list.
     #[serde(default)]
     pub beats: Vec<ShotBeat>,
 }
 
 impl ShotDescription {
-    /// True when this clip already absorbed adjacent shots.
+    /// True when this clip still carries a legacy multi-beat list.
     ///
-    /// Packing is not idempotent — absorbing an already-packed clip would replay
-    /// its beats — so every producer of packed clips checks this first.
+    /// A published row leaves [`Self::beats`] empty. Joining an already-listed
+    /// clip again would replay those beats, so producers check this first.
     pub fn is_merged(&self) -> bool {
         self.beats.len() >= 2
     }
 
-    /// Camera the clip *ends* on — what the next clip's seam compares against.
+    /// Camera the clip ends on — what the next clip's seam compares against.
     ///
-    /// Equals [`Self::cam_idx`] for an unpacked shot or a same-camera pack.
-    /// A native multi-shot that cut to a reverse angle exits on that later
-    /// camera, so the next clip must not be told it is still rolling on the
-    /// opening setup.
+    /// Equals [`Self::cam_idx`] unless this file changes camera inside the
+    /// generation.
     pub fn exit_cam_idx(&self) -> i32 {
         self.beats
             .iter()
@@ -138,7 +133,7 @@ impl ShotDescription {
             .unwrap_or(self.cam_idx)
     }
 
-    /// True when packed beats change camera inside this generation.
+    /// True when this generation changes camera inside the file.
     pub fn has_camera_cuts(&self) -> bool {
         self.beats
             .iter()

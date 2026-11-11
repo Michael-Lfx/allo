@@ -1,5 +1,5 @@
 const DYNAMIC_IMPORT_ERROR_PATTERN =
-  /Failed to fetch dynamically imported module|Importing a module script failed|dynamically imported module|ChunkLoadError/i;
+  /Failed to fetch dynamically imported module|Importing a module script failed|dynamically imported module|ChunkLoadError|does not provide an export named/i;
 
 export const DYNAMIC_IMPORT_RETRY_STORAGE_KEY = 'flowy.dynamic-import-retry';
 export const DYNAMIC_IMPORT_RETRY_WINDOW_MS = 10_000;
@@ -11,9 +11,10 @@ type RetryRecord = {
 
 /**
  * React.lazy caches a rejected loader promise. A state-only boundary reset
- * therefore renders the same error again; classify those failures so the
- * user can reload the module graph instead of being offered a misleading
- * in-place retry.
+ * therefore renders the same error again. That includes stale HMR graphs
+ * where a module no longer provides an export the loader already imported.
+ * Classify those failures so the user can reload the module graph instead of
+ * being offered a misleading in-place retry.
  */
 export function isDynamicImportFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;

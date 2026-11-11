@@ -1,6 +1,7 @@
 
 
 import { ipcBridge } from '@/common';
+import { getActiveVoiceCallConversationId } from '@/common/adapter/voiceCompanion';
 import type { TChatConversation } from '@/common/config/storage';
 import type { ConversationId } from '@/common/types/ids';
 import { refreshConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
@@ -77,6 +78,10 @@ export const useConversationActions = ({
 
   const removeConversation = useCallback(
     async (conversation_id: ConversationId) => {
+      if (getActiveVoiceCallConversationId() === conversation_id) {
+        Message.info(t('voice.entry.endBeforeDelete'));
+        return false;
+      }
       await ipcBridge.conversation.remove.invoke({ conversation_id: conversation_id });
 
       emitter.emit('conversation.deleted', conversation_id);
@@ -85,7 +90,7 @@ export const useConversationActions = ({
       }
       return true;
     },
-    [activeConversationId, navigate]
+    [activeConversationId, navigate, t]
   );
 
   const handleDeleteClick = useCallback(

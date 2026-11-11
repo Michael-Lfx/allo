@@ -1,9 +1,9 @@
 .guidLayout {
   --preset-surface-bg: color-mix(in srgb, var(--bg-2) 65%, transparent);
   --preset-surface-bg-hover: color-mix(in srgb, var(--bg-2) 85%, transparent);
-  width: clamp(var(--app-min-width, 360px), calc(100% - 32px), 840px);
-  max-width: 100%;
-  padding: 0 16px;
+  width: clamp(var(--app-min-width, 360px), calc(100% - 64px), 920px);
+  max-width: 920px;
+  padding: 0 40px;
   box-sizing: border-box;
   margin: 0 auto;
 }
@@ -13,37 +13,36 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 12px;
+  margin-bottom: 40px;
 }
 
 .heroTitlePrimary {
   margin: 0;
   color: var(--flowy-text-primary);
-  font-size: clamp(26px, 2.2vw, 32px);
-  font-weight: var(--flowy-weight-semibold);
-  line-height: 1.18;
-  letter-spacing: -0.035em;
+  font-size: clamp(28px, 2.5vw, 36px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
   text-align: center;
 }
 
 .heroDescription {
   margin: 0;
-  max-width: 560px;
+  max-width: 600px;
   text-align: center;
-  color: var(--flowy-text-muted);
-  font-size: 14px;
-  line-height: 1.5;
+  color: var(--color-text-3);
+  font-size: 15px;
+  line-height: 1.6;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.guidTaskProfile {
-  display: flex;
-  justify-content: center;
-  margin: 4px 0 36px;
+.composerTaskProfile {
+  flex: 0 0 auto;
+  margin-left: 8px;
 }
 
 .heroHeaderControls {
@@ -416,10 +415,10 @@
 .guidInputCardWrap {
   width: 100%;
   box-sizing: border-box;
-  background: var(--flowy-panel);
-  border: 1px solid var(--flowy-border-subtle);
-  border-radius: 12px;
-  box-shadow: 0 10px 32px rgba(15, 23, 42, 0.14);
+  background: var(--flowy-raised);
+  border: 1px solid var(--color-border-2);
+  border-radius: 24px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   transition:
     border-color var(--flowy-motion-fast) var(--flowy-ease-enter),
     box-shadow var(--flowy-motion-base) var(--flowy-ease-enter),
@@ -1092,10 +1091,10 @@
 
 .drawerSearchInput:global(.arco-input-inner-wrapper) {
   width: 100%;
-  height: 40px;
-  border: 1px solid var(--drawer-hairline) !important;
-  border-radius: 10px !important;
-  background: var(--drawer-panel-bg) !important;
+  height: var(--flowy-search-height, 32px);
+  border: 1px solid transparent !important;
+  border-radius: var(--flowy-radius-field, 8px) !important;
+  background: var(--color-fill-2, var(--drawer-panel-bg)) !important;
   box-shadow: none !important;
   overflow: hidden;
 }
@@ -1117,15 +1116,15 @@
 }
 
 .drawerSearchInput :global(.arco-input) {
-  height: 38px;
+  height: 100%;
   color: var(--color-text-1);
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--flowy-text-control, 13px);
+  font-weight: 400;
 }
 
 .drawerSearchInput :global(.arco-input::placeholder) {
   color: var(--color-text-3);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .drawerFilterPanel {
@@ -1628,6 +1627,254 @@
   margin-right: 0;
 }
 
+.entryFlyout {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  overflow: hidden;
+  background: var(--color-bg-popup);
+  border: 1px solid var(--color-border-2);
+  border-radius: 12px;
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--flowy-text-primary) 8%, transparent),
+    0 12px 24px color-mix(in srgb, var(--flowy-text-primary) 12%, transparent);
+  color: var(--text-primary);
+}
+
+.entryFlyoutAction,
+.entryFlyoutRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.entryFlyoutAction {
+  height: 36px;
+  flex: 0 0 auto;
+  padding: 0 8px;
+}
+
+.entryFlyoutActionLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryFlyoutAction:hover,
+.entryFlyoutAction:focus-visible,
+.entryFlyoutRow:hover,
+.entryFlyoutRow:focus-visible {
+  background: var(--bg-hover);
+}
+
+.entryFlyoutAction:focus-visible,
+.entryFlyoutRow:focus-visible {
+  outline: 2px solid var(--flowy-focus-ring);
+  outline-offset: -2px;
+}
+
+.entryFlyoutList {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.entryFlyoutRow {
+  align-items: flex-start;
+  padding: 8px;
+}
+
+.entryFlyoutIcon {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.entryFlyoutBody {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entryFlyoutTitle {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryFlyoutDesc {
+  overflow: hidden;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryFlyoutMark {
+  display: flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: rgb(var(--primary-6));
+}
+
+.entryFlyoutEmpty {
+  padding: 16px 8px;
+  color: var(--color-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.entryFlyoutSearch {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--color-border-2);
+  padding: 6px 2px 2px;
+}
+
+.entryFlyoutEmbed {
+  padding: 0;
+}
+
+.addMenuPopover {
+  box-sizing: border-box;
+  padding: 4px;
+  background: var(--color-bg-popup) !important;
+  border: 1px solid var(--color-border-2) !important;
+  border-radius: 12px !important;
+  box-shadow:
+    0 2px 8px color-mix(in srgb, var(--flowy-text-primary) 8%, transparent),
+    0 12px 24px color-mix(in srgb, var(--flowy-text-primary) 12%, transparent) !important;
+  color: var(--text-primary);
+}
+
+.addMenuPopover > div {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.addMenuPopover [role='listbox'] {
+  padding: 0 !important;
+}
+
+.addMenuPopover [role='option'] {
+  display: flex !important;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  min-height: 32px !important;
+  margin: 0 !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--text-primary) !important;
+}
+
+.addMenuPopover [role='option'][aria-selected='true'] {
+  background: var(--bg-hover) !important;
+}
+
+.addMenuPopover [role='option']:active {
+  background: var(--bg-active) !important;
+}
+
+.addMenuPopover [role='option']:focus-visible {
+  outline: 2px solid var(--flowy-focus-ring);
+  outline-offset: -2px;
+}
+
+.addMenuPopover [role='option'] > div {
+  width: 100%;
+}
+
+.addMenuPopover [role='option'] :global(.gap-8px) {
+  gap: 8px !important;
+}
+
+.addMenuPopover [role='option'] :global(.h-18px) {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.addMenuPopover [role='option'] :global(.flowy-icon) {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.addMenuPopover :global(.text-13px) {
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  line-height: 20px !important;
+  color: var(--text-primary) !important;
+}
+
+.addMenuPopover [aria-selected='true'] :global(.text-13px) {
+  font-weight: 400 !important;
+  color: var(--text-primary) !important;
+}
+
+.addMenuSheetLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.addMenuSheetRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.addMenuSheetRow:hover,
+.addMenuSheetRow:focus-visible,
+.addMenuSheetRowActive {
+  background: var(--bg-hover);
+}
+
 .actionEntry :global(.arco-btn),
 .actionEntry :global(.arco-btn:active),
 .actionEntry :global(.arco-btn:focus),
@@ -1723,6 +1970,112 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.actionExpertButton:global(.arco-btn) {
+  flex: 0 1 auto;
+  box-sizing: border-box;
+  max-width: 220px;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 10px 0 4px !important;
+  border-width: 1px !important;
+  border-style: solid !important;
+  border-color: transparent !important;
+  border-radius: 999px !important;
+  color: var(--color-text-2) !important;
+  background: transparent !important;
+  transform: translateY(0);
+  vertical-align: middle;
+}
+
+.actionExpertButton:global(.arco-btn:hover),
+.actionExpertButton:global(.arco-btn:focus-visible) {
+  color: var(--color-text-2) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  transform: translateY(0);
+}
+
+.actionExpertButtonContent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  line-height: 1;
+}
+
+.actionExpertMark {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.actionExpertAvatar,
+.actionExpertDismiss {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 120ms ease;
+}
+
+.actionExpertAvatar {
+  overflow: hidden;
+  border-radius: 50%;
+  color: var(--color-text-3);
+  background: var(--color-fill-2);
+  opacity: 1;
+}
+
+.actionExpertAvatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.actionExpertEmoji {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.actionExpertDismiss {
+  color: var(--color-text-2);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.actionExpertButton:global(.arco-btn:hover) .actionExpertAvatar,
+.actionExpertButton:global(.arco-btn:focus-visible) .actionExpertAvatar {
+  opacity: 0;
+}
+
+.actionExpertButton:global(.arco-btn:hover) .actionExpertDismiss,
+.actionExpertButton:global(.arco-btn:focus-visible) .actionExpertDismiss {
+  opacity: 1;
+}
+
+.actionExpertDismiss :global(svg) {
+  display: block;
+}
+
+.actionExpertLabel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 方案E：模型 + 权限各自独立 tb-btn，中间有竖线分隔 */
@@ -1950,7 +2303,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 6px 10px 14px;
+  padding: 0 2px 8px;
   background: transparent;
 }
 
@@ -2077,17 +2430,25 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  min-height: var(--flowy-search-height-compact, 28px);
+  padding: 0 10px;
   margin-bottom: 4px;
   background: var(--color-fill-2);
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--flowy-radius-field, 8px);
+}
+
+.wsDropdownSearch:focus-within {
+  border-color: var(--flowy-accent, #0f766e);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--flowy-accent, #0f766e) 16%, transparent);
 }
 
 .wsDropdownSearchInput {
   border: none;
   outline: none;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--flowy-text-control, 13px);
+  font-weight: 400;
   color: var(--color-text-1);
   width: 100%;
   font-family: inherit;
@@ -2307,27 +2668,139 @@
 
 /* 首页以对话舞台为主；矮视口仍需纵向滚动，才能看到输入框下方的描述/示例提示 */
 .guidContainer {
+  flex: 1 1 auto;
+  width: 100%;
   height: 100%;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-x: hidden;
+  /* Always reserve the 14px bar. `auto` drops it when slides mode hides the
+     home column, and the centered layout shifts sideways. */
+  overflow-y: scroll;
   position: relative;
-  -webkit-overflow-scrolling: touch;
+  /* 首页是浅灰底、白色输入框（参考 Manus）；暗色仍跟 --color-bg-1 */
+  --guid-canvas: color-mix(in srgb, var(--bg-1) 70%, var(--bg-base));
+  background: var(--guid-canvas);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-3) 55%, transparent) transparent;
+}
+
+.guidScrollArea {
+  flex: 1 0 auto;
+  overflow: visible;
+  /* 只留一点空隙，避免滚到底时内容和输入框贴死 */
+  padding-bottom: 20px;
+}
+
+.guidContainer::-webkit-scrollbar,
+.guidScrollArea::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.guidContainer::-webkit-scrollbar-track,
+.guidScrollArea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.guidContainer::-webkit-scrollbar-thumb,
+.guidScrollArea::-webkit-scrollbar-thumb {
+  border: 5px solid transparent;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-text-3) 55%, transparent);
+  background-clip: padding-box;
+}
+
+.guidContainer::-webkit-scrollbar-thumb:hover,
+.guidScrollArea::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--color-text-3) 75%, transparent);
+}
+
+.guidContainer {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-3) 55%, transparent) transparent;
+}
+
+.guidFixedInputArea {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 36px 10px 20px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent 0%, var(--guid-canvas, var(--color-bg-1)) 40px);
+}
+
+:global([data-theme='dark']) .guidContainer {
+  --guid-canvas: var(--color-bg-1);
+}
+
+.guidFixedInputArea .guidLayout {
+  width: min(100%, 920px);
+  max-width: 920px;
+  margin-inline: auto;
+  pointer-events: auto;
 }
 
 .guidPrimaryStage {
   width: 100%;
-  min-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 10px;
+  justify-content: flex-start;
+  padding: 8px 10px 8px;
   box-sizing: border-box;
 }
 
-/* 整体内容块略往上移，减轻「重心偏下」的感觉 */
 .guidPrimaryStage .guidLayout {
-  margin-top: -5vh;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 920px);
+  max-width: 920px;
+  margin-top: 0;
+  margin-inline: auto;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.homeMasthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.78fr);
+  column-gap: 12px;
+  align-items: end;
+  width: 100%;
+  margin: 0 0 16px;
+  min-height: 0;
+}
+
+.homeBrand {
+  display: block;
+  width: min(416px, 100%);
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text-1);
+}
+
+.homeVideo {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+@media (max-width: 860px) {
+  .homeMasthead {
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-bottom: 16px;
+  }
+}
+
+.homeGallery {
+  position: relative;
+  width: 100%;
 }
 
 .guidDiscoveryArea {
@@ -2359,22 +2832,11 @@
   animation: agentSelectPop 0.4s ease-out forwards;
 }
 
-/* 首页右上角：会话创建前的知识库挂载草稿 */
-.guidCornerActions {
-  position: absolute;
-  top: 12px;
-  right: 16px;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
 /* 矮视口（含 1280×720）：取消负 margin，避免内容被裁切 */
 @media (max-height: 760px) {
   .guidPrimaryStage {
     justify-content: flex-start;
-    padding-top: 24px;
+    padding-top: 4px;
   }
 
   .guidPrimaryStage .guidLayout {
@@ -2385,7 +2847,7 @@
 @media (max-width: 768px) {
   .guidPrimaryStage {
     justify-content: flex-start;
-    padding-top: 20px;
+    padding-top: 8px;
     min-height: auto;
   }
 
@@ -2953,4 +3415,31 @@
   .actionConfigGroup :global(.chat-model-picker-slot .chat-model-picker-trigger) {
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * Slides studio (create panel open): the card wall fills the page behind the
+ * composer. Home content is taken out of flow so the composer sits at the
+ * bottom, and only the panel and the input card catch the pointer — the gaps
+ * around them pass hover and clicks through to the wall. Width matches the
+ * home column (920px) set on `.guidLayout`.
+ */
+.guidContainer[data-slide-studio] .guidPrimaryStage {
+  display: none;
+}
+
+.guidContainer[data-slide-studio] .guidScrollArea {
+  pointer-events: none;
+}
+
+.guidContainer[data-slide-studio] .guidFixedInputArea {
+  background: none;
+}
+
+.guidContainer[data-slide-studio] .guidFixedInputArea .guidLayout {
+  pointer-events: none;
+}
+
+.guidContainer[data-slide-studio] .guidFixedInputArea .guidLayout > * {
+  pointer-events: auto;
 }

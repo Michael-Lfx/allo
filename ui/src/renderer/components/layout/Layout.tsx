@@ -2,7 +2,9 @@ import { ipcBridge } from '@/common';
 import { httpGet } from '@/common/adapter/httpBridge';
 import { configService } from '@/common/config/configService';
 import type { ICssTheme } from '@/common/config/storage';
-import appLogo from '@renderer/assets/logo.svg';
+import BrandLogo from '@renderer/components/brand/BrandLogo';
+import { BRAND_NAME } from '@renderer/config/brand';
+import TechText from '@renderer/components/layout/Sider/TechText';
 import PwaPullToRefresh from '@/renderer/components/layout/PwaPullToRefresh';
 import Titlebar from '@/renderer/components/layout/Titlebar';
 import NotificationHost from '@/renderer/components/notifications/NotificationHost';
@@ -731,10 +733,32 @@ const Layout: React.FC<{
                         '!size-24px': collapsed,
                       })}
                     >
-                      <img src={appLogo} alt='Flowy' className='absolute inset-0 w-full h-full object-cover' />
+                      <BrandLogo className='absolute inset-0 w-full h-full object-cover' />
                     </div>
-                    <div className='min-w-0 flex-1 flex flex-col justify-center collapsed-hidden'>
-                      <span className='truncate text-16px text-t-primary font-semibold'>Flowy</span>
+                    <div className='sider-brand-lockup collapsed-hidden'>
+                      <div className='sider-wordmark text-t-primary'>
+                        <TechText
+                          text={BRAND_NAME}
+                          fontWeight={600}
+                          fontSize={22}
+                          letterSpacing={0.12}
+                          align='left'
+                          reveal='letter'
+                          dashLength={4}
+                          dashGap={2}
+                          strokeWidth={1.5}
+                          specks={0}
+                          selection={false}
+                          labels={false}
+                          draggable={false}
+                          clickKick={false}
+                          intro='none'
+                          guides={false}
+                          sweep
+                          speed={0.55}
+                          style={{ width: '100%', height: '100%' }}
+                        />
+                      </div>
                       {appVersion && <span className='sidebar-app-version'>v{appVersion}</span>}
                     </div>
                     {isMobile && !collapsed && (

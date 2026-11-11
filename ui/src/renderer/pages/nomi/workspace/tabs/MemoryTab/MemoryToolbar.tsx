@@ -6,16 +6,12 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Input } from '@arco-design/web-react';
 import { Plus } from '@icon-park/react';
+import FlowySearch from '@/renderer/components/base/FlowySearch';
 import NomiSelect from '@/renderer/components/base/NomiSelect';
 import SegmentedTabs, { type SegmentedTabItem } from '@/renderer/components/base/SegmentedTabs';
 import type { ICompanionMemoryKind, ICompanionMemorySort } from '@/common/adapter/ipcBridge';
 import { MEMORY_KINDS, MEMORY_STATUS_FILTERS, type MemoryStatusFilter } from './constants';
-
-/** Pill search field — matches the round search input used across the app. */
-const SEARCH_PILL_CLASS =
-  'w-240px max-w-full [&_.arco-input-inner-wrapper]:!rounded-full [&_.arco-input-inner-wrapper]:!border [&_.arco-input-inner-wrapper]:!border-solid [&_.arco-input-inner-wrapper]:!border-[var(--color-border-2)] [&_.arco-input-inner-wrapper:hover]:!border-[var(--color-border-3)] [&_.arco-input-inner-wrapper-focus]:!border-primary-6';
 
 interface MemoryToolbarProps {
   q: string;
@@ -74,12 +70,11 @@ const MemoryToolbar: React.FC<MemoryToolbarProps> = ({
         onChange={(key) => onStatusChange(key as MemoryStatusFilter)}
       />
 
-      <Input.Search
-        allowClear
+      <FlowySearch
         value={q}
         onChange={onQChange}
         placeholder={t('nomi.memories.searchPlaceholder', { defaultValue: '搜索记忆内容' })}
-        className={SEARCH_PILL_CLASS}
+        className='w-240px max-w-full'
       />
 
       <NomiSelect

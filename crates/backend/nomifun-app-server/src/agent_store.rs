@@ -51,7 +51,7 @@ pub struct AgentStoreConfig {
     ///
     /// ```toml
     /// [default_marketplaces.experts]
-    /// source_kind = "url"      # url | github | git | directory | zip
+    /// source_kind = "url"      # url | github | git | directory | zip | index
     /// source = "http://127.0.0.1:8300/marketplace.json"
     /// ```
     #[serde(default)]
@@ -1184,24 +1184,26 @@ impl AgentStoreConfig {
     /// address as third-party. (The lazy fallback registration deliberately
     /// pins `auto_update = false` anyway: see `register_unfetched`.)
     pub fn builtin_default_marketplaces() -> Vec<(String, String, String)> {
-        // Doc 30: the official bundles ship as **one archive per market** on
-        // ModelScope, not as a file-per-entry tree on the site. The `url` form
-        // cost a first fetch 14,714 requests / 611 MiB for `experts` alone
-        // (the site mirrors every listed file); the archive is 1 request /
-        // 289 MiB and is the same bytes the mirror would have pulled.
-        //
-        // `master` is deliberate, not sloppiness: a market is a *moving*
-        // target, so pinning a commit sha here would freeze every client at
-        // whatever was current when this binary was built, and shipping a new
-        // binary would be the only way to publish a market change. Clients
-        // detect the change with a `HEAD` (`X-Linked-Etag` = content sha256),
-        // so an unchanged archive is never re-downloaded.
+        // Doc 30 §6.1: the three official markets are index-first — one small
+        // pointer each, entry content fetched on demand. (`zip` remains a
+        // supported source kind for third parties and frozen old bundles.)
+        // `master` is deliberate: a market is a *moving* target; clients detect
+        // change via the index/host `X-Linked-Etag` (content sha256), so an
+        // unchanged market is never re-downloaded.
         const MARKET_HOST: &str =
             "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master";
-        ["experts", "skills", "connectors"]
-            .into_iter()
-            .map(|id| (id.to_owned(), "zip".to_owned(), format!("{MARKET_HOST}/{id}.zip")))
-            .collect()
+        // Doc 30 §6.1: all three official markets are index-first now — one
+        // small pointer each, entries fetched on demand. `skills` / `connectors`
+        // share a payload zip (`member` selects the entry); `experts` has one
+        // tar.gz per entry.
+        [
+            ("experts", "index", format!("{MARKET_HOST}/wb-market/experts/index.json")),
+            ("skills", "index", format!("{MARKET_HOST}/wb-market/skills/index.json")),
+            ("connectors", "index", format!("{MARKET_HOST}/wb-market/connectors/index.json")),
+        ]
+        .into_iter()
+        .map(|(id, kind, source)| (id.to_owned(), kind.to_owned(), source))
+        .collect()
     }
 
     /// Default location: `~/.agent-store/config.toml` (Windows then POSIX).
@@ -2116,8 +2118,12 @@ model = "mimo-v2.5-free"
         let ids: Vec<&str> = builtin.iter().map(|(id, _, _)| id.as_str()).collect();
         assert_eq!(ids, ["experts", "skills", "connectors"]);
         for (id, kind, source) in &builtin {
-            assert_eq!(kind, "zip");
-            assert!(source.ends_with(&format!("/{id}.zip")), "{id} source: {source}");
+            // Doc 30 §6.1: all three official markets are index-first.
+            assert_eq!(kind, "index");
+            assert!(
+                source.ends_with(&format!("/wb-market/{id}/index.json")),
+                "{id} source: {source}"
+            );
             assert!(source.starts_with("https://"), "{id} source must be absolute: {source}");
         }
         // The release default is the product's own market host. Pinned because
@@ -2126,14 +2132,15 @@ model = "mimo-v2.5-free"
         // via `is_official_source` (auto-update off). Since doc 30 each market
         // ships as **one archive** (not a file-per-entry tree on the site), and
         // `master` is the mutable market tip — publishing a market must not
-        // require shipping a new binary.
+        // require shipping a new binary. Doc 30 §6.1 moves `experts` to the
+        // index: one ~1 MiB pointer, entry archives on demand.
         let sources: Vec<&str> = builtin.iter().map(|(_, _, source)| source.as_str()).collect();
         assert_eq!(
             sources,
             [
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/experts.zip",
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/skills.zip",
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/connectors.zip",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/experts/index.json",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/skills/index.json",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/connectors/index.json",
             ]
         );
     }

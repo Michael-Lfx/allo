@@ -47,7 +47,7 @@ describe('desktop companion user-menu entry', () => {
     expect(companionIndex).toBeGreaterThan(creditsIndex);
     expect(languageIndex).toBeGreaterThan(companionIndex);
     expect(userMenuSource.includes('onOpenCompanion')).toBe(true);
-    expect(userMenuSource.includes('Peoples')).toBe(true);
+    expect(userMenuSource.includes("name='users'")).toBe(true);
     expect(userMenuSource.includes('CreditsWebsiteButton')).toBe(true);
     expect(userMenuSource.includes('CreditsRefreshButton')).toBe(false);
   });

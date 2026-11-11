@@ -124,3 +124,5 @@ web/packages/runtime/vendor/
 .edgeone
 .zcodeignore
 .dsh/
+.tmp/
+.dsh-meow/

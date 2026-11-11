@@ -153,7 +153,7 @@ pub fn image_generation_response(
         body["user_prompt_block"] = json!(block);
         body["delivery_note"] = json!(
             "Include user_prompt_block in your reply so the user sees the final API prompt. \
-             Deliver the image with MEDIA: when local_path is available."
+             Do not paste MEDIA: paths; the app shows the image."
         );
     }
     body.to_string()
@@ -220,11 +220,11 @@ pub fn video_generation_response(
     }
     if media_hint.is_null() {
         body["delivery_note"] = json!(
-            "Video URL is available; share user_prompt_block and the link, or retry if MEDIA: path is needed."
+            "Video URL is available; share user_prompt_block and the link."
         );
     } else if has_user_prompt_block {
         body["delivery_note"] = json!(
-            "Include user_prompt_block in your reply. Deliver the video with MEDIA: when local_path is available."
+            "Include user_prompt_block in your reply. Do not paste MEDIA: paths; the app shows the video."
         );
     }
     body.to_string()

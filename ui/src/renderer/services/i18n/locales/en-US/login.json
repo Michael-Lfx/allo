@@ -1,6 +1,6 @@
 {
-  "pageTitle": "Flowy - Sign In",
-  "brand": "Flowy",
+  "pageTitle": "{{brandName}} - Sign In",
+  "brand": "{{brandName}}",
   "brandTagline": "Let a trusted device become the start of work.",
   "brandFlow": "Device → Workspace → Result",
   "welcomeTitle": "Sign in to WebUI",

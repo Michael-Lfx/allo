@@ -37,14 +37,14 @@ describe('conversation send idempotency wiring', () => {
 
   test('captures a workspace snapshot when ordinary messages enter the queue', () => {
     for (const source of platformSources) {
-      expect(source).toContain('workspace_path: workspacePath');
+      expect(source).toContain('workspace_path: queuedWorkspacePath');
     }
     expect(queueSource).toContain('workspace_path: workspace_path ?? \'\'');
   });
 
   test('uses UUIDv7 for every default direct-send id before forwarding it as the header key', () => {
     for (const source of platformSources) {
-      expect(source.includes("import { uuid, uuidv7 } from '@/common/utils';")).toBe(true);
+      expect(source).toMatch(/import\s*\{[^}]*\buuidv7\b[^}]*\}\s*from\s*'@\/common\/utils';/);
 
       const defaultId = source.indexOf('id = uuidv7(),');
       const forwardedId = source.indexOf('idempotency_key: id,', defaultId);

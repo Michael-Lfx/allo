@@ -118,6 +118,9 @@ pub struct ModuleStates {
     pub agent_execution: Arc<AgentExecutionEngine>,
     /// P3-X2: per-pet browser-use credential secret CRUD state.
     pub secret: SecretRouterState,
+    /// Host-managed ppt-master capability. One instance for the HTTP routes
+    /// and the gateway tools, so they share one install slot.
+    pub presentation: nomifun_presentation::PresentationRouterState,
     pub terminal: TerminalRouterState,
     pub office: OfficeRouterState,
     pub shell: ShellRouterState,
@@ -490,6 +493,14 @@ async fn reconcile_unsettled_conversation_turns_before_background_work(
 }
 
 /// Build all default `ModuleStates` from application services.
+/// Install progress is instance scoped (data dir), so it rides the instance
+/// bus to the authoritative owner.
+fn build_presentation_state(services: &AppServices) -> nomifun_presentation::PresentationRouterState {
+    let service = nomifun_presentation::PresentationCapabilityService::new(&services.data_dir);
+    service.set_event_broadcaster(services.event_bus.clone());
+    nomifun_presentation::PresentationRouterState { service }
+}
+
 pub async fn build_module_states(services: &AppServices) -> (ModuleStates, ChannelMessageLoopComponents) {
     let boot = Instant::now();
     tracing::info!("startup: module state build started");
@@ -698,6 +709,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             preset.service.clone(),
         ),
         secret: build_secret_state(services),
+        presentation: build_presentation_state(services),
         terminal: build_terminal_state(services),
         office: build_office_state(services),
         shell: build_shell_state(services),

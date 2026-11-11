@@ -55,6 +55,8 @@ export type GenerationTaskView = {
   last_frame_media_id?: string | null;
   /** Set when the job was started from a canvas node. Empty for home clip tasks. */
   project_id?: string | null;
+  /** Canvas node this job was started for. Empty for home clip tasks. */
+  node_id?: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -72,6 +74,7 @@ export type CreateGenerationBody = {
   first_frame_media_id?: string;
   last_frame_media_id?: string;
   project_id?: string;
+  node_id?: string;
 };
 
 export function resolveCanvasUrl(path: string | null | undefined): string | null {
@@ -180,10 +183,11 @@ export async function cancelGenerationTask(taskId: string): Promise<GenerationTa
 export async function listGenerationTasks(
   limit = 30,
   offset = 0,
-  options?: { standalone?: boolean }
+  options?: { standalone?: boolean; projectId?: string }
 ): Promise<{ tasks: GenerationTaskView[]; total: number }> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (options?.standalone) params.set('standalone', 'true');
+  if (options?.projectId) params.set('project_id', options.projectId);
   return httpRequest<{ tasks: GenerationTaskView[]; total: number }>(
     'GET',
     `/api/video-canvas/tasks?${params.toString()}`
