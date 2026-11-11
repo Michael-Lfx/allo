@@ -26,7 +26,10 @@ import {
   exportTeam,
   materializePack,
   type ExportDeps,
+  type ExportOptions,
   type ExportResult,
+  type MarketStore,
+  type MaterializeOptions,
 } from "./export";
 import { parseReadinessLine, type ReadinessInfo } from "./readiness";
 import {
@@ -51,7 +54,10 @@ export {
   exportTeam,
   materializePack,
   type ExportDeps,
+  type ExportOptions,
   type ExportResult,
+  type MarketStore,
+  type MaterializeOptions,
 };
 
 export interface HarnessOptions extends SpawnOptions {
