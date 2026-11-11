@@ -7,10 +7,8 @@
 import { Button, Card, Typography } from '@arco-design/web-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AppMessage as Message } from '@/renderer/components/notifications';
 import { learningApi } from '../api';
 import type { QuizProgressView } from '../types';
-import { errorMessage } from '../utils';
 
 const { Text } = Typography;
 
@@ -26,25 +24,26 @@ const { Text } = Typography;
  * 回调后 index.tsx bump 令牌）再拉一次。读数面非门禁，结算后由会话结束
  * 回调驱动归零呈现，轮询徒增请求面。
  *
- * 409 兜底（R3）：读数非门禁——due 呈现与点开测之间存在竞态窗口，开测
- * 被后端 409 拒时（onStartQuiz 回调拒绝即本区块的兜底触发面，u3 接线后
- * 生效）toast 报实情 + 重拉进度；会话容器内的完整边界态归 u5。 */
+ * 开测点击（u5 R4 简化）：即调 onStartQuiz 同步打开会话容器（index.tsx
+ * 接线为同步 setState，不 reject）——本区块不再有 loading 态与失败兜底；
+ * start 409（due 门竞态）的完整边界态归会话容器 QuizSession（u5 R2）：
+ * toast 未到期文案 + onConflict bump 令牌（本卡随 refreshToken 重拉归零
+ * 读数）+ 关闭会话。 */
 export function QuizEntryCard({
   courseId,
   refreshToken,
   onStartQuiz,
 }: {
   courseId: string;
-  /** 进度刷新令牌：进页初值；测验会话结束回调后 +1（u3 接线）驱动重拉 */
+  /** 进度刷新令牌：进页初值；测验会话结束/冲突回调后 +1（u3/u5 接线）驱动重拉 */
   refreshToken: number;
-  /** u3 接线位：打开会话容器。回调拒绝（如开测 409）= 本区块兜底呈现 */
-  onStartQuiz: () => void | Promise<void>;
+  /** u3 接线位：打开会话容器（同步；409 边界态在容器内处理，u5 R2） */
+  onStartQuiz: () => void;
 }) {
   const { t } = useTranslation();
   const [progress, setProgress] = useState<QuizProgressView | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [starting, setStarting] = useState(false);
-  // 并发重拉 last-wins 序号：令牌 bump / 409 兜底重拉与进页拉并行时，
+  // 并发重拉 last-wins 序号：令牌 bump / 冲突重拉与进页拉并行时，
   // 只让最新一次写读数，旧响应不得回写陈旧 N/K。
   const pullSeqRef = useRef(0);
 
@@ -70,17 +69,7 @@ export function QuizEntryCard({
   const due = progress?.due ?? false;
   const handleStart = () => {
     if (!due) return;
-    setStarting(true);
-    Promise.resolve()
-      .then(onStartQuiz)
-      .catch((startError: unknown) => {
-        // R3 兜底：报实情（errorMessage 409 → conflictBusy 单源映射）+
-        // 重拉读数（开测被拒瞬间 N/K 可能已变，呈现如实）。会话容器内的
-        // 完整边界态归 u5。
-        Message.error(errorMessage(t, startError));
-        void pullProgress();
-      })
-      .finally(() => setStarting(false));
+    onStartQuiz();
   };
 
   // 进度在拉：先不出卡，避免读数空闪；存在性语义（归档/删除不渲染）在
@@ -112,7 +101,7 @@ export function QuizEntryCard({
             </>
           )}
         </div>
-        <Button type='primary' loading={starting} disabled={!due} onClick={handleStart}>
+        <Button type='primary' disabled={!due} onClick={handleStart}>
           {t('learning.quizStartButton')}
         </Button>
       </div>
