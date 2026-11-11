@@ -48,6 +48,7 @@ export function CourseGenerationProgress({
   sources = [],
   courseKind,
   restored = false,
+  structureLine = null,
   onStartLearning,
   onRetry,
   onCancel,
@@ -63,6 +64,11 @@ export function CourseGenerationProgress({
   /** 恢复态（页面挂载时从快照重建的生成任务）：终态面板只出指引文案，
    * 不提供重发式重试（见头注释）。缺省 = in-session。 */
   restored?: boolean;
+  /** completed 卡片结构态行（v4）：结构在跑时「知识结构生成中 · 已 m:ss」
+   * 的已翻译文案（index 由 structurePillWatch 同一快照轮询派生，非本组件
+   * 自建轮询）。null/缺省 = 不渲染（终态/排队/未接管都无行——卡片是 HTTP
+   * 响应快照，本票不刷新它）；仅 learning_graph 卡片渲染。 */
+  structureLine?: string | null;
   /** 建课管线代际（x11）：课程摘要可用时显式传入；生成中从 WS 帧兜底读取。 */
   pipeline?: 'sampling' | 'source_plan';
   onStartLearning: (courseId: string) => void;
@@ -393,6 +399,17 @@ export function CourseGenerationProgress({
                 {t('learning.genModulesCount', { count: result.modules.length })} ·{' '}
                 {t('learning.genLessonsCount', { count: result.course.total_lessons })}
               </Text>
+              {/* 结构态披露（v4）：graph 流 HTTP 秒回后结构仍在后台跑——在跑
+                  期间在卡片里如实披露（无交互纯文案，真话源头在 Pill/工作区）；
+                  终态/排队/未接管不渲染（卡片是快照，本票不刷新它）。仅
+                  learning_graph 渲染；v2 流卡片零变化。 */}
+              {graphFlow && structureLine && (
+                <div>
+                  <Text type='secondary' className='text-12px'>
+                    {structureLine}
+                  </Text>
+                </div>
+              )}
               {/* 采样披露（t2）：建课完成视图如实报出按目标采样了多少文件，
                   目标与库无交集时明说退回默认顺序（工作区同一行、同一口径） */}
               {result.course.sampling && (

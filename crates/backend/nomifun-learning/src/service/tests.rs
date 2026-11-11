@@ -35,7 +35,10 @@
         }
     }
 
-    async fn job_test_service() -> (LearningService, Arc<KnowledgeService>, nomifun_common::UserId) {
+    /// `pub(super)`：learning_graph 的 cfg(test) 模块复用本夹具（F5 attempt
+    /// 初始化时序测试要直呼私有任务体方法，只能住在 learning_graph 内）。
+    pub(super) async fn job_test_service()
+    -> (LearningService, Arc<KnowledgeService>, nomifun_common::UserId) {
         let data_dir = tempfile::tempdir().unwrap();
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
@@ -2362,7 +2365,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
     /// 学习图课程的最小 DB 夹具（ADR-0009 概念网模型）：课程行 +
     /// 隐含模块 + 两个节点（节点A teaches 概念「向量基础」@teach，节点B
     /// assumes 同概念 @know——依赖由概念网折叠，没有先修边）+ 概念登记表行。
-    async fn seed_graph_course(
+    pub(super) async fn seed_graph_course(
         service: &LearningService,
     ) -> (String, String, String) {
         let pool = service.pool_for_tests();
@@ -5205,6 +5208,7 @@ async fn structure_generation_stops_early_on_repeated_violations() {
         None,
         &input,
         None,
+        &|_| {}, // attempt 回调 noop（无注册表 guard 可回写）
     )
     .await
     .unwrap_err();

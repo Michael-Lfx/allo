@@ -17,6 +17,8 @@ import { useCourseCreation } from './hooks/useCourseCreation';
 import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
+import { structureCardLine, structurePillSpec, useStructurePillWatch } from './structurePillWatch';
+import type { StructurePillSpec } from './structurePillWatch';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
 import { errorMessage, knowledgeBaseNames, loadStoredReviewFilters } from './utils';
 
@@ -41,6 +43,14 @@ const CreateCourseDialog = lazy(() =>
 const TagEditorModal = lazy(() =>
   import('./components/TagEditorModal').then((m) => ({ default: m.TagEditorModal }))
 );
+
+/** 图课程流 Pill 分流（v3，F2 哨兵收敛）：`phase` 显式两相取代
+ * undefined/null 双哨兵。'legacy' = 不在图课程流（v2 描述流/知识库流的
+ * 既有状态词典 Pill，零变化）；'structure' = 图课程流接管，`spec` 为
+ * null 即退场（落库/注册表清空——完成真话在工作区徽章/摘要行与卡片）。 */
+type GraphPillFacet =
+  | { phase: 'legacy' }
+  | { phase: 'structure'; spec: StructurePillSpec | null };
 
 const LearningPage: React.FC = () => {
   const { id } = useParams<{ id?: string }>();
@@ -162,6 +172,68 @@ const LearningPage: React.FC = () => {
     // 依赖首次渲染值，对一次性恢复语义足够。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 图课程流 Pill 真值分流（v3，G1）：HTTP 秒回 completed 后，Pill 不再挂
+  // 「✓ 生成完成」——改绑该课 structure 任务快照（structurePillWatch）。
+  // course id：in-session 取 result.course.id；恢复态收敛完成同样先经
+  // fetchCourse 落入 result——两路统一取 result，restoredTask 无需另带 id。
+  // 激活面（v4 放宽）：只要图课程 completed 就开轮询——generation 非空时
+  // 「对话框打开」与「Pill 可见」互斥且必居其一（pillVisible =
+  // generation 非空且对话框关闭），原来只在 Pill 可见时开是为对话框期间
+  // 不空转；v4 起对话框 completed 卡片的结构态行消费同一 watch 快照
+  // （structureCardLine，经 props 链下发），仍是单一轮询源、不新增第二份
+  // 轮询。courseId 缺失（result 异常）时不接管——宁可退场不撒谎。
+  const generation = creation.generation;
+  const pillVisible = generation !== null && !creation.generateVisible;
+  const graphCompletedPill =
+    generation !== null &&
+    generation.request.course_kind === 'learning_graph' &&
+    generation.status === 'completed';
+  const structureWatch = useStructurePillWatch(
+    graphCompletedPill ? generation.result?.course.id ?? null : null
+  );
+  // 图课程流分流判据（F2 收敛）：undefined/null 双哨兵换成显式两相——
+  // 'legacy' = 不在图课程流（既有状态词典 Pill，v2 流零变化）；
+  // 'structure' = 图课程流接管（spec null = 落库/missing 退场）。
+  const graphPillFacet: GraphPillFacet = graphCompletedPill
+    ? { phase: 'structure', spec: pillVisible ? structurePillSpec(structureWatch, t) : null }
+    : { phase: 'legacy' };
+  // 单渲染块的装配面（F2 双块合并）：null = Pill 不渲染（对话框开着 /
+  // 落库退场 / missing）；legacy 相无 label 覆盖、取消走整任务端点，
+  // structure 相带 spec 的 label 与 per-key 取消键。
+  const pillProps =
+    generation === null || !pillVisible
+      ? null
+      : graphPillFacet.phase === 'legacy'
+        ? { status: generation.status, label: undefined, taskKey: null }
+        : graphPillFacet.spec === null
+          ? null
+          : {
+              status: graphPillFacet.spec.status,
+              label: graphPillFacet.spec.label ?? undefined,
+              taskKey: graphPillFacet.spec.taskKey,
+            };
+  // completed 卡片结构态行（v4）：同一 watch 派生的已翻译文案；仅对话框
+  // 在跑期间被渲染（卡片本体），终态/排队/未接管为 null——该行不渲染。
+  const structureCardLineText = graphCompletedPill ? structureCardLine(structureWatch, t) : null;
+
+  // 图课程流取消（per-key 端点，d7 已暴露）：取消胜出 = cancelled；任务已
+  // 先到终态（竞速落败）= 如实提示。终态以随后的快照轮询为准（Pill 面）。
+  const cancelStructureTask = useCallback(
+    async (key: string) => {
+      try {
+        const result = await learningApi.cancelGenerationTask(key);
+        if (result.state === 'cancelled') {
+          Message.success(t('learning.genCancelRequested'));
+        } else {
+          Message.info(t('learning.genNotRunning'));
+        }
+      } catch (cancelError) {
+        Message.error(errorMessage(t, cancelError));
+      }
+    },
+    [t]
+  );
 
   const importCourse = useCallback(async () => {
     let pack: unknown;
@@ -441,26 +513,43 @@ const LearningPage: React.FC = () => {
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
+            // completed 卡片结构态行（v4）：同一 structurePillWatch 快照派生，
+            // 仅 learning_graph 卡片渲染；终态为 null 该行退场。
+            structureLine={structureCardLineText}
           />
         </Suspense>
 
         {/* 后台生成指示条：对话框关闭后生成仍在继续，从这里查看进度或取消。
             副行文案（c3）：恢复态按快照 kind 走词典组装，后端中文 topic 不
-            直达 UI；实时链 description 即用户输入，原样显示。 */}
-        {creation.generation && !creation.generateVisible && (
+            直达 UI；实时链 description 即用户输入，原样显示。
+            图课程流分流（v3，G1）：HTTP 秒回 completed 后 Pill 绑 structure
+            快照真值——running/queued 换新 label，落库即退场（不显示完成态），
+            failed/cancelled 沿用既有终态语义；v2 描述流/知识库流零变化。
+            单渲染块（F2）：graphPillFacet 定分流，pillProps 出条件 props。 */}
+        {generation !== null && pillProps && (
           <CourseGenerationPill
-            status={creation.generation.status}
+            status={pillProps.status}
+            label={pillProps.label}
             topic={
-              creation.generation.restoredTask
-                ? restoredTaskTopic(creation.generation.restoredTask, t)
-                : creation.generation.request.description ?? ''
+              generation.restoredTask
+                ? restoredTaskTopic(generation.restoredTask, t)
+                : generation.request.description ?? ''
             }
             sources={knowledgeBaseNames(
-              creation.generation.request.knowledge_base_ids ?? [],
+              generation.request.knowledge_base_ids ?? [],
               creation.knowledgeBases
             )}
             onView={() => void creation.openGenerator()}
-            onCancel={() => void creation.cancelGeneration()}
+            onCancel={() => {
+              // 分流按相位不按 taskKey 空判：legacy 相取消走整任务端点；
+              // structure 相走 per-key，首读在途 taskKey null = 守卫 no-op
+              // （一次首读往返的窗口，行为与合并前双块逐字一致）。
+              if (graphPillFacet.phase === 'structure') {
+                if (pillProps.taskKey) void cancelStructureTask(pillProps.taskKey);
+              } else {
+                void creation.cancelGeneration();
+              }
+            }}
           />
         )}
 

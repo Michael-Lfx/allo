@@ -53,6 +53,9 @@ const renderProgress = async (
     result?: CourseDetail | null;
     error?: string | null;
     restored?: boolean;
+    /** completed 卡片结构态行（v4）：index 由 structurePillWatch 派生的已
+     * 翻译文案；null/缺省 = 不渲染。 */
+    structureLine?: string | null;
   }
 ): Promise<string> => {
   const instance = await initTestI18n(locale);
@@ -64,6 +67,7 @@ const renderProgress = async (
         result={options.result ?? null}
         error={options.error ?? null}
         restored={options.restored ?? false}
+        structureLine={options.structureLine ?? null}
         onStartLearning={noop}
         onRetry={noop}
         onCancel={noop}
@@ -135,6 +139,57 @@ describe('CourseGenerationProgress（学习图流，c1）', () => {
     expect(queued).toContain('准备');
     expect(queued).toContain('任务已提交，正在排队等待空闲资源槽；排队期可取消。');
     expect(count(queued, '取消生成')).toBe(1);
+  });
+});
+
+describe('CourseGenerationProgress（completed 卡片结构态行，v4）', () => {
+  const LINE = '知识结构生成中 · 已 7:31';
+
+  test('graph + completed + 在跑行：卡片出现「知识结构生成中 · 已 …」secondary 文案行', async () => {
+    const html = await renderProgress('zh-CN', {
+      status: 'completed',
+      courseKind: 'learning_graph',
+      result: card('通盘认识股票市场基础'),
+      structureLine: LINE,
+    });
+    expect(count(html, LINE)).toBe(1);
+    // 位置：在「N 个模块 · 0 个课时」读数行下方（同一卡片内）
+    expect(html.indexOf('个模块')).toBeGreaterThan(-1);
+    expect(html.indexOf('个模块')).toBeLessThan(html.indexOf(LINE));
+    // 无交互面：该行是纯文案——卡片里仍只有「开始学习」一个按钮
+    expect(count(html, '<button')).toBe(1);
+    expect(html).toContain('开始学习');
+  });
+
+  test('graph + completed + 终态/无行（structureLine null）：结构态行不渲染（本票不刷新卡片）', async () => {
+    const html = await renderProgress('zh-CN', {
+      status: 'completed',
+      courseKind: 'learning_graph',
+      result: card('通盘认识股票市场基础'),
+      structureLine: null,
+    });
+    expect(html).not.toContain('知识结构生成中');
+    expect(html).toContain('通盘认识股票市场基础');
+  });
+
+  test('graph + completed 缺省（不传 structureLine）：零变化（结构态行不渲染）', async () => {
+    const html = await renderProgress('zh-CN', {
+      status: 'completed',
+      courseKind: 'learning_graph',
+      result: card('通盘认识股票市场基础'),
+    });
+    expect(html).not.toContain('知识结构生成中');
+  });
+
+  test('v2 流 completed 即使误传 structureLine 也不渲染（仅 learning_graph 渲染，钉死）', async () => {
+    const html = await renderProgress('zh-CN', {
+      status: 'completed',
+      result: card('证券入门知识库课'),
+      structureLine: LINE,
+    });
+    expect(html).toContain('证券入门知识库课');
+    expect(html).not.toContain('知识结构生成中');
+    expect(count(html, '<button')).toBe(1);
   });
 });
 
