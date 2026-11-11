@@ -7089,6 +7089,7 @@ dependencies = [
  "clap",
  "dirs 6.0.0",
  "flate2",
+ "flowy-web",
  "fs2",
  "futures-util",
  "git2",
