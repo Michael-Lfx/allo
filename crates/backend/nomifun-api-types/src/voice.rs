@@ -57,6 +57,8 @@ pub struct VoiceFeedbackConfig {
     pub wake_reply: String,
     pub interject_keyword: String,
     pub dismiss_phrases: Vec<String>,
+    /// Kept for config/API compatibility. Exit audio always uses the bundled
+    /// pre-rendered farewell, so this text is no longer spoken on dismissal.
     pub dismiss_reply: String,
     #[serde(
         default = "default_tts_backend",
