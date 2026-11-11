@@ -12,11 +12,10 @@ type LocaleJson = Record<string, unknown>;
 
 /**
  * t5 source-plan surfaces: the modern generation stepper (triage → source
- * plan → expansion), the cost-gate confirmation modal, and the course-detail
- * "Source coverage" card (SourcePlan / SourceCoverage vocabulary — never the
- * learning-graph Structure / Coverage Gauge). A missing key renders as a raw
- * i18n key in the UI, which the generators cannot catch (they only track key
- * sets).
+ * plan → expansion) and the course-detail "Source coverage" card
+ * (SourcePlan / SourceCoverage vocabulary — never the learning-graph
+ * Structure / Coverage Gauge). A missing key renders as a raw i18n key in
+ * the UI, which the generators cannot catch (they only track key sets).
  */
 const SOURCE_PLAN_KEYS = [
   // 现代管线步骤条（知识库流）：准备 → 来源分诊 → 来源结构计划 → 课时展开 → 完成
@@ -33,11 +32,6 @@ const SOURCE_PLAN_KEYS = [
   // source_plan_ready / coverage_ready 帧
   'genSourcePlanReady',
   'genCoverageReady',
-  // 成本门确认弹窗（y05 起并入计划卡；只余确定性读数行）
-  'costGateFiles',
-  'costGateBatches',
-  'costGateCalls',
-  'costGateDuration',
   // 课程详情「来源覆盖」卡
   'sourceCoverageTitle',
   'sourceCoverageUnavailable',
@@ -63,10 +57,6 @@ const PLACEHOLDERS: readonly [string, readonly string[]][] = [
   ['genUncertainTooMany', ['{{count}}']],
   ['genSourcePlanReady', ['{{chapters}}', '{{concepts}}']],
   ['genCoverageReady', ['{{covered}}', '{{skipped}}', '{{fallback}}']],
-  ['costGateFiles', ['{{count}}']],
-  ['costGateBatches', ['{{count}}']],
-  ['costGateCalls', ['{{count}}']],
-  ['costGateDuration', ['{{minutes}}']],
   ['sourceCoverageTopics', ['{{covered}}', '{{total}}', '{{skipped}}']],
   ['sourceCoverageDestinations', ['{{prereq}}', '{{practice}}']],
   ['sourceCoverageMixed', ['{{count}}']],
@@ -108,7 +98,7 @@ function assertStringKeys(localeName: string, locale: LocaleJson, keys: readonly
 }
 
 describe('t5 source plan locale coverage', () => {
-  test('stepper, cost gate and source coverage card have copy in both locales', () => {
+  test('stepper and source coverage card have copy in both locales', () => {
     assertStringKeys('en-US learning', enLearning as LocaleJson, SOURCE_PLAN_KEYS);
     assertStringKeys('zh-CN learning', zhLearning as LocaleJson, SOURCE_PLAN_KEYS);
   });

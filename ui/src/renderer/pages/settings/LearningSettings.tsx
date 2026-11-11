@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, InputNumber, Slider, Switch } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Slider, Switch, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { useWideContentLayout } from '@/renderer/pages/learning/components/ContentWidthToggle';
@@ -87,7 +87,17 @@ const LearningSettings: React.FC = () => {
         <SettingsList>
             <PreferenceRow
               label={t('learning.settings.wideContent')}
-              description={t('learning.settings.wideContentHint')}
+              description={
+                <Tooltip
+                  content={
+                    <span className='whitespace-pre-line'>
+                      {t('learning.settings.wideContentDetail')}
+                    </span>
+                  }
+                >
+                  <span>{t('learning.settings.wideContentHint')}</span>
+                </Tooltip>
+              }
               controlLayout='field'
             >
               <Switch checked={wideContent} onChange={(value) => void setWideContent(value)} />

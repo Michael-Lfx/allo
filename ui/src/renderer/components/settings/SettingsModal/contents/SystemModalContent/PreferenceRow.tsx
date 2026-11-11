@@ -13,7 +13,7 @@ import {
 const PreferenceRow: React.FC<{
   label: string;
   children: React.ReactNode;
-  description?: string;
+  description?: React.ReactNode;
   controlLayout?: SettingsRowProps['controlLayout'];
 }> = ({ label, children, description, controlLayout = 'compact' }) => (
   <SettingsRow
