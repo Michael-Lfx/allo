@@ -435,3 +435,117 @@ describe('v3 新 i18n key：真实词典双语对称断言（红线 2）', () =>
     expect(STRUCTURE_PILL_I18N_KEYS).toContain('learning.genBgStructureQueued');
   });
 });
+
+describe('structureCardLine（watch 态 → completed 卡片结构态行；null = 不渲染）', () => {
+  test('watching + running + elapsed：卡片耗时键 + 已格式化耗时 vars', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t, calls } = tStub();
+    expect(structureCardLine({ phase: 'watching', row: row({ elapsed_secs: 451 }) }, t)).toBe(
+      'learning.genCardStructureRunningElapsed'
+    );
+    expect(calls[0]?.vars).toEqual({ elapsed: '07:31' });
+  });
+
+  test('attempt 在场也只走耗时键（卡片行无轮次，轮次真话在 Pill）', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t, calls } = tStub();
+    expect(
+      structureCardLine({ phase: 'watching', row: row({ attempt: 2, elapsed_secs: 451 }) }, t)
+    ).toBe('learning.genCardStructureRunningElapsed');
+    expect(calls[0]?.vars).toEqual({ elapsed: '07:31' });
+  });
+
+  test('watching + running 但 elapsed 缺失：无耗时键（不渲染「已 」空尾巴）', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t, calls } = tStub();
+    expect(
+      structureCardLine(
+        { phase: 'watching', row: row({ elapsed_secs: null, attempt: null }) },
+        t
+      )
+    ).toBe('learning.genCardStructureRunning');
+    expect(calls[0]?.vars).toBeUndefined();
+  });
+
+  test('watching + 行未读到（首读在途）：乐观无耗时键（面孔先立、读数随后，与 Pill 同口径）', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t, calls } = tStub();
+    expect(structureCardLine({ phase: 'watching', row: null }, t)).toBe(
+      'learning.genCardStructureRunning'
+    );
+    expect(calls[0]?.vars).toBeUndefined();
+  });
+
+  test('queued 行 → null（卡片只披露「在跑」；排队真话在 Pill/工作区）', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t } = tStub();
+    expect(
+      structureCardLine(
+        { phase: 'watching', row: row({ state: 'queued', elapsed_secs: null }) },
+        t
+      )
+    ).toBeNull();
+  });
+
+  test('终态行（done/failed/cancelled）→ null（落库后本票不刷新卡片，该行退场）', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t } = tStub();
+    for (const state of ['done', 'failed', 'cancelled'] as const) {
+      expect(
+        structureCardLine(
+          { phase: 'watching', row: row({ state, elapsed_secs: null }) },
+          t
+        )
+      ).toBeNull();
+    }
+    expect(
+      structureCardLine(
+        { phase: 'settled', row: row({ state: 'done', elapsed_secs: null }) },
+        t
+      )
+    ).toBeNull();
+  });
+
+  test('idle / settled + missing（row null）→ null（未接管与退场都不渲染）', async () => {
+    const { structureCardLine } = await import('./structurePillWatch');
+    const { t } = tStub();
+    expect(structureCardLine({ phase: 'idle', row: null }, t)).toBeNull();
+    expect(structureCardLine({ phase: 'settled', row: null }, t)).toBeNull();
+  });
+});
+
+describe('v4 新 i18n key：真实词典双语对称断言（红线 2）', () => {
+  const short = (key: string) => key.replace(/^learning\./, '');
+
+  test('zh-CN 与 en-US learning.json 都含卡片新 key（非空字符串）', async () => {
+    const { STRUCTURE_CARD_I18N_KEYS } = await import('./structurePillWatch');
+    expect(STRUCTURE_CARD_I18N_KEYS).toEqual([
+      'learning.genCardStructureRunning',
+      'learning.genCardStructureRunningElapsed',
+    ]);
+    const zh = learningZh as unknown as Record<string, string>;
+    const en = learningEn as unknown as Record<string, string>;
+    for (const key of STRUCTURE_CARD_I18N_KEYS) {
+      expect(typeof zh[short(key)]).toBe('string');
+      expect(zh[short(key)].length).toBeGreaterThan(0);
+      expect(en[short(key)].length).toBeGreaterThan(0);
+    }
+  });
+
+  test('zh 文案钉住票面语义：「知识结构生成中 · 已 {{elapsed}}」；en 同构插值', async () => {
+    const { STRUCTURE_CARD_I18N_KEYS } = await import('./structurePillWatch');
+    const zh = learningZh as unknown as Record<string, string>;
+    const en = learningEn as unknown as Record<string, string>;
+    const elapsedKey = STRUCTURE_CARD_I18N_KEYS.find(
+      (k) => short(k) === 'genCardStructureRunningElapsed'
+    );
+    expect(zh[short(elapsedKey!)]).toContain('知识结构生成中');
+    expect(zh[short(elapsedKey!)]).toContain('{{elapsed}}');
+    expect(zh[short(elapsedKey!)]).toContain('· 已');
+    expect(en[short(elapsedKey!)]).toContain('{{elapsed}}');
+    const plainKey = STRUCTURE_CARD_I18N_KEYS.find(
+      (k) => short(k) === 'genCardStructureRunning'
+    );
+    expect(zh[short(plainKey!)]).toBe('知识结构生成中');
+  });
+});

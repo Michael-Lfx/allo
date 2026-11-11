@@ -17,7 +17,7 @@ import { useCourseCreation } from './hooks/useCourseCreation';
 import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
-import { structurePillSpec, useStructurePillWatch } from './structurePillWatch';
+import { structureCardLine, structurePillSpec, useStructurePillWatch } from './structurePillWatch';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
 import { errorMessage, knowledgeBaseNames, loadStoredReviewFilters } from './utils';
 
@@ -168,8 +168,12 @@ const LearningPage: React.FC = () => {
   // 「✓ 生成完成」——改绑该课 structure 任务快照（structurePillWatch）。
   // course id：in-session 取 result.course.id；恢复态收敛完成同样先经
   // fetchCourse 落入 result——两路统一取 result，restoredTask 无需另带 id。
-  // 轮询只在 Pill 可见且图课程 completed 时开（对话框打开期间 Pill 隐藏，
-  // 不空转）；courseId 缺失（result 异常）时不接管——宁可退场不撒谎。
+  // 激活面（v4 放宽）：只要图课程 completed 就开轮询——generation 非空时
+  // 「对话框打开」与「Pill 可见」互斥且必居其一（pillVisible =
+  // generation 非空且对话框关闭），原来只在 Pill 可见时开是为对话框期间
+  // 不空转；v4 起对话框 completed 卡片的结构态行消费同一 watch 快照
+  // （structureCardLine，经 props 链下发），仍是单一轮询源、不新增第二份
+  // 轮询。courseId 缺失（result 异常）时不接管——宁可退场不撒谎。
   const generation = creation.generation;
   const pillVisible = generation !== null && !creation.generateVisible;
   const graphCompletedPill =
@@ -177,10 +181,13 @@ const LearningPage: React.FC = () => {
     generation.request.course_kind === 'learning_graph' &&
     generation.status === 'completed';
   const structureWatch = useStructurePillWatch(
-    pillVisible && graphCompletedPill ? generation.result?.course.id ?? null : null
+    graphCompletedPill ? generation.result?.course.id ?? null : null
   );
   const graphPillSpec =
     pillVisible && graphCompletedPill ? structurePillSpec(structureWatch, t) : undefined;
+  // completed 卡片结构态行（v4）：同一 watch 派生的已翻译文案；仅对话框
+  // 在跑期间被渲染（卡片本体），终态/排队/未接管为 null——该行不渲染。
+  const structureCardLineText = graphCompletedPill ? structureCardLine(structureWatch, t) : null;
 
   // 图课程流取消（per-key 端点，d7 已暴露）：取消胜出 = cancelled；任务已
   // 先到终态（竞速落败）= 如实提示。终态以随后的快照轮询为准（Pill 面）。
@@ -478,6 +485,9 @@ const LearningPage: React.FC = () => {
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
+            // completed 卡片结构态行（v4）：同一 structurePillWatch 快照派生，
+            // 仅 learning_graph 卡片渲染；终态为 null 该行退场。
+            structureLine={structureCardLineText}
           />
         </Suspense>
 

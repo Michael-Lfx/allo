@@ -65,6 +65,8 @@
   "genBgStructureRunningElapsed": "结构生成中 · 已 {{elapsed}}",
   "genBgStructureRunningAttempt": "结构生成中 · 第 {{attempt}} 轮 · 已 {{elapsed}}",
   "genBgStructureQueued": "结构生成排队中",
+  "genCardStructureRunning": "知识结构生成中",
+  "genCardStructureRunningElapsed": "知识结构生成中 · 已 {{elapsed}}",
   "genView": "查看",
   "genCompleted": "课程生成完成",
   "genFailed": "课程生成失败",
