@@ -29,6 +29,11 @@ describe('release product profile contract', () => {
     expect(validateUnibuddyInstallerBitmaps(ROOT)).toEqual([]);
   });
 
+  test('a hardcoded Flowy macOS binary fails', () => {
+    const changed = workflow.replace('Contents/MacOS/$PRODUCT_NAME', 'Contents/MacOS/Flowy');
+    expect(validateReleaseProductProfiles(changed).some((item) => item.includes('hardcodes the Flowy binary'))).toBe(true);
+  });
+
   test('an unconditional GitHub upload fails', () => {
     const changed = workflow.replace(
       "        if: needs.release-context.outputs.publish_github == 'true'\n",
