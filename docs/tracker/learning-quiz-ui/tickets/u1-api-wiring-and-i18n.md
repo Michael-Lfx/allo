@@ -47,4 +47,20 @@
 
 ## Resolution
 
-（施工后收口）
+已施工收口（2026-11-11，a970df5c38 经 merge 合入 learn0928；双轴评审随 u5）。
+
+- R1：types.ts 七个 DTO 镜像（QuizProgressView/QuizRoundQuestionView/
+  QuizRoundView/QuizGradeFeedback/QuizCalibrationPoint/QuizRoundNodeReport/
+  QuizRoundReport），注释逐个标注 models.rs 3043–3142 单源行号 + settle.rs
+  常量名。
+- R2：api.ts quizProgress/quizStart/quizGrade/quizComplete（httpRequest+BASE
+  惯例）；**未接** quiz/calibration（节制，注释留 u4 裁决指引）。
+- R3：zh/en learning.json 各 16 条 `quiz*` 词条（进度读数/开测/会话标题/
+  题源节点标注/判分反馈五面/分级三档/折叠不计薪/边界三态）+ gen 产物
+  i18n-keys.d.ts +16 键。
+- 验证：typecheck 绿；gen:i18n + check:i18n 绿（12417 keys）；新增
+  quizDictionary.test.ts（16 键双语对称/占位逐键对称/键集合一致）4 测试 +
+  api.quiz.test.ts（四端点 method/path/body 边界钉死 + 无 quizCalibration）
+  6 测试；learning 目录回归 326 pass。TDD 红→绿走通（8 fail → 10/10）。
+- 备注：en 侧 quizNotDueHint/quizMissingAnswers 用 em-dash 分隔（zh 逗号
+  句式），占位两侧对称已断言钉住；无实质偏离。
