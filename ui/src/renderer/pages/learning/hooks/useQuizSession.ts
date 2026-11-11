@@ -19,7 +19,10 @@ import { errorMessage, type Translate } from '../utils';
  *   校验全题覆盖（后端缺题拒绝是兜底）；判分零落账，结算只在 complete。
  * - R6（生命周期）：`close()` 即弃回合（后端无取消端点，abandoned 语义由
  *   下次 start supersede 收口）；会话内不调 progress（N/K 读数由集成侧在
- *   会话结束回调后刷新）。 */
+ *   会话结束回调后刷新）。
+ * - R4（u4 收口时序）：complete 成功只进 `report` 相（报告在容器内呈现，
+ *   逐节点对账 + 分级），`onFinished` 延后到 [`QuizSessionController.finish`]
+ *   （「完成」按钮）才触发——集成侧据此刷新 N/K 归零读数并卸载会话。 */
 
 export type QuizSessionPhase =
   | 'loading'
@@ -27,6 +30,7 @@ export type QuizSessionPhase =
   | 'answering'
   | 'graded'
   | 'ready'
+  | 'report'
   | 'completed';
 
 export interface QuizSessionState {
@@ -40,6 +44,10 @@ export interface QuizSessionState {
   answers: Record<string, unknown>;
   /** R4 持答案：仅判分后存在、仅随当前题；下一题/关闭即弃 */
   feedback: QuizGradeFeedback | null;
+  /** u4 报告相：complete 成功的全卷报告（折叠节点 earned_xp=null 原样保
+   *  留，不做 0/空归一——呈现层按 null 呈「同日已结算 · 不计薪」）；仅
+   *  report 相持有，「完成」交回调、关闭即弃 */
+  report: QuizRoundReport | null;
   /** start 失败的人面文案（errorMessage 单源映射，后端原文不上屏） */
   error: string | null;
 }
@@ -51,6 +59,7 @@ export const initialQuizSessionState: QuizSessionState = {
   index: 0,
   answers: {},
   feedback: null,
+  report: null,
   error: null,
 };
 
@@ -65,7 +74,8 @@ export function missingAnswerCount(
 export interface QuizSessionControllerDeps {
   courseId: string;
   t: Translate;
-  /** 会话结束回调（complete 成功）：携带全卷报告，集成侧刷新 N/K 读数 */
+  /** 会话结束回调（u4：「完成」按钮交报告相收口时触发）：携带全卷报告，
+   *  集成侧刷新 N/K 读数 */
   onFinished: (report: QuizRoundReport) => void;
   /** 状态迁移通知（hook 订阅壳据此 setState） */
   onChange: (state: QuizSessionState) => void;
@@ -151,7 +161,8 @@ export function createQuizSessionController(deps: QuizSessionControllerDeps) {
     },
 
     /** 全卷结算（R5）：ready 相才可进；前置校验全题覆盖，缺题拒绝并提示
-     * （后端缺题拒绝是兜底）。成功经 onFinished 交报告，会话相收口。 */
+     * （后端缺题拒绝是兜底）。成功进 `report` 相（u4：报告在容器内呈现，
+     * onFinished 延后到 finish 的「完成」按钮）。 */
     async complete(): Promise<boolean> {
       if (state.phase !== 'ready' || !state.round || state.busy) return false;
       const missing = missingAnswerCount(state.round, state.answers);
@@ -162,14 +173,26 @@ export function createQuizSessionController(deps: QuizSessionControllerDeps) {
       emit({ ...state, busy: true });
       try {
         const finished = await api.quizComplete(courseId, state.round.round_id, state.answers);
-        emit({ ...state, busy: false, phase: 'completed' });
-        onFinished(finished);
+        // 折叠节点 earned_xp=null 原样入态（呈现层按 null 呈「同日已结算 ·
+        // 不计薪」，控制器不做 0/空归一）
+        emit({ ...state, busy: false, phase: 'report', report: finished });
         return true;
       } catch (completeError) {
         emit({ ...state, busy: false });
         notify(errorMessage(t, completeError));
         return false;
       }
+    },
+
+    /** 报告相收口（u4 R4）：只从 report 相可进；「完成」触发 onFinished 交
+     * 报告（集成侧清位 + bump quizProgressToken 刷新 N/K 归零读数并卸载），
+     * 会话相落 completed 兜底态。completed 相重复 finish 拒绝（幂等门）。 */
+    finish(): boolean {
+      if (state.phase !== 'report' || state.report === null) return false;
+      const finished = state.report;
+      emit({ ...state, phase: 'completed', report: null });
+      onFinished(finished);
+      return true;
     },
 
     /** 关闭会话（R6）：丢弃回合与全部反馈/收集态。后端无取消端点，abandoned
@@ -184,7 +207,7 @@ export type QuizSessionController = ReturnType<typeof createQuizSessionControlle
 
 export interface UseQuizSessionOptions {
   courseId: string;
-  /** 会话结束回调（complete 成功交报告），透传控制器；经 ref 间接保持稳定 */
+  /** 会话结束回调（u4：报告相「完成」交报告），透传控制器；经 ref 间接保持稳定 */
   onFinished: (report: QuizRoundReport) => void;
 }
 
@@ -224,6 +247,7 @@ export function useQuizSession({ courseId, onFinished }: UseQuizSessionOptions) 
     grade: controller.grade,
     next: controller.next,
     complete: controller.complete,
+    finish: controller.finish,
     close: controller.close,
   };
 }
