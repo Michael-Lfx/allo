@@ -218,11 +218,11 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         );
         return kept.length > 0 ? kept : usable[0] ? [usable[0].knowledge_base_id] : [];
       });
-    } catch (actionError) {
-      // o1：Error 走 errorMessage 单源映射；非 Error 落既有知识库词典句。
-      Message.error(
-        actionError instanceof Error ? errorMessage(t, actionError) : t('learning.loadBasesFailed')
-      );
+    } catch {
+      // F3 裁决：这个 catch 的失败语义恒同（= 拉知识库列表失败），语境句
+      // loadBasesFailed 优先于 errorMessage 通用映射——恢复票面指定的语境句
+      // （o1 曾改走通用映射，语境信息反而丢失）。原始报文不进 UI。
+      Message.error(t('learning.loadBasesFailed'));
     } finally {
       setKnowledgeLoading(false);
     }

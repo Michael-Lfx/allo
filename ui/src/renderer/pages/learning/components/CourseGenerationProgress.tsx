@@ -16,12 +16,102 @@ import {
   isModernPipeline,
   summarizeTools,
   triageCountsLine,
+  triageDetailCountsLine,
   uncertainTooMany,
 } from '../model';
 import { CourseSamplingLine } from './CourseSamplingLine';
 import { LEGACY_VISIBLE_PHASES, MODERN_VISIBLE_PHASES, PHASE } from '../phaseMeta';
 
 const { Text, Title } = Typography;
+
+/** triageCompleted 帧读数面（t5；F4 起独立成组件供渲染测试直接断言）：主行 =
+ * 总数 + 核心/跳过（o3 两段口径）；混合/重复/不确定三个残余计数与文件级列表
+ * 收进单一「详情」折叠（o6 收纳口径）——折叠首行是三个计数的模板串
+ * （triageDetailCountsLine），二级是跳过理由 / duplicate_of / uncertain 文件
+ * 列表（帧里有界 ≤10）。三个计数全为 0 且无列表时不出折叠（无空折叠）。 */
+export function TriageCompletedFrame({
+  event,
+  index,
+}: {
+  event: ILearningCourseGenerationEvent;
+  index: number;
+}) {
+  const { t } = useTranslation();
+  const counts = event.counts;
+  if (!counts) return null;
+  const detailCountsLine = triageDetailCountsLine(counts, t);
+  const triageListCount =
+    (event.excluded?.length ?? 0) +
+    (event.duplicates?.length ?? 0) +
+    (event.uncertain?.length ?? 0);
+  return (
+    <div className='flex flex-col gap-4px text-13px leading-20px'>
+      <span className='font-500 text-t-primary'>{triageCountsLine(counts, t)}</span>
+      {event.degraded && (
+        <span className='text-warning-6'>· {t('learning.genTriageDegraded')}</span>
+      )}
+      {uncertainTooMany(counts) && (
+        <span className='text-warning-6'>
+          · {t('learning.genUncertainTooMany', { count: counts.uncertain })}
+        </span>
+      )}
+      {(detailCountsLine !== null || triageListCount > 0) && (
+        <NomiCollapse bordered={false}>
+          <NomiCollapse.Item
+            name={`triage-details-${index}`}
+            header={t('learning.genTriageDetails')}
+          >
+            <div className='flex flex-col gap-4px'>
+              {detailCountsLine !== null && (
+                <Text className='text-13px leading-20px'>{detailCountsLine}</Text>
+              )}
+              {triageListCount > 0 && (
+                <NomiCollapse bordered={false}>
+                  {(event.excluded?.length ?? 0) > 0 && (
+                    <NomiCollapse.Item
+                      name={`triage-excluded-${index}`}
+                      header={t('learning.genTriageExcludedTitle')}
+                    >
+                      {event.excluded?.map((entry) => (
+                        <Text key={entry.path} type='secondary' className='block break-all text-12px'>
+                          · {entry.path} — {entry.reason}
+                        </Text>
+                      ))}
+                    </NomiCollapse.Item>
+                  )}
+                  {(event.duplicates?.length ?? 0) > 0 && (
+                    <NomiCollapse.Item
+                      name={`triage-duplicates-${index}`}
+                      header={t('learning.genTriageDuplicatesTitle')}
+                    >
+                      {event.duplicates?.map((duplicate) => (
+                        <Text key={duplicate.path} type='secondary' className='block break-all text-12px'>
+                          · {duplicate.path} → {duplicate.duplicate_of}
+                        </Text>
+                      ))}
+                    </NomiCollapse.Item>
+                  )}
+                  {(event.uncertain?.length ?? 0) > 0 && (
+                    <NomiCollapse.Item
+                      name={`triage-uncertain-${index}`}
+                      header={t('learning.genTriageUncertainTitle')}
+                    >
+                      {event.uncertain?.map((entry) => (
+                        <Text key={entry.path} type='secondary' className='block break-all text-12px'>
+                          · {entry.path} — {entry.reason}
+                        </Text>
+                      ))}
+                    </NomiCollapse.Item>
+                  )}
+                </NomiCollapse>
+              )}
+            </div>
+          </NomiCollapse.Item>
+        </NomiCollapse>
+      )}
+    </div>
+  );
+}
 
 
 
@@ -275,62 +365,10 @@ export function CourseGenerationProgress({
                 </div>
               );
             }
-            if (event.phase === PHASE.triageCompleted && event.counts) {
-              const counts = event.counts;
-              return (
-                <div key={index} className='flex flex-col gap-4px text-13px leading-20px'>
-                  <span className='font-500 text-t-primary'>{triageCountsLine(counts, t)}</span>
-                  {event.degraded && (
-                    <span className='text-warning-6'>· {t('learning.genTriageDegraded')}</span>
-                  )}
-                  {uncertainTooMany(counts) && (
-                    <span className='text-warning-6'>
-                      · {t('learning.genUncertainTooMany', { count: counts.uncertain })}
-                    </span>
-                  )}
-                  {/* 可展开明细：跳过理由 / duplicate_of / uncertain（帧里有界 ≤10） */}
-                  {(event.excluded?.length ?? 0) + (event.duplicates?.length ?? 0) + (event.uncertain?.length ?? 0) > 0 && (
-                    <NomiCollapse bordered={false}>
-                      {(event.excluded?.length ?? 0) > 0 && (
-                        <NomiCollapse.Item
-                          name={`triage-excluded-${index}`}
-                          header={t('learning.genTriageExcludedTitle')}
-                        >
-                          {event.excluded?.map((entry) => (
-                            <Text key={entry.path} type='secondary' className='block break-all text-12px'>
-                              · {entry.path} — {entry.reason}
-                            </Text>
-                          ))}
-                        </NomiCollapse.Item>
-                      )}
-                      {(event.duplicates?.length ?? 0) > 0 && (
-                        <NomiCollapse.Item
-                          name={`triage-duplicates-${index}`}
-                          header={t('learning.genTriageDuplicatesTitle')}
-                        >
-                          {event.duplicates?.map((duplicate) => (
-                            <Text key={duplicate.path} type='secondary' className='block break-all text-12px'>
-                              · {duplicate.path} → {duplicate.duplicate_of}
-                            </Text>
-                          ))}
-                        </NomiCollapse.Item>
-                      )}
-                      {(event.uncertain?.length ?? 0) > 0 && (
-                        <NomiCollapse.Item
-                          name={`triage-uncertain-${index}`}
-                          header={t('learning.genTriageUncertainTitle')}
-                        >
-                          {event.uncertain?.map((entry) => (
-                            <Text key={entry.path} type='secondary' className='block break-all text-12px'>
-                              · {entry.path} — {entry.reason}
-                            </Text>
-                          ))}
-                        </NomiCollapse.Item>
-                      )}
-                    </NomiCollapse>
-                  )}
-                </div>
-              );
+            if (event.phase === PHASE.triageCompleted) {
+              // F4：读数面抽为 TriageCompletedFrame（残余计数收进「详情」折叠
+              // 首行），组件注释承载完整结构说明。
+              return <TriageCompletedFrame key={index} event={event} index={index} />;
             }
             if (event.phase === PHASE.sourcePlanReady) {
               return (
