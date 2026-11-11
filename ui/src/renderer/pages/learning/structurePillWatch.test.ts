@@ -7,15 +7,19 @@
 /** 图课程流悬浮 Pill 的快照真值面（v3，G1 谎言面）：HTTP 秒回 completed 后
  * Pill 绑该课 structure 任务快照（running/queued → 新 label；done → 退场；
  * failed/cancelled → 既有终态语义）。测试面：
- * - `formatStructureElapsed` / `findStructureTaskRow`：纯函数矩阵；
+ * - `findStructureTaskRow`：纯函数矩阵；耗时读数由单一格式器
+ *   `formatGrowthElapsed`（F1 收口，矩阵在其老家的 growthTaskPill.test.ts）
+ *   经 `structurePillLabel`/`structureCardLine` 的 vars 断言覆盖；
  * - `structurePillLabel` / `structurePillSpec`：行形状 → Pill 呈现分流
  *   （键选择 + vars 映射；词典文本本身由真实 JSON 断言钉住）；
  * - `startStructurePillWatch`：轮询循环（首读即取、5s 节拍、终态即停、
  *   快照不可达不臆造终态、行消失 = 注册表清空按退场收口），假数据源注入
  *   ——与 c2 `startRestoredGenerationConvergence` 同形状的第二处实现（票面
  *   明示不抽公共 hook）。
- * i18n（红线 2）：新 key 对真实 zh-CN / en-US 词典 JSON 双语遍历断言。 */
+ * i18n（红线 2）：新 key 对真实 zh-CN / en-US 词典 JSON 双语遍历断言（含
+ * 插值占位符全对称，F3）。 */
 import * as bunTest from 'bun:test';
+import { readFileSync } from 'node:fs';
 
 import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
@@ -24,6 +28,10 @@ import type { Translate } from './utils';
 
 const { afterEach, beforeEach, describe, expect, test } = bunTest;
 const timers = (bunTest as unknown as { jest: FakeTimerApi }).jest;
+
+/** 源断言读面（v2「工作区接线」同形态）：index 装配面无渲染测试基建，
+ * 三分流接线以源码子串钉住。 */
+const readSource = (url: URL): string => readFileSync(url, 'utf8');
 
 interface FakeTimerApi {
   useFakeTimers: () => void;
@@ -65,28 +73,6 @@ const tStub = () => {
   return { t, calls };
 };
 
-describe('formatStructureElapsed（mm:ss，超时进位 h:mm:ss）', () => {
-  test('451s → 07:31（票面示例）', async () => {
-    const { formatStructureElapsed } = await import('./structurePillWatch');
-    expect(formatStructureElapsed(451)).toBe('07:31');
-  });
-  test('0 → 00:00；59 → 00:59；60 → 01:00', async () => {
-    const { formatStructureElapsed } = await import('./structurePillWatch');
-    expect(formatStructureElapsed(0)).toBe('00:00');
-    expect(formatStructureElapsed(59)).toBe('00:59');
-    expect(formatStructureElapsed(60)).toBe('01:00');
-  });
-  test('3661 → 1:01:01（小时不补零）', async () => {
-    const { formatStructureElapsed } = await import('./structurePillWatch');
-    expect(formatStructureElapsed(3661)).toBe('1:01:01');
-  });
-  test('null / 负数 → null（queued 行无 elapsed）', async () => {
-    const { formatStructureElapsed } = await import('./structurePillWatch');
-    expect(formatStructureElapsed(null)).toBeNull();
-    expect(formatStructureElapsed(-1)).toBeNull();
-  });
-});
-
 describe('findStructureTaskRow（只认 structure 本尊 + 课程 id 匹配）', () => {
   test('命中 kind=structure 且 course_id 匹配的行', async () => {
     const { findStructureTaskRow } = await import('./structurePillWatch');
@@ -109,13 +95,13 @@ describe('findStructureTaskRow（只认 structure 本尊 + 课程 id 匹配）',
 });
 
 describe('structurePillLabel（快照行 → 新 label 键选择）', () => {
-  test('running + elapsed：耗时键 + 已格式化耗时 vars', async () => {
+  test('running + elapsed：耗时键 + 已格式化耗时 vars（formatGrowthElapsed 口径，F1 单一格式器）', async () => {
     const { structurePillLabel } = await import('./structurePillWatch');
     const { t, calls } = tStub();
     expect(structurePillLabel(row({ elapsed_secs: 451 }), t)).toBe(
       'learning.genBgStructureRunningElapsed'
     );
-    expect(calls[0]?.vars).toEqual({ elapsed: '07:31' });
+    expect(calls[0]?.vars).toEqual({ elapsed: '7:31' });
   });
   test('running + attempt（v1 机器面）：轮次键 + attempt/elapsed 双 vars', async () => {
     const { structurePillLabel } = await import('./structurePillWatch');
@@ -123,7 +109,7 @@ describe('structurePillLabel（快照行 → 新 label 键选择）', () => {
     expect(structurePillLabel(row({ attempt: 2, elapsed_secs: 451 }), t)).toBe(
       'learning.genBgStructureRunningAttempt'
     );
-    expect(calls[0]?.vars).toEqual({ attempt: 2, elapsed: '07:31' });
+    expect(calls[0]?.vars).toEqual({ attempt: 2, elapsed: '7:31' });
   });
   test('running 但 elapsed 缺失：退回无耗时键（不渲染「已 」空尾巴）', async () => {
     const { structurePillLabel } = await import('./structurePillWatch');
@@ -434,16 +420,33 @@ describe('v3 新 i18n key：真实词典双语对称断言（红线 2）', () =>
     expect(STRUCTURE_PILL_I18N_KEYS).toContain('learning.genBgStructureRunningAttempt');
     expect(STRUCTURE_PILL_I18N_KEYS).toContain('learning.genBgStructureQueued');
   });
+
+  test('新 key 双语插值占位符全对称（F3：照 structureReadout 全对称模式遍历，Attempt 键不再漏断言）', async () => {
+    const { STRUCTURE_PILL_I18N_KEYS } = await import('./structurePillWatch');
+    const placeholders = (template: string): string[] =>
+      (template.match(/\{\{\w+\}\}/g) ?? []).sort();
+    const zh = learningZh as unknown as Record<string, string>;
+    const en = learningEn as unknown as Record<string, string>;
+    for (const key of STRUCTURE_PILL_I18N_KEYS) {
+      expect(placeholders(zh[short(key)])).toEqual(placeholders(en[short(key)]));
+    }
+    // Attempt 键点名：轮次 + 耗时双插值双语同构（「第 {{attempt}} 轮 · 已 {{elapsed}}」）。
+    const attemptKey = STRUCTURE_PILL_I18N_KEYS.find(
+      (k) => short(k) === 'genBgStructureRunningAttempt'
+    );
+    expect(placeholders(zh[short(attemptKey!)])).toEqual(['{{attempt}}', '{{elapsed}}']);
+    expect(placeholders(en[short(attemptKey!)])).toEqual(['{{attempt}}', '{{elapsed}}']);
+  });
 });
 
 describe('structureCardLine（watch 态 → completed 卡片结构态行；null = 不渲染）', () => {
-  test('watching + running + elapsed：卡片耗时键 + 已格式化耗时 vars', async () => {
+  test('watching + running + elapsed：卡片耗时键 + 已格式化耗时 vars（单一格式器口径）', async () => {
     const { structureCardLine } = await import('./structurePillWatch');
     const { t, calls } = tStub();
     expect(structureCardLine({ phase: 'watching', row: row({ elapsed_secs: 451 }) }, t)).toBe(
       'learning.genCardStructureRunningElapsed'
     );
-    expect(calls[0]?.vars).toEqual({ elapsed: '07:31' });
+    expect(calls[0]?.vars).toEqual({ elapsed: '7:31' });
   });
 
   test('attempt 在场也只走耗时键（卡片行无轮次，轮次真话在 Pill）', async () => {
@@ -452,7 +455,7 @@ describe('structureCardLine（watch 态 → completed 卡片结构态行；null 
     expect(
       structureCardLine({ phase: 'watching', row: row({ attempt: 2, elapsed_secs: 451 }) }, t)
     ).toBe('learning.genCardStructureRunningElapsed');
-    expect(calls[0]?.vars).toEqual({ elapsed: '07:31' });
+    expect(calls[0]?.vars).toEqual({ elapsed: '7:31' });
   });
 
   test('watching + running 但 elapsed 缺失：无耗时键（不渲染「已 」空尾巴）', async () => {
@@ -547,5 +550,42 @@ describe('v4 新 i18n key：真实词典双语对称断言（红线 2）', () =>
       (k) => short(k) === 'genCardStructureRunning'
     );
     expect(zh[short(plainKey!)]).toBe('知识结构生成中');
+  });
+
+  test('卡片新 key 双语插值占位符全对称（F3 同款遍历）', async () => {
+    const { STRUCTURE_CARD_I18N_KEYS } = await import('./structurePillWatch');
+    const placeholders = (template: string): string[] =>
+      (template.match(/\{\{\w+\}\}/g) ?? []).sort();
+    const zh = learningZh as unknown as Record<string, string>;
+    const en = learningEn as unknown as Record<string, string>;
+    for (const key of STRUCTURE_CARD_I18N_KEYS) {
+      expect(placeholders(zh[short(key)])).toEqual(placeholders(en[short(key)]));
+    }
+  });
+});
+
+describe('index Pill 装配（源断言，v2「工作区接线」同形态）', () => {
+  const indexSource = readSource(new URL('./index.tsx', import.meta.url));
+
+  test('F2 双哨兵收敛：图课程流分流走单一判据 graphPillFacet（legacy / structure 两相显式）', () => {
+    expect(indexSource.includes("graphPillFacet.phase === 'legacy'")).toBe(true);
+    expect(indexSource.includes("phase: 'structure'")).toBe(true);
+  });
+
+  test('F2 双块合并：CourseGenerationPill 全页只装配一次（单渲染块 + 条件 props）', () => {
+    expect(indexSource.split('<CourseGenerationPill').length - 1).toBe(1);
+  });
+
+  test('既有分支零变化：legacy 相主行走 generation.status 词典，取消走 creation.cancelGeneration', () => {
+    expect(indexSource.includes('status: generation.status')).toBe(true);
+    expect(indexSource.includes('void creation.cancelGeneration()')).toBe(true);
+  });
+
+  test('图课程流接线：structure 相取消走 per-key cancelStructureTask（taskKey 空守卫 no-op）', () => {
+    expect(indexSource.includes('void cancelStructureTask(pillProps.taskKey)')).toBe(true);
+  });
+
+  test('落库退场：structure spec 为 null（done/missing）不渲染 Pill——完成真话在工作区徽章/摘要行与卡片', () => {
+    expect(indexSource.includes('graphPillFacet.spec === null')).toBe(true);
   });
 });

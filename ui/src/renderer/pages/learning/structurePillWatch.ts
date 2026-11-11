@@ -10,8 +10,9 @@
  * Pill 不再显示「✓ 生成完成」——结构生成此后还要在后台跑十余分钟，完成态
  * 对它是半程谎言。本模块把 Pill 绑到该课 structure 任务快照：
  *
- * - running/queued → 新 label（「结构生成中 · 已 mm:ss」，elapsed 来自快照
- *   行；attempt（v1 机器面）在场时带轮次）；
+ * - running/queued → 新 label（「结构生成中 · 已 m:ss」，elapsed 来自快照
+ *   行、`formatGrowthElapsed` 单一格式器（F1 收口，与工作区徽章/生长 Pill
+ *   同口径）；attempt（v1 机器面）在场时带轮次）；
  * - done → Pill 退场（完成的真话在工作区徽章/摘要行与对话框卡片，不再造
  *   一个秒级翻转的完成面）；
  * - failed/cancelled → 沿用 Pill 既有终态语义（genBgFailed/genCancelled +
@@ -34,6 +35,7 @@
 import { useEffect, useState } from 'react';
 
 import { learningApi } from './api';
+import { formatGrowthElapsed } from './growthTaskPill';
 import type { LearningGenerationTaskView } from './types';
 import type { Translate } from './utils';
 
@@ -56,15 +58,11 @@ export const STRUCTURE_CARD_I18N_KEYS = [
   'learning.genCardStructureRunningElapsed',
 ] as const;
 
-/** 秒 → 「mm:ss」（超 1h 进位「h:mm:ss」，小时不补零）。null/负数 → null。 */
-export function formatStructureElapsed(secs: number | null): string | null {
-  if (secs == null || secs < 0) return null;
-  const hours = Math.floor(secs / 3600);
-  const minutes = Math.floor((secs % 3600) / 60);
-  const seconds = secs % 60;
-  const mm = String(minutes).padStart(2, '0');
-  const ss = String(seconds).padStart(2, '0');
-  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+/** 已运行时长读数（单一格式器，F1 收口）：复用既有 `formatGrowthElapsed`
+ * （m:ss，满一小时 h:mm:ss）——与工作区徽章/生长 Pill 同口径，同 451s 三面
+ * 同显「7:31」。elapsed_secs 缺席（queued 行）→ null，调用面回退无耗时键。 */
+function structureElapsed(secs: number | null): string | null {
+  return secs == null ? null : formatGrowthElapsed(secs);
 }
 
 /** 快照列表里找该课的 structure 本尊行：只认 `kind === 'structure'` 且
@@ -83,7 +81,7 @@ export function structurePillLabel(
   t: Translate
 ): string | null {
   if (rowState.state === 'running') {
-    const elapsed = formatStructureElapsed(rowState.elapsed_secs);
+    const elapsed = structureElapsed(rowState.elapsed_secs);
     if (rowState.attempt != null) {
       return t('learning.genBgStructureRunningAttempt', {
         attempt: rowState.attempt,
@@ -143,7 +141,7 @@ export function structurePillSpec(
 }
 
 /** watch 态 → 图课程 completed 卡片结构态行文案（v4；null = 该行不渲染）。
- * 在跑 → 「知识结构生成中 · 已 mm:ss」（卡片行用「知识结构」全称前缀，与
+ * 在跑 → 「知识结构生成中 · 已 m:ss」（卡片行用「知识结构」全称前缀，与
  * Pill 的「结构生成中」区分开——票面文案锚定 taskKindStructure 全称）；
  * elapsed 缺失退无耗时键；attempt 不上卡片行（无交互无轮次——轮次真话在
  * Pill/工作区）。queued / 终态（done 落库）/ 未接管 → null：卡片是 HTTP
@@ -160,7 +158,7 @@ export function structureCardLine(
     return watch.phase === 'watching' ? t('learning.genCardStructureRunning') : null;
   }
   if (rowState.state !== 'running') return null;
-  const elapsed = formatStructureElapsed(rowState.elapsed_secs);
+  const elapsed = structureElapsed(rowState.elapsed_secs);
   if (elapsed != null) {
     return t('learning.genCardStructureRunningElapsed', { elapsed });
   }

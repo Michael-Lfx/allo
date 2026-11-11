@@ -143,7 +143,7 @@ describe('CourseGenerationProgress（学习图流，c1）', () => {
 });
 
 describe('CourseGenerationProgress（completed 卡片结构态行，v4）', () => {
-  const LINE = '知识结构生成中 · 已 07:31';
+  const LINE = '知识结构生成中 · 已 7:31';
 
   test('graph + completed + 在跑行：卡片出现「知识结构生成中 · 已 …」secondary 文案行', async () => {
     const html = await renderProgress('zh-CN', {

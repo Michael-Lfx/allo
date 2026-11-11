@@ -18,6 +18,7 @@ import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
 import { structureCardLine, structurePillSpec, useStructurePillWatch } from './structurePillWatch';
+import type { StructurePillSpec } from './structurePillWatch';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
 import { errorMessage, knowledgeBaseNames, loadStoredReviewFilters } from './utils';
 
@@ -42,6 +43,14 @@ const CreateCourseDialog = lazy(() =>
 const TagEditorModal = lazy(() =>
   import('./components/TagEditorModal').then((m) => ({ default: m.TagEditorModal }))
 );
+
+/** 图课程流 Pill 分流（v3，F2 哨兵收敛）：`phase` 显式两相取代
+ * undefined/null 双哨兵。'legacy' = 不在图课程流（v2 描述流/知识库流的
+ * 既有状态词典 Pill，零变化）；'structure' = 图课程流接管，`spec` 为
+ * null 即退场（落库/注册表清空——完成真话在工作区徽章/摘要行与卡片）。 */
+type GraphPillFacet =
+  | { phase: 'legacy' }
+  | { phase: 'structure'; spec: StructurePillSpec | null };
 
 const LearningPage: React.FC = () => {
   const { id } = useParams<{ id?: string }>();
@@ -183,8 +192,27 @@ const LearningPage: React.FC = () => {
   const structureWatch = useStructurePillWatch(
     graphCompletedPill ? generation.result?.course.id ?? null : null
   );
-  const graphPillSpec =
-    pillVisible && graphCompletedPill ? structurePillSpec(structureWatch, t) : undefined;
+  // 图课程流分流判据（F2 收敛）：undefined/null 双哨兵换成显式两相——
+  // 'legacy' = 不在图课程流（既有状态词典 Pill，v2 流零变化）；
+  // 'structure' = 图课程流接管（spec null = 落库/missing 退场）。
+  const graphPillFacet: GraphPillFacet = graphCompletedPill
+    ? { phase: 'structure', spec: pillVisible ? structurePillSpec(structureWatch, t) : null }
+    : { phase: 'legacy' };
+  // 单渲染块的装配面（F2 双块合并）：null = Pill 不渲染（对话框开着 /
+  // 落库退场 / missing）；legacy 相无 label 覆盖、取消走整任务端点，
+  // structure 相带 spec 的 label 与 per-key 取消键。
+  const pillProps =
+    generation === null || !pillVisible
+      ? null
+      : graphPillFacet.phase === 'legacy'
+        ? { status: generation.status, label: undefined, taskKey: null }
+        : graphPillFacet.spec === null
+          ? null
+          : {
+              status: graphPillFacet.spec.status,
+              label: graphPillFacet.spec.label ?? undefined,
+              taskKey: graphPillFacet.spec.taskKey,
+            };
   // completed 卡片结构态行（v4）：同一 watch 派生的已翻译文案；仅对话框
   // 在跑期间被渲染（卡片本体），终态/排队/未接管为 null——该行不渲染。
   const structureCardLineText = graphCompletedPill ? structureCardLine(structureWatch, t) : null;
@@ -496,11 +524,12 @@ const LearningPage: React.FC = () => {
             直达 UI；实时链 description 即用户输入，原样显示。
             图课程流分流（v3，G1）：HTTP 秒回 completed 后 Pill 绑 structure
             快照真值——running/queued 换新 label，落库即退场（不显示完成态），
-            failed/cancelled 沿用既有终态语义；v2 描述流/知识库流零变化。 */}
-        {pillVisible && graphPillSpec !== undefined && graphPillSpec !== null && generation !== null && (
+            failed/cancelled 沿用既有终态语义；v2 描述流/知识库流零变化。
+            单渲染块（F2）：graphPillFacet 定分流，pillProps 出条件 props。 */}
+        {generation !== null && pillProps && (
           <CourseGenerationPill
-            status={graphPillSpec.status}
-            label={graphPillSpec.label ?? undefined}
+            status={pillProps.status}
+            label={pillProps.label}
             topic={
               generation.restoredTask
                 ? restoredTaskTopic(generation.restoredTask, t)
@@ -512,24 +541,15 @@ const LearningPage: React.FC = () => {
             )}
             onView={() => void creation.openGenerator()}
             onCancel={() => {
-              if (graphPillSpec.taskKey) void cancelStructureTask(graphPillSpec.taskKey);
+              // 分流按相位不按 taskKey 空判：legacy 相取消走整任务端点；
+              // structure 相走 per-key，首读在途 taskKey null = 守卫 no-op
+              // （一次首读往返的窗口，行为与合并前双块逐字一致）。
+              if (graphPillFacet.phase === 'structure') {
+                if (pillProps.taskKey) void cancelStructureTask(pillProps.taskKey);
+              } else {
+                void creation.cancelGeneration();
+              }
             }}
-          />
-        )}
-        {pillVisible && graphPillSpec === undefined && generation !== null && (
-          <CourseGenerationPill
-            status={generation.status}
-            topic={
-              generation.restoredTask
-                ? restoredTaskTopic(generation.restoredTask, t)
-                : generation.request.description ?? ''
-            }
-            sources={knowledgeBaseNames(
-              generation.request.knowledge_base_ids ?? [],
-              creation.knowledgeBases
-            )}
-            onView={() => void creation.openGenerator()}
-            onCancel={() => void creation.cancelGeneration()}
           />
         )}
 
