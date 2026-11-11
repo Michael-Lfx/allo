@@ -472,6 +472,7 @@
   "learningGraphCreateHint": "内容复杂、边界不明确或想覆盖整个领域时，用学习图：输入目标，系统先生成一张知识结构参考地图（主干与知识块），再逐个生长学习节点；学习顺序以教练安排为准。",
   "learningGraphStructureTitle": "知识结构",
   "learningGraphStructureGenerating": "生成中…",
+  "structureBadgeRunning": "结构生成中 · 第 {{attempt}}/{{max}} 次 · 已 {{elapsed}}",
   "learningGraphStructureFailed": "知识结构生成失败",
   "learningGraphStructureConflict": "结构生成已在进行中，请等待当前生成完成",
   "learningGraphStructureSummary": "{{spines}} 主干 · {{blocks}} 块 · {{doors}} 门口",

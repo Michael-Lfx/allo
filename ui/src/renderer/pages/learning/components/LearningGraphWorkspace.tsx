@@ -39,6 +39,12 @@ import {
   saveStructurePresentedWatermark,
   shouldPresentStructure,
 } from '../structurePresentation';
+import {
+  hasActiveStructureRow,
+  startStructureReadoutPolling,
+  structureBadgeCopy,
+  type StructureReadout,
+} from '../structureReadout';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
@@ -148,10 +154,15 @@ const LearningGraphWorkspace: React.FC<{
   // ── 知识结构状态（读侧投影 + 生成中/失败态）─────────────────────────────
   const [structure, setStructure] = useState<LearningStructureView | null>(null);
   const [structureError, setStructureError] = useState<string | null>(null);
-  const [structureRunning, setStructureRunning] = useState(false);
+  // WS 帧驱动的运行旗（best-effort，不重放——刷新即丢）；对外呈现用下方
+  // 与注册表快照行取并集后的 structureRunning。
+  const [structureRunningWs, setStructureRunningWs] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [mounting, setMounting] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  // 快照轮询终态的接棒柄：指向下方 WS 效应内的 load 闭包（保留课程切换的
+  // cancelled 守卫——装载路径只此一份，快照终态面不另写第二条）。
+  const structureLoadRef = React.useRef<() => void>(() => undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,7 +173,7 @@ const LearningGraphWorkspace: React.FC<{
           if (cancelled) return;
           setStructure(view);
           setStructureError(null);
-          if (view.structure) setStructureRunning(false);
+          if (view.structure) setStructureRunningWs(false);
           presentStructureOnce(view);
         })
         .catch((loadError) => {
@@ -171,16 +182,17 @@ const LearningGraphWorkspace: React.FC<{
           }
         });
     };
+    structureLoadRef.current = load;
     load();
     // 结构生成的开始/终结帧驱动「生成中」状态机，终结即重取投影。
     // 失败必须显式清 running——否则首次生成失败会永久停在「生成中…」
     // （快照仍为 null，load 里无法自行消解）。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
       if (event.course_id !== detail.course.id) return;
-      if (event.event === 'structure_started') setStructureRunning(true);
+      if (event.event === 'structure_started') setStructureRunningWs(true);
       if (event.event === 'structure_completed') load();
       if (event.event === 'structure_failed' || event.event === 'structure_cancelled') {
-        setStructureRunning(false);
+        setStructureRunningWs(false);
         load();
       }
     });
@@ -226,13 +238,13 @@ const LearningGraphWorkspace: React.FC<{
   const regenerateStructure = useCallback(async () => {
     setRegenerating(true);
     try {
-      setStructureRunning(true);
+      setStructureRunningWs(true);
       await learningApi.regenerateGraphStructure(detail.course.id, {
         provider_id: model.choice?.provider_id,
         model: model.choice?.model,
       });
     } catch (actionError) {
-      setStructureRunning(false);
+      setStructureRunningWs(false);
       // g3 冲突显性化：生成进行中重复触发 = 后端 409 → 非阻塞 toast 明确
       // 反馈（此前 200 kicked=true 静默吞掉，「生成中」Tag 卡死到刷新）；
       // 其余失败保留阻塞 Modal——需要用户看见并处置。
@@ -471,7 +483,10 @@ const LearningGraphWorkspace: React.FC<{
             <Spin size={12} />
           ) : structureRunning ? (
             <Tag size='small' color='processing' className='!mx-0'>
-              {t('learning.learningGraphStructureGenerating')}
+              {t(
+                structureBadge.key,
+                'vars' in structureBadge ? structureBadge.vars : undefined
+              )}
             </Tag>
           ) : structure.structure ? (
             <Text type='secondary' className='text-12px'>
@@ -520,7 +535,9 @@ const LearningGraphWorkspace: React.FC<{
             loading={growing || graph.growth_running}
             // growth_running 是服务端真相（d7）：切页往返后本地 growing 已丢，
             // 服务端在跑的生长批次照样禁用补充节点（防槽锁 409 双击）。
-            disabled={growing || graph.growth_running || busyId !== null}
+            // structureRunning 同防呆（G5）：结构生成期间显式生长恒过后端
+            // 零节点停摆臂（e3/m10 只拦自动臂），按钮侧先关闸。
+            disabled={growing || graph.growth_running || busyId !== null || structureRunning}
             onClick={() => void grow()}
           >
             {readyStockFull
