@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { DomCommitRecovery } from './errorBoundaryRecovery';
 import { claimDynamicImportReload, isDynamicImportFailure } from './routeErrorRecovery';
 
 interface SettingsSiderErrorBoundaryProps {
@@ -89,6 +90,10 @@ export default class SettingsSiderErrorBoundary extends React.Component<
     dynamicImportReloadExhausted: false,
   };
 
+  private readonly domCommitRecovery = new DomCommitRecovery({
+    onRecover: () => this.setState({ error: null, componentStack: null }),
+  });
+
   static getDerivedStateFromError(error: Error): Partial<SettingsSiderErrorBoundaryState> {
     return { error, dynamicImportReloadExhausted: false };
   }
@@ -96,12 +101,21 @@ export default class SettingsSiderErrorBoundary extends React.Component<
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     console.error('[SettingsSiderErrorBoundary] settings rail failed:', error, info.componentStack);
     this.setState({ componentStack: info.componentStack ?? null });
+    if (this.domCommitRecovery.maybeSchedule(error)) {
+      // eslint-disable-next-line no-console
+      console.warn('[SettingsSiderErrorBoundary] external DOM mutation crashed commit — remounting once:', error);
+    }
   }
 
   componentDidUpdate(previousProps: SettingsSiderErrorBoundaryProps): void {
     if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.domCommitRecovery.reset();
       this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
     }
+  }
+
+  componentWillUnmount(): void {
+    this.domCommitRecovery.dispose();
   }
 
   private isDynamicImportFailure(): boolean {
@@ -109,6 +123,7 @@ export default class SettingsSiderErrorBoundary extends React.Component<
   }
 
   private retry = (): void => {
+    this.domCommitRecovery.reset();
     if (this.isDynamicImportFailure()) {
       if (this.state.dynamicImportReloadExhausted) {
         this.reload();

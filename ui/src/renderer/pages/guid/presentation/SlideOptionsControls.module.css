@@ -52,3 +52,40 @@
   line-height: 0;
   color: var(--color-text-3);
 }
+
+.summary {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  margin: 0;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-1) 4%, transparent);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.summary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-text-1) 7%, transparent);
+  color: var(--color-text-1);
+}
+
+.summary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.summary:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
+}
+:global([data-home-compact='true']) .summary {
+  padding: 0 6px;
+  font-size: 10px;
+}

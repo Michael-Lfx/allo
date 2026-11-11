@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'bun:test';
 
 import { lookbookCanvasStylePresets } from '@oc/lib/canvas/canvas-style-system';
@@ -43,7 +44,7 @@ describe('unified look catalog', () => {
   });
 
   test('every catalog look has an original webp still in public/looks', () => {
-    const looksDir = join(process.cwd(), 'public', 'looks');
+    const looksDir = fileURLToPath(new URL('../../../../../public/looks', import.meta.url));
     const fileIds = new Set(
       [...HOME_LOOKS, ...CANVAS_LOOKS].map((look) => lookCoverFileId(look.id)),
     );

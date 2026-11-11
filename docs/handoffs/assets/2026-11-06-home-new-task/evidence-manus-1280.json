@@ -1,0 +1,440 @@
+{
+  "ok": true,
+  "tab_id": 1356842799,
+  "value": {
+    "bodyBg": "rgb(36, 36, 36)",
+    "buttons": [
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "normal",
+        "h": 52,
+        "pad": "8px 0px 8px 9px",
+        "radius": "12px",
+        "txt": "赚取 2,500 积分每邀请一位好友",
+        "w": 283.1,
+        "x": 8.4,
+        "y": 618.7
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "4px",
+        "h": 32,
+        "pad": "7px 6px 7px 8px",
+        "radius": "8px",
+        "txt": "Manus 2.0 Lite",
+        "w": 137.8,
+        "x": 316,
+        "y": 7.6
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "6px",
+        "h": 21,
+        "pad": "0px",
+        "radius": "8px",
+        "txt": "升级",
+        "w": 28,
+        "x": 1133.9,
+        "y": 13.1
+      },
+      {
+        "bg": "rgb(0, 0, 0)",
+        "gap": "normal",
+        "h": 56,
+        "pad": "1px 14px 1px 10px",
+        "radius": "12px",
+        "txt": "创建你的视频让想法变为现实",
+        "w": 252,
+        "x": 922,
+        "y": 83.7
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "normal",
+        "h": 18,
+        "pad": "0px",
+        "radius": "9999px",
+        "txt": "创建你的视频",
+        "w": 14,
+        "x": 1175,
+        "y": 94.7
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "normal",
+        "h": 12,
+        "pad": "0px",
+        "radius": "9999px",
+        "txt": "游戏开发",
+        "w": 14,
+        "x": 1175,
+        "y": 116.7
+      },
+      {
+        "bg": "rgba(255, 255, 255, 0.04)",
+        "gap": "normal",
+        "h": 130,
+        "pad": "0px 0px 0px 20px",
+        "radius": "12px",
+        "txt": "构建网站、应用和游戏",
+        "w": 486,
+        "x": 406,
+        "y": 171.7
+      },
+      {
+        "bg": "rgba(255, 255, 255, 0.04)",
+        "gap": "20px",
+        "h": 272,
+        "pad": "12px",
+        "radius": "12px",
+        "txt": "仅限 Studio从本地文件开始在 Manus Studio",
+        "w": 270,
+        "x": 904,
+        "y": 171.7
+      },
+      {
+        "bg": "rgba(255, 255, 255, 0.04)",
+        "gap": "normal",
+        "h": 130,
+        "pad": "0px 0px 0px 20px",
+        "radius": "12px",
+        "txt": "创建幻灯片、图片和视频",
+        "w": 486,
+        "x": 406,
+        "y": 313.7
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "6px",
+        "h": 32,
+        "pad": "0px 12px 0px 10px",
+        "radius": "9999px",
+        "txt": "云服务",
+        "w": 86,
+        "x": 412,
+        "y": 529.3
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "4px",
+        "h": 32,
+        "pad": "0px",
+        "radius": "9999px",
+        "txt": "",
+        "w": 32,
+        "x": 418.9,
+        "y": 642.2
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "gap": "4px",
+        "h": 32,
+        "pad": "8px",
+        "radius": "100px",
+        "txt": "",
+        "w": 32,
+        "x": 458.9,
+        "y": 642.2
+      },
+      {
+        "bg": "rgba(255, 255, 255, 0.08)",
+        "gap": "6px",
+        "h": 32,
+        "pad": "0px",
+        "radius": "9999px",
+        "txt": "",
+        "w": 32,
+        "x": 1129.1,
+        "y": 642.2
+      }
+    ],
+    "el": {
+      "1,020": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "14px",
+        "fw": "500",
+        "h": 20,
+        "w": 31.4,
+        "x": 1211.7,
+        "y": 13.6
+      },
+      "Manus 2.0 Lite": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "16px",
+        "fw": "500",
+        "h": 22,
+        "w": 103.8,
+        "x": 324,
+        "y": 12.6
+      },
+      "云服务": {
+        "color": "rgb(179, 179, 179)",
+        "fs": "14px",
+        "fw": "400",
+        "h": 20,
+        "w": 42,
+        "x": 444,
+        "y": 535.3
+      },
+      "仅限 Studio": {
+        "color": "rgb(179, 179, 179)",
+        "fs": "12px",
+        "fw": "400",
+        "h": 20,
+        "w": 72.9,
+        "x": 1093.1,
+        "y": 179.7
+      },
+      "从本地文件开始": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "16px",
+        "fw": "500",
+        "h": 22,
+        "w": 112,
+        "x": 983,
+        "y": 335.7
+      },
+      "免费计划": {
+        "color": "rgb(140, 140, 140)",
+        "fs": "14px",
+        "fw": "400",
+        "h": 21,
+        "w": 56,
+        "x": 1052.9,
+        "y": 13.1
+      },
+      "创建": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "16px",
+        "fw": "500",
+        "h": 22,
+        "w": 126,
+        "x": 426,
+        "y": 374.7
+      },
+      "升级": {
+        "color": "rgb(26, 147, 254)",
+        "fs": "14px",
+        "fw": "400",
+        "h": 21,
+        "w": 28,
+        "x": 1133.9,
+        "y": 13.1
+      },
+      "在 Manus Studio 中打开本地文件": {
+        "color": "rgb(140, 140, 140)",
+        "fs": "14px",
+        "fw": "400",
+        "h": 20,
+        "w": 202.9,
+        "x": 937.6,
+        "y": 359.7
+      },
+      "把创意变成游戏": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "16px",
+        "fw": "400",
+        "h": 0,
+        "w": 0,
+        "x": 0,
+        "y": 0
+      },
+      "构建": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "16px",
+        "fw": "500",
+        "h": 22,
+        "w": 112,
+        "x": 426,
+        "y": 232.7
+      },
+      "游戏开发": {
+        "color": "rgb(230, 230, 230)",
+        "fs": "16px",
+        "fw": "400",
+        "h": 1,
+        "w": 1,
+        "x": 1181.5,
+        "y": 122.2
+      },
+      "网站、应用和游戏": {
+        "color": "rgb(140, 140, 140)",
+        "fs": "14px",
+        "fw": "400",
+        "h": 20,
+        "w": 112,
+        "x": 426,
+        "y": 256.7
+      },
+      "选择项目": {
+        "color": "rgb(179, 179, 179)",
+        "fs": "14px",
+        "fw": "400",
+        "h": 20,
+        "w": 56,
+        "x": 530,
+        "y": 535.3
+      }
+    },
+    "grid": [
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px solid rgb(229, 231, 235)",
+        "cls": "grid grid-cols-1 gap-[12px] @[700px]:grid-cols-[minmax(0,1fr)_270px]",
+        "color": "rgb(230, 230, 230)",
+        "cols": "486px 270px",
+        "display": "grid",
+        "fs": "16px",
+        "fw": "400",
+        "gap": "12px",
+        "h": 272,
+        "maxW": "none",
+        "pad": "0px",
+        "radius": "0px",
+        "rows": "130px 130px",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 171.7
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px solid rgb(229, 231, 235)",
+        "cls": "@container w-full max-w-[768px]",
+        "color": "rgb(230, 230, 230)",
+        "cols": "none",
+        "display": "block",
+        "fs": "16px",
+        "fw": "400",
+        "gap": "normal",
+        "h": 272,
+        "maxW": "768px",
+        "pad": "0px",
+        "radius": "0px",
+        "rows": "none",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 171.7
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px solid rgb(229, 231, 235)",
+        "cls": "flex w-full flex-col gap-[12px]",
+        "color": "rgb(230, 230, 230)",
+        "cols": "none",
+        "display": "flex",
+        "fs": "16px",
+        "fw": "400",
+        "gap": "12px",
+        "h": 272,
+        "maxW": "none",
+        "pad": "0px",
+        "radius": "0px",
+        "rows": "none",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 171.7
+      }
+    ],
+    "nav": {
+      "bg": "rgb(31, 31, 31)",
+      "h": 719.1,
+      "w": 300,
+      "x": 0,
+      "y": 0
+    },
+    "textbox": {
+      "h": 24,
+      "w": 742.2,
+      "x": 422.9,
+      "y": 581.2
+    },
+    "textboxChain": [
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "cls": "chat-input-editor overflow-auto ps-4 pe-2 [&_.tiptap]:outlin",
+        "gap": "normal",
+        "h": 50,
+        "pad": "1px 8px 0px 16px",
+        "radius": "0px",
+        "tag": "DIV",
+        "w": 766.2,
+        "x": 406.9,
+        "y": 580.2
+      },
+      {
+        "bg": "rgb(36, 36, 36)",
+        "cls": "flex flex-col rounded-[var(--ui-density-composer-radius)] re",
+        "gap": "12px",
+        "h": 119.8,
+        "pad": "12px 0px",
+        "radius": "22px",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 567.3
+      },
+      {
+        "bg": "rgb(26, 26, 26)",
+        "cls": "relative rounded-t-[var(--ui-density-composer-radius)] pb-[v",
+        "gap": "normal",
+        "h": 151.8,
+        "pad": "0px 0px 8px",
+        "radius": "22px 22px 0px 0px",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 567.3
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "cls": "group/chat-input flex flex-col mx-auto w-full",
+        "gap": "normal",
+        "h": 195.8,
+        "pad": "0px",
+        "radius": "0px",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 523.3
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "cls": "pointer-events-auto relative",
+        "gap": "normal",
+        "h": 195.8,
+        "pad": "0px",
+        "radius": "0px",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 523.3
+      },
+      {
+        "bg": "rgba(0, 0, 0, 0)",
+        "cls": "bg-[linear-gradient(to_bottom,var(--gradual-white-0),var(--b",
+        "gap": "normal",
+        "h": 243.8,
+        "pad": "48px 0px 0px",
+        "radius": "0px",
+        "tag": "DIV",
+        "w": 768,
+        "x": 406,
+        "y": 475.3
+      }
+    ],
+    "view": {
+      "dpr": 2.25,
+      "h": 719,
+      "w": 1280
+    },
+    "wordmark": {
+      "h": 64,
+      "w": 376,
+      "x": 406,
+      "y": 79.7
+    }
+  }
+}

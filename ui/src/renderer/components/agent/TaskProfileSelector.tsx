@@ -18,6 +18,13 @@ export interface TaskProfileSelectorProps {
   /** Fired after a local selection (optional local listeners). */
   onProfileSelect?: (profile: TaskProfile) => void;
   disabled?: boolean;
+  /**
+   * Optional controlled value. Omit to use the persisted global profile; the
+   * Guid home uses it to show "coding" for the build capability without
+   * mutating the app-global preference.
+   */
+  value?: TaskProfile;
+  onChange?: (profile: TaskProfile) => void;
   /** Fits the composer toolbar instead of a page header. */
   compact?: boolean;
   className?: string;
@@ -59,14 +66,17 @@ function profileIcon(value: TaskProfile) {
 const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
   onProfileSelect,
   disabled = false,
+  value,
+  onChange,
   compact = false,
   className,
   slidesActive = false,
   onSlidesChange,
 }) => {
   const { t } = useTranslation();
-  const profile = useTaskProfileStore((state) => state.taskProfile);
+  const storeProfile = useTaskProfileStore((state) => state.taskProfile);
   const setTaskProfile = useTaskProfileStore((state) => state.setTaskProfile);
+  const profile = value ?? storeProfile;
   const [open, setOpen] = useState(false);
 
   const label = t('conversation.taskProfile.label', { defaultValue: '工作模式' });
@@ -78,6 +88,10 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
   const slidesSelected = showSlides && slidesActive;
 
   const profileLabel = (value: TaskProfile) => (value === 'coding' ? codingLabel : officeLabel);
+  // The active profile is already shown on the chip; hide it from the menu.
+  // When slides is active the stored profile is office but the visible mode is
+  // slides, so both office and coding remain selectable to leave slides.
+  const menuProfiles = PROFILES.filter((value) => (slidesActive ? true : value !== profile));
 
   const handleSelect = useCallback(
     (next: TaskProfile) => {
@@ -85,21 +99,23 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
       if (slidesActive) onSlidesChange?.(false);
       const normalized = normalizeTaskProfile(next);
       if (normalized === profile) return;
-      setTaskProfile(normalized);
+      if (value === undefined) setTaskProfile(normalized);
+      onChange?.(normalized);
       onProfileSelect?.(normalized);
     },
-    [disabled, onProfileSelect, onSlidesChange, profile, setTaskProfile, slidesActive]
+    [disabled, onProfileSelect, onSlidesChange, onChange, profile, setTaskProfile, slidesActive, value]
   );
 
   const handleSelectSlides = useCallback(() => {
     if (disabled || slidesActive) return;
-    // Decks are office work: keep the stored profile consistent with the mode.
+    // Decks are office work: keep the controlled/global profile consistent.
     if (profile !== 'office') {
-      setTaskProfile('office');
+      if (value === undefined) setTaskProfile('office');
+      onChange?.('office');
       onProfileSelect?.('office');
     }
     onSlidesChange?.(true);
-  }, [disabled, onProfileSelect, onSlidesChange, profile, setTaskProfile, slidesActive]);
+  }, [disabled, onProfileSelect, onSlidesChange, onChange, profile, setTaskProfile, slidesActive, value]);
 
   const menu = (
     <Menu
@@ -126,7 +142,7 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({
           </span>
         </Menu.Item>
       )}
-      {PROFILES.map((value) => (
+      {menuProfiles.map((value) => (
         <Menu.Item key={value}>
           <span className={styles.menuItem} data-testid={`task-profile-option-${value}`}>
             <span className={styles.optionIcon}>{profileIcon(value)}</span>

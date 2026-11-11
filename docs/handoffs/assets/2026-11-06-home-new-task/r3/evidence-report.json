@@ -1,0 +1,360 @@
+{
+  "wideView": {
+    "w": 1280,
+    "h": 832,
+    "compact": null
+  },
+  "wideDefault": {
+    "brand": {
+      "x": 824.2,
+      "y": 112,
+      "w": 287.3,
+      "h": 220,
+      "right": 1111.5,
+      "bottom": 332
+    },
+    "develop": {
+      "x": 343.5,
+      "y": 112,
+      "w": 468.7,
+      "h": 104,
+      "right": 812.2,
+      "bottom": 216
+    },
+    "create": {
+      "x": 343.5,
+      "y": 228,
+      "w": 468.7,
+      "h": 104,
+      "right": 812.2,
+      "bottom": 332
+    },
+    "video": {
+      "x": 928,
+      "y": 60,
+      "w": 183.5,
+      "h": 44,
+      "right": 1111.5,
+      "bottom": 104
+    },
+    "input": {
+      "x": 356.5,
+      "y": 715,
+      "w": 749,
+      "h": 40,
+      "right": 1105.5,
+      "bottom": 755
+    },
+    "scroll": {
+      "h": 796,
+      "client": 796
+    },
+    "sketches": [
+      {
+        "w": 14,
+        "h": 14
+      },
+      {
+        "w": 144,
+        "h": 86
+      },
+      {
+        "w": 14,
+        "h": 14
+      },
+      {
+        "w": 144,
+        "h": 86
+      }
+    ]
+  },
+  "wideCreateDir": {
+    "drawer": {
+      "x": 343.5,
+      "y": 418,
+      "w": 768,
+      "h": 244,
+      "right": 1111.5,
+      "bottom": 662
+    },
+    "card": {
+      "x": 343.5,
+      "y": 670,
+      "w": 768,
+      "h": 142,
+      "right": 1111.5,
+      "bottom": 812
+    },
+    "coverRects": [
+      {
+        "w": 352,
+        "h": 120
+      },
+      {
+        "w": 352,
+        "h": 120
+      },
+      {
+        "w": 352,
+        "h": 120
+      }
+    ]
+  },
+  "wideSlides": {
+    "host": {
+      "x": 343.5,
+      "y": 430,
+      "w": 768,
+      "h": 232,
+      "right": 1111.5,
+      "bottom": 662
+    },
+    "panel": {
+      "x": 343.5,
+      "y": 430,
+      "w": 753,
+      "h": 225.4,
+      "right": 1096.5,
+      "bottom": 655.4
+    },
+    "hostScroll": {
+      "h": 235,
+      "client": 232
+    },
+    "order": [
+      "_header_1rx8u_13",
+      "_rail_1rx8u_132",
+      "_suggestions_1rx8u_76"
+    ],
+    "firstTemplate": "Free design",
+    "wall": true,
+    "inputBottom": 755
+  },
+  "wideSlidesClosed": {
+    "panel": false,
+    "wall": true,
+    "slidesChip": true,
+    "text": "slides draft body",
+    "placeholder": "Describe your deck, e.g. quarterly business review for leadership"
+  },
+  "memberHover": {
+    "pressed": "true",
+    "backAriaHidden": "false"
+  },
+  "memberHoverClickPinned": {
+    "pressed": "true",
+    "backAriaHidden": "false"
+  },
+  "memberPinnedAway": {
+    "pressed": "true",
+    "backAriaHidden": "false"
+  },
+  "memberUnpinned": {
+    "pressed": "true",
+    "backAriaHidden": "false"
+  },
+  "memberKeyboard": {
+    "pressed": "false",
+    "backAriaHidden": "true"
+  },
+  "imageExample": {
+    "text": "An athlete sprints at full effort down a rainy night street, in a dynamic side m",
+    "slidesChip": false,
+    "slidesBody": false
+  },
+  "slidesRestored": {
+    "text": "slides draft body",
+    "swissSelected": true,
+    "slidesChip": true
+  },
+  "slidesPasteAttachment": {
+    "dispatched": true,
+    "chips": []
+  },
+  "slidesAttachment": {
+    "names": [],
+    "bodyHasRef": false
+  },
+  "attachmentIsolation": {
+    "bar": true,
+    "officeHasRef": false,
+    "officeChips": []
+  },
+  "exampleConfirm": {
+    "bar": true,
+    "barText": "Build a personal reading log Cancel Confirm",
+    "text": "An athlete sprints at full effort down a rainy night street, in a dynamic side medium shot that clearly shows the head, ear, upper body, and running posture. A pair of pearl-white wireless sport earbuds sits naturally on the ear, with a translucent silicone wing fitted to the ear; the product is clearly visible at a true-to-life size. The athlete's foot strikes standing water and throws up a splash, and the wet pavement reflects electric lime and cool cyan neon. Deep indigo night, cold cinematic light, a few lime-colored motes of dust, with the energy of a premium sports-technology advertisement."
+  },
+  "exampleCancel": {
+    "bar": false,
+    "text": "An athlete sprints at full effort down a rainy night street, in a dynamic side medium shot that clearly shows the head, ear, upper body, and running posture. A pair of pearl-white wireless sport earbuds sits naturally on the ear, with a translucent silicone wing fitted to the ear; the product is clearly visible at a true-to-life size. The athlete's foot strikes standing water and throws up a splash, and the wet pavement reflects electric lime and cool cyan neon. Deep indigo night, cold cinematic light, a few lime-colored motes of dust, with the energy of a premium sports-technology advertisement."
+  },
+  "exampleConfirmApplied": {
+    "text": "Please build a reading tracker for me. Let me add books and record reading progress, ratin",
+    "layer": "capability",
+    "capabilityTitle": "‹ Back Build × Build a personal reading log Websites, apps, "
+  },
+  "videoPrep": {
+    "composer": {
+      "x": 343.5,
+      "y": 580,
+      "w": 768,
+      "h": 232,
+      "right": 1111.5,
+      "bottom": 812
+    },
+    "hero": {
+      "x": 343.5,
+      "y": 84,
+      "w": 768,
+      "h": 169.5,
+      "right": 1111.5,
+      "bottom": 253.5
+    },
+    "modelOptions": 0,
+    "modelText": "No model selected",
+    "sendDisabled": true,
+    "durationChips": [
+      "4s",
+      "5s",
+      "6s",
+      "8s",
+      "10s",
+      "12s",
+      "15s"
+    ]
+  },
+  "videoTyped": {
+    "sendDisabled": true,
+    "modelHint": "No model selected"
+  },
+  "videoSendFailure": {
+    "text": "video draft body",
+    "notification": null
+  },
+  "compactView": {
+    "w": 880,
+    "h": 600,
+    "compact": "true"
+  },
+  "compactDefault": {
+    "input": {
+      "x": 42,
+      "y": 495,
+      "w": 793,
+      "h": 40,
+      "right": 835,
+      "bottom": 535
+    },
+    "card": {
+      "x": 29,
+      "y": 450,
+      "w": 812,
+      "h": 142,
+      "right": 841,
+      "bottom": 592
+    },
+    "scroll": {
+      "h": 552,
+      "client": 552
+    },
+    "sketches": [
+      {
+        "w": 14,
+        "h": 14
+      },
+      {
+        "w": 104,
+        "h": 62
+      },
+      {
+        "w": 14,
+        "h": 14
+      },
+      {
+        "w": 104,
+        "h": 62
+      }
+    ]
+  },
+  "compactCreateDir": {
+    "drawer": {
+      "x": 43,
+      "y": 238,
+      "w": 784,
+      "h": 204,
+      "right": 827,
+      "bottom": 442
+    },
+    "card": {
+      "x": 29,
+      "y": 450,
+      "w": 812,
+      "h": 142,
+      "right": 841,
+      "bottom": 592
+    },
+    "gap": 8,
+    "covers": [
+      {
+        "w": 362,
+        "h": 84
+      },
+      {
+        "w": 362,
+        "h": 84
+      },
+      {
+        "w": 362,
+        "h": 84
+      }
+    ]
+  },
+  "compactSlides": {
+    "host": {
+      "x": 43,
+      "y": 275.5,
+      "w": 784,
+      "h": 166.5,
+      "right": 827,
+      "bottom": 442
+    },
+    "hostScroll": {
+      "h": 167,
+      "client": 167
+    },
+    "inputBottom": 535,
+    "cardTop": 450,
+    "visibleTemplates": [
+      "guid-slide-template-free",
+      "guid-slide-template-swiss",
+      "guid-slide-template-navy",
+      "guid-slide-template-frost",
+      "guid-slide-template-editorial",
+      "guid-slide-template-midnight"
+    ],
+    "summary": "16:9 · Quick draft",
+    "summaryRight": 594.234375,
+    "modelLeft": 620,
+    "overlap": -25.8
+  },
+  "escPriorityBefore": {
+    "panel": true,
+    "popups": 0
+  },
+  "escPriorityAfter": {
+    "panel": true,
+    "popups": 0
+  },
+  "compactSlidesClosed": {
+    "panel": false,
+    "wall": true,
+    "text": "compact slides body",
+    "inputBottom": 535,
+    "slidesChip": true
+  },
+  "reducedMotion": {
+    "matches": true,
+    "transition": "0s"
+  }
+}

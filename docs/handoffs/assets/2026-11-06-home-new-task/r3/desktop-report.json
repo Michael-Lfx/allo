@@ -1,0 +1,33 @@
+{
+  "slidesTemplateSelected": true,
+  "pageChoices": [
+    "guid-slide-pages-auto",
+    "guid-slide-pages-5-8",
+    "guid-slide-pages-10-15",
+    "guid-slide-pages-20+"
+  ],
+  "pageChosen": "guid-slide-pages-5-8",
+  "slidesTyped": 37,
+  "slidesSendPresent": true,
+  "slides": {
+    "route": "#/conversation/01a1b41f-e4c8-7c10-8061-ce08647d10e1",
+    "hashBefore": "#/guid"
+  },
+  "videoModel": "minimax-h3",
+  "videoModelOptions": [
+    "minimax-h3"
+  ],
+  "videoTextLen": 8,
+  "videoRefFiles": 0,
+  "videoFailure": {
+    "hash": "#/guid",
+    "composerStill": true,
+    "draftLen": 8,
+    "errorVisible": true
+  },
+  "video": {
+    "route": "#/video-generation/clip/01a1b420-1013-7d82-9f24-21f367f2df76",
+    "model": "minimax-h3",
+    "refs": 0
+  }
+}

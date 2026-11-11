@@ -46,11 +46,6 @@
   outline-offset: 4px;
 }
 
-:global([data-theme='dark']) .root {
-  --fc-shadow: #000000 !important;
-  --fc-shadow-o: 0.55 !important;
-}
-
 .shadow {
   position: absolute;
   inset: 14% 10% -7%;

@@ -105,6 +105,14 @@
       "group": "check",
       "desc": "扫描所有 Arco 图标文字按钮并校验共享横向布局契约"
     },
+    "check:example-covers": {
+      "group": "check",
+      "desc": "校验首页示例封面尺寸与单文件体积，防止打包资源回涨"
+    },
+    "optimize:example-covers": {
+      "group": "dev",
+      "desc": "用 ImageMagick 重新压缩首页示例封面并仅在更小时替换"
+    },
     "dev":           { "group": "dev",   "desc": "启动桌面应用开发（tauri dev，热重载）" },
     "dev:web":       { "group": "dev",   "desc": "启动 Web 全栈开发（后端 API + 前端 vite）" },
     "dev:ui":        { "group": "dev",   "desc": "仅启动前端开发服务器（纯 vite，无后端）" },

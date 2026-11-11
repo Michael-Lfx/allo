@@ -32,11 +32,36 @@ import GuidInputCard from './components/GuidInputCard';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
 import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
-import GuidVideoShortcut from './components/GuidVideoShortcut';
 import ShowcaseCards from './components/ShowcaseCards';
+import HomeInputDrawer from './components/HomeInputDrawer';
+import BuildAmbientWall, { type BuildAmbientVariant } from './components/BuildAmbientWall';
+import ImagePromptPanel from './components/ImagePromptPanel';
+import ImagePromptOptions from './components/ImagePromptOptions';
+import {
+  DEFAULT_IMAGE_PROMPT_PARAMETERS,
+  composeImagePromptInput,
+  isDefaultImagePromptParameters,
+  type ImagePromptParameters,
+} from './components/imagePromptParameters';
+import buildWebsiteMain from './components/assets/build/website-main.webp';
+import buildWebsiteExhibition1 from './components/assets/build/website-exhibition-1.webp';
+import buildWebsiteExhibition2 from './components/assets/build/website-exhibition-2.webp';
+import buildWebsitePortfolio from './components/assets/build/website-portfolio.webp';
+import buildAppMain from './components/assets/build/app-main.webp';
+import buildAppSpending from './components/assets/build/app-spending.webp';
+import buildAppHabits from './components/assets/build/app-habits.webp';
+import buildAppTravel from './components/assets/build/app-travel.webp';
+import buildGameMain from './components/assets/build/game-main.webp';
+import buildGameSokoban from './components/assets/build/game-sokoban.webp';
+import buildGameNeon from './components/assets/build/game-neon.webp';
+import buildGameGomoku from './components/assets/build/game-gomoku.webp';
+import showcaseVideoCover from './components/assets/showcase-video-cover.webp';
+import showcaseImageCover from './components/assets/showcase-image-cover.webp';
+import type { HomeCapability, HomeStageOption } from './components/homeStage';
 import SlideOptionsControls from './presentation/SlideOptionsControls';
 import SlideCreatePanel from './presentation/SlideCreatePanel';
 import SlideCardWall from './presentation/SlideCardWall';
+import SlideThemeThumbnail from './presentation/SlideThemeThumbnail';
 import type { SlideSuggestion } from './presentation/slideGallery';
 import {
   DEFAULT_SLIDE_OPTIONS,
@@ -56,7 +81,6 @@ import type {
 import GuidModelSelector from './components/GuidModelSelector';
 import GuidAddProviderModal, { type GuidAddProviderHandle } from './components/GuidAddProviderModal';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
-import { useTaskProfileStore } from '@/renderer/stores/taskProfileStore';
 import { createWorkspaceDialogGate } from './workspaceDialogGate';
 import MentionDropdown, { MentionSelectorBadge } from './components/MentionDropdown';
 import GuidEntryFlyout, { GuidAnchoredFlyout, type GuidEntryFlyoutMode } from './components/GuidEntryFlyout';
@@ -99,13 +123,121 @@ import type { Preset } from '@/common/types/agent/presetTypes';
 import type { TProviderWithModel } from '@/common/config/storage';
 import { replaceActiveSlashToken, type SlashLauncherItem } from '@/common/chat/slash/launcher';
 import { PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
+import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
+import { useHomeVideoSubmit } from './homeVideoSubmit';
+import type { VideoHomeMode } from '../videoGeneration/home/types';
 import styles from './index.module.css';
+
+const CreateAmbientWall = React.lazy(() => import('./components/CreateAmbientWall'));
+const VideoExamplePanel = React.lazy(() => import('./components/VideoExamplePanel'));
+const VideoHomeComposer = React.lazy(() => import('../videoGeneration/home/VideoHomeComposer'));
 
 type ActiveChatPopup = 'model' | 'strategy' | null;
 type HomeFlyout = GuidEntryFlyoutMode | 'knowledge';
 
 const asHomeFlyout = (key: string | undefined): HomeFlyout | null =>
   key === 'preset' || key === 'skills' || key === 'knowledge' ? key : null;
+
+type HomeBuildKind = 'website' | 'app' | 'game';
+
+const HOME_BUILD_KINDS: readonly HomeBuildKind[] = ['website', 'app', 'game'];
+
+const HOME_BUILD_COPY = {
+  website: {
+    title: 'guid.home.buildChoices.website.title',
+    description: 'guid.home.buildChoices.website.description',
+    firstLabel: 'guid.home.buildPrompts.website.firstLabel',
+    secondLabel: 'guid.home.buildPrompts.website.secondLabel',
+    first: 'guid.home.buildPrompts.website.first',
+    second: 'guid.home.buildPrompts.website.second',
+    thirdLabel: 'guid.home.buildPrompts.website.thirdLabel',
+    third: 'guid.home.buildPrompts.website.third',
+  },
+  app: {
+    title: 'guid.home.buildChoices.app.title',
+    description: 'guid.home.buildChoices.app.description',
+    firstLabel: 'guid.home.buildPrompts.app.secondLabel',
+    secondLabel: 'guid.home.buildPrompts.app.firstLabel',
+    first: 'guid.home.buildPrompts.app.second',
+    second: 'guid.home.buildPrompts.app.first',
+    thirdLabel: 'guid.home.buildPrompts.app.thirdLabel',
+    third: 'guid.home.buildPrompts.app.third',
+  },
+  game: {
+    title: 'guid.home.buildChoices.game.title',
+    description: 'guid.home.buildChoices.game.description',
+    firstLabel: 'guid.home.buildPrompts.game.firstLabel',
+    secondLabel: 'guid.home.buildPrompts.game.secondLabel',
+    first: 'guid.home.buildPrompts.game.first',
+    second: 'guid.home.buildPrompts.game.second',
+    thirdLabel: 'guid.home.buildPrompts.game.thirdLabel',
+    third: 'guid.home.buildPrompts.game.third',
+  },
+} as const;
+
+const BUILD_DRAWER_COLLAPSE_MS = 340;
+const BUILD_DRAWER_EXPAND_MS = 420;
+const SLIDE_PANEL_CLOSE_FALLBACK_MS = 380;
+
+type BuildDrawerMotion = 'idle' | 'closing' | 'opening';
+
+type HomeBuildExample = {
+  labelKey: string;
+  promptKey: string;
+  cover: string;
+};
+
+/**
+ * Build prompts use role seeds from the CC0 prompt collection
+ * f/awesome-chatgpt-prompts. Each prompt is rewritten as an explicit,
+ * model-agnostic task spec (deliverable + constraints + verification) so
+ * DeepSeek/Qwen/Claude-class models can execute the same task.
+ * The fourth example in each category is a direct community-prompt rewrite.
+ */
+const HOME_BUILD_EXAMPLES: Record<HomeBuildKind, readonly HomeBuildExample[]> = {
+  website: [
+    { labelKey: 'guid.home.buildPrompts.website.firstLabel', promptKey: 'guid.home.buildPrompts.website.first', cover: buildWebsiteMain },
+    { labelKey: 'guid.home.buildPrompts.website.secondLabel', promptKey: 'guid.home.buildPrompts.website.second', cover: buildWebsiteExhibition1 },
+    { labelKey: 'guid.home.buildPrompts.website.thirdLabel', promptKey: 'guid.home.buildPrompts.website.third', cover: buildWebsiteExhibition2 },
+    { labelKey: 'guid.home.buildPrompts.website.fourthLabel', promptKey: 'guid.home.buildPrompts.website.fourth', cover: buildWebsitePortfolio },
+  ],
+  app: [
+    { labelKey: 'guid.home.buildPrompts.app.secondLabel', promptKey: 'guid.home.buildPrompts.app.second', cover: buildAppSpending },
+    { labelKey: 'guid.home.buildPrompts.app.firstLabel', promptKey: 'guid.home.buildPrompts.app.first', cover: buildAppMain },
+    { labelKey: 'guid.home.buildPrompts.app.thirdLabel', promptKey: 'guid.home.buildPrompts.app.third', cover: buildAppHabits },
+    { labelKey: 'guid.home.buildPrompts.app.fourthLabel', promptKey: 'guid.home.buildPrompts.app.fourth', cover: buildAppTravel },
+  ],
+  game: [
+    { labelKey: 'guid.home.buildPrompts.game.firstLabel', promptKey: 'guid.home.buildPrompts.game.first', cover: buildGameMain },
+    { labelKey: 'guid.home.buildPrompts.game.secondLabel', promptKey: 'guid.home.buildPrompts.game.second', cover: buildGameSokoban },
+    { labelKey: 'guid.home.buildPrompts.game.thirdLabel', promptKey: 'guid.home.buildPrompts.game.third', cover: buildGameNeon },
+    { labelKey: 'guid.home.buildPrompts.game.fourthLabel', promptKey: 'guid.home.buildPrompts.game.fourth', cover: buildGameGomoku },
+  ],
+};
+
+const HOME_BUILD_PROMPT_SOURCES: Record<string, string> = {
+  'guid.home.buildPrompts.website.first': 'Web Design Consultant',
+  'guid.home.buildPrompts.website.second': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.website.third': 'Fullstack Software Developer',
+  'guid.home.buildPrompts.website.fourth': 'Web Design Consultant',
+  'guid.home.buildPrompts.app.first': 'UX/UI Developer',
+  'guid.home.buildPrompts.app.second': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.app.third': 'Fullstack Software Developer',
+  'guid.home.buildPrompts.app.fourth': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.game.first': 'Text Based Adventure Game',
+  'guid.home.buildPrompts.game.second': 'Tic-Tac-Toe Game',
+  'guid.home.buildPrompts.game.third': 'Senior Frontend Developer',
+  'guid.home.buildPrompts.game.fourth': 'Gomoku player',
+};
+
+const HOME_BUILD_EXAMPLE_SLOTS = ['first', 'second', 'third', 'fourth'] as const;
+
+const homeBuildKindOfOption = (key: string): HomeBuildKind | null => {
+  if (key === 'develop-website') return 'website';
+  if (key === 'develop-app') return 'app';
+  if (key === 'develop-game') return 'game';
+  return null;
+};
 
 const GuidPage: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -156,6 +288,8 @@ const GuidPage: React.FC = () => {
   // It opens with slides mode. Dismissing the panel exits slides mode, and
   // leaving slides mode closes the panel.
   const [slidePanelOpen, setSlidePanelOpen] = useState(false);
+  const [slidePanelMotion, setSlidePanelMotion] = useState<'open' | 'closing'>('open');
+  const slidePanelCloseTimerRef = useRef<number | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | undefined>(() =>
     readPreferredReasoningEffort()
   );
@@ -171,7 +305,56 @@ const GuidPage: React.FC = () => {
     (visible: boolean) => handleChatPopupVisibleChange('strategy', visible),
     [handleChatPopupVisibleChange]
   );
-  const taskProfile = useTaskProfileStore((state) => state.taskProfile);
+  // Home stage state machine: `home` shows the two entries + membership card;
+  // a directory replaces them; build-examples is a drawer layer, not a
+  // capability prep page.
+  const [homeView, setHomeView] = useState<'home' | 'develop-directory' | 'build-examples' | 'create-directory' | 'capability'>('home');
+  // Mirrors data-home-compact so React children (action row) can compact too.
+  const [homeCompact, setHomeCompact] = useState(false);
+  const [homeCapability, setHomeCapability] = useState<HomeCapability>('office');
+  const [imagePromptParameters, setImagePromptParameters] = useState<ImagePromptParameters>(
+    DEFAULT_IMAGE_PROMPT_PARAMETERS,
+  );
+  // Drafts are isolated per capability. Text, workspace, attachments and the
+  // slides template/options all travel with their own draft, so an attachment
+  // imported for slides never leaks into an office send and returning to a
+  // capability restores both its body and its reference files.
+  const homeDraftsRef = useRef<
+    Record<
+      HomeCapability,
+      {
+        text: string;
+        dir: string;
+        files: string[];
+        slideOptions: SlideOptions | null;
+        imageParameters: ImagePromptParameters;
+      }
+    >
+  >({
+    office: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    develop: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    slides: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    video: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+    image: { text: '', dir: '', files: [], slideOptions: null, imageParameters: DEFAULT_IMAGE_PROMPT_PARAMETERS },
+  });
+  // Build directory category; drives the prepared prompts and the preview copy.
+  const [homeBuildKind, setHomeBuildKind] = useState<HomeBuildKind | null>(null);
+  const [selectedBuildExample, setSelectedBuildExample] = useState<string | null>(null);
+  const [buildDrawerMotion, setBuildDrawerMotion] = useState<BuildDrawerMotion>('idle');
+  const [buildTransitionDirection, setBuildTransitionDirection] = useState<'forward' | 'back' | 'home' | null>(null);
+  const [buildDirectoryMotion, setBuildDirectoryMotion] = useState<'enter' | 'expand' | 'exit' | 'idle'>('enter');
+  const [pendingBuildKind, setPendingBuildKind] = useState<HomeBuildKind | null>(null);
+  const [videoPanelOpen, setVideoPanelOpen] = useState(false);
+  const [homeVideoMode, setHomeVideoMode] = useState<VideoHomeMode>('agent');
+  const homeVideoSubmit = useHomeVideoSubmit();
+  // Example cards only replace a visible draft after an explicit confirmation.
+  const [pendingExample, setPendingExample] = useState<{ title: string; run: () => void } | null>(null);
+  const exampleConfirmCancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!pendingExample) return;
+    const frame = window.requestAnimationFrame(() => exampleConfirmCancelRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingExample]);
   const [isHomeAddMenuOpen, setIsHomeAddMenuOpen] = useState(false);
   const [homeAddMenuActiveIndex, setHomeAddMenuActiveIndex] = useState(0);
   const pendingAutoSendRef = useRef(false);
@@ -314,15 +497,221 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
-  const handleSelectShowcaseApp = useCallback(() => {
-    guidInput.setInput(t('guid.home.showcaseAppPrompt'));
-    useTaskProfileStore.getState().setTaskProfile('coding');
+  const focusHomeComposer = useCallback(() => {
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
-  }, [guidInput.setInput, t]);
-  const handleSelectShowcaseImage = useCallback(() => {
-    guidInput.setInput(t('guid.home.showcaseImagePrompt'));
-    window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
-  }, [guidInput.setInput, t]);
+  }, []);
+  const switchHomeCapability = useCallback(
+    (next: HomeCapability) => {
+      if (next === homeCapability) return;
+      setPendingExample(null);
+      const leaving = homeDraftsRef.current[homeCapability];
+      homeDraftsRef.current[homeCapability] = {
+        text: guidInput.input,
+        dir: guidInput.dir,
+        files: guidInput.files,
+        slideOptions: homeCapability === 'slides' ? slideOptions : leaving.slideOptions,
+        imageParameters: homeCapability === 'image' ? imagePromptParameters : leaving.imageParameters,
+      };
+      const draft = homeDraftsRef.current[next];
+      setImagePromptParameters(draft.imageParameters);
+      guidInput.setInput(draft.text);
+      guidInput.setDir(draft.dir);
+      guidInput.setFiles(draft.files);
+      // Only slides owns template options; every other capability must not show
+      // or send a template imported for slides.
+      setSlideOptions(next === 'slides' ? (draft.slideOptions ?? DEFAULT_SLIDE_OPTIONS) : null);
+      if (next !== 'slides') setSlidePanelOpen(false);
+      if (next !== 'video') setVideoPanelOpen(false);
+      setHomeCapability(next);
+      focusHomeComposer();
+    },
+    [
+      homeCapability,
+      guidInput.input,
+      guidInput.dir,
+      guidInput.files,
+      guidInput.setInput,
+      guidInput.setDir,
+      guidInput.setFiles,
+      slideOptions,
+      imagePromptParameters,
+      focusHomeComposer,
+    ],
+  );
+  const openHomeDirectory = useCallback((group: 'develop' | 'create') => {
+    const openingCreate = group === 'create';
+    const animateCreate = openingCreate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    setBuildDrawerMotion(animateCreate ? 'opening' : 'idle');
+    setBuildTransitionDirection(null);
+    setBuildDirectoryMotion(openingCreate ? (animateCreate ? 'expand' : 'idle') : 'enter');
+    setPendingBuildKind(null);
+    setHomeView(group === 'develop' ? 'develop-directory' : 'create-directory');
+  }, []);
+  const closeHomePanel = useCallback(() => {
+    if (
+      (homeView === 'develop-directory' || homeView === 'create-directory') &&
+      buildDrawerMotion === 'idle' &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      setBuildDirectoryMotion('exit');
+      setBuildTransitionDirection('home');
+      setBuildDrawerMotion('closing');
+      return;
+    }
+    setBuildDrawerMotion('idle');
+    setBuildTransitionDirection(null);
+    setBuildDirectoryMotion('idle');
+    setPendingBuildKind(null);
+    setHomeView('home');
+    if (homeCapability !== 'office') switchHomeCapability('office');
+    focusHomeComposer();
+  }, [buildDrawerMotion, focusHomeComposer, homeCapability, homeView, switchHomeCapability]);
+  /** A capability draft counts as occupied when it has text, attachments or an imported template. */
+  const capabilityHasDraft = useCallback(
+    (capability: HomeCapability) => {
+      // The full video composer owns its draft in session storage; it no longer
+      // maps onto GuidPage input state, so show-case examples never replace it.
+      if (capability === 'video') return false;
+      if (capability === 'image') {
+        const parameters =
+          capability === homeCapability ? imagePromptParameters : homeDraftsRef.current.image.imageParameters;
+        if (!isDefaultImagePromptParameters(parameters)) return true;
+      }
+      if (capability === homeCapability) {
+        return Boolean(
+          guidInput.input.trim() || guidInput.files.length > 0 || slideOptions?.template.kind === 'import',
+        );
+      }
+      const draft = homeDraftsRef.current[capability];
+      return Boolean(draft.text.trim() || draft.files.length > 0 || draft.slideOptions?.template.kind === 'import');
+    },
+    [guidInput.input, guidInput.files, homeCapability, imagePromptParameters, slideOptions],
+  );
+  const enterImageMode = useCallback(
+    (prompt?: string) => {
+      const imageDraft = homeDraftsRef.current.image;
+      const restoreDraft =
+        prompt === undefined &&
+        Boolean(
+          imageDraft.text.trim() ||
+            imageDraft.files.length > 0 ||
+            !isDefaultImagePromptParameters(imageDraft.imageParameters),
+        );
+      switchHomeCapability('image');
+      if (!restoreDraft) {
+        setImagePromptParameters(DEFAULT_IMAGE_PROMPT_PARAMETERS);
+        guidInput.setInput(prompt ?? t('guid.home.imageCustomPrompt'));
+      }
+      setHomeView('capability');
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput, switchHomeCapability, t],
+  );
+  const handleSelectImagePrompt = useCallback(
+    (prompt: string, parameters: ImagePromptParameters) => {
+      setImagePromptParameters(parameters);
+      guidInput.setInput(prompt);
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput],
+  );
+  const closeImagePanel = useCallback(() => {
+    if (homeCapability === 'image') switchHomeCapability('office');
+    openHomeDirectory('create');
+  }, [homeCapability, openHomeDirectory, switchHomeCapability]);
+  /** The single example-application path shared by covers and the dev prep starter. */
+  const applyHomeExample = useCallback(
+    (kind: 'image' | 'video') => {
+      if (kind === 'image') {
+        enterImageMode(t('guid.home.showcaseImagePrompt'));
+      } else {
+        switchHomeCapability('video');
+        setVideoPanelOpen(true);
+        setHomeView('capability');
+      }
+      setPendingExample(null);
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [enterImageMode, guidInput.setInput, switchHomeCapability, t],
+  );
+  const requestHomeExample = useCallback(
+    (kind: 'image' | 'video', title: string) => {
+      const target: HomeCapability = kind === 'image' ? 'image' : 'video';
+      if (capabilityHasDraft(target)) {
+        setPendingExample({ title, run: () => applyHomeExample(kind) });
+        return;
+      }
+      applyHomeExample(kind);
+    },
+    [applyHomeExample, capabilityHasDraft],
+  );
+  const applyBuildPrompt = useCallback(
+    (kind: HomeBuildKind, promptKey: string) => {
+      // Build examples are exploratory: overwrite the current build draft
+      // immediately and keep the picker open so another example can be tried.
+      setHomeBuildKind(kind);
+      switchHomeCapability('develop');
+      const prompt = t(promptKey);
+      const sourceRole = HOME_BUILD_PROMPT_SOURCES[promptKey];
+      guidInput.setInput(
+        sourceRole ? `${t('guid.home.buildPromptRolePrefix', { role: sourceRole })}\n\n${prompt}` : prompt,
+      );
+      setPendingExample(null);
+      window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
+    },
+    [guidInput.setInput, switchHomeCapability, t],
+  );
+  const selectBuildExample = useCallback(
+    (option: HomeStageOption) => {
+      const kind = homeBuildKind ?? 'website';
+      const promptKey = option.promptKey;
+      if (!promptKey) return;
+      setSelectedBuildExample(option.key);
+      applyBuildPrompt(kind, promptKey);
+    },
+    [applyBuildPrompt, homeBuildKind],
+  );
+  const showBuildDirectory = useCallback((animated: boolean) => {
+    setBuildDirectoryMotion(animated ? 'expand' : 'idle');
+    setBuildDrawerMotion(animated ? 'opening' : 'idle');
+    setBuildTransitionDirection(null);
+    setPendingBuildKind(null);
+    setHomeView('develop-directory');
+    setSelectedBuildExample(null);
+    setPendingExample(null);
+  }, []);
+  const backFromBuildExamples = useCallback(() => {
+    // Let X interrupt the opening animation instead of ignoring the click.
+    if (buildDrawerMotion === 'opening') {
+      setBuildTransitionDirection('back');
+      setBuildDirectoryMotion('expand');
+      setHomeView('develop-directory');
+      setSelectedBuildExample(null);
+      setPendingExample(null);
+      setPendingBuildKind(null);
+      return;
+    }
+    if (buildDrawerMotion !== 'idle') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      showBuildDirectory(false);
+      return;
+    }
+    setPendingBuildKind(null);
+    setBuildTransitionDirection('back');
+    setBuildDrawerMotion('closing');
+  }, [buildDrawerMotion, showBuildDirectory]);
+  const dismissPendingExample = useCallback(() => {
+    setPendingExample(null);
+    focusHomeComposer();
+  }, [focusHomeComposer]);
+  const handleSelectShowcaseVideo = useCallback(
+    () => requestHomeExample('video', t('guid.home.showcaseVideoTitle')),
+    [requestHomeExample, t],
+  );
+  const handleSelectShowcaseImage = useCallback(
+    () => requestHomeExample('image', t('guid.home.showcaseImageTitle')),
+    [requestHomeExample, t],
+  );
   useEffect(() => {
     const report = () => { void reportVoiceCandidate(null, guidInput.dir?.trim() || null).catch(() => {}); };
     report();
@@ -626,6 +1015,114 @@ const GuidPage: React.FC = () => {
     agentSelection.currentEffectiveAgentInfo.agent_type,
   );
   const supportsHomeGoalCommand = agentSelection.currentEffectiveAgentInfo.agent_type === 'nomi';
+
+  // Compact stage check: content width <= 560 (i.e. stage area <= 608) or
+  // available height <= 580. Measured on the real container so the 880x600
+  // desktop window and the browser viewport share one rule.
+  useEffect(() => {
+    const el = guidContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const apply = () => {
+      const compact = el.clientWidth - 48 <= 560 || el.clientHeight <= 580;
+      setHomeCompact(compact);
+      if (compact) el.setAttribute('data-home-compact', 'true');
+      else el.removeAttribute('data-home-compact');
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // ESC only changes stage display/focus; it never rewrites the draft.
+
+  // Home directory entries and the per-capability input placeholder. Copy reuses
+  // existing bilingual keys only (i18n files stay read-only in this task).
+  const homeDevelopOptions = useMemo<HomeStageOption[]>(
+    () =>
+      HOME_BUILD_KINDS.map((kind) => ({
+        key: `develop-${kind}`,
+        id: 'develop',
+        title: t(HOME_BUILD_COPY[kind].title),
+        description: t(HOME_BUILD_COPY[kind].description),
+        cover: HOME_BUILD_EXAMPLES[kind][0].cover,
+        coverAlt: t(HOME_BUILD_COPY[kind].title),
+      })),
+    [t],
+  );
+  const homeBuildExampleOptions = useMemo<HomeStageOption[]>(() => {
+    const kind: HomeBuildKind = homeBuildKind ?? 'website';
+    return HOME_BUILD_EXAMPLES[kind].map((example, index) => {
+      const slot = HOME_BUILD_EXAMPLE_SLOTS[index];
+      const key = `build-example-${kind}-${slot}`;
+      return {
+        key,
+        id: 'develop',
+        title: t(example.labelKey),
+        cover: example.cover,
+        coverAlt: t(example.labelKey),
+        promptKey: example.promptKey,
+        selected: selectedBuildExample === key,
+      };
+    });
+  }, [homeBuildKind, selectedBuildExample, t]);
+  const homeCreateOptions = useMemo<HomeStageOption[]>(
+    () => [
+      {
+        key: 'create-image',
+        id: 'image',
+        title: t('guid.home.imageCustomTitle'),
+        description: t('guid.home.imageDescription'),
+        cover: showcaseImageCover,
+        coverAlt: t('guid.home.imageCustomTitle'),
+      },
+      {
+        key: 'create-slides',
+        id: 'slides',
+        title: t('presentation.home.label'),
+        description: t('presentation.create.templateTitle'),
+        preview: <SlideThemeThumbnail id='swiss' className={styles.dirThumbImage} />,
+        disabled: !supportsHomeGoalCommand,
+      },
+      {
+        key: 'create-video',
+        id: 'video',
+        title: t('videoGeneration.create.preferences.video'),
+        description: t('guid.home.videoShortcutSubtitle'),
+        cover: showcaseVideoCover,
+        coverAlt: t('guid.home.showcaseVideoTitle'),
+      },
+    ],
+    [supportsHomeGoalCommand, t],
+  );
+  const composerMode: 'office' | 'coding' | 'slides' =
+    homeCapability === 'slides' ? 'slides' : homeCapability === 'develop' ? 'coding' : 'office';
+  const composerProfile: 'office' | 'coding' = composerMode === 'coding' ? 'coding' : 'office';
+  const handleHomeTaskProfileChange = useCallback(
+    (profile: 'office' | 'coding') => {
+      if (profile === 'coding') {
+        if (homeCapability !== 'develop') {
+          switchHomeCapability('develop');
+          setHomeView('home');
+        }
+        return;
+      }
+      if (homeCapability !== 'office') {
+        switchHomeCapability('office');
+        setHomeView('home');
+      }
+    },
+    [homeCapability, switchHomeCapability],
+  );
+  const homePlaceholder =
+    homeCapability === 'slides'
+      ? t('presentation.home.placeholder')
+      : homeCapability === 'video'
+        ? t('videoGeneration.create.composer.generatePlaceholder')
+        : homeCapability === 'image'
+          ? t('guid.home.imagePlaceholder')
+          : t('conversation.welcome.placeholder');
+
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(supportsHomeSkillLoading);
   const pickerSkills = useMemo(
     () => installedPickerSkills(catalogSkills),
@@ -652,11 +1149,53 @@ const GuidPage: React.FC = () => {
   const enterSlideMode = useCallback(() => {
     setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
     setSlidePanelOpen(true);
+    setSlidePanelMotion('open');
+    if (homeCapability !== 'slides') switchHomeCapability('slides');
+    setHomeView('capability');
     window.requestAnimationFrame(() => homeTokenInputRef.current?.focus());
-  }, []);
+  }, [homeCapability, switchHomeCapability]);
   const exitSlideMode = useCallback(() => {
     setSlideOptions(null);
-  }, []);
+    setSlidePanelOpen(false);
+    setSlidePanelMotion('open');
+    if (homeCapability === 'slides') {
+      switchHomeCapability('office');
+      setHomeView('home');
+    }
+  }, [homeCapability, switchHomeCapability]);
+  const finishCloseSlidePanel = useCallback(() => {
+    if (slidePanelCloseTimerRef.current !== null) {
+      window.clearTimeout(slidePanelCloseTimerRef.current);
+      slidePanelCloseTimerRef.current = null;
+    }
+    setSlidePanelOpen(false);
+    setSlideOptions(null);
+    setSlidePanelMotion('open');
+    if (homeCapability === 'slides') switchHomeCapability('office');
+    openHomeDirectory('create');
+  }, [homeCapability, openHomeDirectory, switchHomeCapability]);
+  const closeVideoPanel = useCallback(() => {
+    setVideoPanelOpen(false);
+    if (homeCapability === 'video') switchHomeCapability('office');
+    openHomeDirectory('create');
+  }, [homeCapability, openHomeDirectory, switchHomeCapability]);
+  const closeSlidePanelToDirectory = useCallback(() => {
+    if (slidePanelMotion === 'closing') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finishCloseSlidePanel();
+      return;
+    }
+    setSlidePanelMotion('closing');
+    if (slidePanelCloseTimerRef.current !== null) {
+      window.clearTimeout(slidePanelCloseTimerRef.current);
+    }
+    // animationend is not guaranteed if the panel is interrupted or the
+    // animation is skipped; this timer is the recovery path to the directory.
+    slidePanelCloseTimerRef.current = window.setTimeout(() => {
+      slidePanelCloseTimerRef.current = null;
+      finishCloseSlidePanel();
+    }, SLIDE_PANEL_CLOSE_FALLBACK_MS);
+  }, [finishCloseSlidePanel, slidePanelMotion]);
   const handleSlidesChange = useCallback(
     (active: boolean) => (active ? enterSlideMode() : exitSlideMode()),
     [enterSlideMode, exitSlideMode],
@@ -670,7 +1209,114 @@ const GuidPage: React.FC = () => {
   useEffect(() => {
     if (slideOptions === null) setSlidePanelOpen(false);
   }, [slideOptions]);
-  const slideStudioOpen = supportsHomeGoalCommand && slideOptions !== null && slidePanelOpen;
+  useEffect(
+    () => () => {
+      if (slidePanelCloseTimerRef.current !== null) {
+        window.clearTimeout(slidePanelCloseTimerRef.current);
+        slidePanelCloseTimerRef.current = null;
+      }
+    },
+    [],
+  );
+  // Entering slides restores the slide-card wall independently of whether the
+  // template panel is expanded. Closing the panel returns to the create directory.
+  const slideStudioOpen = supportsHomeGoalCommand && homeCapability === 'slides';
+  const imageAmbientOpen = homeView === 'capability' && homeCapability === 'image';
+  const buildAmbientVariant: BuildAmbientVariant | 'create' | null =
+    homeView === 'develop-directory'
+      ? 'directory'
+      : homeView === 'build-examples'
+        ? (homeBuildKind ?? 'website')
+        : homeView === 'create-directory'
+          ? 'create'
+          : null;
+  // ESC: native selectors, dropdown menus and mention popovers keep priority;
+  // then the template panel, then the capability layer, then the directory.
+  useEffect(() => {
+    const hasOpenOverlay = () => {
+      const selectors = [
+        '.arco-select-popup',
+        '.arco-dropdown',
+        '.arco-trigger-popup',
+        '.arco-modal',
+        '.canvas-overlay:not(.canvas-composer-shell)',
+        '[class*="mentionMenu"]',
+        '[class*="mention-menu"]',
+        '[data-escape-owner]',
+      ];
+      return selectors.some((selector) =>
+        Array.from(document.querySelectorAll<HTMLElement>(selector)).some((element) => {
+          if (element.hidden) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return false;
+          const style = window.getComputedStyle(element);
+          return style.visibility !== 'hidden' && style.display !== 'none';
+        }),
+      );
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      // A preceding handler (dropdown/popover) already consumed this Escape.
+      if (event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('[role="listbox"],[role="menu"],[data-escape-owner]')) return;
+      if (hasOpenOverlay()) return;
+      if (pendingExample) {
+        event.preventDefault();
+        dismissPendingExample();
+        return;
+      }
+      if (homeView === 'home') return;
+      event.preventDefault();
+      if (homeCapability === 'slides' && slidePanelOpen) {
+        closeSlidePanelToDirectory();
+        return;
+      }
+      if (homeCapability === 'slides') {
+        exitSlideMode();
+        return;
+      }
+      if (homeCapability === 'image') {
+        closeImagePanel();
+        return;
+      }
+      if (homeCapability === 'video' && videoPanelOpen) {
+        closeVideoPanel();
+        return;
+      }
+      if (homeCapability !== 'office') switchHomeCapability('office');
+      setHomeView('home');
+      focusHomeComposer();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    // Capture the overlay before its own window listener closes it: otherwise a
+    // mode/preferences/look menu consumes Escape and this page handler sees no
+    // overlay, incorrectly closing the whole video capability.
+    const onKeyDownCapture = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (hasOpenOverlay()) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKeyDownCapture, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keydown', onKeyDownCapture, true);
+    };
+  }, [
+    homeView,
+    homeCapability,
+    slidePanelOpen,
+    closeSlidePanelToDirectory,
+    pendingExample,
+    dismissPendingExample,
+    exitSlideMode,
+    closeImagePanel,
+    closeVideoPanel,
+    videoPanelOpen,
+    switchHomeCapability,
+    focusHomeComposer,
+  ]);
   // An imported template is the attached reference file: removing the chip (or
   // a draft reset) drops the template choice too.
   const importedTemplatePath = slideOptions?.template.kind === 'import' ? slideOptions.template.path : null;
@@ -1042,8 +1688,16 @@ const GuidPage: React.FC = () => {
   );
   // Slides mode applies only to a real brief: an empty composer stays empty
   // (the send button stays disabled), and nothing is added to it visibly.
-  const slidesBrief = supportsHomeGoalCommand && slideOptions !== null && guidInput.input.trim().length > 0;
-  const sendInput = slidesBrief ? applySlideHeader(guidInput.input, slideOptions) : guidInput.input;
+  const slidesBrief =
+    homeCapability === 'slides' &&
+    supportsHomeGoalCommand &&
+    slideOptions !== null &&
+    guidInput.input.trim().length > 0;
+  const sendInput =
+    homeCapability === 'image'
+      ? composeImagePromptInput(guidInput.input, imagePromptParameters, t)
+      : guidInput.input;
+  const resolvedSendInput = slidesBrief ? applySlideHeader(sendInput, slideOptions) : sendInput;
   const sendSkillIds = useMemo(
     () =>
       slidesBrief && managedSlidesSkillReady && !homeInitialSkillIds.includes(PRESENTATION_SKILL_ID)
@@ -1127,9 +1781,115 @@ const GuidPage: React.FC = () => {
     });
   }, [guidInput.setDir]);
 
+  const showBuildExamples = useCallback(
+    (kind: HomeBuildKind, animated: boolean) => {
+      setHomeBuildKind(kind);
+      setSelectedBuildExample(null);
+      setPendingExample(null);
+      switchHomeCapability('develop');
+      setHomeView('build-examples');
+      setBuildTransitionDirection(null);
+      setBuildDrawerMotion(animated ? 'opening' : 'idle');
+    },
+    [switchHomeCapability],
+  );
+  const openWebsiteExamples = useCallback(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      showBuildExamples('website', false);
+    } else {
+      showBuildExamples('website', true);
+    }
+  }, [showBuildExamples]);
+  const handleSelectShowcaseWebsite = useCallback(() => {
+    // Opening the picker itself does not overwrite the draft, but selecting an
+    // example does. Keep the same confirmation contract as the video/image
+    // covers when a develop draft already exists.
+    if (capabilityHasDraft('develop')) {
+      setPendingExample({
+        title: t('guid.home.showcaseWebsiteTitle'),
+        run: openWebsiteExamples,
+      });
+      return;
+    }
+    openWebsiteExamples();
+  }, [capabilityHasDraft, openWebsiteExamples, t]);
+  const selectHomeOption = useCallback(
+    (option: HomeStageOption) => {
+      if (option.id === 'slides' && !supportsHomeGoalCommand) return;
+      setPendingExample(null);
+      if (option.id === 'image') {
+        enterImageMode();
+        return;
+      }
+      if (option.id === 'slides') {
+        setSlideOptions((current) => current ?? DEFAULT_SLIDE_OPTIONS);
+        setSlidePanelOpen(true);
+        setSlidePanelMotion('open');
+      }
+      const buildKind = homeBuildKindOfOption(option.key);
+      if (buildKind) {
+        if (buildDrawerMotion !== 'idle') return;
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          showBuildExamples(buildKind, false);
+        } else {
+          setBuildDirectoryMotion('exit');
+          setBuildTransitionDirection('forward');
+          setPendingBuildKind(buildKind);
+          setBuildDrawerMotion('closing');
+        }
+        return;
+      }
+      if (option.id === 'video') setVideoPanelOpen(true);
+      switchHomeCapability(option.id);
+      setHomeView('capability');
+    },
+    [buildDrawerMotion, enterImageMode, showBuildExamples, supportsHomeGoalCommand, switchHomeCapability],
+  );
+  const handleDirectoryMotionEnd = useCallback(() => {
+    if (buildDirectoryMotion === 'exit') {
+      if (buildTransitionDirection === 'forward' && pendingBuildKind) {
+        showBuildExamples(pendingBuildKind, true);
+        setPendingBuildKind(null);
+        return;
+      }
+      if (buildTransitionDirection === 'home') {
+        setBuildDrawerMotion('idle');
+        setBuildTransitionDirection(null);
+        setBuildDirectoryMotion('idle');
+        setPendingBuildKind(null);
+        setHomeView('home');
+        if (homeCapability !== 'office') switchHomeCapability('office');
+        focusHomeComposer();
+      }
+      return;
+    }
+    if (buildDirectoryMotion === 'expand') {
+      setBuildDrawerMotion('idle');
+      setBuildDirectoryMotion('idle');
+    }
+  }, [
+    buildDirectoryMotion,
+    buildTransitionDirection,
+    focusHomeComposer,
+    homeCapability,
+    pendingBuildKind,
+    showBuildExamples,
+    switchHomeCapability,
+  ]);
+  const handleExamplesMotionEnd = useCallback(() => {
+    if (buildTransitionDirection === 'back' && buildDrawerMotion === 'closing') {
+      showBuildDirectory(true);
+      return;
+    }
+    if (buildDrawerMotion === 'opening') {
+      setBuildDrawerMotion('idle');
+      setBuildDirectoryMotion('idle');
+    }
+  }, [buildDrawerMotion, buildTransitionDirection, showBuildDirectory]);
+
   const send = useGuidSend({
     // Input state (slides mode prepends the ppt-master option line here)
-    input: sendInput,
+    input: resolvedSendInput,
     setInput: guidInput.setInput,
     files: guidInput.files,
     setFiles: guidInput.setFiles,
@@ -1148,7 +1908,7 @@ const GuidPage: React.FC = () => {
     selectedAcpModel: agentSelection.selectedAcpModel,
     current_model: modelSelection.current_model,
     reasoningEffort: effectiveReasoningEffort,
-    taskProfile,
+    taskProfile: composerProfile,
 
     // Agent helpers
     findAgentByKey: agentSelection.findAgentByKey,
@@ -1210,6 +1970,7 @@ const GuidPage: React.FC = () => {
 
   // --- Coordinated handlers (depend on multiple hooks) ---
   const handleComposerSend = send.sendMessageHandler;
+  const homeSend = handleComposerSend;
 
   const handleInputChange = useCallback(
     (value: string) => {
@@ -1306,7 +2067,7 @@ const GuidPage: React.FC = () => {
       if (isSubmitGesture(event, sendKey)) {
         event.preventDefault();
         if (!hasGuidInitialPayload(guidInput.input, homeInitialSkillIds)) return;
-        handleComposerSend();
+        homeSend();
       }
     },
     [
@@ -1315,7 +2076,7 @@ const GuidPage: React.FC = () => {
       homeSlashController,
       mention,
       guidInput.input,
-      handleComposerSend,
+      homeSend,
       sendKey,
     ],
   );
@@ -1667,16 +2428,28 @@ const GuidPage: React.FC = () => {
       autoWorkDraft={advancedConfig.autoWork}
       goalMode={supportsHomeGoalCommand && goalMode}
       onGoalModeChange={supportsHomeGoalCommand ? setGoalMode : undefined}
-      slidesActive={supportsHomeGoalCommand && slideOptions !== null}
+      slidesActive={supportsHomeGoalCommand && homeCapability === 'slides'}
       onSlidesChange={supportsHomeGoalCommand ? handleSlidesChange : undefined}
+      taskProfile={composerProfile}
+      onTaskProfileChange={handleHomeTaskProfileChange}
+      hideTaskProfile={homeCapability === 'image'}
+      imageControls={
+        homeCapability === 'image' ? (
+          <ImagePromptOptions value={imagePromptParameters} onChange={setImagePromptParameters} />
+        ) : undefined
+      }
       slideControls={
-        slideOptions !== null ? (
+        homeCapability === 'slides' && slideOptions !== null ? (
           <SlideOptionsControls
             options={slideOptions}
             onChange={setSlideOptions}
             disabled={guidInput.loading}
+            compact={homeCompact}
             templatesOpen={slidePanelOpen}
-            onToggleTemplates={() => setSlidePanelOpen((open) => !open)}
+            onToggleTemplates={() => {
+              setSlidePanelMotion('open');
+              setSlidePanelOpen((open) => !open);
+            }}
           />
         ) : undefined
       }
@@ -1686,7 +2459,7 @@ const GuidPage: React.FC = () => {
         guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
       }}
       dictationActivation={dictationActivation}
-      onSend={handleComposerSend}
+      onSend={homeSend}
     />
   );
 
@@ -1696,42 +2469,232 @@ const GuidPage: React.FC = () => {
         ref={guidContainerRef}
         className={styles.guidContainer}
         data-slide-studio={slideStudioOpen || undefined}
+        data-video-gallery={homeView === 'capability' && homeCapability === 'video' ? 'true' : undefined}
       >
-        {/* Slides studio: a wall of slide cards replaces the home content behind the create panel. */}
-        {slideStudioOpen && <SlideCardWall />}
-        <div className={styles.guidScrollArea}>
+        {homeVideoSubmit.messageHolder}
+        {/* Slides owns the slide-card wall. Build has its own lightweight layer. */}
+        {slideStudioOpen ? (
+          <SlideCardWall />
+        ) : buildAmbientVariant ? (
+          <div
+            className={styles.ambientWall}
+            data-testid='guid-build-ambient'
+            data-ambient-variant={buildAmbientVariant}
+            aria-hidden='true'
+          >
+            {buildAmbientVariant === 'create' ? (
+              <React.Suspense fallback={null}>
+                <CreateAmbientWall />
+              </React.Suspense>
+            ) : (
+              <BuildAmbientWall variant={buildAmbientVariant} />
+            )}
+          </div>
+        ) : imageAmbientOpen ? (
+          <div
+            className={styles.ambientWall}
+            data-testid='guid-image-ambient'
+            data-ambient-variant='image'
+            aria-hidden='true'
+          >
+            <React.Suspense fallback={null}>
+              <CreateAmbientWall variant='image' />
+            </React.Suspense>
+          </div>
+        ) : homeView === 'capability' && homeCapability === 'video' ? (
+          <div
+            className={styles.ambientWall}
+            data-testid='guid-video-ambient'
+            data-ambient-variant='video'
+            aria-hidden='true'
+          >
+            <React.Suspense fallback={null}>
+              <CreateAmbientWall variant='video' />
+            </React.Suspense>
+          </div>
+        ) : null}
+        <div className={styles.guidScrollArea} data-home-layer={homeView}>
           <div className={styles.guidPrimaryStage}>
             <div className={styles.guidLayout}>
-              <div className={styles.homeMasthead}>
-                <GuidHomeBrand />
-                <div className={styles.homeVideo} data-testid='guid-home-video'>
-                  <GuidVideoShortcut />
+              {homeView === 'home' ? (
+                <div className={styles.homeStage}>
+                  <GuidHomeBrand />
+                  <div className={styles.homeEntries}>
+                    <FeatureCards
+                      onOpenDevelop={() => openHomeDirectory('develop')}
+                      onOpenCreate={() => openHomeDirectory('create')}
+                    />
+                  </div>
+                  <div className={styles.homeGallery}>
+                    <ShowcaseCards
+                      onSelectVideo={handleSelectShowcaseVideo}
+                      onSelectWebsite={handleSelectShowcaseWebsite}
+                      onSelectImage={handleSelectShowcaseImage}
+                    />
+                  </div>
                 </div>
-              </div>
-              <FeatureCards
-                onStartFromLocal={() => void handleLinkWorkspace()}
-                onCreate={supportsHomeGoalCommand ? enterSlideMode : undefined}
-              />
-
-              <div className={styles.homeGallery}>
-                <ShowcaseCards onSelectApp={handleSelectShowcaseApp} onSelectImage={handleSelectShowcaseImage} />
-              </div>
+              ) : null}
             </div>
           </div>
         </div>
 
         <div className={styles.guidFixedInputArea}>
           <div className={styles.guidLayout}>
-            {slideStudioOpen && slideOptions !== null && (
-              <SlideCreatePanel
-                template={slideOptions.template}
-                onSelectTemplate={handleSelectSlideTemplate}
-                onSelectSuggestion={handleSelectSlideSuggestion}
-                onImportTemplate={handleImportSlideTemplate}
-                onClose={exitSlideMode}
-                disabled={guidInput.loading}
+            {pendingExample ? (
+              <div
+                className={styles.exampleConfirm}
+                data-testid='guid-home-example-confirm'
+                role='alertdialog'
+                aria-label={pendingExample.title}
+              >
+                <span className={styles.exampleConfirmText}>{pendingExample.title}</span>
+                <div className={styles.exampleConfirmActions}>
+                  <button
+                    ref={exampleConfirmCancelRef}
+                    type='button'
+                    className={styles.exampleConfirmCancel}
+                    onClick={dismissPendingExample}
+                  >
+                    {t('common.cancel', { defaultValue: 'Cancel' })}
+                  </button>
+                  <button
+                    type='button'
+                    className={styles.exampleConfirmApply}
+                    onClick={() => {
+                      const run = pendingExample.run;
+                      setPendingExample(null);
+                      run();
+                    }}
+                  >
+                    {t('common.confirm', { defaultValue: 'Confirm' })}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {homeView === 'develop-directory' ? (
+              <HomeInputDrawer
+                title={t('guid.home.buildTitle')}
+                options={homeDevelopOptions}
+                onSelect={selectHomeOption}
+                onClose={closeHomePanel}
+                closeLabel={t('common.close', { defaultValue: 'Close' })}
+                testId='guid-home-develop-directory'
+                onMotionEnd={handleDirectoryMotionEnd}
+                motion={buildDirectoryMotion}
+                motionDuration={buildDrawerMotion === 'closing' ? BUILD_DRAWER_COLLAPSE_MS : BUILD_DRAWER_EXPAND_MS}
               />
-            )}
+            ) : null}
+            {homeView === 'build-examples' ? (
+              <HomeInputDrawer
+                title={t(HOME_BUILD_COPY[homeBuildKind ?? 'website'].title)}
+                options={homeBuildExampleOptions}
+                onSelect={selectBuildExample}
+                onClose={backFromBuildExamples}
+                closeLabel={t('common.close', { defaultValue: 'Close' })}
+                testId='guid-home-build-examples'
+                scrollableMedia
+                onMotionEnd={handleExamplesMotionEnd}
+                motion={
+                  buildTransitionDirection === 'back' && buildDrawerMotion === 'closing'
+                    ? 'exit'
+                    : buildDrawerMotion === 'opening'
+                      ? 'expand'
+                      : 'idle'
+                }
+                motionDuration={buildDrawerMotion === 'closing' ? BUILD_DRAWER_COLLAPSE_MS : BUILD_DRAWER_EXPAND_MS}
+              />
+            ) : null}
+            {homeView === 'create-directory' ? (
+              <HomeInputDrawer
+                title={t('guid.home.createTitle')}
+                options={homeCreateOptions}
+                onSelect={selectHomeOption}
+                onClose={closeHomePanel}
+                closeLabel={t('common.close', { defaultValue: 'Close' })}
+                testId='guid-home-create-directory'
+                motion={buildDirectoryMotion}
+                motionDuration={buildDrawerMotion === 'closing' ? BUILD_DRAWER_COLLAPSE_MS : BUILD_DRAWER_EXPAND_MS}
+                onMotionEnd={handleDirectoryMotionEnd}
+              />
+            ) : null}
+            {homeView === 'capability' && homeCapability === 'video' && videoPanelOpen ? (
+              <div className={styles.slidePanelHost} data-testid='guid-home-video-panel-host'>
+                <VideoExamplePanel onClose={closeVideoPanel} />
+              </div>
+            ) : null}
+            {homeView === 'capability' && homeCapability === 'slides' && slidePanelOpen && slideOptions !== null ? (
+              <div className={styles.slidePanelHost} data-testid='guid-home-slides-panel'>
+                <SlideCreatePanel
+                  template={slideOptions.template}
+                  onSelectTemplate={handleSelectSlideTemplate}
+                  onSelectSuggestion={handleSelectSlideSuggestion}
+                  onImportTemplate={handleImportSlideTemplate}
+                  onClose={closeSlidePanelToDirectory}
+                  motion={slidePanelMotion}
+                  onMotionEnd={finishCloseSlidePanel}
+                  disabled={guidInput.loading}
+                />
+              </div>
+            ) : null}
+            {homeView === 'capability' && homeCapability === 'image' ? (
+              <div className={styles.slidePanelHost} data-testid='guid-home-image-panel-host'>
+                <ImagePromptPanel onSelectPrompt={handleSelectImagePrompt} onClose={closeImagePanel} />
+              </div>
+            ) : null}
+            {homeView === 'capability' && homeCapability === 'video' && homeVideoSubmit.generateRecovery ? (
+              <div
+                className={styles.exampleConfirm}
+                data-testid='guid-home-video-generate-recovery'
+                role='alert'
+              >
+                <span className={styles.exampleConfirmText}>
+                  {t('guid.home.videoRecoveryNotice')}
+                </span>
+                <div className={styles.exampleConfirmActions}>
+                  <button
+                    type='button'
+                    className={styles.exampleConfirmCancel}
+                    disabled={homeVideoSubmit.generateRecoveryChecking}
+                    onClick={() => void homeVideoSubmit.resolveGenerateRecovery()}
+                  >
+                    {t('common.retry')}
+                  </button>
+                  <button
+                    type='button'
+                    className={styles.exampleConfirmApply}
+                    onClick={() => void navigate('/video-generation')}
+                  >
+                    {t('videoGeneration.list.generateRecentTitle')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {homeView === 'capability' && homeCapability === 'video' ? (
+              <React.Suspense fallback={null}>
+                <VideoHomeComposer
+                mode={homeVideoMode}
+                loading={homeVideoSubmit.creating}
+                onModeChange={setHomeVideoMode}
+                onSubmitAgent={(draft) => {
+                  void homeVideoSubmit.handleCreate(draft);
+                }}
+                onSubmitCreation={(draft) => {
+                  void homeVideoSubmit.handleCreateCanvas(draft);
+                }}
+                onSubmitGenerate={(draft) => {
+                  void homeVideoSubmit.handleCreateGenerate(draft);
+                }}
+                onSubmitBriefing={(draft) => {
+                  void homeVideoSubmit.handleCreateBriefing(draft);
+                }}
+                onCreateBlankCanvas={() => {
+                  void homeVideoSubmit.handleCreateBlankCanvas();
+                }}
+                  showHero={false}
+                  showCampaign={false}
+                />
+              </React.Suspense>
+            ) : (
             <GuidInputCard
               containerRef={guidInputCardRef}
               input={guidInput.input}
@@ -1740,11 +2703,7 @@ const GuidPage: React.FC = () => {
               onPaste={guidInput.onPaste}
               onFocus={guidInput.handleTextareaFocus}
               onBlur={guidInput.handleTextareaBlur}
-              placeholder={
-                supportsHomeGoalCommand && slideOptions !== null
-                  ? t('presentation.home.placeholder')
-                  : t('conversation.welcome.placeholder')
-              }
+              placeholder={homePlaceholder}
               isInputActive={guidInput.isInputFocused}
               isFileDragging={guidInput.isFileDragging}
               activeBorderColor={activeBorderColor}
@@ -1794,6 +2753,7 @@ const GuidPage: React.FC = () => {
               onClearWorkspace={() => guidInput.setDir('')}
               onOpenLocalDialog={() => void handleLinkWorkspace()}
             />
+            )}
 
             {/* Editor host (modals + fallback notice) */}
             <GuidPresetEditorHost

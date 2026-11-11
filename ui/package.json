@@ -8,7 +8,7 @@
     "dev:web": "vite --mode webdev",
     "build": "bun scripts/vite-production-build.mjs",
     "preview": "vite preview",
-    "test": "bun test --isolate",
+    "test": "bun ../scripts/run-ui-tests.mjs",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
     "typecheck:auth": "bun node_modules/typescript/bin/tsc --noEmit -p tsconfig.auth.json",
     "test:auth": "bun test src/renderer/hooks/auth src/renderer/components/auth/authSurface.test.ts src/renderer/utils/analytics/authTelemetry.test.ts"
@@ -37,6 +37,7 @@
     "@mediapipe/tasks-vision": "^1.0.1",
     "@monaco-editor/react": "^4.7.0",
     "@napi-rs/canvas": "^0.1.100",
+    "@paper-design/shaders-react": "^0.0.82",
     "@phosphor-icons/react": "^2.1.10",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",

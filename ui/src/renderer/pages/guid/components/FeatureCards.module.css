@@ -1,53 +1,33 @@
 .board {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.78fr);
-  grid-template-rows: 156px 156px;
+  grid-template-rows: repeat(2, minmax(104px, 1fr));
   gap: 12px;
   width: 100%;
-}
-
-.entry,
-.studio {
-  position: relative;
-  overflow: hidden;
-  border-radius: 20px;
-  background: var(--flowy-raised);
-  /* White cards on the grey home page: a hairline ring plus a soft drop, like the
-     composer. Drawn with box-shadow so buttons keep `border: 0` and their size. */
-  box-shadow:
-    0 0 0 1px var(--color-border-2),
-    0 2px 12px color-mix(in srgb, var(--color-text-1) 5%, transparent);
-  transition:
-    background-color 220ms ease,
-    box-shadow 220ms ease;
-}
-
-.studio {
-  box-sizing: border-box;
-  width: 100%;
-  margin: 0;
-  border: 0;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-
-.entry:hover,
-.studio:hover {
-  background: color-mix(in srgb, var(--color-text-1) 4%, var(--flowy-raised));
-  box-shadow:
-    0 0 0 1px var(--color-border-3),
-    0 4px 16px color-mix(in srgb, var(--color-text-1) 8%, transparent);
+  height: 100%;
+  min-width: 0;
 }
 
 .entry {
+  /* Local control radius so the global `button { border-radius: 6px !important }`
+     contract resolves card buttons to the card radius (12px), without a second
+     `!important`. Static article cards never enter this rule. */
+  --flowy-radius-control: var(--flowy-radius-lg, 12px);
+  --entry-accent: color-mix(in srgb, rgb(var(--primary-6)) 82%, currentColor);
+  --feature-hover-duration: 800ms;
+  --feature-bar-duration: 555ms;
+  position: relative;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  align-self: stretch;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
   min-height: 0;
-  padding: 16px 22px;
+  overflow: hidden;
+  padding: 8px 16px;
+  border-radius: var(--flowy-radius-lg, 12px);
+  background: var(--flowy-raised);
+  box-shadow: 0 0 0 1px var(--flowy-border-subtle);
+  color: var(--color-text-1);
   text-align: left;
 }
 
@@ -57,176 +37,225 @@
   margin: 0;
   border: 0;
   font: inherit;
-  color: inherit;
   cursor: pointer;
+  transition:
+    background-color 120ms var(--flowy-ease-move, ease-out),
+    box-shadow 120ms var(--flowy-ease-move, ease-out);
 }
 
-.build {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.create {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.mark {
-  width: 28px;
-  height: 28px;
-  margin-bottom: 8px;
+.entryCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .entryTitle {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  margin: 0;
+  gap: 4px;
   color: var(--color-text-1);
   font-size: 18px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-}
-
-.chevron {
-  width: 16px;
-  height: 16px;
-  color: var(--color-text-2);
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: -0.01em;
 }
 
 .entryDescription {
-  margin: 4px 0 0;
-  max-width: 46%;
-  color: var(--color-text-3);
+  color: var(--color-text-2);
   font-size: 13px;
-  line-height: 1.4;
+  font-weight: 400;
+  line-height: 18px;
 }
 
-.sketch {
-  position: absolute;
-  top: 50%;
-  right: 16px;
-  width: min(44%, 196px);
+.chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-2);
+  flex: 0 0 auto;
+}
+
+.entryArt {
+  width: min(44%, 144px);
   height: auto;
-  transform: translateY(-50%);
-  pointer-events: none;
-  overflow: visible;
+  flex: none;
+  color: var(--color-text-2);
 }
 
-.sketchFloat {
+.artFrameTrace {
+  opacity: 0;
+  stroke: var(--entry-accent);
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  transition:
+    stroke-dashoffset var(--feature-hover-duration, 800ms) cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.artStateCode,
+.artStateLine,
+.artStatePage,
+.artStateBars {
+  transition:
+    opacity var(--feature-hover-duration, 800ms) cubic-bezier(0.2, 0.8, 0.2, 1),
+    clip-path var(--feature-hover-duration, 800ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.artStateCode,
+.artStateLine {
+  opacity: 1;
+}
+
+.artStatePage,
+.artStateBars {
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+}
+
+.artBar {
+  fill: color-mix(in srgb, var(--entry-accent) 10%, transparent);
+  stroke: var(--entry-accent);
   transform-box: fill-box;
-  animation: sketchFloat 3.8s ease-in-out infinite;
+  transform-origin: bottom;
+  transform: scaleY(0);
+  transition: transform var(--feature-bar-duration, 560ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition-delay: var(--bar-delay, 0ms);
 }
 
-.slabSides,
-.slabTop,
-.sheetMid,
-.sheetFront {
-  transform-box: fill-box;
-  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+.artAccent {
+  stroke: var(--entry-accent, currentColor);
 }
 
-.build:hover .slabSides {
-  transform: translate(5px, 4px);
-}
-
-.build:hover .slabTop {
-  transform: translate(-8px, -14px);
-}
-
-.create:hover .sheetMid {
-  transform: translate(-7px, -6px);
-}
-
-.create:hover .sheetFront {
-  transform: translate(-16px, -14px);
-}
-
-.folder {
-  width: 112px;
-  height: auto;
-  margin: 0 0 16px;
-  overflow: visible;
-}
-
-.folderSheets {
-  transform-box: fill-box;
-  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.studio:hover .folderSheets {
-  transform: translateY(-14px);
-}
-
-@keyframes sketchFloat {
-  0%,
-  100% {
-    transform: translateY(0);
+@media (hover: hover) and (pointer: fine) {
+  .entryButton:hover {
+    background: color-mix(in srgb, var(--color-text-1) 4%, var(--flowy-raised));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-text-1) 18%, var(--flowy-border-subtle));
   }
-  50% {
-    transform: translateY(-5px);
+
+  .entryButton:hover .artStateCode,
+  .entryButton:hover .artStateLine {
+    opacity: 0;
+  }
+
+  .entryButton:hover .artStatePage,
+  .entryButton:hover .artStateBars {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+
+  .entryButton:hover .artFrameTrace {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+
+  .entryButton:hover .artBar {
+    transform: scaleY(1);
   }
 }
 
-.studio {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 28px 20px;
-  text-align: center;
+.entryButton:focus-visible .artStateCode,
+.entryButton:focus-visible .artStateLine {
+  opacity: 0;
 }
 
-.entry:focus-visible,
-.studio:focus-visible {
-  outline: 2px solid rgb(var(--primary-6));
+.entryButton:focus-visible .artStatePage,
+.entryButton:focus-visible .artStateBars {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+}
+
+.entryButton:focus-visible .artFrameTrace {
+  opacity: 1;
+  stroke-dashoffset: 0;
+}
+
+.entryButton:focus-visible .artBar {
+  transform: scaleY(1);
+}
+
+.entryButton:focus-visible {
+  outline: 2px solid var(--flowy-focus);
   outline-offset: 2px;
 }
 
-.studioTitle {
-  margin: 0;
-  color: var(--color-text-1);
-  font-size: 18px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-  text-align: center;
+:global([data-theme='dark']) .entryButton:hover {
+  background: color-mix(in srgb, var(--color-text-1) 6%, var(--flowy-raised));
 }
 
-@media (max-width: 860px) {
-  .board {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-  }
+:global([data-home-compact='true']) .board {
+  grid-template-rows: repeat(2, minmax(84px, 1fr));
+  gap: 10px;
+}
 
-  .build,
-  .create,
-  .studio {
-    grid-column: 1;
-    grid-row: auto;
-  }
+:global([data-home-compact='true']) .entry {
+  padding: 6px 12px;
+  gap: 10px;
+}
 
-  .studio {
-    min-height: 220px;
-  }
+:global([data-home-compact='true']) .entryTitle {
+  font-size: 16px;
+  line-height: 22px;
+}
 
-  .entryDescription {
-    max-width: 58%;
-  }
+:global([data-home-compact='true']) .entryDescription {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+:global([data-home-compact='true']) .entryArt {
+  width: min(40%, 104px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sketchFloat,
-  .slabSides,
-  .slabTop,
-  .sheetMid,
-  .sheetFront,
-  .folderSheets,
-  .folder {
-    animation: none;
+  .entryButton,
+  .artWindowFrame,
+  .artStateCode,
+  .artStateLine,
+  .artStatePage,
+  .artStateBars,
+  .artBar,
+  .artFrameTrace {
     transition: none;
+  }
+
+  .entryButton:hover .artFrameTrace {
+    opacity: 0;
+    stroke-dashoffset: 1;
+  }
+
+  .entryButton:hover .artStateCode,
+  .entryButton:hover .artStateLine {
+    opacity: 1 !important;
+  }
+
+  .entryButton:hover .artStatePage,
+  .entryButton:hover .artStateBars {
+    opacity: 0 !important;
+    clip-path: inset(0 100% 0 0) !important;
+  }
+
+  .entryButton:hover .artBar {
+    transform: scaleY(0) !important;
+  }
+
+  .entryButton:focus-visible .artFrameTrace {
+    opacity: 0;
+    stroke-dashoffset: 1;
+  }
+
+  .entryButton:focus-visible .artStateCode,
+  .entryButton:focus-visible .artStateLine {
+    opacity: 1 !important;
+  }
+
+  .entryButton:focus-visible .artStatePage,
+  .entryButton:focus-visible .artStateBars {
+    opacity: 0 !important;
+    clip-path: inset(0 100% 0 0) !important;
+  }
+
+  .entryButton:focus-visible .artBar {
+    transform: scaleY(0) !important;
   }
 }

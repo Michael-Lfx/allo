@@ -56,10 +56,15 @@ import {
 import type { BriefingSessionSummary } from './briefing/api';
 import { parseVideoHomeMode, type VideoCreateDraft, type VideoHomeMode } from './home/types';
 import { resolveLookIdentity } from './styleCatalog/lookIdentity';
-import { composeClipPrompt, lookById } from './styleCatalog/looks';
-import { materializeHomeImageMentions } from './home/imageMentions';
+import { lookById } from './styleCatalog/looks';
 import { parseTvShowTab } from './campaign';
 import { clampClipDurationForModel } from './durationBounds';
+import {
+  buildBriefingCreateInput,
+  buildGenerateTaskPayload,
+  buildHomeVideoGenerateRequest,
+  buildVideoSessionCreateInput,
+} from './home/submitDtos';
 import {
   clearVideoGenerationSessionMemory,
   rememberVideoGenerationBriefing,
@@ -104,19 +109,6 @@ const BriefingCard = lazy(() => import('./components/BriefingCard'));
 const CanvasProjectCard = lazy(() =>
   import('./home/CanvasProjectGallery').then((mod) => ({ default: mod.CanvasProjectCard }))
 );
-
-function firstLineTitle(text: string): string {
-  return text.split(/\r?\n/, 1)[0]?.trim().slice(0, 48) || '';
-}
-
-function titleForDraft(draft: VideoCreateDraft): string {
-  if (draft.workflow === 'action2video') {
-    const fromCharacter = draft.actionCharacter?.file.name.replace(/\.[^.]+$/, '').trim();
-    return fromCharacter?.slice(0, 48) || '';
-  }
-  // Short-drama titles are set on the task details page, not from the prompt.
-  return '';
-}
 
 const VideoGenerationListPage: React.FC = () => {
   const { t } = useTranslation();
@@ -317,10 +309,7 @@ const VideoGenerationListPage: React.FC = () => {
       if (creating) return;
       setCreating(true);
       try {
-        const created = await createSession({
-          workflow: draft.workflow,
-          title: titleForDraft(draft) || undefined,
-        });
+        const created = await createSession(buildVideoSessionCreateInput(draft));
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           workflow: draft.workflow,
@@ -607,8 +596,9 @@ const VideoGenerationListPage: React.FC = () => {
       const uploadedMediaIds: string[] = [];
 
       try {
+        const request = buildHomeVideoGenerateRequest(draft);
         const title =
-          draft.creationPrompt.split(/\r?\n/, 1)[0]?.trim().slice(0, 36) ||
+          request.title ||
           t('videoGeneration.create.generateTitle', {
             defaultValue: '视频生成',
           });
@@ -634,24 +624,9 @@ const VideoGenerationListPage: React.FC = () => {
 
         // 2. Create video generation task via Canvas API
         const { createGenerationTask } = await import('../videoCanvas/api');
-        const durationSecs = clampClipDurationForModel(
-          draft.preferences.models.video_model,
-          draft.preferences.targetDurationSecs
+        const task = await createGenerationTask(
+          buildGenerateTaskPayload(draft, uploadedMediaIds),
         );
-
-        const prompt = composeClipPrompt(
-          materializeHomeImageMentions(draft.creationPrompt),
-          draft.style,
-        );
-
-        const task = await createGenerationTask({
-          mode: 'video',
-          prompt,
-          model: draft.preferences.models.video_model || undefined,
-          resolution: draft.preferences.resolution,
-          duration_secs: durationSecs,
-          reference_media_ids: uploadedMediaIds,
-        });
 
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
@@ -664,7 +639,7 @@ const VideoGenerationListPage: React.FC = () => {
           workflow: 'canvas_clip',
           task_id: task.task_id,
           source: 'generate_create',
-          duration_secs: durationSecs,
+          duration_secs: request.durationSecs,
           has_references: pendingReferences.length > 0,
         });
 
@@ -680,7 +655,7 @@ const VideoGenerationListPage: React.FC = () => {
           {
             state: {
               title,
-              prompt,
+              prompt: request.prompt,
               taskId: task.task_id,
             },
           }
@@ -717,25 +692,9 @@ const VideoGenerationListPage: React.FC = () => {
   const handleCreateBriefing = useCallback(
     async (draft: VideoCreateDraft) => {
       if (creating) return;
-      const sourceUrls = draft.sourceUrls
-        .split(/[\s,]+/)
-        .map((row) => row.trim())
-        .filter((url) => /^https?:\/\//i.test(url));
       setCreating(true);
       try {
-        const created = await createBriefing({
-          intent: draft.sourceText.trim(),
-          title: firstLineTitle(draft.sourceText) || undefined,
-          format_secs: draft.briefingFormatSecs,
-          research_depth: draft.researchDepth,
-          time_window_hours: draft.timeWindowHours,
-          source_urls: sourceUrls,
-          tts_provider_id: draft.briefingTts?.provider_id,
-          tts_model: draft.briefingTts?.model,
-          tts_voice: draft.briefingTts?.voice ?? undefined,
-          image_provider_id: draft.briefingImage?.provider_id,
-          image_model: draft.briefingImage?.model,
-        });
+        const created = await createBriefing(buildBriefingCreateInput(draft));
         trackFunnelEvent('task_accepted', {
           feature: 'video_generation',
           mode: 'briefing',

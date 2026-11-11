@@ -55,15 +55,15 @@ describe('Presentation capability surfaces', () => {
     const page = read('../guid/GuidPage.tsx');
     expect(page).toContain("id: 'system:ppt'");
     expect(page).toContain('PRESENTATION_SKILL_ID');
-    expect(page).toContain('slidesActive={supportsHomeGoalCommand && slideOptions !== null}');
+    expect(page).toContain("slidesActive={supportsHomeGoalCommand && homeCapability === 'slides'}");
     // Closing the create-presentation panel exits slides mode; the panel
     // itself closes because slide options are cleared.
-    expect(page).toContain('onClose={exitSlideMode}');
+    expect(page).toContain('onClose={closeSlidePanelToDirectory}');
     expect(page).toContain('<SlideOptionsControls');
     expect(page).not.toContain('entryStrip=');
     expect(page).not.toContain('SlideOptionsStrip');
     // The composer keeps the user's text; the option line is added at send time.
-    expect(page).toContain('input: sendInput,');
+    expect(page).toContain('input: resolvedSendInput,');
     expect(page).toContain('initialSkillIds: sendSkillIds,');
 
     const row = read('../guid/components/GuidActionRow.tsx');

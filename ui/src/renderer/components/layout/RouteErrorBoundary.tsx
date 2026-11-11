@@ -3,6 +3,7 @@
 import React from 'react';
 import { captureException } from '@/renderer/utils/analytics/telemetry';
 import { useTranslation } from 'react-i18next';
+import { DomCommitRecovery } from './errorBoundaryRecovery';
 import { claimDynamicImportReload, isDynamicImportFailure } from './routeErrorRecovery';
 
 interface RouteErrorBoundaryProps {
@@ -137,6 +138,10 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
     dynamicImportReloadExhausted: false,
   };
 
+  private readonly domCommitRecovery = new DomCommitRecovery({
+    onRecover: () => this.setState({ error: null, componentStack: null }),
+  });
+
   static getDerivedStateFromError(error: Error): Partial<RouteErrorBoundaryState> {
     return { error, dynamicImportReloadExhausted: false };
   }
@@ -152,12 +157,28 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
     );
     captureException(error);
     this.setState({ componentStack: info.componentStack ?? null });
+    // Only route-scoped boundaries remount themselves: a root-level commit crash
+    // can indicate wider renderer corruption, so the application boundary keeps
+    // the explicit reload panel instead of silently rebooting the whole app.
+    if (this.props.scope !== 'application' && this.domCommitRecovery.maybeSchedule(error)) {
+      // eslint-disable-next-line no-console
+      console.warn('[RouteErrorBoundary] external DOM mutation crashed commit — remounting once:', error);
+    }
   }
 
   componentDidUpdate(previousProps: RouteErrorBoundaryProps): void {
     if (previousProps.resetKey !== this.props.resetKey && this.state.error) {
-      this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
+      this.domCommitRecovery.reset();
+      this.setState({
+        error: null,
+        componentStack: null,
+        dynamicImportReloadExhausted: false,
+      });
     }
+  }
+
+  componentWillUnmount(): void {
+    this.domCommitRecovery.dispose();
   }
 
   private handleReset = (): void => {
@@ -176,6 +197,7 @@ class RouteErrorBoundary extends React.Component<RouteErrorBoundaryProps, RouteE
       this.setState({ dynamicImportReloadExhausted: true });
       return;
     }
+    this.domCommitRecovery.reset();
     this.setState({ error: null, componentStack: null, dynamicImportReloadExhausted: false });
   };
 

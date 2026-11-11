@@ -189,7 +189,7 @@ const GuidInputCard: React.FC<GuidInputCardProps> = ({
             maxHeight: isMobile ? '160px' : '400px',
             overflowY: 'auto',
             paddingLeft: '7px',
-            paddingRight: 0,
+            paddingRight: '10px',
           }}
           placeholder={placeholder}
           value={input}

@@ -7,7 +7,7 @@ import { entryFlyoutPositionStyle, useEntryFlyoutBox } from './entryFlyoutPlacem
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
-import TaskProfileSelector from '@/renderer/components/agent/TaskProfileSelector';
+import TaskProfileSelector, { type TaskProfile } from '@/renderer/components/agent/TaskProfileSelector';
 import { supportsModeSwitch, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { AvailableAgent } from '../types';
@@ -89,8 +89,15 @@ type GuidActionRowProps = {
   /** Home "Slides" work mode (Nomi only); omitted hides the entry. */
   slidesActive?: boolean;
   onSlidesChange?: (active: boolean) => void;
+  /** Optional controlled home work profile (build capability = coding). */
+  taskProfile?: TaskProfile;
+  onTaskProfileChange?: (profile: TaskProfile) => void;
+  /** Image mode owns its own parameter controls, so the office/coding profile is not shown. */
+  hideTaskProfile?: boolean;
   /** ppt-master option pills, rendered after the work-mode selector in slides mode. */
   slideControls?: React.ReactNode;
+  /** Image-generation parameters, rendered next to the model controls in image mode. */
+  imageControls?: React.ReactNode;
   /** When true the primary button starts an AutoWork session (no chat send):
    * it shows a robot icon + "Start AutoWork" tooltip. Disabled/onClick are
    * still driven by the parent. */
@@ -143,7 +150,11 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   onGoalModeChange,
   slidesActive = false,
   onSlidesChange,
+  taskProfile,
+  onTaskProfileChange,
+  hideTaskProfile = false,
   slideControls,
+  imageControls,
   autoWorkMode = false,
 }) => {
   const { t } = useTranslation();
@@ -203,7 +214,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   };
 
   return (
-    <div className={styles.actionRow}>
+    <div className={styles.actionRow} data-has-image-controls={imageControls ? 'true' : undefined}>
       <div className={`${styles.actionTools} composer-toolbar-tools`}>
         <div className={styles.actionEntry}>
           <span className='flex items-center gap-4px lh-[1]'>
@@ -318,13 +329,18 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             modeLabelFormatter={getModeDisplayLabel}
           />
         )}
-        <TaskProfileSelector
-          compact
-          className={styles.composerTaskProfile}
-          slidesActive={slidesActive}
-          onSlidesChange={onSlidesChange}
-        />
+        {!hideTaskProfile ? (
+          <TaskProfileSelector
+            compact
+            className={styles.composerTaskProfile}
+            value={taskProfile}
+            onChange={onTaskProfileChange}
+            slidesActive={slidesActive}
+            onSlidesChange={onSlidesChange}
+          />
+        ) : null}
         {slidesActive && slideControls}
+        {imageControls}
         {goalMode && onGoalModeChange && (
           <Button
             type='text'
