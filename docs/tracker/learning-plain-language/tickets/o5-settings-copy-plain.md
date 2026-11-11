@@ -2,7 +2,7 @@
 id: o5
 title: "设置页与遗留文案口语化——留痕/补挂/回合/环境开关清零"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -55,3 +55,13 @@ part_of: ../map.md
 
 - 呈现密度重构（o6）、错误直泄（o1）。
 - 设置项行为与后端语义零变化（纯词典 + 呈现措辞）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验（设置页两语读一遍）与欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `6f99bf2a5` + `07b410416`（10 文件 +217/−60）：票面 14 行全覆盖（zh+en）+ o3 移交 4 挂载键（`MountRun`→「重新检查」顺带修复 banner 所指按钮不存在的问题、`MountTitle`→「内容与目录对应」、`MountStale`、`SystemActionKindMount`→「结构对齐」与 o3 taskKind 同词）+ 同域顺手 `courseArchiveDone`（安排面→复习队列/推荐）。
+- **costGate 存量红测归零**（与票面建议的偏差，已留痕）：删 `sourcePlanLocales.test.ts` 的 4 个 `costGate*` 陈旧断言而非补词典——d5 已删计划卡 UI 与词典键且全库无消费点，补词典 = 复活死文案。
+- **共享面声明**：`pages/settings/.../PreferenceRow.tsx` description 放宽为 `ReactNode`（additive，14 处消费点零行为变化）——学习模块之外的共享组件，本波唯一一处（map 非目标为 common 层；此为 pages/settings，评审判轻越界、保留并记录）。
+- 后置建议（进 map）：「修补」词族（`learningGraphRepairRun/RepairNoop/SystemActionKindRepair`「结构修补」）不在必改清单、与 o3 修补域相邻——留独立小票。
+- 263 绿（施工时）→ 316（全波终态）绿；`sourcePlanLocales.test.ts` 2 红 → 0。

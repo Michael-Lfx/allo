@@ -2,7 +2,7 @@
 id: o4
 title: "结构区术语与机器直出——主干/门口/投影/端点口语化 + id/枚举不再上屏"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -65,3 +65,12 @@ part_of: ../map.md
 
 - 声明区（o2 已覆盖）、布局重构与双挂载去重（o6）、图例/教学引导新功能
   （若口语化后仍需解释，先记录后置，不本波加功能）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验（结构图 Tab + 门口卡 + RouteMap 两语）与欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `40ef60a43` + `ea61ba86f`（20 文件 +943/−107）：A 面 14 组术语双语改写（主线/知识组/入门检查/前置知识/仅供了解结构/第 N 层…）+ B 面 6 直出点收口（门口 Tag→criterionSummary 判据摘要码点安全截断、已声明行只报数量、role 八档词典映射 SOURCE_ROLE_KEYS 收 model.ts、knowledgeBaseNames 裸 UUID→「来源库已删除」、GrowthTaskPill topic 失配回退→「后台生长任务」词典、后端观察句确认后收 MountObservationSummary 折叠）+ **票外发现 1 处**（BasisDeclareDone toast join 门口 id+块 slug 双串→只报数量）。
+- 与 o2 的合并裁定（已落在集成树）：结构区措辞归 o4、声明区措辞归 o2；占位契约归 o4（`{{doorsCount}}/{{blocksCount}}`，o2 原 `{{doors}}` id 串值与其组件不兼容）；o2 两处测试期望同步到合并值。
+- 会话裁决修正落地：**「知识块」移出保留隐喻清单、统一「知识组」**（评审发现 o4 票面方向与 map 裁决 3 冲突致词典三词并存）——残留 5 处由修复 F1 清零（`302ecc3c8`），`rg 知识块` 全词典归零。
+- 病词 sweep：主干/门口/投影/端点/宁滥勿缺/ISO 704/剔除/连贯预算/幂等/铸出/登记表 zh learning.json **零命中**。297 绿（施工时）→ 316（全波终态）绿。

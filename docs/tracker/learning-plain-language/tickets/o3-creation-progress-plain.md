@@ -2,7 +2,7 @@
 id: o3
 title: "建课与进度流程口语化——分诊/审计/资源槽/幂等/快照/挂载族清零"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -54,3 +54,13 @@ part_of: ../map.md
 
 - 工作区结构区术语（o4）、设置页（o5）、呈现密度（o6）。
 - 「生长/教练/块/XP」保留隐喻（map 裁决 3）。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；真机目验（建课全程两语读一遍）与欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `88c59582e`：票面 16 key 双语改写 + **同域新发现 4 处**（`genPublishing` 审计残留→质量检查、`learningGraphAuditUnavailable` 同特征兄弟句、`growthPillRedraftReview` 与 Gates 句式对齐、`taskKindStructureMount`→「结构对齐」）+ **`genTriageLine` 结构性收口**（一行五段箭头→两句；`triageCountsLine` 同步只传 total/core/skipped）。
+- 措辞微调（票面允许，留痕）：`genRetryResumeHint` 用「重试」起句——失败面板上「重新生成」是另一个独立按钮（genRetryFresh），照票面原句会混淆两键。
+- 边界纪律：挂载面板 4 key（MountTitle/MountRun/MountStale/SystemActionKindMount）刻意留 o5 同域核对（o5 已完成：MountRun→「重新检查」，banner 所指按钮真实存在）。
+- 评审修复 = `276ca3b78`（F4）：genTriageLine 改两句后混合/重复/不确定三计数无处呈现、model.ts 注释与实现不符——新增 `triageDetailCountsLine` 纯函数 + `genTriageDetailCounts` 双语 key，三计数收进 triage 明细折叠首行（mixed-only 场景渲染测试钉死），注释改回一致。
+- 253 绿（施工时）→ 316（全波终态）绿。

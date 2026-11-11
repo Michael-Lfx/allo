@@ -79,3 +79,29 @@ o6 最后（呈现重构需对照 v 波后的现状，且最好在 o2–o5 文�
 - companion 宠物气泡（消费 learning 文案，归 companion 后置，先例同 c3）。
 - 保留隐喻清单内的词（裁决 3）。
 - error-surface contract 的契约本身变更（o1 只改消费侧映射，闸门约定不变）。
+
+## 收图记录（2026-11-11）
+
+- 施工：o1 = `f5aff2084`；o2 = `9ab13389a`；o3 = `88c59582e`；o4 = `40ef60a43`；
+  o5 = `6f99bf2a5`；o6 = `175b8ec9b`+`59f3151da`。o1 先行（根因票），o2–o5
+  四代理并行，o6 收尾；worktree 各自分支，merger 依次并回；tracker 随
+  `ecbdf73a6` 入 git。
+- 双轴评审（Standards/Spec 并行子代理）：Standards **零硬违规**（common 层
+  diff 为空、packContract 删键零残留、诊断信息 Tooltip/折叠收纳不丢、双语
+  断言与署名达标）；Spec **非目标全守住**（后端/companion/v 波真话面零回改，
+  保留隐喻除下述裁决修正外未碰）。
+- 评审修复 = `302ecc3c8`（F1 术语统一）+ `276ca3b78`（F2 动作标题恢复/F3
+  语境句复活/F4 triage 计数进明细/F5 reason 原文收纳/F6 映射语义修正/
+  F7 组件去重两处）。
+- **裁决修正（收图时）**：「知识块」移出 map 裁决 3 保留隐喻清单——o4 票面
+  方向（知识组）与裁决冲突致词典三词并存，会话裁决统一「知识组」（更口语，
+  且为已施工方向）；全词典 `rg 知识块` 归零（F1）。
+- 验证（集成树 3716976e1 会话独立复验）：前端 learning **316 绿**、
+  typecheck **0 错**、i18n **12401 keys**、check:theme 过；病词 sweep
+  （主干/门口/投影/端点/幂等/铸出/登记表/留痕/补挂/回合/环境开关/安排面）
+  zh 词典零命中；`sourcePlanLocales.test.ts` 存量 2 红被 o5 顺路归零。
+- 留痕不修/后置：PreferenceRow 共享面 Tooltip 改动（pages/settings，additive
+  已申报保留）；「修补」词族独立小票；`row.basis` 裸渲染下票核对；英文复数
+  `_one/_other`（非违规）；reasonKey string 沿旧例；check:error-surface
+  浏览器探针本机环境受阻（Edge 管道 stdout，非代码问题，环境正常补跑）。
+- 真机欠账合并批：o 波六票目验 + v 波四票 + c1–c3 + s1/s4。

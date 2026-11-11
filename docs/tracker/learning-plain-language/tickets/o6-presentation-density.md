@@ -2,7 +2,7 @@
 id: o6
 title: "呈现密度与信息架构——顶条三态合一、双挂载去重、首屏精简（施工最后）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [o1, o2, o3, o4, o5]
 part_of: ../map.md
@@ -60,3 +60,13 @@ part_of: ../map.md
 - 新增引导/图例功能（口语化后仍需解释的点先记录后置）。
 - v2/v3 已落地的徽章/Pill 真话面回改。
 - 学习模块之外的布局。
+
+## Resolution（2026-11-11 施工收口）
+
+**代码面验收全过，已闭票；双主题真机目验与欠账合并执行，FAIL 按票重开。**
+
+- 施工 = `175b8ec9b` + `59f3151da`（learning 页面 + 双语词典 + i18n-keys.d.ts；票外顺手改零）。五重灾区 before/after 密度读数（评审指出票文件缺记录，补录于此）：
+  ①工作区顶条 processing Tag 最大同屏 **3→1**（结构读数徽章优先级合并；被压态转次要行）；②首页顶区常驻 Alert **2→0**（error→非阻塞 toast；packContract 双语删键，删前 grep 确认唯一使用点）+ 列间距 20→16px；③GateCoverage 整卡渲染 **2→1**（学习 Tab 声明窗口保整卡，结构图 Tab 收为默认收起摘要入口）；④挂载条顶条外默认可见元素 **stale 行+N 索引+≤4 观察 Tag+1 内层折叠 → 1**（单一「详情」折叠，o5 计数口径与 o4 观察摘要原样保留在内）；⑤完成视图默认 **≤7 行 → 2 行**（主题覆盖+去向）+ 1「详情」折叠；失败视图原文常显滚动块 → 摘要句 +「复制详情」（复用仓内 copyText，无新剪贴板基建）+ 折叠「错误详情」。
+- 布局裁量 7 条（留痕，评审核对）：次要行 `·` 连接、结构运行中加载失败句降级为次要行、stale 指引并入详情、GateCoverage 摘要入口默认收起（含已声明读数）、来源覆盖卡中性例外行也入详情、列间距最小实现、空折叠壳不再渲染。
+- 评审修复 = `276ca3b78`（F7a 顶条三枚 processing Tag 提 ProcessingStateTag 组件——v2 徽章数据源原样；F7b GrowthTaskPill 单 progressNode）。
+- 新键 4 个双语对称 + 真实词典 JSON 断言（presentationDensity.test.ts）；`check:theme` 6 主题过；306 绿（施工时）→ 316（全波终态）绿。
