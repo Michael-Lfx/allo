@@ -91,7 +91,9 @@ export function GrowthTaskPill({
 }) {
   const { t } = useTranslation();
   const active = isGrowthActive(item.status);
-  const title = growthCourseTitle(item.topic);
+  // o4：主题前缀失配（后端改措辞）时不再回显整句后端串——出词典兜底文案，
+  // 与 restoredTaskTopic 的 taskKindUnknown 同水位（宁缺不泄漏）。
+  const title = growthCourseTitle(item.topic) ?? t('learning.growthPillTopicFallback');
   const progress = progressLine(t, item);
   return (
     <Card size='small' className='shadow-lg'>

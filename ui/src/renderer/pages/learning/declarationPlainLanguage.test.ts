@@ -32,17 +32,19 @@ const PLAIN_KEYS: Record<string, { zh: string; en: string }> = {
     zh: '确认后，勾选的 {{count}} 项内容视为你已掌握：不再生成或安排这部分学习，也不计 XP。声明只能进行一次，确认后不可修改。',
     en: "After you confirm, the {{count}} item(s) you ticked count as already mastered: they won't be generated or scheduled, and no XP is awarded. Declaring is a one-time action and can't be changed afterwards.",
   },
+  // o4 合并口径：已声明门口行与成功 toast 只报数量（{{doorsCount}}/
+  // {{blocksCount}}）——id 串占位随 o4 B2 组件契约退场，措辞仍循 o2 票面。
   learningGraphBasisDeclaredDoors: {
-    zh: '已声明：{{doors}}（覆盖 {{count}} 个概念）',
-    en: 'Declared: {{doors}} (covering {{count}} concepts)',
+    zh: '已声明 {{doorsCount}} 项入门检查（覆盖 {{count}} 个概念）',
+    en: '{{doorsCount}} entry checks declared (covering {{count}} concepts)',
   },
   learningGraphBasisDeclareNoop: {
     zh: '这些内容之前已声明过，本次没有变化。',
     en: 'These were already declared before — nothing changed this time.',
   },
   learningGraphBasisDeclareDone: {
-    zh: '已记录这些内容你已会：{{doors}}；不再安排学习，也不计 XP。对应知识块：{{blocks}}。',
-    en: "Saved as already known: {{doors}}; they won't be scheduled and no XP is awarded. Knowledge blocks covered: {{blocks}}.",
+    zh: '已记录 {{doorsCount}} 项内容你已会；不再安排学习，也不计 XP。对应知识块：{{blocksCount}} 个。',
+    en: "Saved as already known: {{doorsCount}} item(s); they won't be scheduled and no XP is awarded. Knowledge blocks covered: {{blocksCount}}.",
   },
   learningGraphBasisOff: {
     zh: '此课程暂不支持声明已会',

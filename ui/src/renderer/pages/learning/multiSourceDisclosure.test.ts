@@ -65,9 +65,30 @@ describe('learning multi-source disclosure', () => {
     expect(progressSource.includes("t('learning.samplingLine'")).toBe(false);
   });
 
-  test('knowledgeBaseNames resolves ids to names with an honest id fallback', () => {
+  test('knowledgeBaseNames resolves ids to names; unresolved id falls back to a localized label (o4: bare UUID never on screen)', async () => {
+    const { createInstance } = await import('i18next');
+    const { initReactI18next } = await import('react-i18next');
+    const instance = createInstance();
+    await instance.use(initReactI18next).init({
+      lng: 'zh-CN',
+      fallbackLng: 'zh-CN',
+      resources: { 'zh-CN': { translation: { learning: zhLearning } } },
+      interpolation: { escapeValue: false },
+    });
     const bases = [{ knowledge_base_id: 'kb-1', name: '金融笔记' }];
-    expect(knowledgeBaseNames(['kb-1', 'kb-missing'], bases)).toEqual(['金融笔记', 'kb-missing']);
-    expect(knowledgeBaseNames([], bases)).toEqual([]);
+    expect(knowledgeBaseNames(['kb-1', 'kb-missing'], bases, instance.t)).toEqual([
+      '金融笔记',
+      '来源库已删除',
+    ]);
+    expect(knowledgeBaseNames([], bases, instance.t)).toEqual([]);
+    // en 同口径：回退词双语在场。
+    const enInstance = createInstance();
+    await enInstance.use(initReactI18next).init({
+      lng: 'en-US',
+      fallbackLng: 'zh-CN',
+      resources: { 'en-US': { translation: { learning: enLearning } } },
+      interpolation: { escapeValue: false },
+    });
+    expect(knowledgeBaseNames(['kb-missing'], [], enInstance.t)).toEqual(['Source library deleted']);
   });
 });

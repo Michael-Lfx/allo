@@ -121,6 +121,15 @@ describe('GrowthTaskPill', () => {
     expect(html).toContain('取消生成');
   });
 
+  test('o4：主题前缀失配回退词典「后台生长任务」，整句后端串不再上屏', async () => {
+    const zh = await renderPill('zh-CN', item({ topic: '学习图生长·线性代数（措辞已变）' }));
+    expect(zh).toContain('后台生长任务');
+    expect(zh).not.toContain('学习图生长·线性代数（措辞已变）');
+    const en = await renderPill('en-US', item({ topic: 'growth topic mismatched' }));
+    expect(en).toContain('Background growth task');
+    expect(en).not.toContain('growth topic mismatched');
+  });
+
   test('en-US 文案同样齐备', async () => {
     const running = await renderPill('en-US', item());
     expect(running).toContain('Growing learning graph · 3:12');

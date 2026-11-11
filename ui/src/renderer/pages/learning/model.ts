@@ -293,3 +293,23 @@ export function coverageTopicTotals(coverage: {
   const skipped = coverage.topics_skipped;
   return { covered, skipped, total: covered + skipped + (coverage.uncertain?.length ?? 0) };
 }
+
+// ── o4：来源分诊 role 枚举 → 人面角色名（机器枚举不再上屏）──────────────
+
+/** 后端 `KbTriageRole`（triage.rs，serde snake_case）→ 词典 key。七档全覆盖；
+ * 未知档位（后端新增）走 `sourceCoverageRoleOther` 兜底，不落机器名。 */
+export const SOURCE_ROLE_KEYS: Record<string, `learning.sourceCoverageRole${string}`> = {
+  core: 'learning.sourceCoverageRoleCore',
+  prerequisite: 'learning.sourceCoverageRolePrerequisite',
+  practice: 'learning.sourceCoverageRolePractice',
+  mixed: 'learning.sourceCoverageRoleMixed',
+  noise: 'learning.sourceCoverageRoleNoise',
+  duplicate: 'learning.sourceCoverageRoleDuplicate',
+  uncertain: 'learning.sourceCoverageRoleUncertain',
+};
+
+/** role 枚举 → 角色名（被排除/重复文件诊断行共用一份口径）。 */
+export function sourceRoleLabel(role: string, t: Translate): string {
+  const key = SOURCE_ROLE_KEYS[role] ?? 'learning.sourceCoverageRoleOther';
+  return t(key);
+}

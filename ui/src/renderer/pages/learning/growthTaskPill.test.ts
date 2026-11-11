@@ -8,6 +8,7 @@ import {
   formatGrowthElapsed,
   GROWTH_POLL_ACTIVE_MS,
   GROWTH_POLL_IDLE_MS,
+  growthCourseTitle,
   growthPollDelay,
   mergeGrowthSnapshot,
 } from './growthTaskPill';
@@ -43,6 +44,17 @@ describe('formatGrowthElapsed（m:ss 单一格式器，超时进位 h:mm:ss）',
   });
   test('3661 → 1:01:01（小时不补零）', () => {
     expect(formatGrowthElapsed(3661)).toBe('1:01:01');
+  });
+});
+
+describe('growthCourseTitle（o4 B5：前缀失配回退 null，整句后端串不再漏到 Pill）', () => {
+  test('前缀命中 → 副行只留课程名', () => {
+    expect(growthCourseTitle('学习图生长 · 线性代数')).toBe('线性代数');
+  });
+  test('前缀失配（后端改措辞/无前缀）→ null，由组件出词典兜底文案', () => {
+    expect(growthCourseTitle('学习图生长·线性代数')).toBeNull();
+    expect(growthCourseTitle('growth · linear algebra')).toBeNull();
+    expect(growthCourseTitle('')).toBeNull();
   });
 });
 
