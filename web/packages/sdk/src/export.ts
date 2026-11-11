@@ -24,10 +24,20 @@
  * privilege `spawn.ts` already has — while `@flowy-agent-store/client` must
  * never gain it.
  */
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
-import type { ExpertPack } from "@flowy-agent-store/protocol";
+import type { ExpertPack, StoreItem } from "@flowy-agent-store/protocol";
 
 /**
  * The wire faces this module needs, narrowed from {@link Harness} on purpose:
@@ -44,6 +54,12 @@ export interface ExportDeps {
     readFile(skillId: string, path: string): Promise<Uint8Array>;
   };
   /**
+   * The store face, used only by `syncToMarketVersion`. Optional so every
+   * existing caller and fake keeps working; a sync request without it fails
+   * with a clear error instead of silently exporting a stale snapshot.
+   */
+  store?: MarketStore;
+  /**
    * The plugin-level snapshot asset byte face (`import/asset`, doc 38). The
    * pack names the `avatars/`, `bin/` and `scripts/` files by reference —
    * that list is the single source of what to fetch — and this fetches one
@@ -52,6 +68,12 @@ export interface ExportDeps {
    * directory can never contain a file the pack does not name.)
    */
   readImportAsset(snapshotId: string, path: string): Promise<Uint8Array>;
+}
+
+/** The slice of `AppServerClient.store` the export sync needs. */
+export interface MarketStore {
+  list(): Promise<StoreItem[]>;
+  update(item: StoreItem): Promise<unknown>;
 }
 
 export interface ExportResult {
@@ -75,6 +97,45 @@ export interface ExportResult {
    * judge (doc `32` §5 R8, live criterion EX-008).
    */
   danglingSkills: { id: string; error: string }[];
+}
+
+export interface MaterializeOptions {
+  /**
+   * Replace the target directory instead of merging into it (in-place update).
+   *
+   * The pack is materialized in a sibling staging directory first and only
+   * swapped into `dir` after every byte has been written. A repeat export to
+   * the same directory is therefore an exact representation of the new pack:
+   * files the previous version had but this one no longer has are removed, and
+   * a mid-write failure leaves the old directory untouched.
+   *
+   * Safety: a non-empty target without a top-level `expert-pack.json` (i.e. not
+   * a previous expert export) is refused rather than deleted. Everything inside
+   * a previous export root is replaced — do not point this at a directory that
+   * also holds unrelated files.
+   */
+  replaceExisting?: boolean;
+}
+
+export interface ExportOptions extends MaterializeOptions {
+  /**
+   * Update the installed market entry to the version its market advertises
+   * before exporting (doc `35` §5.2).
+   *
+   * The export itself always reads the **installed snapshot**; switching a
+   * market source only changes the catalogue. Passing this makes the export
+   * explicit about that: the entry is looked up by `marketplaceId` +
+   * `entryName`, and when it is installed with `update_available`, the store's
+   * update runs first (new snapshot installed, previous one released). Then the
+   * pack is fetched from the new snapshot.
+   *
+   * It never installs a missing entry and never overrides a same-version
+   * content change (the market must bump the version; see doc `35` §5.2).
+   */
+  syncToMarketVersion?: {
+    marketplaceId: string;
+    entryName: string;
+  };
 }
 
 /**
@@ -110,15 +171,53 @@ function rejectUnsafeRelative(path: string): void {
  * <dir>/bin/… · scripts/…    # pack.assets, kind === "script" (doc 38 D5)
  * ```
  *
+ * Two write modes:
+ *
+ * - **merge (default, legacy)**: files are written one by one into `dir`.
+ *   Same-name files are overwritten, but files this pack does not mention are
+ *   left alone — so a re-export of a changed pack can leave stale entries.
+ * - **replace (`{ replaceExisting: true }`)**: the layout is written into a
+ *   sibling staging directory and swapped into `dir` only after every byte has
+ *   landed. The target becomes an exact representation of this pack: files the
+ *   previous version had but this one no longer has are removed, and a failure
+ *   while writing leaves the previous export untouched.
+ *
  * Error semantics (doc `35` §6): the pack is fetched **before** anything is
  * written, so a failed wire export leaves no directory behind; a `skill/files`
  * rejection lands in {@link ExportResult.danglingSkills} and the loop
  * continues; a `skill/file` or `import/asset` rejection after a successful
  * listing **throws** — that is a host I/O failure, and swallowing it would
- * produce a directory that lists files it does not contain. No rollback on
- * mid-write failure.
+ * produce a directory that lists files it does not contain. Merge mode has no
+ * rollback on mid-write failure; replace mode never touches the target until
+ * staging is complete.
  */
 export async function materializePack(
+  deps: ExportDeps,
+  pack: ExpertPack,
+  dir: string,
+  options: MaterializeOptions = {},
+): Promise<ExportResult> {
+  if (!options.replaceExisting) {
+    return writePackInto(deps, pack, dir);
+  }
+
+  const target = resolve(dir);
+  await assertReplaceable(target);
+  const parent = dirname(target);
+  await mkdir(parent, { recursive: true });
+  const staging = await mkdtemp(join(parent, `.${basename(target)}.export-`));
+  try {
+    const result = await writePackInto(deps, pack, staging);
+    await promoteStaging(staging, target);
+    return { ...result, dir };
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** The actual byte-writing step shared by both modes; writes only into `dir`. */
+async function writePackInto(
   deps: ExportDeps,
   pack: ExpertPack,
   dir: string,
@@ -179,6 +278,109 @@ export async function materializePack(
   return { pack, dir, writtenSkills, writtenAssets, danglingSkills };
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * Align one installed market entry with the version its market advertises.
+ *
+ * Deliberately narrow: it updates only an already-installed entry that the
+ * host reports as `update_available`. Installing something the user never
+ * installed, or forcing a same-version content change, is not this function's
+ * job (the latter needs a market-side version bump — doc `35` §5.2).
+ */
+async function syncInstalledEntry(
+  deps: ExportDeps,
+  target: NonNullable<ExportOptions["syncToMarketVersion"]>,
+): Promise<void> {
+  if (!deps.store) {
+    throw new Error("syncToMarketVersion requires a store face on ExportDeps");
+  }
+  const items = await deps.store.list();
+  const item = items.find(
+    (candidate) =>
+      candidate.marketplace_id === target.marketplaceId &&
+      candidate.entry_name === target.entryName,
+  );
+  if (!item) {
+    throw new Error(
+      `market entry ${target.marketplaceId}/${target.entryName} not found; refresh the market first`,
+    );
+  }
+  if (!item.installed) {
+    throw new Error(
+      `market entry ${target.marketplaceId}/${target.entryName} is not installed; ` +
+        "install it before exporting (syncToMarketVersion never installs)",
+    );
+  }
+  if (!item.update_available) return;
+  await deps.store.update(item);
+}
+
+/**
+ * Refuse to replace a target that is not a previous export root.
+ *
+ * Deleting a whole directory is only defensible when it is the export we wrote
+ * earlier: an empty directory or one whose top level carries `expert-pack.json`.
+ * Anything else is the caller's data, so it is refused before any byte moves.
+ */
+async function assertReplaceable(target: string): Promise<void> {
+  let info;
+  try {
+    info = await lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return; // will be created
+    throw error;
+  }
+  if (info.isSymbolicLink()) {
+    throw new Error(`export target is a symbolic link, refusing to replace it: ${target}`);
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`export target is not a directory: ${target}`);
+  }
+  const entries = await readdir(target);
+  if (entries.length === 0) return;
+  if (!(await pathExists(join(target, "expert-pack.json")))) {
+    throw new Error(
+      `export target is not empty and is not a previous expert export (no expert-pack.json): ${target}`,
+    );
+  }
+}
+
+/** Swap a fully written staging directory into `target`, keeping the old one on failure. */
+async function promoteStaging(staging: string, target: string): Promise<void> {
+  if (!(await pathExists(target))) {
+    await rename(staging, target);
+    return;
+  }
+
+  const entries = await readdir(target);
+  if (entries.length === 0) {
+    // Windows cannot rename onto an existing directory: drop the empty shell first.
+    await rmdir(target);
+    await rename(staging, target);
+    return;
+  }
+
+  const backup = `${target}.old-${randomUUID()}`;
+  await rename(target, backup);
+  try {
+    await rename(staging, target);
+  } catch (error) {
+    // Put the previous export back so a failed swap never disappears it.
+    await rename(backup, target).catch(() => undefined);
+    throw error;
+  }
+  await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+}
+
 /**
  * Export one single-agent expert and write it out as a directory.
  *
@@ -187,14 +389,24 @@ export async function materializePack(
  * `preset_disabled`; a host whose `[expert_export]` table refuses the id
  * answers `policy_denied` (the capability bit only reports the seam). Check
  * `capabilities.expert_export` for the seam, not for this id.
+ *
+ * Pass `{ replaceExisting: true }` to update a previous export in place; the
+ * default keeps the legacy merge behavior (see {@link MaterializeOptions}).
+ * Pass `{ syncToMarketVersion: { marketplaceId, entryName } }` to update the
+ * installed entry to its market's advertised version first (see
+ * {@link ExportOptions}).
  */
 export async function exportAgent(
   deps: ExportDeps,
   agentId: string,
   dir: string,
+  options: ExportOptions = {},
 ): Promise<ExportResult> {
+  if (options.syncToMarketVersion) {
+    await syncInstalledEntry(deps, options.syncToMarketVersion);
+  }
   const pack = await deps.agents.export(agentId); // fetch first, write only on success (doc `35` §6)
-  return materializePack(deps, pack, dir);
+  return materializePack(deps, pack, dir, options);
 }
 
 /**
@@ -204,13 +416,23 @@ export async function exportAgent(
  * or refused by policy, the whole call fails and nothing is written. A pack
  * over 1 MiB fails with `response_too_large` rather than being truncated.
  * `teamVersion` is an optional pin; a mismatch is `version_mismatch`.
+ *
+ * Pass `{ replaceExisting: true }` as `options` to update a previous export in
+ * place; the default keeps the legacy merge behavior ({@link MaterializeOptions}).
+ * Pass `{ syncToMarketVersion: { marketplaceId, entryName } }` to update the
+ * team's installed entry to its market's advertised version first (see
+ * {@link ExportOptions}).
  */
 export async function exportTeam(
   deps: ExportDeps,
   teamId: string,
   dir: string,
   teamVersion?: string,
+  options: ExportOptions = {},
 ): Promise<ExportResult> {
+  if (options.syncToMarketVersion) {
+    await syncInstalledEntry(deps, options.syncToMarketVersion);
+  }
   const pack = await deps.teams.export(teamId, teamVersion);
-  return materializePack(deps, pack, dir);
+  return materializePack(deps, pack, dir, options);
 }

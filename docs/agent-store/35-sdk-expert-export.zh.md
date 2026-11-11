@@ -437,6 +437,46 @@ export function materializePack(
 2. **`skills/` 平铺在顶层，不按成员分目录**。成员共用技能是常态（同一 `name/id`），按 id 去重后
    写一份即可——技能目录的归属是「包」不是「成员」，与运行期 `preset_enabled_skills` 的合并语义一致。
 
+### 5.1 原地更新（`replaceExisting`，2026-11-11）
+
+同一目录重复导出有两种模式：
+
+| 模式 | 触发 | 结果 |
+|---|---|---|
+| merge（默认，兼容旧行为） | 不传选项 | 逐文件写入，同名文件被覆盖；**本 pack 未提及的旧文件保留** |
+| replace（原地更新） | `{ replaceExisting: true }` | 写进目标旁的 staging 目录，全部字节落盘后再整体换入；目标目录**恰好等于新 pack** |
+
+`replaceExisting` 的边界：
+
+- **旧版独有的文件会被删除**：旧成员 `members/<id>/persona.md`、旧技能目录、旧 `assets` 都不会留下。
+- **写失败不破坏上一版**：staging 写完才换入；任何写盘错误只清理 staging，目标目录保持原样。
+- **只替换“上一次导出”**：目标为空，或顶层存在 `expert-pack.json` 才允许；其它非空目录直接拒绝
+  （`not a previous expert export`），绝不为了“更新”误删调用方的数据。
+- **不做跨目录事务**：换入用同盘 rename（旧目录先改名备份，换入成功后删除备份；换入失败则恢复备份）。
+
+### 5.2 切换市场源后先对齐版本（`syncToMarketVersion`，2026-11-11）
+
+导出读取的永远是**本机已安装快照**，市场源只决定商店目录。因此“把 `config.toml` 的默认源换成新
+index”本身不会让导出变成新版；必须先把已安装条目更新到市场广告的版本。
+
+`exportAgent` / `exportTeam` 的 `ExportOptions.syncToMarketVersion = { marketplaceId, entryName }`
+就是这个动作的显式封装：
+
+| 情况 | 行为 |
+|---|---|
+| 条目已安装且 `update_available = true` | 先 `store.update(item)`（新版安装成功才释放旧版），再取 pack |
+| 条目已安装且已是最新 | 直接导出 |
+| 条目未安装 | **拒绝**（`is not installed`），不会顺手安装 |
+| 条目不存在（市场没刷新） | **拒绝**（`not found`），不会静默导出旧快照 |
+| `ExportDeps` 没接 `store` | **拒绝**（`requires a store face`） |
+| 市场同版本改内容 | 宿主的 `update_available` 为 false → 本选项无动作；发布端必须抬版本（见下） |
+
+边界（同 `store/update-entry`）：
+
+- `store/install-entry` 对已安装条目是 no-op，**不是升级**；要升级只能用 `store.update-entry`。
+- 同一 `plugin_id@version` 内容变了会被不可变快照的 digest 冲突拒绝；**卸载重装也解决不了**，
+  因为快照不被卸载删除。唯一的产品内解法是发布端抬 `version`（或换新条目名）。
+
 ---
 
 ## 6. 错误与语义决策表
@@ -447,7 +487,10 @@ export function materializePack(
 | `skill/files` 失败（悬空声明，或能力位 `skill_files` 未接线 ⇒ `unsupported_operation`） | 记入 `danglingSkills`，**继续**写其余技能 | doc `32` §6.5 EX-008：默认不静默跳过；`files()` 拒绝是「声明解析不了」的统一入口（含能力位缺失） |
 | `files()` 成功后 `skill/file` 读失败 | **抛出** | 那是宿主 I/O 错误而非悬空声明；吞掉会造出「列了文件却缺内容」的残目录 |
 | 同一技能被多个成员声明 | 按 `id` 去重，只写一份 | `id === name`；写两份是同一字节的复制，只会制造 diff 噪音 |
-| 写盘中途失败 | 抛出，**不回滚** | 半成品目录是可识别状态（缺 `expert-pack.json` 或不完整）；回滚逻辑是投机性复杂度（§3 第 7 条） |
+| 写盘中途失败（默认 merge） | 抛出，**不回滚** | 半成品目录是可识别状态（缺 `expert-pack.json` 或不完整）；回滚逻辑是投机性复杂度（§3 第 7 条） |
+| 写盘中途失败（`replaceExisting: true`） | 抛出，**目标目录保持上一版不变** | 先写 staging 再换入；失败只清 staging，旧导出不受影响（§5.1） |
+| 目标目录已有上一次导出（`expert-pack.json`）且传 `replaceExisting: true` | **原地更新**：旧版独有文件被清掉，目标恰好等于新 pack | “同一路径再导出”的自然语义；见 §5.1 |
+| 非空目录且没有 `expert-pack.json`，传 `replaceExisting: true` | **拒绝**（`not a previous expert export`），不删任何文件 | 只替换自己写过的导出根，避免误删调用方数据 |
 | 同一 pack 写两次 | 文件集与字节相同 | 跟随导出的确定性（§2.1），是 §8 的断言之一 |
 
 ---
@@ -520,6 +563,13 @@ export async function exportTeam(
 }
 ```
 
+> **现状修订（2026-11-11）**：上面的 §7 代码是初版草案（只有 merge 写）。当前实现把写字节抽成
+> `writePackInto`，并在 `materializePack(deps, pack, dir, options?)` 上增加
+> `MaterializeOptions.replaceExisting`：为 true 时写 sibling staging 再换入（§5.1），
+> `exportAgent` 第 4 参、`exportTeam` 第 5 参透传该选项；默认仍为 merge，不动既有调用方。
+> 同一批还在 `ExportOptions` 增加 `syncToMarketVersion`（§5.2）：导出前按
+> `marketplaceId + entryName` 把已安装条目更新到市场广告版本。
+
 配套改动：
 
 - `web/packages/sdk/src/index.ts`：re-export 三个函数与两个类型（**只加不改**，既有导出集合不动）。
@@ -547,6 +597,12 @@ export async function exportTeam(
 | 5 | 读失败 | `files()` 成功、`readFile()` reject ⇒ **抛出**，不吞 |
 | 6 | 导出失败不留痕 | `agents.export` reject ⇒ `dir` 未被创建（先取数后落盘的顺序被钉住） |
 | 7 | 确定性 | 同一 pack 写两次 ⇒ 文件清单与每个文件字节相同 |
+| 8 | 原地更新 | 先导出旧团、再以 `replaceExisting: true` 导出成员/技能更少的版本 ⇒ 旧成员与旧技能文件消失，文件集恰好等于新 pack |
+| 9 | 更新失败保旧 | 上一次导出后，用会抛 I/O 错误的新 pack 走 `replaceExisting: true` ⇒ 抛出，目标目录文件清单与字节保持上一版，无 staging/backup 残留 |
+| 10 | 拒绝误删 | 非空且无 `expert-pack.json` 的目录 + `replaceExisting: true` ⇒ 抛 `not a previous expert export`，目录内容原样 |
+| 11 | 空目录可换入 | 已存在的空目录 + `replaceExisting: true` ⇒ 正常写出，且 `ExportResult.dir` 仍是调用方传入的路径 |
+| 12 | 导出前同步市场版本 | 假 store 报 `installed && update_available` ⇒ `store.update` 先被调用，随后导出的 pack 是新版本内容 |
+| 13 | 同步拒绝安装/缺 store | 条目 `installed=false` ⇒ `is not installed`；`ExportDeps` 无 `store` ⇒ `requires a store face`；两者都不写目录 |
 
 ### 8.2 live 端到端（改 `web/scripts/sdk-live-expert-export.ts`）
 

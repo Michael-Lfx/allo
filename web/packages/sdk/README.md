@@ -88,6 +88,34 @@ result.danglingSkills;       // 声明了但本机取不到的技能：{ id, err
 失败进 `danglingSkills` 并继续；`skill/file` 在列文件成功后失败则**抛出**——那是宿主 I/O 错误，
 吞掉会造出「列了文件却缺内容」的残目录。
 
+**同一目录重复导出 = 原地更新**：默认仍是合并写（同名文件覆盖、旧文件不删）。要得到「目标目录
+恰好等于新 pack」的效果，传 `{ replaceExisting: true }`：
+
+```ts
+await exportTeam(harness, teamId, dir, undefined, { replaceExisting: true });
+await exportAgent(harness, agentId, dir, { replaceExisting: true });
+```
+
+实现先在目标旁边写一个 staging 目录，全部字节写完后再整体换入：旧版独有、新版不再有的成员 /
+技能 / 资产文件会被清掉，写盘中途失败也**不会破坏上一版目录**。只有空目录或上一次导出目录
+（顶层有 `expert-pack.json`）才允许替换；其它非空目录会被拒绝而不是误删。
+
+**切了市场源后要先更新已安装条目**：导出只读已安装快照，市场源只影响目录。可以显式让导出先
+对齐市场版本：
+
+```ts
+const result = await exportTeam(harness, teamId, dir, undefined, {
+  replaceExisting: true,
+  syncToMarketVersion: { marketplaceId: "experts", entryName: "edgeone-makers-experts" },
+});
+// exportAgent 同理：exportAgent(harness, agentId, dir, { syncToMarketVersion: {...} })
+```
+
+`syncToMarketVersion` 的行为是：按 `marketplaceId + entryName` 找到已安装条目；若宿主报告
+`update_available`，先执行 `store.update()`（新版装成功才释放旧版），再 `export`。它**不会**
+安装一个本来没装的条目；也**解决不了**“同版本内容变了”的发布问题——那需要市场侧抬 `version`
+（否则会被不可变快照的 digest 冲突拒绝）。
+
 **`launchHarness` 解析出的对象就是那个 client**（`docs/agent-store/31` §5 方案 B）：`harness.store` / `harness.conversations` / `harness.models` 直接可用，没有 `.client` 一跳；子进程是 `harness.server`（`readiness` / `dataDir` / `exited`），握手响应是 `harness.handshake`。
 
 五个动词都在 SDK 里可用，但**它们不是 `@flowy-agent-store/sdk` 自己实现的**：本包只负责进程与传输，返回的对象就是一个 `@flowy-agent-store/client` 的 `AppServerClient`（sdk 另挂 `server` / `handshake` / `close()`），其中 `store` 子客户端把 `install` / `uninstall` / `setEnabled` 编排成一条状态机（`search → install → … → uninstall`）。这样分层是刻意的——见 `docs/agent-store/12-sdk-packaging.md` §2 的职责划分。

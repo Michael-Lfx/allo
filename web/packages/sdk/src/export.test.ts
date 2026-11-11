@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ExpertPack } from "@flowy-agent-store/protocol";
+import type { ExpertPack, StoreItem } from "@flowy-agent-store/protocol";
 import { exportAgent, exportTeam, materializePack, type ExportDeps } from "./export";
 
 /**
@@ -349,6 +349,41 @@ describe("exportAgent / exportTeam (thin entries)", () => {
       await rm(second, { recursive: true, force: true });
     }
   });
+
+  it("forwards replaceExisting so exportTeam updates the same directory in place", async () => {
+    const parent = await tempDir();
+    const dir = path.join(parent, "out");
+    try {
+      const first = makePack("team");
+      await exportTeam(
+        fakeDeps(first, { hello: HELLO, planning: PLANNING }),
+        "frontend-backend-experts",
+        dir,
+        undefined,
+        { replaceExisting: true },
+      );
+
+      const second: ExpertPack = {
+        ...first,
+        team: { ...first.team!, member_agent_ids: ["lead-agent"], members: [first.team!.members[0]!] },
+      };
+      await exportTeam(
+        fakeDeps(second, { hello: HELLO }),
+        "frontend-backend-experts",
+        dir,
+        undefined,
+        { replaceExisting: true },
+      );
+
+      expect(await listFilesDeep(dir)).toEqual([
+        "expert-pack.json",
+        "members/lead-agent/persona.md",
+        "skills/hello/SKILL.md",
+      ]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
 });
 
 /**
@@ -438,6 +473,225 @@ describe("materializePack (doc 51 icons)", () => {
       expect(files.some((file) => file.includes("assets/"))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `replaceExisting` turns a repeated export into an in-place update: the target
+ * ends up exactly as the new pack describes it, and a failed write never eats
+ * the previous export.
+ */
+describe("materializePack (in-place update, replaceExisting)", () => {
+  function targetIn(parent: string): string {
+    return path.join(parent, "out");
+  }
+
+  it("replaces a previous export instead of merging: stale members and skills are gone", async () => {
+    const parent = await tempDir();
+    const dir = targetIn(parent);
+    try {
+      const first = makePack("team");
+      await materializePack(
+        fakeDeps(first, { hello: HELLO, planning: PLANNING }),
+        first,
+        dir,
+        { replaceExisting: true },
+      );
+      expect(await listFilesDeep(dir)).toContain("members/qa-agent/persona.md");
+      expect(await listFilesDeep(dir)).toContain("skills/planning/references/steps.md");
+
+      const second: ExpertPack = {
+        ...first,
+        team: {
+          ...first.team!,
+          member_agent_ids: ["lead-agent"],
+          members: [first.team!.members[0]!],
+        },
+      };
+      await materializePack(fakeDeps(second, { hello: HELLO }), second, dir, {
+        replaceExisting: true,
+      });
+
+      expect(await listFilesDeep(dir)).toEqual([
+        "expert-pack.json",
+        "members/lead-agent/persona.md",
+        "skills/hello/SKILL.md",
+      ]);
+      expect(await readFile(path.join(dir, "expert-pack.json"), "utf8"))
+        .toBe(JSON.stringify(second, null, 2));
+      // The staging and backup directories were cleaned up beside the target.
+      expect(await readdir(parent)).toEqual(["out"]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the previous export intact when the new write fails", async () => {
+    const parent = await tempDir();
+    const dir = targetIn(parent);
+    try {
+      const first = makePack("agent");
+      await materializePack(fakeDeps(first, { hello: HELLO }), first, dir, {
+        replaceExisting: true,
+      });
+      const before = await listFilesDeep(dir);
+      const beforeJson = await readFile(path.join(dir, "expert-pack.json"), "utf8");
+
+      const second = makePack("agent");
+      second.skills = [{ name: "planning", id: "planning" }];
+      const broken = fakeDeps(second, { planning: PLANNING });
+      broken.skills.readFile = async () => {
+        throw new Error("EIO from host");
+      };
+      await expect(
+        materializePack(broken, second, dir, { replaceExisting: true }),
+      ).rejects.toThrow("EIO from host");
+
+      expect(await listFilesDeep(dir)).toEqual(before);
+      expect(await readFile(path.join(dir, "expert-pack.json"), "utf8")).toBe(beforeJson);
+      expect(await readdir(parent)).toEqual(["out"]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to delete a non-empty directory that is not a previous export", async () => {
+    const parent = await tempDir();
+    const dir = targetIn(parent);
+    const pack = makePack("agent");
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "notes.txt"), "keep me");
+      await expect(
+        materializePack(fakeDeps(pack, { hello: HELLO }), pack, dir, { replaceExisting: true }),
+      ).rejects.toThrow("not a previous expert export");
+      expect(await readdir(dir)).toEqual(["notes.txt"]);
+      expect(await readFile(path.join(dir, "notes.txt"), "utf8")).toBe("keep me");
+      expect(await readdir(parent)).toEqual(["out"]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an existing empty directory", async () => {
+    const parent = await tempDir();
+    const dir = targetIn(parent);
+    const pack = makePack("agent");
+    try {
+      await mkdir(dir, { recursive: true });
+      const result = await materializePack(fakeDeps(pack, { hello: HELLO }), pack, dir, {
+        replaceExisting: true,
+      });
+      expect(result.dir).toBe(dir);
+      expect(await listFilesDeep(dir)).toEqual([
+        "expert-pack.json",
+        "persona.md",
+        "skills/hello/SKILL.md",
+      ]);
+      expect(await readdir(parent)).toEqual(["out"]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `syncToMarketVersion` bridges the gap between "the market source changed" and
+ * "the export still reads the installed snapshot": it updates the installed
+ * entry first, then exports the new snapshot's pack.
+ */
+describe("exportTeam (syncToMarketVersion)", () => {
+  function storeItem(overrides: Partial<StoreItem> = {}): StoreItem {
+    return {
+      id: "experts/edgeone-makers-experts",
+      marketplace_id: "experts",
+      marketplace_name: "experts",
+      entry_name: "edgeone-makers-experts",
+      kind: "team",
+      name: "edgeone-makers-experts",
+      version: "1.0.3",
+      source_kind: "index",
+      installed: true,
+      update_available: true,
+      ...overrides,
+    };
+  }
+
+  it("updates the installed entry before fetching the pack", async () => {
+    const first = makePack("team");
+    const second: ExpertPack = {
+      ...first,
+      version: "1.0.3",
+      team: {
+        ...first.team!,
+        member_agent_ids: ["lead-agent"],
+        members: [first.team!.members[0]!],
+      },
+    };
+    let current = first;
+    const updates: StoreItem[] = [];
+    const deps: ExportDeps = {
+      ...fakeDeps(first, { hello: HELLO, planning: PLANNING }),
+      teams: { export: async () => current },
+      store: {
+        list: async () => [storeItem()],
+        update: async (item) => {
+          updates.push(item);
+          current = second;
+          return {};
+        },
+      },
+    };
+    const parent = await tempDir();
+    const dir = path.join(parent, "out");
+    try {
+      const result = await exportTeam(deps, "frontend-backend-experts", dir, undefined, {
+        replaceExisting: true,
+        syncToMarketVersion: { marketplaceId: "experts", entryName: "edgeone-makers-experts" },
+      });
+
+      expect(updates.map((item) => item.id)).toEqual(["experts/edgeone-makers-experts"]);
+      expect(result.pack.version).toBe("1.0.3");
+      expect(await listFilesDeep(dir)).toEqual([
+        "expert-pack.json",
+        "members/lead-agent/persona.md",
+        "skills/hello/SKILL.md",
+      ]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to install a missing entry or export without a store face", async () => {
+    const pack = makePack("team");
+    const parent = await tempDir();
+    const dir = path.join(parent, "out");
+    try {
+      const uninstalled: ExportDeps = {
+        ...fakeDeps(pack, { hello: HELLO, planning: PLANNING }),
+        store: {
+          list: async () => [storeItem({ installed: false })],
+          update: async () => {
+            throw new Error("must not update");
+          },
+        },
+      };
+      await expect(
+        exportTeam(uninstalled, "frontend-backend-experts", dir, undefined, {
+          syncToMarketVersion: { marketplaceId: "experts", entryName: "edgeone-makers-experts" },
+        }),
+      ).rejects.toThrow("is not installed");
+      await expect(readdir(dir)).rejects.toThrow();
+
+      const noStore = fakeDeps(pack, { hello: HELLO, planning: PLANNING });
+      await expect(
+        exportTeam(noStore, "frontend-backend-experts", dir, undefined, {
+          syncToMarketVersion: { marketplaceId: "experts", entryName: "edgeone-makers-experts" },
+        }),
+      ).rejects.toThrow("requires a store face");
+    } finally {
+      await rm(parent, { recursive: true, force: true });
     }
   });
 });
