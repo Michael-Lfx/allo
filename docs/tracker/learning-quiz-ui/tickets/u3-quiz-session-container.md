@@ -43,4 +43,39 @@
 
 ## Resolution
 
-（施工后收口）
+已施工收口（2026-11-11，2bb510000 @ feat/learn-quiz-ui-u3，基点 0ec1e2b43；
+挂载接线归集成收口，双轴评审随 u5）。
+
+- R1：`hooks/useQuizSession.ts` 导出 `createQuizSessionController`（纯对象
+  状态机：`{phase, busy, round, index, answers, feedback, error}`，相 =
+  loading/error/answering/graded/ready/completed）+ `useQuizSession` 订阅壳
+  （挂载即 start、卸载即 close）；`components/QuizSession.tsx` 导出
+  `QuizCard`（显式 props，渲染 seam）+ `QuizSession`（Modal 壳，props
+  `{courseId, onFinished(report), onClose}`）。骨架照 ReviewSession 形态，
+  不搬 learnhub runner。
+- R2：题面全字段——prompt 走 InlineMarkdown（$…$ 出 KaTeX）；`node_name`
+  题源标注 Tag；`difficulty` 1–3 呈现、None 不占位（渲染断言双臂）；
+  options/matches 原样交 ActivityInput；交错序 UI 不重排。
+- R3：提交即 quizGrade → 反馈面板（对/错互斥 + 判底 answer 经 answerText
+  按 kind 可读化 + 解析/证据 InlineMarkdown，证据有则呈现）；反馈期作答
+  disabled + 提交钮消失 + 下一题推进。
+- R4：控制器钉死——graded 相拒绝重复判分（零状态迁移，引用断言）；反馈
+  随 next/next/close 丢弃；关闭深等于初始态；作答相渲染零判底泄漏
+  （无正确答案/解析/证据字样的渲染断言）。
+- R5：response 原样回收（引用相等断言）；`missingAnswerCount` 前置校验 +
+  complete 仅 ready 相可进（作答/判分相拒绝零 API 调用），漏题不可能由
+  状态机结构保证（next 只从 graded 推进）。
+- R6：close 即弃回合（abandoned 由下次 start supersede）；会话内零
+  progress 调用（假 api 计数断言）；N/K 读数由集成在 onFinished 后刷新。
+- 失败路径：start 409/网络经 errorMessage 单源落 error 相（conflictBusy/
+  networkUnstable）+ 重试同入口；grade/complete 失败 toast 后停在原相可
+  重交；契约外空回合如实落 error。
+- 词典：消费 u1 全部 16 条 quiz* 键 + 复用 reviewSubmitAnswer/
+  questionDifficulty/reviewSessionClose；追加 4 条对称键（quizNext/
+  quizRetry/quizReadyToSettle/quizCompleteButton，紧邻 quiz 块），gen:i18n
+  +4 键、check:i18n 绿。
+- 闸门：typecheck 绿；hook 状态机单测 15 例（全旅程/红线门/失败路径）+
+  渲染测试 10 例（node_name/difficulty 双臂/反馈两态/反馈期禁用/en 对称）
+  全绿；learning 回归 351/351（bun test --isolate）；check:theme、
+  check:dead-css 干净。全量套件不相关失败（tauriUpdater/notification
+  facade/CreditsContext 等）已对 pristine base 复核为存量/抖动。
