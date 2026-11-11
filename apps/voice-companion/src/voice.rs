@@ -2070,12 +2070,25 @@ impl VoiceCompanionRuntime {
             reason: VoiceSessionEndReason::UserStop,
         });
         drop(driver);
-        voice_feedback::schedule(
-            self.playback.clone(),
-            self.event_tx.clone(),
-            VoiceCueKind::Stopped,
-            generation,
-        );
+        if self.event_tx.feedback().speak_replies {
+            // A manual stop is a user-initiated exit: say the same fixed
+            // pre-rendered farewell as every other dismiss path.
+            let locale = self.snapshot().locale.clone();
+            let is_en = nomifun_api_types::voice::is_english_locale(locale.as_deref());
+            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+            let playback = self.playback.clone();
+            let event_tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                let _ = voice_feedback::play_vocal(&playback, &event_tx, dismiss_bytes, VoiceCueKind::Sleep, generation).await;
+            });
+        } else {
+            voice_feedback::schedule(
+                self.playback.clone(),
+                self.event_tx.clone(),
+                VoiceCueKind::Stopped,
+                generation,
+            );
+        }
         Ok(())
     }
 
@@ -2713,34 +2726,16 @@ impl VoiceCompanionRuntime {
                         );
                         drop(d);
                         let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                        let custom_dismiss = feedback.dismiss_reply.trim();
-                        let goodbye_text = if !custom_dismiss.is_empty() && (custom_dismiss != "好的，再见" || !is_en) {
-                            custom_dismiss
-                        } else if is_en {
-                            "Goodbye"
-                        } else {
-                            "好的，再见"
-                        };
                         if event_tx.feedback().speak_replies {
-                            let is_default_dismiss = custom_dismiss.is_empty()
-                                || custom_dismiss == "好的，再见"
-                                || custom_dismiss.eq_ignore_ascii_case("goodbye");
-                            if is_default_dismiss {
-                                let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
-                                let playback_clone = playback.clone();
-                                let event_tx_clone = event_tx.clone();
-                                tokio::spawn(async move {
-                                    let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
-                                });
-                            } else {
-                                let tts_clone = local_tts.clone();
-                                let playback_clone = playback.clone();
-                                let reply = goodbye_text.to_string();
-                                let voice_spec = format_voice_spec(scope.locale.as_deref(), feedback.tts_speed);
-                                tokio::spawn(async move {
-                                    let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
-                                });
-                            }
+                            // Every user-initiated exit speaks the same fixed,
+                            // pre-rendered farewell; custom dismiss text no longer
+                            // changes the exit voice.
+                            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+                            let playback_clone = playback.clone();
+                            let event_tx_clone = event_tx.clone();
+                            tokio::spawn(async move {
+                                let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
+                            });
                         } else {
                             voice_feedback::schedule(
                                 playback.clone(),
@@ -3217,8 +3212,7 @@ impl VoiceCompanionRuntime {
                     Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 }
                 IntentType::Dismiss => {
-                    let goodbye_text = dec.reply_tts.as_deref().unwrap_or("好的，您先忙。有需要随时叫我。");
-                    info!(reply = %goodbye_text, "LLM decided Dismiss intent; speaking farewell and ending session");
+                    info!("LLM decided Dismiss intent; playing the preset farewell and ending session");
                     drop(d);
                     let _ = playback.interrupt().await;
                     let sleep_gen = playback.generation_id();
@@ -3235,27 +3229,13 @@ impl VoiceCompanionRuntime {
                         },
                     );
                     let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                    let is_default_dismiss = goodbye_text == "好的，再见"
-                        || goodbye_text == "好的，您先忙。有需要随时叫我。"
-                        || goodbye_text.eq_ignore_ascii_case("goodbye");
-
                     if event_tx.feedback().speak_replies {
-                        if is_default_dismiss {
-                            let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
-                            let playback_clone = playback.clone();
-                            let event_tx_clone = event_tx.clone();
-                            tokio::spawn(async move {
-                                let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
-                            });
-                        } else {
-                            let tts_clone = local_tts.clone();
-                            let playback_clone = playback.clone();
-                            let reply = goodbye_text.to_string();
-                            let voice_spec = format_voice_spec(scope.locale.as_deref(), event_tx.feedback().tts_speed);
-                            tokio::spawn(async move {
-                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
-                            });
-                        }
+                        let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
+                        let playback_clone = playback.clone();
+                        let event_tx_clone = event_tx.clone();
+                        tokio::spawn(async move {
+                            let _ = voice_feedback::play_vocal(&playback_clone, &event_tx_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
+                        });
                     } else {
                         voice_feedback::schedule(
                             playback.clone(),
@@ -4791,7 +4771,7 @@ impl VoiceCompanionRuntime {
                             }
                             let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms,pending.approval_id.clone(),pending.session_id.clone())))};
                             if let Some((response,generation,deadline_ms,approval_id,session_id))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();let local_tts=local_tts.clone();
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();
                                 let reservation = lease_admission.reserve();
                                 let pending_for_turn = pending_confirmation.clone();
                                 let snapshot = events.snapshot();
@@ -4846,22 +4826,21 @@ impl VoiceCompanionRuntime {
                                                     );
                                                     drop(d);
                                                     let is_en = nomifun_api_types::voice::is_english_locale(current.locale.as_deref());
-                                                    let goodbye_text = if is_en { "Goodbye" } else { "好的，再见" };
                                                     if events.feedback().speak_replies {
+                                                        let dismiss_bytes = nomifun_audio::vocal::VocalPhrase::dismiss_bytes(is_en);
                                                         let output_clone = output.clone();
-                                                        let reply = goodbye_text.to_string();
-                                                        let voice_spec = format_voice_spec(current.locale.as_deref(), events.feedback().tts_speed);
-                                                        let tts_prov = local_tts.clone();
+                                                        let events_clone = events.clone();
                                                         tokio::spawn(async move {
-                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, &voice_spec, sleep_gen, || {}).await;
+                                                            let _ = voice_feedback::play_vocal(&output_clone, &events_clone, dismiss_bytes, VoiceCueKind::Sleep, sleep_gen).await;
                                                         });
+                                                    } else {
+                                                        voice_feedback::schedule(
+                                                            output.clone(),
+                                                            events.clone(),
+                                                            VoiceCueKind::Sleep,
+                                                            sleep_gen,
+                                                        );
                                                     }
-                                                    voice_feedback::schedule(
-                                                        output.clone(),
-                                                        events.clone(),
-                                                        VoiceCueKind::Sleep,
-                                                        sleep_gen,
-                                                    );
                                                     let _ = response.send(Ok(Some("cancel".to_string())));
                                                     return;
                                                 }

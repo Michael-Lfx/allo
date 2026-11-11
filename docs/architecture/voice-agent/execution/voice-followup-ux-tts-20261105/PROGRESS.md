@@ -11,7 +11,7 @@
 ## 当前改动
 
 - B：`voiceWakeNavigation` 新增 `nextVoiceWakeNavigation`，Router 仅在有效 binding 时消费激活；新增 helper 测试和实际 Router 订阅集成测试（unbound→bound→仅一次、受保护路由/self-check，仍为 31 pass 内）。
-- C：产品默认速度 1.1x（API、VoiceUserPreferences、SherpaOfflineTtsConfig、VoiceFeedbackSettings 回退），补显式 1.3/1.0 保留测试；WAV 尚未替换。
+- C：产品默认速度 1.1x（API、VoiceUserPreferences、SherpaOfflineTtsConfig、VoiceFeedbackSettings 回退），补显式 1.3/1.0 保留测试；WAV 尚未替换（2026-11-11 更新：已用 Edge 预生成资产替换，见 `TTS-GENERATION.md`）。
 - A：修复计时冻结。等待行不再作为 synthetic `thinking` 混入 `MessageList` 的 turn/process 管线；`NomiChat` 在 `MessageList` 下方独立渲染 `VoiceKeyboardWaitRow`，用 `MessageThinking` standalone 自有 1s timer，`startedAt` 固定；transcript 只保留右侧用户预览。`nomiSendDispatch` 仍在 await 前同步回调；真实 task 轮询、Completed 先于消息刷新、回复一次接管、失败/切会话/108s 清理保持不变。测试：wait view 8 + dispatch 8 + B 7 + feedback 4 + NomiChat 页面集成 2 + Router 集成 2 = 31 pass / 0 fail；页面测试断言等待行不在 process_group/turn_process_disclosure 内、56s 显示 56、57s 显示 57、刷新后真实回复只出现一次。reset 清理、英文/dark 上下文、自动完成刷新已覆盖；stop 已接入 `voice.keyboard.wait.clear` 清理，light/dark 上下文已有 smoke；仍缺浅深主题视觉人工验收（Enter/IME 已覆盖）。
 - C：默认速度全链路 1.1x（`VoiceFeedbackConfig`、`VoiceUserPreferences` 缺省、`SherpaOfflineTtsConfig` 两处、设置页回退），显式 1.3/1.0 保留测试；API 713 pass、TTS cache 7 pass。六段 WAV 已用本机 local provider 1.1 生成到 `build.noindex/generated-vocal/`，指标通过；因中文模型 non-commercial/发行许可未核，未替换资产。另生成 1.0/1.3 对照：除 `dismiss_zh` 13ms 边界差异外，时长随速度单调缩短，见 `TTS-GENERATION.md`。
 

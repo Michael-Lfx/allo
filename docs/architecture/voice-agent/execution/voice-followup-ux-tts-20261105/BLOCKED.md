@@ -6,7 +6,7 @@
 
 | 项 | 原因 | 已做 | 影响 |
 | --- | --- | --- | --- |
-| 六段固定人声替换 | 本机 Matcha 中文模型 README 明确 `The dataset is for non-commercial use only.`；仓库既有语音架构文档也记录 sherpa 模型资产无显式发行许可（`k2-fsa/sherpa-onnx#3802`）。生成音频是否可随 Desktop/daemon 分发需产品/法务确认。 | 已用本机本地 provider 以 1.1x 生成 6 段到 `build.noindex/generated-vocal/`，保留完整 SHA-256/时长/峰值证据；**未替换仓库资产** | C 的“六段内嵌人声替换”暂不能分发；原资产保留 |
+| 六段固定人声替换 | 本机 Matcha 中文模型 README 明确 `The dataset is for non-commercial use only.`；仓库既有语音架构文档也记录 sherpa 模型资产无显式发行许可（`k2-fsa/sherpa-onnx#3802`）。生成音频是否可随 Desktop/daemon 分发需产品/法务确认。 | 已用本机本地 provider 以 1.1x 生成 6 段到 `build.noindex/generated-vocal/`，保留完整 SHA-256/时长/峰值证据；**未替换仓库资产**。2026-11-11 已改用 Edge 预生成替换 6 段（见 TTS-GENERATION.md），与 Matcha 许可无关。 | C 的“六段内嵌人声替换”已用 Edge 资产完成；本地 Matcha 生成物仍不可分发 |
 > **2026-11-06 用户确认**：A 主题/真机、B 真机唤醒/路由、D 真实 TC12/物理播放均已实测达成；以下对应旧阻断项已移除。
 
 ## 当前已知基线
@@ -18,7 +18,7 @@
 
 ## 待人工 / 后续
 
-1. 产品/法务确认 Matcha 中文模型输出与生成 WAV 的分发许可；确认后再决定是否替换 `crates/backend/nomifun-audio/assets/vocal/`。
+1. 产品/法务确认 Matcha 中文模型输出与生成 WAV 的分发许可；确认后再决定是否替换 `crates/backend/nomifun-audio/assets/vocal/`（2026-11-11 注：预置人声已改用 Edge 预生成并完成替换，本项仅针对 Matcha 生成物，不再阻挡资产替换）。
 2. 运行修复版 Desktop/daemon，复核 1.1x 透传、缓存键；用户确认真机六段播放与首句识别已达成。
 
 ## E 轮新增阻断 / 边界（2026-11-06）

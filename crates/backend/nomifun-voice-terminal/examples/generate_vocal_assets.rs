@@ -1,5 +1,9 @@
 //! Generate the six built-in vocal WAV assets with the deployed local TTS.
 //!
+//! Historical / license-blocked alternative: the checked-in assets are now
+//! generated with Edge TTS by `generate_vocal_assets_edge.rs`. This local-TTS
+//! output is kept as evidence only and is not distributed.
+//!
 //! Run:
 //!   cargo run -p nomifun-voice-terminal --example generate_vocal_assets \
 //!     --features local-tts -- \

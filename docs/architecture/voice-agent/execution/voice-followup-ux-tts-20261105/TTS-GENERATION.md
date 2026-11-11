@@ -45,7 +45,7 @@
 
 除 `dismiss_zh` 的 1.3x 比 1.1x 长约 13ms（模型推理/裁剪边界差异）外，其余均随速度提高而缩短；每段均重新合成，没有复用旧缓存。复跑命令追加 `--speed 1.0` / `--speed 1.3` 与对应 `--out-dir`。
 
-## 现有仓库资产
+## 已被替换的旧仓库资产（2026-11-02 入库，历史对照）
 
 | 文件 | SHA-256（保留未替换） |
 | --- | --- |
@@ -55,6 +55,32 @@
 | `barge_en.wav` | `1c779e2edef92adde5132a7b86eca345803131adfe8359bc17802e086eee77e7` |
 | `dismiss_zh.wav` | `c378a334d48c5f6146eedb5fd4a9175c94ed1a23d0d0debaca0128ae3958335e` |
 | `dismiss_en.wav` | `254fbf8ecc61c65c4132f081e7b4b62463f7e7f514bb536c1b85876b950f80bb` |
+
+## 2026-11-11 预置人声改用 Edge 预生成（已替换仓库资产）
+
+- 生成工具：`crates/backend/nomifun-voice-terminal/examples/generate_vocal_assets_edge.rs`
+- 命令：
+  ```powershell
+  cargo run -p nomifun-voice-terminal --example generate_vocal_assets_edge -- `
+    --out-dir build.noindex/generated-vocal-edge --speed 1.1
+  ```
+- 音色：中文 `zh-CN-XiaoxiaoNeural`；英文 `en-US-JennyNeural`（与优质档聊天音色一致）。
+- 速度：`1.1`（与 `VoiceFeedbackConfig` 默认 `tts_speed` 对齐；预置资产语速固定，不跟随运行时设置）。
+- 输出：16 kHz / mono / 16-bit PCM，30ms 前导 + 30ms 尾部静音，去除首尾静音段后按 1.1x 合成。
+- 运行时行为（2026-11-11 更新）：资产选择逻辑、zh/en 映射与播放入口未改；用户主动退出（直接命令、LLM Dismiss、确认阶段退出、UI 停止）统一播放预置告别音，自定义 `dismiss_reply` 不再影响退出音频。
+- 许可口径：沿用既有 Edge 预生成资产来源（2026-11-02 首次入库；历史生成命令未完整留档，未据此新增许可结论）；本次不涉及本地 Matcha 生成物。
+
+| 文件 | 文案 | 音色 | 语速 | 源采样率 | 时长 ms | peak | SHA-256 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `wake_zh.wav` | 我在 | Xiaoxiao | 1.1 | 24000 | 480 | 0.6682 | `8c71245187a97607d908264b640b7f2e2ab4879c0a0af9ae1985706bfeb37d19` |
+| `wake_en.wav` | I'm here | Jenny | 1.1 | 24000 | 530 | 0.5914 | `55b22d179064c1a6e455d2cd0716731bf5a8edc7ae27682008a9043de6f6a2e2` |
+| `barge_zh.wav` | 你说 | Xiaoxiao | 1.1 | 24000 | 511 | 0.5014 | `855884079c05feb5ac31dcfa4ca0b5723558d2ed57d1018de83b2a8bec4fb84e` |
+| `barge_en.wav` | Go ahead | Jenny | 1.1 | 24000 | 571 | 0.4439 | `e56417402a329ce0f6ca7c8c2438ec4972edebe3e39cca990745dae54aee74d5` |
+| `dismiss_zh.wav` | 好的，再见 | Xiaoxiao | 1.1 | 24000 | 1135 | 0.5513 | `82227524184e02b5670f9cf434d2d873deb9adeb6db586454efcda8c25bc1abd` |
+| `dismiss_en.wav` | Goodbye | Jenny | 1.1 | 24000 | 489 | 0.6014 | `765296c9fc1e9c2611ac422542b338351d29cb94d398fd44b6e0d6a3ea672e94` |
+
+- 契约测试：`nomifun-audio` 的 `vocal_assets_are_bounded_audible_and_padded` 覆盖 16kHz/mono/16bit、30ms 首尾静音、300–1600ms 时长、峰值与 RMS 区间；`vocal_locale_dispatch` 覆盖 zh/en 资产映射。
+- 真机中英文听感仍待 Owner 复核；代码层不可替代。
 
 ## 未验 / 阻塞
 

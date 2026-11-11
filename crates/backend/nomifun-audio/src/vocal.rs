@@ -154,4 +154,55 @@ mod tests {
         assert_eq!(VocalPhrase::dismiss_bytes(true), DISMISS_EN_WAV);
         assert_eq!(VocalPhrase::dismiss_bytes(false), DISMISS_ZH_WAV);
     }
+
+    #[test]
+    fn vocal_assets_are_bounded_audible_and_padded() {
+        for phrase in VocalPhrase::ALL {
+            let bytes = phrase.as_wav_bytes();
+            let name = phrase.filename();
+            let data_size =
+                u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
+            let samples: Vec<i16> = bytes[44..44 + data_size]
+                .chunks_exact(2)
+                .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            assert!(
+                samples.len() > 480 * 2,
+                "{name} is too short for the fixed 30ms padding"
+            );
+            let duration_ms = samples.len() as u64 * 1000 / 16_000;
+            assert!(
+                (300..=1600).contains(&duration_ms),
+                "{name} duration {duration_ms}ms is outside the 300-1600ms contract"
+            );
+            let leading = &samples[..480];
+            let trailing = &samples[samples.len() - 480..];
+            assert!(
+                leading.iter().all(|sample| sample.abs() <= 2),
+                "{name} must start with 30ms silence"
+            );
+            assert!(
+                trailing.iter().all(|sample| sample.abs() <= 2),
+                "{name} must end with 30ms silence"
+            );
+            let peak = samples
+                .iter()
+                .map(|sample| sample.unsigned_abs() as f32 / 32768.0)
+                .fold(0.0f32, f32::max);
+            assert!(
+                (0.05..=0.999).contains(&peak),
+                "{name} peak {peak} is outside the audible-but-unclipped contract"
+            );
+            let rms = (samples
+                .iter()
+                .map(|sample| {
+                    let value = *sample as f64 / 32768.0;
+                    value * value
+                })
+                .sum::<f64>()
+                / samples.len() as f64)
+                .sqrt();
+            assert!(rms > 0.01, "{name} looks silent (rms {rms})");
+        }
+    }
 }

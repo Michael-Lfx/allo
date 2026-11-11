@@ -1,5 +1,7 @@
 # 第二轮语音 UX/TTS · 验收报告
 
+> **2026-11-11 更新**：预置人声已改用 Edge 预生成（zh-CN-XiaoxiaoNeural / en-US-JennyNeural，1.1x）并替换仓库资产；下文“未替换仓库资产/WAV 尚未替换”为 2026-11-05 历史结论，现状见 [TTS-GENERATION.md](TTS-GENERATION.md)。
+
 > **2026-11-06 E 轮追加**：语音 runtime 冷启动与模型继承另见 [RUNTIME-WARMUP.md](RUNTIME-WARMUP.md)。新建自动语音会话 gateway-only，日志实测首次 build 364–490ms；旧会话不迁移。A/B/C/D 验收结论保持原文，E 的边界见该文档。
 
 - 日期：2026-11-05（UTC+8）
@@ -65,7 +67,7 @@
 - 使用本机 `C:\Users\38788\AppData\Local\Flowy\models\tts` 的 Matcha/Vocos local provider，1.1x，生成 6 段到 `build.noindex/generated-vocal/`。
 - 格式均为 16kHz/mono/16-bit/30ms 首尾静音；peak ≤ 0.498；时长 382–870ms；完整 SHA-256/模型指纹及 1.0/1.3 速度对照见 `TTS-GENERATION.md`。
 - 生成期间 sherpa 打印 `Unknown token: shei2`；听感/可懂度未验。
-- **未替换仓库资产**：中文模型 README 明确 non-commercial，仓库既有架构文档记录模型资产无显式发行许可；按任务“许可受阻保留原资产交证据”处理。
+- **未替换仓库资产**：中文模型 README 明确 non-commercial，仓库既有架构文档记录模型资产无显式发行许可；按任务“许可受阻保留原资产交证据”处理（2026-11-11 更新：已改用 Edge 资产替换，见 `TTS-GENERATION.md`）。
 
 ## 5. D · 证据与真实 TC12
 
