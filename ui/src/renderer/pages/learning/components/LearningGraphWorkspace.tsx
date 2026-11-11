@@ -179,7 +179,8 @@ const LearningGraphWorkspace: React.FC<{
         })
         .catch((loadError) => {
           if (!cancelled) {
-            setStructureError(loadError instanceof Error ? loadError.message : String(loadError));
+            // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+            setStructureError(errorMessage(t, loadError));
           }
         });
     };
@@ -201,7 +202,7 @@ const LearningGraphWorkspace: React.FC<{
       cancelled = true;
       off();
     };
-  }, [detail.course.id]);
+  }, [detail.course.id, t]);
 
   const regenerateStructure = useCallback(async () => {
     setRegenerating(true);
@@ -215,14 +216,12 @@ const LearningGraphWorkspace: React.FC<{
       setStructureRunningWs(false);
       // g3 冲突显性化：生成进行中重复触发 = 后端 409 → 非阻塞 toast 明确
       // 反馈（此前 200 kicked=true 静默吞掉，「生成中」Tag 卡死到刷新）；
-      // 其余失败保留阻塞 Modal——需要用户看见并处置。
+      // 其余失败同样走非阻塞 toast（c2 口径，o1 收编：错误文案由
+      // errorMessage 单源映射，不再强弹窗打断）。
       if (actionError instanceof BackendHttpError && actionError.status === 409) {
         Message.warning(t('learning.learningGraphStructureConflict'));
       } else {
-        Modal.error({
-          title: t('learning.learningGraphStructureFailed'),
-          content: errorMessage(t, actionError),
-        });
+        Message.error(errorMessage(t, actionError));
       }
     } finally {
       setRegenerating(false);
@@ -277,10 +276,8 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         await refetchStructure();
       } else {
-        Modal.error({
-          title: t('learning.learningGraphMountFailed'),
-          content: errorMessage(t, actionError),
-        });
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
+        Message.error(errorMessage(t, actionError));
       }
     } finally {
       clearInFlight(`mount:${detail.course.id}`);
@@ -303,10 +300,8 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         await refetchStructure();
       } else {
-        Modal.error({
-          title: t('learning.learningGraphRepairFailed'),
-          content: errorMessage(t, actionError),
-        });
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
+        Message.error(errorMessage(t, actionError));
       }
     } finally {
       clearInFlight(`repair:${detail.course.id}`);
@@ -476,10 +471,8 @@ const LearningGraphWorkspace: React.FC<{
           const view = await learningApi.basisView(detail.course.id).catch(() => null);
           if (view) setBasis(view);
         } else {
-          Modal.error({
-            title: t('learning.learningGraphBasisDeclareFailed'),
-            content: errorMessage(t, actionError),
-          });
+          // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
+          Message.error(errorMessage(t, actionError));
         }
       } finally {
         clearInFlight(`basis:${detail.course.id}`);
@@ -503,10 +496,8 @@ const LearningGraphWorkspace: React.FC<{
         Message.info(t('learning.inflightTaskToast'));
         onRefresh();
       } else {
-        Modal.error({
-          title: t('learning.learningGraphGrowFailed'),
-          content: errorMessage(t, actionError),
-        });
+        // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）。
+        Message.error(errorMessage(t, actionError));
       }
     } finally {
       clearInFlight(`grow:${detail.course.id}`);
@@ -893,7 +884,8 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
           if (!cancelled) setBatches(view.batches);
         })
         .catch((loadError) => {
-          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+          // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+          if (!cancelled) setError(errorMessage(t, loadError));
         });
     };
     load();
@@ -908,10 +900,10 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
       cancelled = true;
       off();
     };
-  }, [courseId]);
+  }, [courseId, t]);
 
   if (error) {
-    return <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
+    return <Alert type='error' content={error} />;
   }
   if (batches === null) {
     return (
@@ -1000,8 +992,8 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
           if (!cancelled) setActions(view);
         })
         .catch((loadError) => {
-          if (!cancelled)
-            setError(loadError instanceof Error ? loadError.message : String(loadError));
+          // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+          if (!cancelled) setError(errorMessage(t, loadError));
         });
     };
     load();
@@ -1019,7 +1011,7 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
       cancelled = true;
       off();
     };
-  }, [courseId]);
+  }, [courseId, t]);
 
   const model = actions ? buildSystemActionRows(actions) : null;
   return (
@@ -1029,7 +1021,7 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
         header={<span className='text-12px'>{t('learning.learningGraphSystemActions')}</span>}
       >
         {error ? (
-          <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />
+          <Alert type='error' content={error} />
         ) : !model ? (
           <div className='flex justify-center py-16px'>
             <Spin />
@@ -1056,9 +1048,9 @@ const SystemActionsSection: React.FC<{ courseId: string }> = ({ courseId }) => {
                 <Tag size='small' color={row.resultColor} className='!mx-0'>
                   {t(row.resultKey)}
                 </Tag>
-                {row.reason.trim() !== '' && (
+                {row.reasonKey.trim() !== '' && (
                   <Text type='error' className='min-w-0 basis-full truncate text-11px'>
-                    {row.reason}
+                    {t(row.reasonKey)}
                   </Text>
                 )}
               </div>
@@ -1093,7 +1085,8 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           }
         })
         .catch((loadError) => {
-          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+          // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+          if (!cancelled) setError(errorMessage(t, loadError));
         });
       // 定义审计（m9 只读）：与行表并行拉取；失败只降级审计列并明示
       // （审计缺席是静默误导——缺口看不见不等于没有缺口），不打翻概念表。
@@ -1123,7 +1116,7 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
       cancelled = true;
       off();
     };
-  }, [courseId]);
+  }, [courseId, t]);
 
   // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名——互指可多组，
   // 收集全部而不是只剩最后一个 partner（c6 修覆盖写 bug））。
@@ -1147,7 +1140,7 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   }, [audit]);
 
   if (error) {
-    return <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
+    return <Alert type='error' content={error} />;
   }
   if (rows === null) {
     return (

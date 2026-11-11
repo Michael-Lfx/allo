@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Card, Spin, Tag, Typography } from '@arco-design/web-react';
+import { Button, Card, Spin, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import {
   formatGrowthElapsed,
   growthCourseTitle,
@@ -64,7 +64,12 @@ function progressLine(t: Translate, item: GrowthPillItem): string | null {
     const stepKey = item.step ? STEP_KEYS[item.step] : undefined;
     return stepKey ? t(stepKey) : null;
   }
-  return item.status === 'failed' ? item.detail : null;
+  // 失败行不再直出后端 detail（o1）：人面出通用失败句，原文收进 Tooltip
+  // 悬停可见（诊断不丢）。没有 detail 时宁缺不泄漏，不出提示行。
+  if (item.status === 'failed') {
+    return item.detail ? t('learning.growthPillFailedHint') : null;
+  }
+  return null;
 }
 
 /** 学习图生长悬浮指示条（g4）：复用建课链 CourseGenerationPill 骨架。
@@ -109,10 +114,19 @@ export function GrowthTaskPill({
               {title}
             </Text>
           )}
-          {progress && (
-            <Text type='secondary' className='block truncate text-12px'>
-              {progress}
-            </Text>
+          {progress && item.status === 'failed' && item.detail ? (
+            // 失败原因原文收纳进 Tooltip（o1：人面通用句 + 悬停诊断不丢）。
+            <Tooltip content={item.detail}>
+              <Text type='secondary' className='block truncate text-12px'>
+                {progress}
+              </Text>
+            </Tooltip>
+          ) : (
+            progress && (
+              <Text type='secondary' className='block truncate text-12px'>
+                {progress}
+              </Text>
+            )
           )}
         </div>
         {onView && (

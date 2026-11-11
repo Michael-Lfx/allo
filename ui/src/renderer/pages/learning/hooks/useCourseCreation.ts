@@ -219,7 +219,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         return kept.length > 0 ? kept : usable[0] ? [usable[0].knowledge_base_id] : [];
       });
     } catch (actionError) {
-      Message.error(actionError instanceof Error ? actionError.message : t('learning.loadBasesFailed'));
+      // o1：Error 走 errorMessage 单源映射；非 Error 落既有知识库词典句。
+      Message.error(
+        actionError instanceof Error ? errorMessage(t, actionError) : t('learning.loadBasesFailed')
+      );
     } finally {
       setKnowledgeLoading(false);
     }
@@ -342,7 +345,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         taskKey: active.key,
         fetchTasks: () => learningApi.generationTasks(),
         fetchCourse: (courseId) => learningApi.getCourse(courseId),
-        describeError: (error) => errorMessage(t, error),
+        // o1：终态收敛失败面固定句（「任务完成但课程详情拉不到」是固定语境，
+        // 不映射原始报文）。
+        describeError: () => t('learning.courseInfoLoadFailed'),
         describeFailed: () => t('learning.restoredTaskFailed'),
         onConverge: (converged) => {
           // 双写幂等：只翻 running/queued 的恢复态；若此刻已另有在跑的
