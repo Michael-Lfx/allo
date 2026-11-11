@@ -17,6 +17,10 @@
  * - failed/cancelled → 沿用 Pill 既有终态语义（genBgFailed/genCancelled +
  *   「查看」）。
  *
+ * v4 起同一 watch 快照还供图课程 completed 卡片的结构态行消费
+ * （`structureCardLine`，index 接线经 props 链下发）——仍是单一轮询源，
+ * 只是在 Pill 隐藏（对话框打开）期间 watch 也保持激活。
+ *
  * 轮询与 c2 `startRestoredGenerationConvergence` 同形状（5s 节拍、终态即停、
  * 假数据源可注入）——票面明示不抽公共 hook（评审 judgement「第三处手写轮
  * 询」留痕：这是第二处同形状实现，若日后出现第三处再议收口）。
@@ -42,6 +46,14 @@ export const STRUCTURE_PILL_I18N_KEYS = [
   'learning.genBgStructureRunningElapsed',
   'learning.genBgStructureRunningAttempt',
   'learning.genBgStructureQueued',
+] as const;
+
+/** v4 新增的 completed 卡片结构态行词典键（红线 2：双语对称由真实词典 JSON
+ * 断言钉住）。卡片行只披露「在跑」；数据与 Pill 共用同一 watch 快照（单一
+ * 轮询源），不新增第二份轮询。 */
+export const STRUCTURE_CARD_I18N_KEYS = [
+  'learning.genCardStructureRunning',
+  'learning.genCardStructureRunningElapsed',
 ] as const;
 
 /** 秒 → 「mm:ss」（超 1h 进位「h:mm:ss」，小时不补零）。null/负数 → null。 */
@@ -128,6 +140,31 @@ export function structurePillSpec(
     label: structurePillLabel(rowState, t),
     taskKey: rowState.key,
   };
+}
+
+/** watch 态 → 图课程 completed 卡片结构态行文案（v4；null = 该行不渲染）。
+ * 在跑 → 「知识结构生成中 · 已 mm:ss」（卡片行用「知识结构」全称前缀，与
+ * Pill 的「结构生成中」区分开——票面文案锚定 taskKindStructure 全称）；
+ * elapsed 缺失退无耗时键；attempt 不上卡片行（无交互无轮次——轮次真话在
+ * Pill/工作区）。queued / 终态（done 落库）/ 未接管 → null：卡片是 HTTP
+ * 响应快照，本票不刷新它，行只披露「在跑」这一件事。 */
+export function structureCardLine(
+  watch: StructurePillWatchState,
+  t: Translate
+): string | null {
+  if (watch.phase === 'idle') return null;
+  const rowState = watch.row;
+  if (rowState == null) {
+    // 首读在途：乐观「在跑」无耗时（与 Pill 乐观面孔同口径）；settled +
+    // row null = missing 退场，不渲染。
+    return watch.phase === 'watching' ? t('learning.genCardStructureRunning') : null;
+  }
+  if (rowState.state !== 'running') return null;
+  const elapsed = formatStructureElapsed(rowState.elapsed_secs);
+  if (elapsed != null) {
+    return t('learning.genCardStructureRunningElapsed', { elapsed });
+  }
+  return t('learning.genCardStructureRunning');
 }
 
 export interface StructurePillWatchOptions {
