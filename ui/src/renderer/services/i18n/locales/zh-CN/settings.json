@@ -111,6 +111,7 @@
     "installUnsupported": "当前来源暂不支持托管安装。",
     "installInvalidId": "技能市场条目标识无效。",
     "installNotFound": "技能市场条目已不存在。",
+    "installPublisherUnavailable": "该发布者的技能包暂时无法下载，请安装同名技能里可下载的那一条。",
     "installConflict": "该技能名称已存在，请前往已安装 Skill 处理。",
     "installArtifactInvalid": "下载的技能包无法通过安全校验。",
     "installManifestInvalid": "下载的技能清单无效。",

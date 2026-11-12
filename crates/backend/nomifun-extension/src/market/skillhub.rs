@@ -5,7 +5,7 @@
 //! that their identity, filtering, pagination, and installation contract is
 //! owned by one provider instead of being inferred from scraped pages.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, FixedOffset};
@@ -25,6 +25,7 @@ use super::client::{
 use super::parse::{clean_market_text, is_market_slug, json_string_array, market_https_image_url, title_from_slug};
 
 const SKILLHUB_SKILLS_URL: &str = "https://api.skillhub.cn/api/skills";
+const SKILLHUB_SKILL_DETAIL_BASE_URL: &str = "https://api.skillhub.cn/api/v1/skills/";
 const SKILLHUB_CATEGORIES_URL: &str = "https://api.skillhub.cn/api/v1/categories";
 const SKILLHUB_WEB_SKILLS_URL: &str = "https://skillhub.cn/skills";
 const SKILLHUB_MARKET_DEADLINE: Duration = Duration::from_secs(30);
@@ -130,11 +131,13 @@ async fn query_skillhub_market_with_client(
 ) -> Result<SkillHubMarketQueryResponse, SkillHubMarketError> {
     let url = skillhub_query_url(&query)?;
     let root = fetch_json(client, url, "SkillHub skill list").await?;
-    Ok(parse_skillhub_query_response(
-        &root,
-        query.page,
-        query.page_size,
-    )?)
+    let mut response = parse_skillhub_query_response(&root, query.page, query.page_size)?;
+    // SkillHub detail and download are keyed by slug alone. A page that lists
+    // the same slug under several publishers can install only the publisher
+    // the detail endpoint returns; the other cards fail closed at install.
+    let canonical_owners = canonical_owners_for_duplicate_slugs(client, &response.items).await;
+    response.items = retain_detail_backed_duplicates(response.items, &canonical_owners);
+    Ok(response)
 }
 
 async fn list_skillhub_market_categories_with_client(
@@ -261,6 +264,72 @@ fn parse_skillhub_query_response(
         page_size,
         items,
     })
+}
+
+fn skillhub_detail_url(slug: &str) -> Result<Url, AppError> {
+    if !is_market_slug(slug) {
+        return Err(AppError::BadRequest("invalid SkillHub skill slug".into()));
+    }
+    let mut url = Url::parse(SKILLHUB_SKILL_DETAIL_BASE_URL)
+        .map_err(|_| AppError::Internal("invalid SkillHub detail URL".into()))?;
+    url.path_segments_mut()
+        .map_err(|_| AppError::Internal("invalid SkillHub detail URL".into()))?
+        .pop_if_empty()
+        .push(slug);
+    Ok(url)
+}
+
+/// One detail lookup per slug that this page lists more than once. A failed
+/// lookup leaves that slug untouched so a blip cannot hide the whole page.
+async fn canonical_owners_for_duplicate_slugs(
+    client: &reqwest::Client,
+    items: &[SkillHubMarketItem],
+) -> HashMap<String, String> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for item in items {
+        *counts.entry(item.slug.as_str()).or_default() += 1;
+    }
+    let mut resolved = HashMap::new();
+    for (slug, count) in counts {
+        if count < 2 {
+            continue;
+        }
+        if let Some(owner) = canonical_owner_for_slug(client, slug).await {
+            resolved.insert(slug.to_owned(), owner);
+        }
+    }
+    resolved
+}
+
+async fn canonical_owner_for_slug(client: &reqwest::Client, slug: &str) -> Option<String> {
+    let url = skillhub_detail_url(slug).ok()?;
+    let mut response =
+        send_skillhub_get_with_retry(client, url, "application/json", MARKET_REQUEST_TIMEOUT)
+            .await
+            .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = read_market_response(&mut response).await.ok()?;
+    super::skill::skillhub_detail_public_owner(&body, slug)
+}
+
+/// Drop duplicate-slug rows whose publisher is not the one SkillHub will
+/// actually download. Slugs absent from `canonical_owners` are kept as-is.
+fn retain_detail_backed_duplicates(
+    items: Vec<SkillHubMarketItem>,
+    canonical_owners: &HashMap<String, String>,
+) -> Vec<SkillHubMarketItem> {
+    if canonical_owners.is_empty() {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| match canonical_owners.get(&item.slug) {
+            Some(owner) => item.owner.eq_ignore_ascii_case(owner),
+            None => true,
+        })
+        .collect()
 }
 
 fn parse_skillhub_item(raw: &Value) -> Option<SkillHubMarketItem> {
@@ -731,5 +800,62 @@ mod tests {
             20
         )
         .is_err());
+    }
+
+    fn sample_item(owner: &str, slug: &str, rank: usize) -> SkillHubMarketItem {
+        SkillHubMarketItem {
+            id: format!("skillhub:{owner}/skills/{slug}"),
+            owner: owner.to_owned(),
+            slug: slug.to_owned(),
+            market_source: SkillHubMarketContentSource::Skillhub,
+            upstream_source: None,
+            rank,
+            name: slug.to_owned(),
+            description: String::new(),
+            version: "1.0.0".to_owned(),
+            category: None,
+            tags: Vec::new(),
+            sub_categories: Vec::new(),
+            requires_api_key: None,
+            downloads: 0,
+            installs: 0,
+            stars: 0,
+            score: 0.0,
+            created_at: None,
+            updated_at: None,
+            url: format!("https://skillhub.cn/skills/{owner}/{slug}"),
+            avatar: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_slug_keeps_only_the_publisher_detail_will_download() {
+        let items = vec![
+            sample_item("indiv-integrator", "dev-expert-pro", 1),
+            sample_item("user_814dbe54", "dev-expert-pro", 2),
+            sample_item("user_28275a78", "dev-expert-pro", 3),
+            sample_item("archai", "tencent-dev", 4),
+        ];
+        let mut canonical = HashMap::new();
+        canonical.insert("dev-expert-pro".to_owned(), "indiv-integrator".to_owned());
+
+        let kept = retain_detail_backed_duplicates(items, &canonical);
+        assert_eq!(
+            kept.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "skillhub:indiv-integrator/skills/dev-expert-pro",
+                "skillhub:archai/skills/tencent-dev",
+            ]
+        );
+    }
+
+    #[test]
+    fn unresolved_duplicate_slug_stays_on_the_page() {
+        let items = vec![
+            sample_item("indiv-integrator", "dev-expert-pro", 1),
+            sample_item("user_814dbe54", "dev-expert-pro", 2),
+        ];
+        let kept = retain_detail_backed_duplicates(items.clone(), &HashMap::new());
+        assert_eq!(kept, items);
     }
 }
