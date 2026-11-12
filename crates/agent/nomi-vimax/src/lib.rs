@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod artifact_edit;
 pub mod aspect;
+pub mod cast_align;
 pub mod backends;
 pub mod clip_bounds;
 pub mod creative;

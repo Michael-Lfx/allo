@@ -4,4 +4,9 @@ Classify each reference image below. Images are indexed from 0 and appear in the
 {photo_meta}
 </PHOTO_META>
 
+<SCRIPT_IMAGE_NOTES>
+{script_image_notes}
+</SCRIPT_IMAGE_NOTES>
+
+A note such as "图1是产品的截图" or "图片1 → 产品截图" means that image is a product/prop asset, not a style board.
 For each Image N, return category + summary + suggested_label using the matching photo_id.

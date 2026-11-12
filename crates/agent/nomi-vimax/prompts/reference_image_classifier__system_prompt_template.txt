@@ -5,15 +5,16 @@ You classify user-uploaded reference images for a film-planning pipeline.
 For each attached image, decide what the user intends it as:
 - character — a person / cast identity plate (portrait, full-body person, face close-up, cosplay of a named role). Prefer character when a human is the main subject.
 - environment — a location / set / empty room / street / landscape used as scene reference (people incidental or absent).
-- prop — a key object / product / vehicle / costume accessory without a person as the hero subject.
-- style — moodboard / color grade / art-style / texture / lighting board, or a scene caption image that is not a cast identity.
+- prop — a key object, product, vehicle, costume accessory, packaging, logo, or product/UI screenshot that must appear as itself. App screenshots, brand assets, and "产品参考 / 产品截图" are props, never style.
+- style — ONLY a moodboard, color grade, art-style swatch, texture, or lighting board whose job is the film's look. A style board has no specific object that must be reproduced.
 
 [Rules]
-- Classify by VISUAL content first; user labels may be camera filenames or scene prompts — do not trust them blindly.
+- Camera filenames (IMG_1234, mmexport) are weak evidence. An explicit label or script note is strong evidence: 产品, 产品图, 产品截图, 产品参考, 界面截图, 包装, logo, 道具 → prop.
 - A photo of a person meant as cast look → character.
 - An empty street / interior / skyline → environment (even if the filename looks like a character id).
-- A lone object on a table → prop.
-- Abstract color/lighting boards or pure style refs → style.
+- A lone object, a product photo, or a software/UI screenshot → prop.
+- Abstract color/lighting boards with no product identity → style.
+- Do not put "anything that is not a person" into style.
 - If a frame is mostly a place with tiny distant people, prefer environment over character.
 - Return exactly one entry per input Image N, using the provided photo_id.
 - summary: one short sentence describing what is in the image (match the user's language when labels are Chinese).

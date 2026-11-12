@@ -1,9 +1,11 @@
 //! Multimodal classification of user-uploaded session reference photos.
 //!
-//! Agent-mode uploads all land in `cameo/`; this agent decides which are cast
+//! Agent-mode uploads all land in `references/`; this agent decides which are cast
 //! identity plates vs environment / prop / style refs before planning assets.
+//! An explicit product label or script note ("图1是产品的截图") locks the photo
+//! as a prop asset even when the vision model calls it a style board.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -38,6 +40,10 @@ impl ReferenceImageCategory {
         !self.is_character()
     }
 
+    pub fn is_prop(self) -> bool {
+        matches!(self, Self::Prop)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Character => "character",
@@ -67,6 +73,9 @@ pub struct ReferenceImageClassification {
     /// True when category came from name heuristics after vision failure / miss.
     #[serde(default)]
     pub heuristic: bool,
+    /// User label or script note forces this photo to stay a product/prop asset.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -211,6 +220,8 @@ impl ReferenceImageClassifier {
             }
         }
 
+        let script = planning_text_for_locks(session_root);
+        apply_explicit_product_locks(&photos, &script, &mut ordered);
         let report = ReferenceClassificationReport {
             classifications: ordered,
         };
@@ -270,10 +281,12 @@ impl ReferenceImageClassifier {
             "../../prompts/reference_image_classifier__system_prompt_template.txt"
         )
         .replace("{format_instructions}", REF_IMAGE_CLASSIFY);
+        let notes = script_image_notes(&planning_text_for_locks(session_root));
         let user = include_str!(
             "../../prompts/reference_image_classifier__human_prompt_template.txt"
         )
-        .replace("{photo_meta}", &meta_lines);
+        .replace("{photo_meta}", &meta_lines)
+        .replace("{script_image_notes}", &notes);
 
         #[derive(Deserialize)]
         struct LlmItem {
@@ -312,6 +325,7 @@ impl ReferenceImageClassifier {
                     summary: item.summary.trim().to_string(),
                     suggested_label: item.suggested_label.trim().to_string(),
                     heuristic: false,
+                    locked: false,
                 });
             } else {
                 // Model omitted an id — fall back per photo rather than failing the plan.
@@ -336,6 +350,22 @@ impl ReferenceImageClassifier {
 pub fn heuristic_classification(photo: &CameoPhotoEntry) -> ReferenceImageClassification {
     let name = photo.character_name.trim();
     let desc = photo.description.trim();
+    if looks_like_product_label(name) || looks_like_product_label(desc) {
+        let summary = if !desc.is_empty() {
+            desc.to_string()
+        } else {
+            name.to_string()
+        };
+        return ReferenceImageClassification {
+            photo_id: photo.id.clone(),
+            sha256: photo.sha256.clone(),
+            category: ReferenceImageCategory::Prop,
+            summary,
+            suggested_label: name.to_string(),
+            heuristic: true,
+            locked: true,
+        };
+    }
     let non_character = looks_non_character_label(name);
     let category = if non_character {
         if looks_place_like(name) || looks_place_like(desc) {
@@ -360,7 +390,218 @@ pub fn heuristic_classification(photo: &CameoPhotoEntry) -> ReferenceImageClassi
         summary,
         suggested_label: name.to_string(),
         heuristic: true,
+        locked: false,
     }
+}
+
+/// Upload label / description that names a product or prop asset, not a cast member.
+pub fn looks_like_product_label(text: &str) -> bool {
+    let trimmed = text.trim();
+    // Upload names are short. A sentence that merely mentions "logo" is not a product plate.
+    if trimmed.is_empty() || trimmed.chars().count() > 24 {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "产品图",
+        "产品截图",
+        "产品参考",
+        "产品素材",
+        "产品录屏",
+        "产品照",
+        "产品画面",
+        "界面截图",
+        "ui截图",
+        "ui screenshot",
+        "product screenshot",
+        "product photo",
+        "product reference",
+        "product ref",
+        "包装图",
+        "包装参考",
+        "道具图",
+        "道具参考",
+    ];
+    if NEEDLES
+        .iter()
+        .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
+    {
+        return true;
+    }
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    let compact_l = compact.to_ascii_lowercase();
+    matches!(
+        compact_l.as_str(),
+        "道具" | "产品" | "包装" | "logo" | "logoref" | "logoreference"
+    )
+}
+
+/// 1-based upload indexes the script explicitly assigns as a product or prop.
+///
+/// `图1是产品的截图` and `图片1 → 产品截图` lock image 1. `图片10` does not lock image 1.
+pub fn explicit_product_photo_indexes(script: &str) -> HashSet<usize> {
+    let mut found = HashSet::new();
+    let mut rest = script;
+    while !rest.is_empty() {
+        let Some(rel) = rest.find('图') else {
+            break;
+        };
+        let after_tu = &rest[rel + '图'.len_utf8()..];
+        let (num_src, mark_len) = if let Some(stripped) = after_tu.strip_prefix('片') {
+            (stripped, '图'.len_utf8() + '片'.len_utf8())
+        } else {
+            (after_tu, '图'.len_utf8())
+        };
+        let digits: String = num_src
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if digits.is_empty() {
+            rest = &rest[rel + '图'.len_utf8()..];
+            continue;
+        }
+        let index: usize = digits.parse().unwrap_or(0);
+        let after_num = &num_src[digits.len()..];
+        let window: String = after_num.chars().take(48).collect();
+        let window_trim = window.trim_start();
+        let has_role = window_trim.starts_with('是')
+            || window_trim.starts_with('为')
+            || window_trim.starts_with('：')
+            || window_trim.starts_with(':')
+            || window_trim.starts_with('→')
+            || window_trim.starts_with("->")
+            || window_trim.starts_with('＝')
+            || window_trim.starts_with('=');
+        if index >= 1 && has_role && window_has_product_role(&window) {
+            found.insert(index);
+        }
+        let advance = rel + mark_len + digits.len();
+        rest = &rest[advance..];
+    }
+    found
+}
+
+fn window_has_product_role(window: &str) -> bool {
+    looks_like_product_label(window) || window.contains("产品") || window.contains("道具")
+}
+
+/// Short script lines the classifier should see alongside the pixels.
+pub fn script_image_notes(script: &str) -> String {
+    let mut lines = Vec::new();
+    for line in script.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.contains('图') {
+            continue;
+        }
+        let relevant = trimmed.contains("产品")
+            || trimmed.contains("道具")
+            || trimmed.contains("画风")
+            || trimmed.contains("风格")
+            || trimmed.contains("图片");
+        if !relevant || trimmed.chars().count() > 160 {
+            continue;
+        }
+        lines.push(trimmed.to_string());
+        if lines.len() == 8 {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        "（无）".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+/// Force product/prop when the upload label or the script names that image as one.
+///
+/// Vision may still fill `summary`. A style or character answer cannot override
+/// an explicit product note. Photos the user did not mark are unlocked.
+pub fn apply_explicit_product_locks(
+    photos: &[CameoPhotoEntry],
+    script: &str,
+    items: &mut [ReferenceImageClassification],
+) {
+    let indexes = explicit_product_photo_indexes(script);
+    for (i, photo) in photos.iter().enumerate() {
+        let Some(item) = items.iter_mut().find(|c| c.photo_id == photo.id) else {
+            continue;
+        };
+        let explicit = looks_like_product_label(&photo.character_name)
+            || looks_like_product_label(&photo.description)
+            || indexes.contains(&(i + 1));
+        if explicit {
+            item.category = ReferenceImageCategory::Prop;
+            item.locked = true;
+        } else {
+            item.locked = false;
+        }
+    }
+}
+
+/// Cache hit when the sha still matches, otherwise the name heuristic, then product locks.
+///
+/// Does not write the cache. Callers that only read (world refs, prop pinning)
+/// still honor a script note saved after the last vision pass.
+pub fn resolve_reference_classifications(
+    session_root: &Path,
+    photos: &[CameoPhotoEntry],
+) -> ReferenceClassificationReport {
+    let cached = load_classification_report(session_root);
+    let mut items = Vec::with_capacity(photos.len());
+    for photo in photos {
+        if let Some(hit) = cached.classifications.iter().find(|c| {
+            c.photo_id == photo.id && !c.sha256.is_empty() && c.sha256 == photo.sha256
+        }) {
+            items.push(hit.clone());
+        } else {
+            items.push(heuristic_classification(photo));
+        }
+    }
+    let script = planning_text_for_locks(session_root);
+    apply_explicit_product_locks(photos, &script, &mut items);
+    ReferenceClassificationReport {
+        classifications: items,
+    }
+}
+
+fn planning_text_for_locks(session_root: &Path) -> String {
+    let mut chunks = Vec::new();
+    let mut push_file = |path: PathBuf| {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        if !text.trim().is_empty() {
+            chunks.push(text);
+        }
+    };
+    for name in ["script.txt", "story.txt"] {
+        push_file(session_root.join(name));
+    }
+    if let Ok(read) = std::fs::read_dir(session_root) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !matches!(
+                name.as_ref(),
+                "script2video" | "idea2video" | "novel2video" | "action2video"
+            ) {
+                continue;
+            }
+            for fname in ["script.txt", "story.txt"] {
+                push_file(path.join(fname));
+            }
+        }
+    }
+    let mut out = chunks.join("\n");
+    if out.chars().count() > 80_000 {
+        out = out.chars().take(80_000).collect();
+    }
+    out
 }
 
 /// Camera stems, scene-prompt filenames, demographic shorthand → not cast identity.
@@ -601,6 +842,7 @@ mod tests {
                     summary: String::new(),
                     suggested_label: String::new(),
                     heuristic: false,
+                    locked: false,
                 },
                 ReferenceImageClassification {
                     photo_id: "2".into(),
@@ -609,12 +851,74 @@ mod tests {
                     summary: "rainy alley".into(),
                     suggested_label: String::new(),
                     heuristic: false,
+                    locked: false,
                 },
             ],
         };
         assert_eq!(report.character_photos(&photos).len(), 1);
         assert_eq!(report.world_photos(&photos).len(), 1);
         assert_eq!(report.world_photos(&photos)[0].0.id, "2");
+    }
+
+    #[test]
+    fn heuristic_locks_product_screenshot_as_prop() {
+        let p = photo("p", "产品截图", "", "sha");
+        let c = heuristic_classification(&p);
+        assert_eq!(c.category, ReferenceImageCategory::Prop);
+        assert!(c.locked);
+        assert!(c.heuristic);
+    }
+
+    #[test]
+    fn heuristic_does_not_treat_product_manager_as_asset() {
+        let p = photo("m", "产品经理", "", "sha");
+        let c = heuristic_classification(&p);
+        assert_eq!(c.category, ReferenceImageCategory::Character);
+        assert!(!c.locked);
+    }
+
+    #[test]
+    fn script_product_note_overrides_style_classification() {
+        let photos = vec![photo("1", "参考图1", "", "s1")];
+        let mut items = vec![ReferenceImageClassification {
+            photo_id: "1".into(),
+            sha256: "s1".into(),
+            category: ReferenceImageCategory::Style,
+            summary: "software screenshot".into(),
+            suggested_label: "product UI screenshot".into(),
+            heuristic: false,
+            locked: false,
+        }];
+        let script = "图1是产品的截图\n\n图片对照：图片1 → 产品截图";
+        apply_explicit_product_locks(&photos, script, &mut items);
+        assert_eq!(items[0].category, ReferenceImageCategory::Prop);
+        assert!(items[0].locked);
+        assert_eq!(items[0].summary, "software screenshot");
+    }
+
+    #[test]
+    fn image_ten_does_not_lock_image_one() {
+        let script = "图片对照：图片10 → 产品截图、图片1 → Alice";
+        let indexes = explicit_product_photo_indexes(script);
+        assert!(indexes.contains(&10));
+        assert!(!indexes.contains(&1));
+    }
+
+    #[test]
+    fn label_locks_even_when_vision_said_style() {
+        let photos = vec![photo("1", "产品截图", "", "s1")];
+        let mut items = vec![ReferenceImageClassification {
+            photo_id: "1".into(),
+            sha256: "s1".into(),
+            category: ReferenceImageCategory::Style,
+            summary: "A screenshot of a software application interface.".into(),
+            suggested_label: "product UI screenshot".into(),
+            heuristic: false,
+            locked: false,
+        }];
+        apply_explicit_product_locks(&photos, "", &mut items);
+        assert_eq!(items[0].category, ReferenceImageCategory::Prop);
+        assert!(items[0].locked);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,6 +16,9 @@ use super::formats::WORLD_ASSETS;
 /// Optional vacant look bible. Env/prop plates do **not** img2img from this file
 /// (Seedream copies its layout as a background). Style lock is text-only.
 pub const LOOK_PLATE_FILENAME: &str = "look_plate.png";
+
+/// Registry marker: this prop plate is the user's original product image.
+pub const USER_PRODUCT_PLATE_MARK: &str = "USER PRODUCT PLATE";
 const LOOK_PLATE_LOCK_FILENAME: &str = "look_plate_lock.txt";
 
 /// Extracted environment plate for global consistency.
@@ -296,7 +299,7 @@ impl WorldAssetsPlanner {
         } else {
             None
         };
-        let spec = match existing {
+        let mut spec = match existing {
             Some(spec) if spec_covers_locations(&spec, &headings) => spec,
             stale => {
                 if stale.is_some() {
@@ -319,6 +322,11 @@ impl WorldAssetsPlanner {
                 spec
             }
         };
+
+        let product_aliases = pin_locked_product_plates(film_root, &mut spec, script_or_story);
+        if product_aliases.spec_changed {
+            write_json_artifact(&spec_path, &spec).await?;
+        }
 
         let mut registry: WorldAssetRegistry = if registry_path.exists() {
             read_json_artifact(&registry_path).await?
@@ -418,8 +426,17 @@ impl WorldAssetsPlanner {
                 None
             };
             let detail: String = stripped_desc.chars().take(100).collect();
+            let product_note = product_aliases
+                .by_name
+                .get(&key)
+                .map(|aliases| {
+                    format!(
+                        " {USER_PRODUCT_PLATE_MARK}. Aliases: {aliases}. Reproduce this exact object or interface; do not redesign."
+                    )
+                })
+                .unwrap_or_default();
             let registry_desc = format!(
-                "File [{plate_name}] = GLOBAL prop bible (object only, no people, white studio catalog): <{key}>. {detail}. Lock shape, materials, colors, real-world scale."
+                "File [{plate_name}] = GLOBAL prop bible (object only, no people, white studio catalog): <{key}>. {detail}. Lock shape, materials, colors, real-world scale.{product_note}"
             );
             prepared.push(PreparedPlate {
                 group: "props",
@@ -534,6 +551,11 @@ impl WorldAssetsPlanner {
                 _ => prop_map.contains_key(&plate.key),
             };
             if already {
+                if plate.group == "props" && product_aliases.by_name.contains_key(&plate.key) {
+                    if let Some(item) = prop_map.get_mut(&plate.key) {
+                        item.insert("description".into(), plate.registry_desc.clone());
+                    }
+                }
                 continue;
             }
             let item = asset_item(out, &plate.registry_desc);
@@ -813,6 +835,408 @@ fn sweep_world_vision_thumbs(film_root: &Path) {
     }
 }
 
+struct ProductAliasMap {
+    by_name: HashMap<String, String>,
+    spec_changed: bool,
+}
+
+struct LockedProduct {
+    source: PathBuf,
+    label: String,
+    summary: String,
+    suggested_label: String,
+    /// 1-based upload index, matching 图N / 图片N in the script.
+    index: usize,
+}
+
+/// Copy locked product uploads onto the matching prop plate and skip redraws.
+///
+/// A software screenshot is the product. Image models redesign UIs, so the
+/// original file is the plate. Unmatched uploads become their own prop.
+fn pin_locked_product_plates(
+    film_root: &Path,
+    spec: &mut WorldAssetsSpec,
+    script: &str,
+) -> ProductAliasMap {
+    let empty = ProductAliasMap {
+        by_name: HashMap::new(),
+        spec_changed: false,
+    };
+    let session = session_root_for_film(film_root);
+    let photos = crate::session::cameo::list_photos(&session).unwrap_or_default();
+    if photos.is_empty() {
+        return empty;
+    }
+    let report = super::resolve_reference_classifications(&session, &photos);
+    let mut locked = Vec::new();
+    for (i, photo) in photos.iter().enumerate() {
+        let Some(class) = report
+            .classifications
+            .iter()
+            .find(|c| c.photo_id == photo.id)
+        else {
+            continue;
+        };
+        if !(class.locked && class.category.is_prop()) {
+            continue;
+        }
+        let source = session.join(&photo.rel_path);
+        if !crate::media_local::is_usable_image_file(&source) {
+            continue;
+        }
+        let label = if !photo.character_name.trim().is_empty() {
+            photo.character_name.trim().to_string()
+        } else if !class.suggested_label.trim().is_empty() {
+            class.suggested_label.trim().to_string()
+        } else {
+            format!("产品{}", i + 1)
+        };
+        locked.push(LockedProduct {
+            source,
+            label,
+            summary: class.summary.clone(),
+            suggested_label: class.suggested_label.clone(),
+            index: i + 1,
+        });
+    }
+    if locked.is_empty() {
+        return empty;
+    }
+
+    let mut pairs = Vec::new();
+    for (pi, plate) in locked.iter().enumerate() {
+        for (ri, prop) in spec.props.iter().enumerate() {
+            let score = score_prop_for_product(prop, plate, script);
+            if score >= 6 {
+                pairs.push((score, pi, ri));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let mut used_plate = HashSet::new();
+    let mut used_prop = HashSet::new();
+    let mut assigned: Vec<(usize, usize)> = Vec::new();
+    for (_, pi, ri) in pairs {
+        if used_plate.contains(&pi) || used_prop.contains(&ri) {
+            continue;
+        }
+        used_plate.insert(pi);
+        used_prop.insert(ri);
+        assigned.push((ri, pi));
+    }
+
+    let mut spec_changed = false;
+    let mut next_idx = spec.props.iter().map(|p| p.idx).max().unwrap_or(-1) + 1;
+    for (pi, plate) in locked.iter().enumerate() {
+        if used_plate.contains(&pi) {
+            continue;
+        }
+        spec.props.push(PropAsset {
+            idx: next_idx,
+            name: plate.label.clone(),
+            description: format!(
+                "用户上传的产品原图。画面必须沿用这张图，不要重画。{}",
+                plate.summary.trim()
+            ),
+        });
+        assigned.push((spec.props.len() - 1, pi));
+        used_plate.insert(pi);
+        next_idx += 1;
+        spec_changed = true;
+    }
+
+    let mut by_name = HashMap::new();
+    for (ri, pi) in assigned {
+        let Some(prop) = spec.props.get(ri) else {
+            continue;
+        };
+        let key = prop.name.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        let idx = prop.idx;
+        let plate = &locked[pi];
+        let dir = film_root
+            .join("props")
+            .join(format!("{idx}_{}", safe_component(&key)));
+        let out = dir.join(format!("{}_prop.png", safe_component(&key)));
+        if let Err(err) = std::fs::create_dir_all(&dir)
+            .map_err(VimaxError::from)
+            .and_then(|_| crate::media_local::copy_image_file_atomic(&plate.source, &out))
+        {
+            tracing::warn!(error = %err, prop = %key, "failed to pin user product plate");
+            continue;
+        }
+        tracing::info!(prop = %key, "pinned user product image as prop plate");
+        by_name.insert(key.clone(), product_plate_aliases(&key, plate, script));
+    }
+    ProductAliasMap {
+        by_name,
+        spec_changed,
+    }
+}
+
+fn session_root_for_film(film_root: &Path) -> PathBuf {
+    let name = film_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if matches!(
+        name,
+        "idea2video" | "script2video" | "novel2video" | "action2video"
+    ) {
+        film_root
+            .parent()
+            .unwrap_or(film_root)
+            .to_path_buf()
+    } else {
+        film_root.to_path_buf()
+    }
+}
+
+fn score_prop_for_product(prop: &PropAsset, plate: &LockedProduct, script: &str) -> i32 {
+    let name = prop.name.trim();
+    if name.is_empty() {
+        return 0;
+    }
+    let mut score = 0;
+    if names_share(&plate.label, name) {
+        score += 6;
+    }
+    // The vision summary names the same object the extractor called "Flow 应用界面"
+    // even when the upload's filename is only "产品截图".
+    if prop_name_in_plate_text(name, &plate.summary)
+        || prop_name_in_plate_text(name, &plate.suggested_label)
+    {
+        score += 8;
+    }
+    let prop_blob = format!("{} {}", prop.name, prop.description);
+    let plate_blob = format!("{} {}", plate.label, plate.summary);
+    if looks_like_ui_text(&prop_blob) && looks_like_ui_text(&plate_blob) {
+        score += 2;
+    }
+    if script_links_prop(script, name, plate.index) {
+        score += 6;
+    }
+    score
+}
+
+fn prop_name_in_plate_text(name: &str, hay: &str) -> bool {
+    let name = name.trim();
+    if name.chars().count() < 4 || hay.trim().is_empty() {
+        return false;
+    }
+    hay.to_ascii_lowercase()
+        .contains(&name.to_ascii_lowercase())
+}
+
+fn product_plate_aliases(key: &str, plate: &LockedProduct, script: &str) -> String {
+    let mut aliases = Vec::new();
+    let mut push = |raw: &str| {
+        let alias = raw.trim();
+        if alias.chars().count() < 2 || alias == key || aliases.iter().any(|have| have == alias) {
+            return;
+        }
+        aliases.push(alias.to_string());
+    };
+    push(&plate.label);
+    push(&plate.suggested_label);
+    for token in distinctive_product_tokens(script, plate) {
+        push(&token);
+    }
+    aliases.truncate(16);
+    aliases.join("|")
+}
+
+fn distinctive_product_tokens(script: &str, plate: &LockedProduct) -> Vec<String> {
+    let mut product = std::collections::HashSet::new();
+    let mut other = std::collections::HashSet::new();
+    for line in script.lines() {
+        let tokens = text_tokens(line);
+        if product_evidence_line(line, plate.index) {
+            product.extend(tokens);
+        } else {
+            other.extend(tokens);
+        }
+    }
+    let summary_head = plate
+        .summary
+        .split(['，', ',', '。', '；'])
+        .next()
+        .unwrap_or("");
+    product.extend(text_tokens(&plate.suggested_label));
+    product.extend(text_tokens(summary_head));
+    let mut out: Vec<String> = product
+        .into_iter()
+        .filter(|token| alias_token_ok(token) && !other.contains(token))
+        .collect();
+    out.sort_by(|a, b| {
+        let a_ascii = a.chars().all(|c| c.is_ascii());
+        let b_ascii = b.chars().all(|c| c.is_ascii());
+        b_ascii
+            .cmp(&a_ascii)
+            .reverse()
+            .then(b.chars().count().cmp(&a.chars().count()))
+            .then(a.cmp(b))
+    });
+    out
+}
+
+fn product_evidence_line(line: &str, photo_index: usize) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    t.contains("产品") || t.contains("录屏") || line_mentions_figure(t, photo_index)
+}
+
+fn alias_token_ok(token: &str) -> bool {
+    let n = token.chars().count();
+    let cjk = token.chars().any(|c| {
+        let u = c as u32;
+        (0x4E00..=0x9FFF).contains(&u)
+    });
+    let useful = if cjk {
+        (2..=6).contains(&n)
+    } else {
+        (4..=16).contains(&n) && token.chars().any(|c| c.is_ascii_alphabetic())
+    };
+    if !useful || ALIAS_STOP.iter().any(|stop| *stop == token) {
+        return false;
+    }
+    // A maximal CJK run glues "同事打开" into one token. Drop anything that
+    // still contains a role name or a product-meta word.
+    const GLUE: &[&str] = &[
+        "主角", "同事", "老板", "打开", "插入", "此处", "画面", "产品", "截图", "录屏", "参考",
+    ];
+    !GLUE.iter().any(|piece| token.contains(piece))
+}
+
+const ALIAS_STOP: &[&str] = &[
+    "产品", "截图", "录屏", "画面", "此处", "插入", "参考", "素材", "图片", "对照", "需要", "说明",
+    "对应", "分镜", "主角", "同事", "老板", "一个", "这个", "我们", "可以", "以及", "下载", "评论",
+    "引导", "原样", "入画", "不是", "画风", "资产", "应用", "界面", "打开", "出现", "准备", "自己",
+    "所有", "一句", "一句话",
+];
+
+fn text_tokens(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cjk_run: Option<bool> = None;
+    let flush = |cur: &mut String, out: &mut Vec<String>| {
+        if !cur.is_empty() {
+            out.push(std::mem::take(cur));
+        }
+    };
+    for ch in line.chars() {
+        let cjk = ('\u{4e00}'..='\u{9fff}').contains(&ch);
+        let latin = ch.is_ascii_alphanumeric();
+        if cjk || latin {
+            if cjk_run != Some(cjk) {
+                flush(&mut cur, &mut out);
+                cjk_run = Some(cjk);
+            }
+            cur.push(if cjk { ch } else { ch.to_ascii_lowercase() });
+        } else {
+            flush(&mut cur, &mut out);
+            cjk_run = None;
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
+fn names_share(a: &str, b: &str) -> bool {
+    let a = a.trim().to_ascii_lowercase();
+    let b = b.trim().to_ascii_lowercase();
+    if a.chars().count() < 2 || b.chars().count() < 2 {
+        return false;
+    }
+    a.contains(&b) || b.contains(&a)
+}
+
+fn looks_like_ui_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "界面",
+        "应用",
+        "app",
+        "ui",
+        "截图",
+        "软件",
+        "screenshot",
+        "sidebar",
+        "日历",
+        "产品",
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(*needle))
+}
+
+fn script_links_prop(script: &str, name: &str, photo_index: usize) -> bool {
+    let prefixes = useful_name_prefixes(name);
+    if prefixes.is_empty() {
+        return false;
+    }
+    script.lines().any(|line| {
+        let window = line.trim();
+        if window.is_empty() {
+            return false;
+        }
+        let productish = window.contains("产品")
+            || window.contains("录屏")
+            || line_mentions_figure(window, photo_index);
+        if !productish {
+            return false;
+        }
+        let window_l = window.to_ascii_lowercase();
+        prefixes
+            .iter()
+            .any(|prefix| window_l.contains(&prefix.to_ascii_lowercase()))
+    })
+}
+
+fn line_mentions_figure(line: &str, index: usize) -> bool {
+    let mut rest = line;
+    while let Some(rel) = rest.find('图') {
+        let after = &rest[rel + '图'.len_utf8()..];
+        let (num_src, mark_len) = if let Some(stripped) = after.strip_prefix('片') {
+            (stripped, '图'.len_utf8() + '片'.len_utf8())
+        } else {
+            (after, '图'.len_utf8())
+        };
+        let digits: String = num_src
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if digits.is_empty() {
+            rest = &rest[rel + '图'.len_utf8()..];
+            continue;
+        }
+        if digits.parse::<usize>().ok() == Some(index) {
+            return true;
+        }
+        rest = &rest[rel + mark_len + digits.len()..];
+    }
+    false
+}
+
+fn useful_name_prefixes(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = Vec::new();
+    for len in 1..=chars.len() {
+        let prefix: String = chars[..len].iter().collect();
+        let n = prefix.chars().count();
+        let cjk = prefix.chars().any(|c| {
+            let u = c as u32;
+            (0x4E00..=0x9FFF).contains(&u)
+        });
+        if (cjk && n >= 4) || (!cjk && n >= 5) {
+            out.push(prefix);
+        }
+    }
+    out
+}
+
 async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
     for name in ["environments", "props"] {
         let dir = film_root.join(name);
@@ -1064,8 +1488,9 @@ fn looks_like_scene_heading(t: &str) -> bool {
 /// only when that names one of this scene's headings; anything else (a paraphrase
 /// from the storyboard LLM, or a place from another scene) is replaced by the
 /// scene heading. Names are then aligned to the film's environment slugs, so each
-/// row resolves to exactly one plate. A scene without any heading keeps the LLM's
-/// own id.
+/// row resolves to exactly one plate. A scene without any heading snaps each row
+/// onto the environment plate of the same place — a clock time (`周五傍晚 19:20`)
+/// is not a different set.
 pub fn bind_location_ids(
     briefs: &mut [crate::domain::ShotBriefDescription],
     script: &str,
@@ -1076,6 +1501,14 @@ pub fn bind_location_ids(
         .first()
         .cloned()
         .unwrap_or_else(|| first_scene_slugline(script));
+    if scene_heading.is_empty() {
+        for brief in briefs.iter_mut() {
+            if let Some(hit) = snap_location_label(&brief.location_id, sluglines) {
+                brief.location_id = hit;
+            }
+        }
+        return;
+    }
     let canonical = |heading: &str| {
         sluglines
             .iter()
@@ -1123,10 +1556,113 @@ pub fn select_environment_plate(
     if key.is_empty() {
         return None;
     }
-    pairs
+    if let Some(hit) = pairs
         .iter()
         .find(|(p, t)| is_env_pair_path(p) && plate_matches_location(p, t, key))
-        .cloned()
+    {
+        return Some(hit.clone());
+    }
+    // Same place, extra clock: "办公室工位区 - 周五傍晚 19:20" is the
+    // "开放式办公室工位区 - 傍晚" plate, not a new set. Unrelated places stay unmatched.
+    let mut env_at = Vec::new();
+    let mut labels = Vec::new();
+    for (i, (path, text)) in pairs.iter().enumerate() {
+        if !is_env_pair_path(path) {
+            continue;
+        }
+        env_at.push(i);
+        labels.push(format!("{} {}", path.display(), text));
+    }
+    let local = best_place_index(key, &labels)?;
+    Some(pairs[env_at[local]].clone())
+}
+
+const PLACE_TIME_WORDS: &[&str] = &[
+    "傍晚", "黄昏", "夜晚", "夜间", "深夜", "凌晨", "早晨", "清晨", "白天", "白日", "上午", "中午",
+    "午后", "下午", "night", "evening", "morning", "dawn", "dusk", "noon", "day",
+];
+
+fn place_core(s: &str) -> String {
+    let mut core = place_identity(s);
+    for word in PLACE_TIME_WORDS {
+        core = core.replace(word, "");
+    }
+    core.chars().filter(|c| !c.is_ascii_digit()).collect()
+}
+
+fn place_time_agrees(a: &str, b: &str) -> bool {
+    let a = a.to_ascii_lowercase();
+    let b = b.to_ascii_lowercase();
+    PLACE_TIME_WORDS
+        .iter()
+        .any(|word| a.contains(word) && b.contains(word))
+}
+
+fn longest_common_run(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() || b.is_empty() {
+        return 0;
+    }
+    let mut prev = vec![0usize; b.len() + 1];
+    let mut best = 0usize;
+    for &ca in &a {
+        let mut cur = vec![0usize; b.len() + 1];
+        for (j, &cb) in b.iter().enumerate() {
+            if ca == cb {
+                cur[j + 1] = prev[j] + 1;
+                best = best.max(cur[j + 1]);
+            }
+        }
+        prev = cur;
+    }
+    best
+}
+
+/// Index of the label that names the same place as `location_id`.
+///
+/// Exact slug wins. Otherwise the longest shared place stem, at least 3
+/// characters, with time-of-day as a tie break. Two different places that
+/// score the same are left unmatched.
+fn best_place_index(location_id: &str, labels: &[String]) -> Option<usize> {
+    let loc = location_id.trim();
+    if loc.is_empty() || labels.is_empty() {
+        return None;
+    }
+    if let Some(i) = labels.iter().position(|label| same_place(label, loc)) {
+        return Some(i);
+    }
+    let loc_core = place_core(loc);
+    if loc_core.chars().count() < 2 {
+        return None;
+    }
+    let mut cands: Vec<(usize, bool, usize)> = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let score = longest_common_run(&loc_core, &place_core(label));
+        if score < 3 {
+            continue;
+        }
+        cands.push((score, place_time_agrees(loc, label), i));
+    }
+    if cands.is_empty() {
+        return None;
+    }
+    cands.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    let best = cands[0];
+    if let Some(second) = cands.get(1) {
+        if second.0 == best.0 && second.1 == best.1 {
+            let mutual = longest_common_run(&place_core(&labels[best.2]), &place_core(&labels[second.2]));
+            if mutual + 1 < best.0 {
+                return None;
+            }
+        }
+    }
+    Some(best.2)
+}
+
+fn snap_location_label(location_id: &str, sluglines: &[String]) -> Option<String> {
+    let idx = best_place_index(location_id, sluglines)?;
+    Some(sluglines[idx].clone())
 }
 
 /// Location bible for a clip: the plate of `location_id`, or the only env plate.
@@ -1745,6 +2281,46 @@ mod tests {
     }
 
     #[test]
+    fn bind_location_ids_snaps_clocked_office_to_the_evening_plate() {
+        let slugs = vec![
+            "INT. 开放式办公室工位区 - 傍晚".to_string(),
+            "INT. 开放式办公室工位区 - 夜晚".to_string(),
+            "INT. 主角工位 - 傍晚".to_string(),
+            "INT. 同事工位 - 傍晚".to_string(),
+        ];
+        let mut briefs = vec![crate::domain::ShotBriefDescription {
+            idx: 2,
+            is_last: false,
+            cam_idx: 0,
+            visual_desc: "同事打开应用".into(),
+            audio_desc: None,
+            location_id: "INT. 办公室工位区 - 周五傍晚 19:20".into(),
+            beats: Vec::new(),
+        }];
+        bind_location_ids(&mut briefs, "主角在工位上加班，没有场景标题。", &slugs);
+        assert_eq!(briefs[0].location_id, "INT. 开放式办公室工位区 - 傍晚");
+
+        let pairs = vec![
+            (
+                PathBuf::from(
+                    "environments/0_INT_开放式办公室工位区_-_傍晚/plate_environment_plate.png",
+                ),
+                "GLOBAL EMPTY environment plate (no people): INT. 开放式办公室工位区 - 傍晚.".into(),
+            ),
+            (
+                PathBuf::from(
+                    "environments/1_INT_开放式办公室工位区_-_夜晚/plate_environment_plate.png",
+                ),
+                "GLOBAL EMPTY environment plate (no people): INT. 开放式办公室工位区 - 夜晚.".into(),
+            ),
+        ];
+        let hit = resolve_environment_plate("INT. 办公室工位区 - 周五傍晚 19:20", &pairs)
+            .expect("evening office plate");
+        assert!(hit.0.to_string_lossy().contains("傍晚"));
+        assert!(resolve_environment_plate("INT. 会议室 - 第二天早会", &pairs).is_none());
+    }
+
+    #[test]
     fn world_assets_json_tolerates_name_aliases_and_defaults() {
         use crate::json_util::parse_llm_json;
         let raw = r#"{
@@ -1754,5 +2330,156 @@ mod tests {
         let spec: WorldAssetsSpec = parse_llm_json(raw).expect("parse");
         assert_eq!(spec.environments[0].slugline, "INT. STUDIO - DAY");
         assert_eq!(spec.props[0].name, "red umbrella");
+    }
+
+    #[test]
+    fn pins_product_screenshot_onto_the_agent_prop() {
+        use image::{ImageFormat, Rgb, RgbImage};
+
+        let mut bytes = Vec::new();
+        RgbImage::from_pixel(8, 8, Rgb([10, 20, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Jpeg)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("script2video");
+        std::fs::create_dir_all(&film).unwrap();
+        crate::session::cameo::upload_photo(session, &bytes, "产品截图", "").unwrap();
+        let script = "图1是产品的截图\n同事打开Agent应用。此处插入产品录屏\n我对着空白PPT发呆\n";
+        let mut spec = WorldAssetsSpec {
+            environments: Vec::new(),
+            props: vec![
+                super::PropAsset {
+                    idx: 1,
+                    name: "空白PPT电脑屏幕".into(),
+                    description: "纯白空白演示文稿".into(),
+                },
+                super::PropAsset {
+                    idx: 2,
+                    name: "Agent应用界面".into(),
+                    description: "软件应用界面，左侧侧边栏，右侧卡片和日历".into(),
+                },
+            ],
+        };
+        let pinned = super::pin_locked_product_plates(&film, &mut spec, script);
+        assert!(
+            pinned.by_name.contains_key("Agent应用界面"),
+            "aliases={:?}",
+            pinned.by_name
+        );
+        assert!(!pinned.by_name.contains_key("空白PPT电脑屏幕"));
+        assert!(!pinned.spec_changed);
+        let plate = film
+            .join("props")
+            .join("2_Agent应用界面")
+            .join("Agent应用界面_prop.png");
+        assert!(plate.is_file(), "missing {}", plate.display());
+        assert!(!film.join("props").join("1_空白PPT电脑屏幕").exists());
+    }
+
+    #[test]
+    fn unmatched_product_upload_becomes_its_own_prop() {
+        use image::{ImageFormat, Rgb, RgbImage};
+
+        let mut bytes = Vec::new();
+        RgbImage::from_pixel(8, 8, Rgb([10, 20, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Jpeg)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("script2video");
+        std::fs::create_dir_all(&film).unwrap();
+        crate::session::cameo::upload_photo(session, &bytes, "产品截图", "").unwrap();
+        let script = "图1是产品的截图";
+        let mut spec = WorldAssetsSpec {
+            environments: Vec::new(),
+            props: vec![super::PropAsset {
+                idx: 0,
+                name: "工位纸牌".into(),
+                description: "一副扑克牌".into(),
+            }],
+        };
+        let pinned = super::pin_locked_product_plates(&film, &mut spec, script);
+        assert!(pinned.spec_changed);
+        assert!(pinned.by_name.contains_key("产品截图"));
+        assert!(
+            film.join("props")
+                .join("1_产品截图")
+                .join("产品截图_prop.png")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn flow_summary_pins_upload_onto_the_flow_prop_and_keeps_script_aliases() {
+        use image::{ImageFormat, Rgb, RgbImage};
+
+        let mut bytes = Vec::new();
+        RgbImage::from_pixel(8, 8, Rgb([10, 20, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Jpeg)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("script2video");
+        std::fs::create_dir_all(&film).unwrap();
+        let photo = crate::session::cameo::upload_photo(session, &bytes, "产品截图", "").unwrap();
+        let report = super::super::ReferenceClassificationReport {
+            classifications: vec![super::super::ReferenceImageClassification {
+                photo_id: photo.id,
+                sha256: photo.sha256,
+                category: super::super::ReferenceImageCategory::Prop,
+                summary: "Flow 应用界面截图,左侧为任务列表,底部为输入框。".into(),
+                suggested_label: "Flow 产品界面截图".into(),
+                heuristic: false,
+                locked: true,
+            }],
+        };
+        let cache = session.join(super::super::CLASSIFICATION_CACHE_REL);
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(&cache, serde_json::to_string(&report).unwrap()).unwrap();
+        let script = "图1为应用参考截图\n同事慢悠悠打开Agent应用。此处插入产品录屏：输入一句\"帮我做一份汇报PPT，商务风\"\n我对着空白PPT发呆\n";
+        let mut spec = WorldAssetsSpec {
+            environments: Vec::new(),
+            props: vec![
+                super::PropAsset {
+                    idx: 1,
+                    name: "空白PPT页面".into(),
+                    description: "白色空白演示页".into(),
+                },
+                super::PropAsset {
+                    idx: 2,
+                    name: "Flow 应用界面".into(),
+                    description: "左侧任务列表，底部输入框".into(),
+                },
+                super::PropAsset {
+                    idx: 4,
+                    name: "产品截图".into(),
+                    description: "用户上传的产品原图".into(),
+                },
+            ],
+        };
+        let pinned = super::pin_locked_product_plates(&film, &mut spec, script);
+        let aliases = pinned
+            .by_name
+            .get("Flow 应用界面")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            pinned.by_name.contains_key("Flow 应用界面"),
+            "pinned={:?}",
+            pinned.by_name
+        );
+        assert!(!pinned.by_name.contains_key("产品截图"));
+        assert!(!pinned.spec_changed, "must reuse the extracted UI prop");
+        assert!(
+            aliases.to_ascii_lowercase().contains("agent"),
+            "aliases={aliases}"
+        );
+        assert!(aliases.contains("商务风"), "aliases={aliases}");
+        let plate = film
+            .join("props")
+            .join("2_Flow_应用界面")
+            .join("Flow_应用界面_prop.png");
+        assert!(plate.is_file(), "missing {}", plate.display());
     }
 }

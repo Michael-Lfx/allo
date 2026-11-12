@@ -10,7 +10,7 @@ use crate::clip_bounds::ClipBounds;
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, StoryboardArtist, VoiceProfileGenerator,
     bind_location_ids, ensure_film_cover, environment_sluglines_from_dir, has_usable_portrait,
-    resolve_environment_plate, world_asset_pairs,
+    resolve_environment_plate, world_asset_pairs, USER_PRODUCT_PLATE_MARK,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::drama::{lint_script_promise_coverage, load_drama_engine, pack_split_needles};
@@ -644,6 +644,7 @@ impl Script2VideoPipeline {
         if ensure_brief_audio_descs(&mut storyboard) {
             tracing::info!("filled missing storyboard audio_desc with ambient defaults");
         }
+        crate::cast_align::align_briefs(&mut storyboard, characters, script);
         let film_root = resolve_film_root(&self.working_dir);
         let slugs = environment_sluglines_from_dir(&film_root).await;
         bind_location_ids(&mut storyboard, script, &slugs);
@@ -690,6 +691,7 @@ impl Script2VideoPipeline {
     ) -> VimaxResult<Vec<ShotDescription>> {
         let aggregate = self.working_dir.join("shot_descriptions.json");
         let mut briefs = briefs.to_vec();
+        crate::cast_align::align_briefs(&mut briefs, characters, script);
         let film_root = resolve_film_root(&self.working_dir);
         let slugs = environment_sluglines_from_dir(&film_root).await;
         bind_location_ids(&mut briefs, script, &slugs);
@@ -1151,12 +1153,19 @@ impl Script2VideoPipeline {
         }
 
         let session_root = resolve_session_root(&self.working_dir);
-        let packet = load_packet(&self.working_dir, shot.idx).await.ok().flatten();
+        let mut packet = load_packet(&self.working_dir, shot.idx).await.ok().flatten();
         let mut shot_owned = shot.clone();
         if let Some(p) = &packet {
             apply_packet_to_shot(&mut shot_owned, p);
         }
         super::clip_beats::sanitize_shot_prompt_payloads(&mut shot_owned, prev);
+        if !packet.as_ref().is_some_and(|p| p.user_edited) {
+            let script = read_script_text(&self.working_dir).await;
+            let corpus = tokio::fs::read_to_string(self.working_dir.join("storyboard.json"))
+                .await
+                .unwrap_or_default();
+            crate::cast_align::align_shot(&mut shot_owned, characters, &script, &corpus);
+        }
         let shot = &shot_owned;
         let duration_secs = packet
             .as_ref()
@@ -1222,6 +1231,20 @@ impl Script2VideoPipeline {
                     "; first shot needs world/cast assets"
                 }
             )));
+        }
+        if let Some(p) = packet.as_mut() {
+            if !p.user_edited {
+                p.visual_desc = shot.visual_desc.clone();
+                if let Some(audio) = shot.audio_desc.clone() {
+                    p.audio_desc = audio;
+                }
+                p.location_id = shot.location_id.clone();
+                merge_live_image_refs(
+                    p,
+                    crate::shot_packet::slots_from_image_pairs(&session_root, &ref_pairs),
+                );
+                let _ = save_packet(&self.working_dir, p).await;
+            }
         }
 
         let ref_paths: Vec<&Path> = ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
@@ -1609,6 +1632,18 @@ pub(crate) async fn refresh_shot_packet(
 
     let mut shot_owned = shot.clone();
     apply_packet_to_shot(&mut shot_owned, &packet);
+    if !packet.user_edited {
+        let script = read_script_text(scene_dir).await;
+        let corpus = tokio::fs::read_to_string(scene_dir.join("storyboard.json"))
+            .await
+            .unwrap_or_default();
+        crate::cast_align::align_shot(&mut shot_owned, characters, &script, &corpus);
+        packet.visual_desc = shot_owned.visual_desc.clone();
+        if let Some(audio) = shot_owned.audio_desc.clone() {
+            packet.audio_desc = audio;
+        }
+        packet.location_id = shot_owned.location_id.clone();
+    }
     let prior = if shot.idx > 0 {
         load_shot_for_packet(scene_dir, shot.idx - 1).await.ok()
     } else {
@@ -2448,9 +2483,40 @@ fn prop_name_needles(path: &Path, text: &str) -> Vec<String> {
 
 fn query_mentions_prop(query: &str, path: &Path, text: &str) -> bool {
     let q = query.to_ascii_lowercase();
-    prop_name_needles(path, text)
+    let needles = prop_name_needles(path, text);
+    if needles
         .iter()
         .any(|n| q.contains(&n.to_ascii_lowercase()))
+    {
+        return true;
+    }
+    if !text.contains(USER_PRODUCT_PLATE_MARK) {
+        return false;
+    }
+    if let Some(aliases) = text.split("Aliases:").nth(1) {
+        let aliases = aliases.split(['.', '\n']).next().unwrap_or("");
+        for alias in aliases.split('|') {
+            let alias = alias.trim();
+            if alias.chars().count() >= 2 && q.contains(&alias.to_ascii_lowercase()) {
+                return true;
+            }
+        }
+    }
+    // "打开Agent应用" does not contain the full plate name "Agent应用界面".
+    // A locked product plate also matches a distinctive prefix of its name.
+    needles.iter().any(|needle| {
+        let chars: Vec<char> = needle.chars().collect();
+        (1..=chars.len()).any(|len| {
+            let prefix: String = chars[..len].iter().collect();
+            let n = prefix.chars().count();
+            let cjk = prefix.chars().any(|c| {
+                let u = c as u32;
+                (0x4E00..=0x9FFF).contains(&u)
+            });
+            let useful = (cjk && n >= 4) || (!cjk && n >= 5);
+            useful && q.contains(&prefix.to_ascii_lowercase())
+        })
+    })
 }
 
 fn mentioned_prop_pairs(
@@ -3408,6 +3474,51 @@ fn collapse_ws(s: &str) -> String {
     out
 }
 
+async fn read_script_text(dir: &Path) -> String {
+    for path in [dir.join("script.txt"), dir.join("script2video").join("script.txt")] {
+        if let Ok(text) = tokio::fs::read_to_string(&path).await {
+            if !text.trim().is_empty() {
+                return text;
+            }
+        }
+    }
+    String::new()
+}
+
+fn shot_picture(shot: &ShotDescription) -> String {
+    let mut blob = String::new();
+    for piece in [
+        shot.visual_desc.as_str(),
+        shot.motion_desc.as_str(),
+        shot.ff_desc.as_str(),
+        shot.lf_desc.as_str(),
+    ] {
+        blob.push_str(piece);
+        blob.push(' ');
+    }
+    for beat in &shot.beats {
+        blob.push_str(&beat.motion_desc);
+        blob.push(' ');
+    }
+    blob
+}
+
+/// Image refs are bodies the camera can see. An off-screen voice ("老板语音条",
+/// 不入画) is not a face plate. Bracketing that person (`<老板>`) puts them on
+/// camera for this shot even when the cast list marked them off-screen.
+fn include_portrait(ch: &CharacterInScene, picture: &str, audio: &str) -> bool {
+    let name = ch.identifier_in_scene.trim();
+    if name.chars().count() < 2 {
+        return false;
+    }
+    let bracketed =
+        picture.contains(&format!("<{name}>")) || picture.contains(&format!("〈{name}〉"));
+    if !ch.is_visible {
+        return bracketed;
+    }
+    picture.contains(name) || audio.contains(name)
+}
+
 /// Video generation stays multi-reference. A previous clip's pixels are not
 /// submitted: some models reject a frame role mixed with references, and a
 /// generated frame trips face checks. The filmstrip may still store the still.
@@ -3431,7 +3542,16 @@ pub(crate) fn shot_video_ref_pairs(
 ) -> Vec<(PathBuf, String)> {
     let _ = continuity;
     let mut pairs: Vec<(PathBuf, String)> = Vec::new();
-    let vis = shot_cast_idxs(shot, characters);
+    let picture = shot_picture(shot);
+    let audio = shot.audio_source();
+    let vis: Vec<i32> = shot_cast_idxs(shot, characters)
+        .into_iter()
+        .filter(|&idx| {
+            characters
+                .iter()
+                .any(|ch| ch.idx == idx && include_portrait(ch, &picture, &audio))
+        })
+        .collect();
     pairs.extend(
         portrait_pairs(characters, &vis, registry, film_root)
             .into_iter()
@@ -5464,5 +5584,75 @@ mod packet_seed_tests {
             "unexpected error: {err}"
         );
         assert!(!scene.join("shots").join("2").join("shot_packet.json").is_file());
+    }
+}
+
+#[cfg(test)]
+mod product_plate_ref_tests {
+    use super::query_mentions_prop;
+    use crate::agents::USER_PRODUCT_PLATE_MARK;
+    use crate::domain::CharacterInScene;
+    use std::path::PathBuf;
+
+    #[test]
+    fn locked_product_plate_matches_agent_prefix_and_alias() {
+        let path = PathBuf::from("script2video/props/2_Agent应用界面/Agent应用界面_prop.png");
+        let text = format!(
+            "File [Agent应用界面_prop.png] = GLOBAL prop bible: <Agent应用界面>. {USER_PRODUCT_PLATE_MARK}. Aliases: 产品截图. Reproduce this exact object or interface; do not redesign."
+        );
+        assert!(query_mentions_prop(
+            "同事打开Agent应用，输入一句话",
+            &path,
+            &text
+        ));
+        assert!(query_mentions_prop("画面插入产品截图", &path, &text));
+        let flow = format!(
+            "File [Flow_应用界面_prop.png] = GLOBAL prop bible: <Flow 应用界面>. {USER_PRODUCT_PLATE_MARK}. Aliases: agent|商务风|产品截图. Reproduce this exact object or interface; do not redesign."
+        );
+        let flow_path = PathBuf::from("script2video/props/2_Flow_应用界面/Flow_应用界面_prop.png");
+        assert!(query_mentions_prop(
+            "<同事>手机屏幕上的Agent输入框，输入一句话“帮我做一份Q3运营汇报PPT,商务风”",
+            &flow_path,
+            &flow
+        ));
+        assert!(!query_mentions_prop(
+            "<主角>对着空白PPT发呆",
+            &flow_path,
+            &flow
+        ));
+        let boss = CharacterInScene {
+            idx: 1,
+            identifier_in_scene: "老板".into(),
+            is_visible: false,
+            static_features: "成年男性".into(),
+            dynamic_features: None,
+            voice_profile: None,
+        };
+        let lead = CharacterInScene {
+            idx: 0,
+            identifier_in_scene: "主角".into(),
+            is_visible: true,
+            static_features: "成年男性".into(),
+            dynamic_features: None,
+            voice_profile: None,
+        };
+        assert!(!super::include_portrait(
+            &boss,
+            "手机弹出老板语音条 <主角>在门口",
+            "老板：「PPT今晚出」"
+        ));
+        assert!(super::include_portrait(
+            &lead,
+            "<主角>在门口",
+            ""
+        ));
+        assert!(super::include_portrait(
+            &boss,
+            "<老板>在会议桌主位",
+            ""
+        ));
+        let ppt = PathBuf::from("script2video/props/1_空白PPT电脑屏幕/空白PPT电脑屏幕_prop.png");
+        let plain = "File [x] = GLOBAL prop bible: <空白PPT电脑屏幕>. Lock shape.";
+        assert!(!query_mentions_prop("同事打开Agent应用", &ppt, plain));
     }
 }
