@@ -456,6 +456,7 @@
   "learningGraphGrowing": "Growing…",
   "learningGraphAutoPreparing": "Auto-preparing…",
   "learningGraphBlockedAdvice": "\"{{title}}\" is ready, but its supplier \"{{supplier}}\" was answered wrong recently — review {{due}} due cards of \"{{supplier}}\" (predicted recall {{percent}}%) first.",
+  "learningGraphBlockedGoSupplier": "Review supplier node",
   "learningGraphBatchPending": "Growing",
   "learningGraphBatchFailed": "Growth failed (retry via Grow)",
   "learningGraphBatchCancelled": "Cancelled",
