@@ -8,7 +8,7 @@ import { FileService } from '@renderer/services/FileService';
 import type { UploadSource } from '@renderer/hooks/file/useUploadState';
 import type { ConversationId } from '@/common/types/ids';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
-import { isPhysicalPointOverElement, pathsToFileMetadata, registerDropzone } from '@renderer/utils/tauriDragDrop';
+import { tauriDragDrop } from '@/common/adapter/tauriDragDrop';
 import { useLatestRef } from '@renderer/hooks/ui/useLatestRef';
 
 export interface UseDragUploadOptions {
@@ -145,16 +145,10 @@ export const useDragUpload = ({
         // like AttachmentsField's collapsed dropzone simply won't register until
         // remount — fine, since they don't co-exist with the workspace listener.)
         if (containerRef.current) {
-          unregisterDropzone = registerDropzone(containerRef.current);
+          unregisterDropzone = tauriDragDrop.registerDropzone(containerRef.current);
         }
 
-        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-        const fn = await getCurrentWebview().onDragDropEvent((event) => {
-          const payload = event.payload as {
-            type: string;
-            paths?: string[];
-            position?: { x: number; y: number };
-          };
+        const fn = await tauriDragDrop.subscribe((payload) => {
           const target = containerRef.current;
 
           if (payload.type === 'enter' || payload.type === 'over') {
@@ -165,7 +159,7 @@ export const useDragUpload = ({
               cancelRaf();
               rafId = requestAnimationFrame(() => {
                 rafId = null;
-                setIsFileDragging(isPhysicalPointOverElement(x, y, target));
+                setIsFileDragging(tauriDragDrop.isPointOverElement({ x, y }, target));
               });
             }
           } else if (payload.type === 'leave' || payload.type === 'cancel') {
@@ -179,9 +173,9 @@ export const useDragUpload = ({
               payload.position &&
               Array.isArray(payload.paths) &&
               payload.paths.length > 0 &&
-              isPhysicalPointOverElement(payload.position.x, payload.position.y, target)
+              tauriDragDrop.isPointOverElement(payload.position, target)
             ) {
-              onFilesAddedLatest.current?.(pathsToFileMetadata(payload.paths));
+              onFilesAddedLatest.current?.(tauriDragDrop.pathsToFileMetadata(payload.paths));
             }
           }
         });

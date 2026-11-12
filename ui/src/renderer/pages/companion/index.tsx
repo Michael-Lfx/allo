@@ -7,6 +7,10 @@ import { parseCompanionId, type CompanionId, type ConversationId } from '@/commo
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriEvents } from '@/common/adapter/tauriEvents';
+import { tauriDragDrop } from '@/common/adapter/tauriDragDrop';
+import { tauriSystem } from '@/common/adapter/tauriSystem';
+import { tauriWindows } from '@/common/adapter/tauriWindows';
 import { openVoiceTask, startVoiceConversation, stopVoiceSession } from '@/common/adapter/voiceCompanion';
 import VoicePetInput from './VoicePetInput';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
@@ -358,8 +362,7 @@ const CompanionPage: React.FC = () => {
   const applyWindowState = useCallback(async (cfg: ICompanionProfile, opts?: { skipPosition?: boolean; strict?: boolean }) => {
     if (!isTauriRuntime()) return;
     try {
-      const { getCurrentWindow, PhysicalPosition, availableMonitors } = await import('@tauri-apps/api/window');
-      const win = getCurrentWindow();
+      const win = tauriWindows.current();
       const effectiveVisible = Boolean(cfg.appearance.companion_enabled) || voiceActiveRef.current;
       if (!effectiveVisible) {
         await win.hide();
@@ -384,14 +387,14 @@ const CompanionPage: React.FC = () => {
         // echo then persists the healed coords. Validation is best-effort —
         // on failure keep the raw saved position rather than blocking show().
         try {
-          const [monitors, size] = await Promise.all([availableMonitors(), win.outerSize()]);
+          const [monitors, size] = await Promise.all([tauriWindows.monitors(), win.outerSize()]);
           if (monitors.length > 0) {
             target = clampSavedCompanionPosition(target, size, monitors);
           }
         } catch {
           // keep raw saved position
         }
-        await win.setPosition(new PhysicalPosition(target.x, target.y));
+        await win.setPosition(target);
       }
       if (!wasVisible) {
         await win.show();
@@ -403,7 +406,7 @@ const CompanionPage: React.FC = () => {
       // (compounding every launch until the companion is off-screen). Once visible
       // the scale is correct; this second call is idempotent elsewhere.
       if (target) {
-        await win.setPosition(new PhysicalPosition(target.x, target.y));
+        await win.setPosition(target);
       }
     } catch (e) {
       console.error('companion window state apply failed:', e);
@@ -424,8 +427,7 @@ const CompanionPage: React.FC = () => {
     // echoes must not shrink it or turn its temporary top-left into desk state.
     if (expandedWindowSessionRef.current) return;
     try {
-      const { getCurrentWindow, PhysicalPosition, PhysicalSize, availableMonitors } = await import('@tauri-apps/api/window');
-      const win = getCurrentWindow();
+      const win = tauriWindows.current();
       const desk = getDeskSpecFor(cfg.character, customFigureMetaOf(cfg));
       const [pos, size, scale] = await Promise.all([win.outerPosition(), win.outerSize(), win.scaleFactor()]);
       const target = { width: Math.round(desk.windowWidth * scale), height: Math.round(desk.windowHeight * scale) };
@@ -433,11 +435,11 @@ const CompanionPage: React.FC = () => {
       if (size.width === target.width && size.height === target.height) return;
       let monitors: { x: number; y: number; width: number; height: number }[] = [];
       try {
-        monitors = workAreasFromMonitors(await availableMonitors());
+        monitors = workAreasFromMonitors(await tauriWindows.monitors());
       } catch {
         // place unclamped
       }
-      await win.setSize(new PhysicalSize(target.width, target.height));
+      await win.setSize(target);
       // Read back what the OS actually granted (a resizable(false) window can
       // refuse programmatic resizes on some window managers) and anchor from
       // the achieved size — never reposition for a resize that didn't happen.
@@ -456,7 +458,7 @@ const CompanionPage: React.FC = () => {
           ? { x: pos.x, y: pos.y, width: achieved.width, height: achieved.height }
           : { x: pos.x, y: pos.y, width: size.width, height: size.height };
       const next = placeResizedWindow(anchorRect, achieved, monitors);
-      await win.setPosition(new PhysicalPosition(next.x, next.y));
+      await win.setPosition(next);
       // The move is ours: keep the config-updated echo from snapping us back,
       // and let the onMoved handler persist the new coords.
       lastLocalMoveAt.current = Date.now();
@@ -480,13 +482,12 @@ const CompanionPage: React.FC = () => {
     if (mode !== null) expandedWindowRestoreRetriesRef.current = 0;
     const queued = expandedWindowQueueRef.current.then(async () => {
       const cfg = profileRef.current;
-      const { getCurrentWindow, PhysicalPosition, PhysicalSize, availableMonitors } = await import('@tauri-apps/api/window');
-      const win = getCurrentWindow();
+      const win = tauriWindows.current();
       internalWindowLayoutRef.current = true;
       try {
         let monitors: MonitorLayout[] = [];
         try {
-          monitors = (await availableMonitors()).map((monitor) => ({
+          monitors = (await tauriWindows.monitors()).map((monitor) => ({
             id: `${monitor.name ?? 'monitor'}:${monitor.position.x}:${monitor.position.y}:${monitor.size.width}:${monitor.size.height}:${monitor.scaleFactor}`,
             bounds: {
               x: monitor.position.x,
@@ -534,7 +535,7 @@ const CompanionPage: React.FC = () => {
             monitors,
             logicalDesk,
           });
-          await win.setSize(new PhysicalSize(restored.rect.width, restored.rect.height));
+          await win.setSize({ width: restored.rect.width, height: restored.rect.height });
           const achieved = await win.outerSize();
           if (achieved.width !== restored.rect.width || achieved.height !== restored.rect.height) {
             console.warn('[companion] native window refused desk-size restoration');
@@ -556,7 +557,7 @@ const CompanionPage: React.FC = () => {
             }
             return;
           }
-          await win.setPosition(new PhysicalPosition(restored.rect.x, restored.rect.y));
+          await win.setPosition({ x: restored.rect.x, y: restored.rect.y });
           if (rebase) {
             // Keep the healed position authoritative: the config-updated echo
             // would otherwise replay the pre-drag saved coords after the 2s guard.
@@ -640,20 +641,20 @@ const CompanionPage: React.FC = () => {
         const position = placeResizedWindow(session.anchor, targetSize, workAreas.length > 0 ? workAreas : [host]);
         const targetRect: GeomRect = { ...position, ...targetSize };
 
-        await win.setSize(new PhysicalSize(targetRect.width, targetRect.height));
+        await win.setSize({ width: targetRect.width, height: targetRect.height });
         const achieved = await win.outerSize();
         if (achieved.width !== targetRect.width || achieved.height !== targetRect.height) {
           console.warn('[companion] native window refused expanded surface size');
-          await win.setSize(new PhysicalSize(session.anchor.width, session.anchor.height));
+          await win.setSize({ width: session.anchor.width, height: session.anchor.height });
           const restored = await win.outerSize();
           if (restored.width === session.anchor.width && restored.height === session.anchor.height) {
-            await win.setPosition(new PhysicalPosition(session.anchor.x, session.anchor.y));
+            await win.setPosition({ x: session.anchor.x, y: session.anchor.y });
             expandedWindowSessionRef.current = null;
             expandedWindowRestoreRetriesRef.current = 0;
           }
           return;
         }
-        await win.setPosition(new PhysicalPosition(targetRect.x, targetRect.y));
+        await win.setPosition({ x: targetRect.x, y: targetRect.y });
         lastLocalMoveAt.current = Date.now();
       } catch (error) {
         console.error('companion expanded window layout failed:', error);
@@ -765,7 +766,7 @@ const CompanionPage: React.FC = () => {
         if (!disposed && attempt < INIT_MAX_RETRIES) {
           retryTimer = setTimeout(() => void init(attempt + 1), INIT_RETRY_MS);
         } else if (!disposed && isTauriRuntime()) {
-          void import('@tauri-apps/api/event').then(({emitTo}) => emitTo('main','companion-boot-error',companionId)).catch(() => {});
+          void tauriEvents.emitTo('main', 'companion-boot-error', companionId).catch(() => {});
         }
       }
     };
@@ -881,8 +882,7 @@ const CompanionPage: React.FC = () => {
       if (companion_id !== companionId) return;
       void (async () => {
         try {
-          const { getCurrentWindow } = await import('@tauri-apps/api/window');
-          await getCurrentWindow().close();
+          await tauriWindows.current().close();
         } catch (e) {
           console.error('companion window self-close failed:', e);
         }
@@ -1161,8 +1161,7 @@ const CompanionPage: React.FC = () => {
     let unlisten: (() => void) | undefined;
     let timer: ReturnType<typeof setTimeout> | null = null;
     void (async () => {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      unlisten = await getCurrentWindow().onMoved(() => {
+      unlisten = await tauriWindows.current().onMoved(() => {
         if (internalWindowLayoutRef.current || expandedWindowSessionRef.current) return;
         lastLocalMoveAt.current = Date.now();
         if (timer) clearTimeout(timer);
@@ -1204,16 +1203,14 @@ const CompanionPage: React.FC = () => {
     let unFocus: (() => void) | undefined;
     let unScale: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/window')
-      .then(async ({ getCurrentWindow }) => {
+    void (async () => {
         if (disposed) return;
-        const win = getCurrentWindow();
-        unFocus = await win.onFocusChanged((event) => {
-          if (event.payload) snapIfIdle();
+        const win = tauriWindows.current();
+        unFocus = await win.onFocusChanged((focused) => {
+          if (focused) snapIfIdle();
         });
         unScale = await win.onScaleChanged(() => snapIfIdle());
-      })
-      .catch(() => {});
+      })().catch(() => {});
     const onVis = () => {
       if (document.visibilityState === 'visible') snapIfIdle();
     };
@@ -1281,21 +1278,18 @@ const CompanionPage: React.FC = () => {
         }
       })
       .catch(() => {});
-    void import('@tauri-apps/api/event')
-      .then(({ listen }) =>
-        listen<ThemeSyncPayload>(THEME_SYNC_EVENT, (evt) => {
-          const payload = evt.payload;
-          const next = payload?.theme;
-          if (next === 'light' || next === 'dark') {
-            document.documentElement.setAttribute('data-theme', next);
-            document.body.setAttribute('arco-theme', next);
-          }
-          if (payload?.customCss !== undefined) injectCompanionCustomCss(payload.customCss);
-          if (payload?.wallpaperTokens !== undefined) {
-            injectWallpaperTokenSheet(payload.wallpaperTokens, Boolean(payload.wallpaperEnabled));
-          }
-        })
-      )
+    void tauriEvents
+      .listen<ThemeSyncPayload>(THEME_SYNC_EVENT, (payload) => {
+        const next = payload?.theme;
+        if (next === 'light' || next === 'dark') {
+          document.documentElement.setAttribute('data-theme', next);
+          document.body.setAttribute('arco-theme', next);
+        }
+        if (payload?.customCss !== undefined) injectCompanionCustomCss(payload.customCss);
+        if (payload?.wallpaperTokens !== undefined) {
+          injectWallpaperTokenSheet(payload.wallpaperTokens, Boolean(payload.wallpaperEnabled));
+        }
+      })
       .then((un) => {
         if (disposed) un();
         else unlisten = un;
@@ -1315,9 +1309,7 @@ const CompanionPage: React.FC = () => {
     if (!isTauriRuntime()) return;
     const name = profile?.name?.trim();
     if (!name) return;
-    void import('@tauri-apps/api/window')
-      .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(name))
-      .catch(() => {});
+    void tauriWindows.current().setTitle(name).catch(() => {});
   }, [profile?.name]);
 
   // ---- 气泡正文「粘底自动追尾」（持续对话感，无需用户手动滚动）----
@@ -1394,13 +1386,13 @@ const CompanionPage: React.FC = () => {
     window.addEventListener('mouseup', end);
     safety = setTimeout(end, 6000);
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      unlistenMoved = await getCurrentWindow().onMoved(bumpSilence);
+      const win = tauriWindows.current();
+      unlistenMoved = await win.onMoved(bumpSilence);
       if (ended) {
         unlistenMoved();
         return;
       }
-      await getCurrentWindow().startDragging();
+      await win.startDragging();
     } catch {
       end(); // startDragging 抛错则立即解冻
     }
@@ -1409,21 +1401,17 @@ const CompanionPage: React.FC = () => {
   const openMainAt = useCallback(async (path: string) => {
     if (!isTauriRuntime()) return;
     try {
-      const { emitTo } = await import('@tauri-apps/api/event');
-      const { Window } = await import('@tauri-apps/api/window');
-      await emitTo('main', 'companion-navigate', path);
+      await tauriEvents.emitTo('main', 'companion-navigate', path);
       // Bring the main window fully forward before/while it routes. setFocus()
       // alone can't reveal a window that's hidden-to-tray or minimized (the
       // common case: the companion floats while the main window is tucked away),
       // so the navigation lands invisibly and reads as "点了没跳转". Mirror the
       // Rust show_main_window helper: show → unminimize → focus. Each step is
       // best-effort so one failing (e.g. already visible) still runs the rest.
-      const main = await Window.getByLabel('main');
-      if (main) {
-        await main.show().catch(() => {});
-        await main.unminimize().catch(() => {});
-        await main.setFocus().catch(() => {});
-      }
+      const main = tauriWindows.get('main');
+      await main.show().catch(() => {});
+      await main.unminimize().catch(() => {});
+      await main.setFocus().catch(() => {});
     } catch (e) {
       console.error('companion→main navigate failed:', e);
     }
@@ -1502,18 +1490,15 @@ const CompanionPage: React.FC = () => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    void import('@tauri-apps/api/webview')
-      .then(({ getCurrentWebview }) =>
-        getCurrentWebview().onDragDropEvent((event) => {
-          const p = event.payload as { type: string; paths?: string[] };
-          if (p.type === 'enter' || p.type === 'over') setDragOver(true);
-          else if (p.type === 'leave' || p.type === 'cancel') setDragOver(false);
-          else if (p.type === 'drop') {
-            setDragOver(false);
-            if (Array.isArray(p.paths) && p.paths.length > 0) addImagePaths(p.paths);
-          }
-        })
-      )
+    void tauriDragDrop
+      .subscribe((event) => {
+        if (event.type === 'enter' || event.type === 'over') setDragOver(true);
+        else if (event.type === 'leave' || event.type === 'cancel') setDragOver(false);
+        else if (event.type === 'drop') {
+          setDragOver(false);
+          if (event.paths.length > 0) addImagePaths(event.paths);
+        }
+      })
       .then((un) => {
         if (cancelled) un();
         else unlisten = un;
@@ -1938,18 +1923,13 @@ const CompanionPage: React.FC = () => {
   const openNativeContextMenu = useCallback(async () => {
     const entries = buildCompanionMenuEntries({ name: profileRef.current?.name || BRAND_NAME, t });
     try {
-      const [{ Menu }, { getCurrentWindow }] = await Promise.all([
-        import('@tauri-apps/api/menu'),
-        import('@tauri-apps/api/window'),
-      ]);
-      const menu = await Menu.new({
-        items: entries.map((entry) => ({
+      await tauriSystem.popupContextMenu(
+        entries.map((entry) => ({
           id: `companion:${entry.action}`,
           text: entry.text,
           action: () => runMenuAction(entry.action),
-        })),
-      });
-      await menu.popup(undefined, getCurrentWindow());
+        }))
+      );
     } catch (e) {
       console.error('companion native context menu failed:', e);
     }
@@ -2027,9 +2007,7 @@ const CompanionPage: React.FC = () => {
         e.preventDefault();
         // 同步捕获：不等下个轮询 tick，先确保这次右键不会被透明穿透状态影响。
         if (isTauriRuntime()) {
-          void import('@tauri-apps/api/window')
-            .then(({ getCurrentWindow }) => getCurrentWindow().setIgnoreCursorEvents(false))
-            .catch(() => {});
+          void tauriWindows.current().setIgnoreCursorEvents(false).catch(() => {});
           void openNativeContextMenu();
         }
       }}

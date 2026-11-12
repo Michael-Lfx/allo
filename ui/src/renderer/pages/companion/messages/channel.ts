@@ -1,4 +1,5 @@
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriEvents } from '@/common/adapter/tauriEvents';
 import { PET_MESSAGE_EVENT, type PetMessage } from './types';
 
 type Listener = (message: PetMessage) => void;
@@ -40,8 +41,7 @@ export function ingestPetMessage(message: Omit<PetMessage, 'updatedAt'> & { upda
 export function publishPetMessage(message: Omit<PetMessage, 'updatedAt'> & { updatedAt?: number }): PetMessage {
   const payload = ingestPetMessage(message);
   if (isTauriRuntime()) {
-    void import('@tauri-apps/api/event')
-      .then(({ emit }) => emit(PET_MESSAGE_EVENT, payload))
+    void tauriEvents.emit(PET_MESSAGE_EVENT, payload)
       .catch(() => {
         /* best-effort: WS projectors still cover backend-backed work */
       });
@@ -54,8 +54,7 @@ export function listenPetMessageBroadcast(listener: Listener): () => void {
   if (!isTauriRuntime()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  void import('@tauri-apps/api/event')
-    .then(({ listen }) => listen<PetMessage>(PET_MESSAGE_EVENT, (event) => listener(event.payload)))
+  void tauriEvents.listen<PetMessage>(PET_MESSAGE_EVENT, listener)
     .then((stop) => {
       if (disposed) stop();
       else unlisten = stop;

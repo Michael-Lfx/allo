@@ -1,5 +1,8 @@
 import { buildBackendAuthHeaders, getBaseUrl } from './httpBridge';
 import { isTauriRuntime } from './tauriRuntime';
+import { tauriEvents } from './tauriEvents';
+import { tauriWindows } from './tauriWindows';
+import { tauriSystem } from './tauriSystem';
 
 export type VoicePhase = 'idle' | 'listening' | 'transcribing' | 'deciding' | 'synthesizing' | 'speaking' | 'follow_up' | 'text_follow_up' | 'awaiting_confirmation' | 'listening_confirm' | 'dispatching' | 'error';
 export interface VoiceSnapshot {
@@ -217,8 +220,7 @@ export async function subscribeVoiceSession(onSnapshot: (snapshot: VoiceSnapshot
   let streamReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let unlisten = () => {};
   if (useNativeEvents) {
-    const { listen } = await import('@tauri-apps/api/event');
-    unlisten = await listen<VoiceSnapshot>('voice-session://snapshot', (event) => receive(event.payload));
+    unlisten = await tauriEvents.listen<VoiceSnapshot>('voice-session://snapshot', receive);
   } else {
     void (async () => {
       while (!controller.signal.aborted) {
@@ -711,10 +713,8 @@ async function enterVoiceConversation(activeLocale: string): Promise<void> {
 export async function openVoiceTask(conversationId: string): Promise<void> {
   const path = `/conversation/${encodeURIComponent(conversationId)}`;
   if (!isTauriRuntime()) { window.location.hash = path; return; }
-  const [{emitTo},{Window}] = await Promise.all([import('@tauri-apps/api/event'),import('@tauri-apps/api/window')]);
-  const main = await Window.getByLabel('main');
-  if (!main) throw new Error('task_window_unavailable');
-  await emitTo('main','companion-navigate',path);
+  const main = tauriWindows.get('main');
+  await tauriEvents.emitTo('main', 'companion-navigate', path);
   await main.show();
   await main.unminimize();
   await main.setFocus();
@@ -730,8 +730,7 @@ export const replayVoiceResult=(snapshot:VoiceSnapshot,replayId:string):Promise<
 let voiceContextSequence = Date.now();
 export async function reportVoiceCandidate(conversationId:string|null, workspace:string|null=null, viewOnly=false):Promise<void> {
   if(!isTauriRuntime())return;
-  const {invoke}=await import('@tauri-apps/api/core');
-  await invoke('report_voice_context',{conversationId,workspace,sequence:++voiceContextSequence,viewOnly});
+  await tauriSystem.reportVoiceContext({conversationId,workspace,sequence:++voiceContextSequence,viewOnly});
 }
 export interface VoiceModelOperationState {
   status: string;

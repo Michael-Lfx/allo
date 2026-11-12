@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { ipcBridge } from '@/common';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriSystem } from '@/common/adapter/tauriSystem';
 import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import {
   isVoiceSessionDismissed,
@@ -59,8 +60,7 @@ export function useCompanionWindowsSync(): void {
             enabled: Boolean(p.appearance.companion_enabled) || isVoiceTarget,
           };
         });
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('sync_companion_windows', { specs });
+        await tauriSystem.syncCompanionWindows(specs);
       } catch (e) {
         // Never throw into React — a failed sync self-heals on the next companion event.
         console.warn('sync_companion_windows failed:', e);
