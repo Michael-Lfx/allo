@@ -109,6 +109,14 @@ N/K 归零回到积累态。九题型作答控件复用复习会话的 ActivityI
 
 ### 后续票（2026-11-12，grill 七题裁决后追加；事实源 = assets/ 分析文档）
 
+> **u6–u8 全关（2026-11-12）**：u6 5d43c8ad8 / u7 ca9fdd8b8 / u8 2ebeccc41 /
+> 双轴评审 8 项修复 3563738b4+f1387228b+abcf8c911，交付合并 dc8b323e2 已推。
+> 全闸 exit 0；learning 回归 400 绿；Rust quiz 簇 24 绿；seed 三臂 + 红测
+> 自证过。API 探针：overview 端点对真实库（用户已消费 quiz due → settled 0
+> → 空数组）语义正确。桌面走查清单见 u6 Resolution（软闸臂/感知横幅/图
+> 入口）。遗留小项：ready_count 软闸前口径需后端加一字段（u8 Resolution
+> 建议在案，未立票）。
+
 | 票 | 标题 | 依赖 |
 |---|---|---|
 | [u6](tickets/u6-graph-workspace-entry-and-seed.md) | 图工作区检测入口 + 图课程造数（seed v3） | 无 |
