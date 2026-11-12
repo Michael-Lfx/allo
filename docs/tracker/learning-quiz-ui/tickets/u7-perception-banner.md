@@ -38,7 +38,7 @@
 
 ## Resolution
 
-已施工收口（2026-11-12，1c74262bf）。
+已施工收口（2026-11-12，施工提交 ca9fdd8b8）。
 
 - **R1（后端聚合端点）**：`GET /api/learning/quiz/overview`（routes.rs
   挂载紧邻 quiz/calibration）→ `Vec<QuizOverviewCourse>`（course_id /
