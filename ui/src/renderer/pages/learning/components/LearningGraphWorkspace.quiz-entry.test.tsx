@@ -8,7 +8,9 @@
  * 前向推荐（继续学习）与回向检测（知识检测）靠语境句区分方向。用例面：
  * ①due 态——入口卡渲染 N/K 读数 + 开测可点（onStartQuiz 透传）且位于推荐
  * 区之后；②not-due 态——按钮禁用 + 未到期提示；③归档课程（enabled=0）
- * 不渲染也不拉读数（与 CourseWorkspace 挂点同存在性语义）。
+ * 不渲染也不拉读数（与 CourseWorkspace 挂点同存在性语义）；④en-US 态——
+ * 语境句/读数/开测钮同走词典零中文回落（QuizOverviewBanner.render.test
+ * 双语模式）。
  * jsdom 宿主：CourseWorkspace.quiz-entry.test 同仪式——进度经
  * learningApi.quizProgress 逐用例打补丁并还原（HTTP 边界）；图工作区挂载
  * 期的结构/声明/注册表/补批判定读数一概打补丁（补批判定必须拒绝，防自动
@@ -26,6 +28,7 @@ import { createInstance } from 'i18next';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router-dom';
 
+import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 // LearningModelSelector → useEffectiveModelTier → useCloudAuth 需要 Provider；
 // 用真实 Provider（其 ipc effects 在测试宿主失败即降级、被 catch），不 mock
@@ -106,12 +109,15 @@ afterAll(async () => {
   }
 });
 
-const initTestI18n = async () => {
+const initTestI18n = async (locale: 'zh-CN' | 'en-US' = 'zh-CN') => {
   const instance = createInstance();
   await instance.use(initReactI18next).init({
-    lng: 'zh-CN',
+    lng: locale,
     fallbackLng: 'zh-CN',
-    resources: { 'zh-CN': { translation: { learning: learningZh } } },
+    resources: {
+      'zh-CN': { translation: { learning: learningZh } },
+      'en-US': { translation: { learning: learningEn } },
+    },
     interpolation: { escapeValue: false },
   });
   return instance;
@@ -190,7 +196,8 @@ const noop = () => undefined;
  * POST 真发），结构投影给 Missing 空投影（合法空状态）。 */
 const mountGraphWorkspace = async (
   enabled: boolean,
-  progress: { settled_count: number; trigger_count: number; due: boolean }
+  progress: { settled_count: number; trigger_count: number; due: boolean },
+  locale: 'zh-CN' | 'en-US' = 'zh-CN'
 ) => {
   if (root) {
     await act(async () => {
@@ -217,7 +224,7 @@ const mountGraphWorkspace = async (
     starts += 1;
   };
   let starts = 0;
-  const instance = await initTestI18n();
+  const instance = await initTestI18n(locale);
   root = createRoot(container);
   await act(async () => {
     root!.render(
@@ -316,6 +323,29 @@ describe('LearningGraphWorkspace 知识检测入口挂点（u6）', () => {
       startButton!.click();
     });
     expect(starts()).toBe(0);
+  });
+
+  test('en-US：语境句/读数/开测钮同走词典（零中文回落）', async () => {
+    const { pulls, starts, html } = await mountGraphWorkspace(
+      true,
+      { settled_count: 8, trigger_count: 6, due: true },
+      'en-US'
+    );
+    expect(pulls()).toBe(1);
+    const markup = html();
+    // 回向语境句与读数、开测钮全部走 en-US 词典
+    expect(markup).toContain('Quizzes run opposite to recommendations');
+    expect(markup).toContain('8/6 new-lesson settlements');
+    const startButton = buttonWithText('Start quiz');
+    expect(startButton).not.toBeNull();
+    expect(startButton!.disabled).toBe(false);
+    await act(async () => {
+      startButton!.click();
+    });
+    expect(starts()).toBe(1);
+    // 零中文回落
+    expect(markup).not.toContain('检测与推荐方向相反');
+    expect(markup).not.toContain('开始检测');
   });
 
   test('归档课程（enabled=0）：不渲染检测入口，也不拉进度', async () => {

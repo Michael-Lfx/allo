@@ -10,7 +10,8 @@
  * （详情 404 → 列表页），由页面级语义覆盖，不在本用例面。
  * jsdom 宿主：CourseWorkspace 经 useConfig（useSyncExternalStore 无
  * getServerSnapshot）不能走 SSR 探针；进度经 learningApi.quizProgress
- * 逐用例打补丁并还原（HTTP 边界，useCourseLearning.test 同纪律）。 */
+ * 逐用例打补丁并还原（HTTP 边界，useCourseLearning.test 同纪律）。
+ * en-US 用例同卡验证零中文回落（QuizOverviewBanner.render.test 双语模式）。 */
 import * as bunTest from 'bun:test';
 const { afterEach, describe, expect, test } = bunTest;
 // The pinned bun-types in this checkout predate the afterAll declaration
@@ -24,6 +25,7 @@ import { createInstance } from 'i18next';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router-dom';
 
+import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 // LearningModelSelector → useEffectiveModelTier → useCloudAuth 需要 Provider；
 // 用真实 Provider（其 ipc effects 在测试宿主失败即降级、被 catch），不 mock
@@ -84,12 +86,15 @@ afterAll(async () => {
   }
 });
 
-const initTestI18n = async () => {
+const initTestI18n = async (locale: 'zh-CN' | 'en-US' = 'zh-CN') => {
   const instance = createInstance();
   await instance.use(initReactI18next).init({
-    lng: 'zh-CN',
+    lng: locale,
     fallbackLng: 'zh-CN',
-    resources: { 'zh-CN': { translation: { learning: learningZh } } },
+    resources: {
+      'zh-CN': { translation: { learning: learningZh } },
+      'en-US': { translation: { learning: learningEn } },
+    },
     interpolation: { escapeValue: false },
   });
   return instance;
@@ -155,7 +160,7 @@ const detail = (enabled: boolean): CourseDetail =>
 const noop = () => undefined;
 
 /** 挂载课程工作区：返回进度拉取计数与标记读取器 */
-const mountWorkspace = async (enabled: boolean) => {
+const mountWorkspace = async (enabled: boolean, locale: 'zh-CN' | 'en-US' = 'zh-CN') => {
   if (root) {
     await act(async () => {
       root!.unmount();
@@ -168,7 +173,7 @@ const mountWorkspace = async (enabled: boolean) => {
     pulls += 1;
     return { settled_count: 8, trigger_count: 6, due: true };
   };
-  const instance = await initTestI18n();
+  const instance = await initTestI18n(locale);
   root = createRoot(container);
   await act(async () => {
     root!.render(
@@ -214,6 +219,17 @@ describe('CourseWorkspace 测验入口挂点（u2 R4）', () => {
     const markup = html();
     expect(markup).toContain('开始检测');
     expect(markup).toContain('距上次检测已积累 8/6 次学新结算');
+  });
+
+  test('en-US：读数/开测钮同走词典（零中文回落）', async () => {
+    const { pulls, html } = await mountWorkspace(true, 'en-US');
+    expect(pulls()).toBe(1);
+    const markup = html();
+    expect(markup).toContain('Start quiz');
+    expect(markup).toContain('8/6 new-lesson settlements');
+    // 零中文回落
+    expect(markup).not.toContain('开始检测');
+    expect(markup).not.toContain('距上次检测已积累');
   });
 
   test('归档课程（enabled=0）：不渲染测验区块，也不拉进度', async () => {

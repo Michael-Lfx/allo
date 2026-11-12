@@ -13,6 +13,14 @@ import type { QuizOverviewCourse } from '../types';
 
 const { Title, Text } = Typography;
 
+// 外壳/行按钮类串克隆自 ReviewBanner（u7 沿用既有视觉；ReviewBanner 是
+// 存量，不跨文件抽常量）。color-mix 长串在本文件多处出现——抽文件内常量
+// 消重；常量内是完整 class token 原文，UnoCSS 文本扫描照常提取。
+const SHELL_CLASS =
+  'rounded-12px border border-solid border-[color-mix(in_srgb,rgb(var(--primary-6))_35%,var(--color-border-2))] bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))] px-20px py-16px';
+const ROW_CLASS =
+  'flex w-full cursor-pointer flex-wrap items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_50%,var(--color-border-2))] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]';
+
 /** 检测感知横幅（u7，grill 裁决 Q3 第一步）：学习首页的跨课程检测聚合——
  * 每行课程名 + N/K 读数 + due 标记，点行直达该课程工作区（传统/图课程
  * 各自工作区的检测入口可见；图分支入口由 u6 并行落地，本票只管跳路由）。
@@ -57,7 +65,7 @@ export function QuizOverviewBanner({
   if (dueCourses.length === 0) return null;
 
   return (
-    <div className='rounded-12px border border-solid border-[color-mix(in_srgb,rgb(var(--primary-6))_35%,var(--color-border-2))] bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))] px-20px py-16px'>
+    <div className={SHELL_CLASS}>
       <Title heading={5} className='!m-0'>
         {t('learning.quizOverviewTitle')}
       </Title>
@@ -66,7 +74,7 @@ export function QuizOverviewBanner({
           <button
             key={course.course_id}
             type='button'
-            className='flex w-full cursor-pointer flex-wrap items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_50%,var(--color-border-2))] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]'
+            className={ROW_CLASS}
             onClick={() => onOpenCourse(course.course_id)}
           >
             <span className='flex min-w-0 flex-wrap items-center gap-8px'>

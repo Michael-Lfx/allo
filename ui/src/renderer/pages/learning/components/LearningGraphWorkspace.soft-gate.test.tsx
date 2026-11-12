@@ -8,7 +8,8 @@
  * ——点击选中供给节点进学习视图（选中即进内容的既有主推荐卡路径）；供给
  * 节点不在本课（跨课程供给）时不出行动钮（保持纯文字建议，不做假跳转）。
  * R2 学习记录页签节点行可点——被挡节点与已完成节点都可进（CONTEXT.md 软闸
- * 词条「学习者仍可从历史记录进入任何节点」）。
+ * 词条「学习者仍可从历史记录进入任何节点」）。行动文案双语断言（en-US 用例
+ * 零中文回落，QuizOverviewBanner.render.test 双语模式）。
  * jsdom 宿主：LearningGraphWorkspace.quiz-entry.test 同仪式——挂载期读数
  * （结构投影/声明/注册表快照/补批判定/检测进度）一概打补丁并还原（HTTP
  * 边界）；学习记录/系统动作两读数按用例注入批次行；WebSocket 换哑插座。 */
@@ -25,6 +26,7 @@ import { createInstance } from 'i18next';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { MemoryRouter } from 'react-router-dom';
 
+import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
 // LearningModelSelector → useEffectiveModelTier → useCloudAuth 需要 Provider；
 // 用真实 Provider（其 ipc effects 在测试宿主失败即降级、被 catch），不 mock
@@ -105,12 +107,15 @@ afterAll(async () => {
   }
 });
 
-const initTestI18n = async () => {
+const initTestI18n = async (locale: 'zh-CN' | 'en-US' = 'zh-CN') => {
   const instance = createInstance();
   await instance.use(initReactI18next).init({
-    lng: 'zh-CN',
+    lng: locale,
     fallbackLng: 'zh-CN',
-    resources: { 'zh-CN': { translation: { learning: learningZh } } },
+    resources: {
+      'zh-CN': { translation: { learning: learningZh } },
+      'en-US': { translation: { learning: learningEn } },
+    },
     interpolation: { escapeValue: false },
   });
   return instance;
@@ -219,7 +224,11 @@ const noop = () => undefined;
 
 /** 挂载图工作区：注入软闸批次（缺省含被挡行与已完成行各一）与挂载期读数
  * 补丁（growthVerdict 必须拒绝，防自动补批 POST 真发）。 */
-const mountGraphWorkspace = async (options?: { supplierId?: string; batches?: GraphBatchView[] }) => {
+const mountGraphWorkspace = async (options?: {
+  supplierId?: string;
+  batches?: GraphBatchView[];
+  locale?: 'zh-CN' | 'en-US';
+}) => {
   if (root) {
     await act(async () => {
       root!.unmount();
@@ -244,7 +253,7 @@ const mountGraphWorkspace = async (options?: { supplierId?: string; batches?: Gr
     ]),
   });
   learningApi.systemActions = async () => [];
-  const instance = await initTestI18n();
+  const instance = await initTestI18n(options?.locale ?? 'zh-CN');
   root = createRoot(container);
   await act(async () => {
     root!.render(
@@ -329,6 +338,22 @@ describe('LearningGraphWorkspace 软闸行动（u8 R1/R2）', () => {
     // 点击后：供给节点 l2（已完成、非就绪集）成为当前选中
     expect(selectedHeading()).toBe('节点乙');
     expect(activeTabTitle()).toBe('学习');
+  });
+
+  test('R1 en-US：行动文案同走词典（零中文回落），点击语义不变', async () => {
+    await mountGraphWorkspace({ locale: 'en-US' });
+    const action = buttonWithText('Review supplier node');
+    expect(action).not.toBeNull();
+    expect(selectedHeading()).toBe('节点甲');
+    await act(async () => {
+      action!.click();
+      await Promise.resolve();
+    });
+    expect(selectedHeading()).toBe('节点乙');
+    // en-US 词典的页签标题（节点名是夹具数据不走词典，保持 zh）
+    expect(activeTabTitle()).toBe('Study');
+    // 零中文回落
+    expect(container.textContent).not.toContain('去复习供给节点');
   });
 
   test('R1 守卫：供给节点不在本课（跨课程供给）时不出行动钮（无假跳转）', async () => {
