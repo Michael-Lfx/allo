@@ -3713,6 +3713,7 @@ export type I18nKey =
   | 'learning.learningGraphBatchPending'
   | 'learning.learningGraphBeta'
   | 'learning.learningGraphBlockedAdvice'
+  | 'learning.learningGraphBlockedGoSupplier'
   | 'learning.learningGraphConceptAliasWithDefinition'
   | 'learning.learningGraphConceptAudit'
   | 'learning.learningGraphConceptCanonical'
