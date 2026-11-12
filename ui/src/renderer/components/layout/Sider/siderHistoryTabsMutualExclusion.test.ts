@@ -103,12 +103,13 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(videoGroupSource.includes("t('videoGeneration.list.empty'")).toBe(false);
   });
 
-  test('keeps history tab panels mounted so switching does not refetch an empty flash', () => {
+  test('lazily mounts history tab panels and keeps visited tabs alive', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(siderSource.includes("activeHistoryTab === 'workspaces' &&")).toBe(false);
-    expect(siderSource.includes("activeHistoryTab === 'companions' &&")).toBe(false);
-    expect(siderSource.includes("activeHistoryTab === 'video' &&")).toBe(false);
+    expect(siderSource.includes('visitedHistoryTabs')).toBe(true);
+    expect(siderSource.includes("visitedHistoryTabs.has('workspaces')")).toBe(true);
+    expect(siderSource.includes("visitedHistoryTabs.has('companions')")).toBe(true);
+    expect(siderSource.includes("visitedHistoryTabs.has('video')")).toBe(true);
     expect(siderSource.includes("hidden={activeHistoryTab !== 'workspaces'}")).toBe(true);
     expect(siderSource.includes("hidden={activeHistoryTab !== 'companions'}")).toBe(true);
     expect(siderSource.includes("hidden={activeHistoryTab !== 'video'}")).toBe(true);

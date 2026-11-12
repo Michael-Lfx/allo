@@ -161,6 +161,7 @@ const Layout: React.FC<{
     typeof window === 'undefined' ? 390 : window.innerWidth
   );
   const [customCss, setCustomCss] = useState<string>('');
+  const customCssRef = useRef('');
   const [shouldMountUpdateModal, setShouldMountUpdateModal] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   const { onClick } = useDebug();
@@ -236,7 +237,7 @@ const Layout: React.FC<{
         savedCss: savedCssRaw || '',
         activeThemeId,
         savedThemes: (savedThemes || []) as ICssTheme[],
-        currentUiCss: customCss,
+        currentUiCss: customCssRef.current,
         lastUiCssUpdateAt: lastUiCssUpdateAtRef.current,
       });
 
@@ -264,6 +265,7 @@ const Layout: React.FC<{
         });
       }
 
+      customCssRef.current = effectiveCss;
       setCustomCss(effectiveCss);
       if (lastCssRef.current !== effectiveCss) {
         lastCssRef.current = effectiveCss;
@@ -272,7 +274,7 @@ const Layout: React.FC<{
     } catch (error) {
       console.error('Failed to load or heal custom CSS:', error);
     }
-  }, [customCss]);
+  }, []);
 
   // 加载并监听自定义 CSS 配置 / Load & watch custom CSS configuration
   useEffect(() => {
@@ -283,6 +285,7 @@ const Layout: React.FC<{
         const css = event.detail.customCss || '';
         lastCssRef.current = css;
         lastUiCssUpdateAtRef.current = Date.now();
+        customCssRef.current = css;
         setCustomCss(css);
       }
     };
@@ -300,11 +303,6 @@ const Layout: React.FC<{
       window.removeEventListener('storage', handleStorageChange);
     };
   }, [loadAndHealCustomCss]);
-
-  // Re-sync theme css on route changes, because some settings pages do not mount CssThemeSettings.
-  useEffect(() => {
-    void loadAndHealCustomCss();
-  }, [location.pathname, location.search, location.hash, loadAndHealCustomCss]);
 
   // 注入自定义 CSS + theme control + send-button guard（单一 observer，避免多个 style 标签互相抢 last 导致内存暴涨）
   useEffect(() => {
@@ -754,8 +752,7 @@ const Layout: React.FC<{
                           clickKick={false}
                           intro='none'
                           guides={false}
-                          sweep
-                          speed={0.55}
+                          sweep={false}
                           style={{ width: '100%', height: '100%' }}
                         />
                       </div>

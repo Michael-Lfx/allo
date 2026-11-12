@@ -91,8 +91,6 @@ import Layout from './components/layout/Layout';
 import RouteErrorBoundary from './components/layout/RouteErrorBoundary';
 import Router from './components/layout/Router';
 import Sider from './components/layout/Sider';
-import ButtonLayoutProbe from './pages/test/ButtonLayoutProbe';
-import ErrorSurfaceProbe from './pages/test/ErrorSurfaceProbe';
 import { refreshDetectedAgentsIfStale } from './hooks/agent/useAgents';
 import { clearAvailableModelsCache } from './hooks/agent/useModelProviderList';
 import {
@@ -517,6 +515,8 @@ const Main = () => {
 
 const App = HOC.Wrapper(Config)(Main);
 const root = createRoot(document.getElementById('root')!);
+const ButtonLayoutProbe = React.lazy(() => import('./pages/test/ButtonLayoutProbe'));
+const ErrorSurfaceProbe = React.lazy(() => import('./pages/test/ErrorSurfaceProbe'));
 const isButtonLayoutProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/button-layout';
 const isErrorSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/error-surface';
 const isSupportSurfaceProbe = import.meta.env.DEV && window.location.hash.split('?')[0] === '#/test/support-surface';
