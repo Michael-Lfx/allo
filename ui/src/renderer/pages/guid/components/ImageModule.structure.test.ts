@@ -5,6 +5,7 @@ const read = (relative: string) => readFileSync(new URL(relative, import.meta.ur
 const guide = read('../GuidPage.tsx');
 const panel = read('./ImagePromptPanel.tsx');
 const options = read('./ImagePromptOptions.tsx');
+const optionsCss = read('./ImagePromptOptions.module.css');
 const actionRow = read('./GuidActionRow.tsx');
 const zhGuid = JSON.parse(read('../../../services/i18n/locales/zh-CN/guid.json'));
 const enGuid = JSON.parse(read('../../../services/i18n/locales/en-US/guid.json'));
@@ -30,6 +31,12 @@ describe('image creation entry contract', () => {
     expect(options).toContain("data-testid='guid-home-image-options'");
     expect(options).not.toContain('imageParamReset');
     expect(options).not.toContain('styles.reset');
+    expect(options).toContain('triggerProps={{ className: styles.selectPopup }}');
+    expect(options).toContain('dropdownMenuClassName={styles.selectMenu}');
+    expect(optionsCss).toContain('.selectPopup');
+    expect(optionsCss).toContain('.selectMenu');
+    expect(optionsCss).toContain('arco-select-option-disabled');
+    expect(optionsCss).not.toContain(":global(html[data-theme='light']) :global(.arco-select-popup)");
     expect(actionRow).toContain('data-has-image-controls');
     expect(zhGuid.home.imageCustomPrompt.trim().endsWith('：')).toBe(true);
     expect(enGuid.home.imageCustomPrompt.trim().endsWith(':')).toBe(true);

@@ -26,7 +26,6 @@ export function createAmbientScene(context: CanvasRenderingContext2D, variant: C
   let primary = '';
   let secondary = '';
   let ink = '';
-  let material = '';
   let paper: CanvasGradient;
   let pigments: string[] = [];
   let foldTones: string[][] = [];
@@ -391,7 +390,6 @@ export function createAmbientScene(context: CanvasRenderingContext2D, variant: C
       secondary = ambientRgba(mixAmbientColor(palette.accent, variant === 'create' ? copper : cyan, 0.68), 1);
       ink = ambientRgba(palette.ink, 1);
       if (variant !== 'video') {
-        material = ambientRgba(mixAmbientColor(palette.surface, palette.accent, dark ? 0.08 : 0.04), 1);
         paper = context.createLinearGradient(-250, -120, 250, 120);
         paper.addColorStop(0, ambientRgba(mixAmbientColor(palette.surface, palette.accent, dark ? 0.18 : 0.08), 1));
         paper.addColorStop(1, ambientRgba(mixAmbientColor(palette.surface, palette.ink, dark ? 0.045 : 0.025), 1));

@@ -1,12 +1,19 @@
 # 首页动态背景性能踩坑与交接
 
-> 2026-11-11 · `feat/home-canvas2d` · 代码、前端检查和 Chrome 组件对照已验证。实际卡顿设备上的 WebView2 性能待测。
+> 2026-11-12 · `feat/home-canvas2d` · 当前实现为全屏 Canvas 2D 三场景，已在本机 WebView2 实测 GPU 增量；输入/切层 P95 与用户卡顿设备仍待验收。
 >
 > 接手先采集目标设备的输入、切层与 GPU 数据，再决定是否继续优化。
 >
-> 2026-11-11 晚更新：三处创作背景已从 Canvas 2D 改为全屏静态 CSS 光氛围层（`.glow` / `.grain` / `.veil`，零逐帧绘制）；随后升级为「单层 conic 光锥 + 指针视差」版本（见下节），下方 Canvas 2D 数据保留为历史对照。
+> 2026-11-12 更新：三处创作背景为全屏 Canvas 2D 场景（创建=连续折流纸带、图片=曝光画幅、视频=胶片航道），复用 `mountAmbientCanvas` 调度（500k backing pixels / 20fps）；CSS 只保留静态材质与内容保护 veil。旧的静态 CSS、conic 光锥与局部 Canvas 数据保留为历史对照。
 
-## 当前实现：单层光锥 + 指针视差（2026-11-11 晚）
+## 当前实现：Canvas 2D 三场景（2026-11-12）
+
+- 入口：[CreateAmbientWall.tsx](../../ui/src/renderer/pages/guid/components/CreateAmbientWall.tsx) 只负责挂载、暂停与被动指针监听；三套场景在 [ambientCreateScene.ts](../../ui/src/renderer/pages/guid/components/ambientCreateScene.ts)，共享 [ambientCanvas.ts](../../ui/src/renderer/pages/guid/components/ambientCanvas.ts) 的有界调度。
+- create 为一条连续折流纸带（共享折脊、C1 连续曲线、连续明暗），image 为错位底稿上的曝光画幅，video 为三条透视胶片航道；指针只做局部牵动/揭示，底部输入区由静态 veil 保护。
+- 预算：单 Canvas，`maxPixels: 500_000`、`fps: 20`，每帧一次 clear；无 CSS 常驻动画、无外部素材、无逐帧 DOM 测量/React 状态/CSS 变量写入。
+- 实测（16 核本机，CDP Performance + GPU 进程 CPU，2026-11-12，同页静态/动画 A/B）：GPU 进程 CPU 增量为 create **+0.21**、image **+0.66**、video **+0.51** 个百分点（整机口径）；主线程样式重算 **0**；实际绘制约 16–19fps。证据见 `build.noindex/ambient-checkpoint/evidence/round4b-*` 与 `round2-*`。
+
+## 历史实现：单层光锥 + 指针视差（2026-11-11 晚，已替换）
 
 - 常驻动画只有一层：`.rays` 的 conic-gradient 光锥，90 秒旋转；创作=紫罗兰、图片=暖琥珀、视频=冷蓝，几何与色相由 CSS 变量按变体驱动。
 - `.glow` 静态光池随指针平移（最大 ±10px），由单例 rAF 更新两个 CSS 变量；指针静止或离开后循环停止。`prefers-reduced-motion` 下不挂监听、光锥动画关闭；`data-paused` 在视频预览播放时暂停光锥；`forced-colors` 隐藏装饰。
@@ -21,8 +28,9 @@
 | --- | --- | --- |
 | `fcdc89c13` | Paper Shaders 的 `GodRays` | 创作背景调用 `getContext('webgl2')` |
 | `3228c2b18` | Canvas 2D 柔光贴图 | 每帧缩放并混合两张透明贴图，预算为 30 万像素、15 FPS |
-| 本文所在版本 | 局部 Canvas 2D 动态图案 | 每帧一次 `stroke()`，三处组件仅请求 `2d` |
-| 当前版本（2026-11-11 晚） | 全屏静态 CSS 光氛围层 | 三处组件不再创建 canvas，只有 `.glow` / `.grain` / `.veil` 三个静态层 |
+| 局部 Canvas 2D 动态图案（历史） | 每帧一次 `stroke()` | 三处组件仅请求 `2d` |
+| 单层 conic 光锥（历史，2026-11-11 晚） | 全屏 `.rays` 常驻 CSS 动画 + 指针光池 | CSS 关键帧与 `conic-gradient` |
+| **当前版本（2026-11-12）** | **全屏 Canvas 2D 三场景** | **三处 `CreateAmbientWall` 各挂载一个 canvas，500k px / 20fps** |
 
 如果客户端仍显示神光，先确认正在运行的 checkout 和前端产物对应哪个版本。共享侧栏、终端、作品球面墙和视频画布可有各自的 WebGL 用途，分析整个客户端时按调用来源归因。 [共享侧栏渲染](../../ui/src/renderer/components/base/GooeyNav.tsx) · [终端渲染](../../ui/src/renderer/pages/terminal/XtermView.tsx) · [视频作品球面墙](../../ui/src/renderer/pages/videoGeneration/components/InfiniteMenu.tsx)
 
@@ -107,7 +115,7 @@
 
 ### 前端验证
 
-本轮通过 187 项首页和壁纸相关测试、TypeScript 检查、主题/CSS scope/dead CSS 检查与前端生产构建。常用复跑命令如下。
+本轮通过 208 项首页和壁纸相关测试、TypeScript 检查、主题/CSS scope/dead CSS 检查。常用复跑命令如下。
 
 ```bash
 bun test ui/src/renderer/pages/guid ui/src/renderer/utils/theme/wallpaperTokens.test.ts
@@ -119,4 +127,4 @@ bun run build:ui
 git diff --check
 ```
 
-待验收项为实际卡顿设备的 WebView2 交互与 GPU 轨迹。Chrome 组件证据可用于复核绘制量和边界行为。
+待验收项为实际卡顿设备的 WebView2 交互、输入/切层 P95 与 GPU 轨迹；本机 Canvas 2D 的 GPU 增量已实测。Chrome 组件证据可用于复核绘制量和边界行为。
