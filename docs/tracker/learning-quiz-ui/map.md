@@ -86,6 +86,13 @@ N/K 归零回到积累态。九题型作答控件复用复习会话的 ActivityI
 
 - 学习页跨课程聚合测验横幅：需新后端端点（每课程 N/K 列表）。
 - quiz 校准呈现并入 MemoryHealthPanel：与 #89 归因读面同范畴（见 u4 Resolution）。
+- **节点级复习/补习 = 整套缺（2026-11-12 勘察裁决：暂不处理）**——调度系统
+  唯一粒度是题卡（FSRS）；「重教」仅存在于课程生长期的螺旋结构语义
+  （learning_graph，面向未来学习者）；lesson_progress 单向到 completed 无
+  重学态；quiz 测出弱节点零引回正文机制。与之相对，**题卡级反哺（g4）是
+  「原语齐、只缺链路」**：建卡 ensure_review_item / 推进 update_mastery_
+  and_review / 落库加题 create_lesson_activity 三原语俱在（q3 §7 在案），
+  可独立立票——两件事不要混为一谈。
 
 ## Tickets
 
