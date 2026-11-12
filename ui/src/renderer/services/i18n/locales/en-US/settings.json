@@ -111,6 +111,7 @@
     "installUnsupported": "This source does not support managed installation yet.",
     "installInvalidId": "The Skill Market entry id is invalid.",
     "installNotFound": "This Skill Market entry no longer exists.",
+    "installPublisherUnavailable": "This publisher's package cannot be downloaded. Install the downloadable entry with the same name.",
     "installConflict": "A Skill with this name already exists. Manage it under Installed Skills.",
     "installArtifactInvalid": "The downloaded Skill package failed security validation.",
     "installManifestInvalid": "The downloaded Skill manifest is invalid.",

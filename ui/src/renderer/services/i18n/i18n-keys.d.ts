@@ -7284,6 +7284,7 @@ export type I18nKey =
   | 'settings.skillsMarket.installManifestInvalid'
   | 'settings.skillsMarket.installNetwork'
   | 'settings.skillsMarket.installNotFound'
+  | 'settings.skillsMarket.installPublisherUnavailable'
   | 'settings.skillsMarket.installReused'
   | 'settings.skillsMarket.installSuccess'
   | 'settings.skillsMarket.installTimeout'

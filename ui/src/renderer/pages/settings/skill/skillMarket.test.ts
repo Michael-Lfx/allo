@@ -82,6 +82,7 @@ describe('skill market helpers', () => {
       ['MARKET_SKILL_SOURCE_UNSUPPORTED', 'settings.skillsMarket.installUnsupported'],
       ['MARKET_SKILL_ID_INVALID', 'settings.skillsMarket.installInvalidId'],
       ['MARKET_SKILL_NOT_FOUND', 'settings.skillsMarket.installNotFound'],
+      ['MARKET_SKILL_PUBLISHER_UNAVAILABLE', 'settings.skillsMarket.installPublisherUnavailable'],
       ['MARKET_SKILL_NAME_CONFLICT', 'settings.skillsMarket.installConflict'],
       ['MARKET_SKILL_ARTIFACT_INVALID', 'settings.skillsMarket.installArtifactInvalid'],
       ['MARKET_SKILL_MANIFEST_INVALID', 'settings.skillsMarket.installManifestInvalid'],

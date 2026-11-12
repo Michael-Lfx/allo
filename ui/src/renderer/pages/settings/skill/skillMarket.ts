@@ -193,6 +193,11 @@ export const marketSkillInstallErrorMessage = (code: string): { key: string; fal
         key: 'settings.skillsMarket.installNotFound',
         fallback: '技能市场条目已不存在。',
       };
+    case 'MARKET_SKILL_PUBLISHER_UNAVAILABLE':
+      return {
+        key: 'settings.skillsMarket.installPublisherUnavailable',
+        fallback: '该发布者的技能包暂时无法下载，请安装同名技能里可下载的那一条。',
+      };
     case 'MARKET_SKILL_NAME_CONFLICT':
       return {
         key: 'settings.skillsMarket.installConflict',

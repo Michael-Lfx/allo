@@ -102,6 +102,10 @@ impl IntoResponse for MarketSkillRouteError {
                         (StatusCode::BAD_REQUEST, "MARKET_SKILL_ID_INVALID"),
                     MarketSkillInstallError::NotFound =>
                         (StatusCode::NOT_FOUND, "MARKET_SKILL_NOT_FOUND"),
+                    MarketSkillInstallError::PublisherUnavailable => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "MARKET_SKILL_PUBLISHER_UNAVAILABLE",
+                    ),
                     MarketSkillInstallError::NameConflict =>
                         (StatusCode::CONFLICT, "MARKET_SKILL_NAME_CONFLICT"),
                     MarketSkillInstallError::ArtifactInvalid =>
@@ -907,6 +911,11 @@ mod tests {
             (MarketSkillInstallError::SourceUnsupported, StatusCode::BAD_REQUEST, "MARKET_SKILL_SOURCE_UNSUPPORTED"),
             (MarketSkillInstallError::IdInvalid, StatusCode::BAD_REQUEST, "MARKET_SKILL_ID_INVALID"),
             (MarketSkillInstallError::NotFound, StatusCode::NOT_FOUND, "MARKET_SKILL_NOT_FOUND"),
+            (
+                MarketSkillInstallError::PublisherUnavailable,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "MARKET_SKILL_PUBLISHER_UNAVAILABLE",
+            ),
             (MarketSkillInstallError::NameConflict, StatusCode::CONFLICT, "MARKET_SKILL_NAME_CONFLICT"),
             (MarketSkillInstallError::ArtifactInvalid, StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_ARTIFACT_INVALID"),
             (MarketSkillInstallError::ManifestInvalid, StatusCode::UNPROCESSABLE_ENTITY, "MARKET_SKILL_MANIFEST_INVALID"),
