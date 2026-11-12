@@ -4,6 +4,7 @@ import type { ConversationId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import { dispatchChatMessageJump } from '@/renderer/utils/chat/chatMinimapEvents';
 import { isDesktopShell } from '@/renderer/utils/platform';
+import { subscribeThemeCustomCssUpdated } from '@/renderer/utils/theme/themeEvents';
 import type { RefInputType } from '@arco-design/web-react/es/Input/interface';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MinimapVisualStyle, TurnPreviewItem } from './minimapTypes';
@@ -93,15 +94,14 @@ export const useMinimapPanel = (conversation_id?: ConversationId): UseMinimapPan
       setVisualStyle(readPopoverVisualStyle());
     };
     refresh();
-    const handleCssUpdated = () => refresh();
-    window.addEventListener('custom-css-updated', handleCssUpdated as EventListener);
+    const unsubscribeCssUpdated = subscribeThemeCustomCssUpdated(() => refresh());
     const observer = new MutationObserver(refresh);
     observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ['data-theme', 'class'],
     });
     return () => {
-      window.removeEventListener('custom-css-updated', handleCssUpdated as EventListener);
+      unsubscribeCssUpdated();
       observer.disconnect();
     };
   }, []);

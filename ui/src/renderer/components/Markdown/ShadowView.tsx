@@ -6,6 +6,7 @@ import ReactDOM from 'react-dom';
 import { addImportantToAll } from '@renderer/utils/theme/customCssProcessor';
 import { configService } from '@/common/config/configService';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
+import { subscribeThemeCustomCssUpdated } from '@renderer/utils/theme/themeEvents';
 
 /**
  * Create the base style element for Shadow DOM with CSS variables, theme styles, and optional custom CSS.
@@ -828,19 +829,14 @@ const ShadowView = ({
     }
 
     // Listen to custom CSS update events
-    const handleCustomCssUpdate = (e: CustomEvent) => {
-      if (e.detail?.customCss !== undefined) {
-        const css = e.detail.customCss || '';
-        // Use unified utility to auto-add !important
-        const processedCss = addImportantToAll(css);
-        setCustomCss(processedCss);
-      }
-    };
-
-    window.addEventListener('custom-css-updated', handleCustomCssUpdate as EventListener);
+    const unsubscribe = subscribeThemeCustomCssUpdated(({ customCss: css }) => {
+      // Use unified utility to auto-add !important
+      const processedCss = addImportantToAll(css);
+      setCustomCss(processedCss);
+    });
 
     return () => {
-      window.removeEventListener('custom-css-updated', handleCustomCssUpdate as EventListener);
+      unsubscribe();
     };
   }, []);
 
