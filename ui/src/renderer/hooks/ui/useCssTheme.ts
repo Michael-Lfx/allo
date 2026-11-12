@@ -8,6 +8,12 @@ import { stripBackgroundCssBlock } from '@renderer/pages/settings/DisplaySetting
 import { DEFAULT_THEME_ID, getCssThemeDisplayName, PRESET_THEMES } from '@renderer/pages/settings/DisplaySettings/presets';
 import { resolveExtensionAssetUrl } from '@renderer/utils/platform';
 import { resolveCssByActiveTheme, setExtensionThemesCache } from '@renderer/utils/theme/themeCssSync';
+import {
+  dispatchThemeCssThemesChanged,
+  dispatchThemeCustomCssUpdated,
+  subscribeThemeCssThemesChanged,
+  subscribeThemeCustomCssUpdated,
+} from '@renderer/utils/theme/themeEvents';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,7 +25,7 @@ import { useTranslation } from 'react-i18next';
  * neon-rainbow, …) historically lived only inside `CssThemeSettings`. This hook
  * extracts that axis so EVERY surface (the Display settings page AND the sider
  * footer quick-switcher) shares one apply path: resolve preset CSS → write
- * `customCss` + `css.activeThemeId` → dispatch `custom-css-updated` (which
+ * `customCss` + `css.activeThemeId` → dispatch `theme.custom-css.updated` (which
  * `Layout` listens for to inject + cross-window broadcast). Writes go through a
  * single module-level serial queue so concurrent applies from different surfaces
  * can never interleave against the same config keys.
@@ -41,18 +47,13 @@ export const normalizeUserThemes = (themes: ICssTheme[]): { normalized: ICssThem
   return { normalized, updated };
 };
 
-const dispatchCustomCssUpdated = (css: string) => {
-  window.dispatchEvent(new CustomEvent('custom-css-updated', { detail: { customCss: css } }));
-};
-
 /**
  * Cross-instance notification: the user theme LIST changed (add/edit/delete).
  * Every mounted `useCssTheme` reloads so the footer popover and the settings
  * grid stay consistent without a remount.
  */
-const CSS_THEMES_CHANGED_EVENT = 'nomifun:css-themes-changed';
 export const notifyCssThemesChanged = (): void => {
-  window.dispatchEvent(new CustomEvent(CSS_THEMES_CHANGED_EVENT));
+  dispatchThemeCssThemesChanged();
 };
 
 // Module-level serial queue — all preset applies (footer control or settings
@@ -63,18 +64,19 @@ let applyQueue: Promise<void> = Promise.resolve();
 /**
  * Queued, best-effort apply of a resolved CSS string + active theme id. On
  * IPC/storage failure it recovers UI state unconditionally from what is actually
- * persisted (re-dispatching `custom-css-updated` so every listener re-syncs).
+ * persisted (re-dispatching `theme.custom-css.updated` so every listener
+ * re-syncs).
  */
 export const applyCssThemeRaw = (css: string, themeId: string): Promise<void> => {
   const task = async () => {
     try {
       await Promise.all([configService.set('customCss', css), configService.set('css.activeThemeId', themeId)]);
-      dispatchCustomCssUpdated(css);
+      dispatchThemeCustomCssUpdated(css);
     } catch (error) {
       console.error('Failed to apply theme (IPC/Storage). Recovering from storage:', error);
       try {
         const realCss = configService.get('customCss') || '';
-        dispatchCustomCssUpdated(realCss);
+        dispatchThemeCustomCssUpdated(realCss);
       } catch (syncError) {
         console.error('Theme recovery sync failed:', syncError);
       }
@@ -160,7 +162,7 @@ export const useCssTheme = (): UseCssThemeResult => {
       const savedCustomCss = configService.get('customCss') || '';
       if (savedCustomCss !== expectedCss) {
         await configService.set('customCss', expectedCss);
-        dispatchCustomCssUpdated(expectedCss);
+        dispatchThemeCustomCssUpdated(expectedCss);
       }
     } catch (error) {
       console.error('Failed to load CSS themes:', error);
@@ -171,21 +173,21 @@ export const useCssTheme = (): UseCssThemeResult => {
     void reload();
 
     // Keep activeThemeId reactive: any surface that applies a preset dispatches
-    // `custom-css-updated` after persisting, so re-read the id from config.
+    // `theme.custom-css.updated` after persisting, so re-read the id from config.
     const onCssUpdated = () => setActiveThemeId(configService.get('css.activeThemeId') || '');
     // The user theme LIST changed elsewhere → reload the merged set.
     const onThemesChanged = () => void reload();
 
-    window.addEventListener('custom-css-updated', onCssUpdated as EventListener);
-    window.addEventListener(CSS_THEMES_CHANGED_EVENT, onThemesChanged as EventListener);
+    const unsubscribeCssUpdated = subscribeThemeCustomCssUpdated(onCssUpdated);
+    const unsubscribeThemesChanged = subscribeThemeCssThemesChanged(onThemesChanged);
     const unsubscribeThemes = configService.subscribe('css.themes', () => void reload());
     const unsubscribeActiveTheme = configService.subscribe('css.activeThemeId', () => void reload());
     const unsubscribeCustomCss = configService.subscribe('customCss', (value) => {
-      dispatchCustomCssUpdated(typeof value === 'string' ? value : '');
+      dispatchThemeCustomCssUpdated(typeof value === 'string' ? value : '');
     });
     return () => {
-      window.removeEventListener('custom-css-updated', onCssUpdated as EventListener);
-      window.removeEventListener(CSS_THEMES_CHANGED_EVENT, onThemesChanged as EventListener);
+      unsubscribeCssUpdated();
+      unsubscribeThemesChanged();
       unsubscribeThemes();
       unsubscribeActiveTheme();
       unsubscribeCustomCss();

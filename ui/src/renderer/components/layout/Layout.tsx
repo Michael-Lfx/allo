@@ -35,6 +35,10 @@ import {
   THEME_CONTROL_CONTRACT_STYLE_ID,
 } from '@renderer/utils/theme/themeControlContract';
 import { broadcastCustomCssSync } from '@renderer/utils/theme/themeBroadcast';
+import {
+  dispatchThemeCustomCssUpdated,
+  subscribeThemeCustomCssUpdated,
+} from '@renderer/utils/theme/themeEvents';
 import { cleanupSiderTooltips } from '@renderer/utils/ui/siderTooltip';
 import { FLOWY_MOTION_MS } from '@renderer/utils/motion/flowyMotion';
 import AppChromeShortcutsHost from '@renderer/components/layout/AppChromeShortcutsHost';
@@ -270,7 +274,7 @@ const Layout: React.FC<{
       setCustomCss(effectiveCss);
       if (lastCssRef.current !== effectiveCss) {
         lastCssRef.current = effectiveCss;
-        window.dispatchEvent(new CustomEvent('custom-css-updated', { detail: { customCss: effectiveCss } }));
+        dispatchThemeCustomCssUpdated(effectiveCss);
       }
     } catch (error) {
       console.error('Failed to load or heal custom CSS:', error);
@@ -281,26 +285,22 @@ const Layout: React.FC<{
   useEffect(() => {
     void loadAndHealCustomCss();
 
-    const handleCssUpdate = (event: CustomEvent) => {
-      if (event.detail?.customCss !== undefined) {
-        const css = event.detail.customCss || '';
-        lastCssRef.current = css;
-        lastUiCssUpdateAtRef.current = Date.now();
-        customCssRef.current = css;
-        setCustomCss(css);
-      }
-    };
+    const unsubscribeCssUpdated = subscribeThemeCustomCssUpdated(({ customCss: css }) => {
+      lastCssRef.current = css;
+      lastUiCssUpdateAtRef.current = Date.now();
+      customCssRef.current = css;
+      setCustomCss(css);
+    });
     const handleStorageChange = (event: StorageEvent) => {
       if (event.key && (event.key.includes('customCss') || event.key.includes('css.activeThemeId'))) {
         void loadAndHealCustomCss();
       }
     };
 
-    window.addEventListener('custom-css-updated', handleCssUpdate as EventListener);
     window.addEventListener('storage', handleStorageChange);
 
     return () => {
-      window.removeEventListener('custom-css-updated', handleCssUpdate as EventListener);
+      unsubscribeCssUpdated();
       window.removeEventListener('storage', handleStorageChange);
     };
   }, [loadAndHealCustomCss]);
