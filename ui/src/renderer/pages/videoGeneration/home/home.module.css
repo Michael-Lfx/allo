@@ -47,6 +47,19 @@
   border-color: color-mix(in srgb, rgb(var(--primary-6)) 35%, transparent);
 }
 
+/*
+ * Surface follows the app theme tokens (light/dark plus CSS skins) instead of
+ * the canvas editor palette. The canvas palette only knows light/dark and
+ * would leave this app-chrome composer dark whenever a light theme/skin is
+ * applied through CSS while the React theme value lags behind.
+ */
+.composerSurface {
+  background: color-mix(in srgb, var(--color-bg-2, #ffffff) 96%, transparent);
+  border-color: var(--color-border-2, rgba(17, 24, 39, 0.1));
+  color: var(--color-text-1, #111827);
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--color-text-1, #111827) 12%, transparent);
+}
+
 .composerMain {
   display: flex;
   flex-direction: column;

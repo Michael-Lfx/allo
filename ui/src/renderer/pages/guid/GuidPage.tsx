@@ -345,6 +345,7 @@ const GuidPage: React.FC = () => {
   const [buildDirectoryMotion, setBuildDirectoryMotion] = useState<'enter' | 'expand' | 'exit' | 'idle'>('enter');
   const [pendingBuildKind, setPendingBuildKind] = useState<HomeBuildKind | null>(null);
   const [videoPanelOpen, setVideoPanelOpen] = useState(false);
+  const [videoPreviewPlaying, setVideoPreviewPlaying] = useState(false);
   const [homeVideoMode, setHomeVideoMode] = useState<VideoHomeMode>('agent');
   const homeVideoSubmit = useHomeVideoSubmit();
   // Example cards only replace a visible draft after an explicit confirmation.
@@ -2509,7 +2510,7 @@ const GuidPage: React.FC = () => {
             aria-hidden='true'
           >
             <React.Suspense fallback={null}>
-              <CreateAmbientWall variant='video' />
+              <CreateAmbientWall variant='video' paused={videoPreviewPlaying} />
             </React.Suspense>
           </div>
         ) : null}
@@ -2619,7 +2620,7 @@ const GuidPage: React.FC = () => {
             ) : null}
             {homeView === 'capability' && homeCapability === 'video' && videoPanelOpen ? (
               <div className={styles.slidePanelHost} data-testid='guid-home-video-panel-host'>
-                <VideoExamplePanel onClose={closeVideoPanel} />
+                <VideoExamplePanel onClose={closeVideoPanel} onPreviewPlayingChange={setVideoPreviewPlaying} />
               </div>
             ) : null}
             {homeView === 'capability' && homeCapability === 'slides' && slidePanelOpen && slideOptions !== null ? (

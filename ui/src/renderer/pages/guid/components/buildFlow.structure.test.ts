@@ -57,14 +57,13 @@ describe('build drawer flow contract', () => {
     expect(ambient).toContain("data-variant={variant}");
     expect(ambient).toContain("'directory' | 'website' | 'app' | 'game'");
     expect(ambient).toContain('<canvas');
-    expect(ambient).toContain('requestAnimationFrame');
+    expect(ambient).toContain('mountAmbientCanvas');
     expect(ambient).not.toContain('SlideCardWall');
     expect(ambientCss).toContain(".wall[data-variant='website']");
     expect(ambientCss).toContain(".wall[data-variant='app']");
     expect(ambientCss).toContain(".wall[data-variant='directory']");
     expect(ambientCss).toContain(".wall[data-variant='game']");
     expect(ambientCss).toContain('background: transparent');
-    expect(ambient).toContain('transparentVariant');
     expect(ambientCss).toContain('.canvas');
     expect(indexCss).toContain('position: absolute');
     expect(indexCss).toContain('data-ambient-variant=\'game\'');

@@ -10,6 +10,7 @@ const PAGE_SIZE = 15;
 
 type VideoExamplePanelProps = {
   onClose: () => void;
+  onPreviewPlayingChange: (playing: boolean) => void;
 };
 
 /**
@@ -17,7 +18,7 @@ type VideoExamplePanelProps = {
  * it never touches the media-model catalog or the composer draft. A card click
  * opens a small preview instead of copying the work title into the prompt.
  */
-const VideoExamplePanel: React.FC<VideoExamplePanelProps> = ({ onClose }) => {
+const VideoExamplePanel: React.FC<VideoExamplePanelProps> = ({ onClose, onPreviewPlayingChange }) => {
   const { t } = useTranslation();
   const [videos, setVideos] = useState<TvShowVideo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,6 +63,13 @@ const VideoExamplePanel: React.FC<VideoExamplePanelProps> = ({ onClose }) => {
     observer.observe(rail);
     return () => observer.disconnect();
   }, [updateEdges, videos.length]);
+
+  useEffect(() => () => onPreviewPlayingChange(false), [onPreviewPlayingChange]);
+
+  const stopPreview = () => {
+    onPreviewPlayingChange(false);
+    setPreviewVideo(null);
+  };
 
   const scrollRail = (direction: -1 | 1) => {
     const rail = railRef.current;
@@ -170,7 +178,7 @@ const VideoExamplePanel: React.FC<VideoExamplePanelProps> = ({ onClose }) => {
         footer={null}
         unmountOnExit
         autoFocus={false}
-        onCancel={() => setPreviewVideo(null)}
+        onCancel={stopPreview}
         style={{ width: 'min(860px, 92vw)' }}
       >
         {previewVideo ? (
@@ -183,6 +191,10 @@ const VideoExamplePanel: React.FC<VideoExamplePanelProps> = ({ onClose }) => {
                 controls
                 playsInline
                 preload='metadata'
+                onPlaying={() => onPreviewPlayingChange(true)}
+                onPause={() => onPreviewPlayingChange(false)}
+                onEnded={() => onPreviewPlayingChange(false)}
+                onError={() => onPreviewPlayingChange(false)}
                 className={styles.previewMedia}
               />
             ) : previewVideo.coverUrl ? (

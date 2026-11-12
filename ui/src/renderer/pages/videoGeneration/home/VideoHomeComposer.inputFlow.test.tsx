@@ -1,4 +1,5 @@
 import * as bunTest from 'bun:test';
+import { readFileSync } from 'node:fs';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 // @ts-expect-error jsdom has no local declaration in this workspace
@@ -14,6 +15,8 @@ import videoZh from '@renderer/services/i18n/locales/zh-CN/videoGeneration.json'
 import { ThemeContext, type ThemeContextValue } from '@renderer/hooks/context/ThemeContext';
 import { CloudAuthContext } from '@renderer/hooks/context/CloudAuthContext';
 import { CreditsContext } from '@renderer/hooks/context/CreditsContext';
+
+const homeCss = readFileSync(new URL('./home.module.css', import.meta.url), 'utf8');
 
 const { afterAll, beforeAll, describe, expect, test } = bunTest as unknown as {
   afterAll: (callback: () => void | Promise<void>) => void;
@@ -159,6 +162,15 @@ describe('home video composer input flow', () => {
 
     const textarea = container.querySelector('textarea');
     expect(textarea).not.toBeNull();
+
+    // The composer surface must follow the app theme tokens (light/dark plus
+    // CSS skins) instead of an inline canvas-editor palette. A regression here
+    // means light themes can leave the input box dark.
+    const composerShell = container.querySelector('.canvas-composer-shell') as HTMLElement | null;
+    expect(composerShell).not.toBeNull();
+    expect(composerShell?.getAttribute('style')).toBeNull();
+    expect(homeCss).toContain('var(--color-bg-2');
+    expect(homeCss).not.toContain('--workspace-surface-strong');
     // jsdom 30 + React 19 does not route a native textarea input through the
     // same onChange path as WebView2. Invoke the public onChange prop directly
     // so this test still locks the real composer state -> submit boundary.

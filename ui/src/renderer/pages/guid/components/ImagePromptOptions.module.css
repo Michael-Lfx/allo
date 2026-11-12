@@ -66,6 +66,65 @@
   background: var(--flowy-raised);
 }
 
+/*
+ * The shared Arco control contract paints controls from the active Arco theme
+ * tokens with !important. If the app chrome is light but the Arco theme state
+ * is still dark (theme switch race / stale body attribute), these small image
+ * parameter selects keep the dark control surface. Scope an explicit light
+ * surface to the light document theme so the parameter row always matches the
+ * page it sits on; dark themes are untouched.
+ */
+:global(html[data-theme='light']) .select :global(.arco-select-view) {
+  border-color: rgba(17, 24, 39, 0.12) !important;
+  background-color: #ffffff !important;
+  color: #1d1d1f !important;
+}
+
+:global(html[data-theme='light']) .select :global(.arco-select-view):hover {
+  border-color: rgba(17, 24, 39, 0.22) !important;
+}
+
+:global(html[data-theme='light']) .select :global(.arco-select-view) :global(.arco-select-view-input),
+:global(html[data-theme='light']) .select :global(.arco-select-view) :global(.arco-select-view-value) {
+  color: #1d1d1f !important;
+}
+
+:global(html[data-theme='light']) .select :global(.arco-select-view) :global(.arco-select-view-placeholder) {
+  color: #6e6e73 !important;
+}
+
+:global(html[data-theme='light']) .select :global(.arco-select-view) :global(.arco-tag) {
+  background-color: rgba(29, 29, 31, 0.06) !important;
+  color: #1d1d1f !important;
+}
+
+:global(html[data-theme='light']) .select :global(.arco-select-view) :global(.arco-tag) :global(.arco-tag-close-btn) {
+  color: #6e6e73 !important;
+}
+
+:global(html[data-theme='light']) .selectPopup :global(.arco-select-popup) {
+  border-color: rgba(17, 24, 39, 0.12) !important;
+  background-color: #ffffff !important;
+  color: #1d1d1f !important;
+}
+
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option) {
+  background-color: #ffffff !important;
+}
+
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option:not(.arco-select-option-disabled)) {
+  color: #1d1d1f !important;
+}
+
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-disabled) {
+  color: #8e8e93 !important;
+}
+
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-hover),
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-selected) {
+  background-color: rgba(29, 29, 31, 0.06) !important;
+}
+
 @media (max-width: 720px) {
   .strip {
     flex: 1 1 100%;

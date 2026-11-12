@@ -13,7 +13,7 @@ const PITCH_X = 92;
 const PITCH_Y = 64;
 const CARD_W = 68;
 const CARD_H = 38;
-/** Click wave: runs over the whole wall, this many ms per cell of distance. */
+/** Click wave delay per cell of distance. */
 const WAVE_STEP_MS = 55;
 /** Within this many cells (about three rings) cards do a full flip and change picture. */
 const WAVE_FLIP_RINGS = 3.2;
@@ -23,7 +23,9 @@ const WAVE_SQUEEZE_MIN = 0.03;
 /** Brightening that rides on the wavefront, mostly over the flipping rings (cells). */
 const WAVE_GLOW_REACH = 4.5;
 /** Ambient shimmer: a soft patch of cards fades in and out every few seconds. */
-const AMBIENT_EVERY_MS = 2200;
+const AMBIENT_EVERY_MS = 4800;
+const MAX_AMBIENT_CARDS = 6;
+const WAVE_INTERVAL_MS = 800;
 const AMBIENT_RADIUS = 1.8;
 /** Pointer position meaning "no hover": far off the grid, so every glow is 0. */
 const OFF_GRID = -100;
@@ -146,7 +148,7 @@ function prefersReducedMotion(): boolean {
  * Hover lifts the card under the pointer and reveals its neighbors with a soft
  * falloff (blank frames show a hidden wireframe only while lit); a click
  * switches the card to another wireframe with a flip, and a wave spreads over
- * the whole wall: full flips in the nearest three rings, a fading squeeze beyond; now and then a small patch of cards
+ * near the clicked card: full flips in the nearest rings, a fading squeeze just outside; now and then a small patch of cards
  * shimmers in and out on its own.
  *
  * Performance: one React render per resize. Hover writes two CSS variables on
@@ -224,7 +226,9 @@ const SlideCardWall: React.FC = () => {
     };
   }, [size.offsetX, size.offsetY]);
 
-  // --- Click: the card flips to a new wireframe, then a flip wave runs over the whole wall. ---
+  const lastWaveAt = useRef(-Infinity);
+
+  // The clicked card always responds. Limit overlapping waves on nearby cards.
   const handleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const wall = wallRef.current;
     const card = (event.target as HTMLElement).closest<HTMLElement>('[data-cell]');
@@ -234,12 +238,16 @@ const SlideCardWall: React.FC = () => {
       return;
     }
     flipCard(card, 0, switchPattern);
+    const now = performance.now();
+    if (now - lastWaveAt.current < WAVE_INTERVAL_MS) return;
+    lastWaveAt.current = now;
 
     const col = Number(card.dataset.col);
     const row = Number(card.dataset.row);
     for (const other of wall.querySelectorAll<HTMLElement>('[data-cell]')) {
       if (other === card) continue;
       const distance = Math.hypot(Number(other.dataset.col) - col, (Number(other.dataset.row) - row) * 1.25);
+      if (distance > WAVE_GLOW_REACH) continue;
       const delay = distance * WAVE_STEP_MS;
       if (distance <= WAVE_FLIP_RINGS) {
         flipCard(other, delay, waveSwap);
@@ -263,9 +271,11 @@ const SlideCardWall: React.FC = () => {
   // --- Ambient shimmer: now and then a few cards light up and fade again. ---
   useEffect(() => {
     const wall = wallRef.current;
-    if (!wall || size.cols === 0 || prefersReducedMotion()) return;
+    if (!wall || size.cols === 0) return;
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const active = new Set<Animation>();
+    let timer: number | undefined;
     const spark = () => {
-      if (document.hidden) return;
       // Keep the patch out of the bottom center, where the panel covers the wall.
       let col = 0;
       let row = 0;
@@ -276,6 +286,7 @@ const SlideCardWall: React.FC = () => {
         if (!underPanel) break;
       }
       for (const card of wall.querySelectorAll<HTMLElement>('[data-cell]')) {
+        if (active.size >= MAX_AMBIENT_CARDS) break;
         if (card.dataset.ambient !== undefined) continue;
         const distance = Math.hypot(Number(card.dataset.col) - col, (Number(card.dataset.row) - row) * 1.25) / AMBIENT_RADIUS;
         if (distance >= 1) continue;
@@ -283,23 +294,34 @@ const SlideCardWall: React.FC = () => {
         if (card.dataset.blank !== undefined) shufflePattern(card);
         const peak = Math.pow(1 - distance, 1.4) * 0.85;
         card.dataset.ambient = '';
-        card
-          .animate([{ '--wall-ambient': 0 }, { '--wall-ambient': peak }, { '--wall-ambient': 0 }] as Keyframe[], {
-            duration: 4200,
-            delay: distance * 240,
-            easing: 'ease-in-out',
-          })
-          .finished.catch(() => undefined)
-          .finally(() => {
-            delete card.dataset.ambient;
-          });
+        const animation = card.animate(
+          [{ '--wall-ambient': 0 }, { '--wall-ambient': peak }, { '--wall-ambient': 0 }] as Keyframe[],
+          { duration: 1100, delay: distance * 160, easing: 'ease-in-out' },
+        );
+        active.add(animation);
+        void animation.finished.catch(() => undefined).finally(() => {
+          active.delete(animation);
+          delete card.dataset.ambient;
+        });
       }
     };
-    const first = window.setTimeout(spark, 1100);
-    const timer = window.setInterval(spark, AMBIENT_EVERY_MS);
+    const stop = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+      for (const animation of active) animation.cancel();
+      active.clear();
+    };
+    const sync = () => {
+      stop();
+      if (!document.hidden && !motion.matches) timer = window.setInterval(spark, AMBIENT_EVERY_MS);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    motion.addEventListener('change', sync);
     return () => {
-      window.clearTimeout(first);
-      window.clearInterval(timer);
+      stop();
+      document.removeEventListener('visibilitychange', sync);
+      motion.removeEventListener('change', sync);
     };
   }, [size.cols, size.rows]);
 
