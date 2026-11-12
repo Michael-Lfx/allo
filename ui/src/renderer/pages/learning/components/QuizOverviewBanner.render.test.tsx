@@ -6,8 +6,9 @@
 
 /** 检测感知横幅（u7）渲染两态 + 行为契约：
  * - 有 due 课程：横幅出现，每行课程名 + N/K 读数（复用 quizProgressReading
- *   词典键）+ due 标记；行点击 → onOpenCourse(course_id)（index.tsx 接线
- *   navigate，本组件不持路由）；非 due 课程不占行（留在课程页内入口）；
+ *   词典键）+ due 标记；行点击 → onOpenCourse(course_id)（index.tsx u10
+ *   接线：置 quizSessionCourseId + navigate /learn/{id}——直开检测会话，
+ *   本组件不持路由，只透传单回调）；非 due 课程不占行（留在课程页内入口）；
  *   后端已按 due 优先排序，前端不重排（按传入序渲染）。
  * - 无 due（空数组 / 全非 due）：整块缺席——与 ReviewBanner 常驻策略刻意
  *   不同（复习天然有货，检测是稀事件），空壳不渲染。
@@ -165,11 +166,12 @@ describe('QuizOverviewBanner（u7 检测感知横幅）', () => {
       }),
     ]);
     const markup = html();
-    expect(markup).toContain('检测到期');
+    expect(markup).toContain('检测已就绪');
     expect(markup).toContain('Alpha course');
     expect(markup).toContain('Beta course');
-    // due 标记逐行在场
-    expect(markup).toContain('已到期');
+    // due 标记逐行在场（u10 R1：时间语义词「已到期」→ 积累制「已就绪」；
+    // 「已就绪」是标题子串，故按出现次数断言：标题 1 次 + 2 行标记 = 3）
+    expect(markup.split('已就绪').length - 1).toBe(3);
     // N/K 读数复用课程页入口同款词典键
     expect(markup).toContain('距上次检测已积累 8/6 次学新结算');
     expect(markup).toContain('距上次检测已积累 6/6 次学新结算');
@@ -187,10 +189,10 @@ describe('QuizOverviewBanner（u7 检测感知横幅）', () => {
       course({ course_id: 'notdue-c', title: 'Gamma course', settled_count: 3, due: false }),
     ]);
     expect(allNotDue.html()).toBe('');
-    expect(allNotDue.html()).not.toContain('检测到期');
+    expect(allNotDue.html()).not.toContain('检测已就绪');
   });
 
-  test('行点击 → onOpenCourse(course_id)（index.tsx 接线 navigate /learn/{id}）', async () => {
+  test('行点击 → onOpenCourse(course_id)（index.tsx u10 接线：置 quizSessionCourseId + navigate /learn/{id}）', async () => {
     const opened: string[] = [];
     await mountBanner('zh-CN', async () => [
       course({ course_id: 'due-a', title: 'Alpha course' }),
@@ -242,9 +244,9 @@ describe('QuizOverviewBanner（u7 检测感知横幅）', () => {
       course({ course_id: 'due-a', title: 'Alpha course', settled_count: 8 }),
     ]);
     const markup = html();
-    expect(markup).toContain('Quiz due');
-    expect(markup).toContain('Due');
+    expect(markup).toContain('Quiz ready');
+    expect(markup).toContain('Ready');
     expect(markup).toContain('8/6 new-lesson settlements');
-    expect(markup).not.toContain('检测到期');
+    expect(markup).not.toContain('检测已就绪');
   });
 });

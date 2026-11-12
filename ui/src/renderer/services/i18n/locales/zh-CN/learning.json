@@ -733,6 +733,6 @@
   "quizReportRowXp": "+{{xp}} XP",
   "quizReportFinish": "完成",
   "quizWeakReviewStart": "开始薄弱复习",
-  "quizOverviewTitle": "检测到期",
-  "quizOverviewDueTag": "已到期"
+  "quizOverviewTitle": "检测已就绪",
+  "quizOverviewDueTag": "已就绪"
 }
