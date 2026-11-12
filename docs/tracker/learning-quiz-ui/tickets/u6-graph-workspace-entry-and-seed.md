@@ -58,8 +58,9 @@ code-review 统一轮）。
   cleanupFresh 补删概念/挂接/批次 + 备份名同秒去碰撞（顺手修重跑撞
   VACUUM INTO 目标的既有坑）。
 - 验证：typecheck / check:i18n（12435 keys）/ 渲染 3 用例 / learning 回归
-  388 pass / theme+dead-css 绿 / **seed 副本 41 项断言 EXIT 0**（--graph 与
-  --graph --fresh 双跑，含软闸 blocked SQL 断言）。
+  388 pass / theme+dead-css 绿 / **seed 断言已内置脚本，重跑即验**（u6 修复
+  F8：核心断言进脚本——行数 / 软闸低 R 卡 / due 翻转 / marker 幂等，
+  mismatch 非零退出；原「41 项断言」为一次性手跑未提交，措辞就此修正）。
 - 已知限制（留痕）：图/传统两模式 checkin 指纹相同（goal 40 + count 54），
   两课共存时 --fresh 互清对方指纹打卡——v2 既有限制，脚本注释留痕。
 - 真机走查：副本已覆盖 SQL 面；桌面走查清单 = `--graph` 灌库 → 开图课程 →
