@@ -5,22 +5,17 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Added an isolated UniBuddy desktop OTA channel on ModelScope, triggered by `unibuddy-vX.Y.Z` through the shared three-platform release workflow, with product-specific updater manifests and macOS permission text, strict CN/AI origin verification, no GitHub `releases/latest` coupling, and unchanged Flowy update routing.
-- Optimized computer-use observation with semantic, automatic, text, and visual modes; window-scoped screenshots; isolated per-caller references; richer target selectors; and wait-for-state actions across the stdio and gateway capability surfaces.
-- Aligned voice companion microphone device routing with industry standards: removed virtual device blacklists to ensure reliable capture across remote desktop environments (such as NetEase UU Remote and ToDesk), added explicit microphone device selection in settings with dynamic hot-swapping, and enforced physical microphone stream release for privacy indicator compliance.
-- Upgraded voice companion KWS engine to official 9MB Sherpa-ONNX bilingual Zipformer with dynamic Chinese pinyin and English CMUdict phoneme compilation, enabling real-time hot-reloaded custom wake words without restarting the application.
-- Overhauled offline TTS pipeline to bundle all 10 Matcha-TTS and Vocos acoustic assets into ModelManager's 17-file SHA-256 verification and download pipeline, prioritizing ModelScope and hf-mirror to prevent silent Edge-TTS fallbacks upon reinstallation.
-- Redesigned voice settings page into a unified, minimalist preferences card with single-line clearable wake words, automatic dirty pulse animations, and merged capability diagnostics.
-- Added locale-adaptive preset voice responses for standalone wake ("我在" / "I'm here") and session dismiss ("好的，再见" / "Goodbye") with punctuation-tolerant ASR prefix stripping.
-- Enhanced desktop pet window geometry with 6px edge docking and 36px threshold-buffered hover undocking, preventing bezel-jumping and re-docking loops across multi-monitor setups.
-- Voice companion runtime and host manager are physically modularized into dedicated submodules (`tests`, `announcements`, `diagnostics`, `recorder`), reducing single-file complexity by over 50% while strictly preserving all lock lifecycles, states, and function token signatures.
-- Fixed the voice session failure chain where task A completion dropped utterance B and caused utterance C to fail with `binding_invalid`. Added atomic lock-guarded ownership checks, accurate epoch advance reconciliation, and isolation of stale callbacks.
-- Prioritized ModelScope mirror across all network environments for local voice acoustic models and hardened download failover with HTTP Range chunk resumption and relaxed speed gate timeouts.
-- Added automated end-to-end joint trace pipeline (`bun run test:voice-joint-trace`) with built-in sanitized fixtures and cryptographic SHA-256 verification.
-- Hardened Windows process tree lifecycle management in test runners using native `CREATE_SUSPENDED` and Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), eliminating pre-assignment descendant escape windows and ensuring clean subtree termination.
+## v1.7.1 - 2026-11-12
 
-- Renamed the voice companion end to end: the daemon, its environment variables, control header, log files and the voice capability row in settings now use `voice-companion` only. The retired `ai-mate` names, environment fallbacks and packaging lookups were removed, and the settings row no longer borrows the old product name.
-- Fixed the voice self-check crash after reinstalling the voice suite: the English Matcha TTS download now includes the required espeak-ng voice definitions, an incomplete suite is detected as repairable instead of crashing the daemon, and self-check fixtures prefer the online voice that the English wake-word model was validated against. The voice settings page no longer repeats the verification title/count and its capability chain wraps without orphan arrows or overflow. Rows now stack by their own container width instead of a viewport media query (high-DPI desktop windows no longer collapse the row layout), and releasing disk space is a named "Uninstall voice suite" action that asks for confirmation in a dialog before deleting.
+- The home stage is rebuilt around capability entries, an ambient gallery, a video entry, and a membership card that flips to check-in. Generated images stay in the conversation, and preview downloads go through the system save dialog.
+- Voice calls can pick a microphone, including remote-desktop devices, and hot-reload custom wake words. Wake and goodbye play a short reply in the current language. Offline voice models resume from ModelScope, reinstall no longer crashes self-check, and removing the voice suite asks for confirmation. Companion replies can use the premium voice. The retired `ai-mate` name is gone.
+- The desktop pet docks 6px from the screen edge and no longer jumps back onto the bezel. A finished voice utterance no longer drops the next one.
+- Computer-use observation supports semantic, automatic, text, and visual modes, with window-scoped screenshots and wait-for-state actions.
+- Presentations can be created from the home panel with the bundled ppt-master skill, including slideshow mode. Deep Research and the Guizang web-deck skill ship built in, and the slash menu lists the skill library.
+- Models show plan-tier badges and lock models the current plan cannot use. Video models show value and pass-rate tags and default to Wan 3.0. Storyboard shots bind to the cast, set, and product plates.
+- Expert search matches name, intro, and tags, and an expert session no longer attaches every installed MCP. Skill Market install clicks register, and listings that cannot be downloaded are hidden. Deliverables render as file cards with type icons.
+- Flowy automatic updates stay on the Flowy channel. UniBuddy publishes on its own channel and does not replace this feed.
+
 ## v1.7.0 - 2026-10-30
 
 - Windows installers include the voice companion daemon and app-local VC++ runtime. Hey Flowy wake aliases are expanded; a command spoken with a wake phrase follows the normal conversation route without a second transcription.
