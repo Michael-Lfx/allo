@@ -712,6 +712,7 @@
   "quizGradeLowHint": "This round surfaced real gaps — no rush. Patch the nodes one by one and the next check will feel much steadier.",
   "quizFoldedNoXp": "Already settled today: coverage kept, no duplicate XP",
   "quizNotDueHint": "Not due yet — unlocks after {{trigger}} new-lesson settlements",
+  "quizGraphEntryContext": "Quizzes run opposite to recommendations: recommendations move you forward to new nodes, quizzes revisit the nodes you have already settled.",
   "quizMissingAnswers": "{{count}} question(s) left unanswered — answer every question to settle",
   "quizLoadFailed": "Failed to load the quiz. Please try again.",
   "quizPreparing": "Preparing your quiz, please wait…",
