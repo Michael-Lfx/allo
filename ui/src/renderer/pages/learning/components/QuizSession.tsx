@@ -185,6 +185,20 @@ export function quizReportScore(covered: QuizRoundNodeReport[]): {
   return { answered, correct };
 }
 
+/** u9 R3 薄弱集提取：covered[] 逐节点 correct/answered 映射 quizReportGrade
+ *  ≤ half（half/low 两档）的 node_id 集合，按对账行顺序去重保序。零作答行
+ *  grade = null（契约外形态），不计入薄弱集——提取只认真实分级。 */
+export function quizWeakNodeIds(covered: QuizRoundNodeReport[]): string[] {
+  const weak: string[] = [];
+  for (const node of covered) {
+    const grade = quizReportGrade(node.correct, node.answered);
+    if ((grade === 'half' || grade === 'low') && !weak.includes(node.node_id)) {
+      weak.push(node.node_id);
+    }
+  }
+  return weak;
+}
+
 /** 三档分级文案（u1 词典已备）+ low 兜底档（u4 对称追加），键面静态可查
  *  （i18n 提取器友好），档位 → 文案单映射。 */
 const gradeLabel: Record<QuizReportGrade, string> = {
@@ -206,11 +220,24 @@ const gradeHint: Record<QuizReportGrade, string> = {
  *  文案与口语化语境句。逐题校准点 `questions[]` 本票不呈现（已落盘喂校准
  *  面，R3 裁决见票面 Resolution）。props 自足显式传入（渲染测试直接装配，
  *  QuizCard 同纪律）；「完成」按钮经 onFinish 触发控制器 finish →
- *  onFinished（集成侧刷新 N/K 归零读数并卸载会话）。 */
-export function QuizReport({ report, onFinish }: { report: QuizRoundReport; onFinish: () => void }) {
+ *  onFinished（集成侧刷新 N/K 归零读数并卸载会话）。u9 R3：对账行之后、
+ *  完成钮之前——薄弱集非空时呈「开始薄弱复习」CTA（quizWeakNodeIds 提取，
+ *  经 onStartWeakReview 开节点集 scoped 复习会话；集成侧裁决先关检测
+ *  Modal 再开复习 Modal，见 index.tsx 接线注释）。 */
+export function QuizReport({
+  report,
+  onFinish,
+  onStartWeakReview,
+}: {
+  report: QuizRoundReport;
+  onFinish: () => void;
+  /** u9 R3：薄弱集复习入口（可选——静态渲染测试可不传）。 */
+  onStartWeakReview?: (nodeIds: string[]) => void;
+}) {
   const { t } = useTranslation();
   const { answered, correct } = quizReportScore(report.covered);
   const grade = quizReportGrade(correct, answered);
+  const weakNodeIds = quizWeakNodeIds(report.covered);
   return (
     <div className='flex flex-col gap-12px py-8px'>
       <div className='flex flex-wrap items-center gap-x-14px gap-y-4px'>
@@ -269,6 +296,18 @@ export function QuizReport({ report, onFinish }: { report: QuizRoundReport; onFi
           </div>
         ))}
       </div>
+      {/* u9 R3 报告尾部 CTA：薄弱集非空才渲染——行动语义与软闸条同源
+          （复习队列真实推进才能改记忆），进同一套 scoped 复习会话。 */}
+      {weakNodeIds.length > 0 && onStartWeakReview && (
+        <Button
+          type='primary'
+          size='small'
+          className='self-start'
+          onClick={() => onStartWeakReview(weakNodeIds)}
+        >
+          {t('learning.quizWeakReviewStart')}
+        </Button>
+      )}
       <Button type='primary' size='small' className='self-start' onClick={onFinish}>
         {t('learning.quizReportFinish')}
       </Button>
@@ -290,6 +329,12 @@ export interface QuizSessionProps {
    * 集成侧据此卸载本组件。u5 R2：start 409 后控制器经 onRequestClose 复用
    * 本回调关闭会话（关闭语义单出口）。 */
   onClose: () => void;
+  /** u9 R3：报告相「开始薄弱复习」CTA（薄弱集 = quizWeakNodeIds(covered)，
+   * 分级 ≤ half 的 node_id 集合）。挂载形态裁决（票面授权）：集成侧先关
+   * 检测 Modal 再开复习 Modal、不叠加——双全宽 Modal 叠加是双层遮罩
+   * （关闭次序/视觉重），且报告相回合已结算完毕，关闭零损失；与 quiz
+   * 容器「容器互斥，不可能双开」既有纪律同构（index.tsx 接线注释）。 */
+  onStartWeakReview?: (nodeIds: string[]) => void;
 }
 
 /** 测验会话容器（u3 R1 + u4 报告相 + u5 边界门）：挂载即 quizStart
@@ -299,7 +344,13 @@ export interface QuizSessionProps {
  * 链路）。u5：loading 相呈现组卷等待文案（R1）；409（R2）与异常回合
  * （R3）的分流在控制器，容器只透传 onConflict/onRequestClose。挂载接线由
  * 集成收口（u2 独立票）——本组件不自触发开测以外的入口。 */
-export function QuizSession({ courseId, onFinished, onConflict, onClose }: QuizSessionProps) {
+export function QuizSession({
+  courseId,
+  onFinished,
+  onConflict,
+  onClose,
+  onStartWeakReview,
+}: QuizSessionProps) {
   const { t } = useTranslation();
   const { state, start, grade, next, complete, finish, close } = useQuizSession({
     courseId,
@@ -383,8 +434,9 @@ export function QuizSession({ courseId, onFinished, onConflict, onClose }: QuizS
       )}
       {state.phase === 'report' && state.report !== null && (
         // u4 R1/R4：全卷报告在容器内呈现（总净入账 + 逐节点对账 + 分级），
-        // 「完成」才触发 onFinished（集成侧刷新 N/K 并卸载）
-        <QuizReport report={state.report} onFinish={finish} />
+        // 「完成」才触发 onFinished（集成侧刷新 N/K 并卸载）；u9 R3：薄弱
+        // 集非空时对账行后多一枚「开始薄弱复习」CTA（透传集成侧回调）。
+        <QuizReport report={state.report} onFinish={finish} onStartWeakReview={onStartWeakReview} />
       )}
       {state.phase === 'completed' && (
         // finish 已交报告（onFinished 触发），集成侧随即卸载；此帧为兜底空态

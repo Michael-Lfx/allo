@@ -241,6 +241,7 @@ const mountGraphWorkspace = async (
               onAttempt={noop}
               onGenerate={noop}
               onStartQuiz={onStartQuiz}
+              onStartWeakReview={noop}
               onRefresh={noop}
             />
           </MemoryRouter>

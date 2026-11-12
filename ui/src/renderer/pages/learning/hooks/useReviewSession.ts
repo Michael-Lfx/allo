@@ -225,6 +225,40 @@ export function useReviewSession({
     [t, setBusyId]
   );
 
+  /** u9 R3 软闸/报告薄弱集行动：开「节点集」范围的复习会话（后端 R2 多值
+   * node_id 过滤，scoped 会话不下发全量队列）。due_only=false 早练语义——
+   * 未到期卡同批出示且真实推进（due_count=0 非死态，当日未推进过的卡允许
+   * 提前练一次）。不带课程过滤：供给节点可能跨课程（ready_partition 跨课
+   * 程取教师），课程过滤会把跨课程供给卡静默滤空——复习队列按用户维度取
+   * 卡，节点集合本身就是作用域。返回是否真正开窗（空队列只提示）。 */
+  const startScopedReviewSession = useCallback(
+    async (nodeIds: string[]): Promise<boolean> => {
+      if (nodeIds.length === 0) return false;
+      setBusyId('review-session');
+      try {
+        // 节点集会话与课程复习同款：专注该集合全部已入队卡片（含未到期），
+        // 用更大的队列上限。
+        const fresh = await learningApi.listDueReviews(100, [], {
+          dueOnly: false,
+          nodeIds,
+        });
+        if (fresh.length === 0) {
+          Message.info(t('learning.noScopedReviews'));
+          return false;
+        }
+        setSessionQueue(fresh);
+        setSessionOpen(true);
+        return true;
+      } catch (sessionError) {
+        Message.error(errorMessage(t, sessionError));
+        return false;
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [t, setBusyId]
+  );
+
   return {
     sessionOpen,
     setSessionOpen,
@@ -239,5 +273,6 @@ export function useReviewSession({
     markEditPending,
     startReviewSession,
     startCourseReviewSession,
+    startScopedReviewSession,
   };
 }

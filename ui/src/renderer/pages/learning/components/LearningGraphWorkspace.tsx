@@ -103,6 +103,9 @@ const LearningGraphWorkspace: React.FC<{
   /** u6 接线位：打开测验会话容器（index.tsx 同步 setState；409 边界态
    * 归 QuizSession 容器处理，入口卡零 loading 态）。 */
   onStartQuiz: () => void;
+  /** u9 R3 接线位：软闸主行动——开薄弱节点集 scoped 复习会话（index.tsx
+   * 接 startScopedReviewSession；nodeIds = 供给节点集合，去重保序）。 */
+  onStartWeakReview: (nodeIds: string[]) => void;
   onRefresh: () => void;
 }> = ({
   detail,
@@ -114,6 +117,7 @@ const LearningGraphWorkspace: React.FC<{
   onAttempt,
   onGenerate,
   onStartQuiz,
+  onStartWeakReview,
   onRefresh,
 }) => {
   const { t } = useTranslation();
@@ -170,7 +174,7 @@ const LearningGraphWorkspace: React.FC<{
     [lessonsById, selectedLessonId, primaryReadyId]
   );
 
-  // 任意节点进入学习视图（u8）：软闸建议条「去复习供给节点」与学习记录页签
+  // 任意节点进入学习视图（u8）：软闸建议条「重读正文」次行动与学习记录页签
   // 节点行共用的同一条路径——主推荐卡「点击即进内容」的选中机制原样复用。
   // 选中不限就绪集：lessonsById 覆盖全部节点，被挡/已完成节点照常渲染正文
   // （CONTEXT.md 软闸词条「学习者仍可从历史记录进入任何节点」）；不在本课的
@@ -183,6 +187,35 @@ const LearningGraphWorkspace: React.FC<{
     },
     [lessonsById]
   );
+
+  // ── 软闸行动闭环（u9 R3/R4）：多条 blocked 聚合为一 + 双行动 + 降噪 ──────
+  // 薄弱节点 = blocked 的供给节点集（后端已按最差 r 升序、≤3 截断）；多候选
+  // 可能共享同一供给节点，按首次出现去重保序。行动裁决（票面机制结论）：
+  // r 回升唯一途径 = 复习队列真实推进——主行动开节点集 scoped 复习会话
+  // （due_only=false 早练语义），重读正文只是辅助记忆、不推卡，降为次行动。
+  const weakNodes = useMemo(() => {
+    const seen = new Set<string>();
+    const nodes: Array<{ id: string; title: string; r: number; dueCount: number }> = [];
+    for (const blocked of graph?.blocked ?? []) {
+      if (seen.has(blocked.supplier_lesson_id)) continue;
+      seen.add(blocked.supplier_lesson_id);
+      nodes.push({
+        id: blocked.supplier_lesson_id,
+        title: blocked.supplier_title,
+        r: blocked.r,
+        dueCount: blocked.due_count,
+      });
+    }
+    return nodes;
+  }, [graph?.blocked]);
+  const weakNodeIds = useMemo(() => weakNodes.map((node) => node.id), [weakNodes]);
+  const weakDueTotal = weakNodes.reduce((sum, node) => sum + node.dueCount, 0);
+  // 列表首位即最差 r 的供给节点（后端排序保序）——「重读正文」落点。
+  const weakestNode = weakNodes[0] ?? null;
+  // 降噪（R4）：当前选中节点已在薄弱集里（正在重读正文）时建议条收起——
+  // 同一提醒不重复打扰；离开该节点后建议条随选中态恢复。
+  const weakBarCollapsed =
+    selectedLessonId !== null && weakNodeIds.includes(selectedLessonId);
 
   // ── 知识结构状态（读侧投影 + 生成中/失败态）─────────────────────────────
   const [structure, setStructure] = useState<LearningStructureView | null>(null);
@@ -757,37 +790,52 @@ const LearningGraphWorkspace: React.FC<{
             {t('learning.learningGraphStructureHint')}
           </Text>
         )}
-        {/* R 软闸建议条：结构就绪但供给节点已遗忘（ADR-0009 Amendment 1）。
-            u8 兑现「直达复习」：行动钮选中供给节点进学习视图（正文即补习
-            材料，到期卡自然在复习队列）；供给节点不在本课（跨课程供给，
-            lessonsById 无行）时不出钮——保持纯文字建议，不做假跳转。 */}
-        {graph.blocked.map((blocked) => {
-          const supplier = lessonsById.get(blocked.supplier_lesson_id) ?? null;
-          return (
-            <Alert
-              key={blocked.lesson_id}
-              type='warning'
-              content={t('learning.learningGraphBlockedAdvice', {
-                title: blocked.title,
-                supplier: blocked.supplier_title,
-                percent: Math.round(blocked.r * 100),
-                due: blocked.due_count,
-              })}
-              action={
-                supplier ? (
+        {/* R 软闸建议条（u9 R3 聚合为一）：结构就绪但供给节点已遗忘
+            （ADR-0009 Amendment 1）。多条 blocked 合并一条——薄弱节点按最差
+            r 升序列名（listSeparator 随语言）；主行动「复习薄弱节点」开节点
+            集 scoped 复习会话（due_only=false 早练语义——r 回升唯一途径是
+            复习队列真实推进）；次行动「重读正文」= u8 既有 openNode 跳转
+            （辅助记忆不推卡，降为次钮；最差供给节点不在本课——跨课程供给
+            ——时不出，不做假跳转，主行动不受此限）。文案事实分支（R4）：
+            due_count 求和 > 0 报到期数，= 0 呈早练语境。降噪：选中节点已在
+            薄弱集（正在重读正文）时整条收起。 */}
+        {!weakBarCollapsed && weakestNode !== null && (
+          <Alert
+            type='warning'
+            content={t('learning.learningGraphWeakAdvice', {
+              nodes: weakNodes.map((node) => node.title).join(t('learning.listSeparator')),
+              percent: Math.round(weakestNode.r * 100),
+              dueText:
+                weakDueTotal > 0
+                  ? t('learning.learningGraphWeakAdviceDue', { count: weakDueTotal })
+                  : t('learning.learningGraphWeakAdviceNotDue'),
+            })}
+            action={
+              <span className='flex items-center gap-4px'>
+                <Button
+                  size='mini'
+                  type='primary'
+                  className='!px-6px'
+                  loading={busyId === 'review-session'}
+                  disabled={busyId !== null && busyId !== 'review-session'}
+                  onClick={() => onStartWeakReview(weakNodeIds)}
+                >
+                  {t('learning.learningGraphWeakReviewAction')}
+                </Button>
+                {lessonsById.has(weakestNode.id) && (
                   <Button
                     size='mini'
                     type='text'
                     className='!px-0'
-                    onClick={() => openNode(blocked.supplier_lesson_id)}
+                    onClick={() => openNode(weakestNode.id)}
                   >
-                    {t('learning.learningGraphBlockedGoSupplier')}
+                    {t('learning.learningGraphWeakRereadAction')}
                   </Button>
-                ) : undefined
-              }
-            />
-          );
-        })}
+                )}
+              </span>
+            }
+          />
+        )}
       </div>
 
       {/* 内容区确定高链（d1，二轮修正）：arco 默认 .arco-tabs-content

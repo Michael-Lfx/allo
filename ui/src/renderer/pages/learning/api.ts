@@ -261,11 +261,14 @@ export const learningApi = {
   listDueReviews: (
     limit = 30,
     courseId?: string | string[],
-    options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[] }
+    options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[]; nodeIds?: string[] }
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     const courseIds = courseId === undefined ? [] : Array.isArray(courseId) ? courseId : [courseId];
     for (const id of courseIds) query.append('course_id', id);
+    // u9 节点过滤（R2）：多值 node_id 照 course_id 手工收集——薄弱集复习
+    // 会话只取供给/薄弱节点集合，scoped 会话不下发全量队列。
+    for (const id of options?.nodeIds ?? []) query.append('node_id', id);
     if (options?.dueOnly) query.set('due_only', 'true');
     if (options?.orphan) query.set('orphan', 'true');
     for (const tag of options?.tags ?? []) query.append('tag', tag);
