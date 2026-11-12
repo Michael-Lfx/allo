@@ -712,6 +712,7 @@
   "quizGradeLowHint": "这轮暴露了不少盲区，别急——按对账行逐个节点补一遍，下次检测会稳很多。",
   "quizFoldedNoXp": "同日已结算，本次覆盖保持但不重复计薪",
   "quizNotDueHint": "尚未到期，满 {{trigger}} 次学新结算后开放检测",
+  "quizGraphEntryContext": "检测与推荐方向相反：推荐带你学新节点，检测考的是已结算的节点",
   "quizMissingAnswers": "还有 {{count}} 题未作答，全卷作答后才能结算",
   "quizLoadFailed": "测验加载失败，请重试",
   "quizPreparing": "正在组卷，请稍候…",

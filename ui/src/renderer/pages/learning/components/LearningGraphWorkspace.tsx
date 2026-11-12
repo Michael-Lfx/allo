@@ -62,6 +62,7 @@ import type {
   SystemActionView,
 } from '../types';
 import { LessonBlock } from './LessonStudy';
+import { QuizEntryCard } from './QuizEntryCard';
 import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
@@ -92,19 +93,27 @@ const LearningGraphWorkspace: React.FC<{
   detail: CourseDetail;
   busyId: string | null;
   attemptResults: Record<string, AttemptRecord>;
+  /** 测验进度刷新令牌（u6）：与 CourseWorkspace 同款——进页初值，会话
+   * 结束/冲突回调后 index.tsx bump，QuizEntryCard 随之重拉 N/K。 */
+  quizProgressToken: number;
   onBack: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
   onGenerate: (lesson: Lesson) => void;
+  /** u6 接线位：打开测验会话容器（index.tsx 同步 setState；409 边界态
+   * 归 QuizSession 容器处理，入口卡零 loading 态）。 */
+  onStartQuiz: () => void;
   onRefresh: () => void;
 }> = ({
   detail,
   busyId,
   attemptResults,
+  quizProgressToken,
   onBack,
   onProgress,
   onAttempt,
   onGenerate,
+  onStartQuiz,
   onRefresh,
 }) => {
   const { t } = useTranslation();
@@ -778,7 +787,12 @@ const LearningGraphWorkspace: React.FC<{
               onStart={() => void grow()}
             />
           ) : (
-          <div className='flex h-full min-h-0 gap-12px'>
+          /* 学习视图主列（u6）：两栏区 flex-1 自管滚动，知识检测入口固定
+             在就绪集推荐区之后（Q2 裁决）——推荐轴（前向，未学节点）与
+             检测轴（回向，已结算节点）并存但方向有别，入口常驻视口底缘
+             不随推荐列表/正文滚动没入。 */
+          <div className='flex h-full min-h-0 flex-col gap-10px'>
+            <div className='flex min-h-0 flex-1 gap-12px'>
             <aside className='flex max-h-full w-280px shrink-0 flex-col gap-10px overflow-y-auto'>
               {/* 主推荐卡：当前应学的节点——最重要的学习入口，点击即进入学习 */}
               <div
@@ -901,6 +915,24 @@ const LearningGraphWorkspace: React.FC<{
                 </div>
               )}
             </section>
+            </div>
+            {/* 知识检测入口（u6，Q2 裁决）：就绪集推荐区之后。QuizEntryCard
+                自带 N/K 读数与开测按钮（quiz* 既有词条）；这里只补一条回向
+                语境句——图工作区推荐 = 前向学新，检测 = 回向考已结算节点，
+                两者并存时方向由文案点破。归档课程不渲染也不拉读数（与
+                CourseWorkspace 挂点同存在性语义）。 */}
+            {detail.course.enabled && (
+              <section className='flex flex-col gap-4px'>
+                <Text type='secondary' className='text-12px'>
+                  {t('learning.quizGraphEntryContext')}
+                </Text>
+                <QuizEntryCard
+                  courseId={detail.course.id}
+                  refreshToken={quizProgressToken}
+                  onStartQuiz={onStartQuiz}
+                />
+              </section>
+            )}
           </div>
           )}
         </Tabs.TabPane>

@@ -334,18 +334,37 @@ const LearningPage: React.FC = () => {
     // 传统课程维持大纲导航工作区。
     if (detail.graph) {
       return (
-        <Suspense fallback={<div className='flex h-full items-center justify-center'><Spin /></div>}>
-          <LearningGraphWorkspace
-            detail={detail}
-            busyId={busyId}
-            attemptResults={courseLearning.attemptResults}
-            onBack={() => navigate('/learn')}
-            onProgress={courseLearning.updateProgress}
-            onAttempt={courseLearning.submitAttempt}
-            onGenerate={courseLearning.generateLesson}
-            onRefresh={() => void load()}
-          />
-        </Suspense>
+        <>
+          <Suspense fallback={<div className='flex h-full items-center justify-center'><Spin /></div>}>
+            <LearningGraphWorkspace
+              detail={detail}
+              busyId={busyId}
+              attemptResults={courseLearning.attemptResults}
+              quizProgressToken={quizProgressToken}
+              onBack={() => navigate('/learn')}
+              onProgress={courseLearning.updateProgress}
+              onAttempt={courseLearning.submitAttempt}
+              onGenerate={courseLearning.generateLesson}
+              onStartQuiz={() => setQuizSessionCourseId(detail.course.id)}
+              onRefresh={() => void load()}
+            />
+          </Suspense>
+          {/* 图分支测验会话容器（u6）：与下方传统分支对称接线——
+              onFinished 清位 + bump 令牌（入口卡重拉归零读数）、onConflict
+              只 bump、onClose 卸载；同一组状态位 quizSessionCourseId /
+              quizProgressToken 两分支共用（容器互斥，不可能双开）。 */}
+          {quizSessionCourseId && (
+            <QuizSession
+                courseId={quizSessionCourseId}
+                onFinished={() => {
+                  setQuizSessionCourseId(null);
+                  setQuizProgressToken((token) => token + 1);
+                }}
+                onConflict={() => setQuizProgressToken((token) => token + 1)}
+                onClose={() => setQuizSessionCourseId(null)}
+            />
+          )}
+        </>
       );
     }
     return (
