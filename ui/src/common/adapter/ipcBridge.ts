@@ -1703,7 +1703,7 @@ export const fs = {
   installSkillMarketSkill: httpPost<
     ISkillMarketSkillInstallResponse,
     { source: 'skillhub'; id: string; market_source?: SkillHubMarketContentSource }
-  >('/api/skills/market/skill/install'),
+  >('/api/skills/market/skill/install', undefined, { timeoutMs: 90_000 }),
 };
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import { ipcBridge } from '@/common';
-import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import { BackendRequestError, isBackendHttpError } from '@/common/adapter/httpBridge';
 import { defaultSkillHubMarketSource, useSkillHubMarket } from '@/renderer/pages/settings/skill/useSkillHubMarket';
 import { openExternalUrl } from '@/renderer/utils/platform';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
@@ -45,7 +45,7 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
   const [detailItem, setDetailItem] = useState<MarketItemViewModel | null>(null);
   const [installedMarketIds, setInstalledMarketIds] = useState<Set<string>>(() => new Set());
-  const { data: skills, error: installedError, isLoading: installedLoading, mutate } = useSWR(
+  const { data: skills, error: installedError, mutate } = useSWR(
     active ? AVAILABLE_SKILLS_SWR_KEY : null,
     fetchAvailableSkills,
   );
@@ -53,7 +53,6 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
     () => new Set((skills ?? []).map((skill) => skill.name)),
     [skills],
   );
-  const installedStateLoading = Boolean(active && installedLoading && !skills);
   const installedStateAvailable = Boolean(skills) && !installedError;
   const market = useSkillHubMarket({ enabled: active, defaultSource });
   const selectedSourceLabel = market.source === 'clawhub'
@@ -108,7 +107,12 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
       } catch (error) {
         clearInstallationStatus();
         console.error('Failed to install SkillHub skill:', error);
-        const mapped = marketSkillInstallErrorMessage(isBackendHttpError(error) ? error.code : '');
+        const code = isBackendHttpError(error)
+          ? error.code
+          : error instanceof BackendRequestError && error.kind === 'timeout'
+            ? 'MARKET_SKILL_TIMEOUT'
+            : '';
+        const mapped = marketSkillInstallErrorMessage(code);
         message.error(t(mapped.key, { defaultValue: mapped.fallback }));
       }
     }, [beginInstallation, clearInstallationStatus, markInstalled, message, mutate, t],
@@ -120,14 +124,10 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
       pendingLabel: t('settings.market.installing', { defaultValue: '安装中' }),
       completedLabel: t('settings.market.installed', { defaultValue: '已安装' }),
       resolveState: (item) =>
-        installedStateLoading
-          ? 'checking'
-          : installedStateAvailable && isAdded(item)
-            ? 'completed'
-            : 'ready',
+        installedStateAvailable && isAdded(item) ? 'completed' : 'ready',
       run: handleAdd,
     }),
-    [handleAdd, installedStateAvailable, installedStateLoading, isAdded, t],
+    [handleAdd, installedStateAvailable, isAdded, t],
   );
   const actionState = useMarketActionState(primaryAction);
 
@@ -152,6 +152,10 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
     })),
     [locale, market.items, skillCategoryLabel, t],
   );
+  const visibleMarketIds = useMemo(() => new Set(viewModels.map((item) => item.id)), [viewModels]);
+  useEffect(() => {
+    actionState.releaseHiddenAction(visibleMarketIds);
+  }, [actionState.releaseHiddenAction, visibleMarketIds]);
 
   const handleOpenSource = useCallback(
     async (item: MarketItemViewModel) => {

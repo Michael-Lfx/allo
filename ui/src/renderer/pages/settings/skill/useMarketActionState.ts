@@ -16,6 +16,12 @@ export const canRunMarketAction = (
   resolved === 'error' ||
   (resolved === 'completed' && runWhenCompleted);
 
+/** An in-flight action whose card left the list must not block the cards still on screen. */
+export const shouldReleaseHiddenMarketAction = (
+  activeId: string | null,
+  visibleIds: ReadonlySet<string>,
+): boolean => Boolean(activeId && !visibleIds.has(activeId));
+
 export const useMarketActionState = (primaryAction: MarketPrimaryActionConfig) => {
   const [activeActionItemId, setActiveActionItemId] = useState<string | null>(null);
   const activeActionItemIdRef = useRef<string | null>(null);
@@ -33,21 +39,31 @@ export const useMarketActionState = (primaryAction: MarketPrimaryActionConfig) =
       if (activeActionItemIdRef.current) return;
       const resolved = primaryAction.resolveState?.(viewModel.raw) ?? 'ready';
       if (!canRunMarketAction(resolved, primaryAction.runWhenCompleted)) return;
-      activeActionItemIdRef.current = viewModel.id;
-      setActiveActionItemId(viewModel.id);
+      const actionId = viewModel.id;
+      activeActionItemIdRef.current = actionId;
+      setActiveActionItemId(actionId);
       try {
         await primaryAction.run(viewModel.raw);
       } finally {
-        activeActionItemIdRef.current = null;
-        setActiveActionItemId(null);
+        if (activeActionItemIdRef.current === actionId) {
+          activeActionItemIdRef.current = null;
+          setActiveActionItemId(null);
+        }
       }
     },
     [primaryAction],
   );
 
+  const releaseHiddenAction = useCallback((visibleIds: ReadonlySet<string>) => {
+    if (!shouldReleaseHiddenMarketAction(activeActionItemIdRef.current, visibleIds)) return;
+    activeActionItemIdRef.current = null;
+    setActiveActionItemId(null);
+  }, []);
+
   return {
     activeActionItemId,
     runPrimaryAction,
+    releaseHiddenAction,
     getState,
     isBusy: (id: string) => activeActionItemId === id,
     isDisabled: (viewModel: MarketItemViewModel) => {
