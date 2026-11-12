@@ -108,8 +108,16 @@
   color: #1d1d1f !important;
 }
 
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option) {
+  background-color: #ffffff !important;
+}
+
 :global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option:not(.arco-select-option-disabled)) {
   color: #1d1d1f !important;
+}
+
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-disabled) {
+  color: #8e8e93 !important;
 }
 
 :global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-hover),
