@@ -106,6 +106,10 @@ navigation does not introduce another product object.
   backend-backed preferences.
 - Realtime events arrive through a singleton WebSocket and are demuxed by event
   name.
+- For same-window application events, prefer the typed emitter in
+  `ui/src/renderer/utils/emitter.ts`; unsubscribe when the consumer unmounts.
+  Cross-window Tauri events and backend IPC events remain on their respective
+  adapters and are not transported through this emitter.
 
 ## In-App Notifications
 

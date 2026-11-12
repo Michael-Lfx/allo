@@ -41,4 +41,13 @@ describe('global update availability entry', () => {
     expect(layoutSource.includes("void runCheck('interval')")).toBe(true);
     expect(layoutSource.includes("source === 'startup' || !previouslyAvailable")).toBe(true);
   });
+
+  test('opens through the typed event after the cancellable delay and retains the IPC entry', () => {
+    expect(layoutSource).toMatch(/if \(shouldOpenModal\)\s*\{\s*modalTimer = window\.setTimeout\(\(\) => \{\s*if \(cancelled\) return;\s*emitter\.emit\('app\.update\.open', \{ source \}\);\s*\}, 1_500\)/);
+    expect(layoutSource).toMatch(/if \(modalTimer != null\) window\.clearTimeout\(modalTimer\)/);
+    expect(modalSource).toContain('ipcBridge.update.open.on(handleOpenUpdateModal)');
+    expect(modalSource).toContain("addEventListener('app.update.open', handleOpenUpdateModal)");
+    expect(modalSource).toContain('removeOpenListener();');
+    expect(modalSource).toContain('removeAppOpenListener();');
+  });
 });

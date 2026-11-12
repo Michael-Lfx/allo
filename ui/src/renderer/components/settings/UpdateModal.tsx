@@ -34,6 +34,7 @@ import {
   type UpdateTelemetrySource,
 } from '@/renderer/utils/analytics/updateTelemetry';
 import { isBackgroundDownload } from '@/renderer/utils/update/updateAutoDownload';
+import { addEventListener } from '@/renderer/utils/emitter';
 
 type UpdateStatus =
   | 'checking'
@@ -547,15 +548,10 @@ const UpdateModal: React.FC = () => {
     return `${(bytes / 1024).toFixed(1)} KB`;
   };
 
-  const handleOpenUpdateModal = (payload?: { source?: string } | Event) => {
+  const handleOpenUpdateModal = (payload?: { source?: string }) => {
     let source: UpdateTelemetrySource = 'modal';
-    if (payload && typeof payload === 'object') {
-      if ('detail' in payload) {
-        const detail = (payload as CustomEvent<{ source?: string }>).detail;
-        source = normalizeUpdateTelemetrySource(detail?.source);
-      } else if ('source' in payload) {
-        source = normalizeUpdateTelemetrySource(payload.source);
-      }
+    if (payload && typeof payload === 'object' && 'source' in payload) {
+      source = normalizeUpdateTelemetrySource(payload.source);
     }
     telemetrySourceRef.current = source;
     setVisible(true);
@@ -572,11 +568,11 @@ const UpdateModal: React.FC = () => {
 
   useEffect(() => {
     const removeOpenListener = ipcBridge.update.open.on(handleOpenUpdateModal);
-    window.addEventListener('nomifun-open-update-modal', handleOpenUpdateModal as EventListener);
+    const removeAppOpenListener = addEventListener('app.update.open', handleOpenUpdateModal);
 
     return () => {
       removeOpenListener();
-      window.removeEventListener('nomifun-open-update-modal', handleOpenUpdateModal as EventListener);
+      removeAppOpenListener();
     };
   }, []);
 
