@@ -24,7 +24,6 @@ import { ArrowUp, ChevronDown, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
-import { canvasOverlayStyle } from '@oc/lib/canvas/canvas-overlay';
 import { useQuietChromeTheme } from '../quietChrome';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import { isActionImitationWorkflow } from '../workflowKind';
@@ -753,8 +752,7 @@ const VideoHomeComposer: React.FC<VideoHomeComposerProps> = ({
 
       <div
         ref={composerRef}
-        className={`${styles.composer} canvas-composer-shell canvas-overlay`}
-        style={canvasOverlayStyle(theme)}
+        className={`${styles.composer} canvas-composer-shell canvas-overlay ${styles.composerSurface}`}
         onDragEnter={(event) => {
           if (isBriefing) return;
           event.preventDefault();

@@ -159,6 +159,13 @@ describe('home video composer input flow', () => {
 
     const textarea = container.querySelector('textarea');
     expect(textarea).not.toBeNull();
+
+    // The composer surface must follow the app theme tokens (light/dark plus
+    // CSS skins) instead of an inline canvas-editor palette. A regression here
+    // means light themes can leave the input box dark.
+    const composerShell = container.querySelector('.canvas-composer-shell') as HTMLElement | null;
+    expect(composerShell).not.toBeNull();
+    expect(composerShell?.getAttribute('style')).toBeNull();
     // jsdom 30 + React 19 does not route a native textarea input through the
     // same onChange path as WebView2. Invoke the public onChange prop directly
     // so this test still locks the real composer state -> submit boundary.

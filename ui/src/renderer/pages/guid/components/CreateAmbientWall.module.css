@@ -1,21 +1,53 @@
+/* Static material and content protection. All motion lives in the bounded canvas. */
 .wall {
+  --ambient-accent: var(--wallpaper-accent, var(--color-primary, var(--brand)));
+  --ambient-material: var(--ambient-accent);
   position: absolute;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
+  background:
+    radial-gradient(ellipse at 24% 18%, color-mix(in srgb, var(--ambient-material) 9%, transparent), transparent 64%),
+    var(--guid-canvas, var(--color-bg-1));
+}
+
+.wall[data-variant='image'] {
+  --ambient-material: color-mix(in srgb, var(--ambient-accent) 32%, oklch(65% 0.09 55));
+}
+
+.wall[data-variant='video'] {
+  --ambient-material: color-mix(in srgb, var(--ambient-accent) 40%, oklch(65% 0.07 205));
 }
 
 .canvas {
-  display: block;
   position: absolute;
-  inset: clamp(16px, 5%, 48px) 0 auto;
-  width: min(100%, 720px);
-  height: clamp(64px, 14vh, 112px);
-  margin-inline: auto;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.veil {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to bottom, transparent 24%, color-mix(in srgb, var(--guid-canvas, var(--color-bg-1)) 42%, transparent) 64%, var(--guid-canvas, var(--color-bg-1)) 100%),
+    radial-gradient(ellipse at 50% 62%, color-mix(in srgb, var(--guid-canvas, var(--color-bg-1)) 48%, transparent), transparent 70%);
+}
+
+:global([data-theme='light']) .wall {
+  background:
+    radial-gradient(ellipse at 24% 18%, color-mix(in srgb, var(--ambient-material) 6%, transparent), transparent 64%),
+    var(--guid-canvas, var(--color-bg-1));
 }
 
 @media (forced-colors: active) {
-  .canvas {
+  .wall {
+    background: transparent;
+  }
+
+  .canvas,
+  .veil {
     display: none;
   }
 }

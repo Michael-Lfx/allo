@@ -3,16 +3,26 @@
 > 2026-11-11 · `feat/home-canvas2d` · 代码、前端检查和 Chrome 组件对照已验证。实际卡顿设备上的 WebView2 性能待测。
 >
 > 接手先采集目标设备的输入、切层与 GPU 数据，再决定是否继续优化。
+>
+> 2026-11-11 晚更新：三处创作背景已从 Canvas 2D 改为全屏静态 CSS 光氛围层（`.glow` / `.grain` / `.veil`，零逐帧绘制）；随后升级为「单层 conic 光锥 + 指针视差」版本（见下节），下方 Canvas 2D 数据保留为历史对照。
 
-## 当前实现与可比基线
+## 当前实现：单层光锥 + 指针视差（2026-11-11 晚）
+
+- 常驻动画只有一层：`.rays` 的 conic-gradient 光锥，90 秒旋转；创作=紫罗兰、图片=暖琥珀、视频=冷蓝，几何与色相由 CSS 变量按变体驱动。
+- `.glow` 静态光池随指针平移（最大 ±10px），由单例 rAF 更新两个 CSS 变量；指针静止或离开后循环停止。`prefers-reduced-motion` 下不挂监听、光锥动画关闭；`data-paused` 在视频预览播放时暂停光锥；`forced-colors` 隐藏装饰。
+- 浅色主题下光锥改用 `multiply` 混合，透明度降低，避免 screen 在浅底上泛白。
+- 实测（16 核本机，CDP Performance + GPU 进程 CPU，2026-11-11）：常驻光锥相对关闭时 GPU 进程 CPU 增加约 **0.6–0.8 个百分点**（整机口径），每 10 秒约 1,060–1,109 次样式重算；Paint 事件 0–2 次，Raster 次数无显著变化；偶发 1–3 帧超过 25 ms，未见持续掉帧。证据与原始 JSON/截图/录屏：`build.noindex/ambient-checkpoint/evidence/`。
+
+## 当时的 Canvas 2D 实现与可比基线（历史对照）
 
 首页创作目录、图片、视频共用 `CreateAmbientWall`，分别绘制波纹、点阵和时间轴刻度。每帧清理一次小画布，提交一次描边。显示区域最大 **720×112 CSS 像素**，缓冲区上限 **48,000 像素**，调度上限 **10 FPS**。背景使用当前主题的底色与强调色，播放视频预览时暂停，系统减少动态效果开启时保留静止画面。 [首页挂载分支](../../ui/src/renderer/pages/guid/GuidPage.tsx) · [Canvas 2D 图案](../../ui/src/renderer/pages/guid/components/CreateAmbientWall.tsx) · [画布尺寸](../../ui/src/renderer/pages/guid/components/CreateAmbientWall.module.css)
 
 | 版本 | 背景实现 | 如何识别 |
 | --- | --- | --- |
 | `fcdc89c13` | Paper Shaders 的 `GodRays` | 创作背景调用 `getContext('webgl2')` |
-| `10620cc2e` | Canvas 2D 柔光贴图 | 每帧缩放并混合两张透明贴图，预算为 30 万像素、15 FPS |
+| `3228c2b18` | Canvas 2D 柔光贴图 | 每帧缩放并混合两张透明贴图，预算为 30 万像素、15 FPS |
 | 本文所在版本 | 局部 Canvas 2D 动态图案 | 每帧一次 `stroke()`，三处组件仅请求 `2d` |
+| 当前版本（2026-11-11 晚） | 全屏静态 CSS 光氛围层 | 三处组件不再创建 canvas，只有 `.glow` / `.grain` / `.veil` 三个静态层 |
 
 如果客户端仍显示神光，先确认正在运行的 checkout 和前端产物对应哪个版本。共享侧栏、终端、作品球面墙和视频画布可有各自的 WebGL 用途，分析整个客户端时按调用来源归因。 [共享侧栏渲染](../../ui/src/renderer/components/base/GooeyNav.tsx) · [终端渲染](../../ui/src/renderer/pages/terminal/XtermView.tsx) · [视频作品球面墙](../../ui/src/renderer/pages/videoGeneration/components/InfiniteMenu.tsx)
 
@@ -25,7 +35,7 @@
 
 ### Chrome 组件对照
 
-同一个 1280×800 视口，每项取约一秒稳定态。旧版为 `10620cc2e` 的 Canvas 2D 柔光版。新旧样本的上下文请求均为 `2d`。清理像素为该样本内 `clearRect` 覆盖的缓冲像素之和。
+同一个 1280×800 视口，每项取约一秒稳定态。旧版为 `3228c2b18` 的 Canvas 2D 柔光版。新旧样本的上下文请求均为 `2d`。清理像素为该样本内 `clearRect` 覆盖的缓冲像素之和。
 
 | 入口 | CSS 显示区，旧 → 新 | 缓冲像素，旧 → 新 | 清理像素，旧 → 新 | 贴图调用，旧 → 新 | 新版描边次数 |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -49,7 +59,7 @@
 ## 接手复测与优化判断
 
 1. 在用户反馈卡顿的 Windows WebView2 上固定 Runtime 版本、窗口大小、系统缩放、刷新率、主题、侧栏状态和壁纸设置。记录设备实际使用的 GPU 或软件渲染状态。用相同的 DevTools Performance 配置采样，并记录对应的 WebView2 进程指标。 [Microsoft WebView2 性能诊断](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/performance)
-2. 对照 `10620cc2e` 柔光版、当前图案版和临时绕过 `CreateAmbientWall` 挂载的诊断版。每个入口先录 20 秒前台空闲，再各做 30 次进入、返回和键入。记录各组的 Renderer CPU、GPU 进程占用、掉帧，以及输入或点击到下一次可见更新的 P95。
+2. 对照 `3228c2b18` 柔光版、当前图案版和临时绕过 `CreateAmbientWall` 挂载的诊断版。每个入口先录 20 秒前台空闲，再各做 30 次进入、返回和键入。记录各组的 Renderer CPU、GPU 进程占用、掉帧，以及输入或点击到下一次可见更新的 P95。
 3. 核对视频预览播放与暂停、减少动态效果、深浅与同模式换肤、窗口缩放。普通模式下三个图案应仍可见且有动态，暂停期间应没有持续背景绘制。录制 GPU/交互 trace 时关闭下方的操作计数探针。
 4. 如果当前版相对无背景对照的输入和切层 P95 差值在约一个刷新周期内，且 CPU/GPU 差异没有稳定复现，可把当前版作为基线。60 Hz 的一个刷新周期约为 16.7 ms。如果仍有明显差距，用 trace 先区分背景绘制、合成、视频解码与共享侧栏，再决定是否缩小对应区域或减少绘制。保留用户要求的 Canvas 2D 动态。
 
