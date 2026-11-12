@@ -122,6 +122,7 @@ N/K 归零回到积累态。九题型作答控件复用复习会话的 ActivityI
 | [u6](tickets/u6-graph-workspace-entry-and-seed.md) | 图工作区检测入口 + 图课程造数（seed v3） | 无 |
 | [u7](tickets/u7-perception-banner.md) | 检测感知横幅（首页聚合 + 后端 N/K 列表端点） | 无（真机验收可搭 u6 的 seed v3） |
 | [u8](tickets/u8-soft-gate-action.md) | 软闸行动承诺兑现（跳转 + 历史可进 + 口径对齐） | 无（真机验收依赖 u6 软闸臂） |
+| [u9](tickets/u9-soft-gate-remediation-loop.md) | 软闸行动闭环——due_count 修复 + 薄弱集复习会话 | 无 |
 
 后置维持：浮动坞 Pill（感知第二步，u7 后可选）；g4 题卡反哺（上线后，
 三设计点随票面裁决）；节点级补习 deepen 式（暂缓——u8 跳转已交付最小
