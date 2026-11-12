@@ -3875,6 +3875,7 @@ export type I18nKey =
   | 'learning.quizGradeLowHint'
   | 'learning.quizGradePass'
   | 'learning.quizGradePassHint'
+  | 'learning.quizGraphEntryContext'
   | 'learning.quizLoadFailed'
   | 'learning.quizMissingAnswers'
   | 'learning.quizNext'

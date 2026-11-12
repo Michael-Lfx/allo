@@ -6,8 +6,11 @@
  * Why: review cards are first due at the NEXT review day's 02:00 local
  * (first_review_due_at), and a quiz unlocks only after 6 settled nodes
  * (QUIZ_TRIGGER_SETTLEMENTS) — both need real time / real accumulation on a
- * clean dev database. This script fabricates the accumulated state directly:
+ * clean dev database. This script fabricates the accumulated state directly.
  *
+ * Two modes (v3, u6):
+ *
+ *   traditional (default) — unchanged from v2:
  *   - one synthetic course `launch-sim 触发数据` (8 lessons × 1 objective
  *     question each, configs valid under the real `evaluate()` grader);
  *   - 8 `node-completed` XP events spread over the past 4–7 local days
@@ -19,12 +22,36 @@
  *   - 4 checkin rows for those past days (today is left unlocked on purpose —
  *     real review/quiz settlements should lock it during verification).
  *
+ *   graph (`--graph`) — learning-graph course variant (u6, 零 LLM):
+ *   - one synthetic course `launch-sim 图课程触发数据` (course_kind=
+ *     'learning_graph' + learning_goal + full structure_json envelope, shape
+ *     mirrored from learning_smoke.rs `valid_structure_seed_envelope`);
+ *   - the minimal 5-table graph set: courses → 1 module → 8 node lessons
+ *     (est/content_generated=1, activities reuse the v2 config shapes) →
+ *     learning_concept_registry → learning_lesson_concepts (teaches ×7 +
+ *     assumes ×1, tiers know/apply — the ready set reads as true at query
+ *     time, no prerequisite edges stored);
+ *   - 6 of 8 nodes completed (lesson_progress rows + `node-completed` XP
+ *     events over days 4–6, 54 XP/day) → quiz due (6/6) for the graph
+ *     workspace entry; the remaining two stay open: 节点 7 assumes the
+ *     concept taught by 节点 6, 节点 8 assumes nothing (ready);
+ *   - soft-gate acceptance arm: the supplier node (节点 6) holds one LOW-R
+ *     card (stability 1.0d, last push 3 days ago → predicted recall ≈ 0.77
+ *     < R_GATE 0.85) so the workspace's `graph.blocked` advice fires for
+ *     节点 7; nodes 1–5 carry bare overdue cards (as a real completion chain
+ *     would have seeded them — stability 0 reads as full recall, no gate
+ *     effect);
+ *   - one applied growth batch row so 学习记录 has a timeline entry.
+ *
  * Deliberately NOT seeded: `quiz-completed` events (keeps quiz due), custom
  * questions, today's checkin.
  *
  * Known divergence (by design): fabricated settlements bypass the companion
  * XP bridge, so the companion balance does not see this history — the
  * learning ledger surfaces (calendar / checkin / triggers) are unaffected.
+ * The checkin cleanup fingerprint (goal 40 + reviewed_count 54) is shared by
+ * both modes, so `--fresh` on one mode also clears same-fingerprint checkins
+ * left by the other — verification DBs rarely hold both at once.
  *
  * SAFETY: close ALL app instances (desktop, `bun run dev`, `dev:web`,
  * `nomicore`) first — the backup step (`VACUUM INTO`) doubles as the lock
@@ -32,9 +59,11 @@
  * target is the `Nomi-dev` data dir; pass `--db` to aim elsewhere.
  *
  * Usage:
- *   bun scripts/seed-learning-triggers.mjs [--db <path>] [--fresh] [--dry-run]
+ *   bun scripts/seed-learning-triggers.mjs [--graph] [--db <path>] [--fresh] [--dry-run]
  *     --db       target SQLite path (default: dev channel data dir)
- *     --fresh    delete the previous launch-sim course's derived rows, reseed
+ *     --graph    seed the learning-graph course variant instead of the
+ *                traditional one (independent marker course)
+ *     --fresh    delete the previous seed run's derived rows, reseed
  *     --dry-run  print the plan without writing anything
  *
  * Idempotent: reruns detect the marker course and skip; `--fresh` rebuilds.
@@ -58,15 +87,28 @@ const XP_FULL_BONUS = 2;
 const DAILY_XP_GOAL_DEFAULT = 40;
 /** Days between two fabricated pushes of one history card. */
 const PUSH_GAP_DAYS = 4;
-/** Marker course title — idempotency + --fresh cleanup anchor. */
+/** Marker course title — idempotency + --fresh cleanup anchor (traditional). */
 const MARKER_TITLE = 'launch-sim 触发数据';
+/** Marker course title for the graph variant (independent anchor, u6). */
+const MARKER_TITLE_GRAPH = 'launch-sim 图课程触发数据';
+/** Graph mode: nodes completed up front (→ quiz settled 6/6, due). */
+const GRAPH_COMPLETED_NODES = 6;
+/**
+ * Graph mode soft-gate arm (ADR-0009 Amendment 1): the supplier card's
+ * stability days / last-push age. R = FSRS current_retrievability(1.0d,
+ * ~3d) ≈ 0.77 < R_GATE (0.85) → the candidate assuming this supplier's
+ * concept is blocked. Keep the values low/short — the whole point is a LOW
+ * recall prediction.
+ */
+const GRAPH_SUPPLIER_STABILITY_DAYS = 1.0;
+const GRAPH_SUPPLIER_LAST_PUSH_DAYS_AGO = 3;
 
 // ---------------------------------------------------------------------------
 // argv
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { db: null, fresh: false, dryRun: false };
+  const args = { db: null, fresh: false, dryRun: false, graph: false };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
     if (value === '--db') {
@@ -77,6 +119,8 @@ function parseArgs(argv) {
       args.fresh = true;
     } else if (value === '--dry-run') {
       args.dryRun = true;
+    } else if (value === '--graph') {
+      args.graph = true;
     } else {
       throw new Error(`unknown argument: ${value}`);
     }
@@ -229,6 +273,175 @@ const CARD_PLANS = [
   { daysOverdue: 2, pushes: { count: 5, stability: 26.0, difficulty: 8.2, lastDaysAgo: 5.0, lapses: 2 } },
 ];
 
+// ---------------------------------------------------------------------------
+// graph mode (v3, u6): 8-node learning-graph course. Nodes 1–6 completed
+// (quiz due 6/6); 节点 7 assumes 节点 6's concept → soft-gate candidate;
+// 节点 8 assumes nothing → the one ready/recommended node. Concept net:
+// teaches ×7 + assumes ×1 (tiers know/apply), so the concept table and the
+// ready-set read both roles and both tiers.
+// ---------------------------------------------------------------------------
+
+const GRAPH_LESSONS = [
+  {
+    title: '节点 1：光速',
+    summary: '光在真空中的传播速度约为每秒 30 万公里，是宇宙中的速度上限。',
+    spine: '物质变化', stage: 'basic',
+    kind: 'single_choice',
+    prompt: '光在真空中的速度大约是多少？',
+    config: { options: ['30 万公里/秒', '3 万公里/秒', '300 万公里/秒'], answer: '30 万公里/秒', explanation: '光速约 299,792 公里/秒，常取 30 万公里/秒。' },
+    concept: { canonical: '光速', definition: '光在真空中的传播速度，约每秒 30 万公里，是物理学的基准常数之一。', tier: 'know' },
+  },
+  {
+    title: '节点 2：素数',
+    summary: '素数只能被 1 和自身整除；2 是唯一的偶素数。',
+    spine: '数与形', stage: 'basic',
+    kind: 'true_false',
+    prompt: '判断：所有素数都是奇数。',
+    config: { options: [], answer: false, explanation: '2 是素数且是偶数，所以"所有素数都是奇数"为假。' },
+    concept: { canonical: '素数', definition: '大于 1 且只能被 1 和自身整除的自然数；2 是唯一的偶素数。', tier: 'know' },
+  },
+  {
+    title: '节点 3：三角形内角和',
+    summary: '平面几何中任意三角形的三个内角之和恒为 180 度。',
+    spine: '数与形', stage: 'basic',
+    kind: 'fill_in_blank',
+    prompt: '一个三角形的内角和是____度。',
+    config: { options: [], answer: ['180', '180°'], explanation: '三角形内角和恒为 180 度。' },
+    concept: { canonical: '三角形内角和', definition: '平面几何中任意三角形三个内角之和恒为 180 度。', tier: 'know' },
+  },
+  {
+    title: '节点 4：无理数',
+    summary: '无理数是无限不循环小数，不能写成两个整数之比。',
+    spine: '数与形', stage: 'advanced',
+    kind: 'multi_choice',
+    prompt: '下列哪些数是无理数？（多选）',
+    config: { options: ['π', '√2', '0.5', 'e'], answer: ['π', '√2', 'e'], explanation: 'π、√2、e 都是无理数；0.5 是有理数。' },
+    concept: { canonical: '无理数', definition: '无限不循环小数，不能写成两个整数之比；与有理数一并构成实数。', tier: 'apply' },
+  },
+  {
+    title: '节点 5：乘法',
+    summary: '两位数乘法的进位规则：先算个位，再算十位，逐位进位。',
+    spine: '数与形', stage: 'basic',
+    kind: 'numeric',
+    prompt: '计算：12 × 8 = ?',
+    config: { options: [], answer: 96, explanation: '12 × 8 = 96。' },
+    concept: { canonical: '乘法进位', definition: '多位数乘法中逐位计算并向高位进位的规则。', tier: 'know' },
+  },
+  {
+    title: '节点 6：水的化学式',
+    summary: '水由两个氢原子和一个氧原子组成，化学式 H₂O。',
+    spine: '物质变化', stage: 'advanced',
+    kind: 'single_choice',
+    prompt: '水的化学式是？',
+    config: { options: ['H₂O', 'CO₂', 'O₂'], answer: 'H₂O', explanation: '水分子由 2 个氢原子和 1 个氧原子构成，写作 H₂O。' },
+    concept: { canonical: '水的组成', definition: '水分子由两个氢原子和一个氧原子构成，化学式写作 H₂O。', tier: 'apply' },
+  },
+  {
+    // 软闸候选（graph.blocked）：assumes 节点 6 教出的「水的组成」，
+    // 而节点 6 名下有一张低 R 卡 → 供给节点代表回忆率 < 0.85。
+    title: '节点 7：电解水',
+    summary: '通电分解水：正极氧气、负极氢气，体积比约 1:2。',
+    spine: '物质变化', stage: 'advanced',
+    kind: 'true_false',
+    prompt: '判断：电解水会生成氢气和氧气。',
+    config: { options: [], answer: true, explanation: '电解水 2H₂O → 2H₂↑ + O₂↑，负极氢气、正极氧气。' },
+    concept: null,
+  },
+  {
+    // 就绪节点（recommended[0]）：零 assumes，发布即就绪。
+    title: '节点 8：化学方程式配平',
+    summary: '配平的依据是质量守恒定律：反应前后各元素原子数目不变。',
+    spine: '物质变化', stage: 'advanced',
+    kind: 'single_choice',
+    prompt: '化学方程式配平的直接依据是？',
+    config: { options: ['质量守恒定律', '能量守恒定律', '电荷守恒定律'], answer: '质量守恒定律', explanation: '配平保证反应前后各元素原子数目相等，依据是质量守恒定律。' },
+    concept: { canonical: '质量守恒', definition: '化学反应前后各元素原子数目与总质量保持不变的定律。', tier: 'know' },
+  },
+];
+
+/** assumes 挂接（先修语义读时计算）：候选节点 index → 供给概念 index。 */
+const GRAPH_ASSUMES = [{ lesson: 6, concept: 5, tier: 'know' }];
+
+/** 全量合法 structure_json 信封（形态抄 learning_smoke.rs
+ * valid_structure_seed_envelope：八标量键齐 + domain + spines + blocks +
+ * edges + gaps + quality + terrain.doors，缩盘到 2 主干 × 8 块）。 */
+function graphStructureEnvelope(goal, now) {
+  const spines = [
+    { name: '数与形', definition: '数与形的初等结构：素数、几何与运算。', key_points: ['素数判定', '内角和恒等式', '实数分类'], instance: '能独立完成素数判定与实数分类，并复述内角和恒等式' },
+    { name: '物质变化', definition: '物质组成与化学变化的初等结构。', key_points: ['水的组成', '电解产物', '配平依据'], instance: '能独立写出水的化学式并解释电解与配平依据' },
+  ];
+  const spineOf = (lesson) => spines.find((spine) => spine.name === lesson.spine);
+  const blocks = GRAPH_LESSONS.map((lesson, index) => ({
+    name: lesson.title,
+    slug: `block-0${index + 1}`,
+    spine: lesson.spine,
+    stage: lesson.stage,
+    note: lesson.summary,
+  }));
+  return {
+    version: 1,
+    generated_at: now,
+    structure: {
+      goal,
+      goal_type: 'capability',
+      proficiency_statement: '达成后能独立复述数与形初等结论，并完成水的组成、电解与配平判据的书面表述',
+      domain_type: 'theory',
+      form_reference: 'Flowy 学习结构模板 v1',
+      source_tier: 'catalog',
+      generated_by: 'seed-learning-triggers',
+      disclaimer: '种子为静态合法盘面，仅供真机走查',
+      domain: {
+        core_definition: '数与形初等结论 + 物质组成与变化判据的最小合法结构',
+        includes: ['素数与实数', '三角形内角和', '水的组成与电解'],
+        excludes: ['真实课程内容', '学习者数据', '生产库'],
+        prerequisite_doors: ['G1'],
+        audience: '走查操作者',
+        scenarios: ['就绪集走查', '软闸走查'],
+        granularity: '每块一个可独立教学的主题',
+      },
+      spines: spines.map((spine) => ({
+        name: spine.name,
+        definition: spine.definition,
+        key_points: spine.key_points,
+        instance: spine.instance,
+      })),
+      blocks,
+      edges: GRAPH_ASSUMES.map((link) => ({
+        source: GRAPH_LESSONS[link.lesson].title,
+        target: GRAPH_LESSONS[
+          GRAPH_LESSONS.findIndex((lesson) => lesson.concept && lesson.concept.canonical === graphConceptByIndex(link.concept).canonical)
+        ].title,
+        type: 'assumes',
+        tier: link.tier,
+        note: '先认化学式再谈电解',
+      })),
+      gaps: [
+        { item: '应用情境覆盖不足', direction: '补情境块' },
+        { item: '实数运算未展开', direction: '补运算判读' },
+      ],
+      quality: [
+        { check: '主干数在 6–12 档', status: 'met' },
+        { check: '块名一物一名', status: 'met' },
+        { check: '边端点全部可解析', status: 'met' },
+        { check: '无顺序承诺', status: 'met' },
+        { check: '盲区已标注', status: 'met' },
+      ],
+    },
+    terrain: {
+      goal,
+      learner_basis_assumed: '已具备四则运算与常见物质名称的基线认识',
+      generated_by: 'seed-learning-triggers',
+      disclaimer: '种子地形，仅供门口对账',
+      doors: [{ id: 'G1', criterion: '能读懂结构快照的块与边', kind: 'hard' }],
+    },
+  };
+}
+
+function graphConceptByIndex(index) {
+  const concepts = GRAPH_LESSONS.map((lesson) => lesson.concept).filter(Boolean);
+  return concepts[index];
+}
+
 /** Push-history plausibility: per push index (0-based), stability before the
  * push and a rating (1=again .. 4=easy). Lapses inject an `again` push. */
 function pushSequence(pushes) {
@@ -267,6 +480,9 @@ function fail(message) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  const isGraph = args.graph;
+  const markerTitle = isGraph ? MARKER_TITLE_GRAPH : MARKER_TITLE;
+  const lessons = isGraph ? GRAPH_LESSONS : LESSONS;
   const dbPath = args.db ?? defaultDevDb();
   if (!existsSync(dbPath)) {
     fail(`database not found: ${dbPath} (pass --db to aim elsewhere)`);
@@ -274,6 +490,7 @@ function main() {
   const stat = statSync(dbPath);
   if (!stat.isFile()) fail(`target is not a file: ${dbPath}`);
 
+  console.log(`mode: ${isGraph ? 'graph (--graph, learning_graph course)' : 'traditional'}`);
   console.log(`database: ${dbPath}`);
   const db = new Database(dbPath);
   db.exec('PRAGMA busy_timeout = 1500');
@@ -304,30 +521,51 @@ function main() {
   if (!owner) fail('installation owner not found (installation_identity empty) — run the app once first');
   console.log(`owner: ${owner.username ?? '(unnamed)'} ${owner.user_id}`);
 
-  const marker = db.query('SELECT course_id FROM learning_courses WHERE title = ?').get(MARKER_TITLE);
+  const marker = db.query('SELECT course_id FROM learning_courses WHERE title = ?').get(markerTitle);
   if (marker && !args.fresh) {
     console.log(`marker course exists (${marker.course_id}); nothing to do (pass --fresh to rebuild)`);
     db.close();
     return;
   }
 
+  const completedCount = isGraph ? GRAPH_COMPLETED_NODES : lessons.length;
+  if (isGraph && completedCount < QUIZ_TRIGGER_SETTLEMENTS) {
+    // wiring guard: the graph arm exists to walk a due quiz entry — keep the
+    // node plan and the trigger constant in sync.
+    fail(`graph plan has ${completedCount} completed nodes but quiz needs ${QUIZ_TRIGGER_SETTLEMENTS}`);
+  }
+
   if (args.dryRun) {
     console.log('\n[dry-run] plan:');
-    console.log(`  course        1   (${MARKER_TITLE})`);
+    console.log(`  course        1   (${markerTitle}${isGraph ? ', course_kind=learning_graph + structure_json envelope' : ''})`);
     console.log('  module        1');
-    console.log(`  lessons       ${LESSONS.length} (est ${NODE_EST_MINUTES}, content_generated=1)`);
-    console.log(`  activities    ${LESSONS.length} (${[...new Set(LESSONS.map((l) => l.kind))].join(', ')})`);
-    console.log('  enrollment    1');
-    console.log(`  xp events     ${LESSONS.length} node-completed, days 4-7 ago, 54 XP/day`);
-    console.log(`  review items  ${CARD_PLANS.length} (4 bare overdue + 4 with push history + review_log)`);
-    console.log('  checkins      4 past days (today left unlocked)');
+    console.log(`  lessons       ${lessons.length} (est ${NODE_EST_MINUTES}, content_generated=1)`);
+    console.log(`  activities    ${lessons.length} (${[...new Set(lessons.map((l) => l.kind))].join(', ')})`);
+    if (isGraph) {
+      console.log(`  concepts      ${GRAPH_LESSONS.filter((l) => l.concept).length} registry rows (teaches ${GRAPH_LESSONS.filter((l) => l.concept).length} / assumes ${GRAPH_ASSUMES.length})`);
+      console.log('  growth batch  1 (seq 1, applied)');
+      console.log(`  completed     ${completedCount} nodes → quiz settled ${completedCount}/${QUIZ_TRIGGER_SETTLEMENTS} (due)`);
+      console.log(`  open nodes    ${lessons.length - completedCount} (1 gate-blocked candidate + 1 ready)`);
+      console.log(`  review items  ${completedCount} (5 bare overdue + 1 low-R supplier card + review_log → graph.blocked)`);
+    } else {
+      console.log('  enrollment    1');
+      console.log(`  xp events     ${lessons.length} node-completed, days 4-7 ago, 54 XP/day`);
+      console.log(`  review items  ${CARD_PLANS.length} (4 bare overdue + 4 with push history + review_log)`);
+    }
+    console.log('  checkins      past days (today left unlocked)');
     db.close();
     return;
   }
 
   // ---- backup (also the lock probe: a running backend fails here) ----------
+  // Second-resolution stamp, de-collided for reruns within the same second
+  // (a failed attempt then immediate retry must not refuse on its own
+  // earlier backup file).
   const stamp = new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14);
-  const backupPath = `${dbPath}.pre-seed-learning-${stamp}`;
+  let backupPath = `${dbPath}.pre-seed-learning-${stamp}`;
+  for (let attempt = 1; existsSync(backupPath); attempt += 1) {
+    backupPath = `${dbPath}.pre-seed-learning-${stamp}-${attempt}`;
+  }
   try {
     db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
   } catch (error) {
@@ -350,27 +588,43 @@ function main() {
     const courseId = uuidv7();
     const moduleId = uuidv7();
     const enrollmentId = uuidv7();
-    db.run(
-      'INSERT INTO learning_courses (course_id, title, description, domain, version, created_at, updated_at) \
-       VALUES (?, ?, ?, ?, 1, ?, ?)',
-      courseId,
-      MARKER_TITLE,
-      '由 scripts/seed-learning-triggers.mjs 造数生成，用于上线前复习/测验触发验证；验证完可整课删除。',
-      'general',
-      now,
-      now,
-    );
+    if (isGraph) {
+      const goal = '图课程触发验证：走完就绪集 → 结算 → 检测到期 → 软闸条全链';
+      db.run(
+        'INSERT INTO learning_courses (course_id, title, description, domain, version, course_kind, learning_goal, learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 1, \'learning_graph\', ?, \'\', ?, ?, ?)',
+        courseId,
+        markerTitle,
+        '由 scripts/seed-learning-triggers.mjs --graph 造数生成，用于图工作区检测入口/软闸/造数走查；验证完可整课删除。',
+        'general',
+        goal,
+        JSON.stringify(graphStructureEnvelope(goal, now)),
+        now,
+        now,
+      );
+    } else {
+      db.run(
+        'INSERT INTO learning_courses (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 1, ?, ?)',
+        courseId,
+        markerTitle,
+        '由 scripts/seed-learning-triggers.mjs 造数生成，用于上线前复习/测验触发验证；验证完可整课删除。',
+        'general',
+        now,
+        now,
+      );
+    }
     db.run(
       'INSERT INTO learning_modules (module_id, course_id, title, description, position) \
        VALUES (?, ?, ?, ?, 0)',
       moduleId,
       courseId,
-      '模拟模块',
+      isGraph ? '学习图' : '模拟模块',
       '',
     );
     const lessonIds = [];
     const activityIds = [];
-    LESSONS.forEach((lesson, index) => {
+    lessons.forEach((lesson, index) => {
       const lessonId = uuidv7();
       const activityId = uuidv7();
       db.run(
@@ -405,14 +659,70 @@ function main() {
       now,
     );
 
+    // ---- concept net (graph mode, u6): registry + lesson hooks -----------
+    if (isGraph) {
+      const conceptIds = [];
+      GRAPH_LESSONS.forEach((lesson) => {
+        if (!lesson.concept) return;
+        const conceptId = uuidv7();
+        db.run(
+          'INSERT INTO learning_concept_registry (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+           VALUES (?, ?, \'[]\', ?, ?, ?)',
+          conceptId,
+          lesson.concept.canonical,
+          lesson.concept.definition,
+          now,
+          now,
+        );
+        lesson.conceptId = conceptId;
+        conceptIds.push(conceptId);
+      });
+      GRAPH_LESSONS.forEach((lesson, index) => {
+        if (!lesson.concept) return;
+        db.run(
+          'INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier, ref_name) \
+           VALUES (?, ?, \'teaches\', ?, NULL)',
+          lessonIds[index],
+          lesson.conceptId,
+          lesson.concept.tier,
+        );
+      });
+      GRAPH_ASSUMES.forEach((link) => {
+        const supplier = GRAPH_LESSONS[link.lesson];
+        const conceptId =
+          GRAPH_LESSONS.find((candidate) => candidate.concept && candidate.concept.canonical === supplierConceptCanonical(link.concept))?.conceptId ?? null;
+        if (!conceptId) fail(`graph assumes link references unknown concept index ${link.concept}`);
+        db.run(
+          'INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier, ref_name) \
+           VALUES (?, ?, \'assumes\', ?, NULL)',
+          lessonIds[link.lesson],
+          conceptId,
+          link.tier,
+        );
+      });
+      // 学习记录时间线种子：一条 applied 首批（生长史即课程史）。
+      db.run(
+        'INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, note, created_at, status) \
+         VALUES (?, ?, 1, ?, ?, ?, \'applied\')',
+        uuidv7(),
+        courseId,
+        JSON.stringify(lessonIds),
+        '造数种子：首批生长（8 节点）',
+        now,
+      );
+    }
+
     // ---- settlement history: node-completed, 2 per day, days 4..7 ago -----
     // Real-flow coherence (v2): a node-completed settlement implies the lesson
     // progress row reached 'completed' (progress.rs settles from completion),
     // so fabricate the matching learning_lesson_progress rows too — otherwise
     // the UI shows 未开始 lessons with a settled ledger (an unreachable state).
+    // Graph mode (u6): only the first 6 nodes are completed — the ready-set
+    // read (就绪集) needs open nodes, and 6 settlements exactly reach the
+    // quiz trigger.
     const xpDays = []; // { ts, xp } per day for the checkin rows
-    lessonIds.forEach((lessonId, index) => {
-      const daysAgo = 4 + Math.floor(index / 2); // 8 nodes → 4 days × 2 nodes
+    lessonIds.slice(0, completedCount).forEach((lessonId, index) => {
+      const daysAgo = 4 + Math.floor(index / 2); // 2 nodes per day
       const ts = localMoment(daysAgo, 10, 5 + (index % 2) * 95 + index * 7);
       const earned = NODE_EST_MINUTES + XP_FULL_BONUS; // settle_node(full): est + bonus
       db.run(
@@ -448,8 +758,34 @@ function main() {
     });
 
     // ---- review cards + push-history logs ---------------------------------
+    // Graph mode (u6 软闸臂): cards only on the completed nodes — a real
+    // completion chain seeds one card per activity. Nodes 1–5 carry bare
+    // overdue cards (stability 0 reads as full recall — no gate effect);
+    // the supplier node (节点 6, index 5) carries ONE low-R card
+    // (GRAPH_SUPPLIER_*): low stability + recent push → predicted recall
+    // ≈ 0.77 < R_GATE 0.85 → ready_partition blocks its dependent (节点 7)
+    // and the workspace renders the soft-gate advice bar.
+    const cardPlans = isGraph
+      ? [
+          { daysOverdue: 1, pushes: null },
+          { daysOverdue: 2, pushes: null },
+          { daysOverdue: 4, pushes: null },
+          { daysOverdue: 7, pushes: null },
+          { daysOverdue: 0.5, pushes: null },
+          {
+            daysOverdue: 1,
+            pushes: {
+              count: 2,
+              stability: GRAPH_SUPPLIER_STABILITY_DAYS,
+              difficulty: 6.5,
+              lastDaysAgo: GRAPH_SUPPLIER_LAST_PUSH_DAYS_AGO,
+              lapses: 1,
+            },
+          },
+        ]
+      : CARD_PLANS;
     let logCount = 0;
-    CARD_PLANS.forEach((plan, index) => {
+    cardPlans.forEach((plan, index) => {
       const reviewItemId = uuidv7();
       const dueAt = Math.round(now - plan.daysOverdue * DAY_MS);
       const pushes = plan.pushes;
@@ -519,8 +855,12 @@ function main() {
     }
 
     db.exec('COMMIT');
-    console.log(`seeded: course ${courseId}, ${lessonIds.length} lessons, ${lessonIds.length} xp events, ${CARD_PLANS.length} cards, ${logCount} log rows, ${checkinCount} checkins`);
-    printReadout(db, owner.user_id, courseId, now, tz);
+    console.log(`seeded: course ${courseId}, ${lessonIds.length} lessons, ${completedCount} xp events, ${cardPlans.length} cards, ${logCount} log rows, ${checkinCount} checkins`);
+    printReadout(db, owner.user_id, courseId, now, tz, {
+      isGraph,
+      lessonIds,
+      completedCount,
+    });
   } catch (error) {
     db.exec('ROLLBACK');
     fail(error.message);
@@ -528,9 +868,20 @@ function main() {
   db.close();
 }
 
+/** graph assumes 链接的概念寻址：供给概念 index → canonical（与
+ * graphStructureEnvelope 的 edges 寻址共用）。 */
+function supplierConceptCanonical(conceptIndex) {
+  const concepts = GRAPH_LESSONS.map((lesson) => lesson.concept).filter(Boolean);
+  return concepts[conceptIndex].canonical;
+}
+
 /** --fresh: remove every row derived from the previous seed run. Checkins are
  * matched by the seed fingerprint (goal + reviewed_count) on the seeded days
- * so real checkins on the same days survive. */
+ * so real checkins on the same days survive. v3 (u6): also clears the graph
+ * artifacts — concept hooks, growth batches, and seed-created concepts that
+ * no remaining lesson references (shared-pool concepts survive, mirroring the
+ * learning-smoke 撤销 semantics). The deletions are no-ops for the
+ * traditional marker course. */
 function cleanupFresh(db, userId, courseId) {
   const lessonIds = db
     .query('SELECT lesson_id FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?')
@@ -561,16 +912,32 @@ function cleanupFresh(db, userId, courseId) {
     db.run(`DELETE FROM learning_lesson_progress WHERE enrollment_id IN (${enrollmentIds.map(() => '?').join(',')})`, ...enrollmentIds);
     db.run(`DELETE FROM learning_enrollments WHERE enrollment_id IN (${enrollmentIds.map(() => '?').join(',')})`, ...enrollmentIds);
   }
+  // graph artifacts (u6): concept hooks reference lessons — collect the
+  // seed-created concepts first, delete hooks, then sweep registry rows that
+  // no remaining lesson_concepts row references.
   if (lessonIds.length) {
+    const conceptIds = db
+      .query(`SELECT DISTINCT concept_id FROM learning_lesson_concepts WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`)
+      .all(...lessonIds)
+      .map((r) => r.concept_id);
+    db.run(`DELETE FROM learning_lesson_concepts WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`, ...lessonIds);
+    if (conceptIds.length) {
+      db.run(
+        `DELETE FROM learning_concept_registry WHERE concept_id IN (${conceptIds.map(() => '?').join(',')}) \
+         AND concept_id NOT IN (SELECT DISTINCT concept_id FROM learning_lesson_concepts)`,
+        ...conceptIds,
+      );
+    }
     db.run(`DELETE FROM learning_activities WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`, ...lessonIds);
     db.run(`DELETE FROM learning_lessons WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`, ...lessonIds);
   }
+  db.run('DELETE FROM learning_growth_batches WHERE course_id = ?', courseId);
   db.run('DELETE FROM learning_modules WHERE course_id = ?', courseId);
   db.run('DELETE FROM learning_courses WHERE course_id = ?', courseId);
 }
 
 /** App-口径 readout: the same SQL shapes the backend uses. */
-function printReadout(db, userId, courseId, now, tz) {
+function printReadout(db, userId, courseId, now, tz, seedInfo = { isGraph: false, lessonIds: [], completedCount: 0 }) {
   const dueCount = db
     .query(
       'SELECT COUNT(*) AS n FROM learning_review_items r \
@@ -600,9 +967,44 @@ function printReadout(db, userId, courseId, now, tz) {
   console.log(`  quiz settled     : ${settledNodes}/${QUIZ_TRIGGER_SETTLEMENTS}  ${settledNodes >= QUIZ_TRIGGER_SETTLEMENTS ? '→ quiz DUE' : '→ not due'}`);
   console.log(`  today XP         : ${todayXp}  (today's checkin stays unlocked until real pushes reach the goal)`);
   console.log(`  checkin history  : ${checkinDays} locked days`);
-  console.log('\nnext steps (真机走查见 docs/tracker/learning-launch-sim/tickets/s1-seed-learning-triggers.md):');
-  console.log(`  1. start the dev app and verify the review surface`);
-  console.log(`  2. quiz API: GET /api/learning/courses/${courseId}/quiz/progress`);
+
+  if (seedInfo.isGraph) {
+    const openNodes = seedInfo.lessonIds.length - seedInfo.completedCount;
+    const hooks = db
+      .query(
+        'SELECT role, COUNT(*) AS n FROM learning_lesson_concepts WHERE lesson_id IN (' +
+          (seedInfo.lessonIds.map(() => '?').join(',') || 'NULL') +
+          ') GROUP BY role',
+      )
+      .all(...seedInfo.lessonIds);
+    const teaches = hooks.find((row) => row.role === 'teaches')?.n ?? 0;
+    const assumes = hooks.find((row) => row.role === 'assumes')?.n ?? 0;
+    const lowRCards = db
+      .query(
+        'SELECT COUNT(*) AS n FROM learning_review_items ri \
+         JOIN learning_activities a ON a.activity_id = ri.activity_id \
+         JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+         JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ? AND ri.stability_days > 0 AND ri.stability_days <= 2 \
+           AND ri.last_reviewed_at IS NOT NULL AND ri.last_reviewed_at >= ?',
+      )
+      .get(courseId, now - 4 * DAY_MS).n;
+    console.log('\ngraph readout (软闸臂, u6):');
+    console.log(`  open nodes        : ${openNodes}  (1 ready → recommended + 1 gate-blocked candidate)`);
+    console.log(`  concept hooks     : teaches ${teaches} / assumes ${assumes}  (concept table should show both roles)`);
+    console.log(`  supplier low-R    : ${lowRCards} card(s)  (stability ≤ 2d + last push ≤ 4d ago → R < 0.85 → graph.blocked expected)`);
+  }
+
+  console.log('\nnext steps:');
+  if (seedInfo.isGraph) {
+    console.log('  1. start the dev app and open the graph course (图课程触发数据)');
+    console.log('  2. expect: ready set shows 节点 8 · soft-gate bar for 节点 7 · quiz entry DUE');
+    console.log(`  3. quiz API: GET /api/learning/courses/${courseId}/quiz/progress`);
+  } else {
+    console.log('  1. start the dev app and verify the review surface');
+    console.log(`  2. quiz API: GET /api/learning/courses/${courseId}/quiz/progress`);
+  }
+  console.log(`  next steps doc: docs/tracker/learning-launch-sim/tickets/s1-seed-learning-triggers.md`);
 }
 
 main();
