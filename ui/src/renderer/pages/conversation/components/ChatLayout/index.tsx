@@ -37,7 +37,7 @@ import {
   usePreviewContext,
   type WorkspacePreviewTabDefinition,
 } from '@/renderer/pages/conversation/Preview';
-import { WORKSPACE_TOGGLE_EVENT, type WorkspaceToggleDetail } from '@/renderer/utils/workspace/workspaceEvents';
+import { subscribeWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';
 import { ipcBridge } from '@/common';
 import type { ITerminalSession } from '@/common/adapter/ipcBridge';
 import { SHELL_SENTINEL } from '@/renderer/pages/terminal/launchPresets';
@@ -260,13 +260,9 @@ const ChatLayoutInner: React.FC<ChatLayoutProps> = (props) => {
 
   useEffect(() => {
     if (typeof window === 'undefined' || !workspaceTarget || !workspaceEnabled) return undefined;
-    const handleWorkspaceToggle = (event: Event) => {
-      const target = (event as CustomEvent<WorkspaceToggleDetail>).detail?.target;
-      if (!target || target.kind !== workspaceTarget.kind || target.id !== workspaceTarget.id) return;
+    return subscribeWorkspaceToggleEvent(workspaceTarget, () => {
       selectWorkspaceTool('files');
-    };
-    window.addEventListener(WORKSPACE_TOGGLE_EVENT, handleWorkspaceToggle);
-    return () => window.removeEventListener(WORKSPACE_TOGGLE_EVENT, handleWorkspaceToggle);
+    });
   }, [selectWorkspaceTool, workspaceEnabled, workspaceTarget]);
 
   const workspaceCollaboration = props.workspaceCollaboration
