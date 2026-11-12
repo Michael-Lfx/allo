@@ -333,6 +333,13 @@ const LearningPage: React.FC = () => {
   // onFinished 清位 + bump 令牌（入口卡重拉归零读数）、onConflict 只 bump、
   // onClose 卸载；同一组状态位 quizSessionCourseId / quizProgressToken 两
   // 分支共用（容器互斥，不可能双开）。回调语义零变化，仅抽局部函数。
+  // u9 R3：onStartWeakReview = 报告尾部「开始薄弱复习」CTA——挂载形态裁决
+  // （票面授权二选一取「关检测 Modal 后开复习」）：报告相回合已结算完毕，
+  // 关闭零损失；双全宽 Modal 叠加 = 双层遮罩（ESC/点遮罩关闭次序混乱、
+  // 视觉重），「容器互斥，不可能双开」纪律对复习会话同样成立。关闭即 bump
+  // 令牌（与 onFinished 同款刷新：结算已发生，入口卡 N/K 归零读数跟上），
+  // 随后开节点集 scoped 复习会话（courseId 不传——covered 节点全在本课，
+  // node 过滤即作用域）。
   const renderQuizSession = (courseId: string) => (
     <QuizSession
       courseId={courseId}
@@ -342,7 +349,46 @@ const LearningPage: React.FC = () => {
       }}
       onConflict={() => setQuizProgressToken((token) => token + 1)}
       onClose={() => setQuizSessionCourseId(null)}
+      onStartWeakReview={(nodeIds) => {
+        setQuizSessionCourseId(null);
+        setQuizProgressToken((token) => token + 1);
+        void reviewSession.startScopedReviewSession(nodeIds);
+      }}
     />
+  );
+
+  // 复习会话容器（u9 R3 起三分支共用）：此前只挂列表分支——软闸/报告的
+  // scoped 会话在课程详情分支内开启，容器必须随行。状态与动作回调同一组
+  // （sessionOpen/sessionQueue + reviewSession.*），markEditPending 等队列
+  // 内变更天然作用于当前打开的那条会话队列；单实例单开，无叠加面。
+  const renderReviewSession = () => (
+    <Suspense fallback={null}>
+      <ReviewSessionModal
+        key='review-session'
+        open={reviewSession.sessionOpen}
+        queue={reviewSession.sessionQueue}
+        busyId={busyId}
+        onAnswer={reviewSession.answerReview}
+        onForget={reviewSession.forgetReview}
+        onRate={reviewSession.rateReview}
+        onSkip={reviewSession.skipReview}
+        onArchive={reviewSession.archiveReview}
+        onRemove={reviewSession.removeReview}
+        onMarkEdit={reviewSession.markEditPending}
+        onEdited={(updated) => {
+          reviewSession.setSessionQueue((prev) =>
+            prev.map((item) => (item.id === updated.id ? updated : item))
+          );
+        }}
+        onClose={() => {
+          reviewSession.setSessionOpen(false);
+          // 会话结束时刷新列表与打卡状态，让角标与下次入队状态保持一致；
+          // 若本次复习恰好达成今日目标，会触发完成仪式高亮
+          void load();
+          void checkin.refreshAfterSession();
+        }}
+      />
+    </Suspense>
   );
 
   if (detail) {
@@ -362,10 +408,14 @@ const LearningPage: React.FC = () => {
               onAttempt={courseLearning.submitAttempt}
               onGenerate={courseLearning.generateLesson}
               onStartQuiz={() => setQuizSessionCourseId(detail.course.id)}
+              onStartWeakReview={(nodeIds) =>
+                void reviewSession.startScopedReviewSession(nodeIds)
+              }
               onRefresh={() => void load()}
             />
           </Suspense>
           {quizSessionCourseId && renderQuizSession(quizSessionCourseId)}
+          {renderReviewSession()}
         </>
       );
     }
@@ -384,6 +434,7 @@ const LearningPage: React.FC = () => {
             onRefresh={() => void load()}
         />
         {quizSessionCourseId && renderQuizSession(quizSessionCourseId)}
+        {renderReviewSession()}
       </>
     );
   }
@@ -469,33 +520,9 @@ const LearningPage: React.FC = () => {
           </Tabs>
         </section>
 
-        <Suspense fallback={null}>
-          <ReviewSessionModal
-            key='review-session'
-            open={reviewSession.sessionOpen}
-            queue={reviewSession.sessionQueue}
-            busyId={busyId}
-            onAnswer={reviewSession.answerReview}
-            onForget={reviewSession.forgetReview}
-            onRate={reviewSession.rateReview}
-            onSkip={reviewSession.skipReview}
-            onArchive={reviewSession.archiveReview}
-            onRemove={reviewSession.removeReview}
-            onMarkEdit={reviewSession.markEditPending}
-            onEdited={(updated) => {
-              reviewSession.setSessionQueue((prev) =>
-                prev.map((item) => (item.id === updated.id ? updated : item))
-              );
-            }}
-            onClose={() => {
-              reviewSession.setSessionOpen(false);
-              // 会话结束时刷新列表与打卡状态，让角标与下次入队状态保持一致；
-              // 若本次复习恰好达成今日目标，会触发完成仪式高亮
-              void load();
-              void checkin.refreshAfterSession();
-            }}
-          />
-        </Suspense>
+        {/* 复习会话容器：u9 R3 起走共享的 renderReviewSession（三分支同一
+            实例），此处为列表分支挂点。 */}
+        {renderReviewSession()}
         {deletingCourse !== null && (
           <CourseDeleteDialog
             course={deletingCourse}
