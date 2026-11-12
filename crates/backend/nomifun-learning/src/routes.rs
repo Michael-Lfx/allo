@@ -849,13 +849,16 @@ async fn due_reviews(
 ) -> Result<Json<ApiResponse<Vec<crate::models::DueReview>>>, AppError> {
     // serde_urlencoded 0.7 cannot map repeated query keys onto Vec fields
     // (it rejects them with "expected a sequence"), so the multi-valued
-    // course/tag parameters are collected manually from the raw query string.
+    // course/node/tag parameters are collected manually from the raw query
+    // string.
     let mut course_ids: Vec<String> = Vec::new();
+    let mut node_ids: Vec<String> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
     if let Some(raw) = raw {
         for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
             match key.as_ref() {
                 "course_id" => course_ids.push(value.into_owned()),
+                "node_id" => node_ids.push(value.into_owned()),
                 "tag" => tags.push(value.into_owned()),
                 _ => {}
             }
@@ -865,10 +868,14 @@ async fn due_reviews(
         .into_iter()
         .map(parse_id::<LearningCourseId>)
         .collect::<Result<Vec<_>, _>>()?;
+    let node_ids = node_ids
+        .into_iter()
+        .map(parse_id::<LearningLessonId>)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .due_reviews(&user.id, query.limit, &course_ids, query.due_only, query.orphan, &tags)
+            .due_reviews(&user.id, query.limit, &course_ids, query.due_only, query.orphan, &tags, &node_ids)
             .await?,
     )))
 }

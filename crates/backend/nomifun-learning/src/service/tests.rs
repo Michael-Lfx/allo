@@ -911,7 +911,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
 
         // The queue itself serves exactly the completed lesson's question.
         let due = service
-            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
             .await
             .unwrap();
        assert_eq!(due.len(), 1);
@@ -1480,7 +1480,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // right after completion; roll the schedule forward to serve it.
         make_all_due(&service, &user_id).await;
         let due = service
-            .due_reviews(&user_id, 30, &[course_id.clone()], true, false, &[])
+            .due_reviews(&user_id, 30, &[course_id.clone()], true, false, &[], &[])
             .await
             .unwrap();
         assert_eq!(due.len(), 1);
@@ -1580,18 +1580,18 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // each card carries its own id, its own activity and its own schedule.
         // New cards surface on the next review day, not immediately.
         let scheduled = service
-            .due_reviews(&user_id, 30, &[], false, false, &[])
+            .due_reviews(&user_id, 30, &[], false, false, &[], &[])
             .await
             .unwrap();
         assert_eq!(scheduled.len(), 2);
         let due_now = service
-            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
             .await
             .unwrap();
         assert_eq!(due_now.len(), 0, "fresh cards are not due the same day");
         make_all_due(&service, &user_id).await;
         let due = service
-            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
             .await
             .unwrap();
         assert_eq!(due.len(), 2);
@@ -1680,13 +1680,13 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // The custom card joins the orphan queue due on the next review day
         // and is graded by the same rule-based evaluator.
         let before_due = service
-            .due_reviews(&user_id, 30, &[], true, true, &[])
+            .due_reviews(&user_id, 30, &[], true, true, &[], &[])
             .await
             .unwrap();
         assert_eq!(before_due.len(), 0, "fresh cards are not due the same day");
         make_all_due(&service, &user_id).await;
         let due = service
-            .due_reviews(&user_id, 30, &[], true, true, &[])
+            .due_reviews(&user_id, 30, &[], true, true, &[], &[])
             .await
             .unwrap();
         assert_eq!(due.len(), 1);
@@ -1853,7 +1853,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         }
         make_all_due(&service, &user_id).await;
         let due = service
-            .due_reviews(&user_id, 30, &[], true, true, &[])
+            .due_reviews(&user_id, 30, &[], true, true, &[], &[])
             .await
             .unwrap();
         assert_eq!(due.len(), 4, "all four kinds join the review queue");
@@ -2774,7 +2774,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .unwrap();
         make_all_due(&service, &user_id).await;
         let before = service
-            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
             .await
             .unwrap();
         assert_eq!(before.len(), 1, "卡先在队列");
@@ -2785,7 +2785,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
         let due = service
-            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
             .await
             .unwrap();
         assert!(due.is_empty(), "archived course cards leave the queue");
@@ -2813,7 +2813,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
         let after = service
-            .due_reviews(&user_id, 30, &[], false, false, &[])
+            .due_reviews(&user_id, 30, &[], false, false, &[], &[])
             .await
             .unwrap();
         assert_eq!(after.len(), 1, "restore returns the card to the queue");
@@ -3095,7 +3095,7 @@ async fn review_log_writes_advances_and_gate_blocks_stale_repeats() {
 
     make_all_due(&service, &user_id).await;
     let due = service
-        .due_reviews(&user_id, 10, &[], true, false, &[])
+        .due_reviews(&user_id, 10, &[], true, false, &[], &[])
         .await
         .unwrap();
     assert_eq!(due.len(), 1);
@@ -3204,7 +3204,7 @@ async fn due_gate_admits_first_same_day_early_review() {
     // 新卡的 due 在下一个学习日：课程复习会话（due_only=false）会出示
     // 这张未到期卡。当日尚无任何推进 → 首次提前复习放行。
     let due = service
-        .due_reviews(&user_id, 10, &[], false, false, &[])
+        .due_reviews(&user_id, 10, &[], false, false, &[], &[])
         .await
         .unwrap();
     assert_eq!(due.len(), 1);
@@ -3251,7 +3251,7 @@ async fn custom_review_log_writes_and_gate_blocks_stale_repeats() {
         .unwrap();
     make_all_due(&service, &user_id).await;
     let due = service
-        .due_reviews(&user_id, 10, &[], true, true, &[])
+        .due_reviews(&user_id, 10, &[], true, true, &[], &[])
         .await
         .unwrap();
     assert_eq!(due.len(), 1);
@@ -3367,7 +3367,7 @@ async fn due_reviews_rank_by_retrievability_buckets() {
     .unwrap();
 
     let due = service
-        .due_reviews(&user_id, 10, &[], true, true, &[])
+        .due_reviews(&user_id, 10, &[], true, true, &[], &[])
         .await
         .unwrap();
     assert_eq!(due.len(), 6);
@@ -3930,6 +3930,158 @@ async fn soft_gate_blocked_reports_supplier_due_count() {
         "供给节点名下到期卡必须被数到（缺陷形态恒 0）: {:?}",
         graph.blocked
     );
+}
+
+/// u9 R2 节点过滤：due_reviews 的多值 node_id 把队列收窄到给定节点集合
+/// （薄弱集复习会话只取供给/薄弱节点，不下发全量）。node 过滤隐含课程域
+/// ——自建题不属于任何节点，被排除；不带 due_only 时未到期卡同批出示
+/// （早练语义，u9 主行动的活路）。
+#[tokio::test]
+async fn due_reviews_node_filter_scopes_weak_set_sessions() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+
+    // 一门课两个节点，各 1 道客观题（导入管线种卡，完成节点后入队）。
+    let objective = |prompt: &str| ActivityPack {
+        difficulty: None,
+        kind: ActivityKind::SingleChoice,
+        prompt: prompt.into(),
+        options: vec!["A".into(), "B".into()],
+        answer: json!("A"),
+        explanation: String::new(),
+        distractors: Vec::new(),
+        tol: None,
+        section_key: None,
+        evidence: None,
+    };
+    let course = service
+        .import_course(CoursePack {
+            title: "Weak set".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![
+                    LessonPack {
+                        title: "Node A".into(),
+                        summary: String::new(),
+                        purpose: String::new(),
+                        intent: String::new(),
+                        scope: String::new(),
+                        est: 10,
+                        source: None,
+                        sources: Vec::new(),
+                        activities: vec![objective("Prompt A?")],
+                        sections: Vec::new(),
+                    },
+                    LessonPack {
+                        title: "Node B".into(),
+                        summary: String::new(),
+                        purpose: String::new(),
+                        intent: String::new(),
+                        scope: String::new(),
+                        est: 10,
+                        source: None,
+                        sources: Vec::new(),
+                        activities: vec![objective("Prompt B?")],
+                        sections: Vec::new(),
+                    },
+                ],
+            }],
+        })
+        .await
+        .unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_a = detail.modules[0].lessons[0].id.clone();
+    let lesson_b = detail.modules[0].lessons[1].id.clone();
+    let activity_a = detail.modules[0].lessons[0].activities[0].id.clone();
+    for lesson_id in [&lesson_a, &lesson_b] {
+        service
+            .update_lesson_progress(lesson_id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+    }
+    // 自建题同样入队（无过滤时是队列的一员，node 过滤下的排除面对照）。
+    service
+        .create_custom_question(
+            &user_id,
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::TrueFalse,
+                prompt: "Custom orphan card.".into(),
+                options: vec!["true".into(), "false".into()],
+                answer: json!(true),
+                explanation: String::new(),
+                distractors: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    // 全部推到已到期（节点 A/B 的课程卡 + 自建题），排除「未到期」噪声，
+    // 让断言只对准过滤本身。
+    let now = now_ms();
+    sqlx::query("UPDATE learning_review_items SET due_at = ?")
+        .bind(now - 1000)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE learning_custom_questions SET due_at = ? WHERE user_id = ?")
+        .bind(now - 1000)
+        .bind(user_id.as_str())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+
+    let node_a = lesson_a;
+    let node_b = lesson_b;
+
+    // 基线：无 node 过滤（course_ids 为空 → 自建题也出列）= 3 张。
+    let all = service
+        .due_reviews(&user_id, 30, &[], false, false, &[], &[])
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3, "two course cards + one custom: {all:?}");
+
+    // node = A：只出 A 的卡；自建题被排除（不属于任何节点）。
+    let scoped_a = service
+        .due_reviews(&user_id, 30, &[], false, false, &[], &[node_a.clone()])
+        .await
+        .unwrap();
+    assert_eq!(scoped_a.len(), 1, "node filter narrows to lesson A: {scoped_a:?}");
+    assert_eq!(
+        scoped_a[0]
+            .question
+            .activity_id
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some(activity_a.as_str())
+    );
+
+    // node = A + B（多值）：两张课程卡都出，自建题仍排除。
+    let scoped_both = service
+        .due_reviews(&user_id, 30, &[], false, false, &[], &[node_a, node_b])
+        .await
+        .unwrap();
+    assert_eq!(scoped_both.len(), 2, "{scoped_both:?}");
+    assert!(scoped_both.iter().all(|card| card.source == ReviewSource::Course));
+
+    // due_only 与 node 过滤叠加：到期门照常生效。
+    let due_scoped = service
+        .due_reviews(&user_id, 30, &[], true, false, &[], &[])
+        .await
+        .unwrap();
+    assert_eq!(due_scoped.len(), 3, "all due after the UPDATE: {due_scoped:?}");
 }
 
 /// 结构读侧投影（t1）：未生成 = 200 形状全空（Missing）；有快照 = 预计算面
@@ -8418,7 +8570,7 @@ async fn xp_review_settlement_folds_same_day_repeat() {
         .unwrap();
     make_all_due(&service, &user_id).await;
     let due = service
-        .due_reviews(&user_id, 10, &[], true, false, &[])
+        .due_reviews(&user_id, 10, &[], true, false, &[], &[])
         .await
         .unwrap();
     assert_eq!(due.len(), 1);
@@ -8505,7 +8657,7 @@ async fn review_log_casts_pre_push_snapshot_fields() {
         .unwrap();
     make_all_due(&service, &user_id).await;
     let card = service
-        .due_reviews(&user_id, 10, &[], true, false, &[])
+        .due_reviews(&user_id, 10, &[], true, false, &[], &[])
         .await
         .unwrap()[0]
         .id
@@ -8623,7 +8775,7 @@ async fn seeding_review_items_is_idempotent() {
     service
         .answer_review(
             &service
-                .due_reviews(&user_id, 10, &[], true, false, &[])
+                .due_reviews(&user_id, 10, &[], true, false, &[], &[])
                 .await
                 .unwrap()[0]
                 .id
