@@ -7,6 +7,9 @@
       红线全闸 exit 0；learning 回归 385 绿。真机走查 T1 通过（入口卡
       due 态 DOM+截图双证据），T2–T5 点击级因 IAB webview 宿主故障受阻
       如实留痕（u5 Resolution），桌面点击走查留用户（造数态 8/6 未消费）。 -->
+<!-- 追加后续票（2026-11-12）：真机走查暴露入口/感知双缺口 + 三路勘察
+      （assets/2026-11-12-course-kind-quiz-surface-analysis.md）+ grill 七题
+      裁决 → u6（图工作区入口+seed v3）/ u7（感知横幅）/ u8（软闸行动）。 -->
 <!-- 来源：上线前裁决——测验后端全链就绪（learning-quiz 波 q1–q3：条款→触发→
       载体→质量）而 SPA 零 quiz 面（ui/src 零引用、词典零词条）。launch-sim
       造数波（2026-11-11）把测验验到 API 层为止；本波补前端，让测验成为
@@ -103,3 +106,15 @@ N/K 归零回到积累态。九题型作答控件复用复习会话的 ActivityI
 | [u3](tickets/u3-quiz-session-container.md) | 测验会话容器（开测→逐题判分→全卷收集） | u1 |
 | [u4](tickets/u4-settlement-report.md) | 完成结算页（逐节点对账 + 分级 + 校准裁决） | u3 |
 | [u5](tickets/u5-edges-and-redlines.md) | 边界态 + 红线全闸 + 双轴评审 + 真机走查 | u2, u3, u4 |
+
+### 后续票（2026-11-12，grill 七题裁决后追加；事实源 = assets/ 分析文档）
+
+| 票 | 标题 | 依赖 |
+|---|---|---|
+| [u6](tickets/u6-graph-workspace-entry-and-seed.md) | 图工作区检测入口 + 图课程造数（seed v3） | 无 |
+| [u7](tickets/u7-perception-banner.md) | 检测感知横幅（首页聚合 + 后端 N/K 列表端点） | 无（真机验收可搭 u6 的 seed v3） |
+| [u8](tickets/u8-soft-gate-action.md) | 软闸行动承诺兑现（跳转 + 历史可进 + 口径对齐） | 无（真机验收依赖 u6 软闸臂） |
+
+后置维持：浮动坞 Pill（感知第二步，u7 后可选）；g4 题卡反哺（上线后，
+三设计点随票面裁决）；节点级补习 deepen 式（暂缓——u8 跳转已交付最小
+行动闭环）。
