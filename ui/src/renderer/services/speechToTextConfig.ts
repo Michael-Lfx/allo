@@ -6,9 +6,23 @@
 
 import { configService } from '@/common/config/configService';
 import type { SpeechToTextConfig } from '@/common/types/provider/speech';
+import { addEventListener, emitter } from '@/renderer/utils/emitter';
 
 export const SPEECH_TO_TEXT_CONFIG_KEY = 'tools.speechToText' as const;
-export const SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT = 'nomifun:speech-to-text-config-changed';
+
+/** Subscribe to same-window changes without allowing a listener to interrupt a save. */
+export const subscribeSpeechToTextConfigChanged = (listener: () => void): (() => void) =>
+  addEventListener('speech.stt-config.changed', () => {
+    try {
+      listener();
+    } catch (error) {
+      if (typeof globalThis.reportError === 'function') {
+        globalThis.reportError(error);
+      } else {
+        console.error('[speechToTextConfig] Listener failed:', error);
+      }
+    }
+  });
 
 export const DEFAULT_SPEECH_TO_TEXT_CONFIG: SpeechToTextConfig = {
   enabled: false,
@@ -47,7 +61,7 @@ export const saveSpeechToTextConfig = async (config: SpeechToTextConfig): Promis
     throw error;
   } finally {
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT));
+      emitter.emit('speech.stt-config.changed');
     }
   }
 };

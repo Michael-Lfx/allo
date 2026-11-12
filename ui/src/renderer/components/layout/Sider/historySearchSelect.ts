@@ -1,6 +1,20 @@
-/** Fired when titlebar search opens a conversation, so the sider list returns to projects. */
-export const SIDER_HISTORY_SEARCH_SELECT_EVENT = 'flowy:sider-history-search-select';
+import { addEventListener, emitter } from '@/renderer/utils/emitter';
 
+/** Fired when titlebar search opens a conversation, so the sider list returns to projects. */
 export const dispatchSiderHistorySearchSelect = (): void => {
-  window.dispatchEvent(new Event(SIDER_HISTORY_SEARCH_SELECT_EVENT));
+  emitter.emit('sider.history-search.select');
 };
+
+/** Keep DOM event semantics: a failing listener must not block the sender or other listeners. */
+export const subscribeSiderHistorySearchSelect = (listener: () => void): (() => void) =>
+  addEventListener('sider.history-search.select', () => {
+    try {
+      listener();
+    } catch (error) {
+      if (typeof globalThis.reportError === 'function') {
+        globalThis.reportError(error);
+      } else {
+        console.error('[historySearchSelect] Listener failed:', error);
+      }
+    }
+  });

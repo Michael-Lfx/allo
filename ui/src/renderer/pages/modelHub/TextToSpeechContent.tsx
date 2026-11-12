@@ -13,7 +13,7 @@ import TaskModelSelect from '@/renderer/components/model/TaskModelSelect';
 import {
   getTextToSpeechConfig,
   saveTextToSpeechConfig,
-  TEXT_TO_SPEECH_CONFIG_CHANGED_EVENT,
+  subscribeTextToSpeechConfigChanged,
 } from '@/renderer/services/textToSpeechConfig';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 
@@ -33,8 +33,7 @@ const TextToSpeechContent: React.FC = () => {
   useEffect(() => {
     const sync = () => setConfig(getTextToSpeechConfig() ?? null);
     sync();
-    window.addEventListener(TEXT_TO_SPEECH_CONFIG_CHANGED_EVENT, sync);
-    return () => window.removeEventListener(TEXT_TO_SPEECH_CONFIG_CHANGED_EVENT, sync);
+    return subscribeTextToSpeechConfigChanged(sync);
   }, []);
 
   const persist = useCallback(
