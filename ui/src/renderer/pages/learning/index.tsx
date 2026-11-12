@@ -329,6 +329,22 @@ const LearningPage: React.FC = () => {
     );
   }
 
+  // quiz 会话容器接线（u6 修复消重）：图分支与传统分支三回调逐字一致——
+  // onFinished 清位 + bump 令牌（入口卡重拉归零读数）、onConflict 只 bump、
+  // onClose 卸载；同一组状态位 quizSessionCourseId / quizProgressToken 两
+  // 分支共用（容器互斥，不可能双开）。回调语义零变化，仅抽局部函数。
+  const renderQuizSession = (courseId: string) => (
+    <QuizSession
+      courseId={courseId}
+      onFinished={() => {
+        setQuizSessionCourseId(null);
+        setQuizProgressToken((token) => token + 1);
+      }}
+      onConflict={() => setQuizProgressToken((token) => token + 1)}
+      onClose={() => setQuizSessionCourseId(null)}
+    />
+  );
+
   if (detail) {
     // 学习图课程走图工作区（DAG + 就绪集推荐 + 节点抽屉）；
     // 传统课程维持大纲导航工作区。
@@ -349,21 +365,7 @@ const LearningPage: React.FC = () => {
               onRefresh={() => void load()}
             />
           </Suspense>
-          {/* 图分支测验会话容器（u6）：与下方传统分支对称接线——
-              onFinished 清位 + bump 令牌（入口卡重拉归零读数）、onConflict
-              只 bump、onClose 卸载；同一组状态位 quizSessionCourseId /
-              quizProgressToken 两分支共用（容器互斥，不可能双开）。 */}
-          {quizSessionCourseId && (
-            <QuizSession
-                courseId={quizSessionCourseId}
-                onFinished={() => {
-                  setQuizSessionCourseId(null);
-                  setQuizProgressToken((token) => token + 1);
-                }}
-                onConflict={() => setQuizProgressToken((token) => token + 1)}
-                onClose={() => setQuizSessionCourseId(null)}
-            />
-          )}
+          {quizSessionCourseId && renderQuizSession(quizSessionCourseId)}
         </>
       );
     }
@@ -381,17 +383,7 @@ const LearningPage: React.FC = () => {
             onStartQuiz={() => setQuizSessionCourseId(detail.course.id)}
             onRefresh={() => void load()}
         />
-        {quizSessionCourseId && (
-          <QuizSession
-              courseId={quizSessionCourseId}
-              onFinished={() => {
-                setQuizSessionCourseId(null);
-                setQuizProgressToken((token) => token + 1);
-              }}
-              onConflict={() => setQuizProgressToken((token) => token + 1)}
-              onClose={() => setQuizSessionCourseId(null)}
-          />
-        )}
+        {quizSessionCourseId && renderQuizSession(quizSessionCourseId)}
       </>
     );
   }

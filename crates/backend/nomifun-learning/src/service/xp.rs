@@ -407,15 +407,12 @@ impl LearningService {
         user_id: &UserId,
         course_id: &str,
     ) -> Result<Vec<String>, AppError> {
-        let rows: Vec<String> = sqlx::query_scalar(
+        let rows: Vec<String> = sqlx::query_scalar(&format!(
             "SELECT e.node_id FROM learning_xp_events e \
              WHERE e.user_id = ? AND e.course_id = ? AND e.kind = 'node-completed' \
-               AND e.node_id IS NOT NULL \
-               AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
-                 WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
-                   AND q.kind = 'quiz-completed' AND q.rowid > e.rowid) \
+             {QUIZ_SETTLED_SINCE_LAST_QUIZ} \
              ORDER BY e.rowid",
-        )
+        ))
         .bind(user_id.as_str())
         .bind(course_id)
         .fetch_all(&self.pool)
@@ -445,10 +442,11 @@ impl LearningService {
         let settled_count = self
             .quiz_settled_count(user_id, course_id.as_str())
             .await?;
+        let (trigger_count, due) = quiz_reading(settled_count);
         Ok(QuizProgressView {
             settled_count,
-            trigger_count: QUIZ_TRIGGER_SETTLEMENTS,
-            due: settled_count >= QUIZ_TRIGGER_SETTLEMENTS,
+            trigger_count,
+            due,
         })
     }
 
@@ -465,18 +463,15 @@ impl LearningService {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<QuizOverviewCourse>, AppError> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT e.course_id, c.title, COUNT(*) AS settled_count \
              FROM learning_xp_events e \
              JOIN learning_courses c ON c.course_id = e.course_id \
                AND c.deleted_at IS NULL AND c.enabled = 1 \
              WHERE e.user_id = ? AND e.kind = 'node-completed' \
-               AND e.node_id IS NOT NULL \
-               AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
-                 WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
-                   AND q.kind = 'quiz-completed' AND q.rowid > e.rowid) \
+             {QUIZ_SETTLED_SINCE_LAST_QUIZ} \
              GROUP BY e.course_id, c.title",
-        )
+        ))
         .bind(user_id.as_str())
         .fetch_all(&self.pool)
         .await
@@ -484,18 +479,38 @@ impl LearningService {
         let mut courses = Vec::with_capacity(rows.len());
         for row in rows {
             let settled_count: i64 = row.try_get("settled_count").map_err(internal)?;
+            let (trigger_count, due) = quiz_reading(settled_count);
             courses.push(QuizOverviewCourse {
                 course_id: parse_id(row.try_get::<String, _>("course_id").map_err(internal)?)?,
                 title: row.try_get("title").map_err(internal)?,
                 settled_count,
-                trigger_count: QUIZ_TRIGGER_SETTLEMENTS,
-                due: settled_count >= QUIZ_TRIGGER_SETTLEMENTS,
+                trigger_count,
+                due,
             });
         }
         // due 优先、课程名次之（Rust 端排序：字节序 UTF-8，与断言同源可钉）。
         courses.sort_by(|a, b| b.due.cmp(&a.due).then_with(|| a.title.cmp(&b.title)));
         Ok(courses)
     }
+}
+
+/// quiz 触发口径共享 SQL 片段（u6 修复消重）：「距上次 quiz 结算之后的
+/// node-completed」判定——[`LearningService::quiz_settled_nodes`] 与
+/// [`LearningService::quiz_overview`] 原本各写一份逐字相同的 NOT EXISTS
+/// 段，抽共享 const 保证改一处即两处；插值前后 SQL 逐字节等价（parity
+/// 测试不动）。
+const QUIZ_SETTLED_SINCE_LAST_QUIZ: &str = "AND e.node_id IS NOT NULL \
+   AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
+     WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
+       AND q.kind = 'quiz-completed' AND q.rowid > e.rowid)";
+
+/// N/K 读数公共段（u6 修复消重）：trigger_count 恒等于触发阈值常量、
+/// due = settled ≥ 阈值——quiz_progress 与 quiz_overview 两处同源赋值。
+fn quiz_reading(settled_count: i64) -> (i64, bool) {
+    (
+        QUIZ_TRIGGER_SETTLEMENTS,
+        settled_count >= QUIZ_TRIGGER_SETTLEMENTS,
+    )
 }
 
 /// 学习日（YYYYMMDD）平移 `delta` 天（真实日历运算，跨月跨年正确）。

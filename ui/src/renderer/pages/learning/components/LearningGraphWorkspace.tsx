@@ -952,9 +952,11 @@ const LearningGraphWorkspace: React.FC<{
                 自带 N/K 读数与开测按钮（quiz* 既有词条）；这里只补一条回向
                 语境句——图工作区推荐 = 前向学新，检测 = 回向考已结算节点，
                 两者并存时方向由文案点破。归档课程不渲染也不拉读数（与
-                CourseWorkspace 挂点同存在性语义）。 */}
+                CourseWorkspace 挂点同存在性语义）。shrink-0（u6 修复）：
+                「视口底缘常驻」意图的收尾——极矮视口下外层 flex-col 压缩
+                flex 子项时入口不被挤压变形。 */}
             {detail.course.enabled && (
-              <section className='flex flex-col gap-4px'>
+              <section className='flex shrink-0 flex-col gap-4px'>
                 <Text type='secondary' className='text-12px'>
                   {t('learning.quizGraphEntryContext')}
                 </Text>
