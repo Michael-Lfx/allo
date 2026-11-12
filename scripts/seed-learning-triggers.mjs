@@ -31,16 +31,18 @@
  *     learning_concept_registry → learning_lesson_concepts (teaches ×7 +
  *     assumes ×1, tiers know/apply — the ready set reads as true at query
  *     time, no prerequisite edges stored);
- *   - 6 of 8 nodes completed (lesson_progress rows + `node-completed` XP
- *     events over days 4–6, 54 XP/day) → quiz due (6/6) for the graph
- *     workspace entry; the remaining two stay open: 节点 7 assumes the
- *     concept taught by 节点 6, 节点 8 assumes nothing (ready);
+ *   - the first `--settled <n>` nodes completed (default 6; lesson_progress
+ *     rows + `node-completed` XP events over days 4–6, 54 XP/day) → quiz
+ *     settled n/6: n = 6 keeps the graph workspace entry DUE, n < 6 keeps it
+ *     NOT due (u7 acceptance: one due + one not-due course on the same DB);
+ *     remaining nodes stay 未开始; review cards are seeded as usual regardless
+ *     of `--settled` (照造不裁);
  *   - soft-gate acceptance arm: the supplier node (节点 6) holds one LOW-R
  *     card (stability 1.0d, last push 3 days ago → predicted recall ≈ 0.77
  *     < R_GATE 0.85) so the workspace's `graph.blocked` advice fires for
- *     节点 7; nodes 1–5 carry bare overdue cards (as a real completion chain
- *     would have seeded them — stability 0 reads as full recall, no gate
- *     effect);
+ *     节点 7 (default 6-settled plan); nodes 1–5 carry bare overdue cards (as
+ *     a real completion chain would have seeded them — stability 0 reads as
+ *     full recall, no gate effect);
  *   - one applied growth batch row so 学习记录 has a timeline entry.
  *
  * Deliberately NOT seeded: `quiz-completed` events (keeps quiz due), custom
@@ -49,9 +51,9 @@
  * Known divergence (by design): fabricated settlements bypass the companion
  * XP bridge, so the companion balance does not see this history — the
  * learning ledger surfaces (calendar / checkin / triggers) are unaffected.
- * The checkin cleanup fingerprint (goal 40 + reviewed_count 54) is shared by
- * both modes, so `--fresh` on one mode also clears same-fingerprint checkins
- * left by the other — verification DBs rarely hold both at once.
+ * The checkin cleanup fingerprint (goal 40 + reviewed_count 27/54) is shared
+ * by both modes, so `--fresh` on one mode also clears same-fingerprint
+ * checkins left by the other — verification DBs rarely hold both at once.
  *
  * SAFETY: close ALL app instances (desktop, `bun run dev`, `dev:web`,
  * `nomicore`) first — the backup step (`VACUUM INTO`) doubles as the lock
@@ -59,14 +61,21 @@
  * target is the `Nomi-dev` data dir; pass `--db` to aim elsewhere.
  *
  * Usage:
- *   bun scripts/seed-learning-triggers.mjs [--graph] [--db <path>] [--fresh] [--dry-run]
+ *   bun scripts/seed-learning-triggers.mjs [--graph] [--settled <n>] [--db <path>] [--fresh] [--dry-run]
  *     --db       target SQLite path (default: dev channel data dir)
  *     --graph    seed the learning-graph course variant instead of the
  *                traditional one (independent marker course)
+ *     --settled  graph mode only: completed node count, integer 1–6
+ *                (default 6 = quiz due); below 6 = quiz not due
  *     --fresh    delete the previous seed run's derived rows, reseed
  *     --dry-run  print the plan without writing anything
  *
  * Idempotent: reruns detect the marker course and skip; `--fresh` rebuilds.
+ *
+ * Built-in assertions (u6 修复 F8): after seeding, the script asserts the core
+ * board in-script (row counts / supplier low-R card / due flip / marker
+ * idempotency) and exits non-zero with an explicit failure line on any
+ * mismatch — rerun to verify, no manual readout diffing.
  */
 import { Database } from 'bun:sqlite';
 import { existsSync, statSync } from 'node:fs';
@@ -91,7 +100,8 @@ const PUSH_GAP_DAYS = 4;
 const MARKER_TITLE = 'launch-sim 触发数据';
 /** Marker course title for the graph variant (independent anchor, u6). */
 const MARKER_TITLE_GRAPH = 'launch-sim 图课程触发数据';
-/** Graph mode: nodes completed up front (→ quiz settled 6/6, due). */
+/** Graph mode default: nodes completed up front (→ quiz settled 6/6, due).
+ * `--settled <n>` overrides the count downward (1–6, not-due arm for u7). */
 const GRAPH_COMPLETED_NODES = 6;
 /**
  * Graph mode soft-gate arm (ADR-0009 Amendment 1): the supplier card's
@@ -108,7 +118,7 @@ const GRAPH_SUPPLIER_LAST_PUSH_DAYS_AGO = 3;
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { db: null, fresh: false, dryRun: false, graph: false };
+  const args = { db: null, fresh: false, dryRun: false, graph: false, settled: null };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
     if (value === '--db') {
@@ -121,9 +131,19 @@ function parseArgs(argv) {
       args.dryRun = true;
     } else if (value === '--graph') {
       args.graph = true;
+    } else if (value === '--settled') {
+      i += 1;
+      const n = Number(argv[i]);
+      if (!Number.isInteger(n) || n < 1 || n > GRAPH_COMPLETED_NODES) {
+        throw new Error(`--settled requires an integer 1-${GRAPH_COMPLETED_NODES}`);
+      }
+      args.settled = n;
     } else {
       throw new Error(`unknown argument: ${value}`);
     }
+  }
+  if (args.settled !== null && !args.graph) {
+    throw new Error('--settled only applies to --graph mode');
   }
   return args;
 }
@@ -273,6 +293,28 @@ const CARD_PLANS = [
   { daysOverdue: 2, pushes: { count: 5, stability: 26.0, difficulty: 8.2, lastDaysAgo: 5.0, lapses: 2 } },
 ];
 
+/** Graph mode card plans (u6 软闸臂): fixed six — nodes 1–5 carry bare
+ * overdue cards, the supplier node (节点 6, index 5) carries the ONE low-R
+ * card (GRAPH_SUPPLIER_*). Deliberately NOT trimmed by `--settled` (照造不裁)
+ * — the review surface keeps its signal in every graph arm. */
+const GRAPH_CARD_PLANS = [
+  { daysOverdue: 1, pushes: null },
+  { daysOverdue: 2, pushes: null },
+  { daysOverdue: 4, pushes: null },
+  { daysOverdue: 7, pushes: null },
+  { daysOverdue: 0.5, pushes: null },
+  {
+    daysOverdue: 1,
+    pushes: {
+      count: 2,
+      stability: GRAPH_SUPPLIER_STABILITY_DAYS,
+      difficulty: 6.5,
+      lastDaysAgo: GRAPH_SUPPLIER_LAST_PUSH_DAYS_AGO,
+      lapses: 1,
+    },
+  },
+];
+
 // ---------------------------------------------------------------------------
 // graph mode (v3, u6): 8-node learning-graph course. Nodes 1–6 completed
 // (quiz due 6/6); 节点 7 assumes 节点 6's concept → soft-gate candidate;
@@ -359,8 +401,10 @@ const GRAPH_LESSONS = [
   },
 ];
 
-/** assumes 挂接（先修语义读时计算）：候选节点 index → 供给概念 index。 */
-const GRAPH_ASSUMES = [{ lesson: 6, concept: 5, tier: 'know' }];
+/** assumes 挂接（先修语义读时计算）：候选节点 index → 供给概念 canonical
+ * 字符串（u6 修复：概念按 canonical 寻址，structure edges 与 lesson_concepts
+ * 两处共用同一寻址，免 index 中转的同体换算函数）。 */
+const GRAPH_ASSUMES = [{ lesson: 6, concept: '水的组成', tier: 'know' }];
 
 /** 全量合法 structure_json 信封（形态抄 learning_smoke.rs
  * valid_structure_seed_envelope：八标量键齐 + domain + spines + blocks +
@@ -408,9 +452,7 @@ function graphStructureEnvelope(goal, now) {
       blocks,
       edges: GRAPH_ASSUMES.map((link) => ({
         source: GRAPH_LESSONS[link.lesson].title,
-        target: GRAPH_LESSONS[
-          GRAPH_LESSONS.findIndex((lesson) => lesson.concept && lesson.concept.canonical === graphConceptByIndex(link.concept).canonical)
-        ].title,
+        target: GRAPH_LESSONS.find((lesson) => lesson.concept?.canonical === link.concept).title,
         type: 'assumes',
         tier: link.tier,
         note: '先认化学式再谈电解',
@@ -435,11 +477,6 @@ function graphStructureEnvelope(goal, now) {
       doors: [{ id: 'G1', criterion: '能读懂结构快照的块与边', kind: 'hard' }],
     },
   };
-}
-
-function graphConceptByIndex(index) {
-  const concepts = GRAPH_LESSONS.map((lesson) => lesson.concept).filter(Boolean);
-  return concepts[index];
 }
 
 /** Push-history plausibility: per push index (0-based), stability before the
@@ -528,10 +565,11 @@ function main() {
     return;
   }
 
-  const completedCount = isGraph ? GRAPH_COMPLETED_NODES : lessons.length;
-  if (isGraph && completedCount < QUIZ_TRIGGER_SETTLEMENTS) {
-    // wiring guard: the graph arm exists to walk a due quiz entry — keep the
-    // node plan and the trigger constant in sync.
+  const completedCount = isGraph ? (args.settled ?? GRAPH_COMPLETED_NODES) : lessons.length;
+  if (isGraph && !args.settled && completedCount < QUIZ_TRIGGER_SETTLEMENTS) {
+    // wiring guard (default plan only — an explicit `--settled` below the
+    // trigger IS the deliberate not-due arm, u7): keep the node plan and the
+    // trigger constant in sync.
     fail(`graph plan has ${completedCount} completed nodes but quiz needs ${QUIZ_TRIGGER_SETTLEMENTS}`);
   }
 
@@ -544,9 +582,9 @@ function main() {
     if (isGraph) {
       console.log(`  concepts      ${GRAPH_LESSONS.filter((l) => l.concept).length} registry rows (teaches ${GRAPH_LESSONS.filter((l) => l.concept).length} / assumes ${GRAPH_ASSUMES.length})`);
       console.log('  growth batch  1 (seq 1, applied)');
-      console.log(`  completed     ${completedCount} nodes → quiz settled ${completedCount}/${QUIZ_TRIGGER_SETTLEMENTS} (due)`);
-      console.log(`  open nodes    ${lessons.length - completedCount} (1 gate-blocked candidate + 1 ready)`);
-      console.log(`  review items  ${completedCount} (5 bare overdue + 1 low-R supplier card + review_log → graph.blocked)`);
+      console.log(`  completed     ${completedCount} nodes → quiz settled ${completedCount}/${QUIZ_TRIGGER_SETTLEMENTS} (${completedCount >= QUIZ_TRIGGER_SETTLEMENTS ? 'due' : 'NOT due'})`);
+      console.log(`  open nodes    ${lessons.length - completedCount} (节点 8 ready${completedCount >= QUIZ_TRIGGER_SETTLEMENTS ? ' · 节点 7 gate-blocked candidate' : ''})`);
+      console.log(`  review items  ${GRAPH_CARD_PLANS.length} (5 bare overdue + 1 low-R supplier card + review_log${completedCount >= QUIZ_TRIGGER_SETTLEMENTS ? ' → graph.blocked' : ''})`);
     } else {
       console.log('  enrollment    1');
       console.log(`  xp events     ${lessons.length} node-completed, days 4-7 ago, 54 XP/day`);
@@ -690,8 +728,8 @@ function main() {
       GRAPH_ASSUMES.forEach((link) => {
         const supplier = GRAPH_LESSONS[link.lesson];
         const conceptId =
-          GRAPH_LESSONS.find((candidate) => candidate.concept && candidate.concept.canonical === supplierConceptCanonical(link.concept))?.conceptId ?? null;
-        if (!conceptId) fail(`graph assumes link references unknown concept index ${link.concept}`);
+          GRAPH_LESSONS.find((candidate) => candidate.concept?.canonical === link.concept)?.conceptId ?? null;
+        if (!conceptId) fail(`graph assumes link references unknown concept '${link.concept}'`);
         db.run(
           'INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier, ref_name) \
            VALUES (?, ?, \'assumes\', ?, NULL)',
@@ -765,25 +803,7 @@ function main() {
     // (GRAPH_SUPPLIER_*): low stability + recent push → predicted recall
     // ≈ 0.77 < R_GATE 0.85 → ready_partition blocks its dependent (节点 7)
     // and the workspace renders the soft-gate advice bar.
-    const cardPlans = isGraph
-      ? [
-          { daysOverdue: 1, pushes: null },
-          { daysOverdue: 2, pushes: null },
-          { daysOverdue: 4, pushes: null },
-          { daysOverdue: 7, pushes: null },
-          { daysOverdue: 0.5, pushes: null },
-          {
-            daysOverdue: 1,
-            pushes: {
-              count: 2,
-              stability: GRAPH_SUPPLIER_STABILITY_DAYS,
-              difficulty: 6.5,
-              lastDaysAgo: GRAPH_SUPPLIER_LAST_PUSH_DAYS_AGO,
-              lapses: 1,
-            },
-          },
-        ]
-      : CARD_PLANS;
+    const cardPlans = isGraph ? GRAPH_CARD_PLANS : CARD_PLANS;
     let logCount = 0;
     cardPlans.forEach((plan, index) => {
       const reviewItemId = uuidv7();
@@ -861,18 +881,19 @@ function main() {
       lessonIds,
       completedCount,
     });
+    assertSeedInvariants(db, owner.user_id, courseId, {
+      isGraph,
+      markerTitle,
+      lessonCount: lessons.length,
+      completedCount,
+      cardCount: cardPlans.length,
+      now,
+    });
   } catch (error) {
     db.exec('ROLLBACK');
     fail(error.message);
   }
   db.close();
-}
-
-/** graph assumes 链接的概念寻址：供给概念 index → canonical（与
- * graphStructureEnvelope 的 edges 寻址共用）。 */
-function supplierConceptCanonical(conceptIndex) {
-  const concepts = GRAPH_LESSONS.map((lesson) => lesson.concept).filter(Boolean);
-  return concepts[conceptIndex].canonical;
 }
 
 /** --fresh: remove every row derived from the previous seed run. Checkins are
@@ -901,11 +922,13 @@ function cleanupFresh(db, userId, courseId) {
   db.run('DELETE FROM learning_review_log WHERE user_id = ? AND item_id IN (' + (itemIds.map(() => '?').join(',') || 'NULL') + ')', userId, ...itemIds);
   if (itemIds.length) db.run(`DELETE FROM learning_review_items WHERE review_item_id IN (${itemIds.map(() => '?').join(',')})`, ...itemIds);
   db.run('DELETE FROM learning_xp_events WHERE course_id = ?', courseId);
-  // checkins: only rows carrying the seed fingerprint (goal 40, reviewed_count 54)
+  // checkins: only rows carrying the seed fingerprint (goal 40, reviewed_count
+  // 54 = 2 nodes/day; --settled odd counts leave one half-day of 27)
   db.run(
-    'DELETE FROM learning_checkins WHERE user_id = ? AND goal = ? AND reviewed_count = ?',
+    'DELETE FROM learning_checkins WHERE user_id = ? AND goal = ? AND reviewed_count IN (?, ?)',
     userId,
     DAILY_XP_GOAL_DEFAULT,
+    NODE_EST_MINUTES + XP_FULL_BONUS,
     (NODE_EST_MINUTES + XP_FULL_BONUS) * 2,
   );
   if (enrollmentIds.length) {
@@ -990,9 +1013,10 @@ function printReadout(db, userId, courseId, now, tz, seedInfo = { isGraph: false
       )
       .get(courseId, now - 4 * DAY_MS).n;
     console.log('\ngraph readout (软闸臂, u6):');
-    console.log(`  open nodes        : ${openNodes}  (1 ready → recommended + 1 gate-blocked candidate)`);
+    const gateArmed = seedInfo.completedCount >= QUIZ_TRIGGER_SETTLEMENTS;
+    console.log(`  open nodes        : ${openNodes}  (节点 8 ready → recommended${gateArmed ? ' · 节点 7 gate-blocked candidate' : ''})`);
     console.log(`  concept hooks     : teaches ${teaches} / assumes ${assumes}  (concept table should show both roles)`);
-    console.log(`  supplier low-R    : ${lowRCards} card(s)  (stability ≤ 2d + last push ≤ 4d ago → R < 0.85 → graph.blocked expected)`);
+    console.log(`  supplier low-R    : ${lowRCards} card(s)  (stability ≤ 2d + last push ≤ 4d ago → R < 0.85${gateArmed ? ' → graph.blocked expected' : ' → gate idle below trigger'})`);
   }
 
   console.log('\nnext steps:');
@@ -1005,6 +1029,144 @@ function printReadout(db, userId, courseId, now, tz, seedInfo = { isGraph: false
     console.log(`  2. quiz API: GET /api/learning/courses/${courseId}/quiz/progress`);
   }
   console.log(`  next steps doc: docs/tracker/learning-launch-sim/tickets/s1-seed-learning-triggers.md`);
+}
+
+// ---------------------------------------------------------------------------
+// built-in assertions (u6 修复 F8)：核心盘面断言进脚本，重跑即验——mismatch
+// 非零退出 + 明确失败行打印（graph 与传统两模式都过断言段）。断言全部落在
+// 种子自控的 course 域事实（行数 / 软闸低 R 卡 / due 翻转 / marker 幂等），
+// 不做全局计数（打卡等跨臂共存下不稳定的事实由 readout 打印承载）。
+// ---------------------------------------------------------------------------
+
+function assertSeedInvariants(db, userId, courseId, ctx) {
+  const failures = [];
+  let checks = 0;
+  const expect = (name, actual, expected) => {
+    checks += 1;
+    if (actual !== expected) {
+      failures.push(`  ASSERT FAIL ${name}: expected ${expected}, got ${actual}`);
+    }
+  };
+  const scalar = (sql, ...params) => db.query(sql).get(...params)?.n ?? 0;
+
+  // marker 幂等：标记课程恰一行（重跑 skip / --fresh 先删后插，都不该双行）
+  expect(
+    'marker course rows',
+    scalar('SELECT COUNT(*) AS n FROM learning_courses WHERE title = ?', ctx.markerTitle),
+    1,
+  );
+  if (ctx.isGraph) {
+    expect(
+      'marker course_kind=learning_graph',
+      scalar(
+        "SELECT COUNT(*) AS n FROM learning_courses WHERE title = ? AND course_kind = 'learning_graph'",
+        ctx.markerTitle,
+      ),
+      1,
+    );
+  }
+
+  // 行数：课程域内 5 表（lesson/activities/progress 与结算事件）
+  const lessonIds = db
+    .query(
+      'SELECT lesson_id FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?',
+    )
+    .all(courseId)
+    .map((r) => r.lesson_id);
+  const lessonIn = lessonIds.map(() => '?').join(',') || 'NULL';
+  expect('lessons', lessonIds.length, ctx.lessonCount);
+  expect(
+    'activities',
+    scalar(`SELECT COUNT(*) AS n FROM learning_activities WHERE lesson_id IN (${lessonIn})`, ...lessonIds),
+    ctx.lessonCount,
+  );
+  const enrollment = db
+    .query('SELECT enrollment_id FROM learning_enrollments WHERE user_id = ? AND course_id = ?')
+    .get(userId, courseId);
+  expect('enrollment', enrollment ? 1 : 0, 1);
+  expect(
+    'lesson_progress rows (only the settled nodes)',
+    scalar('SELECT COUNT(*) AS n FROM learning_lesson_progress WHERE enrollment_id = ?', enrollment.enrollment_id),
+    ctx.completedCount,
+  );
+  expect(
+    "lesson_progress status='completed'",
+    scalar(
+      "SELECT COUNT(*) AS n FROM learning_lesson_progress WHERE enrollment_id = ? AND status = 'completed'",
+      enrollment.enrollment_id,
+    ),
+    ctx.completedCount,
+  );
+
+  // due 翻转：settled 计数（app 口径 NOT EXISTS，xp.rs 同语义）与 due 标志同源
+  const settled = scalar(
+    "SELECT COUNT(*) AS n FROM learning_xp_events e \
+     WHERE e.user_id = ? AND e.course_id = ? AND e.kind = 'node-completed' AND e.node_id IS NOT NULL \
+       AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
+         WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
+           AND q.kind = 'quiz-completed' AND q.rowid > e.rowid)",
+    userId,
+    courseId,
+  );
+  expect('quiz settled (since last quiz)', settled, ctx.completedCount);
+  expect(
+    'quiz due flip',
+    settled >= QUIZ_TRIGGER_SETTLEMENTS ? 1 : 0,
+    ctx.completedCount >= QUIZ_TRIGGER_SETTLEMENTS ? 1 : 0,
+  );
+
+  // 复习卡：本课名下（graph 照造不裁——不随 --settled 收缩）
+  expect(
+    'review cards',
+    scalar('SELECT COUNT(*) AS n FROM learning_review_items WHERE enrollment_id = ?', enrollment.enrollment_id),
+    ctx.cardCount,
+  );
+
+  if (ctx.isGraph) {
+    expect(
+      "concept hooks role='teaches'",
+      scalar(
+        `SELECT COUNT(*) AS n FROM learning_lesson_concepts WHERE lesson_id IN (${lessonIn}) AND role = 'teaches'`,
+        ...lessonIds,
+      ),
+      GRAPH_LESSONS.filter((l) => l.concept).length,
+    );
+    expect(
+      "concept hooks role='assumes'",
+      scalar(
+        `SELECT COUNT(*) AS n FROM learning_lesson_concepts WHERE lesson_id IN (${lessonIn}) AND role = 'assumes'`,
+        ...lessonIds,
+      ),
+      GRAPH_ASSUMES.length,
+    );
+    expect(
+      "growth batch status='applied'",
+      scalar("SELECT COUNT(*) AS n FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'", courseId),
+      1,
+    );
+    // 软闸低 R 卡在场：stability ≤ 2d + 4 天内 push——只有供给节点卡满足
+    expect(
+      'supplier low-R card',
+      scalar(
+        'SELECT COUNT(*) AS n FROM learning_review_items ri \
+         JOIN learning_activities a ON a.activity_id = ri.activity_id \
+         JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+         JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ? AND ri.stability_days > 0 AND ri.stability_days <= 2 \
+           AND ri.last_reviewed_at IS NOT NULL AND ri.last_reviewed_at >= ?',
+        courseId,
+        ctx.now - 4 * DAY_MS,
+      ),
+      1,
+    );
+  }
+
+  if (failures.length > 0) {
+    console.error(`\nseed-learning-triggers: ${failures.length}/${checks} assertion(s) FAILED:`);
+    for (const line of failures) console.error(line);
+    process.exit(1);
+  }
+  console.log(`\nassertions: ${checks} checks passed`);
 }
 
 main();
