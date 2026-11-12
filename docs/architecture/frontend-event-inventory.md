@@ -1,5 +1,37 @@
 # 前端同窗口自定义事件通信清单
 
+## 当前迁移状态（2026-11-12）
+
+下方 §1–§7 保留原始盘点和迁移建议作为历史基线；其中 31 个契约、34 个发送位置和
+35 个监听位置是盘点时的数据，不代表当前剩余数量。已核实的迁移如下：
+
+| 原事件 | 当前状态与入口 | 发送、监听与清理 |
+| --- | --- | --- |
+| `nomifun-open-update-modal` | 已迁移：`app.update.open` | Titlebar 和 Layout 发送，UpdateModal 订阅并在 effect 清理时取消订阅。 |
+| `nomifun-workspace-toggle` | 已迁移：`workspace.toggle` | `workspaceEvents.ts` 封装发送和订阅；订阅者负责清理。 |
+| `custom-css-updated`、`nomifun:css-themes-changed` | 已迁移：`themeEvents.ts` | 同窗口发送和订阅；各订阅者清理。Tauri 跨窗口主题同步仍独立保留，详见 §4.3。 |
+| `flowy:sider-history-search-select` | 已迁移：`sider.history-search.select` | Titlebar 选择会话时经 `historySearchSelect.ts` 同步发送；Sider 订阅并在 effect 清理时取消订阅。监听器异常会报告且不阻断其他监听器。 |
+| `nomifun:tts-config-changed` | 已迁移：`speech.tts-config.changed` | `saveTextToSpeechConfig` 保存或恢复后在 `finally` 同步通知；`TextToSpeechContent` 订阅并在 effect 清理时取消订阅。监听器异常会报告且不影响保存结果或其他监听器。 |
+| `nomifun:speech-to-text-config-changed` | 已迁移：`speech.stt-config.changed` | `saveSpeechToTextConfig` 保存或恢复后在 `finally` 同步通知；`SpeechToTextContent` 订阅并在 effect 清理时取消订阅。监听器异常会报告且不影响保存结果或其他监听器。 |
+
+`skill-catalog-changed`、`nomifun-update-available` 等事件仍保留在
+原通道。对其他清单条目，迁移前应重新核对当前发送方、监听方和清理方式，历史行号
+不能视为实时位置。元素级画布事件、跨层和跨窗口事件继续按各自契约处理。
+
+侧栏搜索事件验证：`bun test ui/src/renderer/components/layout/Sider/historySearchSelect.test.ts`、
+`bun run typecheck`；该事件在仓内没有发现旧名称的其他消费者，外部脚本若监听旧 DOM
+事件名则需要另行更新。
+
+TTS 配置事件验证：`bun test ui/src/renderer/services/textToSpeechConfig.test.ts`、
+`bun run typecheck`；仓内未发现旧事件名的其他消费者，外部脚本若监听旧 DOM 事件名
+则需要另行更新。
+
+STT 配置事件验证：`bun test ui/src/renderer/services/speechToTextConfig.test.ts`、
+`bun run typecheck`；仓内未发现旧事件名的其他消费者，外部脚本若监听旧 DOM 事件名
+则需要另行更新。
+
+## 历史盘点基线与原始记录
+
 > 状态：盘点基线（Batch 3 · 第三步）
 > 范围：`ui/src/renderer/**` 与 `ui/src/common/**` 生产代码中的同窗口自定义业务事件
 > 性质：只读盘点。本文不修改事件运行逻辑，不删除发送方，也不新增门禁。

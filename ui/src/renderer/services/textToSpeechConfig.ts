@@ -6,12 +6,22 @@
 
 import { configService } from '@/common/config/configService';
 import type { TextToSpeechConfig } from '@/common/types/provider/speech';
+import { addEventListener, emitter } from '@/renderer/utils/emitter';
 
 export const TEXT_TO_SPEECH_CONFIG_KEY = 'tools.textToSpeech' as const;
-// Named `tts-` rather than spelling out "text-to-speech": the dead-CSS checker
-// reads a `text-…` hyphenated token in source as a utility class and reports it
-// as generating no CSS.
-export const TEXT_TO_SPEECH_CONFIG_CHANGED_EVENT = 'nomifun:tts-config-changed';
+/** Subscribe to same-window changes without allowing a listener to interrupt a save. */
+export const subscribeTextToSpeechConfigChanged = (listener: () => void): (() => void) =>
+  addEventListener('speech.tts-config.changed', () => {
+    try {
+      listener();
+    } catch (error) {
+      if (typeof globalThis.reportError === 'function') {
+        globalThis.reportError(error);
+      } else {
+        console.error('[textToSpeechConfig] Listener failed:', error);
+      }
+    }
+  });
 
 /** The install-wide synthesis default, or `undefined` when none is set. */
 export const getTextToSpeechConfig = (): TextToSpeechConfig | undefined =>
@@ -39,7 +49,7 @@ export const saveTextToSpeechConfig = async (config: TextToSpeechConfig | null):
     throw error;
   } finally {
     if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent(TEXT_TO_SPEECH_CONFIG_CHANGED_EVENT));
+      emitter.emit('speech.tts-config.changed');
     }
   }
 };

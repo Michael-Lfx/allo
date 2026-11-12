@@ -16,7 +16,7 @@ import {
   getSpeechToTextConfig,
   normalizeSpeechToTextConfig,
   saveSpeechToTextConfig,
-  SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT,
+  subscribeSpeechToTextConfigChanged,
 } from '@/renderer/services/speechToTextConfig';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 
@@ -37,8 +37,7 @@ const SpeechToTextContent: React.FC = () => {
   useEffect(() => {
     const syncConfig = () => setConfig(getSpeechToTextConfig());
     syncConfig();
-    window.addEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, syncConfig);
-    return () => window.removeEventListener(SPEECH_TO_TEXT_CONFIG_CHANGED_EVENT, syncConfig);
+    return subscribeSpeechToTextConfigChanged(syncConfig);
   }, []);
 
   const persist = useCallback(

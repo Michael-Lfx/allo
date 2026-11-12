@@ -36,7 +36,7 @@ import {
 import SiderFooter from './SiderFooter';
 import { formatSiderAccountLabel } from './accountLabel';
 import { activeHistoryTabForRoute, historyTabAfterPathChange, isSessionRoutePath, type SiderHistoryTab } from './historyTab';
-import { SIDER_HISTORY_SEARCH_SELECT_EVENT } from './historySearchSelect';
+import { subscribeSiderHistorySearchSelect } from './historySearchSelect';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
@@ -255,13 +255,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   }, [handleSelectHistoryTab, onSessionClick]);
 
   useEffect(() => {
-    const onHistorySearchSelect = () => {
-      handleConversationSelect();
-    };
-    window.addEventListener(SIDER_HISTORY_SEARCH_SELECT_EVENT, onHistorySearchSelect);
-    return () => {
-      window.removeEventListener(SIDER_HISTORY_SEARCH_SELECT_EVENT, onHistorySearchSelect);
-    };
+    return subscribeSiderHistorySearchSelect(handleConversationSelect);
   }, [handleConversationSelect]);
 
   const compactDisplayPreferences = useMemo(() => {

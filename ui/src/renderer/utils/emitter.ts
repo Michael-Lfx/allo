@@ -98,6 +98,9 @@ interface EventTypes {
   'composer.focus': void;
   'app.shortcuts.open': void;
   'app.update.open': [{ source?: string }];
+  'sider.history-search.select': void;
+  'speech.tts-config.changed': void;
+  'speech.stt-config.changed': void;
   'workspace.toggle': [{ target: SessionTarget }];
   // 同窗口主题事件（自定义 CSS 更新 / 用户主题列表变化），由 themeEvents.ts 封装
   // 发送与订阅；跨窗口同步仍走 Tauri `nomifun://theme-sync`。
