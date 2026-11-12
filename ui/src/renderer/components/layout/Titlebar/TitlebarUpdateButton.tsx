@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
 import { useUpdateAvailability } from '@renderer/hooks/system/useUpdateAvailability';
 import { isDesktopShell } from '@/renderer/utils/platform';
+import { emitter } from '@/renderer/utils/emitter';
 
 /** Custom event Layout dispatches when a startup/interval check finds an update. */
 export const UPDATE_AVAILABLE_EVENT = 'nomifun-update-available';
@@ -44,7 +45,7 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
   const readyToInstall = availability.readyToInstall;
 
   const openUpdateModal = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('nomifun-open-update-modal', { detail: { source: 'titlebar' } }));
+    emitter.emit('app.update.open', { source: 'titlebar' });
   }, []);
 
   if (!isDesktopShell() || !hasUpdate) return null;

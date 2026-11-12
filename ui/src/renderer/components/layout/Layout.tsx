@@ -45,6 +45,7 @@ import { tauriUpdateCurrentVersion } from '@/common/adapter/tauriUpdater';
 import { trackUpdateCheckCompleted } from '@/renderer/utils/analytics/updateTelemetry';
 import { scheduleDeferred } from '@/renderer/utils/scheduleDeferred';
 import { maybeAutoDownloadUpdate } from '@/renderer/utils/update/updateAutoDownload';
+import { emitter } from '@/renderer/utils/emitter';
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import WallpaperScene from '@renderer/components/layout/WallpaperScene';
@@ -487,9 +488,7 @@ const Layout: React.FC<{
           if (shouldOpenModal) {
             modalTimer = window.setTimeout(() => {
               if (cancelled) return;
-              window.dispatchEvent(
-                new CustomEvent('nomifun-open-update-modal', { detail: { source } }),
-              );
+              emitter.emit('app.update.open', { source });
             }, 1_500);
           }
         } else if (res?.success) {

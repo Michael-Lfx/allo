@@ -16,6 +16,11 @@ describe('TitlebarUpdateButton', () => {
     expect(source.includes('useUpdateAvailability')).toBe(true);
   });
 
+  test('opens the update surface with the titlebar source', () => {
+    expect(source).toContain("emitter.emit('app.update.open', { source: 'titlebar' })");
+    expect(source).toContain('onClick={openUpdateModal}');
+  });
+
   test('uses the shared delayed titlebar tooltip', () => {
     expect(source.includes('hoverDelayMs={400}')).toBe(true);
     expect(source.includes("className='app-titlebar__tooltip-anchor'")).toBe(true);
