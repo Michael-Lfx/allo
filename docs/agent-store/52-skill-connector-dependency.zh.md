@@ -1,6 +1,6 @@
 # 技能与连接器依赖关系 · 技术方案
 
-> **状态**：🔧 部分实施（2026-10-30；collector + 宿主 + SDK 已落地，未发版）
+> **状态**：✅ 已实施主体（2026-10-30；collector + 宿主 + SDK 已落地；已随 `0.1.0-beta.14` 发布 2026-11-09）
 > **核心原则**：**能看见不等于能单装**——一个市场条目的可安装性，由它真正依赖的运行时能力决定；跨条目依赖必须结构化发布，禁止靠名字猜。
 > **实现优先级**：**SDK 面 > WebUI 面**。SDK 是第三方接入的稳定契约，WebUI 只是它的消费者；本方案先把类型、helper、错误语义落到 SDK，WebUI 再消费，不允许反过来在 UI 里私接 wire 或特判。
 > **影响面**：collector 索引（`requires_connectors`）→ App Server wire（`StoreItem.required_connectors`，`fp-20` → `fp-21`）→ SDK / WebUI → 文档站同步。`SkillSummary.required_connectors` 是**已有字段**，填充它不改变 wire 形状，不需要额外的指纹变更。
