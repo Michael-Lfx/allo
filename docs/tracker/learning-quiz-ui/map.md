@@ -124,6 +124,12 @@ N/K 归零回到积累态。九题型作答控件复用复习会话的 ActivityI
 | [u8](tickets/u8-soft-gate-action.md) | 软闸行动承诺兑现（跳转 + 历史可进 + 口径对齐） | 无（真机验收依赖 u6 软闸臂） |
 | [u9](tickets/u9-soft-gate-remediation-loop.md) | 软闸行动闭环——due_count 修复 + 薄弱集复习会话 | 无 |
 
+> **u9 全关（2026-11-12）**：交付合并 ab4d11139 已推。双轴评审揪出必修硬伤
+> （learning_smoke 6 参调用 E0061，施工只跑了 -p 闸漏 workspace 闸）→ 修复
+> 代理收口（cc951de47 + 9113cfcce）。实弹探针：同一份 seed 数据 due_count
+> 0 → 1（修复生效）、node_id 过滤精确返回供给节点卡。越权核查通过（scoped
+> 会话恒在用户注册队列内收窄）。桌面走查欠账见 u9 Resolution。
+
 后置维持：浮动坞 Pill（感知第二步，u7 后可选）；g4 题卡反哺（上线后，
 三设计点随票面裁决）；节点级补习 deepen 式（暂缓——u8 跳转已交付最小
 行动闭环）。

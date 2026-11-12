@@ -59,4 +59,32 @@
 
 ## Resolution
 
-（施工后收口）
+已施工收口（2026-11-12，2bd4eeeea + 86f777414 + 1cd198f38 + 评审修复
+cc951de47 + 9113cfcce，交付合并 ab4d11139 已推）。
+
+- **R1**：红绿实证——红相 `GraphBlockedView { r: 0.76, due_count: 0 }`
+  （与真机截图组合一致），修后绿；全量 `cargo test -p nomifun-learning
+  --lib` 966 绿。**实弹探针**：同一份 seed 数据，修复前真机截图「0 道到
+  期题」→ 修后 course detail 返回 `due_count: 1`（r=0.809）。
+- **R2**：方案 a 落地——`DueReviewQuery` 不动，routes 手工收集多值
+  `node_id`（照 course_id 模式），service 末位加参（18 处测试调用点补
+  `&[]`）；**实弹探针**：`node_id=<节点6>&due_only=false` 精确返回该节点
+  1 张卡。注意：node 过滤隐含排除自建题（无节点归属，结构性不匹配）。
+- **R3**：软闸多条聚合为一（节点名按最差 r 升序、≤3 截断保留），主行动
+  「复习薄弱节点」开 scoped 早练会话（**裁决：只传 nodeIds 不带课程过滤**
+  ——ready_partition 跨课程取教师，课程过滤会把跨课程供给卡静默滤空；
+  Spec 轴越权核查通过：due_reviews 恒 JOIN 用户注册队列，未报名课节点
+  匹配零行 + answer_review 二次校验 404）；次行动「重读正文」保留；
+  检测报告尾部薄弱集 CTA（对账行分级 ≤ half 的 node 集）。
+- **R4**：文案事实分支（`WeakAdviceDue`「N 道到期卡」/`WeakAdviceNotDue`
+  「卡未到期，可提前复习巩固」）；选中节点 ∈ 薄弱集 → 整条收起（聚合语义
+  下唯一自洽读法）。
+- 评审轮：Standards（红线全过、3 smell）+ Spec（越权核查通过；揪出
+  **必修硬伤** learning_smoke.rs 6 参调用 E0061 → 修复 + `cargo check
+  --workspace` 绿 8m06s）→ 修复代理 F1–F3 收口。
+- 闸门：`bun run check` exit 0；learning 回归 408 绿；Rust quiz 簇 +
+  learning_graph 966 绿；fmt 干净；词典 7 新键 2 退役全对称。
+- **桌面走查欠账**（IAB 宿主不可用，清单交用户）：`--graph --fresh` 灌库 →
+  学习首页感知横幅（图课 6/6）→ 图课程软闸条显示「1 道到期卡」（不再
+  是 0）→「复习薄弱节点」开 scoped 会话（含未到期卡）→ 推卡后 r 回升
+  重新进页条消失 → 检测全链 → 报告尾部「开始薄弱复习」CTA。
