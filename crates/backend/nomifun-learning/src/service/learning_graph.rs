@@ -4154,28 +4154,31 @@ impl LearningService {
             supplier_r.insert(lesson_id.clone(), worst);
             supplier_due.insert(lesson_id.clone(), 0);
         }
-        // 到期题数（未归档、已到期）。
+        // 到期题数（未归档、已到期）。u9 R1 修复：IN 列表只放 lesson ids，
+        // user_id 挪进 WHERE 段——每个占位符与绑定经 push_bind 同生（字面
+        // `?` 与 push_bind 计数错位正是原缺陷：user_id 被推进 IN 列表后，
+        // 尾部 `ri.due_at <= ?` 落到无绑定态，SQLite 按 NULL → 恒假 →
+        // due_count 恒 0 且无报错）。
         {
             let ids: Vec<String> = supplier_ids.iter().cloned().collect();
             let mut query = sqlx::QueryBuilder::new(
                 "SELECT l.lesson_id, COUNT(*) AS due FROM learning_review_items ri \
-                 JOIN learning_enrollments e ON e.enrollment_id = ri.enrollment_id AND e.user_id = ? \
+                 JOIN learning_enrollments e ON e.enrollment_id = ri.enrollment_id \
                  JOIN learning_activities a ON a.activity_id = ri.activity_id \
                  JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
                  WHERE l.lesson_id IN (",
             );
             let mut separated = query.separated(", ");
-            separated.push_bind(user_id.as_str());
             for lesson_id in &ids {
                 separated.push_bind(lesson_id.clone());
             }
-            query.push(") AND ri.due_at <= ? AND ri.archived_at IS NULL GROUP BY l.lesson_id");
-            let rows = query
-                .build()
-                .bind(now)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(internal)?;
+            query
+                .push(") AND e.user_id = ")
+                .push_bind(user_id.as_str())
+                .push(" AND ri.due_at <= ")
+                .push_bind(now)
+                .push(" AND ri.archived_at IS NULL GROUP BY l.lesson_id");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
             for row in rows {
                 let lesson_id: String = row.try_get("lesson_id").map_err(internal)?;
                 let due: i64 = row.try_get("due").map_err(internal)?;

@@ -3818,6 +3818,120 @@ async fn ready_set_follows_cross_course_tier_coverage() {
     let _ = prep_course;
 }
 
+/// u9 R1 软闸到期数回归（原缺陷漏测点补漏）：blocked 条目的 due_count 必须
+/// 数到供给节点名下「已到期且未归档」的卡。缺陷形态：QueryBuilder 把
+/// user_id 推进 IN 列表——占位符 N+3 对绑定 N+2，尾部 `ri.due_at <= ?` 落
+/// 到无绑定态（sqlx 对 SQLite 未绑定参数按 NULL 传递 → `due_at <= NULL`
+/// 恒假）→ due_count 恒 0 且无任何报错。红测先断言现状恒 0，修复后绿。
+#[tokio::test]
+async fn soft_gate_blocked_reports_supplier_due_count() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+
+    // 准备课教 X@teach，主干课候选 assumes X@apply——供给节点 = 准备课节点。
+    let (prep_course, prep_module) = insert_graph_course_shell(&service, "准备课").await;
+    let concept_x = mint_registry_concept(&service, "特征值").await;
+    let supplier = insert_graph_node_with_ref(
+        &service,
+        &prep_module,
+        "教特征值",
+        &concept_x,
+        "teaches",
+        "teach",
+    )
+    .await;
+
+    let (main_course, main_module) = insert_graph_course_shell(&service, "主干课").await;
+    let main_course_id = nomifun_common::LearningCourseId::parse(&main_course).unwrap();
+    insert_graph_node_with_ref(
+        &service,
+        &main_module,
+        "应用特征值",
+        &concept_x,
+        "assumes",
+        "apply",
+    )
+    .await;
+
+    // 供给节点名下一张「已到期且已遗忘」的卡：stability 1 天、5 个复习日前
+    // 最后推进（预测回忆 ≈ 0.68，远低于 0.85 软闸线），due_at 在过去。
+    let pool = service.pool_for_tests();
+    let now = now_ms();
+    let day = 86_400_000i64;
+    let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_enrollments \
+         (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&enrollment_id)
+    .bind(user_id.as_str())
+    .bind(&prep_course)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .unwrap();
+    let activity_id = nomifun_common::LearningActivityId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_activities \
+         (activity_id, lesson_id, kind, prompt, config_json, position) \
+         VALUES (?, ?, 'single_choice', ?, ?, 0)",
+    )
+    .bind(&activity_id)
+    .bind(&supplier)
+    .bind("供给节点的题面")
+    .bind(r#"{"answer":"B","options":["A","B"],"explanation":"","distractors":[],"matches":[]}"#)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_review_items \
+         (review_item_id, enrollment_id, activity_id, due_at, stability_days, difficulty, \
+          review_count, lapse_count, last_reviewed_at, updated_at) \
+         VALUES (?, ?, ?, ?, 1.0, 5.0, 1, 0, ?, ?)",
+    )
+    .bind(nomifun_common::LearningReviewItemId::new().into_string())
+    .bind(&enrollment_id)
+    .bind(&activity_id)
+    .bind(now - day)
+    .bind(now - 5 * day)
+    .bind(now)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // 真实组装面（course_detail → assemble_learning_graph_view →
+    // ready_partition）：被挡 + 供给到期 → due_count ≥ 1。
+    let detail = service
+        .course_detail(&main_course_id, Some(&user_id))
+        .await
+        .unwrap();
+    let graph = detail
+        .graph
+        .expect("graph course detail carries the graph view");
+    assert_eq!(
+        graph.blocked.len(),
+        1,
+        "供给节点 r < 0.85 → 候选被挡: {:?}",
+        graph.blocked
+    );
+    assert!(
+        graph.blocked[0].r < 0.85,
+        "夹具必须落在软闸线下: {:?}",
+        graph.blocked[0].r
+    );
+    assert!(
+        graph.blocked[0].due_count >= 1,
+        "供给节点名下到期卡必须被数到（缺陷形态恒 0）: {:?}",
+        graph.blocked
+    );
+}
+
 /// 结构读侧投影（t1）：未生成 = 200 形状全空（Missing）；有快照 = 预计算面
 /// 就位；软删 = 404。投影不触碰概念登记表——空登记表照常成影。
 #[tokio::test]
