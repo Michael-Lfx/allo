@@ -1,8 +1,8 @@
 # Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
 
-> 状态：导航总览（全目录 44 份核心方案已全面完成标准化重构）
+> 状态：导航总览（全目录 53 份文档：49 份编号方案 + 4 份总纲/索引）
 >
-> 当前版本：`0.1.0-beta.15` | 协议契约指纹：`fp-21` | 核心方法计数：56 WebSocket 专属方法 / 83 双端映射端点
+> 当前版本：`0.1.0-beta.15` | 协议契约指纹：`fp-21` | 核心方法计数：双端映射 56 / 仅 WebSocket 27（合计 83 个协议方法）
 >
 > 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
 
@@ -33,6 +33,10 @@ flowchart TD
         A30["30-市场Zip托管"]
         A36["36-商店条目更新"]
         A37["37-市场下载策略"]
+        A43["43-分类与标签"]
+        A44["44-类别透出"]
+        A51["51-导出图标"]
+        A52["52-技能连接器依赖"]
     end
 
     subgraph D3["3. 客户端与交互体验"]
@@ -68,6 +72,10 @@ flowchart TD
         A32["32-专家导出规范"]
         A33["33-内置记忆总开关"]
         A34["34-连接器用户凭据"]
+        A45["45-MCP授权现状"]
+        A46["46-授权入口修复"]
+        A47["47-auth_mode语义"]
+        A48["48-连接器市场token"]
     end
 
     D1 --> D2
@@ -90,7 +98,7 @@ flowchart TD
 | [`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md) | 系统 5 层拓扑、AD-01~10 核心决策、Phase 0 验证阶梯 | 🧊 核心基线 |
 | [`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md) | 实体拓扑 ER 图、三层映射状态机、资源生命周期收敛 | 🧊 核心基线 |
 | [`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md) | 8 步装配流水线、分段提示词注入、Leader planned DAG 编排 | 🧊 核心基线 |
-| [`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md) | 统一协议 v1、双模传输（WS/HTTP）、`fp-12` 指纹、53 核心方法 | ✅ 现行规范 |
+| [`05-flowy-agent-store-app-server-protocol.md`](file:///c:/workspace/allo/docs/agent-store/05-flowy-agent-store-app-server-protocol.md) | 统一协议 v1、双模传输（WS/HTTP）、`fp-21` 指纹、双端映射 56 / 仅 WebSocket 27（合计 83 协议方法） | ✅ 现行规范 |
 | [`06-connector-oauth-security.md`](file:///c:/workspace/allo/docs/agent-store/06-connector-oauth-security.md) | 进出站双向鉴权隔离、401 互斥静默刷新、STDIO 沙箱 | 🧊 核心基线 |
 | [`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md) | Monorepo 多包拓扑、WS 握手状态机、`launchHarness` 进程托管 | ✅ 现行规范 |
 | [`08-flowy-web-integration.md`](file:///c:/workspace/allo/docs/agent-store/08-flowy-web-integration.md) | 主进程/渲染进程安全边界、弱通知+权威重读同步模型 | 🧊 核心基线 |
@@ -107,7 +115,7 @@ flowchart TD
 | [`18-marketplace-spec.zh.md`](file:///c:/workspace/allo/docs/agent-store/18-marketplace-spec.zh.md) | 市场源清单校验、原子晋升机制、本地化降级回退链 | ✅ 现行规范 |
 | [`30-market-zip-hosting.zh.md`](file:///c:/workspace/allo/docs/agent-store/30-market-zip-hosting.zh.md) | ModelScope Zip 单归档托管、HEAD ETag 预检、百兆级下载加速 | ✅ 已落地 |
 | [`36-store-update-entry.zh.md`](file:///c:/workspace/allo/docs/agent-store/36-store-update-entry.zh.md) | `store/update-entry` 动词、“先装新后放旧”安全升级、保 ID 原地更新 | ✅ 已实施 |
-| [`37-market-download-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/37-market-download-policy.zh.md) | 启动/运行/更新三通道解耦、写穿 `config.toml`、连接器排除防停用 | 📋 待动工 |
+| [`37-market-download-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/37-market-download-policy.zh.md) | 启动/运行/更新三通道解耦、写穿 `config.toml`、连接器排除防停用 | ✅ 已实施（2026-09-29，`fp-13`；随 `0.1.0-beta.9` 发布） |
 
 ### 2.3 客户端与交互体验（Client & WebUI）
 提供面向终端用户的高阶交互体验与开箱即用的类型化 SDK。
@@ -120,9 +128,9 @@ flowchart TD
 | [`22-webui-productionization.zh.md`](file:///c:/workspace/allo/docs/agent-store/22-webui-productionization.zh.md) | 四组生产化路线（安全/可观测/功能/协议对齐）、杜绝假保护红线 | 📋 已立项 |
 | [`28-webui-composer-connector-switch-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/28-webui-composer-connector-switch-plan.zh.md) | 连接器退出 `@` 提及、输入区抽屉式开关、行内 OAuth 发起 | ✅ 已落地 |
 | [`31-sdk-entry-shape.zh.md`](file:///c:/workspace/allo/docs/agent-store/31-sdk-entry-shape.zh.md) | SDK 入口命名重构（`launchHarness` / `Harness`）、零额外中转 | ✅ 已实现 |
-| [`35-sdk-expert-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/35-sdk-expert-export.zh.md) | SDK 目录导出 API（`exportAgent` / `exportTeam` / `materializePack`） | ✅ 已实施（2026-09-24；2026-10-10 订正「团的技能导不出来」见其 §6） |
+| [`35-sdk-expert-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/35-sdk-expert-export.zh.md) | SDK 目录导出 API（`exportAgent` / `exportTeam` / `materializePack`） | ✅ 已实施（2026-09-24；2026-10-10 订正「团的技能导不出来」见其 §6；2026-11-11 增补 `replaceExisting` / `syncToMarketVersion`，随 `0.1.0-beta.15` 发布） |
 | [`43-store-categories-and-tags-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/43-store-categories-and-tags-plan.zh.md) | 市场分类与标签透出（`store/categories` 字典端点、StoreItem/AgentSummary 增量字段、tags 回退链、`legacy_tags_*` 合并） | ✅ 已实施 |
-| [`44-store-category-parity-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/44-store-category-parity-plan.zh.md) | 类别信息全面透出（Team/Skill 面字段、`pack_format 3` 的 `tags`/`category_id`、索引标签导入固化） | ✅ 已实施 |
+| [`44-store-category-parity-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/44-store-category-parity-plan.zh.md) | 类别信息全面透出（Team/Skill 面字段、`pack_format 3` 的 `tags`/`category_id`、索引标签导入固化） | ✅ 已实施（随 `0.1.0-beta.11` 发布） |
 
 ### 2.4 研发计划与工程门禁（Engineering Gates & Runbooks）
 提供全生命周期的里程碑进度、实测证据、质量门禁与发布操作规范。
@@ -145,7 +153,7 @@ flowchart TD
 | :--- | :--- | :--- |
 | [`14-binary-size-trimming.zh.md`](file:///c:/workspace/allo/docs/agent-store/14-binary-size-trimming.zh.md) | 二进制构建瘦身方案、Feature Gate 条件裁剪、产物体积预算守卫 | 🔧 验证中 |
 | [`20-tool-injection-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/20-tool-injection-policy.zh.md) | Store 会话工具注入策略、三级 `config.toml [tools]` 优先级、Step 1~9 | ✅ 已落地 |
-| [`24-external-agent-skill-and-mcp-access.zh.md`](file:///c:/workspace/allo/docs/agent-store/24-external-agent-skill-and-mcp-access.zh.md) | 外部 Agent 技能目录读取（`skill/files`）、连接器受控代理调用（`connector/call`） | 🔧 阶段 1 完成 |
+| [`24-external-agent-skill-and-mcp-access.zh.md`](file:///c:/workspace/allo/docs/agent-store/24-external-agent-skill-and-mcp-access.zh.md) | 外部 Agent 技能目录读取（`skill/files`）、连接器受控代理调用（`connector/call`） | ✅ 阶段 1 与阶段 2 均已落地（2026-09-20 / 2026-09-21） |
 | [`26-connector-schema-and-grant-policy.zh.md`](file:///c:/workspace/allo/docs/agent-store/26-connector-schema-and-grant-policy.zh.md) | 工具参数 Schema 上线、授权粒度由逐工具上移至连接器、解决盲签 | ✅ 已落地 |
 | [`27-conversation-binding-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/27-conversation-binding-plan.zh.md) | 每轮技能挂载（`conversation/send`）、会话级专家与团开场（`conversation/create`） | ✅ 主体落地 |
 | [`29-send-model-and-effort-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/29-send-model-and-effort-plan.zh.md) | 随轮次指定模型与思考等级、粘性生效模型、`fp-6` 升级 | ✅ 已落地 |
@@ -158,9 +166,9 @@ flowchart TD
 | [`47-connector-auth-mode-field-semantics.zh.md`](file:///c:/workspace/allo/docs/agent-store/47-connector-auth-mode-field-semantics.zh.md) | 第二阶段：协议 `auth_mode` 改名 `auth_transport`（形状归形状、声明归 `credential.mode`），`fp-16` → `fp-17`、12 层落点矩阵、不双写靠指纹强制两端同步、TC-S2-001~008 | ✅ 已实施（2026-10-15；指纹门禁与跨仓站点已同步） |
 | [`48-allo-connector-market-token-auth.zh.md`](file:///c:/workspace/allo/docs/agent-store/48-allo-connector-market-token-auth.zh.md) | 方案 C：allo 自有连接器市场源（token 型授权）——自有市场布局与 `market/add` 接入、`mcp.json` + `token-schema.json` 契约草案、凭据链路时序、header 口径先验证后发布闸门、D1~D6 决策、TC-C1~C8 验收、R1~R6 风险登记 | 🔧 部分实现（2026-10-16；两条条目 GitHub/百度网盘已落地，落点分别为 header 与 SSE 查询参数，均从 zip 源实测安装、未填即 fail-closed；托管形态改为 zip + ModelScope，真实端点接受性待真 token） |
 | [`49-store-search-and-suggestions.zh.md`](file:///c:/workspace/allo/docs/agent-store/49-store-search-and-suggestions.zh.md) | 目录检索与使用提示：多词 AND 匹配口径、`matchStoreItem` 字段级命中区间（供高亮）、`searchWithHits` / `searchInstalled` / `listStatus`（透出 `markets_pending`）、预取取代缓存、三档排序、**四类 × 两面的提示词接入**（`plugin.json.quickPrompts` 优先 + 索引行 `examples_*` 回落，P1 零 wire；详情面 P2 待定）、D1~D12 决策、TC-1~TC-19 验收 | 🔧 P1 已实施（2026-10-21；client 三方法 + 宿主 `examples → quick_prompts` 回落 + 商店卡片/抽屉提示；详情面 P2 与发布同步待做） |
-| [`50-localized-display-fields.zh.md`](file:///c:/workspace/allo/docs/agent-store/50-localized-display-fields.zh.md) | 四类实体的多语言展示字段：四类（专家/专家团/技能/连接器）× 两面（list/get）统一 `display_name` / `display_description` / `tags` / `quick_prompts` 四字段；数据在**导入期**按「作者声明 → 市场索引行 → 缺席」逐语种合并并戳进快照组件 payload（沿用 `44` 的 `index_tags` 通道），读面**零额外 I/O**；顺带修专家团 `tags`/`category_id` 空壳与 `description_zh/en` 兄弟键；指纹 `fp-17 → fp-18`；D1~D11 决策、TC-1~TC-13 验收、本机四市场覆盖率实测 | 🔧 已实施（2026-10-22；指纹 `fp-18`，四类 summary 各带四字段，导入期合并 + 读面零额外 I/O；`web` 584 tests / `nomifun-app` 107 / `nomifun-app-server` 192 全绿；真机 LDF-001~LDF-009 全过；站点仓 typescript-sdk + changelog 已同步） |
+| [`50-localized-display-fields.zh.md`](file:///c:/workspace/allo/docs/agent-store/50-localized-display-fields.zh.md) | 四类实体的多语言展示字段：四类（专家/专家团/技能/连接器）× 两面（list/get）统一 `display_name` / `display_description` / `tags` / `quick_prompts` 四字段；数据在**导入期**按「作者声明 → 市场索引行 → 缺席」逐语种合并并戳进快照组件 payload（沿用 `44` 的 `index_tags` 通道），读面**零额外 I/O**；顺带修专家团 `tags`/`category_id` 空壳与 `description_zh/en` 兄弟键；指纹 `fp-17 → fp-18`；D1~D11 决策、TC-1~TC-13 验收、本机四市场覆盖率实测 | 🔧 已实施（2026-10-22；指纹 `fp-18`，四类 summary 各带四字段，导入期合并 + 读面零额外 I/O；`web` 584 tests / `nomifun-app` 107 / `nomifun-app-server` 192 全绿；真机 LDF-001~LDF-009 全过；站点仓 typescript-sdk + changelog 已同步；已随 `0.1.0-beta.12` 发布） |
 
-| [`51-export-icons.zh.md`](file:///c:/workspace/allo/docs/agent-store/51-export-icons.zh.md) | 导出面图标补齐（专家/专家团/技能/连接器）：市场 `icons/` 与 entry 目录是**兄弟关系**、`copy_tree` 带不到 ⇒ 安装期按实体类型固化进不可变快照（插件/团 `avatars/`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/`），路径写进组件 payload `avatar`（作者声明优先、永不覆盖）；导出面只加 `skills[].icon` / `connectors[].icon`（纯路径字符串），字节仍走 `skill/file` 与 `import/asset`；`pack_format 3 → 4`、指纹 `fp-18 → fp-19`；D1~D12 决策、TC-IM/TC-EX/TC-SDK 用例、连接器图标的**可达性边界**（§3.3.5） | 🔧 已实施（2026-10-26；`nomifun-importer` 64+32 / `nomifun-app` 111 / `nomifun-app-server` 192 / `web` 586 全绿；指纹门 10 落点 + 站点 2 文件；真机 EXI-001~EXI-005 PASS） |
+| [`51-export-icons.zh.md`](file:///c:/workspace/allo/docs/agent-store/51-export-icons.zh.md) | 导出面图标补齐（专家/专家团/技能/连接器）：市场 `icons/` 与 entry 目录是**兄弟关系**、`copy_tree` 带不到 ⇒ 安装期按实体类型固化进不可变快照（插件/团 `avatars/`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/`），路径写进组件 payload `avatar`（作者声明优先、永不覆盖）；导出面只加 `skills[].icon` / `connectors[].icon`（纯路径字符串），字节仍走 `skill/file` 与 `import/asset`；`pack_format 3 → 4`、指纹 `fp-18 → fp-19`；D1~D12 决策、TC-IM/TC-EX/TC-SDK 用例、连接器图标的**可达性边界**（§3.3.5） | 🔧 已实施（2026-10-26；`nomifun-importer` 64+32 / `nomifun-app` 111 / `nomifun-app-server` 192 / `web` 586 全绿；指纹门 10 落点 + 站点 2 文件；真机 EXI-001~EXI-005 PASS；已随 `0.1.0-beta.14` 发布） |
 | [`52-skill-connector-dependency.zh.md`](file:///c:/workspace/allo/docs/agent-store/52-skill-connector-dependency.zh.md) | 技能与连接器依赖：本机 1543 条技能中 1024 条来自连接器包却可单装（装完无 MCP 工具）；采集端按来源路径发布 `requires_connectors`、宿主 `StoreItem.required_connectors` 透出（`fp-20 → fp-21`）、附属技能**可见不可单装**并引导装连接器、依赖不可用继承 `available=false`、`SkillSummary.required_connectors` 复用 `50` 的导入期戳字段链路填充（连接器带来的技能也标，见 §3.5）；**SDK 面优先**（`protocol` 加 `required_connectors`、`client` 加 `dependencies()`、拦截复用 `item_blocked`，WebUI 只消费）；D1~D8 决策、SCD-001~SCD-012 验收 | 🔧 已实施主体（2026-10-30；collector 12 tests / importer 65+32 / web 591 passed；指纹 `fp-21`；已随 `0.1.0-beta.14` 发布 2026-11-09） |
 
 ### 2.6 早期历史总纲（Historical Foundations）
@@ -246,12 +254,12 @@ flowchart TD
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| `25-release-runbook.zh.md` | **发布操作手册（本文）**：一次发布的两个出口（npm 四包 / 站点仓 GitHub Release）、7 条不变量及其机械判据、有序清单 S0–S8、**站点文档同步清单**、失败与回退、已知缺口 | ✅ 现行（每次发版照做；不含产品准入判定） |
-| `32-expert-pack-export.zh.md` | **专家 / 专家团导出给外部 runtime（`ExpertPack`）**：`agent/export` · `team/export` 把专家降级成一份可移植定义（persona / 模型 / 技能 / 连接器 / 团名单）；**明确不导出执行语义**，并把「外部 runtime 必须自己实现什么」列成 R1–R11 责任清单；闸门是**默认开的减项表**（与 `[tools]` 同族）；含 `pack_format` 独立于指纹、确定性导出、物化配方（站点 + live 脚本，不新增 SDK 面）与验收口径 | 📋 **待动工**（2026-09-18 五个分叉均已拍板，见 §1.1） |
+| `25-release-runbook.zh.md` | **发布操作手册（本文）**：一次发布的三个出口（npm 四包 / GitHub Release / 站点上线）、7 条不变量及其机械判据、有序清单 S0–S8（分支 + PR、EdgeOne 手动部署、digest 等价回验）、**站点文档同步清单**、失败与回退、已知边界 | ✅ 现行（每次发版照做；不含产品准入判定） |
+| `32-expert-pack-export.zh.md` | **专家 / 专家团导出给外部 runtime（`ExpertPack`）**：`agent/export` · `team/export` 把专家降级成一份可移植定义（persona / 模型 / 技能 / 连接器 / 团名单）；**明确不导出执行语义**，并把「外部 runtime 必须自己实现什么」列成 R1–R11 责任清单；闸门是**默认开的减项表**（与 `[tools]` 同族）；含 `pack_format` 独立于指纹、确定性导出、物化配方（站点 + live 脚本，不新增 SDK 面）与验收口径 | ✅ **已实施**（`fp-8`、`48 / 73`；随 `0.1.0-beta.7` 发布 2026-09-20） |
 | `33-memory-master-switch.zh.md` | **内置记忆总开关 `[memory] enabled`**：`~/.agent-store/config.toml` 新增一个键，`false` 时**四面同时停**（提示词记忆段落 / `remember` / 轮后蒸馏 / 引用回写）；与同表 `distill_enabled` **独立**（后者只管蒸馏一半），`enabled = false` 使其失去意义。含**命名陷阱的排除**（口语「config.yaml」指的是 TOML 的 `config.toml`，与真叫 `config.yaml` 的 `GatewayConfig` 云登录面无关）、宿主采纳规则（照抄 `[tools]` 的宿主位）、fail-open 口径、跨 crate 的按值透传（**不用进程全局**）、四个门控点与反向验证读数 | ✅ **已实现**（2026-09-20，零 wire 变更故指纹不动；代码未提交） |
 | `34-connector-user-credentials.zh.md` | **连接器用户凭据（key / token 类）· 技术方案**：市场 283 个连接器中 61 个需要用户输入 key / token（索引 `auth_mode: token` 与同目录 `token-schema.json` 61/61 一对一）；本方案定义凭据的来源、存储、模板注入与协议读面——引用升级为模板替换（headers / env / url 三处）、`CredentialSchema` 扩展展示字段（i18n 回退在 host）、新增 `connector/credential get\|set\|clear`（值单向写入，回包只含键名与 `missing`）、per-principal 键控；含 D1–D6 与各自代价、两处实缺、包内脚本永不执行，以及两处源数据缺陷 | ✅ **第 1–7 步已实施**（2026-09-24；`fp-9` → `fp-10` → `fp-11`，第 7 步加 `connector/register`，方法计数 `52 / 77`；活体验收 42/42 见 §9.1） |
 | `36-store-update-entry.zh.md` | **商店条目的更新（update）能力 · 技术方案**：`store/update-entry` 新动词 + 三段顺序（**先导入 → 先装新的 → 成功后才释放旧的**，失败保留旧安装）；先修版本源（**技能与连接器条目的快照版本现被钉在 `1.0.0`**，`18` D9 的适用面因此扩到技能——导入请求带条目版本，D2=A）；专家升级**保 preset id 原地 `PresetService::update`**（不给 `preset_id` 就新铸 UUID 且不按名字去重，换快照=断引用+可能两条同名预设）；连接器按 `mcp_server_id` 判共享（`add_server` 同名即原地更新返回同一 id，盲删会删掉新装的那行）、并如实上报 `upsert_server` 的「配置变了即停用」；**还挖出一个必须先修的前置缺陷（D8）**：`clear_components_installed` 只按 `component_id`、不带快照条件，而 `component_id`（`wb-<plugin>-<slug>`）跨快照相同 ⇒ 释放旧快照会连**新快照那一行**的安装记录一起清掉（该缺陷在今天的 `install/uninstall` 上已经可达）；D1–D8 各带替代方案与代价、`fp-11`→`fp-12`（方法计数 `53 / 78`）、活体验收脚本覆盖三种 kind | ✅ **已实施**（2026-09-28；`fp-12`、计数 `53 / 78`；实施期 4 处差异与 1 处新增见 §12） |
-| `35-sdk-expert-export.zh.md` | **SDK 导出 agent / team 与其 skills（写到目录）**：`web/packages/sdk` 新增 `exportAgent` / `exportTeam` / `materializePack` 三个函数，把 `32` §6.5 的 11 行配方提升成带 semver 的 API（对 §6.5「不做 SDK 助手」的**二次推翻**，理由对账见 §2.2）；团的技能有**两个来源**——顶层 `skills`（该团包级声明、装机后已物化的技能）与 `team.members[].skills`（成员 frontmatter 声明），物化时合并按 id 去重；team 布局新增 `members/<id>/persona.md`（团无自身 persona）；dangling 如实上报；**零 wire 变更**故指纹与方法计数不动 | ✅ **已实施**（2026-09-24）；**2026-10-10 订正**：服务端曾把团顶层 `skills` 硬编码为空 ⇒ 官方团（包级声明、成员零声明，如 `stock-partner-team`）导出零技能；现改为读该团快照已安装的技能组件，SDK 代码零改动，见 `35` §6 与 `32` §7 |
+| `35-sdk-expert-export.zh.md` | **SDK 导出 agent / team 与其 skills（写到目录）**：`web/packages/sdk` 新增 `exportAgent` / `exportTeam` / `materializePack` 三个函数，把 `32` §6.5 的 11 行配方提升成带 semver 的 API（对 §6.5「不做 SDK 助手」的**二次推翻**，理由对账见 §2.2）；团的技能有**两个来源**——顶层 `skills`（该团包级声明、装机后已物化的技能）与 `team.members[].skills`（成员 frontmatter 声明），物化时合并按 id 去重；team 布局新增 `members/<id>/persona.md`（团无自身 persona）；dangling 如实上报；**零 wire 变更**故指纹与方法计数不动 | ✅ **已实施**（2026-09-24）；**2026-10-10 订正**：服务端曾把团顶层 `skills` 硬编码为空 ⇒ 官方团（包级声明、成员零声明，如 `stock-partner-team`）导出零技能；现改为读该团快照已安装的技能组件，SDK 代码零改动，见 `35` §6 与 `32` §7；2026-11-11 增补 `replaceExisting` / `syncToMarketVersion`，随 `0.1.0-beta.15` 发布 |
 | `28-webui-composer-connector-switch-plan.zh.md` | **WebUI 输入区**：连接器退出 `@` 提及、`+` 菜单与连接器抽屉改为真正的启用开关（宿主级 `enabled`，走第一方 `POST /api/mcp/servers/:id/toggle`，零 wire 变更）；行内「连接」＝发起 OAuth；含语义边界、验收与偏差 | ✅ 已落地（2026-09-23；4 处实现期偏差见 §9.1，手测项待用户验证） |
 | `27-conversation-binding-plan.zh.md` | **会话绑定**：每轮技能（`conversation/send` 收 `mentions`）+ 会话级专家 / 专家团（`conversation/create` 收互斥的 `agent_id` / `team_id`）；含**不做每轮连接器**的理由与将来的两条路、验收口径、指纹与跨仓步骤 | ✅ 阶段 1 / 2a / 2b 均已落地（`fp-3`/`fp-4`/`fp-5`）；仅剩「Leader 首轮委派」真机实测 |
 | `30-market-zip-hosting.zh.md` | **市场 zip 单包托管**：`AppServerMarketplaceSourceKind` 新增 `zip`（一个归档、归档根即市场根），官方三个市场从本站逐文件托管迁到 ModelScope 归档；含站点打包/发布脚本口径、`X-Linked-Etag`＝内容 sha256 的新鲜度与完整性设计、老用户配置迁移（只写文档）、以及实现期发现的两个真缺陷 | ✅ 已落地（2026-09-17，`fp-7`）；三个归档已上传并通过远端摘要回验，客户端对真实归档的端到端见 §9.6；站点产物 22,706 → 742 |
@@ -259,7 +267,7 @@ flowchart TD
 | `16-sdk-webui-site-priority-plan.zh.md` | **当前执行顺序（四方向）**：① SDK + 站点（配对） ② 插件与市场规范 ③ WebUI ④ 待立项 | 🔧 批 0–7 已收口（三闭环验收通过、`17`/`18` 现行正文）；剩余见 §5.2 剩余任务总表 **R1–R34**（✅ 23 · 🟡 4 · ⏸ 7）；C 档已于 2026-09-11 二次复核改判 |
 | `21-open-decisions.zh.md` | **开放决策书**：D1–D16，逐条带 ⭐ 默认建议与解锁范围（`16` §5.2 剩余任务总表的拍板入口） | ✅ 已拍板（2026-09-10；D13 卡点四档已批准，含 2026-09-11 C 档二次复核改判；D14 MCP 声明文件接入路径 2026-09-12 拍板 ①A ②C ③C；D15 skill 的 `disable` ＝目录标记、D16 商店假「更新」控件摘除，均 2026-09-15） |
 | `22-webui-productionization.zh.md` | **WebUI 生产化立项**（方向四 + WP-5 协议词汇与概念对齐，来源 `16` R33）：11 项拆为**安全类 / 可观测类 / 功能类 / 协议词汇对齐**，逐条给「可验收条目 + 边界 + 依赖」；含**不做假保护**红线与 V1–V4 未决 | 📋 已立项（2026-09-11），未排期 |
-| `24-external-agent-skill-and-mcp-access.zh.md` | **外部 Agent 使用已安装 Skill / MCP**：Skill 文件读面（`skill/files`·`skill/file`）+ MCP 调用代理（`connector/call`，allowlist 默认全关、凭据不出宿主）；含非目标、验收口径、指纹与跨仓步骤 | 🔧 阶段 1 已落地；阶段 2 进行中（MCP 工具调用能力已落地并验证，策略/路由/TS/指纹未接通） |
+| `24-external-agent-skill-and-mcp-access.zh.md` | **外部 Agent 使用已安装 Skill / MCP**：Skill 文件读面（`skill/files`·`skill/file`）+ MCP 调用代理（`connector/call`，allowlist 默认全关、凭据不出宿主）；含非目标、验收口径、指纹与跨仓步骤 | ✅ 阶段 1 与阶段 2 均已落地（阶段 1 技能读面 2026-09-20 / 阶段 2 MCP 调用代理 2026-09-21） |
 | `19-webui-codex-alignment.zh.md` | **WebUI 子计划**：Codex app 体验对齐基线 + 四层工作包 W1–W14 | 🔧 部分落地（W1 / W5 / W8 / W13 已交付；其余见 R 表） |
 | `15-store-chain-and-protocol-vnext-plan.zh.md` | 四链路闭环 + 协议词汇与概念对齐（WP-1~WP-7；原称「协议 vNext」） | 🔧 WP-1/2/3/4/6 完成，WP-7 模型选择器完成；WP-5 顺延至 `16` |
 | `13-p0-execution-plan.md` | P0-A/B/C/D 执行细则与出口条件 | 🔧 P0-A/B 已关闭；P0-C/D 的 OAuth 运行时证据已完成（`06-connector-oauth-security.md` §12，26/26 PASS） |
@@ -291,7 +299,7 @@ flowchart TD
 |---|---|---|
 | `06-connector-oauth-security.md` §14 | MCP OAuth 动态客户端注册设计 | ✅ 已实现 |
 | `20-tool-injection-policy.zh.md` | **Store 会话工具注入策略**：三份 config.toml 哪份对工具面生效、逐项取舍（含「可配置 vs 只能写在代码里」表达层）、两类延迟、表达机制与坑、`nomi_delegate` 特例、实施步骤 Step 1–9 + §9.1 落地记录 + §9.2 Step 7 三批 + §9.3 MCP 声明文件 + §9.4 可选字段全量支持 | ✅ Step 1–9 已落地（2026-09-11：`team/run` + Team 层委派放行；2026-09-12：`~/.agent-store/mcp.json` 声明 MCP，见 §7.9/§9.3；2026-09-13：补齐全部可选字段 + `headers` 收敛，见 §7.9.1–§7.9.3/§9.4；两处端到端断言缺口分别登记在 §9.2.2 与 §9.3/§9.4） |
-| `31-sdk-entry-shape.zh.md` | **SDK 入口的形状与命名**：`launchClient()` 名不副实（返回的不是 client）、`client` 一词三义、调用点恒多一跳；与 OpenAI Codex（Python）/ Moonshot Kimi Code（Node）两个外部实现逐条对照；含 3 处真问题、2 处「看着像但不是」、3 个候选方案、15 + 13 个文件的实测影响面，以及「**非 wire 变更 ⇒ 不 bump 指纹**」的边界 | ✅ **已实现**（2026-09-18：方案 B 落地 + §10 改名为 **`launchHarness` / `Harness`**；读数与两个实现期约束见 §9/§10。**尚未发版**，已发布的最新版仍是 `beta.5` 的旧形状） |
+| `31-sdk-entry-shape.zh.md` | **SDK 入口的形状与命名**：`launchClient()` 名不副实（返回的不是 client）、`client` 一词三义、调用点恒多一跳；与 OpenAI Codex（Python）/ Moonshot Kimi Code（Node）两个外部实现逐条对照；含 3 处真问题、2 处「看着像但不是」、3 个候选方案、15 + 13 个文件的实测影响面，以及「**非 wire 变更 ⇒ 不 bump 指纹**」的边界 | ✅ **已实现**（2026-09-18：方案 B 落地 + §10 改名为 **`launchHarness` / `Harness`**；读数与两个实现期约束见 §9/§10。已随 `0.1.0-beta.6` 发布（2026-09-18），已发布版本即 `launchHarness` 形状） |
 
 ## 阅读顺序建议
 
