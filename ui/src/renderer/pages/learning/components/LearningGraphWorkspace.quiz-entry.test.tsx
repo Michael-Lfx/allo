@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/** 图工作区的知识检测入口挂点（u6，Q2 裁决）：入口挂在就绪集推荐区之后，
- * 前向推荐（继续学习）与回向检测（知识检测）靠语境句区分方向。用例面：
- * ①due 态——入口卡渲染 N/K 读数 + 开测可点（onStartQuiz 透传）且位于推荐
- * 区之后；②not-due 态——按钮禁用 + 未到期提示；③归档课程（enabled=0）
- * 不渲染也不拉读数（与 CourseWorkspace 挂点同存在性语义）；④en-US 态——
- * 语境句/读数/开测钮同走词典零中文回落（QuizOverviewBanner.render.test
- * 双语模式）。
+/** 图工作区的知识检测入口挂点（u6 挂点、u10 R5 上移）：入口挂在页签头部
+ * 区——知识结构/生长控制条（含软闸建议条）之下、Tabs 之前，自然流位置
+ * 恒可见；前向推荐（继续学习）与回向检测（知识检测）靠语境句区分方向。
+ * 用例面：①due 态——入口卡渲染 N/K 读数 + 开测可点（onStartQuiz 透传）
+ * 且位于结构条之后 Tabs 之前；②not-due 态——按钮禁用 + 未到期提示；
+ * ③归档课程（enabled=0）不渲染也不拉读数（与 CourseWorkspace 挂点同
+ * 存在性语义，上移后原样保留）；④en-US 态——语境句/读数/开测钮同走
+ * 词典零中文回落（QuizOverviewBanner.render.test 双语模式）。
  * jsdom 宿主：CourseWorkspace.quiz-entry.test 同仪式——进度经
  * learningApi.quizProgress 逐用例打补丁并还原（HTTP 边界）；图工作区挂载
  * 期的结构/声明/注册表/补批判定读数一概打补丁（补批判定必须拒绝，防自动
@@ -282,7 +283,7 @@ const buttonWithText = (text: string): HTMLButtonElement | null => {
 };
 
 describe('LearningGraphWorkspace 知识检测入口挂点（u6）', () => {
-  test('due 态：入口卡在就绪集推荐区之后，语境句区分回向，开测可点', async () => {
+  test('due 态：入口卡在页签头部区（结构条之后、Tabs 之前），语境句区分回向，开测可点', async () => {
     const { pulls, starts, html } = await mountGraphWorkspace(true, {
       settled_count: 8,
       trigger_count: 6,
@@ -292,10 +293,14 @@ describe('LearningGraphWorkspace 知识检测入口挂点（u6）', () => {
     const markup = html();
     // 回向语境句在场（前向/回向视觉区分的锚点）
     expect(markup).toContain('检测与推荐方向相反：推荐带你学新节点，检测考的是已结算的节点');
-    // 位置：就绪集推荐区（继续学习卡）之后，节点正文（LessonBlock）之后
+    // 位置（u10 R5）：页签头部区——知识结构条之后、Tabs 之前（自然流，
+    // 学习 Tab 两栏区之上）。「知识结构」首现即结构条标题；「学习记录」
+    // 首现即 Tabs 页签条标题——晚于入口即入口在 Tabs 之前、两栏区之上。
+    expect(markup.indexOf('知识结构')).toBeLessThan(markup.indexOf('检测与推荐方向相反'));
+    expect(markup.indexOf('检测与推荐方向相反')).toBeLessThan(markup.indexOf('学习记录'));
+    // 学习 Tab 两栏区内容照常渲染（滚动语义不受上移影响）
     expect(markup).toContain('继续学习');
-    expect(markup.indexOf('继续学习')).toBeLessThan(markup.indexOf('检测与推荐方向相反'));
-    expect(markup.indexOf('节点甲')).toBeLessThan(markup.indexOf('检测与推荐方向相反'));
+    expect(markup).toContain('节点甲');
     // N/K 读数与开测按钮
     expect(markup).toContain('距上次检测已积累 8/6 次学新结算');
     const startButton = buttonWithText('开始检测');

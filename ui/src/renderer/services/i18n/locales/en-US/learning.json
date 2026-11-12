@@ -733,6 +733,6 @@
   "quizReportRowXp": "+{{xp}} XP",
   "quizReportFinish": "Done",
   "quizWeakReviewStart": "Start weak-node review",
-  "quizOverviewTitle": "Quiz due",
-  "quizOverviewDueTag": "Due"
+  "quizOverviewTitle": "Quiz ready",
+  "quizOverviewDueTag": "Ready"
 }

@@ -490,9 +490,17 @@ const LearningPage: React.FC = () => {
         />
 
         {/* 检测感知横幅（u7）：有 due 课程才渲染（无 due 整块缺席——与复习
-            横幅常驻策略刻意不同，组件头注释）；行点击直达课程工作区，检测
-            入口在两形态工作区内各自可见（图分支入口由 u6 落地）。 */}
-        <QuizOverviewBanner onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)} />
+            横幅常驻策略刻意不同，组件头注释）。行点击 = 直开该课程检测会话
+            （u10 R2）：置 quizSessionCourseId + 跳课程页——QuizSession 经
+            既有 renderQuizSession 在工作区上立即挂载（传统/图分支共用同一
+            状态位，天然生效）；409 竞态由 QuizSession 既有 onConflict 通道
+            兜（零新逻辑）。 */}
+        <QuizOverviewBanner
+          onOpenCourse={(courseId) => {
+            setQuizSessionCourseId(courseId);
+            navigate(`/learn/${courseId}`);
+          }}
+        />
 
         <section key='learn-tabs'>
           <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line' lazyload>
