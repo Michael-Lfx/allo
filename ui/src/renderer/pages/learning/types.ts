@@ -1153,6 +1153,20 @@ export interface QuizProgressView {
   due: boolean;
 }
 
+/** 首页检测聚合行（u7）：启用未删且 settled_count > 0 的课程按 due 优先、
+ * 课程名次之排序（后端排好序，前端不再重排）。N/K 口径与 QuizProgressView
+ * 逐字同源。镜像 models.rs `QuizOverviewCourse`（3052–3067 行）。 */
+export interface QuizOverviewCourse {
+  course_id: string;
+  title: string;
+  /** 学新结算计数 N（quiz 结算即清零重新积累） */
+  settled_count: number;
+  /** 触发阈值 K（settle.rs `QUIZ_TRIGGER_SETTLEMENTS` 起步值 6，待校准） */
+  trigger_count: number;
+  /** N ≥ K = 到期（首页横幅只渲染 due 行） */
+  due: boolean;
+}
+
 /** quiz 回合单题投影（q2，**判底零字段**：无 answer/explanation——答案与
  * 解析只随 [`QuizGradeFeedback`] 判分后下发，UI 不得缓存或提前展示）。
  * 镜像 models.rs `QuizRoundQuestionView`（3056–3074 行）。 */

@@ -452,6 +452,50 @@ impl LearningService {
         })
     }
 
+    /// 首页检测聚合（u7，`GET /api/learning/quiz/overview`；读数面非门禁）：
+    /// 启用未删且 settled_count > 0 的课程列表，due 优先、课程名次之；
+    /// 无符合课程返回空数组。触发口径与 [`Self::quiz_progress`] 逐字同源——
+    /// [`Self::quiz_settled_nodes`] 的 NOT EXISTS 语义原样上移进 WHERE，再
+    /// 按课程聚合成单条 SQL（一次扫描出全列表，免逐课程往返）；课程筛走
+    /// 「现存且启用」段（deleted_at IS NULL AND enabled = 1，review.rs
+    /// due_reviews 同口径）。形态无关：聚合不读 course_kind。
+    /// settled_count = 命中行数（COUNT(*)，非 DISTINCT——与
+    /// quiz_settled_count 的清单 len 同语义）。
+    pub async fn quiz_overview(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Vec<QuizOverviewCourse>, AppError> {
+        let rows = sqlx::query(
+            "SELECT e.course_id, c.title, COUNT(*) AS settled_count \
+             FROM learning_xp_events e \
+             JOIN learning_courses c ON c.course_id = e.course_id \
+               AND c.deleted_at IS NULL AND c.enabled = 1 \
+             WHERE e.user_id = ? AND e.kind = 'node-completed' \
+               AND e.node_id IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
+                 WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
+                   AND q.kind = 'quiz-completed' AND q.rowid > e.rowid) \
+             GROUP BY e.course_id, c.title",
+        )
+        .bind(user_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut courses = Vec::with_capacity(rows.len());
+        for row in rows {
+            let settled_count: i64 = row.try_get("settled_count").map_err(internal)?;
+            courses.push(QuizOverviewCourse {
+                course_id: parse_id(row.try_get::<String, _>("course_id").map_err(internal)?)?,
+                title: row.try_get("title").map_err(internal)?,
+                settled_count,
+                trigger_count: QUIZ_TRIGGER_SETTLEMENTS,
+                due: settled_count >= QUIZ_TRIGGER_SETTLEMENTS,
+            });
+        }
+        // due 优先、课程名次之（Rust 端排序：字节序 UTF-8，与断言同源可钉）。
+        courses.sort_by(|a, b| b.due.cmp(&a.due).then_with(|| a.title.cmp(&b.title)));
+        Ok(courses)
+    }
 }
 
 /// 学习日（YYYYMMDD）平移 `delta` 天（真实日历运算，跨月跨年正确）。

@@ -3049,6 +3049,22 @@ pub struct QuizProgressView {
     pub due: bool,
 }
 
+/// 首页检测聚合行（u7，读数面非门禁）：启用未删且 settled_count > 0 的
+/// 课程按 due 优先、课程名次之排序列出——N/K 口径与 [`QuizProgressView`]
+/// 逐字同源（同源 SQL 见 service::xp）。形态无关：traditional 与
+/// learning_graph 都返回（聚合只读台账与课程行，不看 course_kind）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizOverviewCourse {
+    pub course_id: LearningCourseId,
+    pub title: String,
+    /// 学新结算计数 N（quiz 结算即清零重新积累）。
+    pub settled_count: i64,
+    /// 触发阈值 K（起步值 6，待校准）。
+    pub trigger_count: i64,
+    /// N ≥ K = 到期（首页横幅只渲染 due 行）。
+    pub due: bool,
+}
+
 /// quiz 回合单题投影（q2，**判底零字段**：无 answer/explanation——解析与
 /// 答案只随 [`QuizGradeFeedback`] 判分后下发；learnhub SessionQuestionView
 /// 同红线）。

@@ -10,6 +10,7 @@ import { CourseCard, CourseDeleteDialog } from './components/CourseCard';import 
 import { CourseWorkspace } from './components/CourseWorkspace';
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { QuizSession } from './components/QuizSession';
+import { QuizOverviewBanner } from './components/QuizOverviewBanner';
 import { ReviewBanner } from './components/ReviewBanner';
 import { EMPTY_PACK, ORPHAN_COURSE_FILTER, REVIEW_BANNER_EXPANDED_KEY, REVIEW_FILTERS_STORAGE_KEY } from './constants';
 import { restoredTaskTopic } from './coursePlan';
@@ -444,6 +445,11 @@ const LearningPage: React.FC = () => {
           onExpandedChange={setBannerExpanded}
           onStart={() => void reviewSession.startReviewSession()}
         />
+
+        {/* 检测感知横幅（u7）：有 due 课程才渲染（无 due 整块缺席——与复习
+            横幅常驻策略刻意不同，组件头注释）；行点击直达课程工作区，检测
+            入口在两形态工作区内各自可见（图分支入口由 u6 落地）。 */}
+        <QuizOverviewBanner onOpenCourse={(courseId) => navigate(`/learn/${courseId}`)} />
 
         <section key='learn-tabs'>
           <Tabs activeTab={listTab} onChange={(key) => setListTab(key)} type='line' lazyload>
