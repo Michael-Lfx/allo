@@ -726,5 +726,7 @@
   "quizReportAccuracy": "Accuracy {{percent}}%",
   "quizReportRowScore": "{{answered}} answered · {{correct}} correct",
   "quizReportRowXp": "+{{xp}} XP",
-  "quizReportFinish": "Done"
+  "quizReportFinish": "Done",
+  "quizOverviewTitle": "Quiz due",
+  "quizOverviewDueTag": "Due"
 }

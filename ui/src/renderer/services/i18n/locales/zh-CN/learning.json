@@ -726,5 +726,7 @@
   "quizReportAccuracy": "准确率 {{percent}}%",
   "quizReportRowScore": "作答 {{answered}} · 答对 {{correct}}",
   "quizReportRowXp": "+{{xp}} XP",
-  "quizReportFinish": "完成"
+  "quizReportFinish": "完成",
+  "quizOverviewTitle": "检测到期",
+  "quizOverviewDueTag": "已到期"
 }

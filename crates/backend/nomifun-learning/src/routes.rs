@@ -21,7 +21,7 @@ use crate::models::{
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
-    QuizGradeFeedback, QuizProgressView, QuizRoundReport, QuizRoundView,
+    QuizGradeFeedback, QuizOverviewCourse, QuizProgressView, QuizRoundReport, QuizRoundView,
     RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
@@ -167,6 +167,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/quiz/calibration",
             get(quiz_calibration),
+        )
+        .route(
+            "/api/learning/quiz/overview",
+            get(quiz_overview),
         )
         .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/stats/memory", get(memory_stats))
@@ -906,6 +910,17 @@ async fn xp_calendar(
             .service
             .xp_calendar(&user.id, query.weeks.unwrap_or(12))
             .await?,
+    )))
+}
+
+/// 首页检测聚合（u7，感知横幅数据面；读数面非门禁）：启用未删且
+/// settled_count > 0 的每课程 N/K 列表，due 优先、课程名次之。
+async fn quiz_overview(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<QuizOverviewCourse>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_overview(&user.id).await?,
     )))
 }
 

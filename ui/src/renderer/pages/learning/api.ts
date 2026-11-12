@@ -30,6 +30,7 @@ import type {
   LessonStatus,
   QuestionEntry,
   QuizGradeFeedback,
+  QuizOverviewCourse,
   QuizProgressView,
   QuizRoundReport,
   QuizRoundView,
@@ -388,6 +389,10 @@ export const learningApi = {
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/progress`
     ),
+  /** 首页检测聚合（u7，感知横幅数据面）：启用未删且 settled_count > 0 的
+   * 每课程 N/K 列表（GET /api/learning/quiz/overview），due 优先、课程名次
+   * 之（后端排好序）；无符合课程返回空数组 */
+  quizOverview: () => httpRequest<QuizOverviewCourse[]>('GET', `${BASE}/quiz/overview`),
   /** quiz 开测命令（q2 载体落位）：due 门（Conflict 附 N/K）→ 脱敏题单
    * （判底零字段）。无请求体；慢路径 = 变式链 LLM 调用（有凭据时内联
    * 生成，零凭据只出 bank 旧题），调用方需容忍慢响应 */
