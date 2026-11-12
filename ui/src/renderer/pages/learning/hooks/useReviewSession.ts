@@ -5,6 +5,10 @@ import { ORPHAN_COURSE_FILTER } from '../constants';
 import type { DueReview, ReviewAnswerResult, ReviewRating } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
+/** 课程/节点集复习会话的队列上限：专注域内全部已入队卡片（不限于到期项），
+ * 因此比日刷缺省上限更大。 */
+const REVIEW_SESSION_QUEUE_LIMIT = 100;
+
 export interface UseReviewSessionOptions {
   load: () => Promise<void>;
   t: Translate;
@@ -179,71 +183,16 @@ export function useReviewSession({
     [load, t, setBusyId, setSessionQueue]
   );
 
-  const startReviewSession = useCallback(async () => {
-    setBusyId('review-session');
-    try {
-      // 每次开刷前重新拉取到期队列，避免使用会话期间过期的快照
-      const isOrphan = reviewCourseFilter.includes(ORPHAN_COURSE_FILTER);
-      const courseIds = reviewCourseFilter.filter((value) => value !== ORPHAN_COURSE_FILTER);
-      const fresh = await learningApi.listDueReviews(reviewSessionLimit, courseIds, {
-        dueOnly: true,
-        orphan: isOrphan,
-        tags: reviewTagFilter,
-      });
-      setReviews(fresh);
-      if (fresh.length === 0) {
-        Message.info(t('learning.noReviews'));
-        return;
-      }
-      setSessionQueue(fresh);
-      setSessionOpen(true);
-    } catch (sessionError) {
-      Message.error(errorMessage(t, sessionError));
-    } finally {
-      setBusyId(null);
-    }
-  }, [reviewCourseFilter, reviewTagFilter, reviewSessionLimit, t, setBusyId]);
-
-  const startCourseReviewSession = useCallback(
-    async (courseId: string) => {
+  /** 会话开启骨架（日刷/课程/节点集三入口共用）：置忙 → 经 fetcher 重拉
+   * 到期队列（避免使用会话期间过期的快照）→ 空队列仅提示不开窗 → 入队
+   * 开窗；拉取异常降级为错误 toast。返回是否真正开窗。 */
+  const openSession = useCallback(
+    async (fetcher: () => Promise<DueReview[]>, emptyMessageKey: string): Promise<boolean> => {
       setBusyId('review-session');
       try {
-        // 课程复习专注本课程全部已入队卡片，不限于到期项，因此使用更大的队列上限
-        const fresh = await learningApi.listDueReviews(100, courseId);
+        const fresh = await fetcher();
         if (fresh.length === 0) {
-          Message.info(t('learning.noCourseReviews'));
-          return;
-        }
-        setSessionQueue(fresh);
-        setSessionOpen(true);
-      } catch (sessionError) {
-        Message.error(errorMessage(t, sessionError));
-      } finally {
-        setBusyId(null);
-      }
-    },
-    [t, setBusyId]
-  );
-
-  /** u9 R3 软闸/报告薄弱集行动：开「节点集」范围的复习会话（后端 R2 多值
-   * node_id 过滤，scoped 会话不下发全量队列）。due_only=false 早练语义——
-   * 未到期卡同批出示且真实推进（due_count=0 非死态，当日未推进过的卡允许
-   * 提前练一次）。不带课程过滤：供给节点可能跨课程（ready_partition 跨课
-   * 程取教师），课程过滤会把跨课程供给卡静默滤空——复习队列按用户维度取
-   * 卡，节点集合本身就是作用域。返回是否真正开窗（空队列只提示）。 */
-  const startScopedReviewSession = useCallback(
-    async (nodeIds: string[]): Promise<boolean> => {
-      if (nodeIds.length === 0) return false;
-      setBusyId('review-session');
-      try {
-        // 节点集会话与课程复习同款：专注该集合全部已入队卡片（含未到期），
-        // 用更大的队列上限。
-        const fresh = await learningApi.listDueReviews(100, [], {
-          dueOnly: false,
-          nodeIds,
-        });
-        if (fresh.length === 0) {
-          Message.info(t('learning.noScopedReviews'));
+          Message.info(t(emptyMessageKey));
           return false;
         }
         setSessionQueue(fresh);
@@ -257,6 +206,54 @@ export function useReviewSession({
       }
     },
     [t, setBusyId]
+  );
+
+  const startReviewSession = useCallback(async () => {
+    await openSession(async () => {
+      const isOrphan = reviewCourseFilter.includes(ORPHAN_COURSE_FILTER);
+      const courseIds = reviewCourseFilter.filter((value) => value !== ORPHAN_COURSE_FILTER);
+      const fresh = await learningApi.listDueReviews(reviewSessionLimit, courseIds, {
+        dueOnly: true,
+        orphan: isOrphan,
+        tags: reviewTagFilter,
+      });
+      setReviews(fresh);
+      return fresh;
+    }, 'learning.noReviews');
+  }, [openSession, reviewCourseFilter, reviewTagFilter, reviewSessionLimit, setReviews]);
+
+  const startCourseReviewSession = useCallback(
+    async (courseId: string) => {
+      // 课程复习专注本课程全部已入队卡片，不限于到期项，因此使用更大的队列上限
+      await openSession(
+        () => learningApi.listDueReviews(REVIEW_SESSION_QUEUE_LIMIT, courseId),
+        'learning.noCourseReviews'
+      );
+    },
+    [openSession]
+  );
+
+  /** u9 R3 软闸/报告薄弱集行动：开「节点集」范围的复习会话（后端 R2 多值
+   * node_id 过滤，scoped 会话不下发全量队列）。due_only=false 早练语义——
+   * 未到期卡同批出示且真实推进（due_count=0 非死态，当日未推进过的卡允许
+   * 提前练一次）。不带课程过滤：供给节点可能跨课程（ready_partition 跨课
+   * 程取教师），课程过滤会把跨课程供给卡静默滤空——复习队列按用户维度取
+   * 卡，节点集合本身就是作用域。返回是否真正开窗（空队列只提示）。 */
+  const startScopedReviewSession = useCallback(
+    async (nodeIds: string[]): Promise<boolean> => {
+      if (nodeIds.length === 0) return false;
+      // 节点集会话与课程复习同款：专注该集合全部已入队卡片（含未到期），
+      // 用更大的队列上限。
+      return openSession(
+        () =>
+          learningApi.listDueReviews(REVIEW_SESSION_QUEUE_LIMIT, [], {
+            dueOnly: false,
+            nodeIds,
+          }),
+        'learning.noScopedReviews'
+      );
+    },
+    [openSession]
   );
 
   return {
