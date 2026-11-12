@@ -1,6 +1,7 @@
 import type { SessionTarget } from '@/common/types/ids';
+import { isSameSessionTarget } from '@/common/types/ids';
+import { addEventListener, emitter } from '@/renderer/utils/emitter';
 
-export const WORKSPACE_TOGGLE_EVENT = 'nomifun-workspace-toggle';
 export const WORKSPACE_HAS_FILES_EVENT = 'nomifun-workspace-has-files';
 
 export interface WorkspaceHasFilesDetail {
@@ -18,15 +19,20 @@ export interface WorkspaceHasFilesDetail {
   isInitial: boolean;
 }
 
-export interface WorkspaceToggleDetail {
-  target: SessionTarget;
-}
-
 export function dispatchWorkspaceToggleEvent(target: SessionTarget) {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(
-    new CustomEvent<WorkspaceToggleDetail>(WORKSPACE_TOGGLE_EVENT, { detail: { target } })
-  );
+  emitter.emit('workspace.toggle', { target });
+}
+
+/**
+ * Subscribe to workspace titlebar toggles scoped to a single session target.
+ * The target kind and id must both match before `onToggle` runs.
+ */
+export function subscribeWorkspaceToggleEvent(target: SessionTarget, onToggle: () => void) {
+  return addEventListener('workspace.toggle', ({ target: eventTarget }) => {
+    if (!isSameSessionTarget(eventTarget, target)) return;
+    onToggle();
+  });
 }
 
 /**

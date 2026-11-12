@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { canRunMarketAction, mergeMarketActionState } from './useMarketActionState';
+import { canRunMarketAction, mergeMarketActionState, shouldReleaseHiddenMarketAction } from './useMarketActionState';
 
 describe('market action state', () => {
   test('merges a shared pending item without changing authoritative completion state', () => {
@@ -19,5 +19,12 @@ describe('market action state', () => {
     expect(canRunMarketAction('completed', true)).toBe(true);
     expect(canRunMarketAction('completed', false)).toBe(false);
     expect(canRunMarketAction('checking', true)).toBe(false);
+  });
+
+  test('releases an in-flight action once its card is no longer on screen', () => {
+    const visible = new Set(['skillhub:indiv-integrator/skills/dev-expert-pro']);
+    expect(shouldReleaseHiddenMarketAction('skillhub:user_814dbe54/skills/dev-expert-pro', visible)).toBe(true);
+    expect(shouldReleaseHiddenMarketAction('skillhub:indiv-integrator/skills/dev-expert-pro', visible)).toBe(false);
+    expect(shouldReleaseHiddenMarketAction(null, visible)).toBe(false);
   });
 });

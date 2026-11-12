@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriEvents } from '@/common/adapter/tauriEvents';
+import { tauriSystem } from '@/common/adapter/tauriSystem';
 import './completionToast.css';
 
 type CompletionToastPayload = {
@@ -20,10 +22,9 @@ const CompletionToastPage: React.FC = () => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
-      const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<CompletionToastPayload>('completion-toast://show', (event) => {
+      unlisten = await tauriEvents.listen<CompletionToastPayload>('completion-toast://show', (payload) => {
         if (disposed) return;
-        setPayload(event.payload);
+        setPayload(payload);
       });
     })();
     return () => {
@@ -32,24 +33,19 @@ const CompletionToastPage: React.FC = () => {
     };
   }, []);
 
-  const invokeToastCommand = useCallback(async (cmd: string, generation: number) => {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke(cmd, { generation });
-  }, []);
-
   const onOpen = useCallback(() => {
     if (!payload) return;
-    void invokeToastCommand('activate_completion_toast', payload.generation).finally(() => {
+    void tauriSystem.activateCompletionToast(payload.generation).finally(() => {
       setPayload(null);
     });
-  }, [invokeToastCommand, payload]);
+  }, [payload]);
 
   const onDismiss = useCallback(() => {
     if (!payload) return;
-    void invokeToastCommand('dismiss_completion_toast', payload.generation).finally(() => {
+    void tauriSystem.dismissCompletionToast(payload.generation).finally(() => {
       setPayload(null);
     });
-  }, [invokeToastCommand, payload]);
+  }, [payload]);
 
   if (!payload) {
     return <main className='completion-toast completion-toast--empty' />;

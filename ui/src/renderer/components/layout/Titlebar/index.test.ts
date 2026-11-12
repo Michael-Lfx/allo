@@ -41,6 +41,13 @@ describe('Titlebar instant icon tooltips', () => {
     );
   });
 
+  test('dispatches the typed workspace toggle for the active session target', () => {
+    expect(titlebarSource.includes('dispatchWorkspaceToggleEvent(activeWorkspaceTarget)')).toBe(true);
+    expect(titlebarSource.includes('!workspaceAvailable || !activeWorkspaceTarget')).toBe(true);
+    expect(titlebarSource.includes('nomifun-workspace-toggle')).toBe(false);
+    expect(titlebarSource.includes('WORKSPACE_TOGGLE_EVENT')).toBe(false);
+  });
+
   test('exposes the sidebar state to assistive technology and uses the stateful icon', () => {
     expect(titlebarSource.includes("import SidebarToggleIcon from '../Sider/SidebarToggleIcon';")).toBe(true);
     expect(titlebarSource.includes('ariaExpanded: !layout?.siderCollapsed')).toBe(true);

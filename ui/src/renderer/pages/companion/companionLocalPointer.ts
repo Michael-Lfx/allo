@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { tauriSystem } from '@/common/adapter/tauriSystem';
+
 export type CompanionPointerBackend = 'appkit' | 'win32' | 'x11';
 export type CompanionUnsupportedPointerBackend = 'wayland' | 'other';
 
@@ -88,6 +90,5 @@ export function toCompanionClientPoint(
 }
 
 export async function getCompanionLocalPointer(): Promise<CompanionLocalPointerSample> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return parseCompanionLocalPointer(await invoke<unknown>('get_companion_local_pointer'));
+  return parseCompanionLocalPointer(await tauriSystem.getCompanionLocalPointer<unknown>());
 }

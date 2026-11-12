@@ -16,37 +16,13 @@ import {
   shellProvider,
   stubShellProvider,
   subscribeDeepLink,
-  subscribeWebuiStatus,
-  subscribeWindowMaximized,
-  tauriGetPath,
-  tauriGetZoom,
-  tauriClearAllAttention,
-  tauriClearAttention,
-  tauriClearAttentionScope,
-  tauriIsAppFocused,
-  tauriIsAutostartEnabled,
-  tauriOpenDialog,
-  tauriSaveDialog,
-  tauriRelaunch,
-  tauriSendNotification,
-  tauriSetAutostart,
-  tauriSetKeepAwake,
-  tauriSetTrayLabels,
-  tauriSetZoom,
-  tauriWebuiGetStatus,
-  tauriWebuiStart,
-  tauriWebuiStop,
-  tauriWindowClose,
-  tauriWindowIsMaximized,
-  tauriWindowMaximize,
-  tauriWindowMinimize,
-  tauriWindowToggleMaximize,
-  tauriWindowUnmaximize,
   type ShellOpenDialogOptions,
   type ShellSaveDialogOptions,
   type AttentionSource,
   type TauriUpdatePackageState,
 } from './tauriShell';
+import { tauriSystem } from './tauriSystem';
+import { tauriWindows } from './tauriWindows';
 import {
   autoUpdateStatusEmitter,
   tauriUpdateCheck,
@@ -1171,7 +1147,7 @@ function mapWorkDirRelocationResponse(raw: RawWorkDirRelocationResponse): WorkDi
 // ---------------------------------------------------------------------------
 
 export const application = {
-  restart: shellProvider<void, void>(() => tauriRelaunch(), undefined),
+  restart: shellProvider<void, void>(() => tauriSystem.relaunch(), undefined),
   // Arm a factory reset: the backend writes a marker and the wipe happens early
   // on the next boot (see nomifun_common::factory_reset). Callers should relaunch
   // (application.restart) right after this resolves.
@@ -1239,7 +1215,7 @@ export const application = {
         : undefined,
     })
   ),
-  getPath: shellProvider<string, { name: 'desktop' | 'home' | 'downloads' }>(({ name }) => tauriGetPath(name), ''),
+  getPath: shellProvider<string, { name: 'desktop' | 'home' | 'downloads' }>(({ name }) => tauriSystem.getPath(name), ''),
   // Persist the user-chosen work dir to a pre-boot config file that the next
   // boot reads before resolving work_dir (Rust `nomifun_common::dir_config`).
   // The caller restarts right after this resolves; the new dir applies then.
@@ -1274,9 +1250,9 @@ export const application = {
       ({ operationId }) => `/api/system/work-dir-relocation/${encodeURIComponent(operationId)}/backup`
     ),
   },
-  getZoomFactor: shellProvider<number, void>(async () => tauriGetZoom(), 1),
-  setZoomFactor: shellProvider<number, { factor: number }>(({ factor }) => tauriSetZoom(factor), 1),
-  applyKeepAwake: shellProvider<void, { enabled: boolean }>(({ enabled }) => tauriSetKeepAwake(enabled), undefined),
+  getZoomFactor: shellProvider<number, void>(async () => tauriSystem.getZoom(), 1),
+  setZoomFactor: shellProvider<number, { factor: number }>(({ factor }) => tauriSystem.setZoom(factor), 1),
+  applyKeepAwake: shellProvider<void, { enabled: boolean }>(({ enabled }) => tauriSystem.setKeepAwake(enabled), undefined),
   // Localize the native system-tray menu. Desktop-only OS effect (no-op on web),
   // mirroring applyKeepAwake — the renderer calls it on mount / language change.
   setTrayLabels: shellProvider<
@@ -1292,19 +1268,19 @@ export const application = {
     }
   >(
     ({ show, quit, start, pause, resume, stop, open }) =>
-      tauriSetTrayLabels(show, quit, { start, pause, resume, stop, open }),
+      tauriSystem.setTrayLabels(show, quit, { start, pause, resume, stop, open }),
     undefined
   ),
   getStartOnBootStatus: shellProvider<IBridgeResponse<IStartOnBootStatus>, void>(
     async () => ({
       success: true,
-      data: { supported: true, enabled: await tauriIsAutostartEnabled(), isPackaged: true, platform: navigator.platform },
+      data: { supported: true, enabled: await tauriSystem.isAutostartEnabled(), isPackaged: true, platform: navigator.platform },
     }),
     { success: false }
   ),
   setStartOnBoot: shellProvider<IBridgeResponse<IStartOnBootStatus>, { enabled: boolean }>(
     async ({ enabled }) => {
-      await tauriSetAutostart(enabled);
+      await tauriSystem.setAutostart(enabled);
       return {
         success: true,
         data: {
@@ -1447,12 +1423,12 @@ export const starOffice = {
 
 export const dialog = {
   showOpen: shellProvider<string[] | undefined, ShellOpenDialogOptions | void>(
-    (opts) => tauriOpenDialog(opts || undefined),
+    (opts) => tauriSystem.openDialog(opts || undefined),
     (opts) => bridge.invoke<string[] | undefined>('show-open', opts || undefined)
   ),
   /** Native save dialog (desktop only; web returns null). */
   showSave: shellProvider<string | null, ShellSaveDialogOptions | void>(
-    (opts) => tauriSaveDialog(opts || undefined),
+    (opts) => tauriSystem.saveDialog(opts || undefined),
     async () => null
   ),
 };
@@ -1727,7 +1703,7 @@ export const fs = {
   installSkillMarketSkill: httpPost<
     ISkillMarketSkillInstallResponse,
     { source: 'skillhub'; id: string; market_source?: SkillHubMarketContentSource }
-  >('/api/skills/market/skill/install'),
+  >('/api/skills/market/skill/install', undefined, { timeoutMs: 90_000 }),
 };
 
 // ---------------------------------------------------------------------------
@@ -2942,19 +2918,19 @@ export const deepLink = {
 // ---------------------------------------------------------------------------
 
 export const windowControls = {
-  minimize: shellProvider<void, void>(() => tauriWindowMinimize(), undefined),
-  maximize: shellProvider<void, void>(() => tauriWindowMaximize(), undefined),
-  unmaximize: shellProvider<void, void>(() => tauriWindowUnmaximize(), undefined),
+  minimize: shellProvider<void, void>(() => tauriWindows.current().minimize(), undefined),
+  maximize: shellProvider<void, void>(() => tauriWindows.current().maximize(), undefined),
+  unmaximize: shellProvider<void, void>(() => tauriWindows.current().unmaximize(), undefined),
   // Double-click-titlebar entry: a single native toggle (avoids a race between a
   // separate isMaximized read and maximize/unmaximize). Windows/Linux only — on
   // macOS the OS handles titlebar double-click on the native chrome.
-  toggleMaximize: shellProvider<void, void>(() => tauriWindowToggleMaximize(), undefined),
-  close: shellProvider<void, void>(() => tauriWindowClose(), undefined),
-  isMaximized: shellProvider<boolean, void>(() => tauriWindowIsMaximized(), false),
-  maximizedChanged: shellEmitter<{ is_maximized: boolean }>((cb) => subscribeWindowMaximized(cb)),
+  toggleMaximize: shellProvider<void, void>(() => tauriWindows.current().toggleMaximize(), undefined),
+  close: shellProvider<void, void>(() => tauriWindows.current().close(), undefined),
+  isMaximized: shellProvider<boolean, void>(() => tauriWindows.current().isMaximized(), false),
+  maximizedChanged: shellEmitter<{ is_maximized: boolean }>((cb) => tauriWindows.onMaximizedChanged((isMaximized) => cb({ is_maximized: isMaximized }))),
   // App-level focus across every Flowy window; DOM focus is the web fallback.
   isAppFocused: shellProvider<boolean, void>(
-    () => tauriIsAppFocused(),
+    () => tauriWindows.isAppFocused(),
     () => (typeof document !== 'undefined' ? document.hasFocus() : false)
   ),
 };
@@ -3040,7 +3016,7 @@ export type INotificationOptions = {
 export const notification = {
   show: shellProvider<void, INotificationOptions>(
     (opts) =>
-      tauriSendNotification({
+      tauriSystem.sendNotification({
         title: opts.title,
         body: opts.body,
         icon: opts.icon,
@@ -3056,14 +3032,14 @@ export const notification = {
 
 export const attention = {
   clear: shellProvider<void, { attention_id: string }>(
-    ({ attention_id }) => tauriClearAttention(attention_id),
+    ({ attention_id }) => tauriSystem.clearAttention(attention_id),
     undefined
   ),
   clearScope: shellProvider<void, { source: AttentionSource; entity_id?: string }>(
-    ({ source, entity_id }) => tauriClearAttentionScope(source, entity_id),
+    ({ source, entity_id }) => tauriSystem.clearAttentionScope(source, entity_id),
     undefined
   ),
-  clearAll: shellProvider<void, void>(() => tauriClearAllAttention(), undefined),
+  clearAll: shellProvider<void, void>(() => tauriSystem.clearAllAttention(), undefined),
 };
 
 // ---------------------------------------------------------------------------
@@ -3111,7 +3087,7 @@ export const webui = {
    * browser — that page IS served by the LAN listener, so it cannot control it.
    */
   lifecycleSupported: typeof window !== 'undefined' && Boolean((window as { __backendPort?: number }).__backendPort),
-  getStatus: shellProvider<IWebUIStatus, void>(() => tauriWebuiGetStatus<IWebUIStatus>(), {
+  getStatus: shellProvider<IWebUIStatus, void>(() => tauriSystem.webui.getStatus<IWebUIStatus>(), {
     running: false,
     port: 0,
     allowRemote: false,
@@ -3120,7 +3096,7 @@ export const webui = {
   }),
   // Enabling binds the LAN listener (0.0.0.0); the backend returns the full
   // status (running + error + lanIP + one-time initialPassword).
-  start: shellProvider<IWebUIStatus, void>(() => tauriWebuiStart<IWebUIStatus>(), {
+  start: shellProvider<IWebUIStatus, void>(() => tauriSystem.webui.start<IWebUIStatus>(), {
     running: false,
     port: 0,
     allowRemote: false,
@@ -3128,7 +3104,7 @@ export const webui = {
     adminUsername: '',
     error: 'desktop lifecycle unavailable',
   }),
-  stop: shellProvider<void, void>(() => tauriWebuiStop<void>(), undefined),
+  stop: shellProvider<void, void>(() => tauriSystem.webui.stop<void>(), undefined),
   statusChanged: shellEmitter<{
     running: boolean;
     port?: number;
@@ -3139,7 +3115,7 @@ export const webui = {
     adminUsername?: string;
     passwordSet?: boolean;
     initialPassword?: string;
-  }>((cb) => subscribeWebuiStatus(cb)),
+  }>((cb) => tauriSystem.webui.onStatusChanged(cb)),
   changePassword: httpPost<void, { newPassword: string }>('/api/webui/change-password', (p) => ({
     new_password: p.newPassword,
   })),

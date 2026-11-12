@@ -29,7 +29,7 @@ import WorkspaceToolRail, {
   type WorkspacePanelMetaDetail,
 } from '@/renderer/pages/conversation/components/ChatLayout/WorkspaceToolRail';
 import { useWorkspacePanelTabs } from '@/renderer/pages/conversation/hooks/useWorkspacePanelTabs';
-import { WORKSPACE_TOGGLE_EVENT, type WorkspaceToggleDetail } from '@/renderer/utils/workspace/workspaceEvents';
+import { subscribeWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';
 import RegisterKnowledgeButton from './RegisterKnowledgeButton';
 import TerminalWorkspaceRail from './TerminalWorkspaceRail';
 import XtermView, { type XtermViewHandle } from './XtermView';
@@ -82,13 +82,9 @@ const TerminalRightRegion: React.FC<{ session: ITerminalSession }> = ({ session 
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const handleWorkspaceToggle = (event: Event) => {
-      const target = (event as CustomEvent<WorkspaceToggleDetail>).detail?.target;
-      if (!target || target.kind !== workspaceTarget.kind || target.id !== workspaceTarget.id) return;
+    return subscribeWorkspaceToggleEvent(workspaceTarget, () => {
       selectWorkspaceTool('files');
-    };
-    window.addEventListener(WORKSPACE_TOGGLE_EVENT, handleWorkspaceToggle);
-    return () => window.removeEventListener(WORKSPACE_TOGGLE_EVENT, handleWorkspaceToggle);
+    });
   }, [selectWorkspaceTool, workspaceTarget]);
 
   // Preview column width (px), persisted independently of the rail.

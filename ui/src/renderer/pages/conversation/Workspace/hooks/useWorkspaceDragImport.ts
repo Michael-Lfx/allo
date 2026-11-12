@@ -5,8 +5,9 @@ import type { DragEvent } from 'react';
 import type { TFunction } from 'i18next';
 import { ipcBridge } from '@/common';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriDragDrop } from '@/common/adapter/tauriDragDrop';
 import { FileService } from '@/renderer/services/FileService';
-import { getBaseName, isPhysicalPointOverAnyDropzone } from '@renderer/utils/tauriDragDrop';
+import { getBaseName } from '@renderer/utils/tauriDragDrop';
 import type { MessageApi } from '../types';
 import type { ConversationId } from '@/common/types/ids';
 
@@ -212,9 +213,7 @@ export function useWorkspaceDragImport({
 
     void (async () => {
       try {
-        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-        const fn = await getCurrentWebview().onDragDropEvent((event) => {
-          const payload = event.payload as { type: string; paths?: string[]; position?: { x: number; y: number } };
+        const fn = await tauriDragDrop.subscribe((payload) => {
           if (payload?.type !== 'drop' || !Array.isArray(payload.paths) || payload.paths.length === 0) return;
 
           // 让步：drop 落在任意已挂载的输入拖放区（SendBox 等）时交给各自的监听处理
@@ -223,7 +222,7 @@ export function useWorkspaceDragImport({
           // 拖放区稳健，不再硬编码 `.sendbox-panel` 选择器。
           // Yield: when the drop lands on any registered input dropzone (SendBox, …),
           // defer to that zone's own listener instead of importing into the workspace.
-          if (payload.position && isPhysicalPointOverAnyDropzone(payload.position.x, payload.position.y)) {
+          if (payload.position && tauriDragDrop.isPointOverAnyDropzone(payload.position)) {
             resetDragState();
             return;
           }

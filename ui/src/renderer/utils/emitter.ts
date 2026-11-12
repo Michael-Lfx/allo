@@ -1,5 +1,5 @@
 
-import type { ConversationId, MessageId } from '@/common/types/ids';
+import type { ConversationId, MessageId, SessionTarget } from '@/common/types/ids';
 
 import EventEmitter from 'eventemitter3';
 import type { DependencyList } from 'react';
@@ -97,6 +97,14 @@ interface EventTypes {
   'sendbox.retry': [{ content: string; msgId?: MessageId; createdAt?: number }]; // retry last user turn from an error tip
   'composer.focus': void;
   'app.shortcuts.open': void;
+  'app.update.open': [{ source?: string }];
+  'workspace.toggle': [{ target: SessionTarget }];
+  // 同窗口主题事件（自定义 CSS 更新 / 用户主题列表变化），由 themeEvents.ts 封装
+  // 发送与订阅；跨窗口同步仍走 Tauri `nomifun://theme-sync`。
+  // Same-window theme events (custom CSS update / user theme list change),
+  // wrapped by themeEvents.ts; cross-window sync stays on Tauri `nomifun://theme-sync`.
+  'theme.custom-css.updated': [{ customCss: string }];
+  'theme.css-themes.changed': void;
   'staroffice.install.request': [{ conversation_id: ConversationId; text: string; detectedUrl?: string | null }];
   'staroffice.install.finished': [{ conversation_id: ConversationId }];
   // goal 状态刷新事件：/goal 操作后由 useGoalCommand 发出（携带新快照），GoalStatusNotice 消费

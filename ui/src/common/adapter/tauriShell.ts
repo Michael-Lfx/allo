@@ -22,6 +22,8 @@
  */
 import { isTauriRuntime } from './tauriRuntime';
 import type { UpdaterInstallContext } from './tauriUpdateInstall';
+import { tauriEvents } from './tauriEvents';
+import { tauriWindows } from './tauriWindows';
 
 // ---------------------------------------------------------------------------
 // Channel shapes — mirror the bridge.buildProvider / bridge.buildEmitter API
@@ -360,46 +362,43 @@ function parseDeepLink(url: string): { action: string; params: Record<string, st
 export async function subscribeDeepLink(
   callback: (payload: { action: string; params: Record<string, string> }) => void
 ): Promise<() => void> {
-  const { listen } = await import('@tauri-apps/api/event');
-  return listen<string[]>('deep-link://received', (event) => {
-    for (const url of event.payload ?? []) callback(parseDeepLink(url));
+  return tauriEvents.listen<string[]>('deep-link://received', (urls) => {
+    for (const url of urls ?? []) callback(parseDeepLink(url));
   });
 }
 
 // ---- window controls (@tauri-apps/api/window) ----
+// @deprecated Use `tauriWindows` from `./tauriWindows` in new code. These
+// exports remain for ipcBridge compatibility and delegate to the adapter.
 
 export async function tauriWindowMinimize(): Promise<void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().minimize();
+  await tauriWindows.current().minimize();
 }
+/** @deprecated Use `tauriWindows.current().maximize()`. */
 export async function tauriWindowMaximize(): Promise<void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().maximize();
+  await tauriWindows.current().maximize();
 }
+/** @deprecated Use `tauriWindows.current().unmaximize()`. */
 export async function tauriWindowUnmaximize(): Promise<void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().unmaximize();
+  await tauriWindows.current().unmaximize();
 }
+/** @deprecated Use `tauriWindows.current().toggleMaximize()`. */
 export async function tauriWindowToggleMaximize(): Promise<void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().toggleMaximize();
+  await tauriWindows.current().toggleMaximize();
 }
+/** @deprecated Use `tauriWindows.current().close()`. */
 export async function tauriWindowClose(): Promise<void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().close();
+  await tauriWindows.current().close();
 }
+/** @deprecated Use `tauriWindows.current().isMaximized()`. */
 export async function tauriWindowIsMaximized(): Promise<boolean> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  return getCurrentWindow().isMaximized();
+  return tauriWindows.current().isMaximized();
 }
+/** @deprecated Use `tauriWindows.onMaximizedChanged(...)`. */
 export async function subscribeWindowMaximized(
   callback: (payload: { is_maximized: boolean }) => void
 ): Promise<() => void> {
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  const win = getCurrentWindow();
-  return win.onResized(() => {
-    void win.isMaximized().then((is_maximized) => callback({ is_maximized }));
-  });
+  return tauriWindows.onMaximizedChanged((is_maximized) => callback({ is_maximized }));
 }
 
 /**
@@ -409,20 +408,9 @@ export async function subscribeWindowMaximized(
  * Falls back to the main window, then to the DOM signal, if window
  * enumeration is unavailable.
  */
+/** @deprecated Use `tauriWindows.isAppFocused()`. */
 export async function tauriIsAppFocused(): Promise<boolean> {
-  try {
-    const { getAllWindows } = await import('@tauri-apps/api/window');
-    const windows = await getAllWindows();
-    const focused = await Promise.all(windows.map((win) => win.isFocused().catch(() => false)));
-    return focused.some(Boolean);
-  } catch {
-    try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      return await getCurrentWindow().isFocused();
-    } catch {
-      return typeof document !== 'undefined' && document.hasFocus();
-    }
-  }
+  return tauriWindows.isAppFocused();
 }
 
 // ---- WebUI / LAN remote-access lifecycle (Tauri commands + status event) ----
@@ -453,6 +441,5 @@ export function tauriWebuiStop<T>(): Promise<T> {
  * (`apps/desktop/src/main.rs` forwards them on `webui://status-changed`).
  */
 export async function subscribeWebuiStatus<T>(callback: (status: T) => void): Promise<() => void> {
-  const { listen } = await import('@tauri-apps/api/event');
-  return listen<T>('webui://status-changed', (event) => callback(event.payload));
+  return tauriEvents.listen<T>('webui://status-changed', callback);
 }

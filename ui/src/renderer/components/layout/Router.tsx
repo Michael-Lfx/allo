@@ -14,6 +14,7 @@ import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useCompanionWindowsSync } from '@renderer/hooks/useCompanionWindowsSync';
 import { useTrayLabels } from '@renderer/hooks/useTrayLabels';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriEvents } from '@/common/adapter/tauriEvents';
 import ConversationShell from '@renderer/pages/conversation/components/ConversationShell';
 import { loadVideoCanvasProjectPage } from '@renderer/pages/videoCanvas/loadProjectPage';
 const Conversation = React.lazy(() => import('@renderer/pages/conversation'));
@@ -253,26 +254,23 @@ const CompanionNavigateListener: React.FC = () => {
   useEffect(()=>{
     if(!isTauriRuntime())return;
     let disposed=false;let off:(()=>void)|undefined;
-    void import('@tauri-apps/api/event').then(({listen})=>listen('companion-boot-error',()=>{
+    void tauriEvents.listen('companion-boot-error',()=>{
       Message.error(t('voice.presentation.petBootFailed'));
-    })).then(stop=>{if(disposed)stop();else off=stop;}).catch(()=>{});
+    }).then(stop=>{if(disposed)stop();else off=stop;}).catch(()=>{});
     return()=>{disposed=true;off?.();};
   },[t]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/event')
-      .then(({ listen }) =>
-        listen<string>('companion-navigate', (event) => {
-          if (typeof event.payload === 'string' && event.payload.startsWith('/')) {
-            void navigate(event.payload);
-          }
-        }).then((fn) => {
-          if (disposed) fn();
-          else unlisten = fn;
-        })
-      )
+    void tauriEvents.listen<string>('companion-navigate', (payload) => {
+        if (typeof payload === 'string' && payload.startsWith('/')) {
+          void navigate(payload);
+        }
+      }).then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
       .catch(() => {
         // Native event listeners are best-effort; a missing Tauri bridge must
         // not become an unhandled rejection on the route shell.
@@ -292,19 +290,16 @@ const MeetingOpenListener: React.FC = () => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void import('@tauri-apps/api/event')
-      .then(({ listen }) =>
-        listen<string>('meeting-open', (event) => {
-          const path =
-            typeof event.payload === 'string' && event.payload.startsWith('/')
-              ? event.payload
-              : '/meeting';
-          void navigate(path);
-        }).then((fn) => {
-          if (disposed) fn();
-          else unlisten = fn;
-        })
-      )
+    void tauriEvents.listen<string>('meeting-open', (payload) => {
+      const path =
+        typeof payload === 'string' && payload.startsWith('/')
+          ? payload
+          : '/meeting';
+      void navigate(path);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    })
       .catch(() => {
         // Native event listeners are best-effort; a missing Tauri bridge must
         // not become an unhandled rejection on the route shell.

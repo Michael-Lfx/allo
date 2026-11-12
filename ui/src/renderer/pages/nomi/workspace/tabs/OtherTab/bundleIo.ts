@@ -5,6 +5,7 @@
  */
 
 import { ipcBridge } from '@/common';
+import { tauriSystem } from '@/common/adapter/tauriSystem';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { CompanionId, KnowledgeBaseId } from '@/common/types/ids';
 
@@ -23,8 +24,7 @@ export type ImportOutcome =
 
 /** Native save dialog — desktop only, every caller is gated on `isTauriRuntime()`. */
 export const pickSavePath = async (defaultName: string): Promise<string | null> => {
-  const { save } = await import('@tauri-apps/plugin-dialog');
-  return save({ defaultPath: defaultName, filters: ZIP_FILTERS });
+  return tauriSystem.saveDialog({ defaultPath: defaultName, filters: ZIP_FILTERS });
 };
 
 /** Native open dialog via the existing ipcBridge dialog surface. */

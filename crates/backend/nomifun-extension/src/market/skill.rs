@@ -58,6 +58,11 @@ pub enum MarketSkillInstallError {
     IdInvalid,
     #[error("the market Skill was not found")]
     NotFound,
+    /// The slug exists, but SkillHub's slug-only detail and download endpoints
+    /// serve a different publisher. The requested card cannot be installed, and
+    /// must not be silently replaced by that other archive.
+    #[error("this publisher's Skill package cannot be downloaded")]
+    PublisherUnavailable,
     #[error("a Skill with this name already exists and cannot be replaced")]
     NameConflict,
     #[error("the downloaded Skill artifact is invalid")]
@@ -334,19 +339,16 @@ fn skillhub_skill_detail_url(base_url: &str, slug: &str) -> Result<Url, MarketSk
     Ok(url)
 }
 
-/// Parse the exact detail response and bind it to the requested market entry.
-///
-/// The official detail contract identifies the account with `owner.handle` and
-/// the Skill with `skill.slug`. When `namespace.handle` is present it is the
-/// public identity and must agree with the requested owner. Without a
-/// namespace, `owner.handle` is used as the public identity. Missing or
-/// conflicting identity fields fail closed as `NotFound`, so a stale list entry
-/// cannot be substituted by another Skill.
-fn parse_skill_detail(
-    body: &str,
-    expected_owner: &str,
-    expected_slug: &str,
-) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+struct ResolvedSkillHubDetail {
+    slug: String,
+    public_owner: String,
+    version: String,
+}
+
+/// Parse one SkillHub detail payload into the identity the download endpoint
+/// can actually serve. Missing or illegal identity fields are `NotFound`; a
+/// missing version is `ArtifactInvalid` because the archive cannot be pinned.
+fn resolve_skillhub_detail(body: &str) -> Result<ResolvedSkillHubDetail, MarketSkillInstallError> {
     let root = serde_json::from_str::<serde_json::Value>(body)
         .map_err(|_| MarketSkillInstallError::ArtifactInvalid)?;
     if root.get("code").is_some_and(|code| {
@@ -360,9 +362,7 @@ fn parse_skill_detail(
         .get("skill")
         .ok_or(MarketSkillInstallError::NotFound)?;
     let resolved_slug = json_text(skill, "slug", 96).ok_or(MarketSkillInstallError::NotFound)?;
-    if !is_market_slug(&resolved_slug)
-        || !resolved_slug.eq_ignore_ascii_case(expected_slug)
-    {
+    if !is_market_slug(&resolved_slug) {
         return Err(MarketSkillInstallError::NotFound);
     }
     let owner = root
@@ -373,19 +373,55 @@ fn parse_skill_detail(
         None | Some(serde_json::Value::Null) => owner.clone(),
         Some(namespace) => json_text(namespace, "handle", 96).ok_or(MarketSkillInstallError::NotFound)?,
     };
-    if !is_market_slug(&owner)
-        || !is_market_slug(&public_owner)
-        || !public_owner.eq_ignore_ascii_case(expected_owner)
-    {
+    if !is_market_slug(&owner) || !is_market_slug(&public_owner) {
         return Err(MarketSkillInstallError::NotFound);
     }
     let version = root
         .get("latestVersion")
         .and_then(|value| json_text(value, "version", 64))
         .ok_or(MarketSkillInstallError::ArtifactInvalid)?;
-    Ok(RemoteSkillDetail {
+    Ok(ResolvedSkillHubDetail {
         slug: resolved_slug,
+        public_owner,
         version,
+    })
+}
+
+/// Public owner of a detail payload when it describes `expected_slug`.
+/// `None` means the payload cannot be used to drop duplicate list rows.
+pub(crate) fn skillhub_detail_public_owner(body: &str, expected_slug: &str) -> Option<String> {
+    let resolved = resolve_skillhub_detail(body).ok()?;
+    if resolved.slug.eq_ignore_ascii_case(expected_slug) {
+        Some(resolved.public_owner)
+    } else {
+        None
+    }
+}
+
+/// Parse the exact detail response and bind it to the requested market entry.
+///
+/// The official detail contract identifies the account with `owner.handle` and
+/// the Skill with `skill.slug`. When `namespace.handle` is present it is the
+/// public identity and must agree with the requested owner. Without a
+/// namespace, `owner.handle` is used as the public identity. A different
+/// public owner is `PublisherUnavailable`: the slug exists, but the download
+/// API is keyed by slug alone and would substitute another publisher's
+/// archive. Missing identity fields stay `NotFound`.
+fn parse_skill_detail(
+    body: &str,
+    expected_owner: &str,
+    expected_slug: &str,
+) -> Result<RemoteSkillDetail, MarketSkillInstallError> {
+    let resolved = resolve_skillhub_detail(body)?;
+    if !resolved.slug.eq_ignore_ascii_case(expected_slug) {
+        return Err(MarketSkillInstallError::NotFound);
+    }
+    if !resolved.public_owner.eq_ignore_ascii_case(expected_owner) {
+        return Err(MarketSkillInstallError::PublisherUnavailable);
+    }
+    Ok(RemoteSkillDetail {
+        slug: resolved.slug,
+        version: resolved.version,
     })
 }
 
@@ -1491,13 +1527,17 @@ mod tests {
 
     #[test]
     fn parse_skill_detail_rejects_mismatch_and_missing_fields() {
-        // Official owner mismatch → NotFound (the archive download is keyed
-        // by slug alone, so a mismatched entry is uninstallable, never
+        // Official owner mismatch → PublisherUnavailable (the archive download
+        // is keyed by slug alone, so a mismatched entry is uninstallable, never
         // substituted).
         let body = String::from_utf8(detail_json("other-owner", Some("other-owner"), "demo", "1.0.0")).unwrap();
         assert_eq!(
             parse_skill_detail(&body, "owner", "demo").unwrap_err(),
-            MarketSkillInstallError::NotFound
+            MarketSkillInstallError::PublisherUnavailable
+        );
+        assert_eq!(
+            skillhub_detail_public_owner(&body, "demo").as_deref(),
+            Some("other-owner")
         );
         // The optional observed namespace assertion must also agree.
         let body = serde_json::json!({
@@ -1509,7 +1549,7 @@ mod tests {
         .to_string();
         assert_eq!(
             parse_skill_detail(&body, "tencent-adm", "tencent-docs").unwrap_err(),
-            MarketSkillInstallError::NotFound
+            MarketSkillInstallError::PublisherUnavailable
         );
         // Slug mismatch → NotFound.
         assert_eq!(
@@ -1890,7 +1930,8 @@ mod tests {
         assert_eq!(fixture.requests.lock().unwrap().len(), 1);
         fixture.server.await.unwrap();
 
-        // Detail resolves to a different namespace → NotFound.
+        // Detail resolves to a different namespace → PublisherUnavailable.
+        // The slug exists, but its archive belongs to another publisher.
         let fixture = spawn_recorded_fixture(vec![stub(
             "200 OK",
             "application/json",
@@ -1902,7 +1943,7 @@ mod tests {
             .download(&skillhub_target("owner", "demo"))
             .await
             .unwrap_err();
-        assert_eq!(error, MarketSkillInstallError::NotFound);
+        assert_eq!(error, MarketSkillInstallError::PublisherUnavailable);
         fixture.server.await.unwrap();
     }
 

@@ -9,8 +9,17 @@ import { describe, expect, test } from 'bun:test';
 
 const stylesheet = readFileSync(new URL('./chat-layout.css', import.meta.url), 'utf8');
 const componentSource = readFileSync(new URL('./WorkspaceToolRail.tsx', import.meta.url), 'utf8');
+const chatLayoutSource = readFileSync(new URL('./index.tsx', import.meta.url), 'utf8');
+const terminalSessionPageSource = readFileSync(
+  new URL('../../../terminal/TerminalSessionPage.tsx', import.meta.url),
+  'utf8',
+);
+const workspaceEventsSource = readFileSync(
+  new URL('../../../../utils/workspace/workspaceEvents.ts', import.meta.url),
+  'utf8',
+);
 const workspaceRailBodySource = readFileSync(new URL('../../Workspace/WorkspaceRailBody.tsx', import.meta.url), 'utf8');
-const workspaceEventsSource = readFileSync(new URL('../../Workspace/hooks/useWorkspaceEvents.ts', import.meta.url), 'utf8');
+const workspaceEventsHookSource = readFileSync(new URL('../../Workspace/hooks/useWorkspaceEvents.ts', import.meta.url), 'utf8');
 
 const rule = (selector: string) => {
   const match = stylesheet.match(new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm'));
@@ -31,7 +40,7 @@ describe('workspace tool rail dimensions', () => {
 
   test('refreshes the change count from the existing agent workspace refresh signal', () => {
     expect(workspaceRailBodySource.includes('refreshChanges: fileChangesHook.refreshChanges,')).toBe(true);
-    expect(workspaceEventsSource.includes('refreshChangesRef.current();')).toBe(true);
+    expect(workspaceEventsHookSource.includes('refreshChangesRef.current();')).toBe(true);
   });
 
   test('uses compact square desktop controls', () => {
@@ -89,5 +98,49 @@ describe('workspace tool rail dimensions', () => {
     expect(tooltip.includes('font-size: 11px;')).toBe(true);
     expect(tooltip.includes('line-height: 16px;')).toBe(true);
     expect(tooltip.includes('padding: 3px 6px;')).toBe(true);
+  });
+});
+
+/**
+ * Structural coverage only: bun cannot mount the full conversation/terminal
+ * pages here, so these assertions verify both surfaces subscribe through the
+ * typed entry point and keep the existing `files` selection behavior.
+ */
+describe('workspace titlebar toggle subscription wiring', () => {
+  test('subscribes the conversation surface and keeps the files selection', () => {
+    expect(chatLayoutSource).toContain(
+      "import { subscribeWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';",
+    );
+    expect(chatLayoutSource).toContain('subscribeWorkspaceToggleEvent(workspaceTarget, () => {');
+    expect(chatLayoutSource).toContain("selectWorkspaceTool('files');");
+    expect(chatLayoutSource).toContain(
+      'if (typeof window === \'undefined\' || !workspaceTarget || !workspaceEnabled) return undefined;',
+    );
+    expect(chatLayoutSource).toContain(
+      '}, [selectWorkspaceTool, workspaceEnabled, workspaceTarget]);',
+    );
+    expect(chatLayoutSource.includes('WORKSPACE_TOGGLE_EVENT')).toBe(false);
+    expect(chatLayoutSource.includes('nomifun-workspace-toggle')).toBe(false);
+  });
+
+  test('subscribes the terminal surface and keeps the files selection', () => {
+    expect(terminalSessionPageSource).toContain(
+      "import { subscribeWorkspaceToggleEvent } from '@/renderer/utils/workspace/workspaceEvents';",
+    );
+    expect(terminalSessionPageSource).toContain('subscribeWorkspaceToggleEvent(workspaceTarget, () => {');
+    expect(terminalSessionPageSource).toContain("selectWorkspaceTool('files');");
+    expect(terminalSessionPageSource).toContain("if (typeof window === 'undefined') return undefined;");
+    expect(terminalSessionPageSource).toContain('}, [selectWorkspaceTool, workspaceTarget]);');
+    expect(terminalSessionPageSource.includes('WORKSPACE_TOGGLE_EVENT')).toBe(false);
+    expect(terminalSessionPageSource.includes('nomifun-workspace-toggle')).toBe(false);
+  });
+
+  test('keeps the has-files event unchanged on its own custom event path', () => {
+    expect(workspaceEventsSource).toContain(
+      "export const WORKSPACE_HAS_FILES_EVENT = 'nomifun-workspace-has-files';",
+    );
+    expect(workspaceEventsSource).toContain('window.dispatchEvent(');
+    expect(workspaceEventsSource.includes('WORKSPACE_TOGGLE_EVENT')).toBe(false);
+    expect(workspaceEventsSource).toContain("emitter.emit('workspace.toggle', { target });");
   });
 });
