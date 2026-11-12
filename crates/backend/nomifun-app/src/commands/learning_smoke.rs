@@ -2000,7 +2000,7 @@ async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         .execute(&wiring.pool)
         .await?;
     let due = service
-        .due_reviews(&owner, 10, &[], true, false, &[])
+        .due_reviews(&owner, 10, &[], true, false, &[], &[])
         .await?;
     anyhow::ensure!(due.len() == 1, "expected exactly one seeded card");
     let card = due[0].id.clone();
