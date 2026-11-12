@@ -1,5 +1,5 @@
 
-import type { ConversationId, MessageId } from '@/common/types/ids';
+import type { ConversationId, MessageId, SessionTarget } from '@/common/types/ids';
 
 import EventEmitter from 'eventemitter3';
 import type { DependencyList } from 'react';
@@ -98,6 +98,7 @@ interface EventTypes {
   'composer.focus': void;
   'app.shortcuts.open': void;
   'app.update.open': [{ source?: string }];
+  'workspace.toggle': [{ target: SessionTarget }];
   'staroffice.install.request': [{ conversation_id: ConversationId; text: string; detectedUrl?: string | null }];
   'staroffice.install.finished': [{ conversation_id: ConversationId }];
   // goal 状态刷新事件：/goal 操作后由 useGoalCommand 发出（携带新快照），GoalStatusNotice 消费
