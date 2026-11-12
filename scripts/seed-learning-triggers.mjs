@@ -406,11 +406,26 @@ function main() {
     );
 
     // ---- settlement history: node-completed, 2 per day, days 4..7 ago -----
+    // Real-flow coherence (v2): a node-completed settlement implies the lesson
+    // progress row reached 'completed' (progress.rs settles from completion),
+    // so fabricate the matching learning_lesson_progress rows too — otherwise
+    // the UI shows 未开始 lessons with a settled ledger (an unreachable state).
     const xpDays = []; // { ts, xp } per day for the checkin rows
     lessonIds.forEach((lessonId, index) => {
       const daysAgo = 4 + Math.floor(index / 2); // 8 nodes → 4 days × 2 nodes
       const ts = localMoment(daysAgo, 10, 5 + (index % 2) * 95 + index * 7);
       const earned = NODE_EST_MINUTES + XP_FULL_BONUS; // settle_node(full): est + bonus
+      db.run(
+        'INSERT INTO learning_lesson_progress \
+         (enrollment_id, lesson_id, status, started_at, completed_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?)',
+        enrollmentId,
+        lessonId,
+        'completed',
+        ts - NODE_EST_MINUTES * MIN_MS,
+        ts,
+        now,
+      );
       db.run(
         'INSERT INTO learning_xp_events \
          (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
@@ -542,7 +557,10 @@ function cleanupFresh(db, userId, courseId) {
     DAILY_XP_GOAL_DEFAULT,
     (NODE_EST_MINUTES + XP_FULL_BONUS) * 2,
   );
-  if (enrollmentIds.length) db.run(`DELETE FROM learning_enrollments WHERE enrollment_id IN (${enrollmentIds.map(() => '?').join(',')})`, ...enrollmentIds);
+  if (enrollmentIds.length) {
+    db.run(`DELETE FROM learning_lesson_progress WHERE enrollment_id IN (${enrollmentIds.map(() => '?').join(',')})`, ...enrollmentIds);
+    db.run(`DELETE FROM learning_enrollments WHERE enrollment_id IN (${enrollmentIds.map(() => '?').join(',')})`, ...enrollmentIds);
+  }
   if (lessonIds.length) {
     db.run(`DELETE FROM learning_activities WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`, ...lessonIds);
     db.run(`DELETE FROM learning_lessons WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`, ...lessonIds);
