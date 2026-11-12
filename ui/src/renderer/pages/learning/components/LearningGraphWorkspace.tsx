@@ -838,6 +838,29 @@ const LearningGraphWorkspace: React.FC<{
         )}
       </div>
 
+      {/* 知识检测入口（u10 R5，自 u6 学习 Tab 两栏区之后上移）：页签头部
+          区——知识结构/生长控制条（含软闸建议条）之下、Tabs 之上，自然流
+          位置恒可见、不随两栏区内容滚动没入。QuizEntryCard 自带 N/K 读数
+          与开测按钮（quiz* 既有词条）；回向语境句原样随迁——图工作区推荐
+          = 前向学新，检测 = 回向考已结算节点，方向由文案点破。存在性语义
+          原样随迁：归档课程不渲染也不拉读数（与 CourseWorkspace 挂点同
+          存在性语义）；零节点臂（声明窗分支）同样不渲染——原挂点即在学习
+          Tab 非零节点分支内，上移后显式补 !zeroNodes 保持等价。头部区是
+          Tabs 之上的自然流：shrink-0 保证极矮视口下压缩的是 Tabs 的 flex-1
+          内容区（各 Pane 自管滚动，d1 高链不变），入口本体不被挤压变形。 */}
+      {!zeroNodes && detail.course.enabled && (
+        <section className='flex shrink-0 flex-col gap-4px'>
+          <Text type='secondary' className='text-12px'>
+            {t('learning.quizGraphEntryContext')}
+          </Text>
+          <QuizEntryCard
+            courseId={detail.course.id}
+            refreshToken={quizProgressToken}
+            onStartQuiz={onStartQuiz}
+          />
+        </section>
+      )}
+
       {/* 内容区确定高链（d1，二轮修正）：arco 默认 .arco-tabs-content
           overflow:hidden + content-inner 高度 auto + content-item-active
           height:auto——超高内容被静默裁掉且全链无滚动条。三层都要钉高：
@@ -867,10 +890,9 @@ const LearningGraphWorkspace: React.FC<{
               onStart={() => void grow()}
             />
           ) : (
-          /* 学习视图主列（u6）：两栏区 flex-1 自管滚动，知识检测入口固定
-             在就绪集推荐区之后（Q2 裁决）——推荐轴（前向，未学节点）与
-             检测轴（回向，已结算节点）并存但方向有别，入口常驻视口底缘
-             不随推荐列表/正文滚动没入。 */
+          /* 学习视图主列（u6）：两栏区 flex-1 自管滚动。知识检测入口已于
+             u10 R5 上移页签头部区（本 TabPane 之外、Tabs 之前）——两栏区
+             滚动语义不变（h-full min-h-0 + 内部各自滚）。 */
           <div className='flex h-full min-h-0 flex-col gap-10px'>
             <div className='flex min-h-0 flex-1 gap-12px'>
             <aside className='flex max-h-full w-280px shrink-0 flex-col gap-10px overflow-y-auto'>
@@ -996,25 +1018,6 @@ const LearningGraphWorkspace: React.FC<{
               )}
             </section>
             </div>
-            {/* 知识检测入口（u6，Q2 裁决）：就绪集推荐区之后。QuizEntryCard
-                自带 N/K 读数与开测按钮（quiz* 既有词条）；这里只补一条回向
-                语境句——图工作区推荐 = 前向学新，检测 = 回向考已结算节点，
-                两者并存时方向由文案点破。归档课程不渲染也不拉读数（与
-                CourseWorkspace 挂点同存在性语义）。shrink-0（u6 修复）：
-                「视口底缘常驻」意图的收尾——极矮视口下外层 flex-col 压缩
-                flex 子项时入口不被挤压变形。 */}
-            {detail.course.enabled && (
-              <section className='flex shrink-0 flex-col gap-4px'>
-                <Text type='secondary' className='text-12px'>
-                  {t('learning.quizGraphEntryContext')}
-                </Text>
-                <QuizEntryCard
-                  courseId={detail.course.id}
-                  refreshToken={quizProgressToken}
-                  onStartQuiz={onStartQuiz}
-                />
-              </section>
-            )}
           </div>
           )}
         </Tabs.TabPane>

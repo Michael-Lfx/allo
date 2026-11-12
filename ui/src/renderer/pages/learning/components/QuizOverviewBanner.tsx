@@ -22,8 +22,10 @@ const ROW_CLASS =
   'flex w-full cursor-pointer flex-wrap items-center justify-between gap-12px rounded-10px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-12px transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_50%,var(--color-border-2))] hover:bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]';
 
 /** 检测感知横幅（u7，grill 裁决 Q3 第一步）：学习首页的跨课程检测聚合——
- * 每行课程名 + N/K 读数 + due 标记，点行直达该课程工作区（传统/图课程
- * 各自工作区的检测入口可见；图分支入口由 u6 并行落地，本票只管跳路由）。
+ * 每行课程名 + N/K 读数 + due 标记。点行 = 直开该课程检测会话（u10 R2：
+ * index.tsx 置 quizSessionCourseId + 跳课程页，QuizSession 经既有
+ * renderQuizSession 在工作区上立即挂载；409 竞态由 QuizSession 既有
+ * onConflict 通道兜，本组件零新逻辑）。
  *
  * 渲染策略与 ReviewBanner **刻意不同**：复习每天天然有货（队列空也保留
  * 常驻入口），检测是稀事件——有 due 课程才渲染，无 due 整块缺席（不渲染
@@ -33,7 +35,7 @@ const ROW_CLASS =
  *
  * 数据面（读数非门禁）：进页挂载拉一次（learningApi.quizOverview，后端已
  * 按 due 优先、课程名次之排好序，前端不再重排）；组件自拉（QuizEntryCard
- * 同款，index.tsx 只接 navigate），并发重拉 last-wins 序号防陈旧回写。
+ * 同款，index.tsx 接置位 + navigate），并发重拉 last-wins 序号防陈旧回写。
  * N/K 读数复用 quizProgressReading 词典键（与课程页入口同文案）。 */
 export function QuizOverviewBanner({
   onOpenCourse,
