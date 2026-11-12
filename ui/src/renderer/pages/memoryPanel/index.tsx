@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriWindows } from '@/common/adapter/tauriWindows';
 import { injectCompanionCustomCss } from '@/renderer/utils/theme/applyCustomCss';
 import {
   MEMORY_PANEL_EVENTS,
@@ -108,15 +109,13 @@ const MemoryPanelPage: React.FC = () => {
         setPhase('open');
         phaseRef.current = 'open';
         requestAnimationFrame(() => {
-          void import('@tauri-apps/api/window').then(({ getCurrentWindow }) =>
-            getCurrentWindow().isFocused().then((focused) => {
-              if (!focused && !activationPendingRef.current) {
-                void finishClose({ requestId: payload.requestId, reason: 'blur' });
-                return;
-              }
-              if (focused) firstItemRef.current?.focus({ preventScroll: true });
-            })
-          );
+          void tauriWindows.current().isFocused().then((focused) => {
+            if (!focused && !activationPendingRef.current) {
+              void finishClose({ requestId: payload.requestId, reason: 'blur' });
+              return;
+            }
+            if (focused) firstItemRef.current?.focus({ preventScroll: true });
+          });
         });
       }),
       listenCurrentWindow<MemoryPanelClosePayload>(MEMORY_PANEL_EVENTS.close, (payload) => void finishClose(payload)),
@@ -127,22 +126,20 @@ const MemoryPanelPage: React.FC = () => {
           void finishClose({ requestId: payload.requestId, reason: 'activation' });
           return;
         }
-        void import('@tauri-apps/api/window').then(({ getCurrentWindow }) =>
-          getCurrentWindow().isFocused().then((focused) => {
-            if (!focused && snapshotRef.current?.requestId === payload.requestId && phaseRef.current === 'open') {
-              void finishClose({ requestId: payload.requestId, reason: 'blur' });
-            }
-          })
-        );
+        void tauriWindows.current().isFocused().then((focused) => {
+          if (!focused && snapshotRef.current?.requestId === payload.requestId && phaseRef.current === 'open') {
+            void finishClose({ requestId: payload.requestId, reason: 'blur' });
+          }
+        });
       }),
     ]).then((items) => disposed ? items.forEach((unlisten) => unlisten()) : unlisteners.push(...items));
 
     let unlistenFocus: (() => void) | undefined;
-    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    void tauriWindows.current().onFocusChanged((focused) => {
       if (focused || phaseRef.current !== 'open' || activationPendingRef.current) return;
       const current = snapshotRef.current;
       if (current) void finishClose({ requestId: current.requestId, reason: 'blur' });
-    })).then((unlisten) => { if (disposed) unlisten(); else unlistenFocus = unlisten; });
+    }).then((unlisten) => { if (disposed) unlisten(); else unlistenFocus = unlisten; });
     return () => {
       disposed = true;
       unlisteners.forEach((unlisten) => unlisten());

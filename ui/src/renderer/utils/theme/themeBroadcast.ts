@@ -2,6 +2,7 @@
 
 import type { Theme } from '@renderer/hooks/system/useTheme';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriEvents } from '@/common/adapter/tauriEvents';
 
 /**
  * Cross-window light/dark theme sync.
@@ -30,8 +31,7 @@ export interface ThemeSyncPayload {
 /** Broadcast a light/dark theme change to every window (incl. the companion). */
 export function broadcastThemeSync(theme: Theme): void {
   if (!isTauriRuntime()) return;
-  void import('@tauri-apps/api/event')
-    .then(({ emit }) => emit(THEME_SYNC_EVENT, { theme } satisfies ThemeSyncPayload))
+  void tauriEvents.emit(THEME_SYNC_EVENT, { theme } satisfies ThemeSyncPayload)
     .catch(() => {
       /* best-effort; a missed broadcast just means the other window updates on next reload */
     });
@@ -45,8 +45,7 @@ export function broadcastThemeSync(theme: Theme): void {
  */
 export function broadcastCustomCssSync(customCss: string): void {
   if (!isTauriRuntime()) return;
-  void import('@tauri-apps/api/event')
-    .then(({ emit }) => emit(THEME_SYNC_EVENT, { customCss } satisfies ThemeSyncPayload))
+  void tauriEvents.emit(THEME_SYNC_EVENT, { customCss } satisfies ThemeSyncPayload)
     .catch(() => {
       /* best-effort; the companion re-reads customCss from config on its next load */
     });
@@ -55,8 +54,7 @@ export function broadcastCustomCssSync(customCss: string): void {
 /** Broadcast wallpaper tokens (not bytes) so the companion can plate chrome. */
 export function broadcastWallpaperSync(payload: Pick<ThemeSyncPayload, 'wallpaperTokens' | 'wallpaperEnabled'>): void {
   if (!isTauriRuntime()) return;
-  void import('@tauri-apps/api/event')
-    .then(({ emit }) => emit(THEME_SYNC_EVENT, payload satisfies ThemeSyncPayload))
+  void tauriEvents.emit(THEME_SYNC_EVENT, payload satisfies ThemeSyncPayload)
     .catch(() => {
       /* best-effort */
     });

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriWindows } from '@/common/adapter/tauriWindows';
 import { CompanionClickThroughController } from './companionClickThroughController';
 import { isPointOverCompanionHitTarget } from './companionHitTarget';
 import { getCompanionLocalPointer } from './companionLocalPointer';
@@ -86,8 +87,8 @@ export function useCompanionClickThrough(opts: CompanionClickThroughOptions): vo
 
       const reset = resetNativeCapture
         ? resetNativeCapture()
-        : import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
-            if (activeOwnerId === ownerId) await getCurrentWindow().setIgnoreCursorEvents(false);
+        : Promise.resolve().then(async () => {
+            if (activeOwnerId === ownerId) await tauriWindows.current().setIgnoreCursorEvents(false);
           });
       void reset.catch(warnOnce);
     };
@@ -121,8 +122,7 @@ export function useCompanionClickThrough(opts: CompanionClickThroughOptions): vo
     };
 
     void (async () => {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const win = getCurrentWindow();
+      const win = tauriWindows.current();
       resetNativeCapture = async () => {
         if (activeOwnerId === ownerId) await win.setIgnoreCursorEvents(false);
       };

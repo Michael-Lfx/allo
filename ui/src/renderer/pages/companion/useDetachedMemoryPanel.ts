@@ -3,6 +3,7 @@ import type React from 'react';
 import type { ICompanionSuggestion } from '@/common/adapter/ipcBridge';
 import type { CompanionId } from '@/common/types/ids';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriWindows } from '@/common/adapter/tauriWindows';
 import { configService } from '@/common/config/configService';
 import { chooseDetachedMemoryPanelLayout, type DetachedMonitor } from './detachedMemoryPanelGeometry';
 import {
@@ -80,8 +81,7 @@ export function useDetachedMemoryPanel(options: {
     const requestId = nextMemoryPanelRequestId(options.companionId);
     transition({ type: 'begin', requestId, ownerCompanionId: options.companionId });
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      ownerWindowLabelRef.current = getCurrentWindow().label;
+      ownerWindowLabelRef.current = tauriWindows.current().label;
       await prepareMemoryPanelWindow();
       let attempts = 0;
       const sendProbe = () => {
@@ -132,9 +132,8 @@ export function useDetachedMemoryPanel(options: {
         const ownerCompanionId = current.ownerCompanionId;
         transition({ type: 'opening', requestId: payload.requestId });
         void (async () => {
-          const { availableMonitors, getCurrentWindow } = await import('@tauri-apps/api/window');
-          const win = getCurrentWindow();
-          const [position, size, monitors] = await Promise.all([win.outerPosition(), win.outerSize(), availableMonitors()]);
+          const win = tauriWindows.current();
+          const [position, size, monitors] = await Promise.all([win.outerPosition(), win.outerSize(), tauriWindows.monitors()]);
           if (stateRef.current.requestId !== payload.requestId || stateRef.current.phase !== 'opening') return;
           const mapped: DetachedMonitor[] = monitors.map((monitor) => ({ id: `${monitor.name ?? 'monitor'}:${monitor.position.x}:${monitor.position.y}:${monitor.scaleFactor}`, bounds: { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height }, workArea: { x: monitor.workArea.position.x, y: monitor.workArea.position.y, width: monitor.workArea.size.width, height: monitor.workArea.size.height }, scaleFactor: monitor.scaleFactor }));
           const layout = chooseDetachedMemoryPanelLayout({ anchor: { x: position.x, y: position.y, width: size.width, height: size.height }, monitors: mapped, logicalPanel: { width: payload.width, height: payload.height } });
@@ -215,9 +214,9 @@ export function useDetachedMemoryPanel(options: {
     const closeForGeometryChange = () => {
       if (shouldCloseMemoryPanelForOwnerGeometryChange(stateRef.current.phase)) close('owner-invalid');
     };
-    void import('@tauri-apps/api/window')
-      .then(({ getCurrentWindow }) => {
-        const win = getCurrentWindow();
+    void Promise.resolve()
+      .then(() => {
+        const win = tauriWindows.current();
         return Promise.all([
           win.onMoved(closeForGeometryChange),
           win.onResized(closeForGeometryChange),

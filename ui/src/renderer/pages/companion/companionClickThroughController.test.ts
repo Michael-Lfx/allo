@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { CompanionClickThroughController } from './companionClickThroughController';
+import { tauriWindows } from '@/common/adapter/tauriWindows';
 import type { CompanionLocalPointerSample } from './companionLocalPointer';
 
 const point = (xRatio: number, yRatio: number): CompanionLocalPointerSample => ({
@@ -59,6 +60,54 @@ function makeController(opts: {
 }
 
 describe('companion click-through controller', () => {
+  test('native adapter capture failures enter recovery and retry instead of caching success', async () => {
+    const originalWindow = globalThis.window;
+    const failure = new Error('capture temporarily unavailable');
+    const writes: boolean[] = [];
+    const errors: unknown[] = [];
+    let nativeIgnore = false;
+    let failCapture = false;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __TAURI_INTERNALS__: {
+        metadata: { currentWindow: { label: 'companion-1' } },
+        invoke: async (command: string, args: { value: boolean }) => {
+          if (command !== 'plugin:window|set_ignore_cursor_events') throw new Error(command);
+          writes.push(args.value);
+          if (!args.value && failCapture) throw failure;
+          nativeIgnore = args.value;
+        },
+      } },
+    });
+    const window = tauriWindows.current();
+    const controller = makeController({
+      ignored: [], errors,
+      sample: async () => point(2, 2),
+      setIgnore: (ignore) => window.setIgnoreCursorEvents(ignore),
+    });
+
+    try {
+      await controller.initialize();
+      await controller.tick({ captureAll: false, dragging: false });
+      expect(nativeIgnore).toBe(true);
+      failCapture = true;
+      expect(await controller.tick({ captureAll: true, dragging: false })).toBe('recover');
+      expect(errors).toContain(failure);
+      expect(nativeIgnore).toBe(true);
+
+      failCapture = false;
+      const attempts = writes.length;
+      await controller.tick({ captureAll: true, dragging: false });
+      expect(writes.length).toBeGreaterThan(attempts);
+      expect(nativeIgnore).toBe(false);
+    } finally {
+      failCapture = false;
+      await controller.dispose();
+      if (originalWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+    }
+  });
+
   test('captures before sampling and flips only after a valid hit decision', async () => {
     const ignored: boolean[] = [];
     const controller = makeController({

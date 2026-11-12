@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { tauriEvents } from '@/common/adapter/tauriEvents';
 import './meetingCaptions.css';
 
 type MeetingCaptionsPayload = {
@@ -26,10 +27,8 @@ const MeetingCaptionsPage: React.FC = () => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
-      const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<MeetingCaptionsPayload>('meeting-captions://update', (event) => {
+      unlisten = await tauriEvents.listen<MeetingCaptionsPayload>('meeting-captions://update', (payload) => {
         if (disposed) return;
-        const payload = event.payload;
         if (!payload.visible || !payload.text.trim()) {
           setLine(null);
           return;

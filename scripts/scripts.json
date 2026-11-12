@@ -33,6 +33,10 @@
       "group": "check",
       "desc": "Enforce the single BrowserSessionHub ownership boundary and reject private browser launch paths."
     },
+    "check:tauri-renderer-boundary": {
+      "group": "check",
+      "desc": "Reject direct @tauri-apps imports outside ui/src/common/adapter in renderer and common code."
+    },
     "check:agent-vocabulary": {
       "group": "check",
       "desc": "[Deprecated] Retired gate for legacy agent vocabulary."

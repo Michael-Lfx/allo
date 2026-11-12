@@ -6,6 +6,7 @@ import {
   type DockSide,
   type GeomRect,
 } from './windowGeometry';
+import { tauriWindows } from '@/common/adapter/tauriWindows';
 
 /** Minimal Tauri monitor shape used for work-area clamping. */
 export interface TauriMonitorLike {
@@ -39,8 +40,7 @@ export function workAreasFromMonitors(monitors: TauriMonitorLike[]): GeomRect[] 
 }
 
 export async function loadCompanionWorkAreas(): Promise<GeomRect[]> {
-  const { availableMonitors } = await import('@tauri-apps/api/window');
-  return workAreasFromMonitors(await availableMonitors());
+  return workAreasFromMonitors(await tauriWindows.monitors());
 }
 
 /** Fully inside one connected work area — the rest pose for restore / persist. */
@@ -67,8 +67,7 @@ export function getCurrentDockedSide(): DockSide | null {
 }
 
 export async function snapCompanionWindow(opts?: { force?: boolean }): Promise<{ x: number; y: number } | null> {
-  const { getCurrentWindow, PhysicalPosition } = await import('@tauri-apps/api/window');
-  const win = getCurrentWindow();
+  const win = tauriWindows.current();
   const [pos, size, displays] = await Promise.all([win.outerPosition(), win.outerSize(), loadCompanionWorkAreas()]);
   if (displays.length === 0) return { x: pos.x, y: pos.y };
   const rect: GeomRect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
@@ -78,7 +77,7 @@ export async function snapCompanionWindow(opts?: { force?: boolean }): Promise<{
   if (docked) {
     currentDockedSide = docked.side;
     if (docked.x !== pos.x || docked.y !== pos.y) {
-      await win.setPosition(new PhysicalPosition(docked.x, docked.y));
+      await win.setPosition({ x: docked.x, y: docked.y });
     }
     return { x: docked.x, y: docked.y };
   }
@@ -87,7 +86,7 @@ export async function snapCompanionWindow(opts?: { force?: boolean }): Promise<{
   if (!opts?.force && isReachableOnDisplays(rect, displays)) return { x: pos.x, y: pos.y };
   const next = clampRectToDisplays(rect, displays);
   if (next.x !== pos.x || next.y !== pos.y) {
-    await win.setPosition(new PhysicalPosition(next.x, next.y));
+    await win.setPosition({ x: next.x, y: next.y });
   }
   return next;
 }
@@ -98,15 +97,14 @@ export async function snapCompanionWindow(opts?: { force?: boolean }): Promise<{
 export async function undockCompanionWindow(side?: DockSide): Promise<{ x: number; y: number } | null> {
   const actualSide = side ?? currentDockedSide;
   if (!actualSide) return null;
-  const { getCurrentWindow, PhysicalPosition } = await import('@tauri-apps/api/window');
-  const win = getCurrentWindow();
+  const win = tauriWindows.current();
   const [pos, size, displays] = await Promise.all([win.outerPosition(), win.outerSize(), loadCompanionWorkAreas()]);
   if (displays.length === 0) return { x: pos.x, y: pos.y };
   const rect: GeomRect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
   const next = undockCompanionFromEdge(rect, actualSide, displays);
   currentDockedSide = null;
   if (next.x !== pos.x || next.y !== pos.y) {
-    await win.setPosition(new PhysicalPosition(next.x, next.y));
+    await win.setPosition({ x: next.x, y: next.y });
   }
   return next;
 }
