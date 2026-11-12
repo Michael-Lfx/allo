@@ -52,6 +52,16 @@ interface SiderProps {
   collapsed?: boolean;
 }
 
+const readStoredHistoryTab = (): SiderHistoryTab => {
+  try {
+    const saved = window.localStorage.getItem('flowy.sider.historyTab');
+    if (saved === 'companions' || saved === 'video' || saved === 'workspaces') return saved;
+  } catch {
+    /* ignore */
+  }
+  return 'workspaces';
+};
+
 /**
  * Sider — the app-level primary navigation rail.
  *
@@ -94,18 +104,17 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const activeRoute = useMemo(() => parseSessionRoute(pathname), [pathname]);
   const activeConversationId = activeRoute?.kind === 'conversation' ? activeRoute.id : null;
 
-  const [activeHistoryTab, setActiveHistoryTab] = useState<SiderHistoryTab>(() => {
-    try {
-      const saved = window.localStorage.getItem('flowy.sider.historyTab');
-      if (saved === 'companions' || saved === 'video' || saved === 'workspaces') return saved;
-    } catch {
-      /* ignore */
-    }
-    return 'workspaces';
-  });
+  const [activeHistoryTab, setActiveHistoryTab] = useState<SiderHistoryTab>(readStoredHistoryTab);
+  const [visitedHistoryTabs, setVisitedHistoryTabs] = useState<Set<SiderHistoryTab>>(
+    () => new Set([readStoredHistoryTab()])
+  );
 
   const handleSelectHistoryTab = useCallback((tab: SiderHistoryTab) => {
     setActiveHistoryTab(tab);
+    setVisitedHistoryTabs((visited) => {
+      if (visited.has(tab)) return visited;
+      return new Set(visited).add(tab);
+    });
     try {
       window.localStorage.setItem('flowy.sider.historyTab', tab);
     } catch {
@@ -125,6 +134,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     setActiveHistoryTab((current) => {
       const next = historyTabAfterPathChange(pathname, current);
       if (next === current) return current;
+      setVisitedHistoryTabs((visited) => {
+        if (visited.has(next)) return visited;
+        return new Set(visited).add(next);
+      });
       try {
         window.localStorage.setItem('flowy.sider.historyTab', next);
       } catch {
@@ -423,20 +436,34 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
+    let warmTimer: number | undefined;
+    let cancelled = false;
     const warmIdleRoutes = () => {
-      prefetchLearningPage();
-      prefetchNomiPage();
-      prefetchVideoGenerationHome();
-      prefetchSkillsStore();
+      const warmers = [prefetchLearningPage, prefetchNomiPage, prefetchVideoGenerationHome, prefetchSkillsStore];
+      let index = 0;
+      const runNext = () => {
+        if (cancelled || index >= warmers.length) return;
+        warmers[index++]();
+        if (index < warmers.length) warmTimer = window.setTimeout(runNext, 300);
+      };
+      runNext();
     };
     if (typeof idleWindow.requestIdleCallback === 'function') {
       const idleId = idleWindow.requestIdleCallback(warmIdleRoutes, {
         timeout: 1800,
       });
-      return () => idleWindow.cancelIdleCallback?.(idleId);
+      return () => {
+        cancelled = true;
+        if (warmTimer !== undefined) window.clearTimeout(warmTimer);
+        idleWindow.cancelIdleCallback?.(idleId);
+      };
     }
     const timer = window.setTimeout(warmIdleRoutes, 250);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      if (warmTimer !== undefined) window.clearTimeout(warmTimer);
+    };
   }, [isSettings]);
 
   const handleEvalClick = () => {
@@ -770,45 +797,51 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 data-testid='sider-workspaces-scroll-area'
                 className={`${styles.scrollArea} flex-1 min-h-0 overflow-y-auto overflow-x-hidden pt-0 pb-8px`}
               >
-                <div hidden={activeHistoryTab !== 'workspaces'}>
-                  <WorkpathSessionList
-                    collapsed={false}
-                    tooltipEnabled={false}
-                    batchMode={batchMode}
-                    displayPreferences={compactDisplayPreferences}
-                    onBatchModeChange={setBatchMode}
-                    workspaceActionsTarget={workspaceActionsTarget}
-                    embeddedInPrimarySider
-                    hideCompanionGroup={true}
-                  />
-                </div>
-                <div hidden={activeHistoryTab !== 'companions'} className='px-4px py-2px'>
-                  <CompanionSessionGroup
-                    activeConversationId={activeConversationId}
-                    onSessionClick={onSessionClick}
-                    expanded={true}
-                    hideHeader={true}
-                  />
-                </div>
-                <div hidden={activeHistoryTab !== 'video'} className='px-4px py-2px'>
-                  <SiderVideoGenerationGroup
-                    isMobile={isMobile}
-                    moduleActive={pathname.startsWith('/video-generation')}
-                    activeSessionId={activeVideoGenerationSessionId}
-                    activeClipTaskId={activeClipTaskId}
-                    activeCanvasProjectId={activeCanvasProjectId}
-                    activeBriefingId={activeBriefingId}
-                    collapsed={false}
-                    dock={false}
-                    flat={true}
-                    siderTooltipProps={siderTooltipProps}
-                    onEnterHome={handleVideoGenerationHome}
-                    onOpenProject={handleOpenRecentVideoGeneration}
-                    onOpenClipTask={handleOpenRecentClipTask}
-                    onOpenCanvasProject={handleOpenRecentCanvasProject}
-                    onOpenBriefing={handleOpenRecentBriefing}
-                  />
-                </div>
+                {visitedHistoryTabs.has('workspaces') && (
+                  <div hidden={activeHistoryTab !== 'workspaces'}>
+                    <WorkpathSessionList
+                      collapsed={false}
+                      tooltipEnabled={false}
+                      batchMode={batchMode}
+                      displayPreferences={compactDisplayPreferences}
+                      onBatchModeChange={setBatchMode}
+                      workspaceActionsTarget={workspaceActionsTarget}
+                      embeddedInPrimarySider
+                      hideCompanionGroup={true}
+                    />
+                  </div>
+                )}
+                {visitedHistoryTabs.has('companions') && (
+                  <div hidden={activeHistoryTab !== 'companions'} className='px-4px py-2px'>
+                    <CompanionSessionGroup
+                      activeConversationId={activeConversationId}
+                      onSessionClick={onSessionClick}
+                      expanded={true}
+                      hideHeader={true}
+                    />
+                  </div>
+                )}
+                {visitedHistoryTabs.has('video') && (
+                  <div hidden={activeHistoryTab !== 'video'} className='px-4px py-2px'>
+                    <SiderVideoGenerationGroup
+                      isMobile={isMobile}
+                      moduleActive={pathname.startsWith('/video-generation')}
+                      activeSessionId={activeVideoGenerationSessionId}
+                      activeClipTaskId={activeClipTaskId}
+                      activeCanvasProjectId={activeCanvasProjectId}
+                      activeBriefingId={activeBriefingId}
+                      collapsed={false}
+                      dock={false}
+                      flat={true}
+                      siderTooltipProps={siderTooltipProps}
+                      onEnterHome={handleVideoGenerationHome}
+                      onOpenProject={handleOpenRecentVideoGeneration}
+                      onOpenClipTask={handleOpenRecentClipTask}
+                      onOpenCanvasProject={handleOpenRecentCanvasProject}
+                      onOpenBriefing={handleOpenRecentBriefing}
+                    />
+                  </div>
+                )}
               </div>
             </section>
           )}
