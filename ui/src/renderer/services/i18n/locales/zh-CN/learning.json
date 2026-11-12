@@ -456,6 +456,7 @@
   "learningGraphGrowing": "生长中…",
   "learningGraphAutoPreparing": "自动准备中…",
   "learningGraphBlockedAdvice": "「{{title}}」已就绪，但它依赖的「{{supplier}}」近期答错较多——建议先复习「{{supplier}}」的 {{due}} 道到期题（预测回忆 {{percent}}%）再回来。",
+  "learningGraphBlockedGoSupplier": "去复习供给节点",
   "learningGraphBatchPending": "生长中",
   "learningGraphBatchFailed": "生长失败（可手动补充重试）",
   "learningGraphBatchCancelled": "已取消",

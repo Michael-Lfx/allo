@@ -170,6 +170,20 @@ const LearningGraphWorkspace: React.FC<{
     [lessonsById, selectedLessonId, primaryReadyId]
   );
 
+  // 任意节点进入学习视图（u8）：软闸建议条「去复习供给节点」与学习记录页签
+  // 节点行共用的同一条路径——主推荐卡「点击即进内容」的选中机制原样复用。
+  // 选中不限就绪集：lessonsById 覆盖全部节点，被挡/已完成节点照常渲染正文
+  // （CONTEXT.md 软闸词条「学习者仍可从历史记录进入任何节点」）；不在本课的
+  // id（跨课程供给）no-op，不做假跳转。
+  const openNode = useCallback(
+    (lessonId: string) => {
+      if (!lessonsById.has(lessonId)) return;
+      setSelectedLessonId(lessonId);
+      setActiveTab('study');
+    },
+    [lessonsById]
+  );
+
   // ── 知识结构状态（读侧投影 + 生成中/失败态）─────────────────────────────
   const [structure, setStructure] = useState<LearningStructureView | null>(null);
   const [structureError, setStructureError] = useState<string | null>(null);
@@ -743,19 +757,37 @@ const LearningGraphWorkspace: React.FC<{
             {t('learning.learningGraphStructureHint')}
           </Text>
         )}
-        {/* R 软闸建议条：结构就绪但供给节点已遗忘（ADR-0009 Amendment 1） */}
-        {graph.blocked.map((blocked) => (
-          <Alert
-            key={blocked.lesson_id}
-            type='warning'
-            content={t('learning.learningGraphBlockedAdvice', {
-              title: blocked.title,
-              supplier: blocked.supplier_title,
-              percent: Math.round(blocked.r * 100),
-              due: blocked.due_count,
-            })}
-          />
-        ))}
+        {/* R 软闸建议条：结构就绪但供给节点已遗忘（ADR-0009 Amendment 1）。
+            u8 兑现「直达复习」：行动钮选中供给节点进学习视图（正文即补习
+            材料，到期卡自然在复习队列）；供给节点不在本课（跨课程供给，
+            lessonsById 无行）时不出钮——保持纯文字建议，不做假跳转。 */}
+        {graph.blocked.map((blocked) => {
+          const supplier = lessonsById.get(blocked.supplier_lesson_id) ?? null;
+          return (
+            <Alert
+              key={blocked.lesson_id}
+              type='warning'
+              content={t('learning.learningGraphBlockedAdvice', {
+                title: blocked.title,
+                supplier: blocked.supplier_title,
+                percent: Math.round(blocked.r * 100),
+                due: blocked.due_count,
+              })}
+              action={
+                supplier ? (
+                  <Button
+                    size='mini'
+                    type='text'
+                    className='!px-0'
+                    onClick={() => openNode(blocked.supplier_lesson_id)}
+                  >
+                    {t('learning.learningGraphBlockedGoSupplier')}
+                  </Button>
+                ) : undefined
+              }
+            />
+          );
+        })}
       </div>
 
       {/* 内容区确定高链（d1，二轮修正）：arco 默认 .arco-tabs-content
@@ -937,7 +969,11 @@ const LearningGraphWorkspace: React.FC<{
           )}
         </Tabs.TabPane>
         <Tabs.TabPane key='history' title={t('learning.learningGraphTabHistory')}>
-          <GraphHistory courseId={detail.course.id} enrollmentKey={detail.enrollment_id} />
+          <GraphHistory
+            courseId={detail.course.id}
+            enrollmentKey={detail.enrollment_id}
+            onOpenNode={openNode}
+          />
         </Tabs.TabPane>
         <Tabs.TabPane key='concepts' title={t('learning.learningGraphTabConcepts')}>
           <ConceptTable courseId={detail.course.id} />
@@ -963,10 +999,14 @@ const LearningGraphWorkspace: React.FC<{
 };
 
 /** 学习记录：批次时间线（倒序）——生长史即课程史；顶部「系统动作」折叠节
- * 是自主/后台动作的终态留痕（y04：进行中看任务 pill，终态看账本）。 */
-const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }> = ({
-  courseId,
-}) => {
+ * 是自主/后台动作的终态留痕（y04：进行中看任务 pill，终态看账本）。
+ * 节点行可点（u8）：点击经 onOpenNode 进该节点课时——被软闸挡下的节点与
+ * 已完成节点都可进（models.rs 图视图注释「仍可从学习记录进入」的现实面）。 */
+const GraphHistory: React.FC<{
+  courseId: string;
+  enrollmentKey: string | null;
+  onOpenNode: (lessonId: string) => void;
+}> = ({ courseId, onOpenNode }) => {
   const { t } = useTranslation();
   const [batches, setBatches] = useState<GraphBatchView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1041,9 +1081,11 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
               </div>
               <div className='mt-8px flex flex-col'>
                 {batch.nodes.map((node) => (
-                  <div
+                  <button
                     key={node.lesson_id}
-                    className='flex items-center justify-between gap-8px rd-6px px-6px py-6px hover:bg-[var(--color-fill-1)]'
+                    type='button'
+                    onClick={() => onOpenNode(node.lesson_id)}
+                    className='flex w-full cursor-pointer items-center justify-between gap-8px border-none bg-transparent text-left font-inherit rd-6px px-6px py-6px hover:bg-[var(--color-fill-1)]'
                   >
                     <span className='min-w-0 truncate text-13px text-[var(--color-text-1)]'>
                       {node.title}
@@ -1061,7 +1103,7 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
                         <span>{new Date(node.completed_at).toLocaleDateString()}</span>
                       ) : null}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
