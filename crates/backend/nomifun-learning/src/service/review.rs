@@ -14,6 +14,13 @@ impl LearningService {
     /// `course_ids` list it restricts the queue to those questions only.
     /// `tags` keeps only items whose question itself carries at least one of
     /// the given tag names.
+    ///
+    /// `node_ids` (u9 R2) narrows the queue to the given lesson nodes — the
+    /// scoped weak-node review session fetches exactly the supplier set and
+    /// never hands out the whole queue. It implies a course scope (custom
+    /// questions belong to no node and are excluded), while remaining
+    /// course-agnostic on its own so cross-course supplier nodes stay
+    /// reachable (the soft gate ranks suppliers across courses).
     pub async fn due_reviews(
         &self,
         user_id: &UserId,
@@ -22,6 +29,7 @@ impl LearningService {
         due_only: bool,
         orphan: bool,
         tags: &[String],
+        node_ids: &[LearningLessonId],
     ) -> Result<Vec<DueReview>, AppError> {
         let limit = limit.clamp(1, 100);
         let now = now_ms();
@@ -47,15 +55,20 @@ impl LearningService {
              JOIN learning_modules m ON m.module_id = l.module_id \
              WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL";
         // Course reviews: scoped by one or more courses (all queued, or due
-        // only when requested) and/or by tag names attached to the question.
-        // A pure orphan queue skips course reviews entirely.
-        let rows = if orphan && course_ids.is_empty() {
+        // only when requested), by lesson nodes (u9 weak-set sessions), or
+        // by tag names attached to the question. A pure orphan queue skips
+        // course reviews entirely.
+        let rows = if orphan && course_ids.is_empty() && node_ids.is_empty() {
             Vec::new()
         } else {
             let mut sql = String::from(base);
             if !course_ids.is_empty() {
                 let placeholders = vec!["?"; course_ids.len()].join(", ");
                 sql.push_str(&format!(" AND e.course_id IN ({placeholders})"));
+            }
+            if !node_ids.is_empty() {
+                let placeholders = vec!["?"; node_ids.len()].join(", ");
+                sql.push_str(&format!(" AND l.lesson_id IN ({placeholders})"));
             }
             if due_only {
                 sql.push_str(" AND r.due_at <= ?");
@@ -73,6 +86,9 @@ impl LearningService {
             let mut query = sqlx::query(&sql).bind(user_id.as_str());
             for course_id in course_ids {
                 query = query.bind(course_id.as_str());
+            }
+            for node_id in node_ids {
+                query = query.bind(node_id.as_str());
             }
             if due_only {
                 query = query.bind(now);
@@ -139,9 +155,12 @@ impl LearningService {
         }
         // Learner-authored custom questions carry their own schedule and join
         // the same queue without any course context. They are excluded when
-        // specific courses are selected without the orphan flag; the orphan
-        // filter alone or together with courses adds exactly those questions.
-        if orphan || course_ids.is_empty() {
+        // specific courses or nodes are selected without the orphan flag; a
+        // node scope implies exclusion for the same reason — custom questions
+        // belong to no lesson, so they can never match a weak-node set. The
+        // orphan filter alone or together with courses adds exactly those
+        // questions.
+        if (orphan || course_ids.is_empty()) && node_ids.is_empty() {
             let mut sql = String::from(
                 "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
                         q.stability_days, q.difficulty, q.review_count, q.lapse_count, \
