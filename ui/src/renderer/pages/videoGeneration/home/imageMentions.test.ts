@@ -54,6 +54,12 @@ describe('home image mentions', () => {
     expect(appendHomeImageLegend('hello', [])).toBe('hello');
   });
 
+  test('marks a named product upload as an exact asset, not a look reference', () => {
+    expect(appendHomeImageLegend('图1是产品的截图', ['产品截图'])).toBe(
+      '图1是产品的截图\n\n图片对照：图片1 → 产品截图（产品资产，原样入画，不是画风）',
+    );
+  });
+
   test('does not treat plate filenames as extra character names in the legend', () => {
     expect(appendHomeImageLegend('团子出门', ['5种小猫', '猫猫三视图'])).toBe(
       '团子出门\n\n图片对照：图片1、图片2 是用户上传的角色外观参考（可含三视图或服饰变体）。请锁定剧本中已有角色的外观，不要把这些标签当成新角色名。',

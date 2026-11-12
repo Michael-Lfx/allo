@@ -73,11 +73,22 @@ export function appendHomeImageLegend(prompt: string, names: string[]): string {
     .map((name, index) => {
       const label = homeImageLabel(index);
       const trimmed = name.trim();
-      if (!trimmed || isHomeImagePlateLabel(trimmed)) return `${label}＝角色外观参考`;
-      return `${label} → ${trimmed}`;
+    if (!trimmed || isHomeImagePlateLabel(trimmed)) return `${label}＝角色外观参考`;
+    if (isHomeImageProductLabel(trimmed)) {
+      return `${label} → ${trimmed}（产品资产，原样入画，不是画风）`;
+    }
+    return `${label} → ${trimmed}`;
     })
     .join('、');
   return `${materialized}\n\n图片对照：${legend}`;
+}
+
+function isHomeImageProductLabel(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  return /(产品图|产品截图|产品参考|产品素材|产品录屏|产品照|产品画面|界面截图|ui截图|包装|logo|道具图|道具参考|^道具$|^产品$)/i.test(
+    trimmed,
+  );
 }
 
 function isHomeImagePlateLabel(name: string): boolean {

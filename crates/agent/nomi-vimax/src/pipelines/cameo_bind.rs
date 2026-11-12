@@ -7,16 +7,15 @@
 //!
 //! Animal / toy / non-human character refs also keep the original upload.
 //!
-//! World env/prop style locking uses classified environment/prop/style uploads and
-//! text `[CAMEO SCENE LOCK]` hints — not generated people-free atmosphere plates.
+//! World look locking uses classified environment and style uploads plus
+//! text `[CAMEO SCENE LOCK]` hints. Product/prop uploads are asset plates, not look refs.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agents::{
-    heuristic_classification, load_classification_report, ReferenceClassificationReport,
-    ReferenceImageClassifier,
+    resolve_reference_classifications, ReferenceClassificationReport, ReferenceImageClassifier,
 };
 use crate::backends::{VimaxChat, VimaxImage};
 use crate::domain::CharacterInScene;
@@ -72,36 +71,15 @@ pub(crate) async fn classify_session_references(
         .await
 }
 
-/// Resolve classification for hint / world context (cache hit or name heuristics).
+/// Resolve classification for hint / world context.
+///
+/// Re-applies script and label product locks so a cached `style` answer cannot
+/// keep a product screenshot on the look channel.
 fn resolve_classification_report(
     session_root: &Path,
     photos: &[CameoPhotoEntry],
 ) -> ReferenceClassificationReport {
-    let cached = load_classification_report(session_root);
-    if classification_cache_covers(photos, &cached) {
-        return cached;
-    }
-    ReferenceClassificationReport {
-        classifications: photos.iter().map(heuristic_classification).collect(),
-    }
-}
-
-fn classification_cache_covers(
-    photos: &[CameoPhotoEntry],
-    report: &ReferenceClassificationReport,
-) -> bool {
-    if photos.is_empty() {
-        return true;
-    }
-    if report.classifications.len() != photos.len() {
-        return false;
-    }
-    let map = report.by_id();
-    photos.iter().all(|p| {
-        map.get(&p.id)
-            .map(|c| !c.sha256.is_empty() && c.sha256 == p.sha256)
-            .unwrap_or(false)
-    })
+    resolve_reference_classifications(session_root, photos)
 }
 
 /// Hint appended to character-extraction input so LLM locks looks to user plates.
@@ -1467,6 +1445,17 @@ pub(crate) fn cameo_scene_context_hint(session_root: &Path) -> String {
         } else {
             p.description.trim()
         };
+        if c.locked && c.category.is_prop() {
+            let detail = if summary.is_empty() {
+                label.clone()
+            } else {
+                format!("{label}: {summary}")
+            };
+            lines.push(format!(
+                "- User product asset <{detail}>. Show this exact object or interface when the story features it. Do NOT restyle locations to look like this image. Do NOT invent a substitute UI or product."
+            ));
+            continue;
+        }
         let kind = c.category.as_str();
         if summary.is_empty() {
             lines.push(format!(
@@ -1501,10 +1490,12 @@ pub(crate) fn cameo_scene_context_hint(session_root: &Path) -> String {
         return String::new();
     }
     format!(
-        "\n\n[CAMEO SCENE LOCK]\nThe user uploaded reference photos. Environments and props MUST match the \
-visual world implied by these photos (era, location type, lighting mood, materials, color palette). \
-Do NOT invent a conflicting setting. Keep plates empty-set (no people). \
-Do NOT invent props that are portraits, group photos, selfies, or any image-of-people objects:\n{}\n",
+        "\n\n[CAMEO SCENE LOCK]\nStyle and environment references: match their era, location type, \
+lighting mood, materials, and color palette. Do NOT invent a conflicting setting.\n\
+Exact product assets are identity plates for that object only. Do NOT restyle the location to \
+resemble the product image, and do NOT design a different substitute.\n\
+Keep plates empty of people. Do NOT invent props that are portraits, group photos, selfies, \
+or any image-of-people objects:\n{}\n",
         lines.join("\n")
     )
 }
@@ -1529,10 +1520,11 @@ pub(crate) fn cameo_style_lock_token(session_root: &Path) -> String {
     parts.join("|")
 }
 
-/// Collect Cameo style refs + scene hint + lock token for world-asset generation.
+/// Collect look refs + scene hint + lock token for world-asset generation.
 ///
-/// Style refs are user environment/prop/style uploads (already non-cast). Portrait Cameo
-/// is never passed into vacant env/prop img2img.
+/// Look refs are user environment and style uploads. Prop and locked product
+/// photos stay off this list so a UI screenshot cannot restyle the set.
+/// Portrait Cameo is never passed into vacant env/prop img2img.
 pub(crate) fn world_cameo_context(working_dir: &Path) -> (Vec<PathBuf>, String, String) {
     let film_root = resolve_film_root(working_dir);
     let session_root = resolve_session_root(working_dir);
@@ -1541,9 +1533,16 @@ pub(crate) fn world_cameo_context(working_dir: &Path) -> (Vec<PathBuf>, String, 
 
     let mut refs = cameo_style_ref_paths(&film_root, 2);
     const MAX_WORLD_REFS: usize = 4;
-    // Prefer classified environment/style/prop plates under by_category.
+    let blocked_stems: Vec<String> = report
+        .classifications
+        .iter()
+        .filter(|c| c.locked || c.category.is_prop())
+        .map(|c| c.photo_id.chars().take(8).collect())
+        .collect();
     let by_cat = session_root.join(crate::session::cameo::CAMEO_BY_CATEGORY_DIR);
-    for sub in ["environment", "style", "prop"] {
+    // Environment and style copies only. A product file left under style/ from an
+    // older classification is skipped via its photo-id stem.
+    for sub in ["environment", "style"] {
         let dir = by_cat.join(sub);
         if !dir.is_dir() {
             continue;
@@ -1554,13 +1553,27 @@ pub(crate) fn world_cameo_context(working_dir: &Path) -> (Vec<PathBuf>, String, 
                     break;
                 }
                 let p = entry.path();
+                let name = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if blocked_stems
+                    .iter()
+                    .any(|stem| name.contains(&stem.to_ascii_lowercase()))
+                {
+                    continue;
+                }
                 if is_usable_image_file(&p) {
                     refs.push(p);
                 }
             }
         }
     }
-    for (photo, _c) in report.world_photos(&photos) {
+    for (photo, class) in report.world_photos(&photos) {
+        if class.category.is_prop() || class.locked {
+            continue;
+        }
         if refs.len() >= MAX_WORLD_REFS {
             break;
         }
@@ -1968,6 +1981,7 @@ mod tests {
                     summary: "rainy alley street".into(),
                     suggested_label: "alley".into(),
                     heuristic: false,
+                    locked: false,
                 },
                 ReferenceImageClassification {
                     photo_id: style_photo.id.clone(),
@@ -1976,6 +1990,7 @@ mod tests {
                     summary: "warm teal grade".into(),
                     suggested_label: "look".into(),
                     heuristic: false,
+                    locked: false,
                 },
             ],
         };
@@ -2003,6 +2018,51 @@ mod tests {
         assert!(!token.is_empty());
         assert!(token.contains("environment"));
         assert!(token.contains("style"));
+    }
+
+    #[test]
+    fn product_screenshot_is_not_a_look_ref_even_when_cached_as_style() {
+        use crate::agents::{
+            ReferenceClassificationReport, ReferenceImageCategory, ReferenceImageClassification,
+            CLASSIFICATION_CACHE_REL,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path();
+        let film = session.join("script2video");
+        std::fs::create_dir_all(&film).unwrap();
+        std::fs::write(session.join("script.txt"), "图1是产品的截图\n").unwrap();
+        let photo = cameo::upload_photo(session, &jpeg_bytes(), "参考图1", "").unwrap();
+        let report = ReferenceClassificationReport {
+            classifications: vec![ReferenceImageClassification {
+                photo_id: photo.id.clone(),
+                sha256: photo.sha256.clone(),
+                category: ReferenceImageCategory::Style,
+                summary: "software screenshot".into(),
+                suggested_label: "product UI screenshot".into(),
+                heuristic: false,
+                locked: false,
+            }],
+        };
+        let cache_path = session.join(CLASSIFICATION_CACHE_REL);
+        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        std::fs::write(&cache_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+
+        let id8: String = photo.id.chars().take(8).collect();
+        let stale = session
+            .join("references/by_category/style")
+            .join(format!("product_UI_screenshot_{id8}.png"));
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::copy(session.join(&photo.rel_path), &stale).unwrap();
+
+        let (refs, hint, token) = world_cameo_context(&film);
+        assert!(
+            refs.is_empty(),
+            "product screenshot must not style-lock the set: {refs:?}"
+        );
+        assert!(hint.contains("product asset"));
+        assert!(hint.contains("Do NOT restyle"));
+        assert!(token.contains("prop"), "{token}");
     }
 
     #[test]
@@ -2034,6 +2094,7 @@ mod tests {
                     summary: "portrait of Alice".into(),
                     suggested_label: "Alice".into(),
                     heuristic: false,
+                    locked: false,
                 },
                 ReferenceImageClassification {
                     photo_id: street.id.clone(),
@@ -2042,6 +2103,7 @@ mod tests {
                     summary: "night street".into(),
                     suggested_label: "street".into(),
                     heuristic: false,
+                    locked: false,
                 },
             ],
         };
