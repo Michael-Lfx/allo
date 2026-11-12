@@ -32,6 +32,7 @@ import {
   QuizReport,
   quizReportGrade,
   quizReportScore,
+  quizWeakNodeIds,
 } from './QuizSession';
 
 const initTestI18n = async (locale: 'zh-CN' | 'en-US') => {
@@ -213,11 +214,12 @@ const makeReport = (
 
 const renderReport = async (
   report: QuizRoundReport,
-  locale: 'zh-CN' | 'en-US' = 'zh-CN'
+  locale: 'zh-CN' | 'en-US' = 'zh-CN',
+  onStartWeakReview?: (nodeIds: string[]) => void
 ) =>
   renderToStaticMarkup(
     <I18nextProvider i18n={await initTestI18n(locale)}>
-      <QuizReport report={report} onFinish={noop} />
+      <QuizReport report={report} onFinish={noop} onStartWeakReview={onStartWeakReview} />
     </I18nextProvider>
   );
 
@@ -351,5 +353,63 @@ describe('分级阈值钉值（u5 R5：与 settle.rs 单源注释双保险防漂
     expect(quizReportGrade(QUIZ_PASS_RATIO * 10, 10)).toBe('pass');
     expect(quizReportGrade(QUIZ_HALF_RATIO * 10, 10)).toBe('half');
     expect(quizReportGrade(QUIZ_HALF_RATIO * 10 - 1, 10)).toBe('low');
+  });
+});
+
+// ── u9 R3：报告尾部薄弱集 CTA（quizWeakNodeIds 提取 + 渲染在位） ───────────
+
+describe('QuizReport 薄弱集 CTA（u9 R3）', () => {
+  test('quizWeakNodeIds 提取：分级 ≤ half（half/low）的 node_id 集合，去重保序', () => {
+    const covered = [
+      makeNode({ node_id: 'n-strong', node_name: '实数系', answered: 10, correct: 9 }), // excellent
+      makeNode({ node_id: 'n-half', node_name: '虚数系', answered: 10, correct: 3 }), // half
+      makeNode({ node_id: 'n-pass', node_name: '复数域', answered: 10, correct: 6 }), // pass
+      makeNode({ node_id: 'n-low', node_name: '函数', answered: 10, correct: 2 }), // low
+      makeNode({ node_id: 'n-folded', node_name: '折叠', answered: 0, correct: 0 }), // null 不计
+    ];
+    expect(quizWeakNodeIds(covered)).toEqual(['n-half', 'n-low']);
+    // 同节点重复行（理论上不出现，防御性去重）保首现序
+    expect(
+      quizWeakNodeIds([
+        makeNode({ node_id: 'n-a', answered: 10, correct: 3 }),
+        makeNode({ node_id: 'n-b', answered: 10, correct: 9 }),
+        makeNode({ node_id: 'n-a', answered: 10, correct: 2 }),
+      ])
+    ).toEqual(['n-a']);
+    expect(quizWeakNodeIds([])).toEqual([]);
+  });
+
+  test('薄弱集非空：报告尾部呈「开始薄弱复习」CTA（对账行后、完成钮前）', async () => {
+    const markup = await renderReport(
+      makeReport([
+        makeNode({ node_id: 'n-1', answered: 10, correct: 9 }),
+        makeNode({ node_id: 'n-2', node_name: '虚数系', answered: 10, correct: 3 }),
+      ]),
+      'zh-CN',
+      () => undefined
+    );
+    expect(markup).toMatch(/<button[^>]*>[\s\S]*?开始薄弱复习/);
+    expect(markup).toMatch(/<button[^>]*>[\s\S]*?完成/);
+    expect(markup.indexOf('开始薄弱复习')).toBeLessThan(markup.indexOf('完成'));
+  });
+
+  test('薄弱集为空（全 pass/excellent）：零 CTA', async () => {
+    const markup = await renderReport(
+      makeReport([makeNode({ answered: 10, correct: 9 })]),
+      'zh-CN',
+      () => undefined
+    );
+    expect(markup).not.toContain('开始薄弱复习');
+    expect(markup).toMatch(/<button[^>]*>[\s\S]*?完成/);
+  });
+
+  test('en-US：CTA 文案同走词典（零中文回落）', async () => {
+    const markup = await renderReport(
+      makeReport([makeNode({ answered: 10, correct: 3 })]),
+      'en-US',
+      () => undefined
+    );
+    expect(markup).toContain('Start weak-node review');
+    expect(markup).not.toContain('开始薄弱复习');
   });
 });
