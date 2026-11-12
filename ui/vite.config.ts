@@ -188,10 +188,12 @@ export default defineConfig(({ mode }) => {
       headers: {
         'Cache-Control': 'no-store',
       },
-      // Pre-crawl canvas lazy chunks so first-open of text/3D does not
-      // discover new deps and trigger a full client reload mid-session.
+      // Pre-crawl lazy chunks so first-open does not discover new deps and
+      // trigger a full client reload mid-session. The home ambient wall pulls
+      // in Paper Shaders; canvas text/3D pulls in three.
       warmup: {
         clientFiles: [
+          './src/renderer/pages/guid/components/CreateAmbientWall.tsx',
           './src/renderer/pages/videoCanvas/oc/lib/canvas/canvas-rich-text.ts',
           './src/renderer/pages/videoCanvas/oc/components/canvas/canvas-text-editor-modal.tsx',
           './src/renderer/pages/videoCanvas/oc/components/canvas/canvas-script-editor.tsx',
@@ -217,6 +219,7 @@ export default defineConfig(({ mode }) => {
         'three',
         '@react-three/fiber',
         '@react-three/drei',
+        '@paper-design/shaders-react',
       ],
     },
     // Tailwind v4 powers the ported open-ai-canvas (oc/) utility classes + globals.css.

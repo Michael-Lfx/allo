@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test';
 const read = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8');
 const guide = read('../GuidPage.tsx');
 const wall = read('./CreateAmbientWall.tsx');
+const viteConfig = read('../../../../../vite.config.ts');
 
 describe('create ambient wall contract', () => {
   test('uses the GPU light field with explicit performance and accessibility guards', () => {
@@ -23,5 +24,10 @@ describe('create ambient wall contract', () => {
     expect(wall).toContain('data-variant={variant}');
     expect(wall).toContain('VIDEO_DARK_PALETTE');
     expect(wall).toContain('VIDEO_LIGHT_PALETTE');
+  });
+
+  test('prebundles the shader dependency before the home page opens', () => {
+    expect(viteConfig).toContain("'@paper-design/shaders-react'");
+    expect(viteConfig).toContain('./src/renderer/pages/guid/components/CreateAmbientWall.tsx');
   });
 });
