@@ -32,6 +32,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 import learningEn from '@/renderer/services/i18n/locales/en-US/learning.json';
 import learningZh from '@/renderer/services/i18n/locales/zh-CN/learning.json';
+import { AppMessage, notificationStore } from '@/renderer/components/notifications';
 // LearningModelSelector → useEffectiveModelTier → useCloudAuth 需要 Provider；
 // 用真实 Provider（其 ipc effects 在测试宿主失败即降级、被 catch），不 mock
 // （bun 的 mock.module 进程全局常驻，污染 test:ui 全套件——同波测试纪律）。
@@ -309,6 +310,9 @@ afterEach(() => {
   for (const [key, value] of Object.entries(realApi)) {
     (learningApi as unknown as Record<string, unknown>)[key] = value;
   }
+  // toast 落 notificationStore 是进程全局（AppMessage 无宿主也可入队），
+  // 清场防跨用例渗漏（QuizOverviewBanner.render.test 同仪式）。
+  AppMessage.clear();
 });
 
 const buttonWithText = (text: string): HTMLButtonElement | null => {
@@ -472,14 +476,21 @@ interface ScopedProbe {
   getState: () => { sessionOpen: boolean; queueLen: number };
 }
 
-/** useReviewSession 探针：t 用记参替身（零 i18n 依赖），api 替身在用例内
- * 打补丁（afterEach 统一还原）。onReady 只发一次稳定句柄——start 与
- * getState 都经 ref 间接，读的永远是最新渲染的 state。 */
+/** useReviewSession 探针：t 用记参替身（learning.* 无参键走 en-US 词典
+ * 实证——空队列 toast 断言真实文案而非键名，同文件 R4 en-US 用例模式；
+ * 未收录键与带参键保持替身原样），api 替身在用例内打补丁（afterEach 统一
+ * 还原）。onReady 只发一次稳定句柄——start 与 getState 都经 ref 间接，读
+ * 的永远是最新渲染的 state。 */
 const ScopedHookProbe: React.FC<{ onReady: (probe: ScopedProbe) => void }> = ({ onReady }) => {
   const session = useReviewSession({
     load: async () => undefined,
-    t: ((key: string, params?: Record<string, unknown>) =>
-      params === undefined ? key : `${key}:${JSON.stringify(params)}`) as unknown as Translate,
+    t: ((key: string, params?: Record<string, unknown>) => {
+      if (params !== undefined) return `${key}:${JSON.stringify(params)}`;
+      const [scope, leaf] = key.split('.');
+      const resolved =
+        scope === 'learning' ? (learningEn as Record<string, unknown>)[leaf] : undefined;
+      return typeof resolved === 'string' ? resolved : key;
+    }) as unknown as Translate,
     reviewCourseFilter: [],
     reviewTagFilter: [],
     reviewSessionLimit: 30,
@@ -548,6 +559,7 @@ describe('startScopedReviewSession 参数透传（u9 R3）', () => {
       calls.push(1);
       return [];
     }) as typeof learningApi.listDueReviews;
+    const toastKeysBefore = new Set(notificationStore.getSnapshot().map((record) => record.key));
     const probe = await mountScopedProbe();
     let opened = true;
     await act(async () => {
@@ -556,11 +568,25 @@ describe('startScopedReviewSession 参数透传（u9 R3）', () => {
     expect(opened).toBe(false);
     expect(probe.getState().sessionOpen).toBe(false);
     expect(calls.length).toBe(1);
+    // 空队列 toast 文案断言（红线 2.3.3）：恰好一条 info，走 en-US 词典
+    // 真实文案（探针 t 以 learningEn 实证解析 learning.* 键），零中文回落。
+    const newToasts = notificationStore
+      .getSnapshot()
+      .filter((record) => !toastKeysBefore.has(record.key));
+    expect(newToasts.length).toBe(1);
+    expect(newToasts[0].level).toBe('info');
+    expect(newToasts[0].content).toBe(learningEn.noScopedReviews);
+    expect(newToasts[0].content).not.toBe(learningZh.noScopedReviews);
     let rejected = true;
     await act(async () => {
       rejected = await probe.startScopedReviewSession([]);
     });
     expect(rejected).toBe(false);
     expect(calls.length).toBe(1);
+    // 空 nodeIds 臂在拉取前直接拒绝：不追加请求也不追加 toast
+    const toastsAfterReject = notificationStore
+      .getSnapshot()
+      .filter((record) => !toastKeysBefore.has(record.key));
+    expect(toastsAfterReject.length).toBe(1);
   });
 });
