@@ -38,4 +38,43 @@
 
 ## Resolution
 
-（施工后收口）
+已施工收口（2026-11-12，施工提交 ca9fdd8b8）。
+
+- **R1（后端聚合端点）**：`GET /api/learning/quiz/overview`（routes.rs
+  挂载紧邻 quiz/calibration）→ `Vec<QuizOverviewCourse>`（course_id /
+  title / settled_count / trigger_count / due）。服务实现住 service/xp.rs
+  `quiz_overview`：`quiz_settled_nodes` 的 NOT EXISTS 语义原样上移进
+  WHERE（`node-completed` 排除其后 `quiz-completed`）后按课程聚合成单条
+  SQL（**COUNT(*) 非 DISTINCT**，与 quiz_settled_count 清单 len 同语义）；
+  课程筛走「现存且启用」段（deleted_at IS NULL AND enabled = 1，review.rs
+  due_reviews 同口径）；due 优先、课程名次之在 Rust 端排序；无符合课程
+  返回空数组；形态无关（聚合不读 course_kind）。DTO
+  `QuizOverviewCourse` 住 learning models.rs + lib.rs re-export（q1–q3
+  存量形态：quiz DTO 实住 learning 而非 api-types，未搬家，前端 types.ts
+  按实形镜像）。
+- **R2（首页横幅）**：`QuizOverviewBanner`（新组件）——**有 due 课程才
+  渲染**：无 due / 拉取中 / 拉取失败整块缺席、零 toast（与 ReviewBanner
+  常驻策略刻意不同：复习天然有货、检测是稀事件；课程页内
+  QuizEntryCard 入口不依赖本横幅，组件头注释在案）。每行课程名 + N/K
+  读数（复用存量 `quizProgressReading` 键，K 一律后端 `trigger_count`）
+  + due 标记；行点击 → index.tsx 接线 `navigate(/learn/{course_id})`
+  （传统/图工作区检测入口各自可见；图分支入口由 u6 并行落地，本票只管
+  跳路由）。数据面组件自拉 `learningApi.quizOverview()`（挂载拉一次，
+  last-wins 序号，无定时器零轮询，QuizEntryCard 同款）；挂列表页
+  ReviewBanner 之后。
+- **R3（词典）**：加 2 键 zh/en 对称——`quizOverviewTitle`（检测到期 /
+  Quiz due）、`quizOverviewDueTag`（已到期 / Due）；N/K 读数复用存量
+  `quizProgressReading` 零重复；gen:i18n + check:i18n 绿。
+- **R4（不做）**：浮动坞 Pill / 通知推送 / 「今日安排」面——维持票面
+  裁决，后置留痕。
+- 验证：`cargo test -p nomifun-learning --lib quiz` 24 pass / 0 fail——
+  新增 `quiz_overview_lists_settled_courses_due_first_and_drops_on_reset`
+  （空态；形态无关：traditional 走真实结算管线 + learning_graph 直插
+  台账各带结算都返回；due 优先 + 同档课程名排序；N/K 与 quiz_progress
+  逐字同源对账；归档 / 墓碑 / 零结算不出列；quiz 结算清零即出列）；
+  cargo fmt 过。前端：`bun run typecheck` 绿；check:i18n 绿；check:theme
+  / check:dead-css / check:icons 绿；新增
+  `QuizOverviewBanner.render.test.tsx` 5 用例（有 due 行呈现与后端序、
+  无 due 两形态整块缺席、行点击回调、失败缺席零 toast、en-US 零中文
+  回落）+ learning 目录回归 390 pass / 0 fail。真机走查（seed 两课程一
+  due 一非 due 验呈现与跳转）留与 u6 seed v3 同批执行。

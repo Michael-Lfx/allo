@@ -3881,6 +3881,8 @@ export type I18nKey =
   | 'learning.quizMissingAnswers'
   | 'learning.quizNext'
   | 'learning.quizNotDueHint'
+  | 'learning.quizOverviewDueTag'
+  | 'learning.quizOverviewTitle'
   | 'learning.quizPreparing'
   | 'learning.quizProgressReading'
   | 'learning.quizReadyToSettle'

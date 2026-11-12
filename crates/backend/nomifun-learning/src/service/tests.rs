@@ -9082,6 +9082,170 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(matches!(missing, Err(AppError::NotFound(_))), "{missing:?}");
     }
 
+    // —— 检测感知聚合（u7，GET /quiz/overview） ——
+
+    /// 直插一笔学新结算（u7 聚合用例）：origin/anchor 与真实教新结算同形
+    /// （lesson-progress / node:{lesson_id}）；node_id 用新造合法课时 id
+    /// （台账仅格式 CHECK 无外键，聚合 SQL 只按 kind/course_id/rowid 过滤）。
+    async fn insert_node_settlement(service: &LearningService, user_id: &UserId, course_id: &str) {
+        let node_id = LearningLessonId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_xp_events \
+             (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+             VALUES (?, ?, ?, ?, ?, 'node-completed', 25, 2, 'full', NULL, 'lesson-progress', ?)",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(now_ms())
+        .bind(course_id)
+        .bind(&node_id)
+        .bind(format!("node:{node_id}"))
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    /// 图课程最小壳（u7 形态无关载体）：courses 行（course_kind=
+    /// 'learning_graph'）+ `settled` 笔直插学新结算——聚合端点只读
+    /// courses/xp_events 两表，模块/课时/活动面不参与。
+    async fn seed_graph_course_ledger(
+        service: &LearningService,
+        user_id: &UserId,
+        title: &str,
+        settled: usize,
+    ) -> String {
+        let now = now_ms();
+        let course_id = LearningCourseId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, created_at, updated_at, course_kind) \
+             VALUES (?, ?, '', 'general', 1, ?, ?, 'learning_graph')",
+        )
+        .bind(&course_id)
+        .bind(title)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        for _ in 0..settled {
+            insert_node_settlement(service, user_id, &course_id).await;
+        }
+        course_id
+    }
+
+    async fn set_course_title(service: &LearningService, course_id: &str, title: &str) {
+        sqlx::query("UPDATE learning_courses SET title = ? WHERE course_id = ?")
+            .bind(title)
+            .bind(course_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+    }
+
+    /// u7 感知聚合（读数面非门禁）：启用未删且 settled > 0 才出列；形态无关
+    /// （traditional 与 learning_graph 都返回）；due 优先、课程名次之；N/K
+    /// 与 quiz_progress 逐字同源；quiz 结算清零即出列；空态返回空数组。
+    #[tokio::test]
+    async fn quiz_overview_lists_settled_courses_due_first_and_drops_on_reset() {
+        let (service, user_id) = checkin_test_service().await;
+
+        // 空态：无任何结算课程 → 空数组（首页横幅整块缺席的数据面）。
+        let empty = service.quiz_overview(&user_id).await.unwrap();
+        assert!(empty.is_empty(), "无结算课程 = 空列表: {empty:?}");
+
+        // 传统课 Alpha：真实结算管线 6 节 → due。
+        let (alpha_id, alpha_lessons, _a) = seed_quiz_course(&service, &user_id, 6).await;
+        for lesson in &alpha_lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        set_course_title(&service, &alpha_id, "Alpha course").await;
+
+        // 传统课 Beta：同 due 档（同档内课程名排序验证用）。
+        let (beta_id, beta_lessons, _b) = seed_quiz_course(&service, &user_id, 6).await;
+        for lesson in &beta_lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        set_course_title(&service, &beta_id, "Beta course").await;
+
+        // 图课 Gamma（course_kind='learning_graph'，直插台账 4 笔）→ 未 due。
+        let gamma_id = seed_graph_course_ledger(&service, &user_id, "Gamma graph", 4).await;
+
+        let rows = service.quiz_overview(&user_id).await.unwrap();
+        assert_eq!(rows.len(), 3, "两形态都出列: {rows:?}");
+        // due 优先、课程名次之：Alpha/Beta（due 档）在 Gamma（非 due 档）前。
+        let ordered: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(
+            ordered,
+            ["Alpha course", "Beta course", "Gamma graph"],
+            "{rows:?}"
+        );
+        let alpha = &rows[0];
+        assert_eq!(alpha.course_id.as_str(), alpha_id);
+        assert!(alpha.due, "6 ≥ 6 到期");
+        assert_eq!(alpha.settled_count, 6);
+        assert_eq!(alpha.trigger_count, 6);
+        let gamma = &rows[2];
+        assert_eq!(gamma.course_id.as_str(), gamma_id);
+        assert!(!gamma.due, "4 < 6 未到期");
+        assert_eq!(gamma.settled_count, 4);
+
+        // N/K 口径逐字同源：任一课程行与 quiz_progress 单课程读数一致。
+        let progress = service
+            .quiz_progress(&user_id, &LearningCourseId::parse(&gamma_id).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(gamma.settled_count, progress.settled_count);
+        assert_eq!(gamma.trigger_count, progress.trigger_count);
+        assert_eq!(gamma.due, progress.due);
+
+        // 「现存且启用」口径（review.rs due_reviews 同段）：归档（enabled=0）
+        // 与删除墓碑（deleted_at）即使 settled > 0 也不出列；零结算不出列。
+        let archived_id = seed_graph_course_ledger(&service, &user_id, "Archived course", 2).await;
+        let _zero = seed_graph_course_ledger(&service, &user_id, "Zero course", 0).await;
+        let tomb_id = seed_graph_course_ledger(&service, &user_id, "Tomb course", 6).await;
+        sqlx::query("UPDATE learning_courses SET enabled = 0 WHERE course_id = ?")
+            .bind(&archived_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE learning_courses SET deleted_at = ? WHERE course_id = ?")
+            .bind(now_ms())
+            .bind(&tomb_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let rows = service.quiz_overview(&user_id).await.unwrap();
+        let ordered: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(
+            ordered,
+            ["Alpha course", "Beta course", "Gamma graph"],
+            "归档/墓碑/零结算不出列: {rows:?}"
+        );
+
+        // quiz 结算清零（触发口径同源）：图课 Gamma 落一笔 quiz-completed →
+        // settled 归零 → 出列（横幅随单课程检测消失的数据面）。
+        sqlx::query(
+            "INSERT INTO learning_xp_events \
+             (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+             VALUES (?, ?, ?, ?, NULL, 'quiz-completed', 4, 0, 'full', NULL, 'quiz', 'quiz:u7:1')",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(now_ms())
+        .bind(&gamma_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let rows = service.quiz_overview(&user_id).await.unwrap();
+        let ordered: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(
+            ordered,
+            ["Alpha course", "Beta course"],
+            "quiz 结算清零出列: {rows:?}"
+        );
+    }
+
     /// q2 开测全链路前置：due 门（Conflict 附 N/K）→ 到期后出脱敏回合
     /// （判底零字段）。
     #[tokio::test]
