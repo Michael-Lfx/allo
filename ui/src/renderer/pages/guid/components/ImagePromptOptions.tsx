@@ -25,6 +25,8 @@ const ImagePromptOptions: React.FC<ImagePromptOptionsProps> = ({ value, onChange
         <span className={styles.fieldLabel}>{t('guid.home.imageParamStyle')}</span>
         <Select
           className={styles.select}
+          triggerProps={{ className: styles.selectPopup }}
+          dropdownMenuClassName={styles.selectMenu}
           size='small'
           allowClear
           placeholder={t('guid.home.imageParamChoose')}
@@ -37,6 +39,8 @@ const ImagePromptOptions: React.FC<ImagePromptOptionsProps> = ({ value, onChange
         <span className={styles.fieldLabel}>{t('guid.home.imageParamAspect')}</span>
         <Select
           className={`${styles.select} ${styles.aspectSelect}`}
+          triggerProps={{ className: styles.selectPopup }}
+          dropdownMenuClassName={styles.selectMenu}
           size='small'
           allowClear
           placeholder={t('guid.home.imageParamChoose')}
@@ -49,6 +53,8 @@ const ImagePromptOptions: React.FC<ImagePromptOptionsProps> = ({ value, onChange
         <span className={styles.fieldLabel}>{t('guid.home.imageParamDetails')}</span>
         <Select
           className={`${styles.select} ${styles.multiSelect}`}
+          triggerProps={{ className: styles.selectPopup }}
+          dropdownMenuClassName={styles.selectMenu}
           size='small'
           allowClear
           mode='multiple'

@@ -54,11 +54,7 @@
  * applied through CSS while the React theme value lags behind.
  */
 .composerSurface {
-  background: color-mix(
-    in srgb,
-    var(--workspace-surface-strong, var(--color-bg-2, #ffffff)) 96%,
-    transparent
-  );
+  background: color-mix(in srgb, var(--color-bg-2, #ffffff) 96%, transparent);
   border-color: var(--color-border-2, rgba(17, 24, 39, 0.1));
   color: var(--color-text-1, #111827);
   box-shadow: 0 10px 32px color-mix(in srgb, var(--color-text-1, #111827) 12%, transparent);

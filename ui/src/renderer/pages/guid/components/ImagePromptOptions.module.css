@@ -102,18 +102,18 @@
   color: #6e6e73 !important;
 }
 
-:global(html[data-theme='light']) :global(.arco-select-popup) {
+:global(html[data-theme='light']) .selectPopup :global(.arco-select-popup) {
   border-color: rgba(17, 24, 39, 0.12) !important;
   background-color: #ffffff !important;
   color: #1d1d1f !important;
 }
 
-:global(html[data-theme='light']) :global(.arco-select-popup) :global(.arco-select-option) {
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option:not(.arco-select-option-disabled)) {
   color: #1d1d1f !important;
 }
 
-:global(html[data-theme='light']) :global(.arco-select-popup) :global(.arco-select-option-hover),
-:global(html[data-theme='light']) :global(.arco-select-popup) :global(.arco-select-option-selected) {
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-hover),
+:global(html[data-theme='light']) .selectPopup .selectMenu :global(.arco-select-option-selected) {
   background-color: rgba(29, 29, 31, 0.06) !important;
 }
 
