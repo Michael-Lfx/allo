@@ -3,7 +3,7 @@ use super::{FlowyApp, Screen, SignIn};
 use flowy_auth::{EMAIL_OTP_LENGTH, valid_email};
 use flowy_ui as theme;
 use gpui::{
-    ColorExt, Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb,
+    ColorExt, Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb, svg,
 };
 use gpui_ce_elements::editable_text::text_input;
 
@@ -93,8 +93,7 @@ impl FlowyApp {
                             .flex_col()
                             .child(
                                 div()
-                                    .w(px(390.))
-                                    .mx_auto()
+                                    .w_full()
                                     .flex_1()
                                     .flex()
                                     .flex_col()
@@ -379,12 +378,20 @@ impl FlowyApp {
             .items_center()
             .gap_2()
             .child(progress_step(
-                if on_otp { "✓" } else { "1" },
+                if on_otp {
+                    StepMark::Done
+                } else {
+                    StepMark::Number("1")
+                },
                 &self.t("login.step_email"),
                 true,
             ))
             .child(div().flex_1().h(px(1.)).min_w(px(20.)).bg(theme::line()))
-            .child(progress_step("2", &self.t("login.step_otp"), on_otp))
+            .child(progress_step(
+                StepMark::Number("2"),
+                &self.t("login.step_otp"),
+                on_otp,
+            ))
     }
 
     fn login_email_form(
@@ -583,10 +590,10 @@ impl FlowyApp {
             .caret_color(gpui::rgb_to_hsla(theme::ink()))
             .caret_blink_interval_500ms()
             .w_full()
-            .h(px(48.))
-            .min_h(px(48.))
+            .min_h_auto()
             .whitespace_nowrap()
             .px_3()
+            .py(px(10.))
             .rounded_lg()
             .border_1()
             .border_color(theme::line())
@@ -603,10 +610,10 @@ impl FlowyApp {
             .caret_color(gpui::rgb_to_hsla(theme::ink()))
             .caret_blink_interval_500ms()
             .w_full()
-            .h(px(52.))
-            .min_h(px(52.))
+            .h_full()
             .whitespace_nowrap()
             .px_3()
+            .py(px(12.))
             .rounded_lg()
             .border_1()
             .border_color(theme::line())
@@ -616,34 +623,48 @@ impl FlowyApp {
     }
 }
 
-fn progress_step(number: &str, label: &str, active: bool) -> impl IntoElement {
+enum StepMark {
+    Number(&'static str),
+    Done,
+}
+
+const STEP_CHECK_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#000" d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>"##;
+
+fn progress_step(mark: StepMark, label: &str, active: bool) -> impl IntoElement {
+    let fg = if active {
+        auth_on_accent()
+    } else {
+        theme::muted()
+    };
+    let badge = div()
+        .size(px(26.))
+        .rounded_full()
+        .border_1()
+        .border_color(if active {
+            auth_accent()
+        } else {
+            theme::line()
+        })
+        .bg(if active { auth_accent() } else { theme::card() })
+        .text_color(fg)
+        .flex()
+        .items_center()
+        .justify_center();
+    let badge = match mark {
+        StepMark::Number(number) => badge
+            .text_xs()
+            .font_family("Menlo")
+            .child(number.to_string())
+            .into_any_element(),
+        StepMark::Done => badge
+            .child(svg().data(STEP_CHECK_SVG).size(px(14.)).text_color(fg))
+            .into_any_element(),
+    };
     div()
         .flex()
         .items_center()
         .gap_2()
-        .child(
-            div()
-                .size(px(26.))
-                .rounded_full()
-                .border_1()
-                .border_color(if active {
-                    auth_accent()
-                } else {
-                    theme::line()
-                })
-                .bg(if active { auth_accent() } else { theme::card() })
-                .text_color(if active {
-                    auth_on_accent()
-                } else {
-                    theme::muted()
-                })
-                .text_xs()
-                .font_family("Menlo")
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(number.to_string()),
-        )
+        .child(badge)
         .child(
             div()
                 .text_xs()
