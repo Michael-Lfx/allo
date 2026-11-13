@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/voice-companion", "apps/desktop", "apps/web"]
 
 [workspace.package]
-version = "1.7.1"
+version = "1.0.7"
 edition = "2024"
 license = "Apache-2.0"
 repository = "local/nomifun-tauri"
@@ -166,7 +166,7 @@ bytes = "1"
 # Windows pyke ORT prebuilts hard-link DirectML (`DMLCreateDevice1`). The NSIS
 # installer downloads Microsoft.AI.DirectML from nuget.org into $INSTDIR only
 # when the machine's DirectML lacks that export (see windows/nsis/installer.nsi).
-ort = { version = "2.0.0-rc.13", default-features = false, features = [
+ort = { version = "2.0.0-rc.15", default-features = false, features = [
     "std",
     "tracing",
     "download-binaries",

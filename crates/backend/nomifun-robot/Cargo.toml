@@ -86,3 +86,7 @@ tower = { workspace = true }
 # the handshake, the frame types and the 401 rejection are all exercised for
 # real rather than asserted about.
 tokio-tungstenite = { workspace = true }
+
+[build-dependencies]
+# Compiles the arm64 macOS availability shim. No-op on every other target.
+cc = "1.4.0"

@@ -53,6 +53,7 @@ pub struct AuthState {
     pub phase: LoginPhase,
     pub message: Option<&'static str>,
     pub pending_req_no: Option<String>,
+    pub attempted_code: String,
     pub cooldown_left: u64,
     pub generation: u64,
     pub task: Option<Task<()>>,
