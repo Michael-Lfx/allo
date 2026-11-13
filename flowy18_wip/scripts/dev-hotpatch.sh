@@ -18,4 +18,17 @@ case "$ver" in
     ;;
 esac
 
-exec dx serve --hot-patch -p flowy-desktop --bin flowy-app --platform macos --renderer native --open false
+serve_help="$(dx serve --help 2>&1)" || {
+  echo "failed to inspect dx serve options" >&2
+  exit 1
+}
+if grep -q -- '--hotpatch' <<<"$serve_help"; then
+  hot_patch_flag='--hotpatch'
+elif grep -q -- '--hot-patch' <<<"$serve_help"; then
+  hot_patch_flag='--hot-patch'
+else
+  echo "dx serve does not expose --hotpatch or --hot-patch" >&2
+  exit 1
+fi
+
+exec dx serve "$hot_patch_flag" --package flowy-desktop --bin flowy-app --platform macos --renderer native --open false
