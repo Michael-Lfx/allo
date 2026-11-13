@@ -2,7 +2,7 @@
 
 ## Status
 
-待施工（2026-11-13 开票；真库实见幽灵回合 + 死卡无标）。
+已关（2026-11-13 施工收口，f7ad320e4 经 merge d4b0cf902 合入集成分支；评审修复 29f5475da；整波经 04c110cae 并回 learn0928）。
 
 ## 已核验事实（2026-11-13 对库 + 对码）
 
@@ -56,4 +56,12 @@
 
 ## Resolution
 
-（关票时回填）
+已施工收口（2026-11-13，f7ad320e4 + 评审修复 29f5475da）。
+
+- R1①：新增 `abandon_active_rounds(executor, scoped_user, course_id, now)` 单源助手落 quiz.rs（pub(super)，executor 接池或事务）；**quiz_start 的 supersede 路径同步改走它**（评审核等价：SQL/bind 顺序逐字一致）——废弃形态单源化超出票面字面，评审判定接受。delete_course 事务内对墓碑课调用（课程键定分流）。
+- R1②：死卡打标在 `purge_course_content` 之前（activities 在场时定位），同款子查询；R1③：墓碑 UPDATE 同时 `enabled = 0`。三处收尾语句旁注明 R 编号 + ADR-0017。
+- R2：迁移 `071_learning_delete_finalize_backfill.sql`（NOT EXISTS 反查形态同 070 清理段）；评审修复 F1 补第三条 UPDATE——**存量墓碑 enabled=0 背填**（Standards 轴硬违规：原 071 漏了它，course.rs 注释承诺失真），头注扩为「三条 UPDATE 天然幂等」。迁移测试 2 例：`tombstone_ghost_rounds_are_abandoned_and_dead_cards_archived`（含正负对照：在学课回合/卡/enabled 原样）+ `backfill_is_idempotent_on_replay`。
+- R3：回望面边界注释评审修复 F2 落 memory.rs Panel3+4、xp.rs today_xp。
+- R4：`delete_course_finalizes_active_round_and_dead_cards`（TDD 红→绿）；评审修复 F3 升级——真断言而非注释：删课后两课 review_log 行原样保留（digest 输入不变，结构性理由入测试 doc，对照 learning_graph.rs:3109-3117 确认其读面无 archived_at/enabled 过滤）。
+- 验证：`cargo test -p nomifun-learning --lib` 965/0；`cargo test -p nomifun-db` 全绿（070 系列基线/lineage 无需跟随）；fmt 按包 check 干净。一次 `quiz_start_supersedes_active_round` 全量跑失败经两次复跑+单跑全绿，判定为共享锁慢机抖动非代码问题。
+- 真机复验点：删课后再查库——无 active 幽灵回合、死卡带 archived_at、墓碑 enabled=0；记忆面板曲线不回退（待用户桌面走查；dev 库 3 墓碑 + 1 幽灵回合 + 14 死卡由 071 一次性收编）。

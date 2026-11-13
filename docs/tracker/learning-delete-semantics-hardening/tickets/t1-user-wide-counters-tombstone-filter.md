@@ -2,7 +2,7 @@
 
 ## Status
 
-待施工（2026-11-13 开票；真库实演坐实）。
+已关（2026-11-13 施工收口，8a306c0d5 经 merge 438656525 合入集成分支；评审修复 29f5475da；整波经 04c110cae 并回 learn0928）。
 
 ## 已核验事实（2026-11-13 对库 + 对码）
 
@@ -68,4 +68,12 @@
 
 ## Resolution
 
-（关票时回填）
+已施工收口（2026-11-13，8a306c0d5 + 评审修复 29f5475da）。
+
+- R1：`COURSE_ARRANGEMENT_JOIN` 共享片段常量落 `service/mod.rs`（注释引 ADR-0017），memory.rs 两处接入，`due_reviews` base（review.rs）顺手收编同一常量。
+- R2：Panel1 负荷预报/overdue、Panel2 状态分布过滤墓碑+归档课。
+- R3：新增 `memory_stats_exclude_tombstoned_course_cards` 首测（TDD 红阶段精确复现泄漏 overdue 2≠1）；calendar 五例测试随死链删除；checkin_today 测试剥离 due_count 断言。
+- R5（裁决定稿=删）：`calendar_stats` 整链退役（函数+路由+`CalendarStatsQuery`+`CalendarStats`/`CalendarDayStats`/`CalendarLessonRef`/`CalendarCourseRef` DTO+api.ts `getCalendarStats`+types.ts 类型）；`CheckinStatus.due_count` 字段全删；孤儿助手（streak_days/local_wall_clock_utc_ms/previous_review_day）连带清；**xp_calendar、useCheckinStatus 链、MemoryHealthPanel 活面未动**。ui 删除面 typecheck 绿。
+- 边界（R4）：回望面注释在评审修复 29f5475da 补齐（memory.rs Panel3+4、xp.rs today_xp——F2）。
+- 验证：`cargo test -p nomifun-learning` 965/0（整波终态）；typecheck 绿。
+- 真机复验点：删课后记忆面板不再出现幽灵到期数（待用户桌面走查）。

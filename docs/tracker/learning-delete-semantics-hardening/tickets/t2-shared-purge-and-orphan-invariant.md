@@ -2,7 +2,7 @@
 
 ## Status
 
-待施工（2026-11-13 开票；双路径对码坐实漂移）。
+已关（2026-11-13 施工收口，f8ab67bc5 经 merge b0ed32546 合入集成分支；整波经 04c110cae 并回 learn0928）。
 
 ## 已核验事实（2026-11-13 对码）
 
@@ -50,4 +50,10 @@
 
 ## Resolution
 
-（关票时回填）
+已施工收口（2026-11-13，f8ab67bc5，TDD 全程）。
+
+- R1：模块级 `purge_course_content(transaction, course_id)` 单源落 course.rs，八表清单按票面顺序（lesson_sections 新补 → lesson_concepts → question_tags(course) → activities → lessons → modules → course_tags → basis_declarations），docstring 写明「先子后父」与「新增挂课内容行的表必须来此补 DELETE」约定；软删 = purge + 墓碑位（enabled=0 留给 t3 未碰），硬删 = per-enrollment 清理 + enrollments + 同一 purge + 课程行硬删。过时「concepts」docstring 已修。
+- R2：共享种子 `seed_course_with_full_content`（八表各 1 行 + 种子自证）+ `assert_course_content_fully_purged`（course 直键三表等值计数 + lesson/activity 键定五表 NOT EXISTS 孤儿形态——免疫「子查询落已清空宿主表恒绿」陷阱）；两测试 `delete_course_soft_purge_leaves_zero_content_orphans` / `delete_by_title_hard_purge_leaves_zero_content_orphans` 落既有删除测试旁。Red 阶段失败点与票面已核验事实吻合（软删红在 sections、硬删红在 basis_declarations）。
+- R3：账本面/外键/t3 范围零触碰（确认）。
+- 验证：当波 968/0；整波终态 965/0（t1 删 5 例日历测试 + 增 1 例 memory 测试后）。
+- 真机复验点：无（纯内部重构，行为由测试钉死）。
