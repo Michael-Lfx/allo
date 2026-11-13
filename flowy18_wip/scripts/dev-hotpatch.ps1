@@ -43,9 +43,22 @@ if ($null -eq $sdkLib) {
     exit 1
 }
 
+$sdkUcrt = Join-Path $sdkLib.FullName "ucrt\x64"
+$sdkUm = Join-Path $sdkLib.FullName "um\x64"
+$requiredLibraries = @(
+    (Join-Path $msvcLib "vcruntime.lib")
+    (Join-Path $sdkUcrt "ucrt.lib")
+    (Join-Path $sdkUm "advapi32.lib")
+)
+if ($requiredLibraries | Where-Object { -not (Test-Path $_) }) {
+    Write-Error "MSVC/Windows SDK library set is incomplete. Expected vcruntime.lib, ucrt.lib, and advapi32.lib for x64."
+    exit 1
+}
+
 $libPaths = @(
     $msvcLib
-    (Join-Path $sdkLib.FullName "um\x64")
+    $sdkUcrt
+    $sdkUm
 )
 if (-not [string]::IsNullOrWhiteSpace($env:LIB)) {
     $libPaths += $env:LIB
