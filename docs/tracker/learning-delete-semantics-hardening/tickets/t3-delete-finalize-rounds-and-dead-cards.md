@@ -24,11 +24,14 @@
 
 ## Terms
 
-- **R1（删除事务内收尾）**：`delete_course` 事务内追加两条：
+- **R1（删除事务内收尾，2026-11-13 裁决增补 ③）**：`delete_course`
+  事务内追加三条：
   ① 该课程 `status='active'` 的 quiz_rounds → `abandoned`（supersede
   同款形态）；② 该课程 enrollment 下、activity 行将被删的
   review_items → `archived_at = now`（在内容清理 SQL 之前打标，用
-  同一子查询定位）。
+  同一子查询定位）；③ 墓碑统一形态——课程行 `UPDATE` 同时清
+  `enabled = 0`（原只写 `deleted_at`；无恢复路径零风险，半抄过滤的
+  查询面从此安全，ADR-0017 §3）。
 - **R2（迁移 071 存量背填）**：append-only 迁移——
   ① 挂墓碑课（`deleted_at IS NOT NULL`）的 active 回合废弃；
   ② `NOT EXISTS (SELECT 1 FROM learning_activities a WHERE
