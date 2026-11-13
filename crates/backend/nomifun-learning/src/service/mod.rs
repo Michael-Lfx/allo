@@ -35,7 +35,7 @@ pub(super) use crate::generation::{
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CheckinStatus, CourseDetail, CourseKind, CoursePack,
     CourseSamplingView, CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest,
-    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
+    DueReview, GenerateCourseRequest,
     GenerateLessonActivityRequest, GenerateLessonRequest, GeneratedLessonActivity, SectionKind,
     SectionView, LessonStatus,
     LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
@@ -53,7 +53,7 @@ pub(super) use crate::scheduler::{
 
 /// 前瞻可行动面的课程「现存且启用」共享过滤片段（单源口径，ADR-0017）：
 /// 回答「现在该做什么」的读数（负荷预报、到期计数、卡片状态分布……）必须
-/// 过滤墓碑贡献——已删除（`deleted_at` 非空）与已停用（`enabled = 0`）课程
+/// 过滤墓碑贡献——已删除（`deleted_at` 非空）与已归档（`enabled = 0`）课程
 /// 的卡永不复服务，计入即是对行动的误导。依赖前置：查询里注册行别名必须
 /// 是 `e`（`learning_enrollments e`）。回望历史面（记忆校准、XP 总账、
 /// 复习日志）**不**接本片段——「账本永远保留」是设计语义，错边即是 bug；
@@ -566,7 +566,6 @@ pub use learning_graph::{
 mod capacity_feedback;
 mod course;
 mod course_outline;
-mod diagnostic;
 mod generation_tasks;
 mod generate;
 mod lesson;

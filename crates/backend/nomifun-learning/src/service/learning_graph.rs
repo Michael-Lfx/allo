@@ -4048,6 +4048,8 @@ impl LearningService {
         }
 
         // 供给表：概念 → 教它的节点（跨课程，不含被评估的候选自身）。
+        // 知识供给全宽含归档课（支撑其它课程，ADR-0017 修正案）——
+        // deleted_at 过滤只挡墓碑，归档课已掌握的前置照常支撑就绪门。
         let assumed_concepts: HashSet<String> = ready
             .iter()
             .flat_map(|candidate| candidate.assumes.iter().map(|(concept_id, _)| concept_id.clone()))
@@ -4888,26 +4890,6 @@ impl LearningService {
             .await
     }
 
-    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数；
-    /// 无在跑而有排队时回退最新排队主题（m7 排队可见），queued = 排队计数。
-    pub fn generation_status(&self) -> crate::models::LearningGraphGenerationStatus {
-        let (queued, queued_topic) = self.generation_tasks.queued_summary();
-        match self.generation_tasks.running_newest() {
-            Some((topic, elapsed_secs)) => crate::models::LearningGraphGenerationStatus {
-                running: true,
-                topic: Some(topic),
-                elapsed_secs: Some(elapsed_secs),
-                queued,
-            },
-            None => crate::models::LearningGraphGenerationStatus {
-                running: false,
-                topic: queued_topic,
-                elapsed_secs: None,
-                queued,
-            },
-        }
-    }
-
     /// 长任务快照（`GET /api/learning/generation-tasks`）。
     pub fn generation_task_snapshot(&self) -> Vec<crate::service::GenerationTaskView> {
         self.generation_tasks.snapshot()
@@ -5174,6 +5156,9 @@ impl LearningService {
     }
 
     /// 已教概念账文本（canonical@最高档）。
+    /// 知识供给全宽含归档课（支撑其它课程，ADR-0017 修正案）；零过滤依赖
+    /// purge 不变量——删除路径必清 lesson_concepts（软删 g3/硬删 t2），孤儿
+    /// 边不存在则账面只含未删课程。
     pub(super) async fn render_taught_summary(&self) -> Result<String, AppError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT reg.canonical, lc.tier FROM learning_lesson_concepts lc \

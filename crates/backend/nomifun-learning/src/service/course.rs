@@ -216,6 +216,8 @@ impl LearningService {
     pub async fn list_courses(&self, user_id: &UserId) -> Result<Vec<CourseSummary>, AppError> {
         // 目录列出现存课程（归档课也在列——带徽标可恢复）；安排面收窄由
         // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
+        // due_today 徽标（t1，ADR-0017 可服务性计数面）：归档课卡不可复服务，
+        // 计数如实滤归档——子查询接外层现存课 c 补 enabled = 1（deleted_at 外层已滤）。
         let rows = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
@@ -236,7 +238,7 @@ impl LearningService {
                      WHERE x.course_id = c.course_id AND x.user_id = ?) AS total_xp, \
                     (SELECT COUNT(*) FROM learning_review_items r \
                      JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-                     WHERE e.user_id = ? AND e.course_id = c.course_id \
+                     WHERE e.user_id = ? AND e.course_id = c.course_id AND c.enabled = 1 \
                        AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
                        AND r.due_at <= ?) AS due_today \
              FROM learning_courses c WHERE c.deleted_at IS NULL \
@@ -268,6 +270,8 @@ impl LearningService {
         user_id: Option<&UserId>,
     ) -> Result<CourseDetail, AppError> {
         let user_value = user_id.map(UserId::as_str);
+        // due_today 徽标（t1，ADR-0017 可服务性计数面）：归档课卡不可复服务，
+        // 计数如实滤归档——子查询接外层现存课 c 补 enabled = 1（deleted_at 外层已滤）。
         let row = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
@@ -288,7 +292,7 @@ impl LearningService {
                      WHERE x.course_id = c.course_id AND x.user_id = ?) AS total_xp, \
                     (SELECT COUNT(*) FROM learning_review_items r \
                      JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-                     WHERE e.user_id = ? AND e.course_id = c.course_id \
+                     WHERE e.user_id = ? AND e.course_id = c.course_id AND c.enabled = 1 \
                        AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
                        AND r.due_at <= ?) AS due_today, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -434,11 +438,15 @@ impl LearningService {
         let due_review_count = if let Some(enrollment_id) = &enrollment_id {
             // Items are seeded per objective question when the lesson is
             // completed, so every row already represents a due-able card.
-            sqlx::query_scalar(
+            // ADR-0017 可服务性计数面（t1）：接共享「现存且启用」片段滤归档——
+            // 归档课卡不可复服务，计数如实归零（与 due_reviews 队列同口径）。
+            sqlx::query_scalar(&format!(
                 "SELECT COUNT(*) FROM learning_review_items r \
+                 JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+                 {COURSE_ARRANGEMENT_JOIN} \
                  WHERE r.enrollment_id = ? AND r.due_at <= ? AND r.archived_at IS NULL \
                  AND r.edit_pending_at IS NULL",
-            )
+            ))
             .bind(enrollment_id.as_str())
             .bind(now_ms())
             .fetch_one(&self.pool)
@@ -484,6 +492,62 @@ impl LearningService {
         .await
         .map_err(internal)?;
         id.map(parse_id).transpose()
+    }
+
+    /// Returns the user's enrollment for a course, creating it on first use.
+    /// Practice flows (attempts, lesson progress) call this instead of
+    /// requiring an explicit join step, so enrollment is a data grouping key
+    /// rather than a permission gate. Idempotent: re-calling after an
+    /// enrollment exists only bumps `updated_at`.
+    pub(super) async fn ensure_enrollment(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<LearningEnrollmentId, AppError> {
+        let course_exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+        if course_exists == 0 {
+            return Err(AppError::NotFound(format!("learning course {course_id}")));
+        }
+        let enrollment_id = LearningEnrollmentId::new();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_enrollments \
+             (enrollment_id, user_id, course_id, enrolled_at, updated_at) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id, course_id) DO UPDATE SET updated_at = excluded.updated_at",
+        )
+        .bind(enrollment_id.as_str())
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        let stored: String = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        parse_id(stored)
+    }
+
+    /// Explicit join entry, kept as a service-level seam for Rust unit tests
+    /// (the HTTP face was retired with the auto-join flows); the same
+    /// idempotent upsert is triggered implicitly by any practice flow.
+    pub async fn enroll(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<LearningEnrollmentId, AppError> {
+        self.ensure_enrollment(course_id, user_id).await
     }
 
     /// A single lesson's public view (mirrors the per-lesson projection in

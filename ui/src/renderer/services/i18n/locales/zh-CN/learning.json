@@ -412,8 +412,6 @@
     "parametersInvalid": "FSRS 参数必须全部为有限数字",
     "reviewSessionLimit": "复习队列长度",
     "reviewSessionLimitHint": "单次加载的到期复习卡片上限",
-    "diagnosticLimit": "诊断题目数量",
-    "diagnosticLimitHint": "单次知识诊断抽取的题目上限",
     "dailyXpGoal": "每日 XP 目标",
     "dailyXpGoalHint": "每日努力目标（1 XP ≈ 1 分钟专注）；达标即记当日完成（1–1000，默认 40）",
     "autoRefillEnabled": "自动补批",

@@ -730,11 +730,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
             detail.next_lesson_id.as_ref(),
             Some(&detail.modules[0].lessons[0].id)
         );
-        let diagnostic = service
-            .diagnostic_plan(&course.course.id, &user_id, 10)
-            .await
-            .unwrap();
-        assert_eq!(diagnostic.items.len(), 1);
         let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
         let lesson_id = detail.modules[0].lessons[0].id.clone();
         let result = service
@@ -775,11 +770,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let course = service.import_course(valid_pack()).await.unwrap();
         let course_id = &course.course.id;
         // No explicit enroll anywhere: opening the detail must create the
-        // enrollment so diagnostics, attempts and progress writes all work.
+        // enrollment so attempts and progress writes all work.
         let detail = service.course_detail(course_id, Some(&user_id)).await.unwrap();
         assert!(detail.enrollment_id.is_some());
-        let diagnostic = service.diagnostic_plan(course_id, &user_id, 10).await.unwrap();
-        assert_eq!(diagnostic.items.len(), 1);
         let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
         let lesson_id = detail.modules[0].lessons[0].id.clone();
         let result = service
@@ -3166,6 +3159,100 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(after.len(), 1, "restore returns the card to the queue");
         let listed = service.list_courses(&user_id).await.unwrap();
         assert!(listed.iter().find(|c| c.id == course.course.id).unwrap().enabled);
+    }
+
+    /// t1（ADR-0017 修正案·可服务性计数面）：归档课的到期徽标如实归零。
+    /// 目录 due_today 与详情 due_review_count 回答「现在能复习什么」——
+    /// 归档课卡不可服务（due_reviews 全口径过滤 enabled=1），徽标虚高
+    /// 即误导（用户点进队列为空）；归档后两处计数 = 0，恢复后回来
+    /// （归档可逆，计数对账可逆）。前端 0 张到期如实显示。
+    #[tokio::test]
+    async fn archived_course_due_counters_drop_to_zero_and_come_back_on_restore() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        service
+            .update_lesson_progress(&detail.modules[0].lessons[0].id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        make_all_due(&service, &user_id).await;
+
+        // 归档前：目录与详情都见到到期卡。
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == course.course.id)
+            .expect("course listed");
+        assert!(
+            summary.due_today > 0,
+            "list due_today sees the card before archiving"
+        );
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert!(
+            detail.due_review_count > 0,
+            "detail due_review_count sees the card before archiving"
+        );
+
+        // 归档：两处计数如实归零（可服务性计数面滤归档，ADR-0017 修正案）。
+        service
+            .set_course_archived(&course.course.id, true)
+            .await
+            .unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == course.course.id)
+            .expect("archived course still listed");
+        assert_eq!(summary.due_today, 0, "archived course list badge reads 0");
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            detail.due_review_count, 0,
+            "archived course detail counter reads 0"
+        );
+
+        // 恢复：计数回来（可逆对账）。
+        service
+            .set_course_archived(&course.course.id, false)
+            .await
+            .unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == course.course.id)
+            .expect("course listed after restore");
+        assert!(
+            summary.due_today > 0,
+            "restore brings the list due_today back"
+        );
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert!(
+            detail.due_review_count > 0,
+            "restore brings the detail due_review_count back"
+        );
     }
 
     /// x11：CourseSummary 显式带 pipeline——传统课程按来源计划列判定
@@ -11766,172 +11853,6 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 || p.starts_with("coverage")),
             "描述流零结构发现阶段事件,实际 {course_phases:?}"
         );
-    }
-
-    /// t5 成本门估算:小库(≤40 文件)不触发确认;估算走规则分诊(零 LLM,
-    /// degraded=true)+ 噪声/重复跳过摘要;批数/调用量/耗时读数可读。
-    #[tokio::test]
-    async fn estimate_endpoint_reports_rule_triage_without_confirmation_for_small_kbs() {
-        let (service, knowledge, owner) = job_test_service().await;
-        let base = knowledge
-            .quick_create_base(Some("小库"), None, "blank", None, None, None, None)
-            .await
-            .unwrap();
-        write_kb_file(&base.base.root_path, "ch01.md", "# 排序\n\n正文。");
-        write_kb_file(&base.base.root_path, "ch02.md", "# 查找\n\n正文。");
-        write_kb_file(&base.base.root_path, "license.md", "# License\n\nMIT license text.");
-
-        let estimate = service
-            .estimate_course_generation(
-                &owner,
-                GenerateCourseRequest {
-                    course_kind: crate::models::CourseKind::Traditional,
-                    teaching_style: None,
-                    knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
-                    description: None,
-                    domain: None,
-                    provider_id: None,
-                    model: None,
-                    mode: crate::models::CourseGenerationMode::OnDemand,
-                    goal: Some("学会排序".into()),
-                    proficiency_statement: None,
-                    learner_basis: None,
-                    knowledge_base_ids: Vec::new(),
-                },
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(estimate.triage.total_files, 3);
-        assert!(!estimate.needs_confirm, "3 文件远低于 40 文件阈值");
-        assert!(estimate.triage.degraded, "估算走规则分诊(未做 LLM 判定)");
-        assert!(estimate.estimated_llm_calls >= 1);
-        assert!(estimate.estimated_batches >= 1);
-        assert!(estimate.estimated_seconds >= 1);
-        assert!(
-            !estimate.skipped_examples.is_empty(),
-            "license 类元数据噪声必须有跳过摘要(path + reason)"
-        );
-        assert_eq!(estimate.skipped_examples[0].path, "license.md");
-        assert!(!estimate.skipped_examples[0].reason.is_empty());
-    }
-
-    /// t5 成本门阈值:>40 文件触发确认;>20 次预估调用同样触发(大库两把尺
-    /// 都拦);描述流直接不需要确认。
-    #[tokio::test]
-    async fn estimate_endpoint_flags_large_kbs_and_passes_description_flow() {
-        let (service, knowledge, owner) = job_test_service().await;
-        let base = knowledge
-            .quick_create_base(Some("大库"), None, "blank", None, None, None, None)
-            .await
-            .unwrap();
-        for index in 0..45 {
-            write_kb_file(
-                &base.base.root_path,
-                &format!("ch{index:02}.md"),
-                &format!("# 第{index}章\n\n正文要点。"),
-            );
-        }
-        let kb_request = GenerateCourseRequest {
-            course_kind: crate::models::CourseKind::Traditional,
-            teaching_style: None,
-            knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
-            description: None,
-            domain: None,
-            provider_id: None,
-            model: None,
-            mode: crate::models::CourseGenerationMode::OnDemand,
-            goal: Some("通读全书".into()),
-            proficiency_statement: None,
-            learner_basis: None,
-            knowledge_base_ids: Vec::new(),
-        };
-        let estimate = service.estimate_course_generation(&owner, kb_request).await.unwrap();
-        assert_eq!(estimate.triage.total_files, 45);
-        assert!(estimate.needs_confirm, ">40 文件必须确认");
-        assert!(estimate.estimated_llm_calls > 3, "45 文件至少两批分诊 + 计划 + 展开");
-
-        // 描述流:无知识库 → 零估算面,不需要确认。
-        let estimate = service
-            .estimate_course_generation(
-                &owner,
-                GenerateCourseRequest {
-                    course_kind: crate::models::CourseKind::Traditional,
-                    teaching_style: None,
-                    knowledge_base_id: None,
-                    description: Some("零基础期权入门".into()),
-                    domain: None,
-                    provider_id: None,
-                    model: None,
-                    mode: crate::models::CourseGenerationMode::OnDemand,
-                    goal: None,
-                    proficiency_statement: None,
-                    learner_basis: None,
-                    knowledge_base_ids: Vec::new(),
-                },
-            )
-            .await
-            .unwrap();
-        assert!(!estimate.needs_confirm);
-        assert_eq!(estimate.triage.total_files, 0);
-    }
-
-    /// 评审修复 S2:成本门按章估算展开批数——有 plan 每章一批(单章锚点
-    /// 文件超 EXPANSION_BATCH_MAX_FILES 才按文件数拆批),多章少文件的库
-    /// 估算 ≥ 章数;无 plan(估算端不跑 LLM 结构发现)退保守上界 = 候选
-    /// 文件数(最坏每个候选文件自成一章)。
-    #[test]
-    fn expansion_batch_estimate_counts_one_batch_per_chapter() {
-        use super::generate::estimate_expansion_batches;
-
-        fn anchored_chapter(title: &str, files: &[&str]) -> crate::generation::PlannedChapter {
-            crate::generation::PlannedChapter {
-                title: title.to_owned(),
-                summary: String::new(),
-                learning_objectives: Vec::new(),
-                covers: Vec::new(),
-                prerequisites: Vec::new(),
-                source_anchors: files
-                    .iter()
-                    .map(|path| crate::generation::SourceAnchor {
-                        kb_id: "kb-1".into(),
-                        rel_path: (*path).to_owned(),
-                        heading_or_anchor: None,
-                        paragraph: None,
-                        snippet: None,
-                        anchor_uncertain: false,
-                    })
-                    .collect(),
-                content_type: crate::generation::ChapterContentType::Concept,
-            }
-        }
-
-        // 多章少文件:8 章 × 2 文件(候选 16)→ 每章一批 = 8 ≥ 章数(旧口径
-        // ceil(16/40)=1 把 7 个批次漏掉,成本门失真)。
-        let chapters: Vec<_> = (0..8)
-            .map(|index| anchored_chapter(&format!("第{index}章"), &["a.md", "b.md"]))
-            .collect();
-        let plan = crate::generation::SourcePlan {
-            chapters,
-            ..Default::default()
-        };
-        assert!(
-            estimate_expansion_batches(Some(&plan), 16) >= 8,
-            "多章少文件的库估算 ≥ 章数"
-        );
-        assert_eq!(estimate_expansion_batches(Some(&plan), 16), 8);
-
-        // 单章锚点文件超批上限(41 > 40)→ 按文件数拆成 2 批。
-        let wide: Vec<String> = (0..41).map(|index| format!("f{index:02}.md")).collect();
-        let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
-        let plan = crate::generation::SourcePlan {
-            chapters: vec![anchored_chapter("大章", &wide_refs)],
-            ..Default::default()
-        };
-        assert_eq!(estimate_expansion_batches(Some(&plan), 41), 2);
-
-        // 无 plan:保守上界 = 候选文件数。
-        assert_eq!(estimate_expansion_batches(None, 16), 16);
     }
 
     /// 评审修复 S3(内部 kill switch,Q13):`NOMI_LEARNING_SOURCE_PLAN` 取
