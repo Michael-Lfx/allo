@@ -29,4 +29,4 @@ Windows 推荐启动步骤：
 
 3. 保持这个终端和 `dx serve` 进程运行，修改源码后观察窗口热补丁结果。
 
-首次启动会编译完整 debug 依赖，耗时较长；后续应在同一个 `dx serve` 会话中迭代。脚本会在编译前检查旧进程、`dx` 0.7.10 和 Visual Studio 的 `link.exe`。两个入口都使用 GPUI 的 `hot-patching` feature。Windows 入口会把 `link.exe` 传给 Cargo，避免仓库默认的 `rust-lld.exe` 与 Dioxus hotpatch linker 冲突。热补丁只对 debug/native 构建生效，修改渲染、布局和绘制逻辑时会保留运行中的窗口状态；修改 struct 字段、初始化逻辑或依赖状态布局时需要重启。
+首次启动会编译完整 debug 依赖，耗时较长；后续应在同一个 `dx serve` 会话中迭代。脚本会在编译前检查旧进程、`dx` 0.7.10、Visual Studio 的 `link.exe` 和 Windows SDK 的 `advapi32.lib`，并自动设置 MSVC/SDK 的 `LIB` 路径。两个入口都使用 GPUI 的 `hot-patching` feature。Windows 入口会把 `link.exe` 传给 Cargo，避免仓库默认的 `rust-lld.exe` 与 Dioxus hotpatch linker 冲突。热补丁只对 debug/native 构建生效，修改渲染、布局和绘制逻辑时会保留运行中的窗口状态；修改 struct 字段、初始化逻辑或依赖状态布局时需要重启。

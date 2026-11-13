@@ -30,6 +30,28 @@ $linkerPath = "link.exe"
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linkerPath
 $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linkerPath
 
+$msvcRoot = Split-Path (Split-Path (Split-Path (Split-Path $windowsLinker.Source -Parent) -Parent) -Parent) -Parent
+$msvcLib = Join-Path $msvcRoot "lib\x64"
+$programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+$windowsKitsRoot = Join-Path $programFilesX86 "Windows Kits\10\Lib"
+$sdkLib = Get-ChildItem $windowsKitsRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName "um\x64\advapi32.lib") } |
+    Sort-Object Name -Descending |
+    Select-Object -First 1
+if ($null -eq $sdkLib) {
+    Write-Error "Windows SDK advapi32.lib not found. Install the Windows 10/11 SDK through Visual Studio Build Tools."
+    exit 1
+}
+
+$libPaths = @(
+    $msvcLib
+    (Join-Path $sdkLib.FullName "um\x64")
+)
+if (-not [string]::IsNullOrWhiteSpace($env:LIB)) {
+    $libPaths += $env:LIB
+}
+$env:LIB = $libPaths -join ";"
+
 $runningFlowy = Get-Process -Name flowy_app -ErrorAction SilentlyContinue
 if ($null -ne $runningFlowy) {
     $pids = ($runningFlowy | Select-Object -ExpandProperty Id) -join ", "
