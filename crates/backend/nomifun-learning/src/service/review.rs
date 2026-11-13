@@ -37,23 +37,24 @@ impl LearningService {
         // Ranking quality: the forgettability order is computed over a wider
         // due-ordered window than the requested page, then truncated.
         let fetch_limit = (limit * 4).min(500);
-        // 安排面收窄（三轮 g3「现存且启用」单源口径）：只服务现存且启用的
-        // 课程——已归档（enabled = 0）与已删除（墓碑）的课程卡都不再出队；
-        // 历史面（日历/统计/打卡）不过筛。已出卡的单卡入口（review_entry）
-        // 不在此列，作答提交不因归档失败。
-        let base = "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
+        // 安排面收窄（前瞻可行动面，ADR-0017 单源口径）：只服务现存且启用
+        // 的课程——已归档（enabled = 0）与已删除（墓碑）的课程卡都不再出队
+        // （共享片段 COURSE_ARRANGEMENT_JOIN 收编）；回望历史面不过筛。已出
+        // 卡的单卡入口（review_entry）不在此列，作答提交不因归档失败。
+        let base = format!(
+            "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.activity_id, a.kind, a.prompt, a.config_json, \
                     l.title AS lesson_title, m.title AS module_title, \
                     r.due_at, r.stability_days, r.difficulty, r.review_count, r.lapse_count, \
                     r.last_reviewed_at, r.edit_pending_at, r.edit_note \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-             JOIN learning_courses c ON c.course_id = e.course_id \
-               AND c.deleted_at IS NULL AND c.enabled = 1 \
+             {COURSE_ARRANGEMENT_JOIN} \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL";
+             WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL"
+        );
         // Course reviews: scoped by one or more courses (all queued, or due
         // only when requested), by lesson nodes (u9 weak-set sessions), or
         // by tag names attached to the question. A pure orphan queue skips
@@ -61,7 +62,7 @@ impl LearningService {
         let rows = if orphan && course_ids.is_empty() && node_ids.is_empty() {
             Vec::new()
         } else {
-            let mut sql = String::from(base);
+            let mut sql = base;
             if !course_ids.is_empty() {
                 let placeholders = vec!["?"; course_ids.len()].join(", ");
                 sql.push_str(&format!(" AND e.course_id IN ({placeholders})"));

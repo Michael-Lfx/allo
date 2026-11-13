@@ -425,8 +425,6 @@ export interface CheckinStatus {
   goal: number;
   /** 本复习日净入账 XP（负结算计入） */
   reviewed_count: number;
-  /** 当前到期卡片数（课程 + 自定义） */
-  due_count: number;
   /** 当日是否已锁定为完成（今日 XP 达标即锁定） */
   completed: boolean;
   /** 完成锁定时刻（UTC 毫秒），未完成时为 null */
@@ -470,40 +468,6 @@ export interface XpCalendar {
   tz_offset: number;
   /** 恒 weeks×7 个日桶，旧 → 新，末桶 = 今日 */
   days: XpCalendarDay[];
-}
-
-/** 复习日内完成的课时（日历明细） */
-export interface CalendarLessonRef {
-  lesson_id: string;
-  title: string;
-}
-
-/** 复习日内创建的课程（日历明细） */
-export interface CalendarCourseRef {
-  course_id: string;
-  title: string;
-}
-
-/** 请求范围内的一个复习日，无活动时后端补零 */
-export interface CalendarDayStats {
-  review_day: number;
-  reviewed_count: number;
-  checkin_completed: boolean;
-  /** 当日到期卡片数（过期卡片并入当天，与复习队列同口径） */
-  due_count: number;
-  completed_lessons: CalendarLessonRef[];
-  created_courses: CalendarCourseRef[];
-}
-
-/** 日历聚合响应：月视图或年视图 + 当前 streak */
-export interface CalendarStats {
-  year: number;
-  /** 1..=12 为月视图，null 为年视图 */
-  month: number | null;
-  tz_offset: number;
-  /** 以当前复习日为终点的连续打卡天数；今日未完成时为 0 */
-  streak: number;
-  days: CalendarDayStats[];
 }
 
 export interface ReviewAnswerResult {

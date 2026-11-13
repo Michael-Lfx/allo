@@ -89,12 +89,15 @@ impl LearningService {
         let today = review_day_number(now, tz_offset_minutes);
 
         // Panel 1 — load forecast: due moments of every active card,
-        // course + custom.
-        let mut due_moments: Vec<i64> = sqlx::query_scalar(
+        // course + custom. 前瞻可行动面（ADR-0017）：接共享「现存且启用」
+        // 片段，墓碑课程的死卡不计入负荷预报/overdue（与 due_reviews 队列
+        // 口径一致——面板不再出现「到期」点进队列却是空的幽灵读数）。
+        let mut due_moments: Vec<i64> = sqlx::query_scalar(&format!(
             "SELECT r.due_at FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             {COURSE_ARRANGEMENT_JOIN} \
              WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL",
-        )
+        ))
         .bind(user_id.as_str())
         .fetch_all(&self.pool)
         .await
@@ -123,8 +126,10 @@ impl LearningService {
         }
 
         // Panel 2 — state distribution over the active pool, course + custom.
+        // 前瞻可行动面（ADR-0017）：课程侧查询接共享「现存且启用」片段，
+        // 墓碑课程的死卡不进分布；自建题无课程归属，不受删除影响。
         let mut state_counts: HashMap<String, i64> = HashMap::new();
-        for sql in [
+        let course_state_sql = format!(
             "SELECT CASE \
               WHEN r.review_count = 0 THEN 'new' \
               WHEN r.stability_days < 7 THEN 'young' \
@@ -132,8 +137,12 @@ impl LearningService {
               ELSE 'master' END AS key, COUNT(*) \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             {COURSE_ARRANGEMENT_JOIN} \
              WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
              GROUP BY key",
+        );
+        for sql in [
+            course_state_sql.as_str(),
             "SELECT CASE \
               WHEN q.review_count = 0 THEN 'new' \
               WHEN q.stability_days < 7 THEN 'young' \
