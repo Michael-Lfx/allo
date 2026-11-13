@@ -1,4 +1,3 @@
-    use super::checkin::local_wall_clock_utc_ms;
     use super::course::{recommend_next_lesson, validate_pack};
     use super::progress::evaluate;
     use super::*;
@@ -1893,20 +1892,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         (service, user_id)
     }
 
-    async fn insert_review_event(service: &LearningService, user_id: &UserId, at: i64) {
-        sqlx::query(
-            "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-             VALUES (?, ?, 'course', ?, ?)",
-        )
-        .bind(generate_id())
-        .bind(user_id.as_str())
-        .bind(generate_id())
-        .bind(at)
-        .execute(service.pool_for_tests())
-        .await
-        .unwrap();
-    }
-
     /// 历史：j05 起打卡按 XP 口径（`checkin_today_locks_on_xp_gauge`），
     /// `learning.dailyCheckinGoal` 计数口径退役，其设置助手一并移除。
 
@@ -1929,8 +1914,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .unwrap();
     }
 
-    /// Inserts a custom question due at an exact timestamp (for calendar
-    /// due-bucket tests).
+    /// Inserts a custom question due at an exact timestamp (memory-panel
+    /// load tests).
     async fn insert_custom_question_due_at(
         service: &LearningService,
         user_id: &UserId,
@@ -1953,34 +1938,12 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .unwrap();
     }
 
-    /// YYYYMMDD integer for a local calendar date (review_day format).
-    fn day_number(date: chrono::NaiveDate) -> i64 {
-        i64::from(date.year()) * 10_000 + i64::from(date.month()) * 100 + i64::from(date.day())
-    }
-
     async fn checkin_rows(service: &LearningService, user_id: &UserId) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM learning_checkins WHERE user_id = ?")
             .bind(user_id.as_str())
             .fetch_one(service.pool_for_tests())
             .await
             .unwrap()
-    }
-
-    /// Seeds a completed check-in row for a specific review day (as the
-    /// locking logic would, with a snapshot reviewed_count of 1).
-    async fn insert_checkin(service: &LearningService, user_id: &UserId, review_day: i64) {
-        sqlx::query(
-            "INSERT INTO learning_checkins \
-             (checkin_id, user_id, review_day, goal, reviewed_count, completed_at) \
-             VALUES (?, ?, ?, 15, 1, ?)",
-        )
-        .bind(generate_id())
-        .bind(user_id.as_str())
-        .bind(review_day)
-        .bind(now_ms())
-        .execute(service.pool_for_tests())
-        .await
-        .unwrap();
     }
 
     /// Seeds one course with one module and lesson, enrolled by `user_id`;
@@ -2040,29 +2003,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         (course_id, lesson_id, enrollment_id)
     }
 
-    /// Marks a lesson as completed at `at` (started one minute earlier to
-    /// satisfy the progress CHECK constraint).
-    async fn complete_lesson(
-        service: &LearningService,
-        enrollment_id: &str,
-        lesson_id: &str,
-        at: i64,
-    ) {
-        sqlx::query(
-            "INSERT INTO learning_lesson_progress \
-             (enrollment_id, lesson_id, status, started_at, completed_at, updated_at) \
-             VALUES (?, ?, 'completed', ?, ?, ?)",
-        )
-        .bind(enrollment_id)
-        .bind(lesson_id)
-        .bind(at - 60_000)
-        .bind(at)
-        .bind(at)
-        .execute(service.pool_for_tests())
-        .await
-        .unwrap();
-    }
-
     /// Rolls every card of the user to "due right now". Fresh cards enter
     /// the queue due on the next review day; tests that exercise answering
     /// call this to fast-forward past the rollover.
@@ -2093,7 +2033,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // 收窄后的语义：零复习 + 空队列只是初始状态，绝不锁定“完成”。
         let status = service.checkin_today(&user_id).await.unwrap();
         assert_eq!(status.reviewed_count, 0);
-        assert_eq!(status.due_count, 0);
         assert!(!status.completed, "no review action must never complete the day");
         assert_eq!(checkin_rows(&service, &user_id).await, 0);
     }
@@ -2105,7 +2044,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let (service, user_id) = checkin_test_service().await;
         // 队列已清空但没有 XP：不完成。
         let status = service.checkin_today(&user_id).await.unwrap();
-        assert_eq!(status.due_count, 0);
         assert!(!status.completed, "an empty queue without XP is not a check-in");
         // 一笔 0 分结算（错答推进）也不完成：净入账仍为 0。
         sqlx::query(
@@ -2157,7 +2095,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         insert_due_custom_question(&service, &user_id).await;
         let second = service.checkin_today(&user_id).await.unwrap();
         assert!(second.completed);
-        assert_eq!(second.due_count, 1);
         assert_eq!(checkin_rows(&service, &user_id).await, 1);
     }
 
@@ -2187,179 +2124,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let status = service.checkin_today(&user_id).await.unwrap();
         assert_eq!(status.review_day, review_day_number(now, tz));
         assert_ne!(status.review_day, yesterday);
-        assert_eq!(status.due_count, 1);
         assert!(!status.completed, "a new review day starts unchecked");
-    }
-
-    #[tokio::test]
-    async fn calendar_buckets_by_review_day_and_tz() {
-        let (service, user_id) = checkin_test_service().await;
-        let tz = 480;
-        // UTC 2026-08-01 06:00：tz=+480 视图下本地 8 月 1 日 14:00 → 复习日 20260801；
-        // tz=-300 视图下本地 8 月 1 日 01:00（02:00 日界线前）→ 复习日 20260731，
-        // 不出现在 8 月视图中。同一时刻在两种时区下归属不同复习日。
-        let at = local_wall_clock_utc_ms(2026, 8, 1, 1, -300).unwrap();
-        insert_review_event(&service, &user_id, at).await;
-        let stats = service.calendar_stats(&user_id, tz, 2026, Some(8)).await.unwrap();
-        assert_eq!(stats.year, 2026);
-        assert_eq!(stats.month, Some(8));
-        assert_eq!(stats.tz_offset, 480);
-        assert_eq!(stats.days.len(), 31, "month view must zero-fill every day");
-        assert_eq!(stats.days.first().unwrap().review_day, 20260801);
-        assert_eq!(stats.days.last().unwrap().review_day, 20260831);
-        let day = stats.days.iter().find(|d| d.review_day == 20260801).unwrap();
-        assert_eq!(day.reviewed_count, 1);
-        // 同一事件、另一时区（UTC-5）：本地 8 月 1 日 01:00 → 复习日 20260731，
-        // 不出现在 8 月视图中。
-        let west = service.calendar_stats(&user_id, -300, 2026, Some(8)).await.unwrap();
-        let west_day = west.days.iter().find(|d| d.review_day == 20260801).unwrap();
-        assert_eq!(west_day.reviewed_count, 0);
-    }
-
-    #[tokio::test]
-    async fn calendar_buckets_due_count_by_review_day() {
-        let (service, user_id) = checkin_test_service().await;
-        let tz = SchedulerSettings::default().tz_offset_minutes;
-        let now = now_ms();
-        let today = review_day_number(now, tz);
-        let ymd = chrono::NaiveDate::from_ymd_opt(
-            (today / 10_000) as i32,
-            ((today / 100) % 100) as u32,
-            (today % 100) as u32,
-        )
-        .unwrap();
-        // 过期卡片（due 早于今天）滚入今天：与复习横幅到期队列同口径
-        insert_custom_question_due_at(&service, &user_id, now - 60_000).await;
-        // 明天 03:00 与后天 04:00（本地）到期的卡片分别归各自复习日
-        let tomorrow_ymd = ymd.succ();
-        let day_after_ymd = ymd.succ().succ();
-        let tomorrow_start = local_wall_clock_utc_ms(
-            tomorrow_ymd.year(),
-            tomorrow_ymd.month(),
-            tomorrow_ymd.day(),
-            2,
-            tz,
-        )
-        .unwrap();
-        let day_after_start = local_wall_clock_utc_ms(
-            day_after_ymd.year(),
-            day_after_ymd.month(),
-            day_after_ymd.day(),
-            2,
-            tz,
-        )
-        .unwrap();
-        insert_custom_question_due_at(&service, &user_id, tomorrow_start + 3_600_000).await;
-        insert_custom_question_due_at(&service, &user_id, day_after_start + 4_360_000).await;
-
-        let year = i64::from(ymd.year());
-        let stats = service
-            .calendar_stats(&user_id, tz, year, None)
-            .await
-            .unwrap();
-        let today_day = stats.days.iter().find(|d| d.review_day == today).unwrap();
-        assert_eq!(today_day.due_count, 1, "overdue cards roll into today");
-        for (label, expected) in [
-            ("tomorrow", day_number(tomorrow_ymd)),
-            ("day after", day_number(day_after_ymd)),
-        ] {
-            if let Some(d) = stats.days.iter().find(|d| d.review_day == expected) {
-                assert_eq!(d.due_count, 1, "{label} due must bucket to its review day");
-            }
-        }
-        assert!(
-            stats
-                .days
-                .iter()
-                .filter(|d| {
-                    d.review_day != today
-                        && d.review_day != day_number(tomorrow_ymd)
-                        && d.review_day != day_number(day_after_ymd)
-                })
-                .all(|d| d.due_count == 0),
-            "days without due cards must be zero"
-        );
-    }
-
-    #[tokio::test]
-    async fn calendar_year_view_zero_fills_every_day() {
-        let (service, user_id) = checkin_test_service().await;
-        let stats = service.calendar_stats(&user_id, 480, 2026, None).await.unwrap();
-        assert_eq!(stats.month, None);
-        assert_eq!(stats.days.len(), 365, "year view must cover the whole year");
-        assert_eq!(stats.days.first().unwrap().review_day, 20260101);
-        assert_eq!(stats.days.last().unwrap().review_day, 20261231);
-        assert!(stats.days.iter().all(|d| d.reviewed_count == 0 && !d.checkin_completed));
-    }
-
-    #[tokio::test]
-    async fn calendar_details_scope_lessons_to_user_and_bucket_courses() {
-        let (service, user_id) = checkin_test_service().await;
-        let tz = 480;
-        let created_at = local_wall_clock_utc_ms(2026, 8, 10, 10, tz).unwrap();
-        let completed_at = local_wall_clock_utc_ms(2026, 8, 11, 10, tz).unwrap();
-        let (course_id, lesson_id, enrollment_id) =
-            seed_course_with_lesson(&service, &user_id, created_at).await;
-        complete_lesson(&service, &enrollment_id, &lesson_id, completed_at).await;
-        // 另一用户的进度不应混入本用户的课时明细；但课程创建是全局目录聚合
-        // （不过滤用户），两个用户的课程都应出现在创建明细中。
-        let other_user = UserId::new();
-        let (_, other_lesson_id, other_enrollment_id) =
-            seed_course_with_lesson(&service, &other_user, created_at).await;
-        complete_lesson(&service, &other_enrollment_id, &other_lesson_id, completed_at).await;
-        let stats = service.calendar_stats(&user_id, tz, 2026, Some(8)).await.unwrap();
-        let created_day = stats.days.iter().find(|d| d.review_day == 20260810).unwrap();
-        assert_eq!(created_day.created_courses.len(), 2, "course catalog is global");
-        assert!(
-            created_day.created_courses.iter().any(|c| c.course_id == course_id),
-            "own course present"
-        );
-        assert!(
-            created_day
-                .created_courses
-                .iter()
-                .any(|c| c.title == "Calendar test course"),
-            "catalog titles present"
-        );
-        let completed_day = stats.days.iter().find(|d| d.review_day == 20260811).unwrap();
-        assert_eq!(completed_day.completed_lessons.len(), 1, "other users' progress must not leak");
-        assert_eq!(completed_day.completed_lessons[0].lesson_id, lesson_id);
-        assert_eq!(completed_day.completed_lessons[0].title, "Lesson");
-    }
-
-    #[tokio::test]
-    async fn calendar_streak_stops_at_gap_and_zero_without_today() {
-        let (service, user_id) = checkin_test_service().await;
-        let tz = SchedulerSettings::default().tz_offset_minutes;
-        let anchor = review_day_start_utc(now_ms(), tz) + 3_600_000; // 当天 03:00，属当天复习日
-        let today = review_day_number(anchor, tz);
-        // 今天 + 前 3 天完成，第 5 天缺失（断）但更早还有 → 从今天往前数 streak = 4。
-        for offset in [0_i64, 1, 2, 3, 5] {
-            insert_checkin(
-                &service,
-                &user_id,
-                review_day_number(anchor - offset * 86_400_000, tz),
-            )
-            .await;
-        }
-        let stats = service
-            .calendar_stats(&user_id, tz, today / 10_000, None)
-            .await
-            .unwrap();
-        assert_eq!(stats.streak, 4);
-        // 今天未完成（无今天行）→ streak = 0。
-        let (service2, user_id2) = checkin_test_service().await;
-        insert_checkin(
-            &service2,
-            &user_id2,
-            review_day_number(anchor - 86_400_000, tz),
-        )
-        .await;
-        let stats2 = service2
-            .calendar_stats(&user_id2, tz, today / 10_000, None)
-            .await
-            .unwrap();
-        assert_eq!(stats2.streak, 0);
     }
 
     /// 学习图课程的最小 DB 夹具（ADR-0009 概念网模型）：课程行 +
@@ -3478,6 +3243,119 @@ async fn memory_stats_aggregates_retention_calibration_and_load() {
     };
     assert!(bucket("new") >= 1);
     assert!(bucket("young") + bucket("mature") + bucket("master") >= 1);
+}
+
+/// t1 R3（ADR-0017 前瞻面过滤）：课程软删（墓碑）后，死卡（activity 行已
+/// 物理删除、永不复服务）必须从记忆面板的前瞻读数退场——负荷预报
+/// （overdue/逐日桶）与卡片状态分布回落到只剩未受影响的卡；队列口径
+/// （due_reviews）本就过滤，作回归守卫——面板与队列一致，不再出现
+/// 「面板显示到期、点进队列为空」的幽灵读数。
+#[tokio::test]
+async fn memory_stats_exclude_tombstoned_course_cards() {
+    let (service, user_id) = checkin_test_service().await;
+    let now = now_ms();
+    let tz = 480;
+    let (course_id, lesson_id, enrollment_id) =
+        seed_course_with_lesson(&service, &user_id, now).await;
+    // 课程卡两张（每卡一枚活动行，UNIQUE(enrollment_id, activity_id)）：
+    // A 已到期（overdue，young 桶）；B 在预报窗口内到期（今日+3 复习日的
+    // 本地 03:00），new 桶。另有一张自建卡作对照（不受删课影响）。
+    let pool = service.pool_for_tests();
+    let seed_course_card = |due_at: i64, stability: f64, review_count: i64, position: i64| {
+        let lesson_id = lesson_id.clone();
+        let enrollment_id = enrollment_id.clone();
+        async move {
+            let activity_id = LearningActivityId::new().into_string();
+            sqlx::query(
+                "INSERT INTO learning_activities \
+                 (activity_id, lesson_id, kind, prompt, config_json, position) \
+                 VALUES (?, ?, 'single_choice', ?, ?, ?)",
+            )
+            .bind(&activity_id)
+            .bind(&lesson_id)
+            .bind("课程卡的题面")
+            .bind(r#"{"answer":"B","options":["A","B"],"explanation":"","distractors":[],"matches":[]}"#)
+            .bind(position)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO learning_review_items \
+                 (review_item_id, enrollment_id, activity_id, due_at, stability_days, difficulty, \
+                  review_count, lapse_count, last_reviewed_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 5.0, ?, 0, NULL, ?)",
+            )
+            .bind(LearningReviewItemId::new().into_string())
+            .bind(&enrollment_id)
+            .bind(&activity_id)
+            .bind(due_at)
+            .bind(stability)
+            .bind(review_count)
+            .bind(now_ms())
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    };
+    seed_course_card(now - 1000, 1.0, 1, 0).await;
+    seed_course_card(
+        review_day_start_utc(now, tz) + 3 * 86_400_000 + 3_600_000,
+        0.0,
+        0,
+        1,
+    )
+    .await;
+    insert_due_custom_question(&service, &user_id).await;
+
+    let bucket = |stats: &MemoryHealthStats, key: &str| {
+        stats
+            .state_distribution
+            .iter()
+            .find(|bucket| bucket.key == key)
+            .unwrap()
+            .count
+    };
+    let forecast_day = |stats: &MemoryHealthStats, day: i64| {
+        stats
+            .load_forecast
+            .iter()
+            .find(|day_row| day_row.review_day == day)
+            .map(|day_row| day_row.due_count)
+    };
+    let queue = || async {
+        // 主复习入口口径：due_only + 全课程域 + 自建题并入。
+        service
+            .due_reviews(&user_id, 10, &[], true, false, &[], &[])
+            .await
+            .unwrap()
+            .len()
+    };
+
+    // 删除前：面板与队列一致，课程卡全部计入。
+    let before = service.memory_health_stats(&user_id, tz).await.unwrap();
+    assert_eq!(before.overdue_count, 2, "课程到期卡 + 自建到期卡");
+    let future_day = review_day_number(
+        review_day_start_utc(now, tz) + 3 * 86_400_000 + 3_600_000,
+        tz,
+    );
+    assert_eq!(forecast_day(&before, future_day), Some(1), "窗口内课程卡入桶");
+    assert_eq!(bucket(&before, "new"), 2);
+    assert_eq!(bucket(&before, "young"), 1);
+    assert_eq!(queue().await, 2, "队列口径同样计入到期课程卡");
+
+    // 软删课程（墓碑语义）：课程卡变死卡。
+    service
+        .delete_course(&LearningCourseId::parse(&course_id).unwrap(), &user_id)
+        .await
+        .unwrap();
+
+    // 删除后：死卡从前瞻读数退场，自建卡读数不动。
+    let after = service.memory_health_stats(&user_id, tz).await.unwrap();
+    assert_eq!(after.overdue_count, 1, "死卡 overdue 退场（14 → 0 语义的最小复现）");
+    assert_eq!(forecast_day(&after, future_day), Some(0), "死卡逐日桶归零");
+    assert_eq!(bucket(&after, "new"), 1, "死卡 new 桶退场，自建 new 保留");
+    assert_eq!(bucket(&after, "young"), 0, "死卡 young 桶退场");
+    assert_eq!(queue().await, 1, "回归守卫：队列口径不变，与面板一致");
 }
 
 /// 手动编辑节正文测试的种子：一条 traditional 课程（content_generated=1）
