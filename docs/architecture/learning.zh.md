@@ -50,9 +50,10 @@
   空章节回退采样路径）④分批展开（`run_kb_expansion`：按章展开产 Blueprint，
   跳过对称账台账 SourceCoverage）。四件套（inventory/triage/plan/coverage）
   以 v1 信封落 `course_source_plan_json`（迁移 069）；描述流/回退路径列
-  NULL 不伪造。**40 文件预算的新定位**：只是单批分诊/展开的批预算与成本门
-  阈值之一（>40 文件或预估 >20 次调用时 `POST /courses/generate/estimate`
-  规则分诊 + 估算确认），不再承担结构发现。与 t3 课时检索的关系：课时正文
+  NULL 不伪造。**40 文件预算的新定位**：只是单批分诊/展开的批预算阈值之一
+  （>40 文件触发规则分诊，提交即生成——d5 建课简化已移除计划确认页，估算
+  端点 `POST /courses/generate/estimate` 亦于 2026-11-13 退役），不再承担
+  结构发现。与 t3 课时检索的关系：课时正文
   grounding 仍按课时 `sources` 走既有 24KB/40KB 预算，锚点 rel_path 必须出
   自清点清单（防幻觉门）；文件级 role 只作诊断，覆盖以 topic 为主单位。WS
   进度帧新增 `triage_started/triage_completed/source_plan_started/
