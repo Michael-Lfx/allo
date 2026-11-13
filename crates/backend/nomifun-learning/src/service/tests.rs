@@ -2847,6 +2847,180 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_course_content_fully_purged(pool, &course_id).await;
     }
 
+    /// t3 R1+R4 删除收尾（ADR-0017 §4）：删一门「正测到一半」的课——
+    /// ① active 检测回合废弃（supersede 同款形态：abandoned + finished_at，
+    /// answers/report/earned 保持空）；② 该课 activities 将被 purge，其复习
+    /// 卡（死卡）在 purge 之前打 archived_at；③ 墓碑统一形态：enabled 随
+    /// deleted_at 一并清零。收尾按课程键定不越界：另一门在学课的 active
+    /// 回合与在学卡原样；前瞻读数（due_reviews 队列）随 t1 口径只退场死卡、
+    /// 在学课的卡照常出队；回望面（completed 回合历史）原样保留（账本永远
+    /// 保留）。
+    #[tokio::test]
+    async fn delete_course_finalizes_active_round_and_dead_cards() {
+        let (service, user_id) = checkin_test_service().await;
+        let pool = service.pool_for_tests();
+        let (deleted_id, _lessons, deleted_activities) =
+            seed_quiz_course(&service, &user_id, 1).await;
+        let (kept_id, _lessons, kept_activities) = seed_quiz_course(&service, &user_id, 1).await;
+        let now = now_ms();
+        let enrollment_of = |course_id: &str| {
+            let course_id = course_id.to_owned();
+            async move {
+                let enrollment_id: String = sqlx::query_scalar(
+                    "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ?",
+                )
+                .bind(&course_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                enrollment_id
+            }
+        };
+        // 两门课各一组回合成像：正测一半（active）+ 一段已结算历史
+        // （completed，账本面——删除收尾不得改写）。
+        for (course_id, activities) in [(&deleted_id, &deleted_activities), (&kept_id, &kept_activities)] {
+            let enrollment_id = enrollment_of(course_id).await;
+            sqlx::query(
+                "INSERT INTO learning_review_items \
+                 (review_item_id, enrollment_id, activity_id, due_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(LearningReviewItemId::new().into_string())
+            .bind(&enrollment_id)
+            .bind(&activities[0])
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO learning_quiz_rounds \
+                 (round_id, user_id, course_id, started_at, status, doc_version, plan_json) \
+                 VALUES (?, ?, ?, ?, 'active', 1, '[]')",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(course_id)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO learning_quiz_rounds \
+                 (round_id, user_id, course_id, started_at, finished_at, status, doc_version, \
+                  plan_json, answers_json, report_json, earned_xp) \
+                 VALUES (?, ?, ?, ?, ?, 'completed', 1, '[]', '{}', '[]', 0)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(course_id)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        let queue = || async {
+            service
+                .due_reviews(&user_id, 10, &[], true, false, &[], &[])
+                .await
+                .unwrap()
+        };
+        // 删除前：两门课的到期卡都出队。
+        assert_eq!(queue().await.len(), 2, "both live courses queue their due card");
+
+        service
+            .delete_course(&LearningCourseId::parse(&deleted_id).unwrap(), &user_id)
+            .await
+            .unwrap();
+
+        // ① active 回合废弃（supersede 形态）；completed 历史回合原样。
+        let (status, finished_at, answers, report, earned): (String, Option<i64>, Option<String>, Option<String>, Option<i64>) =
+            sqlx::query_as(
+                "SELECT status, finished_at, answers_json, report_json, earned_xp \
+                 FROM learning_quiz_rounds WHERE course_id = ? AND status != 'completed'",
+            )
+            .bind(&deleted_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "abandoned", "active round must be abandoned on delete");
+        assert!(finished_at.is_some(), "abandoned shape carries finished_at");
+        assert!(answers.is_none() && report.is_none() && earned.is_none(),
+            "abandoned shape keeps answers/report/earned empty");
+        let completed_kept: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_quiz_rounds \
+             WHERE course_id = ? AND status = 'completed'",
+        )
+        .bind(&deleted_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(completed_kept, 1, "settled round history is ledger face, untouched");
+        // 不越界：在学课的 active 回合照旧。
+        let kept_active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_quiz_rounds \
+             WHERE course_id = ? AND status = 'active' AND finished_at IS NULL",
+        )
+        .bind(&kept_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(kept_active, 1, "the kept course's active round must stay active");
+
+        // ② 死卡打标；在学课的卡不打标。
+        let dead_archived: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE e.course_id = ? AND r.archived_at IS NOT NULL",
+        )
+        .bind(&deleted_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(dead_archived, 1, "the purged course's card must carry archived_at");
+        let kept_unarchived: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE e.course_id = ? AND r.archived_at IS NULL",
+        )
+        .bind(&kept_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(kept_unarchived, 1, "the kept course's card must stay unarchived");
+
+        // ③ 墓碑统一形态：enabled 随 deleted_at 清零；在学课 enabled=1。
+        let tombstone: (Option<i64>, i64) = sqlx::query_as(
+            "SELECT deleted_at, enabled FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(&deleted_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(
+            tombstone.0.is_some() && tombstone.1 == 0,
+            "tombstone must carry deleted_at and enabled = 0, got {tombstone:?}"
+        );
+        let kept_enabled: i64 = sqlx::query_scalar(
+            "SELECT enabled FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(&kept_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(kept_enabled, 1);
+
+        // 前瞻读数回归：队列只退场死卡，在学课的卡照常出队（口径不变）。
+        let after = queue().await;
+        assert_eq!(after.len(), 1, "only the dead card leaves the due queue");
+        assert_eq!(
+            after[0].course_id.as_ref().map(|c| c.as_str()),
+            Some(kept_id.as_str()),
+            "the kept course's card still queues"
+        );
+    }
+
     /// 安排面收窄（三轮 g3「现存且启用」）：归档课的卡离开到期队列、恢复后
     /// 回来；队列收窄不拦已出卡的作答提交（历史面如实落账）；概况读数随
     /// enabled 与 due_today 反映。
