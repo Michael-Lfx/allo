@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Left, Right, Refresh, Loading } from '@icon-park/react';
+import { useTranslation } from 'react-i18next';
 
 export interface WebviewHostProps {
   /** URL to display */
@@ -55,6 +56,7 @@ const WebviewHost: React.FC<WebviewHostProps> = ({
   onDidFinishLoad,
   onDidFailLoad,
 }) => {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -340,13 +342,13 @@ const WebviewHost: React.FC<WebviewHostProps> = ({
       {/* Navigation bar (optional) */}
       {showNavBar && (
         <div className='nomi-url-viewer-toolbar flex items-center gap-6px h-40px px-10px bg-2 border-b border-b-solid border-arco-1 flex-shrink-0'>
-          <button onClick={handleGoBack} disabled={!canGoBack} className='toolbar-btn icon-btn' title='Back'>
+          <button onClick={handleGoBack} disabled={!canGoBack} className='toolbar-btn icon-btn' title={t('common.webview.back', { defaultValue: '后退' })} aria-label={t('common.webview.back', { defaultValue: '后退' })}>
             <Left theme='outline' size={16} />
           </button>
-          <button onClick={handleGoForward} disabled={!canGoForward} className='toolbar-btn icon-btn' title='Forward'>
+          <button onClick={handleGoForward} disabled={!canGoForward} className='toolbar-btn icon-btn' title={t('common.webview.forward', { defaultValue: '前进' })} aria-label={t('common.webview.forward', { defaultValue: '前进' })}>
             <Right theme='outline' size={16} />
           </button>
-          <button onClick={handleRefresh} className='toolbar-btn icon-btn' title='Refresh'>
+          <button onClick={handleRefresh} className='toolbar-btn icon-btn' title={t('common.webview.refresh', { defaultValue: '刷新' })} aria-label={t('common.webview.refresh', { defaultValue: '刷新' })}>
             {isLoading ? (
               <Loading theme='outline' size={16} className='animate-spin' />
             ) : (
@@ -355,11 +357,11 @@ const WebviewHost: React.FC<WebviewHostProps> = ({
           </button>
           {isStarOffice && (
             <div className='flex items-center gap-6px ml-2px'>
-              <button onClick={handleZoomReset} className='toolbar-btn' title='Reset zoom'>
+              <button onClick={handleZoomReset} className='toolbar-btn' title={t('common.webview.resetZoom', { defaultValue: '重置缩放' })} aria-label={t('common.webview.resetZoom', { defaultValue: '重置缩放' })}>
                 100%
               </button>
-              <button onClick={handleZoomFit} className='toolbar-btn' title='Fit'>
-                Fit
+              <button onClick={handleZoomFit} className='toolbar-btn' title={t('common.webview.fit', { defaultValue: '适应视图' })} aria-label={t('common.webview.fit', { defaultValue: '适应视图' })}>
+                {t('common.webview.fit', { defaultValue: '适应视图' })}
               </button>
               <span className='toolbar-chip'>{Math.round(zoomFactor * 100)}%</span>
             </div>
@@ -372,7 +374,8 @@ const WebviewHost: React.FC<WebviewHostProps> = ({
               onKeyDown={handleUrlKeyDown}
               onFocus={(e) => e.target.select()}
               className='toolbar-input'
-              placeholder='Enter URL...'
+              aria-label={t('common.webview.enterUrl', { defaultValue: '输入网址' })}
+              placeholder={t('common.webview.enterUrlPlaceholder', { defaultValue: '输入网址…' })}
             />
           </form>
         </div>
@@ -407,7 +410,7 @@ const WebviewHost: React.FC<WebviewHostProps> = ({
             opacity: !showNavBar && isLoading ? 0 : 1,
             transition: 'opacity 150ms ease-in',
           }}
-          title='Embedded content'
+          title={t('common.webview.embeddedContent', { defaultValue: '嵌入内容' })}
         />
       </div>
     </div>

@@ -349,7 +349,10 @@ const ExecutionTopPanel: React.FC<{ embedded?: boolean }> = ({ embedded = false 
         </div>
       )}
 
-      <ActiveSubagentsPanel executionId={executionId} />
+      <ActiveSubagentsPanel
+        executionId={executionId}
+        forceExpanded={status === 'waiting_input' || status === 'failed' || status === 'completed_with_failures'}
+      />
 
       <div className={`${styles.body} flex-1 min-h-0`}>
         <Suspense fallback={<Spin className='m-auto' />}>

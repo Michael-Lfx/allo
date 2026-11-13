@@ -98,6 +98,7 @@ import {
   shouldScheduleAgentRefreshForHash,
 } from './hooks/agent/agentDetectionRefresh';
 import { useCloudAuth } from './hooks/context/CloudAuthContext';
+import { useArcoPrimaryColor } from './hooks/ui/useArcoPrimaryColor';
 import { ConversationHistoryProvider } from './hooks/context/ConversationHistoryContext';
 import HOC from './utils/ui/HOC';
 import { isDesktopShell } from './utils/platform';
@@ -146,8 +147,9 @@ const Config: React.FC<PropsWithChildren> = ({ children }) => {
     i18n: { language },
   } = useTranslation();
   const arcoLocale = arcoLocales[language] ?? enUS;
+  const primaryColor = useArcoPrimaryColor();
 
-  return React.createElement(ConfigProvider, { theme: { primaryColor: '#4E5969' }, locale: arcoLocale }, children);
+  return React.createElement(ConfigProvider, { theme: { primaryColor }, locale: arcoLocale }, children);
 };
 
 const StartupRecoveryPanel: React.FC<{

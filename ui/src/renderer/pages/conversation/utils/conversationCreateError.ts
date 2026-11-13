@@ -10,6 +10,7 @@ export type WorkspacePathErrorCode =
 
 export type ConversationCreateErrorCode = 'WORKSPACE_PATH_EDGE_WHITESPACE_UNSUPPORTED';
 export type ConversationRuntimeWorkspaceErrorCode = 'WORKSPACE_PATH_EDGE_WHITESPACE_RUNTIME_UNSUPPORTED';
+export type ConversationModelErrorCode = 'MODEL_NOT_CONFIGURED' | 'PROVIDER_UNAVAILABLE';
 
 const BACKEND_ERROR_CODE_MAP: Record<string, WorkspacePathErrorCode> = {
   WORKSPACE_PATH_EDGE_WHITESPACE_UNSUPPORTED: 'WORKSPACE_PATH_EDGE_WHITESPACE_UNSUPPORTED',
@@ -17,6 +18,8 @@ const BACKEND_ERROR_CODE_MAP: Record<string, WorkspacePathErrorCode> = {
 };
 
 const PROVIDER_ERROR_CODES = new Set(['PROVIDER_UNAVAILABLE']);
+
+const MODEL_NOT_CONFIGURED_PATTERN = /no\s+(?:provider\/model|model)\s+(?:configured|selected)/i;
 
 /** i18n key for a provider-config error code, or undefined if not one. */
 export function providerErrorI18nKey(code: string): string | undefined {
@@ -115,7 +118,25 @@ export const normalizeConversationRuntimeWorkspaceErrorCode = (
   return code === 'WORKSPACE_PATH_EDGE_WHITESPACE_RUNTIME_UNSUPPORTED' ? code : undefined;
 };
 
+export const normalizeConversationModelErrorCode = (error: unknown): ConversationModelErrorCode | undefined => {
+  const payload = getWorkspacePathErrorPayload(error);
+  if (payload?.code && PROVIDER_ERROR_CODES.has(payload.code)) {
+    return 'PROVIDER_UNAVAILABLE';
+  }
+
+  const rawMessage = payload?.error || parseError(error) || '';
+  return MODEL_NOT_CONFIGURED_PATTERN.test(rawMessage) ? 'MODEL_NOT_CONFIGURED' : undefined;
+};
+
 export const getConversationCreateErrorMessage = (error: unknown, t: TFunction): string => {
+  const modelError = normalizeConversationModelErrorCode(error);
+  if (modelError === 'MODEL_NOT_CONFIGURED') {
+    return t('conversation.chat.noModelSelected');
+  }
+  if (modelError === 'PROVIDER_UNAVAILABLE') {
+    return t('conversation.agentError.codes.PROVIDER_UNAVAILABLE.body');
+  }
+
   const normalizedCode = normalizeConversationCreateErrorCode(error);
   const payload = getWorkspacePathErrorPayload(error);
   const workspacePath = getWorkspacePathFromErrorDetails(error);
@@ -132,6 +153,11 @@ export const getConversationCreateErrorMessage = (error: unknown, t: TFunction):
 };
 
 export const getConversationRuntimeWorkspaceErrorMessage = (error: unknown, t: TFunction): string => {
+  const modelError = normalizeConversationModelErrorCode(error);
+  if (modelError === 'MODEL_NOT_CONFIGURED') {
+    return t('conversation.chat.noModelSelected');
+  }
+
   const payload = getWorkspacePathErrorPayload(error);
   const providerKey = payload?.code ? providerErrorI18nKey(payload.code) : undefined;
   if (providerKey) {

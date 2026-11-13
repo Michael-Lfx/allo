@@ -7,6 +7,7 @@
 import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useCallback, useEffect } from 'react';
 import classNames from 'classnames';
+import { useTranslation } from 'react-i18next';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 
 export interface ContentAsideProps {
@@ -55,6 +56,7 @@ const ContentAside: React.FC<ContentAsideProps> = ({
   children,
   className,
 }) => {
+  const { t } = useTranslation();
   const resize = useResizableSplit({ unit: 'px', defaultWidth, minWidth, maxWidth, storageKey });
 
   const handleKeyDown = useCallback(
@@ -87,20 +89,14 @@ const ContentAside: React.FC<ContentAsideProps> = ({
           {subtitle && <div className='mt-2px text-12px leading-18px text-t-tertiary truncate'>{subtitle}</div>}
         </div>
         {actions && <div className='shrink-0 flex items-center gap-6px'>{actions}</div>}
-        {/* A real <button> would paint a black focus box in WebView2 — the app
-            uses role='button' divs for custom clickables throughout. */}
-        <div
-          role='button'
-          tabIndex={0}
-          aria-label='close'
+        <button
+          type='button'
+          aria-label={t('common.close', { defaultValue: '关闭' })}
           onClick={onClose}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') onClose();
-          }}
-          className='shrink-0 flex items-center justify-center w-22px h-22px rd-6px text-t-tertiary hover:text-t-primary hover:bg-[var(--color-fill-2)] transition-colors cursor-pointer'
+          className='shrink-0 flex items-center justify-center w-22px h-22px rd-6px border-none bg-transparent p-0 text-t-tertiary hover:text-t-primary hover:bg-[var(--color-fill-2)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px'
         >
           <FlowyIcon name='close' size={14} />
-        </div>
+        </button>
       </div>
       <div className='flex-1 min-h-0 overflow-y-auto px-14px pb-14px'>{children}</div>
     </aside>

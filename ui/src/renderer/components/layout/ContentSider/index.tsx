@@ -69,7 +69,7 @@ const ContentSider: React.FC<ContentSiderProps> = ({
         // Soft right edge: a gentle shadow bleeding onto the content area instead
         // of a stark 1px divider. Paired with the recessed bg-2 tone, the boundary
         // reads柔和 in both themes — no hard line.
-        boxShadow: '6px 0 14px -8px rgba(0, 0, 0, 0.14)',
+        boxShadow: 'var(--flowy-shadow-structure)',
       }}
     >
       {header ? <div className='shrink-0'>{header}</div> : null}

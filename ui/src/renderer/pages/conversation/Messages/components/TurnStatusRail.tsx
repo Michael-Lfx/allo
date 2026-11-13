@@ -47,6 +47,21 @@ const TurnStatusRail: React.FC<TurnStatusRailProps> = ({ presentation }) => {
     [presentation.detail, presentation.phase, t]
   );
 
+  if (presentation.phase === 'failed' && label) {
+    return (
+      <div
+        className='turn-status-rail mx-auto mb-8px max-w-780px px-8px text-12px text-danger flex items-center gap-8px min-h-20px'
+        role='alert'
+        aria-live='polite'
+        data-testid='turn-error-notice'
+        data-phase='failed'
+      >
+        <span className='inline-block w-6px h-6px rd-full shrink-0 bg-danger' aria-hidden='true' />
+        <span className='truncate'>{label}</span>
+      </div>
+    );
+  }
+
   if (presentation.showStatusRail && shouldShowLiveRail(presentation.phase) && label) {
     return (
       <div

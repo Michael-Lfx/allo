@@ -416,9 +416,9 @@
   width: 100%;
   box-sizing: border-box;
   background: var(--flowy-raised);
-  border: 1px solid var(--color-border-2);
+  border: 1px solid var(--flowy-border-structural);
   border-radius: 24px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--flowy-shadow-structure);
   transition:
     border-color var(--flowy-motion-fast) var(--flowy-ease-enter),
     box-shadow var(--flowy-motion-base) var(--flowy-ease-enter),
@@ -443,6 +443,61 @@
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
+}
+
+.modelReadinessNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--flowy-warning, var(--warning)) 30%, transparent);
+  border-radius: var(--flowy-radius-md, 8px);
+  background: color-mix(in srgb, var(--flowy-warning, var(--warning)) 10%, transparent);
+  color: var(--flowy-text-primary, var(--color-text-1));
+  font-size: var(--flowy-text-control, 13px);
+  line-height: 18px;
+}
+
+.modelReadinessNoticeDraft {
+  background: color-mix(in srgb, var(--flowy-warning, var(--warning)) 8%, var(--flowy-panel, var(--color-bg-1)));
+}
+
+.modelReadinessNoticeText {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.modelReadinessNoticeMeta {
+  min-width: 0;
+  color: var(--flowy-text-muted, var(--color-text-3));
+  font-size: var(--flowy-text-caption, 12px);
+  white-space: nowrap;
+}
+
+.modelReadinessNoticeAction {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--flowy-accent) 42%, transparent);
+  border-radius: var(--flowy-radius-control, 6px);
+  background: var(--flowy-panel, var(--color-bg-1));
+  color: var(--flowy-text-primary, var(--color-text-1));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modelReadinessNoticeAction:hover,
+.modelReadinessNoticeAction:focus-visible {
+  border-color: var(--flowy-accent);
+  color: var(--flowy-accent);
+}
+
+.modelReadinessNoticeAction:focus-visible {
+  outline: 2px solid var(--flowy-focus);
+  outline-offset: 2px;
 }
 
 .guidStatusChips {
@@ -2789,6 +2844,13 @@
   align-self: stretch;
   margin: 0;
   color: var(--color-text-1);
+  opacity: 0.9;
+  transition: opacity var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
+}
+
+.homeBrand:hover,
+.homeBrand:focus-within {
+  opacity: 1;
 }
 
 .homeEntries {
@@ -2811,6 +2873,13 @@
   position: relative;
   width: 100%;
   margin-top: 8px;
+  opacity: 0.82;
+  transition: opacity var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
+}
+
+.homeGallery:hover,
+.homeGallery:focus-within {
+  opacity: 1;
 }
 
 .homeCapabilityChip {

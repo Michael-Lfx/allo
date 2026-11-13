@@ -57,7 +57,6 @@ export const useNomiQuickStart = () => {
     async ({ name, prompt, send = true, model, extra }: NomiQuickStartOptions): Promise<boolean> => {
       const effectiveModel = model ?? current_model;
       if (!effectiveModel) {
-        Message.warning(t('conversation.noModelConfigured'));
         return false;
       }
       try {

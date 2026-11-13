@@ -12,6 +12,7 @@ import type { ExecutionStepId } from '@/common/types/ids';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import ExecutionPlanEditor from './ExecutionPlanEditor';
 import { refreshOnVersionConflict } from './refreshOnVersionConflict';
+import ExecutionDisclosure from './ExecutionDisclosure';
 
 type AdjustmentSummary = {
   kept: number;
@@ -108,16 +109,23 @@ const ExecutionAdjustBox: React.FC<{
     // (The old form resolved to var(--bg-base), so the divider matched the background.)
     <div className='shrink-0 border-t border-t-solid border-t-[var(--border-base)] bg-1 px-10px pb-10px pt-8px'>
       {messageContext}
-      {summary && <div className='mb-6px truncate px-8px text-11px text-t-tertiary'>{summary}</div>}
-      <ExecutionPlanEditor
-        fluid
-        value={intent}
-        onChange={setIntent}
-        onSubmit={submit}
-        submitting={submitting}
-        label={t('agentExecution.adjust.label')}
-        placeholder={t('agentExecution.adjust.placeholder')}
-      />
+      <ExecutionDisclosure
+        executionId={detail.execution.execution_id}
+        id='adjustment'
+        defaultCollapsed
+        title={<span className='text-12px font-500 text-t-primary'>{t('agentExecution.adjust.label')}</span>}
+        summary={summary ? <span className='max-w-240px truncate text-11px text-t-tertiary'>{summary}</span> : undefined}
+      >
+        <ExecutionPlanEditor
+          fluid
+          value={intent}
+          onChange={setIntent}
+          onSubmit={submit}
+          submitting={submitting}
+          label={t('agentExecution.adjust.label')}
+          placeholder={t('agentExecution.adjust.placeholder')}
+        />
+      </ExecutionDisclosure>
     </div>
   );
 };

@@ -80,8 +80,8 @@ button.arco-btn.arco-btn-shape-circle,
 
 .arco-btn {
   &.arco-btn-outline {
-    border-color: #86909c;
-    color: #86909c;
+    border-color: var(--flowy-border-structural);
+    color: var(--flowy-text-secondary);
   }
 }
 
@@ -131,10 +131,10 @@ body[arco-theme='dark']
 .send-button-custom.arco-btn-primary.arco-btn-icon-only:disabled,
 .send-button-custom.arco-btn-secondary.arco-btn-icon-only.arco-btn-disabled,
 .send-button-custom.arco-btn-secondary.arco-btn-icon-only:disabled {
-  background: #d3d4d9 !important;
-  background-color: #d3d4d9 !important;
+  background: var(--flowy-interactive) !important;
+  background-color: var(--flowy-interactive) !important;
   background-image: none !important;
-  border-color: #d3d4d9 !important;
+  border-color: var(--flowy-border-subtle) !important;
   opacity: 1 !important;
 }
 
@@ -153,25 +153,15 @@ body[arco-theme='dark']
 }
 
 .send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
-  background-color: #2b2f36 !important;
+  background-color: var(--flowy-ink-button) !important;
   background-image: none !important;
-  border-color: #2b2f36 !important;
-  color: #fff !important;
+  border-color: var(--flowy-ink-button) !important;
+  color: var(--flowy-ink-button-fg) !important;
 }
 
 .send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
-  background-color: #1f2128 !important;
-  border-color: #1f2128 !important;
-}
-
-[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled) {
-  background-color: #52525b !important;
-  border-color: #52525b !important;
-}
-
-[data-theme='dark'] .send-button-custom.sendbox-stop-button.arco-btn-secondary:not(:disabled):not(.arco-btn-disabled):hover {
-  background-color: #71717a !important;
-  border-color: #71717a !important;
+  background-color: color-mix(in srgb, var(--flowy-ink-button) 86%, var(--flowy-text-primary)) !important;
+  border-color: color-mix(in srgb, var(--flowy-ink-button) 86%, var(--flowy-text-primary)) !important;
 }
 
 [data-theme='dark'] .send-button-custom.arco-btn-primary.arco-btn-disabled,
@@ -1733,9 +1723,7 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
   background: var(--dialog-fill-0) !important;
   border: 1px solid var(--border-base) !important;
   border-radius: var(--sider-popover-radius) !important;
-  box-shadow:
-    0 18px 46px rgba(15, 23, 42, 0.13),
-    0 3px 12px rgba(15, 23, 42, 0.06) !important;
+  box-shadow: var(--flowy-shadow-raised) !important;
   overflow: hidden;
 }
 
@@ -1750,9 +1738,7 @@ html[data-support-probe-pointer='coarse'] .support-image-preview-item__remove {
 
 body[arco-theme='dark'] .sider-soft-popover .arco-popover-content {
   border-color: var(--color-border-2) !important;
-  box-shadow:
-    0 20px 52px rgba(0, 0, 0, 0.42),
-    0 2px 12px rgba(0, 0, 0, 0.26) !important;
+  box-shadow: var(--flowy-shadow-raised) !important;
 }
 
 body[arco-theme='dark'] .sider-soft-popover .arco-popover-arrow {

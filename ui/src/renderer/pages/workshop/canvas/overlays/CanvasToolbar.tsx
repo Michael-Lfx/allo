@@ -16,10 +16,10 @@ import { useTranslation } from 'react-i18next';
 import type { WorkshopCanvasBackground } from '../../types';
 
 const CHROME_BTN =
-  'grid h-30px w-30px place-items-center rounded-8px cursor-pointer transition-colors text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]';
-const CHROME_BTN_DISABLED = 'grid h-30px w-30px place-items-center rounded-8px text-[var(--color-text-3)] opacity-45 cursor-not-allowed';
+  'grid h-30px w-30px place-items-center rounded-8px border-none bg-transparent p-0 cursor-pointer transition-colors text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px';
+const CHROME_BTN_DISABLED = 'grid h-30px w-30px place-items-center rounded-8px border-none bg-transparent p-0 text-[var(--color-text-3)] opacity-45 cursor-not-allowed';
 const CHROME_BTN_ACTIVE =
-  'grid h-30px w-30px place-items-center rounded-8px cursor-pointer transition-colors text-[rgb(var(--primary-6))]';
+  'grid h-30px w-30px place-items-center rounded-8px border-none bg-transparent p-0 cursor-pointer transition-colors text-[rgb(var(--primary-6))] focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px';
 
 export interface CanvasToolbarProps {
   canUndo: boolean;
@@ -41,26 +41,17 @@ const ChromeButton: React.FC<{
   active?: boolean;
   children: React.ReactNode;
 }> = ({ label, onClick, disabled, active, children }) => (
-  <div
-    role='button'
-    tabIndex={disabled ? -1 : 0}
+  <button
+    type='button'
     title={label}
     aria-label={label}
-    aria-disabled={disabled}
-    onClick={() => {
-      if (!disabled) onClick?.();
-    }}
-    onKeyDown={(e) => {
-      if (disabled) return;
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        onClick?.();
-      }
-    }}
+    disabled={disabled}
+    aria-pressed={active}
+    onClick={onClick}
     className={disabled ? CHROME_BTN_DISABLED : active ? CHROME_BTN_ACTIVE : CHROME_BTN}
   >
     {children}
-  </div>
+  </button>
 );
 
 const BG_ICON: Record<WorkshopCanvasBackground, React.ReactNode> = {
@@ -85,7 +76,7 @@ const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   const bgLabel = t(`workshopCanvas.background.${background}`, { defaultValue: background });
 
   return (
-    <div className='flex items-center gap-1px rounded-11px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-4px py-4px shadow-[0_8px_28px_rgba(0,0,0,0.16)] backdrop-blur-md'>
+    <div className='flex items-center gap-1px rounded-11px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-4px py-4px shadow-[var(--flowy-shadow-raised)] backdrop-blur-md'>
       <ChromeButton label={t('workshopCanvas.toolbar.undo', { defaultValue: '撤销 (Ctrl+Z)' })} onClick={onUndo} disabled={!canUndo}>
         <Undo theme='outline' size={17} strokeWidth={3} />
       </ChromeButton>

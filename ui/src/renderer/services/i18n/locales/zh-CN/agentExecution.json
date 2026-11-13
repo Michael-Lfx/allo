@@ -9,6 +9,7 @@
     "title": "运行中的子 Agent",
     "loading": "正在加载子 Agent…",
     "loadError": "加载子 Agent 失败：{{error}}",
+    "loadErrorSafe": "加载子 Agent 失败，请稍后重试。",
     "waitingQuestion": "等待回答：{{question}}",
     "roleFallback": "子 Agent",
     "activeCount": "{{count}} 个运行中"

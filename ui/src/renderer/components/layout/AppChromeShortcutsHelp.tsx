@@ -44,7 +44,7 @@ const AppChromeShortcutsHelp: React.FC<AppChromeShortcutsHelpProps> = ({ onClose
 
   return (
     <div
-      className='fixed inset-0 z-[5000] flex items-center justify-center bg-[rgba(0,0,0,0.42)] px-16px'
+      className='fixed inset-0 z-[5000] flex items-center justify-center bg-[var(--flowy-overlay-scrim)] px-16px'
       data-testid='app-chrome-shortcuts-help'
       role='dialog'
       aria-modal='true'
@@ -52,34 +52,28 @@ const AppChromeShortcutsHelp: React.FC<AppChromeShortcutsHelpProps> = ({ onClose
       onClick={onClose}
     >
       <div
-        className='flex max-h-[80%] w-full max-w-460px flex-col overflow-hidden rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] shadow-[0_24px_64px_rgba(0,0,0,0.32)]'
+        className='flex max-h-[80%] w-full max-w-460px flex-col overflow-hidden rounded-16px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] shadow-[var(--flowy-shadow-raised)]'
         onClick={(event) => event.stopPropagation()}
       >
         <div className='flex items-center gap-9px border-b border-solid border-[var(--color-border-2)] border-l-0 border-r-0 border-t-0 px-18px py-14px'>
           <span
             className='grid size-26px place-items-center rounded-8px leading-none text-primary-6 [&_.i-icon]:block [&_.i-icon]:leading-none [&_svg]:block'
-            style={{ background: 'rgba(var(--primary-6),0.12)' }}
+            style={{ background: 'var(--flowy-accent-muted)' }}
           >
             <FlowyIcon name='keyboard' size={16} className='block leading-none' />
           </span>
           <span id='app-chrome-shortcuts-title' className='text-15px font-700 text-[var(--color-text-1)]'>
             {t('common.shortcuts.title', { defaultValue: '快捷键' })}
           </span>
-          <div
-            role='button'
-            tabIndex={0}
+          <button
+            type='button'
+            aria-label={t('common.shortcuts.close', { defaultValue: '关闭' })}
             title={t('common.shortcuts.close', { defaultValue: '关闭' })}
             onClick={onClose}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                onClose();
-              }
-            }}
-            className='ml-auto grid h-28px w-28px place-items-center rounded-7px cursor-pointer text-[var(--color-text-3)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]'
+            className='ml-auto grid h-28px w-28px place-items-center rounded-7px border-none bg-transparent p-0 cursor-pointer text-[var(--color-text-3)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px'
           >
             <FlowyIcon name='close' size={20} />
-          </div>
+          </button>
         </div>
 
         <div className='min-h-0 flex-1 overflow-y-auto px-18px py-10px'>

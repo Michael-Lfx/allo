@@ -837,7 +837,7 @@ const NomiSendBox: React.FC<{
         throw new Error('The selected model cannot accept these attachments');
       }
       if (!current_model?.use_model) {
-        if (!execution) Message.warning(t('conversation.chat.noModelSelected'));
+        if (!execution) notifyFailed(t('conversation.chat.noModelSelected'));
         throw new Error('No model selected');
       }
 
@@ -913,8 +913,6 @@ const NomiSendBox: React.FC<{
                 'The conversation is still busy. This message and its Skill selection were kept; retry after the current turn finishes.',
             })
           );
-        } else {
-          Message.error(getConversationRuntimeWorkspaceErrorMessage(error, t));
         }
         throw error;
       }

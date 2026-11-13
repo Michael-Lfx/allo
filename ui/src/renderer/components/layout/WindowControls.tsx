@@ -1,6 +1,7 @@
 import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useState } from 'react';
 import { ipcBridge } from '@/common';
+import { useTranslation } from 'react-i18next';
 
 const WindowMaximizeIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
   <svg width={size} height={size} viewBox='0 0 18 18' fill='none' stroke='currentColor' strokeWidth='1.4'>
@@ -19,6 +20,7 @@ const WindowRestoreIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
 );
 
 const WindowControls: React.FC = () => {
+  const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
 
   // 初始化时同步窗口状态并订阅最大化事件 / Sync current window state and subscribe to maximize events
@@ -90,7 +92,7 @@ const WindowControls: React.FC = () => {
         className='app-window-controls__button'
         onClick={handleMinimize}
         onPointerDown={stopDragPlaneCapture}
-        aria-label='Minimize'
+        aria-label={t('common.windowControls.minimize', { defaultValue: '最小化' })}
         data-tauri-no-drag
         data-tauri-drag-region='false'
       >
@@ -101,7 +103,9 @@ const WindowControls: React.FC = () => {
         className='app-window-controls__button'
         onClick={handleToggleMaximize}
         onPointerDown={stopDragPlaneCapture}
-        aria-label={isMaximized ? 'Restore' : 'Maximize'}
+        aria-label={t(isMaximized ? 'common.windowControls.restore' : 'common.windowControls.maximize', {
+          defaultValue: isMaximized ? '还原' : '最大化',
+        })}
         data-tauri-no-drag
         data-tauri-drag-region='false'
       >
@@ -112,7 +116,7 @@ const WindowControls: React.FC = () => {
         className='app-window-controls__button app-window-controls__button--close'
         onClick={handleClose}
         onPointerDown={stopDragPlaneCapture}
-        aria-label='Close'
+        aria-label={t('common.windowControls.close', { defaultValue: '关闭' })}
         data-tauri-no-drag
         data-tauri-drag-region='false'
       >

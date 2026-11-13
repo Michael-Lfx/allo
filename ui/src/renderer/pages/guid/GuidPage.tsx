@@ -29,6 +29,7 @@ import { resolveExtensionAssetUrl } from '@/renderer/utils/platform';
 import GuidPresetEditorHost from './components/GuidPresetEditorHost';
 import GuidActionRow from './components/GuidActionRow';
 import GuidInputCard from './components/GuidInputCard';
+import ModelReadinessNotice from './components/ModelReadinessNotice';
 import SlashCommandMenu, { type SlashCommandMenuItem } from '@/renderer/components/chat/SlashCommandMenu';
 import FeatureCards from './components/FeatureCards';
 import GuidHomeBrand from './components/GuidHomeBrand';
@@ -1761,6 +1762,15 @@ const GuidPage: React.FC = () => {
     [guidInput.dir, modelSelection.current_model, needsModelForAgent]
   );
 
+  const [modelReadinessNotice, setModelReadinessNotice] = useState<'missing' | 'unavailable' | null>(null);
+  useEffect(() => {
+    if (readiness.blocker === 'model') {
+      setModelReadinessNotice((current) => current ?? 'missing');
+      return;
+    }
+    setModelReadinessNotice(null);
+  }, [readiness.blocker]);
+
   const handleLinkWorkspace = useCallback(() => {
     return workspaceDialogGateRef.current(async () => {
       try {
@@ -1938,7 +1948,11 @@ const GuidPage: React.FC = () => {
     t,
     onNeedModel: () => {
       pendingAutoSendRef.current = true;
-      addProviderRef.current?.open();
+      setModelReadinessNotice('missing');
+    },
+    onModelUnavailable: () => {
+      pendingAutoSendRef.current = true;
+      setModelReadinessNotice('unavailable');
     },
     onNeedWorkspace: handleLinkWorkspace,
     readinessReady: readiness.ready,
@@ -2518,22 +2532,24 @@ const GuidPage: React.FC = () => {
           <div className={styles.guidPrimaryStage}>
             <div className={styles.guidLayout}>
               {homeView === 'home' ? (
-                <div className={styles.homeStage}>
-                  <GuidHomeBrand />
-                  <div className={styles.homeEntries}>
-                    <FeatureCards
-                      onOpenDevelop={() => openHomeDirectory('develop')}
-                      onOpenCreate={() => openHomeDirectory('create')}
-                    />
+                <>
+                  <div className={styles.homeStage}>
+                    <GuidHomeBrand />
+                    <div className={styles.homeEntries}>
+                      <FeatureCards
+                        onOpenDevelop={() => openHomeDirectory('develop')}
+                        onOpenCreate={() => openHomeDirectory('create')}
+                      />
+                    </div>
+                    <div className={styles.homeGallery}>
+                      <ShowcaseCards
+                        onSelectVideo={handleSelectShowcaseVideo}
+                        onSelectWebsite={handleSelectShowcaseWebsite}
+                        onSelectImage={handleSelectShowcaseImage}
+                      />
+                    </div>
                   </div>
-                  <div className={styles.homeGallery}>
-                    <ShowcaseCards
-                      onSelectVideo={handleSelectShowcaseVideo}
-                      onSelectWebsite={handleSelectShowcaseWebsite}
-                      onSelectImage={handleSelectShowcaseImage}
-                    />
-                  </div>
-                </div>
+                </>
               ) : null}
             </div>
           </div>
@@ -2746,6 +2762,18 @@ const GuidPage: React.FC = () => {
               onSkillChipsChange={supportsHomeSkillLoading ? setHomeSkillChips : undefined}
               onTokenInputStateChange={setHomeTokenInputState}
               tokenInputRef={homeTokenInputRef}
+              entryStrip={
+                modelReadinessNotice ? (
+                  <ModelReadinessNotice
+                    state={modelReadinessNotice}
+                    hasDraft={hasDraft}
+                    onChooseModel={() => {
+                      pendingAutoSendRef.current = true;
+                      addProviderRef.current?.open();
+                    }}
+                  />
+                ) : null
+              }
               files={guidInput.files}
               onRemoveFile={guidInput.handleRemoveFile}
               actionRow={actionRowNode}

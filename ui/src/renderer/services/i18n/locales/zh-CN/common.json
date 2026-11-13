@@ -45,6 +45,26 @@
   "copyPath": "复制路径",
   "download": "下载",
   "close": "关闭",
+  "windowControls": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭"
+  },
+  "workspaceToggle": {
+    "open": "打开工作区",
+    "close": "关闭工作区"
+  },
+  "webview": {
+    "back": "后退",
+    "forward": "前进",
+    "refresh": "刷新",
+    "resetZoom": "重置缩放",
+    "fit": "适应视图",
+    "enterUrl": "输入网址",
+    "enterUrlPlaceholder": "输入网址…",
+    "embeddedContent": "嵌入内容"
+  },
   "retry": "重试",
   "routeError": {
     "applicationTitle": "应用渲染出错（已捕获，未显示空白窗口）",

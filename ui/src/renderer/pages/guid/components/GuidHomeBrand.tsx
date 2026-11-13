@@ -303,9 +303,9 @@ const GuidHomeBrand: React.FC = () => {
         draggable={false}
         tilt
         tiltMax={8}
-        glare
-        glareOpacity={0.2}
-        hoverScale={1.025}
+        glare={false}
+        glareOpacity={0}
+        hoverScale={1.01}
         perspective={1200}
         stiffness={160}
         damping={22}
@@ -315,8 +315,8 @@ const GuidHomeBrand: React.FC = () => {
         background='transparent'
         color='#17171a'
         shadow
-        shadowColor='var(--brand, #7f93b8)'
-        shadowOpacity={0.2}
+        shadowColor='var(--flowy-accent)'
+        shadowOpacity={0.12}
         flipped={flipped}
         front={front}
         back={back}

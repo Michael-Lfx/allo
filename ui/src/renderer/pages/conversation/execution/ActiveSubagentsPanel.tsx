@@ -9,6 +9,7 @@ import type { TActiveSubagent } from '@/common/types/agentExecution/agentExecuti
 import type { ExecutionId } from '@/common/types/ids';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import ExecutionDisclosure from './ExecutionDisclosure';
 
 const REFRESH_DEBOUNCE_MS = 150;
 const LIMIT = 20;
@@ -24,7 +25,10 @@ function statusDotClass(status: TActiveSubagent['attempt_status']): string {
  * the filtering rules; this component only presents the flattened rows and
  * refreshes them when the execution emits a durable change event.
  */
-const ActiveSubagentsPanel: React.FC<{ executionId: ExecutionId }> = ({ executionId }) => {
+const ActiveSubagentsPanel: React.FC<{ executionId: ExecutionId; forceExpanded?: boolean }> = ({
+  executionId,
+  forceExpanded = false,
+}) => {
   const { t } = useTranslation();
   const [items, setItems] = useState<TActiveSubagent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,27 +85,38 @@ const ActiveSubagentsPanel: React.FC<{ executionId: ExecutionId }> = ({ executio
 
   if (error !== null) {
     return (
-      <div className='px-12px py-6px text-11px text-danger-6' role='alert'>
-        {t('agentExecution.subagents.loadError', { error })}
-      </div>
+      <ExecutionDisclosure
+        executionId={executionId}
+        id='subagents'
+        defaultCollapsed={false}
+        forceExpanded={forceExpanded}
+        className='mx-10px mb-6px rd-8px border border-solid border-[var(--border-base)] bg-fill-2 px-10px py-8px'
+        title={<span className='text-12px font-500 text-t-primary'>{t('agentExecution.subagents.title')}</span>}
+      >
+        <div className='text-11px text-danger-6' role='alert'>
+          {t('agentExecution.subagents.loadErrorSafe')}
+        </div>
+      </ExecutionDisclosure>
     );
   }
 
   if (items.length === 0) return null;
 
   return (
-    <section
+    <ExecutionDisclosure
+      executionId={executionId}
+      id='subagents'
+      defaultCollapsed
+      forceExpanded={forceExpanded}
       className='mx-10px mb-6px flex flex-col gap-6px rd-8px border border-solid border-[var(--border-base)] bg-fill-2 px-10px py-8px'
-      aria-label={t('agentExecution.subagents.title')}
-      data-testid='active-subagents-panel'
-    >
-      <header className='flex items-center justify-between gap-8px'>
-        <span className='text-12px font-500 text-t-primary'>{t('agentExecution.subagents.title')}</span>
-        <span className='text-11px text-t-tertiary'>
-          {t('agentExecution.subagents.activeCount', { count: items.length })}
+      title={
+        <span className='text-12px font-500 text-t-primary' aria-label={t('agentExecution.subagents.title')}>
+          {t('agentExecution.subagents.title')}
         </span>
-      </header>
-      <ul className='flex max-h-120px flex-col gap-2px overflow-auto'>
+      }
+      summary={<span className='text-11px text-t-tertiary'>{t('agentExecution.subagents.activeCount', { count: items.length })}</span>}
+    >
+      <ul className='flex max-h-120px flex-col gap-2px overflow-auto' data-testid='active-subagents-panel'>
         {items.map((item) => (
           <li
             key={item.attempt_id}
@@ -131,7 +146,7 @@ const ActiveSubagentsPanel: React.FC<{ executionId: ExecutionId }> = ({ executio
           </li>
         ))}
       </ul>
-    </section>
+    </ExecutionDisclosure>
   );
 };
 

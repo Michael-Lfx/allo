@@ -9,6 +9,7 @@
     "title": "Active subagents",
     "loading": "Loading subagents…",
     "loadError": "Failed to load subagents: {{error}}",
+    "loadErrorSafe": "Failed to load subagents. Try again later.",
     "waitingQuestion": "Waiting for: {{question}}",
     "roleFallback": "Subagent",
     "activeCount": "{{count}} active"

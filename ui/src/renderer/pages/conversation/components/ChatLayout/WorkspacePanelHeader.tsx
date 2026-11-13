@@ -2,6 +2,7 @@ import type { ConversationId } from '@/common/types/ids';
 import { WORKSPACE_HEADER_HEIGHT } from '@/renderer/pages/conversation/utils/layoutCalc';
 import { ExpandLeft, ExpandRight } from '@icon-park/react';
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import WorkspaceBindButton from './WorkspaceBindButton';
 import WorkspaceOpenButton from './WorkspaceOpenButton';
 import type { WorkspaceTab } from '@/renderer/pages/conversation/Workspace/types';
@@ -39,7 +40,13 @@ const WorkspacePanelHeader: React.FC<WorkspaceHeaderProps> = ({
   isTemporaryWorkspace = false,
   conversation_id,
   activeTab = 'files',
-}) => (
+}) => {
+  const { t } = useTranslation();
+  const toggleLabel = t(collapsed ? 'common.workspaceToggle.open' : 'common.workspaceToggle.close', {
+    defaultValue: collapsed ? '打开工作区' : '关闭工作区',
+  });
+
+  return (
   <div
     className='workspace-panel-header flex items-center justify-start px-12px py-4px gap-12px border-b border-b-solid border-[var(--bg-3)]'
     style={{ height: WORKSPACE_HEADER_HEIGHT, minHeight: WORKSPACE_HEADER_HEIGHT }}
@@ -48,7 +55,7 @@ const WorkspacePanelHeader: React.FC<WorkspaceHeaderProps> = ({
       <button
         type='button'
         className='workspace-header__toggle mr-4px'
-        aria-label='Toggle workspace'
+        aria-label={toggleLabel}
         onClick={onToggle}
       >
         {collapsed ? <ExpandRight size={16} /> : <ExpandLeft size={16} />}
@@ -69,11 +76,12 @@ const WorkspacePanelHeader: React.FC<WorkspaceHeaderProps> = ({
       ))}
 
     {showToggle && togglePlacement === 'right' && (
-      <button type='button' className='workspace-header__toggle' aria-label='Toggle workspace' onClick={onToggle}>
+      <button type='button' className='workspace-header__toggle' aria-label={toggleLabel} onClick={onToggle}>
         {collapsed ? <ExpandRight size={16} /> : <ExpandLeft size={16} />}
       </button>
     )}
   </div>
-);
+  );
+};
 
 export default WorkspacePanelHeader;

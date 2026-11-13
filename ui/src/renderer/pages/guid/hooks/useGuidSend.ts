@@ -23,7 +23,10 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useMemo, useRef } from 'react';
 import { type TFunction } from 'i18next';
 import type { NavigateFunction } from 'react-router-dom';
-import { getConversationCreateErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
+import {
+  getConversationCreateErrorMessage,
+  normalizeConversationModelErrorCode,
+} from '@/renderer/pages/conversation/utils/conversationCreateError';
 import { registerConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
 import { warmupConversation } from '@/renderer/pages/conversation/utils/warmupConversation';
@@ -132,6 +135,8 @@ export type GuidSendDeps = {
 
   /** When Nomi needs a model and none is configured, open in-place setup instead of only toasting. */
   onNeedModel?: () => void;
+  /** When conversation creation reports a model/provider availability issue. */
+  onModelUnavailable?: () => void;
   /** When the selected intent requires a workspace, open the folder picker instead of sending. */
   onNeedWorkspace?: () => void;
   /** Unified readiness gate from Guid readiness resolver. */
@@ -208,6 +213,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     navigate,
     t,
     onNeedModel,
+    onModelUnavailable,
     onNeedWorkspace,
     readinessReady,
     readinessBlocker,
@@ -430,7 +436,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     // Nomi path (direct selection or preset preset with nomi as main agent)
     if (selectedAgent === 'nomi' || (is_preset && finalEffectiveAgentType === 'nomi')) {
       if (!current_model) {
-        Message.warning(t('conversation.noModelConfigured'));
         onNeedModel?.();
         return false;
       }
@@ -694,7 +699,6 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     if (!isAutoWorkEntry(autoWork) && !hasGuidInitialPayload(input, initialSkillIds)) return;
     if (readinessBlocker === 'model' || needsModelBeforeSend) {
       trackFunnelEvent('task_drafted', { blocker: 'model' });
-      Message.warning(t('conversation.noModelConfigured'));
       onNeedModel?.();
       return;
     }
@@ -748,7 +752,11 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
       })
       .catch((error) => {
         console.error('Failed to send message:', error);
-        Message.error(getConversationCreateErrorMessage(error, t));
+        if (normalizeConversationModelErrorCode(error)) {
+          onModelUnavailable?.();
+        } else {
+          Message.error(getConversationCreateErrorMessage(error, t));
+        }
         abortPending?.();
       })
       .finally(() => {
@@ -777,6 +785,7 @@ export const useGuidSend = (deps: GuidSendDeps): GuidSendResult => {
     abortPending,
     needsModelBeforeSend,
     onNeedModel,
+    onModelUnavailable,
     onNeedWorkspace,
     readinessReady,
     readinessBlocker,

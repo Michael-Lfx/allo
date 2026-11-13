@@ -28,7 +28,7 @@ function sliderToZoom(t: number): number {
 }
 
 const CHROME_BTN =
-  'grid h-28px w-28px place-items-center rounded-7px cursor-pointer transition-colors text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]';
+  'grid h-28px w-28px place-items-center rounded-7px border-none bg-transparent p-0 cursor-pointer transition-colors text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)] focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px';
 
 const ZoomControls: React.FC = () => {
   const { t } = useTranslation();
@@ -43,23 +43,16 @@ const ZoomControls: React.FC = () => {
   );
 
   return (
-    <div className='flex items-center gap-4px rounded-11px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-6px py-4px shadow-[0_8px_28px_rgba(0,0,0,0.16)] backdrop-blur-md'>
-      <div
-        role='button'
-        tabIndex={0}
+    <div className='flex items-center gap-4px rounded-11px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-6px py-4px shadow-[var(--flowy-shadow-raised)] backdrop-blur-md'>
+      <button
+        type='button'
         title={t('workshopCanvas.zoom.out', { defaultValue: '缩小' })}
         aria-label={t('workshopCanvas.zoom.out', { defaultValue: '缩小' })}
         onClick={() => zoomTo(Math.max(ZOOM_MIN, zoom / 1.25), { duration: 160 })}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            zoomTo(Math.max(ZOOM_MIN, zoom / 1.25), { duration: 160 });
-          }
-        }}
         className={CHROME_BTN}
       >
         <ZoomOut theme='outline' size={16} strokeWidth={3} />
-      </div>
+      </button>
 
       <input
         type='range'
@@ -72,55 +65,35 @@ const ZoomControls: React.FC = () => {
         className='nomi-ws-zoom-slider h-3px w-120px cursor-pointer'
       />
 
-      <div
-        role='button'
-        tabIndex={0}
+      <button
+        type='button'
         title={t('workshopCanvas.zoom.in', { defaultValue: '放大' })}
         aria-label={t('workshopCanvas.zoom.in', { defaultValue: '放大' })}
         onClick={() => zoomTo(Math.min(ZOOM_MAX, zoom * 1.25), { duration: 160 })}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            zoomTo(Math.min(ZOOM_MAX, zoom * 1.25), { duration: 160 });
-          }
-        }}
         className={CHROME_BTN}
       >
         <ZoomIn theme='outline' size={16} strokeWidth={3} />
-      </div>
+      </button>
 
-      <div
-        role='button'
-        tabIndex={0}
+      <button
+        type='button'
         title={t('workshopCanvas.zoom.reset', { defaultValue: '重置为 100%' })}
+        aria-label={t('workshopCanvas.zoom.reset', { defaultValue: '重置为 100%' })}
         onClick={() => zoomTo(1, { duration: 200 })}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            zoomTo(1, { duration: 200 });
-          }
-        }}
-        className='min-w-46px rounded-6px px-6px py-3px text-center text-12px font-600 tabular-nums text-[var(--color-text-2)] cursor-pointer hover:bg-[var(--color-fill-2)]'
+        className='min-w-46px rounded-6px border-none bg-transparent px-6px py-3px text-center text-12px font-600 tabular-nums text-[var(--color-text-2)] cursor-pointer hover:bg-[var(--color-fill-2)] focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px'
       >
         {Math.round(zoom * 100)}%
-      </div>
+      </button>
 
-      <div
-        role='button'
-        tabIndex={0}
+      <button
+        type='button'
         title={t('workshopCanvas.zoom.fit', { defaultValue: '适应视图' })}
         aria-label={t('workshopCanvas.zoom.fit', { defaultValue: '适应视图' })}
         onClick={() => fitView(FIT_VIEW_OPTIONS)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            fitView(FIT_VIEW_OPTIONS);
-          }
-        }}
         className={CHROME_BTN}
       >
         <FullScreen theme='outline' size={16} strokeWidth={3} />
-      </div>
+      </button>
     </div>
   );
 };

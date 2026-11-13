@@ -45,21 +45,17 @@ const CopyIconButton: React.FC<CopyIconButtonProps> = ({ text, tooltip, successM
 
   return (
     <Tooltip content={label} position='top' mini>
-      <span
-        role='button'
-        tabIndex={0}
+      <button
+        type='button'
         aria-label={label}
         className={classNames(
-          'inline-flex items-center justify-center cursor-pointer rd-4px text-t-tertiary transition-colors hover:text-t-primary',
+          'inline-flex items-center justify-center cursor-pointer rd-4px border-none bg-transparent p-0 text-t-tertiary transition-colors hover:text-t-primary focus-visible:outline-none focus-visible:ring-2px focus-visible:ring-[var(--flowy-focus)] focus-visible:ring-offset-1px',
           className
         )}
         onClick={handleCopy}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') handleCopy(event);
-        }}
       >
         <Copy theme='outline' size={size} fill='currentColor' className='block leading-none' />
-      </span>
+      </button>
     </Tooltip>
   );
 };

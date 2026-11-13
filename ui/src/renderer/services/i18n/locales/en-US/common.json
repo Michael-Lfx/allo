@@ -45,6 +45,26 @@
   "copyPath": "Copy path",
   "download": "Download",
   "close": "Close",
+  "windowControls": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close"
+  },
+  "workspaceToggle": {
+    "open": "Open workspace",
+    "close": "Close workspace"
+  },
+  "webview": {
+    "back": "Back",
+    "forward": "Forward",
+    "refresh": "Refresh",
+    "resetZoom": "Reset zoom",
+    "fit": "Fit view",
+    "enterUrl": "Enter URL",
+    "enterUrlPlaceholder": "Enter URL…",
+    "embeddedContent": "Embedded content"
+  },
   "retry": "Retry",
   "routeError": {
     "applicationTitle": "Application render error (caught; the window was not left blank)",
