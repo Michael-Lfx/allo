@@ -1,0 +1,19 @@
+Privacy Policy (placeholder)
+
+This is temporary placeholder text for the Flowy privacy policy.
+Replace this file with the final policy before release.
+
+1. What we collect
+We may collect account email, device identifiers, and product usage data needed to operate the cloud workspace.
+
+2. How we use it
+Data is used to authenticate you, deliver product features, improve reliability, and meet legal obligations.
+
+3. Sharing
+We do not sell personal data. Service providers may process data only to run Flowy on our behalf.
+
+4. Retention
+Account data is kept while your account is active and for a limited period afterward as required by law.
+
+5. Your choices
+You may request access, correction, or deletion of account data through product support channels.

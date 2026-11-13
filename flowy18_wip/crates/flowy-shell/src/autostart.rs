@@ -25,7 +25,7 @@ fn path() -> Option<PathBuf> {
         let home = directories::UserDirs::new()?.home_dir().to_path_buf();
         Some(
             home.join("Library/LaunchAgents")
-                .join(format!("{}.plist", crate::brand::bundle_id())),
+                .join(format!("{}.plist", crate::brand().bundle_id)),
         )
     }
     #[cfg(target_os = "linux")]
@@ -33,7 +33,7 @@ fn path() -> Option<PathBuf> {
         let home = directories::UserDirs::new()?.home_dir().to_path_buf();
         Some(
             home.join(".config/autostart")
-                .join(format!("{}.desktop", crate::brand::url_scheme())),
+                .join(format!("{}.desktop", crate::brand().url_scheme)),
         )
     }
     #[cfg(target_os = "windows")]
@@ -41,7 +41,7 @@ fn path() -> Option<PathBuf> {
         let base = directories::BaseDirs::new()?.data_dir().to_path_buf();
         Some(
             base.join("Microsoft/Windows/Start Menu/Programs/Startup")
-                .join(format!("{}.cmd", crate::brand::url_scheme())),
+                .join(format!("{}.cmd", crate::brand().url_scheme)),
         )
     }
     #[cfg(not(any(
@@ -75,7 +75,7 @@ fn launch_body() -> Result<String, String> {
 </dict>
 </plist>
 "#,
-            crate::brand::bundle_id(),
+            crate::brand().bundle_id,
             xml_escape(&exe),
         ))
     }
@@ -83,7 +83,7 @@ fn launch_body() -> Result<String, String> {
     {
         Ok(format!(
             "[Desktop Entry]\nType=Application\nName={}\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
-            crate::brand::product(),
+            crate::brand().product,
             exe.replace('"', "\\\""),
         ))
     }

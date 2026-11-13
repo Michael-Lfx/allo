@@ -3,7 +3,7 @@ use crate::persona::{
     ABOUT_MAX, INSTRUCTIONS_MAX, KNOWLEDGE_MAX, Knowledge, NAME_MAX, Profile,
     limited, read_patch, save,
 };
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{
     AnyElement, ClipboardItem, ColorExt, Context, Entity, div, prelude::*, px,
 };
@@ -42,7 +42,10 @@ const MENU: &[(&str, &str, Page)] = &[
 
 impl FlowyApp {
     pub(super) fn toggle_more(&mut self, cx: &mut Context<'_, Self>) {
-        self.studio.model_menu_open = false;
+        self.studio.update(cx, |panel, cx| {
+            panel.model_menu_open = false;
+            cx.notify();
+        });
         if self.section == Section::More {
             self.persona.menu = !self.persona.menu;
         } else {
@@ -50,10 +53,11 @@ impl FlowyApp {
             self.persona.menu = true;
             self.notice = None;
         }
+        self.sync_studio_surface(cx);
         cx.notify();
     }
 
-    pub(super) fn more_flyout(
+    pub fn more_flyout(
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
@@ -81,7 +85,7 @@ impl FlowyApp {
         menu
     }
 
-    pub(super) fn more_canvas(
+    pub fn more_canvas(
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {

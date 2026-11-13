@@ -1,0 +1,16 @@
+[package]
+name = "flowy-ui"
+description = "Shared theme tokens and look primitives for Flowy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+gpui = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

@@ -87,18 +87,20 @@ impl Locale {
 #[derive(Clone, Debug)]
 pub struct I18n {
     locale: Locale,
+    product: &'static str,
     messages: HashMap<Locale, HashMap<String, String>>,
 }
 
 impl I18n {
     #[must_use]
-    pub fn embedded() -> Self {
+    pub fn embedded(product: &'static str) -> Self {
         let mut messages = HashMap::new();
         for locale in Locale::ALL {
             messages.insert(locale, parse_map(embedded_json(locale)));
         }
         Self {
             locale: Locale::ZhCn,
+            product,
             messages,
         }
     }
@@ -120,7 +122,8 @@ impl I18n {
 
     pub fn reload_dir(&mut self, dir: &Path) {
         let locale = self.locale;
-        *self = Self::embedded();
+        let product = self.product;
+        *self = Self::embedded(product);
         self.locale = locale;
         self.overlay_dir(dir);
     }
@@ -131,7 +134,7 @@ impl I18n {
             .lookup(self.locale, key)
             .or_else(|| self.lookup(Locale::ZhCn, key))
             .unwrap_or_else(|| key.to_string());
-        text.replace("{product}", crate::brand::product())
+        text.replace("{product}", self.product)
     }
 
     #[must_use]
@@ -232,7 +235,7 @@ mod tests {
 
     #[test]
     fn every_locale_has_the_same_keys() {
-        let i18n = I18n::embedded();
+        let i18n = I18n::embedded("Flowy");
         let base = key_set(i18n.messages.get(&Locale::ZhCn).unwrap());
         assert!(base.len() > 20);
         for locale in Locale::ALL {
@@ -256,7 +259,7 @@ mod tests {
             r#"{"login.sign_in_title":"Sign in now"}"#,
         )
         .unwrap();
-        let mut i18n = I18n::embedded();
+        let mut i18n = I18n::embedded("Flowy");
         i18n.set_locale(Locale::En);
         let original = i18n.t("login.email");
         i18n.reload_dir(&dir);
@@ -267,15 +270,15 @@ mod tests {
 
     #[test]
     fn product_name_is_filled() {
-        let i18n = I18n::embedded();
+        let i18n = I18n::embedded("Flowy");
         let text = i18n.t("model.lite");
-        assert!(text.contains(crate::brand::product()));
+        assert!(text.contains("Flowy"));
         assert!(!text.contains("{product}"));
     }
 
     #[test]
     fn placeholders_are_replaced() {
-        let i18n = I18n::embedded();
+        let i18n = I18n::embedded("Flowy");
         let text = i18n.tf("project.untitled", &[("index", "3")]);
         assert!(text.contains('3'));
         assert!(!text.contains("{index}"));

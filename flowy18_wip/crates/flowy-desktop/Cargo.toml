@@ -1,0 +1,25 @@
+[package]
+name = "flowy-desktop"
+description = "Flowy desktop binary (hot-patch host)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "flowy-app"
+path = "src/main.rs"
+
+[dependencies]
+flowy-app = { workspace = true }
+flowy-obs = { workspace = true }
+flowy-shell = { workspace = true }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

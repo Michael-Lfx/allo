@@ -1,0 +1,20 @@
+[package]
+name = "flowy-auth"
+description = "Cloud email-OTP auth and session store for Flowy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+flowy-core = { workspace = true }
+flowy-net = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,5 +1,5 @@
 use super::{FlowyApp, Section};
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{Context, Window, div, prelude::*, px};
 
 const NAV: &[(&str, &str, Section)] = &[
@@ -13,7 +13,7 @@ const NAV: &[(&str, &str, Section)] = &[
 ];
 
 impl FlowyApp {
-    pub(super) fn dock(
+    pub fn dock(
         &self,
         _window: &mut Window,
         cx: &Context<'_, Self>,
@@ -23,7 +23,8 @@ impl FlowyApp {
             |session| session.display_name.clone(),
         );
         let initial = name.chars().next().unwrap_or('F').to_string();
-        let credits = grouped(self.studio.credits);
+        let studio = self.studio.read(cx);
+        let credits = grouped(studio.credits);
 
         div()
             .id("dock")
@@ -58,13 +59,14 @@ impl FlowyApp {
                 self.t("dock.new_task"),
                 self.section == Section::Studio,
                 cx,
-            ))
-            .child(Self::nav_item(
-                "agent",
-                self.tf("dock.agent", &[("name", name)]),
-                self.section == Section::Agent,
-                cx,
             ));
+            // Independent Agent App entry — deferred.
+            // .child(Self::nav_item(
+            //     "agent",
+            //     self.tf("dock.agent", &[("name", name)]),
+            //     false,
+            //     cx,
+            // ));
 
         for (id, key, section) in NAV {
             column = if *id == "more" {
@@ -94,13 +96,13 @@ impl FlowyApp {
                 app.section = section;
                 app.persona.menu = false;
                 if id == "new-task" {
-                    app.clear_thread(cx);
+                    app.studio.update(cx, |panel, cx| panel.new_task(cx));
+                    app.section = Section::Studio;
                 } else if section == Section::Studio {
                     app.notice = None;
-                    cx.notify();
-                } else {
-                    cx.notify();
                 }
+                app.sync_studio_surface(cx);
+                cx.notify();
             },
         ))
     }
@@ -122,7 +124,8 @@ impl FlowyApp {
                     cx.listener(|app, _event, _window, cx| app.add_project(cx)),
                 ),
         );
-        for (slot, index) in self.studio.projects.iter().enumerate() {
+        let projects = self.studio.read(cx).projects.clone();
+        for (slot, index) in projects.iter().enumerate() {
             let id = format!("project-{slot}");
             let label =
                 self.tf("project.untitled", &[("index", &index.to_string())]);
@@ -132,7 +135,10 @@ impl FlowyApp {
     }
 
     fn task_rows(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        if self.studio.tasks.is_empty() {
+        let studio = self.studio.read(cx);
+        let sessions = studio.agent.list_sessions();
+        let active = studio.agent.active_session_id();
+        if sessions.is_empty() {
             return div()
                 .px_4()
                 .py_1()
@@ -140,19 +146,23 @@ impl FlowyApp {
                 .text_color(theme::muted())
                 .child(self.t("dock.no_tasks"));
         }
-        let active = self
-            .studio
-            .thread
-            .as_ref()
-            .map(|thread| thread.title.as_str());
         let mut rows = div().flex().flex_col();
-        for (index, task) in self.studio.tasks.iter().enumerate() {
+        for (index, session) in sessions.into_iter().enumerate() {
             let id = format!("task-{index}");
-            let title = task.clone();
-            let selected = active == Some(title.as_str());
-            rows = rows.child(item_row(id, title.clone(), selected).on_click(
+            let session_id = session.id.clone();
+            let title = if session.title.is_empty() {
+                self.t("dock.new_task")
+            } else {
+                session.title
+            };
+            let selected = active.as_deref() == Some(session_id.as_str());
+            rows = rows.child(item_row(id, title, selected).on_click(
                 cx.listener(move |app, _event, _window, cx| {
-                    app.open_thread(title.clone(), cx);
+                    app.section = Section::Studio;
+                    app.studio.update(cx, |panel, cx| {
+                        panel.open_session(&session_id, cx);
+                    });
+                    cx.notify();
                 }),
             ));
         }
@@ -240,7 +250,7 @@ impl FlowyApp {
 
 fn section_for(id: &str) -> Section {
     match id {
-        "agent" => Section::Agent,
+        // "agent" => Section::Agent,
         "search" => Section::Search,
         "library" => Section::Library,
         "create" => Section::Create,

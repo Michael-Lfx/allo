@@ -1,0 +1,17 @@
+[package]
+name = "flowy-shell"
+description = "Desktop shell lifecycle: deep link, tray, notify, autostart"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+directories = { workspace = true }
+gpui = { workspace = true }
+gpui-tray = { workspace = true }
+
+[lints]
+workspace = true

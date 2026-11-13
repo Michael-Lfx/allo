@@ -1,4 +1,6 @@
-use crate::i18n::Locale;
+use flowy_i18n::Locale;
+pub use flowy_agent::{FlexProvider, LlmConfig, Model, Plan};
+pub use flowy_ui::{Accent, Density};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -24,66 +26,6 @@ impl SendMode {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Plan {
-    #[default]
-    Free,
-    Paid,
-}
-
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Model {
-    Max,
-    Standard,
-    #[default]
-    Lite,
-    Flex,
-}
-
-impl Model {
-    pub const ALL: [Self; 4] =
-        [Self::Max, Self::Standard, Self::Lite, Self::Flex];
-
-    #[must_use]
-    pub const fn name_key(self) -> &'static str {
-        match self {
-            Self::Max => "model.max",
-            Self::Standard => "model.standard",
-            Self::Lite => "model.lite",
-            Self::Flex => "model.flex",
-        }
-    }
-
-    #[must_use]
-    pub const fn detail_key(self) -> &'static str {
-        match self {
-            Self::Max => "model.max_detail",
-            Self::Standard => "model.standard_detail",
-            Self::Lite => "model.lite_detail",
-            Self::Flex => "model.flex_detail",
-        }
-    }
-
-    #[must_use]
-    pub const fn is_pro(self) -> bool {
-        matches!(self, Self::Max | Self::Standard)
-    }
-
-    #[must_use]
-    pub const fn can_use(self, plan: Plan) -> bool {
-        match self {
-            Self::Lite => true,
-            Self::Max | Self::Standard => matches!(plan, Plan::Paid),
-            Self::Flex => false,
-        }
-    }
-}
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
@@ -107,69 +49,7 @@ impl ThemeMode {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-#[repr(u8)]
-pub enum Accent {
-    #[default]
-    Default = 0,
-    Blue = 1,
-    Green = 2,
-    Orange = 3,
-    Red = 4,
-    Purple = 5,
-}
 
-impl Accent {
-    pub const ALL: [Self; 6] = [
-        Self::Default,
-        Self::Blue,
-        Self::Green,
-        Self::Orange,
-        Self::Red,
-        Self::Purple,
-    ];
-
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Default => "look.default",
-            Self::Blue => "look.blue",
-            Self::Green => "look.green",
-            Self::Orange => "look.orange",
-            Self::Red => "look.red",
-            Self::Purple => "look.purple",
-        }
-    }
-}
-
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-#[repr(u8)]
-pub enum Density {
-    #[default]
-    Compact = 0,
-    Regular = 1,
-    Comfortable = 2,
-}
-
-impl Density {
-    pub const ALL: [Self; 3] =
-        [Self::Compact, Self::Regular, Self::Comfortable];
-
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Compact => "look.compact",
-            Self::Regular => "look.regular",
-            Self::Comfortable => "look.comfortable",
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
@@ -188,6 +68,8 @@ pub struct Preferences {
     pub activity: bool,
     pub telemetry_opt_out: bool,
     pub launch_at_login: bool,
+    pub flex_provider: Option<FlexProvider>,
+    pub flex_api_key: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -218,6 +100,10 @@ struct File {
     telemetry_opt_out: bool,
     #[serde(default)]
     launch_at_login: bool,
+    #[serde(default)]
+    flex_provider: Option<FlexProvider>,
+    #[serde(default)]
+    flex_api_key: String,
 }
 
 const fn default_font_size() -> u8 {
@@ -252,11 +138,31 @@ impl Default for Preferences {
             activity: false,
             telemetry_opt_out: false,
             launch_at_login: false,
+            flex_provider: None,
+            flex_api_key: String::new(),
         }
     }
 }
 
 impl Preferences {
+    #[must_use]
+    pub fn flex_ready(&self) -> bool {
+        self.flex_provider.is_some() && !self.flex_api_key.trim().is_empty()
+    }
+
+    #[must_use]
+    pub fn llm_config(&self) -> LlmConfig {
+        if self.model == Model::Flex {
+            if let Some(provider) = self.flex_provider {
+                let config = LlmConfig::from_flex(provider, self.flex_api_key.clone());
+                if config.uses_live() {
+                    return config;
+                }
+            }
+        }
+        LlmConfig::from_env()
+    }
+
     #[must_use]
     pub fn load(root: &Path) -> Self {
         let text = fs::read_to_string(root.join("preferences.json")).ok();
@@ -280,11 +186,21 @@ impl Preferences {
             activity: false,
             telemetry_opt_out: false,
             launch_at_login: false,
+            flex_provider: None,
+            flex_api_key: String::new(),
         });
         if file.version != VERSION {
             return Self::default();
         }
-        let model = if file.model.can_use(file.plan) {
+        let flex_ready = file.flex_provider.is_some()
+            && !file.flex_api_key.trim().is_empty();
+        let model = if file.model == Model::Flex {
+            if flex_ready {
+                Model::Flex
+            } else {
+                Model::Lite
+            }
+        } else if file.model.can_use(file.plan) {
             file.model
         } else {
             Model::Lite
@@ -305,6 +221,8 @@ impl Preferences {
             activity: file.activity,
             telemetry_opt_out: file.telemetry_opt_out,
             launch_at_login: file.launch_at_login,
+            flex_provider: file.flex_provider,
+            flex_api_key: file.flex_api_key,
         }
     }
 
@@ -337,6 +255,8 @@ impl Preferences {
             activity: self.activity,
             telemetry_opt_out: self.telemetry_opt_out,
             launch_at_login: self.launch_at_login,
+            flex_provider: self.flex_provider,
+            flex_api_key: self.flex_api_key.clone(),
         };
         let Ok(bytes) = serde_json::to_vec_pretty(&file) else {
             return;
@@ -347,8 +267,8 @@ impl Preferences {
 
 #[cfg(test)]
 mod tests {
-    use super::{Model, Plan, Preferences};
-    use crate::i18n::Locale;
+    use super::{FlexProvider, Model, Plan, Preferences};
+    use flowy_i18n::Locale;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -419,6 +339,22 @@ mod tests {
         .unwrap();
         assert_eq!(Preferences::load(&dir).model, Model::Max);
         assert!(!Model::Flex.can_use(Plan::Paid));
+        fs::write(
+            &path,
+            r#"{"version":1,"locale":"zh-CN","send_mode":"quiet","notify_browser":true,"sound":true,"early_access":true,"plan":"free","model":"flex","flex_provider":"deepseek","flex_api_key":"sk-test"}"#,
+        )
+        .unwrap();
+        let flex = Preferences::load(&dir);
+        assert_eq!(flex.model, Model::Flex);
+        assert_eq!(flex.flex_provider, Some(FlexProvider::DeepSeek));
+        assert_eq!(flex.flex_api_key, "sk-test");
+        assert!(flex.flex_ready());
+        fs::write(
+            &path,
+            r#"{"version":1,"locale":"zh-CN","send_mode":"quiet","notify_browser":true,"sound":true,"early_access":true,"plan":"free","model":"flex"}"#,
+        )
+        .unwrap();
+        assert_eq!(Preferences::load(&dir).model, Model::Lite);
         let _ = fs::remove_dir_all(dir);
     }
 

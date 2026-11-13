@@ -3,6 +3,14 @@ resolver = "3"
 members = [
     "crates/flowy-core",
     "crates/flowy-app",
+    "crates/flowy-auth",
+    "crates/flowy-desktop",
+    "crates/flowy-chat",
+    "crates/flowy-ui",
+    "crates/flowy-shell",
+    "crates/flowy-studio",
+    "crates/flowy-agent",
+    "crates/flowy-i18n",
     "crates/flowy-net",
     "crates/flowy-ota",
     "crates/flowy-obs",
@@ -15,6 +23,14 @@ members = [
 default-members = [
     "crates/flowy-core",
     "crates/flowy-app",
+    "crates/flowy-auth",
+    "crates/flowy-desktop",
+    "crates/flowy-chat",
+    "crates/flowy-ui",
+    "crates/flowy-shell",
+    "crates/flowy-studio",
+    "crates/flowy-agent",
+    "crates/flowy-i18n",
     "crates/flowy-net",
     "crates/flowy-ota",
     "crates/flowy-obs",
@@ -29,6 +45,14 @@ repository = "https://github.com/flowy-app/flowy"
 
 [workspace.dependencies]
 flowy-core = { path = "crates/flowy-core" }
+flowy-app = { path = "crates/flowy-app" }
+flowy-auth = { path = "crates/flowy-auth" }
+flowy-agent = { path = "crates/flowy-agent" }
+flowy-chat = { path = "crates/flowy-chat" }
+flowy-i18n = { path = "crates/flowy-i18n" }
+flowy-ui = { path = "crates/flowy-ui" }
+flowy-shell = { path = "crates/flowy-shell" }
+flowy-studio = { path = "crates/flowy-studio" }
 flowy-net = { path = "crates/flowy-net" }
 flowy-ota = { path = "crates/flowy-ota" }
 flowy-obs = { path = "crates/flowy-obs" }
@@ -58,7 +82,7 @@ sentry = { version = "0.38", default-features = false, features = [
     "rustls",
 ] }
 sentry-tracing = "0.38"
-gpui = { package = "gpui-ce", version = "0.3.0" }
+gpui = { package = "gpui-ce", version = "0.3.0", features = ["hot-patching"] }
 gpui_platform = { package = "gpui_ce_platform", version = "0.3.0" }
 gpui_ce_elements = "0.3.0"
 gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }

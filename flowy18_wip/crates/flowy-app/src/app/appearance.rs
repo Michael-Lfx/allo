@@ -1,7 +1,7 @@
 use super::settings::{Picker, toggle_switch};
 use super::{FlowyApp, place};
 use crate::prefs::{Accent, Density, ThemeMode};
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{Context, SharedString, div, prelude::*, px};
 use gpui_ce_elements::editable_text::text_input;
 

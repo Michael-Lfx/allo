@@ -1,7 +1,7 @@
 use super::FlowyApp;
 use crate::i18n::Locale;
 use crate::prefs::SendMode;
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
 use gpui_ce_elements::editable_text::text_input;
 
@@ -103,9 +103,12 @@ impl FlowyApp {
     pub(super) fn open_settings(&mut self, cx: &mut Context<'_, Self>) {
         self.settings.open = true;
         self.invite.open = false;
-        self.studio.model_menu_open = false;
-        self.studio.credits_hover = false;
-        self.studio.credits_close = None;
+        self.studio.update(cx, |panel, cx| {
+            panel.model_menu_open = false;
+            panel.credits_hover = false;
+            panel.credits_close = None;
+            cx.notify();
+        });
         self.gallery.ideas_open = false;
         self.gallery.idea_id = None;
         self.gallery.idea_note = false;
@@ -125,6 +128,10 @@ impl FlowyApp {
     fn choose_locale(&mut self, locale: Locale, cx: &mut Context<'_, Self>) {
         self.prefs.locale = locale;
         self.i18n.set_locale(locale);
+        let i18n = self.i18n.clone();
+        self.studio.update(cx, |panel, cx| {
+            panel.sync_i18n(i18n, cx);
+        });
         self.settings.picker = Picker::None;
         self.prefs.save(self.store.root());
         cx.notify();
@@ -154,7 +161,7 @@ impl FlowyApp {
             }
             PrefToggle::LaunchAtLogin => {
                 self.prefs.launch_at_login = !self.prefs.launch_at_login;
-                let _ = crate::shell::set_autostart(self.prefs.launch_at_login);
+                let _ = flowy_shell::set_autostart(self.prefs.launch_at_login);
             }
         }
         self.prefs.save(self.store.root());

@@ -1,5 +1,5 @@
 use super::FlowyApp;
-use crate::theme;
+use flowy_ui as theme;
 use flowy_ota::{
     AvailableUpdate, BeginUpdateDownload, DownloadProgress, ReadyPackage,
     TakeReadyError, UpdateError, UpdatePackageCache, Updater,
@@ -31,7 +31,7 @@ pub(super) enum UpdateStatus {
     },
 }
 
-pub(super) struct OtaController {
+pub struct OtaController {
     pub status: UpdateStatus,
     pub cache: Arc<UpdatePackageCache>,
     pub error_detail: Option<String>,
@@ -228,7 +228,7 @@ impl FlowyApp {
                     notes: update.notes,
                 };
                 self.notify_update(
-                    crate::shell::NotifyKind::Available,
+                    flowy_shell::NotifyKind::Available,
                     &version,
                     cx,
                 );
@@ -246,7 +246,7 @@ impl FlowyApp {
                     );
                 });
                 self.notify_update(
-                    crate::shell::NotifyKind::Ready,
+                    flowy_shell::NotifyKind::Ready,
                     &version,
                     cx,
                 );
@@ -275,22 +275,22 @@ impl FlowyApp {
 
     fn notify_update(
         &self,
-        kind: crate::shell::NotifyKind,
+        kind: flowy_shell::NotifyKind,
         version: &str,
         cx: &Context<'_, Self>,
     ) {
         let (title_key, body_key) = match kind {
-            crate::shell::NotifyKind::Available => {
+            flowy_shell::NotifyKind::Available => {
                 ("shell.notify_update_title", "shell.notify_update_body")
             }
-            crate::shell::NotifyKind::Ready => {
+            flowy_shell::NotifyKind::Ready => {
                 ("shell.notify_ready_title", "shell.notify_ready_body")
             }
         };
         let title = self.t(title_key);
         let body = self.tf(body_key, &[("version", version)]);
         let open = self.t("shell.notify_open");
-        crate::shell::show_update_notification(
+        flowy_shell::show_update_notification(
             cx, kind, &title, &body, &open,
         );
     }

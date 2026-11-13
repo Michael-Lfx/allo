@@ -24,7 +24,10 @@ pub fn take_pending() -> Vec<String> {
 }
 
 pub fn parse(url: &str) -> Option<DeepLink> {
-    let scheme = crate::brand::url_scheme();
+    parse_with_scheme(url, crate::brand().url_scheme)
+}
+
+pub fn parse_with_scheme(url: &str, scheme: &str) -> Option<DeepLink> {
     let prefix = format!("{scheme}://");
     let rest = url.strip_prefix(&prefix)?;
     let rest = rest.trim_start_matches('/');
@@ -53,23 +56,32 @@ pub fn parse(url: &str) -> Option<DeepLink> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeepLink, parse};
+    use super::{DeepLink, parse_with_scheme};
 
     #[test]
     fn parses_invite_and_open() {
-        let scheme = crate::brand::url_scheme();
+        let scheme = "flowy";
         assert_eq!(
-            parse(&format!("{scheme}://invite/AbC_12")),
+            parse_with_scheme(&format!("{scheme}://invite/AbC_12"), scheme),
             Some(DeepLink::Invite {
                 code: "AbC_12".into()
             })
         );
         assert_eq!(
-            parse(&format!("{scheme}://open")),
+            parse_with_scheme(&format!("{scheme}://open"), scheme),
             Some(DeepLink::Open)
         );
-        assert_eq!(parse(&format!("{scheme}://")), Some(DeepLink::Open));
-        assert_eq!(parse(&format!("{scheme}://invite/")), None);
-        assert_eq!(parse("https://example.com/invite/x"), None);
+        assert_eq!(
+            parse_with_scheme(&format!("{scheme}://"), scheme),
+            Some(DeepLink::Open)
+        );
+        assert_eq!(
+            parse_with_scheme(&format!("{scheme}://invite/"), scheme),
+            None
+        );
+        assert_eq!(
+            parse_with_scheme("https://example.com/invite/x", scheme),
+            None
+        );
     }
 }

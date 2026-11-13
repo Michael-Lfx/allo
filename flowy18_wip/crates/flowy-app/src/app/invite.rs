@@ -1,5 +1,5 @@
 use super::FlowyApp;
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{
     ClipboardItem, ColorExt, Context, SharedString, div, prelude::*, px, rgb,
 };
@@ -16,7 +16,7 @@ pub(super) enum Panel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Book {
+pub struct Book {
     pub code: String,
     pub emails: Vec<String>,
 }

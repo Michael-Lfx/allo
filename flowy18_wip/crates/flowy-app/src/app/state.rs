@@ -2,40 +2,65 @@ use super::gallery;
 use super::invite;
 use super::more;
 use super::settings;
-use crate::agent::AgentHandle;
+use crate::prefs::FlexProvider;
 use crate::session::Session;
-use flowy_core::DocumentSession;
 use gpui::{Entity, Task, WindowAppearance};
 use gpui_ce_elements::editable_text::EditableTextState;
 
-pub(super) struct AuthState {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginStep {
+    Email,
+    Otp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginPhase {
+    Idle,
+    Sending,
+    Verifying,
+    Success,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegalDoc {
+    Privacy,
+    Terms,
+}
+
+impl LegalDoc {
+    #[must_use]
+    pub const fn title_key(self) -> &'static str {
+        match self {
+            Self::Privacy => "login.legal_privacy",
+            Self::Terms => "login.legal_terms",
+        }
+    }
+
+    #[must_use]
+    pub const fn body(self) -> &'static str {
+        match self {
+            Self::Privacy => include_str!("../../res/legal/privacy.txt"),
+            Self::Terms => include_str!("../../res/legal/terms.txt"),
+        }
+    }
+}
+
+pub struct AuthState {
     pub session: Option<Session>,
-    pub account_exists: bool,
     pub email: Entity<EditableTextState>,
-    pub password: Entity<EditableTextState>,
-    pub password_visible: bool,
-    pub login_error: Option<&'static str>,
+    pub code: Entity<EditableTextState>,
+    pub step: LoginStep,
+    pub phase: LoginPhase,
+    pub message: Option<&'static str>,
+    pub pending_req_no: Option<String>,
+    pub cooldown_left: u64,
+    pub generation: u64,
+    pub task: Option<Task<()>>,
+    pub cooldown_task: Option<Task<()>>,
+    pub legal: Option<LegalDoc>,
 }
 
-pub(super) struct StudioState {
-    pub prompt: Entity<EditableTextState>,
-    pub projects: Vec<usize>,
-    pub tasks: Vec<String>,
-    pub thread: Option<crate::chat::Thread>,
-    pub stream: Option<crate::chat::MockStream>,
-    pub stream_task: Option<Task<()>>,
-    pub confirm_rights: bool,
-    pub confirm_terms: bool,
-    pub document: DocumentSession,
-    pub agent: AgentHandle,
-    pub credits: u32,
-    pub credits_hover: bool,
-    pub credits_close: Option<Task<()>>,
-    pub model_info_open: bool,
-    pub model_menu_open: bool,
-}
-
-pub(super) struct GalleryState {
+pub struct GalleryState {
     pub page: usize,
     pub ideas_open: bool,
     pub idea_filter: gallery::Filter,
@@ -43,14 +68,14 @@ pub(super) struct GalleryState {
     pub idea_note: bool,
 }
 
-pub(super) struct SettingsState {
+pub struct SettingsState {
     pub open: bool,
     pub page: settings::Page,
     pub picker: settings::Picker,
     pub query: Entity<EditableTextState>,
 }
 
-pub(super) struct InviteState {
+pub struct InviteState {
     pub open: bool,
     pub panel: invite::Panel,
     pub status: Option<&'static str>,
@@ -60,7 +85,7 @@ pub(super) struct InviteState {
     pub email: Entity<EditableTextState>,
 }
 
-pub(super) struct PersonaState {
+pub struct PersonaState {
     pub menu: bool,
     pub page: more::Page,
     pub tab: more::Tab,
@@ -77,8 +102,19 @@ pub(super) struct PersonaState {
     pub knowledge_body: Entity<EditableTextState>,
 }
 
-pub(super) struct AppearanceChrome {
+pub struct AppearanceChrome {
     pub known: bool,
     pub forced: Option<WindowAppearance>,
     pub font_size_field: Entity<EditableTextState>,
+}
+
+pub struct FlexState {
+    pub open: bool,
+    pub provider_menu: bool,
+    pub draft_provider: Option<FlexProvider>,
+    /// Field contents (plaintext when visible, `*` mask when hidden).
+    pub api_key: Entity<EditableTextState>,
+    /// Real API key while the field shows a mask.
+    pub secret: String,
+    pub key_visible: bool,
 }

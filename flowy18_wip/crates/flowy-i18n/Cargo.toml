@@ -1,0 +1,15 @@
+[package]
+name = "flowy-i18n"
+description = "Embedded locales and translation helpers for Flowy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

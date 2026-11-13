@@ -1,0 +1,19 @@
+Terms of Service (placeholder)
+
+This is temporary placeholder text for the Flowy terms of service.
+Replace this file with the final terms before release.
+
+1. Acceptance
+By signing in or using Flowy, you agree to these terms.
+
+2. Accounts
+You are responsible for activity under your account and for keeping login credentials secure.
+
+3. Acceptable use
+Do not misuse the service, attempt unauthorized access, or use Flowy to violate applicable law.
+
+4. Service changes
+Features may change, and the service may be interrupted for maintenance or operational reasons.
+
+5. Limitation
+To the extent permitted by law, Flowy is provided as available without warranties of uninterrupted operation.

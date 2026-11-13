@@ -1,0 +1,20 @@
+[package]
+name = "flowy-studio"
+description = "Studio / thread / automation / agent workspace Entity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+flowy-agent = { workspace = true }
+flowy-core = { workspace = true }
+flowy-i18n = { workspace = true }
+flowy-ui = { workspace = true }
+gpui = { workspace = true }
+gpui_ce_elements = { workspace = true }
+
+[lints]
+workspace = true

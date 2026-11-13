@@ -237,6 +237,20 @@ pub async fn install_base(ctx: &Context, config: BaseConfig) -> Result<Vec<Fiber
     Ok(handles)
 }
 
+/// Build an OpenAI-compatible adapter for hot-register via [`crate::api::services::LlmRuntimeApi`].
+///
+/// Desktop hosts use this instead of enabling the `unstable` feature just to
+/// construct [`crate::llm::adapters::openai::OpenAiAdapter`].
+#[cfg(feature = "openai")]
+pub fn openai_compatible_adapter(
+    section: Value,
+) -> Result<Arc<dyn crate::api::services::LlmAdapterApi>, String> {
+    use crate::llm::adapters::openai::OpenAiAdapter;
+    OpenAiAdapter::new(section)
+        .map(|adapter| Arc::new(adapter) as Arc<dyn crate::api::services::LlmAdapterApi>)
+        .map_err(|error| error.to_string())
+}
+
 /// Convenience: load a dynamic plugin cdylib (see [`dynamic`]).
 pub fn load_dynamic_plugin(path: &std::path::Path) -> dynamic::Result<Arc<dynamic::DynamicPlugin>> {
     dynamic::load_dynamic_plugin(path)

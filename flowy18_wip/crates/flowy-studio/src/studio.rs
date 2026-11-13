@@ -1,32 +1,12 @@
-use super::{FlowyApp, Section};
-use crate::prefs::{Model, Plan};
-use crate::theme;
-use gpui::{Context, SharedString, Window, div, prelude::*, px, rgb};
+use flowy_agent::{Model, Plan};
+use flowy_ui as theme;
+use gpui::{Context, SharedString, div, prelude::*, px, rgb};
 use gpui_ce_elements::editable_text::text_area;
 use std::time::Duration;
 
-impl FlowyApp {
-    pub(super) fn main_canvas(
-        &self,
-        window: &mut Window,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let mut canvas = div()
-            .size_full()
-            .relative()
-            .flex()
-            .flex_row()
-            .bg(theme::canvas())
-            .text_color(theme::ink())
-            .child(self.dock(window, cx))
-            .child(self.workspace(cx));
-        if self.persona.menu && self.section == Section::More {
-            canvas = canvas.child(self.more_flyout(cx));
-        }
-        canvas
-    }
+impl crate::panel::StudioPanel {
 
-    fn workspace(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(crate) fn workspace(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut column = div()
             .id("workspace")
             .flex_1()
@@ -35,8 +15,8 @@ impl FlowyApp {
             .relative()
             .flex()
             .flex_col();
-        let chrome = self.section != Section::More
-            && self.section != Section::Automation;
+        let chrome = true
+            && self.surface != crate::panel::StudioSurface::Automation;
         if chrome {
             column = column.child(self.top_bar(cx));
         }
@@ -50,25 +30,23 @@ impl FlowyApp {
                     .child(self.t(notice)),
             );
         }
-        column = if self.section == Section::Studio {
+        column = if self.surface == crate::panel::StudioSurface::Home {
             column.child(self.studio(cx))
-        } else if self.section == Section::Agent {
-            column.child(self.agent_canvas(cx))
-        } else if self.section == Section::More {
-            column.child(self.more_canvas(cx))
-        } else if self.section == Section::Automation {
+        } else if self.surface == crate::panel::StudioSurface::Chat {
+            column.child(self.chat_canvas(cx))
+        } else if self.surface == crate::panel::StudioSurface::Automation {
             column.child(self.automation_canvas(cx))
         } else {
             column.child(self.section_page())
         };
-        if self.studio.model_info_open && !self.studio.model_menu_open && chrome
+        if self.model_info_open && !self.model_menu_open && chrome
         {
             column = column.child(self.model_info(cx));
         }
-        if self.studio.model_menu_open && chrome {
+        if self.model_menu_open && chrome {
             column = column.child(self.model_menu(cx));
         }
-        if self.studio.credits_hover && chrome {
+        if self.credits_hover && chrome {
             column = column.child(self.credit_card(cx));
         }
         column
@@ -157,12 +135,12 @@ impl FlowyApp {
     }
 
     fn model_button_label(&self) -> String {
-        let mark = if self.studio.model_menu_open {
+        let mark = if self.model_menu_open {
             "▴"
         } else {
             "▾"
         };
-        format!("{}  {mark}", self.t(self.prefs.model.name_key()))
+        format!("{}  {mark}", self.t(self.model.name_key()))
     }
 
     fn model_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -193,7 +171,7 @@ impl FlowyApp {
         model: Model,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let selected = self.prefs.model == model;
+        let selected = self.model == model;
         let id = SharedString::from(format!("model-row-{}", model.name_key()));
         div()
             .id(id)
@@ -251,27 +229,29 @@ impl FlowyApp {
     }
 
     fn choose_model(&mut self, model: Model, cx: &mut Context<'_, Self>) {
-        if !model.can_use(self.prefs.plan) {
-            let key = if model == Model::Flex {
-                "model.flex_later"
-            } else {
-                "notice.upgrade_later"
-            };
-            self.note(key, cx);
+        if model == Model::Flex {
+            self.model_menu_open = false;
+            self.notice = None;
+            cx.emit(crate::panel::StudioEvent::OpenFlex);
+            cx.notify();
             return;
         }
-        self.prefs.model = model;
-        self.prefs.save(self.store.root());
-        self.studio.model_menu_open = false;
+        if !model.can_use(self.plan) {
+            self.emit_notice(Some("notice.upgrade_later"), cx);
+            return;
+        }
+        self.model = model;
+        self.emit_model(cx);
+        self.model_menu_open = false;
         self.notice = None;
         cx.notify();
     }
 
     fn dismiss_model_info(&mut self, cx: &mut Context<'_, Self>) {
-        self.prefs.model_info_version =
-            crate::prefs::Preferences::app_version().to_string();
-        self.prefs.save(self.store.root());
-        self.studio.model_info_open = false;
+        self.model_info_version =
+            env!("CARGO_PKG_VERSION").to_string();
+        self.emit_model(cx);
+        self.model_info_open = false;
         cx.notify();
     }
 
@@ -294,8 +274,8 @@ impl FlowyApp {
                     .hover(|style| style.bg(theme::soft()))
                     .child(self.model_button_label())
                     .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.studio.model_menu_open =
-                            !app.studio.model_menu_open;
+                        app.model_menu_open =
+                            !app.model_menu_open;
                         cx.notify();
                     })),
             )
@@ -333,22 +313,22 @@ impl FlowyApp {
 
     fn set_credit_hover(&mut self, hovered: bool, cx: &mut Context<'_, Self>) {
         if hovered {
-            self.studio.credits_close = None;
-            if !self.studio.credits_hover {
-                self.studio.credits_hover = true;
+            self.credits_close = None;
+            if !self.credits_hover {
+                self.credits_hover = true;
                 cx.notify();
             }
             return;
         }
-        if !self.studio.credits_hover {
+        if !self.credits_hover {
             return;
         }
-        self.studio.credits_close = Some(cx.spawn(async move |weak, cx| {
+        self.credits_close = Some(cx.spawn(async move |weak, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(150))
                 .await;
             let _ = weak.update(cx, |app, cx| {
-                app.studio.credits_hover = false;
+                app.credits_hover = false;
                 cx.notify();
             });
         }));
@@ -374,17 +354,17 @@ impl FlowyApp {
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(grouped(self.studio.credits)),
+                    .child(Self::grouped(self.credits)),
             )
     }
 
     fn credit_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let (free, daily) = credit_split(self.studio.credits);
-        let plan = match self.prefs.plan {
+        let (free, daily) = Self::credit_split(self.credits);
+        let plan = match self.plan {
             Plan::Free => "credits.plan_free",
             Plan::Paid => "credits.plan_paid",
         };
-        let daily_note = grouped(DAILY_GRANT);
+        let daily_note = Self::grouped(Self::DAILY_GRANT);
         div()
             .id("credit-card")
             .occlude()
@@ -441,20 +421,20 @@ impl FlowyApp {
                     .border_dashed_gap(3.)
                     .border_color(theme::line()),
             )
-            .child(credit_row(
+            .child(Self::credit_row(
                 "✦",
                 self.t("credits.balance"),
-                grouped(free),
+                Self::grouped(free),
                 true,
             ))
-            .child(credit_sub(self.t("credits.free"), Some(grouped(free))))
-            .child(credit_row(
+            .child(Self::credit_sub(self.t("credits.free"), Some(Self::grouped(free))))
+            .child(Self::credit_row(
                 "▣",
                 self.t("credits.daily"),
-                grouped(daily),
+                Self::grouped(daily),
                 true,
             ))
-            .child(credit_sub(
+            .child(Self::credit_sub(
                 self.tf("credits.daily_note", &[("count", &daily_note)]),
                 None,
             ))
@@ -473,9 +453,6 @@ impl FlowyApp {
     }
 
     fn studio(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        if self.studio.thread.is_some() {
-            return self.thread_canvas(cx).into_any_element();
-        }
         div()
             .flex_1()
             .min_h_0()
@@ -490,11 +467,10 @@ impl FlowyApp {
                     .child(self.studio_body(cx)),
             )
             .child(self.composer(cx))
-            .into_any_element()
     }
 
     fn studio_body(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let doc = self.studio.document.document();
+        let doc = self.document.document();
         div()
             .w_full()
             .max_w(px(980.))
@@ -512,7 +488,7 @@ impl FlowyApp {
                 doc.nodes.len()
             )))
             .child(self.feature_row(cx))
-            .child(self.gallery_row(cx))
+            .child(self.ideas_entry(cx))
     }
 
     fn title_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -718,87 +694,6 @@ impl FlowyApp {
             )
     }
 
-    fn agent_canvas(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let events = self.studio.agent.events();
-        let mut feed = div()
-            .id("agent-feed")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap_2();
-        if events.is_empty() {
-            feed = feed.child(
-                div()
-                    .text_sm()
-                    .text_color(theme::muted())
-                    .child(self.t("section.agent")),
-            );
-        } else {
-            for (index, event) in events.iter().enumerate() {
-                let label = match event.role {
-                    crate::agent::AgentRole::User => "You",
-                    crate::agent::AgentRole::Assistant => "Agent",
-                };
-                feed = feed.child(
-                    div()
-                        .id(("agent-event", index))
-                        .p_3()
-                        .rounded_lg()
-                        .bg(theme::soft())
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::muted())
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .whitespace_normal()
-                                .child(event.text.clone()),
-                        ),
-                );
-            }
-        }
-        div()
-            .id("agent")
-            .flex_1()
-            .min_h_0()
-            .px_8()
-            .py_6()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(div().text_2xl().child(self.t("dock.agent")))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme::muted())
-                    .child(self.t("section.agent")),
-            )
-            .child(feed)
-            .child(self.prompt_field())
-            .child(
-                div()
-                    .id("agent-send")
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .text_sm()
-                    .bg(theme::fill())
-                    .text_color(theme::on_fill())
-                    .cursor_pointer()
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.send_prompt(cx);
-                    }))
-                    .child(self.t("studio.send")),
-            )
-    }
 
     fn section_page(&self) -> impl IntoElement {
         div().flex_1().flex().items_center().justify_center().child(
@@ -812,19 +707,19 @@ impl FlowyApp {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(div().text_2xl().child(self.t(self.section.title_key())))
+                .child(div().text_2xl().child(self.placeholder_title()))
                 .child(
                     div()
                         .text_sm()
                         .text_color(theme::muted())
-                        .child(self.t(self.section.detail_key())),
+                        .child(self.placeholder_detail()),
                 ),
         )
     }
 
     fn prompt_field(&self) -> impl gpui::IntoElement {
         text_area("prompt")
-            .state(self.studio.prompt.downgrade())
+            .state(self.prompt.downgrade())
             .placeholder(self.t("studio.prompt_placeholder"))
             .placeholder_color(theme::muted())
             .caret_color(gpui::rgb_to_hsla(theme::ink()))
@@ -835,21 +730,20 @@ impl FlowyApp {
             .overflow_y_scroll()
             .text_color(theme::ink())
     }
-}
 
-const DAILY_GRANT: u32 = 300;
+    const DAILY_GRANT: u32 = 300;
 
-fn credit_split(total: u32) -> (u32, u32) {
-    let daily = DAILY_GRANT.min(total);
+    fn credit_split(total: u32) -> (u32, u32) {
+    let daily = Self::DAILY_GRANT.min(total);
     (total - daily, daily)
-}
+    }
 
-fn credit_row(
+    fn credit_row(
     mark: &'static str,
     label: String,
     value: String,
     help: bool,
-) -> impl IntoElement {
+    ) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -862,12 +756,12 @@ fn credit_row(
                 .gap_2()
                 .child(div().text_sm().child(mark))
                 .child(div().text_sm().child(label))
-                .when(help, |row| row.child(help_mark())),
+                .when(help, |row| row.child(Self::help_mark())),
         )
         .child(div().text_sm().child(value))
-}
+    }
 
-fn credit_sub(label: String, value: Option<String>) -> impl IntoElement {
+    fn credit_sub(label: String, value: Option<String>) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -875,9 +769,9 @@ fn credit_sub(label: String, value: Option<String>) -> impl IntoElement {
         .pl(px(22.))
         .child(div().text_xs().text_color(theme::muted()).child(label))
         .children(value.map(|text| div().text_xs().child(text)))
-}
+    }
 
-fn help_mark() -> impl IntoElement {
+    fn help_mark() -> impl IntoElement {
     div()
         .size(px(14.))
         .rounded_full()
@@ -889,9 +783,9 @@ fn help_mark() -> impl IntoElement {
         .text_xs()
         .text_color(theme::muted())
         .child("?")
-}
+    }
 
-fn grouped(value: u32) -> String {
+    fn grouped(value: u32) -> String {
     let raw = value.to_string();
     let mut out = String::new();
     for (index, ch) in raw.chars().rev().enumerate() {
@@ -901,20 +795,5 @@ fn grouped(value: u32) -> String {
         out.push(ch);
     }
     out.chars().rev().collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::credit_split;
-
-    #[test]
-    fn credit_split_keeps_the_total() {
-        let (free, daily) = credit_split(2500);
-        assert_eq!(free + daily, 2500);
-        assert_eq!(daily, 300);
-        assert_eq!(free, 2200);
-        let (free, daily) = credit_split(100);
-        assert_eq!(free, 0);
-        assert_eq!(daily, 100);
     }
 }

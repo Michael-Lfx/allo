@@ -1,4 +1,4 @@
-use crate::prefs::{Accent, Density};
+use crate::{Accent, Density};
 use gpui::{Pixels, Rgba, px, rgb};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 

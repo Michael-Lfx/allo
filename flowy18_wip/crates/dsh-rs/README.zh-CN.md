@@ -225,7 +225,8 @@ effect——卸载插件会自动注销其工具。带有 `inject: ["tools"]` �
 ## 扩展
 
 加工具：构造 `ToolDefinition` 并注册到 `ctx.tools`。加 provider：实现
-`LlmAdapter` 并注册到 `ctx.llm`。加提示词段：`ctx.systemPrompt.section(...)`。
+`LlmAdapter` 并注册到 `ctx.llm`（桌面端也可调用 `bundle::openai_compatible_adapter`
+热挂 OpenAI 兼容路由，无需 `unstable`）。加提示词段：`ctx.systemPrompt.section(...)`。
 拦截行为：监听 `agent/pre-step`、`agent/request`、`tools/pre-execute` 或
 `llm/stream` 瀑布。一切皆插件，一切都可以从配置替换。
 

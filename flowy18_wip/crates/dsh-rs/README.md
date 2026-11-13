@@ -229,7 +229,9 @@ exactly like the static plugins. Add your own plugin: implement
 ## Extending
 
 Add a tool: build a `ToolDefinition` and register it on `ctx.tools`. Add a
-provider: implement `LlmAdapter` and register it on `ctx.llm`. Add a prompt
+provider: implement `LlmAdapter` and register it on `ctx.llm` (desktop hosts
+can also call `bundle::openai_compatible_adapter` to hot-register an
+OpenAI-compatible route without enabling `unstable`). Add a prompt
 section: `ctx.systemPrompt.section(...)`. Intercept behavior: listen on the
 `agent/pre-step`, `agent/request`, `tools/pre-execute`, or `llm/stream`
 waterfalls. Everything is a plugin, and everything is replaceable from

@@ -1,5 +1,5 @@
 use super::FlowyApp;
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{ColorExt, Context, SharedString, div, prelude::*, px, rgb};
 
 const PAGE: usize = 3;
@@ -251,7 +251,7 @@ fn similar(item: &Item) -> Vec<&'static Item> {
 }
 
 impl FlowyApp {
-    pub(super) fn gallery_row(
+    pub fn gallery_row(
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {

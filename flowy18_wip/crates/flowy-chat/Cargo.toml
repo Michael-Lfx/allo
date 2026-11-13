@@ -1,0 +1,12 @@
+[package]
+name = "flowy-chat"
+description = "Task thread projection and mock stream domain for Flowy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

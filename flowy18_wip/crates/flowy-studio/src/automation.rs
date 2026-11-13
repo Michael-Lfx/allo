@@ -1,12 +1,12 @@
-use super::FlowyApp;
-use crate::theme;
+use flowy_ui as theme;
 use gpui::{Context, SharedString, div, prelude::*, px, rgb};
 use gpui_ce_elements::editable_text::text_area;
 
 const COLUMN: f32 = 720.0;
 
-impl FlowyApp {
-    pub(super) fn automation_canvas(
+impl crate::panel::StudioPanel {
+
+    pub fn automation_canvas(
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
@@ -71,10 +71,10 @@ impl FlowyApp {
             )
             .child(
                 text_area("auto-prompt")
-                    .state(self.studio.prompt.downgrade())
+                    .state(self.prompt.downgrade())
                     .placeholder(self.tf(
                         "auto.prompt_placeholder",
-                        &[("product", crate::brand::product())],
+                        &[("product", self.product)],
                     ))
                     .placeholder_color(theme::muted())
                     .caret_color(gpui::rgb_to_hsla(theme::ink()))
@@ -423,9 +423,9 @@ impl FlowyApp {
                     ),
             )
     }
-}
+    }
 
-fn tool_mark(glyph: &'static str) -> impl IntoElement {
+    fn tool_mark(glyph: &'static str) -> impl IntoElement {
     div()
         .size(px(28.))
         .rounded_full()

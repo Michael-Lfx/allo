@@ -1,0 +1,17 @@
+[application]
+name = "FlowyApp"
+out_dir = "dist"
+
+[web.app]
+title = "Flowy"
+
+[web.watcher]
+reload_html = false
+watch_path = [
+  "crates/flowy-desktop/src",
+  "crates/flowy-app/src",
+  "crates/flowy-studio/src",
+  "crates/flowy-ui/src",
+  "crates/flowy-chat/src",
+  "crates/flowy-shell/src",
+]
