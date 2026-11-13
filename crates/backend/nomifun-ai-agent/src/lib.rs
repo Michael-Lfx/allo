@@ -1,6 +1,7 @@
 //! Agent runtime lifecycle, per-conversation runtime registration, and skill management.
 pub(crate) mod runtime_state;
 pub mod agent_eval;
+pub mod archiving_completer;
 pub mod agent_trace;
 pub mod artifact_store;
 pub mod boot_process_reaper;
@@ -12,7 +13,6 @@ pub mod runtime_handle;
 pub mod browser_fetcher;
 pub mod capability;
 pub mod cc_switch;
-pub mod learning_graph_loop;
 pub mod course_outline_loop;
 pub mod factory;
 pub mod goal_bridge;
@@ -21,6 +21,10 @@ pub(crate) mod idle_scanner;
 pub(crate) mod shutdown_signal;
 pub mod auxiliary_provider;
 pub mod extraction_scanner;
+/// 冒烟瞬断注入 provider（e4）：smoke content 档模拟「代理掐流两次再恢复」
+/// 的注入面；计数器恒 0 = 纯透传，生产不装配（无 feature 门——smoke 命令
+/// 在无 test-support 的常规依赖面上取用）。
+pub mod flaky_provider;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
@@ -145,7 +149,6 @@ pub use browser_fetcher::BrowserFetcher;
 pub use knowledge_completer::LiveKnowledgeCompleter;
 pub use knowledge_completer::{resolve_default_model, resolve_flowy_cloud_model};
 pub use learning_completer::LiveLearningCompleter;
-pub use learning_graph_loop::LiveLearningGraphAgentEngine;
 pub use course_outline_loop::LiveCourseOutlineAgentEngine;
 pub use lesson_content_loop::LiveLessonContentAgentEngine;
 pub use knowledge_retrieval::LiveKnowledgeRetrievalSink;

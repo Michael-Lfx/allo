@@ -162,12 +162,24 @@ bootstrap/schema maintenance remains the documented exception.
 ### v3 baseline and dataset reset
 
 The embedded SQL defines the clean v3 baseline for a new, empty database.
-Schema evolution after the baseline happens through 45 append-only numbered
+Schema evolution after the baseline happens through append-only numbered
 migrations under
 [`crates/backend/nomifun-db/migrations/`](../../crates/backend/nomifun-db/migrations/)
-applied by `sqlx::migrate!()` on every boot; the lineage must begin with
-`001_v3_baseline.sql`. `init_database` may record and verify that baseline,
-but it never transforms pre-v3 product rows into v3 rows.
+(see the directory for the current count) applied by `sqlx::migrate!()` on
+every boot; the lineage must begin with `001_v3_baseline.sql`. `init_database`
+may record and verify that baseline, but it never transforms pre-v3 product
+rows into v3 rows.
+
+Two evolution rules sit on top of append-only (decided 2026-11-02):
+
+- **Released migrations are frozen forever** (checksums are verified on boot).
+  Migration segments that have *not* shipped in a release are folded into a
+  single net-shape baseline migration before each release — unreleased tables
+  are created in their final shape, data transforms on released tables are
+  preserved verbatim. See [ADR-0016](../adr/0016-persistence-evolution-discipline.md).
+- **Enum-set columns carry no `CHECK IN (...)`**; their value sets are owned by
+  the Rust enums (write-strict, read-tolerant). See
+  [ADR-0015](../adr/0015-enum-sets-out-of-db-checks.md).
 
 Before SQLite is opened, bootstrap checks the dataset contract and generation.
 An absent dataset is initialized as v3. An incompatible or historical dataset

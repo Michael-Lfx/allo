@@ -19,6 +19,7 @@ nomifun-models-dev.workspace = true
 nomifun-ai-agent.workspace = true
 nomifun-conversation.workspace = true
 nomifun-db.workspace = true
+nomifun-learning.workspace = true
 nomifun-realtime.workspace = true
 nomifun-system.workspace = true
 serde.workspace = true

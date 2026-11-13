@@ -104,7 +104,7 @@ use nomifun_realtime::{BroadcastEventBus, UserEventEnvelope};
 use nomifun_system::{ProviderModelService, ProviderService};
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 /// App Server wire protocol version, negotiated by `initialize`.
@@ -736,6 +736,7 @@ impl AppServerError {
             | nomifun_common::AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported(_) => {
                 ("workspace_denied", false)
             }
+            nomifun_common::AppError::NotImplemented(_) => ("not_implemented", false),
         };
         let details = error.error_details();
         let mapped = Self::new(code, error.to_string(), status, retryable);
@@ -2748,6 +2749,131 @@ pub fn warm_default_marketplaces(state: &AppServerRouterState) {
 /// One auto-update sweep per process.
 static MARKETPLACES_AUTO_UPDATE_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// 学习自动维护调度器：每进程一枚（k02）。
+static LEARNING_MAINTENANCE_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 学习维护调度器的唤醒步长（不是间隔本身——间隔每醒重读设置，改设置
+/// 无需重启；learnhub maintenance.rs sleep-then-work 同构）。
+const LEARNING_MAINTENANCE_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 学习维护调度器的存活守卫：spawn 任务体任何退出路径（含 panic 展开）都会
+/// Drop —— 复位 [`LEARNING_MAINTENANCE_STARTED`]，让「标志 true ⟺ 调度任务
+/// 在位」恒真，panic 不再把标志位永久卡死（曾致自动维护停摆到进程重启）。
+struct LearningMaintenanceLivenessGuard;
+
+impl Drop for LearningMaintenanceLivenessGuard {
+    fn drop(&mut self) {
+        LEARNING_MAINTENANCE_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+/// 学习维护回合的 panic 兜底：回合体 panic 就地收编为 `Err(死因)`，调度循环
+/// 存活、下个 tick 重新拉起——panic 与 `Err` 同样不再杀死调度任务（写法同
+/// nomi-agent 工具执行面的 catch_unwind 隔离）。
+async fn learning_maintenance_tick_guarded<T>(
+    tick: std::panic::AssertUnwindSafe<impl std::future::Future<Output = T>>,
+) -> Result<T, String> {
+    match tick.catch_unwind().await {
+        Ok(output) => Ok(output),
+        Err(payload) => Err(panic_message(payload.as_ref())),
+    }
+}
+
+/// 学习域自动维护回合调度（k02，learnhub ADR-0028 / maintenance.rs）：
+/// 定时醒来 → 重读设置 → 到期则跑**一轮**维护（先修补后挂载、纯读判定、
+/// 零工作不提交）。单轮在途由「本任务 await 回合」保证；回合内部逐课在
+/// 生成槽上串行（busy = 跳过该课含挂载）。
+///
+/// 两枚开关都生效：`NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册调度器；
+/// `learning.maintenanceAutoEnabled=false` 运行期关（设置页/配置写入即生效）。
+pub fn start_learning_auto_maintenance(
+    service: std::sync::Arc<nomifun_learning::LearningService>,
+    pool: nomifun_db::sqlx::SqlitePool,
+) {
+    use std::sync::atomic::Ordering;
+    let disabled = std::env::var("NOMI_LEARNING_AUTO_MAINTENANCE")
+        .map(|value| nomifun_learning::is_off_switch_value(&value))
+        .unwrap_or(false);
+    if disabled {
+        return;
+    }
+    if LEARNING_MAINTENANCE_STARTED.swap(true, Ordering::SeqCst) {
+        return; // already scheduling
+    }
+    tokio::spawn(async move {
+        // 死亡守卫：任务退出（含 panic 展开）复位标志位——标志位不再谎报
+        // 「调度器在位」，死亡后可再拉起。
+        let _liveness = LearningMaintenanceLivenessGuard;
+        // 首轮不立即跑：启动流量留给预热，先等一个缺省间隔。
+        let mut last_run = std::time::Instant::now();
+        loop {
+            // 回合体 panic 就地记死因并吞掉（见 guarded 文档）：循环存活，
+            // 下个 tick 重新拉起；last_run 照常推进，防 panic 热循环重试。
+            let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
+                tokio::time::sleep(LEARNING_MAINTENANCE_TICK).await;
+                // 每醒重读设置：开关/间隔改动下个周期生效。
+                let settings = service.maintenance_settings().await;
+                if !settings.enabled {
+                    return;
+                }
+                let due = std::time::Duration::from_secs(settings.interval_minutes as u64 * 60);
+                if last_run.elapsed() < due {
+                    return;
+                }
+                // 单轮在途：本任务 await 回合，不会重入。
+                let owner = match nomifun_db::installation_owner_id(&pool).await {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        tracing::warn!(%error, "learning maintenance: owner resolution failed; tick skipped");
+                        return;
+                    }
+                };
+                let user_id = match nomifun_common::UserId::parse(&owner) {
+                    Ok(user_id) => user_id,
+                    Err(error) => {
+                        tracing::warn!(%error, "learning maintenance: owner id invalid; tick skipped");
+                        return;
+                    }
+                };
+                match service.run_maintenance_tick(&user_id, None).await {
+                    Ok(report) => {
+                        if !report.courses.is_empty() {
+                            tracing::info!(
+                                scanned = report.scanned,
+                                idle = report.idle,
+                                worked = report.courses.len(),
+                                "learning auto maintenance tick"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "learning auto maintenance tick failed");
+                    }
+                }
+            }));
+            if let Err(cause) = tick.await {
+                tracing::error!(
+                    cause = %cause,
+                    "learning maintenance tick panicked; loop survives and retries next tick"
+                );
+            }
+            last_run = std::time::Instant::now();
+        }
+    });
+}
 
 /// How often the scheduler wakes up to ask whether a sweep is due (doc `37`
 /// §3.3).
@@ -8865,7 +8991,86 @@ mod tests {
     use http_body_util::BodyExt;
     use nomifun_api_types::WebSocketMessage;
     use nomifun_realtime::UserEventSink;
+    use std::sync::atomic::Ordering;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn maintenance_tick_guard_swallows_panic_and_reports_cause() {
+        // 回合体 panic → Err(死因)（死因进 tracing::error），panic 不再沿
+        // await 链外溢杀死调度任务。
+        let result = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
+            panic!("模拟回合体 panic");
+        }))
+        .await;
+        let cause = result.expect_err("panic 必须被收编为 Err");
+        assert!(cause.contains("模拟回合体 panic"), "{cause}");
+        // 正常回合原样透传（守卫不改变回合的返回面）。
+        let output = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(async {
+            7u32
+        }))
+        .await
+        .expect("正常回合不被收编");
+        assert_eq!(output, 7);
+    }
+
+    #[tokio::test]
+    async fn maintenance_liveness_guard_resets_flag_so_next_round_can_relaunch() {
+        // arrange：标志位 true（调度任务在位）。
+        LEARNING_MAINTENANCE_STARTED.store(true, Ordering::SeqCst);
+        // act：持守卫的任务 panic 退出（守卫随展开 Drop）。
+        let handle = tokio::spawn(async {
+            let _liveness = LearningMaintenanceLivenessGuard;
+            panic!("模拟调度任务死亡");
+        });
+        assert!(handle.await.is_err(), "任务确实死于 panic");
+        // assert：标志位复位 + 可再拉起（start 的 swap(true) 不命中「已在位」
+        // early-return，调度器可被重新注册）。
+        assert!(
+            !LEARNING_MAINTENANCE_STARTED.load(Ordering::SeqCst),
+            "panic 后标志位必须复位（不再永久卡死）"
+        );
+        assert!(
+            !LEARNING_MAINTENANCE_STARTED.swap(true, Ordering::SeqCst),
+            "复位后必须可再拉起"
+        );
+        LEARNING_MAINTENANCE_STARTED.store(false, Ordering::SeqCst); // 清场
+    }
+
+    /// 假 service 的回合体：第一轮 panic（模拟维护任务中途炸掉），第二轮
+    /// 正常返回——用于在包裹层复刻真实 spawn 循环的推进语义。
+    async fn fake_service_tick(round: u32) -> u32 {
+        if round == 0 {
+            panic!("模拟 service 回合 panic");
+        }
+        round
+    }
+
+    #[tokio::test]
+    async fn maintenance_loop_absorbs_panicking_service_tick_and_advances_next_round() {
+        // 真实 spawn 链无法注入假 service（`start_learning_auto_maintenance`
+        // 收具体 `Arc<LearningService>`，无 trait/时钟口子；tick 间隔为私有
+        // 常量），按退路在 [`learning_maintenance_tick_guarded`] 包裹层复刻
+        // `start_learning_auto_maintenance` 循环体的真实形状：回合 panic →
+        // `Err(死因)`（生产侧进 tracing::error），循环不死于 panic、照常推进
+        // 到下一轮；下一轮重新拉起且原样透传。标志位复位由上面的 liveness
+        // 守卫测试单独覆盖。
+        let mut round_outputs: Vec<Result<u32, String>> = Vec::new();
+        for round in 0..2u32 {
+            let tick = learning_maintenance_tick_guarded(std::panic::AssertUnwindSafe(
+                fake_service_tick(round),
+            ));
+            round_outputs.push(tick.await);
+        }
+        let cause = round_outputs[0].as_ref().expect_err("panic 必须收编为 Err 死因");
+        assert!(cause.contains("模拟 service 回合 panic"), "{cause}");
+        assert_eq!(
+            *round_outputs[1]
+                .as_ref()
+                .expect("panic 后循环必须存活并推进到下一轮"),
+            1,
+            "下一轮重新拉起且原样透传"
+        );
+    }
 
     fn request() -> InitializeRequest {
         InitializeRequest {

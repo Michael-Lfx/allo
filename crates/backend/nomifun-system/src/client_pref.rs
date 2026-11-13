@@ -99,6 +99,7 @@ impl ClientPrefService {
 
         for (key, value) in req {
             validate_key(&key)?;
+            validate_value(&key, &value)?;
             if SYSTEM_RESERVED_PREFIXES
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
@@ -216,6 +217,54 @@ fn validate_key(key: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Keyed value-range gates for preferences that the backend reads as numbers:
+/// an out-of-range write is rejected up front instead of being silently
+/// clamped (or worse, honored) at read time. Currently only the learning
+/// daily XP goal (j05); add keys as they gain read-side contracts.
+/// 单源注记：缺省值 40 与读侧回退住 nomifun-learning `settle.rs`
+/// （`DEFAULT_DAILY_XP_GOAL`）——改缺省或范围时两处同步。
+fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), AppError> {
+    if key == "learning.dailyXpGoal" {
+        return match value.as_i64() {
+            Some(goal) if (1..=1000).contains(&goal) => Ok(()),
+            _ => Err(AppError::BadRequest(
+                "learning.dailyXpGoal must be an integer between 1 and 1000".into(),
+            )),
+        };
+    }
+    // k02 自动维护：开关是布尔、间隔 30..=10080 分钟（learnhub 同界；越界
+    // 写入拒绝，读侧回退缺省 360——单源注记在 nomifun-learning
+    // `DEFAULT_MAINTENANCE_INTERVAL_MINUTES`）。
+    if key == "learning.maintenanceAutoEnabled" {
+        return match value.as_bool() {
+            Some(_) => Ok(()),
+            None => Err(AppError::BadRequest(
+                "learning.maintenanceAutoEnabled must be a boolean".into(),
+            )),
+        };
+    }
+    // m10 自动补批开关：布尔（缺省开的单源注记在 nomifun-learning
+    // `DEFAULT_AUTO_REFILL_ENABLED`；环境闸 `NOMI_LEARNING_AUTO_REFILL` 兜底）。
+    if key == "learning.autoRefillEnabled" {
+        return match value.as_bool() {
+            Some(_) => Ok(()),
+            None => Err(AppError::BadRequest(
+                "learning.autoRefillEnabled must be a boolean".into(),
+            )),
+        };
+    }
+    if key == "learning.maintenanceIntervalMinutes" {
+        return match value.as_i64() {
+            Some(minutes) if (30..=10080).contains(&minutes) => Ok(()),
+            _ => Err(AppError::BadRequest(
+                "learning.maintenanceIntervalMinutes must be an integer between 30 and 10080"
+                    .into(),
+            )),
+        };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +308,48 @@ mod tests {
     fn validate_key_rejects_too_long() {
         let long_key = "x".repeat(MAX_KEY_LENGTH + 1);
         assert!(validate_key(&long_key).is_err());
+    }
+
+    #[test]
+    fn validate_value_gates_daily_xp_goal_range() {
+        assert!(validate_value("learning.dailyXpGoal", &json!(1)).is_ok());
+        assert!(validate_value("learning.dailyXpGoal", &json!(40)).is_ok());
+        assert!(validate_value("learning.dailyXpGoal", &json!(1000)).is_ok());
+        assert!(validate_value("learning.dailyXpGoal", &json!(0)).is_err());
+        assert!(validate_value("learning.dailyXpGoal", &json!(1001)).is_err());
+        assert!(validate_value("learning.dailyXpGoal", &json!("40")).is_err());
+        // 其它键不设值域门。
+        assert!(validate_value("theme", &json!(0)).is_ok());
+    }
+
+    /// k02：自动维护两键——开关必须是布尔、间隔 30..=10080（越界拒绝）；
+    /// 读侧回退缺省在 nomifun-learning 的单测里锁。
+    #[test]
+    fn validate_value_gates_maintenance_switch_and_interval() {
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!(true)).is_ok());
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!(false)).is_ok());
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!("true")).is_err());
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!(1)).is_err());
+
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(30)).is_ok());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(360)).is_ok());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(10080)).is_ok());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(29)).is_err());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(10081)).is_err());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!("360")).is_err());
+    }
+
+    /// m10 自动补批开关：布尔可写，非布尔拒绝（缺省开的读侧在
+    /// nomifun-learning，写侧只把形状锁住）。
+    #[test]
+    fn validate_value_gates_auto_refill_switch() {
+        assert!(validate_value("learning.autoRefillEnabled", &json!(true)).is_ok());
+        assert!(validate_value("learning.autoRefillEnabled", &json!(false)).is_ok());
+        assert!(validate_value("learning.autoRefillEnabled", &json!("true")).is_err());
+        assert!(validate_value("learning.autoRefillEnabled", &json!(1)).is_err());
+        // null 同样拒绝（与 maintenanceAutoEnabled 一致：布尔键不设删除面，
+        // 关 = 写 false）。
+        assert!(validate_value("learning.autoRefillEnabled", &json!(serde_json::Value::Null)).is_err());
     }
 
     #[tokio::test]

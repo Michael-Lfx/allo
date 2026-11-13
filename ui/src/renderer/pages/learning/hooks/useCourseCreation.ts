@@ -1,21 +1,169 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { ipcBridge } from '@/common';
-import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
-import type { CourseDetail, GenerateCourseRequest, TeachingStyle } from '../types';
+import {
+  buildPlanRequest,
+  buildRestoredRequest,
+  type CreationTab,
+  type RestoredTaskInfo,
+} from '../coursePlan';
+import type {
+  CourseDetail,
+  GenerateCourseRequest,
+  LearningGenerationTaskView,
+} from '../types';
 import { errorMessage, type Translate } from '../utils';
 
-/** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
- * 失败 / 已取消（用户主动取消，学习图草稿保留可续建）。
- * request 保留用于失败后的「重试」。 */
+/** 一次建课的来源库上限（t4）：与后端 `COURSE_MAX_KNOWLEDGE_BASES` 同一口径
+ * ——t2 采样预算按库分摊，5 库时每库 8 文件仍有完整的结构预算。 */
+export const MAX_COURSE_KNOWLEDGE_BASES = 5;
+
+/** 对话框内生成视图的一次完整尝试：排队中（m7 资源闸：提交已受理、
+ * 等空闲许可，排队期可取消）/ 运行中 / 已完成（课程入库）/ 失败 /
+ * 已取消（用户主动取消，重试即重新发起）。request 保留用于失败后的「重试」
+ * （仅 in-session；恢复态终态是合成请求，不可重发，见
+ * `retryableGenerationRequest`）。
+ * restoredTask（c3）：仅恢复态带快照机器面（悬浮 Pill 副行按 kind 词典组装
+ * 显示文案）；实时链为 null——description 即用户输入，语言中立。 */
 export interface CourseGenerationState {
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   request: GenerateCourseRequest;
+  restoredTask: RestoredTaskInfo | null;
   result: CourseDetail | null;
   error: string | null;
+}
+
+/** 从快照行重建对话框生成态（恢复态）：running 原样落位，其余活跃态
+ * （m7 资源闸排队中）落 queued；请求形状由 `buildRestoredRequest` 单源给出
+ * （course_kind 按任务类别标注）。无主题的行不可恢复（null）。
+ * restoredTask（c3）：快照机器面留存——悬浮 Pill 副行按 kind 词典组装
+ * 显示文案，后端中文 topic 不再直达 UI；收敛写回展开 `{ ...current,
+ * ...converged }`，该字段随恢复态全程保留。 */
+export function restoredGenerationFromTask(
+  task: LearningGenerationTaskView
+): CourseGenerationState | null {
+  if (!task.topic) return null;
+  return {
+    status: task.state === 'running' ? 'running' : 'queued',
+    request: buildRestoredRequest(task),
+    restoredTask: { kind: task.kind, topic: task.topic },
+    result: null,
+    error: null,
+  };
+}
+
+/** 恢复态终态收敛的轮询间隔（c2）：running/queued 期间开、终态即停。 */
+export const RESTORED_GENERATION_POLL_MS = 5_000;
+
+/** 重试守卫：返回可重发的请求，不可重试时返回 null。恢复态（restoredTask
+ * 在场）永不重发——它的 request 是按快照 topic 合成的（description = 后端
+ * topic 标签，如「知识结构生成」），重发会以标签为名新建一门学习图课程；
+ * 终态面板对恢复态只出指引文案（见 CourseGenerationProgress），这里是
+ * retryGeneration 的第二道保险。in-session 终态（request 即用户输入）维持
+ * 「按原请求重试」不变。 */
+export function retryableGenerationRequest(
+  generation: CourseGenerationState | null
+): GenerateCourseRequest | null {
+  if (!generation || generation.restoredTask) return null;
+  if (generation.status !== 'failed' && generation.status !== 'cancelled') return null;
+  return generation.request;
+}
+
+/** 恢复态收敛写回的终态面；request 由 hook 侧保留（合成请求，只供呈现
+ * 分流——恢复态终态不重发，见 `retryableGenerationRequest`）。 */
+export interface RestoredGenerationConvergence {
+  status: 'completed' | 'failed' | 'cancelled';
+  result: CourseDetail | null;
+  error: string | null;
+}
+
+export interface RestoredGenerationConvergenceOptions {
+  /** 被恢复任务的快照键（跟踪它的状态迁移） */
+  taskKey: string;
+  /** 快照读数面（`GET /api/learning/generation-tasks`） */
+  fetchTasks: () => Promise<LearningGenerationTaskView[]>;
+  /** 课程详情读数面：done 时按快照行 `course_id` 拉取 */
+  fetchCourse: (courseId: string) => Promise<CourseDetail>;
+  /** 错误 → 人面文案（i18n 住 hook 侧，循环本身不碰翻译） */
+  describeError: (error: unknown) => string;
+  /** 任务翻 failed 的人面文案：后端 detail 是中文诊断面，不进 error；
+   * 本地化键出文案，保证 failed ⇒ error 非空。 */
+  describeFailed: () => string;
+  /** 终态写回：至多调用一次，调用后循环自停 */
+  onConverge: (converged: RestoredGenerationConvergence) => void;
+  /** 非终态推进：恢复的 queued 任务在快照里开跑时触发——写回侧把 queued
+   * 翻 running，界面不再停「排队中」；轮询继续等终态。 */
+  onRunning?: () => void;
+}
+
+/** 恢复态终态收敛循环（c2）：refreshGenerationStatus 重建出的 running/queued
+ * 态没有挂起的 HTTP 请求可等，改由轻量轮询快照推到终态。返回停止函数。 */
+export function startRestoredGenerationConvergence(
+  options: RestoredGenerationConvergenceOptions
+): () => void {
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const schedule = () => {
+    timer = setTimeout(() => void poll(), RESTORED_GENERATION_POLL_MS);
+  };
+
+  const poll = async () => {
+    timer = null;
+    let tasks: LearningGenerationTaskView[];
+    try {
+      tasks = await options.fetchTasks();
+    } catch {
+      // 快照不可达（后端重启 / 断网）：证据不足不臆造终态，下一轮再取。
+      if (!disposed) schedule();
+      return;
+    }
+    if (disposed) return;
+    const row = tasks.find((task) => task.key === options.taskKey);
+    if (row?.state === 'done') {
+      let detail: CourseDetail;
+      try {
+        detail = await options.fetchCourse(row.course_id);
+      } catch (fetchError) {
+        // 任务已完成但课程详情拉不到：如实按失败收场（带原因），不无限重试。
+        if (!disposed) {
+          options.onConverge({
+            status: 'failed',
+            result: null,
+            error: options.describeError(fetchError),
+          });
+        }
+        return;
+      }
+      if (!disposed) options.onConverge({ status: 'completed', result: detail, error: null });
+      return;
+    }
+    if (row?.state === 'failed') {
+      // 后端 detail 是中文诊断面（宁缺不泄漏，不进 error）：本地化键出文案，
+      // 保证 failed ⇒ error 非空。
+      options.onConverge({ status: 'failed', result: null, error: options.describeFailed() });
+      return;
+    }
+    // 取消是中性终态；任务从快照消失（如后端重启清空注册表）同样按取消
+    // 兜底——恢复态没有别的读数面，缺行即再无终态可等，绝不永久挂起。
+    if (!row || row.state === 'cancelled') {
+      options.onConverge({ status: 'cancelled', result: null, error: null });
+      return;
+    }
+    // 恢复的 queued 任务在快照里开跑：报非终态推进（写回侧把 queued 翻
+    // running，重复触发由写回侧按当前态幂等），轮询继续等终态。
+    if (row.state === 'running') options.onRunning?.();
+    schedule();
+  };
+
+  schedule();
+  return () => {
+    disposed = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 export interface UseCourseCreationOptions {
@@ -24,27 +172,35 @@ export interface UseCourseCreationOptions {
   setBusyId: (id: string | null) => void;
 }
 
-/** 创建课程域：双方式对话框的状态与动作（知识库生成 / 描述生成）。
- * 两种方式都直连同步生成端点：agent loop 在 HTTP 请求内执行，
- * 过程事件经 WS 推送进对话框内的生成视图，终态以 HTTP 响应为准。 */
+/** 创建课程域：三入口对话框（知识库 / 描述 / 学习图）的状态与动作。
+ * 提交即生成（d5：计划确认页已移除）：校验通过直接发起同步生成端点，
+ * agent loop 在 HTTP 请求内执行，过程事件经 WS 推送进对话框内的生成视图，
+ * 终态以 HTTP 响应为准。 */
 export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationOptions) {
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
   // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
-  // 方式三（学习图 beta：描述即学习目标，生成前置网络）；默认描述生成
+  // 方式三（学习图 beta：只留目标输入 → 建课并生成知识结构）；默认描述生成
   const [creationTab, setCreationTab] = useState<'base' | 'description' | 'graph'>('description');
   const [creationDescription, setCreationDescription] = useState('');
+  // 用户目标（知识库流，t1）：整体文本即目标——简单时即课程名，复杂时是目标
+  // 描述；课程标题默认即该文本，采样与大范围都以此为主索引。UI 必填。
+  const [creationGoal, setCreationGoal] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
-  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
+  // 多知识库（t4）：来源库列表（首个 = 主来源），上限与后端同一口径。
+  const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
   const [generationDomain, setGenerationDomain] = useState('');
-  // 讲解风格（ADR-0002，课程级）：创建时选择，随课程存储并驱动节写作变体
-  const [teachingStyle, setTeachingStyle] = useState<TeachingStyle>('standard');
   const [generation, setGeneration] = useState<CourseGenerationState | null>(null);
   // 用户取消标记：cancelGeneration 被服务端受理（cancelled=true）后置位，
   // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
   // 而非失败。取消动作与终态判定在同一 hook 内闭合，不依赖后端错误码。
   const cancelRequestedRef = useRef(false);
+  // 恢复态终态收敛循环（c2）的停止柄：新恢复 / 进入 in-session 生成 / 卸载
+  // 时作废上一轮，保证写回 generation 的路径任意时刻只有一条在跑。
+  const restoredStopRef = useRef<(() => void) | null>(null);
+  // 卸载标记：恢复读数在途时页面已卸载，读数回来后不得再启动轮询。
+  const unmountedRef = useRef(false);
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -55,13 +211,18 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       );
       // 方式一需要库内已有 Markdown 文档；描述生成不再使用知识库
       setKnowledgeBases(bases.filter((base) => base.file_count > 0));
-      setSelectedKnowledgeBaseId((current) =>
-        current && bases.some((base) => base.knowledge_base_id === current)
-          ? current
-          : bases[0]?.knowledge_base_id
-      );
-    } catch (actionError) {
-      Message.error(actionError instanceof Error ? actionError.message : t('learning.loadBasesFailed'));
+      setSelectedKnowledgeBaseIds((current) => {
+        const usable = bases.filter((base) => base.file_count > 0);
+        const kept = current.filter((id) =>
+          usable.some((base) => base.knowledge_base_id === id)
+        );
+        return kept.length > 0 ? kept : usable[0] ? [usable[0].knowledge_base_id] : [];
+      });
+    } catch {
+      // F3 裁决：这个 catch 的失败语义恒同（= 拉知识库列表失败），语境句
+      // loadBasesFailed 优先于 errorMessage 通用映射——恢复票面指定的语境句
+      // （o1 曾改走通用映射，语境信息反而丢失）。原始报文不进 UI。
+      Message.error(t('learning.loadBasesFailed'));
     } finally {
       setKnowledgeLoading(false);
     }
@@ -72,23 +233,30 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 运行中保持不变（重开对话框回到进度视图）。悬浮指示条的「查看」仍走
   // openGenerator，保留查看终态详情的入口。
   const openCreateForm = useCallback(() => {
-    setGeneration((current) => (current && current.status === 'running' ? current : null));
+    setGeneration((current) =>
+      current && (current.status === 'running' || current.status === 'queued') ? current : null
+    );
     void openGenerator();
   }, [openGenerator]);
 
   const generateCourse = useCallback(
     async (request: GenerateCourseRequest) => {
+      // in-session 生成的终态以 HTTP 响应为准：先停恢复态收敛轮询，两条
+      // 写回路径不并存（双写幂等）。
+      restoredStopRef.current?.();
+      restoredStopRef.current = null;
       cancelRequestedRef.current = false;
       setBusyId('generate');
-      setGeneration({ status: 'running', request, result: null, error: null });
+      setGeneration({ status: 'running', request, restoredTask: null, result: null, error: null });
       try {
         const detail = await learningApi.generateCourse(request);
-        setGeneration({ status: 'completed', request, result: detail, error: null });
+        setGeneration({ status: 'completed', request, restoredTask: null, result: detail, error: null });
       } catch (actionError) {
         const cancelled = cancelRequestedRef.current;
         setGeneration({
           status: cancelled ? 'cancelled' : 'failed',
           request,
+          restoredTask: null,
           result: null,
           error: cancelled ? null : errorMessage(t, actionError),
         });
@@ -100,154 +268,122 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [t, setBusyId]
   );
 
-  // 提交当前 tab 的生成请求：base tab 要求已选知识库；description tab 要求
-  // 已填写课程简报。校验失败时提示并停留在表单。
-  const submitGeneration = useCallback(async () => {
-    if (!modelChoice) {
-      Message.warning(t('learning.form.modelPending'));
-      return;
-    }
-    const modelFields = {
-      provider_id: modelChoice.provider_id,
-      model: modelChoice.model,
-    };
-    if (creationTab === 'base') {
-      if (!selectedKnowledgeBaseId) {
-        Message.warning(t('learning.selectKnowledgeBase'));
+  // 提交当前 tab（d5：校验通过直接生成，不再进计划确认页）。校验失败提示
+  // 并停留表单；程度/基础声明与讲解风格的 UI 已移除——后端 DTO 全部缺省
+  // （结构生成扩写 / 纯零基础 / standard），请求不再携带。
+  const submitGeneration = useCallback(
+    (tab: CreationTab) => {
+      const result = buildPlanRequest(
+        {
+          tab,
+          goal: creationGoal,
+          description: creationDescription,
+          knowledgeBaseIds: selectedKnowledgeBaseIds,
+          domain: generationDomain,
+          providerId: modelChoice?.provider_id,
+          model: modelChoice?.model,
+        },
+        MAX_COURSE_KNOWLEDGE_BASES
+      );
+      if (result.kind === 'invalid') {
+        Message.warning(t(result.messageKey, result.messageVars));
         return;
       }
-      await generateCourse({
-        knowledge_base_id: selectedKnowledgeBaseId,
-        domain: generationDomain.trim() || undefined,
-        teaching_style: teachingStyle,
-        ...modelFields,
-      });
-      return;
-    }
-    const description = creationDescription.trim();
-    if (!description) {
-      Message.warning(t('learning.describeRequired'));
-      return;
-    }
-    // 学习图（beta）：描述即学习目标，后端按 course_kind 分流到图生成；
-    // 传统课程走描述流生成大纲。
-    if (creationTab === 'graph') {
-      await generateCourse({
-        course_kind: 'learning_graph',
-        description,
-        teaching_style: teachingStyle,
-        ...modelFields,
-      });
-      return;
-    }
-    await generateCourse({ description, teaching_style: teachingStyle, ...modelFields });
-  }, [
-    creationDescription,
-    creationTab,
-    generationDomain,
-    generateCourse,
-    modelChoice,
-    selectedKnowledgeBaseId,
-    t,
-  ]);
+      void generateCourse(result.request);
+    },
+    [
+      creationDescription,
+      creationGoal,
+      generateCourse,
+      generationDomain,
+      modelChoice,
+      selectedKnowledgeBaseIds,
+      t,
+    ]
+  );
 
-  // 重试失败的生成：学习图优先续建存活草稿（中断前可能已建几十轮），
-  // 仅当续建不可用（草稿过期/重启 404、引擎未配置 409）时回退全量重生
-  // 成——续建本身再失败时不回退，草稿仍在，再次重试还会接着建。
+  // 学习图建课：目标 → 直接建课（知识结构生成在后台启动，结构进度
+  // 走工作区 WS structure_* 事件）。
+  const confirmGraphCreation = useCallback(() => {
+    submitGeneration('graph');
+  }, [submitGeneration]);
+
+  // 重试失败的生成：直接按原请求重新发起（生长是幂等的小批次操作，
+  // 失败不残留半成品）。恢复态不可重发（retryableGenerationRequest 守卫：
+  // 合成请求会以后端 topic 标签为名新建课程），终态面板改出指引文案。
   const retryGeneration = useCallback(() => {
-    if (generation?.status !== 'failed' && generation?.status !== 'cancelled') return;
-    const failed = generation;
-    cancelRequestedRef.current = false;
-    // 取消不保留草稿：取消后的重试直接全量重生成；仅真实失败的学习图走
-    // 续建（草稿仍存活时接续，404/409 再回退全量）。
-    if (failed.request.course_kind !== 'learning_graph' || failed.status === 'cancelled') {
-      void generateCourse(failed.request);
-      return;
-    }
-    if (!modelChoice) {
-      Message.warning(t('learning.form.modelPending'));
-      return;
-    }
-    setBusyId('generate');
-    setGeneration({ status: 'running', request: failed.request, result: null, error: null });
-    void (async () => {
-      try {
-        const detail = await learningApi.resumeLearningGraph({
-          provider_id: modelChoice?.provider_id,
-          model: modelChoice?.model,
-        });
-        setGeneration({
-          status: 'completed',
-          request: failed.request,
-          result: detail,
-          error: null,
-        });
-      } catch (resumeError) {
-        if (cancelRequestedRef.current) {
-          setGeneration({
-            status: 'cancelled',
-            request: failed.request,
-            result: null,
-            error: null,
-          });
-          return;
-        }
-        const resumeUnavailable =
-          isBackendHttpError(resumeError) &&
-          (resumeError.status === 404 || resumeError.status === 409);
-        if (!resumeUnavailable) {
-          setGeneration({
-            status: 'failed',
-            request: failed.request,
-            result: null,
-            error: errorMessage(t, resumeError),
-          });
-          return;
-        }
-        try {
-          const detail = await learningApi.generateCourse(failed.request);
-          setGeneration({
-            status: 'completed',
-            request: failed.request,
-            result: detail,
-            error: null,
-          });
-        } catch (retryError) {
-          const cancelled = cancelRequestedRef.current;
-          setGeneration({
-            status: cancelled ? 'cancelled' : 'failed',
-            request: failed.request,
-            result: null,
-            error: cancelled ? null : errorMessage(t, retryError),
-          });
-        }
-      } finally {
-        cancelRequestedRef.current = false;
-        setBusyId(null);
-      }
-    })();
-  }, [generateCourse, generation, modelChoice, setBusyId, t]);
+    const request = retryableGenerationRequest(generation);
+    if (!request) return;
+    void generateCourse(request);
+  }, [generateCourse, generation]);
 
   // 页面挂载时恢复后台生成状态：对话框状态是易失的（切页即丢），服务端
-  // 注册表是事实来源。running 时重建 generation 状态，让悬浮指示条与对话
-  // 框进度视图恢复；完成/失败态无法可靠恢复（进程内会话可能已终结），由
-  // 用户从课程列表查看或重新发起。
+  // 注册表是事实来源。running 时重建 running 态；m7 资源闸排队中（无在跑、
+  // queued>0）重建 queued 态——排队期同样可从指示条回到进度视图并取消。
+  // 生长任务不在此认领（g4）：它们由全局生长 Pill 呈现，建课 Pill 不重复
+  // 展示同一任务——因此读按任务类别可分的快照，而非不分类别的 legacy 状态端点。
+  // c2：恢复态没有挂起的 HTTP 请求可等（in-session 的收敛通道不在），启动
+  // 轻量轮询把 running/queued 推到终态——done 按 course_id 拉课程详情交
+  // completed（补齐「完成态无法可靠恢复」的缺口），failed/cancelled 如实
+  // 收场，任务消失按取消兜底，绝不永久挂起。
   const refreshGenerationStatus = useCallback(async () => {
     if (generation) return;
     try {
-      const status = await learningApi.generationStatus();
-      if (status.running && status.topic) {
-        setGeneration({
-          status: 'running',
-          request: { course_kind: 'learning_graph', description: status.topic },
-          result: null,
-          error: null,
-        });
-      }
+      const tasks = (await learningApi.generationTasks()).filter(
+        // 只认建课管线两段（d7 收窄）：此前「除 growth 外全部」会把正在跑的
+        // 课时内容生成/结构挂载/修补误显成建课进度（审计实锤的存量误判）。
+        (task) => task.kind === 'outline' || task.kind === 'structure'
+      );
+      const active =
+        tasks.find((task) => task.state === 'running') ??
+        tasks.find((task) => task.state === 'queued');
+      const restored = active ? restoredGenerationFromTask(active) : null;
+      if (!active || !restored || unmountedRef.current) return;
+      setGeneration(restored);
+      restoredStopRef.current?.();
+      restoredStopRef.current = startRestoredGenerationConvergence({
+        taskKey: active.key,
+        fetchTasks: () => learningApi.generationTasks(),
+        fetchCourse: (courseId) => learningApi.getCourse(courseId),
+        // o1：终态收敛失败面固定句（「任务完成但课程详情拉不到」是固定语境，
+        // 不映射原始报文）。
+        describeError: () => t('learning.courseInfoLoadFailed'),
+        describeFailed: () => t('learning.restoredTaskFailed'),
+        onConverge: (converged) => {
+          // 双写幂等：只翻 running/queued 的恢复态；若此刻已另有在跑的
+          // in-session 生成接管，迟到的读数不覆盖它。
+          setGeneration((current) =>
+            current && (current.status === 'running' || current.status === 'queued')
+              ? { ...current, ...converged }
+              : current
+          );
+        },
+        onRunning: () => {
+          // 非终态推进：恢复的 queued 任务开跑后翻 running（界面不再停
+          // 「排队中」）；只对 queued 生效，重复触发返回原引用即无重渲染。
+          setGeneration((current) =>
+            current && current.status === 'queued'
+              ? { ...current, status: 'running' }
+              : current
+          );
+        },
+      });
     } catch {
       // 状态查询失败不影响主流程（后端不可达等）
     }
-  }, [generation]);
+  }, [generation, t]);
+
+  // 卸载即停恢复态收敛轮询：页面销毁后写回无意义，也不留空转的定时器。
+  // 恢复读数在途时卸载的情形由卸载标记兜住——清理先于启动发生，读数回来
+  // 后凭标记放弃启动（挂载时复位，兼容 StrictMode 的复挂）。
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      restoredStopRef.current?.();
+      restoredStopRef.current = null;
+    };
+  }, []);
 
   // 取消后台生成：置位服务端取消旗标，循环在下一个 LLM 请求边界失败收场
   // （草稿保持存活，失败面板可续建）。挂起的 HTTP 生成请求随后以失败终态
@@ -282,27 +418,34 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [navigate]
   );
 
+  // 对话框阶段（d5 收窄）：生成视图（含终态）→ 表单。
+  const creationPhase: import('../coursePlan').CreationPhase = generation
+    ? 'generating'
+    : 'form';
+
   return {
     generateVisible,
     setGenerateVisible,
     modelChoice,
     setModelChoice,
-    teachingStyle,
-    setTeachingStyle,
     creationTab,
     setCreationTab,
     creationDescription,
     setCreationDescription,
+    creationGoal,
+    setCreationGoal,
     knowledgeBases,
     knowledgeLoading,
-    selectedKnowledgeBaseId,
-    setSelectedKnowledgeBaseId,
+    selectedKnowledgeBaseIds,
+    setSelectedKnowledgeBaseIds,
     generationDomain,
     setGenerationDomain,
     generation,
+    creationPhase,
     openGenerator,
     openCreateForm,
     submitGeneration,
+    confirmGraphCreation,
     retryGeneration,
     closeGenerator,
     refreshGenerationStatus,

@@ -12,6 +12,54 @@
 
 use super::*;
 
+/// triage_completed 帧的有界示例数(跳过/重复/uncertain;进度视图展开用)。
+const TRIAGE_FRAME_EXAMPLES_MAX: usize = 10;
+
+/// 生成注册表/悬浮指示条的主题（t1）：知识库流优先用户目标——目标即课程
+/// 的意图，比库名更贴近用户正在建的东西；缺省回退库名，描述流取描述前
+/// 120 字。确定性纯函数。
+fn outline_brief_topic(brief: &OutlineBrief) -> String {
+    if let Some(goal) = brief.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        return goal.chars().take(120).collect();
+    }
+    match (&brief.description, &brief.knowledge_base) {
+        (Some(description), _) => description.trim().chars().take(120).collect(),
+        (_, Some(kb)) => kb.name.clone(),
+        // 简报永远带一个来源（validate 保证）；防御性留空而非 panic。
+        _ => String::new(),
+    }
+}
+
+/// 内部 kill switch 的进程内 env 名（Q13,评审 S3）：置 off/0/false 禁用
+/// 「清点分诊 → 结构发现 → 展开」新管线,回退现状采样+大纲引擎。运维级
+/// 开关——不进 UI/用户配置面,默认(未设/其它值)新管线开启。
+pub(super) const SOURCE_PLAN_KILL_SWITCH_ENV: &str = "NOMI_LEARNING_SOURCE_PLAN";
+
+/// kill switch 命中判定（off/0/false;大小写与首尾空白宽容）。
+pub(super) fn is_source_plan_kill_switch_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "0" | "false"
+    )
+}
+
+/// 新管线是否被内部 kill switch 禁用（进程内 env 读取;默认开启）。
+fn source_plan_pipeline_disabled() -> bool {
+    std::env::var(SOURCE_PLAN_KILL_SWITCH_ENV)
+        .map(|value| is_source_plan_kill_switch_value(&value))
+        .unwrap_or(false)
+}
+
+/// 建课管线代际（x11 单源）：门判定只此一处；帧与 DTO 都从这里取值，
+/// 禁止第二份。`source_plan` = 知识库流 + 大纲引擎 + kill switch 未关。
+pub(super) fn course_pipeline(brief: &OutlineBrief, outline_engine_present: bool) -> &'static str {
+    if brief.knowledge_base.is_some() && outline_engine_present && !source_plan_pipeline_disabled() {
+        "source_plan"
+    } else {
+        "sampling"
+    }
+}
+
 impl LearningService {
     /// Generate a course synchronously. Exactly one source must be set
     /// (knowledge base or free-text description) — enforced by
@@ -29,8 +77,12 @@ impl LearningService {
         let brief = self.resolve_outline_brief(&request).await?;
         // One in-flight generation per (user, source): duplicate submits
         // (double click, parallel agent tool calls) are rejected up front.
+        // 多知识库（t4）：来源键 = 库 id 排序拼接——乱序提交同一组库命中
+        // 同一槽位，不重复建课；单库保持 t2 的 `kb:{id}` 形状。
         let kind_key = match (&brief.knowledge_base, &brief.description) {
-            (Some(kb), _) => format!("kb:{}", kb.kb_id),
+            (Some(_), _) => request
+                .knowledge_base_key()
+                .unwrap_or_else(|| "kb:".to_owned()),
             (_, Some(description)) => {
                 let head: String = description.trim().chars().take(120).collect();
                 format!("desc:{head}")
@@ -38,40 +90,161 @@ impl LearningService {
             _ => unreachable!("validated request always carries one source"),
         };
         let _slot = self.acquire_generation_slot(user_id, kind_key)?;
-        // 登记生成注册（status/cancel 端点的唯一数据源，学习图流同样登
-        // 记）：RAII 守卫在请求结束——含客户端断连中止——时注销。主题取
-        // 描述前 120 字或知识库名，供悬浮指示条展示。
-        let topic: String = match (&brief.description, &brief.knowledge_base) {
-            (Some(description), _) => description.trim().chars().take(120).collect(),
-            (_, Some(kb)) => kb.name.clone(),
-            _ => unreachable!("validated request always carries one source"),
-        };
-        let _run = self.begin_generation(&topic);
+        // 登记长任务（generation_tasks 注册表，status/cancel/快照端点的
+        // 唯一数据源）：守卫 drop（含客户端断连中止）按终态收尾。主题取
+        // 知识库流的用户目标（目标即课程的意图）、描述前 120 字或库名。
+        // 键的课程段 = 会话 id（建课时课程尚不存在）。
+        let topic = outline_brief_topic(&brief);
         let session = generate_id();
+        let _task =
+            self
+                .begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)
+                .await?;
+        // t5(评审 S5):started 前导任何 triage/结构发现阶段帧——后续任何
+        // failed(分诊/展开/导入失败)都有 started 前缀,进度视图不会收到
+        // 无源 failed。
+        // 管线代际单源：与下面的门判定同函数，帧与 DTO 都带它（x11）。
+        let pipeline = course_pipeline(&brief, self.course_outline_engine().is_some());
+        self.emit_course_event(serde_json::json!({
+            "phase": crate::events::phase::STARTED,
+            "pipeline": pipeline,
+            "kind": brief.kind(),
+        }));
+        // t2 结构发现 + t3 分批展开(仅 KB 流 + 引擎路径):t1 清点/分诊 →
+        // 证据驱动章节骨架 → **有可用 plan 时按章展开直接产 Blueprint(不再
+        // 调大纲引擎)**;展开失败(非取消)→ 回退现行大纲引擎路径(degraded
+        // 不阻断);无 completer/连续失败/零证据 → 无 plan,采样路径照旧。
+        // 内部 kill switch(Q13,评审 S3):`NOMI_LEARNING_SOURCE_PLAN` 置
+        // off/0/false 时不跑新管线,直接走现状采样+大纲引擎(行为等同现状;
+        // 运维开关,非用户可见 flag,默认新管线开启)。
+        // 遗留 one-shot 兜底路径(无引擎)不跑结构发现——它无法兑现 plan 的
+        // 权威性,且保持测试/直调路径的 LLM 调用面零变化。
+        let mut brief = brief;
+        let mut expansion: Option<crate::generation::ExpansionOutcome> = None;
+        // t4 快照信封的四件套库存位:inventory/triage 只在展开成功时保留
+        // (coverage 在 expansion 里,plan 在 brief.source_plan 里)——四件
+        // 套齐全 = 课程确实按 plan 建成,落库点才组装信封。
+        let mut discovered: Option<(
+            crate::generation::KbInventory,
+            crate::generation::KbTriageReport,
+        )> = None;
+        if pipeline == "source_plan" {
+            match self
+                .discover_kb_source_plan(&request, &brief, pipeline, _task.token(), &_task)
+                .await
+            {
+                Ok((inventory, triage, plan)) => {
+                    if let Some(plan) = plan.filter(|plan| plan.is_usable()) {
+                        brief.source_plan = Some(plan.clone());
+                        match self
+                            .expand_kb_course_blueprint(
+                                &inventory,
+                                &triage,
+                                &plan,
+                                &brief,
+                                pipeline,
+                                _task.token(),
+                                &_task,
+                            )
+                            .await
+                        {
+                            Ok(Some(outcome)) => {
+                                discovered = Some((inventory, triage));
+                                expansion = Some(outcome);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                if matches!(
+                                    &error,
+                                    AppError::Conflict(message)
+                                        if message.contains(crate::service::CANCELLED_MESSAGE)
+                                ) {
+                                    self.emit_course_event(serde_json::json!({
+                                        "phase": crate::events::phase::FAILED,
+                                        "pipeline": pipeline,
+                                        "kind": brief.kind(),
+                                        "error": error.to_string(),
+                                    }));
+                                    return Err(error);
+                                }
+                                tracing::warn!(
+                                    session = %session,
+                                    error = %error,
+                                    "kb expansion failed; falling back to the outline engine"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": crate::events::phase::FAILED,
+                        "pipeline": pipeline,
+                        "kind": brief.kind(),
+                        "error": error.to_string(),
+                    }));
+                    return Err(error);
+                }
+            }
+        }
         let model_override = request
             .provider_id
             .as_ref()
             .zip(request.model.as_deref());
-        self.emit_course_event(serde_json::json!({
-            "phase": "started",
-            "kind": brief.kind(),
-        }));
-        let blueprint = match self
-            .generate_course_blueprint(&brief, model_override, &session)
-            .await
-        {
-            Ok(blueprint) => blueprint,
-            Err(error) => {
-                self.emit_course_event(serde_json::json!({
-                    "phase": "failed",
-                    "kind": brief.kind(),
-                    "error": error.to_string(),
-                }));
-                return Err(error);
+        // (started 帧已在任务登记后、结构发现前发出,评审 S5。)
+        let (blueprint, expansion_coverage) = match expansion {
+            // t3 分批展开产物:plan 权威骨架的确定性落地,直接进装配/导入
+            //(跳过大纲引擎;失败时上面已回退 engine 路径)。coverage 保留
+            // 给 t4 快照信封。
+            Some(outcome) => {
+                tracing::info!(
+                    session,
+                    modules = outcome.blueprint.modules.len(),
+                    coverage_warnings = outcome.coverage.warnings.len(),
+                    "kb expansion blueprint"
+                );
+                (outcome.blueprint, Some(outcome.coverage))
             }
+            None => match self
+                .generate_course_blueprint(&brief, model_override, &session)
+                .await
+            {
+                Ok(blueprint) => (blueprint, None),
+                Err(error) => {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": crate::events::phase::FAILED,
+                        "pipeline": pipeline,
+                        "kind": brief.kind(),
+                        "error": error.to_string(),
+                    }));
+                    return Err(error);
+                }
+            },
         };
+        // 蓝图的来源标注（t4）：逐课时把 source 路径解析回来源库，写入
+        // `SourceSpan.kb_id`——快照/蓝图/课时三处的库归属同源，多库下课时
+        // 读库（t3 实时读数）按它去前缀取正确库。
+        let mut blueprint = blueprint;
+        // 来源库列表（t4 + 评审对齐）：归一顺序原样落库（首个 = 主来源），但
+        // 多库请求里**解析不到的库不进课程行**——它的缺席由采样披露的逐库
+        // 条目（计数 0）如实承担，导入侧的"不写悬空 id"守卫保持原样。
+        let source_kb_ids = if brief.knowledge_bases.is_empty() {
+            request.knowledge_base_ids_normalized()
+        } else {
+            brief
+                .knowledge_bases
+                .iter()
+                .filter_map(|base| KnowledgeBaseId::parse(&base.kb_id).ok())
+                .collect()
+        };
+        annotate_blueprint_sources(
+            &mut blueprint,
+            brief.sampling.as_ref(),
+            &source_kb_ids,
+        );
         self.emit_course_event(serde_json::json!({
-            "phase": "publishing",
+            "phase": crate::events::phase::PUBLISHING,
+            "pipeline": pipeline,
             "kind": brief.kind(),
         }));
         let pack = assemble_outline_pack(&blueprint, &request);
@@ -81,13 +254,63 @@ impl LearningService {
         let samples_json = serde_json::to_string(&brief.samples).map_err(|error| {
             AppError::Internal(format!("failed to serialize sampled sources: {error}"))
         })?;
+        // 目标与采样披露走独立列/伴随结构（t1/t2）：samples_json 保持
+        // `Vec<(String, String)>` 旧形状，既有消费方零改动。
+        let samples_meta_json = brief
+            .sampling
+            .as_ref()
+            .map(|sampling| {
+                serde_json::to_string(sampling).map_err(|error| {
+                    AppError::Internal(format!("failed to serialize sampling disclosure: {error}"))
+                })
+            })
+            .transpose()?;
+        // 来源计划快照(t4):四件套齐全(清点/分诊/计划/展开覆盖)才组装
+        // v1 信封——体积控制在 capture 里统一截断;描述流/回退采样路径/
+        // legacy 走 None(列上 NULL,不伪造)。导入与 modules/lessons 同事务。
+        let course_source_plan_json =
+            match (&discovered, brief.source_plan.as_ref(), expansion_coverage.as_ref()) {
+                (Some((inventory, triage)), Some(plan), Some(coverage)) => Some(
+                    serde_json::to_string(
+                        &crate::generation::CourseSourcePlanSnapshot::capture(
+                            inventory, triage, plan, coverage,
+                        ),
+                    )
+                    .map_err(|error| {
+                        AppError::Internal(format!(
+                            "failed to serialize course source plan snapshot: {error}"
+                        ))
+                    })?,
+                ),
+                _ => None,
+            };
         let detail = self
-            .import_course_outline(pack, blueprint_json, samples_json)
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json,
+                    samples_json,
+                    learning_goal: brief.goal.clone().unwrap_or_default(),
+                    samples_meta_json,
+                    // 来源库列表（t4）：归一顺序原样落库（首个 = 主来源）。
+                    source_kb_ids,
+                    // 来源计划快照（t4）：只有建课确实走了「计划 → 展开」
+                    // 管线才写;描述流/回退路径 NULL,不伪造。
+                    course_source_plan_json,
+                },
+            )
             .await;
         match &detail {
             Ok(detail) => {
+                // s4 终态契约：课程落库后补挂真实 id + 显式收尾——此前守卫
+                // drop 一律落 failed「任务中断（未收尾即退出）」，且视图课程
+                // 段是会话 id，恢复态翻 done 后拉详情必 404（课程建成却呈现
+                // 失败）。键与原课程段不动（恢复态按 taskKey 匹配）。
+                _task.set_resolved_course_id(detail.course.id.as_str());
+                _task.finish_done("课程已建成");
                 self.emit_course_event(serde_json::json!({
-                    "phase": "completed",
+                    "phase": crate::events::phase::COMPLETED,
+                    "pipeline": pipeline,
                     "kind": brief.kind(),
                     "course_id": detail.course.id.as_str(),
                     "title": detail.course.title,
@@ -97,7 +320,8 @@ impl LearningService {
             }
             Err(error) => {
                 self.emit_course_event(serde_json::json!({
-                    "phase": "failed",
+                    "phase": crate::events::phase::FAILED,
+                    "pipeline": pipeline,
                     "kind": brief.kind(),
                     "error": error.to_string(),
                 }));
@@ -106,40 +330,271 @@ impl LearningService {
         detail
     }
 
+    /// t2 结构发现编排:t1 分诊 → 证据驱动章节骨架。返回清点/分诊/计划
+    /// 三件套——inventory+triage 供 t3 分批展开复用(不重复跑 t1 的 LLM 面)。
+    /// 计划 `None` = 回退现行采样路径(无 completer/草稿连续失败/零证据降级
+    /// 空章节);`Err` = 硬失败(零候选/零 core/用户取消)。
+    ///
+    /// t5:各阶段边界发 WS 进度帧(triage/source_plan)并更新长任务注册表的
+    /// step 文案——「跳过与不确定可见」从分诊一刻就开始,不是建完课才补叙。
+    async fn discover_kb_source_plan(
+        &self,
+        request: &GenerateCourseRequest,
+        brief: &OutlineBrief,
+        pipeline: &'static str,
+        token: tokio_util::sync::CancellationToken,
+        task: &crate::service::GenerationTaskGuard,
+    ) -> Result<
+        (
+            crate::generation::KbInventory,
+            crate::generation::KbTriageReport,
+            Option<crate::generation::SourcePlan>,
+        ),
+        AppError,
+    > {
+        let knowledge = self.injected_knowledge_service()?;
+        let kb_ids = request.knowledge_base_ids_normalized();
+        let goal = brief.goal.clone().unwrap_or_default();
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone();
+        let kind = brief.kind();
+        task.set_step("triage", "正在清点与分诊来源文件…");
+        self.emit_course_event(serde_json::json!({
+            "phase": crate::events::phase::TRIAGE_STARTED,
+            "pipeline": pipeline,
+            "kind": kind,
+        }));
+        let (inventory, triage) =
+            crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, completer.as_deref())
+                .await?;
+        let counts = &triage.counts;
+        self.emit_course_event(serde_json::json!({
+            "phase": crate::events::phase::TRIAGE_COMPLETED,
+            "pipeline": pipeline,
+            "kind": kind,
+            "counts": {
+                "total": counts.core + counts.prerequisite + counts.practice
+                    + counts.mixed + counts.noise + counts.duplicate + counts.uncertain,
+                "core": counts.core,
+                "prerequisite": counts.prerequisite,
+                "practice": counts.practice,
+                "mixed": counts.mixed,
+                "noise": counts.noise,
+                "duplicate": counts.duplicate,
+                "uncertain": counts.uncertain,
+            },
+            "degraded": triage.degraded,
+            // 有界示例(≤10):进度视图的「可展开跳过理由/duplicate_of/
+            // uncertain 列表」;全量在课程详情的诊断明细里。
+            "excluded": triage.excluded.iter().take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|entry| serde_json::json!({
+                    "path": entry.path, "role": entry.role, "reason": entry.reason,
+                }))
+                .collect::<Vec<_>>(),
+            "duplicates": triage.duplicates.iter().take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|duplicate| serde_json::json!({
+                    "path": duplicate.path,
+                    "duplicate_of": duplicate.duplicate_of,
+                    "canonical_reason": duplicate.canonical_reason,
+                }))
+                .collect::<Vec<_>>(),
+            "uncertain": triage.files.iter()
+                .filter(|file| file.role == crate::generation::KbTriageRole::Uncertain)
+                .take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|file| serde_json::json!({
+                    "path": file.rel_path, "reason": file.reason,
+                }))
+                .collect::<Vec<_>>(),
+        }));
+        task.set_step("source_plan", "正在从证据规划章节骨架…");
+        self.emit_course_event(serde_json::json!({
+            "phase": crate::events::phase::SOURCE_PLAN_STARTED,
+            "pipeline": pipeline,
+            "kind": kind,
+        }));
+        let plan = crate::generation::run_kb_structure(
+            &knowledge,
+            &inventory,
+            &triage,
+            &goal,
+            completer.as_deref(),
+            Some(&token),
+        )
+        .await?;
+        let plan = match plan {
+            Some(plan) => {
+                tracing::info!(
+                    chapters = plan.chapters.len(),
+                    degraded = plan.degraded,
+                    warnings = plan.warnings.len(),
+                    "kb structure plan discovered"
+                );
+                if plan.is_usable() {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": crate::events::phase::SOURCE_PLAN_READY,
+                        "pipeline": pipeline,
+                        "kind": kind,
+                        "chapters": plan.chapters.len(),
+                        "concepts": plan.concept_graph.nodes.len(),
+                        "gaps": plan.evidence.gaps,
+                    }));
+                    Some(plan)
+                } else {
+                    // 降级空章节计划:不进简报,回退采样路径。
+                    None
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "kb structure discovery produced no usable plan; falling back to sampling"
+                );
+                None
+            }
+        };
+        Ok((inventory, triage, plan))
+    }
+
+    /// t3 分批展开编排:可用 plan 按章展开产 Blueprint(不再走大纲引擎)。
+    /// `Ok(None)` = 无 completer(调用方回退引擎路径);`Err` 取消向上传播、
+    /// 其余由调用方按「展开失败 → 引擎路径」降级。展开成功时发 t5 覆盖
+    /// 读数帧(topics covered/skipped/fallback——跳过与兜底在读数里先可见)。
+    async fn expand_kb_course_blueprint(
+        &self,
+        inventory: &crate::generation::KbInventory,
+        triage: &crate::generation::KbTriageReport,
+        plan: &crate::generation::SourcePlan,
+        brief: &OutlineBrief,
+        pipeline: &'static str,
+        token: tokio_util::sync::CancellationToken,
+        task: &crate::service::GenerationTaskGuard,
+    ) -> Result<Option<crate::generation::ExpansionOutcome>, AppError> {
+        let knowledge = self.injected_knowledge_service()?;
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone();
+        let goal = brief.goal.clone().unwrap_or_default();
+        task.set_step("expansion", "正在按章节分批展开课时…");
+        let outcome = crate::generation::run_kb_expansion(
+            &knowledge,
+            inventory,
+            triage,
+            plan,
+            &goal,
+            completer.as_deref(),
+            Some(&token),
+        )
+        .await?;
+        if let Some(outcome) = &outcome {
+            self.emit_course_event(serde_json::json!({
+                "phase": crate::events::phase::COVERAGE_READY,
+                "pipeline": pipeline,
+                "kind": brief.kind(),
+                "topics_covered": outcome
+                    .coverage
+                    .topics
+                    .iter()
+                    .filter(|topic| topic.status == crate::generation::TopicStatus::Covered)
+                    .count(),
+                "topics_skipped": outcome
+                    .coverage
+                    .topics
+                    .iter()
+                    .filter(|topic| topic.status == crate::generation::TopicStatus::Skipped)
+                    .count(),
+                "fallback": outcome
+                    .coverage
+                    .lessons
+                    .iter()
+                    .filter(|lesson| lesson.fallback)
+                    .count(),
+            }));
+        }
+        Ok(outcome)
+    }
+
     /// Resolve the generation brief up front: the kb flow fetches the base
     /// context and samples its documents inline (local file IO), so the
     /// engine needs no knowledge-service access; the description flow
     /// carries the brief text alone with no sampled sources.
+    ///
+    /// 多知识库（t4）：逐库核验存在 + 解析元数据，预算按库分摊、路径带
+    /// `{库名}/rel` 命名空间；单库逐字走旧路径（零回归）。
     async fn resolve_outline_brief(
         &self,
         request: &GenerateCourseRequest,
     ) -> Result<OutlineBrief, AppError> {
-        match (&request.knowledge_base_id, &request.description) {
-            (Some(kb_id), _) => {
-                let knowledge = self.injected_knowledge_service()?;
-                let base = knowledge.get_base_info(kb_id.as_str()).await?;
-                let samples = sample_base_files(&knowledge, kb_id.as_str()).await?;
-                Ok(OutlineBrief {
-                    description: None,
-                    knowledge_base: Some(KnowledgeBaseBrief {
+        let kb_ids = request.knowledge_base_ids_normalized();
+        if !kb_ids.is_empty() {
+            let knowledge = self.injected_knowledge_service()?;
+            let single = kb_ids.len() == 1;
+            let mut bases: Vec<KnowledgeBaseBrief> = Vec::with_capacity(kb_ids.len());
+            for kb_id in &kb_ids {
+                match knowledge.get_base_info(kb_id.as_str()).await {
+                    Ok(base) => bases.push(KnowledgeBaseBrief {
                         kb_id: kb_id.as_str().to_owned(),
                         name: base.name,
                         description: base.description,
                     }),
-                    samples,
-                    domain: request.domain.clone(),
-                })
+                    // 缺库口径与采样侧同一把尺（t4 裁决，评审对齐）：多库按库
+                    // 跳过——缺失的库在采样披露里计数 0（`sample_bases` 仍拿
+                    // 全量 id 列表），不让一个坏库阻断整门课；单库保持原错误
+                    // （零回归）。全部库都缺失时采样侧以既有的 400 收场。
+                    Err(error) if !single => {
+                        tracing::warn!(
+                            kb_id = kb_id.as_str(),
+                            error = %error,
+                            "knowledge base metadata unavailable; skipping it for this course"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-            (None, Some(description)) => Ok(OutlineBrief {
+            let goal = request.goal_text();
+            // 目标感知采样（t2）与多库分摊（t4）：目标非空时按相关度选入 +
+            // 连贯预算补相邻，并带回披露快照；缺省（旧客户端）与无目标时逐字
+            // 回退旧行为（单库）。
+            let id_list: Vec<String> = kb_ids.iter().map(|id| id.as_str().to_owned()).collect();
+            let outcome = sample_bases(&knowledge, &id_list, goal.as_deref()).await?;
+            // 主来源 = 列表首个（多库下其余库的归属由采样命名空间承载）。
+            let primary = bases.first().cloned();
+            return Ok(OutlineBrief {
+                description: None,
+                knowledge_base: primary,
+                knowledge_bases: bases,
+                samples: outcome.samples,
+                domain: request.domain.clone(),
+                // 目标（t1）：归一落位；旧客户端不传即 None，主题/标题
+                // 回退库名与模型命名（行为与旧路径一致）。
+                goal,
+                // 目标感知采样的披露（t2）：无目标路径为 None（单库）；多库
+                // 恒有披露（命名空间需要它承载库归属）。
+                sampling: outcome.disclosure,
+                // 结构发现计划由 discover_kb_source_plan 在任务登记后补挂。
+                source_plan: None,
+            });
+        }
+        if let Some(description) = &request.description {
+            return Ok(OutlineBrief {
                 description: Some(description.trim().to_owned()),
                 knowledge_base: None,
+                knowledge_bases: Vec::new(),
                 samples: Vec::new(),
                 domain: request.domain.clone(),
-            }),
-            (None, None) => Err(AppError::BadRequest(
-                "provide either a knowledge base or a course description".into(),
-            )),
+                // 描述流的目标由 description 自身承担（学习图同语义）。
+                goal: None,
+                sampling: None,
+                // 描述流零结构发现。
+                source_plan: None,
+            });
         }
+        Err(AppError::BadRequest(
+            "provide either a knowledge base or a course description".into(),
+        ))
     }
 
     /// Blueprint production: the injected two-loop agent engine owns the
@@ -165,7 +620,6 @@ impl LearningService {
                 Ok(blueprint) => tracing::info!(
                     session,
                     modules = blueprint.modules.len(),
-                    concepts = blueprint.concepts.len(),
                     "course outline engine end"
                 ),
                 Err(error) => tracing::warn!(session, error = %error, "course outline engine failed"),
@@ -184,12 +638,27 @@ impl LearningService {
             (Some(description), _) => {
                 build_description_blueprint_prompt(description, brief.domain.as_deref())
             }
-            (_, Some(kb)) => build_blueprint_prompt(
-                &kb.name,
-                &kb.description,
-                brief.domain.as_deref(),
-                &brief.samples,
-            ),
+            (_, Some(kb)) => {
+                // 多知识库（t4）：库名逐一点出（采样路径自带 `{库名}/rel` 命名
+                // 空间，模型按路径归属引用来源）。
+                let names: Vec<&str> = brief
+                    .source_knowledge_bases()
+                    .iter()
+                    .map(|base| base.name.as_str())
+                    .collect();
+                let name = if names.is_empty() {
+                    kb.name.clone()
+                } else {
+                    names.join("、")
+                };
+                build_blueprint_prompt(
+                    &name,
+                    &kb.description,
+                    brief.domain.as_deref(),
+                    brief.goal.as_deref(),
+                    &brief.samples,
+                )
+            }
             _ => {
                 return Err(AppError::BadRequest(
                     "course brief carries no generation source".into(),
@@ -212,7 +681,6 @@ impl LearningService {
         tracing::info!(
             session,
             modules = blueprint.modules.len(),
-            concepts = blueprint.concepts.len(),
             "course outline fallback blueprint"
         );
         Ok(blueprint)

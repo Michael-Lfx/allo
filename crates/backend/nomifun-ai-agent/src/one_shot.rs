@@ -140,6 +140,7 @@ async fn tool_loop(
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
         let mut rx = provider
             .stream(&request)

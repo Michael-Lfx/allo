@@ -172,6 +172,7 @@ impl MoaRunner {
                 temperature: slot.temperature,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
             };
             let semaphore = Arc::clone(&semaphore);
             let attribution = attribution.clone();

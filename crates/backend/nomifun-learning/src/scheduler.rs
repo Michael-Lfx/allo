@@ -15,6 +15,55 @@ const MIN_RELEARN_DELAY_MS: i64 = 60 * 1000;
 /// the common "2 AM is the next day" convention for night-owl learners.
 const ROLLOVER_LOCAL_HOUR: i64 = 2;
 
+/// 现行 FSRS 算法代际（x10）：`learning.fsrsParameters` 信封的 `algo` 值，
+/// 也是 review_log.algo 的写值。
+pub const FSRS_ALGO: &str = "fsrs6";
+
+/// 解析后的用户 FSRS 参数：已知算法携带权重；未知算法整体回退默认
+/// （w 向量布局与算法绑定，混搭比全默认更危险）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum FsrsParams {
+    Fsrs6(Vec<f32>),
+    Unsupported(String),
+}
+
+/// 读侧解析 `learning.fsrsParameters`：旧形裸数组（历史）与
+/// `{"algo":"fsrs6","w":[…]}` 新形都认；未知 algo → `Unsupported`；
+/// 其余形状按「缺省参数」处理（与旧代码 `as_array` 失败即空一致）。
+pub fn parse_fsrs_params(value: &serde_json::Value) -> FsrsParams {
+    fn weights(items: &[serde_json::Value]) -> Vec<f32> {
+        // 与旧口径一致：任一元素非数值/非有限 → 整组作废走默认（不半生效）。
+        let parsed: Option<Vec<f32>> = items
+            .iter()
+            .map(|item| {
+                item.as_f64()
+                    .map(|value| value as f32)
+                    .filter(|value| value.is_finite())
+            })
+            .collect();
+        parsed.unwrap_or_default()
+    }
+    if let Some(items) = value.as_array() {
+        return FsrsParams::Fsrs6(weights(items));
+    }
+    if let Some(object) = value.as_object() {
+        let algo = object
+            .get("algo")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if algo == FSRS_ALGO {
+            let w = object
+                .get("w")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| weights(items))
+                .unwrap_or_default();
+            return FsrsParams::Fsrs6(w);
+        }
+        return FsrsParams::Unsupported(algo.to_owned());
+    }
+    FsrsParams::Fsrs6(Vec::new())
+}
+
 /// User-tunable FSRS knobs, loaded from client preferences.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchedulerSettings {
@@ -34,6 +83,16 @@ impl Default for SchedulerSettings {
             parameters: Vec::new(),
             tz_offset_minutes: chrono::Local::now().offset().local_minus_utc() / 60,
         }
+    }
+}
+
+impl SchedulerSettings {
+    /// FSRS decay 分量（w[20]），缺省 = FSRS-6 默认衰减。
+    pub fn decay_component(&self) -> f32 {
+        self.parameters
+            .get(20)
+            .copied()
+            .unwrap_or(fsrs::FSRS6_DEFAULT_DECAY)
     }
 }
 
@@ -109,11 +168,7 @@ pub fn predicted_retrievability(
     if stability_days <= 0.0 {
         return None;
     }
-    let decay = settings
-        .parameters
-        .get(20)
-        .copied()
-        .unwrap_or(fsrs::FSRS6_DEFAULT_DECAY);
+    let decay = settings.decay_component();
     let state = MemoryState {
         stability: stability_days as f32,
         difficulty: 5.0,
@@ -147,7 +202,13 @@ pub fn schedule_review(
 ) -> Result<ScheduleState, AppError> {
     let model = match FSRS::new(&settings.parameters) {
         Ok(model) => model,
-        Err(_) => FSRS::default(),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "custom FSRS weights rejected; falling back to library defaults"
+            );
+            FSRS::default()
+        }
     };
     let previous_state = if review_count > 0 {
         Some(MemoryState {
@@ -386,5 +447,48 @@ mod tests {
                 .expect("strict schedules");
         // Higher retention targets review sooner.
         assert!(strict_next.due_at <= relaxed_next.due_at);
+    }
+}
+
+#[cfg(test)]
+mod params_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_array_and_algorithm_envelope_parse_alike() {
+        let legacy = serde_json::json!([0.4, 0.6, 2.4]);
+        let envelope = serde_json::json!({"algo": "fsrs6", "w": [0.4, 0.6, 2.4]});
+        assert_eq!(
+            parse_fsrs_params(&legacy),
+            FsrsParams::Fsrs6(vec![0.4, 0.6, 2.4])
+        );
+        assert_eq!(
+            parse_fsrs_params(&envelope),
+            FsrsParams::Fsrs6(vec![0.4, 0.6, 2.4])
+        );
+    }
+
+    #[test]
+    fn unknown_algorithm_is_explicit_and_never_half_applies() {
+        let future = serde_json::json!({"algo": "fsrs9", "w": [1.0, 2.0]});
+        assert_eq!(
+            parse_fsrs_params(&future),
+            FsrsParams::Unsupported("fsrs9".into())
+        );
+        // 缺省/非数/非有限 → 整组作废走默认。
+        assert_eq!(parse_fsrs_params(&serde_json::Value::Null), FsrsParams::Fsrs6(Vec::new()));
+        assert_eq!(
+            parse_fsrs_params(&serde_json::json!([0.4, "bad"])),
+            FsrsParams::Fsrs6(Vec::new())
+        );
+    }
+
+    #[test]
+    fn decay_component_falls_back_to_the_fsrs6_default() {
+        let mut settings = SchedulerSettings::default();
+        assert_eq!(settings.decay_component(), fsrs::FSRS6_DEFAULT_DECAY);
+        settings.parameters = vec![0.0; 20];
+        settings.parameters.push(0.2);
+        assert_eq!(settings.decay_component(), 0.2);
     }
 }

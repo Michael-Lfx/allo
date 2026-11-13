@@ -4,7 +4,7 @@ use crate::message::{StopReason, TokenUsage, ToolUseId};
 use crate::tool::ToolDef;
 
 /// A request to the LLM provider
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LlmRequest {
     pub model: String,
     pub system: String,
@@ -33,6 +33,12 @@ pub struct LlmRequest {
     /// [`LlmEvent::Error`]. Only the agent engine, which settles the call as a
     /// tool error, sets this.
     pub isolate_malformed_tool_calls: bool,
+    /// Ask the provider to guarantee a syntactically valid JSON object reply
+    /// (OpenAI-compatible `response_format: {"type": "json_object"}`).
+    /// Structured-output pipelines pair this with a local schema validator —
+    /// the guarantee covers legality only, not shape. Providers without the
+    /// mode reject the request outright (fail loud, no silent fallback).
+    pub json_object: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -1,63 +1,87 @@
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Card, Spin, Tag, Typography } from '@arco-design/web-react';
+import { useLearningFloatingSlot } from '../learningFloatingDock';
 
 const { Text } = Typography;
 
 /** 后台生成悬浮指示条：创建对话框关闭后，生成仍在 HTTP 请求内继续——
- * 运行中/失败/取消/完成四种状态都从这里回到对话框进度视图，运行中可取消。 */
+ * 排队中（m7 资源闸）/运行中/失败/取消/完成五种状态都从这里回到对话框
+ * 进度视图，排队期与运行中都可取消（排队取消 = 释放排队位，body 零执行）。
+ * 多知识库（t4）：sources 非空时展示「来源：库A、库B」（名称由调用方按库 id 解析）。
+ * 定位（g4）：全局生长 Pill 宿主在场时 portal 进其右下角停靠栏与生长 Pill
+ * 纵向排队（同角不重叠）；宿主缺席时自带 fixed 定位。
+ * label 覆盖（v3，图课程流）：传 `label` 时主行原文呈现（structure 快照
+ * 真值新键，见 structurePillWatch），其余布局/取消/查看行为不变；不传
+ * 走既有状态词典——v2 描述流/知识库流零变化。 */
 export function CourseGenerationPill({
   status,
   topic,
+  sources = [],
+  label: labelOverride,
   onView,
   onCancel,
 }: {
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   topic: string;
+  sources?: string[];
+  label?: string;
   onView: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
+  const dockSlot = useLearningFloatingSlot();
   const label =
-    status === 'running'
-      ? t('learning.genBgRunning')
-      : status === 'failed'
-        ? t('learning.genBgFailed')
-        : status === 'cancelled'
-          ? t('learning.genCancelled')
-          : t('learning.genBgDone');
-  return (
-    <div className='fixed right-24px bottom-24px z-100'>
-      <Card size='small' className='shadow-lg'>
-        <div className='flex items-center gap-12px'>
-          {status === 'running' ? (
-            <Spin size={14} />
-          ) : (
-            <Tag
-              size='small'
-              color={status === 'failed' ? 'red' : status === 'cancelled' ? 'orange' : 'green'}
-              className='!mx-0'
-            >
-              {status === 'completed' ? '✓' : '✕'}
-            </Tag>
+    labelOverride ??
+    (status === 'queued'
+      ? t('learning.genBgQueued')
+      : status === 'running'
+        ? t('learning.genBgRunning')
+        : status === 'failed'
+          ? t('learning.genBgFailed')
+          : status === 'cancelled'
+            ? t('learning.genCancelled')
+            : t('learning.genBgDone'));
+  const card = (
+    <Card size='small' className='shadow-lg'>
+      <div className='flex items-center gap-12px'>
+        {status === 'running' || status === 'queued' ? (
+          <Spin size={14} />
+        ) : (
+          <Tag
+            size='small'
+            color={status === 'failed' ? 'red' : status === 'cancelled' ? 'orange' : 'green'}
+            className='!mx-0'
+          >
+            {status === 'completed' ? '✓' : '✕'}
+          </Tag>
+        )}
+        <div className='min-w-0 max-w-260px'>
+          <Text className='block truncate text-13px font-500'>{label}</Text>
+          {topic && (
+            <Text type='secondary' className='block truncate text-12px'>
+              {topic}
+            </Text>
           )}
-          <div className='min-w-0 max-w-260px'>
-            <Text className='block truncate text-13px font-500'>{label}</Text>
-            {topic && (
-              <Text type='secondary' className='block truncate text-12px'>
-                {topic}
-              </Text>
-            )}
-          </div>
-          <Button size='mini' type='secondary' onClick={onView}>
-            {t('learning.genView')}
-          </Button>
-          {status === 'running' && (
-            <Button size='mini' status='danger' onClick={onCancel}>
-              {t('learning.genCancel')}
-            </Button>
+          {sources.length > 0 && (
+            <Text type='secondary' className='block truncate text-12px'>
+              {t('learning.courseSources', {
+                names: sources.join(t('learning.listSeparator')),
+              })}
+            </Text>
           )}
         </div>
-      </Card>
-    </div>
+        <Button size='mini' type='secondary' onClick={onView}>
+          {t('learning.genView')}
+        </Button>
+        {(status === 'running' || status === 'queued') && (
+          <Button size='mini' status='danger' onClick={onCancel}>
+            {t('learning.genCancel')}
+          </Button>
+        )}
+      </div>
+    </Card>
   );
+  if (dockSlot) return createPortal(card, dockSlot);
+  return <div className='fixed right-24px bottom-24px z-100'>{card}</div>;
 }

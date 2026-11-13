@@ -143,6 +143,13 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        if request.json_object {
+            return Err(ProviderError::Config(
+                "provider does not support response_format json_object; \
+                 structured output needs an OpenAI-compatible provider"
+                    .into(),
+            ));
+        }
         let url = format!("{}/v1/messages", self.base_url);
         let client = crate::http_client();
         let sanitize_tool_schemas = self.should_sanitize_tool_schemas();
@@ -221,6 +228,7 @@ mod tests {
             temperature: None,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
         }
     }
 

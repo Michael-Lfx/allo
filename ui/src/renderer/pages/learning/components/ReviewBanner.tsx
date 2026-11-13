@@ -4,13 +4,14 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ORPHAN_COURSE_FILTER } from '../constants';
 import type { CheckinStatus, CourseSummary, DueReview } from '../types';
-import { CheckinPanel } from './CheckinPanel';
 import { MemoryHealthPanel } from './MemoryHealthPanel';
+import { XpPanel } from './XpPanel';
 
 const { Title, Text } = Typography;
 
 /** 学习页顶部的复习横幅：到期队列筛选（课程 / 标签）与开始复习；
- *  底部独立"打卡统计"折叠条为展开入口（整条可点击，展开状态由外层持久化）。 */
+ *  底部独立"XP 读数"折叠条为展开入口（整条可点击，展开状态由外层持久化）。
+ *  打卡计数口径已退役（j05/j06）：徽章与读数面一律按 XP 呈现。 */
 export function ReviewBanner({
   reviews,
   courses,
@@ -43,15 +44,11 @@ export function ReviewBanner({
   const { t } = useTranslation();
   // 记忆健康面板的展开态：本地态即可（低频查看，不需要跨会话持久化）
   const [memoryExpanded, setMemoryExpanded] = useState(false);
-  // 紧凑打卡徽章：有目标显示进度，无目标显示已复习次数；完成态绿色高亮
+  // 紧凑 XP 徽章：今日净 XP / 日目标（j05 起打卡即 XP 口径）；达标绿色高亮
   const badgeText = checkin
-    ? checkin.goal > 0
-      ? checkin.completed
-        ? t('learning.checkinBadgeDone', { reviewed: checkin.reviewed_count, goal: checkin.goal })
-        : t('learning.checkinBadge', { reviewed: checkin.reviewed_count, goal: checkin.goal })
-      : checkin.completed
-        ? t('learning.checkinBadgeNoGoalDone', { reviewed: checkin.reviewed_count })
-        : t('learning.checkinBadgeNoGoal', { reviewed: checkin.reviewed_count })
+    ? checkin.completed
+      ? t('learning.xpBadgeDone', { xp: checkin.reviewed_count, goal: checkin.goal })
+      : t('learning.xpBadge', { xp: checkin.reviewed_count, goal: checkin.goal })
     : '';
   return (
     <div className='rounded-12px border border-solid border-[color-mix(in_srgb,rgb(var(--primary-6))_35%,var(--color-border-2))] bg-[color-mix(in_srgb,rgb(var(--primary-6))_6%,var(--color-bg-2))]'>
@@ -127,7 +124,7 @@ export function ReviewBanner({
         </Button>
       </div>
 
-      {/* 独立打卡统计折叠条：整条可点击，边框 + 图标 + 文字 + 圆形箭头，展开入口一目了然 */}
+      {/* 独立 XP 读数折叠条：整条可点击，边框 + 图标 + 文字 + 圆形箭头，展开入口一目了然 */}
       <div className='px-20px pb-16px'>
         <button
           type='button'
@@ -137,16 +134,16 @@ export function ReviewBanner({
         >
           <span className='flex min-w-0 flex-wrap items-center gap-8px'>
             <IconCalendar className='shrink-0 text-16px text-primary-6' />
-            <Text bold>{t('learning.checkinTitle')}</Text>
+            <Text bold>{t('learning.xpPanelTitle')}</Text>
             {checkin?.completed && (
               <Text className='text-[var(--color-success-6)]'>
-                ✓ {t('learning.checkinCompleted')}
+                ✓ {t('learning.xpGoalReached')}
               </Text>
             )}
           </span>
           <span className='flex shrink-0 items-center gap-8px'>
             <Text className='text-12px text-primary-6'>
-              {expanded ? t('learning.checkinCollapse') : t('learning.checkinExpand')}
+              {expanded ? t('learning.xpCollapse') : t('learning.xpExpand')}
             </Text>
             <span className='flex h-22px w-22px items-center justify-center rounded-full bg-primary-6'>
               <IconDown
@@ -157,7 +154,7 @@ export function ReviewBanner({
         </button>
         {expanded && (
           <div className='pt-12px'>
-            <CheckinPanel checkin={checkin} celebrateToken={celebrateToken} />
+            <XpPanel checkin={checkin} celebrateToken={celebrateToken} />
           </div>
         )}
       </div>

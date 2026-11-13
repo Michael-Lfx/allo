@@ -9,7 +9,6 @@ import {
   Input,
   Modal,
   Spin,
-  Steps,
   Tag,
   Typography,
 } from '@arco-design/web-react';
@@ -21,8 +20,9 @@ import { ipcBridge } from '@/common';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import MarkdownEditor from '@renderer/pages/conversation/Preview/components/editors/MarkdownEditor';
-import Markdown from '@renderer/components/Markdown';
+import Markdown, { InlineMarkdown } from '@renderer/components/Markdown';
 import { learningApi } from '../api';
+import { CapacityFeedbackCard } from './CapacityFeedbackCard';
 import {
   buildSteps,
   canGoToStep,
@@ -31,6 +31,7 @@ import {
   stepActivities,
   stepLocked,
 } from '../model';
+import { PHASE } from '../phaseMeta';
 import type {
   Activity,
   AttemptRecord,
@@ -39,14 +40,17 @@ import type {
   LessonStatus,
   Section,
 } from '../types';
-import { sliceSourceContent, statusLabel } from '../utils';
+import { errorMessage, sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
+import { QuestionExplanation } from './QuestionExplanation';
 import { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonQuestionDialog } from './LessonQuestionDialog';
 
 const { Text, Paragraph } = Typography;
 
-function ActivityBlock({
+/// 逐题练习块（测试缝：导出供 missingPointsTitle 双语断言单测直接渲染判
+/// 错结果面，InlineRenderBoundary 先例同款）。
+export function ActivityBlock({
   activity,
   disabled,
   loading,
@@ -72,7 +76,10 @@ function ActivityBlock({
         : response !== undefined && response !== null;
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
-      <div className='mb-10px font-500 text-t-primary'>{activity.prompt}</div>
+      {/* 题干走内联渲染管线（题面契约允许 $…$ 公式与内联 markdown） */}
+      <div className='mb-10px font-500 text-t-primary'>
+        <InlineMarkdown text={activity.prompt} />
+      </div>
       <ActivityInput
         kind={activity.kind}
         options={activity.options}
@@ -96,10 +103,26 @@ function ActivityBlock({
             <Text type={result.passed ? 'success' : 'error'}>
               {result.passed ? t('learning.correct') : t('learning.incorrect')}
             </Text>
-            {/* AI 批改的反馈是多段 Markdown（评价/覆盖情况/建议），独立渲染 */}
+            {/* AI 批改的反馈是多段 Markdown（评价/覆盖情况/建议），独立渲染；
+                通道按内容分流（围栏/多段 → 块级，短解析 → 内联），与复习面共用 */}
             {result.feedback && (
               <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
-                <Markdown>{result.feedback}</Markdown>
+                <QuestionExplanation text={result.feedback} />
+              </div>
+            )}
+            {/* AI 评审判错点名的缺失要点（判对恒空不渲染；n4 D3 互斥契约） */}
+            {result.missing_points && result.missing_points.length > 0 && (
+              <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
+                <Text type='warning' className='mb-4px block'>
+                  {t('learning.missingPointsTitle')}
+                </Text>
+                <ul className='m-0 pl-18px'>
+                  {result.missing_points.map((point, index) => (
+                    <li key={index} className='text-t-secondary'>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>
@@ -112,9 +135,12 @@ function ActivityBlock({
 function LessonSourcePanel({
   knowledgeBaseId,
   source,
+  sourceCount = 1,
 }: {
   knowledgeBaseId: string | null;
   source: NonNullable<Lesson['source']>;
+  /** 全部引用来源数（t4 多引用）：>1 时在主 source 旁如实标注「共 N 处来源」 */
+  sourceCount?: number;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -122,6 +148,9 @@ function LessonSourcePanel({
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 来源库（t4）：课时自身的归属优先（多库课程按采样命名空间解析），
+  // 老课程/单库课程没有 kb_id → 回退课程主来源。
+  const sourceKbId = source.kb_id ?? knowledgeBaseId;
 
   const toggle = () => {
     if (open) {
@@ -131,20 +160,21 @@ function LessonSourcePanel({
     setOpen(true);
     // 原文仅在用户主动查看时才加载；已加载或失败的内容直接复用
     if (content !== null || loading || error !== null) return;
-    if (knowledgeBaseId === null) {
-      // 未来可能出现的无知识库课程：没有可读取的原文，给出提示而不是报错
+    if (sourceKbId === null) {
+      // 无知识库课程（描述流）或来源库已被删除：没有可读取的原文
       setError(t('learning.sourceUnavailable'));
       return;
     }
     setLoading(true);
     void ipcBridge.knowledge.readFile
       .invoke({
-        knowledge_base_id: parseKnowledgeBaseId(knowledgeBaseId),
+        knowledge_base_id: parseKnowledgeBaseId(sourceKbId),
         path: source.path,
       })
       .then((file) => setContent(sliceSourceContent(file.content, source.start, source.end)))
       .catch((loadError) => {
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
+        // o1：state 只存 errorMessage 单源映射句，原始报文不进人面。
+        setError(errorMessage(t, loadError));
       })
       .finally(() => setLoading(false));
   };
@@ -159,14 +189,19 @@ function LessonSourcePanel({
             {source.start !== null ? `:${source.start}` : ''}
             {source.end !== null ? `-${source.end}` : ''}
           </Text>
+          {sourceCount > 1 && (
+            <Text type='secondary' className='block text-12px'>
+              {t('learning.sourceCountHint', { count: sourceCount })}
+            </Text>
+          )}
         </div>
         <div className='flex shrink-0 items-center gap-8px'>
-          {knowledgeBaseId !== null && (
+          {sourceKbId !== null && (
             <Button
               size='mini'
               onClick={() =>
                 navigate(
-                  `/knowledge/${knowledgeBaseId}?highlight=${encodeURIComponent(source.path)}`
+                  `/knowledge/${sourceKbId}?highlight=${encodeURIComponent(source.path)}`
                 )
               }
             >
@@ -185,7 +220,7 @@ function LessonSourcePanel({
               <Spin tip={t('learning.sourceLoading')} />
             </div>
           )}
-          {error && <Alert type='error' content={`${t('learning.sourceLoadFailed')}: ${error}`} />}
+          {error && <Alert type='error' content={error} />}
           {!loading && !error && content !== null && (
             <div className='max-h-420px overflow-auto rounded-8px bg-[var(--color-fill-1)] p-12px'>
               <Markdown>{content}</Markdown>
@@ -445,31 +480,56 @@ function SectionedLessonBody({
       : lesson.activities.filter((activity) => activity.section_key === section.section_key);
   return (
     <div className='flex flex-col gap-12px'>
-      {/* arco Steps 的 current 是 1 基序号(index 从 1 起):传 0 基值会让
-          高亮恒定落后一步;onChange 回调同样是 1 基,换算回 0 基 state */}
-      <Steps
-        size='small'
-        current={stepIndex + 1}
-        onChange={(next) => {
-          if (canGoTo(next - 1)) setCurrent(next - 1);
-        }}
-      >
-        {steps.map((entry, index) => (
-          <Steps.Step
-            key={entry.section ? entry.section.section_key : 'general'}
-            status={entry.section?.status === 'failed' ? 'error' : undefined}
-            title={
-              entry.section
-                ? entry.section.status === 'failed'
-                  ? `${entry.section.title} · ${t('learning.sectionStatusFailed')}`
-                  : entry.section.status === 'pending'
-                    ? `${entry.section.title} · ${t('learning.sectionStatusPending')}`
-                    : entry.section.title
-                : t('learning.sectionGeneralStep')
-            }
-          />
-        ))}
-      </Steps>
+      {/* 自绘节步骤条（d2）：arco Steps 横排长标题窄容器截断（「概念：团购券
+          里藏着「锁…」）——按钮组 flex-wrap 折行、标题完整呈现；点击切节仍走
+          canGoTo 门禁（练习节题目全部作答才放行，上一节随时可回）。 */}
+      <div className='flex flex-wrap items-center gap-6px'>
+        {steps.map((entry, index) => {
+          const status = entry.section?.status;
+          const label = entry.section
+            ? status === 'failed'
+              ? `${entry.section.title} · ${t('learning.sectionStatusFailed')}`
+              : status === 'pending'
+                ? `${entry.section.title} · ${t('learning.sectionStatusPending')}`
+                : entry.section.title
+            : t('learning.sectionGeneralStep');
+          const locked = index > stepIndex && !canGoTo(index);
+          const active = index === stepIndex;
+          return (
+            <button
+              key={entry.section ? entry.section.section_key : 'general'}
+              type='button'
+              disabled={locked}
+              title={locked ? t('learning.practiceGateHint') : undefined}
+              onClick={() => {
+                if (canGoTo(index)) setCurrent(index);
+              }}
+              className={`rd-6px flex max-w-full cursor-pointer items-center gap-6px border-none px-8px py-4px text-left text-12px font-inherit transition-colors ${
+                active
+                  ? 'bg-[var(--color-primary-6)] font-500 text-white'
+                  : status === 'failed'
+                    ? 'bg-[var(--color-danger-light-1)] text-[var(--color-danger-6)] hover:bg-[var(--color-danger-light-2)]'
+                    : 'bg-[var(--color-fill-1)] text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)]'
+              } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
+            >
+              <span
+                className={`inline-flex h-16px w-16px shrink-0 items-center justify-center rounded-full text-11px leading-16px ${
+                  active
+                    ? 'bg-white font-500 text-[var(--color-primary-6)]'
+                    : status === 'failed'
+                      ? 'bg-[var(--color-danger-6)] text-white'
+                      : 'bg-[var(--color-bg-3)] text-[var(--color-text-3)]'
+                }`}
+              >
+                {index + 1}
+              </span>
+              <span className='min-w-0 whitespace-normal break-words leading-18px'>
+                {label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
       {step.section ? (
         step.section.kind === 'practice' ? (
           // 新规范：练习节 = 一等练习轮(learnhub),内容节只读;练习节可穿插
@@ -636,6 +696,7 @@ export function LessonBlock({
   lesson,
   sourceKbId,
   busyId,
+  externalBusy = false,
   attemptResults,
   onProgress,
   onAttempt,
@@ -645,6 +706,9 @@ export function LessonBlock({
   lesson: Lesson;
   sourceKbId: string | null;
   busyId: string | null;
+  /** 外部在途（d7）：注册表/会话级派生的「本课时内容生成中」——切页往返后
+   * 本地 busyId 已丢，由工作区从服务端真相注入，防重复点击 409。 */
+  externalBusy?: boolean;
   attemptResults: Record<string, AttemptRecord>;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
@@ -683,10 +747,18 @@ export function LessonBlock({
   // 按需生成课时的行内迷你进度：按 lesson 过滤 round/audit 事件，
   // 一行文本轻量更新（不展开完整 timeline）；终态事件清空文本
   const [progressText, setProgressText] = useState<string | null>(null);
+  // t3 降级披露：grounding 帧报「源库不可达 → 快照兜底」时，生成期间显示一行
+  // 提示——课时照常生成，但用户该知道这次没读库（新一次生成重置）。
+  const [groundingDegraded, setGroundingDegraded] = useState(false);
   useEffect(() => {
     return ipcBridge.learning.lessonGeneration.on((event) => {
       if (event.lesson_id && event.lesson_id !== lesson.id) return;
-      if (event.phase === 'round') {
+      if (event.phase === PHASE.grounding) {
+        setGroundingDegraded(event.degraded === true);
+      } else if (event.phase === 'started') {
+        // 新一次生成从零开始：上一轮的降级状态不残留。
+        setGroundingDegraded(false);
+      } else if (event.phase === 'round') {
         setProgressText(
           `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`
         );
@@ -721,7 +793,8 @@ export function LessonBlock({
       Message.success(t('learning.sectionRewriteDone'));
       setRewriteDialogSection(null);
     } catch (rewriteError) {
-      Message.error(rewriteError instanceof Error ? rewriteError.message : t('learning.actionFailed'));
+      // o1：错误文案走 errorMessage 单源映射，原始报文不进人面。
+      Message.error(errorMessage(t, rewriteError));
     } finally {
       setsectionBusyKey(null);
     }
@@ -737,7 +810,8 @@ export function LessonBlock({
       Message.success(t('learning.sectionEditDone'));
       setEditDialogSection(null);
     } catch (editError) {
-      Message.error(editError instanceof Error ? editError.message : t('learning.actionFailed'));
+      // o1：错误文案走 errorMessage 单源映射，原始报文不进人面。
+      Message.error(errorMessage(t, editError));
     } finally {
       setsectionBusyKey(null);
     }
@@ -748,16 +822,31 @@ export function LessonBlock({
         {lesson.purpose && (
           <Paragraph className='!mb-0 text-t-secondary'>{lesson.purpose}</Paragraph>
         )}
+        {/* 声明面两行（absorb-8 z01）：出生即声明的 intent/scope，缺席（空串
+            = 旧档）整行不渲染——purpose 条件渲染同款。 */}
+        {lesson.intent && (
+          <Paragraph className='!mb-0 text-t-secondary'>
+            {t('learning.lessonIntentLine', { text: lesson.intent })}
+          </Paragraph>
+        )}
+        {lesson.scope && (
+          <Paragraph className='!mb-0 text-t-secondary'>
+            {t('learning.lessonScopeLine', { text: lesson.scope })}
+          </Paragraph>
+        )}
         <div className='flex flex-wrap items-center gap-8px'>
           <Tag color={lessonStatusTagColors[lesson.status]}>{statusLabel(lesson.status, t)}</Tag>
           <Button
             type='primary'
-            loading={busyId === lesson.id}
+            loading={busyId === lesson.id || externalBusy}
             onClick={() => onGenerate(lesson)}
           >
             {t('learning.generateLessonContent')}
           </Button>
           {progressText && <Text type='secondary'>{progressText}</Text>}
+          {progressText && groundingDegraded && (
+            <Text type='warning'>{t('learning.lessonGenSourceDegraded')}</Text>
+          )}
         </div>
       </div>
     );
@@ -769,11 +858,17 @@ export function LessonBlock({
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={lessonStatusTagColors[current.status]}>{statusLabel(current.status, t)}</Tag>
         <Text type='secondary'>
-          {current.estimated_minutes} {t('learning.minutes')}
+          {current.est} {t('learning.minutes')}
         </Text>
       </div>
+      {/* 容量反馈卡（y07）：仅生成期自报超容时呈现；选择只留痕、不结算 */}
+      <CapacityFeedbackCard lesson={current} />
       {current.source && (
-        <LessonSourcePanel knowledgeBaseId={sourceKbId} source={current.source} />
+        <LessonSourcePanel
+          knowledgeBaseId={sourceKbId}
+          source={current.source}
+          sourceCount={current.sources?.length ?? 1}
+        />
       )}
       {current.sections.length > 0 ? (
         <>

@@ -2,15 +2,14 @@
 //! 的修复循环」这一曾逐字复制三份的骨架，收敛为一个按每流插头参数化的
 //! deep module。
 //!
-//! 学习图（[`crate::learning_graph_loop`]）/ 课程大纲
-//! （[`crate::course_outline_loop`]）/ 课时内容
-//! （[`crate::lesson_content_loop`]）三条流各自实现 [`FlowCycle`]，只提供
+//! 课程大纲（[`crate::course_outline_loop`]）与课时内容
+//! （[`crate::lesson_content_loop`]）两条流各自实现 [`FlowCycle`]，只提供
 //! 真正属于流的东西：系统提示词、工具白名单、finish 门、发布帧、以及
 //! [`LoopBudgets`] / [`WireConfig`] 两张显式差异表。外壳负责其余一切：
 //! 轮次预算、修复循环、空闲 nudge、发布优先级、错误诊断接线与 WS 事件
-//! 翻译。
+//! 翻译。（学习图草稿流已随 ADR-0009 的生长模型退役。）
 //!
-//! **差异即配置**（ADR-0004 的反损失保证）：三流之间的全部已知行为差异——
+//! **差异即配置**（ADR-0004 的反损失保证）：流之间的全部已知行为差异——
 //! 轮次/时长/token 预算、kind 帧标记、round_feedback 翻译、轮次日志、
 //! start 阶段帧、发布优先于报错、修复轮错误诊断——都落在显式声明里。想把
 //! 某个差异统一掉，必须修改对应声明并说明理由；不存在无声归并的通道。
@@ -29,6 +28,9 @@ use crate::loop_core::{
     GENERATE_REASONING_EFFORT, LoopEventSink, REPAIR_LOOP_LIMIT, REPAIR_MAX_ROUNDS,
     REPAIR_REASONING_EFFORT, log_text, run_agent_loop,
 };
+// u06：压缩钩子类型随 FlowCycle::history_compaction 的签名外露（本 crate
+// 内的流实现都要引用它），私有 use 不够——crate 级再导出。
+pub(crate) use crate::loop_core::HistoryCompaction;
 use crate::one_shot::OneShotTool;
 
 /// 取消提示语：以 `LlmEvent::Error` / `ProviderError::Api` 注入。循环的
@@ -38,13 +40,15 @@ use crate::one_shot::OneShotTool;
 /// 未接入取消——显式差异，见 ADR-0004）。
 pub(crate) const CANCEL_MESSAGE: &str = "生成已被用户取消";
 
-/// 生成循环共用的 provider 包装：每次 LLM 请求开始前与流转发途中轮询
-/// 取消旗标（旗标挂在 [`LearningService`] 的生成注册上，取消端点置位）。
-/// 取消在流边界即刻生效——请求前直接拒绝；流中把取消作为 Error 事件注入
-/// 并停止转发（下游 receiver 被 drop 后上游发送失败，HTTP 流随之终止）。
+/// 生成循环共用的 provider 包装：每次 LLM 请求开始前轮询取消令牌，流转发
+/// 途中与令牌 `select!` 竞速（令牌挂在 LearningService 的长任务注册上，
+/// 取消端点触发）。取消在流边界即刻生效——请求前直接拒绝；流中把取消作为
+/// Error 事件注入并停止转发（下游 receiver 被 drop 后上游发送失败，HTTP
+/// 流随之终止）。j03 起旗标升级为 CancellationToken（真取消，与生长/结构
+/// 循环同一注册表单源）。
 pub(crate) struct CancellableProvider {
     pub(crate) inner: Arc<dyn LlmProvider>,
-    pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
 }
 
 #[async_trait::async_trait]
@@ -57,21 +61,113 @@ impl LlmProvider for CancellableProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-        use std::sync::atomic::Ordering;
-        if self.cancel.load(Ordering::Relaxed) {
+        if self.cancel.is_cancelled() {
             return Err(ProviderError::Api {
                 status: 499,
                 message: CANCEL_MESSAGE.to_owned(),
             });
         }
         let mut rx = self.inner.stream(request).await?;
-        let cancel = Arc::clone(&self.cancel);
+        let cancel = self.cancel.clone();
+        let (tx, out) = mpsc::channel(64);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        let _ = tx.send(LlmEvent::Error(CANCEL_MESSAGE.to_owned())).await;
+                        break;
+                    }
+                    event = rx.recv() => {
+                        match event {
+                            Some(event) => {
+                                if tx.send(event).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+        Ok(out)
+    }
+}
+
+/// 请求侧的字符量（e1 相位耗时读数口径）：system + 全部消息的文本面
+/// （文本块逐块 + 工具调用参数序列化 + 工具结果正文）。体量代理，不是
+/// token 计量。
+fn request_char_volume(request: &LlmRequest) -> u64 {
+    let mut chars = request.system.chars().count() as u64;
+    for message in &request.messages {
+        for block in &message.content {
+            chars += match block {
+                nomi_types::message::ContentBlock::Text { text } => text.chars().count() as u64,
+                nomi_types::message::ContentBlock::ToolUse { input, .. } => {
+                    input.to_string().chars().count() as u64
+                }
+                nomi_types::message::ContentBlock::ToolResult { content, .. } => {
+                    content.chars().count() as u64
+                }
+                _ => 0,
+            };
+        }
+    }
+    chars
+}
+
+/// 流事件的输出字符量（e1 口径）：文本增量 + 完整工具调用参数的序列化长
+/// 度。中途 Error/截断事件不计——没走完的输出不算产出。
+fn event_output_chars(event: &LlmEvent) -> u64 {
+    match event {
+        LlmEvent::TextDelta(text) => text.chars().count() as u64,
+        LlmEvent::ToolUse { input, .. } => input.to_string().chars().count() as u64,
+        _ => 0,
+    }
+}
+
+/// 用量计数 provider 包装（e1 相位耗时读数，课时引擎专用）：每次 `stream()`
+/// 计一次 LLM 调用，输入 = 请求字符量，输出 = 流内文本/工具参数字符量。与
+/// nomifun-learning 的 `CountingCompleter` 是**跨 crate 同职能双实现**（单源
+/// 意图 = 各自 crate 的 provider/completer 形状差异——这里是流事件接缝，
+/// 彼处是一次式 complete 接缝，不强行合并）；改动用量口径（何时计调用数、
+/// 字符量怎么算）时两处同步。观测面
+/// 零语义——上报闭包（任务注册表的 [`nomifun_learning::LlmUsageMeter`]）
+/// 缺席时不装配本包装。取消语义不在此层（课时循环未接取消令牌，见
+/// ADR-0004 显式差异）；并发安全（e4 段写并行的前置）由原子累计承担。
+pub(crate) struct CountingProvider {
+    pub(crate) inner: Arc<dyn LlmProvider>,
+    pub(crate) usage: nomifun_learning::LlmUsageMeter,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for CountingProvider {
+    fn input_tokens_include_cache(&self) -> bool {
+        self.inner.input_tokens_include_cache()
+    }
+
+    async fn stream(
+        &self,
+        request: &LlmRequest,
+    ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        let input_chars = request_char_volume(request);
+        let mut rx = self.inner.stream(request).await?;
+        let usage = self.usage.clone();
+        usage.add(nomifun_learning::LlmUsageDelta {
+            llm_calls: 1,
+            input_chars,
+            output_chars: 0,
+        });
         let (tx, out) = mpsc::channel(64);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                if cancel.load(Ordering::Relaxed) {
-                    let _ = tx.send(LlmEvent::Error(CANCEL_MESSAGE.to_owned())).await;
-                    break;
+                let output_chars = event_output_chars(&event);
+                if output_chars > 0 {
+                    usage.add(nomifun_learning::LlmUsageDelta {
+                        llm_calls: 0,
+                        input_chars: 0,
+                        output_chars,
+                    });
                 }
                 if tx.send(event).await.is_err() {
                     break;
@@ -145,7 +241,7 @@ impl LoopChannel {
         let payload = match event {
             "agent_round" => {
                 let repair =
-                    fields.get("loop").and_then(serde_json::Value::as_str) != Some("generate");
+                    fields.get("loop").and_then(serde_json::Value::as_str) != Some(nomifun_learning::phase::GENERATE);
                 if let Some(gen_label) = self.wire.round_log_gen_label {
                     let tools_text = fields
                         .get("tool_calls")
@@ -194,7 +290,7 @@ impl LoopChannel {
                     }
                 }
                 let mut payload = serde_json::json!({
-                    "phase": "round",
+                    "phase": nomifun_learning::phase::ROUND,
                     "loop": fields.get("loop"),
                     "round": fields.get("round"),
                     "max_rounds": if repair { REPAIR_MAX_ROUNDS } else { self.generate_max_rounds },
@@ -210,7 +306,7 @@ impl LoopChannel {
                 // 损坏降级上 WS：否则用户会看到轮次凭空从 1 跳到 2，不知道
                 // 中间发生过一次传输损坏与自动恢复。复用 round 行渲染。
                 let mut payload = serde_json::json!({
-                    "phase": "round",
+                    "phase": nomifun_learning::phase::ROUND,
                     "loop": fields.get("loop"),
                     "round": fields.get("round"),
                     "tools": [],
@@ -263,6 +359,21 @@ pub(crate) trait FlowCycle: Send + Sync {
     /// 工具白名单。`repair_face = true` 表示修复轮（大纲/课时收窄掉 start
     /// 工具；学习图无 start 工具，两个面相同）。
     fn tools(&self, ctx: Arc<Self::Ctx>, repair_face: bool) -> Vec<OneShotTool>;
+    /// u06 历史压缩钩子（缺省 `None`——课程大纲循环零变化，单测钉住）。
+    /// 仅课时内容循环在 `NOMI_LEARNING_LESSON_HISTORY_COMPACT` on 时返回
+    /// Some；钩子在每轮工具结果回灌后改写消息历史（语义见 loop_core 的
+    /// [`HistoryCompaction`]）。
+    fn history_compaction(&self, _ctx: &Arc<Self::Ctx>) -> Option<Arc<HistoryCompaction>> {
+        None
+    }
+    /// u07 修复轮开场上下文（缺省 `None`——课程大纲循环零变化，单测钉住
+    /// `outline_flow_never_carries_history_compaction`）。仅课时内容循环
+    /// 返回 Some（lesson_user_text 同源——修复轮是全新对话，概念面/档位/
+    /// 教学范围在审计报告里不可达，票面推断的修复盲区）。组装顺序（上下文
+    /// 先行、审计随后）见 [`compose_repair_user`]。
+    fn repair_opening_context(&self, _ctx: &Arc<Self::Ctx>) -> Option<String> {
+        None
+    }
     /// finish 门（确定性审计）：`Ok` 即发布；`UnprocessableEntity` 表示
     /// danger findings 未清，修复循环继续。学习图的门是 async（终审软门
     /// + 落库），大纲/课时为同步语义——统一在 async 插头之后。
@@ -314,6 +425,9 @@ pub(crate) async fn run_loops<F: FlowCycle>(
     round_tokens: u32,
 ) -> Result<F::Output, AppError> {
     let budgets = flow.budgets();
+    // u06：压缩钩子每循环解析一次（仅课时内容循环返回 Some；大纲/学习
+    // 循环恒 None——零变化面）。
+    let compaction = flow.history_compaction(&ctx);
 
     // ── 生成循环：全工具面，注入的开场消息作为 user 轮 ──────────────────
     let generate_tools = flow.tools(Arc::clone(&ctx), false);
@@ -335,21 +449,22 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         round_tokens,
         ThinkingConfig::Disabled,
         GENERATE_REASONING_EFFORT,
-        "generate",
+        nomifun_learning::phase::GENERATE,
         Some(ctx.as_ref()),
+        compaction.as_deref(),
     )
     .await;
     // 发布优先级是显式差异（`publish_before_error`）：发布可能落在循环的
     // 最后一轮（预算恰好在发布轮耗尽）。
     if flow.publish_before_error() {
         if let Some(output) = take_published::<F>(&ctx) {
-            return Ok(publish(flow, &ctx, output, "generate", None));
+            return Ok(publish(flow, &ctx, output, nomifun_learning::phase::GENERATE, None));
         }
     }
     let final_text = loop_result.map_err(|error| flow.map_loop_error(ctx.as_ref(), error))?;
     if !flow.publish_before_error() {
         if let Some(output) = take_published::<F>(&ctx) {
-            return Ok(publish(flow, &ctx, output, "generate", None));
+            return Ok(publish(flow, &ctx, output, nomifun_learning::phase::GENERATE, None));
         }
     }
     let draft_id = match F::draft_slot(&ctx).lock() {
@@ -387,7 +502,7 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         ctx.log("repair_loop_start", start);
         match flow.finish(ctx.as_ref(), &draft_id).await {
             Ok(output) => {
-                return Ok(publish(flow, &ctx, output, "repair", Some(round + 1)));
+                return Ok(publish(flow, &ctx, output, nomifun_learning::phase::REPAIR, Some(round + 1)));
             }
             Err(AppError::UnprocessableEntity(_)) => {
                 ctx.log("finish_blocked", serde_json::json!({
@@ -398,10 +513,13 @@ pub(crate) async fn run_loops<F: FlowCycle>(
             Err(error) => return Err(error),
         }
         let audit = flow.repair_audit(ctx.as_ref(), &draft_id, round + 1)?;
-        let repair_user = match &idle_nudge {
-            Some(nudge) => format!("{nudge}\n\n{audit}"),
-            None => audit,
-        };
+        // u07：修复轮开场组装（[`compose_repair_user`]）——大纲流 None =
+        // 逐字基线（nudge + audit / audit）。
+        let repair_user = compose_repair_user(
+            flow.repair_opening_context(&ctx).as_deref(),
+            idle_nudge.as_deref(),
+            &audit,
+        );
         let repair_tools = flow.tools(Arc::clone(&ctx), true);
         let revision_before = flow.revision(ctx.as_ref(), &draft_id)?;
         let loop_result = run_agent_loop(
@@ -414,20 +532,21 @@ pub(crate) async fn run_loops<F: FlowCycle>(
             round_tokens,
             ThinkingConfig::Disabled,
             REPAIR_REASONING_EFFORT,
-            "repair",
+            nomifun_learning::phase::REPAIR,
             Some(ctx.as_ref()),
+            compaction.as_deref(),
         )
         .await;
         // 发布优先于循环错误（同生成循环，按流的显式声明）。
         if flow.publish_before_error() {
             if let Some(output) = take_published::<F>(&ctx) {
-                return Ok(publish(flow, &ctx, output, "repair", Some(round + 1)));
+                return Ok(publish(flow, &ctx, output, nomifun_learning::phase::REPAIR, Some(round + 1)));
             }
         }
         let final_text = loop_result.map_err(|error| flow.map_loop_error(ctx.as_ref(), error))?;
         if !flow.publish_before_error() {
             if let Some(output) = take_published::<F>(&ctx) {
-                return Ok(publish(flow, &ctx, output, "repair", Some(round + 1)));
+                return Ok(publish(flow, &ctx, output, nomifun_learning::phase::REPAIR, Some(round + 1)));
             }
         }
         let revision_after = flow.revision(ctx.as_ref(), &draft_id)?;
@@ -463,6 +582,24 @@ pub(crate) async fn run_loops<F: FlowCycle>(
         "{} agent exhausted {REPAIR_LOOP_LIMIT} repair loops; the draft survives with these blocking findings:\n{audit}",
         flow.name(),
     )))
+}
+
+/// u07 修复轮开场组装（纯函数，四象限单测 `compose_repair_user_quadrants`）：
+/// 课时上下文（仅课时流注入；大纲流 None = 逐字基线）→ 空闲 nudge →
+/// 审计报告，顺序固定——上下文先行、审计随后（票面「修复轮开场注入课时
+/// 上下文，审计报告随后」）。空白 opening 按缺席裁（全仓省行先例同形）。
+fn compose_repair_user(opening: Option<&str>, nudge: Option<&str>, audit: &str) -> String {
+    let mut text = String::new();
+    if let Some(opening) = opening.filter(|opening| !opening.trim().is_empty()) {
+        text.push_str(opening);
+        text.push_str("\n\n");
+    }
+    if let Some(nudge) = nudge {
+        text.push_str(nudge);
+        text.push_str("\n\n");
+    }
+    text.push_str(audit);
+    text
 }
 
 /// 发布收尾：publish_ok 帧 + 每流钩子，三个发布点共用。
@@ -659,7 +796,6 @@ mod tests {
     use super::test_support::{FakeCompleter, test_service_with};
     use super::LoopChannel;
     use crate::course_outline_loop::{BUDGETS as CO_BUDGETS, WIRE as CO_WIRE};
-    use crate::learning_graph_loop::{BUDGETS as LG_BUDGETS, WIRE as LG_WIRE};
     use crate::lesson_content_loop::{BUDGETS as LS_BUDGETS, WIRE as LS_WIRE};
 
     /// 捕获 learning 事件帧的 sink：翻译器测试直接断言（流名，帧）。
@@ -698,16 +834,11 @@ mod tests {
         (service, dir, sink)
     }
 
-    /// 行为差异矩阵：三流的预算与线上翻译配置逐字钉死。统一某个差异 =
+    /// 行为差异矩阵：两流的预算与线上翻译配置逐字钉死。统一某个差异 =
     /// 修改对应流的声明 + 更新这里的断言（ADR-0004）。
     #[test]
     fn flow_difference_matrix_is_pinned() {
-        // 预算：学习图 100 轮 / 32768 token / 1800s；大纲与课时与 loop_core
-        // 的共享默认逐字一致。
-        assert_eq!(
-            (LG_BUDGETS.generate_max_rounds, LG_BUDGETS.round_tokens, LG_BUDGETS.timeout_secs),
-            (100, 32768, 1800)
-        );
+        // 预算：大纲与课时与 loop_core 的共享默认逐字一致。
         for (name, budgets) in [("course outline", CO_BUDGETS), ("lesson content", LS_BUDGETS)] {
             assert_eq!(budgets.generate_max_rounds, crate::loop_core::GENERATE_MAX_ROUNDS, "{name}");
             assert_eq!(budgets.round_tokens, crate::loop_core::AGENT_MAX_TOKENS, "{name}");
@@ -715,12 +846,6 @@ mod tests {
         }
         // 线上差异表：kind 标记、round_feedback 翻译、轮次日志、start 阶段
         // 帧、事件流选择。
-        assert_eq!(LG_WIRE.kind_tag, Some("learning_graph"));
-        assert!(LG_WIRE.translate_round_feedback);
-        assert_eq!(LG_WIRE.round_log_gen_label, Some("构建"));
-        assert_eq!(LG_WIRE.generate_start_phase, Some("generating"));
-        assert_eq!(LG_WIRE.repair_start_phase, Some("repairing"));
-        assert!(!LG_WIRE.lesson_stream);
         assert_eq!(CO_WIRE.kind_tag, None);
         assert!(!CO_WIRE.translate_round_feedback);
         assert_eq!(CO_WIRE.round_log_gen_label, None);
@@ -736,43 +861,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lg_wire_tags_frames_translates_round_feedback_and_keeps_round_log() {
-        let (service, _dir, sink) = recording_service().await;
-        let channel = LoopChannel::new(LG_WIRE, LG_BUDGETS.generate_max_rounds);
-        channel.emit(
-            &service,
-            "agent_round",
-            &serde_json::json!({
-                "loop": "generate", "round": 3, "text": "计划：覆盖10/12大块",
-                "tool_calls": [{ "name": "lg_patch", "is_error": false }],
-            }),
-        );
-        channel.emit(
-            &service,
-            "round_feedback",
-            &serde_json::json!({
-                "loop": "generate", "round": 4, "feedbacks_used": 1, "error": "malformed",
-            }),
-        );
-        // 无 phase 的 loop 内部事件不上线。
-        channel.emit(
-            &service,
-            "finish_blocked",
-            &serde_json::json!({ "round": 1, "draft_id": "d" }),
-        );
-        let frames = sink.frames("learning.course-generation");
-        assert_eq!(frames.len(), 2, "phase-less events stay off the wire: {frames:?}");
-        assert_eq!(frames[0]["kind"], "learning_graph");
-        assert_eq!(frames[0]["phase"], "round");
-        assert_eq!(frames[0]["max_rounds"], 100);
-        assert_eq!(frames[1]["kind"], "learning_graph");
-        assert!(frames[1]["text"].as_str().unwrap().contains("第 1 次"));
-        let log = channel.round_log_snapshot();
-        assert_eq!(log.len(), 1);
-        assert!(log[0].contains("第3轮(构建)") && log[0].contains("lg_patch✓"), "{log:?}");
-    }
-
-    #[tokio::test]
     async fn co_wire_passes_frames_verbatim_without_kind_or_round_log() {
         let (service, _dir, sink) = recording_service().await;
         let channel = LoopChannel::new(CO_WIRE, CO_BUDGETS.generate_max_rounds);
@@ -780,7 +868,7 @@ mod tests {
             &service,
             "agent_round",
             &serde_json::json!({
-                "loop": "repair", "round": 2, "text": "x",
+                "loop": nomifun_learning::phase::REPAIR, "round": 2, "text": "x",
                 "tool_calls": [{ "name": "co_patch", "is_error": false }],
             }),
         );
@@ -788,14 +876,14 @@ mod tests {
             &service,
             "round_feedback",
             &serde_json::json!({
-                "loop": "repair", "round": 3, "feedbacks_used": 1, "error": "malformed",
+                "loop": nomifun_learning::phase::REPAIR, "round": 3, "feedbacks_used": 1, "error": "malformed",
             }),
         );
         // 带 phase 的事件原样上线（audit / session_end / publish_ok），不加 kind。
         channel.emit(
             &service,
             "audit",
-            &serde_json::json!({ "phase": "audit", "danger": 1 }),
+            &serde_json::json!({ "phase": nomifun_learning::phase::AUDIT, "danger": 1 }),
         );
         let frames = sink.frames("learning.course-generation");
         assert_eq!(frames.len(), 2, "round_feedback stays off the co wire: {frames:?}");
@@ -813,7 +901,7 @@ mod tests {
             &service,
             "agent_round",
             &serde_json::json!({
-                "loop": "generate", "round": 1, "text": "",
+                "loop": nomifun_learning::phase::GENERATE, "round": 1, "text": "",
                 "tool_calls": [{ "name": "ls_start", "is_error": false }],
             }),
         );
@@ -824,5 +912,33 @@ mod tests {
         assert_eq!(frames[0]["max_rounds"], crate::loop_core::GENERATE_MAX_ROUNDS);
         let log = channel.round_log_snapshot();
         assert!(log[0].contains("第1轮(生成)") && log[0].contains("ls_start✓"), "{log:?}");
+    }
+
+    /// u07 修复轮开场组装四象限（纯函数）：opening 只属于课时流（大纲流
+    /// None = 零变化），顺序固定——上下文 → nudge → 审计报告；基线两臂
+    /// （nudge 有/无、opening 缺席）逐字复现旧组装。
+    #[test]
+    fn compose_repair_user_quadrants() {
+        let audit = "课时草稿审计 — 1 条 finding：\n- [danger] x";
+        let nudge = "警告：你上一轮没有对草稿做任何修改";
+        let opening = "课程：测试课程\n课时（1/2）：课时一";
+
+        // 基线（大纲流）：opening 缺席——逐字复现旧两臂。
+        assert_eq!(super::compose_repair_user(None, None, audit), audit);
+        assert_eq!(
+            super::compose_repair_user(None, Some(nudge), audit),
+            format!("{nudge}\n\n{audit}")
+        );
+        // 课时流：上下文先行、审计随后；nudge 在中间。
+        assert_eq!(
+            super::compose_repair_user(Some(opening), None, audit),
+            format!("{opening}\n\n{audit}")
+        );
+        assert_eq!(
+            super::compose_repair_user(Some(opening), Some(nudge), audit),
+            format!("{opening}\n\n{nudge}\n\n{audit}")
+        );
+        // 空白 opening 按缺席裁（与全仓省行先例同形）。
+        assert_eq!(super::compose_repair_user(Some("  "), None, audit), audit);
     }
 }

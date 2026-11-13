@@ -36,6 +36,7 @@ fn make_request() -> LlmRequest {
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     }
 }
 

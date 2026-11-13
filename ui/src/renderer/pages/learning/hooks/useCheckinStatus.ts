@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { learningApi } from '../api';
 import type { CheckinStatus } from '../types';
 
-/** 打卡状态轮询间隔：覆盖跨 02:00 复习日切换与页面常开场景 */
+/** XP 状态轮询间隔：覆盖跨 02:00 复习日切换与页面常开场景 */
 const CHECKIN_POLL_MS = 60_000;
 
 /**
- * 今日打卡状态：60 秒轮询 + visibilitychange 刷新，独立于课程/队列的
+ * 今日 XP 状态（j05 起打卡即 XP 口径，字段语义 = 今日净 XP / XP 目标）：
+ * 60 秒轮询 + visibilitychange 刷新，独立于课程/队列的
  * load()。任何一次拉取检测到 `completed` 从 false → true 的翻转（完成
  * 仪式）都会递增 `celebrateToken`，由面板消费触发高亮动画；复习会话关闭
  * 时调用 `refreshAfterSession` 立即同步一次，不等下一轮轮询。

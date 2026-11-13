@@ -173,6 +173,17 @@ fn nanos_to_ms(nanos: u64) -> u64 {
     nanos / 1_000_000
 }
 
+/// Test-only mutex around the process-global counters. `reset` zeroes every
+/// slot, so any parallel test whose assertion window spans a counter bump
+/// ("count must increase", "everything is zeroed") races the reset test;
+/// holders serialize those windows (s5). Pure `cfg(test)` surface — the
+/// production API stays lock-free by design.
+#[cfg(test)]
+pub(crate) fn test_exclusive_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +252,10 @@ mod tests {
 
     #[test]
     fn reset_zeroes_every_counter() {
+        // 进程级计数器是全局单例：与 horizon ledger 的「计数必须增加」探测
+        // 窗口互斥（并行下 reset 会把对方 before→assert 窗口内的读数清零；
+        // Windows 起 git 子进程慢、窗口宽，s5 票）。纯 cfg(test) 面。
+        let _exclusive = crate::profiler::test_exclusive_lock();
         record(HotPath::ObservationAccumulate, Duration::from_millis(5));
         assert!(counts(HotPath::ObservationAccumulate).0 >= 1);
 

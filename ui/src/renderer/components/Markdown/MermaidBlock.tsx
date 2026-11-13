@@ -5,8 +5,9 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Copy, PreviewOpen } from '@icon-park/react';
 import { usePreviewContextOptional } from '@/renderer/pages/conversation/Preview/context/PreviewContext';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { repairFigure } from './figureRepair';
 import ShikiCodeFence from './ShikiCodeFence';
 
 type MermaidBlockProps = {
@@ -58,14 +59,23 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
   const [isRendering, setIsRendering] = useState(false);
   const [viewMode, setViewMode] = useState<'preview' | 'source'>('source');
   const [debouncedCode, setDebouncedCode] = useState(code);
+  // Corrected source returned by the AI repair call; while set it replaces the
+  // original fence body for rendering, copy and the source view.
+  const [repairedSource, setRepairedSource] = useState<string | null>(null);
+  const [repairing, setRepairing] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
   const [currentTheme, setCurrentTheme] = useState<'light' | 'dark'>(() => {
     return (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'light';
   });
 
   useEffect(() => {
+    // Fresh fence content invalidates any earlier repair result.
+    setRepairedSource(null);
     const timer = setTimeout(() => setDebouncedCode(code), 300);
     return () => clearTimeout(timer);
   }, [code]);
+
+  const source = repairedSource ?? debouncedCode;
 
   useEffect(() => {
     const updateTheme = () => {
@@ -84,11 +94,12 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
 
   useEffect(() => {
     let cancelled = false;
-    const source = debouncedCode.trim();
+    const diagramSource = source.trim();
 
-    if (!source) {
+    if (!diagramSource) {
       setSvg(null);
       setIsRendering(false);
+      setRenderError(null);
       setViewMode('source');
       return () => {
         cancelled = true;
@@ -102,17 +113,19 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
       try {
         ensureMermaidInitialized(currentTheme);
 
-        const { svg: renderedSvg } = await mermaid.render(`${blockIdRef.current}-${Date.now()}`, source);
+        const { svg: renderedSvg } = await mermaid.render(`${blockIdRef.current}-${Date.now()}`, diagramSource);
 
         if (!cancelled) {
           setSvg(withResponsiveSvg(renderedSvg));
           setIsRendering(false);
+          setRenderError(null);
           setViewMode(preferredViewModeRef.current === 'source' ? 'source' : 'preview');
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
           setSvg(null);
           setIsRendering(false);
+          setRenderError(error instanceof Error ? error.message : String(error));
           setViewMode('source');
         }
       }
@@ -123,10 +136,31 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
     return () => {
       cancelled = true;
     };
-  }, [debouncedCode, currentTheme]);
+  }, [source, currentTheme]);
+
+  const handleRepair = useCallback(async () => {
+    if (repairing) return;
+    setRepairing(true);
+    try {
+      const response = await repairFigure({
+        language: 'mermaid',
+        code: source,
+        error: renderError ?? 'Mermaid failed to render this diagram',
+      });
+      setRepairedSource(response.code);
+      preferredViewModeRef.current = null;
+      setRenderError(null);
+      setViewMode('preview');
+    } catch (repairError) {
+      console.error('mermaid figure repair failed', repairError);
+      Message.error(t('preview.repairFailed'));
+    } finally {
+      setRepairing(false);
+    }
+  }, [repairing, source, renderError, t]);
 
   const shouldShowLoading = isRendering && preferredViewModeRef.current !== 'source';
-  const summary = code
+  const summary = source
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find(Boolean);
@@ -179,7 +213,7 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
                 aria-label={t('preview.openInPanelTooltip')}
                 title={t('preview.openInPanelTooltip')}
                 onClick={() => {
-                  previewContext?.openPreview(`\`\`\`mermaid\n${code}\n\`\`\``, 'markdown', {
+                  previewContext?.openPreview(`\`\`\`mermaid\n${source}\n\`\`\``, 'markdown', {
                     title: previewTitle,
                     editable: false,
                   });
@@ -195,7 +229,7 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
               aria-label={t('common.copy')}
               title={t('common.copy')}
               onClick={() => {
-                void copyText(code)
+                void copyText(source)
                   .then(() => {
                     Message.success(t('common.copySuccess'));
                   })
@@ -227,7 +261,23 @@ function MermaidBlock({ code, style, showOpenInPanelButton = true }: MermaidBloc
             <span>{t('preview.loading')}</span>
           </div>
         ) : (
-          <ShikiCodeFence content={code} language='mermaid' showLineNumbers={false} />
+          <div className='markdown-figure-source'>
+            {renderError && (
+              <div className='markdown-figure-error'>
+                <span className='markdown-figure-error-text'>{renderError}</span>
+                <button
+                  type='button'
+                  data-testid='mermaid-repair'
+                  className='markdown-figure-segment'
+                  disabled={repairing}
+                  onClick={() => void handleRepair()}
+                >
+                  {repairing ? t('preview.repairing') : t('preview.repairWithAI')}
+                </button>
+              </div>
+            )}
+            <ShikiCodeFence content={source} language='mermaid' showLineNumbers={false} />
+          </div>
         )}
       </div>
     </div>

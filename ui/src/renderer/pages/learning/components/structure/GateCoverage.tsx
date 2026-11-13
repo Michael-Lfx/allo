@@ -1,0 +1,220 @@
+import { Alert, Button, Modal, Tag, Tooltip, Typography } from '@arco-design/web-react';
+import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { BasisView, StructureView, TerrainView } from '../../types';
+
+const { Text } = Typography;
+
+/**
+ * 门口 Tag 的人面摘要（o4）：判据句过长时按 Unicode 码点截断加省略号（不劈
+ * 代理对）；完整判据同行直出，机器 id（G1…）退到 aria 与 Tooltip，不再上屏。
+ * 导出供渲染测试断言截断口径。
+ */
+export function criterionSummary(criterion: string, max = 20): string {
+  const chars = Array.from(criterion);
+  return chars.length <= max ? criterion : `${chars.slice(0, max).join('')}…`;
+}
+
+/**
+ * 过门自检读侧（m1，learnhub #165 契约 v2.14）+ 已会声明写侧（m2，ADR-0032
+ * 移植）：「门口 → 覆盖块」映射展示；勾选满足的门口 → 确认（三后果如实：
+ * 不生成学习节点、不安排学习、不计 XP）→ 按声明铸概念。数据全部来自读侧
+ * 投影（terrain.doors + blocks[].door_refs + GET basis 读数），前端不做第二
+ * 份真相。声明在产品面不可撤（c3：撤销入口已移除；后端 DELETE /basis 留作
+ * 纠错通道，铸出的概念留池）。课程内铁律照旧：不渲染概念节点、不跨课解析。
+ *
+ * 声明只进行一次（c1）：读侧已有锚行（`basis.declarations > 0`）即整卡冻结
+ * 为纯展示——全部门口渲染为 disabled checkbox，勾选态 = 是否已声明，持久化
+ * 结果以「勾选还在」呈现。草稿勾选是受控 props（由工作区持有，学习 Tab 与
+ * 结构图 Tab 两个挂载点共享），声明成功后由工作区清空。
+ */
+export function GateCoverage({
+  structure,
+  terrain,
+  basis,
+  checked = [],
+  onCheckedChange,
+  declaring = false,
+  onDeclare,
+}: {
+  structure: StructureView;
+  terrain: TerrainView;
+  basis: BasisView | null;
+  checked?: string[];
+  onCheckedChange?: (doors: string[]) => void;
+  declaring?: boolean;
+  onDeclare?: (doors: string[]) => void;
+}) {
+  const { t } = useTranslation();
+  const blocksByDoor = useMemo(() => {
+    const byDoor = new Map<string, string[]>();
+    for (const block of structure.blocks) {
+      for (const door of block.door_refs) {
+        const names = byDoor.get(door) ?? [];
+        names.push(block.name);
+        byDoor.set(door, names);
+      }
+    }
+    return byDoor;
+  }, [structure.blocks]);
+
+  const declaredDoors = useMemo(() => new Set(basis?.doors ?? []), [basis]);
+  const frozen = basis !== null && basis.declarations > 0;
+  const interactive = !frozen && onDeclare !== undefined && onCheckedChange !== undefined;
+  const pendingSelection = checked.filter((door) => !declaredDoors.has(door));
+
+  const confirmDeclare = () => {
+    if (pendingSelection.length === 0 || !onDeclare) return;
+    Modal.confirm({
+      title: t('learning.learningGraphBasisConfirmTitle'),
+      // o4：确认弹窗只报数量——门口 id 串不再内插上屏（id 在 aria/Tag Tooltip
+      // 可查，声明读数以计数为准）。
+      content: t('learning.learningGraphBasisConfirmContent', {
+        count: pendingSelection.length,
+      }),
+      okText: t('learning.learningGraphBasisConfirmOk'),
+      cancelText: t('learning.learningGraphBasisCancel'),
+      onOk: () => onDeclare(pendingSelection),
+    });
+  };
+
+  if (terrain.doors.length === 0) return null;
+
+  return (
+    <div className='flex flex-col gap-6px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-10px'>
+      <div className='flex flex-wrap items-center gap-8px'>
+        <Text bold className='text-13px'>
+          {t('learning.learningGraphGateTitle')}
+        </Text>
+        <Tag size='small' color='arcoblue' className='!mx-0'>
+          {t('learning.learningGraphGateCounts', { doors: terrain.doors.length })}
+        </Tag>
+        <span className='flex-1' />
+        <Text type='secondary' className='text-11px'>
+          {t('learning.learningGraphGateHint')}
+        </Text>
+      </div>
+      {/* 声明的动机（未声明时）/ 一次性冻结说明（已声明后）：用户需要先知道
+          声明换来什么、而且只能做一次，再决定勾不勾。 */}
+      {interactive && <Alert type='info' content={t('learning.learningGraphBasisWhyDeclare')} />}
+      {frozen && (
+        <Text type='secondary' className='text-12px leading-18px'>
+          {t('learning.learningGraphBasisFrozenHint')}
+        </Text>
+      )}
+      <div className='flex flex-col gap-4px'>
+        {terrain.doors.map((door) => {
+          const blocks = blocksByDoor.get(door.id) ?? [];
+          const declared = declaredDoors.has(door.id);
+          const doorAria = `${t('learning.learningGraphBasisDoorAria')}: ${door.id}`;
+          return (
+            <div
+              key={door.id}
+              className='flex flex-wrap items-center gap-6px text-11px'
+            >
+              {interactive ? (
+                <input
+                  type='checkbox'
+                  className='shrink-0 cursor-pointer'
+                  aria-label={doorAria}
+                  checked={checked.includes(door.id)}
+                  onChange={(event) =>
+                    onCheckedChange(
+                      event.target.checked
+                        ? [...checked, door.id]
+                        : checked.filter((candidate) => candidate !== door.id)
+                    )
+                  }
+                />
+              ) : frozen ? (
+                <input
+                  type='checkbox'
+                  className='shrink-0'
+                  aria-label={doorAria}
+                  checked={declared}
+                  disabled
+                  readOnly
+                />
+              ) : null}
+              {/* o4：门口机器 id 不再直出——Tag 出判据摘要句，完整判据同行
+                  可读，id 退到 aria（勾选框）与 Tooltip（悬停诊断可查）。 */}
+              <Tooltip content={door.id}>
+                <Tag
+                  size='small'
+                  color={door.kind === 'hard' ? 'orangered' : 'green'}
+                  className='!mx-0'
+                >
+                  {criterionSummary(door.criterion)}
+                </Tag>
+              </Tooltip>
+              <Tag size='small' className='!mx-0'>
+                {door.kind === 'hard'
+                  ? t('learning.learningGraphGateKindHard')
+                  : t('learning.learningGraphGateKindSelfCheck')}
+              </Tag>
+              {declared ? (
+                <Tag size='small' color='green' className='!mx-0'>
+                  {t('learning.learningGraphBasisDeclaredTag')}
+                </Tag>
+              ) : (
+                frozen && (
+                  <Tag size='small' color='gray' className='!mx-0'>
+                    {t('learning.learningGraphBasisNotDeclaredTag')}
+                  </Tag>
+                )
+              )}
+              <span className='text-[var(--color-text-2)]'>{door.criterion}</span>
+              <span className='flex-1' />
+              <Text type='secondary' className='text-11px leading-16px'>
+                {blocks.length > 0
+                  ? t('learning.learningGraphGateDoorCovers', {
+                      count: blocks.length,
+                      blocks: blocks.join(t('learning.listSeparator')),
+                    })
+                  : t('learning.learningGraphGateDoorCoversNone')}
+              </Text>
+            </div>
+          );
+        })}
+      </div>
+      {onDeclare && (
+        <div className='flex flex-wrap items-center gap-8px'>
+          {basis !== null && !basis.enabled && (
+            <Tag size='small' color='gray' className='!mx-0'>
+              {t('learning.learningGraphBasisOff')}
+            </Tag>
+          )}
+          {basis !== null && basis.unresolved_concept_ids.length > 0 && (
+            <Tag size='small' color='orange' className='!mx-0'>
+              {t('learning.learningGraphBasisUnresolved', {
+                count: basis.unresolved_concept_ids.length,
+              })}
+            </Tag>
+          )}
+          <span className='flex-1' />
+          {!frozen && (
+            <Button
+              type='primary'
+              // 读数缺席（basis 拉取失败）时无法确认是否已声明过——不放行，
+              // 免得绕过「只声明一次」。
+              disabled={pendingSelection.length === 0 || basis === null || !basis.enabled}
+              loading={declaring}
+              onClick={confirmDeclare}
+            >
+              {t('learning.learningGraphBasisDeclareButton', { count: pendingSelection.length })}
+            </Button>
+          )}
+        </div>
+      )}
+      {basis !== null && basis.doors.length > 0 && (
+        <Text type='secondary' className='text-11px leading-16px'>
+          {/* o4：只报数量——已声明门口的 id 串不再拼接上屏。 */}
+          {t('learning.learningGraphBasisDeclaredDoors', {
+            doorsCount: basis.doors.length,
+            count: basis.concepts.length,
+          })}
+        </Text>
+      )}
+    </div>
+  );
+}

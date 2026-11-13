@@ -1,4 +1,29 @@
 use super::*;
+use super::open_judge::OpenJudgeInput;
+
+/// 课时进度的四态形态规则（原迁移 048 的表级 CHECK，ADR-0015 移到写路径）：
+/// not_started 双空、in_progress 有起点无终点、completed 双全、skipped 无终点
+/// （保留既有 in_progress 起点历史）。
+fn validate_progress_shape(
+    status: LessonStatus,
+    started_at: Option<i64>,
+    completed_at: Option<i64>,
+) -> Result<(), AppError> {
+    let shaped = match status {
+        LessonStatus::NotStarted => started_at.is_none() && completed_at.is_none(),
+        LessonStatus::InProgress => started_at.is_some() && completed_at.is_none(),
+        LessonStatus::Completed => started_at.is_some() && completed_at.is_some(),
+        LessonStatus::Skipped => completed_at.is_none(),
+    };
+    if shaped {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "lesson progress shape is invalid for status '{}'",
+            status.as_str()
+        )))
+    }
+}
 
 impl LearningService {
 
@@ -57,6 +82,7 @@ impl LearningService {
             // completed_at 为 NULL）：保留已有的 in_progress 历史即可。
             LessonStatus::Skipped => (existing_started, None),
         };
+        validate_progress_shape(status, started_at, completed_at)?;
         sqlx::query(
             "INSERT INTO learning_lesson_progress \
              (enrollment_id, lesson_id, status, started_at, completed_at, updated_at) \
@@ -75,8 +101,9 @@ impl LearningService {
         .await
         .map_err(internal)?;
         if status == LessonStatus::Completed {
-            // Completing a lesson admits its concepts into the review queue:
-            // seed one item per concept due on the next review day (idempotent).
+            // Completing a lesson admits its objective questions into the
+            // review queue: seed one item per question due on the next review
+            // day (idempotent).
             let enrollment = parse_id::<LearningEnrollmentId>(enrollment_id.clone())?;
             let mut transaction = self.pool.begin().await.map_err(internal)?;
             let tz_offset_minutes = self.tz_offset_minutes().await;
@@ -89,6 +116,14 @@ impl LearningService {
             )
             .await?;
             transaction.commit().await.map_err(internal)?;
+            // 教新线 XP 结算（j05，幂等锚 = 节点一次性）：完成即按 est 计价
+            // 入 `learning_xp_events`，重复完成被锚吸收（不重复结算）。
+            self.settle_node_completed(user_id, lesson_id, now).await?;
+        }
+        // 生长钩子（best-effort，ADR-0009 Amendment 1）：完成与跳过同为
+        // satisfied，都会使就绪存量 −1——水位降到触发线以下就在后台补货。
+        if matches!(status, LessonStatus::Completed | LessonStatus::Skipped) {
+            self.maybe_kick_growth(user_id, lesson_id).await;
         }
         Ok(())
     }
@@ -102,7 +137,8 @@ impl LearningService {
         model: Option<String>,
     ) -> Result<AttemptResult, AppError> {
         let row = sqlx::query(
-            "SELECT a.kind, a.prompt, a.config_json, m.course_id \
+            "SELECT a.kind, a.prompt, a.config_json, m.course_id, \
+                    l.title AS lesson_title, l.summary AS lesson_summary \
              FROM learning_activities a \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
@@ -125,33 +161,60 @@ impl LearningService {
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
         let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
         // AI-graded answers (reflection 0-1, open_question 0-10) are graded
-        // by the LLM: the activity's linked concepts ground the grading
-        // prompt. AI grading is authoritative — the empty-answer rejection
-        // is enforced here by the rule-based evaluator, and any grading
-        // failure (unconfigured completer, call error, unparseable reply)
-        // surfaces as an error to the learner. The old silent fallback
-        // passed every non-empty answer with a score of 1.0, hiding grading
-        // failures behind a fake success.
-        let (score, feedback) = if kind.is_ai_graded() {
+        // by the LLM: the question itself plus its explanation (the
+        // grounding, n4 D1(a)) and its lesson's title/summary ground the
+        // grading prompt. AI grading is authoritative — the empty-answer
+        // rejection is enforced here by the rule-based evaluator, and any
+        // grading failure (unconfigured completer, call error, exhausted
+        // retry budget, unparseable reply) surfaces as an error to the
+        // learner. The old silent fallback passed every non-empty answer
+        // with a score of 1.0, hiding grading failures behind a fake
+        // success.
+        let (score, feedback, missing_points) = if kind.is_ai_graded() {
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
                 // Always rejected: the evaluator errors on empty responses.
-                evaluate(kind, &config, &response)?
+                evaluate(kind, &config, &response)
+                    .map(|(score, feedback)| (score, feedback, Vec::new()))?
             } else {
-                let linked_concepts =
-                    activity_concept_titles(&self.pool, activity_id).await?;
-                self.grade_open_answer(
-                    kind,
-                    &activity_prompt,
-                    answer,
-                    &linked_concepts,
-                    provider_id.as_ref(),
-                    model.as_deref(),
-                )
-                .await?
+                let lesson_title: String = row.try_get("lesson_title").map_err(internal)?;
+                let lesson_summary: String = row.try_get("lesson_summary").map_err(internal)?;
+                if crate::switches::open_judge_enabled() {
+                    // 新评审链（n5）：重试环 + 超时 + thinking json 通道 +
+                    // 判底/缺失要点契约（机制面开关臂 on，缺省）。
+                    let input = OpenJudgeInput {
+                        kind,
+                        prompt: &activity_prompt,
+                        answer,
+                        lesson_title: &lesson_title,
+                        lesson_summary: &lesson_summary,
+                        explanation: Some(&config.explanation),
+                    };
+                    self.judge_answer(input, provider_id.as_ref(), model.as_deref())
+                        .await?
+                } else {
+                    // 旧路径对照臂（`NOMI_LEARNING_OPEN_JUDGE=off`）：单次
+                    // 裸调、无重试无超时、`{score,feedback}` 两键解析、
+                    // missing_points 语义缺席（恒空）。
+                    let input = OpenJudgeInput {
+                        kind,
+                        prompt: &activity_prompt,
+                        answer,
+                        lesson_title: &lesson_title,
+                        lesson_summary: &lesson_summary,
+                        // 旧臂 (None, None) 保形：判底槽不装配，prompt 逐
+                        // 字节保持旧形。
+                        explanation: None,
+                    };
+                    let (score, feedback) = self
+                        .grade_open_answer(input, provider_id.as_ref(), model.as_deref())
+                        .await?;
+                    (score, feedback, Vec::new())
+                }
             }
         } else {
-            evaluate(kind, &config, &response)?
+            evaluate(kind, &config, &response)
+                .map(|(score, feedback)| (score, feedback, Vec::new()))?
         };
         let passed = score >= 0.6;
         let attempt_id = LearningAttemptId::new();
@@ -165,7 +228,15 @@ impl LearningService {
         .bind(attempt_id.as_str())
         .bind(enrollment_id.as_str())
         .bind(activity_id.as_str())
-        .bind(serde_json::to_string(&response).map_err(internal)?)
+        .bind(
+            crate::envelope::write_envelope(
+                crate::envelope::ATTEMPT_RESPONSE_SCHEMA_VERSION,
+                &crate::envelope::ResponseDoc {
+                    response: response.clone(),
+                },
+            )
+            .map_err(internal)?,
+        )
         .bind(score)
         .bind(passed)
         .bind(&feedback)
@@ -173,21 +244,6 @@ impl LearningService {
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
-
-        let concept_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT concept_id FROM learning_activity_concepts WHERE activity_id = ?",
-        )
-        .bind(activity_id.as_str())
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(internal)?;
-        // In-course attempts only feed mastery evidence. The memory curve
-        // (FSRS rescheduling, review/lapse counts) is driven exclusively by
-        // the review queue (`answer_review` / `rate_review`), and review
-        // items are seeded when the lesson is completed, not here.
-        for concept_id in concept_ids {
-            update_mastery(&mut transaction, &enrollment_id, &concept_id, score, now).await?;
-        }
         transaction.commit().await.map_err(internal)?;
 
         Ok(AttemptResult {
@@ -195,12 +251,21 @@ impl LearningService {
             score,
             passed,
             feedback,
+            // missing_points 走 API 层不落库（n4 D5/票面：零迁移）。
+            missing_points,
         })
     }
 
     /// LLM-grades an open answer (reflection 0-1, open_question 0-10) against
-    /// the exercise's concepts. The model sees the exercise prompt, the
-    /// learner's answer and the linked concepts; it must reply with strict
+    /// the question itself and its lesson's topic (title + summary) — the
+    /// LEGACY single-shot arm, kept verbatim as the mechanism-face
+    /// comparison arm (`NOMI_LEARNING_OPEN_JUDGE=off`); the default arm is
+    /// [`Self::judge_answer`] (retry ring + timeout + thinking json channel
+    /// + grounding/missing-points contract). Grading input arrives as an
+    /// [`OpenJudgeInput`] (Data Clumps 收口，评审裁定); the legacy
+    /// `(None, None)` prompt shape (no grounding slot, no retry-feedback
+    /// slot) is preserved verbatim. The model sees the exercise prompt, the
+    /// learner's answer and the lesson context; it must reply with strict
     /// JSON `{ "score": f64, "feedback": string }`. open_question scores are
     /// reported on a 0-10 scale and normalized to 0-1 here (≥6 passes).
     /// Every failure (no completer, call error, unparseable reply) returns
@@ -208,10 +273,7 @@ impl LearningService {
     /// so a broken grader must never masquerade as a passing answer.
     async fn grade_open_answer(
         &self,
-        kind: ActivityKind,
-        prompt: &str,
-        answer: &str,
-        linked_concepts: &[(String, String, String)],
+        input: OpenJudgeInput<'_>,
         provider_id: Option<&ProviderId>,
         model: Option<&str>,
     ) -> Result<(f64, String), AppError> {
@@ -223,12 +285,21 @@ impl LearningService {
             .ok_or_else(|| {
                 AppError::Conflict("AI answer grading is not configured".into())
             })?;
-        let system = if kind == ActivityKind::OpenQuestion {
+        let system = if input.kind == ActivityKind::OpenQuestion {
             OPEN_QUESTION_GRADING_SYSTEM
         } else {
             REFLECTION_GRADING_SYSTEM
         };
-        let user = build_open_grading_prompt(kind, prompt, answer, linked_concepts);
+        // (None, None) = 旧臂不装配判底槽与回灌槽，prompt 逐字节保持旧形。
+        let user = build_open_grading_prompt(
+            input.kind,
+            input.prompt,
+            input.answer,
+            input.lesson_title,
+            input.lesson_summary,
+            None,
+            None,
+        );
         let raw = completer
             .complete(
                 provider_id.zip(model).map(|(id, model)| (id.as_str(), model)),
@@ -239,8 +310,8 @@ impl LearningService {
             .await?;
         let (score, feedback) = parse_open_grading(&raw)?;
         // open_question arrives on a 0-10 scale; normalize to 0-1 so
-        // mastery/attempt storage stays on the shared scale (0.6 = pass).
-        let normalized = if kind == ActivityKind::OpenQuestion {
+        // attempt storage stays on the shared scale (0.6 = pass).
+        let normalized = if input.kind == ActivityKind::OpenQuestion {
             score / 10.0
         } else {
             score
@@ -250,14 +321,17 @@ impl LearningService {
 
 }
 
-/// System prompt for AI reflection grading: the model judges correctness and
-/// completeness against the exercise's concepts, reports coverage of the full
-/// course concept list, and replies with strict JSON.
+/// System prompt for AI reflection grading (LEGACY off-arm, kept verbatim
+/// for `NOMI_LEARNING_OPEN_JUDGE=off`; the on-arm system lives in
+/// service/open_judge.rs with the grounding semantics and the
+/// missing_points contract): the model judges correctness and completeness
+/// against the question itself and its lesson's topic, and replies with
+/// strict JSON.
 const REFLECTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's reflection answer for a course exercise.
 
 Score the answer from 0.0 to 1.0 (0.6 is passing):
-- Correctness: does the answer align with the concepts this exercise targets?
-- Completeness: does it cover the key points of those concepts?
+- Correctness: does the answer address what the question asks?
+- Completeness: does it cover the key points the question is about?
 
 Reply with ONLY one JSON object matching this shape:
 {
@@ -270,13 +344,15 @@ Rules:
 - Write the feedback in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 
-/// System prompt for AI open-question grading: a comprehensive-application
-/// question scored on a 0-10 scale (≥6 passes), graded on full-lesson
-/// coverage rather than a single concept.
+/// System prompt for AI open-question grading (LEGACY off-arm, kept
+/// verbatim for `NOMI_LEARNING_OPEN_JUDGE=off`; the on-arm system lives in
+/// service/open_judge.rs): a comprehensive-application question scored on a
+/// 0-10 scale (≥6 passes), graded on lesson-topic coverage rather than a
+/// single sub-point.
 const OPEN_QUESTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's open-ended answer to a comprehensive course question.
 
 Score the answer from 0.0 to 10.0 (6.0 is passing):
-- Correctness: are the claims aligned with the concepts this question targets?
+- Correctness: are the claims aligned with what the question asks, in the context of its lesson topic?
 - Completeness: does the answer assemble the key points into a working whole?
 - Application: does it show the learner can use the ideas, not just recite them?
 
@@ -287,31 +363,65 @@ Reply with ONLY one JSON object matching this shape:
 }
 Rules:
 - score must be a number between 0.0 and 10.0.
-- feedback must be Markdown with two parts: (1) 逐点批改 — point-by-point evaluation against the expected key points, (2) 改进建议 — concrete improvement suggestions.
+- feedback must be non-empty Markdown that helps the learner improve: what the answer conveys or misses against the expected key points, and how to close the gap.
 - Write the feedback in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 
+/// 存量题 explanation 为空的判底装配容错占位（n4 D1(a)：explanation 非空
+/// 必填是生成期契约，历史行可能为空——空判底显式声明「以课时上下文为准」，
+/// 评审不因判底缺席而哑火）。
+pub(super) const EMPTY_GROUNDING_TEXT: &str = "(无：以课时上下文为准)";
+
 /// Builds the user message for AI answer grading: the exercise prompt, the
-/// learner's answer and the concepts the exercise targets (its own lesson's
-/// concepts — open questions never bind concepts of other lessons).
-fn build_open_grading_prompt(
+/// learner's answer and the owning lesson's topic (title + summary) —
+/// grading is grounded in the question and the lesson, never in a concept
+/// list (ADR-0009: the per-course concept system is retired).
+///
+/// `explanation`（判底槽，n4 D1(a)）：`Some(text)` 装配题目自己的
+/// explanation（空串装配 [`EMPTY_GROUNDING_TEXT`] 容错占位）；`None` =
+/// 旧对照臂，不装配判底槽（prompt 逐字节保持旧形）。`retry_feedback`
+/// （回灌槽，n4 D2 重试环）：`Some(reason)` 携带上一轮被拒原因；
+/// `None` = 首轮/旧臂。
+pub(super) fn build_open_grading_prompt(
     kind: ActivityKind,
     prompt: &str,
     answer: &str,
-    linked_concepts: &[(String, String, String)],
+    lesson_title: &str,
+    lesson_summary: &str,
+    explanation: Option<&str>,
+    retry_feedback: Option<&str>,
 ) -> String {
-    let linked = linked_concepts
-        .iter()
-        .map(|(_, title, description)| format!("- {title}: {description}"))
-        .collect::<Vec<_>>()
-        .join("\n");
     let framing = if kind == ActivityKind::OpenQuestion {
         "Comprehensive question covering the whole lesson (score on the 0-10 scale):"
     } else {
         "Exercise prompt:"
     };
+    let lesson_context = if lesson_summary.trim().is_empty() {
+        format!("Lesson topic: {lesson_title}")
+    } else {
+        format!("Lesson topic: {lesson_title}\nLesson summary: {lesson_summary}")
+    };
+    let grounding_section = match explanation {
+        None => String::new(),
+        Some(text) => {
+            let grounding = if text.trim().is_empty() {
+                EMPTY_GROUNDING_TEXT
+            } else {
+                text
+            };
+            format!(
+                "\n\nGrounding (the question's own explanation — what a correct answer must convey):\n{grounding}"
+            )
+        }
+    };
+    let retry_section = match retry_feedback {
+        None => String::new(),
+        Some(reason) => format!(
+            "\n\nYour previous reply was rejected: {reason}\nFix the reported problem and reply again with ONLY the JSON object."
+        ),
+    };
     format!(
-        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\nConcepts this exercise targets:\n{linked}"
+        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\n{lesson_context}{grounding_section}{retry_section}"
     )
 }
 
@@ -330,26 +440,6 @@ fn parse_open_grading(raw: &str) -> Result<(f64, String), AppError> {
         AppError::Internal(format!("unparseable answer grading reply: {error}"))
     })?;
     Ok((reply.score, reply.feedback))
-}
-
-/// Concept rows (id, title, description) bound to an activity, used both for
-/// mastery evidence and to ground AI reflection grading. Reflections are
-/// generated within one lesson, so this is the concept scope the grading
-/// prompt carries.
-async fn activity_concept_titles(
-    pool: &SqlitePool,
-    activity_id: &LearningActivityId,
-) -> Result<Vec<(String, String, String)>, AppError> {
-    sqlx::query_as(
-        "SELECT c.concept_id, c.title, c.description \
-         FROM learning_activity_concepts ac \
-         JOIN learning_concepts c ON c.concept_id = ac.concept_id \
-         WHERE ac.activity_id = ?",
-    )
-    .bind(activity_id.as_str())
-    .fetch_all(pool)
-    .await
-    .map_err(internal)
 }
 
 pub(super) fn evaluate(
@@ -485,42 +575,17 @@ pub(super) fn evaluate(
     Ok((score, feedback))
 }
 
-/// Feeds a review outcome into the mastery of every concept the activity is
-/// bound to, mirroring in-course attempts.
-pub(super) async fn update_activity_mastery(
-    transaction: &mut Transaction<'_, Sqlite>,
-    enrollment_id: &LearningEnrollmentId,
-    activity_id: &LearningActivityId,
-    score: f64,
-    now: i64,
-) -> Result<(), AppError> {
-    let concept_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT concept_id FROM learning_activity_concepts WHERE activity_id = ?",
-    )
-    .bind(activity_id.as_str())
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(internal)?;
-    for concept_id in concept_ids {
-        update_mastery(transaction, enrollment_id, &concept_id, score, now).await?;
-    }
-    Ok(())
-}
-
 /// Rates a review item `again` on a wrong/forgotten answer: reschedules the
-/// item and feeds the score into its activity's concepts. Items only exist
-/// after their lesson was completed, so the row is guaranteed to be present.
+/// item (FSRS only — per-course mastery states are retired, ADR-0009). Items
+/// only exist after their lesson was completed, so the row is guaranteed to
+/// be present.
 pub(super) async fn update_mastery_and_review(
     transaction: &mut Transaction<'_, Sqlite>,
     review_id: &LearningReviewItemId,
-    enrollment_id: &LearningEnrollmentId,
-    activity_id: &LearningActivityId,
-    score: f64,
     rating: ReviewRating,
     now: i64,
     settings: &SchedulerSettings,
 ) -> Result<(), AppError> {
-    update_activity_mastery(transaction, enrollment_id, activity_id, score, now).await?;
     let current = sqlx::query(
         "SELECT stability_days, difficulty, review_count, lapse_count, last_reviewed_at \
          FROM learning_review_items WHERE review_item_id = ?",
@@ -558,48 +623,6 @@ pub(super) async fn update_mastery_and_review(
     Ok(())
 }
 
-async fn update_mastery(
-    transaction: &mut Transaction<'_, Sqlite>,
-    enrollment_id: &LearningEnrollmentId,
-    concept_id: &str,
-    score: f64,
-    now: i64,
-) -> Result<(), AppError> {
-    let current: Option<(f64, i64)> = sqlx::query_as(
-        "SELECT mastery, evidence_count FROM learning_mastery_states \
-         WHERE enrollment_id = ? AND concept_id = ?",
-    )
-    .bind(enrollment_id.as_str())
-    .bind(concept_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(internal)?;
-    let (mastery, evidence_count) = current.unwrap_or((score, 0));
-    let next_mastery = if evidence_count == 0 {
-        score
-    } else {
-        mastery * 0.7 + score * 0.3
-    };
-    sqlx::query(
-        "INSERT INTO learning_mastery_states \
-         (enrollment_id, concept_id, mastery, evidence_count, last_practiced_at, updated_at) \
-         VALUES (?, ?, ?, 1, ?, ?) \
-         ON CONFLICT(enrollment_id, concept_id) DO UPDATE SET \
-           mastery = excluded.mastery, \
-           evidence_count = learning_mastery_states.evidence_count + 1, \
-           last_practiced_at = excluded.last_practiced_at, updated_at = excluded.updated_at",
-    )
-    .bind(enrollment_id.as_str())
-    .bind(concept_id)
-    .bind(next_mastery.clamp(0.0, 1.0))
-    .bind(now)
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(internal)?;
-    Ok(())
-}
-
 /// Creates one review item per objective question of a lesson when the learner
 /// completes it, due on the next review day. Each question carries its own
 /// memory curve. Existing items keep their schedule untouched.
@@ -610,12 +633,11 @@ async fn seed_lesson_review_items(
     now: i64,
     tz_offset_minutes: i32,
 ) -> Result<(), AppError> {
-    let activity_ids: Vec<String> = sqlx::query_scalar(
+    let activity_ids: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT activity_id FROM learning_activities \
-         WHERE lesson_id = ? AND kind IN ('single_choice', 'true_false', 'fill_in_blank', \
-           'multi_choice', 'numeric', 'ordering', 'matching') \
-         ORDER BY position, activity_id",
-    )
+         WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST}) \
+         ORDER BY position, activity_id"
+    ))
     .bind(lesson_id.as_str())
     .fetch_all(&mut **transaction)
     .await
@@ -629,7 +651,9 @@ async fn seed_lesson_review_items(
 /// Creates the initial review item for one objective question, due at the
 /// start of the next review day (02:00 local). Existing items keep their
 /// schedule untouched: in-course attempts never reschedule, only the review
-/// queue does.
+/// queue does. 种卡幂等显式化（三轮 t3）：已存在 = 跳过（幂等）；插入冲突
+/// （并发种卡的 UNIQUE(enrollment_id, activity_id) 违约）= fail loud 而非
+/// 静默吞掉——种卡是一次性事实，静默重置会污染调度。
 pub(super) async fn ensure_review_item(
     transaction: &mut Transaction<'_, Sqlite>,
     enrollment_id: &LearningEnrollmentId,
@@ -650,7 +674,7 @@ pub(super) async fn ensure_review_item(
         return Ok(());
     }
     let review_item_id = LearningReviewItemId::new().into_string();
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO learning_review_items \
          (review_item_id, enrollment_id, activity_id, due_at, stability_days, difficulty, \
           review_count, lapse_count, last_reviewed_at, updated_at) \
@@ -662,8 +686,19 @@ pub(super) async fn ensure_review_item(
     .bind(first_review_due_at(now, tz_offset_minutes))
     .bind(now)
     .execute(&mut **transaction)
-    .await
-    .map_err(internal)?;
+    .await;
+    if let Err(error) = inserted {
+        // 并发种卡撞 UNIQUE：显式冲突错误（fail loud），不伪装成功也不重置。
+        if error
+            .as_database_error()
+            .is_some_and(|db| db.message().contains("UNIQUE"))
+        {
+            return Err(AppError::Conflict(format!(
+                "review item for activity {activity_id} already exists (concurrent seeding)"
+            )));
+        }
+        return Err(internal(error));
+    }
     // Synthetic marker row: the card exists from this moment, but seeding
     // is not an answer — it never counts as a push, and memory statistics
     // and optimizer training exclude it (review log rating_source rules).
@@ -677,8 +712,8 @@ pub(super) async fn ensure_review_item(
     sqlx::query(
         "INSERT INTO learning_review_log \
          (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
-          stability_before, difficulty_before, r_pred, review_day, created_at) \
-         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?)",
+          stability_before, difficulty_before, r_pred, review_day, created_at, algo) \
+         VALUES (?, ?, 'course', ?, 0, 'synthetic', 0, NULL, NULL, NULL, ?, ?, NULL)",
     )
     .bind(generate_id())
     .bind(&user_id)
@@ -689,4 +724,25 @@ pub(super) async fn ensure_review_item(
     .await
     .map_err(internal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_progress_shape;
+    use crate::models::LessonStatus;
+
+    /// 四态形态规则（原 048 表级 CHECK）逐条钉住：合法四态 + 非法四样。
+    #[test]
+    fn progress_shape_rules_cover_four_lesson_states() {
+        assert!(validate_progress_shape(LessonStatus::NotStarted, None, None).is_ok());
+        assert!(validate_progress_shape(LessonStatus::InProgress, Some(1), None).is_ok());
+        assert!(validate_progress_shape(LessonStatus::Completed, Some(1), Some(2)).is_ok());
+        assert!(validate_progress_shape(LessonStatus::Skipped, None, None).is_ok());
+        assert!(validate_progress_shape(LessonStatus::Skipped, Some(1), None).is_ok());
+
+        assert!(validate_progress_shape(LessonStatus::NotStarted, Some(1), None).is_err());
+        assert!(validate_progress_shape(LessonStatus::InProgress, None, None).is_err());
+        assert!(validate_progress_shape(LessonStatus::Completed, Some(1), None).is_err());
+        assert!(validate_progress_shape(LessonStatus::Skipped, Some(1), Some(2)).is_err());
+    }
 }
