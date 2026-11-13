@@ -1,6 +1,7 @@
 //! t3 R2（ADR-0017 §4）：删除收尾存量背填——墓碑课（`deleted_at IS NOT
 //! NULL`）上的 active 幽灵回合废弃（supersede 同款形态），activity 行已删
-//! 的死卡打 `archived_at`。断言面：收尾只碰存量残影、在学课（活课程）的
+//! 的死卡打 `archived_at`，旧墓碑背填墓碑统一形态（`enabled = 0`，运行时
+//! t3 R1③ 同款）。断言面：收尾只碰存量残影、在学课（活课程）的
 //! active 回合与在学卡原样；回望账本面（completed 回合历史）原样保留；
 //! 背填幂等（重放零副作用）。
 
@@ -125,7 +126,37 @@ async fn tombstone_ghost_rounds_are_abandoned_and_dead_cards_archived() {
     migrate_range(&pool, 0, 70).await;
     seed_v70(&pool).await;
 
+    // 存量形状（③ 的背填对象）：旧墓碑 enabled 缺省仍为 1——正是运行时
+    // t3 R1③ 之前、071 之后的残影；在学课 enabled = 1。
+    let tomb_enabled_before: i64 = sqlx::query_scalar(&format!(
+        "SELECT enabled FROM learning_courses WHERE course_id = '{TOMB}'"
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        tomb_enabled_before, 1,
+        "pre-071 tombstone ships enabled = 1: the residual this migration backfills"
+    );
+
     migrate_range(&pool, 70, i64::MAX).await;
+
+    // ③ 墓碑统一形态：旧墓碑 enabled 背填为 0；在学课 enabled 原样 1
+    //    （收尾按课程键定不越界）。
+    let tomb_enabled: i64 = sqlx::query_scalar(&format!(
+        "SELECT enabled FROM learning_courses WHERE course_id = '{TOMB}'"
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let kept_enabled: i64 = sqlx::query_scalar(&format!(
+        "SELECT enabled FROM learning_courses WHERE course_id = '{KEPT}'"
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(tomb_enabled, 0, "backfilled tombstone must carry enabled = 0 (unified tombstone shape)");
+    assert_eq!(kept_enabled, 1, "the kept course's enabled must stay 1");
 
     // ① 墓碑课的 active 幽灵回合 → abandoned（supersede 形态：finished_at
     //    在，answers/report/earned 保持空）。
@@ -201,14 +232,15 @@ async fn tombstone_ghost_rounds_are_abandoned_and_dead_cards_archived() {
         assert!(archived_at.is_none(), "{label}");
     }
 
-    // 账本面零接触：注册与进度无人被删（迁移只有两条 UPDATE，无 DELETE）。
+    // 账本面零接触：注册与进度无人被删（迁移只有三条 UPDATE，无 DELETE）。
     let enrollments: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM learning_enrollments").fetch_one(&pool).await.unwrap();
     assert_eq!(enrollments, 2, "backfill must not touch the enrollment ledger");
 }
 
 /// 背填幂等（t3 R4）：重放 071 全文零副作用——abandoned 非 active 不再
-/// 命中、archived_at IS NULL 过滤不重打标；首背填的时间戳原样保留。
+/// 命中、archived_at IS NULL 过滤不重打标、enabled = 0 对已清零墓碑零
+/// 副作用；首背填的时间戳原样保留。
 #[tokio::test]
 async fn backfill_is_idempotent_on_replay() {
     let pool = pool().await;
@@ -233,7 +265,13 @@ async fn backfill_is_idempotent_on_replay() {
             .fetch_one(&pool)
             .await
             .unwrap();
-            (round, dead)
+            let tomb_enabled: i64 = sqlx::query_scalar(&format!(
+                "SELECT enabled FROM learning_courses WHERE course_id = '{TOMB}'"
+            ))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            (round, dead, tomb_enabled)
         }
     };
     let before = snapshot(&pool).await;

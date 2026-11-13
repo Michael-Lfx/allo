@@ -2,12 +2,14 @@
 -- 事务内收尾（active 回合废弃、死卡打 archived_at、墓碑 enabled = 0），
 -- 本迁移对存量一次性执法——070 以来任何「已删过课」的用户库都留有同构残
 -- 影：墓碑课（deleted_at IS NOT NULL）上的 active 幽灵回合（消费面惰性无
--- 害但无界累积），与 activity 行已删、永不复服务的死卡（与归档卡、在学
--- 卡在行上不可区分）。账本面不动：xp_events / quiz_rounds 历史（completed
+-- 害但无界累积），activity 行已删、永不复服务的死卡（与归档卡、在学卡在
+-- 行上不可区分），以及 enabled 仍为 1 的旧墓碑（墓碑统一形态未及——双状
+-- 态位冗余未收敛，半抄过滤只看 enabled 的查询面会把旧墓碑当在学供给）。
+-- 账本面不动：xp_events / quiz_rounds 历史（completed
 -- 与既有 abandoned）/ review_log / review_events / enrollments / progress
 -- 原样保留——回望历史面「账本永远保留」是设计语义（ADR-0017 §2）。
--- 两条 UPDATE 天然幂等：abandoned 非 active 不再命中、archived_at IS
--- NULL 过滤不重打标，重放零副作用。
+-- 三条 UPDATE 天然幂等：abandoned 非 active 不再命中、archived_at IS
+-- NULL 过滤不重打标、enabled = 0 对已清零墓碑零副作用，重放零副作用。
 -- v3 contract: 无物理外键、无触发器。
 
 -- ① 墓碑课的 active 回合废弃：supersede 同款形态（abandoned + finished_at，
@@ -33,3 +35,9 @@ WHERE archived_at IS NULL
     SELECT 1 FROM learning_activities a
     WHERE a.activity_id = learning_review_items.activity_id
   );
+
+-- ③ 墓碑统一形态背填（运行时 t3 R1③ 同款：enabled 随 deleted_at 一并
+--    清零，ADR-0017 §3）——旧墓碑 enabled 缺省 1，双状态位冗余在此收敛。
+UPDATE learning_courses
+SET enabled = 0
+WHERE deleted_at IS NOT NULL;

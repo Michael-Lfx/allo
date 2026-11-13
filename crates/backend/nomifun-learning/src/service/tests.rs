@@ -2853,8 +2853,11 @@ teaching_style: crate::models::TeachingStyle::Standard,
     /// 卡（死卡）在 purge 之前打 archived_at；③ 墓碑统一形态：enabled 随
     /// deleted_at 一并清零。收尾按课程键定不越界：另一门在学课的 active
     /// 回合与在学卡原样；前瞻读数（due_reviews 队列）随 t1 口径只退场死卡、
-    /// 在学课的卡照常出队；回望面（completed 回合历史）原样保留（账本永远
-    /// 保留）。
+    /// 在学课的卡照常出队；回望面（completed 回合历史 + review_log 推进
+    /// 行）原样保留（账本永远保留）。概念推进读数（fold_behavior_digest）
+    /// 结构性不受收尾影响：它读的是 review_log + registry（learning_attempts /
+    /// review_log 按课程安排 join），不吃 archived_at / enabled——收尾三动作
+    /// 都不在其读面上，断言删课前后输入行数不变。
     #[tokio::test]
     async fn delete_course_finalizes_active_round_and_dead_cards() {
         let (service, user_id) = checkin_test_service().await;
@@ -2877,15 +2880,18 @@ teaching_style: crate::models::TeachingStyle::Standard,
             }
         };
         // 两门课各一组回合成像：正测一半（active）+ 一段已结算历史
-        // （completed，账本面——删除收尾不得改写）。
+        // （completed，账本面——删除收尾不得改写）+ 一条真实复习推进
+        // （review_log auto 行，概念推进 digest 的输入，账本面）。
+        let mut card_of: Vec<(String, String)> = Vec::new();
         for (course_id, activities) in [(&deleted_id, &deleted_activities), (&kept_id, &kept_activities)] {
             let enrollment_id = enrollment_of(course_id).await;
+            let card_id = LearningReviewItemId::new().into_string();
             sqlx::query(
                 "INSERT INTO learning_review_items \
                  (review_item_id, enrollment_id, activity_id, due_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?)",
             )
-            .bind(LearningReviewItemId::new().into_string())
+            .bind(&card_id)
             .bind(&enrollment_id)
             .bind(&activities[0])
             .bind(now)
@@ -2893,6 +2899,23 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .execute(pool)
             .await
             .unwrap();
+            // 复习推进账本行（fold_behavior_digest 的输入面）：每张卡一条
+            // auto 真实推进。
+            sqlx::query(
+                "INSERT INTO learning_review_log \
+                 (log_id, user_id, source, item_id, rating, rating_source, elapsed_days, \
+                  review_day, created_at) \
+                 VALUES (?, ?, 'course', ?, 3, 'auto', 0, ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(&card_id)
+            .bind(review_day_number(now, 0))
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+            card_of.push((course_id.as_str().to_string(), card_id));
             sqlx::query(
                 "INSERT INTO learning_quiz_rounds \
                  (round_id, user_id, course_id, started_at, status, doc_version, plan_json) \
@@ -3010,6 +3033,25 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .await
         .unwrap();
         assert_eq!(kept_enabled, 1);
+
+        // ④ 回望账本面 + 概念推进回归（t3 R4）：review_log 一行不动——含
+        //    死卡行（账本永远保留，ADR-0017 §2）；fold_behavior_digest 的
+        //    输入行数删课前后不变（digest 读 review_log + registry，不吃
+        //    archived_at / enabled，收尾三动作都不在其读面上）。
+        for (course_id, card_id) in &card_of {
+            let push_rows: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_review_log WHERE item_id = ?",
+            )
+            .bind(card_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                push_rows, 1,
+                "review log is ledger face — delete must not touch it (digest inputs unchanged); \
+                 course {course_id}, card {card_id}"
+            );
+        }
 
         // 前瞻读数回归：队列只退场死卡，在学课的卡照常出队（口径不变）。
         let after = queue().await;

@@ -168,11 +168,11 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/quiz/calibration",
             get(quiz_calibration),
         )
-    .route(
-        "/api/learning/quiz/overview",
-        get(quiz_overview),
-    )
-    .route("/api/learning/stats/memory", get(memory_stats))
+        .route(
+            "/api/learning/quiz/overview",
+            get(quiz_overview),
+        )
+        .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
         .route("/api/learning/reviews/{id}/rate", post(rate_review))

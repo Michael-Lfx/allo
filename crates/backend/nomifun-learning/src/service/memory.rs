@@ -170,6 +170,7 @@ impl LearningService {
             .collect();
 
         // Panels 3 + 4 — from the review log with the honesty filters.
+        // 回望面：保留墓碑课贡献，不过滤（ADR-0017）。
         let window_start = review_day_number(now - LOG_WINDOW_DAYS * DAY_MS, tz_offset_minutes);
         let rows: Vec<(String, String, i64, i64, i64, f64)> = sqlx::query_as(
             "SELECT source, item_id, review_day, rating, elapsed_days, r_pred \

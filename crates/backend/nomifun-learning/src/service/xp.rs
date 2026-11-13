@@ -250,6 +250,7 @@ impl LearningService {
         let tz_offset_minutes = self.tz_offset_minutes().await;
         let review_day = review_day_number(now, tz_offset_minutes);
         let day_start = review_day_start_utc(now, tz_offset_minutes);
+        // 回望面：保留墓碑课贡献，不过滤（ADR-0017）。
         let today_xp: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
              WHERE user_id = ? AND ts >= ?",
