@@ -228,6 +228,7 @@ impl FlowyApp {
                 phase: LoginPhase::Idle,
                 message: None,
                 pending_req_no: None,
+                attempted_code: String::new(),
                 cooldown_left: 0,
                 generation: 0,
                 task: None,
@@ -325,6 +326,7 @@ impl FlowyApp {
         let generation = self.auth.generation;
         self.auth.phase = LoginPhase::Sending;
         self.auth.message = None;
+        self.auth.attempted_code.clear();
         self.auth
             .code
             .update(cx, |state, cx| state.emplace("", cx));
@@ -392,6 +394,7 @@ impl FlowyApp {
             cx.notify();
             return;
         }
+        self.auth.attempted_code = code.clone();
         self.auth.generation = self.auth.generation.saturating_add(1);
         let generation = self.auth.generation;
         self.auth.phase = LoginPhase::Verifying;
@@ -429,6 +432,7 @@ impl FlowyApp {
                                 cx.notify();
                                 return;
                             }
+                            app.auth.attempted_code.clear();
                             app.auth
                                 .code
                                 .update(cx, |state, cx| state.emplace("", cx));
@@ -447,12 +451,19 @@ impl FlowyApp {
                         }
                         Err(AuthError::InvalidCode) => {
                             app.auth.phase = LoginPhase::Idle;
+                            app.auth.attempted_code.clear();
+                            app.auth
+                                .code
+                                .update(cx, |state, cx| state.emplace("", cx));
                             app.auth.message = Some(AuthError::InvalidCode.key());
                         }
                         Err(AuthError::SessionExpired) => {
                             app.auth.phase = LoginPhase::Idle;
-                            app.auth.step = LoginStep::Email;
                             app.auth.pending_req_no = None;
+                            app.auth.attempted_code.clear();
+                            app.auth
+                                .code
+                                .update(cx, |state, cx| state.emplace("", cx));
                             app.auth.cooldown_left = 0;
                             app.auth.message =
                                 Some(AuthError::SessionExpired.key());
@@ -483,6 +494,7 @@ impl FlowyApp {
         }
         cx.notify();
         if normalized.len() == EMAIL_OTP_LENGTH
+            && normalized != self.auth.attempted_code
             && self.auth.phase == LoginPhase::Idle
         {
             self.verify_login_code(cx);
@@ -495,6 +507,7 @@ impl FlowyApp {
         self.auth.phase = LoginPhase::Idle;
         self.auth.message = None;
         self.auth.pending_req_no = None;
+        self.auth.attempted_code.clear();
         self.auth.cooldown_left = 0;
         self.auth.task = None;
         self.auth.cooldown_task = None;
@@ -598,6 +611,7 @@ impl FlowyApp {
         self.auth.phase = LoginPhase::Idle;
         self.auth.message = None;
         self.auth.pending_req_no = None;
+        self.auth.attempted_code.clear();
         self.auth.cooldown_left = 0;
         self.auth.task = None;
         self.auth.cooldown_task = None;

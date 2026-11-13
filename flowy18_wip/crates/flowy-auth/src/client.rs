@@ -357,11 +357,8 @@ fn map_verify_error(error: AuthError) -> AuthError {
 fn is_session_expired_message(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     normalized.contains("expired")
-        || normalized.contains("too many")
-        || normalized.contains("attempt")
         || normalized.contains("session expired")
         || message.contains("过期")
-        || message.contains("次数")
         || message.contains("会话失效")
 }
 
@@ -398,6 +395,19 @@ mod tests {
         assert!(is_invalid_otp("验证码无效", Some(422)));
         assert!(is_invalid_otp("wrong verification code", Some(500)));
         assert!(!is_invalid_otp("verification code expired", Some(422)));
-        assert!(is_session_expired_message("too many attempts"));
+    }
+
+    #[test]
+    fn attempt_limits_do_not_expire_the_otp_session() {
+        assert!(!is_session_expired_message("too many attempts"));
+        assert!(!is_session_expired_message("验证码错误次数过多"));
+        assert!(is_invalid_otp("验证码错误次数过多", Some(400)));
+    }
+
+    #[test]
+    fn only_genuine_expiry_ends_the_otp_session() {
+        assert!(is_session_expired_message("verification code expired"));
+        assert!(is_session_expired_message("验证码已过期"));
+        assert!(is_session_expired_message("会话失效，请重新登录"));
     }
 }
