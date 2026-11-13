@@ -120,6 +120,41 @@ fn validate_round_shape(
     }
 }
 
+/// 废弃进行中回合的写路径单源（ADR-0017 §4 收尾动作）：abandoned 形态校验
+/// （[`validate_round_shape`]，supersede 同款）+ UPDATE 带 `finished_at`。
+/// `scoped_user` 为 Some 时按（用户, 课程）键定——quiz_start 的 supersede
+/// 流（同用户同课程至多一个 active 的并发地板）；None 时只按课程键定——
+/// 课程删除收尾（[`LearningService::delete_course`]，墓碑课的 active 回合
+/// 全用户一并废弃）。执行器可接连接池或打开中的事务（删除收尾须在事务内）。
+pub(super) async fn abandon_active_rounds<'e, E>(
+    executor: E,
+    scoped_user: Option<&UserId>,
+    course_id: &str,
+    now: i64,
+) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    validate_round_shape("abandoned", Some(now), None, None, None)?;
+    let sql = if scoped_user.is_some() {
+        "UPDATE learning_quiz_rounds SET status = 'abandoned', finished_at = ? \
+         WHERE user_id = ? AND course_id = ? AND status = 'active'"
+    } else {
+        "UPDATE learning_quiz_rounds SET status = 'abandoned', finished_at = ? \
+         WHERE course_id = ? AND status = 'active'"
+    };
+    let mut query = sqlx::query(sql).bind(now);
+    if let Some(user_id) = scoped_user {
+        query = query.bind(user_id.as_str());
+    }
+    query
+        .bind(course_id)
+        .execute(executor)
+        .await
+        .map_err(internal)?;
+    Ok(())
+}
+
 /// 选题快照行（plan_json 元素；kind 是审计面快照，判分与定价都以题源现行
 /// 为准——单源）。`origin`/`variant` 为 q3 增量，serde default 容 q2 时代
 /// 旧档（缺省 = bank 题库旧题）。
@@ -408,17 +443,8 @@ impl LearningService {
 
         // supersede：既有 active 回合标 abandoned（重开 = 新回合；被取代
         // 回合的作答/结算零痕迹是合法态——learnhub「重启即弃」同义）。
-        validate_round_shape("abandoned", Some(now), None, None, None)?;
-        sqlx::query(
-            "UPDATE learning_quiz_rounds SET status = 'abandoned', finished_at = ? \
-             WHERE user_id = ? AND course_id = ? AND status = 'active'",
-        )
-        .bind(now)
-        .bind(user_id.as_str())
-        .bind(course_id.as_str())
-        .execute(&self.pool)
-        .await
-        .map_err(internal)?;
+        // 废弃写路径单源在 [`abandon_active_rounds`]（t3：删除收尾同用）。
+        abandon_active_rounds(&self.pool, Some(user_id), course_id.as_str(), now).await?;
         let round_id = generate_id();
         let plan_json = serde_json::to_string(&ordered_plan)
             .map_err(|error| AppError::Internal(format!("quiz plan: {error}")))?;

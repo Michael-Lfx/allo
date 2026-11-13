@@ -667,6 +667,13 @@ impl LearningService {
     /// stop listing the course via the existing-and-enabled filter, the
     /// history surfaces keep the record. There is no option to wipe reviews
     /// anymore; pausing without deletion is what archiving is for.
+    ///
+    /// 删除事务内的收尾动作（t3 R1，ADR-0017 §4）：该课 active 检测回合
+    /// 废弃（supersede 同款形态，写路径单源在
+    /// `quiz::abandon_active_rounds`）；将被 purge 的 activities 名下的
+    /// 复习卡（死卡）在 purge 之前打 `archived_at`（列现成、全读面已过滤
+    /// `archived_at IS NULL`，纯数据自描述）；墓碑统一形态——`enabled` 随
+    /// `deleted_at` 一并清零。存量由迁移 071 一次性背填。
     pub async fn delete_course(
         &self,
         course_id: &LearningCourseId,
@@ -682,18 +689,46 @@ impl LearningService {
         if exists.is_none() {
             return Err(AppError::NotFound(format!("course {course_id}")));
         }
+        let now = now_ms();
+        // 死卡打标（t3 R1②，ADR-0017）：该课 activities 即将被 purge，其
+        // 复习卡按「账本永远保留」留存，但永不复服务——purge 之前打
+        // archived_at（同一子查询定位 activities，排后则恒空），让「死卡」
+        // 成为可查询状态而非推断；读面已过滤 archived_at IS NULL，前瞻
+        // 口径零行为变化。
+        sqlx::query(
+            "UPDATE learning_review_items SET archived_at = ?, updated_at = ? \
+             WHERE archived_at IS NULL AND activity_id IN (\
+                 SELECT a.activity_id FROM learning_activities a \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 WHERE m.course_id = ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(course_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        // active 回合废弃（t3 R1①，ADR-0017）：正测到一半的课不留幽灵
+        // 回合；supersede 同款形态，写路径单源在 quiz::abandon_active_rounds。
+        super::quiz::abandon_active_rounds(&mut *transaction, None, course_id.as_str(), now)
+            .await?;
         // 课程内容八表单源 purge（t2 R1，与 delete_courses_by_title 同一张
         // 清单）——复习保留的只是题目数据，不靠课时行续命。孤儿课时曾把
         // 新课的入口层向上顶（全局已教账把幽灵供给当真），这条语义从根上
         // 掐掉污染源。
         purge_course_content(&mut transaction, course_id.as_str()).await?;
         // 软删除：课程行留作墓碑（名称即标识、deleted_at 即删除状态位），
-        // 遗留数据凭 course_id 归账，后续清理时有据可查。
+        // 遗留数据凭 course_id 归账，后续清理时有据可查。墓碑统一形态
+        // （t3 R1③，ADR-0017 §3）：enabled 随 deleted_at 一并清零——双状态
+        // 位冗余收敛，半抄过滤（只看 enabled）的查询面从此安全；无恢复
+        // 路径，零行为风险。
         sqlx::query(
-            "UPDATE learning_courses SET deleted_at = ?, updated_at = ? WHERE course_id = ?",
+            "UPDATE learning_courses SET deleted_at = ?, updated_at = ?, enabled = 0 \
+             WHERE course_id = ?",
         )
-        .bind(now_ms())
-        .bind(now_ms())
+        .bind(now)
+        .bind(now)
         .bind(course_id.as_str())
         .execute(&mut *transaction)
         .await
