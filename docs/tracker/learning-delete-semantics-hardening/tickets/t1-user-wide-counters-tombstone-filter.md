@@ -36,24 +36,25 @@
 - **R2（修活面）**：memory.rs:94（Panel1 负荷预报/overdue）与
   memory.rs:133（Panel2 状态分布）接入 R1 片段——这是仅有的两个**活消费**
   泄漏面（MemoryHealthPanel 渲染负荷预报 day.due_count 与状态分布）。
-- **R5（裁决点，2026-11-13 消费面复核新增）**：checkin.rs 两处泄漏
-  经消费面复核均为**死读数**，随死链一并裁决：
+- **R5（死链清理，2026-11-13 用户裁决：删）**：checkin.rs 两处泄漏
+  经消费面复核均为**死读数**，随死链一并删除：
   - `calendar_stats`（checkin.rs:176-250，含 216 读 events、309 分桶）
-    → 路由 `/api/learning/stats/calendar` → api.ts `getCalendarStats`
-    → **前端零调用**（全 renderer grep 无消费方）。j05 已拍板打卡按
-    XP 口径（`xp/calendar` → XpPanel），本链是口径迁移遗留体。
-  - `checkin_today` 的 `due_count` 字段（checkin.rs:102）→ useCheckinStatus
-    → XpPanel 只渲染 XP gauge（reviewed_count/goal/completed/locked_at），
-    due_count 字段**零渲染**。
-  - **推荐裁决**：删死链——calendar_stats 函数+路由、getCalendarStats
-    包装、CalendarStats/CalendarDayStats 类型、CheckinStatus.due_count
-    字段；checkin.rs:309 随函数删除、102 随字段删除（泄漏自然消失）。
-    备选：日历热力视图仍在规划中则保留整链并按 R1 补过滤。
-    **施工前用户拍板。**
+    → 删函数 + 路由 `/api/learning/stats/calendar`（routes.rs:175）+
+    `CalendarStatsQuery`（routes.rs:1018）+ api.ts `getCalendarStats`
+    + `CalendarStats`/`CalendarDayStats` 类型（models.rs:3417/3432 及
+    ui types.ts 对应）。j05 已拍板打卡按 XP 口径（`xp/calendar` →
+    XpPanel），本链是口径迁移遗留体。既有 calendar_stats 测试
+    （tests.rs 2195/2220/2285 三例）随函数删除。
+  - `CheckinStatus.due_count` 字段（models.rs:2978 段，checkin.rs:102
+    计算）→ 删字段 + 计算子查询 + 前端 types.ts 字段（XpPanel 零渲染；
+    useCheckinStatus 链不拆，其余字段照常）。checkin_today 既有测试
+    （2094-2187）里断言 due_count 的行同步移除。
+  - 注意：`xp_calendar`（routes.rs:153/910，XpPanel 在用）**不动**。
 - **R3（测试）**：新增断言——造卡 + 删课（软删）后：
   memory_health_stats 负荷预报/状态分布读数归零/回落；且 due_reviews
   口径不变（回归守卫）。`memory_health_stats` 现无测试，一并落首测。
-  若 R5 走删除：删除相关既有 checkin/calendar 测试同步移除。
+  R5 删除涉及的既有 checkin/calendar 测试同步移除，其余 checkin_today
+  测试保持绿。
 - **R4（不做，边界）**：回望历史面不过滤——memory.rs:167 记忆 Panel3+4
   诚实校准、xp_events 全局统计、review_log 保留墓碑课贡献是「账本永远
   保留」的设计语义（详细定性与分工见 map C2 观察项）。本票只修前瞻
