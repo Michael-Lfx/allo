@@ -227,9 +227,9 @@ export function CourseCard({
 }
 
 /**
- * 删除课程对话框（三轮 g3 强确认）：逐字输入课程显示名 + 三条如实后果。
- * 删除永远保留学习记录（复习卡/作答/进度）——没有连带删卡选项；只想暂停
- * 请用归档。
+ * 删除课程对话框（d1 降噪）：三条如实后果 + 危险按钮二段确认，不再要求
+ * 逐字输入课程名。删除保留学习记录（复习卡/作答/进度）、课程本身不可
+ * 恢复——想保课随时回来请用归档。
  */
 export function CourseDeleteDialog({
   course,
@@ -241,9 +241,7 @@ export function CourseDeleteDialog({
   onDeleted: () => void;
 }) {
   const { t } = useTranslation();
-  const [confirmation, setConfirmation] = useState('');
   const [busy, setBusy] = useState(false);
-  const confirmed = confirmation.trim() === course.title.trim();
   return (
     <Modal
       title={t('learning.deleteCourseTitle')}
@@ -251,7 +249,7 @@ export function CourseDeleteDialog({
       style={{ width: 480 }}
       confirmLoading={busy}
       okText={t('learning.deleteCourseConfirm')}
-      okButtonProps={{ status: 'danger', disabled: !confirmed }}
+      okButtonProps={{ status: 'danger' }}
       onCancel={() => {
         if (!busy) onClose();
       }}
@@ -277,16 +275,6 @@ export function CourseDeleteDialog({
         <li>{t('learning.deleteCourseConsequenceRecords')}</li>
         <li>{t('learning.deleteCourseConsequenceIrreversible')}</li>
       </ul>
-      <Input
-        value={confirmation}
-        onChange={setConfirmation}
-        placeholder={t('learning.deleteCourseRequireInput', { title: course.title })}
-      />
-      {!confirmed && confirmation.length > 0 && (
-        <Paragraph type='secondary' className='!mb-0 mt-6px text-12px'>
-          {t('learning.deleteCourseMismatchHint')}
-        </Paragraph>
-      )}
     </Modal>
   );
 }

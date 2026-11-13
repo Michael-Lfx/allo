@@ -3451,8 +3451,6 @@ export type I18nKey =
   | 'learning.deleteCourseConsequenceRecords'
   | 'learning.deleteCourseDone'
   | 'learning.deleteCourseHint'
-  | 'learning.deleteCourseMismatchHint'
-  | 'learning.deleteCourseRequireInput'
   | 'learning.deleteCourseTitle'
   | 'learning.deletedCourse'
   | 'learning.describeRequired'
