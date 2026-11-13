@@ -45,4 +45,17 @@
 
 ## Resolution
 
-（关票时回填）
+已施工收口（2026-11-13，68b949146 经 merge 合入 learn0928）。
+
+- R1：`CourseDeleteDialog` 移除逐字输入 `Input`、不匹配提示段与 `confirmed`
+  门，危险确认按钮常态可用；键 `deleteCourseRequireInput` /
+  `deleteCourseMismatchHint` 双语删除，`gen:i18n` 重生成（12441 键）。
+- R2：`deleteCourseConsequenceIrreversible` 双语改为如实对照——zh「删除无法
+  恢复——想保留课程本身、以后随时恢复继续学，请改用「归档」。」en
+  "Deletion cannot be undone — to keep the course intact and restore it
+  anytime, archive it instead."（归档的真实差异 = 课程本身保留 + 可逆。）
+- 验证：typecheck 绿；check:i18n 绿；learning 408 测试全绿
+  （settingsCopyPlain 只断 `deleteCourseConsequenceRecords`，未波及）；
+  全库 grep 无两键残留引用。
+- 真机复验点：删除弹窗无输入框、确认直接可点；第三条后果文案如实对照
+  归档/删除。
