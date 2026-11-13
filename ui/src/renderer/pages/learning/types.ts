@@ -68,17 +68,6 @@ export interface GenerateCourseRequest {
   learner_basis?: string;
 }
 
-/** 学习图生成状态（后台指示条/取消入口的数据源）。创建在请求内完成，
- * 生长在后台任务执行——注册表让运行对外可发现、可取消。m7 资源闸：
- * `queued` = 排队中的任务数（闸开时提交先落排队，空闲许可就位才开跑；
- * off 臂恒 0）。无在跑任务时 `topic` 回退最新排队主题。 */
-export interface LearningGraphGenerationStatus {
-  running: boolean;
-  topic: string | null;
-  elapsed_secs: number | null;
-  queued: number;
-}
-
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
  * feedback 是单节重写的可选学习建议（ADR-0007），为空即同分布重生成。 */
 export interface GenerateLessonRequest {
@@ -253,8 +242,6 @@ export interface CourseSourcePlanDetailView {
   excluded: CourseSourcePlanExcludedView[];
   duplicates: CourseSourcePlanDuplicateExampleView[];
 }
-
-/** t5 成本门估算已随计划确认页移除（d5）：端点后端保留，前端读数面删除。 */
 
 export interface CourseSummary {
   id: string;

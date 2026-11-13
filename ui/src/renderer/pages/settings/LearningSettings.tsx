@@ -14,7 +14,6 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 const DEFAULT_DESIRED_RETENTION = 0.9;
 const DEFAULT_REVIEW_SESSION_LIMIT = 30;
-const DEFAULT_DIAGNOSTIC_LIMIT = 10;
 const DEFAULT_DAILY_XP_GOAL = 40;
 /** k02：自动维护缺省值（后端单源 `DEFAULT_MAINTENANCE_*` 同值）。 */
 const DEFAULT_MAINTENANCE_ENABLED = true;
@@ -27,7 +26,6 @@ const LearningSettings: React.FC = () => {
   const [desiredRetention, setDesiredRetention] = useConfig('learning.desiredRetention');
   const [fsrsParameters, setFsrsParameters] = useConfig('learning.fsrsParameters');
   const [reviewSessionLimit, setReviewSessionLimit] = useConfig('learning.reviewSessionLimit');
-  const [diagnosticLimit, setDiagnosticLimit] = useConfig('learning.diagnosticLimit');
   const [dailyXpGoal, setDailyXpGoal] = useConfig('learning.dailyXpGoal');
   const [maintenanceAutoEnabled, setMaintenanceAutoEnabled] = useConfig(
     'learning.maintenanceAutoEnabled'
@@ -176,19 +174,6 @@ const LearningSettings: React.FC = () => {
                 max={1000}
                 value={dailyXpGoal ?? DEFAULT_DAILY_XP_GOAL}
                 onChange={(value) => value != null && void setDailyXpGoal(Number(value))}
-              />
-            </PreferenceRow>
-            <PreferenceRow
-              label={t('learning.settings.diagnosticLimit')}
-              description={t('learning.settings.diagnosticLimitHint')}
-              controlLayout='field'
-            >
-              <InputNumber
-                className='w-full sm:w-180px'
-                min={1}
-                max={50}
-                value={diagnosticLimit ?? DEFAULT_DIAGNOSTIC_LIMIT}
-                onChange={(value) => value != null && void setDiagnosticLimit(Number(value))}
               />
             </PreferenceRow>
             <PreferenceRow

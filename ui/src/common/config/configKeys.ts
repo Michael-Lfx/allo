@@ -170,8 +170,6 @@ export type ConfigKeyMap = {
     | undefined;
   // Max due-review items fetched per review queue load (default 30).
   'learning.reviewSessionLimit': number | undefined;
-  // Max questions in a diagnostic plan (default 10).
-  'learning.diagnosticLimit': number | undefined;
   // Daily XP goal in XP units ≈ focused minutes (default 40; 1..=1000,
   // out-of-range writes are rejected by the backend). Read by the backend
   // learning service for the daily XP gauge (j05 打卡计数口径退役).

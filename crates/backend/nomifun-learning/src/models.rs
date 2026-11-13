@@ -119,18 +119,6 @@ pub fn goal_course_title(goal: &str) -> String {
     title
 }
 
-/// 课程生成状态（后台指示条/取消入口的数据源，学习图生长与大纲流共用）。
-/// 生成在 HTTP 请求内同步执行（大纲）或后台任务执行（学习图生长），注册表
-/// 让运行对外可发现、可取消。
-#[derive(Debug, Serialize)]
-pub struct LearningGraphGenerationStatus {
-    pub running: bool,
-    pub topic: Option<String>,
-    pub elapsed_secs: Option<u64>,
-    /// 排队任务数（m7 资源闸排队可见；off 臂恒 0）。
-    pub queued: usize,
-}
-
 /// 任务资源闸读数（m7，smoke 对照卡数据源）：闸状态 + 在跑/排队的当前值与
 /// 峰值。判据形态：on 臂 `running_peak <= limit` 恒成立；off 臂 `queued` 恒
 /// 0、`running_peak` 可超 limit（直跑形态读数）。
@@ -2190,29 +2178,6 @@ pub struct CourseSourcePlanExcludedView {
     pub reason: String,
 }
 
-/// t5 成本门确认阈值（票面定案,后端单源）:超过任一阈值,建课前必须展示
-/// 估算并让用户确认;低于阈值自动跑。
-pub const COURSE_ESTIMATE_CONFIRM_FILES: usize = 40;
-pub const COURSE_ESTIMATE_CONFIRM_CALLS: usize = 20;
-
-/// t5 成本门估算视图:提交建课前的一次**规则分诊**读数（零 LLM、
-/// `triage.degraded=true`——「规则分诊,未做 LLM 判定」在估算里就如实标出）。
-/// `needs_confirm` 由后端按 [`COURSE_ESTIMATE_CONFIRM_FILES`]/
-/// [`COURSE_ESTIMATE_CONFIRM_CALLS`] 判定;描述流全零、不确认。
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct CourseGenerationEstimateView {
-    pub total_files: usize,
-    pub estimated_batches: usize,
-    pub estimated_llm_calls: usize,
-    /// 粗估耗时（秒,按调用数 × 经验常数;仅供确认弹窗展示,不是承诺）。
-    pub estimated_seconds: u64,
-    pub needs_confirm: bool,
-    pub triage: CourseSourcePlanTriageView,
-    /// 规则判定的跳过摘要（噪声/重复,path + role + reason,限长 ≤10）。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub skipped_examples: Vec<CourseSourcePlanExcludedView>,
-}
-
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
 /// ——建议先复习供给节点（候选仍可从学习记录进入，软闸只降推荐优先级）。
 #[derive(Debug, Clone, Serialize)]
@@ -2804,19 +2769,6 @@ pub struct ActivityView {
     #[serde(default)]
     pub matches: Vec<String>,
     pub position: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DiagnosticItem {
-    pub lesson_id: LearningLessonId,
-    pub lesson_title: String,
-    pub activity: ActivityView,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DiagnosticPlan {
-    pub course_id: LearningCourseId,
-    pub items: Vec<DiagnosticItem>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

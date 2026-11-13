@@ -633,23 +633,6 @@ impl GenerationTaskRegistry {
         cancelled
     }
 
-    /// 排队面摘要（queued 计数 + 最新排队任务的 topic；generation_status 的
-    /// queued 读数源）。
-    pub(crate) fn queued_summary(&self) -> (usize, Option<String>) {
-        let tasks = self.tasks.lock().expect("generation task registry poisoned");
-        let mut rows: Vec<(u64, String)> = tasks
-            .values()
-            .filter(|record| record.state == STATE_QUEUED)
-            .map(|record| (record.sequence, record.topic.clone()))
-            .collect();
-        drop(tasks);
-        rows.sort_by_key(|(sequence, _)| *sequence);
-        (
-            rows.len(),
-            rows.last().map(|(_, topic)| topic.clone()),
-        )
-    }
-
     /// 快照（活跃置顶、注册序倒序；终态随后同序）。活跃 = queued ∪ running
     /// （m7 排队可见）；queued 行带 `queued_at_ms` 与 FIFO 位次（注册序升序
     /// 中的名次，1 起）。
@@ -720,16 +703,6 @@ impl GenerationTaskRegistry {
                 }
             })
             .collect()
-    }
-
-    /// 最新在跑任务的（topic, elapsed_secs）——legacy 状态端点的数据源。
-    pub(crate) fn running_newest(&self) -> Option<(String, u64)> {
-        let tasks = self.tasks.lock().expect("generation task registry poisoned");
-        tasks
-            .values()
-            .filter(|record| record.state == STATE_RUNNING)
-            .max_by_key(|record| record.sequence)
-            .map(|record| (record.topic.clone(), record.started_at.elapsed().as_secs()))
     }
 
     /// 指定键的在跑 token（大纲流的取消旗标视图：agent 循环经

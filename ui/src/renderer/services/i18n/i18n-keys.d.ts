@@ -4099,8 +4099,6 @@ export type I18nKey =
   | 'learning.settings.description'
   | 'learning.settings.desiredRetention'
   | 'learning.settings.desiredRetentionHint'
-  | 'learning.settings.diagnosticLimit'
-  | 'learning.settings.diagnosticLimitHint'
   | 'learning.settings.fsrsParameters'
   | 'learning.settings.fsrsParametersApply'
   | 'learning.settings.fsrsParametersHint'

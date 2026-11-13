@@ -114,7 +114,7 @@ pub use models::{
     ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, ConceptSearchHit,
     ConceptSearchMode, ConceptSearchResults, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DeclareBasisRequest,
-    DeclarationResultView, DiagnosticItem, DiagnosticPlan,
+    DeclarationResultView,
     DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
@@ -128,7 +128,7 @@ pub use models::{
 };
 pub use models::{
     MaintenanceCourseOutcome, MaintenanceNeedsView, MaintenanceSettings, MaintenanceTickReport,
-    LearningGraphGenerationStatus, LearningTaskGateReadout, GrowthVerdictView,
+    LearningTaskGateReadout, GrowthVerdictView,
 };
 pub use service::{
     DEFAULT_AUTO_REFILL_ENABLED, DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,

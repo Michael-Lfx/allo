@@ -12,13 +12,6 @@
 
 use super::*;
 
-/// 结构发现阶段的常数次 LLM 调用(查询生成/证据摘要/结构草稿/结构评审,
-/// 不随库规模变化;估算口径)。
-const STRUCTURE_STAGE_CALLS: usize = 4;
-/// 估算耗时经验常数(秒/次调用;确认弹窗的粗估读数,不是承诺)。
-const ESTIMATE_SECONDS_PER_CALL: u64 = 10;
-/// 估算跳过摘要限长(噪声/重复示例,确认弹窗够用)。
-const ESTIMATE_SKIPPED_EXAMPLES_MAX: usize = 10;
 /// triage_completed 帧的有界示例数(跳过/重复/uncertain;进度视图展开用)。
 const TRIAGE_FRAME_EXAMPLES_MAX: usize = 10;
 
@@ -65,32 +58,6 @@ pub(super) fn course_pipeline(brief: &OutlineBrief, outline_engine_present: bool
     } else {
         "sampling"
     }
-}
-
-/// 展开批数估算（评审 S2:成本门按章估算,不再按文件数近似）——有 plan
-/// 时每章一批,单章锚点文件数超 [`EXPANSION_BATCH_MAX_FILES`] 才按文件数
-/// 拆批;无 plan（估算端不跑 LLM 结构发现）退保守上界 = 候选文件数（最坏
-/// 每个候选文件自成一章）,宁可高估不漏估（成本门的职责是拦住大库）。
-pub(super) fn estimate_expansion_batches(
-    plan: Option<&crate::generation::SourcePlan>,
-    candidate_files: usize,
-) -> usize {
-    let Some(plan) = plan.filter(|plan| !plan.chapters.is_empty()) else {
-        return candidate_files;
-    };
-    plan.chapters
-        .iter()
-        .map(|chapter| {
-            let files: HashSet<&str> = chapter
-                .source_anchors
-                .iter()
-                .map(|anchor| anchor.rel_path.as_str())
-                .collect();
-            files
-                .len()
-                .div_ceil(crate::generation::EXPANSION_BATCH_MAX_FILES)
-        })
-        .sum()
 }
 
 impl LearningService {
@@ -548,88 +515,6 @@ impl LearningService {
             }));
         }
         Ok(outcome)
-    }
-
-    /// t5 成本门估算:提交建课前对知识库流做一次**规则分诊**(零 LLM、
-    /// `degraded=true`——只读元数据/内容一次),给出文件数/批数/预估调用
-    /// 数/预计耗时与跳过摘要;`needs_confirm` = >40 文件或预估 >20 次 LLM
-    /// 调用(阈值在后端单源)。描述流无知识库 → 全零、不确认。
-    pub async fn estimate_course_generation(
-        &self,
-        _user_id: &UserId,
-        request: GenerateCourseRequest,
-    ) -> Result<crate::models::CourseGenerationEstimateView, AppError> {
-        request.validate()?;
-        let kb_ids = request.knowledge_base_ids_normalized();
-        if kb_ids.is_empty() {
-            return Ok(crate::models::CourseGenerationEstimateView::default());
-        }
-        let knowledge = self.injected_knowledge_service()?;
-        let goal = request.goal_text().unwrap_or_default();
-        // completer=None → t1 规则路径:零 LLM 调用,非噪声全部 core(降级)。
-        let (_inventory, triage) =
-            crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, None).await?;
-        let counts = triage.counts;
-        let total_files = counts.core
-            + counts.prerequisite
-            + counts.practice
-            + counts.mixed
-            + counts.noise
-            + counts.duplicate
-            + counts.uncertain;
-        // LLM 分诊只批「规则未判定的文件」(噪声/重复已被规则排除);
-        // 展开按章分批——估算端没有 plan(LLM 结构发现不进成本门),退
-        // 保守上界 = 候选文件数(评审 S2);结构阶段是常数次(查询/证据/
-        // 草稿/评审)。
-        let llm_files = counts.core + counts.prerequisite + counts.practice + counts.mixed + counts.uncertain;
-        let triage_batches = llm_files.div_ceil(crate::generation::TRIAGE_BATCH_MAX_FILES);
-        let expansion_batches = estimate_expansion_batches(None, llm_files);
-        let estimated_batches = triage_batches + expansion_batches;
-        let estimated_llm_calls = estimated_batches + STRUCTURE_STAGE_CALLS;
-        let estimated_seconds = u64::try_from(estimated_llm_calls)
-            .unwrap_or_default()
-            .saturating_mul(ESTIMATE_SECONDS_PER_CALL);
-        Ok(crate::models::CourseGenerationEstimateView {
-            total_files,
-            estimated_batches,
-            estimated_llm_calls,
-            estimated_seconds,
-            needs_confirm: total_files
-                > crate::models::COURSE_ESTIMATE_CONFIRM_FILES
-                || estimated_llm_calls > crate::models::COURSE_ESTIMATE_CONFIRM_CALLS,
-            triage: crate::models::CourseSourcePlanTriageView {
-                total_files,
-                core: counts.core,
-                prerequisite: counts.prerequisite,
-                practice: counts.practice,
-                mixed: counts.mixed,
-                noise: counts.noise,
-                duplicate: counts.duplicate,
-                uncertain: counts.uncertain,
-                degraded: triage.degraded,
-                batch_repair_count: crate::models::disclosed(triage.batch_repair_count),
-                still_missing_count: crate::models::disclosed(triage.still_missing_count),
-                warnings: triage
-                    .warnings
-                    .iter()
-                    .take(super::course::SOURCE_PLAN_WARNINGS_MAX)
-                    .cloned()
-                    .collect(),
-            },
-            skipped_examples: triage
-                .excluded
-                .iter()
-                .take(ESTIMATE_SKIPPED_EXAMPLES_MAX)
-                .map(|entry| crate::models::CourseSourcePlanExcludedView {
-                    path: entry.path.clone(),
-                    role: serde_json::to_value(entry.role)
-                        .ok()
-                        .and_then(|value| value.as_str().map(str::to_owned))
-                        .unwrap_or_default(),
-                    reason: entry.reason.clone(),
-                })
-                .collect(),
-        })
     }
 
     /// Resolve the generation brief up front: the kb flow fetches the base
