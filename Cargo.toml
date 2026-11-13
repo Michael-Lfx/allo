@@ -166,7 +166,7 @@ bytes = "1"
 # Windows pyke ORT prebuilts hard-link DirectML (`DMLCreateDevice1`). The NSIS
 # installer downloads Microsoft.AI.DirectML from nuget.org into $INSTDIR only
 # when the machine's DirectML lacks that export (see windows/nsis/installer.nsi).
-ort = { version = "2.0.0-rc.13", default-features = false, features = [
+ort = { version = "2.0.0-rc.15", default-features = false, features = [
     "std",
     "tracing",
     "download-binaries",

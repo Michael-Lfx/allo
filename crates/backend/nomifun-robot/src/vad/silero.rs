@@ -8,6 +8,9 @@
 //!
 //! Weights are embedded at compile time — no runtime download, no user setup.
 
+use std::sync::OnceLock;
+
+use ort::environment::Environment;
 use ort::session::Session;
 use ort::value::Tensor;
 
@@ -27,6 +30,22 @@ const P_AT_MAX_SENSITIVITY: f32 = 0.80;
 
 static MODEL: &[u8] = include_bytes!("../../assets/silero_vad.onnx");
 
+/// `ort` 2.0.0-rc.15 allows one environment per process and keeps that slot
+/// occupied even after the handle is dropped. Reuse a single environment so a
+/// second voice session can still build a Silero session.
+fn shared_environment() -> anyhow::Result<&'static Environment> {
+    static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    match ort::init().with_name("silero-vad").with_telemetry(false).build() {
+        Ok(environment) => Ok(ENVIRONMENT.get_or_init(|| environment)),
+        Err(error) => ENVIRONMENT
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("failed to initialize ONNX Runtime: {error}")),
+    }
+}
+
 /// Streaming Silero endpointer.
 pub struct SileroVad {
     session: Session,
@@ -43,7 +62,8 @@ impl SileroVad {
     /// Load the embedded model. Fails if ONNX Runtime is unavailable — callers
     /// must fall back to [`super::EnergyVad`], never propagate.
     pub fn new(tuning: VadTuning) -> anyhow::Result<Self> {
-        let session = Session::builder()?.commit_from_memory(MODEL)?;
+        let environment = shared_environment()?;
+        let session = Session::builder(&environment)?.commit_from_memory(MODEL)?;
         let threshold = P_AT_MIN_SENSITIVITY
             + (P_AT_MAX_SENSITIVITY - P_AT_MIN_SENSITIVITY) * tuning.sensitivity;
         Ok(Self {
