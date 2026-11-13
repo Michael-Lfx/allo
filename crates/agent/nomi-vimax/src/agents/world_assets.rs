@@ -1519,10 +1519,19 @@ pub fn bind_location_ids(
     let scene_loc = (!scene_heading.is_empty()).then(|| canonical(&scene_heading));
     for brief in briefs {
         let existing = brief.location_id.trim();
-        let own = headings
-            .iter()
-            .find(|h| same_place(h, existing))
-            .map(|h| canonical(h));
+        // A later heading wins when the row names it. Exact spelling missed
+        // "森林泳池" against "外景·森林泳池·白日" and every later row collapsed
+        // onto scene 1, so a cutaway there had no plate of its own.
+        let own = if existing.is_empty() {
+            None
+        } else {
+            headings
+                .iter()
+                .find(|h| same_place(h, existing))
+                .cloned()
+                .or_else(|| snap_location_label(existing, &headings))
+        };
+        let own = own.as_deref().map(canonical);
         brief.location_id = own
             .or_else(|| scene_loc.clone())
             .unwrap_or_else(|| existing.to_string());
@@ -1644,20 +1653,40 @@ fn best_place_index(location_id: &str, labels: &[String]) -> Option<usize> {
         }
         cands.push((score, place_time_agrees(loc, label), i));
     }
-    if cands.is_empty() {
-        return None;
-    }
-    cands.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-    let best = cands[0];
-    if let Some(second) = cands.get(1) {
-        if second.0 == best.0 && second.1 == best.1 {
-            let mutual = longest_common_run(&place_core(&labels[best.2]), &place_core(&labels[second.2]));
-            if mutual + 1 < best.0 {
-                return None;
+    if !cands.is_empty() {
+        cands.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        let best = cands[0];
+        if let Some(second) = cands.get(1) {
+            if second.0 == best.0 && second.1 == best.1 {
+                let mutual = longest_common_run(
+                    &place_core(&labels[best.2]),
+                    &place_core(&labels[second.2]),
+                );
+                if mutual + 1 < best.0 {
+                    return None;
+                }
             }
         }
+        return Some(best.2);
     }
-    Some(best.2)
+    // "卧室" is two characters, under the stem threshold, but it is the whole
+    // name of the only 主卧卧室 plate. Two bedrooms that both contain 卧室 stay unmatched.
+    unique_contained_place(&loc_core, labels)
+}
+
+fn unique_contained_place(loc_core: &str, labels: &[String]) -> Option<usize> {
+    let loc_n = loc_core.chars().count();
+    let mut hits = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let core = place_core(label);
+        let core_n = core.chars().count();
+        let loc_in_plate = loc_n >= 2 && core.contains(loc_core);
+        let plate_in_loc = core_n >= 2 && loc_n > core_n && loc_core.contains(&core);
+        if loc_in_plate || plate_in_loc {
+            hits.push(i);
+        }
+    }
+    (hits.len() == 1).then(|| hits[0])
 }
 
 fn snap_location_label(location_id: &str, sluglines: &[String]) -> Option<String> {
@@ -1675,6 +1704,24 @@ pub fn resolve_environment_plate(
     location_id: &str,
     pairs: &[(PathBuf, String)],
 ) -> Option<(PathBuf, String)> {
+    let hit = match_environment_plate(location_id, pairs);
+    if hit.is_none() {
+        let environments = pairs.iter().filter(|(p, _)| is_env_pair_path(p)).count();
+        if environments > 1 {
+            tracing::warn!(
+                location_id,
+                environments,
+                "no environment plate matches this location; rendering without a set bible"
+            );
+        }
+    }
+    hit
+}
+
+fn match_environment_plate(
+    location_id: &str,
+    pairs: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
     let envs: Vec<(PathBuf, String)> = pairs
         .iter()
         .filter(|(p, _)| is_env_pair_path(p))
@@ -1689,12 +1736,32 @@ pub fn resolve_environment_plate(
     if envs.len() == 1 {
         return envs.into_iter().next();
     }
-    tracing::warn!(
-        location_id,
-        environments = envs.len(),
-        "no environment plate matches this location; rendering without a set bible"
-    );
     None
+}
+
+/// This shot's plate, or the previous shot's plate when this row is still in
+/// that room. An empty `location_id` did not name a new place. A clocked or
+/// shortened label of the same room is not a new place either. A different
+/// place stays unmatched so the caller can decide what to hold.
+pub fn resolve_shot_environment(
+    location_id: &str,
+    prev_location_id: Option<&str>,
+    pairs: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
+    if let Some(hit) = match_environment_plate(location_id, pairs) {
+        return Some(hit);
+    }
+    let prev = prev_location_id.map(str::trim).filter(|s| !s.is_empty())?;
+    let cur = location_id.trim();
+    if cur.is_empty() || same_story_place(cur, prev) {
+        return match_environment_plate(prev, pairs);
+    }
+    None
+}
+
+fn same_story_place(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    !a.is_empty() && !b.is_empty() && (same_place(a, b) || best_place_index(a, &[b.to_string()]).is_some())
 }
 
 fn plate_matches_location(path: &Path, text: &str, location_id: &str) -> bool {
@@ -2278,6 +2345,69 @@ mod tests {
         );
         assert_eq!(briefs[0].location_id, "外景·补给站·白日");
         assert_eq!(briefs[1].location_id, "外景·补给站·白日");
+    }
+
+    #[test]
+    fn bind_location_ids_keeps_a_later_heading() {
+        let mut briefs = vec![
+            crate::domain::ShotBriefDescription {
+                idx: 0,
+                is_last: false,
+                cam_idx: 0,
+                visual_desc: "station".into(),
+                audio_desc: None,
+                location_id: "补给站".into(),
+                beats: Vec::new(),
+            },
+            crate::domain::ShotBriefDescription {
+                idx: 18,
+                is_last: false,
+                cam_idx: 0,
+                visual_desc: "pool".into(),
+                audio_desc: None,
+                location_id: "森林泳池".into(),
+                beats: Vec::new(),
+            },
+            crate::domain::ShotBriefDescription {
+                idx: 19,
+                is_last: true,
+                cam_idx: 0,
+                visual_desc: "the bedroom".into(),
+                audio_desc: None,
+                location_id: "卧室".into(),
+                beats: Vec::new(),
+            },
+        ];
+        bind_location_ids(
+            &mut briefs,
+            "外景·补给站·白日\n她灌水。\n\n外景·森林泳池·白日\n她跳下去。\n\n内景·主卧卧室·夜\n灯灭了。",
+            &[
+                "外景·补给站·白日".into(),
+                "外景·森林泳池·白日".into(),
+                "内景·主卧卧室·夜".into(),
+            ],
+        );
+        assert_eq!(briefs[0].location_id, "外景·补给站·白日");
+        assert_eq!(briefs[1].location_id, "外景·森林泳池·白日");
+        assert_eq!(briefs[2].location_id, "内景·主卧卧室·夜");
+    }
+
+    #[test]
+    fn short_bedroom_name_matches_only_one_plate() {
+        let bedroom = PathBuf::from("environments/0_主卧卧室/plate_environment_plate.png");
+        let kitchen = PathBuf::from("environments/1_厨房/plate_environment_plate.png");
+        let pairs = vec![
+            (
+                bedroom.clone(),
+                "GLOBAL EMPTY environment plate: INT. 主卧卧室 - 夜".into(),
+            ),
+            (
+                kitchen,
+                "GLOBAL EMPTY environment plate: INT. 厨房 - 夜".into(),
+            ),
+        ];
+        let hit = resolve_environment_plate("卧室", &pairs).expect("unique bedroom");
+        assert_eq!(hit.0, bedroom);
     }
 
     #[test]

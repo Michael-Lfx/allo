@@ -10,7 +10,8 @@ use crate::clip_bounds::ClipBounds;
 use crate::agents::{
     CharacterExtractor, CharacterPortraitsGenerator, StoryboardArtist, VoiceProfileGenerator,
     bind_location_ids, ensure_film_cover, environment_sluglines_from_dir, has_usable_portrait,
-    resolve_environment_plate, world_asset_pairs, USER_PRODUCT_PLATE_MARK,
+    resolve_environment_plate, resolve_shot_environment, world_asset_pairs,
+    USER_PRODUCT_PLATE_MARK,
 };
 use crate::domain::{Camera, CharacterInScene, ShotBriefDescription, ShotDescription};
 use crate::drama::{lint_script_promise_coverage, load_drama_engine, pack_split_needles};
@@ -921,6 +922,7 @@ impl Script2VideoPipeline {
                     world_pairs,
                     &resolve_film_root(&self.working_dir),
                     true,
+                    Some(shot),
                 )
                 .into_iter()
                 .map(|(p, _)| p)
@@ -1158,7 +1160,6 @@ impl Script2VideoPipeline {
         if let Some(p) = &packet {
             apply_packet_to_shot(&mut shot_owned, p);
         }
-        super::clip_beats::sanitize_shot_prompt_payloads(&mut shot_owned, prev);
         if !packet.as_ref().is_some_and(|p| p.user_edited) {
             let script = read_script_text(&self.working_dir).await;
             let corpus = tokio::fs::read_to_string(self.working_dir.join("storyboard.json"))
@@ -1166,6 +1167,11 @@ impl Script2VideoPipeline {
                 .unwrap_or_default();
             crate::cast_align::align_shot(&mut shot_owned, characters, &script, &corpus);
         }
+        // Speaker prefixes are identity. Stripping a repeated line before the
+        // ref pass deleted the only name on a close-up, and the shot then had
+        // no portrait. The prompt still loses the repeated line.
+        let mut prompt_shot = shot_owned.clone();
+        super::clip_beats::sanitize_shot_prompt_payloads(&mut prompt_shot, prev);
         let shot = &shot_owned;
         let duration_secs = packet
             .as_ref()
@@ -1197,6 +1203,7 @@ impl Script2VideoPipeline {
             world_pairs,
             &resolve_film_root(&self.working_dir),
             keep_env,
+            prev,
         );
         if let Some(p) = &packet {
             if p.image_refs.iter().any(|s| s.user_override || s.unbound) {
@@ -1225,10 +1232,10 @@ impl Script2VideoPipeline {
             return Err(VimaxError::Video(format!(
                 "Shot {}: no usable reference images (cast/env/prop{}) for multi-ref video",
                 shot.idx,
-                if using_video_continuity {
-                    ""
-                } else {
+                if shot.idx == 0 {
                     "; first shot needs world/cast assets"
+                } else {
+                    "; no cast, set, or prop plate matched, and the previous shot had none to hold"
                 }
             )));
         }
@@ -1252,7 +1259,7 @@ impl Script2VideoPipeline {
         let ref_audio_paths: [&Path; 0] = [];
         let aspect_ratio = crate::aspect::load_aspect_from_dir(&self.working_dir).await;
         let compiled = i2v_motion_prompt(
-            shot,
+            &prompt_shot,
             characters,
             style,
             &ref_pairs,
@@ -1512,7 +1519,7 @@ impl Script2VideoPipeline {
                 let retry_paths: Vec<&Path> =
                     ref_pairs.iter().map(|(p, _)| p.as_path()).collect();
                 let retry_prompt = i2v_motion_prompt(
-                    shot,
+                    &prompt_shot,
                     characters,
                     style,
                     &ref_pairs,
@@ -1649,7 +1656,6 @@ pub(crate) async fn refresh_shot_packet(
     } else {
         None
     };
-    super::clip_beats::sanitize_shot_prompt_payloads(&mut shot_owned, prior.as_ref());
     let continuity = if continuity_unbound(&packet) {
         None
     } else {
@@ -1667,7 +1673,9 @@ pub(crate) async fn refresh_shot_packet(
         world_pairs,
         &film_root,
         keep_env,
+        prior.as_ref(),
     );
+    super::clip_beats::sanitize_shot_prompt_payloads(&mut shot_owned, prior.as_ref());
     merge_live_image_refs(
         &mut packet,
         slots_from_image_pairs(&session_root, &image_pairs),
@@ -3529,8 +3537,11 @@ pub(crate) fn continuity_still_for_seam(
     None
 }
 
-/// Multi-ref strip for Seedance R2V: optional caller still, then in-shot
-/// portraits, the location plate, and mentioned props.
+/// Multi-ref strip for Seedance R2V: in-shot portraits, the location plate,
+/// and mentioned props. A previous clip's pixels are not a reference. When
+/// this row names nobody and no plate of its own, the previous shot's plate
+/// (or, failing that, its on-camera portrait) is held so one unmatched row
+/// does not abandon the rest of the film.
 pub(crate) fn shot_video_ref_pairs(
     shot: &ShotDescription,
     continuity: Option<&Path>,
@@ -3539,31 +3550,22 @@ pub(crate) fn shot_video_ref_pairs(
     world_pairs: &[(PathBuf, String)],
     film_root: &Path,
     keep_env: bool,
+    prev: Option<&ShotDescription>,
 ) -> Vec<(PathBuf, String)> {
     let _ = continuity;
     let mut pairs: Vec<(PathBuf, String)> = Vec::new();
     let picture = shot_picture(shot);
     let audio = shot.audio_source();
-    let vis: Vec<i32> = shot_cast_idxs(shot, characters)
-        .into_iter()
-        .filter(|&idx| {
-            characters
-                .iter()
-                .any(|ch| ch.idx == idx && include_portrait(ch, &picture, &audio))
-        })
-        .collect();
-    pairs.extend(
-        portrait_pairs(characters, &vis, registry, film_root)
-            .into_iter()
-            .map(|(p, t)| {
-                let front = media_local::ensure_three_view_front_panel(&p);
-                (front, t)
-            }),
-    );
+    let vis = on_camera_idxs(shot, characters, &picture, &audio);
+    pairs.extend(front_portrait_pairs(characters, &vis, registry, film_root));
 
     let world_query = shot_world_query(shot);
     if keep_env {
-        if let Some(env) = resolve_environment_plate(&shot.location_id, world_pairs) {
+        if let Some(env) = resolve_shot_environment(
+            &shot.location_id,
+            prev.map(|p| p.location_id.as_str()),
+            world_pairs,
+        ) {
             pairs.push(env);
         }
     }
@@ -3580,9 +3582,208 @@ pub(crate) fn shot_video_ref_pairs(
         pairs.push((p, t));
     }
 
+    if pairs.is_empty() {
+        if let Some(held) = hold_previous_ref(
+            shot,
+            prev,
+            characters,
+            registry,
+            world_pairs,
+            film_root,
+            keep_env,
+        ) {
+            pairs.push(held);
+        }
+    }
+
     let mut seen = std::collections::HashSet::new();
     pairs.retain(|(p, _)| seen.insert(p.clone()));
     pick_video_assets(pairs, continuity, keep_env)
+}
+
+fn front_portrait_pairs(
+    characters: &[CharacterInScene],
+    vis: &[i32],
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    film_root: &Path,
+) -> Vec<(PathBuf, String)> {
+    portrait_pairs(characters, vis, registry, film_root)
+        .into_iter()
+        .map(|(p, t)| {
+            let front = media_local::ensure_three_view_front_panel(&p);
+            (front, t)
+        })
+        .collect()
+}
+
+/// Who the camera can see. A name in the prose wins. A plan-time vis idx is
+/// kept when a later audio strip left only 他/她. A bare pronoun maps to the
+/// one visible person of that sex, never to an off-screen voice.
+fn on_camera_idxs(
+    shot: &ShotDescription,
+    characters: &[CharacterInScene],
+    picture: &str,
+    audio: &str,
+) -> Vec<i32> {
+    let mut vis: Vec<i32> = shot_cast_idxs(shot, characters)
+        .into_iter()
+        .filter(|&idx| {
+            characters
+                .iter()
+                .any(|ch| ch.idx == idx && include_portrait(ch, picture, audio))
+        })
+        .collect();
+    if !vis.is_empty() {
+        return vis;
+    }
+    let prose = format!("{picture} {audio}");
+    let listed = listed_visible_idxs(shot, characters);
+    if listed.len() == 1 {
+        return listed;
+    }
+    let narrowed = pronoun_cast_idxs(&prose, &listed, characters);
+    if !narrowed.is_empty() {
+        return narrowed;
+    }
+    if !listed.is_empty() && !has_free_pronoun(&prose, '他') && !has_free_pronoun(&prose, '她') {
+        return listed;
+    }
+    pronoun_cast_idxs(&prose, &[], characters)
+        .into_iter()
+        .for_each(|idx| {
+            if !vis.contains(&idx) {
+                vis.push(idx);
+            }
+        });
+    vis
+}
+
+fn listed_visible_idxs(shot: &ShotDescription, characters: &[CharacterInScene]) -> Vec<i32> {
+    let mut idxs = Vec::new();
+    for idx in shot
+        .ff_vis_char_idxs
+        .iter()
+        .chain(shot.lf_vis_char_idxs.iter())
+    {
+        if idxs.contains(idx) {
+            continue;
+        }
+        let visible = characters.iter().any(|ch| {
+            ch.idx == *idx && ch.is_visible && ch.identifier_in_scene.trim().chars().count() >= 2
+        });
+        if visible {
+            idxs.push(*idx);
+        }
+    }
+    idxs
+}
+
+fn pronoun_cast_idxs(
+    text: &str,
+    limit: &[i32],
+    characters: &[CharacterInScene],
+) -> Vec<i32> {
+    let mut out = Vec::new();
+    for (pronoun, female) in [('他', false), ('她', true)] {
+        if !has_free_pronoun(text, pronoun) {
+            continue;
+        }
+        let pool: Vec<&CharacterInScene> = characters
+            .iter()
+            .filter(|ch| ch.is_visible && (limit.is_empty() || limit.contains(&ch.idx)))
+            .filter(|ch| cast_is_female(ch) == Some(female))
+            .collect();
+        if pool.len() == 1 {
+            out.push(pool[0].idx);
+        }
+    }
+    out
+}
+
+fn cast_is_female(ch: &CharacterInScene) -> Option<bool> {
+    let features = ch.static_features.as_str();
+    let lower = features.to_ascii_lowercase();
+    let female = features.contains('女')
+        || lower.contains("female")
+        || lower.contains("woman")
+        || lower.contains("girl");
+    let male = !female
+        && (features.contains('男')
+            || lower.contains("male")
+            || lower.contains("man")
+            || lower.contains("boy"));
+    if female && !male {
+        Some(true)
+    } else if male {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn has_free_pronoun(text: &str, pronoun: char) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut quote: Option<char> = None;
+    for (i, ch) in chars.iter().enumerate() {
+        match (quote, *ch) {
+            (None, '「') => quote = Some('」'),
+            (None, '“') => quote = Some('”'),
+            (None, '"') => quote = Some('"'),
+            (Some(stop), c) if c == stop => quote = None,
+            // 他抬起头 is a pronoun. 他们 / 其他 are not.
+            (None, c) if c == pronoun => {
+                let prev = i.checked_sub(1).map(|p| chars[p]);
+                let next = chars.get(i + 1).copied();
+                if !matches!(next, Some('们')) && !matches!(prev, Some('其')) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// One image the previous shot could already render with. Used only when this
+/// shot matched nothing, so a cutaway or a renamed room does not stop the film.
+fn hold_previous_ref(
+    shot: &ShotDescription,
+    prev: Option<&ShotDescription>,
+    characters: &[CharacterInScene],
+    registry: &HashMap<String, HashMap<String, HashMap<String, String>>>,
+    world_pairs: &[(PathBuf, String)],
+    film_root: &Path,
+    keep_env: bool,
+) -> Option<(PathBuf, String)> {
+    let prev = prev?;
+    if keep_env {
+        if let Some(env) = resolve_environment_plate(&prev.location_id, world_pairs) {
+            tracing::warn!(
+                shot = shot.idx,
+                location_id = %shot.location_id,
+                held = %prev.location_id,
+                "shot matched no plate; holding the previous shot's set"
+            );
+            return Some(env);
+        }
+    }
+    let prose = format!("{} {}", shot_picture(shot), shot.audio_source());
+    if prose.contains("空镜") || prose.contains("无人物") {
+        return None;
+    }
+    let prev_picture = shot_picture(prev);
+    let prev_audio = prev.audio_source();
+    let prev_vis = on_camera_idxs(prev, characters, &prev_picture, &prev_audio);
+    let face = front_portrait_pairs(characters, &prev_vis, registry, film_root)
+        .into_iter()
+        .next();
+    if face.is_some() {
+        tracing::warn!(
+            shot = shot.idx,
+            "shot matched no plate; holding the previous shot's on-camera portrait"
+        );
+    }
+    face
 }
 
 /// Location bible always travels with the clip. Last-frame continuity is
@@ -5119,10 +5320,170 @@ PrivacyInformation (input image 'content[2]' may contain real person)";
             &world,
             Path::new("."),
             true,
+            None,
         );
         assert!(
             pairs.iter().any(|(p, _)| p == &env),
             "sole environment plate must ride with the clip: {pairs:?}"
+        );
+    }
+
+    fn person(idx: i32, name: &str, features: &str, visible: bool) -> CharacterInScene {
+        CharacterInScene {
+            idx,
+            identifier_in_scene: name.into(),
+            is_visible: visible,
+            static_features: features.into(),
+            dynamic_features: None,
+            voice_profile: None,
+        }
+    }
+
+    fn write_png(dir: &std::path::Path, name: &str) -> PathBuf {
+        let path = dir.join("character_portraits").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([20, 40, 60, 255]))
+            .save(&path)
+            .unwrap();
+        path
+    }
+
+    fn registry_with(name: &str, path: &std::path::Path) -> HashMap<String, HashMap<String, HashMap<String, String>>> {
+        let mut item = HashMap::new();
+        item.insert("path".into(), path.to_string_lossy().to_string());
+        item.insert("description".into(), format!("portrait {name}"));
+        let mut views = HashMap::new();
+        views.insert("front".into(), item);
+        let mut registry = HashMap::new();
+        registry.insert(name.to_string(), views);
+        registry
+    }
+
+    #[test]
+    fn pronoun_close_up_uses_the_only_visible_person() {
+        let dir = tempfile::tempdir().unwrap();
+        let lead = write_png(dir.path(), "0_lead.png");
+        let boss = write_png(dir.path(), "1_boss.png");
+        let mut registry = registry_with("主角", &lead);
+        registry.extend(registry_with("老板", &boss));
+        let mut shot = shot(19, 0);
+        shot.visual_desc = "特写。他抬起头，指节发白。".into();
+        shot.motion_desc = shot.visual_desc.clone();
+        shot.ff_desc = shot.visual_desc.clone();
+        shot.audio_desc = Some("老板语音条响起".into());
+        shot.location_id = "INT. 会议室 - 第二天早会".into();
+        let office = PathBuf::from("environments/0_office/plate_environment_plate.png");
+        let hall = PathBuf::from("environments/1_hall/plate_environment_plate.png");
+        let world = vec![
+            (office, "INT. 开放式办公室工位区 - 傍晚".into()),
+            (hall, "INT. 宴会厅 - 夜".into()),
+        ];
+        let pairs = shot_video_ref_pairs(
+            &shot,
+            None,
+            &[
+                person(0, "主角", "成年男性", true),
+                person(1, "老板", "成年男性", false),
+            ],
+            &registry,
+            &world,
+            dir.path(),
+            true,
+            None,
+        );
+        let blob = pairs
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(blob.contains("0_lead"), "the visible 他 is the lead: {blob}");
+        assert!(!blob.contains("1_boss"), "an off-screen voice is not 他: {blob}");
+    }
+
+    #[test]
+    fn listed_face_survives_when_the_line_was_stripped_to_a_pronoun() {
+        let dir = tempfile::tempdir().unwrap();
+        let lead = write_png(dir.path(), "0_lead.png");
+        let colleague = write_png(dir.path(), "2_colleague.png");
+        let mut registry = registry_with("主角", &lead);
+        registry.extend(registry_with("同事", &colleague));
+        let mut shot = shot(19, 0);
+        shot.visual_desc = "近景。他接过信。".into();
+        shot.motion_desc = shot.visual_desc.clone();
+        shot.ff_desc = shot.visual_desc.clone();
+        shot.ff_vis_char_idxs = vec![0];
+        shot.lf_vis_char_idxs = vec![0];
+        shot.location_id = "INT. 巷口 - 夜".into();
+        let world = vec![
+            (
+                PathBuf::from("environments/0_office/plate_environment_plate.png"),
+                "INT. 办公室 - 夜".into(),
+            ),
+            (
+                PathBuf::from("environments/1_alley/plate_environment_plate.png"),
+                "INT. 窄巷 - 夜".into(),
+            ),
+        ];
+        let pairs = shot_video_ref_pairs(
+            &shot,
+            None,
+            &[
+                person(0, "主角", "成年男性", true),
+                person(2, "同事", "成年男性", true),
+            ],
+            &registry,
+            &world,
+            dir.path(),
+            true,
+            None,
+        );
+        let blob = pairs
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(blob.contains("0_lead"), "{blob}");
+        assert!(!blob.contains("2_colleague"), "{blob}");
+    }
+
+    #[test]
+    fn unmatched_room_holds_the_previous_set() {
+        let mut cur = shot(19, 0);
+        cur.visual_desc = "空镜。雨打在玻璃上。".into();
+        cur.motion_desc = cur.visual_desc.clone();
+        cur.ff_desc = cur.visual_desc.clone();
+        cur.location_id = "INT. 会议室 - 第二天早会".into();
+        let mut prev = shot(18, 0);
+        prev.location_id = "INT. 开放式办公室工位区 - 傍晚".into();
+        let office = PathBuf::from("environments/0_office/plate_environment_plate.png");
+        let banquet = PathBuf::from("environments/1_banquet/plate_environment_plate.png");
+        let world = vec![
+            (
+                office.clone(),
+                "GLOBAL EMPTY environment plate: INT. 开放式办公室工位区 - 傍晚".into(),
+            ),
+            (
+                banquet,
+                "GLOBAL EMPTY environment plate: INT. 宴会厅 - 夜".into(),
+            ),
+        ];
+        let pairs = shot_video_ref_pairs(
+            &cur,
+            None,
+            &[],
+            &HashMap::new(),
+            &world,
+            Path::new("."),
+            true,
+            Some(&prev),
+        );
+        assert!(
+            pairs.iter().any(|(p, _)| p == &office),
+            "an unmatched row keeps the previous set instead of failing the film: {pairs:?}"
+        );
+        assert!(
+            pairs.iter().all(|(p, _)| p != &PathBuf::from("environments/1_banquet/plate_environment_plate.png")),
+            "a different plate is not borrowed by name overlap: {pairs:?}"
         );
     }
 
