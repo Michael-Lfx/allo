@@ -412,8 +412,6 @@
     "parametersInvalid": "FSRS parameters must all be finite numbers",
     "reviewSessionLimit": "Review queue size",
     "reviewSessionLimitHint": "Maximum due review cards loaded per session",
-    "diagnosticLimit": "Diagnostic questions",
-    "diagnosticLimitHint": "Maximum questions sampled per knowledge diagnostic",
     "dailyXpGoal": "Daily XP goal",
     "dailyXpGoalHint": "Daily effort target in XP (1 XP ≈ one focused minute); the day completes on reaching it (1–1000, default 40)",
     "autoRefillEnabled": "Automatic refill",

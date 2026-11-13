@@ -23,7 +23,6 @@ import type {
   LearningStructureView,
   MemoryHealthStats,
   GeneratedLessonActivity,
-  LearningGraphGenerationStatus,
   Lesson,
   LessonGenerationAccepted,
   LessonStatus,
@@ -59,16 +58,10 @@ export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
   // 同步创建：课程落库即返回；知识结构生成在后台执行（进度经
-  // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
+  // WS 的 `learning.course-generation` 推送，取消用下方端点；
+  // 任务一览/轮询走 generation-tasks 快照端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
-  // t5 成本门估算已随计划确认页移除（d5）：提交即生成，估算端点后端保留。
-  // 学习图生成/生长状态/取消：后台运行对外可发现、可取消。
-  generationStatus: () =>
-    httpRequest<LearningGraphGenerationStatus>(
-      'GET',
-      `${BASE}/courses/generate/status`
-    ),
   cancelGeneration: () =>
     httpRequest<{ cancelled: boolean }>(
       'POST',
@@ -191,8 +184,6 @@ export const learningApi = {
     ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
-  enroll: (id: string) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/${encodeURIComponent(id)}/enroll`),
   getLesson: (id: string) =>
     httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>

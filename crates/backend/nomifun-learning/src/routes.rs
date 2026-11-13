@@ -20,7 +20,7 @@ use crate::models::{
     AnswerReviewRequest, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
+    GenerateLessonRequest, MemoryCalibrationBin, MountRoundSummary,
     QuizGradeFeedback, QuizOverviewCourse, QuizProgressView, QuizRoundReport, QuizRoundView,
     RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
@@ -35,11 +35,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route(
-            "/api/learning/courses/generate/estimate",
-            post(estimate_course_generation),
-        )
-        .route("/api/learning/courses/generate/status", get(learning_graph_generation_status))
         .route("/api/learning/generation-tasks", get(list_generation_tasks))
         .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
         .route(
@@ -108,11 +103,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/courses/{id}/archive", post(archive_course))
         .route("/api/learning/courses/{id}/restore", post(restore_course))
         .route("/api/learning/courses/{id}/tags", put(set_course_tags))
-        .route("/api/learning/courses/{id}/enroll", post(enroll))
-        .route(
-            "/api/learning/courses/{id}/diagnostic",
-            get(diagnostic_plan),
-        )
         .route("/api/learning/lessons/{id}", get(lesson_detail))
         .route(
             "/api/learning/lessons/{id}/capacity-feedback",
@@ -262,25 +252,6 @@ async fn generate_course(
     Ok(Json(ApiResponse::ok(
         state.service.generate_course(&user.id, request).await?,
     )))
-}
-
-/// t5 成本门估算：提交建课前对知识库流做一次规则分诊（零 LLM），返回
-/// 文件数/批数/预估调用/耗时与 `needs_confirm`（阈值后端单源）。
-async fn estimate_course_generation(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<GenerateCourseRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseGenerationEstimateView>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.estimate_course_generation(&user.id, request).await?,
-    )))
-}
-
-/// 课程生成状态（学习图生长与大纲流共用）：后台指示条的数据源。
-async fn learning_graph_generation_status(
-    State(state): State<LearningRouterState>,
-) -> Result<Json<ApiResponse<LearningGraphGenerationStatus>>, AppError> {
-    Ok(Json(ApiResponse::ok(state.service.generation_status())))
 }
 
 /// 长任务快照（三轮 t2）：四类生成任务的在跑/终态一览（在跑置顶、注册序
@@ -612,43 +583,6 @@ async fn get_course(
     let id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.course_detail(&id, Some(&user.id)).await?,
-    )))
-}
-
-async fn enroll(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
-    let id = parse_id::<LearningCourseId>(id)?;
-    state.service.enroll(&id, &user.id).await?;
-    Ok(Json(ApiResponse::ok(
-        state.service.course_detail(&id, Some(&user.id)).await?,
-    )))
-}
-
-#[derive(Debug, Deserialize)]
-struct DiagnosticQuery {
-    #[serde(default = "default_diagnostic_limit")]
-    limit: i64,
-}
-
-const fn default_diagnostic_limit() -> i64 {
-    10
-}
-
-async fn diagnostic_plan(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    Query(query): Query<DiagnosticQuery>,
-) -> Result<Json<ApiResponse<crate::models::DiagnosticPlan>>, AppError> {
-    let id = parse_id::<LearningCourseId>(id)?;
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .diagnostic_plan(&id, &user.id, query.limit)
-            .await?,
     )))
 }
 

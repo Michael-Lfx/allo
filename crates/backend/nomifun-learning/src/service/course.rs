@@ -494,6 +494,62 @@ impl LearningService {
         id.map(parse_id).transpose()
     }
 
+    /// Returns the user's enrollment for a course, creating it on first use.
+    /// Practice flows (attempts, lesson progress) call this instead of
+    /// requiring an explicit join step, so enrollment is a data grouping key
+    /// rather than a permission gate. Idempotent: re-calling after an
+    /// enrollment exists only bumps `updated_at`.
+    pub(super) async fn ensure_enrollment(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<LearningEnrollmentId, AppError> {
+        let course_exists: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
+                .bind(course_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+        if course_exists == 0 {
+            return Err(AppError::NotFound(format!("learning course {course_id}")));
+        }
+        let enrollment_id = LearningEnrollmentId::new();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_enrollments \
+             (enrollment_id, user_id, course_id, enrolled_at, updated_at) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id, course_id) DO UPDATE SET updated_at = excluded.updated_at",
+        )
+        .bind(enrollment_id.as_str())
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        let stored: String = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE user_id = ? AND course_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        parse_id(stored)
+    }
+
+    /// Explicit join entry, kept as a service-level seam for Rust unit tests
+    /// (the HTTP face was retired with the auto-join flows); the same
+    /// idempotent upsert is triggered implicitly by any practice flow.
+    pub async fn enroll(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+    ) -> Result<LearningEnrollmentId, AppError> {
+        self.ensure_enrollment(course_id, user_id).await
+    }
+
     /// A single lesson's public view (mirrors the per-lesson projection in
     /// course_detail), used as the response of on-demand generation.
     pub(super) async fn lesson_view(
