@@ -3168,6 +3168,100 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert!(listed.iter().find(|c| c.id == course.course.id).unwrap().enabled);
     }
 
+    /// t1（ADR-0017 修正案·可服务性计数面）：归档课的到期徽标如实归零。
+    /// 目录 due_today 与详情 due_review_count 回答「现在能复习什么」——
+    /// 归档课卡不可服务（due_reviews 全口径过滤 enabled=1），徽标虚高
+    /// 即误导（用户点进队列为空）；归档后两处计数 = 0，恢复后回来
+    /// （归档可逆，计数对账可逆）。前端 0 张到期如实显示。
+    #[tokio::test]
+    async fn archived_course_due_counters_drop_to_zero_and_come_back_on_restore() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        service
+            .update_lesson_progress(&detail.modules[0].lessons[0].id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        make_all_due(&service, &user_id).await;
+
+        // 归档前：目录与详情都见到到期卡。
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == course.course.id)
+            .expect("course listed");
+        assert!(
+            summary.due_today > 0,
+            "list due_today sees the card before archiving"
+        );
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert!(
+            detail.due_review_count > 0,
+            "detail due_review_count sees the card before archiving"
+        );
+
+        // 归档：两处计数如实归零（可服务性计数面滤归档，ADR-0017 修正案）。
+        service
+            .set_course_archived(&course.course.id, true)
+            .await
+            .unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == course.course.id)
+            .expect("archived course still listed");
+        assert_eq!(summary.due_today, 0, "archived course list badge reads 0");
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            detail.due_review_count, 0,
+            "archived course detail counter reads 0"
+        );
+
+        // 恢复：计数回来（可逆对账）。
+        service
+            .set_course_archived(&course.course.id, false)
+            .await
+            .unwrap();
+        let summary = service
+            .list_courses(&user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == course.course.id)
+            .expect("course listed after restore");
+        assert!(
+            summary.due_today > 0,
+            "restore brings the list due_today back"
+        );
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert!(
+            detail.due_review_count > 0,
+            "restore brings the detail due_review_count back"
+        );
+    }
+
     /// x11：CourseSummary 显式带 pipeline——传统课程按来源计划列判定
     /// （NULL = sampling），学习图课程不标（None）。
     #[tokio::test]
