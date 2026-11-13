@@ -2,7 +2,7 @@
 
 ## Status
 
-待施工（2026-11-13 开票；AB 审计坐实 + 用户裁决定口径）。
+已关（2026-11-13 施工收口，6b8498d96 经 merge ed39e3ae6 合入集成分支；整波经合并并回 learn0928 已推）。
 
 ## 已核验事实（2026-11-13 对码）
 
@@ -42,4 +42,15 @@
 
 ## Resolution
 
-（关票时回填）
+已施工收口（2026-11-13，6b8498d96，TDD 全程）。
+
+- R1：三处接入课程存活条件——list/detail 两处 due_today 相关子查询补
+  `AND c.enabled = 1`（注释引 ADR-0017 可服务性计数面）；due_review_count
+  升级为复用共享片段 `COURSE_ARRANGEMENT_JOIN`（比票面字面多滤 deleted_at
+  一维，评审核为单源裁决授权、与 due_reviews 同口径）。
+- R2：`archived_course_due_counters_drop_to_zero_and_come_back_on_restore`
+  ——归档前 >0 → 归档后双计数 =0 → 恢复后 >0（可逆对账）。Red 实证：
+  修复前失败于「archived course list badge reads 0: left 1, right 0」。
+- R3：供给面/前端/xp_calendar 零触碰（评审核实）。
+- 验证：966/0（965 存量 + 1 新增）+ fmt 干净。
+- 真机复验点：归档课卡片/详情不再显示幽灵「N 张到期」。
