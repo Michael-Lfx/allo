@@ -33,8 +33,7 @@ pub(super) use crate::generation::{
     validate_blueprint, variant_v2_enabled,
 };
 pub(super) use crate::models::{
-    ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
-    CalendarLessonRef, CalendarStats, CheckinStatus, CourseDetail, CourseKind, CoursePack,
+    ActivityKind, ActivityView, AttemptResult, CheckinStatus, CourseDetail, CourseKind, CoursePack,
     CourseSamplingView, CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest,
     DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
     GenerateLessonActivityRequest, GenerateLessonRequest, GeneratedLessonActivity, SectionKind,
@@ -51,6 +50,16 @@ pub(super) use crate::scheduler::{
     SchedulerSettings, days_elapsed_between, first_review_due_at, predicted_retrievability,
     recall_bucket, review_day_number, review_day_start_utc, schedule_review,
 };
+
+/// 前瞻可行动面的课程「现存且启用」共享过滤片段（单源口径，ADR-0017）：
+/// 回答「现在该做什么」的读数（负荷预报、到期计数、卡片状态分布……）必须
+/// 过滤墓碑贡献——已删除（`deleted_at` 非空）与已停用（`enabled = 0`）课程
+/// 的卡永不复服务，计入即是对行动的误导。依赖前置：查询里注册行别名必须
+/// 是 `e`（`learning_enrollments e`）。回望历史面（记忆校准、XP 总账、
+/// 复习日志）**不**接本片段——「账本永远保留」是设计语义，错边即是 bug；
+/// 新增读数面时先回答「前瞻还是回望」，回望须注明不过滤的理由。
+pub(super) const COURSE_ARRANGEMENT_JOIN: &str = "JOIN learning_courses c \
+     ON c.course_id = e.course_id AND c.deleted_at IS NULL AND c.enabled = 1";
 
 /// 大纲建课的落库快照：蓝图与采样维持旧形状（`blueprint_json` /
 /// `samples_json`，既有消费方按原格式解析），目标与采样披露走独立列
