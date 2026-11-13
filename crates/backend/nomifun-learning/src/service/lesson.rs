@@ -1335,6 +1335,8 @@ impl LearningService {
 
         // 2) 前置：每条 assumes 的概念由哪些节点（跨课程）教。
         //    concept canonical → [(lesson_id, 节点标题, 课程标题, purpose)]。
+        //    知识供给全宽含归档课（支撑其它课程，ADR-0017 修正案）；删除课
+        //    无课时行，join 天然缺席（purge 不变量）。
         let mut teachers: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
         if !assumes.is_empty() {
             let mut query = sqlx::QueryBuilder::new(
@@ -1395,6 +1397,7 @@ impl LearningService {
         // 4) 禁止清单：assumes 本课 teaches 概念的下游课程节点（防超纲黑
         //    名单，ADR-0009 概念网变体；purpose 帮作者知道下游要拿这些概念
         //    去做什么，从而知道哪些铺垫该留给下游）。
+        //    宽度同 teachers：知识供给全宽含归档课（ADR-0017 修正案）。
         let mut forbidden_concepts = String::new();
         if !teaches.is_empty() {
             let mut query = sqlx::QueryBuilder::new(
@@ -1573,8 +1576,9 @@ impl LearningService {
     ) -> Result<Option<Vec<String>>, AppError> {
         let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // 已教半边：本课程图全部节点的 teaches（登记表正名；退役概念不占
-        // 名单——名字已退场，不再当工作词；已删墓碑课的节点不参与——
-        // deleted_at IS NULL 与闭包查询同律，删课节点的供给不出名单）。
+        // 名单——名字已退场，不再当工作词）。deleted_at IS NULL 只挡墓碑：
+        // 本课自读场景下归档课自己的正名照常在列（知识供给支撑语义，
+        // ADR-0017 修正案）；跨课首现闭包才是排除归档的另一面，两者不同律。
         let taught: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT reg.canonical \
              FROM learning_lesson_concepts lc \
