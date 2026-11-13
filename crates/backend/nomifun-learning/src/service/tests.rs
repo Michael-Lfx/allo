@@ -2716,6 +2716,372 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    /// t2 R2 红绿样种子：一条覆盖全部八张内容表的课程——modules → lessons →
+    /// activities（带 course question_tag）→ lesson_sections（软硬删此前都
+    /// 缺）→ lesson_concepts（硬删此前缺）→ course_tags →
+    /// basis_declarations（硬删此前缺）。返回 course_id；种子末尾自证八表
+    /// 各有一行在册——删后断言不得因种子缺席而恒绿。
+    async fn seed_course_with_full_content(service: &LearningService, title: &str) -> String {
+        let now = now_ms();
+        let pool = service.pool_for_tests();
+        let course_id = LearningCourseId::new().into_string();
+        let module_id = LearningModuleId::new().into_string();
+        let lesson_id = LearningLessonId::new().into_string();
+        let activity_id = LearningActivityId::new().into_string();
+        let concept_id = LearningConceptId::new().into_string();
+        let tag_id = LearningTagId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, created_at, updated_at) \
+             VALUES (?, ?, '', 'general', 1, ?, ?)",
+        )
+        .bind(&course_id)
+        .bind(title)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules \
+             (module_id, course_id, title, description, position) VALUES (?, ?, 'Module', '', 0)",
+        )
+        .bind(&module_id)
+        .bind(&course_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, 'Lesson', '', 'purpose', 0, 10, 1)",
+        )
+        .bind(&lesson_id)
+        .bind(&module_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, 'single_choice', 'q', '{}', 0)",
+        )
+        .bind(&activity_id)
+        .bind(&lesson_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_tags (tag_id, name, created_at) VALUES (?, 't2标签', ?)",
+        )
+        .bind(&tag_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        // course 题库标签（m2 订正面）：question_id = activity_id。
+        sqlx::query(
+            "INSERT INTO learning_question_tags (question_id, source, tag_id) \
+             VALUES (?, 'course', ?)",
+        )
+        .bind(&activity_id)
+        .bind(&tag_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lesson_sections \
+             (section_key, lesson_id, kind, title, points, visual, body_md, status, version, \
+              position, created_at, updated_at) \
+             VALUES ('s1', ?, 'concept', 'Concept', '', '', 'body', 'ready', 1, 0, ?, ?)",
+        )
+        .bind(&lesson_id)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        // 概念网边（g3 污染事故面）：070 后概念池用户级，边随课时删。
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, 't2概念', '[]', '', ?, ?)",
+        )
+        .bind(&concept_id)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lesson_concepts \
+             (lesson_id, concept_id, role, tier) VALUES (?, ?, 'teaches', 'teach')",
+        )
+        .bind(&lesson_id)
+        .bind(&concept_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO learning_course_tags (course_id, tag_id) VALUES (?, ?)")
+            .bind(&course_id)
+            .bind(&tag_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        // 已会声明锚（m2 订正面）：声明随课删，概念留池。
+        sqlx::query(
+            "INSERT INTO learning_basis_declarations \
+             (course_id, doors_json, blocks_json, concept_ids_json, declared_at) \
+             VALUES (?, '[]', '[]', ?, ?)",
+        )
+        .bind(&course_id)
+        .bind(format!("[\"{concept_id}\"]"))
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        // 种子自证（八表逐一）：有数据可删，删后断言才有牙齿。
+        let mut seeded: Vec<(&'static str, i64)> = Vec::new();
+        seeded.push((
+            "modules",
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM learning_modules WHERE course_id = ?")
+                .bind(&course_id)
+                .fetch_one(pool)
+                .await
+                .unwrap(),
+        ));
+        seeded.push((
+            "lessons",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_lessons l \
+                 JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        seeded.push((
+            "activities",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_activities a \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        seeded.push((
+            "lesson_sections",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_lesson_sections s \
+                 JOIN learning_lessons l ON l.lesson_id = s.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        seeded.push((
+            "lesson_concepts",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        seeded.push((
+            "question_tags(course)",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_question_tags qt \
+                 JOIN learning_activities a ON a.activity_id = qt.question_id \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 WHERE qt.source = 'course' AND m.course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        seeded.push((
+            "course_tags",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_course_tags WHERE course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        seeded.push((
+            "basis_declarations",
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM learning_basis_declarations WHERE course_id = ?",
+            )
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        ));
+        for (label, count) in seeded {
+            assert_eq!(
+                count, 1,
+                "seed must put exactly one {label} row in place before the delete"
+            );
+        }
+        course_id
+    }
+
+    /// t2 R2 零孤儿断言（软删/硬删两路径共享的测试工具）：八张内容表删后
+    /// 零残留。按 course_id 直键的表（modules/course_tags/
+    /// basis_declarations）用等值计数；以 lesson_id/activity_id 反查宿主的
+    /// 表用孤儿形态断言（NOT EXISTS 宿主行）——不按 course 子查询计数：
+    /// 子查询落在已清空的宿主表上恒空 = 恒绿，正是 g3/m2 两次咬人的
+    /// 「永不生效」老坑，断言本身必须免疫它。夹具是单课程全新内存库，
+    /// 孤儿形态在此等价于全表零残留。
+    async fn assert_course_content_fully_purged(pool: &SqlitePool, course_id: &str) {
+        let orphans = |label: &'static str, count: i64| {
+            assert_eq!(count, 0, "{label} must have zero orphans after the delete");
+        };
+        orphans(
+            "learning_modules",
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_modules WHERE course_id = ?")
+                .bind(course_id)
+                .fetch_one(pool)
+                .await
+                .unwrap(),
+        );
+        orphans(
+            "learning_course_tags",
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_course_tags WHERE course_id = ?")
+                .bind(course_id)
+                .fetch_one(pool)
+                .await
+                .unwrap(),
+        );
+        orphans(
+            "learning_basis_declarations",
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_basis_declarations WHERE course_id = ?",
+            )
+            .bind(course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+        orphans(
+            "learning_lessons (module gone)",
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_lessons l WHERE NOT EXISTS (\
+                    SELECT 1 FROM learning_modules m WHERE m.module_id = l.module_id)",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+        orphans(
+            "learning_activities (lesson gone)",
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_activities a WHERE NOT EXISTS (\
+                    SELECT 1 FROM learning_lessons l WHERE l.lesson_id = a.lesson_id)",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+        orphans(
+            "learning_lesson_sections (lesson gone)",
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_lesson_sections s WHERE NOT EXISTS (\
+                    SELECT 1 FROM learning_lessons l WHERE l.lesson_id = s.lesson_id)",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+        orphans(
+            "learning_lesson_concepts (lesson gone)",
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_lesson_concepts lc WHERE NOT EXISTS (\
+                    SELECT 1 FROM learning_lessons l WHERE l.lesson_id = lc.lesson_id)",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+        orphans(
+            "learning_question_tags course rows (activity gone)",
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_question_tags qt WHERE qt.source = 'course' \
+                 AND NOT EXISTS (\
+                    SELECT 1 FROM learning_activities a WHERE a.activity_id = qt.question_id)",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+    }
+
+    /// 软删零孤儿（t2 R1+R2）：目录删除按同一张 purge 清单清八张内容表，
+    /// 课程行留墓碑。清单此前缺 learning_lesson_sections——分节内容表不在
+    /// 删除清单里，课时行删后节行成孤儿。
+    #[tokio::test]
+    async fn delete_course_soft_purge_leaves_zero_content_orphans() {
+        let (service, _knowledge, owner_id) = job_test_service().await;
+        let pool = service.pool_for_tests();
+        let course_id = seed_course_with_full_content(&service, "软删全量课").await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        service.delete_course(&course, &owner_id).await.unwrap();
+        // 墓碑位：课程行留，deleted_at 置位（软删与硬删的处置分界）。
+        let tombstones: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses \
+             WHERE course_id = ? AND deleted_at IS NOT NULL",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let live: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses \
+             WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstones, 1, "soft delete must leave exactly one tombstone");
+        assert_eq!(live, 0, "soft delete must not leave a live row");
+        assert_course_content_fully_purged(pool, &course_id).await;
+    }
+
+    /// 硬删零孤儿（t2 R1+R2）：教程种子替换按同一张 purge 清单清八张内容
+    /// 表再硬删课程行。清单此前缺 lesson_sections / lesson_concepts /
+    /// basis_declarations——课程行一删这些孤儿边永远无主，比软删更糟。
+    #[tokio::test]
+    async fn delete_by_title_hard_purge_leaves_zero_content_orphans() {
+        let (service, _knowledge, _owner_id) = job_test_service().await;
+        let pool = service.pool_for_tests();
+        let course_id = seed_course_with_full_content(&service, "硬删全量课").await;
+        service.delete_courses_by_title("硬删全量课").await.unwrap();
+        // 课程行硬删（现语义保持）：无墓碑。
+        let courses: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
+                .bind(&course_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(courses, 0, "by-title delete must hard-delete the course row");
+        assert_course_content_fully_purged(pool, &course_id).await;
+    }
+
     /// 安排面收窄（三轮 g3「现存且启用」）：归档课的卡离开到期队列、恢复后
     /// 回来；队列收窄不拦已出卡的作答提交（历史面如实落账）；概况读数随
     /// enabled 与 due_today 反映。
