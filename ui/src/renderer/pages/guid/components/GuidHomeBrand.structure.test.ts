@@ -18,7 +18,8 @@ describe('Guid homepage membership card', () => {
     expect(source.includes("data-testid='guid-home-calendar'")).toBe(true);
     expect(source.includes("data-testid='guid-home-checkin-status'")).toBe(true);
     expect(source.includes("data-testid='guid-home-credits-detail'")).toBe(true);
-    expect(source.includes("shadowColor='var(--brand, #7f93b8)'")).toBe(true);
+    expect(source.includes("shadowColor='var(--flowy-accent)'")).toBe(true);
+    expect(source.includes('#7f93b8')).toBe(false);
   });
 
   test('keeps the compact back as a message list with a real detail button', () => {

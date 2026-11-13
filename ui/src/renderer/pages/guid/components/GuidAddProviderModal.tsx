@@ -13,7 +13,9 @@ export type GuidAddProviderHandle = {
 };
 
 type GuidAddProviderModalProps = {
-  onConfigured?: (model: TProviderWithModel) => void | Promise<void>;
+  /** Returns false when the caller could not persist the selection and has
+   * already surfaced its own error toast; the success toast is then skipped. */
+  onConfigured?: (model: TProviderWithModel) => void | boolean | Promise<void | boolean>;
 };
 
 /**
@@ -50,7 +52,8 @@ const GuidAddProviderModal = React.forwardRef<GuidAddProviderHandle, GuidAddProv
           await mutate();
           const firstModel = platform.models?.[0];
           if (firstModel) {
-            await onConfigured?.({ ...platform, use_model: firstModel });
+            const configured = await onConfigured?.({ ...platform, use_model: firstModel });
+            if (configured === false) return;
           }
           message.success(t('guid.modelProviderSaved', { defaultValue: '模型已就绪，可以开始任务' }));
         } catch (error) {

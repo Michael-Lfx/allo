@@ -1751,25 +1751,55 @@ const GuidPage: React.FC = () => {
     agentSelection.selectedAgent,
   ]);
 
+  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds) || guidInput.files.length > 0;
+  const hasModel = Boolean(modelSelection.current_model);
+  const currentModelKey = `${modelSelection.current_model?.id ?? ''}\u0000${modelSelection.current_model?.use_model ?? ''}`;
+
   const readiness = useMemo(
     () =>
       resolveGuidReadiness({
         intentId: 'freeform',
-        hasModel: Boolean(modelSelection.current_model),
+        hasModel,
         workspaceDir: guidInput.dir,
         needsModelForAgent,
       }),
-    [guidInput.dir, modelSelection.current_model, needsModelForAgent]
+    [guidInput.dir, hasModel, needsModelForAgent]
   );
 
-  const [modelReadinessNotice, setModelReadinessNotice] = useState<'missing' | 'unavailable' | null>(null);
+  // The inline notice is an *intent* signal: it appears once the user has a
+  // draft (or a send was blocked), never as a cold-start flash while the model
+  // catalog is still resolving. "Unavailable" is bound to the model that
+  // failed, so switching to another model clears it even though readiness
+  // stays satisfied (blocker === null) throughout.
+  const [modelReadinessNotice, setModelReadinessNotice] = useState<{
+    state: 'missing' | 'unavailable';
+    modelKey: string;
+  } | null>(null);
+
   useEffect(() => {
-    if (readiness.blocker === 'model') {
-      setModelReadinessNotice((current) => current ?? 'missing');
+    if (modelSelection.isModelCatalogLoading) return;
+
+    if (!hasModel) {
+      if (hasDraft && readiness.blocker === 'model') {
+        setModelReadinessNotice((current) =>
+          current?.state === 'missing' ? current : { state: 'missing', modelKey: currentModelKey }
+        );
+      }
       return;
     }
-    setModelReadinessNotice(null);
-  }, [readiness.blocker]);
+
+    setModelReadinessNotice((current) => {
+      if (!current) return current;
+      if (current.state === 'missing') return null;
+      return current.modelKey === currentModelKey ? current : null;
+    });
+  }, [
+    currentModelKey,
+    hasDraft,
+    hasModel,
+    modelSelection.isModelCatalogLoading,
+    readiness.blocker,
+  ]);
 
   const handleLinkWorkspace = useCallback(() => {
     return workspaceDialogGateRef.current(async () => {
@@ -1948,11 +1978,11 @@ const GuidPage: React.FC = () => {
     t,
     onNeedModel: () => {
       pendingAutoSendRef.current = true;
-      setModelReadinessNotice('missing');
+      setModelReadinessNotice({ state: 'missing', modelKey: currentModelKey });
     },
     onModelUnavailable: () => {
       pendingAutoSendRef.current = true;
-      setModelReadinessNotice('unavailable');
+      setModelReadinessNotice({ state: 'unavailable', modelKey: currentModelKey });
     },
     onNeedWorkspace: handleLinkWorkspace,
     readinessReady: readiness.ready,
@@ -2327,7 +2357,6 @@ const GuidPage: React.FC = () => {
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
-  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds) || guidInput.files.length > 0;
   const actionRowNode = (
     <GuidActionRow
       onStartVoiceCall={isNomiAgent ? handleStartVoiceCall : undefined}
@@ -2765,7 +2794,7 @@ const GuidPage: React.FC = () => {
               entryStrip={
                 modelReadinessNotice ? (
                   <ModelReadinessNotice
-                    state={modelReadinessNotice}
+                    state={modelReadinessNotice.state}
                     hasDraft={hasDraft}
                     onChooseModel={() => {
                       pendingAutoSendRef.current = true;
@@ -2794,18 +2823,25 @@ const GuidPage: React.FC = () => {
 
         <GuidAddProviderModal
           ref={addProviderRef}
-          onConfigured={(model) => {
-            void modelSelection.setCurrentModel(model).then(() => {
-              trackFunnelEvent('prerequisite_resolved', { kind: 'model' });
-              if (pendingAutoSendRef.current) {
-                pendingAutoSendRef.current = false;
-                window.setTimeout(() => {
-                  send.sendMessageHandler();
-                }, 0);
-              }
-            }).catch((error) => {
+          onConfigured={async (model) => {
+            try {
+              // Await persistence so the success toast reflects the real
+              // outcome and auto-send never races an unselected model.
+              await modelSelection.setCurrentModel(model);
+            } catch (error) {
+              // setCurrentModel already surfaced the failure toast; report it
+              // as false so the caller does not add a second "success" toast.
               console.error('[GuidPage] Failed to persist configured model:', error);
-            });
+              return false;
+            }
+            trackFunnelEvent('prerequisite_resolved', { kind: 'model' });
+            if (pendingAutoSendRef.current) {
+              pendingAutoSendRef.current = false;
+              window.setTimeout(() => {
+                send.sendMessageHandler();
+              }, 0);
+            }
+            return true;
           }}
         />
       </div>

@@ -14,6 +14,8 @@ type WorkspaceHeaderProps = {
   onToggle: () => void;
   togglePlacement?: 'left' | 'right';
   workspacePath?: string;
+  /** id of the panel body controlled by the collapse toggle. */
+  contentId?: string;
   /**
    * Authoritative temp-workspace flag from
    * `conversation.extra.is_temporary_workspace`. Drives which right-side action
@@ -37,6 +39,7 @@ const WorkspacePanelHeader: React.FC<WorkspaceHeaderProps> = ({
   onToggle,
   togglePlacement = 'right',
   workspacePath,
+  contentId,
   isTemporaryWorkspace = false,
   conversation_id,
   activeTab = 'files',
@@ -56,6 +59,8 @@ const WorkspacePanelHeader: React.FC<WorkspaceHeaderProps> = ({
         type='button'
         className='workspace-header__toggle mr-4px'
         aria-label={toggleLabel}
+        aria-expanded={!collapsed}
+        aria-controls={contentId}
         onClick={onToggle}
       >
         {collapsed ? <ExpandRight size={16} /> : <ExpandLeft size={16} />}
@@ -76,7 +81,14 @@ const WorkspacePanelHeader: React.FC<WorkspaceHeaderProps> = ({
       ))}
 
     {showToggle && togglePlacement === 'right' && (
-      <button type='button' className='workspace-header__toggle' aria-label={toggleLabel} onClick={onToggle}>
+      <button
+        type='button'
+        className='workspace-header__toggle'
+        aria-label={toggleLabel}
+        aria-expanded={!collapsed}
+        aria-controls={contentId}
+        onClick={onToggle}
+      >
         {collapsed ? <ExpandRight size={16} /> : <ExpandLeft size={16} />}
       </button>
     )}

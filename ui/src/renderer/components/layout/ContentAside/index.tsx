@@ -9,6 +9,7 @@ import React, { useCallback, useEffect } from 'react';
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
+import { shouldCloseAsideOnEscape } from './contentAsideEscape';
 
 export interface ContentAsideProps {
   /** Panel heading. */
@@ -61,7 +62,11 @@ const ContentAside: React.FC<ContentAsideProps> = ({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      // A dialog/popover that already consumed Escape (or that currently owns
+      // focus) is the topmost surface; closing the aside too would dismiss two
+      // layers with one key press.
+      const active = typeof document === 'undefined' ? null : document.activeElement;
+      if (shouldCloseAsideOnEscape(event, active)) onClose();
     },
     [onClose]
   );
