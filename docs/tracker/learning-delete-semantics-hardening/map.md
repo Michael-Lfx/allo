@@ -31,7 +31,7 @@
 | 项 | 不做理由 | 重启条件 |
 | --- | --- | --- |
 | C1 物理外键替代物（运行时孤儿扫描器常态化） | t2 的「零孤儿断言」已覆盖删除路径的主要暴露面；常驻扫描器是架构级投入，当前量级无实害 | 出现删除路径之外的孤儿来源，或库量级到需要定期体检 |
-| C2 双流水分工疑虑（review_log 16 vs review_events 0） | **已对码定性（2026-11-13，非 bug）**：log=评分流水，每行用 rating_source 自标出身（progress.rs:713 播种行 rating=0/'synthetic'，读面以 `rating_source IN ('auto','self')` + 参数非 NULL 诚实过滤排除），喂记忆校准（memory Panel3+4）/概念推进（learning_graph.rs:3110，课程作用域）/quiz 评分锚（quiz.rs:766，课程作用域）；events=判分门通过的真实作答流水（review.rs:1142/1614 `if allowed`），喂打卡热力（checkin.rs:216）/quiz 时间锚（quiz.rs:257）。dev 库 16/0 自洽：16 条=造数波故意灌的历史评分轨迹（喂面板是 s1 本意，10-21→10-31），events 空=真机从未交互复习作答（11-12 走查实弹的是 quiz） | 真机交互复习作答后 events 仍 0（写入路径断），或出现需合并两表的读数需求 |
+| C2 双流水分工疑虑（review_log 16 vs review_events 0） | **已对码定性（2026-11-13，非 bug，消费面全量复核）**：log=评分流水——每行 rating_source 自标出身（progress.rs:713 播种行 rating=0/'synthetic'，读面以 `rating_source IN ('auto','self')`+参数非 NULL 诚实过滤），消费面 4 个全活：`push_allowed` 闸门状态（review.rs:1765，查同日真实推进防刷）、记忆校准（memory.rs:167→MemoryHealthPanel）、教练推进（learning_graph.rs:3110→build_coach_context）、quiz escalation（quiz.rs:766）；events=判分门通过的行为流水（review.rs:1142/1614 `if allowed`），消费面 1 活 1 死：quiz_start 选题 LRU 锚（quiz.rs:257，活）、打卡日历热力（checkin.rs:216→calendar_stats→前端零调用，死链，随 t1 R5 裁决）。dev 库 16/0 自洽：16 条=造数波故意灌的历史轨迹（喂面板是 s1 本意），events 空=真机从未交互复习作答 | 真机交互复习作答后 events 仍 0（写入路径断），或日历热力视图重启立项 |
 | 墓碑账面 GC（xp_events/quiz_rounds/enrollment 悬挂行清理） | 注释「后续清理时有据可查」的清理器不存在，但单用户本地库量级下无实害 | 库体积或孤儿行数到可感知量级 |
 | 「现存且启用」过滤 20 处存量全量收编 | t1 只建共享片段并落 4 个修复点；全量收编是大面重构，收益边际递减 | 再出现一处漏抄导致的计数泄漏 |
 
