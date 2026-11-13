@@ -2,7 +2,6 @@ import { httpRequest } from '@/common/adapter/httpBridge';
 import type {
   AttemptResult,
   BasisView,
-  CalendarStats,
   CapacityFeedbackChoice,
   CapacityFeedbackView,
   CheckinStatus,
@@ -283,11 +282,6 @@ export const learningApi = {
     httpRequest<XpCalendar>('GET', `${BASE}/xp/calendar?weeks=${weeks}`),
   getMemoryStats: (tzOffset: number) =>
     httpRequest<MemoryHealthStats>('GET', `${BASE}/stats/memory?tz_offset=${tzOffset}`),
-  getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>
-    httpRequest<CalendarStats>(
-      'GET',
-      `${BASE}/stats/calendar?tz_offset=${tzOffset}&year=${year}${month ? `&month=${month}` : ''}`
-    ),
   setCourseTags: (id: string, request: SetTagsRequest) =>
     httpRequest<string[]>('PUT', `${BASE}/courses/${encodeURIComponent(id)}/tags`, request),
   setQuestionTags: (

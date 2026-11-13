@@ -660,12 +660,20 @@ impl LearningService {
     }
 
     /// Deletes a course (三轮 g3 语义对齐 learnhub：账本永远保留): the course
-    /// row becomes a tombstone and the course content (lessons/modules/concept
-    /// edges/activities) is physically removed, while review cards, attempts,
-    /// progress and the enrollment stay — the arrangement surfaces stop
-    /// listing the course via the existing-and-enabled filter, the history
-    /// surfaces keep the record. There is no option to wipe reviews anymore;
-    /// pausing without deletion is what archiving is for.
+    /// row becomes a tombstone and the course content (modules/lessons/lesson
+    /// sections/concept edges/activities/course tags/basis declarations) is
+    /// physically removed via the shared purge list, while review cards,
+    /// attempts, progress and the enrollment stay — the arrangement surfaces
+    /// stop listing the course via the existing-and-enabled filter, the
+    /// history surfaces keep the record. There is no option to wipe reviews
+    /// anymore; pausing without deletion is what archiving is for.
+    ///
+    /// 删除事务内的收尾动作（t3 R1，ADR-0017 §4）：该课 active 检测回合
+    /// 废弃（supersede 同款形态，写路径单源在
+    /// `quiz::abandon_active_rounds`）；将被 purge 的 activities 名下的
+    /// 复习卡（死卡）在 purge 之前打 `archived_at`（列现成、全读面已过滤
+    /// `archived_at IS NULL`，纯数据自描述）；墓碑统一形态——`enabled` 随
+    /// `deleted_at` 一并清零。存量由迁移 071 一次性背填。
     pub async fn delete_course(
         &self,
         course_id: &LearningCourseId,
@@ -681,55 +689,46 @@ impl LearningService {
         if exists.is_none() {
             return Err(AppError::NotFound(format!("course {course_id}")));
         }
-        // 课程内容（课时/模块/概念网边）物理删除——复习保留的只是题目数据，
-        // 不靠课时行续命。孤儿课时曾把新课的入口层向上顶（全局已教账把幽灵
-        // 供给当真），这条语义从根上掐掉污染源。
-        let content_sql = [
-            "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
-                SELECT l.lesson_id FROM learning_lessons l \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
-            // 题库标签先于活动行删除（m2 订正）：子查询按活动行键定，排在
-            // activities 删除之后则恒空 = 标签永不生效，题库留幽灵行。
-            "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
-                SELECT a.activity_id FROM learning_activities a \
-                JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
-            "DELETE FROM learning_activities WHERE lesson_id IN (\
-                SELECT l.lesson_id FROM learning_lessons l \
-                JOIN learning_modules m ON m.module_id = l.module_id \
-                WHERE m.course_id = ?)",
-            "DELETE FROM learning_lessons WHERE module_id IN (\
-                SELECT module_id FROM learning_modules WHERE course_id = ?)",
-            "DELETE FROM learning_modules WHERE course_id = ?",
-        ];
-        for sql in content_sql {
-            sqlx::query(sql)
-                .bind(course_id.as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
-        }
-        sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
-            .bind(course_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
-        // 已会声明锚随课删（m2，逻辑引用 Cascade 的应用侧执行面——声明是本
-        // 课事实；铸出的概念留池不受影响，「声明可撤、概念不灭」）。
-        sqlx::query("DELETE FROM learning_basis_declarations WHERE course_id = ?")
-            .bind(course_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
-        // 软删除：课程行留作墓碑（名称即标识、deleted_at 即删除状态位），
-        // 遗留数据凭 course_id 归账，后续清理时有据可查。
+        let now = now_ms();
+        // 死卡打标（t3 R1②，ADR-0017）：该课 activities 即将被 purge，其
+        // 复习卡按「账本永远保留」留存，但永不复服务——purge 之前打
+        // archived_at（同一子查询定位 activities，排后则恒空），让「死卡」
+        // 成为可查询状态而非推断；读面已过滤 archived_at IS NULL，前瞻
+        // 口径零行为变化。
         sqlx::query(
-            "UPDATE learning_courses SET deleted_at = ?, updated_at = ? WHERE course_id = ?",
+            "UPDATE learning_review_items SET archived_at = ?, updated_at = ? \
+             WHERE archived_at IS NULL AND activity_id IN (\
+                 SELECT a.activity_id FROM learning_activities a \
+                 JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 WHERE m.course_id = ?)",
         )
-        .bind(now_ms())
-        .bind(now_ms())
+        .bind(now)
+        .bind(now)
+        .bind(course_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        // active 回合废弃（t3 R1①，ADR-0017）：正测到一半的课不留幽灵
+        // 回合；supersede 同款形态，写路径单源在 quiz::abandon_active_rounds。
+        super::quiz::abandon_active_rounds(&mut *transaction, None, course_id.as_str(), now)
+            .await?;
+        // 课程内容八表单源 purge（t2 R1，与 delete_courses_by_title 同一张
+        // 清单）——复习保留的只是题目数据，不靠课时行续命。孤儿课时曾把
+        // 新课的入口层向上顶（全局已教账把幽灵供给当真），这条语义从根上
+        // 掐掉污染源。
+        purge_course_content(&mut transaction, course_id.as_str()).await?;
+        // 软删除：课程行留作墓碑（名称即标识、deleted_at 即删除状态位），
+        // 遗留数据凭 course_id 归账，后续清理时有据可查。墓碑统一形态
+        // （t3 R1③，ADR-0017 §3）：enabled 随 deleted_at 一并清零——双状态
+        // 位冗余收敛，半抄过滤（只看 enabled）的查询面从此安全；无恢复
+        // 路径，零行为风险。
+        sqlx::query(
+            "UPDATE learning_courses SET deleted_at = ?, updated_at = ?, enabled = 0 \
+             WHERE course_id = ?",
+        )
+        .bind(now)
+        .bind(now)
         .bind(course_id.as_str())
         .execute(&mut *transaction)
         .await
@@ -757,9 +756,15 @@ impl LearningService {
     }
 
     /// Deletes every course with the given title and all of its data —
-    /// enrollments, progress, attempts, reviews, concepts, lessons and
-    /// activities — regardless of which user created them. Used by the
-    /// tutorial seed to replace a stale preset course version.
+    /// enrollments, progress, attempts, reviews, lessons and activities —
+    /// regardless of which user created them. Used by the tutorial seed to
+    /// replace a stale preset course version. Content tables go through the
+    /// same shared purge list as [`LearningService::delete_course`] (t2 R1);
+    /// the only differences are the ledger face (enrollments/review cards/
+    /// progress/attempts are wiped here, kept under tombstone semantics) and
+    /// the course row itself being hard-deleted instead of tombstoned.
+    /// (概念不再出现在清单里：070 后概念池用户级、无 course_id，课级概念
+    /// 清理已不可能也不需要。)
     pub(crate) async fn delete_courses_by_title(&self, title: &str) -> Result<(), AppError> {
         let course_ids: Vec<String> =
             sqlx::query_scalar(
@@ -799,34 +804,10 @@ impl LearningService {
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
-            let content_sql = [
-                // 题库标签先于活动行删除（m2 订正，同 delete_course）：子查询
-                // 按活动行键定，排在 activities 删除之后则恒空 = 永不生效。
-                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
-                    SELECT a.activity_id FROM learning_activities a \
-                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
-                "DELETE FROM learning_activities WHERE lesson_id IN (\
-                    SELECT l.lesson_id FROM learning_lessons l \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
-                "DELETE FROM learning_lessons WHERE module_id IN (\
-                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
-                "DELETE FROM learning_modules WHERE course_id = ?",
-            ];
-            for sql in content_sql {
-                sqlx::query(sql)
-                    .bind(course_id)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(internal)?;
-            }
-            sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
-                .bind(course_id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
+            // 课程内容八表与软删共用同一张 purge 清单（t2 R1）——此前硬删
+            // 缺 lesson_sections / lesson_concepts / basis_declarations，课程
+            // 行一删这些孤儿边永远无主，比软删更糟。
+            purge_course_content(&mut transaction, course_id).await?;
             sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
                 .bind(course_id)
                 .execute(&mut *transaction)
@@ -837,6 +818,62 @@ impl LearningService {
         Ok(())
     }
 
+}
+
+/// 课程内容 purge 清单（t2 R1 单源）：软删（[`LearningService::delete_course`]，
+/// 墓碑语义）与硬删（[`LearningService::delete_courses_by_title`]，教程种子
+/// 替换）共用同一张清单，差异只在账本面与课程行处置。物理外键被合同禁用
+/// （`id_schema_contract::validate_no_physical_foreign_keys`），完整性只能由
+/// 这张应用层删除清单保证——新增任何挂在课程内容行上的表，必须在这里补上
+/// 对应的 DELETE。
+///
+/// 清单顺序一律「先子后父」：子查询按宿主行（modules → lessons →
+/// activities）键定，宿主删后子查询恒空 = 清理永不生效（g3/m2 两次咬人），
+/// 所以 lesson_sections / lesson_concepts / question_tags(course) 必须排在
+/// 各自宿主行删除之前。
+async fn purge_course_content(
+    transaction: &mut Transaction<'_, Sqlite>,
+    course_id: &str,
+) -> Result<(), AppError> {
+    const PURGE_SQL: [&str; 8] = [
+        // 分节内容（t2 补齐）：软硬删此前都缺——课时行删后节行成孤儿。
+        "DELETE FROM learning_lesson_sections WHERE lesson_id IN (\
+            SELECT l.lesson_id FROM learning_lessons l \
+            JOIN learning_modules m ON m.module_id = l.module_id \
+            WHERE m.course_id = ?)",
+        // 概念网边（g3）：边随课时删，防孤儿课时把全局已教账顶高；概念登记
+        // 表用户级留池（070 后无 course_id 可按）。
+        "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
+            SELECT l.lesson_id FROM learning_lessons l \
+            JOIN learning_modules m ON m.module_id = l.module_id \
+            WHERE m.course_id = ?)",
+        // 题库标签先于活动行删除（m2 订正）：子查询按活动行键定，排在
+        // activities 删除之后则恒空 = 标签永不生效，题库留幽灵行。
+        "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+            SELECT a.activity_id FROM learning_activities a \
+            JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+            JOIN learning_modules m ON m.module_id = l.module_id \
+            WHERE m.course_id = ?)",
+        "DELETE FROM learning_activities WHERE lesson_id IN (\
+            SELECT l.lesson_id FROM learning_lessons l \
+            JOIN learning_modules m ON m.module_id = l.module_id \
+            WHERE m.course_id = ?)",
+        "DELETE FROM learning_lessons WHERE module_id IN (\
+            SELECT module_id FROM learning_modules WHERE course_id = ?)",
+        "DELETE FROM learning_modules WHERE course_id = ?",
+        "DELETE FROM learning_course_tags WHERE course_id = ?",
+        // 已会声明锚随课删（m2，逻辑引用 Cascade 的应用侧执行面——声明是本
+        // 课事实；铸出的概念留池不受影响，「声明可撤、概念不灭」）。
+        "DELETE FROM learning_basis_declarations WHERE course_id = ?",
+    ];
+    for sql in PURGE_SQL {
+        sqlx::query(sql)
+            .bind(course_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(internal)?;
+    }
+    Ok(())
 }
 
 pub(super) fn recommend_next_lesson(modules: &[ModuleView]) -> Option<LearningLessonId> {

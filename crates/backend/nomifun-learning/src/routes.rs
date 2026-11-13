@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
+    AnswerReviewRequest, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
@@ -172,7 +172,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/quiz/overview",
             get(quiz_overview),
         )
-        .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
@@ -1011,46 +1010,6 @@ async fn quiz_calibration(
 ) -> Result<Json<ApiResponse<Vec<MemoryCalibrationBin>>>, AppError> {
     Ok(Json(ApiResponse::ok(
         state.service.quiz_calibration(&user.id).await?,
-    )))
-}
-
-#[derive(Debug, Deserialize)]
-struct CalendarStatsQuery {
-    /// Minutes east of UTC (same sign as `SchedulerSettings::tz_offset_minutes`),
-    /// reported by the frontend as `-Date().getTimezoneOffset()`.
-    tz_offset: i32,
-    year: i64,
-    /// 1..=12; absent = year view (heatmap).
-    month: Option<u32>,
-}
-
-async fn calendar_stats(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Query(query): Query<CalendarStatsQuery>,
-) -> Result<Json<ApiResponse<CalendarStats>>, AppError> {
-    if !(-24 * 60..=24 * 60).contains(&query.tz_offset) {
-        return Err(AppError::BadRequest(format!(
-            "tz_offset out of range: {}",
-            query.tz_offset
-        )));
-    }
-    if !(1900..=2999).contains(&query.year) {
-        return Err(AppError::BadRequest(format!(
-            "year out of range: {}",
-            query.year
-        )));
-    }
-    if let Some(month) = query.month {
-        if !(1..=12).contains(&month) {
-            return Err(AppError::BadRequest(format!("month out of range: {month}")));
-        }
-    }
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .calendar_stats(&user.id, query.tz_offset, query.year, query.month)
-            .await?,
     )))
 }
 
