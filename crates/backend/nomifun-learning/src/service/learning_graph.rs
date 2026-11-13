@@ -4048,6 +4048,8 @@ impl LearningService {
         }
 
         // 供给表：概念 → 教它的节点（跨课程，不含被评估的候选自身）。
+        // 知识供给全宽含归档课（支撑其它课程，ADR-0017 修正案）——
+        // deleted_at 过滤只挡墓碑，归档课已掌握的前置照常支撑就绪门。
         let assumed_concepts: HashSet<String> = ready
             .iter()
             .flat_map(|candidate| candidate.assumes.iter().map(|(concept_id, _)| concept_id.clone()))
@@ -5174,6 +5176,9 @@ impl LearningService {
     }
 
     /// 已教概念账文本（canonical@最高档）。
+    /// 知识供给全宽含归档课（支撑其它课程，ADR-0017 修正案）；零过滤依赖
+    /// purge 不变量——删除路径必清 lesson_concepts（软删 g3/硬删 t2），孤儿
+    /// 边不存在则账面只含未删课程。
     pub(super) async fn render_taught_summary(&self) -> Result<String, AppError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT reg.canonical, lc.tier FROM learning_lesson_concepts lc \
