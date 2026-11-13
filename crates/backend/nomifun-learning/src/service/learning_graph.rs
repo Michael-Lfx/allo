@@ -4890,26 +4890,6 @@ impl LearningService {
             .await
     }
 
-    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数；
-    /// 无在跑而有排队时回退最新排队主题（m7 排队可见），queued = 排队计数。
-    pub fn generation_status(&self) -> crate::models::LearningGraphGenerationStatus {
-        let (queued, queued_topic) = self.generation_tasks.queued_summary();
-        match self.generation_tasks.running_newest() {
-            Some((topic, elapsed_secs)) => crate::models::LearningGraphGenerationStatus {
-                running: true,
-                topic: Some(topic),
-                elapsed_secs: Some(elapsed_secs),
-                queued,
-            },
-            None => crate::models::LearningGraphGenerationStatus {
-                running: false,
-                topic: queued_topic,
-                elapsed_secs: None,
-                queued,
-            },
-        }
-    }
-
     /// 长任务快照（`GET /api/learning/generation-tasks`）。
     pub fn generation_task_snapshot(&self) -> Vec<crate::service::GenerationTaskView> {
         self.generation_tasks.snapshot()

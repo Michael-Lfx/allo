@@ -35,7 +35,7 @@ pub(super) use crate::generation::{
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CheckinStatus, CourseDetail, CourseKind, CoursePack,
     CourseSamplingView, CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest,
-    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
+    DueReview, GenerateCourseRequest,
     GenerateLessonActivityRequest, GenerateLessonRequest, GeneratedLessonActivity, SectionKind,
     SectionView, LessonStatus,
     LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
@@ -566,7 +566,6 @@ pub use learning_graph::{
 mod capacity_feedback;
 mod course;
 mod course_outline;
-mod diagnostic;
 mod generation_tasks;
 mod generate;
 mod lesson;
