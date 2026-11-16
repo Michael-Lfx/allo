@@ -532,6 +532,7 @@ pub(crate) async fn run_mount_round(
         let raw = crate::generation::complete_json_coach(
             completer,
             model_override,
+            "structure_mount",
             MOUNT_SYSTEM,
             &prompt.text,
             crate::generation::STRUCTURE_MAX_TOKENS,

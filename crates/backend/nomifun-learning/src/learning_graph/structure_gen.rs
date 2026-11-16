@@ -249,6 +249,7 @@ async fn attempt_once(
     let terrain_raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
+        "structure_terrain",
         STRUCTURE_SYSTEM,
         &terrain_prompt.text,
         crate::generation::STRUCTURE_MAX_TOKENS,
@@ -283,6 +284,7 @@ async fn attempt_once(
     let structure_raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
+        "structure_artifact",
         STRUCTURE_SYSTEM,
         &structure_prompt.text,
         crate::generation::STRUCTURE_MAX_TOKENS,

@@ -828,6 +828,7 @@ pub(crate) async fn coach_draft(
     let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
+        "growth_draft",
         &coach_system(),
         &user,
         crate::generation::COACH_MAX_TOKENS,
@@ -873,6 +874,7 @@ pub(crate) async fn coach_redraft(
     let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
+        "growth_redraft",
         &coach_system(),
         &user,
         crate::generation::COACH_MAX_TOKENS,
@@ -1774,6 +1776,7 @@ pub(crate) async fn concept_review(
         let raw = match crate::generation::complete_json_coach(
             completer,
             model_override,
+            "growth_review",
             &system,
             &user,
             crate::generation::CONCEPT_REVIEW_MAX_TOKENS,

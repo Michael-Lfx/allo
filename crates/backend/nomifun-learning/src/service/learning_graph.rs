@@ -1857,6 +1857,10 @@ impl LearningService {
         let mut task = self.begin_growth_task(course_id).await?;
         let token = task.token();
         task.set_step("draft", "教练正在阅读结构参考与花名册，起草本批节点…");
+        // 运行级计时（o1）：accept/failure 读数行与 reject WARN 对称——批次
+        // 通过不再静默（2026-11-16 病历：attempt-3 通过后零日志，确认只能
+        // 查 DB learning_growth_batches.status）。
+        let started = std::time::Instant::now();
         let model_label = match engine.model_override() {
             Some((provider, model)) => format!("{}/{}", provider.as_str(), model),
             None => "default".to_owned(),
@@ -1885,6 +1889,18 @@ impl LearningService {
         let ledger_basis = format!("ready={}", engine.ready_count);
         match &result {
             Ok(applied) => {
+                // o1 accept 对称行：reject 有 WARN（concept review 打回），
+                // 通过也要有一行（attempt 序号 + 耗时 + 节点数）——零正文，
+                // 只数字与 id。
+                tracing::info!(
+                    course = course_id.as_str(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    attempts = applied.attempts_used,
+                    nodes = applied.node_count,
+                    ready = applied.ready_count,
+                    idle = applied.idle,
+                    "learning graph growth batch accepted"
+                );
                 task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
                 // 空手批（idle）= 零工作：不落账本。落库批 = Done 终态行。
                 if !applied.idle {
@@ -1951,6 +1967,13 @@ impl LearningService {
                     )
                     .await;
                     task.finish_failed(error.to_string());
+                    // o1 失败臂对称读数：耗时随失败行可见（cancelled 臂不记
+                    // ——用户取消不是诊断对象）。
+                    tracing::info!(
+                        course = course_id.as_str(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "learning graph growth run failed"
+                    );
                     self.emit_graph_event(
                         course_id,
                         "growth_failed",
@@ -2797,16 +2820,20 @@ impl LearningService {
                 note: batch.note.clone(),
                 ready_count,
                 idle: true,
+                attempts_used,
             });
         }
-        self.apply_batch(
-            course_id,
-            engine,
-            pending,
-            &batch,
-            batch_rulings.as_ref().unwrap_or(&HashMap::new()),
-        )
-        .await
+        let mut applied = self
+            .apply_batch(
+                course_id,
+                engine,
+                pending,
+                &batch,
+                batch_rulings.as_ref().unwrap_or(&HashMap::new()),
+            )
+            .await?;
+        applied.attempts_used = attempts_used;
+        Ok(applied)
     }
 
     /// 提名候选集的评审可见面渲染（j04）：每条提名一节，直定宿主注明；
@@ -3765,6 +3792,9 @@ impl LearningService {
             note: batch.note.clone(),
             ready_count,
             idle: false,
+            // 调用侧（growth_body）以预算轮实际消耗数回填（apply_batch 不在
+            // attempt 循环作用域内）。
+            attempts_used: 0,
         })
     }
 
@@ -5587,6 +5617,7 @@ impl LearningService {
         let raw = crate::generation::complete_json_coach(
             completer.as_ref(),
             model_override,
+            "basis_declare",
             basis::DECLARATION_SYSTEM,
             prompt.text.as_str(),
             crate::generation::STRUCTURE_MAX_TOKENS,
@@ -5676,6 +5707,7 @@ impl LearningService {
             let raw = crate::generation::complete_json_coach(
                 completer.as_ref(),
                 model_override,
+                "reuse_ruling",
                 basis::REUSE_RULING_SYSTEM,
                 user.as_str(),
                 crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
@@ -6071,13 +6103,15 @@ pub(crate) struct PendingBatch {
 }
 
 /// 一批生长落库的结果快照（WS 终态帧的数据源）：idle = 空手批（就绪已满
-/// 或无可长方向，不落档案）。
+/// 或无可长方向，不落档案）。attempts_used = 预算轮消耗数（o1 accept 读数
+/// ——通过行与 reject WARN 对称，不再要 DB 才知道第几轮过的）。
 pub(crate) struct GrowthApplied {
     pub batch_id: String,
     pub node_count: usize,
     pub note: String,
     pub ready_count: usize,
     pub idle: bool,
+    pub attempts_used: usize,
 }
 
 /// 单概念的关系集（c7；concept_id 集，展示层 join 登记表补 canonical 名）。

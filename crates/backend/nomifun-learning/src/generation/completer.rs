@@ -131,11 +131,17 @@ const COACH_CALL_TIMEOUT_SECS: u64 = 480;
 pub(crate) async fn complete_json_coach(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    stage: &'static str,
     system: &str,
     user: &str,
     max_tokens: u32,
     temperature: Option<f32>,
 ) -> Result<String, AppError> {
+    // 逐调用计时读数（o1）：每次 LLM 尝试恰一行（含失败臂）——批次聚合
+    // （learning-tasks.jsonl）拆不出单调用耗时，2026-11-16 病历里
+    // redraft 7s vs 2min 的方差只能靠日志行差值反推。只打数字与标签，
+    // 零 prompt/回包正文。
+    let started = std::time::Instant::now();
     let call = async {
         completer
             .complete_json_with_thinking(
@@ -147,17 +153,36 @@ pub(crate) async fn complete_json_coach(
             )
             .await
     };
-    tokio::time::timeout(std::time::Duration::from_secs(COACH_CALL_TIMEOUT_SECS), call)
-        .await
-        .map_err(|_| {
-            tracing::warn!(
-                timeout_secs = COACH_CALL_TIMEOUT_SECS,
-                "json coach call timed out"
-            );
-            AppError::Timeout(format!(
-                "json coach call exceeded {COACH_CALL_TIMEOUT_SECS}s"
-            ))
-        })?
+    let outcome =
+        tokio::time::timeout(std::time::Duration::from_secs(COACH_CALL_TIMEOUT_SECS), call).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &outcome {
+        Ok(Ok(raw)) => tracing::info!(
+            stage,
+            elapsed_ms,
+            system_chars = system.chars().count(),
+            user_chars = user.chars().count(),
+            output_chars = raw.chars().count(),
+            "learning coach llm call done"
+        ),
+        _ => tracing::info!(
+            stage,
+            elapsed_ms,
+            system_chars = system.chars().count(),
+            user_chars = user.chars().count(),
+            ok = false,
+            "learning coach llm call failed"
+        ),
+    }
+    outcome.map_err(|_| {
+        tracing::warn!(
+            timeout_secs = COACH_CALL_TIMEOUT_SECS,
+            "json coach call timed out"
+        );
+        AppError::Timeout(format!(
+            "json coach call exceeded {COACH_CALL_TIMEOUT_SECS}s"
+        ))
+    })?
 }
 
 

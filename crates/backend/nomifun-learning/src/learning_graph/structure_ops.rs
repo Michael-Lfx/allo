@@ -771,6 +771,7 @@ pub(crate) async fn run_repair_round(
         let raw = crate::generation::complete_json_coach(
             completer,
             model_override,
+            "structure_repair",
             REPAIR_SYSTEM,
             &prompt.text,
             crate::generation::STRUCTURE_MAX_TOKENS,
