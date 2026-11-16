@@ -57,6 +57,21 @@ Resolution 末条，候选项②的裁决数据待下一次带凭据真机跑回
 
 ## Resolution
 
+已施工收口（2026-11-16，feat/learn1116）。R1/R2 落地（开关缺省关、
+sibling one-shot、CallUsage 桥接、归档行 usage 键），测试 1163 绿。
+
+- **归因读数已回填（2026-11-16 17:00 真机首跑，smoke loop v4.1-flash，
+  calls.jsonl 4 行全带 usage）**：
+  - 概念评审调用：**161.9s，reasoning_tokens 28579 / output 31290 =
+    91%**——「评审慢 = 推理还是排队」的答案坐实为**推理主导**；
+  - growth draft：69.5s，reasoning 9561 / 10774 = 89%；
+  - 结构两调（terrain/artifact）：2.4s / 4.1s，reasoning 占 80%/60%。
+  - **候选②裁决数据在案**：评审输出是 tiny verdict 但 91% 的输出
+    token 花在推理上——降推理档（显式 `reasoning_effort:"low"` 起步）
+    有真实的分钟级收益空间，是否动质量闸门待用户裁决。
+
+## Resolution
+
 已施工收口（2026-11-16，feat/learn1116）。四问裁决（grilling 收口）全部
 落地：缺省关 / sibling 变体 / 独立目录 / 不做 UI。
 
