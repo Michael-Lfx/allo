@@ -57,10 +57,7 @@ impl FlowyApp {
         cx.notify();
     }
 
-    pub fn more_flyout(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    pub fn more_flyout(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut menu = div()
             .id("more-flyout")
             .occlude()
@@ -85,10 +82,7 @@ impl FlowyApp {
         menu
     }
 
-    pub fn more_canvas(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    pub fn more_canvas(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut page = div().id("more-page").size_full().flex().flex_col();
         page = if self.persona.page == Page::Personal {
             page.child(self.personal_canvas(cx))
@@ -183,7 +177,7 @@ impl FlowyApp {
             }))
             .child(menu_icon(page))
             .child(div().flex_1().text_sm().child(self.t(key)))
-            .when(selected, |row| row.child(div().text_sm().child("✓")))
+            .when(selected, |row| row.child(theme::icons::check()))
     }
 
     fn more_note(
@@ -342,7 +336,7 @@ impl FlowyApp {
                             .child(self.t("more.import_card_body")),
                     ),
             )
-            .child(div().text_sm().text_color(theme::muted()).child("›"))
+            .child(theme::icons::chevron_right().text_color(theme::muted()))
     }
 
     fn profile_fields(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -655,7 +649,7 @@ impl FlowyApp {
                     .justify_center()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme::soft()))
-                    .child("×")
+                    .child(theme::icons::x())
                     .on_click(cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.close_more_dialog(cx);
@@ -1094,54 +1088,15 @@ fn card_mark() -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(div().size(px(8.)).rounded_full().bg(theme::ink()))
+        .child(theme::icons::file_plus())
 }
 
 fn menu_icon(page: Page) -> AnyElement {
     match page {
-        Page::Computer => monitor_icon().into_any_element(),
-        Page::Skills => skill_icon().into_any_element(),
-        Page::Personal => sliders_icon().into_any_element(),
+        Page::Computer => theme::icons::monitor().into_any_element(),
+        Page::Skills => theme::icons::sparkles().into_any_element(),
+        Page::Personal => theme::icons::sliders_horizontal().into_any_element(),
     }
-}
-
-fn monitor_icon() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(1.))
-        .child(
-            div()
-                .w(px(12.))
-                .h(px(8.))
-                .rounded(px(2.))
-                .border_1()
-                .border_color(theme::ink()),
-        )
-        .child(div().w(px(6.)).h(px(2.)).bg(theme::ink()))
-}
-
-fn skill_icon() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(div().size(px(6.)).rounded(px(1.)).bg(theme::ink()))
-}
-
-fn sliders_icon() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .flex()
-        .flex_col()
-        .justify_center()
-        .gap(px(3.))
-        .child(div().w(px(12.)).h(px(2.)).bg(theme::ink()))
-        .child(div().ml(px(4.)).w(px(8.)).h(px(2.)).bg(theme::ink()))
 }
 
 fn assign_text(

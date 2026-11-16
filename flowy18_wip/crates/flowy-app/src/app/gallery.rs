@@ -251,10 +251,7 @@ fn similar(item: &Item) -> Vec<&'static Item> {
 }
 
 impl FlowyApp {
-    pub fn gallery_row(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    pub fn gallery_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let pages = page_count();
         let page = self.gallery.page.min(pages.saturating_sub(1));
         let start = page.saturating_mul(PAGE);
@@ -299,7 +296,11 @@ fn gallery_arrow(
         .justify_center()
         .cursor_pointer()
         .hover(|arrow| arrow.bg(theme::soft()))
-        .child(if previous { "‹" } else { "›" })
+        .child(if previous {
+            theme::icons::chevron_left()
+        } else {
+            theme::icons::chevron_right()
+        })
         .on_click(cx.listener(move |app, _event, _window, cx| {
             cx.stop_propagation();
             if previous {
@@ -440,7 +441,7 @@ impl FlowyApp {
                     .justify_center()
                     .cursor_pointer()
                     .hover(|mark| mark.bg(theme::soft()))
-                    .child("×")
+                    .child(theme::icons::x())
                     .on_click(cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.gallery.ideas_open = false;
@@ -667,7 +668,7 @@ impl FlowyApp {
                     .justify_center()
                     .cursor_pointer()
                     .hover(|mark| mark.bg(theme::soft()))
-                    .child("×")
+                    .child(theme::icons::x())
                     .on_click(cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.gallery.idea_id = None;
@@ -729,7 +730,14 @@ impl FlowyApp {
                     .id("idea-detail-all")
                     .text_sm()
                     .cursor_pointer()
-                    .child(format!("{}  ›", self.t("gallery.see_all")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(self.t("gallery.see_all"))
+                            .child(theme::icons::chevron_right()),
+                    )
                     .on_click(cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.gallery.idea_id = None;
@@ -771,7 +779,7 @@ fn transport(cx: &Context<'_, FlowyApp>) -> impl IntoElement {
                 .items_center()
                 .gap_3()
                 .bg(rgb(0x0000_0000).opacity(0.55))
-                .child(transport_hit("idea-play", "▶", cx))
+                .child(transport_hit("idea-play", theme::icons::play(), cx))
                 .child(
                     div()
                         .text_xs()
@@ -780,7 +788,7 @@ fn transport(cx: &Context<'_, FlowyApp>) -> impl IntoElement {
                 )
                 .child(div().flex_1())
                 .child(transport_hit("idea-volume", volume_mark(), cx))
-                .child(transport_hit("idea-more", "···", cx))
+                .child(transport_hit("idea-more", theme::icons::ellipsis(), cx))
                 .child(transport_hit("idea-full", full_mark(), cx)),
         )
 }
@@ -808,21 +816,12 @@ fn transport_hit(
         }))
 }
 
-fn volume_mark() -> impl IntoElement {
-    div()
-        .flex()
-        .items_end()
-        .gap(px(2.))
-        .child(div().w(px(2.)).h(px(6.)).bg(rgb(0x00ff_ffff)))
-        .child(div().w(px(2.)).h(px(9.)).bg(rgb(0x00ff_ffff)))
-        .child(div().w(px(2.)).h(px(12.)).bg(rgb(0x00ff_ffff)))
+fn volume_mark() -> gpui::Svg {
+    theme::icons::volume_2().text_color(rgb(0x00ff_ffff))
 }
 
-fn full_mark() -> impl IntoElement {
-    div()
-        .size(px(11.))
-        .border_1()
-        .border_color(rgb(0x00ff_ffff))
+fn full_mark() -> gpui::Svg {
+    theme::icons::maximize().text_color(rgb(0x00ff_ffff))
 }
 
 fn poster(tint: u32, height: f32) -> impl IntoElement {
@@ -857,17 +856,8 @@ fn thumb(tint: u32, kind: String) -> impl IntoElement {
         )
 }
 
-fn grid_mark() -> impl IntoElement {
-    let mut mark = div().flex().flex_col().gap(px(3.));
-    for _row in 0..2 {
-        let mut line = div().flex().gap(px(3.));
-        for _column in 0..2 {
-            line =
-                line.child(div().size(px(6.)).rounded(px(1.)).bg(theme::ink()));
-        }
-        mark = mark.child(line);
-    }
-    mark
+fn grid_mark() -> gpui::Svg {
+    theme::icons::layout_grid().size(px(24.))
 }
 
 #[cfg(test)]

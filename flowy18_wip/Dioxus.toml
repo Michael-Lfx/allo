@@ -12,6 +12,7 @@ watch_path = [
   "crates/flowy-app/src",
   "crates/flowy-studio/src",
   "crates/flowy-ui/src",
+  "crates/flowy-ui/assets",
   "crates/flowy-chat/src",
   "crates/flowy-shell/src",
 ]

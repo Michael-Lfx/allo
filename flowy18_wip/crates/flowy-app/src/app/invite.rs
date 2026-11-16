@@ -144,10 +144,7 @@ impl FlowyApp {
                 } else {
                     self.t(key)
                 };
-                div()
-                    .text_xs()
-                    .text_color(theme::muted())
-                    .child(text)
+                div().text_xs().text_color(theme::muted()).child(text)
             }))
             .child(self.invite_footer(cx))
     }
@@ -163,7 +160,7 @@ impl FlowyApp {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::soft()))
-                .child("×")
+                .child(theme::icons::x())
                 .on_click(cx.listener(|app, _event, _window, cx| {
                     cx.stop_propagation();
                     app.close_invite(cx);

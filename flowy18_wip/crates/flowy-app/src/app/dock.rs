@@ -2,14 +2,59 @@ use super::{FlowyApp, Section};
 use flowy_ui as theme;
 use gpui::{Context, Window, div, prelude::*, px};
 
-const NAV: &[(&str, &str, Section)] = &[
-    // ("computer", "dock.computer", Section::Computer),
-    ("search", "dock.search", Section::Search),
-    ("library", "dock.library", Section::Library),
-    ("create", "dock.create", Section::Create),
-    ("automation", "dock.automation", Section::Automation),
-    ("plugins", "dock.plugins", Section::Plugins),
-    ("more", "dock.more", Section::More),
+#[derive(Clone, Copy)]
+enum DockIcon {
+    NewTask,
+    Search,
+    Library,
+    Create,
+    Automation,
+    Plugins,
+    More,
+    NewProject,
+    Project,
+    Task,
+}
+
+impl DockIcon {
+    fn render(self) -> gpui::Svg {
+        match self {
+            Self::NewTask => theme::icons::square_pen(),
+            Self::Search => theme::icons::search(),
+            Self::Library => theme::icons::library(),
+            Self::Create => theme::icons::plus(),
+            Self::Automation => theme::icons::workflow(),
+            Self::Plugins => theme::icons::puzzle(),
+            Self::More => theme::icons::ellipsis(),
+            Self::NewProject => theme::icons::folder_plus(),
+            Self::Project => theme::icons::folder(),
+            Self::Task => theme::icons::list_check(),
+        }
+    }
+}
+
+const NAV: &[(&str, &str, Section, DockIcon)] = &[
+    ("search", "dock.search", Section::Search, DockIcon::Search),
+    (
+        "library",
+        "dock.library",
+        Section::Library,
+        DockIcon::Library,
+    ),
+    ("create", "dock.create", Section::Create, DockIcon::Create),
+    (
+        "automation",
+        "dock.automation",
+        Section::Automation,
+        DockIcon::Automation,
+    ),
+    (
+        "plugins",
+        "dock.plugins",
+        Section::Plugins,
+        DockIcon::Plugins,
+    ),
+    ("more", "dock.more", Section::More, DockIcon::More),
 ];
 
 impl FlowyApp {
@@ -58,22 +103,31 @@ impl FlowyApp {
                 "new-task",
                 self.t("dock.new_task"),
                 self.section == Section::Studio,
+                Section::Studio,
+                DockIcon::NewTask,
                 cx,
             ));
-            // Independent Agent App entry — deferred.
-            // .child(Self::nav_item(
-            //     "agent",
-            //     self.tf("dock.agent", &[("name", name)]),
-            //     false,
-            //     cx,
-            // ));
+        // Independent Agent App entry — deferred.
+        // .child(Self::nav_item(
+        //     "agent",
+        //     self.tf("dock.agent", &[("name", name)]),
+        //     false,
+        //     cx,
+        // ));
 
-        for (id, key, section) in NAV {
+        for (id, key, section, icon) in NAV {
             column = if *id == "more" {
-                column.child(self.more_dock_item(cx))
+                column.child(self.more_dock_item(*icon, cx))
             } else {
                 let selected = self.section == *section;
-                column.child(Self::nav_item(id, self.t(key), selected, cx))
+                column.child(Self::nav_item(
+                    id,
+                    self.t(key),
+                    selected,
+                    *section,
+                    *icon,
+                    cx,
+                ))
             };
         }
 
@@ -88,10 +142,11 @@ impl FlowyApp {
         id: &'static str,
         label: String,
         selected: bool,
+        section: Section,
+        icon: DockIcon,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let section = section_for(id);
-        item_row(id, label, selected).on_click(cx.listener(
+        item_row(id, label, selected, icon).on_click(cx.listener(
             move |app, _event, _window, cx| {
                 app.section = section;
                 app.persona.menu = false;
@@ -107,29 +162,38 @@ impl FlowyApp {
         ))
     }
 
-    fn more_dock_item(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn more_dock_item(
+        &self,
+        icon: DockIcon,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let selected = self.section == Section::More;
-        item_row("more", self.t("dock.more"), selected).on_click(cx.listener(
-            |app, _event, _window, cx| {
+        item_row("more", self.t("dock.more"), selected, icon).on_click(
+            cx.listener(|app, _event, _window, cx| {
                 app.toggle_more(cx);
-            },
-        ))
+            }),
+        )
     }
 
     fn project_rows(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut rows = div().flex().flex_col();
         rows = rows.child(
-            item_row("new-project", self.t("dock.new_project"), false)
-                .on_click(
-                    cx.listener(|app, _event, _window, cx| app.add_project(cx)),
-                ),
+            item_row(
+                "new-project",
+                self.t("dock.new_project"),
+                false,
+                DockIcon::NewProject,
+            )
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                app.add_project(cx);
+            })),
         );
         let projects = self.studio.read(cx).projects.clone();
         for (slot, index) in projects.iter().enumerate() {
             let id = format!("project-{slot}");
             let label =
                 self.tf("project.untitled", &[("index", &index.to_string())]);
-            rows = rows.child(item_row(id, label, false));
+            rows = rows.child(item_row(id, label, false, DockIcon::Project));
         }
         rows
     }
@@ -156,15 +220,17 @@ impl FlowyApp {
                 session.title
             };
             let selected = active.as_deref() == Some(session_id.as_str());
-            rows = rows.child(item_row(id, title, selected).on_click(
-                cx.listener(move |app, _event, _window, cx| {
-                    app.section = Section::Studio;
-                    app.studio.update(cx, |panel, cx| {
-                        panel.open_session(&session_id, cx);
-                    });
-                    cx.notify();
-                }),
-            ));
+            rows = rows.child(
+                item_row(id, title, selected, DockIcon::Task).on_click(
+                    cx.listener(move |app, _event, _window, cx| {
+                        app.section = Section::Studio;
+                        app.studio.update(cx, |panel, cx| {
+                            panel.open_session(&session_id, cx);
+                        });
+                        cx.notify();
+                    }),
+                ),
+            );
         }
         rows
     }
@@ -248,19 +314,6 @@ impl FlowyApp {
     }
 }
 
-fn section_for(id: &str) -> Section {
-    match id {
-        // "agent" => Section::Agent,
-        "search" => Section::Search,
-        "library" => Section::Library,
-        "create" => Section::Create,
-        "automation" => Section::Automation,
-        "plugins" => Section::Plugins,
-        "more" => Section::More,
-        _ => Section::Studio,
-    }
-}
-
 fn brand() -> impl IntoElement {
     div()
         .px_4()
@@ -290,6 +343,7 @@ fn item_row(
     id: impl Into<gpui::ElementId>,
     label: String,
     selected: bool,
+    icon: DockIcon,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -308,7 +362,7 @@ fn item_row(
         .when(selected, gpui::Styled::shadow_sm)
         .cursor_pointer()
         .hover(|row| row.bg(theme::card()))
-        .child(icon_mark())
+        .child(icon.render())
         .child(
             div()
                 .text_sm()
@@ -316,18 +370,6 @@ fn item_row(
                 .whitespace_nowrap()
                 .child(label),
         )
-}
-
-fn icon_mark() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(theme::line())
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(div().size(px(6.)).rounded_full().bg(theme::ink()))
 }
 
 fn avatar(initial: &str) -> impl IntoElement {
