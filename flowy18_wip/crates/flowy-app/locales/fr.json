@@ -296,6 +296,7 @@
   "notice.model_later": "Le changement de modèle arrivera plus tard",
   "notice.project_created": "Projet créé pour cette session seulement",
   "notice.prompt_empty": "Écrivez d'abord une tâche",
+  "notice.session_storage_failed": "Impossible de lire ou d’enregistrer les données de session. Vérifiez l’accès au stockage.",
   "notice.prompt_filled": "Tâche insérée. Envoyez quand elle convient.",
   "notice.task_added": "Ajoutée à la liste de cette session",
   "notice.upgrade_later": "La mise à niveau n'est pas encore disponible",

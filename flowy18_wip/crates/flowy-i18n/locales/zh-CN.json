@@ -296,6 +296,7 @@
   "notice.model_later": "模型切换将在后续阶段接入",
   "notice.project_created": "已创建项目，只保存在本次会话",
   "notice.prompt_empty": "先写任务内容",
+  "notice.session_storage_failed": "无法读取或保存会话数据，请检查存储访问权限。",
   "notice.prompt_filled": "已填入任务，确认后发送",
   "notice.task_added": "已加入本次会话的任务列表",
   "notice.upgrade_later": "升级尚未开通",

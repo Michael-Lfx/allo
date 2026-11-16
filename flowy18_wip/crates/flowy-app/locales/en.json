@@ -296,6 +296,7 @@
   "notice.model_later": "Model switching comes in a later stage",
   "notice.project_created": "Project created for this session only",
   "notice.prompt_empty": "Write a task first",
+  "notice.session_storage_failed": "Session data could not be read or saved. Check storage access.",
   "notice.prompt_filled": "Task filled in. Send when ready.",
   "notice.task_added": "Added to this session's task list",
   "notice.upgrade_later": "Upgrade is not available yet",

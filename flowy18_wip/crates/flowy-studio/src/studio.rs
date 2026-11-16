@@ -1,6 +1,6 @@
 use flowy_agent::{Model, Plan};
 use flowy_ui as theme;
-use gpui::{Context, SharedString, div, prelude::*, px, rgb};
+use gpui::{Context, SharedString, div, prelude::*, px};
 use gpui_ce_elements::editable_text::text_area;
 use std::time::Duration;
 
@@ -99,19 +99,20 @@ impl crate::panel::StudioPanel {
     }
 
     fn model_got_it(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("model-got-it")
-            .px_3()
-            .py_1()
-            .rounded_full()
-            .bg(theme::soft())
-            .text_sm()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::line()))
-            .child(self.t("model.got_it"))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.dismiss_model_info(cx);
-            }))
+        let label = self.t("model.got_it");
+        theme::button(
+            "model-got-it",
+            label.clone(),
+            false,
+            cx.listener(|app, _event, _window, cx| app.dismiss_model_info(cx)),
+        )
+        .px_3()
+        .py_1()
+        .rounded_full()
+        .bg(theme::soft())
+        .text_sm()
+        .hover(|style| style.bg(theme::line()))
+        .child(label)
     }
 
     fn model_upgrade(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -233,7 +234,7 @@ impl crate::panel::StudioPanel {
     fn choose_model(&mut self, model: Model, cx: &mut Context<'_, Self>) {
         if model == Model::Flex {
             self.model_menu_open = false;
-            self.notice = None;
+            self.emit_notice(None, cx);
             cx.emit(crate::panel::StudioEvent::OpenFlex);
             cx.notify();
             return;
@@ -245,7 +246,7 @@ impl crate::panel::StudioPanel {
         self.model = model;
         self.emit_model(cx);
         self.model_menu_open = false;
-        self.notice = None;
+        self.emit_notice(None, cx);
         cx.notify();
     }
 
@@ -538,7 +539,7 @@ impl crate::panel::StudioPanel {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x00c8_c8c8))
+                            .text_color(theme::on_ink())
                             .child(self.t("studio.creative_hint")),
                     ),
             )

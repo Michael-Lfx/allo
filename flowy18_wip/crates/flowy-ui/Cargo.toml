@@ -12,5 +12,8 @@ publish = false
 gpui = { workspace = true }
 serde = { workspace = true }
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

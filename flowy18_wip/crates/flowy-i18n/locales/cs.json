@@ -296,6 +296,7 @@
   "notice.model_later": "Přepínání modelu přijde v další etapě",
   "notice.project_created": "Projekt vytvořen jen pro tuto relaci",
   "notice.prompt_empty": "Nejprve napište úkol",
+  "notice.session_storage_failed": "Data relace nelze načíst ani uložit. Zkontrolujte přístup k úložišti.",
   "notice.prompt_filled": "Úkol je vyplněný. Odešlete, až bude hotový.",
   "notice.task_added": "Přidáno do seznamu úkolů této relace",
   "notice.upgrade_later": "Upgrade zatím není dostupný",

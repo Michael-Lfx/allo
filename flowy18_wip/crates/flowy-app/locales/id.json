@@ -296,6 +296,7 @@
   "notice.model_later": "Ganti model akan hadir pada tahap berikutnya",
   "notice.project_created": "Proyek dibuat hanya untuk sesi ini",
   "notice.prompt_empty": "Tulis tugas terlebih dahulu",
+  "notice.session_storage_failed": "Data sesi tidak dapat dibaca atau disimpan. Periksa akses penyimpanan.",
   "notice.prompt_filled": "Tugas sudah diisi. Kirim saat siap.",
   "notice.task_added": "Ditambahkan ke daftar tugas sesi ini",
   "notice.upgrade_later": "Upgrade belum tersedia",

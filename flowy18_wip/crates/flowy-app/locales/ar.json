@@ -296,6 +296,7 @@
   "notice.model_later": "تبديل النموذج سيصل في مرحلة لاحقة",
   "notice.project_created": "أُنشئ المشروع لهذه الجلسة فقط",
   "notice.prompt_empty": "اكتب المهمة أولًا",
+  "notice.session_storage_failed": "تعذّر قراءة بيانات الجلسة أو حفظها. تحقق من صلاحية الوصول إلى التخزين.",
   "notice.prompt_filled": "تم ملء المهمة. أرسلها عندما تكون جاهزة.",
   "notice.task_added": "أُضيفت إلى قائمة مهام هذه الجلسة",
   "notice.upgrade_later": "الترقية غير متاحة بعد",

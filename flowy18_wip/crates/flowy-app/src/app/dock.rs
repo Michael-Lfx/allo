@@ -148,18 +148,27 @@ impl FlowyApp {
     ) -> impl IntoElement {
         item_row(id, label, selected, icon).on_click(cx.listener(
             move |app, _event, _window, cx| {
-                app.section = section;
-                app.persona.menu = false;
-                if id == "new-task" {
-                    app.studio.update(cx, |panel, cx| panel.new_task(cx));
-                    app.section = Section::Studio;
-                } else if section == Section::Studio {
-                    app.notice = None;
-                }
-                app.sync_studio_surface(cx);
-                cx.notify();
+                app.select_navigation(id, section, cx);
             },
         ))
+    }
+
+    pub(super) fn select_navigation(
+        &mut self,
+        id: &str,
+        section: Section,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.section = section;
+        self.persona.menu = false;
+        if id == "new-task" {
+            self.studio.update(cx, |panel, cx| panel.new_task(cx));
+            self.section = Section::Studio;
+        } else if section == Section::Studio {
+            self.notice = None;
+        }
+        self.sync_studio_surface(cx);
+        cx.notify();
     }
 
     fn more_dock_item(

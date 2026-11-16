@@ -296,6 +296,7 @@
   "notice.model_later": "Modellwechsel folgt in einer späteren Stufe",
   "notice.project_created": "Projekt nur für diese Sitzung erstellt",
   "notice.prompt_empty": "Schreib zuerst eine Aufgabe",
+  "notice.session_storage_failed": "Sitzungsdaten konnten nicht gelesen oder gespeichert werden. Prüfe den Speicherzugriff.",
   "notice.prompt_filled": "Aufgabe eingesetzt. Senden, wenn sie passt.",
   "notice.task_added": "Zur Aufgabenliste dieser Sitzung hinzugefügt",
   "notice.upgrade_later": "Upgrade ist noch nicht verfügbar",
