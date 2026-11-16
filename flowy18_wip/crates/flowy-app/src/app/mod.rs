@@ -15,7 +15,8 @@ use crate::i18n::{I18n, file_stamps};
 use crate::prefs::Preferences;
 use crate::session::SessionStore;
 use flowy_auth::{
-    AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH, normalize_otp,
+    AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
+    normalize_otp,
 };
 use flowy_studio::{StudioEvent, StudioPanel, StudioSurface};
 use gpui::{
@@ -25,16 +26,16 @@ use gpui::{
 };
 use gpui_ce_elements::editable_text::{
     EditableTextState, StringStorage, TextChanged,
-    actions::{DEFAULT_INPUT_CONTEXT, default_bindings},
+    actions::{DEFAULT_INPUT_CONTEXT, Tab, default_bindings},
 };
 use state::{
-    AppearanceChrome, AuthState, FlexState, GalleryState, InviteState, LegalDoc,
-    LoginPhase, LoginStep, PersonaState, SettingsState,
+    AppearanceChrome, AuthState, FlexState, GalleryState, InviteState,
+    LegalDoc, LoginPhase, LoginStep, PersonaState, SettingsState,
 };
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-actions!(flowy, [SignIn]);
+actions!(flowy, [SignIn, FocusNext, FocusPrevious]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -90,6 +91,7 @@ pub struct FlowyApp {
     pub screen: Screen,
     pub section: Section,
     pub notice: Option<&'static str>,
+    storage_error: bool,
     pub auth: AuthState,
     pub studio: Entity<StudioPanel>,
     pub gallery: GalleryState,
@@ -220,6 +222,7 @@ impl FlowyApp {
             screen,
             section: Section::Studio,
             notice: None,
+            storage_error: false,
             auth: AuthState {
                 session,
                 email,
@@ -327,9 +330,7 @@ impl FlowyApp {
         self.auth.phase = LoginPhase::Sending;
         self.auth.message = None;
         self.auth.attempted_code.clear();
-        self.auth
-            .code
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.auth.code.update(cx, |state, cx| state.emplace("", cx));
         cx.notify();
 
         let client = AuthClient::from_env();
@@ -455,7 +456,8 @@ impl FlowyApp {
                             app.auth
                                 .code
                                 .update(cx, |state, cx| state.emplace("", cx));
-                            app.auth.message = Some(AuthError::InvalidCode.key());
+                            app.auth.message =
+                                Some(AuthError::InvalidCode.key());
                         }
                         Err(AuthError::SessionExpired) => {
                             app.auth.phase = LoginPhase::Idle;
@@ -511,9 +513,7 @@ impl FlowyApp {
         self.auth.cooldown_left = 0;
         self.auth.task = None;
         self.auth.cooldown_task = None;
-        self.auth
-            .code
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.auth.code.update(cx, |state, cx| state.emplace("", cx));
         cx.notify();
     }
 
@@ -577,9 +577,7 @@ impl FlowyApp {
         self.auth.cooldown_left = EMAIL_OTP_COOLDOWN_SECS;
         self.auth.cooldown_task = Some(cx.spawn(async move |weak, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(1))
-                    .await;
+                cx.background_executor().timer(Duration::from_secs(1)).await;
                 let cont = weak
                     .update(cx, |app, cx| {
                         if app.auth.cooldown_left == 0 {
@@ -603,9 +601,7 @@ impl FlowyApp {
         self.auth
             .email
             .update(cx, |state, cx| state.emplace("", cx));
-        self.auth
-            .code
-            .update(cx, |state, cx| state.emplace("", cx));
+        self.auth.code.update(cx, |state, cx| state.emplace("", cx));
         self.auth.session = None;
         self.auth.step = LoginStep::Email;
         self.auth.phase = LoginPhase::Idle;
@@ -671,8 +667,16 @@ impl FlowyApp {
         let notice = self.notice;
         match self.section {
             Section::Studio => {
-                // Home vs Chat is owned by StudioPanel.
                 self.studio.update(cx, |panel, cx| {
+                    // Enter the currently selected session when returning from
+                    // another section. Explicit new-task/session actions still
+                    // choose Home or Chat themselves.
+                    let surface = if panel.agent.has_messages() {
+                        StudioSurface::Chat
+                    } else {
+                        StudioSurface::Home
+                    };
+                    panel.set_surface(surface, cx);
                     panel.set_notice(notice, cx);
                 });
             }
@@ -745,7 +749,18 @@ impl FlowyApp {
     ) {
         match event {
             StudioEvent::Notice(notice) => {
-                self.notice = *notice;
+                // Events are delivered after the current action. Reconcile the
+                // panel again so a navigation action cannot restore stale text
+                // between emitting this event and handling it here.
+                if *notice == Some("notice.session_storage_failed") {
+                    self.storage_error = true;
+                    self.notice = None;
+                } else {
+                    self.notice = *notice;
+                }
+                let notice = self.notice;
+                self.studio
+                    .update(cx, |panel, cx| panel.set_notice(notice, cx));
                 cx.notify();
             }
             StudioEvent::ModelChanged {
@@ -812,6 +827,11 @@ impl FlowyApp {
         self.notice = Some(key);
         self.studio
             .update(cx, |panel, cx| panel.set_notice(Some(key), cx));
+        cx.notify();
+    }
+
+    fn dismiss_storage_error(&mut self, cx: &mut Context<'_, Self>) {
+        self.storage_error = false;
         cx.notify();
     }
 
@@ -894,7 +914,15 @@ impl Render for FlowyApp {
             self.ota.checked = true;
             self.start_update_check(cx);
         }
-        let mut root = div().id("flowy").size_full().bg(flowy_ui::canvas());
+        let mut root = div()
+            .id("flowy")
+            .size_full()
+            .bg(flowy_ui::canvas())
+            .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
+            .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            // Single-line inputs propagate their Tab action to this handler;
+            // multiline inputs retain their normal tab insertion behavior.
+            .on_action(|_: &Tab, window, cx| window.focus_next(cx));
         root = if self.i18n.locale().is_rtl() {
             root.rtl()
         } else {
@@ -914,7 +942,6 @@ impl Render for FlowyApp {
         } else if self.settings.open {
             root.child(self.settings_canvas(window, cx))
         } else {
-            self.sync_studio_surface(cx);
             root.child(self.main_canvas(window, cx))
         };
         if self.gallery.ideas_open
@@ -944,6 +971,43 @@ impl Render for FlowyApp {
         }
         if self.prefs.activity && self.screen == Screen::Main {
             root = root.child(self.activity_floater());
+        }
+        if self.storage_error && self.screen == Screen::Main {
+            let dismiss = self.t("model.got_it");
+            root = root.child(
+                div()
+                    .id("session-storage-error")
+                    .absolute()
+                    .top(px(16.))
+                    .right(px(16.))
+                    .max_w(px(480.))
+                    .p_3()
+                    .rounded_lg()
+                    .bg(flowy_ui::card())
+                    .border_1()
+                    .border_color(flowy_ui::danger())
+                    .text_color(flowy_ui::ink())
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(self.t("notice.session_storage_failed"))
+                    .child(
+                        flowy_ui::button(
+                            "dismiss-session-storage-error",
+                            dismiss.clone(),
+                            false,
+                            cx.listener(|app, _, _, cx| {
+                                app.dismiss_storage_error(cx)
+                            }),
+                        )
+                        .px_3()
+                        .py_1()
+                        .rounded_lg()
+                        .bg(flowy_ui::fill())
+                        .text_color(flowy_ui::on_fill())
+                        .child(dismiss),
+                    ),
+            );
         }
         root
     }
@@ -1007,7 +1071,12 @@ pub fn run(cx: &mut App) {
     cx.bind_keys(
         default_bindings().as_keybindings(Some(DEFAULT_INPUT_CONTEXT)),
     );
-    cx.bind_keys([KeyBinding::new("enter", SignIn, Some("Login"))]);
+    cx.bind_keys([
+        KeyBinding::new("enter", SignIn, Some("Login")),
+        KeyBinding::new("tab", FocusNext, None),
+        KeyBinding::new("shift-tab", FocusPrevious, None),
+    ]);
+    flowy_ui::install_initial_tab_focus(cx).detach();
     flowy_shell::install(
         flowy_shell::Brand {
             product: crate::brand::product(),
@@ -1105,5 +1174,120 @@ fn apply_pending_deep_links(
             }
             Some(flowy_shell::DeepLink::Open) | None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn test_root() -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "flowy-app-notice-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    panic!("could not create test directory: {error}")
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn new_task_reconciles_deferred_studio_notice(cx: &mut TestAppContext) {
+        let root = test_root();
+        let app = cx.update(|cx| {
+            cx.new(|cx| FlowyApp::new(SessionStore::new(root.clone()), cx))
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                app.studio.update(cx, |panel, cx| {
+                    panel.note("notice.attach_later", cx)
+                });
+            })
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.notice, Some("notice.attach_later"));
+                app.select_navigation("new-task", Section::Studio, cx);
+            })
+        });
+        cx.update(|cx| {
+            let app = app.read(cx);
+            assert_eq!(app.notice, None);
+            assert_eq!(app.studio.read(cx).notice, None);
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn storage_error_survives_login_settings_and_navigation_until_dismissed(
+        cx: &mut TestAppContext,
+    ) {
+        let root = test_root();
+        let app = cx.update(|cx| {
+            cx.new(|cx| FlowyApp::new(SessionStore::new(root.clone()), cx))
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.screen, Screen::Login);
+                app.studio.update(cx, |panel, cx| {
+                    panel.note("notice.session_storage_failed", cx)
+                });
+            })
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.storage_error);
+                app.screen = Screen::Main;
+                app.settings.open = true;
+                app.select_navigation("automation", Section::Automation, cx);
+                app.select_navigation("new-task", Section::Studio, cx);
+            })
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.storage_error);
+                app.dismiss_storage_error(cx);
+                assert!(!app.storage_error);
+            })
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn failed_new_task_is_not_hidden_by_navigation(cx: &mut TestAppContext) {
+        let root = test_root();
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("index.json"), b"{broken").unwrap();
+        let app = cx.update(|cx| {
+            cx.new(|cx| FlowyApp::new(SessionStore::new(root.clone()), cx))
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                app.select_navigation("new-task", Section::Studio, cx);
+            })
+        });
+        cx.update(|cx| {
+            assert!(app.read(cx).storage_error);
+        });
+        assert_eq!(
+            std::fs::read(sessions.join("index.json")).unwrap(),
+            b"{broken"
+        );
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

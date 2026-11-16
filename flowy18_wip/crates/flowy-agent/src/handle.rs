@@ -1,13 +1,14 @@
 use cordis::Context as CordisContext;
 use dsh_rs::api::events::{self, SessionEventPayload};
 use dsh_rs::api::services::{
-    AgentRegistryService, AgentView, LlmAdapterApi, LlmService, SessionPersistenceApi,
+    AgentRegistryService, AgentView, LlmAdapterApi, LlmService,
+    SessionPersistenceApi,
 };
-use dsh_rs::bundle::{install_base, BaseConfig};
+use dsh_rs::bundle::{BaseConfig, install_base};
 use dsh_rs::types::{
-    stream_from_chunks, AgentCancelCause, AgentOptions, BoxStream, ContentBlock, FinishReason,
-    GenerateOptions, LlmError, Message, MessageSource, Role, SessionEventData, StreamChunk,
-    TurnEndReason,
+    AgentCancelCause, AgentOptions, BoxStream, ContentBlock, FinishReason,
+    GenerateOptions, LlmError, Message, MessageSource, Role, SessionEventData,
+    StreamChunk, TurnEndReason, stream_from_chunks,
 };
 use futures::StreamExt;
 use std::collections::{HashMap, VecDeque};
@@ -31,12 +32,17 @@ pub struct SessionSummary {
 #[derive(Clone, Debug)]
 pub enum AgentUpdate {
     Sessions,
-    Session { id: String },
+    Session {
+        id: String,
+    },
+    /// The session index could not be loaded or saved.
+    StorageError,
 }
 
 struct LiveSession {
     agent: Arc<dyn AgentView>,
     projection: ChatProjection,
+    replayed_through: Option<u64>,
     title: String,
     titled: bool,
     status: TurnStatus,
@@ -67,6 +73,8 @@ struct Harness {
     store_root: PathBuf,
     config: LlmConfig,
     booted: Option<Booted>,
+    pending_storage_error: bool,
+    storage_error_reported: bool,
 }
 
 #[derive(Clone)]
@@ -106,6 +114,8 @@ impl AgentHandle {
                 store_root,
                 config,
                 booted: None,
+                pending_storage_error: false,
+                storage_error_reported: false,
             })),
         }
     }
@@ -120,7 +130,10 @@ impl AgentHandle {
     }
 
     pub fn drain_updates(&self) -> Vec<AgentUpdate> {
-        let guard = lock(&self.inner);
+        let mut guard = lock(&self.inner);
+        if std::mem::take(&mut guard.pending_storage_error) {
+            return vec![AgentUpdate::StorageError];
+        }
         let Some(booted) = guard.booted.as_ref() else {
             return Vec::new();
         };
@@ -155,9 +168,10 @@ impl AgentHandle {
     pub fn active_session_id(&self) -> Option<String> {
         let mut guard = lock(&self.inner);
         let _ = guard.ensure_booted();
-        guard.booted.as_ref().and_then(|booted| {
-            lock(&booted.shared.active).clone()
-        })
+        guard
+            .booted
+            .as_ref()
+            .and_then(|booted| lock(&booted.shared.active).clone())
     }
 
     pub fn has_messages(&self) -> bool {
@@ -252,9 +266,7 @@ impl AgentHandle {
         guard.set_active(id);
         guard.persist_index();
         guard.push_update(AgentUpdate::Sessions);
-        guard.push_update(AgentUpdate::Session {
-            id: id.to_owned(),
-        });
+        guard.push_update(AgentUpdate::Session { id: id.to_owned() });
         Ok(())
     }
 
@@ -267,14 +279,16 @@ impl AgentHandle {
         let mut guard = lock(&self.inner);
         guard.ensure_booted()?;
         if guard.active_id().is_none() {
-            let id = guard.spawn_session(None, String::new(), Vec::new(), false)?;
+            let id =
+                guard.spawn_session(None, String::new(), Vec::new(), false)?;
             guard.set_active(&id);
         }
         let session_id = guard.active_id().ok_or("notice.agent_failed")?;
         let (agent, need_title) = {
             let booted = guard.booted.as_mut().ok_or("notice.agent_failed")?;
             let mut live = lock(&booted.shared.live);
-            let session = live.get_mut(&session_id).ok_or("notice.agent_failed")?;
+            let session =
+                live.get_mut(&session_id).ok_or("notice.agent_failed")?;
             if matches!(session.status, TurnStatus::Running) {
                 return Err("notice.agent_busy");
             }
@@ -318,7 +332,10 @@ impl AgentHandle {
                     }
                     drop(live);
                     persist_shared(booted);
-                    push_shared(booted, AgentUpdate::Session { id: session_id });
+                    push_shared(
+                        booted,
+                        AgentUpdate::Session { id: session_id },
+                    );
                 }
             }
         });
@@ -428,12 +445,7 @@ impl AgentHandle {
         }
         persist_shared(booted);
         push_shared(booted, AgentUpdate::Sessions);
-        push_shared(
-            booted,
-            AgentUpdate::Session {
-                id: session_id,
-            },
-        );
+        push_shared(booted, AgentUpdate::Session { id: session_id });
     }
 }
 
@@ -442,6 +454,14 @@ impl Harness {
         if self.booted.is_some() {
             return Ok(());
         }
+        let index = SessionIndex::load(&self.store_root).map_err(|_| {
+            if !self.storage_error_reported {
+                self.pending_storage_error = true;
+                self.storage_error_reported = true;
+            }
+            "notice.session_storage_failed"
+        })?;
+        self.storage_error_reported = false;
         let shared = Arc::new(Shared {
             live: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
@@ -455,7 +475,10 @@ impl Harness {
             .block_on(boot(self.store_root.clone(), shared_boot, config))
             .map_err(|_| "notice.agent_failed")?;
         self.booted = Some(booted);
-        self.restore_from_index()?;
+        if let Err(error) = self.restore_from_index(index) {
+            self.booted = None;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -491,14 +514,13 @@ impl Harness {
             .create(id, options, Some(cwd), None)
             .map_err(|_| "notice.agent_failed")?;
         let session_id = agent.id().to_owned();
-        if !lines.is_empty() {
-            replay_lines(agent.as_ref(), &lines);
-        }
+        let replayed_through = replay_lines(agent.as_ref(), &lines);
         lock(&booted.shared.live).insert(
             session_id.clone(),
             LiveSession {
                 agent,
                 projection: ChatProjection::from_lines(lines),
+                replayed_through,
                 title,
                 titled,
                 status: TurnStatus::Idle,
@@ -509,8 +531,11 @@ impl Harness {
         Ok(session_id)
     }
 
-    fn restore_from_index(&mut self) -> Result<(), &'static str> {
-        let index = SessionIndex::load(&self.store_root);
+    fn restore_from_index(
+        &mut self,
+        index: SessionIndex,
+    ) -> Result<(), &'static str> {
+        let mut interrupted = false;
         for record in index.sessions {
             let exists = self.booted.as_ref().is_some_and(|booted| {
                 lock(&booted.shared.live).contains_key(&record.id)
@@ -527,7 +552,21 @@ impl Harness {
             if let Some(booted) = self.booted.as_ref() {
                 if let Some(session) = lock(&booted.shared.live).get_mut(&id) {
                     session.status = match record.status {
-                        TurnStatus::Running => TurnStatus::Stopped,
+                        TurnStatus::Running => {
+                            interrupted = true;
+                            for line in &mut session.projection.lines {
+                                match line {
+                                    ChatLine::Reasoning { live, .. } => {
+                                        *live = false
+                                    }
+                                    ChatLine::ToolCall { running, .. } => {
+                                        *running = false
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            TurnStatus::Stopped
+                        }
                         other => other,
                     };
                     session.turn_started_at = None;
@@ -546,6 +585,9 @@ impl Harness {
                 *lock(&booted.shared.active) = first;
             }
         }
+        if interrupted {
+            self.persist_index();
+        }
         Ok(())
     }
 
@@ -563,6 +605,8 @@ impl Harness {
 }
 
 fn persist_shared(booted: &Booted) {
+    // All callers hold the Harness mutex through snapshot creation and write,
+    // so writes from this handle cannot race or replace a newer snapshot.
     let live = lock(&booted.shared.live);
     let active = lock(&booted.shared.active).clone();
     let mut index = SessionIndex {
@@ -580,11 +624,14 @@ fn persist_shared(booted: &Booted) {
         });
     }
     drop(live);
-    index.save(&booted.shared.store_root);
+    let mut failed = index.save(&booted.shared.store_root).is_err();
     if let Some(persistence) = &booted.persistence {
         if let Some(id) = lock(&booted.shared.active).clone() {
-            let _ = persistence.flush(&id);
+            failed |= persistence.flush(&id).is_err();
         }
+    }
+    if failed {
+        push_shared(booted, AgentUpdate::StorageError);
     }
 }
 
@@ -592,11 +639,20 @@ fn push_shared(booted: &Booted, update: AgentUpdate) {
     lock(&booted.shared.updates).push_back(update);
 }
 
-fn apply_event(shared: &Shared, session_id: &str, event: &dsh_rs::types::SessionEvent) {
+fn apply_event(
+    shared: &Shared,
+    session_id: &str,
+    event: &dsh_rs::types::SessionEvent,
+) {
     let mut live = lock(&shared.live);
     let Some(session) = live.get_mut(session_id) else {
         return;
     };
+    // Replay events can arrive asynchronously after the saved projection is
+    // installed. They are already represented in that projection.
+    if session.replayed_through.is_some_and(|seq| event.seq <= seq) {
+        return;
+    }
     // Skip duplicate optimistic user bubble.
     if let SessionEventData::UserMessage { message } = &event.data {
         let text = message.text();
@@ -628,14 +684,18 @@ fn apply_event(shared: &Shared, session_id: &str, event: &dsh_rs::types::Session
     }
 }
 
-fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
+fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) -> Option<u64> {
     let session = agent.session();
     let mut turn = 1_u64;
+    let mut last_seq = None;
+    let mut append = |data| {
+        last_seq = Some(session.append(data).seq);
+    };
     for line in lines {
         match line {
             ChatLine::User { text } => {
-                session.append(SessionEventData::TurnStart { turn });
-                session.append(SessionEventData::UserMessage {
+                append(SessionEventData::TurnStart { turn });
+                append(SessionEventData::UserMessage {
                     message: Message::user(
                         format!("replay-u-{turn}"),
                         vec![ContentBlock::text(text.clone())],
@@ -643,7 +703,7 @@ fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
                 });
             }
             ChatLine::Assistant { text } => {
-                session.append(SessionEventData::AssistantMessage {
+                append(SessionEventData::AssistantMessage {
                     turn,
                     step: 0,
                     message: Message {
@@ -658,14 +718,14 @@ fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
                     usage: None,
                     interrupted: None,
                 });
-                session.append(SessionEventData::TurnEnd {
+                append(SessionEventData::TurnEnd {
                     turn,
                     reason: TurnEndReason::Completed,
                 });
                 turn = turn.saturating_add(1);
             }
             ChatLine::Reasoning { text, .. } => {
-                session.append(SessionEventData::AssistantMessage {
+                append(SessionEventData::AssistantMessage {
                     turn,
                     step: 0,
                     message: Message {
@@ -694,7 +754,7 @@ fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
                 } else {
                     serde_json::json!({ "target": target }).to_string()
                 };
-                session.append(SessionEventData::ToolCall {
+                append(SessionEventData::ToolCall {
                     turn,
                     step: 0,
                     call_id: if call_id.is_empty() {
@@ -709,7 +769,7 @@ fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
             ChatLine::Tool { text }
             | ChatLine::ToolResult { text, .. }
             | ChatLine::Status { text } => {
-                session.append(SessionEventData::ToolResult {
+                append(SessionEventData::ToolResult {
                     turn,
                     step: 0,
                     message: Message {
@@ -722,9 +782,13 @@ fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
             }
         }
     }
+    last_seq
 }
 
-fn apply_live_config(booted: &mut Booted, config: &LlmConfig) -> Result<(), &'static str> {
+fn apply_live_config(
+    booted: &mut Booted,
+    config: &LlmConfig,
+) -> Result<(), &'static str> {
     let previous = booted.config.agent_provider().to_owned();
     if previous != "mock" {
         booted.llm.unregister_adapter(&[&previous]);
@@ -787,7 +851,9 @@ async fn boot(
         .map_err(|error| error.to_string())?;
     let agents = (*agents).clone();
     let persistence = ctx
-        .get::<Arc<dyn SessionPersistenceApi>>(dsh_rs::api::SESSION_PERSISTENCE_SERVICE)
+        .get::<Arc<dyn SessionPersistenceApi>>(
+            dsh_rs::api::SESSION_PERSISTENCE_SERVICE,
+        )
         .map(|wrapped| (*wrapped).clone());
     let llm = ctx
         .require::<LlmService>(dsh_rs::api::LLM_SERVICE)
@@ -795,13 +861,16 @@ async fn boot(
     let llm = (*llm).clone();
 
     let shared_listener = Arc::clone(&shared);
-    let listener = events::on_sync::<SessionEventPayload, _>(&ctx, move |_ctx, payload| {
-        let shared_listener = Arc::clone(&shared_listener);
-        Box::pin(async move {
-            apply_event(&shared_listener, &payload.session, &payload.event);
-            Ok(serde_json::Value::Null)
-        })
-    })
+    let listener = events::on_sync::<SessionEventPayload, _>(
+        &ctx,
+        move |_ctx, payload| {
+            let shared_listener = Arc::clone(&shared_listener);
+            Box::pin(async move {
+                apply_event(&shared_listener, &payload.session, &payload.event);
+                Ok(serde_json::Value::Null)
+            })
+        },
+    )
     .await
     .map_err(|error| error.to_string())?;
 
@@ -855,7 +924,9 @@ impl LlmAdapterApi for ScriptedMock {
     fn stream(
         &self,
         options: GenerateOptions,
-    ) -> dsh_rs::api::services::BoxFuture<Result<BoxStream<StreamChunk>, LlmError>> {
+    ) -> dsh_rs::api::services::BoxFuture<
+        Result<BoxStream<StreamChunk>, LlmError>,
+    > {
         let scripted = self
             .script
             .lock()

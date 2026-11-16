@@ -43,19 +43,22 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
             };
 
             let mut bonus = 1;
-            if token.chars().count() == token.chars().count() && index == 0 {
+            if index == 0 {
                 bonus += 3;
             }
             if position == 0 || !haystack[position - 1].is_alphanumeric() {
                 bonus += 6;
             }
             if previous_match == Some(position.wrapping_sub(1)) {
-                bonus += 4;
+                bonus += 6;
             }
             if haystack[position] == needle {
                 bonus += 1;
             }
-            score += bonus;
+            // Keep word-boundary rewards, but do not let a series of widely
+            // separated word starts outrank a compact consecutive match.
+            let skipped = (position - cursor).min(20) as i32;
+            score += bonus - skipped;
             previous_match = Some(position);
             cursor = position + 1;
             matched = true;
@@ -76,14 +79,18 @@ fn fuzzy_score_unicode(query: &str, haystack: &[char]) -> Option<i32> {
     for token in query.split_whitespace() {
         let token = token.to_lowercase();
         let mut first = true;
+        let mut previous_match = None;
         for needle in token.chars() {
             let rest = lower.get(cursor..)?;
             let offset = rest.find(needle)?;
             let position = cursor + offset;
-            score += 1;
+            score += 1 - (rest[..offset].chars().count().min(20) as i32);
             if first {
                 score += 3;
                 first = false;
+            }
+            if previous_match == Some(position) {
+                score += 6;
             }
             if position == 0
                 || !joined[..position]
@@ -94,6 +101,7 @@ fn fuzzy_score_unicode(query: &str, haystack: &[char]) -> Option<i32> {
                 score += 6;
             }
             cursor = position + needle.len_utf8();
+            previous_match = Some(cursor);
         }
     }
     Some(score)
@@ -120,6 +128,28 @@ mod tests {
         let prefix = fuzzy_score("save", "Save flow").unwrap();
         let scattered = fuzzy_score("save", "Send a very early file").unwrap();
         assert!(prefix > scattered);
+    }
+
+    #[test]
+    fn compact_matches_rank_above_distant_word_starts() {
+        let compact = fuzzy_score("ab", "about").unwrap();
+        let scattered = fuzzy_score("ab", "a very distant beta").unwrap();
+        assert!(compact > scattered);
+        assert!(fuzzy_matches("ab", "a very distant beta"));
+    }
+
+    #[test]
+    fn consecutive_matches_rank_above_adjacent_word_starts() {
+        assert!(
+            fuzzy_score("ab", "ab").unwrap()
+                > fuzzy_score("ab", "a b").unwrap()
+        );
+        // The capital dotted I expands to two lowercase characters, forcing
+        // the Unicode fallback without changing the matched substring.
+        assert!(
+            fuzzy_score("ab", "İab").unwrap()
+                > fuzzy_score("ab", "İa b").unwrap()
+        );
     }
 
     #[test]

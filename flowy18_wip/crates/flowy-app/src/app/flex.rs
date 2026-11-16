@@ -428,8 +428,7 @@ impl FlowyApp {
 
     fn connect_flex(&mut self, cx: &mut Context<'_, Self>) {
         let Some(provider) = self.flex.draft_provider else {
-            self.notice = Some("flex.need_provider");
-            cx.notify();
+            self.note("flex.need_provider", cx);
             return;
         };
         if self.flex.key_visible {
@@ -437,14 +436,12 @@ impl FlowyApp {
         }
         let api_key = self.flex.secret.trim().to_string();
         if api_key.is_empty() {
-            self.notice = Some("flex.need_key");
-            cx.notify();
+            self.note("flex.need_key", cx);
             return;
         }
         let config = LlmConfig::from_flex(provider, api_key.clone());
         if let Err(key) = self.studio.read(cx).agent.apply_config(config) {
-            self.notice = Some(key);
-            cx.notify();
+            self.note(key, cx);
             return;
         }
         self.prefs.flex_provider = Some(provider);
@@ -457,6 +454,8 @@ impl FlowyApp {
             panel.sync_model(Model::Flex, plan, version, cx);
         });
         self.notice = None;
+        self.studio
+            .update(cx, |panel, cx| panel.set_notice(None, cx));
         self.close_flex(cx);
     }
 

@@ -296,6 +296,7 @@
   "notice.model_later": "El cambio de modelo llegará en una etapa posterior",
   "notice.project_created": "Proyecto creado solo para esta sesión",
   "notice.prompt_empty": "Escribe primero una tarea",
+  "notice.session_storage_failed": "No se pudieron leer o guardar los datos de la sesión. Comprueba el acceso al almacenamiento.",
   "notice.prompt_filled": "Tarea completada. Envíala cuando quieras.",
   "notice.task_added": "Agregada a la lista de esta sesión",
   "notice.upgrade_later": "La mejora todavía no está disponible",

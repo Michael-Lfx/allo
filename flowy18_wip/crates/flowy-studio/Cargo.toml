@@ -16,5 +16,8 @@ flowy-ui = { workspace = true }
 gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

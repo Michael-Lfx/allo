@@ -1,9 +1,11 @@
 //! Shared look tokens for Flowy screens.
 
+mod button;
 mod theme;
 
 pub mod icons;
 
+pub use button::{button, install_initial_tab_focus};
 pub use theme::*;
 
 use serde::{Deserialize, Serialize};

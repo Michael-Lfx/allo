@@ -173,6 +173,7 @@ impl FlowyApp {
                 app.persona.page = page;
                 app.section = Section::More;
                 app.notice = None;
+                app.sync_studio_surface(cx);
                 cx.notify();
             }))
             .child(menu_icon(page))
@@ -841,6 +842,7 @@ impl FlowyApp {
         } else {
             "more.import_none"
         });
+        self.sync_studio_surface(cx);
         cx.notify();
     }
 
@@ -873,6 +875,7 @@ impl FlowyApp {
         self.persona.dialog = Dialog::None;
         self.write_profile(cx);
         self.notice = Some("more.knowledge_saved");
+        self.sync_studio_surface(cx);
         cx.notify();
     }
 

@@ -39,7 +39,11 @@ pub fn card() -> Rgba {
 }
 
 pub fn ink() -> Rgba {
-    if dark() {
+    ink_for(dark())
+}
+
+fn ink_for(dark: bool) -> Rgba {
+    if dark {
         rgb(0x00f4_f3ef)
     } else {
         rgb(0x001c_1c1c)
@@ -47,10 +51,14 @@ pub fn ink() -> Rgba {
 }
 
 pub fn muted() -> Rgba {
-    if dark() {
+    muted_for(dark())
+}
+
+fn muted_for(dark: bool) -> Rgba {
+    if dark {
         rgb(0x00a8_a49c)
     } else {
-        rgb(0x008a_877f)
+        rgb(0x006b_6861)
     }
 }
 
@@ -96,7 +104,11 @@ pub fn danger() -> Rgba {
 }
 
 pub fn on_ink() -> Rgba {
-    if dark() {
+    on_ink_for(dark())
+}
+
+fn on_ink_for(dark: bool) -> Rgba {
+    if dark {
         rgb(0x001c_1c1a)
     } else {
         rgb(0x00ff_ffff)
@@ -111,19 +123,28 @@ pub fn accent() -> Rgba {
 }
 
 pub fn fill() -> Rgba {
-    let accent = current_accent();
-    if accent == Accent::Default {
-        ink()
-    } else {
-        swatch(accent)
+    fill_for(current_accent(), dark())
+}
+
+fn fill_for(accent: Accent, dark: bool) -> Rgba {
+    match accent {
+        Accent::Default => ink_for(dark),
+        // The blue swatch is just below 4.5:1 against white text.
+        Accent::Blue => rgb(0x002e_68f5),
+        other => swatch(other),
     }
 }
 
 pub fn on_fill() -> Rgba {
-    if current_accent() == Accent::Default {
-        on_ink()
-    } else {
-        rgb(0x00ff_ffff)
+    on_fill_for(current_accent(), dark())
+}
+
+fn on_fill_for(accent: Accent, dark: bool) -> Rgba {
+    match accent {
+        Accent::Default => on_ink_for(dark),
+        // These lighter swatches need black text to maintain legibility.
+        Accent::Green | Accent::Orange => rgb(0x0000_0000),
+        _ => rgb(0x00ff_ffff),
     }
 }
 
@@ -167,5 +188,55 @@ fn current_density() -> Density {
         1 => Density::Regular,
         2 => Density::Comfortable,
         _ => Density::Compact,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        fn luminance(color: Rgba) -> f32 {
+            fn linear(value: f32) -> f32 {
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            0.2126 * linear(color.color.red)
+                + 0.7152 * linear(color.color.green)
+                + 0.0722 * linear(color.color.blue)
+        }
+        let a = luminance(a);
+        let b = luminance(b);
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn fill_text_meets_contrast_in_every_theme_and_accent() {
+        for dark in [false, true] {
+            for accent in Accent::ALL {
+                let ratio =
+                    contrast(fill_for(accent, dark), on_fill_for(accent, dark));
+                assert!(ratio >= 4.5, "{accent:?}, dark={dark}: {ratio}");
+            }
+        }
+    }
+
+    #[test]
+    fn muted_text_meets_contrast_on_standard_surfaces() {
+        for (dark, surfaces) in [
+            (false, [0x00ff_ffff, 0x00f4_f3ef, 0x00f7_f6f3, 0x00ef_eee9]),
+            (true, [0x002c_2c2a, 0x001c_1c1a, 0x0024_2422, 0x0034_3432]),
+        ] {
+            for surface in surfaces {
+                let ratio = contrast(muted_for(dark), rgb(surface));
+                assert!(
+                    ratio >= 4.5,
+                    "surface={surface:x}, dark={dark}: {ratio}"
+                );
+            }
+        }
     }
 }

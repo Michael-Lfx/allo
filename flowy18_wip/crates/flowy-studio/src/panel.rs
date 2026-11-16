@@ -35,7 +35,9 @@ pub enum StudioEvent {
     OpenFlex,
     OpenIdeas,
     SessionsChanged,
-    Rated { stars: u32 },
+    Rated {
+        stars: u32,
+    },
 }
 
 pub struct StudioPanel {
@@ -120,24 +122,15 @@ impl StudioPanel {
                 let ok = weak.update(cx, |panel, cx| {
                     let updates = panel.agent.drain_updates();
                     let busy = panel.agent.turn_status().is_busy();
-                    if updates.is_empty() && !busy {
-                        return;
-                    }
-                    let mut sessions = false;
-                    for update in updates {
-                        match update {
-                            flowy_agent::AgentUpdate::Sessions => sessions = true,
-                            flowy_agent::AgentUpdate::Session { .. } => {
-                                if panel.agent.has_messages() {
-                                    panel.surface = StudioSurface::Chat;
-                                }
-                            }
+                    if updates.is_empty() {
+                        // The working indicator's elapsed time changes even
+                        // when the agent has no new events to deliver.
+                        if busy {
+                            cx.notify();
                         }
+                    } else {
+                        panel.process_agent_updates(updates, cx);
                     }
-                    if sessions {
-                        cx.emit(StudioEvent::SessionsChanged);
-                    }
-                    cx.notify();
                 });
                 if ok.is_err() {
                     break;
@@ -146,7 +139,34 @@ impl StudioPanel {
         }));
     }
 
-    pub fn set_surface(&mut self, surface: StudioSurface, cx: &mut Context<'_, Self>) {
+    fn process_agent_updates(
+        &mut self,
+        updates: Vec<flowy_agent::AgentUpdate>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if updates.is_empty() {
+            return;
+        }
+        // Background activity updates session contents, not the selected surface.
+        if updates
+            .iter()
+            .any(|update| matches!(update, flowy_agent::AgentUpdate::Sessions))
+        {
+            cx.emit(StudioEvent::SessionsChanged);
+        }
+        if updates.iter().any(|update| {
+            matches!(update, flowy_agent::AgentUpdate::StorageError)
+        }) {
+            self.emit_notice(Some("notice.session_storage_failed"), cx);
+        }
+        cx.notify();
+    }
+
+    pub fn set_surface(
+        &mut self,
+        surface: StudioSurface,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.surface != surface {
             self.surface = surface;
             cx.notify();
@@ -215,7 +235,7 @@ impl StudioPanel {
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.create_session();
         self.surface = StudioSurface::Home;
-        self.notice = None;
+        self.emit_notice(None, cx);
         self.credits_hover = false;
         self.credits_close = None;
         cx.emit(StudioEvent::SessionsChanged);
@@ -226,7 +246,7 @@ impl StudioPanel {
         match self.agent.create_session() {
             Ok(_) => {
                 self.surface = StudioSurface::Home;
-                self.notice = None;
+                self.emit_notice(None, cx);
                 self.prompt.update(cx, |state, cx| state.emplace("", cx));
                 cx.emit(StudioEvent::SessionsChanged);
                 cx.notify();
@@ -260,7 +280,7 @@ impl StudioPanel {
             Ok(()) => {
                 self.prompt.update(cx, |state, cx| state.emplace("", cx));
                 self.surface = StudioSurface::Chat;
-                self.notice = None;
+                self.emit_notice(None, cx);
                 cx.emit(StudioEvent::SessionsChanged);
                 cx.notify();
             }
@@ -274,8 +294,7 @@ impl StudioPanel {
     }
 
     pub fn fill_prompt(&mut self, text: &str, cx: &mut Context<'_, Self>) {
-        self.prompt
-            .update(cx, |state, cx| state.emplace(text, cx));
+        self.prompt.update(cx, |state, cx| state.emplace(text, cx));
         cx.notify();
     }
 
@@ -321,7 +340,10 @@ impl StudioPanel {
         }
     }
 
-    pub(crate) fn ideas_entry(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(crate) fn ideas_entry(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         div()
             .id("studio-ideas")
             .w_full()
@@ -350,5 +372,83 @@ impl Render for StudioPanel {
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         self.workspace(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[gpui::test]
+    fn background_session_updates_do_not_change_selected_surface(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-navigation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let panel = cx.update(|cx| {
+            cx.new(|cx| {
+                StudioPanel::new(
+                    "Flowy",
+                    I18n::embedded("Flowy"),
+                    Model::Lite,
+                    Plan::Free,
+                    String::new(),
+                    false,
+                    root.clone(),
+                    LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                    },
+                    cx,
+                )
+            })
+        });
+        let notices = Rc::new(RefCell::new(Vec::new()));
+        let subscription = cx.update(|cx| {
+            cx.subscribe(&panel, {
+                let notices = notices.clone();
+                move |_, event: &StudioEvent, _| {
+                    if let StudioEvent::Notice(notice) = event {
+                        notices.borrow_mut().push(*notice);
+                    }
+                }
+            })
+        });
+        cx.update(|cx| {
+            panel.update(cx, |panel, cx| {
+                panel.fill_prompt("hello", cx);
+                panel.send_prompt(cx);
+                assert_eq!(panel.surface, StudioSurface::Chat);
+                panel.set_surface(StudioSurface::Automation, cx);
+                let updates = panel.agent.drain_updates();
+                assert!(updates.iter().any(|update| matches!(
+                    update,
+                    flowy_agent::AgentUpdate::Session { .. }
+                )));
+                panel.process_agent_updates(updates, cx);
+                assert_eq!(panel.surface, StudioSurface::Automation);
+                panel.process_agent_updates(
+                    vec![flowy_agent::AgentUpdate::StorageError],
+                    cx,
+                );
+                assert_eq!(panel.notice, Some("notice.session_storage_failed"));
+                assert_eq!(panel.surface, StudioSurface::Automation);
+            });
+        });
+        cx.update(|cx| panel.update(cx, |panel, cx| panel.new_task(cx)));
+        assert_eq!(notices.borrow().last(), Some(&None));
+        drop(subscription);
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

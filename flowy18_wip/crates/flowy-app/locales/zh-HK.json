@@ -296,6 +296,7 @@
   "notice.model_later": "模型切換會在後續階段接入",
   "notice.project_created": "已建立項目，只保存在這次工作階段",
   "notice.prompt_empty": "先寫任務內容",
+  "notice.session_storage_failed": "無法讀取或儲存工作階段資料，請檢查儲存空間的存取權限。",
   "notice.prompt_filled": "已填入任務，確認後傳送",
   "notice.task_added": "已加入這次工作階段的任務清單",
   "notice.upgrade_later": "升級尚未開放",

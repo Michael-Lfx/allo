@@ -419,18 +419,97 @@ impl EdgeGeometry {
         }
     }
 
-    /// Returns the smallest distance from `point` to the curve.
+    /// Approximates the smallest distance from `point` to the curve.
     #[must_use]
     pub fn distance_to(self, point: Vec2) -> f32 {
-        const SAMPLES: usize = 32;
-        let mut previous = self.start;
-        let mut closest = point.distance(previous);
-        for step in 1..=SAMPLES {
-            let next = self.point_at(step as f32 / SAMPLES as f32);
-            closest = closest.min(distance_to_segment(point, previous, next));
-            previous = next;
+        // Subdivide until the control polygon is close to its chord. Unlike a
+        // fixed number of samples this adapts to both curvature and scale.
+        const FLATNESS: f32 = 0.005;
+        const MAX_DEPTH: u8 = 16;
+        fn distance(
+            curve: EdgeGeometry,
+            point: Vec2,
+            depth: u8,
+            closest: f32,
+        ) -> f32 {
+            // The curve stays within the control points' bounding box. Skip
+            // branches that cannot improve the best distance found so far.
+            let min_x = curve
+                .start
+                .x
+                .min(curve.control_a.x)
+                .min(curve.control_b.x)
+                .min(curve.end.x);
+            let max_x = curve
+                .start
+                .x
+                .max(curve.control_a.x)
+                .max(curve.control_b.x)
+                .max(curve.end.x);
+            let min_y = curve
+                .start
+                .y
+                .min(curve.control_a.y)
+                .min(curve.control_b.y)
+                .min(curve.end.y);
+            let max_y = curve
+                .start
+                .y
+                .max(curve.control_a.y)
+                .max(curve.control_b.y)
+                .max(curve.end.y);
+            let dx = (min_x - point.x).max(0.0).max(point.x - max_x);
+            let dy = (min_y - point.y).max(0.0).max(point.y - max_y);
+            if dx * dx + dy * dy >= closest * closest {
+                return closest;
+            }
+            if depth == MAX_DEPTH
+                || (distance_to_segment(
+                    curve.control_a,
+                    curve.start,
+                    curve.end,
+                ) <= FLATNESS
+                    && distance_to_segment(
+                        curve.control_b,
+                        curve.start,
+                        curve.end,
+                    ) <= FLATNESS)
+            {
+                return closest.min(distance_to_segment(
+                    point,
+                    curve.start,
+                    curve.end,
+                ));
+            }
+
+            let a = (curve.start + curve.control_a) / 2.0;
+            let b = (curve.control_a + curve.control_b) / 2.0;
+            let c = (curve.control_b + curve.end) / 2.0;
+            let d = (a + b) / 2.0;
+            let e = (b + c) / 2.0;
+            let midpoint = (d + e) / 2.0;
+            let left = EdgeGeometry {
+                start: curve.start,
+                control_a: a,
+                control_b: d,
+                end: midpoint,
+            };
+            let right = EdgeGeometry {
+                start: midpoint,
+                control_a: e,
+                control_b: c,
+                end: curve.end,
+            };
+            let closest = distance(left, point, depth + 1, closest);
+            distance(right, point, depth + 1, closest)
         }
-        closest
+
+        distance(
+            self,
+            point,
+            0,
+            point.distance(self.start).min(point.distance(self.end)),
+        )
     }
 }
 
@@ -516,6 +595,18 @@ mod tests {
             assert!(edge.distance_to(point) < 0.01);
         }
         assert!(edge.distance_to(Vec2::new(200.0, -200.0)) > 50.0);
+    }
+
+    #[test]
+    fn cubic_curve_hit_test_adapts_to_curve_scale() {
+        let edge = EdgeGeometry::between(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(4000.0, 2000.0),
+        );
+        for step in 0..=10 {
+            let point = edge.point_at(step as f32 / 10.0);
+            assert!(edge.distance_to(point) < 0.01);
+        }
     }
 
     #[test]
