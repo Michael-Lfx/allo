@@ -18,11 +18,22 @@ pub enum Locale {
     ZhTw,
     ZhHk,
     Fr,
+    Hi,
+    It,
+    Ja,
     Ko,
+    Nl,
+    Pl,
+    PtBr,
+    PtPt,
+    Th,
+    Tr,
+    Uk,
+    Vi,
 }
 
 impl Locale {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 23] = [
         Self::Ar,
         Self::Id,
         Self::Cs,
@@ -30,11 +41,22 @@ impl Locale {
         Self::En,
         Self::Es,
         Self::Es419,
+        Self::Fr,
+        Self::Hi,
+        Self::It,
+        Self::Ja,
+        Self::Ko,
+        Self::Nl,
+        Self::Pl,
+        Self::PtBr,
+        Self::PtPt,
         Self::ZhCn,
         Self::ZhTw,
         Self::ZhHk,
-        Self::Fr,
-        Self::Ko,
+        Self::Th,
+        Self::Vi,
+        Self::Tr,
+        Self::Uk,
     ];
 
     #[must_use]
@@ -51,7 +73,18 @@ impl Locale {
             Self::ZhTw => "zh-TW",
             Self::ZhHk => "zh-HK",
             Self::Fr => "fr",
+            Self::Hi => "hi",
+            Self::It => "it",
+            Self::Ja => "ja",
             Self::Ko => "ko",
+            Self::Nl => "nl",
+            Self::Pl => "pl",
+            Self::PtBr => "pt-BR",
+            Self::PtPt => "pt-PT",
+            Self::Th => "th",
+            Self::Tr => "tr",
+            Self::Uk => "uk",
+            Self::Vi => "vi",
         }
     }
 
@@ -69,7 +102,18 @@ impl Locale {
             Self::ZhTw => "繁體中文",
             Self::ZhHk => "繁體中文（香港）",
             Self::Fr => "Français",
+            Self::Hi => "हिन्दी",
+            Self::It => "Italiano",
+            Self::Ja => "日本語",
             Self::Ko => "한국어",
+            Self::Nl => "Nederlands",
+            Self::Pl => "Polski",
+            Self::PtBr => "Português (Brasil)",
+            Self::PtPt => "Português (Portugal)",
+            Self::Th => "ไทย",
+            Self::Tr => "Türkçe",
+            Self::Uk => "Українська",
+            Self::Vi => "Tiếng Việt",
         }
     }
 
@@ -217,7 +261,18 @@ const fn embedded_json(locale: Locale) -> &'static str {
         Locale::ZhTw => include_str!("../locales/zh-TW.json"),
         Locale::ZhHk => include_str!("../locales/zh-HK.json"),
         Locale::Fr => include_str!("../locales/fr.json"),
+        Locale::Hi => include_str!("../locales/hi.json"),
+        Locale::It => include_str!("../locales/it.json"),
+        Locale::Ja => include_str!("../locales/ja.json"),
         Locale::Ko => include_str!("../locales/ko.json"),
+        Locale::Nl => include_str!("../locales/nl.json"),
+        Locale::Pl => include_str!("../locales/pl.json"),
+        Locale::PtBr => include_str!("../locales/pt-BR.json"),
+        Locale::PtPt => include_str!("../locales/pt-PT.json"),
+        Locale::Th => include_str!("../locales/th.json"),
+        Locale::Tr => include_str!("../locales/tr.json"),
+        Locale::Uk => include_str!("../locales/uk.json"),
+        Locale::Vi => include_str!("../locales/vi.json"),
     }
 }
 
