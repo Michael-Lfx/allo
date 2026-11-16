@@ -5,6 +5,7 @@
 //! BYOK prefs, or mock when no key is set. Projects session events into chat
 //! lines for Studio.
 
+mod catalog;
 mod config;
 mod flex;
 mod handle;
@@ -13,6 +14,7 @@ mod model;
 mod projection;
 mod title;
 
+pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use handle::{AgentHandle, AgentUpdate, SessionSummary};

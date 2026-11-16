@@ -122,11 +122,11 @@ impl AgentHandle {
 
     pub fn apply_config(&self, config: LlmConfig) -> Result<(), &'static str> {
         let mut guard = lock(&self.inner);
-        guard.config = config.clone();
-        let Some(booted) = guard.booted.as_mut() else {
-            return Ok(());
-        };
-        apply_live_config(booted, &config)
+        if let Some(booted) = guard.booted.as_mut() {
+            apply_live_config(booted, &config)?;
+        }
+        guard.config = config;
+        Ok(())
     }
 
     pub fn drain_updates(&self) -> Vec<AgentUpdate> {
@@ -789,26 +789,31 @@ fn apply_live_config(
     booted: &mut Booted,
     config: &LlmConfig,
 ) -> Result<(), &'static str> {
-    let previous = booted.config.agent_provider().to_owned();
-    if previous != "mock" {
-        booted.llm.unregister_adapter(&[&previous]);
+    if config.uses_live() && (booted.agents.list().iter().any(|agent| agent.driver_busy())
+        || lock(&booted.shared.live).values().any(|session| session.status.is_busy())) {
+        return Err("notice.agent_busy");
     }
-    if config.uses_live() {
-        let section = config.openai_section().ok_or("notice.agent_failed")?;
-        let adapter = dsh_rs::bundle::openai_compatible_adapter(section)
-            .map_err(|_| "notice.agent_failed")?;
-        let route = config.agent_provider();
-        booted.llm.unregister_adapter(&[route]);
-        booted
-            .llm
-            .register_adapter(&[route], adapter)
-            .map_err(|_| "notice.agent_failed")?;
-    } else {
-        booted.llm.unregister_adapter(&["mock"]);
-        booted
-            .llm
-            .register_adapter(&["mock"], Arc::new(ScriptedMock::echo()))
-            .map_err(|_| "notice.agent_failed")?;
+    if !config.uses_live() {
+        for agent in booted.agents.list() {
+            agent.cancel(AgentCancelCause::User, false);
+        }
+    }
+    // Validate the replacement before removing the working route.
+    let replacement = if config.uses_live() {
+        Some(dsh_rs::bundle::openai_compatible_adapter(
+            config.openai_section().ok_or("notice.agent_failed")?
+        ).map_err(|_| "notice.agent_failed")?)
+    } else { None };
+    let previous = booted.config.agent_provider().to_owned();
+    let adapter: Arc<dyn LlmAdapterApi> = replacement.unwrap_or_else(|| Arc::new(ScriptedMock::echo()));
+    booted.llm.replace_adapter(&previous, config.agent_provider(), adapter);
+    let options = AgentOptions {
+        provider: config.agent_provider().to_owned(),
+        model: config.agent_model().to_owned(),
+        max_tokens: None,
+    };
+    for agent in booted.agents.list() {
+        agent.set_options(options.clone());
     }
     booted.config = config.clone();
     Ok(())

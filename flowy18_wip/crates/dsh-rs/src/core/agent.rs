@@ -31,7 +31,7 @@ struct Inbox {
 /// Live agent handle: the surface every plugin programs against.
 pub struct Agent {
     pub id: SessionId,
-    pub options: AgentOptions,
+    pub options: Mutex<AgentOptions>,
     pub session: Arc<dyn SessionView>,
     /// Agent-scoped context.
     pub ctx: Context,
@@ -65,7 +65,7 @@ impl Agent {
         let (settle_tx, settle_rx) = tokio::sync::watch::channel(0);
         Arc::new(Agent {
             id,
-            options,
+            options: Mutex::new(options),
             session,
             ctx,
             status: Mutex::new(AgentStatus::Idle),
@@ -346,6 +346,10 @@ impl crate::api::services::AgentView for Agent {
 
     fn driver_busy(&self) -> bool {
         Agent::driver_busy(self)
+    }
+
+    fn set_options(&self, options: AgentOptions) {
+        *self.options.lock().unwrap() = options;
     }
 
     fn when_idle(&self) -> crate::api::services::BoxFuture<()> {

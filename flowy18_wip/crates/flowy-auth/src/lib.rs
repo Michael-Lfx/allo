@@ -7,6 +7,7 @@ mod client;
 mod config;
 mod error;
 mod session;
+mod model_catalog;
 
 pub use client::{
     AuthClient, UserProfile, display_name_from_email, normalize_email, normalize_otp,
@@ -17,4 +18,5 @@ pub use config::{
     EMAIL_OTP_LENGTH,
 };
 pub use error::AuthError;
+pub use model_catalog::{AvailableModels, CloudModel, parse_available_models};
 pub use session::{Session, SessionStore};

@@ -372,14 +372,44 @@ fn next_turn_number(session: &dyn SessionView) -> Result<u64, crate::core::Agent
     Ok(max + 1)
 }
 
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use crate::api::services::AgentView;
+
+    #[tokio::test]
+    async fn updated_route_preserves_session_and_history() {
+        let session: Arc<dyn SessionView> = Arc::new(crate::session::Session::new(
+            "same-session".into(),
+            crate::types::SessionHeader { cwd: None, created_at: 0, parent_session: None, seed_length: 0 },
+            Vec::new(),
+        ));
+        session.append(SessionEventData::UserMessage {
+            message: Message::user("first", vec![ContentBlock::text("keep this history")]),
+        });
+        let agent = Agent::new("same-session".into(), crate::types::AgentOptions::mock("old"), session.clone(), cordis::Context::new());
+        assert_eq!(resolve_config(&agent, 1).await.unwrap().model, "old");
+        agent.set_options(crate::types::AgentOptions { provider: "flowy".into(), model: "new".into(), max_tokens: None });
+        let config = resolve_config(&agent, 2).await.unwrap();
+        assert_eq!(config.provider, "flowy");
+        assert_eq!(config.model, "new");
+        assert!(Arc::ptr_eq(&session, &agent.session()));
+        assert_eq!(agent.session().events().len(), 1);
+        assert_eq!(agent.id(), "same-session");
+    }
+}
+
 /// Resolve the call configuration through the `agent/request` waterfall.
 async fn resolve_config(agent: &Arc<Agent>, turn: u64) -> Result<LlmCallConfig, crate::core::AgentError> {
-    let default = LlmCallConfig {
-        provider: agent.options.provider.clone(),
-        model: agent.options.model.clone(),
-        temperature: None,
-        max_tokens: agent.options.max_tokens,
-        stop: None,
+    let default = {
+        let options = agent.options.lock().unwrap();
+        LlmCallConfig {
+            provider: options.provider.clone(),
+            model: options.model.clone(),
+            temperature: None,
+            max_tokens: options.max_tokens,
+            stop: None,
+        }
     };
     let fallback = default.clone();
     let result = agent

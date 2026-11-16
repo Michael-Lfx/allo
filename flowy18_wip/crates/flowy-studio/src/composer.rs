@@ -23,6 +23,10 @@ pub(super) struct ChatComposer {
     prompt: Entity<EditableTextState>,
     i18n: I18n,
     model: Model,
+    /// Live cloud-catalog label. The catalog lives on `StudioPanel`, so the
+    /// selected model name is pushed down while the composer stays cached.
+    model_label: SharedString,
+    cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
     _theme_sub: Subscription,
@@ -52,6 +56,8 @@ impl ChatComposer {
             prompt,
             i18n,
             model,
+            model_label: SharedString::default(),
+            cloud_ready: false,
             model_menu_open: false,
             running: false,
             _theme_sub: theme_sub,
@@ -64,15 +70,22 @@ impl ChatComposer {
         model: Model,
         menu_open: bool,
         running: bool,
+        model_label: String,
+        cloud_ready: bool,
         cx: &mut Context<'_, Self>,
     ) {
+        let model_label = SharedString::from(model_label);
         if self.model != model
             || self.model_menu_open != menu_open
             || self.running != running
+            || self.model_label != model_label
+            || self.cloud_ready != cloud_ready
         {
             self.model = model;
             self.model_menu_open = menu_open;
             self.running = running;
+            self.model_label = model_label;
+            self.cloud_ready = cloud_ready;
             cx.notify();
         }
     }
@@ -170,17 +183,16 @@ impl ChatComposer {
             )
     }
 
-    fn composer_model_label(&self) -> String {
-        self.t(self.model.name_key())
+    pub(crate) fn composer_model_label(&self) -> String {
+        if self.model_label.is_empty() {
+            self.t(self.model.name_key())
+        } else {
+            self.model_label.to_string()
+        }
     }
 
     fn composer_plan_label(&self) -> String {
-        match self.model {
-            Model::Max => self.t("chat.plan_max"),
-            Model::Standard => self.t("chat.plan_standard"),
-            Model::Lite => self.t("chat.plan_lite"),
-            Model::Flex => self.t("model.flex"),
-        }
+        "Flowy".to_owned()
     }
 
     fn chat_composer_chip(
@@ -253,6 +265,10 @@ impl ChatComposer {
             },
             true,
         );
+        // A missing cloud model means no live routing is configured; keep the
+        // send affordance disabled instead of failing after the click.
+        let has_draft =
+            has_draft && self.cloud_ready && !self.model_label.is_empty();
         if running {
             theme::IconButton::new(
                 "chat-stop",

@@ -50,6 +50,30 @@ actions!(
     ]
 );
 
+fn cloud_model_config(model: &flowy_agent::CatalogModel, token: &str) -> flowy_agent::LlmConfig {
+    flowy_agent::LlmConfig {
+        api_key: (!token.trim().is_empty()).then(|| token.to_owned()),
+        base_url: model.endpoint.clone(), model: model.id.clone(), provider: "flowy".into(),
+    }
+}
+
+#[cfg(test)]
+mod cloud_config_tests {
+    #[test]
+    fn selected_cloud_model_sets_fixed_provider_and_account_credential() {
+        let model = flowy_agent::CatalogModel {
+            id: "selected-model".into(), endpoint: "https://example.com/claw/v1".into(),
+            ..Default::default()
+        };
+        let config = super::cloud_model_config(&model, "account-token");
+        assert_eq!(config.provider, "flowy");
+        assert_eq!(config.model, "selected-model");
+        assert_eq!(config.base_url, "https://example.com/claw/v1");
+        assert_eq!(config.api_key.as_deref(), Some("account-token"));
+        assert!(!super::cloud_model_config(&model, " ").uses_live());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Login,
@@ -94,6 +118,9 @@ pub struct FlowyApp {
     pub user_menu: bool,
     pub prefs: Preferences,
     pub i18n: I18n,
+    catalog_task: Option<Task<()>>,
+    catalog_generation: u64,
+    catalog_loading: bool,
     locale_watch: Option<Task<()>>,
     shell_watch: Option<Task<()>>,
     subscriptions: Vec<Subscription>,
@@ -217,7 +244,9 @@ impl FlowyApp {
             let model = prefs.model;
             let plan = prefs.plan;
             let model_info_version = prefs.model_info_version.clone();
-            let llm = prefs.llm_config();
+            // The cloud model catalog owns the live LLM config. Never fall back
+            // to environment/BYOK configuration here.
+            let llm = Self::disconnected_config();
             let ui = ui.clone();
             cx.new(move |cx| {
                 StudioPanel::new(
@@ -299,7 +328,7 @@ impl FlowyApp {
                 app.on_studio_event(event, cx);
             }),
         ];
-        Self {
+        let mut app = Self {
             active_dialog: state::ActiveDialog::None,
             ui,
             theme,
@@ -379,10 +408,112 @@ impl FlowyApp {
             user_menu: false,
             prefs,
             i18n,
+            catalog_task: None,
+            catalog_generation: 0,
+            catalog_loading: false,
             locale_watch: None,
             shell_watch: None,
             subscriptions,
+        };
+        app.refresh_models(cx);
+        app
+    }
+
+    fn disconnected_config() -> flowy_agent::LlmConfig {
+        flowy_agent::LlmConfig {
+            api_key: None, base_url: String::new(), model: String::new(), provider: "flowy".into(),
         }
+    }
+
+    fn select_cloud_model(&mut self, id: &str, cx: &mut Context<'_, Self>) {
+        if self.catalog_loading { return; }
+        let Some(session) = self.auth.session.as_ref() else { return; };
+        if session.access_token.trim().is_empty() { return; }
+        if self.studio.read(cx).agent.turn_status().is_busy() { return; }
+        let Some(model) = self.studio.read(cx).catalog.models.iter().find(|m| m.id == id).cloned() else { return; };
+        let config = cloud_model_config(&model, &session.access_token);
+        match self.studio.read(cx).agent.apply_config(config) {
+            Ok(()) => {
+                self.prefs.model_id = model.id.clone();
+                let save_failed = self.prefs.save_checked(self.store.root()).is_err();
+                self.studio.update(cx, |panel, cx| {
+                    panel.catalog.select(model.id);
+                    panel.cloud_ready = true;
+                    panel.set_notice(save_failed.then_some("notice.session_storage_failed"), cx);
+                });
+            }
+            Err(key) => {
+                self.studio.update(cx, |panel, cx| { panel.cloud_ready = false; panel.set_notice(Some(key), cx); });
+            }
+        }
+    }
+
+    fn refresh_models(&mut self, cx: &mut Context<'_, Self>) {
+        if self.catalog_loading { return; }
+        let Some(session) = self.auth.session.clone() else { return; };
+        if self.studio.read(cx).agent.turn_status().is_busy() { return; }
+        let client = AuthClient::from_env();
+        let account = session.user_id.map(|id| format!("{}:{id}", client.config().effective_base_url()));
+        self.catalog_loading = true;
+        let was_ready = self.studio.read(cx).cloud_ready;
+        self.studio.update(cx, |panel, cx| { panel.cloud_ready = false; cx.notify(); });
+        let saved_id = if account.as_deref() == Some(self.prefs.model_account.as_str()) {
+            self.prefs.model_id.clone()
+        } else { String::new() };
+        if account.is_some() && account.as_deref() != Some(self.prefs.model_account.as_str()) {
+            self.studio.update(cx, |panel, _| {
+                panel.cloud_ready = false;
+                panel.catalog = flowy_agent::ProviderCatalog::new();
+            });
+        }
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+        let generation = self.catalog_generation;
+        let token = session.access_token;
+        let outcome = Arc::new(Mutex::new(None));
+        let writer = Arc::clone(&outcome);
+        std::thread::spawn(move || {
+            let result = client.available_models(&token);
+            if let Ok(mut guard) = writer.lock() { *guard = Some(result); }
+        });
+        self.catalog_task = Some(cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(40)).await;
+                let Some(result) = outcome.lock().ok().and_then(|mut guard| guard.take()) else { continue; };
+                let _ = weak.update(cx, |app, cx| {
+                    if generation != app.catalog_generation || app.auth.session.is_none() { return; }
+                    app.catalog_loading = false;
+                    match result {
+                        Ok(result) => {
+                            let models = result.cloud.into_iter().map(|m| flowy_agent::CatalogModel {
+                                id: m.id, name: m.name, endpoint: m.endpoint,
+                                context_window: m.context_window, max_tokens: m.max_tokens, credit_rate: m.credit_rate,
+                            }).collect();
+                            app.studio.update(cx, |panel, cx| {
+                                panel.cloud_ready = false;
+                                panel.catalog.replace(models);
+                                if !saved_id.is_empty() { panel.catalog.select(saved_id); }
+                                cx.notify();
+                            });
+                            app.prefs.model_account = account.unwrap_or_default();
+                            let selected = app.studio.read(cx).catalog.selected.clone();
+                            if let Some(id) = selected { app.select_cloud_model(&id, cx); }
+                            else {
+                                app.prefs.model_id.clear();
+                                app.prefs.save(app.store.root());
+                                let _ = app.studio.read(cx).agent.apply_config(Self::disconnected_config());
+                                app.note("notice.agent_failed", cx);
+                            }
+                        }
+                        Err(AuthError::AuthRequired) => app.sign_out(cx),
+                        Err(error) => {
+                            app.studio.update(cx, |panel, _| { panel.cloud_ready = was_ready; });
+                            app.note(error.key(), cx);
+                        }
+                    }
+                });
+                break;
+            }
+        }));
     }
 
     pub fn receive_invite_code(
@@ -530,7 +661,8 @@ impl FlowyApp {
                             app.auth.cooldown_left = 0;
                             app.notice = None;
                             app.screen = Screen::Main;
-                            let open = app.prefs.shows_model_info();
+                            app.refresh_models(cx);
+                            let open = false;
                             app.studio.update(cx, |panel, cx| {
                                 panel.model_info_open = open;
                                 cx.notify();
@@ -683,6 +815,16 @@ impl FlowyApp {
     }
 
     pub(super) fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+        self.catalog_task = None;
+        self.catalog_loading = false;
+        self.studio.update(cx, |panel, cx| {
+            panel.cloud_ready = false;
+            panel.catalog = flowy_agent::ProviderCatalog::new();
+            panel.agent.stop();
+            let _ = panel.agent.apply_config(Self::disconnected_config());
+            cx.notify();
+        });
         self.store.clear();
         self.auth
             .email
@@ -861,12 +1003,14 @@ impl FlowyApp {
                 self.prefs.plan = *plan;
                 self.prefs.model_info_version.clone_from(model_info_version);
                 self.prefs.save(self.store.root());
-                self.sync_agent_llm(cx);
+                // Legacy model-info events must not restore BYOK/environment configuration.
                 cx.notify();
             }
             StudioEvent::OpenFlex => {
                 self.open_flex(cx);
             }
+            StudioEvent::CloudModelSelected(id) => self.select_cloud_model(id, cx),
+            StudioEvent::RefreshModels => self.refresh_models(cx),
             StudioEvent::OpenIdeas => {
                 self.activate_dialog(state::ActiveDialog::Ideas, cx);
                 cx.notify();

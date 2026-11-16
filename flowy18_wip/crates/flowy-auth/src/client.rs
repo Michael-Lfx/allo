@@ -2,6 +2,7 @@
 
 use crate::config::{Config, REQUEST_TIMEOUT_SECS};
 use crate::error::AuthError;
+use crate::model_catalog::{AvailableModels, parse_available_models};
 use crate::session::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -159,6 +160,29 @@ impl AuthClient {
     pub fn fetch_me(&self, access_token: &str) -> Result<UserProfile, AuthError> {
         let env = self.get("/user/me", Some(access_token))?;
         env.into_data()
+    }
+
+    pub fn available_models(&self, access_token: &str) -> Result<AvailableModels, AuthError> {
+        let mut query = reqwest::Url::parse("https://catalog.invalid/")
+            .map_err(|_| AuthError::Transport)?;
+        query.query_pairs_mut().append_pair("category", "1").append_pair("app", &self.config.app);
+        let path = format!("/api/v2/model/availableListClaw?{}", query.query().unwrap_or_default());
+        let env = self.get(&path, Some(access_token))?;
+        let data = env.into_data::<Value>()?;
+        let mut catalog = parse_available_models(&data)?;
+        let origin = reqwest::Url::parse(&self.config.effective_base_url()).map_err(|_| AuthError::Transport)?;
+        let original_count = catalog.cloud.len();
+        catalog.cloud.retain(|model| {
+            reqwest::Url::parse(&model.endpoint).is_ok_and(|url| {
+                url.scheme() == "https" && url.origin() == origin.origin()
+                    && url.username().is_empty() && url.password().is_none()
+                    && url.query().is_none() && url.fragment().is_none()
+            })
+        });
+        if catalog.cloud.len() != original_count {
+            return Err(AuthError::Server("model catalog contains an untrusted endpoint".into()));
+        }
+        Ok(catalog)
     }
 
     /// Lightweight reachability check against the configured API root.

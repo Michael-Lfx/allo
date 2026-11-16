@@ -272,6 +272,25 @@ pub async fn stream_via_waterfall(
 }
 
 
+#[cfg(test)]
+mod replacement_tests {
+    use super::*;
+    use crate::api::services::LlmRuntimeApi;
+
+    #[test]
+    fn replacing_route_removes_old_and_overwrites_existing_target() {
+        let runtime = LlmRuntime::new();
+        let old: Arc<dyn LlmAdapter> = Arc::new(crate::llm::adapters::mock::MockAdapter::new());
+        let replacement: Arc<dyn LlmAdapter> = Arc::new(crate::llm::adapters::mock::MockAdapter::new());
+        runtime.register_adapter(&["old", "new"], old).unwrap();
+        runtime.replace_adapter("old", "new", replacement.clone());
+        let map = runtime.inner.adapters.lock().unwrap();
+        assert!(!map.contains_key("old"));
+        assert!(Arc::ptr_eq(map.get("new").unwrap(), &replacement));
+        assert_eq!(map.len(), 1);
+    }
+}
+
 impl crate::api::services::LlmRuntimeApi for LlmRuntime {
     fn list_providers(&self) -> Vec<LlmProviderInfo> {
         self.list_providers()
@@ -291,6 +310,12 @@ impl crate::api::services::LlmRuntimeApi for LlmRuntime {
 
     fn unregister_adapter(&self, providers: &[&str]) {
         self.unregister_adapter(providers)
+    }
+
+    fn replace_adapter(&self, previous: &str, provider: &str, adapter: Arc<dyn crate::api::services::LlmAdapterApi>) {
+        let mut map = self.inner.adapters.lock().unwrap();
+        map.remove(previous);
+        map.insert(provider.to_owned(), adapter);
     }
 
     fn stream(

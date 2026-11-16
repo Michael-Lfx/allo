@@ -108,6 +108,8 @@ pub trait LlmRuntimeApi: Send + Sync + 'static {
         adapter: Arc<dyn LlmAdapterApi>,
     ) -> Result<(), LlmError>;
     fn unregister_adapter(&self, providers: &[&str]);
+    /// Atomically replace a host-owned route after validating its adapter.
+    fn replace_adapter(&self, previous: &str, provider: &str, adapter: Arc<dyn LlmAdapterApi>);
     fn stream(
         &self,
         options: GenerateOptions,
@@ -161,6 +163,8 @@ pub trait AgentView: Send + Sync + 'static {
     fn cancel(&self, cause: AgentCancelCause, keep_inbox: bool);
     fn status(&self) -> AgentStatus;
     fn driver_busy(&self) -> bool;
+    /// Update routing for subsequent requests without replacing session history.
+    fn set_options(&self, options: AgentOptions);
     fn when_idle(&self) -> BoxFuture<()>;
 }
 

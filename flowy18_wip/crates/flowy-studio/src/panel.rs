@@ -1,6 +1,6 @@
 use crate::composer::{ChatComposer, ComposerEvent};
 use crate::feed::{ChatFeed, WorkingIndicator};
-use flowy_agent::{AgentHandle, LlmConfig, Model, Plan};
+use flowy_agent::{AgentHandle, LlmConfig, Model, Plan, ProviderCatalog};
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
 use flowy_ui::{ResolvedTheme, UiContext};
@@ -35,6 +35,8 @@ pub enum StudioEvent {
         model_info_version: String,
     },
     OpenFlex,
+    CloudModelSelected(String),
+    RefreshModels,
     OpenIdeas,
     SessionsChanged,
     Rated {
@@ -87,6 +89,8 @@ pub struct StudioPanel {
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
     pub model: Model,
+    pub catalog: ProviderCatalog,
+    pub cloud_ready: bool,
     pub plan: Plan,
     pub model_info_version: String,
     pub store_root: PathBuf,
@@ -219,6 +223,8 @@ impl StudioPanel {
             model_menu_anchor: "model-menu-trigger",
             i18n,
             model,
+            catalog: ProviderCatalog::new(),
+            cloud_ready: false,
             plan,
             model_info_version,
             store_root,
@@ -347,6 +353,16 @@ impl StudioPanel {
         self.credits.label(&self.i18n)
     }
 
+    /// Label for the selected cloud model. The catalog is the single source of
+    /// truth for model routing; the legacy `Model` enum only remains as the
+    /// pre-login fallback surface.
+    pub(crate) fn model_label(&self) -> String {
+        self.catalog
+            .selected_model()
+            .map(|model| model.name.clone())
+            .unwrap_or_else(|| self.t("notice.agent_failed"))
+    }
+
     pub(crate) fn t(&self, key: &str) -> String {
         self.i18n.t(key)
     }
@@ -419,6 +435,10 @@ impl StudioPanel {
     }
 
     pub fn send_prompt(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.cloud_ready || self.catalog.selected_model().is_none() {
+            self.emit_notice(Some("notice.agent_failed"), cx);
+            return;
+        }
         let text = self.prompt.read(cx).as_str().trim().to_string();
         if text.is_empty() {
             self.emit_notice(Some("notice.prompt_empty"), cx);
@@ -523,11 +543,15 @@ impl Render for StudioPanel {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        let model_label = self.model_label();
+        let cloud_ready = self.cloud_ready;
         self.composer.update(cx, |composer, cx| {
             composer.sync_state(
                 self.model,
                 self.model_menu_open,
                 self.status.is_busy(),
+                model_label,
+                cloud_ready,
                 cx,
             );
         });
