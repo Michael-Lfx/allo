@@ -2,7 +2,9 @@ use super::FlowyApp;
 use crate::i18n::Locale;
 use crate::prefs::SendMode;
 use flowy_ui as theme;
-use gpui::{Context, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    Context, Pixels, SharedString, Size, Window, div, prelude::*, px,
+};
 use gpui_ce_elements::editable_text::text_input;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +105,8 @@ impl FlowyApp {
     pub(super) fn open_settings(&mut self, cx: &mut Context<'_, Self>) {
         self.settings.open = true;
         self.invite.open = false;
+        self.flex.open = false;
+        self.flex.provider_menu = false;
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
             panel.credits_hover = false;
@@ -168,16 +172,49 @@ impl FlowyApp {
         cx.notify();
     }
 
-    pub(super) fn settings_canvas(
+    pub(super) fn settings_layer(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let frame = theme::modal_size(window.viewport_size());
+        div()
+            .id("settings-layer")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme::scrim())
+            .backdrop_blur(theme::scrim_blur())
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                cx.stop_propagation();
+                app.close_settings(cx);
+            }))
+            .child(self.settings_panel(frame, cx))
+    }
+
+    fn settings_panel(
+        &self,
+        frame: Size<Pixels>,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         div()
-            .size_full()
+            .id("settings-panel")
+            .w(frame.width)
+            .h(frame.height)
+            .rounded(theme::modal_radius())
+            .bg(theme::card())
+            .shadow_md()
+            .overflow_hidden()
             .flex()
-            .bg(theme::canvas())
             .text_color(theme::ink())
+            .on_click(cx.listener(|_app, _event, _window, cx| {
+                cx.stop_propagation();
+            }))
             .child(self.settings_nav(cx))
             .child(self.settings_main(cx))
     }
@@ -194,6 +231,9 @@ impl FlowyApp {
             .h_full()
             .flex()
             .flex_col()
+            .rounded_l(theme::modal_radius())
+            .overflow_hidden()
+            .pb(theme::modal_radius())
             .border_r_1()
             .border_color(theme::line())
             .bg(theme::dock())
@@ -329,6 +369,10 @@ impl FlowyApp {
             .h_full()
             .flex()
             .flex_col()
+            .rounded_r(theme::modal_radius())
+            .overflow_hidden()
+            .pb(theme::modal_radius())
+            .bg(theme::card())
             .child(
                 div()
                     .h(px(48.))
@@ -510,7 +554,7 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let mut menu = menu_shell("language-menu");
+        let mut menu = menu_shell("language-menu").w(px(260.));
         for locale in Locale::ALL {
             let selected = self.i18n.locale() == locale;
             let id = SharedString::from(format!("locale-{}", locale.code()));
@@ -522,13 +566,24 @@ impl FlowyApp {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
                     .bg(if selected {
                         theme::soft()
                     } else {
                         theme::card()
                     })
                     .hover(|row| row.bg(theme::soft()))
-                    .child(locale.endonym())
+                    .child(div().flex_1().min_w_0().child(locale.endonym()))
+                    .when(selected, |row| {
+                        row.child(
+                            theme::icons::check()
+                                .size(px(14.))
+                                .text_color(theme::accent()),
+                        )
+                    })
                     .on_click(cx.listener(move |app, _event, _window, cx| {
                         app.choose_locale(locale, cx);
                     })),

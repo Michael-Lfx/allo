@@ -939,8 +939,6 @@ impl Render for FlowyApp {
                 login = login.child(self.legal_layer(cx));
             }
             root.child(login)
-        } else if self.settings.open {
-            root.child(self.settings_canvas(window, cx))
         } else {
             root.child(self.main_canvas(window, cx))
         };
@@ -948,15 +946,16 @@ impl Render for FlowyApp {
             && self.screen == Screen::Main
             && !self.settings.open
         {
-            root = root.child(self.ideas_layer(cx));
+            root = root.child(self.ideas_layer(window, cx));
         }
         if self.gallery.idea_id.is_some()
             && self.screen == Screen::Main
             && !self.settings.open
         {
-            root = root.child(self.idea_layer(cx));
+            root = root.child(self.idea_layer(window, cx));
         }
-        if self.invite.open && self.screen == Screen::Main {
+        if self.invite.open && self.screen == Screen::Main && !self.settings.open
+        {
             root = root.child(self.invite_layer(cx));
         }
         if self.persona.dialog != more::Dialog::None
@@ -968,6 +967,9 @@ impl Render for FlowyApp {
         if self.flex.open && self.screen == Screen::Main && !self.settings.open
         {
             root = root.child(self.flex_layer(cx));
+        }
+        if self.settings.open && self.screen == Screen::Main {
+            root = root.child(self.settings_layer(window, cx));
         }
         if self.prefs.activity && self.screen == Screen::Main {
             root = root.child(self.activity_floater());

@@ -1,6 +1,9 @@
 use super::FlowyApp;
 use flowy_ui as theme;
-use gpui::{ColorExt, Context, SharedString, div, prelude::*, px, rgb};
+use gpui::{
+    ColorExt, Context, Pixels, SharedString, Size, Window, div, prelude::*, px,
+    rgb,
+};
 
 const PAGE: usize = 3;
 
@@ -378,8 +381,10 @@ impl FlowyApp {
 
     pub(super) fn ideas_layer(
         &self,
+        window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let frame = theme::modal_size(window.viewport_size());
         div()
             .id("ideas-layer")
             .occlude()
@@ -390,22 +395,26 @@ impl FlowyApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::ink().opacity(0.28))
+            .bg(theme::scrim())
+            .backdrop_blur(theme::scrim_blur())
             .on_click(cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.gallery.ideas_open = false;
                 cx.notify();
             }))
-            .child(self.ideas_card(cx))
+            .child(self.ideas_card(frame, cx))
     }
 
-    fn ideas_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn ideas_card(
+        &self,
+        frame: Size<Pixels>,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         div()
             .id("ideas-card")
-            .w(px(860.))
-            .h(px(640.))
-            .max_w_full()
-            .rounded_xl()
+            .w(frame.width)
+            .h(frame.height)
+            .rounded(theme::modal_radius())
             .bg(theme::card())
             .shadow_md()
             .p_5()
@@ -544,8 +553,10 @@ impl FlowyApp {
 
     pub(super) fn idea_layer(
         &self,
+        window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let frame = theme::modal_size(window.viewport_size());
         let item = self.gallery.idea_id.and_then(item_by_id);
         let mut layer = div()
             .id("idea-layer")
@@ -557,7 +568,8 @@ impl FlowyApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::ink().opacity(0.28))
+            .bg(theme::scrim())
+            .backdrop_blur(theme::scrim_blur())
             .on_click(cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.gallery.idea_id = None;
@@ -565,7 +577,7 @@ impl FlowyApp {
                 cx.notify();
             }));
         if let Some(item) = item {
-            layer = layer.child(self.idea_card(item, cx));
+            layer = layer.child(self.idea_card(item, frame, cx));
         }
         layer
     }
@@ -573,14 +585,15 @@ impl FlowyApp {
     fn idea_card(
         &self,
         item: &Item,
+        frame: Size<Pixels>,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let body = item.body;
         div()
             .id("idea-card")
-            .w(px(880.))
-            .max_w_full()
-            .rounded_xl()
+            .w(frame.width)
+            .max_h(frame.height)
+            .rounded(theme::modal_radius())
             .bg(theme::card())
             .shadow_md()
             .p_5()

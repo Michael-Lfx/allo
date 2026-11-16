@@ -1,7 +1,7 @@
 use super::FlowyApp;
 use flowy_ui as theme;
 use gpui::{
-    ClipboardItem, ColorExt, Context, SharedString, div, prelude::*, px, rgb,
+    ClipboardItem, Context, SharedString, div, prelude::*, px, rgb,
 };
 use gpui_ce_elements::editable_text::text_input;
 use serde::{Deserialize, Serialize};
@@ -106,7 +106,8 @@ impl FlowyApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::ink().opacity(0.28))
+            .bg(theme::scrim())
+            .backdrop_blur(theme::scrim_blur())
             .on_click(cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.close_invite(cx);
@@ -121,7 +122,7 @@ impl FlowyApp {
             .max_h(px(640.))
             .overflow_y_scroll()
             .bg(theme::card())
-            .rounded_xl()
+            .rounded(theme::modal_radius())
             .shadow_md()
             .px_6()
             .pt_4()

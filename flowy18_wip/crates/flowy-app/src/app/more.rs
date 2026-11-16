@@ -68,7 +68,7 @@ impl FlowyApp {
             .bg(theme::card())
             .border_1()
             .border_color(theme::line())
-            .rounded_xl()
+            .rounded(theme::modal_radius())
             .shadow_md()
             .p_1()
             .flex()
@@ -108,7 +108,8 @@ impl FlowyApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::ink().opacity(0.28))
+            .bg(theme::scrim())
+            .backdrop_blur(theme::scrim_blur())
             .on_click(cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.close_more_dialog(cx);

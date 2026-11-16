@@ -3,7 +3,7 @@ use super::{FlowyApp, Screen, SignIn};
 use flowy_auth::{EMAIL_OTP_LENGTH, valid_email};
 use flowy_ui as theme;
 use gpui::{
-    ColorExt, Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb,
+    Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb,
 };
 use gpui_ce_elements::editable_text::text_input;
 
@@ -266,8 +266,8 @@ impl FlowyApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::ink().opacity(0.18))
-            .backdrop_blur(px(14.))
+            .bg(theme::scrim())
+            .backdrop_blur(theme::scrim_blur())
             .on_click(cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.close_legal(cx);
@@ -285,7 +285,7 @@ impl FlowyApp {
             .id("legal-dialog")
             .w(px(560.))
             .max_h(px(520.))
-            .rounded(px(20.))
+            .rounded(theme::modal_radius())
             .bg(theme::card())
             .shadow_lg()
             .px_8()
