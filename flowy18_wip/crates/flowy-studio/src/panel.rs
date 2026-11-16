@@ -8,6 +8,7 @@ use gpui::{
 use gpui_ce_elements::editable_text::{
     EditableTextState, StringStorage, TextChanged,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -55,6 +56,7 @@ pub struct StudioPanel {
     pub product: &'static str,
     pub surface: StudioSurface,
     pub notice: Option<&'static str>,
+    pub expanded_feed: HashSet<String>,
     _prompt_sub: gpui::Subscription,
     _pump: Option<Task<()>>,
 }
@@ -101,6 +103,7 @@ impl StudioPanel {
             product,
             surface,
             notice: None,
+            expanded_feed: HashSet::new(),
             _prompt_sub: prompt_sub,
             _pump: None,
         };
@@ -116,7 +119,8 @@ impl StudioPanel {
                     .await;
                 let ok = weak.update(cx, |panel, cx| {
                     let updates = panel.agent.drain_updates();
-                    if updates.is_empty() {
+                    let busy = panel.agent.turn_status().is_busy();
+                    if updates.is_empty() && !busy {
                         return;
                     }
                     let mut sessions = false;

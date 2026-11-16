@@ -2,6 +2,7 @@
 
 mod automation;
 mod chat;
+mod composer;
 mod panel;
 mod studio;
 mod thread;

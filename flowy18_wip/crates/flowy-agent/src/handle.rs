@@ -41,6 +41,7 @@ struct LiveSession {
     titled: bool,
     status: TurnStatus,
     updated_at: u64,
+    turn_started_at: Option<u64>,
 }
 
 struct Shared {
@@ -195,6 +196,24 @@ impl AgentHandle {
             .unwrap_or_default()
     }
 
+    /// Elapsed seconds for the in-feed working indicator while a turn is busy.
+    #[must_use]
+    pub fn working_elapsed_secs(&self) -> Option<u64> {
+        let mut guard = lock(&self.inner);
+        let _ = guard.ensure_booted();
+        let Some(booted) = guard.booted.as_ref() else {
+            return None;
+        };
+        let active = lock(&booted.shared.active).clone()?;
+        let live = lock(&booted.shared.live);
+        let session = live.get(&active)?;
+        if !session.status.is_busy() {
+            return None;
+        }
+        let started = session.turn_started_at?;
+        Some(now_ms().saturating_sub(started).div_ceil(1000).max(1))
+    }
+
     pub fn session_title(&self) -> String {
         let mut guard = lock(&self.inner);
         let _ = guard.ensure_booted();
@@ -261,6 +280,7 @@ impl AgentHandle {
             }
             let need_title = !session.titled;
             session.status = TurnStatus::Running;
+            session.turn_started_at = Some(now_ms());
             session.updated_at = now_ms();
             session.projection.lines.push(ChatLine::User {
                 text: text.to_owned(),
@@ -292,6 +312,7 @@ impl AgentHandle {
                         session.projection.flush_pending();
                         if matches!(session.status, TurnStatus::Running) {
                             session.status = TurnStatus::Completed;
+                            session.turn_started_at = None;
                         }
                         session.updated_at = now_ms();
                     }
@@ -330,6 +351,7 @@ impl AgentHandle {
             if let Some(session) = live.get_mut(&id) {
                 session.agent.cancel(AgentCancelCause::User, false);
                 session.status = TurnStatus::Stopped;
+                session.turn_started_at = None;
                 session.updated_at = now_ms();
             }
         }
@@ -481,6 +503,7 @@ impl Harness {
                 titled,
                 status: TurnStatus::Idle,
                 updated_at: now_ms(),
+                turn_started_at: None,
             },
         );
         Ok(session_id)
@@ -503,7 +526,11 @@ impl Harness {
             )?;
             if let Some(booted) = self.booted.as_ref() {
                 if let Some(session) = lock(&booted.shared.live).get_mut(&id) {
-                    session.status = record.status;
+                    session.status = match record.status {
+                        TurnStatus::Running => TurnStatus::Stopped,
+                        other => other,
+                    };
+                    session.turn_started_at = None;
                     session.updated_at = record.updated_at;
                 }
             }
@@ -592,6 +619,7 @@ fn apply_event(shared: &Shared, session_id: &str, event: &dsh_rs::types::Session
             session.status = TurnStatus::Error {
                 message: message.clone(),
             };
+            session.turn_started_at = None;
         }
         drop(live);
         lock(&shared.updates).push_back(AgentUpdate::Session {
@@ -636,7 +664,51 @@ fn replay_lines(agent: &dyn AgentView, lines: &[ChatLine]) {
                 });
                 turn = turn.saturating_add(1);
             }
-            ChatLine::Tool { text } | ChatLine::Status { text } => {
+            ChatLine::Reasoning { text, .. } => {
+                session.append(SessionEventData::AssistantMessage {
+                    turn,
+                    step: 0,
+                    message: Message {
+                        id: format!("replay-r-{turn}"),
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Reasoning {
+                            text: text.clone(),
+                        }],
+                        source: MessageSource::Model {
+                            provider: "replay".into(),
+                            model: "replay".into(),
+                        },
+                    },
+                    usage: None,
+                    interrupted: None,
+                });
+            }
+            ChatLine::ToolCall {
+                name,
+                target,
+                call_id,
+                ..
+            } => {
+                let arguments = if target.is_empty() {
+                    "{}".to_owned()
+                } else {
+                    serde_json::json!({ "target": target }).to_string()
+                };
+                session.append(SessionEventData::ToolCall {
+                    turn,
+                    step: 0,
+                    call_id: if call_id.is_empty() {
+                        format!("replay-c-{turn}")
+                    } else {
+                        call_id.clone()
+                    },
+                    name: name.clone(),
+                    arguments,
+                });
+            }
+            ChatLine::Tool { text }
+            | ChatLine::ToolResult { text, .. }
+            | ChatLine::Status { text } => {
                 session.append(SessionEventData::ToolResult {
                     turn,
                     step: 0,

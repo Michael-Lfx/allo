@@ -70,6 +70,23 @@ pub fn soft() -> Rgba {
     }
 }
 
+/// Floating chat composer fill (dark card on light canvas, raised on dark).
+pub fn composer() -> Rgba {
+    if dark() {
+        rgb(0x0034_3432)
+    } else {
+        rgb(0x002c_2c2a)
+    }
+}
+
+pub fn on_composer() -> Rgba {
+    rgb(0x00f4_f3ef)
+}
+
+pub fn composer_muted() -> Rgba {
+    rgb(0x00a8_a49c)
+}
+
 pub fn danger() -> Rgba {
     if dark() {
         rgb(0x00e0_7070)
