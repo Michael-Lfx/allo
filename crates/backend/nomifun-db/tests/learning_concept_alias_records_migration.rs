@@ -41,7 +41,6 @@ async fn alias_records_pin_the_structured_shape() {
     assert_eq!(parsed[0]["name"], "Limits");
     assert_eq!(parsed[0]["status"], "active");
     assert_eq!(parsed[1]["name"], "配方法");
-
     // 读侧（json_extract 路径）按名字可查活跃别名。
     let hit: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM learning_concept_registry reg, json_each(reg.aliases_json) je \
@@ -74,7 +73,12 @@ async fn alias_records_pin_the_structured_shape() {
 /// ref_name 可空列：新写带投影名，旧行为 NULL（读侧回退正名）。
 #[tokio::test]
 async fn ref_name_column_is_nullable() {
-    let pool = setup().await;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
     let nullable: (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), SUM(NOT \"notnull\") FROM pragma_table_info('learning_lesson_concepts') \
          WHERE name = 'ref_name'",

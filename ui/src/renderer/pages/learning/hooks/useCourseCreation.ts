@@ -38,7 +38,10 @@ export interface CourseGenerationState {
 
 /** 从快照行重建对话框生成态（恢复态）：running 原样落位，其余活跃态
  * （m7 资源闸排队中）落 queued；请求形状由 `buildRestoredRequest` 单源给出
- * （course_kind 按任务类别标注）。无主题的行不可恢复（null）。 */
+ * （course_kind 按任务类别标注）。无主题的行不可恢复（null）。
+ * restoredTask（c3）：快照机器面留存——悬浮 Pill 副行按 kind 词典组装
+ * 显示文案，后端中文 topic 不再直达 UI；收敛写回展开 `{ ...current,
+ * ...converged }`，该字段随恢复态全程保留。 */
 export function restoredGenerationFromTask(
   task: LearningGenerationTaskView
 ): CourseGenerationState | null {
@@ -46,6 +49,7 @@ export function restoredGenerationFromTask(
   return {
     status: task.state === 'running' ? 'running' : 'queued',
     request: buildRestoredRequest(task),
+    restoredTask: { kind: task.kind, topic: task.topic },
     result: null,
     error: null,
   };

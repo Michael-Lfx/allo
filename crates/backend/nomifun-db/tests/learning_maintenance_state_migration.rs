@@ -1,4 +1,4 @@
-//! 迁移 070 学习维护水位表（`learning_maintenance_state`）的契约：一行一课、
+//! 迁移 071 学习维护水位表（`learning_maintenance_state`）的契约：一行一课、
 //! 水位默认 0（行缺失 = 全量重读一次）、非负、PK 唯一。水位是派生记账面，
 //! 课程删除随删（逻辑引用 Cascade，见 id_schema_contract）。
 

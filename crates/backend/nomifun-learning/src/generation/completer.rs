@@ -160,40 +160,6 @@ pub(crate) async fn complete_json_coach(
         })?
 }
 
-/// JSON-mode sibling of [`complete_coach`]: artifact-contract generation
-/// (structure + terrain) runs the full prompt as the user message on the
-/// json seam with thinking ON, under the same timeout arithmetic — reasoning
-/// tokens share the ceiling with the JSON reply, and a truncated artifact
-/// surfaces as a contract violation instead of a parse hang.
-pub(crate) async fn complete_json_coach(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    system: &str,
-    user: &str,
-) -> Result<String, AppError> {
-    let call = async {
-        completer
-            .complete_json_with_thinking(
-                model_override.map(|(id, model)| (id.as_str(), model)),
-                system,
-                user,
-                crate::generation::STRUCTURE_MAX_TOKENS,
-            )
-            .await
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(COACH_CALL_TIMEOUT_SECS), call)
-        .await
-        .map_err(|_| {
-            tracing::warn!(
-                timeout_secs = COACH_CALL_TIMEOUT_SECS,
-                "structure artifact call timed out"
-            );
-            AppError::Timeout(format!(
-                "json coach call exceeded {COACH_CALL_TIMEOUT_SECS}s"
-            ))
-        })?
-}
-
 
 pub(crate) async fn complete(
     completer: &dyn LearningCompleter,

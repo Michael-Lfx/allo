@@ -1896,7 +1896,7 @@ mod tests {
         serde_json::json!({ "operations": [
             { "op": "add_activity", "activity": { "kind": "single_choice", "prompt": "期权的本质是什么？", "options": ["权利", "义务", "债务"], "answer": "权利", "explanation": "买方持有的是权利而非义务。" } },
             { "op": "add_activity", "activity": { "kind": "true_false", "prompt": "期权卖方没有履约义务。", "answer": false, "explanation": "卖方承担履约义务。" } },
-            { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "" } },
+            { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "用身边合同或规则的例子说明：权利可以放弃，义务不履行会有后果，两者不对等。" } },
             { "op": "set_estimated_minutes", "minutes": 15 }
         ] })
     }

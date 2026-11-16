@@ -38,7 +38,7 @@ async fn migrate_range(pool: &SqlitePool, from: i64, to: i64) {
     }
 }
 
-/// 老行回填：合并基线之后 `source_kb_ids` = `[source_kb_id]`；无单列的行得到
+/// 老行回填：073 之后 `source_kb_ids` = `[source_kb_id]`；无单列的行得到
 /// 空数组（描述流/已删库的旧行为不变）。
 #[tokio::test]
 async fn migration_backfills_legacy_single_source_into_a_one_element_list() {

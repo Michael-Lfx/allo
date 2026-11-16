@@ -1,4 +1,4 @@
-//! 迁移 071 已会声明锚表（`learning_basis_declarations`）的契约：一行一次
+//! 迁移 072 已会声明锚表（`learning_basis_declarations`）的契约：一行一次
 //! 声明、三张 JSON 清单（门口/命中块/概念）、声明随课删（逻辑引用 Cascade）；
 //! concept_ids_json 是铸造出处留痕（KeepHistory——概念被移除后锚行原样保留，
 //! 「声明可撤、概念不灭」）。v3 契约注册整库校验全绿。

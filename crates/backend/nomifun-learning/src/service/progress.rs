@@ -125,11 +125,6 @@ impl LearningService {
         if matches!(status, LessonStatus::Completed | LessonStatus::Skipped) {
             self.maybe_kick_growth(user_id, lesson_id).await;
         }
-        // 生长钩子（best-effort，ADR-0009 Amendment 1）：完成与跳过同为
-        // satisfied，都会使就绪存量 −1——水位降到触发线以下就在后台补货。
-        if matches!(status, LessonStatus::Completed | LessonStatus::Skipped) {
-            self.maybe_kick_growth(user_id, lesson_id).await;
-        }
         Ok(())
     }
 

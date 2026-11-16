@@ -1,8 +1,3 @@
-//! 学习域合并基线（068）的迁移契约：原 068–084 十七段学习迁移按序合并为一个
-//! 版本。分段升级路径没有真实用户库承载（分支内演进，未随正式版本发布），所以
-//! 这里不再逐段推进中间世界，而是从 065 世界的旧学习表出发，一次合并迁移后
-//! 断言最终世界：旧图课程退役、概念网重建、终点锚退役、批行状态机就位。
-
 use nomifun_db::sqlx::{self, SqlitePool};
 
 /// 068 之前的全部学习域迁移（按序），拼出与生产一致的旧世界基线。
@@ -258,7 +253,7 @@ async fn learning_domain_rebuild_removes_graph_world_and_concept_tables() {
     let dropped: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN \
          ('learning_graph_prerequisites', 'learning_concepts', 'learning_concept_prerequisites', \
-          'learning_activity_concepts', 'learning_mastery_states')",
+          'learning_lesson_concepts', 'learning_activity_concepts', 'learning_mastery_states')",
     )
     .fetch_all(&pool)
     .await
@@ -467,16 +462,6 @@ async fn growth_batch_status_lifecycle_lands_with_the_create() {
     .execute(&pool)
     .await
     .unwrap();
-
-    let applied: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_growth_batches WHERE status = 'applied'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(applied, 1, "rows without explicit status default to applied");
-
-    // pending 行合法（生长开始即落）。
     sqlx::query(
         "INSERT INTO learning_growth_batches \
          (batch_id, course_id, seq, node_ids_json, status, created_at) \

@@ -51,6 +51,7 @@ import { learningApi } from '../api';
 import type {
   Activity,
   AttemptRecord,
+  BasisView,
   ConceptAuditReport,
   CourseDetail,
   GraphBatchView,
@@ -268,39 +269,6 @@ const LearningGraphWorkspace: React.FC<{
     };
   }, [detail.course.id, t]);
 
-  const removeEndpoint = useCallback(
-    (endpoint: GraphEndpointView) => {
-      Modal.confirm({
-        title: t('learning.learningGraphEndpointDeleteConfirm', { title: endpoint.title }),
-        onOk: async () => {
-          setMutating(true);
-          try {
-            await learningApi.deleteGraphEndpoint(detail.course.id, endpoint.endpoint_id);
-            onRefresh();
-          } finally {
-            setMutating(false);
-          }
-        });
-    };
-    load();
-    // 结构生成的开始/终结帧驱动「生成中」状态机，终结即重取投影。
-    // 失败必须显式清 running——否则首次生成失败会永久停在「生成中…」
-    // （快照仍为 null，load 里无法自行消解）。
-    const off = ipcBridge.learning.courseGeneration.on((event) => {
-      if (event.course_id !== detail.course.id) return;
-      if (event.event === 'structure_started') setStructureRunning(true);
-      if (event.event === 'structure_completed') load();
-      if (event.event === 'structure_failed' || event.event === 'structure_cancelled') {
-        setStructureRunning(false);
-        load();
-      }
-    });
-    return () => {
-      cancelled = true;
-      off();
-    };
-  }, [detail.course.id]);
-
   const regenerateStructure = useCallback(async () => {
     setRegenerating(true);
     try {
@@ -419,24 +387,184 @@ const LearningGraphWorkspace: React.FC<{
     }
   }, [detail.course.id, refetchStructure, t]);
 
-  // 结构修补回合（j09）：按留痕与观察修补结构；皆空时后端如实 skipped。
-  const repairStructure = useCallback(async () => {
-    setRepairing(true);
+  // ── 在途恢复（d6/d7）：组件本地在途态随路由卸载即丢——服务端真相（生成
+  // 任务注册表快照）∪ 会话级 pending 标记取并集，挂载与课程事件帧时重算。
+  // 声明（d6 起 basis_declare 也进注册表）/挂载/修补按 course 匹配，课时内容
+  // 生成按 node_id（= lessonId）匹配。
+  const [registryBusy, setRegistryBusy] = useState<{
+    basis: boolean;
+    structure: boolean;
+    mount: boolean;
+    repair: boolean;
+    lessons: Set<string>;
+  }>({ basis: false, structure: false, mount: false, repair: false, lessons: new Set() });
+  const refreshRegistryBusy = useCallback(async () => {
+    const courseId = detail.course.id;
+    const sessionBasis = isInFlight(`basis:${courseId}`);
+    const sessionMount = isInFlight(`mount:${courseId}`);
+    const sessionRepair = isInFlight(`repair:${courseId}`);
+    const sessionLessons = inFlightIdsWithPrefix(`lesson:${courseId}:`);
+    setRegistryBusy({
+      basis: sessionBasis,
+      structure: false,
+      mount: sessionMount,
+      repair: sessionRepair,
+      lessons: sessionLessons,
+    });
     try {
-      const summary = await learningApi.repairStructure(detail.course.id);
-      if (summary.status === 'noop') {
-        Modal.info({ title: t('learning.learningGraphRepairNoop') });
-      }
-      await refetchStructure();
-    } catch (actionError) {
-      Modal.error({
-        title: t('learning.learningGraphRepairFailed'),
-        content: errorMessage(t, actionError),
+      const tasks = await learningApi.generationTasks();
+      const active = tasks.filter(
+        (task) =>
+          task.course_id === courseId && (task.state === 'running' || task.state === 'queued')
+      );
+      setRegistryBusy({
+        basis: sessionBasis || active.some((task) => task.kind === 'basis_declare'),
+        // structure 类补位（G3 失忆面）：d7 的 active 过滤四类恰好漏了本尊
+        // ——刷新后结构明明在跑却呈现「尚未生成 + 可点生成按钮（点了才
+        // 409）」。快照行即服务端真相，用与读数轮询同源的判定。
+        structure: hasActiveStructureRow(tasks, courseId),
+        mount: sessionMount || active.some((task) => task.kind === 'structure_mount'),
+        repair: sessionRepair || active.some((task) => task.kind === 'structure_repair'),
+        lessons: new Set([
+          ...sessionLessons,
+          ...active
+            .filter((task) => task.kind === 'lesson' && task.node_id)
+            .map((task) => task.node_id as string),
+        ]),
       });
-    } finally {
-      setRepairing(false);
+    } catch {
+      // 快照不可达：保留会话级 pending（上方已先按 session 置位）。
     }
-  }, [detail.course.id, refetchStructure, t]);
+  }, [detail.course.id]);
+  useEffect(() => {
+    void refreshRegistryBusy();
+  }, [refreshRegistryBusy]);
+
+  // structureRunning 三源并集（G3）：WS 旗（不重放，刷新即丢）∪ 注册表快照
+  // 行（上字段补位）。既有 load() 消解不动（投影非空才清 WS 旗）；快照源
+  // 随终态行出集自然落定（WS 终态帧触发的注册表重算 + 下方轮询终态接棒）。
+  const structureRunning = structureRunningWs || registryBusy.structure;
+
+  // ── 结构生成实时读数（G2 哑巴面修复）：running 期间 5s 轮询任务快照，
+  // attempt/elapsed 全取服务端真相（不自算钟）；快照缺行或 attempt 未回写
+  // → 回退静态「生成中…」；快照不可达保留现值不臆造（c2 收敛轮询纪律）。
+  // 快照终态接棒语义对齐 WS 终态臂：failed/cancelled 显式清旗（快照 null
+  // 无法自行消解），done 由 load 按投影非空消解；注册表并集随终态行出集
+  // 同步重算。
+  const [structureReadout, setStructureReadout] = useState<StructureReadout | null>(null);
+  useEffect(() => {
+    if (!structureRunning) {
+      setStructureReadout(null);
+      return undefined;
+    }
+    return startStructureReadoutPolling({
+      courseId: detail.course.id,
+      fetchTasks: () => learningApi.generationTasks(),
+      onReadout: setStructureReadout,
+      onTerminal: (state) => {
+        if (state === 'failed' || state === 'cancelled') setStructureRunningWs(false);
+        void refreshRegistryBusy();
+        structureLoadRef.current();
+      },
+    });
+  }, [structureRunning, detail.course.id, refreshRegistryBusy]);
+  // 徽章文案机面（c3 契约）：读数在 → 插值键；缺 → 静态「生成中…」。
+  const structureBadge = structureBadgeCopy(structureReadout);
+
+  // ── 已会声明（Declared Known，m2）：读数 + 一次性声明（c3 起产品面无撤销
+  // 入口；后端 DELETE /basis 留作纠错通道）──────────────────────────────
+  const [basis, setBasis] = useState<BasisView | null>(null);
+  const [declaringBasis, setDeclaringBasis] = useState(false);
+  // 声明在途合成（d6）：本地发起态 ∪ 会话 pending ∪ 注册表快照——切页重挂
+  // 载后三者任一为真即恢复 loading/不可点，竞态双击不再发生。
+  const basisDeclareBusy =
+    declaringBasis ||
+    registryBusy.basis ||
+    isInFlight(`basis:${detail.course.id}`);
+  // 草稿勾选（c1）：工作区单持，学习 Tab 声明窗口与结构图 Tab 两个过门自检
+  // 挂载点共享同一份——切 Tab 不丢；声明成功后清空，失败保留。
+  const [basisDraftChecked, setBasisDraftChecked] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      learningApi
+        .basisView(detail.course.id)
+        .then((view) => {
+          if (!cancelled) setBasis(view);
+        })
+        .catch(() => {
+          // 读数缺席不挡结构 Tab：保留 null（声明入口按未声明渲染）。
+          if (!cancelled) setBasis(null);
+        });
+    };
+    load();
+    // 声明/生长经 WS course-generation 流（basis_declared 复用既有事件面）
+    // 驱动重拉；后端纠错通道撤销（basis_revoked）同样会被读数接住。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id === detail.course.id) {
+        load();
+        // 任一课程帧都可能改变注册表在途面（basis_declared / mount/repair
+        // 终态帧等）——重算派生（d6/d7）。
+        void refreshRegistryBusy();
+      }
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [detail.course.id]);
+
+  const declareBasis = useCallback(
+    async (doors: string[]) => {
+      setDeclaringBasis(true);
+      markInFlight(`basis:${detail.course.id}`);
+      try {
+        const result = await learningApi.declareBasis(detail.course.id, doors, model.choice);
+        setBasisDraftChecked([]);
+        // 声明反馈走非阻塞 toast（c2）：阻塞弹窗叠在冻结展示上是二次打断；
+        // 失败保持 Modal——需要用户看见并处置。
+        if (result.noop) {
+          Message.info(t('learning.learningGraphBasisDeclareNoop'));
+        } else {
+          // o4：成功 toast 只报数量——门口 id 串与块 slug 串不再内插上屏
+          // （与 GateCoverage 已声明行同口径；铸出/复用计数随 o2 口语化版
+          // 本文退出用户面）。
+          Message.success(
+            t('learning.learningGraphBasisDeclareDone', {
+              doorsCount: result.doors.length,
+              blocksCount: result.blocks.length,
+            })
+          );
+        }
+        const view = await learningApi.basisView(detail.course.id);
+        setBasis(view);
+        // 声明改就绪集/推荐集（声明概念按能教计）：立即重拉课程详情，调度
+        // 效果当场可见，而不是等下次无关刷新。
+        onRefresh();
+      } catch (actionError) {
+        if (isGenerationConflict(actionError, `basis-declare-${detail.course.id}`)) {
+          // 槽锁 409（d6）：原始请求还在后台跑（切页重挂载后的竞态双击）——
+          // 非阻塞提示 + 重拉读数，不弹原始 JSON 错误。
+          Message.info(t('learning.inflightBasisToast'));
+          const view = await learningApi.basisView(detail.course.id).catch(() => null);
+          if (view) setBasis(view);
+        } else {
+          // 强弹窗降级为非阻塞 toast（o1 收编，与同文件其它动作一致）；
+          // F2：带各自动作标题。
+          Message.error({
+            title: t('learning.learningGraphBasisDeclareFailed'),
+            content: errorMessage(t, actionError),
+          });
+        }
+      } finally {
+        clearInFlight(`basis:${detail.course.id}`);
+        setDeclaringBasis(false);
+        void refreshRegistryBusy();
+      }
+    },
+    [detail.course.id, model.choice, onRefresh, refreshRegistryBusy, t]
+  );
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);

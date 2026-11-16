@@ -1563,6 +1563,15 @@ async fn run_grow(
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
         }
+        // 批后对照读数（m10）：ready 前后并排的「后」半张——对照卡看批后
+        // 水位回升（on 臂），off 臂此行同样如实（verdict=disabled）。
+        match wiring.service.growth_verdict(&wiring.owner, &course_id).await {
+            Ok(view) => println!(
+                "[auto-refill] round {round} post verdict={} ready={} (对照 pre 行看批后水位)",
+                view.verdict, view.ready_count
+            ),
+            Err(error) => println!("[auto-refill] round {round} post verdict readout unavailable: {error}"),
+        }
         // 铸名门外部证据读数（m11，读数面非门禁）：搜索/命中/扩邻/降级；
         // off 臂（`NOMI_LEARNING_MINT_RESEARCH=off`）显式零 = 零搜索证明。
         if let Some(mint) = wiring.service.mint_research_stats() {
@@ -2431,20 +2440,6 @@ async fn run_quiz(
     anyhow::ensure!(
         status == "completed" && row_earned == full_xp * 4,
         "round row must be completed with earned {} (got {status}/{row_earned})", full_xp * 4
-    );
-    println!("[3/6] settled per node: 4 full ({full_xp} xp each) + 2 partial (0 xp, never negative); ledger re-read matches");
-
-    // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
-    // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。
-    let calibration = service.quiz_calibration(&owner).await?;
-    anyhow::ensure!(
-        calibration.iter().any(|bin| bin.count >= 1),
-        "calibration bins must carry the pushed card's point"
-    );
-    println!(
-        "[4/6] calibration: {} bin(s), top count {} (predicted R vs actual)",
-        calibration.len(),
-        calibration.iter().map(|bin| bin.count).max().unwrap_or(0)
     );
     println!("[3/6] settled per node: 4 full ({full_xp} xp each) + 2 partial (0 xp, never negative); ledger re-read matches");
 

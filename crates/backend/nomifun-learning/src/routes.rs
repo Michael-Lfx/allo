@@ -405,6 +405,49 @@ async fn graph_concepts(
     )))
 }
 
+/// 已会声明（m2）：勾选门口 → 幂等增量铸概念（零节点写）。整个管线同步跑
+/// 在 handler 里（generate_course 先例）：一次结构化 LLM 调用 + 命名门，
+/// 落库在单事务。
+async fn declare_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<DeclareBasisRequest>,
+) -> Result<Json<ApiResponse<crate::models::DeclarationResultView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .declare_basis(&user.id, &course_id, request)
+            .await?,
+    )))
+}
+
+/// 已会声明读数（GET basis）：已声明 doors/blocks/concepts + Broken 降级披露。
+async fn get_basis(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::BasisView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.basis_view(&course_id).await?,
+    )))
+}
+
+/// 撤销本课全部已会声明（删锚行；概念留池——「声明可撤、概念不灭」）。
+async fn revoke_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let revoked = state.service.revoke_basis(&user.id, &course_id).await?;
+    Ok(Json(ApiResponse::ok(
+        serde_json::json!({ "revoked": revoked }),
+    )))
+}
+
 /// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
 /// 缺口片段/自指/互指环。「读侧先看见」——审计是缺口标记不是拦截门；
 /// 概念表 Tab 的行级标记数据源。

@@ -140,13 +140,6 @@ export const learningApi = {
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/regenerate`,
       request
     ),
-  // 终点锚 CRUD（任何变更后端自动重画罗盘）
-  addGraphEndpoint: (courseId: string, request: EndpointInput) =>
-    httpRequest<GraphEndpointView>(
-      'POST',
-      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/regenerate`,
-      request
-    ),
   // 结构挂载回合（j08）：把待挂集节点挂到结构块（导航事实）；同步返回
   // 回合摘要（mounted | skipped）
   mountStructure: (

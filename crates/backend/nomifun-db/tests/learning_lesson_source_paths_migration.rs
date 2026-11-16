@@ -38,7 +38,7 @@ async fn migrate_range(pool: &SqlitePool, from: i64, to: i64) {
     }
 }
 
-/// 老行回填：合并基线之后 `source_paths_json` = `[{"path":…}]`（三列的单来源
+/// 老行回填：075 之后 `source_paths_json` = `[{"path":…}]`（三列的单来源
 /// 形状）；无来源的旧行得到空数组（描述流/旧课程行为不变）。
 #[tokio::test]
 async fn migration_backfills_legacy_single_source_into_a_one_element_list() {

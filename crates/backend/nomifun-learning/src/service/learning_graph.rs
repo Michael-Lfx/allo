@@ -2622,167 +2622,6 @@ impl LearningService {
                     report = %report,
                     "growth batch rejected by concept review"
                 );
-                if draft_no >= GROWTH_MAX_DRAFTS {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        drafts = draft_no,
-                        batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
-                        "growth failed: concept review rejected every draft"
-                    );
-                    return Err(AppError::UnprocessableEntity(format!(
-                        "生长批次 {} 稿均未通过概念评审：\n{}",
-                        draft_no,
-                        crate::learning_graph::format_review_problems(&problems)
-                    )));
-                }
-                if !plan
-                    .candidates
-                    .iter()
-                    .any(|candidate| candidate.concept_id == concept_id)
-                {
-                    tracing::info!(
-                        course = course_id.as_str(),
-                        name = %ruling.name,
-                        concept_id,
-                        "review reuse ruling host outside the nomination candidate set — accepted (registry-valid)"
-                    );
-                }
-                rulings.insert(key, concept_id.to_owned());
-            }
-            // ── 评审建议机械转化（t4）：advice 指向「裁为别名/复用」且宿主可
-            // 机械解析的 teaches/mints 问题，由代码直接执行——合成 reuse 裁决
-            // （复用 j04 落池通道：不铸新行、落宿主活跃别名、引用随裁决改
-            // 写），问题从报告剔除，不折返模型。真机实录（run-1792403482606
-            // call 3）这类问题每次打回烧一轮重裁预算（点修越权高发段）。解析
-            // 面从窄（见 advice_alias 模块），解析失败的问题照常打回。转化不
-            // 进点修守卫基线（不改写 candidate；记录进批次 note 留痕）。
-            let mut advice_converted: Vec<(String, String, String)> = Vec::new();
-            {
-                let nomination_names: HashSet<String> = outcome
-                    .nominations
-                    .iter()
-                    .map(|plan| plan.name.trim().to_lowercase())
-                    .collect();
-                let parsed = crate::learning_graph::advice_alias::advice_reuse_conversions(
-                    &review.problems,
-                    &nomination_names,
-                    &outcome.registry_name_hosts,
-                    &outcome.registry_concept_ids,
-                );
-                let mut dropped: Vec<usize> = Vec::new();
-                for (index, name, host_id) in parsed {
-                    if rulings.contains_key(&name) {
-                        // 评审显式裁决优先；advice 只是补位。
-                        continue;
-                    }
-                    let canonical = outcome
-                        .registry_name_hosts
-                        .values()
-                        .find_map(|(id, canonical)| (id == &host_id).then_some(canonical.clone()))
-                        .unwrap_or_else(|| host_id.clone());
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        name = %name,
-                        host = %canonical,
-                        concept_id = %host_id,
-                        "review advice mechanically converted to a reuse ruling — problem dropped"
-                    );
-                    advice_converted.push((name.clone(), canonical, host_id.clone()));
-                    rulings.insert(name, host_id);
-                    dropped.push(index);
-                }
-                if !dropped.is_empty() {
-                    let mut kept = Vec::with_capacity(review.problems.len());
-                    for (index, problem) in review.problems.drain(..).enumerate() {
-                        if !dropped.contains(&index) {
-                            kept.push(problem);
-                        }
-                    }
-                    review.problems = kept;
-                }
-            }
-            // 撞池机械复用（gate 面已吸收红条）：裁决合入——机械事实优先于
-            // 评审/advice 裁决（撞池名落别的宿主会在落池时 Conflict）。
-            for (name, host_id) in &outcome.auto_reusals {
-                rulings.insert(name.clone(), host_id.clone());
-            }
-            // ── 评审「移出本批」建议机械执行（t9）：同批内容依赖类问题的
-            // 唯一正路是摘节点（评审判据 2 明文；gate 只能看 assumes 按名
-            // 引用，看不见内容级依赖）。advice 含「移出本批」且 node 精确
-            // 匹配批内标题 → 摘除留痕，问题剔除；否则照常打回。真机实录
-            // （run-1792473152116 call 3）：这类 reject 走重裁必触发点修越
-            // 权烧光预算——「移出本批」是逐字可执行的动作，不折返模型。
-            let mut removed_nodes: Vec<String> = Vec::new();
-            if review.problems.iter().any(|problem| problem.advice.contains("移出本批")) {
-                let mut kept_nodes = Vec::with_capacity(candidate.nodes.len());
-                for node in candidate.nodes.drain(..) {
-                    let remove = review.problems.iter().any(|problem| {
-                        problem.advice.contains("移出本批")
-                            && !problem.node.trim().is_empty()
-                            && problem.node.trim() == node.title.trim()
-                    });
-                    if remove {
-                        removed_nodes.push(node.title.trim().to_owned());
-                    } else {
-                        kept_nodes.push(node);
-                    }
-                }
-                candidate.nodes = kept_nodes;
-                if !removed_nodes.is_empty() {
-                    let mut kept_problems = Vec::with_capacity(review.problems.len());
-                    for problem in review.problems.drain(..) {
-                        let resolved = problem.advice.contains("移出本批")
-                            && removed_nodes.iter().any(|title| title == problem.node.trim());
-                        if !resolved {
-                            kept_problems.push(problem);
-                        }
-                    }
-                    review.problems = kept_problems;
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        nodes = ?removed_nodes,
-                        "review node-removal advice executed mechanically — nodes dropped from the batch"
-                    );
-                }
-            }
-            if !rulings.is_empty() && !review.problems.is_empty() {
-                let resolved_mask: Vec<bool> = review
-                    .problems
-                    .iter()
-                    .map(|problem| {
-                        matches!(problem.field.as_str(), "teaches" | "mints")
-                            && rulings.keys().any(|key| {
-                                // 「」/『』两种书名习惯都认（真机实录混用）。
-                                problem.issue.contains(&format!("「{key}」"))
-                                    || problem.issue.contains(&format!("『{key}』"))
-                            })
-                    })
-                    .collect();
-                let resolved_count = resolved_mask.iter().filter(|resolved| **resolved).count();
-                if resolved_count > 0 {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        resolved = resolved_count,
-                        "review problems resolved by reuse rulings — dropped from the report"
-                    );
-                    let mut kept = Vec::with_capacity(review.problems.len());
-                    for (problem, resolved) in review.problems.drain(..).zip(resolved_mask) {
-                        if !resolved {
-                            kept.push(problem);
-                        }
-                    }
-                    review.problems = kept;
-                }
-            }
-            if !review.problems.is_empty() {
-                let report = crate::learning_graph::format_review_problems(&review.problems);
-                tracing::warn!(
-                    course = course_id.as_str(),
-                    attempt,
-                    problem_count = review.problems.len(),
-                    report = %report,
-                    "growth batch rejected by concept review"
-                );
                 self.emit_graph_event(course_id, "growth_redraft", serde_json::json!({
                     "stage": "concept_review",
                     "problems": report,
@@ -3019,6 +2858,29 @@ impl LearningService {
         sections.join("\n")
     }
 
+    /// 记录最近一次生长的铸名门外部证据读数（m11 smoke grow 读数面；
+    /// off 臂记录显式零——证明零搜索）。
+    pub(crate) fn record_mint_research_stats(
+        &self,
+        stats: crate::learning_graph::mint_evidence::MintResearchStats,
+    ) {
+        if let Ok(mut slot) = self.mint_research_stats.lock() {
+            *slot = Some(stats);
+        }
+    }
+
+    /// 最近一次生长的铸名门外部证据读数（smoke 读数面非门禁）。
+    pub fn mint_research_stats(
+        &self,
+    ) -> Option<crate::learning_graph::mint_evidence::MintResearchStats> {
+        self.mint_research_stats.lock().ok().and_then(|stats| *stats)
+    }
+
+    /// 铸名门搜索提供方快照（None = 未接线，零搜索）。
+    fn mint_search_provider(&self) -> Option<Arc<dyn SearchProvider>> {
+        self.mint_search.read().ok().and_then(|slot| slot.clone())
+    }
+
     /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 与 m3 挂
     /// 号表读数行 rows/invalid/retried/degraded 的数据源；m5 增有状态复审臂
     /// `review_state` 与前轮意见回灌次数。读数面非门禁）。内存态，仅诊断。
@@ -3052,24 +2914,6 @@ impl LearningService {
                 review_state,
                 review_state_injections,
                 review_degraded,
-            });
-        }
-    }
-
-    pub fn growth_run_stats(&self) -> Option<GrowthRunStats> {
-        self.growth_run_stats
-            .lock()
-            .ok()
-            .and_then(|stats| stats.clone())
-    }
-
-    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 的数据
-    /// 源；读数面非门禁）。内存态，仅诊断。
-    pub(crate) fn record_growth_stats(&self, attempts_used: usize, stop_reason: &str) {
-        if let Ok(mut stats) = self.growth_run_stats.lock() {
-            *stats = Some(GrowthRunStats {
-                attempts_used,
-                stop_reason: stop_reason.to_owned(),
             });
         }
     }
@@ -3592,6 +3436,10 @@ impl LearningService {
         errors.extend(nomination_errors);
         // 深度水位门已退役（g3：档位比较是精度剧场）——难度诚实性由 AI 概念
         // 评审门作语义兜底。
+        let registry_concept_ids: HashSet<String> = registry_entries
+            .iter()
+            .map(|entry| entry.concept_id.clone())
+            .collect();
         // 评审挂号表的已知名池（m3）：已教账 ∪ 登记表活跃名+别名 ∪ 本批
         // 铸名/提名（小写折叠）——机械校验所需的已知名字池，评审上下文已
         // 装配的机械面输入原样复用（learnhub `ReviewInput.known_names` 同缝）。

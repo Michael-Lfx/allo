@@ -1639,7 +1639,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
     #[tokio::test]
     async fn custom_questions_persist_config_and_join_the_review_queue() {
         // 自建题契约：config 落库、进题库、按同一判卷器判分；填空题走 038
-        // 的三题型宽口径 CHECK（迁移 068 重建必须保留）。
+        // 的三题型宽口径 CHECK（迁移 069-085 重建必须保留）。
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
             .await
@@ -2182,45 +2182,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         )
         .bind(concept_id.as_str())
         .bind(now)
-        .bind(now)
-        .execute(pool)
-        .await
-        .unwrap();
-        for (lesson, role, tier) in [
-            (lesson_a.as_str(), "teaches", "teach"),
-            (lesson_b.as_str(), "assumes", "know"),
-        ] {
-            sqlx::query(
-                "INSERT INTO learning_lesson_concepts \
-                 (lesson_id, concept_id, role, tier) VALUES (?, ?, ?, ?)",
-            )
-            .bind(lesson)
-            .bind(concept_id.as_str())
-            .bind(role)
-            .bind(tier)
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-        // 一条终点锚：标记课时行 + 终点行成对落库（零正文，不入可学列表）。
-        sqlx::query(
-            "INSERT INTO learning_lessons \
-             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-              content_generated) VALUES (?, ?, '期末终点', '', '', 2, 1, 0)",
-        )
-        .bind(endpoint_lesson_id.as_str())
-        .bind(module_id.as_str())
-        .execute(pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO learning_course_endpoints \
-             (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
-             VALUES (?, ?, ?, '期末终点', '能独立完成综合题', ?)",
-        )
-        .bind(endpoint_id.as_str())
-        .bind(course_id.as_str())
-        .bind(endpoint_lesson_id.as_str())
         .bind(now)
         .execute(pool)
         .await
@@ -6926,278 +6887,6 @@ async fn lesson_context_carries_the_course_goal() {
                         samples_meta_json: None,
                         source_kb_ids: Vec::new(),
                         course_source_plan_json: None,
-                    },
-                )
-                .await
-                .unwrap()
-        }
-    };
-
-    let engine = Arc::new(RecordingLessonEngine {
-        contexts: Mutex::new(Vec::new()),
-    });
-    service.set_lesson_engine(engine.clone());
-
-    let with_goal = import(&service, "零基础学 Python 数据分析").await;
-    let lesson_id = with_goal.modules[0].lessons[0].id.clone();
-    service
-        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
-        .await
-        .unwrap();
-    assert_eq!(
-        engine.contexts.lock().unwrap()[0].goal.as_deref(),
-        Some("零基础学 Python 数据分析")
-    );
-
-    let legacy = import(&service, "").await;
-    let lesson_id = legacy.modules[0].lessons[0].id.clone();
-    service
-        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
-        .await
-        .unwrap();
-    assert!(engine.contexts.lock().unwrap()[1].goal.is_none());
-}
-
-/// 课程大纲引擎的测试替身（t1）：只记录收到的简报，返回固定的最小蓝图。
-struct RecordingOutlineEngine {
-    briefs: Mutex<Vec<crate::course_outline::OutlineBrief>>,
-}
-
-#[async_trait::async_trait]
-impl crate::course_outline::CourseOutlineAgentEngine for RecordingOutlineEngine {
-    async fn generate(
-        &self,
-        brief: &crate::course_outline::OutlineBrief,
-        _model_override: Option<(&str, &str)>,
-    ) -> Result<crate::generation::Blueprint, nomifun_common::AppError> {
-        self.briefs.lock().unwrap().push(brief.clone());
-        Ok(crate::generation::Blueprint {
-            title: "模型自定名".into(),
-            description: "d".into(),
-            domain: "general".into(),
-            version: 1,
-            modules: vec![crate::generation::BlueprintModule {
-                title: "M".into(),
-                description: String::new(),
-                lessons: vec![crate::generation::BlueprintLesson {
-                    title: "L".into(),
-                    purpose: "P".into(),
-                    source: None,
-                    sources: Vec::new(),
-                }],
-            }],
-        })
-    }
-}
-
-/// 知识库流的目标输入（t1）+ 目标感知采样（t2）：带目标时──归一目标进简报
-/// （进快照与下游上下文）、课程标题即目标文本、learning_goal 列落库、采样
-/// 按目标相关度选入并留下披露快照；不带目标时（旧客户端）行为与现状完全
-/// 一致：主题回退库名、标题是模型蓝图标题、目标列为空、无采样披露。
-#[tokio::test]
-async fn kb_goal_flows_into_brief_title_and_course_row() {
-    let (service, knowledge_service, owner_id) = job_test_service().await;
-    let engine = Arc::new(RecordingOutlineEngine {
-        briefs: Mutex::new(Vec::new()),
-    });
-    service.set_course_outline_engine(engine.clone());
-    let base = knowledge_service
-        .quick_create_base(Some("Math"), None, "blank", None, None, None, None)
-        .await
-        .unwrap();
-    let kb_id: nomifun_common::KnowledgeBaseId = base.base.knowledge_base_id.parse().unwrap();
-    let root = knowledge_service
-        .content_root_for_base(kb_id.as_str())
-        .await
-        .unwrap();
-    std::fs::create_dir_all(root.join("notes")).unwrap();
-    std::fs::create_dir_all(root.join("misc")).unwrap();
-    // 与目标无关的文件放在另一个目录：既不入选相关集合、也不在连贯预算的
-    // 同目录兄弟范围内——低分未采清单因此有素材。
-    std::fs::write(root.join("misc/a.md"), "# A\n正文").unwrap();
-    // 目标相关文件与同目录兄弟各一份：相关度选入 + 连贯补入两条规则都上榜。
-    std::fs::write(
-        root.join("notes/python-数据分析.md"),
-        "# Python 数据分析\n用 pandas 做分组聚合。",
-    )
-    .unwrap();
-    std::fs::write(root.join("notes/附录.md"), "# 附录\n常见问题与术语表。").unwrap();
-
-    let request = |goal: Option<&str>| GenerateCourseRequest {
-        course_kind: crate::models::CourseKind::Traditional,
-        teaching_style: None,
-        knowledge_base_id: Some(kb_id.clone()),
-        description: None,
-        domain: None,
-        provider_id: None,
-        model: None,
-        mode: crate::models::CourseGenerationMode::OnDemand,
-        goal: goal.map(ToOwned::to_owned),
-        proficiency_statement: None,
-        learner_basis: None,
-        knowledge_base_ids: Vec::new(),
-    };
-
-    let with_goal = service
-        .generate_course(&owner_id, request(Some("  零基础学 Python 数据分析 ")))
-        .await
-        .unwrap();
-    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
-    assert_eq!(brief.goal.as_deref(), Some("零基础学 Python 数据分析"));
-    assert_eq!(with_goal.course.title, "零基础学 Python 数据分析");
-    assert_eq!(
-        with_goal.course.learning_goal.as_deref(),
-        Some("零基础学 Python 数据分析")
-    );
-    let sampled: Vec<&str> = brief.samples.iter().map(|(path, _)| path.as_str()).collect();
-    assert_eq!(
-        sampled,
-        vec!["notes/python-数据分析.md", "notes/附录.md"],
-        "相关文件入样 + 同目录兄弟靠连贯预算补入（清单仍按字节序，与旧采样同尺）"
-    );
-    let sampling = brief.sampling.clone().expect("goal run discloses sampling");
-    assert!(!sampling.goal_fallback);
-    assert_eq!(sampling.total_files, 3);
-    assert_eq!(sampling.sampled_files, 2);
-    assert_eq!(sampling.coherence_files, 1, "附录.md 因同目录兄弟补入");
-    assert_eq!(sampling.low_score_files, vec!["misc/a.md".to_owned()]);
-    // 详情 DTO 同步暴露披露与目标（TS 镜像同形状）。
-    let view = with_goal.course.sampling.clone().expect("course summary carries the disclosure");
-    assert_eq!(view.sampled_files, 2);
-    assert_eq!(view.total_files, 3);
-    assert_eq!(view.coherence_files, 1);
-    assert_eq!(view.low_score_examples, vec!["misc/a.md".to_owned()]);
-    assert!(!view.goal_fallback);
-
-    let legacy = service
-        .generate_course(&owner_id, request(None))
-        .await
-        .unwrap();
-    assert_eq!(legacy.course.title, "模型自定名");
-    assert!(legacy.course.learning_goal.is_none());
-    assert!(legacy.course.sampling.is_none(), "旧路径不产生采样披露");
-    let legacy_brief = engine.briefs.lock().unwrap()[1].clone();
-    assert_eq!(
-        legacy_brief.samples.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(),
-        vec!["misc/a.md", "notes/python-数据分析.md", "notes/附录.md"],
-        "无目标回退字母序全采（旧行为）"
-    );
-}
-
-/// 目标与库无交集（t2）：生成照常成功（退回默认采样），披露如实标注
-/// fallback——目标措辞与库内容不一致时不能连课都建不出来。
-#[tokio::test]
-async fn kb_goal_without_any_match_falls_back_and_still_generates() {
-    let (service, knowledge_service, owner_id) = job_test_service().await;
-    let engine = Arc::new(RecordingOutlineEngine {
-        briefs: Mutex::new(Vec::new()),
-    });
-    service.set_course_outline_engine(engine.clone());
-    let base = knowledge_service
-        .quick_create_base(Some("Trading"), None, "blank", None, None, None, None)
-        .await
-        .unwrap();
-    let kb_id: nomifun_common::KnowledgeBaseId = base.base.knowledge_base_id.parse().unwrap();
-    let root = knowledge_service
-        .content_root_for_base(kb_id.as_str())
-        .await
-        .unwrap();
-    std::fs::write(root.join("期权入门.md"), "# 期权入门\n认购与认沽的基本概念。").unwrap();
-
-    let detail = service
-        .generate_course(
-            &owner_id,
-            GenerateCourseRequest {
-                course_kind: crate::models::CourseKind::Traditional,
-                teaching_style: None,
-                knowledge_base_id: Some(kb_id.clone()),
-                description: None,
-                domain: None,
-                provider_id: None,
-                model: None,
-                mode: crate::models::CourseGenerationMode::OnDemand,
-                goal: Some("零基础学 Python 数据分析".into()),
-                proficiency_statement: None,
-                learner_basis: None,
-                knowledge_base_ids: Vec::new(),
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(detail.course.total_lessons, 1, "生成照常完成");
-    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
-    assert_eq!(
-        brief.samples.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(),
-        vec!["期权入门.md"],
-        "退回默认字母序采样"
-    );
-    let sampling = brief.sampling.expect("fallback still discloses");
-    assert!(sampling.goal_fallback);
-    assert!(sampling.brief_line().contains("已按默认顺序采样 1/1 个文件"));
-}
-
-/// 目标进课时生成上下文（t1）：传统课时的目标从课程行 learning_goal 读出，
-/// 预渲染进 LessonGenerationContext（既有空位）；旧课程（无目标）恒为 None。
-#[tokio::test]
-async fn lesson_context_carries_the_course_goal() {
-    let database = nomifun_db::init_database_memory().await.unwrap();
-    let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
-    let user_id = UserId::parse(owner_id).unwrap();
-    let service = LearningService::new(database.pool().clone());
-    let lesson = |title: &str| LessonPack {
-        title: title.into(),
-        summary: String::new(),
-        purpose: "目标一".into(),
-        est: 10,
-        source: None,
-        sources: Vec::new(),
-        activities: Vec::new(),
-        sections: Vec::new(),
-    };
-    let pack = |title: &str| CoursePack {
-        title: title.into(),
-        description: "d".into(),
-        domain: "math".into(),
-        source_kb_id: None,
-        version: 1,
-        modules: vec![ModulePack {
-            title: "模块一".into(),
-            description: String::new(),
-            lessons: vec![lesson("第一课")],
-        }],
-        teaching_style: crate::models::TeachingStyle::Standard,
-    };
-    let blueprint = crate::generation::Blueprint {
-        title: "目标课程".into(),
-        description: "d".into(),
-        domain: "math".into(),
-        version: 1,
-        modules: vec![crate::generation::BlueprintModule {
-            title: "模块一".into(),
-            description: String::new(),
-            lessons: vec![crate::generation::BlueprintLesson {
-                title: "第一课".into(),
-                purpose: "目标一".into(),
-                source: None,
-                sources: Vec::new(),
-            }],
-        }],
-    };
-    let import = |service: &LearningService, learning_goal: &str| {
-        let pack = pack("目标课程");
-        let blueprint = blueprint.clone();
-        let goal = learning_goal.to_owned();
-        let service = service.clone();
-        async move {
-            service
-                .import_course_outline(
-                    pack,
-                    OutlineSnapshot {
-                        blueprint_json: serde_json::to_string(&blueprint).unwrap(),
-                        samples_json: "[]".to_owned(),
-                        learning_goal: goal,
-                        samples_meta_json: None,
-                        source_kb_ids: Vec::new(),
                     },
                 )
                 .await
@@ -12326,7 +12015,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     learning_goal: String::new(),
                     samples_meta_json: None,
                     source_kb_ids: Vec::new(),
-                    // 迁移 069 CHECK:数组/标量/非法 JSON 一律拒绝——事务
+                    // 迁移 070 CHECK:数组/标量/非法 JSON 一律拒绝——事务
                     // 在 course INSERT 处中断。
                     course_source_plan_json: Some("[1, 2]".to_owned()),
                 },
@@ -13593,3 +13282,248 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             "退役条目不进投影（扩邻不扩退役）:{ids:?}"
         );
     }
+    // ── 定义审计（m9：三层用语表 × 只读报告；夹具红绿是验收核心）─────────
+
+    /// 哲学入门夹具（learnhub 原样移植，编译期嵌入）。
+    const PHILOSOPHY_AUDIT_FIXTURE: &str = include_str!(
+        "../../../../../docs/research/fixtures/learning/philosophy-intro/case.json"
+    );
+
+    /// 审计夹具：铸入带定义与别名串的概念，返回 concept_id。
+    async fn mint_audited_concept(
+        service: &LearningService,
+        canonical: &str,
+        definition: &str,
+        aliases_json: &str,
+    ) -> String {
+        let concept_id = nomifun_common::LearningConceptId::new().into_string();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&concept_id)
+        .bind(canonical)
+        .bind(aliases_json)
+        .bind(definition)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        concept_id
+    }
+
+    /// 三态如实：空表全空；哲学夹具（预埋自指 + 互指对 + 缺口）全部被抓住；
+    /// 干净定义零误报。
+    #[tokio::test]
+    async fn concept_audit_reports_three_states_and_fixture_defects() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let (course_id, _module) = insert_graph_course_shell(&service, "哲学入门").await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+
+        // 空表如实：全零报告。
+        let report = service.concept_audit(&course).await.unwrap();
+        assert_eq!(report.concept_count, 0);
+        assert!(report.flagged.is_empty());
+        assert!(report.self_refs.is_empty());
+        assert!(report.mutual_cycles.is_empty());
+
+        // 哲学夹具 13 条全量铸入（含预埋自指「怀疑论」与互指对「实体↔属性」）。
+        let fixture: serde_json::Value =
+            serde_json::from_str(PHILOSOPHY_AUDIT_FIXTURE).unwrap();
+        let concepts = fixture["concepts"].as_array().unwrap();
+        for concept in concepts {
+            mint_audited_concept(
+                &service,
+                concept["name"].as_str().unwrap(),
+                concept["definition"].as_str().unwrap(),
+                "[]",
+            )
+            .await;
+        }
+
+        let report = service.concept_audit(&course).await.unwrap();
+        assert_eq!(report.concept_count, 13, "登记表全量如实计数");
+        // 自指：预埋的「怀疑论」被点名（ISO 704）。
+        assert_eq!(
+            report
+                .self_refs
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["怀疑论"],
+            "预埋自指须被抓住"
+        );
+        assert!(
+            report
+                .self_refs
+                .iter()
+                .all(|entry| !entry.concept_id.is_empty())
+        );
+        // 互指环：预埋的「实体↔属性」被点名（循环定义最短形态）。
+        assert_eq!(
+            report.mutual_cycles.len(),
+            1,
+            "恰一对互指:{:?}",
+            report.mutual_cycles
+        );
+        let pair = &report.mutual_cycles[0];
+        assert_eq!(pair.a_name, "实体");
+        assert_eq!(pair.b_name, "属性");
+        // 缺口：属性定义的「述说」无人教也无处着落，须露为片段（宁滥勿缺）。
+        let attribute = report
+            .flagged
+            .iter()
+            .find(|entry| entry.canonical == "属性")
+            .expect("属性定义有缺口");
+        assert!(
+            attribute.fragments.iter().any(|f| f.contains("述说")),
+            "述说须在缺口片段中:{:?}",
+            attribute.fragments
+        );
+
+        // 干净定义零误报：定义完全落在 已知面（base ∪ 登记表活跃名）内
+        // （「属性」是夹具在册概念，「合并/计算」在 base）。
+        mint_audited_concept(&service, "加法", "一种把属性合并的计算。", "[]").await;
+        let report = service.concept_audit(&course).await.unwrap();
+        assert_eq!(report.concept_count, 14);
+        assert!(
+            !report.flagged.iter().any(|entry| entry.canonical == "加法"),
+            "全着落的定义零误报:{:?}",
+            report
+                .flagged
+                .iter()
+                .filter(|entry| entry.canonical == "加法")
+                .collect::<Vec<_>>()
+        );
+        assert!(!report.self_refs.iter().any(|entry| entry.name == "加法"));
+        assert!(
+            !report.mutual_cycles.iter().any(|pair| pair.a_name == "加法"
+                || pair.b_name == "加法"),
+            "单向引用不构成互指环"
+        );
+    }
+
+    /// 课程层语义：增词掩码（三角形进课层词表 → 「角形」片段消失）、豁免视而
+    /// 不见、活跃别名进已知面而退役名不掩码；旁键损坏 fail loud。
+    #[tokio::test]
+    async fn concept_audit_course_layer_adds_ignores_and_fails_loud() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let (course_id, _module) = insert_graph_course_shell(&service, "几何入门").await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+
+        // 「三角形的顶角。」：三角形不在 base（领域名词纪律），顶角是「内角」
+        // 的活跃别名（在册 → 掩码）。已知面只缺三角形 → 片段「角形」。
+        mint_audited_concept(&service, "内角", "三角形的顶角。", r#"[{"name":"顶角"}]"#).await;
+        let report = service.concept_audit(&course).await.unwrap();
+        assert_eq!(report.concept_count, 1);
+        let row = &report.flagged[0];
+        assert!(
+            row.fragments.iter().any(|f| f.contains("角形")),
+            "领域名词缺口照常点名:{:?}",
+            row.fragments
+        );
+        assert!(
+            !row.fragments.iter().any(|f| f.contains("顶角")),
+            "活跃别名在已知面，覆盖处不点名:{:?}",
+            row.fragments
+        );
+
+        // 增词（words: 三角形）掩码掉「角形」→ 零片段、不占行。
+        let snapshot = serde_json::json!({
+            "version": 1, "generated_at": 1, "structure": {}, "terrain": {},
+            "lexicon": { "words": ["三角形"], "ignore": [] },
+        });
+        sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+            .bind(snapshot.to_string())
+            .bind(&course_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let report = service.concept_audit(&course).await.unwrap();
+        assert!(
+            report.flagged.is_empty(),
+            "课程增词 + 活跃别名在册 = 零缺口:{:?}",
+            report.flagged
+        );
+
+        // 退役名不掩码：别名翻 retired → 「顶角」重新露为缺口。
+        sqlx::query("UPDATE learning_concept_registry SET aliases_json = ? WHERE canonical = '内角'")
+            .bind(r#"[{"name":"顶角","status":"retired"}]"#)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let report = service.concept_audit(&course).await.unwrap();
+        let row = &report.flagged[0];
+        assert!(
+            row.fragments.iter().any(|f| f.contains("顶角")),
+            "退役名不占已知面:{:?}",
+            row.fragments
+        );
+
+        // 豁免（ignore: 顶角）：含豁免词的片段视而不见——只影响本课读数。
+        let snapshot = serde_json::json!({
+            "version": 1, "generated_at": 1, "structure": {}, "terrain": {},
+            "lexicon": { "words": ["三角形"], "ignore": ["顶角"] },
+        });
+        sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+            .bind(snapshot.to_string())
+            .bind(&course_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let report = service.concept_audit(&course).await.unwrap();
+        assert!(
+            report.flagged.is_empty(),
+            "豁免 = 视而不见:{:?}",
+            report.flagged
+        );
+
+        // 旁键损坏 = fail loud（资产坏了不能悄悄放行）。
+        sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+            .bind(r#"{"lexicon": {"words": "不是数组"}}"#)
+            .bind(&course_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        assert!(
+            service.concept_audit(&course).await.is_err(),
+            "旁键损坏必须报错"
+        );
+
+        // 不存在的课程 = 404 语义（AppError::NotFound）。
+        let missing =
+            LearningCourseId::parse(&nomifun_common::LearningCourseId::new().into_string())
+                .unwrap();
+        match service.concept_audit(&missing).await {
+            Err(AppError::NotFound(_)) => {}
+            other => panic!("缺课应 NotFound，得到 {other:?}"),
+        }
+    }
+
+    /// 废弃概念不在审计面：concept_count 与 flagged/self_refs/mutual_cycles
+    /// 全部剔除 deprecated 行。
+    #[tokio::test]
+    async fn concept_audit_excludes_deprecated_concepts() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let (course_id, _module) = insert_graph_course_shell(&service, "退役课").await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        let kept = mint_audited_concept(&service, "整数", "整数的集合。", "[]").await;
+        let retired = mint_audited_concept(&service, "旧名", "旧名指整数。", "[]").await;
+        sqlx::query("UPDATE learning_concept_registry SET deprecated = 1 WHERE concept_id = ?")
+            .bind(&retired)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let report = service.concept_audit(&course).await.unwrap();
+        assert_eq!(report.concept_count, 1, "废弃概念不在审计面");
+        assert!(report.flagged.iter().all(|entry| entry.concept_id != retired));
+        assert_eq!(report.flagged.len(), 1);
+        assert_eq!(report.flagged[0].concept_id, kept);
+    }
+

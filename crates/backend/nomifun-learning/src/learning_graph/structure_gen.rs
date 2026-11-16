@@ -526,7 +526,7 @@ mod tests {
         }
 
         fn calls(&self) -> usize {
-            self.1.load(std::sync::atomic::Ordering::SeqCst)
+            self.1.lock().unwrap().len()
         }
     }
 
@@ -824,10 +824,10 @@ mod tests {
         let mut bad_c = golden_structure();
         bad_c["blocks"][0]["door_refs"] = json!(["G1", "G9"]); // gd.blocks.door_refs 红
         let completer = scripted(vec![
-            bad_a, golden_terrain(), // 第 1 轮
-            bad_b, golden_terrain(), // 第 2 轮
-            bad_c, golden_terrain(), // 第 3 轮
-        ]);
+            golden_terrain(), bad_a, // 第 1 轮
+            golden_terrain(), bad_b, // 第 2 轮（违约互异 → 早停不触发）
+            golden_terrain(), bad_c, // 第 3 轮
+        ]); // 3 轮 ×（地形 + 结构），每轮违约不同 = 指纹永不重复
         let error = generate_structure_artifacts(
             &completer,
             None,
@@ -855,9 +855,9 @@ mod tests {
         let mut bad = golden_structure();
         bad["blocks"] = json!([]); // gd.blocks.count 红，永不修正
         let completer = scripted(vec![
-            bad.clone(), golden_terrain(), // 第 1 轮
-            bad.clone(), golden_terrain(), // 第 2 轮（同指纹 → 早停）
-            bad, golden_terrain(), // 不应到达（预算 proof：脚本有余量）
+            golden_terrain(), bad.clone(), // 第 1 轮
+            golden_terrain(), bad.clone(), // 第 2 轮（同指纹 → 早停）
+            golden_terrain(), bad, // 不应到达（预算 proof：脚本有余量）
         ]);
         let error = generate_structure_artifacts(
             &completer,

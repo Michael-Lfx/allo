@@ -34,6 +34,7 @@ pub mod defnear;
 pub mod fragment_verdict;
 pub mod growth_contract;
 pub mod growth_retry;
+pub mod lexicon;
 pub mod mint_evidence;
 pub mod mounting;
 pub mod name_adjudication;
@@ -1221,15 +1222,6 @@ pub(crate) struct ReviewFinding {
     pub advice: String,
 }
 
-/// 一条 findings 观察：留痕是线索不是第二真相。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ReviewFinding {
-    pub node: String,
-    pub field: String,
-    pub issue: String,
-    pub advice: String,
-}
-
 /// 一条复用裁决：提名名 → 登记表中的宿主概念（候选集归属只作日志注记）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReuseRuling {
@@ -1532,14 +1524,16 @@ pub(crate) async fn concept_review(
     // pretty 另票处理）。
     let batch_json = serde_json::to_string(batch).unwrap_or_default();
     // u04 反循环臂（缺省 on；service 传 `prior_review` = 评审往返记录，
-    // off/首轮为空串）：翻案锁——有状态复审时前轮意见随 user 回灌并锁定
+    // off/首轮为空串）：①翻案锁——有状态复审时前轮意见随 user 回灌并锁定
     // 「按前轮意见做出的修改本身不得再判为问题；修改若引入与前轮无关的新
-    // 硬伤照常报告」（反乒乓纪律此前只约束教练，评审不受约束才有跨轮翻
-    // 案）。off 臂恒零注入（基线逐字节）。课程语境词不再由评审面补注
-    // （w02）：context.render() 每一批都渲染【课程语境词】块（同一单源
-    // [`course_context_words_block`]），评审 user 经渲染自然携带——补注
-    // 通道撤销，避免双份；豁免语义（可作定义背景用语、teaches 照常挂号）
-    // 不变。
+    // 硬伤照常报告；对同一词源的前轮判定（如已判常识/已判缺失），无新证据
+    // 不得改判——认为前轮判定有误时写进 findings 说明，不得以改判方式打
+    // 回」（w04 补全：只禁「按前轮意见做的修改」再判时，轮1判常识→轮2要
+    // 求挂号的改判仍合法——run-1793951137445 病历形态）。②课程语境词不再
+    // 由评审面补注（w02）：context.render() 每一批都渲染【课程语境词】块
+    // （同一单源 [`course_context_words_block`]），评审 user 经渲染自然携
+    // 带——补注通道撤销，避免双份；豁免语义（可作定义背景用语、teaches
+    // 照常挂号）不变。off 臂两块恒零注入（基线逐字节）。
     let anti_loop = anti_loop_enabled();
     let overturn_lock = if anti_loop && !prior_review.trim().is_empty() {
         format!(
@@ -3223,8 +3217,9 @@ mod tests {
 
     /// u04 评审臂两块的字节级钉：on = 评审 user 带【课程语境词】块（w02 起
     /// 经 context.render() 每一批单源携带、恰一次）+ 有状态复审臂带【前轮
-    /// 评审意见与教练修订】与翻案锁；off = 两块零注入（差集恰为两块本身；
-    /// off 臂语境词空串 = service 装配口径）；未设 = 开发期缺省 off。
+    /// 评审意见与教练修订】与翻案锁（w04 补全：同一词源前轮判定的无证据改
+    /// 判禁令）；off = 两块零注入（差集恰为两块本身；off 臂语境词空串 =
+    /// service 装配口径）；未设 = 缺省 on（2026-11-07 真机 A/B 达标）。
     /// env 全局态：`#[serial]` 互斥。
     #[tokio::test]
     #[serial_test::serial]
@@ -5080,183 +5075,6 @@ mod tests {
             new_aliases: Vec::new(),
             nodes: vec![
                 node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
-                node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![]),
-            ],
-            mints: vec![
-                ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() },
-                ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() },
-            ],
-            note: String::new(),
-        };
-        let (errors, warns) = validate_batch(&mut batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
-        assert!(errors.is_empty(), "{errors:?}");
-
-        // 依赖既往批次的概念合法：已教账覆盖到所假定档位即放行。
-        let mut batch = ProposedBatch {
-            new_aliases: Vec::new(),
-            nodes: vec![node(
-                "用公式法解因式分解题",
-                vec![reference("公式法", ConceptTier::Know)],
-                vec![reference("因式分解", ConceptTier::Apply)],
-            )],
-            mints: vec![ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new(), source: None }],
-            note: String::new(),
-        };
-        let mut coverage = ConceptCoverage::new();
-        coverage.insert("因式分解".to_owned(), ConceptTier::Apply);
-        let mut registry = HashSet::new();
-        registry.insert("因式分解".to_owned());
-        let (errors, warns) = validate_batch(&mut batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
-        assert!(errors.is_empty(), "{errors:?}");
-    }
-
-    #[test]
-    fn validate_batch_resolves_unique_near_form_ref_with_warn() {
-        // 字级名漂移（flash 真机实录：「十进位置值」vs 账内「十进制位值」，
-        // 距离 2）不烧整批：唯一近形宿主侧归一（learnhub「系统会核对它属于
-        // 哪个既有概念」），warn 留痕、引用就地改写。
-        let mut batch = batch_of(vec![node(
-            "按位权展开把数写成加法式",
-            vec![reference("十进位置值", ConceptTier::Apply)],
-            vec![],
-        )]);
-        let mut registry = HashSet::new();
-        registry.insert("十进制位值".to_owned());
-        let mut name_owner = HashMap::new();
-        name_owner.insert("十进制位值".to_owned(), "十进制位值".to_owned());
-        let (errors, warns) =
-            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
-        assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(warns.len(), 1, "{warns:?}");
-        assert_eq!(warns[0].kind, "ng.refs.nearform");
-        assert_eq!(batch.nodes[0].teaches[0].name, "十进制位值");
-
-        // 包含式近形：「幂」唯一命中「二的幂」。
-        let mut batch = batch_of(vec![node(
-            "用 2 的幂拆数",
-            vec![reference("幂", ConceptTier::Apply)],
-            vec![],
-        )]);
-        let mut registry = HashSet::new();
-        registry.insert("二的幂".to_owned());
-        let mut name_owner = HashMap::new();
-        name_owner.insert("二的幂".to_owned(), "二的幂".to_owned());
-        let (errors, warns) =
-            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
-        assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(warns.len(), 1);
-        assert_eq!(batch.nodes[0].teaches[0].name, "二的幂");
-    }
-
-    #[test]
-    fn validate_batch_rejects_ambiguous_near_form_with_candidates() {
-        // 多个近形宿主（「按位展开」同时近形「按位权展开」「按位展开法」）
-        // 不能替模型猜：红条打回，消息列候选名。
-        let mut batch = batch_of(vec![node(
-            "按位展开说意义",
-            vec![reference("按位展开", ConceptTier::Apply)],
-            vec![],
-        )]);
-        let mut registry = HashSet::new();
-        registry.insert("按位权展开".to_owned());
-        registry.insert("按位展开法".to_owned());
-        let mut name_owner = HashMap::new();
-        name_owner.insert("按位权展开".to_owned(), "按位权展开".to_owned());
-        name_owner.insert("按位展开法".to_owned(), "按位展开法".to_owned());
-        let (errors, warns) =
-            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
-        assert_eq!(warns.len(), 0);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].kind, "ng.refs.resolvable");
-        assert!(errors[0].message.contains("按位权展开"), "{:?}", errors[0]);
-        assert!(errors[0].message.contains("按位展开法"), "{:?}", errors[0]);
-    }
-
-    #[test]
-    fn validate_batch_keeps_short_name_drift_red() {
-        // 两字短名一字差常常是两个真概念（「数位」/「数值」）：归一权留给
-        // 模型/评审，不自动归一。
-        let mut batch = batch_of(vec![node(
-            "认读数位",
-            vec![reference("数位", ConceptTier::Apply)],
-            vec![],
-        )]);
-        let mut registry = HashSet::new();
-        registry.insert("数值".to_owned());
-        let mut name_owner = HashMap::new();
-        name_owner.insert("数值".to_owned(), "数值".to_owned());
-        let (errors, warns) =
-            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
-        assert_eq!(warns.len(), 0);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].kind, "ng.refs.resolvable");
-        assert_eq!(batch.nodes[0].teaches[0].name, "数位");
-    }
-
-    #[tokio::test]
-    async fn concept_review_keeps_reuse_rulings_on_reject() {
-        // 真机实录（run-1792385060145 call 3）：模型把近义铸名裁进 reuse、
-        // 其余硬伤放 problems、verdict=reject——旧解析在 reject 分支丢弃
-        // reuse，模型的正确裁决被烧进重裁循环。reject 必须保留 reuse，由
-        // 服务层先消化裁决（能被裁决覆盖的问题剔除）再谈打回。
-        struct Fixed(std::sync::Mutex<std::vec::IntoIter<String>>);
-        #[async_trait::async_trait]
-        impl LearningCompleter for Fixed {
-            async fn complete(
-                &self,
-                _: Option<(&str, &str)>,
-                _: &str,
-                _: &str,
-                _: u32,
-            ) -> Result<String, nomifun_common::AppError> {
-                unreachable!("review only uses the json seam")
-            }
-            async fn complete_json_with_thinking(
-                &self,
-                _: Option<(&str, &str)>,
-                _: &str,
-                _: &str,
-                _: u32,
-                _: Option<f32>,
-            ) -> Result<String, nomifun_common::AppError> {
-                let mut replies = self.0.lock().unwrap();
-                replies.next().ok_or_else(|| nomifun_common::AppError::Internal("script exhausted".into()))
-            }
-        }
-        let reply = serde_json::json!({
-            "verdict": "reject",
-            "problems": [
-                { "node": "从 0 到 15 逐个写出二进制数", "field": "teaches",
-                  "issue": "铸名「二进制数」与已教概念「二进制数字」内涵重叠",
-                  "advice": "把「二进制数」移入 reuse" },
-                { "node": "反复除以 2", "field": "difficulty",
-                  "issue": "内容量超过 difficulty 3 的负载", "advice": "拆分或上调" }
-            ],
-            "reuse": [ { "name": "二进制数", "concept_id": "01a1442d-2338-7a40-a4bd-fe50a0a64a83" } ]
-        });
-        let completer = Fixed(std::sync::Mutex::new(vec![
-            serde_json::to_string(&reply).unwrap(),
-        ].into_iter()));
-        let batch = batch_of(vec![node(
-            "从 0 到 15 逐个写出二进制数",
-            vec![reference("二进制数", ConceptTier::Apply)],
-            vec![],
-        )]);
-        let review = concept_review(&completer, None, &batch, &CoachContext::default(), "").await;
-        assert_eq!(review.problems.len(), 2, "{review:?}");
-        assert_eq!(review.reuse.len(), 1, "{review:?}");
-        assert_eq!(review.reuse[0].name, "二进制数");
-        assert_eq!(review.reuse[0].concept_id, "01a1442d-2338-7a40-a4bd-fe50a0a64a83");
-    }
-
-    #[test]
-    fn validate_batch_rejects_intra_batch_dependency() {
-        // 同批无先后、必须同时就绪：本批兄弟的 teaches 不构成 assumes 的供给
-        // ——即使概念已随批铸名、也被兄弟教到该档位，依赖它的节点必须留到下一批。
-        let mut batch = ProposedBatch {
-            new_aliases: Vec::new(),
-            nodes: vec![
-                node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
                 node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![reference("因式分解", ConceptTier::Know)]),
             ],
             mints: vec![
@@ -5445,68 +5263,6 @@ mod tests {
                 { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
                   "intent": " 为后续公式法补操作底座 ",
                   "scope": " 教配方三步；不碰判别式 ",
-                  "est": 15, "difficulty": 3,
-                  "teaches": [{"name": " 配方法 ", "tier": "apply"}],
-                  "assumes": [{"name": "一元二次方程", "tier": "know"}] }
-            ],
-            "mints": [ { "canonical": " 配方法 ", "aliases": [" 配方 "], "definition": "" } ],
-            "note": " n "
-        }"#;
-        let batch = parse_coach_reply(raw).unwrap();
-        assert_eq!(batch.nodes[0].est, Some(15), "string est digits normalize");
-        assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
-        assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
-        // 语义违规不受归一庇护：est "0" 解析为 0 后仍被范围门打回。
-        let out_of_range = r#"{
-            "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "est": "0",
-                  "teaches": [{"name": "配方法", "tier": "会用"}], "assumes": [] }
-            ],
-            "mints": [],
-            "note": "n"
-        }"#;
-        let error = parse_coach_reply(out_of_range).unwrap_err();
-        assert!(
-            error.to_string().contains("ng.nodes.est"),
-            "range gate still fires after normalization: {error}"
-        );
-        // 未知档位词（非中英词表）仍打回——归一只认可机械判定的映射。
-        let unknown_tier = r#"{
-            "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "est": 15,
-                  "teaches": [{"name": "配方法", "tier": "熟练"}], "assumes": [] }
-            ],
-            "mints": [],
-            "note": "n"
-        }"#;
-        let error = parse_coach_reply(unknown_tier).unwrap_err();
-        assert!(
-            error.to_string().contains("ng.refs.tier"),
-            "unknown tier words stay red: {error}"
-        );
-    }
-
-    /// 退役键名：`minutes` 不在节点键白名单，旧习惯回潮按未知键打回。
-    #[test]
-    fn retired_minutes_key_is_an_unknown_key_violation() {
-        let raw = r#"{
-            "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "minutes": 15,
-                  "teaches": [{"name": "配方法", "tier": "apply"}], "assumes": [] }
-            ],
-            "mints": [],
-            "note": "n"
-        }"#;
-        let error = parse_coach_reply(raw).unwrap_err();
-        assert!(error.to_string().contains("ng.keys"), "{error}");
-    }
-
-    /// 严格路径的正向：契约合规的回包按结构装填并做 trim 归一。
-    #[test]
-    fn parse_coach_reply_accepts_contract_compliant_reply() {
-        let raw = r#"{
-            "nodes": [
-                { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
                   "est": 15, "difficulty": 3,
                   "teaches": [{"name": " 配方法 ", "tier": "apply"}],
                   "assumes": [{"name": "一元二次方程", "tier": "know"}] }
@@ -5713,53 +5469,6 @@ mod tests {
         let rendered = with_material.render();
         assert!(rendered.contains("结构参考材料"), "{rendered}");
         assert!(rendered.contains("- 块A(a)|主题描述|basic|主干一|无前置"), "{rendered}");
-        assert!(rendered.contains("首批入口重点参照"), "{rendered}");
-        assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
-        assert!(rendered.contains("首批纪律"), "{rendered}");
-        assert!(rendered.contains("assumes 必须全空"), "empty-ledger mechanical floor: {rendered}");
-
-        // 老学习者开新课：账非空 × 花名册为空是常态——首批纪律换跨课程口径，
-        // 机械地板让位，账标注全局来源（评审/教练不再读成材料矛盾）。
-        let veteran = CoachContext {
-            roster: String::new(),
-            taught_summary: "二的幂@会用、按位权展开@会用".into(),
-            coverage_gauge: "已学达标 0 / 已跳过 0 / 未达标 0；概念档位足迹：无".into(),
-            ..Default::default()
-        };
-        let rendered = veteran.render();
-        assert!(rendered.contains("跨课程全局"), "{rendered}");
-        assert!(!rendered.contains("assumes 必须全空"), "ledger non-empty: no mechanical floor: {rendered}");
-        assert!(rendered.contains("本批 assumes 可假定账内已有概念"), "{rendered}");
-        assert!(rendered.contains("本课程存量口径"), "{rendered}");
-
-        let doorless = CoachContext { roster: String::new(), ..Default::default() };
-        let rendered = doorless.render();
-        assert!(rendered.contains("首批纪律"), "{rendered}");
-        assert!(!rendered.contains("前置地形门口"), "no doors block when snapshot missing: {rendered}");
-
-        let later_batch = CoachContext {
-            roster: "在学 | 节点A".into(),
-            terrain_doors: "- [G1]（硬前置）能用配方法解方程".into(),
-            ..Default::default()
-        };
-        let rendered = later_batch.render();
-        assert!(!rendered.contains("首批纪律"), "later batches: no first-batch discipline");
-        assert!(rendered.contains("软参照"), "later batches: doors read as soft reference: {rendered}");
-    }
-
-    /// 首批九块渲染：结构参考材料 + 地形门口（首批重点框架语）+ 凝练纪律三行；
-    /// 非首批不渲染首批纪律、门口换软参照框架语。
-    #[test]
-    fn coach_context_renders_structure_reference_and_first_batch_discipline() {
-        let with_material = CoachContext {
-            roster: String::new(),
-            structure_reference: "- 块A(a)|主题描述|入门|主干一|无前置".into(),
-            terrain_doors: "- [G1]（硬前置）能用配方法解形如 x²=p 的方程".into(),
-            ..Default::default()
-        };
-        let rendered = with_material.render();
-        assert!(rendered.contains("结构参考材料"), "{rendered}");
-        assert!(rendered.contains("- 块A(a)|主题描述|入门|主干一|无前置"), "{rendered}");
         assert!(rendered.contains("首批入口重点参照"), "{rendered}");
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
         assert!(rendered.contains("首批纪律"), "{rendered}");

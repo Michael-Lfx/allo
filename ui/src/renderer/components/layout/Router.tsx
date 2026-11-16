@@ -231,6 +231,10 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
       <MeetingOpenListener />
       <CompanionWindowsSyncMount />
       <TrayLabelsMount />
+      {/* Learning-graph growth floating pill (g4): visible on every protected
+          page while a growth task is queued/running — view progress, jump
+          back to the graph workspace, or cancel. */}
+      <GrowthTaskPillHost />
       <GlobalVoiceWakeListener />
       {React.cloneElement(layout)}
     </>
