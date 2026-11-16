@@ -5,7 +5,6 @@ use gpui_ce_elements::editable_text::text_area;
 const COLUMN: f32 = 720.0;
 
 impl crate::panel::StudioPanel {
-
     pub fn automation_canvas(
         &self,
         cx: &Context<'_, Self>,
@@ -40,10 +39,7 @@ impl crate::panel::StudioPanel {
             )
     }
 
-    fn automation_composer(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    fn automation_composer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
             .w_full()
             .bg(theme::card())
@@ -95,8 +91,8 @@ impl crate::panel::StudioPanel {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(tool_mark("+"))
-                            .child(tool_mark("#"))
+                            .child(tool_mark(theme::icons::plus()))
+                            .child(tool_mark(theme::icons::hash()))
                             .child(
                                 div()
                                     .px_2()
@@ -120,7 +116,7 @@ impl crate::panel::StudioPanel {
                             .justify_center()
                             .text_sm()
                             .cursor_pointer()
-                            .child("↑")
+                            .child(theme::icons::send())
                             .on_click(cx.listener(|app, _e, _w, cx| {
                                 app.notice = Some("auto.later");
                                 cx.notify();
@@ -189,7 +185,7 @@ impl crate::panel::StudioPanel {
                             .text_color(theme::muted())
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::soft()))
-                            .child("×")
+                            .child(theme::icons::x())
                             .on_click(cx.listener(|app, _e, _w, cx| {
                                 app.notice = Some("auto.later");
                                 cx.notify();
@@ -283,10 +279,7 @@ impl crate::panel::StudioPanel {
             )
     }
 
-    fn suggestions_panel(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    fn suggestions_panel(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
             .w_full()
             .flex()
@@ -315,7 +308,7 @@ impl crate::panel::StudioPanel {
                             .text_color(theme::muted())
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::soft()))
-                            .child("↻")
+                            .child(theme::icons::refresh_cw())
                             .on_click(cx.listener(|app, _e, _w, cx| {
                                 app.notice = Some("auto.later");
                                 cx.notify();
@@ -344,21 +337,25 @@ impl crate::panel::StudioPanel {
                         "auto.suggest_return_body",
                         cx,
                     ))
-                    .child(self.suggestion_column(
-                        "auto-s3",
-                        "∞",
-                        rgb(0x0008_66ff),
-                        "auto.suggest_ads_title",
-                        "auto.suggest_ads_body",
-                        cx,
-                    )),
+                    .child(
+                        self.suggestion_column(
+                            "auto-s3",
+                            theme::icons::infinity()
+                                .size(px(20.))
+                                .text_color(theme::on_ink()),
+                            rgb(0x0008_66ff),
+                            "auto.suggest_ads_title",
+                            "auto.suggest_ads_body",
+                            cx,
+                        ),
+                    ),
             )
     }
 
     fn suggestion_column(
         &self,
         id: &'static str,
-        mark: &'static str,
+        mark: impl IntoElement,
         tint: gpui::Rgba,
         title: &'static str,
         body: &'static str,
@@ -423,9 +420,9 @@ impl crate::panel::StudioPanel {
                     ),
             )
     }
-    }
+}
 
-    fn tool_mark(glyph: &'static str) -> impl IntoElement {
+fn tool_mark(icon: gpui::Svg) -> impl IntoElement {
     div()
         .size(px(28.))
         .rounded_full()
@@ -434,5 +431,5 @@ impl crate::panel::StudioPanel {
         .justify_center()
         .text_sm()
         .text_color(theme::muted())
-        .child(glyph)
+        .child(icon.text_color(theme::muted()))
 }

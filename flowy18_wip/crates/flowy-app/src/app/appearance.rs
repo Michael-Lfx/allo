@@ -346,7 +346,11 @@ fn chip(
         .hover(|style| style.bg(theme::line()))
         .children(accent.map(dot))
         .child(div().text_sm().child(label))
-        .child(div().text_xs().text_color(theme::muted()).child("▾"))
+        .child(
+            theme::icons::chevron_down()
+                .size(px(14.))
+                .text_color(theme::muted()),
+        )
         .on_click(cx.listener(move |app, _event, _window, cx| {
             app.settings.picker = if app.settings.picker == picker {
                 Picker::None
@@ -363,64 +367,8 @@ fn dot(accent: Accent) -> impl IntoElement {
 
 fn theme_icon(mode: ThemeMode) -> gpui::AnyElement {
     match mode {
-        ThemeMode::Light => sun_icon().into_any_element(),
-        ThemeMode::Dark => moon_icon().into_any_element(),
-        ThemeMode::Auto => monitor_icon().into_any_element(),
+        ThemeMode::Light => theme::icons::sun().into_any_element(),
+        ThemeMode::Dark => theme::icons::moon().into_any_element(),
+        ThemeMode::Auto => theme::icons::monitor().into_any_element(),
     }
-}
-
-fn sun_icon() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .size(px(8.))
-                .rounded_full()
-                .border_1()
-                .border_color(theme::ink()),
-        )
-}
-
-fn moon_icon() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .size(px(8.))
-                .rounded_full()
-                .border_1()
-                .border_color(theme::ink()),
-        )
-        .child(
-            div()
-                .ml(px(-5.))
-                .size(px(8.))
-                .rounded_full()
-                .bg(theme::card()),
-        )
-}
-
-fn monitor_icon() -> impl IntoElement {
-    div()
-        .size(px(16.))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(1.))
-        .child(
-            div()
-                .w(px(12.))
-                .h(px(8.))
-                .rounded(px(2.))
-                .border_1()
-                .border_color(theme::ink()),
-        )
-        .child(div().w(px(6.)).h(px(2.)).bg(theme::ink()))
 }

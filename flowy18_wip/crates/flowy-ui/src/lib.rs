@@ -2,6 +2,8 @@
 
 mod theme;
 
+pub mod icons;
+
 pub use theme::*;
 
 use serde::{Deserialize, Serialize};

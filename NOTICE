@@ -44,5 +44,12 @@ applicable:
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 
+  Lucide Icons
+  https://github.com/lucide-icons/lucide
+  Copyright (c) 2026 Lucide Icons and Contributors
+  Licensed under the ISC License. Lucide's Feather-derived icons also carry
+  the MIT License. The vendored icon sources and complete license texts live
+  in flowy18_wip/crates/flowy-ui/assets/icons/.
+
 Our sincere thanks to the maintainers and communities of the open-source
 projects Flowy uses.

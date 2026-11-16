@@ -29,7 +29,10 @@ impl FlowyApp {
         cx.notify();
     }
 
-    pub(super) fn flex_layer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(super) fn flex_layer(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         div()
             .id("flex-layer")
             .occlude()
@@ -110,7 +113,7 @@ impl FlowyApp {
                     .text_color(theme::muted())
                     .cursor_pointer()
                     .hover(|style| style.bg(theme::soft()))
-                    .child("×")
+                    .child(theme::icons::x())
                     .on_click(cx.listener(|app, _event, _window, cx| {
                         app.close_flex(cx);
                     })),
@@ -124,7 +127,7 @@ impl FlowyApp {
                     .items_center()
                     .justify_center()
                     .text_2xl()
-                    .child("∞"),
+                    .child(theme::icons::infinity().size(px(28.))),
             )
             .child(
                 div()
@@ -190,16 +193,15 @@ impl FlowyApp {
                             })
                             .child(label),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .child(if self.flex.provider_menu {
-                                "▴"
-                            } else {
-                                "▾"
-                            }),
-                    ),
+                    .child(div().text_sm().text_color(theme::muted()).child(
+                        if self.flex.provider_menu {
+                            theme::icons::chevron_up()
+                                .text_color(theme::muted())
+                        } else {
+                            theme::icons::chevron_down()
+                                .text_color(theme::muted())
+                        },
+                    )),
             )
     }
 
@@ -223,7 +225,8 @@ impl FlowyApp {
             .gap_1();
         for provider in FlexProvider::ALL {
             let selected = self.flex.draft_provider == Some(provider);
-            let id = SharedString::from(format!("flex-provider-{}", provider.id()));
+            let id =
+                SharedString::from(format!("flex-provider-{}", provider.id()));
             menu = menu.child(
                 div()
                     .id(id)
@@ -296,11 +299,18 @@ impl FlowyApp {
                             .text_color(theme::muted())
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::line()))
-                            .child(if hidden { "◌" } else { "●" })
-                            .on_click(cx.listener(|app, _event, _window, cx| {
-                                cx.stop_propagation();
-                                app.toggle_flex_key_visible(cx);
-                            })),
+                            .child(if hidden {
+                                theme::icons::eye_off()
+                                    .text_color(theme::muted())
+                            } else {
+                                theme::icons::eye().text_color(theme::muted())
+                            })
+                            .on_click(cx.listener(
+                                |app, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    app.toggle_flex_key_visible(cx);
+                                },
+                            )),
                     ),
             )
     }

@@ -5,7 +5,6 @@ use gpui_ce_elements::editable_text::text_area;
 use std::time::Duration;
 
 impl crate::panel::StudioPanel {
-
     pub(crate) fn workspace(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut column = div()
             .id("workspace")
@@ -15,8 +14,8 @@ impl crate::panel::StudioPanel {
             .relative()
             .flex()
             .flex_col();
-        let chrome = true
-            && self.surface != crate::panel::StudioSurface::Automation;
+        let chrome =
+            true && self.surface != crate::panel::StudioSurface::Automation;
         if chrome {
             column = column.child(self.top_bar(cx));
         }
@@ -39,8 +38,7 @@ impl crate::panel::StudioPanel {
         } else {
             column.child(self.section_page())
         };
-        if self.model_info_open && !self.model_menu_open && chrome
-        {
+        if self.model_info_open && !self.model_menu_open && chrome {
             column = column.child(self.model_info(cx));
         }
         if self.model_menu_open && chrome {
@@ -74,7 +72,7 @@ impl crate::panel::StudioPanel {
                     .flex()
                     .items_start()
                     .gap_2()
-                    .child(div().text_sm().child("✦"))
+                    .child(theme::icons::sparkles())
                     .child(
                         div()
                             .text_sm()
@@ -134,13 +132,17 @@ impl crate::panel::StudioPanel {
             }))
     }
 
-    fn model_button_label(&self) -> String {
-        let mark = if self.model_menu_open {
-            "▴"
-        } else {
-            "▾"
-        };
-        format!("{}  {mark}", self.t(self.model.name_key()))
+    fn model_button_label(&self) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(self.t(self.model.name_key()))
+            .child(if self.model_menu_open {
+                theme::icons::chevron_up()
+            } else {
+                theme::icons::chevron_down()
+            })
     }
 
     fn model_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -225,7 +227,7 @@ impl crate::panel::StudioPanel {
                             .child(self.t(model.detail_key())),
                     ),
             )
-            .when(selected, |row| row.child(div().text_sm().child("✓")))
+            .when(selected, |row| row.child(theme::icons::check()))
     }
 
     fn choose_model(&mut self, model: Model, cx: &mut Context<'_, Self>) {
@@ -248,8 +250,7 @@ impl crate::panel::StudioPanel {
     }
 
     fn dismiss_model_info(&mut self, cx: &mut Context<'_, Self>) {
-        self.model_info_version =
-            env!("CARGO_PKG_VERSION").to_string();
+        self.model_info_version = env!("CARGO_PKG_VERSION").to_string();
         self.emit_model(cx);
         self.model_info_open = false;
         cx.notify();
@@ -274,8 +275,7 @@ impl crate::panel::StudioPanel {
                     .hover(|style| style.bg(theme::soft()))
                     .child(self.model_button_label())
                     .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.model_menu_open =
-                            !app.model_menu_open;
+                        app.model_menu_open = !app.model_menu_open;
                         cx.notify();
                     })),
             )
@@ -349,7 +349,7 @@ impl crate::panel::StudioPanel {
             .on_hover(cx.listener(|app, hovered: &bool, _window, cx| {
                 app.set_credit_hover(*hovered, cx);
             }))
-            .child(div().text_sm().child("✦"))
+            .child(theme::icons::sparkles())
             .child(
                 div()
                     .text_sm()
@@ -422,14 +422,17 @@ impl crate::panel::StudioPanel {
                     .border_color(theme::line()),
             )
             .child(Self::credit_row(
-                "✦",
+                theme::icons::sparkles(),
                 self.t("credits.balance"),
                 Self::grouped(free),
                 true,
             ))
-            .child(Self::credit_sub(self.t("credits.free"), Some(Self::grouped(free))))
+            .child(Self::credit_sub(
+                self.t("credits.free"),
+                Some(Self::grouped(free)),
+            ))
             .child(Self::credit_row(
-                "▣",
+                theme::icons::square(),
                 self.t("credits.daily"),
                 Self::grouped(daily),
                 true,
@@ -445,7 +448,14 @@ impl crate::panel::StudioPanel {
                     .text_sm()
                     .cursor_pointer()
                     .hover(|row| row.text_color(theme::muted()))
-                    .child(format!("{}  ›", self.t("credits.usage")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(self.t("credits.usage"))
+                            .child(theme::icons::chevron_right()),
+                    )
                     .on_click(cx.listener(|app, _event, _window, cx| {
                         app.note("credits.usage_later", cx);
                     })),
@@ -694,7 +704,6 @@ impl crate::panel::StudioPanel {
             )
     }
 
-
     fn section_page(&self) -> impl IntoElement {
         div().flex_1().flex().items_center().justify_center().child(
             div()
@@ -734,66 +743,70 @@ impl crate::panel::StudioPanel {
     const DAILY_GRANT: u32 = 300;
 
     fn credit_split(total: u32) -> (u32, u32) {
-    let daily = Self::DAILY_GRANT.min(total);
-    (total - daily, daily)
+        let daily = Self::DAILY_GRANT.min(total);
+        (total - daily, daily)
     }
 
     fn credit_row(
-    mark: &'static str,
-    label: String,
-    value: String,
-    help: bool,
+        mark: gpui::Svg,
+        label: String,
+        value: String,
+        help: bool,
     ) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(div().text_sm().child(mark))
-                .child(div().text_sm().child(label))
-                .when(help, |row| row.child(Self::help_mark())),
-        )
-        .child(div().text_sm().child(value))
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(mark)
+                    .child(div().text_sm().child(label))
+                    .when(help, |row| row.child(Self::help_mark())),
+            )
+            .child(div().text_sm().child(value))
     }
 
     fn credit_sub(label: String, value: Option<String>) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .pl(px(22.))
-        .child(div().text_xs().text_color(theme::muted()).child(label))
-        .children(value.map(|text| div().text_xs().child(text)))
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .pl(px(22.))
+            .child(div().text_xs().text_color(theme::muted()).child(label))
+            .children(value.map(|text| div().text_xs().child(text)))
     }
 
     fn help_mark() -> impl IntoElement {
-    div()
-        .size(px(14.))
-        .rounded_full()
-        .border_1()
-        .border_color(theme::line())
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_xs()
-        .text_color(theme::muted())
-        .child("?")
+        div()
+            .size(px(14.))
+            .rounded_full()
+            .border_1()
+            .border_color(theme::line())
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_xs()
+            .text_color(theme::muted())
+            .child(
+                theme::icons::circle_help()
+                    .size(px(14.))
+                    .text_color(theme::muted()),
+            )
     }
 
     fn grouped(value: u32) -> String {
-    let raw = value.to_string();
-    let mut out = String::new();
-    for (index, ch) in raw.chars().rev().enumerate() {
-        if index > 0 && index.is_multiple_of(3) {
-            out.push(',');
+        let raw = value.to_string();
+        let mut out = String::new();
+        for (index, ch) in raw.chars().rev().enumerate() {
+            if index > 0 && index.is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(ch);
         }
-        out.push(ch);
-    }
-    out.chars().rev().collect()
+        out.chars().rev().collect()
     }
 }

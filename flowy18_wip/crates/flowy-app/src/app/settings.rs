@@ -346,7 +346,7 @@ impl FlowyApp {
                             .justify_center()
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::soft()))
-                            .child("×")
+                            .child(theme::icons::x().size(px(16.)))
                             .on_click(cx.listener(
                                 |app, _event, _window, cx| {
                                     app.close_settings(cx);
@@ -491,7 +491,11 @@ impl FlowyApp {
             .cursor_pointer()
             .hover(|style| style.bg(theme::line()))
             .child(div().text_sm().child(label))
-            .child(div().text_xs().text_color(theme::muted()).child("▾"))
+            .child(
+                theme::icons::chevron_down()
+                    .size(px(14.))
+                    .text_color(theme::muted()),
+            )
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.settings.picker = if app.settings.picker == picker {
                     Picker::None

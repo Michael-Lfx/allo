@@ -3,7 +3,7 @@ use super::{FlowyApp, Screen, SignIn};
 use flowy_auth::{EMAIL_OTP_LENGTH, valid_email};
 use flowy_ui as theme;
 use gpui::{
-    ColorExt, Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb, svg,
+    ColorExt, Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb,
 };
 use gpui_ce_elements::editable_text::text_input;
 
@@ -156,10 +156,7 @@ impl FlowyApp {
             )
     }
 
-    fn login_brand_pane(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    fn login_brand_pane(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
             .id("login-brand")
             .w(px(560.))
@@ -628,9 +625,11 @@ enum StepMark {
     Done,
 }
 
-const STEP_CHECK_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#000" d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>"##;
-
-fn progress_step(mark: StepMark, label: &str, active: bool) -> impl IntoElement {
+fn progress_step(
+    mark: StepMark,
+    label: &str,
+    active: bool,
+) -> impl IntoElement {
     let fg = if active {
         auth_on_accent()
     } else {
@@ -640,11 +639,7 @@ fn progress_step(mark: StepMark, label: &str, active: bool) -> impl IntoElement 
         .size(px(26.))
         .rounded_full()
         .border_1()
-        .border_color(if active {
-            auth_accent()
-        } else {
-            theme::line()
-        })
+        .border_color(if active { auth_accent() } else { theme::line() })
         .bg(if active { auth_accent() } else { theme::card() })
         .text_color(fg)
         .flex()
@@ -657,25 +652,20 @@ fn progress_step(mark: StepMark, label: &str, active: bool) -> impl IntoElement 
             .child(number.to_string())
             .into_any_element(),
         StepMark::Done => badge
-            .child(svg().data(STEP_CHECK_SVG).size(px(14.)).text_color(fg))
+            .child(theme::icons::check().size(px(14.)).text_color(fg))
             .into_any_element(),
     };
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(badge)
-        .child(
-            div()
-                .text_xs()
-                .font_weight(if active {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::NORMAL
-                })
-                .text_color(if active { theme::ink() } else { theme::muted() })
-                .child(label.to_string()),
-        )
+    div().flex().items_center().gap_2().child(badge).child(
+        div()
+            .text_xs()
+            .font_weight(if active {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::NORMAL
+            })
+            .text_color(if active { theme::ink() } else { theme::muted() })
+            .child(label.to_string()),
+    )
 }
 
 fn otp_cells(code: &str) -> impl IntoElement {

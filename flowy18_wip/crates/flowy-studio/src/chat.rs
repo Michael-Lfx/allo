@@ -4,14 +4,14 @@ use flowy_ui as theme;
 use gpui::{Context, SharedString, div, prelude::*, px};
 use gpui_ce_elements::editable_text::text_area;
 
-const SUGGESTIONS: &[&str] = &[
-    "gallery.documentary",
-    "gallery.budget",
-    "gallery.fashion",
-];
+const SUGGESTIONS: &[&str] =
+    &["gallery.documentary", "gallery.budget", "gallery.fashion"];
 
 impl crate::panel::StudioPanel {
-    pub(crate) fn chat_canvas(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(crate) fn chat_canvas(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let lines = self.agent.lines();
         let status = self.agent.turn_status();
         let running = matches!(status, TurnStatus::Running);
@@ -81,12 +81,7 @@ impl crate::panel::StudioPanel {
                         .text_color(theme::muted())
                         .child(self.product.to_string()),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .whitespace_normal()
-                        .child(text.clone()),
-                ),
+                .child(div().text_sm().whitespace_normal().child(text.clone())),
             ChatLine::Tool { text } => div()
                 .id(("chat-tool", index))
                 .text_xs()
@@ -104,7 +99,7 @@ impl crate::panel::StudioPanel {
                     .items_center()
                     .gap_2()
                     .text_sm()
-                    .child(div().child("✓"))
+                    .child(theme::icons::check())
                     .child(label)
             }
         }
@@ -126,14 +121,19 @@ impl crate::panel::StudioPanel {
             .gap_2()
             .text_sm()
             .text_color(theme::muted())
-            .child(match status {
-                TurnStatus::Completed => "✓",
-                TurnStatus::Running => "…",
-                TurnStatus::Stopped => "■",
-                TurnStatus::Error { .. } => "!",
-                TurnStatus::Idle => "·",
-            })
+            .child(Self::status_icon(status))
             .child(label)
+    }
+
+    fn status_icon(status: &TurnStatus) -> gpui::Svg {
+        let icon = match status {
+            TurnStatus::Completed => theme::icons::check(),
+            TurnStatus::Running => theme::icons::loader_circle(),
+            TurnStatus::Stopped => theme::icons::square(),
+            TurnStatus::Error { .. } => theme::icons::circle_alert(),
+            TurnStatus::Idle => theme::icons::clock(),
+        };
+        icon.text_color(theme::muted())
     }
 
     fn chat_composer(
@@ -162,12 +162,10 @@ impl crate::panel::StudioPanel {
                     .child(
                         text_area("chat-prompt")
                             .state(self.prompt.downgrade())
-                            .placeholder(SharedString::from(
-                                self.tf(
-                                    "thread.prompt_placeholder",
-                                    &[("product", self.product)],
-                                ),
-                            )),
+                            .placeholder(SharedString::from(self.tf(
+                                "thread.prompt_placeholder",
+                                &[("product", self.product)],
+                            ))),
                     )
                     .child(
                         div()
@@ -264,7 +262,7 @@ impl crate::panel::StudioPanel {
                     .id(("chat-star", star))
                     .px_1()
                     .cursor_pointer()
-                    .child("★")
+                    .child(theme::icons::star())
                     .on_click(cx.listener(move |panel, _, _, cx| {
                         panel.rate_result(star, cx);
                     })),
@@ -274,7 +272,12 @@ impl crate::panel::StudioPanel {
     }
 
     fn suggestions(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut column = div().id("chat-suggestions").flex().flex_col().gap_2().pt_2();
+        let mut column = div()
+            .id("chat-suggestions")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .pt_2();
         for (index, key) in SUGGESTIONS.iter().enumerate() {
             let key = *key;
             let label = self.t(key);
@@ -296,7 +299,11 @@ impl crate::panel::StudioPanel {
         column
     }
 
-    pub(crate) fn rate_result(&mut self, stars: u32, cx: &mut Context<'_, Self>) {
+    pub(crate) fn rate_result(
+        &mut self,
+        stars: u32,
+        cx: &mut Context<'_, Self>,
+    ) {
         cx.emit(StudioEvent::Rated { stars });
         self.emit_notice(Some("chat.rate_thanks"), cx);
     }
