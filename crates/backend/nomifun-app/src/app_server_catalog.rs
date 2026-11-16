@@ -1001,7 +1001,10 @@ max_context_size = 1000000
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // 进程级全局态（env/共享单例）竞态：合并验证实测并行跑红过一次、隔离
+    // 绿——按仓规写 env/触全局态的测试一律 `#[serial_test::serial]`。
     #[tokio::test]
+    #[serial_test::serial]
     async fn models_list_falls_back_to_db_default_when_config_has_none() {
         let dir = std::env::temp_dir().join(format!("allo-wp7-{}", nomifun_common::generate_id()));
         std::fs::create_dir_all(&dir).expect("temp dir");

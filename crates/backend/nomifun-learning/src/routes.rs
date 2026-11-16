@@ -1,24 +1,30 @@
 use std::str::FromStr;
 
 use axum::extract::{Extension, Json, Path, Query, RawQuery, State};
-use axum::routing::{delete, get, post, put};
+use axum::response::IntoResponse;
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use nomifun_api_types::ApiResponse;
 use nomifun_auth::CurrentUser;
 use nomifun_common::{
     AppError, LearningActivityId, LearningCourseId, LearningLessonId, LearningReviewItemId,
+    ProviderId,
     UuidV7Error,
 };
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use url::form_urlencoded;
 
 use crate::models::{
-    AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
-    GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
-    RepairFigureResponse, ResumeLearningGraphRequest, SetTagsRequest, SubmitAttemptRequest,
+    AnswerReviewRequest, CheckinStatus, CoursePack,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
+    GenerateCourseRequest, GenerateLessonActivityRequest,
+    GenerateLessonRequest, MemoryCalibrationBin, MountRoundSummary,
+    QuizGradeFeedback, QuizOverviewCourse, QuizProgressView, QuizRoundReport, QuizRoundView,
+    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
+    XpCalendar, XpReading,
 };
 use crate::state::LearningRouterState;
 
@@ -29,27 +35,79 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route(
-            "/api/learning/courses/generate/resume",
-            post(resume_learning_graph),
-        )
-        .route(
-            "/api/learning/courses/generate/status",
-            get(learning_graph_generation_status),
-        )
+        .route("/api/learning/generation-tasks", get(list_generation_tasks))
+        .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
         .route(
             "/api/learning/courses/generate/cancel",
             post(cancel_learning_graph_generation),
         )
+        .route(
+            "/api/learning/courses/{id}/graph/grow",
+            post(grow_learning_graph),
+        )
+        .route(
+            "/api/learning/courses/{id}/growth/verdict",
+            get(growth_verdict),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/history",
+            get(graph_history),
+        )
+        // 系统动作簿（y04）：自主/后台动作的终态留痕，按课程倒序 + limit
+        // （缺省 50、上限 200）；课程不存在/软删 404，归档课仍可读。
+        .route(
+            "/api/learning/courses/{id}/system-actions",
+            get(list_system_actions),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/concepts",
+            get(graph_concepts),
+        )
+        .route(
+            "/api/learning/courses/{id}/concepts/audit",
+            get(concept_audit),
+        )
+        // 概念是全局实体（registry 无课程归属列）：总览与详情不挂课程路由
+        // （c7）；详情的关系/使用/声明面全部读时推导，零 LLM 零写库。
+        .route("/api/learning/concepts", get(concepts_overview))
+        .route(
+            "/api/learning/concepts/{concept_id}",
+            get(concept_detail),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/structure/regenerate",
+            post(regenerate_graph_structure),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/structure/mount",
+            post(mount_structure),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/structure/repair",
+            post(repair_structure),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/structure",
+            get(get_structure_view),
+        )
+        // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点）
+        // + 读数 + 撤销（概念留池）。off 开关 = 409 如实拒绝（service 侧执法）。
+        .route(
+            "/api/learning/courses/{id}/basis/declare",
+            post(declare_basis),
+        )
+        .route("/api/learning/courses/{id}/basis", get(get_basis).delete(revoke_basis))
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
+        .route("/api/learning/courses/{id}", patch(rename_course))
+        .route("/api/learning/courses/{id}/archive", post(archive_course))
+        .route("/api/learning/courses/{id}/restore", post(restore_course))
         .route("/api/learning/courses/{id}/tags", put(set_course_tags))
-        .route("/api/learning/courses/{id}/enroll", post(enroll))
-        .route(
-            "/api/learning/courses/{id}/diagnostic",
-            get(diagnostic_plan),
-        )
         .route("/api/learning/lessons/{id}", get(lesson_detail))
+        .route(
+            "/api/learning/lessons/{id}/capacity-feedback",
+            post(record_lesson_capacity_feedback),
+        )
         .route(
             "/api/learning/lessons/{id}/progress",
             post(update_lesson_progress),
@@ -81,7 +139,29 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/reviews/due", get(due_reviews))
         .route("/api/learning/checkins/today", get(checkin_today))
-        .route("/api/learning/stats/calendar", get(calendar_stats))
+        .route("/api/learning/xp/reading", get(xp_reading))
+        .route("/api/learning/xp/calendar", get(xp_calendar))
+        .route(
+            "/api/learning/courses/{id}/quiz/progress",
+            get(quiz_progress),
+        )
+        .route("/api/learning/courses/{id}/quiz/start", post(quiz_start))
+        .route(
+            "/api/learning/courses/{id}/quiz/rounds/{round_id}/grade",
+            post(quiz_grade),
+        )
+        .route(
+            "/api/learning/courses/{id}/quiz/rounds/{round_id}/complete",
+            post(quiz_complete),
+        )
+        .route(
+            "/api/learning/quiz/calibration",
+            get(quiz_calibration),
+        )
+        .route(
+            "/api/learning/quiz/overview",
+            get(quiz_overview),
+        )
         .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
         .route("/api/learning/reviews/{id}/answer", post(answer_review))
@@ -137,7 +217,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/custom-questions/{id}/skip",
             post(skip_custom_review),
         )
-        .route("/api/learning/concepts", get(list_concept_refs))
         .with_state(state)
 }
 
@@ -175,34 +254,30 @@ async fn generate_course(
     )))
 }
 
-async fn resume_learning_graph(
+/// 长任务快照（三轮 t2）：四类生成任务的在跑/终态一览（在跑置顶、注册序
+/// 倒序），供指示条与诊断面。
+async fn list_generation_tasks(
     State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<ResumeLearningGraphRequest>,
-) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
-    // 续建失败的学习图生成:与 generate_course 同一套同步执行契约——请求
-    // 中断即终止循环,过程事件经 WS 推送,终态以本响应为准。无存活草稿时
-    // 返回 NotFound,前端回退全量重生成。
+) -> Result<Json<ApiResponse<Vec<crate::service::GenerationTaskView>>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.generation_task_snapshot())))
+}
+
+/// 统一取消（按任务键，三轮 t2 真取消）：取消胜出 = `{state: "cancelled"}`
+/// （不报错误）；任务先完成 = 竞速落败如实 `{state: "done"|"failed"}`；
+/// 键不存在 = 404。
+async fn cancel_generation_task(
+    State(state): State<LearningRouterState>,
+    Path(key): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let outcome = state.service.cancel_generation_task(&key)?;
     Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .resume_learning_graph_course(&user.id, request.provider_id, request.model)
-            .await?,
+        serde_json::json!({ "state": outcome }),
     )))
 }
 
-/// 课程生成状态（学习图与大纲流共用）：后台指示条的数据源。生成在 HTTP
-/// 请求内同步执行，但创建对话框可以随时关闭——注册表让运行对外可发现
-/// （主题 + 已运行时长）。
-async fn learning_graph_generation_status(
-    State(state): State<LearningRouterState>,
-) -> Result<Json<ApiResponse<LearningGraphGenerationStatus>>, AppError> {
-    Ok(Json(ApiResponse::ok(state.service.generation_status())))
-}
-
-/// 取消进行中的课程生成：置位旗标，循环在下一个 LLM 请求边界停止（取消
-/// 不保留草稿，重试即全新生成）。无进行中的生成时返回 cancelled=false
-/// （幂等，前端不必区分竞态）。
+/// 取消进行中的课程生成/生长（legacy 全局端点，转发到注册表）：触发全部
+/// 可取消在跑任务的 token（growth/structure/outline），任务在检查点或
+/// LLM 调用内（select! 真中断）停止。无可取消任务时 cancelled=false（幂等）。
 async fn cancel_learning_graph_generation(
     State(state): State<LearningRouterState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
@@ -210,6 +285,294 @@ async fn cancel_learning_graph_generation(
     Ok(Json(ApiResponse::ok(serde_json::json!({
         "cancelled": cancelled,
     }))))
+}
+
+/// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。e3 起也是
+/// 零节点课程的首批触发面：学习窗口「开始学习」调这里（force 恒过停摆臂）。
+/// y04：可选 `?trigger=auto_refill`（缺省 manual）——只改动作簿触发源标签，
+/// 不改变任何裁决；settlement/timer 不接受外部注入。
+/// g1：可选 body `{provider_id, model}` = 用户的学习模型选择（成对，缺一
+/// 400；缺省回落默认档）；手动与自动补批两臂同经此 handler。
+async fn grow_learning_graph(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<GrowGraphQuery>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let trigger = match query.trigger.as_deref() {
+        None => crate::service::SystemActionTrigger::Manual,
+        Some(value) => crate::service::SystemActionTrigger::from_grow_query(value).ok_or_else(
+            || AppError::BadRequest(format!("unknown growth trigger: {value}")),
+        )?,
+    };
+    let model_override = paired_model_choice(request)?;
+    let kicked = state
+        .service
+        .kick_growth_with_trigger(
+            &user.id,
+            &course_id,
+            true,
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
+            trigger,
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GrowGraphQuery {
+    #[serde(default)]
+    trigger: Option<String>,
+}
+
+/// 系统动作读侧（y04）：终态动作按课程倒序 + limit（缺省 50、上限 200）。
+/// 结构化 info 日志在 service 读侧（course/limit/returned 三字段）；本层只
+/// 解析参数与透传。
+async fn list_system_actions(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<SystemActionsQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::models::SystemActionView>>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let limit = query
+        .limit
+        .unwrap_or(crate::service::SYSTEM_ACTION_DEFAULT_LIMIT);
+    Ok(Json(ApiResponse::ok(
+        state.service.system_actions(&course_id, limit).await?,
+    )))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SystemActionsQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+/// 自动补批判定（m10 触发②）：纯读裁决——就绪存量 × 开关合力 →
+/// due | below_threshold | disabled。零 LLM 零写入，Disabled 臂与停摆臂
+/// 如实读数；前端课程工作区加载时据此决定是否自动调既有 POST grow。
+async fn growth_verdict(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::GrowthVerdictView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .growth_verdict(&user.id, &course_id)
+            .await?,
+    )))
+}
+
+async fn graph_history(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::GraphHistoryView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.graph_history(&course_id, &user.id).await?,
+    )))
+}
+
+/// 知识结构读侧投影（200 恒答、structure: null = 未生成；软删/不存在 404）。
+/// 前端结构图 Tab 以 WS structure_* 事件触发重取本接口。
+async fn get_structure_view(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::LearningStructureView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.structure_view(&course_id).await?,
+    )))
+}
+
+async fn graph_concepts(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<crate::models::GraphConceptRowView>>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.graph_concepts(&course_id, &user.id).await?,
+    )))
+}
+
+/// 已会声明（m2）：勾选门口 → 幂等增量铸概念（零节点写）。整个管线同步跑
+/// 在 handler 里（generate_course 先例）：一次结构化 LLM 调用 + 命名门，
+/// 落库在单事务。
+async fn declare_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<DeclareBasisRequest>,
+) -> Result<Json<ApiResponse<crate::models::DeclarationResultView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .declare_basis(&user.id, &course_id, request)
+            .await?,
+    )))
+}
+
+/// 已会声明读数（GET basis）：已声明 doors/blocks/concepts + Broken 降级披露。
+async fn get_basis(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::BasisView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.basis_view(&course_id).await?,
+    )))
+}
+
+/// 撤销本课全部已会声明（删锚行；概念留池——「声明可撤、概念不灭」）。
+async fn revoke_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let revoked = state.service.revoke_basis(&user.id, &course_id).await?;
+    Ok(Json(ApiResponse::ok(
+        serde_json::json!({ "revoked": revoked }),
+    )))
+}
+
+/// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+/// 缺口片段/自指/互指环。「读侧先看见」——审计是缺口标记不是拦截门；
+/// 概念表 Tab 的行级标记数据源。
+async fn concept_audit(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ConceptAuditReport>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.concept_audit(&course_id).await?,
+    )))
+}
+
+/// 全局概念总览（c7）：跨课程共享的登记表非废弃概念 + 计数与审计旗标
+/// （详情看细节，总览给计数；上限与概念检索同界）。
+async fn concepts_overview(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<crate::models::ConceptOverviewRowView>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.concepts_overview().await?,
+    )))
+}
+
+/// 单概念详情（c7）：条目 + 读时推导关系（自指/互指/单向提及）+ 按课程
+/// 分组的跨课程使用 + 已会声明使用反查。
+async fn concept_detail(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(concept_id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ConceptDetailView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.concept_detail(&user.id, &concept_id).await?,
+    )))
+}
+
+/// 模型选择覆盖（g1/g2/j08/j09 四个生成端点共用：grow / 结构重生成 / 挂载 /
+/// 修补；可选模型偏好，缺省用实现方的默认 provider）。纯 Rust 侧命名——
+/// serde 字段不变，线上负载零影响。
+#[derive(Debug, Default, serde::Deserialize)]
+struct ModelChoiceOverrideRequest {
+    #[serde(default)]
+    provider_id: Option<ProviderId>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// provider_id+model 成对校验收口（评审修复：四端点逐字同形样板收口）。
+/// 单给其一 400（文案与原四处逐字一致）；缺省 / 双缺回落默认档（None）。
+/// 消费整个可选 body（含 axum `Json` 包装），返回持有的 `(ProviderId, String)`。
+fn paired_model_choice(
+    request: Option<Json<ModelChoiceOverrideRequest>>,
+) -> Result<Option<(ProviderId, String)>, AppError> {
+    let Some(Json(request)) = request else {
+        return Ok(None);
+    };
+    if request.provider_id.is_some() != request.model.is_some() {
+        return Err(AppError::BadRequest(
+            "provider_id and model must be provided together".into(),
+        ));
+    }
+    Ok(request.provider_id.zip(request.model))
+}
+
+/// 重跑知识结构生成（g2：重生成 = 换参考地图不换课，快照原子覆盖）；
+/// 进度走 WS structure_* 事件。已在生成中报冲突。
+async fn regenerate_graph_structure(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let model_override = paired_model_choice(request)?;
+    let kicked = state
+        .service
+        .regenerate_structure(&user.id, &course_id, model_override.as_ref().map(|(provider, model)| (provider, model.as_str())))
+        .await?;
+    Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
+}
+
+/// 结构挂载回合（j08）：显式命令触发、单课串行、可取消；同步返回回合摘
+/// 要（单 LLM 调用，秒级）。
+async fn mount_structure(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
+) -> Result<Json<ApiResponse<MountRoundSummary>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let model_override = paired_model_choice(request)?;
+    let summary = state
+        .service
+        .run_structure_mount(
+            &user.id,
+            &course_id,
+            model_override.as_ref().map(|(provider, model)| (provider, model.as_str())),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(summary)))
+}
+
+/// 结构修补回合（j09）：显式命令触发、单课串行、可取消；同步返回回合摘
+/// 要（单 LLM 调用，秒级）。触发门槛在服务面（findings ∪ 挂载观察皆空 =
+/// skipped）。
+async fn repair_structure(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    request: Option<Json<ModelChoiceOverrideRequest>>,
+) -> Result<Json<ApiResponse<StructureRepairSummary>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let model_override = paired_model_choice(request)?;
+    let summary = state
+        .service
+        .run_structure_repair(
+            &user.id,
+            &course_id,
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(summary)))
 }
 
 async fn get_course(
@@ -220,43 +583,6 @@ async fn get_course(
     let id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.course_detail(&id, Some(&user.id)).await?,
-    )))
-}
-
-async fn enroll(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<crate::models::CourseDetail>>, AppError> {
-    let id = parse_id::<LearningCourseId>(id)?;
-    state.service.enroll(&id, &user.id).await?;
-    Ok(Json(ApiResponse::ok(
-        state.service.course_detail(&id, Some(&user.id)).await?,
-    )))
-}
-
-#[derive(Debug, Deserialize)]
-struct DiagnosticQuery {
-    #[serde(default = "default_diagnostic_limit")]
-    limit: i64,
-}
-
-const fn default_diagnostic_limit() -> i64 {
-    10
-}
-
-async fn diagnostic_plan(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    Query(query): Query<DiagnosticQuery>,
-) -> Result<Json<ApiResponse<crate::models::DiagnosticPlan>>, AppError> {
-    let id = parse_id::<LearningCourseId>(id)?;
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .diagnostic_plan(&id, &user.id, query.limit)
-            .await?,
     )))
 }
 
@@ -271,19 +597,60 @@ async fn lesson_detail(
     )))
 }
 
-async fn generate_lesson(
+/// `POST /api/learning/lessons/{id}/capacity-feedback`（y07）：三选一留痕，
+/// latest-wins；响应 saved view，回显随 lesson detail 读回（不另设 GET）。
+/// 零结算零置位：只写反馈表（choice 空/未知 400；未选课/课时不存在 404）。
+async fn record_lesson_capacity_feedback(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    Json(request): Json<GenerateLessonRequest>,
-) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    Json(request): Json<crate::models::RecordCapacityFeedbackRequest>,
+) -> Result<Json<ApiResponse<crate::models::CapacityFeedbackView>>, AppError> {
     let id = parse_id::<LearningLessonId>(id)?;
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .generate_lesson_content(&user.id, &id, &request)
+            .record_capacity_feedback(&user.id, &id, &request.choice)
             .await?,
     )))
+}
+
+/// `?wait=true` 同步臂查询参数（e4 双模化）：缺省 = 异步（202 + 任务键，
+/// 任务脱离请求生命周期，断连不取消）；`wait=true` = 既有同步语义（分钟级
+/// 阻塞直至发布——冒烟/脚本的回归面）。
+#[derive(Debug, Deserialize)]
+struct LessonGenerateQuery {
+    wait: Option<bool>,
+}
+
+/// e4 双模化：默认异步——登记 j03 任务注册表（kind=lesson）即回 202 +
+/// 任务键，生成体在脱离任务里跑完（learnhub「分钟级任务不占请求生命周期」
+/// 红线）；前端轮询 `GET /api/learning/generation-tasks`（响应体 `poll`
+/// 字段）或听 `learning.lesson-generation` WS 流。`?wait=true` 保留同步臂。
+async fn generate_lesson(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Query(query): Query<LessonGenerateQuery>,
+    Json(request): Json<GenerateLessonRequest>,
+) -> Result<axum::response::Response, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    if query.wait.unwrap_or(false) {
+        // 同步臂：返回已发布的课时视图（历史响应形状零变化）。
+        let view = state
+            .service
+            .generate_lesson_content(&user.id, &id, &request)
+            .await?;
+        return Ok(Json(ApiResponse::ok(view)).into_response());
+    }
+    // 默认异步臂：202 Accepted + 任务键。
+    let accepted = state
+        .service
+        .start_lesson_generation(&user.id, &id, &request)
+        .await?;
+    let mut response = Json(ApiResponse::ok(accepted)).into_response();
+    *response.status_mut() = axum::http::StatusCode::ACCEPTED;
+    Ok(response)
 }
 
 async fn rewrite_lesson_section(
@@ -415,13 +782,16 @@ async fn due_reviews(
 ) -> Result<Json<ApiResponse<Vec<crate::models::DueReview>>>, AppError> {
     // serde_urlencoded 0.7 cannot map repeated query keys onto Vec fields
     // (it rejects them with "expected a sequence"), so the multi-valued
-    // course/tag parameters are collected manually from the raw query string.
+    // course/node/tag parameters are collected manually from the raw query
+    // string.
     let mut course_ids: Vec<String> = Vec::new();
+    let mut node_ids: Vec<String> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
     if let Some(raw) = raw {
         for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
             match key.as_ref() {
                 "course_id" => course_ids.push(value.into_owned()),
+                "node_id" => node_ids.push(value.into_owned()),
                 "tag" => tags.push(value.into_owned()),
                 _ => {}
             }
@@ -431,10 +801,14 @@ async fn due_reviews(
         .into_iter()
         .map(parse_id::<LearningCourseId>)
         .collect::<Result<Vec<_>, _>>()?;
+    let node_ids = node_ids
+        .into_iter()
+        .map(parse_id::<LearningLessonId>)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .due_reviews(&user.id, query.limit, &course_ids, query.due_only, query.orphan, &tags)
+            .due_reviews(&user.id, query.limit, &course_ids, query.due_only, query.orphan, &tags, &node_ids)
             .await?,
     )))
 }
@@ -448,43 +822,128 @@ async fn checkin_today(
     )))
 }
 
-#[derive(Debug, Deserialize)]
-struct CalendarStatsQuery {
-    /// Minutes east of UTC (same sign as `SchedulerSettings::tz_offset_minutes`),
-    /// reported by the frontend as `-Date().getTimezoneOffset()`.
-    tz_offset: i32,
-    year: i64,
-    /// 1..=12; absent = year view (heatmap).
-    month: Option<u32>,
-}
-
-async fn calendar_stats(
+/// XP 读数（j05）：今日 XP/日目标/达标 + 进度尺（结算数/总数/剩余 est/ETA）。
+/// 两把尺同源回放互不换算，ETA 纯投影绝不回写。
+async fn xp_reading(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
-    Query(query): Query<CalendarStatsQuery>,
-) -> Result<Json<ApiResponse<CalendarStats>>, AppError> {
-    if !(-24 * 60..=24 * 60).contains(&query.tz_offset) {
-        return Err(AppError::BadRequest(format!(
-            "tz_offset out of range: {}",
-            query.tz_offset
-        )));
-    }
-    if !(1900..=2999).contains(&query.year) {
-        return Err(AppError::BadRequest(format!(
-            "year out of range: {}",
-            query.year
-        )));
-    }
-    if let Some(month) = query.month {
-        if !(1..=12).contains(&month) {
-            return Err(AppError::BadRequest(format!("month out of range: {month}")));
-        }
-    }
+) -> Result<Json<ApiResponse<XpReading>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.xp_reading(&user.id).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct XpCalendarQuery {
+    /// 窗口周数（缺省 12，夹取 1..=53）；恒 weeks×7 桶、末桶 = 今日。
+    weeks: Option<i64>,
+}
+
+/// XP 日历（j05）：恒 weeks×7 桶含零桶，负账如实出桶，不过课程筛。
+async fn xp_calendar(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<XpCalendarQuery>,
+) -> Result<Json<ApiResponse<XpCalendar>>, AppError> {
     Ok(Json(ApiResponse::ok(
         state
             .service
-            .calendar_stats(&user.id, query.tz_offset, query.year, query.month)
+            .xp_calendar(&user.id, query.weeks.unwrap_or(12))
             .await?,
+    )))
+}
+
+/// 首页检测聚合（u7，感知横幅数据面；读数面非门禁）：启用未删且
+/// settled_count > 0 的每课程 N/K 列表，due 优先、课程名次之。
+async fn quiz_overview(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<QuizOverviewCourse>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_overview(&user.id).await?,
+    )))
+}
+
+/// quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K。
+async fn quiz_progress(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<QuizProgressView>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_progress(&user.id, &id).await?,
+    )))
+}
+
+/// quiz 开测命令（q2 载体落位）：due 门（Conflict 附 N/K）→ 选题 → 回合
+/// 行 → 脱敏题单（判底零字段）。
+async fn quiz_start(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<QuizRoundView>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_start(&user.id, &id).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct QuizGradeRequest {
+    /// 题 ULID（须在回合计划内）。
+    activity_id: String,
+    /// 学习者作答（形状随题型，与课时作答同约定）。
+    response: Value,
+}
+
+/// 逐题判分（q2，纯读零落账）：判底（answer/explanation）只随本反馈下发。
+async fn quiz_grade(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, round_id)): Path<(String, String)>,
+    Json(request): Json<QuizGradeRequest>,
+) -> Result<Json<ApiResponse<QuizGradeFeedback>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .quiz_grade(&user.id, &id, &round_id, &request.activity_id, &request.response)
+            .await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct QuizCompleteRequest {
+    /// 全卷作答：{activity_id: response}（quiz 必作答，缺题拒绝）。
+    answers: HashMap<String, Value>,
+}
+
+/// 全卷结算（q2）：逐覆盖节点 settle_quiz 分级落账（同日折叠不计薪）+
+/// 回合行首写为终。
+async fn quiz_complete(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, round_id)): Path<(String, String)>,
+    Json(request): Json<QuizCompleteRequest>,
+) -> Result<Json<ApiResponse<QuizRoundReport>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .quiz_complete(&user.id, &id, &round_id, &request.answers)
+            .await?,
+    )))
+}
+
+/// quiz 校准读面（q3，读数面非门禁）：该用户全部 completed 回合的校准点
+/// 按预测 R 五百分点分桶聚合实际正确率（与记忆健康的复习侧校准同构）。
+async fn quiz_calibration(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<MemoryCalibrationBin>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_calibration(&user.id).await?,
     )))
 }
 
@@ -565,14 +1024,47 @@ async fn delete_course(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    Json(request): Json<DeleteCourseRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let id = parse_id::<LearningCourseId>(id)?;
-    state
-        .service
-        .delete_course(&id, &user.id, request.delete_reviews)
-        .await?;
+    state.service.delete_course(&id, &user.id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn rename_course(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::RenameCourseRequest>,
+) -> Result<Json<ApiResponse<crate::models::CourseSummary>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state.service.rename_course(&id, &request.title).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.course_detail(&id, None).await?.course,
+    )))
+}
+
+async fn archive_course(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseSummary>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state.service.set_course_archived(&id, true).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.course_detail(&id, None).await?.course,
+    )))
+}
+
+async fn restore_course(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseSummary>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state.service.set_course_archived(&id, false).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.course_detail(&id, None).await?.course,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -855,15 +1347,6 @@ async fn skip_custom_review(
             .service
             .skip_custom_review(id.as_str(), &user.id)
             .await?,
-    )))
-}
-
-async fn list_concept_refs(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-) -> Result<Json<ApiResponse<Vec<crate::models::ConceptRef>>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.concept_refs(&user.id).await?,
     )))
 }
 

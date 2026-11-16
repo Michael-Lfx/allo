@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { isBackendHttpError, isBackendRequestError } from '@/common/adapter/httpBridge';
 import {
   ARCHIVE_STABLE_DAYS,
   ARCHIVE_STABLE_REVIEW_COUNT,
@@ -22,6 +23,20 @@ export function statusLabel(status: LessonStatus, t: Translate): string {
 
 export function formatReviewTime(value: number | null): string {
   return value === null ? '—' : new Date(value).toLocaleString();
+}
+
+/** 库 id → 库名（t4 来源披露共用；解析不到回退「来源库已删除」的人面词典
+ * 文案——裸 UUID 不再上屏（o4）；不猜名也不静默）。生成视图与悬浮指示条
+ * 两处共用，口径一份。 */
+export function knowledgeBaseNames(
+  ids: string[],
+  bases: { knowledge_base_id: string; name: string }[],
+  t: Translate
+): string[] {
+  return ids.map(
+    (id) =>
+      bases.find((base) => base.knowledge_base_id === id)?.name ?? t('learning.sourceLibraryDeleted')
+  );
 }
 
 export function questionStateMeta(
@@ -110,9 +125,52 @@ export function loadVisibleQuestionColumns(): string[] {
   return [...QUESTION_SELECTABLE_COLUMNS];
 }
 
-/** 统一的异步错误文案：Error 取 message，其余回退到通用失败提示 */
+/**
+ * 统一的异步错误文案单源（o1）：`BackendHttpError` 按 status 映射学习域
+ * 词典（409 冲突 / 404 内容缺失 / 5xx 服务不可用），传输层故障（超时/断网）
+ * 映射网络句，其余一律通用失败句。后端错误原文（含契约门报文）一律不上
+ * UI，只在 console.debug 留诊断。语义与 d7 的 409 拦截路径（inflightTaskToast
+ * 同水位）对齐——d7 拦截先行命中时根本不会走到这里，零改动保留。
+ */
 export function errorMessage(t: Translate, error: unknown): string {
-  return error instanceof Error ? error.message : t('learning.actionFailed');
+  // 诊断原文只进 console；UI 面永远是词典整句。
+  console.debug('[learning:errorMessage] mapped to friendly copy, raw:', error);
+  if (isBackendHttpError(error)) {
+    if (error.status === 409) return t('learning.conflictBusy');
+    if (error.status === 404) return t('learning.contentMissing');
+    if (error.status >= 500) return t('learning.serviceUnavailable');
+    return t('learning.actionFailed');
+  }
+  if (isBackendRequestError(error)) {
+    // timeout / network / aborted 都是传输面故障，人面同一句。
+    return t('learning.networkUnstable');
+  }
+  return t('learning.actionFailed');
+}
+
+/**
+ * quiz 开测 409 的 K 值提取（u5 R2）：due 门 Conflict 报文恒为
+ * `quiz not due: {N}/{K} settlements since last quiz`（quiz.rs 单源格式），
+ * K = 开放阈值——提取后填词典 quizNotDueHint 的 {{trigger}} 槽位，N/K 读数
+ * 本身由 onConflict 触发的进度重拉呈现（读数面不靠报文）。报文是后端散文
+ * 镜像，格式漂移提取不到数时返回 null（调用方回落 conflictBusy 通用句）；
+ * 非 409 或非 BackendHttpError 一律 null。原文不直接上屏。
+ */
+export function quizNotDueTrigger(error: unknown): number | null {
+  if (!isBackendHttpError(error) || error.status !== 409) return null;
+  const match = /quiz not due:\s*\d+\/(\d+)/.exec(error.backendMessage);
+  return match ? Number(match[1]) : null;
+}
+
+/** 槽冲突（409 CONFLICT，d6/d7）：同类长任务已在后台跑。后端错误文本恒含
+ * 槽 key（`course generation for this source is already running (…)`）与
+ * `CONFLICT` 码；keyFragment 用于精确认领（如 `basis-declare-{courseId}`）
+ * ——命中即走非阻塞提示 + 数据重拉，不弹原始 JSON 错误。 */
+export function isGenerationConflict(error: unknown, keyFragment?: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.includes('CONFLICT') && !message.includes('(409)')) return false;
+  if (!message.includes('already running')) return false;
+  return keyFragment ? message.includes(keyFragment) : true;
 }
 
 /** 题目表单校验；返回 i18n 键，校验通过返回 null */

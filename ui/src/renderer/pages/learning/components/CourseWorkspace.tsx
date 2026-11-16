@@ -11,6 +11,7 @@ import { IconLeft, IconRight } from '@arco-design/web-react/icon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { learningApi } from '../api';
 import type {
   Activity,
@@ -21,7 +22,8 @@ import type {
   LessonStatus,
   Section,
 } from '../types';
-import { allConceptsMastered, lessonStatusTagColors } from '../model';
+import { lessonStatusTagColors } from '../model';
+import { CourseSourceCoverageCard } from './CourseSourceCoverageCard';
 import {
   contentColumnWidth,
   outlineWidthClass,
@@ -33,7 +35,11 @@ import {
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonBlock } from './LessonStudy';
-import { statusLabel } from '../utils';
+import { CourseSamplingLine } from './CourseSamplingLine';
+import { QuizEntryCard } from './QuizEntryCard';
+import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
+import { errorMessage, statusLabel } from '../utils';
+import { overloadedBadgeCount } from '../capacityFeedback';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -41,19 +47,25 @@ export function CourseWorkspace({
   detail,
   busyId,
   attemptResults,
+  quizProgressToken,
   onBack,
   onProgress,
   onAttempt,
   onGenerate,
+  onStartQuiz,
   onRefresh,
 }: {
   detail: CourseDetail;
   busyId: string | null;
   attemptResults: Record<string, AttemptRecord>;
+  /** 测验进度刷新令牌（u2）：进页初值；会话结束回调后 index.tsx bump */
+  quizProgressToken: number;
   onBack: () => void;
   onProgress: (lesson: Lesson, status: LessonStatus) => void;
   onAttempt: (activity: Activity, response: unknown) => void;
   onGenerate: (lesson: Lesson, allLessons?: Lesson[]) => void;
+  /** u3 接线位：打开测验会话容器（409 拒测时入口卡兜底 toast + 重拉） */
+  onStartQuiz: () => void;
   onRefresh: () => void;
 }) {
   const { t } = useTranslation();
@@ -118,7 +130,6 @@ export function CourseWorkspace({
     selectedFlatIndex >= 0 && selectedFlatIndex < flatLessons.length - 1
       ? flatLessons[selectedFlatIndex + 1]
       : null;
-  const conceptsMastered = allConceptsMastered(detail.concepts);
   return (
     <div className='app-page-shell w-full min-h-full box-border overflow-y-auto'>
       <div
@@ -130,13 +141,44 @@ export function CourseWorkspace({
           </Button>
           <div className='mt-8px flex flex-wrap items-start justify-between gap-16px'>
             <div className='min-w-0 flex-1'>
-              <Title heading={3} className='!m-0'>
-                {course.title}
-              </Title>
+              {/* 课程标题默认即学习目标（t1）：目标被折叠/截断时，标题悬浮
+                  显示完整目标文本，截断口径可见 */}
+              <div className='flex items-center gap-8px'>
+                {course.learning_goal && course.learning_goal !== course.title ? (
+                  <Tooltip content={course.learning_goal}>
+                    <Title heading={3} className='!m-0 cursor-help'>
+                      {course.title}
+                    </Title>
+                  </Tooltip>
+                ) : (
+                  <Title heading={3} className='!m-0'>
+                    {course.title}
+                  </Title>
+                )}
+                {!course.enabled && <CourseArchivedBadge />}
+              </div>
               <Paragraph className='!mb-0 !mt-6px text-t-secondary'>{course.description}</Paragraph>
             </div>
             {/* 打开课程详情即自动加入，无显式「加入课程」步骤 */}
             <div className='flex shrink-0 items-center gap-8px'>
+              {!course.enabled && (
+                <Button
+                  size='small'
+                  type='primary'
+                  onClick={() => {
+                    learningApi
+                      .restoreCourse(course.id)
+                      .then(() => {
+                        Message.success(t('learning.courseRestoreDone'));
+                        onRefresh();
+                      })
+                      .catch((actionError) => Message.error(errorMessage(t, actionError)));
+                  }}
+                >
+                  {t('learning.courseRestore')}
+                </Button>
+              )}
+              <CourseRenameButton course={course} onChanged={onRefresh} size='small' />
               <ContentWidthToggle />
               <LearningModelSelector
                 choice={modelChoice}
@@ -152,12 +194,72 @@ export function CourseWorkspace({
           <Tag color={detail.due_review_count > 0 ? 'orange' : 'green'}>
             {t('learning.reviews')}: {detail.due_review_count}
           </Tag>
+          {/* 容量聚合（y07）：课程内自报超容的课时数；0 = 零版面（内容级
+              纯读计数，不暴露任何用户的选择） */}
+          {overloadedBadgeCount(detail.overloaded_lessons) !== null && (
+            <Tooltip content={t('learning.capacityOverloadedHint')}>
+              <Tag color='orange'>
+                {t('learning.capacityOverloadedCount', {
+                  count: detail.overloaded_lessons,
+                })}
+              </Tag>
+            </Tooltip>
+          )}
           {course.source_kb_id && (
             <Button size='small' onClick={() => navigate(`/knowledge/${course.source_kb_id}`)}>
               {t('learning.source')}
             </Button>
           )}
+          {/* 多知识库（t4）：来源披露——课程由哪几个库生成（首个 = 主来源，
+              「知识来源」按钮指向它）；单库/旧课程不展示（采样披露无逐库条目）。
+              分隔符随语言（zh-CN 顿号 / en-US 逗号），不写死中文标点。 */}
+          {(course.sampling?.bases.length ?? 0) > 0 && (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.courseSources', {
+                names:
+                  course.sampling?.bases
+                    .map((base) => base.name)
+                    .join(t('learning.listSeparator')) ?? '',
+              })}
+            </Text>
+          )}
+          {/* 采样披露（t2）：已采/总数 + 连贯补入 + 低分未采（悬浮看示例）；
+              目标与库无交集时如实呈现退回默认顺序，不冒充按目标采样 */}
+          {course.sampling && (
+            <Tooltip
+              content={
+                <div className='flex flex-col gap-4px'>
+                  <span>{t('learning.samplingTitle')}</span>
+                  <span>
+                    {course.sampling.goal_fallback
+                      ? t('learning.samplingTooltipFallback')
+                      : course.sampling.low_score_files > 0
+                        ? t('learning.samplingTooltip')
+                        : t('learning.samplingTooltipEmpty')}
+                  </span>
+                  {!course.sampling.goal_fallback && course.sampling.low_score_examples.length > 0 && (
+                    <span className='text-12px'>
+                      {course.sampling.low_score_examples.join(t('learning.listSeparator'))}
+                      {course.sampling.low_score_files > course.sampling.low_score_examples.length
+                        ? ' …'
+                        : ''}
+                    </span>
+                  )}
+                </div>
+              }
+            >
+              <CourseSamplingLine sampling={course.sampling} className='cursor-help' />
+            </Tooltip>
+          )}
         </div>
+
+        {/* 来源覆盖卡（t5）：来源计划快照的完整披露——topic 覆盖、mixed
+            部分进入、跳过/不确定/兜底与文件级诊断。旧课程/描述流列上
+            NULL 时组件自渲染 null（不显示空卡）；未知版本显式「不可用」。 */}
+        <CourseSourceCoverageCard
+          sourcePlan={course.source_plan}
+          detail={detail.source_plan_detail}
+        />
 
         {recommendedLesson && (
           <Card>
@@ -174,10 +276,18 @@ export function CourseWorkspace({
             </div>
           </Card>
         )}
-        {!recommendedLesson && conceptsMastered && (
-          <Alert type='success' content={t('learning.allConceptsMastered')} />
+        {/* 测验入口卡（u2）：N/K 读数 + 开测按钮，固定在推荐课时卡之后
+            （积累循环优先、检测次之，不随 due 摆位）。归档（enabled=0）
+            课程不渲染也不拉读数——跟随课程存在性语义；删除课程（墓碑）
+            详情页本就不挂载工作区。刷新时机：进页 + 会话结束令牌 bump，
+            不轮询（读数非门禁）。 */}
+        {course.enabled && (
+          <QuizEntryCard
+            courseId={course.id}
+            refreshToken={quizProgressToken}
+            onStartQuiz={onStartQuiz}
+          />
         )}
-
         {/* 左侧独立大纲 + 右侧仅显示当前选中课时内容 */}
         <div className='flex flex-col gap-18px lg:flex-row lg:items-start'>
           <aside
@@ -297,23 +407,6 @@ export function CourseWorkspace({
                   </div>
                 </>
               )}
-              <Card title={t('learning.concepts')}>
-                <div className='grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-10px'>
-                  {detail.concepts.map((concept) => (
-                    <div
-                      key={concept.id}
-                      className='rounded-10px border border-solid border-[var(--color-border-2)] p-12px'
-                    >
-                      <div className='mb-6px font-600'>{concept.title}</div>
-                      {concept.mastery === null ? (
-                        <Text type='secondary'>{t('learning.masteryUnknown')}</Text>
-                      ) : (
-                        <Progress percent={Math.round(concept.mastery * 100)} size='small' />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </Card>
             </section>
           </div>
         </div>

@@ -1,0 +1,1077 @@
+//! 生长批产物契约（`ng.*`，g4 裁决：教练批全迁新基建，与 structure_contract
+//! 同族）——schema 单源 + 条款化形状 validator + 评审输出契约。
+//!
+//! 条款表（learnhub validator.rs 头部条款表同构位）：
+//! - `ng.node.brief`（absorb-8 z01，learnhub #205 v1.20 同构）——intent/scope
+//!   非空字符串、各 ≤200 字符；intent 一句话创建意图（为何有这个学习点、课里
+//!   承担什么角色），scope 一两句教学范围（教什么/教到哪/明确不碰什么，「不教
+//!   X」是边界声明）；两字段文本进评审机械点名扫描（扫描面随 z02 落地）。
+//!
+//! 分工（learnhub 同款）：provider 的 json_object 保证**合法 JSON**（ng.parse
+//! 是读侧条款）；本模块执法**形状**（键白名单/词表/量级/批内唯一）；DB 语义门
+//! （登记表撞名、引用可解析、就绪即发布、课程内标题唯一）留
+//! [`super::validate_batch`]，同用 ng.* 编号——重试装配按编号逐条修正。
+//! **容错 deserializer 已退役**（g4）：`"est": "15"`、中文档位、单对象数组
+//! 等旧习惯一律按违约打回，由条款报告引导重试。
+
+use serde_json::Value;
+
+use super::{MAX_BATCH_NODES, structure_contract::ContractViolation};
+
+/// 概念档位词表（机面英文；容错退役后中文档位 = 违约）。
+pub const TIERS: &[&str] = &["know", "apply", "teach"];
+/// 节点批次顶层键白名单。
+pub const BATCH_KEYS: &[&str] = &["nodes", "mints", "new_aliases", "note"];
+/// 节点键白名单（缺省可选键见各条款）。
+pub const NODE_KEYS: &[&str] =
+    &["title", "purpose", "intent", "scope", "est", "difficulty", "teaches", "assumes"];
+/// 铸名键白名单。
+pub const MINT_KEYS: &[&str] = &["canonical", "aliases", "definition", "source"];
+/// new_aliases 提名键白名单（三轮 g2：三字段全必填）。
+pub const NEW_ALIAS_KEYS: &[&str] = &["name", "definition", "source"];
+/// 节点标题长度上限（字符）。
+pub const TITLE_MAX_CHARS: usize = 80;
+/// 节点意图/教学范围字符上限（absorb-8 z01，learnhub `NODE_BRIEF_MAX_CHARS`
+/// 同构）：intent/scope 各 ≤200 字符。
+pub const NODE_BRIEF_MAX_CHARS: usize = 200;
+/// est 区间（门放行 1–60）。est = 专注工作量尺寸锚（1 est 分钟 = 1 分钟
+/// 专注学习）；键名统一 est（j01），DB 列保留旧名 `estimated_minutes`。
+pub const EST_RANGE: (u64, u64) = (1, 60);
+/// 难度区间。
+pub const DIFFICULTY_RANGE: (u64, u64) = (1, 5);
+/// 评审问题条数上限。
+pub const REVIEW_PROBLEMS_MAX: usize = 8;
+/// 评审 verdict 词表。
+pub const REVIEW_VERDICTS: &[&str] = &["pass", "reject"];
+/// 评审问题 field 词表（与评审提示词逐字一致）。
+pub const REVIEW_FIELDS: &[&str] = &["teaches", "assumes", "mints", "title", "difficulty"];
+
+fn red(code: &'static str, message: impl Into<String>) -> ContractViolation {
+    ContractViolation {
+        code,
+        message: message.into(),
+        warning: false,
+    }
+}
+
+fn as_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    value.as_object()
+}
+
+fn array_at<'a>(value: &'a Value, key: &str) -> Option<&'a Vec<Value>> {
+    value.get(key).and_then(Value::as_array)
+}
+
+/// 机械归一面（t7）：教练稿里**可机械判定**的旧形状在契约核验前就地重写
+/// ——① 中文档位（知道/会用/能教，我们自己的材料面教出去的，真机 round 4
+/// 确定性死链的引信）→ know/apply/teach（英文大小写折叠同收）；② est 字
+/// 符串数字 → 整数。范围/词表核验照旧（「0」这类语义违规仍打回——归一不
+/// 造值）。返回重写条数（调用方 warn 留痕）。与 t4 同律：可机械判定的不
+/// 送模型。
+pub fn normalize_proposal(value: &mut Value) -> usize {
+    let Some(nodes) = value.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut rewrites = 0usize;
+    for node in nodes {
+        for field in ["teaches", "assumes"] {
+            let Some(references) = node.get_mut(field).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for reference in references {
+                let Some(tier) = reference.get("tier").and_then(Value::as_str) else {
+                    continue;
+                };
+                let key = tier.trim();
+                let mapped = match key {
+                    "知道" => Some("know"),
+                    "会用" => Some("apply"),
+                    "能教" => Some("teach"),
+                    _ => match key.to_lowercase().as_str() {
+                        "know" if key != "know" => Some("know"),
+                        "apply" if key != "apply" => Some("apply"),
+                        "teach" if key != "teach" => Some("teach"),
+                        _ => None,
+                    },
+                };
+                if let Some(mapped) = mapped
+                    && reference
+                        .as_object_mut()
+                        .is_some_and(|map| map.insert("tier".into(), Value::String(mapped.into())).is_some())
+                {
+                    rewrites += 1;
+                }
+            }
+        }
+        let est_is_string = node
+            .get("est")
+            .is_some_and(|est| est.as_str().is_some_and(|text| text.trim().parse::<u16>().is_ok()));
+        if est_is_string
+            && let Some(text) = node.get("est").and_then(Value::as_str)
+            && let Ok(parsed) = text.trim().parse::<u16>()
+            && node
+                .as_object_mut()
+                .is_some_and(|map| map.insert("est".into(), Value::Number(parsed.into())).is_some())
+        {
+            rewrites += 1;
+        }
+    }
+    rewrites
+}
+
+/// 生长批**形状契约**（ng.*，无 DB 事实）：顶层键、节点形状/词表/量级、批内
+/// 标题与铸名唯一。违规非空 = 打回重试（报告注入）。
+pub fn validate_proposal(value: &Value) -> Vec<ContractViolation> {
+    let mut violations = Vec::new();
+    let Some(map) = as_object(value) else {
+        violations.push(red("ng.parse", "生长批必须是单个 JSON 对象"));
+        return violations;
+    };
+    for key in map.keys() {
+        if !BATCH_KEYS.contains(&key.as_str()) {
+            violations.push(red(
+                "ng.keys",
+                format!("未知顶层键「{key}」——只允许 {}", BATCH_KEYS.join("/")),
+            ));
+        }
+    }
+
+    // ── 节点 ────────────────────────────────────────────────────────────
+    let nodes = array_at(value, "nodes");
+    let Some(nodes) = nodes else {
+        violations.push(red("ng.nodes.required", "nodes 必须是数组（缺口为 0 时给空数组）"));
+        return violations;
+    };
+    if nodes.len() > MAX_BATCH_NODES {
+        violations.push(red(
+            "ng.batch.size",
+            format!("一批最多 {MAX_BATCH_NODES} 个新节点，本批 {} 个——拆批重交", nodes.len()),
+        ));
+    }
+    let mut seen_titles: Vec<String> = Vec::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let at = format!("nodes[{index}]");
+        let Some(node_map) = as_object(node) else {
+            violations.push(red("ng.nodes.required", format!("{at} 不是对象")));
+            continue;
+        };
+        for key in node_map.keys() {
+            if !NODE_KEYS.contains(&key.as_str()) {
+                violations.push(red(
+                    "ng.keys",
+                    format!("{at} 含未知键「{key}」——节点只允许 {}", NODE_KEYS.join("/")),
+                ));
+            }
+        }
+        let title = node_map.get("title").and_then(Value::as_str).unwrap_or_default().trim();
+        if title.is_empty() {
+            violations.push(red("ng.nodes.required", format!("{at} 的 title 缺失或为空")));
+        } else {
+            if title.chars().count() > TITLE_MAX_CHARS {
+                violations.push(red(
+                    "ng.nodes.required",
+                    format!("节点标题过长（>{TITLE_MAX_CHARS} 字）：{title}"),
+                ));
+            }
+            let key = title.to_lowercase();
+            if seen_titles.iter().any(|seen| *seen == key) {
+                violations.push(red("ng.title.batch_unique", format!("批内节点标题重复：{title}")));
+            }
+            seen_titles.push(key);
+        }
+        if node_map.get("purpose").and_then(Value::as_str).unwrap_or_default().trim().is_empty() {
+            violations.push(red(
+                "ng.nodes.required",
+                format!("{at}（{title}）的 purpose 缺失或为空——每个节点必须带日常经验切口"),
+            ));
+        }
+        // ng.node.brief（absorb-8 z01）：intent/scope 节点诞生即声明——必填
+        // 非空（trim 后）、各 ≤200 字符；三态（缺席/空白/超限）各带写法指引。
+        // 违约进重试反馈；文本进评审机械点名扫描（扫描面随 z02 扩面）。
+        for field in ["intent", "scope"] {
+            match node_map.get(field).and_then(Value::as_str) {
+                None => violations.push(red(
+                    "ng.node.brief",
+                    format!(
+                        "{at}（{title}）的 {field} 缺失或不是字符串——节点诞生即声明：\
+                         intent 一句话写为何有这个点、课里承担什么角色，\
+                         scope 一两句写教什么/教到哪/明确不碰什么"
+                    ),
+                )),
+                Some(text) if text.trim().is_empty() => violations.push(red(
+                    "ng.node.brief",
+                    format!(
+                        "{at}（{title}）的 {field} 为空——写实质内容（一句话意图/一两句范围），\
+                         不写「教好这个概念」一类空话"
+                    ),
+                )),
+                Some(text) if text.chars().count() > NODE_BRIEF_MAX_CHARS => violations.push(red(
+                    "ng.node.brief",
+                    format!(
+                        "{at}（{title}）的 {field} 长 {} 字符，越出上限 {NODE_BRIEF_MAX_CHARS}\
+                         ——一句话意图/一两句范围，超限请压缩",
+                        text.chars().count()
+                    ),
+                )),
+                Some(_) => {}
+            }
+        }
+        if let Some(est) = node_map.get("est") {
+            let valid = est
+                .as_u64()
+                .is_some_and(|value| (EST_RANGE.0..=EST_RANGE.1).contains(&value));
+            if !valid {
+                violations.push(red(
+                    "ng.nodes.est",
+                    format!(
+                        "节点 {title} 的 est 必须是 {}-{} 的整数（1 est 分钟 = 1 分钟专注；字符串等旧形状已退役）：{est}",
+                        EST_RANGE.0, EST_RANGE.1
+                    ),
+                ));
+            }
+        }
+        if let Some(difficulty) = node_map.get("difficulty") {
+            let valid = difficulty
+                .as_u64()
+                .is_some_and(|value| (DIFFICULTY_RANGE.0..=DIFFICULTY_RANGE.1).contains(&value));
+            if !valid {
+                violations.push(red(
+                    "ng.nodes.difficulty",
+                    format!(
+                        "节点 {title} 的 difficulty 必须是 {}-{} 的整数：{difficulty}",
+                        DIFFICULTY_RANGE.0, DIFFICULTY_RANGE.1
+                    ),
+                ));
+            }
+        }
+        for field in ["teaches", "assumes"] {
+            let Some(references) = node_map.get(field) else {
+                continue;
+            };
+            let Some(references) = references.as_array() else {
+                violations.push(red(
+                    "ng.refs.shape",
+                    format!("{at} 的 {field} 必须是数组（单对象形状已退役）"),
+                ));
+                continue;
+            };
+            for (reference_index, reference) in references.iter().enumerate() {
+                let reference_at = format!("{at}.{field}[{reference_index}]");
+                let Some(reference_map) = as_object(reference) else {
+                    violations.push(red("ng.refs.shape", format!("{reference_at} 不是对象")));
+                    continue;
+                };
+                let name = reference_map.get("name").and_then(Value::as_str).unwrap_or_default().trim();
+                if name.is_empty() {
+                    violations.push(red(
+                        "ng.refs.name",
+                        format!("{reference_at} 的 name 为空——引用必须带概念名"),
+                    ));
+                }
+                let tier = reference_map.get("tier").and_then(Value::as_str).unwrap_or_default();
+                if !TIERS.contains(&tier) {
+                    violations.push(red(
+                        "ng.refs.tier",
+                        format!(
+                            "{reference_at}（{name}）的 tier 必须是 {} 之一（中文档位等旧形状已退役）：「{tier}」",
+                            TIERS.join("/")
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    // ── 铸名（批内唯一；与登记表的撞名属语义门）──────────────────────────
+    let Some(mints) = array_at(value, "mints") else {
+        violations.push(red("ng.mints.shape", "mints 必须是数组"));
+        return violations;
+    };
+    let mut used_names: Vec<String> = Vec::new();
+    // 批内共享名池：节点标题 + 铸名 canonical/别名 + new_aliases 提名——
+    // 一物一名（ng.aliases.atomic_name 的比对域）。
+    if let Some(nodes) = array_at(value, "nodes") {
+        for node in nodes {
+            if let Some(title) = node.get("title").and_then(Value::as_str) {
+                used_names.push(title.trim().to_lowercase());
+            }
+        }
+    }
+    for (index, mint) in mints.iter().enumerate() {
+        let at = format!("mints[{index}]");
+        let Some(mint_map) = as_object(mint) else {
+            violations.push(red("ng.mints.shape", format!("{at} 不是对象")));
+            continue;
+        };
+        for key in mint_map.keys() {
+            if !MINT_KEYS.contains(&key.as_str()) {
+                violations.push(red(
+                    "ng.keys",
+                    format!("{at} 含未知键「{key}」——铸名只允许 {}", MINT_KEYS.join("/")),
+                ));
+            }
+        }
+        let canonical = mint_map.get("canonical").and_then(Value::as_str).unwrap_or_default().trim();
+        if canonical.is_empty() {
+            violations.push(red("ng.mints.fields", format!("{at} 的 canonical 为空")));
+            continue;
+        }
+        let canonical_key = canonical.to_lowercase();
+        if used_names.iter().any(|used| *used == canonical_key) {
+            violations.push(red("ng.mints.batch_unique", format!("批内铸名重复：「{canonical}」")));
+        }
+        used_names.push(canonical_key);
+        if let Some(aliases) = mint_map.get("aliases") {
+            let Some(aliases) = aliases.as_array() else {
+                violations.push(red(
+                    "ng.mints.fields",
+                    format!("{at}（{canonical}）的 aliases 必须是字符串数组"),
+                ));
+                continue;
+            };
+            for alias in aliases {
+                let Some(alias) = alias.as_str() else {
+                    violations.push(red(
+                        "ng.mints.fields",
+                        format!("{at}（{canonical}）的别名不是字符串"),
+                    ));
+                    continue;
+                };
+                let alias = alias.trim();
+                if alias.is_empty() {
+                    continue;
+                }
+                let alias_key = alias.to_lowercase();
+                if used_names.iter().any(|used| *used == alias_key) {
+                    violations.push(red(
+                        "ng.mints.batch_unique",
+                        format!("铸名「{alias}」（{canonical} 的别名）与批内既有名字冲突"),
+                    ));
+                }
+                used_names.push(alias_key);
+            }
+        }
+    }
+
+    // ── new_aliases 提名（三轮 g2）：三字段全必填 + 批内同池唯一 ──────────
+    let new_aliases = array_at(value, "new_aliases");
+    if let Some(new_aliases) = new_aliases {
+        for (index, nomination) in new_aliases.iter().enumerate() {
+            let at = format!("new_aliases[{index}]");
+            let Some(nomination_map) = as_object(nomination) else {
+                violations.push(red("ng.aliases.required", format!("{at} 不是对象")));
+                continue;
+            };
+            for key in nomination_map.keys() {
+                if !NEW_ALIAS_KEYS.contains(&key.as_str()) {
+                    violations.push(red(
+                        "ng.keys",
+                        format!("{at} 含未知键「{key}」——别名提名只允许 {}", NEW_ALIAS_KEYS.join("/")),
+                    ));
+                }
+            }
+            for field in NEW_ALIAS_KEYS {
+                let value_text = nomination_map
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if value_text.is_empty() {
+                    violations.push(red(
+                        "ng.aliases.required",
+                        format!("{at} 的 {field} 缺失或为空——别名提名三字段全必填"),
+                    ));
+                }
+            }
+            if let Some(name) = nomination_map.get("name").and_then(Value::as_str) {
+                let name_key = name.trim().to_lowercase();
+                if !name_key.is_empty() {
+                    if used_names.iter().any(|used| *used == name_key) {
+                        violations.push(red(
+                            "ng.aliases.atomic_name",
+                            format!(
+                                "别名提名「{name}」与批内既有名字（节点/铸名/别名）互撞——一物一名；\
+                                 多个概念拆成多条提名（每个概念一条、各自下定义），或改写绕开撞名"
+                            ),
+                        ));
+                    }
+                    used_names.push(name_key);
+                }
+            }
+        }
+    }
+    violations
+}
+
+/// 概念评审**输出契约**（ng.review.*）：verdict 词表 + problems 形状/词表。
+/// 评审不可用（调用失败或本节违约）= 保守放行的判定在调用方（语义不变）。
+pub fn validate_review(value: &Value) -> Vec<ContractViolation> {
+    let mut violations = Vec::new();
+    let Some(map) = as_object(value) else {
+        violations.push(red("ng.review.parse", "评审回包必须是单个 JSON 对象"));
+        return violations;
+    };
+    let verdict = map.get("verdict").and_then(Value::as_str).unwrap_or_default();
+    if !REVIEW_VERDICTS.contains(&verdict) {
+        violations.push(red(
+            "ng.review.verdict",
+            format!("verdict 必须是 {} 之一：「{verdict}」", REVIEW_VERDICTS.join("/")),
+        ));
+        return violations;
+    }
+    // 复用裁决面（j04）：`reuse: [{name, concept_id}]`——提名为复用的裁决
+    // 输出；concept_id 是否真在候选集内由调用方机械核验（禁编造），这里只
+    // 执形状。verdict=pass 与 reject 都可携带。
+    if let Some(reuse) = map.get("reuse") {
+        let Some(entries) = reuse.as_array() else {
+            violations.push(red("ng.review.reuse", "reuse 必须是数组"));
+            return violations;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            let at = format!("reuse[{index}]");
+            let Some(entry_map) = as_object(entry) else {
+                violations.push(red("ng.review.reuse", format!("{at} 不是对象")));
+                continue;
+            };
+            for field in ["name", "concept_id"] {
+                if entry_map
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+                {
+                    violations.push(red(
+                        "ng.review.reuse",
+                        format!("{at} 的 {field} 缺失或为空"),
+                    ));
+                }
+            }
+        }
+    }
+    // findings warn 通道（j09，可选键）：`findings: [{node?, field?, issue,
+    // advice?}]`——数据缺陷观察，不打回只留痕；issue 非空是唯一硬形状。
+    if let Some(findings) = map.get("findings") {
+        let Some(entries) = findings.as_array() else {
+            violations.push(red("ng.review.findings", "findings 必须是数组"));
+            return violations;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            let at = format!("findings[{index}]");
+            let Some(entry_map) = as_object(entry) else {
+                violations.push(red("ng.review.findings", format!("{at} 不是对象")));
+                continue;
+            };
+            if entry_map
+                .get("issue")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                violations.push(red(
+                    "ng.review.findings",
+                    format!("{at} 的 issue 缺失或为空——留痕是线索，issue 必须说清缺什么"),
+                ));
+            }
+        }
+    }
+    if verdict == "pass" {
+        return violations;
+    }
+    let Some(problems) = map.get("problems").and_then(Value::as_array) else {
+        violations.push(red("ng.review.problems", "reject 必须带 problems 数组"));
+        return violations;
+    };
+    if problems.is_empty() || problems.len() > REVIEW_PROBLEMS_MAX {
+        violations.push(red(
+            "ng.review.problems",
+            format!("problems 条数须在 1..={REVIEW_PROBLEMS_MAX} 之间：{} 条", problems.len()),
+        ));
+    }
+    for (index, problem) in problems.iter().enumerate() {
+        let at = format!("problems[{index}]");
+        let Some(problem_map) = as_object(problem) else {
+            violations.push(red("ng.review.problems", format!("{at} 不是对象")));
+            continue;
+        };
+        // node 不在必填面（r01）：空串 = 批级意见（不点名任何节点——
+        // advice-range 条款规定的合法格式，真机病历 run-1793859632428：
+        // 模型照条款写批级意见被旧检查整包判违约 → 静默降级 PASS）；
+        // field/issue 仍是问题的最低识别面，空串照拒。
+        for key in ["field", "issue"] {
+            if problem_map.get(key).and_then(Value::as_str).unwrap_or_default().trim().is_empty() {
+                violations.push(red(
+                    "ng.review.problems",
+                    format!("{at} 的 {key} 缺失或为空"),
+                ));
+            }
+        }
+        // node 键必在（字符串，可为空串 = 批级意见）——与 review_schema
+        // 同源（required 含 node、无 minLength）。
+        if problem_map.get("node").and_then(Value::as_str).is_none() {
+            violations.push(red(
+                "ng.review.problems",
+                format!("{at} 的 node 缺失（批级意见填空串，不可省略键）"),
+            ));
+        }
+        let field = problem_map.get("field").and_then(Value::as_str).unwrap_or_default();
+        if !REVIEW_FIELDS.contains(&field) {
+            violations.push(red(
+                "ng.review.problems",
+                format!("{at} 的 field 必须是 {} 之一：「{field}」", REVIEW_FIELDS.join("/")),
+            ));
+        }
+    }
+    violations
+}
+
+// ── JSON Schema 单源（由同一份常量装配；schema↔validator 互钉测试锁定）───────
+
+/// 生长批产物的 JSON Schema（词表/键集/量级全部引自本模块常量）。
+pub fn proposal_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "nodes": {
+                "type": "array",
+                "maxItems": MAX_BATCH_NODES,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["title", "purpose", "intent", "scope"],
+                    "properties": {
+                        "title": { "type": "string", "minLength": 1, "maxLength": TITLE_MAX_CHARS },
+                        "purpose": { "type": "string", "minLength": 1 },
+                        "intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": NODE_BRIEF_MAX_CHARS,
+                        },
+                        "scope": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": NODE_BRIEF_MAX_CHARS,
+                        },
+                        "est": {
+                            "type": "integer",
+                            "minimum": EST_RANGE.0,
+                            "maximum": EST_RANGE.1,
+                        },
+                        "difficulty": {
+                            "type": "integer",
+                            "minimum": DIFFICULTY_RANGE.0,
+                            "maximum": DIFFICULTY_RANGE.1,
+                        },
+                        "teaches": { "$ref": "#/$defs/refs" },
+                        "assumes": { "$ref": "#/$defs/refs" },
+                    },
+                },
+            },
+            "mints": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["canonical"],
+                    "properties": {
+                        "canonical": { "type": "string", "minLength": 1 },
+                        "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+                        "definition": { "type": "string" },
+                    },
+                },
+            },
+            "new_aliases": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "definition", "source"],
+                    "properties": {
+                        "name": { "type": "string", "minLength": 1 },
+                        "definition": { "type": "string", "minLength": 1 },
+                        "source": { "type": "string", "minLength": 1 },
+                    },
+                },
+            },
+            "note": { "type": "string" },
+        },
+        "$defs": {
+            "refs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "tier"],
+                    "properties": {
+                        "name": { "type": "string", "minLength": 1 },
+                        "tier": { "enum": TIERS },
+                    },
+                },
+            },
+        },
+    })
+}
+
+/// 概念评审输出的 JSON Schema。`term_provenance` 为 required（m3）：serde
+/// 解析面 `#[serde(default)]` 容旧包/存量录制，schema 侧约束最大化。
+pub fn review_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verdict", "term_provenance"],
+        "properties": {
+            "verdict": { "enum": REVIEW_VERDICTS },
+            "term_provenance": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["concept", "term", "source"],
+                    "properties": {
+                        "concept": { "type": "string", "minLength": 1 },
+                        "term": { "type": "string", "minLength": 1 },
+                        "source": { "enum": crate::learning_graph::provenance::TERM_SOURCES },
+                        "ref": { "type": "string" },
+                    },
+                },
+            },
+            "problems": {
+                "type": "array",
+                "maxItems": REVIEW_PROBLEMS_MAX,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    // node 可为空串（r01）：批级意见不点名任何节点——与
+                    // validate_review 同源，键必在（空串表批级），不设 minLength。
+                    "required": ["node", "field", "issue"],
+                    "properties": {
+                        "node": { "type": "string" },
+                        "field": { "enum": REVIEW_FIELDS },
+                        "issue": { "type": "string", "minLength": 1 },
+                        "advice": { "type": "string" },
+                    },
+                },
+            },
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn golden_batch() -> Value {
+        json!({
+            "nodes": [
+                { "title": "用定义计算极限", "purpose": "从数格子接近某数的经验切入",
+                  "intent": "为极限法则的引入提供直观底座",
+                  "scope": "教极限的定义式读法；不涉及 ε-δ 证明",
+                  "est": 15, "difficulty": 2,
+                  "teaches": [{ "name": "极限", "tier": "know" }], "assumes": [] },
+                { "title": "用极限法则求切线", "purpose": "从坡道倾斜度的日常经验切入",
+                  "intent": "把极限接到几何斜率上，补应用线第一格",
+                  "scope": "教切线斜率的极限求法；不碰导数一般理论",
+                  "est": 20, "difficulty": 3,
+                  "teaches": [{ "name": "求导法则", "tier": "apply" }],
+                  "assumes": [{ "name": "极限", "tier": "know" }] }
+            ],
+            "mints": [
+                { "canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值" },
+                { "canonical": "求导法则", "aliases": [], "definition": "" }
+            ],
+            "note": "首批两节点"
+        })
+    }
+
+    #[test]
+    fn golden_batch_passes_shape_contract() {
+        assert!(validate_proposal(&golden_batch()).is_empty());
+    }
+
+    #[test]
+    fn legacy_tolerant_shapes_are_now_violations() {
+        // 容错 deserializer 退役：字符串 est + 退役键名 minutes + 中文档位 +
+        // 单对象引用形状。
+        let value = json!({
+            "nodes": [{
+                "title": "用配方法解方程", "purpose": "p",
+                "est": "15",
+                "minutes": 15,
+                "teaches": { "name": "配方法", "tier": "会用" },
+                "assumes": []
+            }],
+            "mints": []
+        });
+        let codes: Vec<&str> = validate_proposal(&value).iter().map(|v| v.code).collect();
+        assert!(codes.contains(&"ng.nodes.est"), "{codes:?}");
+        assert!(codes.contains(&"ng.keys"), "{codes:?}");
+        assert!(codes.contains(&"ng.refs.shape"), "{codes:?}");
+    }
+
+    #[test]
+    fn chinese_tier_within_array_is_a_violation() {
+        let value = json!({
+            "nodes": [{
+                "title": "n", "purpose": "p",
+                "teaches": [{ "name": "配方法", "tier": "知道" }]
+            }],
+            "mints": []
+        });
+        let violations = validate_proposal(&value);
+        assert!(violations.iter().any(|v| v.code == "ng.refs.tier"), "{violations:?}");
+    }
+
+    #[test]
+    fn batch_size_and_title_uniqueness_are_enforced() {
+        let nodes: Vec<Value> = (0..8)
+            .map(|index| json!({ "title": format!("节点{index}"), "purpose": "p" }))
+            .collect();
+        let value = json!({ "nodes": nodes, "mints": [] });
+        assert!(validate_proposal(&value).iter().any(|v| v.code == "ng.batch.size"));
+
+        let value = json!({
+            "nodes": [
+                { "title": "重复标题", "purpose": "p" },
+                { "title": "重复标题", "purpose": "p" }
+            ],
+            "mints": []
+        });
+        assert!(validate_proposal(&value).iter().any(|v| v.code == "ng.title.batch_unique"));
+    }
+
+    #[test]
+    fn batch_internal_mint_collisions_are_shape_violations() {
+        let value = json!({
+            "nodes": [],
+            "mints": [
+                { "canonical": "极限", "aliases": ["Limits"] },
+                { "canonical": "LIMITS" }
+            ]
+        });
+        assert!(validate_proposal(&value).iter().any(|v| v.code == "ng.mints.batch_unique"));
+    }
+
+    #[test]
+    fn unknown_keys_are_violations() {
+        let mut value = golden_batch();
+        value["surprise"] = json!(1);
+        value["nodes"][0]["definition"] = json!("判据形字段不进节点");
+        let codes: Vec<&str> = validate_proposal(&value).iter().map(|v| v.code).collect();
+        assert!(codes.contains(&"ng.keys"), "{codes:?}");
+    }
+
+    #[test]
+    fn empty_batch_is_legal() {
+        let value = json!({ "nodes": [], "mints": [], "note": "缺口 0" });
+        assert!(validate_proposal(&value).is_empty());
+    }
+
+    #[test]
+    fn new_alias_nominations_are_validated() {
+        // 三字段齐全 = 合法。
+        let value = json!({
+            "nodes": [],
+            "mints": [],
+            "new_aliases": [
+                { "name": "十字相乘", "definition": "把二次三项式拆成两因式乘积的技巧", "source": "教练提名：本批换一个操作角度" }
+            ],
+            "note": "n"
+        });
+        assert!(validate_proposal(&value).is_empty(), "{:?}", validate_proposal(&value));
+        // 缺 source = ng.aliases.required。
+        let bad = json!({
+            "nodes": [], "mints": [],
+            "new_aliases": [{ "name": "十字相乘", "definition": "d" }],
+            "note": "n"
+        });
+        let codes: Vec<&str> = validate_proposal(&bad).iter().map(|v| v.code).collect();
+        assert!(codes.contains(&"ng.aliases.required"), "{codes:?}");
+        // 与批内铸名互撞 = ng.aliases.atomic_name。
+        let clash = json!({
+            "nodes": [], "mints": [{ "canonical": "十字相乘", "definition": "d" }],
+            "new_aliases": [{ "name": "十字相乘", "definition": "另一个定义", "source": "s" }],
+            "note": "n"
+        });
+        let codes: Vec<&str> = validate_proposal(&clash).iter().map(|v| v.code).collect();
+        assert!(codes.contains(&"ng.aliases.atomic_name"), "{codes:?}");
+    }
+
+    #[test]
+    fn review_contract_accepts_pass_and_valid_reject() {
+        assert!(validate_review(&json!({ "verdict": "pass" })).is_empty());
+        let reject = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "节点A", "field": "assumes", "issue": "缺「比例」", "advice": "补铸名" }
+            ]
+        });
+        assert!(validate_review(&reject).is_empty());
+    }
+
+    #[test]
+    fn review_contract_rejects_bad_verdict_and_fields() {
+        let violations = validate_review(&json!({ "verdict": "maybe" }));
+        assert!(violations.iter().any(|v| v.code == "ng.review.verdict"), "{violations:?}");
+
+        let reject = json!({
+            "verdict": "reject",
+            "problems": [{ "node": "n", "field": "mood", "issue": "i" }]
+        });
+        assert!(validate_review(&reject).iter().any(|v| v.code == "ng.review.problems"));
+    }
+
+    /// #176 原子名出路指引：atomic_name 违规消息带「拆成多条提名」——终杀
+    /// 复合名的门不再只说禁不说路（learnhub validator.rs 同款）。
+    #[test]
+    fn atomic_name_violation_carries_the_split_way_out() {
+        let clash = json!({
+            "nodes": [],
+            "mints": [{ "canonical": "十字相乘", "definition": "d" }],
+            "new_aliases": [{ "name": "十字相乘", "definition": "另一个定义", "source": "s" }],
+            "note": "n"
+        });
+        let violations = validate_proposal(&clash);
+        let message = violations
+            .iter()
+            .find(|violation| violation.code == "ng.aliases.atomic_name")
+            .expect("atomic_name 红条在场")
+            .message
+            .clone();
+        assert!(
+            message.contains("多个概念拆成多条提名"),
+            "违规消息须带出路指引（拆条）：{message}"
+        );
+        assert!(
+            message.contains("一物一名"),
+            "违规消息保留一物一名判词：{message}"
+        );
+    }
+
+    /// #176 定义原子性条款：COACH_SYSTEM 概念纪律段的关键短语（条款覆盖
+    /// 断言——删条款 = 本测试红）。
+    #[test]
+    fn coach_system_carries_the_definition_atomicity_clause() {
+        let system = crate::learning_graph::coach_system();
+        for phrase in [
+            "一条提名只定义一个对象",
+            "不得顺带给第二个概念下定义",
+            "单列提名",
+            "改写绕开",
+            "把提名拆成两半",
+            "概念严格原子，学习节点允许复合",
+        ] {
+            assert!(system.contains(phrase), "COACH_SYSTEM 缺「{phrase}」");
+        }
+    }
+
+    /// 互钉：schema 的词表/键集/量级与 validator 常量同源。
+    #[test]
+    fn schema_is_pinned_to_validator_constants() {
+        let schema = proposal_schema();
+        let node_items = &schema["properties"]["nodes"]["items"];
+        assert_eq!(node_items["required"], json!(["title", "purpose", "intent", "scope"]));
+        // 声明面（absorb-8 z01）：intent/scope schema 侧约束最大化（非空 +
+        // ≤200 字），与 ng.node.brief 三态检查互钉。
+        assert_eq!(
+            node_items["properties"]["intent"]["maxLength"],
+            json!(NODE_BRIEF_MAX_CHARS)
+        );
+        assert_eq!(
+            node_items["properties"]["scope"]["maxLength"],
+            json!(NODE_BRIEF_MAX_CHARS)
+        );
+        assert_eq!(node_items["properties"]["est"]["maximum"], json!(EST_RANGE.1));
+        assert_eq!(node_items["properties"]["difficulty"]["maximum"], json!(DIFFICULTY_RANGE.1));
+        assert_eq!(schema["properties"]["nodes"]["maxItems"], json!(MAX_BATCH_NODES));
+        assert_eq!(schema["$defs"]["refs"]["items"]["properties"]["tier"]["enum"], json!(TIERS));
+        assert_eq!(schema["properties"]["mints"]["items"]["required"], json!(["canonical"]));
+
+        let review = review_schema();
+        assert_eq!(review["properties"]["verdict"]["enum"], json!(REVIEW_VERDICTS));
+        assert_eq!(
+            review["properties"]["problems"]["items"]["properties"]["field"]["enum"],
+            json!(REVIEW_FIELDS)
+        );
+        assert_eq!(review["properties"]["problems"]["maxItems"], json!(REVIEW_PROBLEMS_MAX));
+        // r01：node 键必在但可空串（批级意见）——schema 无 minLength，与
+        // validate_review「键在场、值可空」同源。
+        assert_eq!(
+            review["properties"]["problems"]["items"]["required"],
+            json!(["node", "field", "issue"])
+        );
+        assert!(
+            review["properties"]["problems"]["items"]["properties"]["node"]
+                .get("minLength")
+                .is_none(),
+            "node 不设 minLength（空串 = 批级意见）"
+        );
+        // 挂号表（m3）：新包 schema required——serde 解析面容旧（缺席 = 空），
+        // 必填性 = schema required + 提示词 + 重试执法（learnhub「schema 侧
+        // 约束最大化」同款）。source 词表与 provenance 解析面互钉。
+        assert_eq!(review["required"], json!(["verdict", "term_provenance"]));
+        assert_eq!(
+            review["properties"]["term_provenance"]["items"]["properties"]["source"]["enum"],
+            json!(crate::learning_graph::provenance::TERM_SOURCES)
+        );
+        assert_eq!(
+            review["properties"]["term_provenance"]["items"]["required"],
+            json!(["concept", "term", "source"])
+        );
+    }
+
+    /// 金样反钉：golden 批必须逐键落在 schema 的白名单内。
+    #[test]
+    fn golden_batch_satisfies_schema_whitelist() {
+        let schema = proposal_schema();
+        let value = golden_batch();
+        let top_keys: Vec<&str> = schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+        for key in value.as_object().unwrap().keys() {
+            assert!(top_keys.contains(&key.as_str()), "top key「{key}」not in schema");
+        }
+        let node_keys: Vec<&str> = schema["properties"]["nodes"]["items"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for node in value["nodes"].as_array().unwrap() {
+            for key in node.as_object().unwrap().keys() {
+                assert!(node_keys.contains(&key.as_str()), "node key「{key}」not in schema");
+            }
+        }
+    }
+
+    // ── ng.node.brief（absorb-8 z01）：intent/scope 节点诞生即声明面 ────────
+
+    /// 缺席态：两键整键缺失 = 各一条违约，消息带写法指引（learnhub validator.rs
+    /// 同构——缺席/空白/超限三态）。
+    #[test]
+    fn node_brief_missing_is_a_violation() {
+        let mut value = golden_batch();
+        let node = value["nodes"][0].as_object_mut().unwrap();
+        node.remove("intent");
+        node.remove("scope");
+        let violations = validate_proposal(&value);
+        let brief: Vec<_> = violations.iter().filter(|v| v.code == "ng.node.brief").collect();
+        assert_eq!(brief.len(), 2, "缺席两键各一条违约：{violations:?}");
+        assert!(
+            brief.iter().all(|v| v.message.contains("节点诞生即声明")),
+            "缺席消息带写法指引：{brief:?}"
+        );
+    }
+
+    /// 空白态：trim 后为空按缺席裁（learnhub `s.trim().is_empty()` 同判据）。
+    #[test]
+    fn node_brief_blank_is_a_violation() {
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!("   ");
+        value["nodes"][0]["scope"] = json!("\n\t");
+        let violations = validate_proposal(&value);
+        let brief: Vec<_> = violations.iter().filter(|v| v.code == "ng.node.brief").collect();
+        assert_eq!(brief.len(), 2, "空白串各一条违约：{violations:?}");
+    }
+
+    /// 超限态：恰好 200 字符放行、201 拒（`chars().count()` 计——中文一字一符）。
+    #[test]
+    fn node_brief_at_limit_passes_and_over_limit_is_rejected() {
+        let at_limit = "界".repeat(NODE_BRIEF_MAX_CHARS);
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!(at_limit);
+        value["nodes"][0]["scope"] = json!("教栈的推入弹出；不涉及泛型实现");
+        assert!(
+            validate_proposal(&value).is_empty(),
+            "恰好 200 字过：{:?}",
+            validate_proposal(&value)
+        );
+
+        let over_limit = "越".repeat(NODE_BRIEF_MAX_CHARS + 1);
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!(over_limit);
+        value["nodes"][0]["scope"] = json!("s");
+        let violations = validate_proposal(&value);
+        assert!(
+            violations.iter().any(|v| v.code == "ng.node.brief" && v.message.contains("越出上限")),
+            "201 字拒且消息带上限：{violations:?}"
+        );
+    }
+
+    /// 齐备态：两键各一句话/一两句实质内容 = 零违约（对 scope 里「不教 X」
+    /// 类边界句零反应——边界声明合法，点名扫描归 z02）。
+    #[test]
+    fn node_brief_both_keys_pass() {
+        let mut value = golden_batch();
+        value["nodes"][0]["intent"] = json!("为何有这个点：补齐入口层的分类经验");
+        value["nodes"][0]["scope"] = json!("教什么：分类判读；不碰：排序算法");
+        assert!(validate_proposal(&value).is_empty(), "{:?}", validate_proposal(&value));
+    }
+
+    /// 批级意见合法（r01 真机病历 run-1793859632428）：reject 的 problem
+    /// `node` 填空串（不点名任何节点——advice-range 条款规定的批级意见格
+    /// 式）必须过契约校验；`field`/`issue` 仍必填，空串照拒。
+    #[test]
+    fn review_reject_allows_empty_node_for_batch_level_opinions() {
+        let value = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints", "issue": "提名定义预设的构件概念无出处", "advice": "并入某节点 teaches 自教" },
+                { "node": "辨认绿茶：凭未发酵这一条从茶叶里认出绿茶", "field": "teaches", "issue": "「芽叶嫩度」无出处", "advice": "单教后再挂 assumes" }
+            ]
+        });
+        assert!(
+            validate_review(&value).is_empty(),
+            "空 node 批级意见合法：{:?}",
+            validate_review(&value)
+        );
+
+        let blank_node = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "  ", "field": "mints", "issue": "issue 在场", "advice": "a" }
+            ]
+        });
+        assert!(
+            validate_review(&blank_node).is_empty(),
+            "空白 node 同批级意见：{:?}",
+            validate_review(&blank_node)
+        );
+
+        let empty_issue = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints", "issue": "", "advice": "a" }
+            ]
+        });
+        assert!(
+            !validate_review(&empty_issue).is_empty(),
+            "issue 空串仍违约：{:?}",
+            validate_review(&empty_issue)
+        );
+        let empty_field = json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "", "issue": "issue 在场", "advice": "a" }
+            ]
+        });
+        assert!(
+            !validate_review(&empty_field).is_empty(),
+            "field 空串仍违约：{:?}",
+            validate_review(&empty_field)
+        );
+        let missing_node_key = json!({
+            "verdict": "reject",
+            "problems": [
+                { "field": "mints", "issue": "issue 在场", "advice": "a" }
+            ]
+        });
+        assert!(
+            validate_review(&missing_node_key)
+                .iter()
+                .any(|v| v.message.contains("node 缺失")),
+            "node 键省略仍违约（批级意见填空串不可省略键）：{:?}",
+            validate_review(&missing_node_key)
+        );
+    }
+}

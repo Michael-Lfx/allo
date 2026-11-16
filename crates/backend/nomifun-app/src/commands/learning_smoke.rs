@@ -1,0 +1,4599 @@
+//! `nomicore learning-smoke`（wayfinder 票 s1）：学习结构生成管线的无头真机
+//! 冒烟入口。与应用同接线（DB pool → `LearningService::new` +
+//! `set_generation_dependencies`；provider 解析复用 `resolve_provider_config`
+//! 现链，不建第二套）；缺省**从零临时 SQLite**（跑 nomifun-db 迁移到临时
+//! 文件，learnhub smoke-loop「新建干净临时目录」纪律），`--db` 可指开发库
+//! （须已是 v3 库；本命令不做 v3 门禁——provider 凭据就在库里，临时库没有
+//! 可用 provider 时命令会如实失败）。
+//!
+//! - `structure`：双产物生成 → gd.* 契约门 + 门口对账 → `structure_json`
+//!   落列；机械判据 = 落列后重读快照、本地重验双契约与对账（失败非零退出）
+//!   + 零生长任务在册（e3 声明窗口：结构完成即停，不自动点火首批）。
+//!   运行必挂 [`nomifun_ai_agent::ArchivingCompleter`]（观测存档
+//!   `<data-dir>/observation/learning-smoke/<run>/`）。
+//! - `json`：json_object 能力读数（合法 JSON 率 / 空内容 / 怪癖分类）；
+//!   **读数面非门禁**——唯一硬判据 = 全灭 0/n；探测调用直调内层 completer，
+//!   不混入管线档案（learnhub smoke-json 纪律）。
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result};
+
+use nomifun_ai_agent::archiving_completer::ArchivingCompleter;
+use nomifun_ai_agent::LiveLearningCompleter;
+use nomifun_common::{ProviderId, UserId};
+use nomifun_db::sqlx;
+use nomifun_db::{IUserRepository, SqliteProviderModelRepository, SqliteProviderRepository, SqliteUserRepository};
+use nomifun_learning::{
+    CourseGenerationMode, CourseKind, GenerateCourseRequest, GenerateLessonRequest,
+    LearningCompleter, LearningService,
+};
+
+use crate::cli::{Cli, LearningSmokeCommand};
+
+pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Result<ExitCode> {
+    // 冒烟是唯一的无头真机面：门级剪枝/归一/落库失败只走 tracing。不初始化
+    // 订阅者，CLI 进程里这些留痕全部丢失（审计纪律要求可见）。
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .try_init();
+    match command {
+        LearningSmokeCommand::Xp { db } => run_xp(cli, db).await,
+        LearningSmokeCommand::Quiz { db, provider, model } => {
+            run_quiz(cli, db, provider, model).await
+        }
+        LearningSmokeCommand::Content {
+            db,
+            provider,
+            model,
+        } => run_content(cli, db, provider, model).await,
+        LearningSmokeCommand::Course {
+            dir,
+            goal,
+            name,
+            lessons,
+            triage_only,
+            plan_only,
+            report_json,
+            db,
+            provider,
+            model,
+        } => {
+            run_course(
+                cli,
+                dir,
+                goal,
+                name,
+                lessons,
+                triage_only,
+                plan_only,
+                report_json,
+                db,
+                provider,
+                model,
+            )
+            .await
+        }
+        LearningSmokeCommand::Mount {
+            db,
+            provider,
+            model,
+        } => run_mount(cli, db, provider, model).await,
+        LearningSmokeCommand::Repair {
+            db,
+            provider,
+            model,
+        } => run_repair(cli, db, provider, model).await,
+        LearningSmokeCommand::Maintenance {
+            db,
+            provider,
+            model,
+        } => run_maintenance(cli, db, provider, model).await,
+        LearningSmokeCommand::Basis {
+            db,
+            provider,
+            model,
+        } => run_basis(cli, db, provider, model).await,
+        LearningSmokeCommand::Structure {
+            goal,
+            proficiency,
+            basis,
+            db,
+            provider,
+            model,
+        } => {
+            run_structure(cli, goal, proficiency, basis, db, provider, model).await
+        }
+        LearningSmokeCommand::Json {
+            db,
+            provider,
+            model,
+            calls,
+        } => run_json(cli, db, provider, model, calls).await,
+        LearningSmokeCommand::Grade {
+            db,
+            provider,
+            model,
+        } => run_grade(cli, db, provider, model).await,
+        LearningSmokeCommand::Grow {
+            goal,
+            batches,
+            db,
+            provider,
+            model,
+        } => run_grow(cli, goal, batches, db, provider, model, false).await,
+        LearningSmokeCommand::Loop {
+            goal,
+            rounds,
+            db,
+            provider,
+            model,
+        } => run_grow(cli, goal, rounds, db, provider, model, true).await,
+    }
+}
+
+struct SmokeWiring {
+    service: Arc<LearningService>,
+    /// 传统课程冒烟档要先把本地 md 目录写成知识库，再交给生成管线采样。
+    knowledge: Arc<nomifun_knowledge::KnowledgeService>,
+    pool: nomifun_db::sqlx::SqlitePool,
+    owner: UserId,
+    /// 长任务 finish 行的进程内捕获（e1 相位耗时读数行）：观测旁路在落
+    /// jsonl 的同时留一份内存序——各档读数行从这里取数，`--db` 复用时不受
+    /// 历史行污染。
+    task_finishes: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// 课时引擎的瞬断注入计数（e4 content 档判据面）：>0 时每次课时 LLM
+    /// 开流注入一次瞬断并扣减，归零后透传。恒 0 = 纯透传（其余档零影响）。
+    lesson_flaky_remaining: Arc<std::sync::atomic::AtomicUsize>,
+    /// 保持临时目录存活到命令结束（缺省从零临时库时非空）。
+    _temp: Option<tempfile::TempDir>,
+}
+
+/// 与应用相同的组合根接线：开库（临时或 --db）→ provider 仓库 + 加密键 →
+/// LiveLearningCompleter（可包 ArchivingCompleter）→ LearningService。
+/// 返回 (wiring, 管线 completer 即 Archiving 挂载结果, 内层 live completer)。
+async fn wire(
+    cli: &Cli,
+    db: Option<&Path>,
+    provider: Option<&str>,
+    model: Option<&str>,
+    archive: bool,
+) -> Result<(
+    SmokeWiring,
+    Option<Arc<ArchivingCompleter>>,
+    Arc<dyn LearningCompleter>,
+)> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let (pool, _temp) = match db {
+        Some(path) => {
+            let database = nomifun_db::init_database(path).await?;
+            (database.pool().clone(), None)
+        }
+        None => {
+            let temp = tempfile::tempdir()?;
+            let database =
+                nomifun_db::init_database(temp.path().join("smoke.sqlite").as_path()).await?;
+            (database.pool().clone(), Some(temp))
+        }
+    };
+    let owner_id = owner_id_string(&pool).await;
+
+    // 加密键：与应用同链（JWT_SECRET env → 库内安装者 jwt_secret → 固定回退）。
+    // 回退分支只发生在无凭据可解的临时库上——键不匹配任何存量密文，无碍。
+    let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(pool.clone()));
+    let secret = match std::env::var("JWT_SECRET").ok().filter(|secret| !secret.is_empty()) {
+        Some(secret) => secret,
+        None => match user_repo.get_system_user().await? {
+            Some(owner) if !owner.jwt_secret.as_deref().unwrap_or_default().is_empty() => {
+                owner.jwt_secret.unwrap()
+            }
+            _ => "learning-smoke-no-credentials".to_owned(),
+        },
+    };
+    let encryption_key =
+        crate::config::load_or_create_data_encryption_key(&cli.data_dir, &secret)?;
+
+    let provider_repo = Arc::new(SqliteProviderRepository::new(pool.clone()));
+    let provider_model_repo = Arc::new(SqliteProviderModelRepository::new(pool.clone()));
+    let live: Arc<dyn LearningCompleter> = Arc::new(LiveLearningCompleter {
+        provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+        provider_model_repo: provider_model_repo.clone(),
+        encryption_key,
+        workspace: cli.data_dir.clone(),
+    });
+    let archiving = if archive {
+        let obs_root = cli.data_dir.join("observation").join("learning-smoke");
+        let archiving = Arc::new(ArchivingCompleter::new(live.clone(), &obs_root)?);
+        println!("observation archive: {}", archiving.run_dir().display());
+        Some(archiving.clone())
+    } else {
+        None
+    };
+    let pipeline: Arc<dyn LearningCompleter> = archiving
+        .clone()
+        .map(|archiving| archiving as Arc<dyn LearningCompleter>)
+        .unwrap_or_else(|| live.clone());
+
+    let knowledge_service = Arc::new(nomifun_knowledge::KnowledgeService::new(
+        Arc::new(nomifun_db::SqliteKnowledgeRepository::new(pool.clone())),
+        cli.data_dir.clone().as_path(),
+        nomifun_knowledge::KnowledgeEventEmitter::new(
+            Arc::new(NoopEventSink),
+            Arc::from(owner_id.as_str()),
+        ),
+    ));
+    let service = Arc::new(LearningService::new(pool.clone()));
+    service.set_generation_dependencies(knowledge_service.clone(), pipeline);
+    // 铸名门外部通行名证据（m11 双臂开关面）：接线 DDG 无 key 搜索提供方；
+    // `NOMI_LEARNING_MINT_RESEARCH=off` 臂在机制内零搜索（off = 现行为）。
+    // 接线失败 = 零搜索（fail-open 同律），只留一行提示。
+    match flowy_web::provider::DuckDuckGoSearchProvider::try_new() {
+        Ok(provider) => {
+            service.set_mint_search_provider(std::sync::Arc::new(provider));
+        }
+        Err(error) => {
+            eprintln!("[mint-research] search provider unavailable, zero searches: {error}");
+        }
+    }
+    // 传统课程（知识库 → 大纲）走与应用同款的双循环大纲引擎；此前的
+    // smoke 档只覆盖学习图/课时内容，这条管线一直没有无头真机入口。
+    service.set_course_outline_engine(Arc::new(
+        nomifun_ai_agent::LiveCourseOutlineAgentEngine {
+            service: service.clone(),
+            deps: nomifun_ai_agent::OneShotDeps {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo: provider_model_repo.clone(),
+                encryption_key,
+                workspace: cli.data_dir.clone(),
+            },
+        },
+    ));
+    // 课时内容 agent 引擎（j07 content 冒烟需要）：与应用同款接线——引擎
+    // 自行解析 provider（OneShotDeps），不经管线 completer。首轮观测钩子把
+    // system/user 追加进本次运行的 calls.jsonl（k03/k05 双臂读数面）。
+    // e4：provider 装饰钩子挂共享瞬断计数——计数 >0 时每次课时 LLM 开流
+    // 掐断一次（content 档瞬断臂的注入面），归零透传（其余档零影响）。
+    let lesson_flaky_remaining = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let flaky_counter = Arc::clone(&lesson_flaky_remaining);
+    let lesson_observer = archiving.as_ref().map(|archiving| {
+        let path = archiving.run_dir().join("calls.jsonl");
+        Arc::new(move |record: serde_json::Value| {
+            use std::io::Write;
+            let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            else {
+                return;
+            };
+            let _ = writeln!(file, "{record}");
+        }) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
+    });
+    service.set_lesson_engine(Arc::new(
+        nomifun_ai_agent::LiveLessonContentAgentEngine {
+            service: service.clone(),
+            deps: nomifun_ai_agent::OneShotDeps {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo,
+                encryption_key,
+                workspace: cli.data_dir.clone(),
+            },
+            round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            prompt_observer: lesson_observer,
+            provider_decorator: Some(Arc::new(move |provider| {
+                nomifun_ai_agent::flaky_provider::FlakyStreamProvider::new(
+                    provider,
+                    Arc::clone(&flaky_counter),
+                )
+            })),
+        },
+    ));
+    // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录；finish
+    // 行同时留一份进程内捕获（e1 相位耗时读数行的取数面）。
+    let task_finishes: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let observation_dir = cli.data_dir.join("observation").join("learning-smoke");
+        let captures = Arc::clone(&task_finishes);
+        service.set_generation_task_observer(Arc::new(move |line: &str| {
+            use std::io::Write;
+            let _ = std::fs::create_dir_all(&observation_dir);
+            let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(observation_dir.join("learning-tasks.jsonl"))
+            else {
+                return;
+            };
+            let _ = writeln!(file, "{line}");
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if value["type"] == "finish" {
+                    captures.lock().unwrap().push(value);
+                }
+            }
+        }));
+    }
+
+    Ok((
+        SmokeWiring {
+            service,
+            knowledge: knowledge_service,
+            pool,
+            owner: UserId::parse(&owner_id)?,
+            task_finishes,
+            lesson_flaky_remaining,
+            _temp,
+        },
+        archiving,
+        live,
+    ))
+}
+
+/// 打印某类任务的 finish 读数行（e1 相位耗时读数）：本进程捕获的该类全部
+/// finish（多节点 content 档逐条列出）。读数面非门禁——jsonl 是全量留档，
+/// 这里只是人读摘要。
+fn print_phase_readings(finishes: &[serde_json::Value], kind: &str) {
+    let rows: Vec<&serde_json::Value> = finishes
+        .iter()
+        .filter(|line| line["kind"] == kind)
+        .collect();
+    if rows.is_empty() {
+        println!("phase reading ({kind}): no finish line captured this run");
+        return;
+    }
+    for (index, finish) in rows.iter().enumerate() {
+        println!(
+            "phase reading ({kind} {}/{}): state={} elapsed_ms={} llm_calls={} input_chars={} output_chars={}",
+            index + 1,
+            rows.len(),
+            finish["state"],
+            finish["elapsed_ms"],
+            finish["llm_calls"],
+            finish["input_chars"],
+            finish["output_chars"],
+        );
+    }
+}
+
+async fn owner_id_string(pool: &nomifun_db::sqlx::SqlitePool) -> String {
+    nomifun_db::installation_owner_id(pool).await.unwrap_or_else(|_| {
+        // init_database 保证安装者行存在；此兜底仅为类型完整。
+        String::new()
+    })
+}
+
+struct NoopEventSink;
+
+impl nomifun_realtime::UserEventSink for NoopEventSink {
+    fn send_to_user(
+        &self,
+        _user_id: &str,
+        _event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
+    ) {
+    }
+}
+
+/// 递归收集目录下的 Markdown 文件，返回 `(库内相对路径, 正文)`，按路径
+/// 字典序排序——与采样器的结构信号同一口径（课程式库的 `01-`…`09-`
+/// 前缀就是阅读顺序）。
+fn collect_markdown_files(root: &Path) -> Result<Vec<(String, String)>> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<()> {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                walk(root, &path, out)?;
+            } else if file_type.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                let relative = path
+                    .strip_prefix(root)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                out.push((relative, content));
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+/// 多库采样路径带 `{库名}/rel` 命名空间；单库是裸路径。两种形状都归一到
+/// 库内相对路径，才能和上传清单比对。
+fn strip_kb_namespace<'a>(path: &'a str, kb_name: &str) -> &'a str {
+    path.strip_prefix(kb_name)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(path)
+}
+
+fn chapter_key(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn chapter_number(path: &str) -> Option<u32> {
+    let head = chapter_key(path).split('-').next()?;
+    // 两种常见的教材命名：`01-标题.md` 与 `ch01-01-标题.md`。
+    let digits = head.strip_prefix("ch").unwrap_or(head);
+    digits.parse().ok()
+}
+
+/// 有 N 个课时要抽看正文时，按课程顺序均匀取点；只要一节就取正中，
+/// 避免总看“前言/安装”这类入口课而看不到后半本教材的接地情况。
+fn lesson_picks(total: usize, wanted: usize) -> Vec<usize> {
+    if total == 0 || wanted == 0 {
+        return Vec::new();
+    }
+    if wanted >= total {
+        return (0..total).collect();
+    }
+    if wanted == 1 {
+        return vec![total / 2];
+    }
+    (0..wanted)
+        .map(|index| index * (total - 1) / (wanted - 1))
+        .collect()
+}
+
+/// `learning-smoke course`：传统课程（知识库 → 大纲）真机冒烟。先用本地
+/// md 目录建一个受管知识库，再走与应用同款的 `generate_course`（目标感知
+/// 采样 + 双循环大纲 + 导入），最后按需生成若干课时正文。机械判据只锁
+/// “管线走通 + 来源可解析”；章节覆盖率、顺序与采样披露作为负优化读数
+/// 打印——完整教材被截断/乱序是产品问题，不应被冒烟入口藏起来。
+#[allow(clippy::too_many_arguments)]
+async fn run_course(
+    cli: &Cli,
+    dir: PathBuf,
+    goal: String,
+    name: Option<String>,
+    lessons: usize,
+    triage_only: bool,
+    plan_only: bool,
+    report_json: Option<PathBuf>,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if goal.trim().is_empty() {
+        eprintln!("--goal must not be empty");
+        return Ok(ExitCode::from(2));
+    }
+    if !dir.is_dir() {
+        eprintln!("--dir must be an existing directory: {}", dir.display());
+        return Ok(ExitCode::from(2));
+    }
+    let files = collect_markdown_files(&dir)?;
+    if files.is_empty() {
+        eprintln!("--dir contains no markdown files: {}", dir.display());
+        return Ok(ExitCode::from(2));
+    }
+    let total_bytes: usize = files.iter().map(|(_, content)| content.len()).sum();
+
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let base_name = name.unwrap_or_else(|| {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "learning-smoke-kb".to_owned())
+    });
+    let base = wiring
+        .knowledge
+        .create_base(&base_name, "learning-smoke course KB", None, None)
+        .await?;
+    let kb_name = base.name.clone();
+    let kb_id = base.knowledge_base_id.clone();
+    let written = wiring
+        .knowledge
+        .upload_files_batch(kb_id.as_str(), &files)
+        .await?;
+    println!(
+        "[1/3] knowledge base {} ({}): {} files, {} bytes written",
+        kb_id.as_str(),
+        kb_name,
+        written,
+        total_bytes
+    );
+
+    // t5 变体：--triage-only / --plan-only 不建课,直接跑清点(分诊[/结构
+    // 计划])并打印读数;报告(可选)按档位落 triage[/plan]。
+    if triage_only || plan_only {
+        let completer: Arc<dyn LearningCompleter> = _archiving
+            .clone()
+            .map(|archiving| archiving as Arc<dyn LearningCompleter>)
+            .unwrap_or_else(|| _live.clone());
+        return run_course_stage_reports(
+            &wiring,
+            completer,
+            &kb_id,
+            goal.trim(),
+            plan_only,
+            report_json.as_deref(),
+        )
+        .await;
+    }
+
+    let uploaded_paths: BTreeSet<String> =
+        files.iter().map(|(path, _)| path.clone()).collect();
+    let provider_id = provider
+        .as_deref()
+        .map(ProviderId::parse)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("invalid provider id: {error}"))?;
+    let request = GenerateCourseRequest {
+        knowledge_base_id: None,
+        knowledge_base_ids: vec![kb_id],
+        description: None,
+        domain: None,
+        provider_id: provider_id.clone(),
+        model: model.clone(),
+        mode: CourseGenerationMode::OnDemand,
+        course_kind: CourseKind::Traditional,
+        proficiency_statement: None,
+        learner_basis: None,
+        teaching_style: None,
+        goal: Some(goal.trim().to_owned()),
+    };
+    println!("[2/3] goal-aware sampling + outline generation …");
+    let detail = match wiring.service.generate_course(&wiring.owner, request).await {
+        Ok(detail) => detail,
+        Err(error) => {
+            eprintln!("course generation FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    println!(
+        "[3/3] course {} — {} ({} modules, {} lessons)",
+        detail.course.id.as_str(),
+        detail.course.title,
+        detail.modules.len(),
+        detail.course.total_lessons
+    );
+    // t5 报告（可选）：full 档落的是库里的快照信封（triage/plan/coverage
+    // 四件套原样），便于与 --triage-only/--plan-only 档对账；回退/描述流
+    // 建的课没有信封——如实写 null,不伪造。
+    if let Some(report_path) = report_json.as_deref() {
+        let snapshot_json: Option<String> = nomifun_db::sqlx::query_scalar(
+            "SELECT course_source_plan_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(detail.course.id.as_str())
+        .fetch_optional(&wiring.pool)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to read course source plan: {error}"))?
+        .flatten();
+        let report = match snapshot_json.as_deref().map(serde_json::from_str::<serde_json::Value>) {
+            Some(Ok(envelope)) => envelope,
+            Some(Err(error)) => {
+                return Err(anyhow::anyhow!("course source plan snapshot unreadable: {error}"))
+            }
+            None => serde_json::json!({
+                "course_id": detail.course.id.as_str(),
+                "source_plan": serde_json::Value::Null,
+                "note": "course built without the plan pipeline (fallback or description flow)",
+            }),
+        };
+        write_course_report(Some(report_path), &report)?;
+        println!("report: {}", report_path.display());
+    }
+    match detail.course.sampling.as_ref() {
+        Some(sampling) => {
+            println!(
+                "sampling: total={} sampled={} coherence={} low_score={} goal_fallback={}",
+                sampling.total_files,
+                sampling.sampled_files,
+                sampling.coherence_files,
+                sampling.low_score_files,
+                sampling.goal_fallback
+            );
+            if !sampling.low_score_examples.is_empty() {
+                println!(
+                    "  low-score examples: {}",
+                    sampling.low_score_examples.join(", ")
+                );
+            }
+        }
+        None => println!("sampling: <none>"),
+    }
+
+    let mut all_lessons = Vec::new();
+    let mut referenced_chapters = BTreeSet::new();
+    let mut unresolved_sources = Vec::new();
+    let mut lessons_without_source = Vec::new();
+    let mut module_centers: Vec<(usize, u32, String)> = Vec::new();
+    for (module_index, module) in detail.modules.iter().enumerate() {
+        println!("\n## module: {}", module.title);
+        let mut module_chapters: Vec<u32> = Vec::new();
+        for lesson in &module.lessons {
+            let sources: Vec<&nomifun_learning::SourceSpan> = if lesson.sources.is_empty() {
+                lesson.source.iter().collect()
+            } else {
+                lesson.sources.iter().collect()
+            };
+            let mut relative_paths = Vec::new();
+            for source in &sources {
+                let relative = strip_kb_namespace(&source.path, &kb_name);
+                if !uploaded_paths.contains(relative) {
+                    unresolved_sources.push(format!("{} -> {}", lesson.title, source.path));
+                }
+                let key = chapter_key(relative).to_owned();
+                referenced_chapters.insert(key);
+                if let Some(number) = chapter_number(relative) {
+                    // 模块的结构位置用“被引章节的中位数”：低章多半是前置
+                    // 引用（讲 rehash 回引第 03 章），高章多半是对照
+                    // （讲 HashMap 顺带提 TreeMap），两者都不该把模块
+                    // 整体抬到错误的位置。
+                    module_chapters.push(number);
+                }
+                relative_paths.push(relative.to_owned());
+            }
+            if sources.is_empty() {
+                lessons_without_source.push(lesson.title.clone());
+            }
+            println!(
+                "- [{}] {}  <- {}",
+                lesson.id.as_str(),
+                lesson.title,
+                if relative_paths.is_empty() {
+                    "<no source>".to_owned()
+                } else {
+                    relative_paths.join(", ")
+                }
+            );
+            all_lessons.push(lesson);
+        }
+        if !module_chapters.is_empty() {
+            module_chapters.sort_unstable();
+            let median = module_chapters[module_chapters.len() / 2];
+            module_centers.push((module_index + 1, median, module.title.clone()));
+        }
+    }
+
+    let uploaded_chapters: BTreeSet<String> = uploaded_paths
+        .iter()
+        .map(|path| chapter_key(path).to_owned())
+        .collect();
+    let missing_chapters: Vec<&String> = uploaded_chapters
+        .difference(&referenced_chapters)
+        .collect();
+    // 前言/目录不是教学内容；把“正文章覆盖”单独列一行，避免 18/19 的
+    // 读数被误读成正文缺一章。
+    let content_chapters: BTreeSet<String> = uploaded_chapters
+        .iter()
+        .filter(|chapter| chapter_number(chapter).is_some_and(|number| number >= 2))
+        .cloned()
+        .collect();
+    let missing_content: Vec<&String> = content_chapters
+        .difference(&referenced_chapters)
+        .collect();
+    let mut order_violations = Vec::new();
+    let mut highest_seen = 0u32;
+    for (position, number, title) in &module_centers {
+        if *number < highest_seen {
+            order_violations.push(format!(
+                "module {position} ({title}) centers on chapter {number:02} after a module centered on chapter {highest_seen:02}"
+            ));
+        }
+        highest_seen = highest_seen.max(*number);
+    }
+    println!("\n--- negative-optimization readings ---");
+    println!(
+        "file coverage: {}/{} referenced (missing: {})",
+        uploaded_chapters.len() - missing_chapters.len(),
+        uploaded_chapters.len(),
+        if missing_chapters.is_empty() {
+            "<none>".to_owned()
+        } else {
+            missing_chapters
+                .iter()
+                .map(|chapter| chapter.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    println!(
+        "content coverage (chapters 02+): {}/{} referenced (missing: {})",
+        content_chapters.len() - missing_content.len(),
+        content_chapters.len(),
+        if missing_content.is_empty() {
+            "<none>".to_owned()
+        } else {
+            missing_content
+                .iter()
+                .map(|chapter| chapter.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    println!(
+        "module order violations: {}",
+        if order_violations.is_empty() {
+            "<none>".to_owned()
+        } else {
+            order_violations.join("; ")
+        }
+    );
+    println!(
+        "lessons without a source: {}",
+        if lessons_without_source.is_empty() {
+            "<none>".to_owned()
+        } else {
+            lessons_without_source.join(", ")
+        }
+    );
+    println!(
+        "unresolved source paths: {}",
+        if unresolved_sources.is_empty() {
+            "<none>".to_owned()
+        } else {
+            unresolved_sources.join("; ")
+        }
+    );
+
+    if detail.modules.is_empty() || all_lessons.is_empty() {
+        eprintln!("course has no modules/lessons");
+        return Ok(ExitCode::from(2));
+    }
+    if !unresolved_sources.is_empty() {
+        eprintln!("course references source paths that do not exist in the uploaded base");
+        return Ok(ExitCode::from(2));
+    }
+    if !lessons_without_source.is_empty() {
+        eprintln!("kb-flow course has lessons without a source");
+        return Ok(ExitCode::from(2));
+    }
+
+    let picks = lesson_picks(all_lessons.len(), lessons);
+    let mut body_failures = 0usize;
+    for (ordinal, index) in picks.iter().enumerate() {
+        let lesson = all_lessons[*index];
+        println!(
+            "\n### lesson body {}/{}: [{}] {}",
+            ordinal + 1,
+            picks.len(),
+            lesson.id.as_str(),
+            lesson.title
+        );
+        let request = GenerateLessonRequest {
+            provider_id: provider_id.clone(),
+            model: model.clone(),
+            feedback: None,
+        };
+        match wiring
+            .service
+            .generate_lesson_content(&wiring.owner, &lesson.id, &request)
+            .await
+        {
+            Ok(view) => {
+                let body_chars: usize = view
+                    .sections
+                    .iter()
+                    .map(|section| section.body_md.chars().count())
+                    .sum();
+                println!(
+                    "generated={} sections={} body_chars={} activities={}",
+                    view.generated,
+                    view.sections.len(),
+                    body_chars,
+                    view.activities.len()
+                );
+                for section in &view.sections {
+                    println!(
+                        "  - {} [{}] {} chars{}",
+                        section.title,
+                        section.section_key,
+                        section.body_md.chars().count(),
+                        if section.degraded { " degraded" } else { "" }
+                    );
+                }
+                let preview: String = view
+                    .sections
+                    .iter()
+                    .flat_map(|section| section.body_md.chars())
+                    .take(600)
+                    .collect();
+                println!("  preview: {}", preview.replace('\n', " "));
+            }
+            Err(error) => {
+                body_failures += 1;
+                eprintln!("lesson body generation FAILED for {}: {error}", lesson.title);
+            }
+        }
+    }
+    if body_failures > 0 {
+        return Ok(ExitCode::from(2));
+    }
+
+    println!("\nEXIT=0");
+    Ok(ExitCode::SUCCESS)
+}
+
+// ── t5 冒烟变体：--triage-only / --plan-only / --report-json ─────────────
+
+/// t5 冒烟变体：清点+分诊（--triage-only）或再跑结构计划（--plan-only），
+/// 打印 counts/排除理由/uncertain/chapters/coverage 台账/gaps。读数面非
+/// 门禁：triage 档有 warning 也 EXIT=0（票面）；plan 档计划不可用 EXIT=2
+/// （该档的目的就是看计划）。
+async fn run_course_stage_reports(
+    wiring: &SmokeWiring,
+    completer: Arc<dyn LearningCompleter>,
+    kb_id: &str,
+    goal: &str,
+    plan_only: bool,
+    report_json: Option<&Path>,
+) -> Result<ExitCode> {
+    let kb_id: nomifun_common::KnowledgeBaseId = kb_id
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid kb id: {error}"))?;
+    let (inventory, triage) =
+        nomifun_learning::run_kb_triage(&wiring.knowledge, &[kb_id.clone()], goal, Some(completer.as_ref()))
+            .await
+            .map_err(|error| anyhow::anyhow!("triage failed: {error}"))?;
+    print_triage_readout(&triage);
+    let mut report = course_report_json(&triage, None);
+    if plan_only {
+        let plan = nomifun_learning::run_kb_structure(
+            &wiring.knowledge,
+            &inventory,
+            &triage,
+            goal,
+            Some(completer.as_ref()),
+            None,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("structure discovery failed: {error}"))?;
+        match plan.filter(|plan| plan.is_usable()) {
+            Some(plan) => {
+                print_plan_readout(&plan);
+                report = course_report_json(&triage, Some(&plan));
+            }
+            None => {
+                eprintln!("structure plan unusable (no chapters / degraded empty)");
+                write_course_report(report_json, &report)?;
+                return Ok(ExitCode::from(2));
+            }
+        }
+    }
+    write_course_report(report_json, &report)?;
+    println!("\nEXIT=0");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 分诊读数：七角色计数 + degraded + 排除/重复/uncertain 逐条理由——
+/// 「跳过与不确定可见」是无头冒烟的第一读数。
+fn print_triage_readout(triage: &nomifun_learning::KbTriageReport) {
+    use nomifun_learning::KbTriageRole;
+    let counts = &triage.counts;
+    let total = counts.core
+        + counts.prerequisite
+        + counts.practice
+        + counts.mixed
+        + counts.noise
+        + counts.duplicate
+        + counts.uncertain;
+    println!(
+        "triage: total={total} core={} prerequisite={} practice={} mixed={} noise={} duplicate={} uncertain={} degraded={}",
+        counts.core,
+        counts.prerequisite,
+        counts.practice,
+        counts.mixed,
+        counts.noise,
+        counts.duplicate,
+        counts.uncertain,
+        triage.degraded
+    );
+    for warning in &triage.warnings {
+        println!("  warning: {warning}");
+    }
+    if !triage.excluded.is_empty() {
+        println!("excluded ({}):", triage.excluded.len());
+        for entry in &triage.excluded {
+            println!(
+                "  - [{}] {} :: {}",
+                entry.role.as_str(),
+                entry.path,
+                entry.reason
+            );
+        }
+    }
+    if !triage.duplicates.is_empty() {
+        println!("duplicates ({}):", triage.duplicates.len());
+        for duplicate in &triage.duplicates {
+            println!(
+                "  - {} -> {} ({})",
+                duplicate.path, duplicate.duplicate_of, duplicate.canonical_reason
+            );
+        }
+    }
+    let uncertain: Vec<&nomifun_learning::KbTriageFile> = triage
+        .files
+        .iter()
+        .filter(|file| file.role == KbTriageRole::Uncertain)
+        .collect();
+    if !uncertain.is_empty() {
+        println!("uncertain ({}):", uncertain.len());
+        for file in uncertain {
+            println!("  - {} :: {}", file.rel_path, file.reason);
+        }
+    }
+}
+
+/// 结构计划读数：章/概念/边 + 逐章锚点 + 覆盖台账 + gaps。
+fn print_plan_readout(plan: &nomifun_learning::SourcePlan) {
+    use nomifun_learning::{FileCoverageStatus, TopicStatus};
+    println!(
+        "plan: chapters={} concepts={} edges={} degraded={} warnings={}",
+        plan.chapters.len(),
+        plan.concept_graph.nodes.len(),
+        plan.concept_graph.edges.len(),
+        plan.degraded,
+        plan.warnings.len()
+    );
+    for (index, chapter) in plan.chapters.iter().enumerate() {
+        println!(
+            "  {}. {} — anchors={} covers={} type={:?}",
+            index + 1,
+            chapter.title,
+            chapter.source_anchors.len(),
+            chapter.covers.len(),
+            chapter.content_type
+        );
+    }
+    if !plan.evidence.gaps.is_empty() {
+        println!("gaps ({}):", plan.evidence.gaps.len());
+        for gap in &plan.evidence.gaps {
+            println!("  - {gap}");
+        }
+    }
+    let ledger = &plan.coverage;
+    let covered = ledger
+        .topics
+        .iter()
+        .filter(|topic| topic.status == TopicStatus::Covered)
+        .count();
+    let skipped = ledger
+        .topics
+        .iter()
+        .filter(|topic| topic.status == TopicStatus::Skipped)
+        .count();
+    let uncertain = ledger
+        .topics
+        .iter()
+        .filter(|topic| topic.status == TopicStatus::Uncertain)
+        .count();
+    println!(
+        "coverage ledger: topics covered={covered} skipped={skipped} uncertain={uncertain}; files covered={} partial={} skipped={} uncertain={}; excluded={}",
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Covered)
+            .count(),
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Partial)
+            .count(),
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Skipped)
+            .count(),
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Uncertain)
+            .count(),
+        ledger.excluded.len()
+    );
+    for entry in &ledger.excluded {
+        println!(
+            "  excluded: [{}] {} :: {}",
+            entry.role.as_str(),
+            entry.rel_path,
+            entry.reason
+        );
+    }
+}
+
+/// 报告 JSON：triage 档 `{triage}`，plan 档 `{triage, plan}`（t1/t2 类型
+/// 原样序列化,字段形状与库内信封一致,便于对账）。
+fn course_report_json(
+    triage: &nomifun_learning::KbTriageReport,
+    plan: Option<&nomifun_learning::SourcePlan>,
+) -> serde_json::Value {
+    let mut report = serde_json::json!({ "triage": triage });
+    if let Some(plan) = plan {
+        report["plan"] = serde_json::json!(plan);
+    }
+    report
+}
+
+/// 报告落盘（pretty JSON；建父目录）。路径缺席 = 调用方没要报告,no-op。
+fn write_course_report(path: Option<&Path>, report: &serde_json::Value) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create report dir {}", parent.display()))?;
+    }
+    let body = serde_json::to_string_pretty(report).context("serialize course report")?;
+    std::fs::write(path, body).with_context(|| format!("write report {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod course_report_tests {
+    use super::course_report_json;
+    use nomifun_learning::{KbTriageCounts, KbTriageReport};
+
+    fn triage_fixture() -> KbTriageReport {
+        KbTriageReport {
+            files: Vec::new(),
+            counts: KbTriageCounts {
+                core: 2,
+                noise: 1,
+                ..KbTriageCounts::default()
+            },
+            excluded: Vec::new(),
+            duplicates: Vec::new(),
+            degraded: false,
+            warnings: Vec::new(),
+            batch_repair_count: 0,
+            still_missing_count: 0,
+        }
+    }
+
+    /// triage 档只有 triage 面;plan 档带 plan 面(章/概念/覆盖台账原样)。
+    #[test]
+    fn course_report_carries_triage_and_optional_plan() {
+        let triage_only = course_report_json(&triage_fixture(), None);
+        assert!(triage_only.get("triage").is_some(), "triage 档必须有 triage 面");
+        assert!(
+            triage_only.get("plan").is_none(),
+            "triage 档不带 plan 面"
+        );
+        assert_eq!(triage_only["triage"]["counts"]["core"], serde_json::json!(2));
+
+        let mut plan = nomifun_learning::SourcePlan::default();
+        plan.chapters = vec![nomifun_learning::PlannedChapter {
+            title: "排序入门".to_owned(),
+            summary: String::new(),
+            learning_objectives: Vec::new(),
+            covers: Vec::new(),
+            prerequisites: Vec::new(),
+            source_anchors: Vec::new(),
+            content_type: nomifun_learning::ChapterContentType::Concept,
+        }];
+        let with_plan = course_report_json(&triage_fixture(), Some(&plan));
+        assert_eq!(with_plan["plan"]["chapters"].as_array().unwrap().len(), 1);
+        assert!(with_plan["triage"].is_object(), "triage 面恒在");
+    }
+}
+
+/// 超纲专名抽查词表（overshoot 读数面，软，人工判读）：正文工作词应取自
+/// 名单，词表专名未声明地出现在正文 = 读数红，回 #177/#178 续裁。
+const OVERSHOOT_TERMS: [&str; 4] = ["布朗运动", "伊藤引理", "GARCH", "维纳过程"];
+
+/// scope 感知 overshoot 计数（p03）：命中词若出现在本节点 intent/scope 声明
+/// 原文（装配 user 帧的「创建意图：」「教学范围：」两行）= 声明过的词正文
+/// 提及属边界诚实（与 scope_findings 的 MENTION_NEGATIONS 同律），不计 hit；
+/// 未声明的命中照计——判据面非门禁不变。
+///
+/// 豁免粒度留痕（评审修复波 2026-11-05 复核）：票面语义 =「本节点」声明
+/// 豁免本节点正文，但归档帧（calls.jsonl 行：ts/method/ok/elapsed_ms/
+/// *_chars/system/user/response）**无结构化节点标识**，`LearningCompleter`
+/// 接口也无元数据通道——按节点归属收窄需跨 crate 改 trait 签名与全部实现
+/// 者，本票不做。现状实现把全部归档帧的声明行拼接统一豁免，即**跨节点
+/// 豁免粒度**：content 臂冒烟单节点生成跑（只 L2，`view.sections` 即该节
+/// 正文）无差；多节点跑里 A 节声明会豁免 B 节正文未声明的命中（误报豁免
+/// 面扩大，读数偏松非偏紧，非门禁不阻塞）——留观，节点归属收窄待观测
+/// 通道扩展票。
+fn scope_aware_overshoot_hits(declaration_text: &str, body_text: &str) -> usize {
+    OVERSHOOT_TERMS
+        .iter()
+        .filter(|term| body_text.contains(**term) && !declaration_text.contains(**term))
+        .count()
+}
+
+/// 从装配 user 帧提取声明行原文（「创建意图：」「教学范围：」行——判据9 的
+/// 行格式逐字固定，p03 overshoot 豁免的扫描源）。全帧拼接无节点归属——
+/// 跨节点豁免粒度留痕见 [`scope_aware_overshoot_hits`]。
+fn declaration_lines_from_user_frames<'a>(user_texts: &[&'a str]) -> Vec<&'a str> {
+    user_texts
+        .iter()
+        .flat_map(|user| user.lines())
+        .filter(|line| line.starts_with("创建意图：") || line.starts_with("教学范围："))
+        .collect()
+}
+
+#[cfg(test)]
+mod overshoot_readout_tests {
+    use super::{declaration_lines_from_user_frames, scope_aware_overshoot_hits};
+
+    /// 两臂形状·豁免臂（p03 票面验收）：真机 run-1793829277050 病历——
+    /// scope 声明「不引入 GARCH」+ 正文按声明优先条款写诚实边界句，旧读数
+    /// hit=1 与 scope_findings=0 并存（误报）；声明过的词正文提及 = 边界
+    /// 诚实，不计 hit。
+    #[test]
+    fn declared_scope_term_mentioned_in_body_is_exempt() {
+        // 声明行原文形状 = 真机档案 content-turn1-user.txt L8-9（行格式逐字
+        // 固定，判据9 同款）。
+        let declaration = "创建意图：在收益率之后刻画波动率，承接两日换算例题\n\
+                           教学范围：教波动率的直观动机与离散度量；不引入 GARCH 模型（范围外内容不教，越界点名不构成引用）";
+        let body =
+            "波动率可以先用直观的方式刻画；按教学范围声明，这里不引入 GARCH 模型，留待后续。";
+        assert_eq!(
+            scope_aware_overshoot_hits(declaration, body),
+            0,
+            "声明过的词正文提及 = 边界诚实，不是超纲（scope-aware 豁免）"
+        );
+    }
+
+    /// 两臂形状·未豁免臂：正文无豁免地出现超纲专名照计 hit=1（判据面不放宽）。
+    #[test]
+    fn undeclared_proper_noun_still_counts_as_hit() {
+        let declaration = "教学范围：教波动率的直观动机与离散度量";
+        let body = "更精细的建模要用布朗运动刻画价格路径。";
+        assert_eq!(
+            scope_aware_overshoot_hits(declaration, body),
+            1,
+            "未声明的超纲专名照计 hit（豁免只认声明原文）"
+        );
+    }
+
+    /// 声明行提取：user 帧里「创建意图：」「教学范围：」两行进豁免扫描源；
+    /// 其余行不进。
+    #[test]
+    fn declaration_lines_extracted_from_user_frames() {
+        let user = "课程：内容成色冒烟\n学习目标：理解衍生品的基础计量工具\n\
+                    创建意图：在收益率之后刻画波动率\n\
+                    教学范围：教波动率的直观动机；不引入 GARCH 模型\n\
+                    正文：……GARCH……";
+        let lines = declaration_lines_from_user_frames(&[user]);
+        assert_eq!(
+            lines,
+            vec![
+                "创建意图：在收益率之后刻画波动率",
+                "教学范围：教波动率的直观动机；不引入 GARCH 模型",
+            ],
+            "声明两行逐行提取（行格式逐字固定）"
+        );
+    }
+}
+
+/// `learning-smoke structure`：从零（或 --db）立一门最小学习图课程，跑结构
+/// 生成管线，机械判据自检。
+#[allow(clippy::too_many_arguments)]
+async fn run_structure(
+    cli: &Cli,
+    goal: String,
+    proficiency: Option<String>,
+    basis: Option<String>,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if goal.trim().is_empty() {
+        eprintln!("--goal must not be empty");
+        return Ok(ExitCode::from(2));
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let model_override = provider
+        .as_deref()
+        .zip(model.as_deref())
+        .map(|(provider, model)| {
+            (
+                nomifun_common::ProviderId::parse(provider).expect("provider id"),
+                model.to_owned(),
+            )
+        });
+
+    // 最小课程行（HTTP 建课的事务子集——冒烟对象是生成管线本身）。
+    let course_id = nomifun_common::LearningCourseId::new();
+    let module_id = nomifun_common::LearningModuleId::new();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, ?, '', 'general', 1, 'learning_graph', ?, '', 1, 1)",
+    )
+    .bind(course_id.as_str())
+    .bind(goal.trim())
+    .bind(goal.trim())
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(module_id.as_str())
+    .bind(course_id.as_str())
+    .execute(&wiring.pool)
+    .await?;
+
+    println!("[1/2] generating structure + terrain (json_object, ≤3 clause-feedback rounds)…");
+    let input = nomifun_learning::StructureInput::new(
+        &goal,
+        proficiency.as_deref(),
+        basis.as_deref(),
+    );
+    if let Err(error) = wiring
+        .service
+        .run_structure_generation(&course_id, &wiring.owner, model_override.as_ref().map(|(provider, model)| (provider, model.as_str())), &input)
+        .await
+    {
+        eprintln!("structure generation FAILED: {error}");
+        return Ok(ExitCode::from(2));
+    }
+
+    println!("[2/2] mechanical criteria: re-read snapshot and re-verify both contracts + door reconciliation…");
+    let snapshot: String = sqlx::query_scalar(
+        "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_one(&wiring.pool)
+    .await?;
+    let envelope: serde_json::Value = serde_json::from_str(&snapshot)?;
+    let structure = envelope
+        .get("structure")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("snapshot envelope missing structure"))?;
+    let terrain = envelope
+        .get("terrain")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("snapshot envelope missing terrain"))?;
+    let mut violations = nomifun_learning::validate_structure_artifact(&structure);
+    violations.extend(nomifun_learning::validate_terrain_artifact(&terrain));
+    violations.extend(nomifun_learning::reconcile_structure_doors(&structure, &terrain));
+    let red: Vec<_> = violations.iter().filter(|violation| !violation.warning).collect();
+    for violation in &red {
+        eprintln!("CRITERION VIOLATION [{}] {}", violation.code, violation.message);
+    }
+    if !red.is_empty() {
+        return Ok(ExitCode::from(2));
+    }
+    // warn 档读数（f2/A2）：警告不拒收、不进重试反馈，但在验收面可见
+    // （k04「读数行在场」先例）——低于 40 参考档与越档两处警告档由此显影。
+    let warnings = violations.iter().filter(|violation| violation.warning).count();
+    let blocks = structure["blocks"].as_array().map(Vec::len).unwrap_or(0);
+    let spines = structure["spines"].as_array().map(Vec::len).unwrap_or(0);
+    let edges = structure["edges"].as_array().map(Vec::len).unwrap_or(0);
+    let doors = terrain["doors"].as_array().map(Vec::len).unwrap_or(0);
+    // 门位标签读数（e2）：带非空 door_refs 的块数——零标注 warn 在生成门面落
+    // 日志，这里随 OK 行并排透出（对照 learnhub 3/21 低标注基线的读数面）。
+    // 口径单源 = nomifun-learning 的 count_door_labeled_blocks（与快照
+    // info/warn 行同一函数，读数数字逐字一致）。
+    let labeled = nomifun_learning::count_door_labeled_blocks(&structure);
+    // e3 声明窗口硬判据：结构完成后零生长任务在册——建课/结构完成不自动
+    // 点火首批，生长只由用户显式触发（学习窗口「开始学习」= POST grow）。
+    // 本档驱动 run_structure_generation 直达管线，判据护栏防的是未来把生长
+    // 重新耦合回结构管线的回归。
+    let growth_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_one(&wiring.pool)
+    .await?;
+    let growth_tasks = wiring
+        .service
+        .generation_task_snapshot()
+        .into_iter()
+        .filter(|task| task.kind == "growth")
+        .count();
+    if growth_batches != 0 || growth_tasks != 0 {
+        eprintln!(
+            "CRITERION VIOLATION [e3.zero-growth] structure done but growth already kicked: \
+             batches={growth_batches} tasks={growth_tasks}"
+        );
+        return Ok(ExitCode::from(2));
+    }
+    println!(
+        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}  warnings={warnings}  growth_batches={growth_batches}  growth_tasks={growth_tasks}",
+        course_id.as_str()
+    );
+    // 相位耗时读数（e1）：两仓首条结构相位耗时基线（jsonl 全量留档，这里
+    // 是人读摘要）。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "structure");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke json`：json_object 能力读数。探测调用直调内层 completer
+/// （不挂 ArchivingCompleter）；唯一硬判据 = 全灭 0/n。
+async fn run_json(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+    calls: usize,
+) -> Result<ExitCode> {
+    if calls == 0 {
+        eprintln!("--calls must be ≥ 1");
+        return Ok(ExitCode::from(2));
+    }
+    let (_wiring, _archiving, live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
+    let model_override = provider
+        .as_deref()
+        .zip(model.as_deref())
+        .map(|(provider, model)| {
+            (
+                nomifun_common::ProviderId::parse(provider).expect("provider id"),
+                model.to_owned(),
+            )
+        });
+    // 探测调用直调内层 completer（不挂 Archiving）——非管线调用，不入档案。
+    let completer: &Arc<dyn LearningCompleter> = &live;
+
+    const PROBE: &str = "只回复一个 JSON 对象：{\"ok\": true, \"probe\": \"json_object capability\"}。不要解释、不要代码围栏。";
+    let mut valid_objects = 0usize;
+    let mut empty = 0usize;
+    let mut malformed = 0usize;
+    for index in 1..=calls {
+        let outcome = completer
+            .complete_json(
+                model_override.as_ref().map(|(provider, model)| (provider.as_str(), model.as_str())),
+                "你是 JSON 探测器。",
+                PROBE,
+                256,
+                None, // 探测调用用 provider 默认温度（读数面不掺工程旋钮）
+            )
+            .await;
+        match outcome {
+            Ok(reply) => {
+                let trimmed = reply.trim();
+                if trimmed.is_empty() {
+                    empty += 1;
+                    println!("  probe {index}: EMPTY");
+                } else {
+                    match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(value) if value.is_object() => {
+                            valid_objects += 1;
+                            println!("  probe {index}: valid object");
+                        }
+                        Ok(_) => {
+                            malformed += 1;
+                            println!("  probe {index}: valid JSON, not an object");
+                        }
+                        Err(error) => {
+                            malformed += 1;
+                            let head: String = trimmed.chars().take(80).collect();
+                            println!("  probe {index}: parse error ({error}); head: {head}");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                malformed += 1;
+                println!("  probe {index}: call failed: {error}");
+            }
+        }
+    }
+    println!(
+        "json_object read-out: {valid_objects}/{calls} valid objects (empty {empty}, malformed {malformed})"
+    );
+    if valid_objects == 0 {
+        eprintln!("all {calls} probes failed — the provider/model cannot deliver json_object");
+        return Ok(ExitCode::from(2));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke grow` / `loop`：生长冒烟（loop = 结构生成先行）。
+/// s1 判据（失败非零退出）：
+/// - 首批 assumes 全空（仅空登记表机械地板；账非空时由就绪即发布判据验覆盖）；
+/// - 每批「就绪即发布」——批内节点的每条 assumes 都被**既往供给**（更早
+///   批次或其他课程的 teaches）以不低于所假定档位覆盖（同批不算）；
+/// - 铸名不撞：登记表 canonical ∪ 别名全局唯一；
+/// - loop 追加：structure_json 落列（结构产物在列）。
+/// 批间用确定性学习者替身：程序化把全部未完成节点标为 completed（完成事件
+/// 自动触发生长，与真实学习者路径同线）。
+#[allow(clippy::too_many_arguments)]
+async fn run_grow(
+    cli: &Cli,
+    goal: String,
+    batches: usize,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+    with_structure: bool,
+) -> Result<ExitCode> {
+    if goal.trim().is_empty() {
+        eprintln!("--goal must not be empty");
+        return Ok(ExitCode::from(2));
+    }
+    if batches == 0 {
+        eprintln!("--batches/--rounds must be ≥ 1");
+        return Ok(ExitCode::from(2));
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let model_override = provider
+        .as_deref()
+        .zip(model.as_deref())
+        .map(|(provider, model)| {
+            (
+                nomifun_common::ProviderId::parse(provider).expect("provider id"),
+                model.to_owned(),
+            )
+        });
+
+    // 最小课程行（HTTP 建课的事务子集——冒烟对象是生长管线本身）。
+    let course_id = nomifun_common::LearningCourseId::new();
+    let module_id = nomifun_common::LearningModuleId::new();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          created_at, updated_at) \
+         VALUES (?, ?, '', 'general', 1, 'learning_graph', ?, 1, 1)",
+    )
+    .bind(course_id.as_str())
+    .bind(goal.trim())
+    .bind(goal.trim())
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(module_id.as_str())
+    .bind(course_id.as_str())
+    .execute(&wiring.pool)
+    .await?;
+
+    if with_structure {
+        println!("[structure] generating knowledge structure (gd.* contract, ≤3 rounds)…");
+        let input = nomifun_learning::StructureInput::new(&goal, None, None);
+        if let Err(error) = wiring
+            .service
+            .run_structure_generation(
+                &course_id,
+                &wiring.owner,
+                model_override
+                    .as_ref()
+                    .map(|(provider, model)| (provider, model.as_str())),
+                &input,
+            )
+            .await
+        {
+            eprintln!("structure generation FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    }
+
+    // y01 读数面：最近一轮生长的 L1 名字提示数（跨轮不聚合——OK 行透出
+    // 最后一轮的读数，与 batches/nodes 同口径）。
+    let mut name_hints_last = 0usize;
+    for round in 1..=batches {
+        // 自动补批判定读数（m10，读数面非门禁）：裁决结果 + ready 数——
+        // 双臂对照卡数据源（on 臂 due + 批后 ready 上升；off 臂 disabled
+        // 如实）。读不到不拦流程（冒烟对象是生长管线本身）。
+        match wiring.service.growth_verdict(&wiring.owner, &course_id).await {
+            Ok(view) => println!(
+                "[auto-refill] round {round} pre  verdict={} ready={} trigger={} enabled={} stalled={}",
+                view.verdict, view.ready_count, view.trigger, view.enabled, view.stalled
+            ),
+            Err(error) => println!("[auto-refill] round {round} pre verdict readout unavailable: {error}"),
+        }
+        if round > 1 {
+            // 确定性学习者替身：首节点完成、其余跳过（两种满足路径都过，
+            // 进度事件自动触发下一轮生长——与真实学习者同线）。
+            let stand_in = complete_all_nodes(&wiring, &course_id).await?;
+            println!("[stand-in] drove {stand_in} nodes (1 completed / rest skipped) to trigger the next round");
+        } else {
+            wiring
+                .service
+                .kick_growth(
+                    &wiring.owner,
+                    &course_id,
+                    true,
+                    model_override
+                        .as_ref()
+                        .map(|(provider, model)| (provider, model.as_str())),
+                )
+                .await?;
+        }
+        if !wait_applied_batches(&wiring.pool, &course_id, round as i64).await? {
+            eprintln!("round {round}: growth batch did not land (applied) in time");
+            return Ok(ExitCode::from(2));
+        }
+        println!("[grow] round {round} batch applied — auditing criteria…");
+        let violations = audit_batch(&wiring.pool, &course_id, round as i64).await?;
+        for violation in &violations {
+            eprintln!("CRITERION VIOLATION [round {round}] {violation}");
+        }
+        if !violations.is_empty() {
+            return Ok(ExitCode::from(2));
+        }
+        let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
+        // 声明面读数行（absorb-8 z01，读数面非门禁）：本批 intent/scope 字符
+        // 均值——两字段写实质内容的观察面。
+        if let Some((rows, intent_avg, scope_avg)) =
+            batch_brief_readout(&wiring.pool, &course_id, seq).await?
+        {
+            println!("  [brief: rows={rows} intent_avg={intent_avg} scope_avg={scope_avg}]");
+        }
+        // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
+        // 挂号表读数行（m3）：rows/invalid/retried/degraded——机械校验观测面。
+        // external_hits（f1 A5）：行 concept 命中本批复用锚的行数——挂号行
+        // 锚定 registry 概念的可观察信号。
+        // 碎片裁决读数行（m9 补接）：total/rows/unhandled/degraded——同款观测面。
+        let stats = wiring.service.growth_run_stats();
+        name_hints_last = stats.as_ref().map(|stats| stats.name_hints).unwrap_or(0);
+        match stats {
+            Some(stats) => println!(
+                "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
+                 [retry: attempts_used={}, stop_reason={}]  \
+                 [provenance: rows={} invalid={} retried={} degraded={} external_hits={}]  \
+                 [fragments: total={} rows={} unhandled={} degraded={}]  \
+                 [names: name_hints={}]  \
+                 [redraft_spliced={}]  \
+                 [review_state: {} injections={} review_degraded={}]",
+                stats.attempts_used,
+                stats.stop_reason,
+                stats.review_provenance_rows,
+                stats.review_provenance_invalid,
+                stats.review_provenance_retried,
+                stats.review_provenance_degraded,
+                stats.review_provenance_external_hits,
+                stats.review_fragments_total,
+                stats.review_fragments_rows,
+                stats.review_fragments_unhandled,
+                stats.review_fragments_degraded,
+                stats.name_hints,
+                stats.redraft_spliced,
+                if stats.review_state { "on" } else { "off" },
+                stats.review_state_injections,
+                stats.review_degraded
+            ),
+            None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
+        }
+        // 批后对照读数（m10）：ready 前后并排的「后」半张——对照卡看批后
+        // 水位回升（on 臂），off 臂此行同样如实（verdict=disabled）。
+        match wiring.service.growth_verdict(&wiring.owner, &course_id).await {
+            Ok(view) => println!(
+                "[auto-refill] round {round} post verdict={} ready={} (对照 pre 行看批后水位)",
+                view.verdict, view.ready_count
+            ),
+            Err(error) => println!("[auto-refill] round {round} post verdict readout unavailable: {error}"),
+        }
+        // 铸名门外部证据读数（m11，读数面非门禁）：搜索/命中/扩邻/降级；
+        // off 臂（`NOMI_LEARNING_MINT_RESEARCH=off`）显式零 = 零搜索证明。
+        if let Some(mint) = wiring.service.mint_research_stats() {
+            println!(
+                "  [mint-research: searches={}, evidence_hits={}, expansions={}, degraded={}]",
+                mint.searches, mint.evidence_hits, mint.expansions, mint.degraded
+            );
+        }
+    }
+
+    if with_structure {
+        let snapshot: Option<String> = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&wiring.pool)
+        .await?;
+        if snapshot.as_deref().unwrap_or_default().trim().is_empty() {
+            eprintln!("CRITERION VIOLATION [loop] structure_json is missing after structure generation");
+            return Ok(ExitCode::from(2));
+        }
+    }
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_one(&wiring.pool)
+    .await?;
+    println!(
+        "OK  course={}  batches={batches}  nodes={total}  name_hints={name_hints_last}  ({} mode)",
+        course_id.as_str(),
+        if with_structure { "loop" } else { "grow" }
+    );
+    // 相位耗时读数（e1）：生长相位（多批逐条）。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "growth");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 确定性学习者替身：把全部未满足节点程序化标为 completed（触发自动生长）。
+async fn complete_all_nodes(
+    wiring: &SmokeWiring,
+    course_id: &nomifun_common::LearningCourseId,
+) -> Result<usize> {
+    let lesson_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT l.lesson_id FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_all(&wiring.pool)
+    .await?;
+    let mut driven = 0usize;
+    for (index, lesson_id) in lesson_ids.into_iter().enumerate() {
+        let lesson: nomifun_common::LearningLessonId =
+            nomifun_common::LearningLessonId::parse(&lesson_id)?;
+        // 确定性学习者替身：首节点 completed、其余 skipped——两种满足路径
+        // 都程序化过一遍（完成/跳过都会触发生长的自动检查；重复赋值幂等）。
+        let status = if index == 0 {
+            nomifun_learning::LessonStatus::Completed
+        } else {
+            nomifun_learning::LessonStatus::Skipped
+        };
+        let flipped = wiring
+            .service
+            .update_lesson_progress(&lesson, &wiring.owner, status)
+            .await;
+        match flipped {
+            Ok(()) => driven += 1,
+            Err(error) => eprintln!("stand-in: lesson {lesson_id} progress update failed: {error}"),
+        }
+    }
+    Ok(driven)
+}
+
+/// 等待第 `target` 个批次落定（applied），最多 25 分钟（r01：评审打回/
+/// 守卫原地重试/降级重试各占一轮 LLM，多轮耗时显著长于基线——20 分钟
+/// 实测在重裁第 3 轮被截断）。
+async fn wait_applied_batches(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    target: i64,
+) -> Result<bool> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25 * 60);
+    loop {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(pool)
+        .await?;
+        if count >= target {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+async fn batch_summary(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<(usize, i64)> {
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+    Ok((node_ids.len(), seq))
+}
+
+/// 声明面读数（absorb-8 z01，读数面非门禁）：本批节点 intent/scope 的 trim 后
+/// 字符均值（`[brief: rows=N intent_avg=X scope_avg=Y]`）。批未落 = None。
+async fn batch_brief_readout(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<Option<(usize, usize, usize)>> {
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+    if node_ids.is_empty() {
+        return Ok(None);
+    }
+    let briefs = fetch_node_briefs(pool, &node_ids).await?;
+    let mut intent_total = 0usize;
+    let mut scope_total = 0usize;
+    for lesson_id in &node_ids {
+        let (intent, scope) = briefs
+            .get(lesson_id.as_str())
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+        intent_total += intent.trim().chars().count();
+        scope_total += scope.trim().chars().count();
+    }
+    let rows = node_ids.len();
+    Ok(Some((rows, intent_total / rows, scope_total / rows)))
+}
+
+/// 全批节点声明行一次取回（逐节点 `SELECT intent, scope … WHERE lesson_id = ?`
+/// N+1 的批量化）：IN 占位符按批规模展开，一条查询取回
+/// (lesson_id, intent, scope)，内存装配成按 lesson_id 的映射。缺行不静默——
+/// 调用方按原 fetch_one 语义以 RowNotFound 如实报错。
+async fn fetch_node_briefs(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    node_ids: &[String],
+) -> Result<std::collections::HashMap<String, (String, String)>> {
+    let mut sql = String::from(
+        "SELECT lesson_id, intent, scope FROM learning_lessons WHERE lesson_id IN (",
+    );
+    for index in 0..node_ids.len() {
+        if index > 0 {
+            sql.push(',');
+        }
+        sql.push('?');
+    }
+    sql.push(')');
+    let mut query = sqlx::query_as::<_, (String, String, String)>(&sql);
+    for lesson_id in node_ids {
+        query = query.bind(lesson_id);
+    }
+    Ok(query
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(lesson_id, intent, scope)| (lesson_id, (intent, scope)))
+        .collect())
+}
+
+/// 批次机械判据审计（s1）：首批 assumes 地板（空账全空/非空账验覆盖） + 就绪即发布（既往供给覆盖）
+/// + 铸名全局唯一。
+async fn audit_batch(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<Vec<String>> {
+    let mut violations = Vec::new();
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+
+    // 声明面判据（absorb-8 z01）：ng.node.brief 契约门放行的批才会 applied
+    // （门拒 = 批不落 = wait_applied_batches 超时退出——判据「首批契约门过、
+    // 无 ng.node.brief 违约读数」的机械面），落库行 intent/scope 必须 trim 后
+    // 非空；空 = 门与落库断链（契约/落库漂移缺陷），如实违约。
+    // 全批声明行一次取回（fetch_node_briefs，N+1 批量化）。
+    let briefs = fetch_node_briefs(pool, &node_ids).await?;
+    for lesson_id in &node_ids {
+        let (intent, scope) = briefs
+            .get(lesson_id.as_str())
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+        if intent.trim().is_empty() || scope.trim().is_empty() {
+            violations.push(format!(
+                "节点声明面判据破坏：{lesson_id} 的 intent/scope 落库为空（ng.node.brief 门应已拦）"
+            ));
+        }
+    }
+
+    // 批内节点的 assumes。
+    let mut batch_assumes: Vec<(String, String, String)> = Vec::new(); // (lesson, concept, tier)
+    for lesson_id in &node_ids {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT concept_id, tier FROM learning_lesson_concepts \
+             WHERE role = 'assumes' AND lesson_id = ?",
+        )
+        .bind(lesson_id)
+        .fetch_all(pool)
+        .await?;
+        for (concept_id, tier) in rows {
+            batch_assumes.push((lesson_id.clone(), concept_id, tier));
+        }
+    }
+    // 首批机械地板（s1）：仅当登记表/已教账为空（缺省临时库从零合龙）时，
+    // 首批 assumes 必须全空。`--db` 指开发库时账是跨课程全局账、非空是常态
+    // ——账内概念可被首批合法引用，其覆盖性由下面的「就绪即发布」判据验证
+    // （该判据本就含其他课程的 teaches）。
+    if seq == 1 && !batch_assumes.is_empty() {
+        let taught_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             WHERE lc.role = 'teaches'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if taught_rows == 0 {
+            violations.push(format!(
+                "首批 assumes 必须全空（空登记表机械地板），发现 {} 条 assume 引用",
+                batch_assumes.len()
+            ));
+        }
+    }
+
+    // 就绪即发布：本批节点的每条 assumes 必须被「既往供给」（本课程更早批次
+    // 或其他课程的 teaches）以不低于所假定档位覆盖；同批（含更晚批）不算。
+    if !batch_assumes.is_empty() {
+        // lesson → 本课程批次 seq（仅本课程视图）。
+        let mut lesson_seq: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        let batch_rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, node_ids_json FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(pool)
+        .await?;
+        for (batch_seq, ids_json) in batch_rows {
+            for lesson_id in serde_json::from_str::<Vec<String>>(&ids_json).unwrap_or_default() {
+                lesson_seq.insert(lesson_id, batch_seq);
+            }
+        }
+        // 全局供给行：(lesson, concept, tier, course)。
+        let teaches_rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT lc.lesson_id, lc.concept_id, lc.tier, m.course_id \
+             FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             WHERE lc.role = 'teaches'",
+        )
+        .fetch_all(pool)
+        .await?;
+        let rank = |tier: &str| match tier {
+            "teach" => 2,
+            "apply" => 1,
+            _ => 0,
+        };
+        for (lesson_id, concept_id, tier) in &batch_assumes {
+            let covered = teaches_rows.iter().any(
+                |(teacher_lesson, teacher_concept, teacher_tier, teacher_course)| {
+                    if teacher_concept != concept_id || rank(teacher_tier) < rank(tier) {
+                        return false;
+                    }
+                    // 其他课程供给恒有效；本课程供给必须来自更早批次。
+                    if teacher_course != course_id.as_str() {
+                        return true;
+                    }
+                    lesson_seq
+                        .get(teacher_lesson)
+                        .map(|teacher_seq| *teacher_seq < seq)
+                        .unwrap_or(false)
+                },
+            );
+            if !covered {
+                violations.push(format!(
+                    "就绪即发布被破坏：批次 #{seq} 节点 {lesson_id} 假定概念 {concept_id}@{tier}，既往供给未覆盖"
+                ));
+            }
+        }
+    }
+
+    // 铸名不撞：登记表 canonical ∪ 别名全局唯一（大小写折叠）。
+    let registry_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT canonical, aliases_json FROM learning_concept_registry")
+            .fetch_all(pool)
+            .await?;
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (canonical, aliases_json) in &registry_rows {
+        let mut names = vec![canonical.trim().to_lowercase()];
+        for alias in serde_json::from_str::<Vec<String>>(aliases_json).unwrap_or_default() {
+            let alias = alias.trim().to_lowercase();
+            if !alias.is_empty() {
+                names.push(alias);
+            }
+        }
+        for name in names {
+            if let Some(owner) = seen.get(&name) {
+                if owner != canonical {
+                    violations.push(format!(
+                        "铸名撞名：「{name}」同时属于「{owner}」与「{canonical}」"
+                    ));
+                }
+            } else {
+                seen.insert(name, canonical.clone());
+            }
+        }
+    }
+    Ok(violations)
+}
+
+/// `learning-smoke xp`（j05）：XP 读数面冒烟。从零临时库种一门单课时课程
+/// （est 25 + 一道单选），走真实管线结算两笔——教新线（练习全对完成课时 =
+/// full 27）与复习线（卡到期答对自评 good = full 5）——然后打印读数与日历
+/// 快照。读数面非门禁：唯一硬判据是两笔结算经真实服务路径落账。
+async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
+    let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+
+    // 种子课程：单课时（est 25）+ 单选题，报名为 owner。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+    let activity_id = nomifun_common::LearningActivityId::new().into_string();
+    let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
+    let now = nomifun_common::now_ms();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'XP smoke course', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons (lesson_id, module_id, title, summary, position, estimated_minutes) \
+         VALUES (?, ?, 'Vectors', '', 0, 25)",
+    )
+    .bind(&lesson_id)
+    .bind(&module_id)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_enrollments \
+         (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&enrollment_id)
+    .bind(owner.as_str())
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    let config = serde_json::json!({
+        "answer": "4",
+        "options": ["3", "4"],
+        "explanation": "",
+        "distractors": [],
+        "matches": []
+    });
+    sqlx::query(
+        "INSERT INTO learning_activities \
+         (activity_id, lesson_id, kind, prompt, config_json, position) \
+         VALUES (?, ?, 'single_choice', '2 + 2 = ?', ?, 0)",
+    )
+    .bind(&activity_id)
+    .bind(&lesson_id)
+    .bind(serde_json::to_string(&config)?.as_str())
+    .execute(&wiring.pool)
+    .await?;
+
+    // 教新线：练习全对 → 完成课时 → full（25 + bonus 2）。
+    let activity = nomifun_common::LearningActivityId::parse(&activity_id)?;
+    let lesson = nomifun_common::LearningLessonId::parse(&lesson_id)?;
+    let attempt = service
+        .submit_attempt(&activity, &owner, serde_json::json!("4"), None, None)
+        .await?;
+    anyhow::ensure!(attempt.passed, "smoke attempt must pass");
+    service
+        .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
+        .await?;
+
+    // 复习线：卡重列到期 → 答对 → 自评 good → full（base 3 + bonus 2）。
+    sqlx::query("UPDATE learning_review_items SET due_at = ?")
+        .bind(nomifun_common::now_ms() - 1_000)
+        .execute(&wiring.pool)
+        .await?;
+    let due = service
+        .due_reviews(&owner, 10, &[], true, false, &[], &[])
+        .await?;
+    anyhow::ensure!(due.len() == 1, "expected exactly one seeded card");
+    let card = due[0].id.clone();
+    let answer = service
+        .answer_review(&card, &owner, serde_json::json!("4"), false, Some(9_000))
+        .await?;
+    anyhow::ensure!(answer.correct, "smoke answer must be correct");
+    service.rate_review(&card, &owner, nomifun_learning::ReviewRating::Good).await?;
+
+    // 读数/日历快照打印（读数面非门禁）。
+    let reading = service.xp_reading(&owner).await?;
+    let calendar = service.xp_calendar(&owner, 12).await?;
+    println!(
+        "xp reading: {}",
+        serde_json::to_string_pretty(&reading)?
+    );
+    let today = calendar.days.last().map(|day| (day.review_day, day.xp));
+    println!(
+        "xp calendar: {} buckets, today {today:?}, nonzero days {}",
+        calendar.days.len(),
+        calendar.days.iter().filter(|day| day.xp != 0).count(),
+    );
+
+    // 机械自检（只报告，不改退出码）：教新 27 + 复习 5 = 32。
+    let settled: (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN kind = 'node-completed' THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN kind = 'review-completed' THEN 1 ELSE 0 END), 0) \
+         FROM learning_xp_events",
+    )
+    .fetch_one(&wiring.pool)
+    .await?;
+    println!(
+        "xp events: total {} (node {} / review {}) — expected today_xp 32, got {}",
+        settled.0,
+        settled.1,
+        settled.2,
+        reading.today_xp
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke quiz`（q2 载体 + q3 质量增量）：quiz 回合全链路冒烟（零
+/// provider 依赖——变式生成无 provider 时如实跳过）。从零临时库种一门 K 节点
+/// 课程（est 25/节点，各带一道单选），走真实管线逐节点结算后开测，机械判据
+/// （失败非零退出）：
+/// ① K−1 结算时 start Conflict（附 N/K）、恰 K 到期；
+/// ② 弱先排序——末节点首卡推成错答（escalation 档）后必须先出；无 provider
+///    变式如实跳过（bank-only）；start 投影判底零字段；grade 判分并下发判底；
+/// ③ complete 逐节点分级落账——full/partial 各至少一笔、恒非负、账本总额与
+///    回合行对账一致（盘面复验）；
+/// ④ 校准读面——被真实推进卡的校准点带预测 R，分桶非空；
+/// ⑤ 同日折叠——第二轮（同计划）全折叠零计薪，账本零新增；
+/// ⑥ 首写为终——重复 complete Conflict。
+/// 变式的 LLM 调用落观测档案（ArchivingCompleter；有 provider 时生效）。
+async fn run_quiz(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    use std::collections::HashMap;
+
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
+    // k04：读数从零开始（进程内计数器，多次运行同一进程时不吃陈旧数）。
+    nomifun_learning::qb_readings::reset();
+    // u10：变式链读数同步归零（跳过变式数/证据逐字违约数——quiz 臂读数行）。
+    nomifun_learning::variant_readings::reset();
+    // 变式站的 LLM 调用落观测档案（structure 冒烟同纪律）：挂 ArchivingCompleter。
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    // 双环境判据（t5）：显式 provider 或指向带凭据库（--db）= 变式在场要求；
+    // 零凭据临时库 = 变式诚实跳过路径。在场与否以 plan 实况为准（凭据在
+    // 调用时解析），要求在场而一条都没生成 = 硬失败。
+    let require_variants = provider.is_some() || db.is_some();
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let now = nomifun_common::now_ms();
+
+    // 种子课程：K 节点（est 25），每节点一道单选（answer = "B"），报名 owner。
+    // u10 判底（on 臂）：变式只在「课时正文已生成」时装配 document——种子
+    // 节点带 content_generated=1 与简短正文（真实覆盖节点形态；正文缺席时
+    // 变式如实跳过，不造逐字证据），变式证据逐字核有真地面可引。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'quiz round smoke', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    let config =
+        r#"{"answer":"B","options":["A","B"],"explanation":"smoke","distractors":[],"matches":[]}"#;
+    let mut lesson_ids = Vec::new();
+    let mut activity_ids = Vec::new();
+    for index in 0..k {
+        let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+        let node_body = format!(
+            "Node {index} reviews the doubling fact: adding a number to itself doubles \
+             it. Example: 2 + 2 = 4 and 3 + 3 = 6, and the doubling of any whole number \
+             is always an even number."
+        );
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, ?, ?, ?, 25, 1)",
+        )
+        .bind(&lesson_id)
+        .bind(&module_id)
+        .bind(format!("Node {index}"))
+        .bind(&node_body)
+        .bind(index)
+        .execute(&wiring.pool)
+        .await?;
+        let activity_id = nomifun_common::LearningActivityId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, 'single_choice', ?, ?, 0)",
+        )
+        .bind(&activity_id)
+        .bind(&lesson_id)
+        .bind(format!("What is {index} + {index}?"))
+        .bind(config)
+        .execute(&wiring.pool)
+        .await?;
+        lesson_ids.push(lesson_id);
+        activity_ids.push(activity_id);
+    }
+    sqlx::query(
+        "INSERT INTO learning_enrollments \
+         (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&enrollment_id)
+    .bind(owner.as_str())
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let complete = async |lesson_id: &str| -> anyhow::Result<()> {
+        let lesson = nomifun_common::LearningLessonId::parse(lesson_id)
+            .map_err(|e| anyhow::anyhow!("lesson id: {e}"))?;
+        Ok(service
+            .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
+            .await?)
+    };
+
+    // ① 触发门：K−1 未到期（Conflict 附 N/K），恰 K 到期。
+    for lesson_id in &lesson_ids[..(k as usize - 1)] {
+        complete(lesson_id).await?;
+    }
+    let error = service.quiz_start(&owner, &course).await.unwrap_err();
+    anyhow::ensure!(
+        matches!(error, nomifun_common::AppError::Conflict(ref m) if m.contains(&format!("quiz not due: {}/", k - 1))),
+        "K−1 settlements must not be due: {error:?}"
+    );
+    complete(lesson_ids.last().expect("k ≥ 1")).await?;
+    println!("[1/6] trigger gate: not due at {}/K, due at K", k - 1);
+
+    // ② 弱先：把末节点的首卡推成「最近一次真实推进 = 错答」（escalation 档），
+    // 开测后它必须先出（交错序第 1 槽首位）。无 provider 时变式如实跳过
+    // （每节点只出旧题——learnhub「失败顺延」的回合内化）。
+    let weak_lesson = lesson_ids[(k as usize - 1)].clone();
+    let weak_item: String = sqlx::query_scalar(
+        "SELECT r.review_item_id FROM learning_review_items r \
+         JOIN learning_activities a ON a.activity_id = r.activity_id \
+         WHERE a.lesson_id = ? ORDER BY r.id LIMIT 1",
+    )
+    .bind(&weak_lesson)
+    .fetch_one(&wiring.pool)
+    .await?;
+    sqlx::query("UPDATE learning_review_items SET due_at = ? WHERE review_item_id = ?")
+        .bind(nomifun_common::now_ms() - 1_000)
+        .bind(&weak_item)
+        .execute(&wiring.pool)
+        .await?;
+    let weak_answer = service
+        .answer_review(
+            &nomifun_common::LearningReviewItemId::parse(&weak_item)?,
+            &owner,
+            serde_json::json!("A"),
+            false,
+            Some(1_000),
+        )
+        .await?;
+    anyhow::ensure!(
+        !weak_answer.correct,
+        "wrong answer must grade incorrect (auto Again = escalation sample)"
+    );
+    let round = service.quiz_start(&owner, &course).await?;
+    anyhow::ensure!(
+        round.questions[0].node_id.as_str() == weak_lesson,
+        "escalated node must come first, got {}",
+        round.questions[0].node_id
+    );
+    let plan_json_started: String =
+        sqlx::query_scalar("SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?")
+            .bind(&round.round_id)
+            .fetch_one(&wiring.pool)
+            .await?;
+    // 双环境分支（t5）：在场与否以 plan 实况为准——凭据在调用时解析，冒烟
+    // 不预判。在场 = 每节点 bank + 恰一变式（题数 > bank 题数）；不在场且
+    // 要求在场（--provider 或 --db 指带凭据库）= 硬失败；不在场且零凭据
+    // 临时库 = 变式诚实跳过路径（q2/q3 判据原样）。
+    let plan_items: Vec<serde_json::Value> = serde_json::from_str(&plan_json_started)?;
+    let is_variant =
+        |item: &serde_json::Value| item.get("origin").and_then(|v| v.as_str()) == Some("variant");
+    let variant_count = plan_items.iter().filter(|item| is_variant(item)).count();
+    // k04 读数行（非门禁）：题面防雷同门的确定性计数器——off 臂 sim_hits
+    // 与 dropped 恒 0（门不在），on 臂为门实际命中数。u10 追变式链读数：
+    // `variants_skipped_no_document`（正文缺席被如实跳过的变式数，on 臂才
+    // 会 >0）与 `evidence_verbatim_misses`（证据逐字核违约数，on 臂走既有
+    // 重试）——真机 A/B 的观测点；变式链开关态随行打印。w04 追
+    // `variant_same_stem_hits`（变式题面与本回合已落盘题面同干的命中数，
+    // 两臂——软约束照出只留痕）。
+    let qb = nomifun_learning::qb_readings::snapshot();
+    let variant_readings = nomifun_learning::variant_readings::snapshot();
+    println!(
+        "qb_similarity read-out: pools={k} pool_checks={} sim_hits={} dropped={} retries={} \
+         variants_generated={variant_count} variants_skipped_no_document={} \
+         evidence_verbatim_misses={} variant_same_stem_hits={} variant_v2={}",
+        qb.pool_checks,
+        qb.sim_hits,
+        qb.dropped,
+        qb.retries,
+        variant_readings.skipped_no_document,
+        variant_readings.evidence_verbatim_misses,
+        variant_readings.same_stem_hits,
+        if nomifun_learning::variant_v2_enabled() { "on" } else { "off" },
+    );
+    let variants_present = variant_count > 0;
+    // 每条计划项的判分底：bank 题 = 种子 config（answer "B"）；变式题 =
+    // payload.config_json 的 answer（判底随计划行内下发，不回库）。
+    let item_answer = |item: &serde_json::Value| -> serde_json::Value {
+        if is_variant(item) {
+            let config: serde_json::Value = serde_json::from_str(
+                item.pointer("/variant/config_json")
+                    .and_then(|v| v.as_str())
+                    .expect("variant payload carries config_json"),
+            )
+            .expect("variant config_json parses");
+            config.get("answer").cloned().expect("variant config carries answer")
+        } else {
+            serde_json::json!("B")
+        }
+    };
+    if variants_present {
+        let mut per_node: HashMap<&str, usize> = HashMap::new();
+        for item in &plan_items {
+            *per_node
+                .entry(item.get("node").and_then(|v| v.as_str()).unwrap_or_default())
+                .or_default() += 1;
+        }
+        anyhow::ensure!(
+            per_node.len() == k as usize && per_node.values().all(|count| *count == 2),
+            "variants present: every node must carry bank + one variant ({variant_count} variants over {} nodes)",
+            per_node.len()
+        );
+        anyhow::ensure!(
+            round.questions.len() == 2 * k as usize,
+            "variants present: per-node question count must exceed bank stock, got {}",
+            round.questions.len()
+        );
+    } else {
+        anyhow::ensure!(
+            !require_variants,
+            "credentials expected (explicit --provider/--model or --db) but no quiz variant was generated"
+        );
+        anyhow::ensure!(
+            round.questions.len() == k as usize,
+            "no provider: bank-only plan (one question per node), got {}",
+            round.questions.len()
+        );
+        anyhow::ensure!(
+            !plan_json_started.contains("\"origin\":\"variant\""),
+            "no provider: variants must be skipped honestly"
+        );
+    }
+    let view_json = serde_json::to_string(&round)?;
+    anyhow::ensure!(
+        !view_json.contains("explanation") && !view_json.contains("\"answer\""),
+        "start projection leaked judge fields"
+    );
+    let graded = service
+        .quiz_grade(
+            &owner,
+            &course,
+            &round.round_id,
+            round.questions[0].activity_id.as_str(),
+            &serde_json::json!("B"),
+        )
+        .await?;
+    anyhow::ensure!(
+        graded.correct && graded.answer == serde_json::json!("B"),
+        "grade must reveal the judge bottom after grading"
+    );
+    if variants_present {
+        // 变式判底随 grade 下发：变式题判分输入来自 plan 内 payload，答对
+        // 揭示的 answer 与 payload 一致（判分已定，揭示不破持答案红线）。
+        let variant_item = plan_items
+            .iter()
+            .find(|item| is_variant(item))
+            .expect("variant item present");
+        let variant_activity = variant_item
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .expect("variant activity id")
+            .to_owned();
+        let expected = item_answer(variant_item);
+        let graded_variant = service
+            .quiz_grade(&owner, &course, &round.round_id, &variant_activity, &expected)
+            .await?;
+        anyhow::ensure!(
+            graded_variant.correct && graded_variant.answer == expected,
+            "variant judge bottom must flow through grade: {:?}",
+            graded_variant
+        );
+    }
+    println!(
+        "[2/6] weak-first (escalated node first), {} sanitized start",
+        if variants_present {
+            format!("{variant_count} variants planned (bank + variant per node),")
+        } else {
+            "variants skipped honestly without provider,".to_owned()
+        }
+    );
+
+    // ③ 全卷作答：弱节点与其前一节点的题答错（partial 0×2）、其余全对
+    //（full 3×4 = 12）。变式在场时答满全计划（bank + 变式都作答——quiz 必
+    // 作答是测量语义）；错误节点的变式答一个非正确项。断言按 node 定位
+    //（计划序是弱先序）。
+    let wrong_nodes: Vec<String> = vec![
+        weak_lesson.clone(),
+        round
+            .questions
+            .iter()
+            .find(|q| q.activity_id.as_str() == activity_ids[(k as usize - 2)])
+            .map(|q| q.node_id.to_string())
+            .expect("second wrong node planned"),
+    ];
+    let mut answers = HashMap::new();
+    for item in &plan_items {
+        let activity = item
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .expect("plan activity id");
+        let node = item.get("node").and_then(|v| v.as_str()).expect("plan node");
+        let correct_answer = item_answer(item);
+        let response = if wrong_nodes.iter().any(|wrong| wrong == node) {
+            if is_variant(item) {
+                item.pointer("/variant/options")
+                    .and_then(|v| v.as_array())
+                    .and_then(|options| {
+                        options
+                            .iter()
+                            .map(|option| option.as_str().unwrap_or_default())
+                            .find(|option| serde_json::json!(*option) != correct_answer)
+                            .map(|option| serde_json::json!(option))
+                    })
+                    .unwrap_or_else(|| serde_json::json!("__wrong__"))
+            } else {
+                serde_json::json!("A")
+            }
+        } else {
+            correct_answer
+        };
+        answers.insert(activity.to_owned(), response);
+    }
+    let report = service
+        .quiz_complete(&owner, &course, &round.round_id, &answers)
+        .await?;
+    // 结算档位随答题量：full = 2 + 该节点题数（no-provider 每节点 1 题 =
+    // 3；变式在场 2 题 = 4），partial = 0。4 full + 2 partial。
+    let per_node_items = if variants_present { 2 } else { 1 };
+    let full_xp = 2 + per_node_items;
+    anyhow::ensure!(
+        report.earned_xp == full_xp * 4,
+        "4 full + 2 partial must settle {}, got {}",
+        full_xp * 4,
+        report.earned_xp
+    );
+    anyhow::ensure!(
+        report.covered.iter().all(|node| node.earned_xp.unwrap_or(0) >= 0),
+        "quiz settlements are never negative"
+    );
+    for entry in &report.covered {
+        let expected = if wrong_nodes.iter().any(|wrong| *wrong == entry.node_id.to_string()) {
+            Some(0)
+        } else {
+            Some(full_xp)
+        };
+        anyhow::ensure!(
+            entry.earned_xp == expected,
+            "tier check for node {}: expected {expected:?}, got {:?}",
+            entry.node_id,
+            entry.earned_xp
+        );
+    }
+    // 盘面复验：账本与回合行从磁盘重读，对账服务面读数（repair 模式）。
+    // 账本按本课程过滤——dev 库会累积历史冒烟课程的行，全局口径只在从零
+    // 临时库上成立。
+    let (events, ledger_total): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+         WHERE kind = 'quiz-completed' AND course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&wiring.pool)
+    .await?;
+    anyhow::ensure!(
+        (events, ledger_total) == (k, full_xp * 4),
+        "ledger re-read must match the report ({events} events, {ledger_total} xp)"
+    );
+    let (status, row_earned): (String, i64) = sqlx::query_as(
+        "SELECT status, earned_xp FROM learning_quiz_rounds WHERE round_id = ?",
+    )
+    .bind(&round.round_id)
+    .fetch_one(&wiring.pool)
+    .await?;
+    anyhow::ensure!(
+        status == "completed" && row_earned == full_xp * 4,
+        "round row must be completed with earned {} (got {status}/{row_earned})", full_xp * 4
+    );
+    println!("[3/6] settled per node: 4 full ({full_xp} xp each) + 2 partial (0 xp, never negative); ledger re-read matches");
+
+    // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
+    // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。
+    let calibration = service.quiz_calibration(&owner).await?;
+    anyhow::ensure!(
+        calibration.iter().any(|bin| bin.count >= 1),
+        "calibration bins must carry the pushed card's point"
+    );
+    println!(
+        "[4/6] calibration: {} bin(s), top count {} (predicted R vs actual)",
+        calibration.len(),
+        calibration.iter().map(|bin| bin.count).max().unwrap_or(0)
+    );
+
+    // ④ 同日折叠：第二轮（同计划直插 active）全对作答 → 全折叠零计薪。
+    // 复用同一 plan_json（变式在场时含变式判分底）→ 折叠结算全程零 LLM
+    // （变式不重铸：判底随计划行流转，不回库不重生成）。
+    let plan_json: String = sqlx::query_scalar(
+        "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
+    )
+    .bind(&round.round_id)
+    .fetch_one(&wiring.pool)
+    .await?;
+    let round_2 = nomifun_common::generate_id();
+    sqlx::query(
+        "INSERT INTO learning_quiz_rounds \
+         (round_id, user_id, course_id, started_at, status, plan_json) \
+         VALUES (?, ?, ?, ?, 'active', ?)",
+    )
+    .bind(&round_2)
+    .bind(owner.as_str())
+    .bind(&course_id)
+    .bind(nomifun_common::now_ms())
+    .bind(&plan_json)
+    .execute(&wiring.pool)
+    .await?;
+    let mut all_correct = HashMap::new();
+    for item in &plan_items {
+        let activity = item
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .expect("plan activity id");
+        all_correct.insert(activity.to_owned(), item_answer(item));
+    }
+    let folded = service
+        .quiz_complete(&owner, &course, &round_2, &all_correct)
+        .await?;
+    anyhow::ensure!(
+        folded.earned_xp == 0
+            && folded.covered.iter().all(|node| node.earned_xp.is_none()),
+        "same-day re-quiz must fold to zero earned with coverage kept"
+    );
+    let (events_after, total_after): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+         WHERE kind = 'quiz-completed' AND course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&wiring.pool)
+    .await?;
+    anyhow::ensure!(
+        (events_after, total_after) == (k, full_xp * 4),
+        "folded round must not double-pay (got {events_after}/{total_after})"
+    );
+
+    // ⑤ 首写为终：重复 complete Conflict。
+    let again = service
+        .quiz_complete(&owner, &course, &round.round_id, &answers)
+        .await
+        .unwrap_err();
+    anyhow::ensure!(
+        matches!(again, nomifun_common::AppError::Conflict(_)),
+        "repeat complete must be rejected (first write wins): {again:?}"
+    );
+    println!("[5/6] same-day fold (zero double-pay) confirmed");
+    println!("[6/6] first-write-wins: repeat complete rejected");
+
+    let progress = service.quiz_progress(&owner, &course).await?;
+    println!(
+        "OK  course={course_id}  settled={} earned={}  progress after quiz: {}/{} due={}",
+        report.covered.len(),
+        report.earned_xp,
+        progress.settled_count,
+        progress.trigger_count,
+        progress.due
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// w1 verify_math oracle 种子序列（蓝图 4.6 双保险）：模型必然见到的收益
+/// 数据，多通道预埋（先行节点例题正文与要点、前置概念定义、本节 summary、
+/// 本节点概念定义）。期望值算死（与 nomifun-learning 求值器单测对账）：
+/// 均值 0、平方和 30、/3 = 10、σ = √10 ≈ 3.1623——判据比对正文中
+/// 「3.16」/「3.2」字符串变体。种子只带数据不带答案（σ 不得预埋，否则
+/// oracle 不再测试计算）。
+const SMOKE_RETURN_SERIES: &str = "四个交易日的日对数收益（%）：+3.0, -1.0, +2.0, -4.0";
+
+/// `learning-smoke content`（j07 + n3 判据升级）：内容成色冒烟。立一门两
+/// 节点学习图课程（概念挂接 + 别名池 + 引用名 + 已会声明锚 + 先行节点两节
+/// 正文），为汇合节点（assumes 前置 + teaches 两概念）生成正文——概念面
+/// 投影、课程已知概念行（Known Names）、teaches 档位行、先例摘要随真实管
+/// 线注入。硬判据（全进 EXIT，learnhub smoke-content 六判据对齐，n2 D7）：
+/// ①输入面名单行（两面归档 user 含「课程已知概念」且命中布景概念——
+/// stale-binary 必红）②条款在场（规划面四条款 + 写作面两条款）③契约面
+/// （管线走通并发布 + est 铸值 == 节点 est）⑤先例行 + 先行节标题。编号
+/// 断档记档（评审裁定，判据面不重构）：④（落位面）不单列——由 ③ 契约面
+/// 的管线半边「管线走通并发布」承接（见下方 `generate_lesson_content` 调
+/// 用点：生成/发布失败即 EXIT=2，ready 正文发布即落位）；⑥（#179 入册）
+/// 属豁免项，不在本波判据清单。e4 追加⑦：瞬断注入臂——生成前掐断两次
+/// 开流再恢复（provider 层单次重试吸收第一断、门面重试环吸收第二断），
+/// 生成仍成功且重试读数 attempts_used=2/success。w1 追加⑧：verify_math
+/// oracle——种子收益序列多通道预埋（概念定义/先行节要点与正文/summary，
+/// 期望 σ=√10≈3.1623 算死），判据（w1 评审修复口径+A6 首跑复案）= verify_math 调用 ≥1
+/// 且 finish findings 无 `math_verify_failed` warning（发布观测帧 unresolved
+/// 槽 == 0——只数 Fail 后无复核 Pass 的未修正失败；累计 failed 只进读数行
+/// 不进硬门，自修正会话必须绿）且正文含「3.16」/「3.2」期望值变体（
+/// `math_verify read-out` 随附；viz_lint 读数经 f3 修复恢复真实）。
+/// absorb-8 z03 追加⑨：声明面骨架行两行——节点 B 带创建意图/教学范围播种，
+/// 归档 user 含两行（命中播种原文，stale-binary 必红）+ system 含「声明优
+/// 先（创建意图/教学范围）」条款；追加⑩（learnhub 3b07214 旧档负样本同
+/// 款）：判据之后把节点行 intent/scope 置空再走一次真实装配——两行省略、
+/// scope_findings 零触发、发布照常成功（旧档零变化；瞬断注入面先归零，
+/// ⑦只判首跑，负臂真实支付第二轮 LLM）。读数追加 `scope_findings
+/// read-out`（报告-only：发布帧披露的 scope_boundary_hit 条数，人判读非
+/// 门禁）。读数
+/// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
+/// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
+/// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
+#[allow(clippy::too_many_arguments)]
+async fn run_content(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let now = nomifun_common::now_ms();
+    // 最小两节点课程：L1 教 α；L2 assumes α（引用名 Alpha）teaches β；
+    // β 带活跃别名「实际波动率」（u11：同义换名——旧夹具的「贝塔系数」在
+    // 金融上是另一个概念，模型照写即事实错误）。概念面投影的数据源全部真实落库。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, '内容成色冒烟', '', 'general', 1, 'learning_graph', \
+                 '理解衍生品的基础计量工具', '', ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    let lesson_a = nomifun_common::LearningLessonId::new().into_string();
+    let lesson_b = nomifun_common::LearningLessonId::new().into_string();
+    // 声明面播种（absorb-8 z03 判据9/10）：节点 B 带创建意图/教学范围——
+    // 骨架行两行随真实管线装配进 user 面 + scope 词面核对的提取源（scope
+    // 边界词点名 GARCH——模型守界则零 findings，越界则读数行如实计数，
+    // 报告-only 非门禁）；节点 A 保持 DB 默认空串（旧档形态，判据⑤先例
+    // 面不受影响）。判据10 的负臂在判据之后把 B 置空再走一次装配。
+    let lesson_b_intent = "在收益率之后刻画波动率，承接两日换算例题";
+    let lesson_b_scope = "教波动率的直观动机与离散度量；不引入 GARCH 模型";
+    // w1 种子预埋（蓝图 4.6 双保险）：L2 summary 带种子序列。走查结论（报
+    // 告回写）：图线路径 generate_graph_lesson_content 的 SELECT 不取
+    // l.summary、LessonGenerationContext 也无 summary 字段——该通道不进生
+    // 成上下文（预埋保留为无害留痕，答案不经此泄露）；真实流通通道见下方
+    // 概念定义（前置路径「定义：」行）与先行节要点（前置摘要行）。
+    let lesson_b_summary = format!("波动率度量的直观动机；布景参考数据：{SMOKE_RETURN_SERIES}");
+    for (lesson_id, title, purpose, summary, position) in [
+        (
+            &lesson_a,
+            "收益率与对数收益率",
+            "建立收益率概念并能相互换算",
+            "",
+            0,
+        ),
+        (
+            &lesson_b,
+            "波动率的直观刻画",
+            "用收益分布理解波动率的度量动机",
+            lesson_b_summary.as_str(),
+            1,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, ?, ?, ?, ?, 20, 0)",
+        )
+        .bind(lesson_id)
+        .bind(&module_id)
+        .bind(title)
+        .bind(summary)
+        .bind(purpose)
+        .bind(position)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    // 节点 B 的声明两列（absorb-8 z03 正臂播种；z01 列 NOT NULL DEFAULT ''
+    // ——节点 A 不动即旧档）。
+    sqlx::query("UPDATE learning_lessons SET intent = ?, scope = ? WHERE lesson_id = ?")
+        .bind(lesson_b_intent)
+        .bind(lesson_b_scope)
+        .bind(&lesson_b)
+        .execute(&wiring.pool)
+        .await?;
+    let concept_alpha = nomifun_common::LearningConceptId::new().into_string();
+    let concept_beta = nomifun_common::LearningConceptId::new().into_string();
+    // w1 种子预埋（蓝图 4.6「概念定义通道兜底」+ 走查修正）：概念定义才是
+    // 图线真实流通的通道——assumes 概念（α）的定义经前置路径「定义：」行
+    // 进上下文（lesson.rs render_prerequisite_path）；teaches 概念（β）的
+    // 定义在 graph_node_topology 里不投影（仅 assumes 分支携带）——照蓝图
+    // 原文预埋 β，另按最小修正补 α（缺陷回写见报告）。
+    for (concept_id, canonical, aliases, definition) in [
+        (
+            &concept_alpha,
+            "对数收益率",
+            serde_json::json!([]),
+            format!("价格比取对数的一阶近似收益度量；参考数据：{SMOKE_RETURN_SERIES}"),
+        ),
+        (
+            &concept_beta,
+            "历史波动率",
+            serde_json::json!([{"name": "实际波动率", "status": "active"}]),
+            format!("收益序列离散程度的年化度量；参考数据：{SMOKE_RETURN_SERIES}"),
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(concept_id)
+        .bind(canonical)
+        .bind(aliases.to_string())
+        .bind(definition)
+        .bind(now)
+        .bind(now)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    // 挂接：L1 teaches α；L2 assumes α（引用名 Alpha）+ teaches β。
+    for (lesson_id, role, concept_id, tier, ref_name) in [
+        (&lesson_a, "teaches", &concept_alpha, "apply", None),
+        (&lesson_b, "assumes", &concept_alpha, "apply", Some("Alpha")),
+        (&lesson_b, "teaches", &concept_beta, "know", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_lesson_concepts \
+             (lesson_id, concept_id, role, tier, ref_name) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(lesson_id)
+        .bind(concept_id)
+        .bind(role)
+        .bind(tier)
+        .bind(ref_name)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    // 已会声明锚（m2，n3 布景对齐 learnhub 声明档案节）：学习者声明已会 α
+    // ——Known Names 的声明半边（∪ 去重：α 同时被 L1 教出）。
+    sqlx::query(
+        "INSERT INTO learning_basis_declarations \
+         (course_id, doors_json, blocks_json, concept_ids_json, declared_at, note) \
+         VALUES (?, '[]', '[]', ?, ?, 'content smoke 布景声明')",
+    )
+    .bind(&course_id)
+    .bind(serde_json::json!([concept_alpha]).to_string())
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    // 先行节点正文两节（n3 布景对齐 learnhub 先行节点节）：L1 落两节
+    // ready 正文——先行节标题判据面（#180）。标题不动（判据⑤机械 grep
+    // 面已核实；p02 双传收敛后标题经前置路径「已教节」行进 user 归档，
+    // 先例块只做概念归属映射——判据⑤按双载体分别断言）；w1 种子序列走
+    // s2 例题的正文与要点——要点经前置路径「已教节」行（title：points）
+    // 进生成上下文，正文照蓝图 4.6 第 1 条预埋。
+    // w1 种子预埋：s2 例题要点带序列（前置路径「已教节」行的流通通道）。
+    let s2_points = format!("相邻两日收益相加等于区间收益；参考数据：{SMOKE_RETURN_SERIES}");
+    for (section_key, kind, title, points, position) in [
+        (
+            "s1",
+            "concept",
+            "概念：对数收益的定义",
+            "价格比取对数的一阶近似",
+            0,
+        ),
+        (
+            "s2",
+            "example",
+            "例题：两日收益的对数换算",
+            s2_points.as_str(),
+            1,
+        ),
+    ] {
+        let body_seed = if section_key == "s2" {
+            format!("{title}\n\n布景正文（先行节点，供先例摘要引用节标题）。\n\n本例数据——{SMOKE_RETURN_SERIES}。")
+        } else {
+            format!("{title}\n\n布景正文（先行节点，供先例摘要引用节标题）。")
+        };
+        sqlx::query(
+            "INSERT INTO learning_lesson_sections \
+             (section_key, lesson_id, kind, title, points, visual, body_md, degraded, \
+              status, version, position, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, '表格', ?, 0, 'ready', 1, ?, ?, ?)",
+        )
+        .bind(section_key)
+        .bind(&lesson_a)
+        .bind(kind)
+        .bind(title)
+        .bind(points)
+        .bind(body_seed)
+        .bind(position)
+        .bind(now)
+        .bind(now)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    sqlx::query("UPDATE learning_lessons SET content_generated = 1 WHERE lesson_id = ?")
+        .bind(&lesson_a)
+        .execute(&wiring.pool)
+        .await?;
+
+    println!("[1/2] generating node B content (known names / tier / precedents ride the real pipeline)…");
+    let request = nomifun_learning::GenerateLessonRequest {
+        provider_id: provider
+            .as_deref()
+            .map(nomifun_common::ProviderId::parse)
+            .transpose()?,
+        model: model.clone(),
+        feedback: None,
+    };
+    let lesson_b_id = nomifun_common::LearningLessonId::parse(&lesson_b)?;
+    // 瞬断注入臂（e4）：生成前注入两次开流瞬断再恢复——第一断被 loop_core
+    // 的 provider 层开流单重试吸收，第二断由门面重试环吸收（retry_feedback
+    // 回灌 + 段级幂等续跑，已落库的节不重写），生成仍成功。E2E 实录形态
+    // （第二次瞬断即 BAD_GATEWAY 裸抛）在此必红。
+    wiring.lesson_flaky_remaining.store(2, std::sync::atomic::Ordering::SeqCst);
+    println!("  (transient injection: 2 stream-open cuts queued before the run)");
+    // 硬判据③（契约面，管线半边）= 管线真实走通并发布：生成失败如实非零
+    // 退出（无凭据临时库走到这里即报 no enabled provider——structure 冒烟
+    // 同纪律）。
+    let view = match service
+        .generate_lesson_content(&owner, &lesson_b_id, &request)
+        .await
+    {
+        Ok(view) => view,
+        Err(error) => {
+            eprintln!("content generation FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+
+    println!("[2/2] hard criteria (D7: input face / clauses / contract / precedents)…");
+    let mut failed: Vec<String> = Vec::new();
+    // 判据⑦（e4 瞬断注入臂）：两次注入全部被吸收（计数归零）+ 门面重试环
+    // 读数 attempts_used=2 / stop_reason=success——瞬断自愈不是靠运气，是
+    // 重试环真实跑了两试。
+    {
+        let injected_left = wiring
+            .lesson_flaky_remaining
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let stats = service.lesson_run_stats();
+        let attempts = stats.as_ref().map(|stats| stats.attempts_used).unwrap_or(0);
+        let stop_reason = stats
+            .as_ref()
+            .map(|stats| stats.stop_reason.as_str())
+            .unwrap_or("missing");
+        println!(
+            "transient read-out: injected_remaining={injected_left} attempts_used={attempts} stop_reason={stop_reason}"
+        );
+        if injected_left != 0 {
+            failed.push(format!(
+                "判据7红：瞬断注入未被全部吸收（剩余 {injected_left} 次未消费）——注入面失灵"
+            ));
+        }
+        if attempts != 2 || stop_reason != "success" {
+            failed.push(format!(
+                "判据7红：门面重试环读数异常（attempts_used={attempts}, stop_reason={stop_reason}，应为 2/success）——第二断应由重试环吸收"
+            ));
+        }
+    }
+    // 观测存档行：user 字段 = 输入面（两面装配事实），system 字段 = 条款面。
+    let archive = archiving.as_ref().expect("content smoke wires archiving");
+    let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+        .unwrap_or_default();
+    let rows: Vec<serde_json::Value> = calls
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect();
+    let user_texts: Vec<&str> = rows
+        .iter()
+        .filter_map(|value| value.get("user").and_then(|v| v.as_str()))
+        .collect();
+    let system_texts: Vec<&str> = rows
+        .iter()
+        .filter_map(|value| value.get("system").and_then(|v| v.as_str()))
+        .collect();
+
+    // 判据①：输入面名单行——user 归档含「课程已知概念」行且命中布景概念
+    // （声明 ∪ 已教并集；stale-binary 必红：装配面旧档无此行）。
+    let known_calls = user_texts
+        .iter()
+        .filter(|user| {
+            user.contains("课程已知概念")
+                && user.contains("对数收益率")
+                && user.contains("历史波动率")
+        })
+        .count();
+    if known_calls == 0 {
+        failed.push(
+            "判据1红：归档 user 缺「课程已知概念」名单行或未命中布景概念（对数收益率/历史波动率）——#177 输入面"
+                .into(),
+        );
+    }
+    // 判据②：条款在场——规划面四条款 + 写作面两条款（stale-binary 门）。
+    // 「意图画像与容量预算」挂在 NOMI_LEARNING_EST_BUDGET 语义臂上：off 臂按
+    // 设计换回旧 #154 条款（EST_LEGACY_CLAUSE_CN），判据按臂接受对应条款。
+    let budget_term = if nomifun_learning::est_budget_enabled() {
+        "意图画像与容量预算"
+    } else {
+        "明显超容才"
+    };
+    let system_joined = system_texts.join("\n");
+    for term in [
+        "构件词边界",
+        "练习形态按档位",
+        "取材池",
+        budget_term,
+        "表述工具在场",
+        "规划即雄心",
+    ] {
+        if !system_joined.contains(term) {
+            failed.push(format!("判据2红：system 归档缺条款「{term}」——二进制可能是旧档"));
+        }
+    }
+    // 判据③（铸值半边）：on 臂 est 铸值 == 节点 est（20；草稿以节点尺寸锚
+    // 开盘）；off 臂按设计回落默认 10、由模型复议——只做健全性区间。
+    if nomifun_learning::est_budget_enabled() {
+        if view.est != 20 {
+            failed.push(format!(
+                "判据3红：est={}，应为节点 est 20（铸值面）",
+                view.est
+            ));
+        }
+    } else if !(1..=240).contains(&view.est) {
+        failed.push(format!(
+            "判据3红：off 臂 est={} 越出 1-240 健全区间（模型复议值）",
+            view.est
+        ));
+    }
+    // 判据⑤（p02 双传收敛后双载体，#180 输入面）：先行节标题「概念：对
+    // 数收益的定义」经前置路径「已教节」行（title：points）进 user 归档
+    // ——不再由先例块承载；先例块本身按 p02 新形状单独验证——「已建立
+    // 先例」块头 + 「概念「X」← 节点「Y」」归属映射行（概念=登记表正名、
+    // 节点=教出它的 L1 标题；节清单/节标题已移出先例块，细节由前置路径
+    // 承载）。两载体缺一即红（旧断言三条件并判，映射行缺席可被前置路径
+    // 行补位而假绿——本断言补上先例块自身的验证面）。
+    let taught_path_calls = user_texts
+        .iter()
+        .filter(|user| user.contains("概念：对数收益的定义"))
+        .count();
+    if taught_path_calls == 0 {
+        failed.push(
+            "判据5红：归档 user 缺前置路径「已教节」行（概念：对数收益的定义）——#180 输入面"
+                .into(),
+        );
+    }
+    let precedent_calls = user_texts
+        .iter()
+        .filter(|user| {
+            user.contains("已建立先例")
+                && user.contains("概念「对数收益率」← 节点「收益率与对数收益率」")
+        })
+        .count();
+    if precedent_calls == 0 {
+        failed.push(
+            "判据5红：归档 user 缺先例块归属映射行（概念「对数收益率」← 节点「收益率与对数收益率」）——#180 输入面（p02 新形状）"
+                .into(),
+        );
+    }
+    // 判据9（absorb-8 z03，声明面骨架行两行 + 声明优先条款）：节点 B 带声
+    // 明播种 → 归档 user 含「创建意图：」「教学范围：」两行（命中播种原文
+    // ——行格式逐字固定，stale-binary 必红）；system 含「声明优先（创建意
+    // 图/教学范围）」条款（learnhub content-plan 声明优先 + content-write
+    // 以教学范围声明为界 的 allo 合成——两字段在场为意图/边界第一真相）。
+    {
+        let declaration_calls = user_texts
+            .iter()
+            .filter(|user| {
+                user.contains(&format!("创建意图：{lesson_b_intent}"))
+                    && user.contains(&format!("教学范围：{lesson_b_scope}"))
+            })
+            .count();
+        if declaration_calls == 0 {
+            failed.push(format!(
+                "判据9红：归档 user 缺声明面两行（创建意图：{lesson_b_intent} / 教学范围：{lesson_b_scope}）——#205 声明面装配"
+            ));
+        }
+        if !system_joined.contains("声明优先（创建意图/教学范围）") {
+            failed.push(
+                "判据9红：system 归档缺「声明优先（创建意图/教学范围）」条款——二进制可能是旧档"
+                    .into(),
+            );
+        }
+    }
+
+    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。密度基线
+    // （e5）：节均字符量 + 例题节数——learnhub 定调「语义纪律不是机械门」，
+    // 不立字数下限，只立对照基线（薄不薄看画像是否吃到 est×档位，回查
+    // est_budget / boundary 读数行）。
+    let body_chars: usize = view
+        .sections
+        .iter()
+        .map(|section| section.body_md.chars().filter(|c| !c.is_whitespace()).count())
+        .sum();
+    let section_count = view.sections.len();
+    let sec_avg_chars = if section_count == 0 { 0 } else { body_chars / section_count };
+    let example_sections = view
+        .sections
+        .iter()
+        .filter(|section| section.kind == nomifun_learning::SectionKind::Example)
+        .count();
+    let joined: String = view
+        .sections
+        .iter()
+        .map(|section| section.body_md.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    println!(
+        "content read-out: sections={} activities={} body_chars={body_chars} \
+         sec_avg_chars={sec_avg_chars} example_sections={example_sections} est={}",
+        view.sections.len(),
+        view.activities.len(),
+        view.est,
+    );
+    // w1 verify_math oracle（蓝图 4.6/A6）：计数取自修复后的发布观测帧
+    // （calls.jsonl 的 lesson_agent_publish 行——f3 修复后该帧带 viz_lint_
+    // events 与 math_verify）。判据⑧（硬，进 EXIT；w1 评审修复口径+A6 首跑
+    // 复案）：verify_math 调用 ≥1 且 finish findings 无 `math_verify_failed`
+    // warning（帧 unresolved 槽 == 0：Fail 后无复核 Pass 的未修正失败数，
+    // Q1 口径——自修正会话「核验失败→打回→复核过→过闸」必须绿）。累计 failed
+    // 是会话计数（含已自修正失败），只进 read-out 读数行不进硬门。
+    // **A6 首跑复案（w1 真机 b 臂实录）**：种子 σ 字符串门从硬门降为软读数
+    // ——模型自选例题数字并全程 verify_math 实算（calls≥1 且 unresolved==0）
+    // 即合规，预埋序列只是测试夹具；硬门用种子字符串把数学合规的课误判红。
+    let (mut math_calls, mut math_passed, mut math_failed, mut math_unresolved) =
+        (0u64, 0u64, 0u64, 0u64);
+    let mut math_batches = 0u64;
+    for value in rows
+        .iter()
+        .filter(|value| value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish"))
+    {
+        if let Some(counters) = value.get("math_verify") {
+            math_calls += counters.get("calls").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_passed += counters.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_failed += counters.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_unresolved += counters.get("unresolved").and_then(|v| v.as_u64()).unwrap_or(0);
+            // u05 批量读数（claims 数组形式的调用数；旧档无此键按 0——
+            // off 臂恒 0，on 臂 >0 且 calls/batches 即每批 claim 数）。
+            math_batches += counters.get("batches").and_then(|v| v.as_u64()).unwrap_or(0);
+        }
+    }
+    println!(
+        "math_verify read-out: calls={math_calls} passed={math_passed} failed={math_failed} unresolved={math_unresolved} batches={math_batches}"
+    );
+    if math_calls == 0 {
+        failed.push(
+            "判据8红（w1）：verify_math 调用计数为 0——模型未把可算量送核验（R14 条款未落地或工具面未生效）"
+                .into(),
+        );
+    }
+    // 硬门按 finish findings 口径：finish 门按传入的未复核修正数追加
+    // `math_verify_failed` warning（lesson_draft.rs），unresolved > 0 = 有
+    // 核验失败未按 R14 复核闭环。累计 failed 不在此判（含已自修正失败）。
+    if math_unresolved != 0 {
+        failed.push(format!(
+            "判据8红（w1）：finish findings 带 math_verify_failed warning（unresolved={math_unresolved}）——核验失败未按 R14 复核闭环（改正文后用 verify_math 重新提交）；累计 failed={math_failed} 只作读数"
+        ));
+    }
+    // 种子序列采用率（软读数非门禁——A6 首跑复案，见上）。
+    let seed_adopted = joined.contains("3.16") || joined.contains("3.2");
+    println!(
+        "seed_series read-out: adopted={seed_adopted}（期望 σ=√10≈3.1623；软读数非门禁）"
+    );
+    println!(
+        "faces: mentions_log_returns={} mentions_beta_canonical={} mentions_alias={}",
+        joined.contains("对数收益率"),
+        joined.contains("历史波动率"),
+        joined.contains("实际波动率"),
+    );
+    // k03 读数面（非门禁）：预算行与超容自报在观测存档里的在场性——双臂
+    // 对照的机械读数（off 臂预算行 0）。
+    {
+        // 预算行按注入原文（"- 时长预算："）在 **user 字段** 计数——系统
+        // 提示词里的说明句同样以该词开头，不能整行 grep。
+        let budget_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("- 时长预算："))
+            .count();
+        // 超容自报按发布观测行计数（实际产物，非 schema 提及；缺席合法）。
+        let capacity_notes = rows
+            .iter()
+            .filter(|value| {
+                value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+            })
+            .filter_map(|value| value.get("capacity_note").cloned())
+            .filter(|note| !note.is_null())
+            .count();
+        println!(
+            "est_budget read-out: budget_line_calls={budget_line_calls} capacity_note_events={capacity_notes}"
+        );
+        // f3 读数面（非门禁）：viz lint 事件经发布帧披露的累计（op 打回 +
+        // 终检剔除）——0 = 生成期零 lint 介入（真机判据：零打回或打回后自愈；
+        // 出现剔除事件回查 tracing 的 viz_block_lint_dropped 行）。
+        let viz_lint_events: u64 = rows
+            .iter()
+            .filter(|value| {
+                value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+            })
+            .filter_map(|value| value.get("viz_lint_events").and_then(|v| v.as_u64()))
+            .sum();
+        println!("viz_lint read-out: viz_lint_events={viz_lint_events}");
+        // scope 词面核对读数（absorb-8 z03，报告-only 非门禁）：发布帧披露
+        // 的 scope_boundary_hit 条数——0 = 零命中或旧档零扫描；命中只进观察
+        // 条/生成报告，人判读，不拦截不重试。
+        let scope_hit_events: u64 = rows
+            .iter()
+            .filter(|value| {
+                value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+            })
+            .filter_map(|value| value.get("scope_findings").and_then(|v| v.as_u64()))
+            .sum();
+        println!(
+            "scope_findings read-out: first_pass_hits={scope_hit_events}（报告-only：命中只进观察条，人判读非门禁）"
+        );
+        // k05 读数面（非门禁）：四条纪律短语在存档里的在场性（off 臂 0）。
+        let discipline_hits = [
+            "具象替身先（R10）",
+            "受众语域（R11）",
+            "表述工具在场（R12）",
+            "断言-例子一致（R13）",
+        ]
+        .iter()
+        .map(|phrase| {
+            (
+                *phrase,
+                calls.lines().filter(|line| line.contains(phrase)).count(),
+            )
+        })
+        .collect::<Vec<_>>();
+        println!(
+            "content_discipline read-out: {}",
+            discipline_hits
+                .iter()
+                .map(|(phrase, count)| format!("{phrase}={count}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        // n3 读数面（非门禁）：档位行与先例行在场计数（双臂对照）。
+        let tier_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("节点档位"))
+            .count();
+        let known_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("课程已知概念"))
+            .count();
+        let precedent_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("已建立先例"))
+            .count();
+        println!(
+            "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
+        );
+        // u07 读数面（非门禁）：档位优先序条款在存档 system 帧的在场计数
+        // ——on 臂随条款注入（= system 帧数），off 臂 0——双臂对照的机械
+        // grep，与 k05 discipline 读数同款。读数行保持纯 key=value ASCII
+        //（与同文件其它读数行一致），双臂说明只住本注释。
+        let tier_clause_calls = calls.lines().filter(|line| line.contains("档位优先序（u07）")).count();
+        println!(
+            "tier_priority read-out: clause_in_system={tier_clause_calls}"
+        );
+        // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
+        // 历史波动率/实际波动率），超纲专名（布朗运动/伊藤引理/GARCH/维纳过程）
+        // 未声明地出现 = 读数红，回 #177/#178 续裁（对照卡人读清单）。scope
+        // 感知豁免（p03）：命中词已在本节点 intent/scope 声明原文（user 帧的
+        // 「创建意图：」「教学范围：」两行）= 声明过的词正文提及属边界诚实，
+        // 不计 hit——真机 run-1793829277050 病历（scope「不引入 GARCH」+
+        // 诚实边界句被误计 hit=1 与 scope_findings=0 并存）不再复发。
+        let declaration_text = declaration_lines_from_user_frames(&user_texts).join("\n");
+        let overshoot = scope_aware_overshoot_hits(&declaration_text, &joined);
+        println!(
+            "overshoot read-out: known-domain words only; out-of-bounds proper nouns hit={overshoot} (scope-aware; human card)"
+        );
+    }
+    println!(
+        "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
+        cli.data_dir.display()
+    );
+    // 相位耗时读数（e1）：内容相位（多节点逐条）——9-15 次串行小调用的
+    // 调用数与字符量基线，两遍式对照（后续票）从这里起表。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "lesson");
+
+    // 判据10（absorb-8 z03 旧档负样本，learnhub 3b07214 同款）：生成后将节
+    // 点行 intent/scope 置空再走一次真实装配——两行省略（旧档零变化）、
+    // scope_findings 零触发（无声明即无排除面）、发布照常成功（report-only
+    // 与声明面都不改变旧档的发布语义）。瞬断注入面先归零（判据⑦只判首跑）。
+    {
+        println!("[negative] regenerating node B with legacy shape (intent/scope zeroed)…");
+        sqlx::query(
+            "UPDATE learning_lessons SET intent = '', scope = '', content_generated = 0 \
+             WHERE lesson_id = ?",
+        )
+        .bind(&lesson_b)
+        .execute(&wiring.pool)
+        .await?;
+        wiring
+            .lesson_flaky_remaining
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        let calls_before = rows.len();
+        if let Err(error) = service
+            .generate_lesson_content(&owner, &lesson_b_id, &request)
+            .await
+        {
+            failed.push(format!("判据10红：旧档（intent/scope 置空）重装配失败：{error}"));
+        } else {
+            let calls_after = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+                .unwrap_or_default();
+            let new_rows: Vec<serde_json::Value> = calls_after
+                .lines()
+                .skip(calls_before)
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect();
+            let legacy_user_hits = new_rows
+                .iter()
+                .filter_map(|value| value.get("user").and_then(|v| v.as_str()))
+                .filter(|user| user.contains("创建意图：") || user.contains("教学范围："))
+                .count();
+            if legacy_user_hits != 0 {
+                failed.push(format!(
+                    "判据10红：旧档装配出 {legacy_user_hits} 个声明两行 user 帧——缺席省略失灵"
+                ));
+            }
+            let legacy_scope_hits: u64 = new_rows
+                .iter()
+                .filter(|value| {
+                    value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+                })
+                .filter_map(|value| value.get("scope_findings").and_then(|v| v.as_u64()))
+                .sum();
+            if legacy_scope_hits != 0 {
+                failed.push(format!(
+                    "判据10红：旧档（scope 空）scope_findings={legacy_scope_hits}——零扫描失灵"
+                ));
+            }
+            println!(
+                "declaration read-out: legacy_two_line_user_frames={legacy_user_hits} legacy_scope_findings={legacy_scope_hits}（应为 0/0——旧档零变化）"
+            );
+        }
+    }
+
+    if !failed.is_empty() {
+        for failure in &failed {
+            eprintln!("{failure}");
+        }
+        return Ok(ExitCode::FAILURE);
+    }
+    println!("\n== 判据全过（EXIT=0） ==");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke mount`（j08）：结构挂载冒烟。从零库立一门带结构快照的
+/// 学习图课程（两块 + 三节点），跑真实挂载回合，机械判据：①落位（状态
+/// mounted、三节点全评估）②hash 锚定（挂载行 hash = 结构字节 FNV-1a）
+/// ③条数一致；随后**重跑幂等**——待挂集空必须 skipped，否则 EXIT=4。
+/// 读数面非门禁；无凭据临时库如实失败（structure 冒烟同纪律）。
+async fn run_mount(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 与应用同接线（completer 注入是挂载回合的硬依赖）。
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+
+    // 种子：图课程（结构快照两块）+ 三节点。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let now = nomifun_common::now_ms();
+    let structure = serde_json::json!({
+        "goal": "挂载冒烟目标",
+        "spines": [{ "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }],
+        "blocks": [
+            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "basic", "note": "第一块" },
+            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "advanced", "note": "第二块" }
+        ],
+        "edges": []
+    });
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": structure,
+        "terrain": { "doors": [] },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '挂载冒烟', '', 'general', 1, 'learning_graph', '挂载冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+    for (position, title) in ["节点一", "节点二", "节点三"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+             VALUES (?, ?, ?, '', 'p', ?, 10)",
+        )
+        .bind(nomifun_common::LearningLessonId::new().into_string())
+        .bind(&module_id)
+        .bind(title)
+        .bind(position as i64)
+        .execute(&pool)
+        .await?;
+    }
+
+    let model_override = match provider.as_deref().zip(model.as_deref()) {
+        Some((p, m)) => Some((nomifun_common::ProviderId::parse(p)?, m.to_owned())),
+        None => None,
+    };
+    let override_ref =
+        model_override.as_ref().map(|(provider, model)| (provider, model.as_str()));
+
+    println!("[1/2] first mount round (real pipeline)…");
+    let first = service
+        .run_structure_mount(&owner, &nomifun_common::LearningCourseId::parse(&course_id)?, override_ref)
+        .await?;
+    println!(
+        "mount read-out: status={} pending={} mounted={} outside={} total_entries={} hash={}",
+        first.status,
+        first.pending_nodes,
+        first.mounted_nodes,
+        first.outside_nodes,
+        first.total_entries,
+        first.structure_hash
+    );
+    anyhow::ensure!(first.status == "mounted", "first round must mount, got {}", first.status);
+    anyhow::ensure!(
+        first.pending_nodes == 3 && first.mounted_nodes + first.outside_nodes == 3,
+        "three nodes must all be evaluated"
+    );
+    // hash 锚定：挂载行 hash = 规范化 structure 投影的 FNV-1a（v2）。
+    let structure_raw: String =
+        sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+            .bind(&course_id)
+            .fetch_one(&pool)
+            .await?;
+    let (row_hash, row_version, mounts_json): (i64, i64, String) = sqlx::query_as(
+        "SELECT structure_hash, hash_version, mounts_json \
+         FROM learning_structure_mounts WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&pool)
+    .await?;
+    let expected = nomifun_learning::hash_structure_column(&structure_raw).0;
+    anyhow::ensure!(
+        row_hash as u64 == expected,
+        "mount row hash {} != canonical(structure) {expected}",
+        row_hash
+    );
+    anyhow::ensure!(
+        row_version == nomifun_learning::STRUCTURE_HASH_VERSION,
+        "mount row hash_version {row_version} must be the current generation"
+    );
+    let entries: serde_json::Value = serde_json::from_str(&mounts_json)?;
+    anyhow::ensure!(
+        entries.as_array().is_some_and(|items| items.len() == 3),
+        "mount entries must cover all three nodes"
+    );
+
+    println!("[2/2] idempotency: second round must be skipped (pending set empty)…");
+    let second = service
+        .run_structure_mount(&owner, &nomifun_common::LearningCourseId::parse(&course_id)?, override_ref)
+        .await?;
+    println!(
+        "second round: status={} pending={} total_entries={}",
+        second.status, second.pending_nodes, second.total_entries
+    );
+    if second.status != "skipped" {
+        eprintln!("IDEMPOTENCY VIOLATION: second round must be skipped, got {}", second.status);
+        return Ok(ExitCode::from(4));
+    }
+    anyhow::ensure!(
+        second.total_entries == first.total_entries,
+        "skipped round must not touch the mount row"
+    );
+    println!("OK  course={course_id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke repair`（j09）：结构修补冒烟。从零库立一门带结构快照的
+/// 学习图课程并落一条 findings 留痕，跑真实修补回合（skip/noop 照印），
+/// 机械判据：①**盘面复验**——回合后从磁盘重读结构快照，独立跑全量 gd.*
+/// validator（零放宽）②**级联标记**——结构已改（old≠new hash）时挂载必
+/// 须判 stale，否则 EXIT=3。读数面非门禁；无凭据临时库如实失败。
+/// 合法结构种子信封（修补/维护两档共用；t1 修法 1 的 6 主干 × 42 块盘面，
+/// 逐项过 gd.* 全量 validator——回合无论 applied 还是 noop 都不会被条款门
+/// 误杀）。
+fn valid_structure_seed_envelope(goal: &str, now: i64) -> serde_json::Value {
+    let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+    let stages = ["basic", "advanced", "expert"];
+    let mut blocks = Vec::new();
+    for (spine_index, spine) in spine_names.iter().enumerate() {
+        for block_index in 0..7 {
+            let ordinal = spine_index * 7 + block_index;
+            blocks.push(serde_json::json!({
+                "name": format!("块{ordinal:02}"),
+                "slug": format!("block-{ordinal:02}"),
+                "spine": spine,
+                "stage": stages[ordinal % stages.len()],
+                "note": format!("第 {ordinal} 个主题的一句话描述"),
+            }));
+        }
+    }
+    let structure = serde_json::json!({
+        "goal": goal,
+        "goal_type": "capability",
+        "proficiency_statement": "达成后能独立复述本结构的修补判据",
+        "domain_type": "theory",
+        "form_reference": "Flowy 学习结构模板 v1",
+        "source_tier": "catalog",
+        "generated_by": "learning-smoke-seed",
+        "disclaimer": "冒烟种子为静态合法盘面，仅供回合验证",
+        "domain": {
+            "core_definition": "冒烟课程的合法结构基线",
+            "includes": ["结构判据", "修补操作", "留痕通道"],
+            "excludes": ["真实课程内容", "学习者数据", "生产库"],
+            "prerequisite_doors": ["G1"],
+            "audience": "冒烟操作者",
+            "scenarios": ["回合验证", "盘面复验"],
+            "granularity": "每块一个可独立教学的主题",
+        },
+        "spines": spine_names.iter().map(|spine| serde_json::json!({
+            "name": spine,
+            "definition": format!("{spine}的一句话定义"),
+            "key_points": ["要点一"],
+            "instance": format!("达标{spine}时能独立完成一次复述"),
+        })).collect::<Vec<_>>(),
+        "blocks": blocks,
+        "edges": [
+            { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" },
+            { "source": "块08", "target": "块09", "type": "composes", "tier": "apply", "note": "组装" },
+            { "source": "块15", "target": "块16", "type": "contrasts", "tier": "know", "note": "对照" },
+        ],
+        "gaps": [
+            { "item": "应用情境覆盖不足", "direction": "补情境块" },
+            { "item": "图像法未展开", "direction": "补图像判读" },
+            { "item": "近似解法缺位", "direction": "补估算策略" },
+        ],
+        "quality": [
+            { "check": "主干数在 6–12 档", "status": "met" },
+            { "check": "块名一物一名", "status": "met" },
+            { "check": "边端点全部可解析", "status": "met" },
+            { "check": "无顺序承诺", "status": "met" },
+            { "check": "盲区已标注", "status": "met" },
+        ],
+    });
+    serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": structure,
+        "terrain": {
+            "goal": goal,
+            "learner_basis_assumed": "已具备结构判据的基线认识",
+            "generated_by": "learning-smoke-seed",
+            "disclaimer": "冒烟种子地形，仅供门口对账",
+            "doors": [
+                { "id": "G1", "criterion": "能读懂结构快照的块与边", "kind": "hard" },
+            ],
+        },
+    })
+}
+
+async fn run_repair(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+
+    // 种子：全量合法 gd.* 盘面（t1 修法 1——对齐 structure_contract 金样形状：
+    // 6 主干 × 42 块、八标量键齐、gaps/quality 齐、门口 G1 地形对账）+ 一条
+    // findings 留痕（触发门槛）。旧的最小种子（2 块、零 frontmatter）从两条
+    // 路都是死路：非空 ops 应用后全量复核必拒、noop 盘面原样复验必拒——种
+    // 子合法化后 applied（修补 op 应用后仍合法）与 noop（盘面没动）都可行。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let now = nomifun_common::now_ms();
+    let envelope = valid_structure_seed_envelope("修补冒烟目标", now);
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '修补冒烟', '', 'general', 1, 'learning_graph', '修补冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_structure_findings \
+         (ts, course_id, seq, source, node, field, issue, advice) \
+         VALUES (?, ?, 1, 'concept-review', '', '', '冒烟留痕：结构缺少一条对照边', '补一条 contrasts 边连接两块')",
+    )
+    .bind(now)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+
+    let model_override = match provider.as_deref().zip(model.as_deref()) {
+        Some((p, m)) => Some((nomifun_common::ProviderId::parse(p)?, m.to_owned())),
+        None => None,
+    };
+    let override_ref =
+        model_override.as_ref().map(|(provider, model)| (provider, model.as_str()));
+
+    println!("[1/2] repair round (real pipeline)…");
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let first = service.run_structure_repair(&owner, &course, override_ref).await?;
+    println!(
+        "repair read-out: status={} applied={} cascade={} mounts_stale={} old={} new={}",
+        first.status,
+        first.applied.len(),
+        first.cascade.len(),
+        first.mounts_stale,
+        first.old_hash,
+        first.new_hash
+    );
+    anyhow::ensure!(
+        first.status == "applied" || first.status == "noop",
+        "first round must run (applied | noop), got {}",
+        first.status
+    );
+
+    println!("[2/2] disk re-read + independent full gd.* validation + cascade marker…");
+    // 盘面复验：从磁盘重读快照信封，独立跑全量 gd.* validator（零放宽）。
+    let disk_raw: String =
+        sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+            .bind(&course_id)
+            .fetch_one(&pool)
+            .await?;
+    let envelope: serde_json::Value = serde_json::from_str(&disk_raw)?;
+    let structure = envelope
+        .get("structure")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("snapshot envelope missing structure"))?;
+    let terrain = envelope
+        .get("terrain")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("snapshot envelope missing terrain"))?;
+    let mut violations = nomifun_learning::validate_structure_artifact(&structure);
+    violations.extend(nomifun_learning::reconcile_structure_doors(&structure, &terrain));
+    let red: Vec<_> = violations.iter().filter(|violation| !violation.warning).collect();
+    for violation in &red {
+        eprintln!("CRITERION VIOLATION [{}] {}", violation.code, violation.message);
+    }
+    anyhow::ensure!(red.is_empty(), "disk re-read failed full gd.* validation");
+    // warn 档读数（f2/A2）：修补档与 structure 档同构——警告不拒收但在
+    // 验收面可见。
+    let warnings = violations.iter().filter(|violation| violation.warning).count();
+
+    // 级联标记：结构已改时挂载必须判 stale（读侧按 hash_version 比对兜住）。
+    let new_hash = nomifun_learning::hash_structure_column(&disk_raw).0;
+    if first.old_hash != first.new_hash {
+        let view = service.structure_view(&course).await?;
+        let stale = view.mounts.as_ref().map(|mounts| mounts.stale).unwrap_or(false);
+        anyhow::ensure!(
+            stale,
+            "CASCADE MARKER VIOLATION: structure changed but mounts not stale"
+        );
+        println!("cascade marker: mounts correctly flagged stale");
+    } else if first.status == "applied" {
+        eprintln!("CASCADE MARKER VIOLATION: applied round must change the hash");
+        return Ok(ExitCode::from(3));
+    }
+    let _ = new_hash;
+    println!("OK  course={course_id}  warnings={warnings}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke maintenance`（k02）：自动维护回合冒烟。种子 = 一门合法盘面
+/// 图课程（两条 findings 留痕、无挂载行）+ 一门归档课（enabled = 0，同带留痕）。
+/// 机械判据：
+/// ① 纯读 needs 判定正确（未消费 2、待挂集非空、stale）；
+/// ② 回合 1 消费留痕并推进水位（applied/noop —— 依赖凭据，无凭据如实非零）；
+/// ③ 回合 2 零工作：idle = 1、零课程行动、观测存档零新增 LLM 行；
+/// ④ 归档课不在扫描面（scanned 只含启用课，归档课 eligible = false）；
+/// ⑤ 设置两键读侧生效（写入后 maintenance_settings 反射）。
+async fn run_maintenance(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 挂载回合可能被 tick 触发：需要 completer 链（archiving 供零 LLM 判据）。
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+    let now = nomifun_common::now_ms();
+
+    // 种子 A：启用课（合法盘面 + 2 条留痕 + 无挂载行）。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let envelope = valid_structure_seed_envelope("维护冒烟目标", now);
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '维护冒烟', '', 'general', 1, 'learning_graph', '维护冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, '维护节点', '', 'p', 0, 15)",
+    )
+    .bind(nomifun_common::LearningLessonId::new().into_string())
+    .bind(&module_id)
+    .execute(&pool)
+    .await?;
+    for (index, issue) in ["留痕一：缺一条对照边", "留痕二：块粒度偏粗"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO learning_structure_findings \
+             (ts, course_id, seq, source, node, field, issue, advice) \
+             VALUES (?, ?, ?, 'concept-review', '', '', ?, '按建议修补')",
+        )
+        .bind(now + index as i64)
+        .bind(&course_id)
+        .bind(index as i64 + 1)
+        .bind(*issue)
+        .execute(&pool)
+        .await?;
+    }
+
+    // 种子 B：归档课（enabled = 0）——同带留痕，必须不在扫描面。
+    let archived_id = nomifun_common::LearningCourseId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, enabled, created_at, updated_at) \
+         VALUES (?, '归档维护课', '', 'general', 1, 'learning_graph', '维护冒烟目标', '', ?, 0, ?, ?)",
+    )
+    .bind(&archived_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_structure_findings \
+         (ts, course_id, seq, source, node, field, issue, advice) \
+         VALUES (?, ?, 1, 'concept-review', '', '', '归档课留痕', '不应被扫')",
+    )
+    .bind(now)
+    .bind(&archived_id)
+    .execute(&pool)
+    .await?;
+
+    // ⑤ 设置两键读侧生效。
+    for (key, value) in [
+        ("learning.maintenanceAutoEnabled", "true"),
+        ("learning.maintenanceIntervalMinutes", "45"),
+    ] {
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now)
+        .execute(&pool)
+        .await?;
+    }
+    let settings = service.maintenance_settings().await;
+    println!(
+        "settings read-out: enabled={} interval_minutes={}",
+        settings.enabled, settings.interval_minutes
+    );
+    anyhow::ensure!(settings.enabled, "maintenanceAutoEnabled must read back true");
+    anyhow::ensure!(
+        settings.interval_minutes == 45,
+        "maintenanceIntervalMinutes must read back 45, got {}",
+        settings.interval_minutes
+    );
+
+    // ① 纯读 needs 判定（零 LLM）。
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let archived = nomifun_common::LearningCourseId::parse(&archived_id)?;
+    let needs = service.maintenance_needs(&course).await?;
+    println!(
+        "needs read-out: eligible={} unconsumed_findings={} pending_mounts={} mounts_stale={} needs_repair={} needs_mount={}",
+        needs.eligible,
+        needs.unconsumed_findings,
+        needs.pending_mounts,
+        needs.mounts_stale,
+        needs.needs_repair,
+        needs.needs_mount
+    );
+    anyhow::ensure!(needs.eligible, "seeded course must be eligible");
+    anyhow::ensure!(
+        needs.unconsumed_findings == 2,
+        "expected 2 unconsumed findings, got {}",
+        needs.unconsumed_findings
+    );
+    anyhow::ensure!(needs.mounts_stale, "no mount row = stale");
+    anyhow::ensure!(needs.needs_repair && needs.needs_mount);
+    let archived_needs = service.maintenance_needs(&archived).await?;
+    anyhow::ensure!(!archived_needs.eligible, "archived course must not be eligible");
+
+    // ② 回合 1（真管线；无凭据如实非零——mount/repair 档先例）。
+    println!("[1/2] maintenance tick (real pipeline)…");
+    let first = match service.run_maintenance_tick(&owner, None).await {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("maintenance tick FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    println!(
+        "tick read-out: scanned={} idle={} worked={}",
+        first.scanned,
+        first.idle,
+        first.courses.len()
+    );
+    // m7 任务资源闸读数（对照卡数据源）：tick 提交的 mount/repair 过闸占并发
+    // 账。判据形态——on 臂 running_peak ≤ limit 恒成立；off 臂 queued 恒 0、
+    // running 可超 limit（直跑形态读数）。
+    let gate = service.generation_gate_readout();
+    println!(
+        "gate read-out: enabled={} limit={} running={} running_peak={} queued={} queued_peak={}",
+        gate.enabled,
+        gate.limit,
+        gate.running,
+        gate.running_peak,
+        gate.queued,
+        gate.queued_peak
+    );
+    if gate.enabled {
+        anyhow::ensure!(
+            gate.running_peak <= gate.limit,
+            "gated arm running_peak must stay within the cap (got {} > {})",
+            gate.running_peak,
+            gate.limit
+        );
+    } else {
+        anyhow::ensure!(
+            gate.queued_peak == 0,
+            "off arm must never queue (queued_peak={})",
+            gate.queued_peak
+        );
+    }
+    anyhow::ensure!(
+        first.scanned == 1,
+        "archived course must not be scanned (scanned={})",
+        first.scanned
+    );
+    anyhow::ensure!(
+        first.courses.len() == 1,
+        "expected one course to be worked, got {}",
+        first.courses.len()
+    );
+    let outcome = &first.courses[0];
+    println!(
+        "course read-out: repair={:?} mount={:?} skipped_busy={} error={:?}",
+        outcome.repair, outcome.mount, outcome.skipped_busy, outcome.error
+    );
+    if let Some(error) = outcome.error.as_deref() {
+        eprintln!("maintenance round FAILED for course: {error}");
+        return Ok(ExitCode::from(2));
+    }
+    anyhow::ensure!(
+        outcome.error.is_none(),
+        "first tick must not record an error"
+    );
+    anyhow::ensure!(
+        outcome.repair.as_deref() == Some("applied") || outcome.repair.as_deref() == Some("noop"),
+        "repair must run to applied|noop, got {:?}",
+        outcome.repair
+    );
+    let watermark: Option<i64> = sqlx::query_scalar(
+        "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_optional(&pool)
+    .await?;
+    // 开关臂分支：on 臂 = 水位推进 + 二回合零工作；off 臂 = 不推水位 +
+    // 二回合全量重读重跑 LLM（旧行为臂，两种终态各自成立）。
+    let watermark_enabled = std::env::var(nomifun_learning::FINDINGS_WATERMARK_SWITCH_ENV)
+        .map(|value| !nomifun_learning::is_findings_watermark_disabled_value(&value))
+        .unwrap_or(true);
+    println!("watermark read-out: enabled={watermark_enabled} value={watermark:?}");
+    if watermark_enabled {
+        anyhow::ensure!(
+            watermark == Some(2),
+            "watermark must advance to the max consumed finding id (got {watermark:?})"
+        );
+    } else {
+        anyhow::ensure!(
+            watermark.is_none(),
+            "off arm must not advance the watermark (got {watermark:?})"
+        );
+    }
+
+    // ③ 回合 2：on 臂零工作零 LLM 零写；off 臂重读同一批留痕并重跑 LLM。
+    println!("[2/2] second tick (on: expect idle; off: expect re-read)…");
+    let archive_lines = |archiving: &Option<Arc<ArchivingCompleter>>| {
+        archiving
+            .as_ref()
+            .and_then(|completer| {
+                std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).ok()
+            })
+            .map(|content| content.lines().count())
+            .unwrap_or(0)
+    };
+    let before = archive_lines(&archiving);
+    let second = service.run_maintenance_tick(&owner, None).await?;
+    let after = archive_lines(&archiving);
+    println!(
+        "tick2 read-out: scanned={} idle={} worked={} llm_calls_before={before} llm_calls_after={after}",
+        second.scanned,
+        second.idle,
+        second.courses.len()
+    );
+    // m7 闸读数（收尾行）：两回合全部退出后在跑/排队应归零（许可不随异常
+    // 退出泄漏的 smoke 面投影）。
+    let gate_after = service.generation_gate_readout();
+    println!(
+        "gate read-out after tick2: running={} running_peak={} queued={} queued_peak={}",
+        gate_after.running,
+        gate_after.running_peak,
+        gate_after.queued,
+        gate_after.queued_peak
+    );
+    anyhow::ensure!(
+        gate_after.running == 0 && gate_after.queued == 0,
+        "gate must drain after ticks (running={} queued={})",
+        gate_after.running,
+        gate_after.queued
+    );
+    if watermark_enabled {
+        anyhow::ensure!(
+            second.courses.is_empty(),
+            "second tick must be zero-work (got {} courses)",
+            second.courses.len()
+        );
+        anyhow::ensure!(second.idle >= 1, "second tick must count the course as idle");
+        anyhow::ensure!(
+            after == before,
+            "second tick must issue zero LLM calls ({before} -> {after})"
+        );
+    } else {
+        // off 臂：留痕未消费 → 二回合重新工作并重跑 LLM（全量重读旧行为）。
+        anyhow::ensure!(
+            second.courses.len() == 1,
+            "off arm second tick must re-work the course (got {})",
+            second.courses.len()
+        );
+        anyhow::ensure!(
+            after > before,
+            "off arm second tick must re-run the model ({before} -> {after})"
+        );
+    }
+    let watermark_after: Option<i64> = sqlx::query_scalar(
+        "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_optional(&pool)
+    .await?;
+    anyhow::ensure!(
+        watermark_after == watermark,
+        "second tick must not write the watermark"
+    );
+
+    println!("OK  course={course_id} archived={archived_id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke basis`（m2，ADR-0032 移植）：已会声明冒烟。种子 = 一门带
+/// 地形门口（G1/G2）与 door_refs 标注块的图课程 + 控制节点（无 assumes，恒
+/// 就绪）。机械判据：
+/// ① off 臂：`NOMI_LEARNING_BASIS_DECLARATION=off` 时声明端点如实拒绝（零 LLM）；
+/// ② 声明（真管线）：登记表增行且**零 learning_lessons / growth_batches
+///    写入**（计数守恒——只铸概念不落节点）、锚行落库、声明概念入概念表读侧；
+/// ③ 下游就绪投影翻转：assume 声明概念的节点由未就绪翻就绪（控制节点恒就绪）；
+/// ④ 幂等重跑：noop、零 LLM（观测存档行数守恒）；
+/// ⑤ 撤销：锚行清零、投影复原、概念留池（来源标记保留不抹）。
+/// 无凭据时步骤 ② 的声明调用如实非零（mount/repair 档先例）。
+async fn run_basis(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 声明走真管线（需要 LLM）；archiving 供零 LLM 判据与调用档案。
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+    let now = nomifun_common::now_ms();
+
+    // 种子：图课程（地形门口 G1/G2 + 块 door_refs）+ 控制节点。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": {
+            "goal": "已会声明冒烟目标",
+            "goal_type": "capability",
+            "proficiency_statement": "能独立复述声明判据",
+            "domain": {
+                "core_definition": "声明冒烟",
+                "includes": ["判读"],
+                "excludes": [],
+                "prerequisite_doors": ["G1", "G2"],
+                "audience": "冒烟操作者",
+                "scenarios": ["声明"],
+                "granularity": "主题级",
+            },
+            "spines": [
+                { "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }
+            ],
+            "blocks": [
+                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "basic", "note": "第一块", "door_refs": ["G1"] },
+                { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "basic", "note": "第二块", "door_refs": ["G1", "G2"] }
+            ],
+            "edges": []
+        },
+        "terrain": {
+            "learner_basis_assumed": "已具备基础判读",
+            "disclaimer": "冒烟种子地形，仅供门口对账",
+            "doors": [
+                { "id": "G1", "criterion": "判据一", "kind": "hard" },
+                { "id": "G2", "criterion": "判据二", "kind": "self_check" }
+            ]
+        },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '声明冒烟', '', 'general', 1, 'learning_graph', '已会声明冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?)
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, '控制节点', '', 'p', 0, 10)",
+    )
+    .bind(nomifun_common::LearningLessonId::new().into_string())
+    .bind(&module_id)
+    .execute(&pool)
+    .await?;
+
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let llm_lines = || {
+        archiving
+            .as_ref()
+            .and_then(|completer| {
+                std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).ok()
+            })
+            .map(|content| content.lines().count())
+            .unwrap_or(0)
+    };
+
+    // ① off 臂：开关 off → 声明端点如实拒绝（零 LLM 零写）。
+    println!("[1/5] off arm: switch rejects the declare endpoint…");
+    let saved = std::env::var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV).ok();
+    unsafe {
+        std::env::set_var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV, "off");
+    }
+    let off_error = service
+        .declare_basis(
+            &owner,
+            &course,
+            nomifun_learning::DeclareBasisRequest {
+                doors: vec!["G1".into()],
+                provider_id: None,
+                model: None,
+            },
+        )
+        .await
+        .err();
+    match saved {
+        Some(value) => unsafe {
+            std::env::set_var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV, value)
+        },
+        None => unsafe {
+            std::env::remove_var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV)
+        },
+    }
+    let Some(off_error) = off_error else {
+        anyhow::bail!("off arm must reject the declare endpoint");
+    };
+    anyhow::ensure!(
+        off_error.to_string().contains("已会声明通道已关闭"),
+        "off arm must reject loudly, got {off_error}"
+    );
+    let anchors_after_off: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_basis_declarations")
+            .fetch_one(&pool)
+            .await?;
+    anyhow::ensure!(anchors_after_off == 0, "off arm must write nothing");
+    println!("  off arm rejected: {off_error}");
+
+    // ② 声明（真管线；无凭据如实非零）。
+    println!("[2/5] declare G1+G2 (real pipeline)…");
+    let registry_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(&pool)
+            .await?;
+    let (lessons_before, batches_before) = node_and_batch_counts(&pool, &course_id).await?;
+    let declared = match service
+        .declare_basis(
+            &owner,
+            &course,
+            nomifun_learning::DeclareBasisRequest {
+                doors: vec!["G1".into(), "G2".into()],
+                provider_id: provider
+                    .as_deref()
+                    .map(nomifun_common::ProviderId::parse)
+                    .transpose()?,
+                model: model.clone(),
+            },
+        )
+        .await
+    {
+        Ok(declared) => declared,
+        Err(error) => {
+            // 无凭据：声明调用如实非零（判据面 = 管线不可用不被藏起来）。
+            eprintln!("declare FAILED (no credentials?): {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    println!(
+        "declare read-out: doors={:?} blocks={:?} minted={} reused={} noop={}",
+        declared.doors, declared.blocks, declared.minted, declared.reused, declared.noop
+    );
+    anyhow::ensure!(!declared.noop, "first declare must not be noop");
+    anyhow::ensure!(
+        !declared.doors.is_empty() && !declared.blocks.is_empty(),
+        "first declare must hit doors and blocks"
+    );
+    anyhow::ensure!(
+        !declared.concepts.is_empty(),
+        "declare must mint or reuse at least one concept"
+    );
+    let registry_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(&pool)
+            .await?;
+    anyhow::ensure!(
+        registry_after > registry_before,
+        "registry must grow ({registry_before} -> {registry_after})"
+    );
+    let (lessons_after, batches_after) = node_and_batch_counts(&pool, &course_id).await?;
+    anyhow::ensure!(
+        (lessons_before, batches_before) == (lessons_after, batches_after)
+            && lessons_after == 1
+            && batches_after == 0,
+        "zero node/batch writes required (lessons {lessons_before}->{lessons_after}, batches {batches_before}->{batches_after})"
+    );
+    let anchors: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_basis_declarations WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(anchors == 1, "one anchor row expected, got {anchors}");
+    // 声明概念入概念表读侧（来源徽标 + declared 旗标）。
+    let concept_rows = service.graph_concepts(&course, &owner).await?;
+    anyhow::ensure!(
+        !concept_rows.is_empty() && concept_rows.iter().all(|row| row.declared),
+        "declared concepts must surface in the concept table read-side"
+    );
+    // 观测存档：声明调用档案在场。判据断在铸造系统提示词的立场句
+    // （DECLARATION_SYSTEM，声明调用独有）上——任务字面量 `basis-declaration`
+    // 到不了存档：它是观测面注册表键（PromptSpec::task），装配
+    // （structure_prompts::assemble）剥离携带它的头注后只发正文；Archiver
+    // 存档行只记方法名与模型面字段（system/user/response），LearningCompleter
+    // 特征不带任务上下文，声明又是同步端点（不进生成任务注册表，
+    // learning-tasks.jsonl 的 begin/finish 观测只覆盖长任务）——该字面量
+    // 按实现恒不在场（真机 m2 对照卡缺口①），故以系统提示词签名为判据
+    // （按 system 字段逐行计，k03 读数面同款纪律）。
+    if let Some(archive) = archiving.as_ref() {
+        let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+            .unwrap_or_default();
+        let declaration_calls = calls
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| {
+                value
+                    .get("system")
+                    .and_then(|system| system.as_str())
+                    .is_some_and(|system| system.contains(nomifun_learning::DECLARATION_SYSTEM))
+            })
+            .count();
+        anyhow::ensure!(
+            declaration_calls >= 1,
+            "observation archive must contain the declaration mint call (system = DECLARATION_SYSTEM)"
+        );
+        println!("archive read-out: declaration_calls={declaration_calls}");
+    }
+
+    // ③ 下游就绪投影翻转：assume 声明概念的节点由未就绪翻就绪。
+    println!("[3/5] downstream readiness flips via the declared concept…");
+    let minted_id = declared
+        .concepts
+        .iter()
+        .find(|concept| concept.minted)
+        .map(|concept| concept.concept_id.clone())
+        .unwrap_or_else(|| declared.concepts[0].concept_id.clone());
+    let downstream_id = nomifun_common::LearningLessonId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, '下游节点', '', 'assumes the declared concept', 1, 10)",
+    )
+    .bind(&downstream_id)
+    .bind(&module_id)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier) \
+         VALUES (?, ?, 'assumes', 'know')",
+    )
+    .bind(&downstream_id)
+    .bind(&minted_id)
+    .execute(&pool)
+    .await?;
+    let detail = service.course_detail(&course, Some(&owner)).await?;
+    let recommended: Vec<String> = detail
+        .graph
+        .as_ref()
+        .map(|graph| {
+            graph
+                .recommended
+                .iter()
+                .map(|lesson| lesson.as_str().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    anyhow::ensure!(
+        recommended.iter().any(|lesson| lesson == &downstream_id),
+        "downstream node must be ready after declaration (recommended={recommended:?})"
+    );
+
+    // ④ 幂等重跑：noop、零 LLM。
+    println!("[4/5] idempotent rerun (noop, zero LLM)…");
+    let calls_before = llm_lines();
+    let rerun = service
+        .declare_basis(
+            &owner,
+            &course,
+            nomifun_learning::DeclareBasisRequest {
+                doors: vec!["G1".into(), "G2".into()],
+                provider_id: None,
+                model: None,
+            },
+        )
+        .await?;
+    let calls_after = llm_lines();
+    println!(
+        "rerun read-out: noop={} llm_calls {calls_before}->{calls_after}",
+        rerun.noop
+    );
+    anyhow::ensure!(rerun.noop, "rerun must be noop");
+    anyhow::ensure!(
+        rerun.doors.is_empty() && rerun.concepts.is_empty(),
+        "noop rerun must carry no doors/concepts"
+    );
+    anyhow::ensure!(
+        calls_after == calls_before,
+        "noop rerun must issue zero LLM calls ({calls_before} -> {calls_after})"
+    );
+
+    // ⑤ 撤销：锚行清零、投影复原、概念留池。
+    println!("[5/5] revoke (anchors deleted, projection restored, concepts kept)…");
+    let revoked = service.revoke_basis(&owner, &course).await?;
+    anyhow::ensure!(revoked == 1, "revoke must delete the one anchor row");
+    let anchors_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_basis_declarations WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(anchors_after == 0, "anchors must be gone after revoke");
+    let registry_final: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(&pool)
+            .await?;
+    anyhow::ensure!(
+        registry_final == registry_after,
+        "concepts must stay in the registry after revoke（声明可撤、概念不灭）"
+    );
+    let source_marks: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_concept_registry WHERE source = 'basis-declaration'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        source_marks >= 1,
+        "declaration source marks must be preserved"
+    );
+    let detail = service.course_detail(&course, Some(&owner)).await?;
+    let recommended: Vec<String> = detail
+        .graph
+        .as_ref()
+        .map(|graph| {
+            graph
+                .recommended
+                .iter()
+                .map(|lesson| lesson.as_str().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    anyhow::ensure!(
+        !recommended.iter().any(|lesson| lesson == &downstream_id),
+        "downstream node must lose readiness after revoke (projection restored)"
+    );
+    // 幂等空撤销。
+    let revoked_again = service.revoke_basis(&owner, &course).await?;
+    anyhow::ensure!(revoked_again == 0, "second revoke must be a no-op");
+
+    println!("OK  course={course_id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 课程内节点数与生长批行数（计数守恒判据的读数）。
+async fn node_and_batch_counts(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &str,
+) -> anyhow::Result<(i64, i64)> {
+    let lessons: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(course_id)
+    .fetch_one(pool)
+    .await?;
+    let batches: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?")
+            .bind(course_id)
+            .fetch_one(pool)
+            .await?;
+    Ok((lessons, batches))
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// grade 档（n5，开放题评审判分冒烟——ADR-0037 评审制移植的判分口径读数）。
+// 布景零 LLM（开放题 + reflection 各一，判底 explanation 落库），四判据经
+// 真实 submit_attempt 链路走新评审执行器（重试环 + 超时 + thinking json 通
+// 道 + 判底/缺失要点契约），另含断 LLM 臂与脱敏回读。机制面开关臂 =
+// `NOMI_LEARNING_OPEN_JUDGE=off`（同二进制旧路径对照臂——对照卡两臂并排）。
+// ---------------------------------------------------------------------------
+
+/// 布景判底（开放题）：domain-neutral 复利题，判底 = 题目自己的 explanation
+/// （n4 D1(a) 判底进评审器）。
+const GRADE_OPEN_PROMPT: &str = "用你自己的话解释：为什么说复利的关键不在收益率高低，而在时间足够长？请结合「利滚利」说明。";
+const GRADE_OPEN_GROUNDING: &str = "复利的本质是利息并入本金、本金再生利息。收益率只决定曲线的斜率，时间才决定曲线的弯曲程度：短期内收益率的差异会被时间平滑，长期里时间会把微小差异放大成巨大差距。所以复利的关键在于让利滚利跑足够长的时间，而不是追逐一时的高收益率。";
+
+/// 布景判底（reflection）：三句复盘（核心概念/旧认识/怎么用）。
+const GRADE_REFLECTION_PROMPT: &str = "用三句话复盘：本课时你学到的一个核心概念、它纠正了你哪个旧认识、你接下来打算怎么用。";
+const GRADE_REFLECTION_GROUNDING: &str = "核心概念：复利=利息并入本金再生息。旧认识：把注意力全放在收益率高低上。应用：尽早开始、坚持足够长的时间，让利滚利发挥作用，而不是频繁追逐高收益产品。";
+
+/// 断 LLM 替身：判分链必须如实上抛（绝不静默判错，n4 D2）——评审失败
+/// 走 Err 面，绝不出 fake-pass。
+struct GradeDeadCompleter;
+
+#[async_trait::async_trait]
+impl LearningCompleter for GradeDeadCompleter {
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, nomifun_common::AppError> {
+        Err(nomifun_common::AppError::Internal(
+            "grade smoke: LLM disconnected drill".into(),
+        ))
+    }
+}
+
+/// `learning-smoke grade`（n5）：布景 → 四判据 → 脱敏回读。判据失败 =
+/// 退出码 2（learnhub smoke-grade 同款）；布景/接线失败 = anyhow 非零。
+async fn run_grade(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    use nomifun_learning::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
+
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 布景要求真凭据（判据①②③全是真 LLM 判分）；零凭据临时库在首次
+    // submit_attempt 如实失败（Conflict: no enabled provider）。
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let now = nomifun_common::now_ms();
+
+    // —— 布景（零 LLM）：单课时 + 开放题（含判底）+ reflection（含判底）。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+    let open_id = nomifun_common::LearningActivityId::new().into_string();
+    let reflection_id = nomifun_common::LearningActivityId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'grade smoke course', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons (lesson_id, module_id, title, summary, position, estimated_minutes) \
+         VALUES (?, ?, '复利思维', '复利如何奖励耐心', 0, 25)",
+    )
+    .bind(&lesson_id)
+    .bind(&module_id)
+    .execute(&wiring.pool)
+    .await?;
+    for (position, (activity_id, kind, prompt, grounding)) in [
+        (
+            &open_id,
+            "open_question",
+            GRADE_OPEN_PROMPT,
+            GRADE_OPEN_GROUNDING,
+        ),
+        (
+            &reflection_id,
+            "reflection",
+            GRADE_REFLECTION_PROMPT,
+            GRADE_REFLECTION_GROUNDING,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let config = serde_json::json!({
+            "answer": null,
+            "options": [],
+            "explanation": grounding,
+            "distractors": [],
+            "matches": []
+        });
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(activity_id)
+        .bind(&lesson_id)
+        .bind(kind)
+        .bind(prompt)
+        .bind(serde_json::to_string(&config)?.as_str())
+        .bind(position as i64)
+        .execute(&wiring.pool)
+        .await?;
+    }
+
+    // —— 判分作答集（脱敏注册同批：判底与作答原文进观测面前必须占位）。
+    let open_patient = "我理解是：利息会变成新的本金继续生息，也就是利滚利。短期看收益率高低差别不大，因为时间会把这些差距抹平；但拉长时间后，哪怕每年只差一点，差距也会越滚越大。所以重要的是坚持足够久，而不是盯着某一年的高收益。";
+    let open_flawed = "复利的关键当然是收益率，收益率越高越好，时间长了意义不大，应该追求短期高收益产品。";
+    let open_offtopic = "今天天气不错，适合出去走走。";
+    let reflection_patient = "这个课时让我把复利真正想明白了：利息会并入本金继续生息。它纠正了我以前只盯着收益率高低的旧认识——原来时间才是放大差异的那个变量。接下来我打算尽早开始并长期坚持，不再频繁换产品追高收益。";
+    let reflection_flawed = "挺好的，学到了很多，感觉很有用。";
+    if let Some(archiving) = &archiving {
+        for grounding in [GRADE_OPEN_GROUNDING, GRADE_REFLECTION_GROUNDING] {
+            archiving.register_redaction(grounding, REDACTED_GROUNDING_PLACEHOLDER);
+        }
+        for answer in [
+            open_patient,
+            open_flawed,
+            open_offtopic,
+            reflection_patient,
+            reflection_flawed,
+        ] {
+            archiving.register_redaction(answer, REDACTED_RESPONSE_PLACEHOLDER);
+        }
+    }
+
+    let open = nomifun_common::LearningActivityId::parse(&open_id)?;
+    let reflection = nomifun_common::LearningActivityId::parse(&reflection_id)?;
+    let submit = |activity: &nomifun_common::LearningActivityId, answer: &'static str| {
+        let service = service.clone();
+        let activity = activity.clone();
+        let owner = owner.clone();
+        async move {
+            service
+                .submit_attempt(&activity, &owner, serde_json::json!(answer), None, None)
+                .await
+        }
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+
+    // —— 判据①（语义覆盖判对）：同义改写覆盖判底全部要点 → 判对 + 点评
+    //      非空 + 缺失要点必空（开放题与 reflection 两题型都过一遍）。
+    for (label, activity, answer) in [
+        ("①开放题病历", &open, open_patient),
+        ("①reflection病历", &reflection, reflection_patient),
+    ] {
+        match submit(activity, answer).await {
+            Ok(result) => {
+                let ok = result.passed
+                    && !result.feedback.trim().is_empty()
+                    && result.missing_points.is_empty();
+                println!(
+                    "[{label}] {} passed={} score={:.2} 缺失要点={}条",
+                    if ok { "PASS" } else { "FAIL" },
+                    result.passed,
+                    result.score,
+                    result.missing_points.len(),
+                );
+                if !ok {
+                    failures.push(format!(
+                        "{label}: 语义覆盖全部要点的作答应判对且点评非空、缺失要点为空——判分口径回归"
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!(
+                "{label}: 评审失败如实上抛了（但本判据要求判出结论）: {error}"
+            )),
+        }
+    }
+
+    // —— 判据②（真误区判错 + 缺失要点非空）：与判底相悖的作答 → 判错 +
+    //      missing_points 点名缺失（n4 D3 互斥的另一侧）。缺失要点是评审链
+    //      新契约字段——off 臂走旧 {score, feedback} 链，结构性无此字段，
+    //      只断判错与低分。
+    let judge_arm = nomifun_learning::open_judge_enabled();
+    for (label, activity, answer) in [
+        ("②开放题真误区", &open, open_flawed),
+        ("②reflection空泛", &reflection, reflection_flawed),
+    ] {
+        match submit(activity, answer).await {
+            Ok(result) => {
+                let ok = if judge_arm {
+                    !result.passed && !result.missing_points.is_empty()
+                } else {
+                    !result.passed && result.score < 0.6
+                };
+                println!(
+                    "[{label}] {} passed={} score={:.2} 缺失要点={}条 点评前40字={}",
+                    if ok { "PASS" } else { "FAIL" },
+                    result.passed,
+                    result.score,
+                    result.missing_points.len(),
+                    result.feedback.chars().take(40).collect::<String>(),
+                );
+                if !ok {
+                    failures.push(format!(
+                        "{label}: 真误区作答应判错且缺失要点非空（互斥契约的另一侧）"
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("{label}: 评审失败: {error}")),
+        }
+    }
+
+    // —— 判据③（离题/抄题判错）：与所测内容无关 → 判错不崩。
+    match submit(&open, open_offtopic).await {
+        Ok(result) => {
+            let ok = !result.passed && !result.feedback.trim().is_empty();
+            println!(
+                "[③离题] {} passed={} score={:.2} 点评前40字={}",
+                if ok { "PASS" } else { "FAIL" },
+                result.passed,
+                result.score,
+                result.feedback.chars().take(40).collect::<String>(),
+            );
+            if !ok {
+                failures.push("③离题: 离题作答应判错且点评具体".into());
+            }
+        }
+        Err(error) => failures.push(format!("③离题: 评审失败: {error}")),
+    }
+
+    // —— 判据④（断 LLM 如实上抛）：换上断 LLM 替身 → submit_attempt 必须
+    //      Err（绝不静默出结论、绝不伪装成功）。
+    service.set_generation_dependencies(
+        wiring.knowledge.clone(),
+        std::sync::Arc::new(GradeDeadCompleter),
+    );
+    match submit(&open, open_patient).await {
+        Err(error) => {
+            println!("[④断LLM] PASS 判分不可用如实上抛（{error}）——fail-loud 出口正确");
+        }
+        Ok(result) => {
+            failures.push(format!(
+                "④断LLM: 断 LLM 臂不得产出结论（静默判错零容忍），实得 passed={}",
+                result.passed
+            ));
+        }
+    }
+
+    // —— 脱敏回读（进 EXIT）：判底与作答原文在观测面 system/user 零命中。
+    if let Some(archiving) = &archiving {
+        let log_path = archiving.run_dir().join("calls.jsonl");
+        let mut leaked = 0usize;
+        if let Ok(log) = std::fs::read_to_string(&log_path) {
+            for line in log.lines() {
+                let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let observed = format!(
+                    "{}{}",
+                    record["system"].as_str().unwrap_or_default(),
+                    record["user"].as_str().unwrap_or_default()
+                );
+                let originals = [
+                    GRADE_OPEN_GROUNDING,
+                    GRADE_REFLECTION_GROUNDING,
+                    open_patient,
+                    open_flawed,
+                    open_offtopic,
+                    reflection_patient,
+                    reflection_flawed,
+                ];
+                if originals
+                    .iter()
+                    .any(|original| !original.is_empty() && observed.contains(original))
+                {
+                    leaked += 1;
+                }
+            }
+        }
+        if leaked > 0 {
+            failures.push(format!(
+                "脱敏回读: 判底/作答原文出现在 {leaked} 条观测档 system/user 面（{}）",
+                log_path.display()
+            ));
+        } else {
+            println!("[脱敏] PASS 观测面 system/user 零判底零作答原文（占位替换生效）");
+        }
+    }
+
+    if failures.is_empty() {
+        println!("\n[判据] 四判据 + 脱敏回读全过（评审口径/缺失要点互斥/离题判错/断 LLM 如实上抛）");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("\n[判据] {} 条失败:", failures.len());
+        for failure in &failures {
+            println!("  FAIL {failure}");
+        }
+        // 判据失败 = 退出码 2（learnhub smoke-grade 同款；布景/接线错误走
+        // anyhow 非零）。
+        Ok(ExitCode::from(2))
+    }
+}

@@ -1746,11 +1746,23 @@ export interface ILearningGenerationToolCall {
 }
 
 /** 课程生成过程事件（`learning.course-generation`）。`phase` 区分阶段；
- * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。 */
+ * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。
+ *
+ * t5 新管线阶段（知识库流）：triage_started/triage_completed（七角色计数 +
+ * degraded + 有界跳过/重复/uncertain 示例）、source_plan_started/
+ * source_plan_ready（章/概念/gaps）、coverage_ready（topic 覆盖读数）。
+ * 旧客户端忽略未知 phase；started/publishing/completed/failed 不变。 */
 export interface ILearningCourseGenerationEvent {
-  phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
-  /** 生成来源：课程简报 / 知识库 */
-  kind?: 'description' | 'knowledge_base';
+  /** WS phase 取值单源见 `pages/learning/phaseMeta.ts`（x11）。 */
+  phase: string;
+  /** 生成来源：课程简报 / 知识库 / 学习图生长（learning_graph） */
+  kind?: 'description' | 'knowledge_base' | 'learning_graph';
+  /** 建课管线代际（x11）：课程流帧显式携带；graph/课时流不带。 */
+  pipeline?: 'sampling' | 'source_plan';
+  /** 学习图生长的细分事件名（growth_started/growth_redraft/growth_completed/...） */
+  event?: string;
+  /** growth_redraft 帧：本轮被哪道关口打回（结构门 / AI 概念评审）。 */
+  stage?: 'gates' | 'concept_review';
   /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
   loop?: 'generate' | 'repair';
   round?: number;
@@ -1762,6 +1774,33 @@ export interface ILearningCourseGenerationEvent {
   warning?: number;
   info?: number;
   top?: string[];
+  /** t5 triage_completed 帧：七角色计数（各角色之和 = total）。 */
+  counts?: {
+    total: number;
+    core: number;
+    prerequisite: number;
+    practice: number;
+    mixed: number;
+    noise: number;
+    duplicate: number;
+    uncertain: number;
+  };
+  /** t5 triage_completed 帧：规则分诊降级（未做 LLM 判定）。 */
+  degraded?: boolean;
+  /** t5 triage_completed 帧：跳过示例（≤10，path + 角色 + 理由）。 */
+  excluded?: { path: string; role: string; reason: string }[];
+  /** t5 triage_completed 帧：重复示例（≤10）。 */
+  duplicates?: { path: string; duplicate_of: string; canonical_reason: string }[];
+  /** t5 triage_completed 帧：uncertain 示例（≤10，path + 理由）。 */
+  uncertain?: { path: string; reason: string }[];
+  /** t5 source_plan_ready 帧：章/概念计数与证据 gaps。 */
+  chapters?: number;
+  concepts?: number;
+  gaps?: string[];
+  /** t5 coverage_ready 帧：topic 覆盖与兜底课时计数。 */
+  topics_covered?: number;
+  topics_skipped?: number;
+  fallback?: number;
   /** 终态：入库课程信息 / 失败原因 */
   course_id?: string;
   title?: string;
@@ -1771,9 +1810,12 @@ export interface ILearningCourseGenerationEvent {
 }
 
 /** 课时内容生成过程事件（`learning.lesson-generation`），与课程事件同构，
- * 额外带 lesson 标识供并发生成的 UI 过滤。 */
+ * 额外带 lesson 标识供并发生成的 UI 过滤。`grounding` 帧披露课时 grounding
+ * 的装配读数（t3）：是否实时读库（primary_live）、命中数、扩读片段数、是否
+ * 降级（源库不可达走快照兜底）。 */
 export interface ILearningLessonGenerationEvent {
-  phase: 'started' | 'round' | 'audit' | 'completed' | 'failed';
+  /** WS phase 取值单源见 `pages/learning/phaseMeta.ts`（x11）。 */
+  phase: string;
   lesson_id?: string;
   title?: string;
   module?: string;
@@ -1787,8 +1829,17 @@ export interface ILearningLessonGenerationEvent {
   info?: number;
   top?: string[];
   activities?: number;
-  estimated_minutes?: number;
+  /** est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注） */
+  est?: number;
   error?: string;
+  /** t3 grounding 披露：primary 是否来自实时读库。 */
+  primary_live?: boolean;
+  /** t3 grounding 披露：检索命中数。 */
+  hits?: number;
+  /** t3 grounding 披露：读入的补充片段数。 */
+  supplements?: number;
+  /** t3 grounding 披露：是否降级（源库不可达/检索失败 → 快照兜底）。 */
+  degraded?: boolean;
 }
 
 /** 学习模块生成过程事件（概念图生成进度同款 best-effort 推送）。 */

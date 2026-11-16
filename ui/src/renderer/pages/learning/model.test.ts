@@ -1,19 +1,26 @@
-/** model.ts 纯决策函数的单测：stepper 构造/门禁、节状态、掌握度、前置
- * 锁定、生成阶段折叠。零渲染——这正是决策逻辑抽离的目的。 */
+/** model.ts 纯决策函数的单测：stepper 构造/门禁、节状态、生成阶段折叠。
+ * 零渲染——这正是决策逻辑抽离的目的。 */
 import { describe, expect, test } from 'bun:test';
 import {
-  allConceptsMastered,
   buildSteps,
+  coverageTopicTotals,
+  deriveModernStep,
+  isModernPipeline,
+  sourceCoverageState,
+  triageCountsLine,
+  triageDetailCountsLine,
+  triageViewCounts,
+  uncertainTooMany,
   canGoToStep,
   deriveStep,
   lessonStatusTagColors,
   lessonProgressLine,
-  prereqLockedIds,
   sectionStatusTagColors,
   stepActivities,
   stepLocked,
 } from './model';
 import type { Activity, Section } from './types';
+import { PHASE } from './phaseMeta';
 import type { Translate } from './utils';
 
 const t = ((key: string, vars?: Record<string, unknown>) =>
@@ -95,14 +102,7 @@ describe('stepActivities / 门禁', () => {
   });
 });
 
-describe('掌握度与状态映射', () => {
-  test('allConceptsMastered：空课程不算掌握，任一未达标即未全掌握', () => {
-    expect(allConceptsMastered([])).toBe(false);
-    expect(allConceptsMastered([{ mastery: null }, { mastery: 1 }])).toBe(false);
-    expect(allConceptsMastered([{ mastery: 0.8 }, { mastery: 1 }])).toBe(true);
-    expect(allConceptsMastered([{ mastery: 0.79 }])).toBe(false);
-  });
-
+describe('状态映射', () => {
   test('状态调色板覆盖全部状态键', () => {
     for (const status of ['pending', 'ready', 'failed'] as const) {
       expect(typeof sectionStatusTagColors[status]).toBe('string');
@@ -113,30 +113,13 @@ describe('掌握度与状态映射', () => {
   });
 });
 
-describe('prereqLockedIds', () => {
-  test('未完成前置锁定后继；完成/跳过前置放行', () => {
-    const nodes = [
-      { lesson_id: 'a', status: 'completed' as const },
-      { lesson_id: 'b', status: 'in_progress' as const },
-      { lesson_id: 'c', status: 'skipped' as const },
-    ];
-    const edges = [
-      { from: 'a', to: 'b' },
-      { from: 'b', to: 'c' },
-    ];
-    const locked = prereqLockedIds(nodes, edges);
-    expect(locked.has('b')).toBe(false); // a 已完成
-    expect(locked.has('c')).toBe(true); // b 未完成
-  });
-});
-
 describe('deriveStep / lessonProgressLine', () => {
   test('事件流折叠：构建 → 审计 → 修复 → 发布', () => {
     const events = [
-      { phase: 'round', loop: 'generate' },
-      { phase: 'audit', danger: 2 },
-      { phase: 'round', loop: 'repair' },
-      { phase: 'publishing' },
+      { phase: PHASE.round, loop: PHASE.generate },
+      { phase: PHASE.audit, danger: 2 },
+      { phase: PHASE.round, loop: PHASE.repair },
+      { phase: PHASE.publishing },
     ] as unknown as Parameters<typeof deriveStep>[0];
     const { step, repairRounds, sawDanger } = deriveStep(events);
     expect(step).toBe(4);
@@ -149,13 +132,164 @@ describe('deriveStep / lessonProgressLine', () => {
   });
 
   test('行内进度：round/audit 出文案，终态清空', () => {
-    expect(lessonProgressLine({ phase: 'round', round: 3 } as never, t)).toContain(
+    expect(lessonProgressLine({ phase: PHASE.round, round: 3 } as never, t)).toContain(
       'learning.lessonGenRound'
     );
-    expect(lessonProgressLine({ phase: 'audit', danger: 1 } as never, t)).toContain(
+    expect(lessonProgressLine({ phase: PHASE.audit, danger: 1 } as never, t)).toContain(
       'learning.lessonGenAudit'
     );
-    expect(lessonProgressLine({ phase: 'completed' } as never, t)).toBeNull();
-    expect(lessonProgressLine({ phase: 'failed' } as never, t)).toBeNull();
+    expect(lessonProgressLine({ phase: PHASE.completed } as never, t)).toBeNull();
+    expect(lessonProgressLine({ phase: PHASE.failed } as never, t)).toBeNull();
+  });
+});
+
+// ── t5：新管线（清点分诊 → 来源结构计划 → 分批展开）的纯决策面 ──────────
+
+describe('t5 新管线步骤折叠', () => {
+  test('triage/source_plan/coverage 阶段推进到对应档', () => {
+    const base = { phase: PHASE.triageStarted } as never;
+    expect(deriveModernStep([base])).toBe(1);
+    expect(
+      deriveModernStep([{ phase: PHASE.triageCompleted } as never])
+    ).toBe(1);
+    expect(
+      deriveModernStep([
+        { phase: PHASE.triageCompleted } as never,
+        { phase: PHASE.sourcePlanStarted } as never,
+      ])
+    ).toBe(2);
+    expect(
+      deriveModernStep([
+        { phase: PHASE.sourcePlanReady, chapters: 3 } as never,
+      ])
+    ).toBe(2);
+    expect(
+      deriveModernStep([{ phase: PHASE.coverageReady } as never])
+    ).toBe(3);
+    expect(
+      deriveModernStep([
+        { phase: PHASE.coverageReady } as never,
+        { phase: PHASE.publishing } as never,
+      ])
+    ).toBe(3);
+    expect(
+      deriveModernStep([
+        { phase: PHASE.coverageReady } as never,
+        { phase: PHASE.completed } as never,
+      ])
+    ).toBe(4);
+  });
+
+  test('空流退化到分诊中档（spinner 不挤掉等待提示）', () => {
+    expect(deriveModernStep([])).toBe(1);
+  });
+
+  test('新管线判定：看到 triage 阶段即切换新步骤条', () => {
+    expect(isModernPipeline([{ phase: PHASE.triageStarted } as never])).toBe(true);
+    expect(isModernPipeline([{ phase: PHASE.triageCompleted } as never])).toBe(true);
+    expect(
+      isModernPipeline([
+        { phase: PHASE.started } as never,
+        { phase: PHASE.round, loop: PHASE.generate } as never,
+      ])
+    ).toBe(false);
+    expect(isModernPipeline([])).toBe(false);
+  });
+
+  test('声明字段优先于 triage 嗅探（x11）', () => {
+    expect(isModernPipeline([], 'source_plan')).toBe(true);
+    expect(
+      isModernPipeline([{ phase: PHASE.triageStarted } as never], 'sampling')
+    ).toBe(false);
+    // 无声明时退回嗅探（滚动部署期旧帧兜底）。
+    expect(isModernPipeline([{ phase: PHASE.triageStarted } as never])).toBe(true);
+  });
+});
+
+describe('t5 uncertain 过多判定与分诊计数适配', () => {
+  const counts = {
+    total: 8,
+    core: 2,
+    prerequisite: 1,
+    practice: 1,
+    mixed: 1,
+    noise: 1,
+    duplicate: 1,
+    uncertain: 1,
+  };
+
+  test('扫描行：总数 + 核心/跳过读数（混合/重复/不确定进明细，不上主行）', () => {
+    const line = triageCountsLine(counts, t);
+    expect(line).toContain('learning.genTriageLine');
+    expect(line).toContain('"total":8');
+    expect(line).toContain('"core":2');
+    expect(line).toContain('"skipped":2');
+    expect(line).not.toContain('"mixed"');
+    expect(line).not.toContain('"duplicate"');
+    expect(line).not.toContain('"uncertain"');
+  });
+
+  test('明细首行（F4）：混合/重复/不确定三个残余计数收进 triage 明细折叠', () => {
+    // 三个计数互不相同：交错接线（mixed↔uncertain 换位等）当场红。
+    const line = triageDetailCountsLine({ ...counts, mixed: 3, duplicate: 2, uncertain: 5 }, t);
+    expect(line).toContain('learning.genTriageDetailCounts');
+    expect(line).toContain('"mixed":3');
+    expect(line).toContain('"duplicate":2');
+    expect(line).toContain('"uncertain":5');
+  });
+
+  test('明细首行（F4）：三个计数全为 0 时不出行（不渲染「0、0、0」噪声行）', () => {
+    expect(triageDetailCountsLine({ ...counts, mixed: 0, duplicate: 0, uncertain: 0 }, t)).toBeNull();
+  });
+
+  test('uncertain 过多：数量 ≥10 或超过 core 时提醒整理知识库', () => {
+    expect(uncertainTooMany({ ...counts, uncertain: 10 })).toBe(true);
+    expect(uncertainTooMany({ ...counts, core: 1, uncertain: 5 })).toBe(true);
+    expect(uncertainTooMany(counts)).toBe(false);
+    expect(uncertainTooMany({ ...counts, uncertain: 9, core: 9 })).toBe(false);
+  });
+
+  test('DTO 分诊摘要（total_files 字段面）适配成计数入参', () => {
+    expect(triageViewCounts({
+      total_files: 8,
+      core: 2,
+      prerequisite: 1,
+      practice: 1,
+      mixed: 1,
+      noise: 1,
+      duplicate: 1,
+      uncertain: 1,
+    })).toEqual(counts);
+  });
+});
+
+// 计数行/成本门读数行（triageCountsLine / estimateLines）已随计划确认页移除（d5）。
+
+// ── t5：课程详情「来源覆盖」卡的三态判定与 topic 总数 ──────────────────────
+
+describe('t5 来源覆盖卡三态', () => {
+  test('null（旧课程/描述流）不显示空卡；available=false 显式不可用；正常快照 ready', () => {
+    expect(sourceCoverageState(null)).toBe('hidden');
+    expect(
+      sourceCoverageState({ snapshot: { version: null, available: false } } as never)
+    ).toBe('unavailable');
+    expect(
+      sourceCoverageState({ snapshot: { version: 1, available: true } } as never)
+    ).toBe('ready');
+  });
+
+  test('topic 总数 = covered + skipped + uncertain 标签数（四态里 uncertain 无计数面）', () => {
+    expect(coverageTopicTotals({ topics_covered: 3, topics_skipped: 1 } as never)).toEqual({
+      covered: 3,
+      skipped: 1,
+      total: 4,
+    });
+    expect(
+      coverageTopicTotals({
+        topics_covered: 3,
+        topics_skipped: 1,
+        uncertain: ['a', 'b'],
+      } as never)
+    ).toEqual({ covered: 3, skipped: 1, total: 6 });
   });
 });

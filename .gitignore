@@ -123,6 +123,7 @@ Thumbs.db
 web/packages/runtime/vendor/
 .edgeone
 .zcodeignore
+.zcode/
 .dsh/
 .tmp/
 .dsh-meow/

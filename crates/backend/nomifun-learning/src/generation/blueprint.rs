@@ -37,10 +37,16 @@ pub(crate) async fn generate_blueprint(
         )
         .await?;
         match parse_json_object::<Blueprint>(&raw) {
-            Ok(blueprint) => match validate_blueprint(&blueprint, samples) {
-                Ok(()) => return Ok(blueprint),
-                Err(error) => last_error = error,
-            },
+            Ok(mut blueprint) => {
+                // 课时来源归一（t4 评审补齐）：模型可能给 `source` 或
+                // `sources`（或两者）——统一成"列表为准、兼容位 = 首个"，
+                // 下游只需读一把尺。
+                normalize_blueprint_sources(&mut blueprint);
+                match validate_blueprint(&blueprint, samples) {
+                    Ok(()) => return Ok(blueprint),
+                    Err(error) => last_error = error,
+                }
+            }
             Err(error) => last_error = error,
         }
     }
@@ -54,6 +60,7 @@ pub(crate) fn build_blueprint_prompt(
     name: &str,
     description: &str,
     domain: Option<&str>,
+    goal: Option<&str>,
     samples: &[(String, String)],
 ) -> String {
     let mut prompt = format!(
@@ -63,6 +70,13 @@ pub(crate) fn build_blueprint_prompt(
         name.trim(),
         description.trim()
     );
+    if let Some(goal) = goal.map(str::trim).filter(|goal| !goal.is_empty()) {
+        // 目标即课程名（t1）：整体文本即目标，标题口径由装配处统一收敛到
+        // 目标文本；设计大纲时始终以目标为方向锚点。
+        prompt.push_str(&format!(
+            "Learner goal (this text IS the course title; design to it):\n{goal}\n"
+        ));
+    }
     if let Some(domain) = domain.map(str::trim).filter(|domain| !domain.is_empty()) {
         prompt.push_str(&format!("Requested domain label: {domain}\n"));
     }
@@ -102,6 +116,17 @@ pub(crate) fn build_description_blueprint_prompt(
 }
 
 
+/// 归一蓝图里每个课时的来源（t4 评审补齐）：`sources` 为准（为空时用兼容位
+/// `source` 升成单元素列表），兼容位重算为首个——同一份蓝图在任何消费方看到
+/// 的都是同一份引用清单。
+pub(crate) fn normalize_blueprint_sources(blueprint: &mut Blueprint) {
+    for module in &mut blueprint.modules {
+        for lesson in &mut module.lessons {
+            lesson.normalize_sources();
+        }
+    }
+}
+
 pub(crate) fn validate_blueprint(
     blueprint: &Blueprint,
     samples: &[(String, String)],
@@ -112,29 +137,6 @@ pub(crate) fn validate_blueprint(
     if blueprint.modules.is_empty() {
         return Err("blueprint has no modules".into());
     }
-    let mut concept_keys = HashSet::new();
-    for concept in &blueprint.concepts {
-        let key = concept.key.trim();
-        if key.is_empty() || concept.title.trim().is_empty() {
-            return Err("concept key and title are required".into());
-        }
-        if !concept_keys.insert(key.to_owned()) {
-            return Err(format!("duplicate concept key: {key}"));
-        }
-        for prerequisite in &concept.prerequisites {
-            if !concept_keys.contains(prerequisite.trim()) {
-                return Err(format!(
-                    "concept {key} references unknown prerequisite {prerequisite}"
-                ));
-            }
-            if prerequisite == key {
-                return Err(format!("concept {key} cannot require itself"));
-            }
-        }
-    }
-    if blueprint_concept_cycle(&blueprint.concepts) {
-        return Err("concept prerequisites form a cycle".into());
-    }
     let source_paths: HashSet<&str> = samples.iter().map(|(path, _)| path.as_str()).collect();
     for module in &blueprint.modules {
         if module.title.trim().is_empty() || module.lessons.is_empty() {
@@ -144,60 +146,26 @@ pub(crate) fn validate_blueprint(
             if lesson.title.trim().is_empty() {
                 return Err("lesson title is required".into());
             }
-            if lesson.concepts.is_empty() {
-                return Err(format!("lesson \"{}\" binds no concept", lesson.title));
-            }
-            for concept in &lesson.concepts {
-                if !concept_keys.contains(concept.trim()) {
-                    return Err(format!(
-                        "lesson \"{}\" references unknown concept {concept}",
-                        lesson.title
-                    ));
-                }
-            }
-            // kb flow: every lesson must cite an exact sampled file. The
+            // kb flow: every lesson must cite an exact sampled file — one or
+            // several (t4 评审补齐：`sources` 里每一条都校验）. The
             // description flow has no samples, so no source is required and
             // an invented path is simply dropped on import.
             if !samples.is_empty() {
-                let Some(source) = &lesson.source else {
+                let cited = lesson.cited_sources();
+                if cited.is_empty() {
                     return Err(format!("lesson \"{}\" has no source", lesson.title));
-                };
-                if !source_paths.contains(source.path.as_str()) {
-                    return Err(format!(
-                        "lesson \"{}\" cites an unsampled source path: {}",
-                        lesson.title, source.path
-                    ));
+                }
+                for source in cited {
+                    if !source_paths.contains(source.path.as_str()) {
+                        return Err(format!(
+                            "lesson \"{}\" cites an unsampled source path: {}",
+                            lesson.title, source.path
+                        ));
+                    }
                 }
             }
         }
     }
     Ok(())
-}
-
-
-/// Cycle detection over the prerequisite graph (Kahn's algorithm: repeatedly
-/// strip concepts whose prerequisites are all gone; leftovers form a cycle).
-fn blueprint_concept_cycle(concepts: &[ConceptPack]) -> bool {
-    let mut remaining: HashSet<&str> = concepts.iter().map(|c| c.key.as_str()).collect();
-    loop {
-        let ready: Vec<&str> = concepts
-            .iter()
-            .filter(|concept| {
-                remaining.contains(concept.key.as_str())
-                    && concept
-                        .prerequisites
-                        .iter()
-                        .all(|prerequisite| !remaining.contains(prerequisite.as_str()))
-            })
-            .map(|concept| concept.key.as_str())
-            .collect();
-        if ready.is_empty() {
-            break;
-        }
-        for key in ready {
-            remaining.remove(key);
-        }
-    }
-    !remaining.is_empty()
 }
 

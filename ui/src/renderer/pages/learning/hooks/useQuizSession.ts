@@ -1,0 +1,314 @@
+import { AppMessage as Message } from '@/renderer/components/notifications';
+import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { learningApi } from '../api';
+import type { QuizGradeFeedback, QuizRoundReport, QuizRoundView } from '../types';
+import { errorMessage, quizNotDueTrigger, type Translate } from '../utils';
+
+/** quiz 会话状态机（u3，票面 R1）：打开即 start → 回合态机
+ * `{ phase, busy, round, index, answers, feedback, error }`。状态迁移全部
+ * 收敛在 [`createQuizSessionController`] 的公共方法里（纯对象控制器，React
+ * 无关），hook 只是订阅壳——状态机单测（useQuizSession.test.ts）直接驱动
+ * 控制器，零 DOM。
+ *
+ * 红线落位：
+ * - R4（持答案）：`feedback` 只在判分后随响应出现、只随当前题（grade 只在
+ *   `answering` 相且以当前题 activity_id 判分）；「下一题」与「关闭」即弃；
+ *   题面侧永远只有 QuestionView 字段。
+ * - R5（全卷收集）：判分时的 response 原样存入 `answers`，complete 前置
+ *   校验全题覆盖（后端缺题拒绝是兜底）；判分零落账，结算只在 complete。
+ * - R6（生命周期）：`close()` 即弃回合（后端无取消端点，abandoned 语义由
+ *   下次 start supersede 收口）；会话内不调 progress（N/K 读数由集成侧在
+ *   会话结束回调后刷新；u5 R2 起冲突路径经 onConflict 通道刷新，本 hook
+ *   依旧零 progress 直调）。
+ * - u5 R2/R3（开测边界）：start 409（due 门竞态）→ 未到期文案 toast +
+ *   onConflict 进度刷新 + onRequestClose 关闭；`status !== 'active'` 的
+ *   异常回合不进作答流（error 相如实呈现，出口即关闭）。
+ * - R4（u4 收口时序）：complete 成功只进 `report` 相（报告在容器内呈现，
+ *   逐节点对账 + 分级），`onFinished` 延后到 [`QuizSessionController.finish`]
+ *   （「完成」按钮）才触发——集成侧据此刷新 N/K 归零读数并卸载会话。 */
+
+export type QuizSessionPhase =
+  | 'loading'
+  | 'error'
+  | 'answering'
+  | 'graded'
+  | 'ready'
+  | 'report'
+  | 'completed';
+
+export interface QuizSessionState {
+  phase: QuizSessionPhase;
+  /** 判分/结算请求在途（作答禁用与按钮 loading 共用） */
+  busy: boolean;
+  round: QuizRoundView | null;
+  /** 当前题下标（ready 相等于 questions.length，仅作答/判分相有意义） */
+  index: number;
+  /** R5 全卷收集：activity_id → 判分时 response 原样（引用不变） */
+  answers: Record<string, unknown>;
+  /** R4 持答案：仅判分后存在、仅随当前题；下一题/关闭即弃 */
+  feedback: QuizGradeFeedback | null;
+  /** u4 报告相：complete 成功的全卷报告（折叠节点 earned_xp=null 原样保
+   *  留，不做 0/空归一——呈现层按 null 呈「同日已结算 · 不计薪」）；仅
+   *  report 相持有，「完成」交回调、关闭即弃 */
+  report: QuizRoundReport | null;
+  /** start 失败的人面文案（errorMessage 单源映射，后端原文不上屏） */
+  error: string | null;
+}
+
+export const initialQuizSessionState: QuizSessionState = {
+  phase: 'loading',
+  busy: false,
+  round: null,
+  index: 0,
+  answers: {},
+  feedback: null,
+  report: null,
+  error: null,
+};
+
+/** R5 前置校验：距全题作答还差几题（0 = 可进 complete） */
+export function missingAnswerCount(
+  round: QuizRoundView,
+  answers: Record<string, unknown>
+): number {
+  return round.questions.filter((item) => !(item.activity_id in answers)).length;
+}
+
+export interface QuizSessionControllerDeps {
+  courseId: string;
+  t: Translate;
+  /** 会话结束回调（u4：「完成」按钮交报告相收口时触发）：携带全卷报告，
+   *  集成侧刷新 N/K 读数 */
+  onFinished: (report: QuizRoundReport) => void;
+  /** 状态迁移通知（hook 订阅壳据此 setState） */
+  onChange: (state: QuizSessionState) => void;
+  /** 测试替身注入口；生产默认 learningApi */
+  api?: Pick<typeof learningApi, 'quizStart' | 'quizGrade' | 'quizComplete'>;
+  /** 失败提示口；生产默认 Message.error（errorMessage 单源映射文案） */
+  notify?: (message: string) => void;
+  /** u5 R2：start 409（due 门竞态）时的进度刷新通道——集成侧 bump
+   *  quizProgressToken 驱动入口卡重拉 N/K（与 onFinished 同款通道） */
+  onConflict?: () => void;
+  /** u5 R2：控制器请求关闭会话（onClose 语义，集成侧卸载容器）。409 后
+   *  会话自关：呈现交给存活的 toast + 入口卡归零读数，模态内零残面 */
+  onRequestClose?: () => void;
+}
+
+export function createQuizSessionController(deps: QuizSessionControllerDeps) {
+  const { courseId, t, onFinished, onChange } = deps;
+  const api = deps.api ?? learningApi;
+  const notify = deps.notify ?? ((message: string) => Message.error(message));
+
+  let state: QuizSessionState = initialQuizSessionState;
+  const emit = (next: QuizSessionState) => {
+    state = next;
+    onChange(next);
+  };
+
+  return {
+    getState: (): QuizSessionState => state,
+
+    /** 开测（挂载自动触发；error 相的重试按钮同入口）。只允许 loading/error
+     * 相起跑，防 StrictMode 双挂载与误触重启在途回合。
+     *
+     * u5 边界门（失败三分法，互斥不叠加）：
+     * - R2：409 Conflict（due 门竞态）不走重试相——quizNotDueHint 文案
+     *   （K 提取自 Conflict 报文，漂移回落 conflictBusy）+ onConflict 触发
+     *   进度刷新 + onRequestClose 关闭会话（onClose 语义）；
+     * - R3：`status !== 'active'` 的异常回合（completed/abandoned）不进作答
+     *   流——error 相如实呈现 quizRoundNotActive 专用文案，出口即关闭按钮
+     *   （onClose 回课程页），不自动关窗（呈现先可见）；
+     * - 其余（网络/5xx 等）维持 error 相 + 重试不动。 */
+    async start(): Promise<boolean> {
+      if (state.busy || (state.phase !== 'loading' && state.phase !== 'error')) return false;
+      emit({ ...initialQuizSessionState, busy: true });
+      try {
+        const round = await api.quizStart(courseId);
+        // R3 状态门：completed/abandoned 回合是契约外异常（supersede 语义本
+        // 该发生在 start 内部）——如实呈现并引导回课程页，不进作答流
+        if (round.status !== 'active') {
+          emit({
+            ...initialQuizSessionState,
+            phase: 'error',
+            error: t('learning.quizRoundNotActive'),
+          });
+          return false;
+        }
+        // 空回合是后端契约外形态（预算 ≥1）：如实落错误态，不渲染空题面
+        if (round.questions.length === 0) {
+          emit({ ...initialQuizSessionState, phase: 'error', error: t('learning.quizLoadFailed') });
+          return false;
+        }
+        emit({ ...initialQuizSessionState, phase: 'answering', round });
+        return true;
+      } catch (startError) {
+        // R2：due 门竞态（409）——toast 未到期文案 + 进度刷新 + 关闭会话；
+        // 网络错误不走此路（维持 error 相 + 重试）
+        if (isBackendHttpError(startError) && startError.status === 409) {
+          const trigger = quizNotDueTrigger(startError);
+          notify(
+            trigger !== null
+              ? t('learning.quizNotDueHint', { trigger })
+              : t('learning.conflictBusy')
+          );
+          emit(initialQuizSessionState);
+          deps.onConflict?.();
+          deps.onRequestClose?.();
+          return false;
+        }
+        emit({
+          ...initialQuizSessionState,
+          phase: 'error',
+          error: errorMessage(t, startError),
+        });
+        return false;
+      }
+    },
+
+    /** 逐题判分（R3）：提交即 grade 当前题，response 原样入收集器。反馈期
+     * （graded）与在途（busy）拒绝重复提交。 */
+    async grade(response: unknown): Promise<boolean> {
+      const round = state.round;
+      const current = round?.questions[state.index];
+      if (state.phase !== 'answering' || state.busy || !round || !current) return false;
+      emit({ ...state, busy: true });
+      try {
+        const graded = await api.quizGrade(courseId, round.round_id, current.activity_id, response);
+        emit({
+          ...state,
+          busy: false,
+          phase: 'graded',
+          feedback: graded,
+          answers: { ...state.answers, [current.activity_id]: response },
+        });
+        return true;
+      } catch (gradeError) {
+        emit({ ...state, busy: false });
+        notify(errorMessage(t, gradeError));
+        return false;
+      }
+    },
+
+    /** 下一题（R3/R4）：只从 graded 相推进，反馈随之丢弃；末题推进进 ready。 */
+    next(): boolean {
+      if (state.phase !== 'graded' || !state.round) return false;
+      const index = state.index + 1;
+      emit({
+        ...state,
+        phase: index < state.round.questions.length ? 'answering' : 'ready',
+        index,
+        feedback: null,
+      });
+      return true;
+    },
+
+    /** 全卷结算（R5）：ready 相才可进；前置校验全题覆盖，缺题拒绝并提示
+     * （后端缺题拒绝是兜底）。成功进 `report` 相（u4：报告在容器内呈现，
+     * onFinished 延后到 finish 的「完成」按钮）。 */
+    async complete(): Promise<boolean> {
+      if (state.phase !== 'ready' || !state.round || state.busy) return false;
+      const missing = missingAnswerCount(state.round, state.answers);
+      if (missing > 0) {
+        notify(t('learning.quizMissingAnswers', { count: missing }));
+        return false;
+      }
+      emit({ ...state, busy: true });
+      try {
+        const finished = await api.quizComplete(courseId, state.round.round_id, state.answers);
+        // 折叠节点 earned_xp=null 原样入态（呈现层按 null 呈「同日已结算 ·
+        // 不计薪」，控制器不做 0/空归一）
+        emit({ ...state, busy: false, phase: 'report', report: finished });
+        return true;
+      } catch (completeError) {
+        emit({ ...state, busy: false });
+        notify(errorMessage(t, completeError));
+        return false;
+      }
+    },
+
+    /** 报告相收口（u4 R4）：只从 report 相可进；「完成」触发 onFinished 交
+     * 报告（集成侧清位 + bump quizProgressToken 刷新 N/K 归零读数并卸载），
+     * 会话相落 completed 兜底态。completed 相重复 finish 拒绝（幂等门）。 */
+    finish(): boolean {
+      if (state.phase !== 'report' || state.report === null) return false;
+      const finished = state.report;
+      emit({ ...state, phase: 'completed', report: null });
+      onFinished(finished);
+      return true;
+    },
+
+    /** 关闭会话（R6）：丢弃回合与全部反馈/收集态。后端无取消端点，abandoned
+     * 语义由下次 start supersede 收口。 */
+    close(): void {
+      emit(initialQuizSessionState);
+    },
+  };
+}
+
+export type QuizSessionController = ReturnType<typeof createQuizSessionController>;
+
+export interface UseQuizSessionOptions {
+  courseId: string;
+  /** 会话结束回调（u4：报告相「完成」交报告），透传控制器；经 ref 间接保持稳定 */
+  onFinished: (report: QuizRoundReport) => void;
+  /** u5 R2：start 409（due 门竞态）的进度刷新通道，透传控制器 onConflict
+   * （集成侧 bump quizProgressToken，与 onFinished 同款） */
+  onConflict?: () => void;
+  /** u5 R2：控制器请求关闭会话（onClose 语义，集成侧卸载容器），透传
+   * 控制器 onRequestClose */
+  onRequestClose?: () => void;
+}
+
+/** hook 订阅壳：状态机全部在 [`createQuizSessionController`]（纯对象、可直
+ * 测），这里只做 React 接线——状态迁移经 onChange 回灌 setState，挂载即开
+ * 测、卸载即弃回合（R6）。t/onFinished/onConflict/onRequestClose 经 ref
+ * 间接注入，控制器按 courseId 单实例，语言切换/回调换名不重建会话。 */
+export function useQuizSession({
+  courseId,
+  onFinished,
+  onConflict,
+  onRequestClose,
+}: UseQuizSessionOptions) {
+  const [state, setState] = useState<QuizSessionState>(initialQuizSessionState);
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  tRef.current = t;
+  const onFinishedRef = useRef(onFinished);
+  onFinishedRef.current = onFinished;
+  const onConflictRef = useRef(onConflict);
+  onConflictRef.current = onConflict;
+  const onRequestCloseRef = useRef(onRequestClose);
+  onRequestCloseRef.current = onRequestClose;
+
+  const controller = useMemo(
+    () =>
+      createQuizSessionController({
+        courseId,
+        t: ((...args: Parameters<Translate>) => tRef.current(...args)) as Translate,
+        onFinished: (report) => onFinishedRef.current(report),
+        onConflict: () => onConflictRef.current?.(),
+        onRequestClose: () => onRequestCloseRef.current?.(),
+        onChange: setState,
+      }),
+    [courseId]
+  );
+
+  // useEffect必要性：开测/弃回合与挂载周期绑定（打开即 start、卸载即 close），
+  // 控制器状态迁移经 onChange 订阅回灌 React。
+  useEffect(() => {
+    void controller.start();
+    return () => controller.close();
+  }, [controller]);
+
+  return {
+    state,
+    start: controller.start,
+    grade: controller.grade,
+    next: controller.next,
+    complete: controller.complete,
+    finish: controller.finish,
+    close: controller.close,
+  };
+}

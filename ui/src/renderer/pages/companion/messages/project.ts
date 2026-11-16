@@ -10,6 +10,7 @@ import type {
   IRequirement,
 } from '@/common/adapter/ipcBridge';
 import type { CompanionId } from '@/common/types/ids';
+import { PET_PHASE_ALIAS, PHASE } from '@/renderer/pages/learning/phaseMeta';
 import type {
   TAgentExecutionChangedEvent,
   TAgentExecutionLeadThinkingEvent,
@@ -91,18 +92,23 @@ export function petMessageFromCronExecuted(evt: {
 }
 
 const learningPhase = (phase: string): PetMessagePhase => {
-  if (phase === 'completed') return 'completed';
-  if (phase === 'failed') return 'failed';
-  if (phase === 'started' || phase === 'queued') return 'queued';
+  // 新 phase 用情绪别名收敛到既有键（A4：12 键覆盖四情绪）。
+  const aliased = PET_PHASE_ALIAS[phase] ?? phase;
+  if (aliased === PHASE.completed) return 'completed';
+  if (aliased === PHASE.failed) return 'failed';
+  if (aliased === PHASE.started || phase === 'queued') return 'queued';
   return 'progress';
 };
+
+/** 气泡文案键后缀：新 phase 先过别名表，nomi.json 只维护既有键。 */
+const petPhaseSuffix = (phase: string): string => PET_PHASE_ALIAS[phase] ?? phase;
 
 export function petMessageFromCourseGeneration(evt: ILearningCourseGenerationEvent): PetMessage {
   return {
     id: `learning:course:${evt.course_id ?? 'active'}`,
     source: 'learning',
     phase: learningPhase(evt.phase),
-    titleKey: petKey(`nomi.petMessage.learning.course.${evt.phase}`),
+    titleKey: petKey(`nomi.petMessage.learning.course.${petPhaseSuffix(evt.phase)}`),
     titleParams: {
       title: evt.title ?? '',
       round: evt.round ?? '',
@@ -123,7 +129,7 @@ export function petMessageFromLessonGeneration(evt: ILearningLessonGenerationEve
     id: `learning:lesson:${evt.lesson_id ?? 'active'}`,
     source: 'learning',
     phase: learningPhase(evt.phase),
-    titleKey: petKey(`nomi.petMessage.learning.lesson.${evt.phase}`),
+    titleKey: petKey(`nomi.petMessage.learning.lesson.${petPhaseSuffix(evt.phase)}`),
     titleParams: { title: evt.title ?? '', round: evt.round ?? '', max: evt.max_rounds ?? '' },
     detail: evt.error ? truncateDetail(evt.error) : evt.text ? truncateDetail(evt.text) : undefined,
     href: '/learn',

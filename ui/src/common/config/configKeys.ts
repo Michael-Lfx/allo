@@ -162,15 +162,26 @@ export type ConfigKeyMap = {
   // service from client preferences.
   // Target recall probability for the FSRS scheduler (0.7–0.99; default 0.9).
   'learning.desiredRetention': number | undefined;
-  // Custom FSRS model weights; empty/absent means the library defaults.
-  'learning.fsrsParameters': number[] | undefined;
+  // Custom FSRS model weights. Legacy shape = bare number[]; current shape =
+  // { algo: 'fsrs6', w: number[] }. Empty/absent means library defaults.
+  'learning.fsrsParameters':
+    | number[]
+    | { algo: string; w: number[] }
+    | undefined;
   // Max due-review items fetched per review queue load (default 30).
   'learning.reviewSessionLimit': number | undefined;
-  // Max questions in a diagnostic plan (default 10).
-  'learning.diagnosticLimit': number | undefined;
-  // Daily check-in review goal (default 15; 0 = clear-the-queue only).
-  // Read by the backend learning service for the daily check-in.
-  'learning.dailyCheckinGoal': number | undefined;
+  // Daily XP goal in XP units ≈ focused minutes (default 40; 1..=1000,
+  // out-of-range writes are rejected by the backend). Read by the backend
+  // learning service for the daily XP gauge (j05 打卡计数口径退役).
+  'learning.dailyXpGoal': number | undefined;
+  // 自动维护回合（k02）：开关（缺省开）+ 间隔分钟（30..=10080，缺省 360；
+  // 越界写入被后端拒绝、读侧回退缺省）。后端学习服务读取。
+  'learning.maintenanceAutoEnabled': boolean | undefined;
+  'learning.maintenanceIntervalMinutes': number | undefined;
+  // 自动补批（m10）：开关（缺省开）。图课程工作区加载时调纯读裁决端点，
+  // Due 即自动补一批（后台）；环境闸 NOMI_LEARNING_AUTO_REFILL 兜底
+  // （off = 恒 Disabled）。后端学习服务读取。
+  'learning.autoRefillEnabled': boolean | undefined;
   // Local-time offset in minutes east of UTC for review-day boundaries
   // (02:00 rollover), reported by the frontend on startup as
   // `-Date().getTimezoneOffset()`. Read by the backend learning service.

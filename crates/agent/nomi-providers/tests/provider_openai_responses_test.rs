@@ -28,6 +28,7 @@ fn request(retain_provider_round: bool) -> LlmRequest {
         temperature: None,
         retain_provider_round,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     }
 }
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, InputNumber, Slider, Switch } from '@arco-design/web-react';
+import { Button, Input, InputNumber, Slider, Switch, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { useWideContentLayout } from '@/renderer/pages/learning/components/ContentWidthToggle';
@@ -14,24 +14,45 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 
 const DEFAULT_DESIRED_RETENTION = 0.9;
 const DEFAULT_REVIEW_SESSION_LIMIT = 30;
-const DEFAULT_DIAGNOSTIC_LIMIT = 10;
-const DEFAULT_DAILY_CHECKIN_GOAL = 15;
+const DEFAULT_DAILY_XP_GOAL = 40;
+/** k02：自动维护缺省值（后端单源 `DEFAULT_MAINTENANCE_*` 同值）。 */
+const DEFAULT_MAINTENANCE_ENABLED = true;
+const DEFAULT_MAINTENANCE_INTERVAL_MINUTES = 360;
+/** m10：自动补批缺省值（后端单源 `DEFAULT_AUTO_REFILL_ENABLED` 同值）。 */
+const DEFAULT_AUTO_REFILL_ENABLED = true;
 
 const LearningSettings: React.FC = () => {
   const { t } = useTranslation();
   const [desiredRetention, setDesiredRetention] = useConfig('learning.desiredRetention');
   const [fsrsParameters, setFsrsParameters] = useConfig('learning.fsrsParameters');
   const [reviewSessionLimit, setReviewSessionLimit] = useConfig('learning.reviewSessionLimit');
-  const [diagnosticLimit, setDiagnosticLimit] = useConfig('learning.diagnosticLimit');
-  const [dailyCheckinGoal, setDailyCheckinGoal] = useConfig('learning.dailyCheckinGoal');
+  const [dailyXpGoal, setDailyXpGoal] = useConfig('learning.dailyXpGoal');
+  const [maintenanceAutoEnabled, setMaintenanceAutoEnabled] = useConfig(
+    'learning.maintenanceAutoEnabled'
+  );
+  const [maintenanceIntervalMinutes, setMaintenanceIntervalMinutes] = useConfig(
+    'learning.maintenanceIntervalMinutes'
+  );
+  const [autoRefillEnabled, setAutoRefillEnabled] = useConfig('learning.autoRefillEnabled');
   // 内容宽度偏好与学习页头部按钮共用同一条读写路径（同一个键、同一套归一化），
   // 避免两个入口写出两种存档形态。
   const { wide: wideContent, setWide: setWideContent } = useWideContentLayout();
 
   const [parametersDraft, setParametersDraft] = useState('');
+  // FSRS 参数两形兼容：旧裸数组 / 新 { algo, w } 信封；未知算法 → 空输入 +
+  // 显式提示（后端已整体回退默认）。
+  const fsrsWeights = Array.isArray(fsrsParameters)
+    ? fsrsParameters
+    : (fsrsParameters?.w ?? []);
+  const unsupportedAlgo =
+    fsrsParameters !== undefined &&
+    !Array.isArray(fsrsParameters) &&
+    fsrsParameters.algo !== 'fsrs6'
+      ? fsrsParameters.algo
+      : null;
 
   useEffect(() => {
-    setParametersDraft((fsrsParameters ?? []).join(', '));
+    setParametersDraft(unsupportedAlgo ? '' : fsrsWeights.join(', '));
   }, [fsrsParameters]);
 
   const saveParameters = () => {
@@ -49,7 +70,8 @@ const LearningSettings: React.FC = () => {
       Message.error(t('learning.settings.parametersInvalid'));
       return;
     }
-    void setFsrsParameters(values);
+    // 写侧恒存算法标签（x10）。
+    void setFsrsParameters({ algo: 'fsrs6', w: values });
     Message.success(t('learning.settings.saved'));
   };
 
@@ -63,7 +85,17 @@ const LearningSettings: React.FC = () => {
         <SettingsList>
             <PreferenceRow
               label={t('learning.settings.wideContent')}
-              description={t('learning.settings.wideContentHint')}
+              description={
+                <Tooltip
+                  content={
+                    <span className='whitespace-pre-line'>
+                      {t('learning.settings.wideContentDetail')}
+                    </span>
+                  }
+                >
+                  <span>{t('learning.settings.wideContentHint')}</span>
+                </Tooltip>
+              }
               controlLayout='field'
             >
               <Switch checked={wideContent} onChange={(value) => void setWideContent(value)} />
@@ -100,10 +132,17 @@ const LearningSettings: React.FC = () => {
               <div className='flex flex-col gap-8px w-full'>
                 <Input.TextArea
                   autoSize={{ minRows: 2, maxRows: 4 }}
-                  placeholder={(fsrsParameters ?? []).join(', ')}
+                  placeholder={unsupportedAlgo ? '' : fsrsWeights.join(', ')}
                   value={parametersDraft}
                   onChange={setParametersDraft}
                 />
+                {unsupportedAlgo && (
+                  <div className='text-12px text-[var(--color-danger)]'>
+                    {t('learning.settings.fsrsParametersUnsupportedAlgo', {
+                      algo: unsupportedAlgo,
+                    })}
+                  </div>
+                )}
                 <SettingsControlGroup>
                   <Button size='small' onClick={saveParameters}>
                     {t('learning.settings.fsrsParametersApply')}
@@ -125,29 +164,51 @@ const LearningSettings: React.FC = () => {
               />
             </PreferenceRow>
             <PreferenceRow
-              label={t('learning.settings.dailyCheckinGoal')}
-              description={t('learning.settings.dailyCheckinGoalHint')}
-              controlLayout='field'
-            >
-              <InputNumber
-                className='w-full sm:w-180px'
-                min={0}
-                max={500}
-                value={dailyCheckinGoal ?? DEFAULT_DAILY_CHECKIN_GOAL}
-                onChange={(value) => value != null && void setDailyCheckinGoal(Number(value))}
-              />
-            </PreferenceRow>
-            <PreferenceRow
-              label={t('learning.settings.diagnosticLimit')}
-              description={t('learning.settings.diagnosticLimitHint')}
+              label={t('learning.settings.dailyXpGoal')}
+              description={t('learning.settings.dailyXpGoalHint')}
               controlLayout='field'
             >
               <InputNumber
                 className='w-full sm:w-180px'
                 min={1}
-                max={50}
-                value={diagnosticLimit ?? DEFAULT_DIAGNOSTIC_LIMIT}
-                onChange={(value) => value != null && void setDiagnosticLimit(Number(value))}
+                max={1000}
+                value={dailyXpGoal ?? DEFAULT_DAILY_XP_GOAL}
+                onChange={(value) => value != null && void setDailyXpGoal(Number(value))}
+              />
+            </PreferenceRow>
+            <PreferenceRow
+              label={t('learning.settings.autoRefillEnabled')}
+              description={t('learning.settings.autoRefillEnabledHint')}
+              controlLayout='field'
+            >
+              <Switch
+                checked={autoRefillEnabled ?? DEFAULT_AUTO_REFILL_ENABLED}
+                onChange={(value) => void setAutoRefillEnabled(value)}
+              />
+            </PreferenceRow>
+            <PreferenceRow
+              label={t('learning.settings.maintenanceAutoEnabled')}
+              description={t('learning.settings.maintenanceAutoEnabledHint')}
+              controlLayout='field'
+            >
+              <Switch
+                checked={maintenanceAutoEnabled ?? DEFAULT_MAINTENANCE_ENABLED}
+                onChange={(value) => void setMaintenanceAutoEnabled(value)}
+              />
+            </PreferenceRow>
+            <PreferenceRow
+              label={t('learning.settings.maintenanceIntervalMinutes')}
+              description={t('learning.settings.maintenanceIntervalMinutesHint')}
+              controlLayout='field'
+            >
+              <InputNumber
+                className='w-full sm:w-180px'
+                min={30}
+                max={10080}
+                value={maintenanceIntervalMinutes ?? DEFAULT_MAINTENANCE_INTERVAL_MINUTES}
+                onChange={(value) =>
+                  value != null && void setMaintenanceIntervalMinutes(Number(value))
+                }
               />
             </PreferenceRow>
         </SettingsList>

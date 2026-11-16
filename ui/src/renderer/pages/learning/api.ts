@@ -1,23 +1,37 @@
 import { httpRequest } from '@/common/adapter/httpBridge';
 import type {
   AttemptResult,
-  CalendarStats,
+  BasisView,
+  CapacityFeedbackChoice,
+  CapacityFeedbackView,
   CheckinStatus,
-  ConceptRef,
+  ConceptAuditReport,
+  ConceptDetailView,
+  ConceptOverviewRowView,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
+  DeclarationResultView,
   DueReview,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
+  GraphConceptRowView,
+  GraphHistoryView,
+  LearningGenerationTaskView,
+  LearningStructureView,
   MemoryHealthStats,
   GeneratedLessonActivity,
-  LearningGraphGenerationStatus,
   Lesson,
+  LessonGenerationAccepted,
   LessonStatus,
   QuestionEntry,
+  QuizGradeFeedback,
+  QuizOverviewCourse,
+  QuizProgressView,
+  QuizRoundReport,
+  QuizRoundView,
   ReviewAnswerResult,
   ReviewRating,
   ReviewResult,
@@ -26,6 +40,11 @@ import type {
   SubmitAttemptRequest,
   UpdateQuestionRequest,
   UpdateSectionBodyRequest,
+  MountRoundSummary,
+  StructureRepairSummary,
+  SystemActionView,
+  XpCalendar,
+  XpReading,
 } from './types';
 
 const BASE = '/api/learning';
@@ -38,38 +57,167 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
-  // 同步生成：agent loop 全程在 HTTP 请求内执行，过程事件经
-  // WS 的 `learning.course-generation` 推送，终态以本响应为准。
+  // 同步创建：课程落库即返回；知识结构生成在后台执行（进度经
+  // WS 的 `learning.course-generation` 推送，取消用下方端点；
+  // 任务一览/轮询走 generation-tasks 快照端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
-  // 续建失败的学习图生成：服务端定位最近活跃草稿接着建（草稿内存存活
-  // 1 小时）；无存活草稿（404）或引擎未配置（409）时报错，调用方回退
-  // 全量重生成。
-  resumeLearningGraph: (request: { provider_id?: string; model?: string } = {}) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate/resume`, request),
-  // 学习图生成状态/取消：关闭对话框后生成仍在后台继续（HTTP 请求内同步
-  // 执行），页面用这对端点恢复悬浮指示条与取消入口。
-  generationStatus: () =>
-    httpRequest<LearningGraphGenerationStatus>(
-      'GET',
-      `${BASE}/courses/generate/status`
-    ),
   cancelGeneration: () =>
     httpRequest<{ cancelled: boolean }>(
       'POST',
       `${BASE}/courses/generate/cancel`,
       {}
     ),
+  // 手动触发一次生长（就绪补到 7；已在生长中报 409）。可选 trigger 只影响
+  // 动作簿的触发源标签（缺省 manual；自动补批传 auto_refill），不改变裁决。
+  // modelChoice = 用户的学习模型选择（provider_id + model 成对随 body 发出）；
+  // 缺省/null 时 body 为空，后端回落默认档。
+  growGraph: (
+    courseId: string,
+    trigger?: 'manual' | 'auto_refill',
+    modelChoice?: { provider_id: string; model: string } | null
+  ) =>
+    httpRequest<{ kicked: boolean }>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow${
+        trigger ? `?trigger=${encodeURIComponent(trigger)}` : ''
+      }`,
+      modelChoice ? { provider_id: modelChoice.provider_id, model: modelChoice.model } : {}
+    ),
+  // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
+  // due 且非停摆才自动调上方 growGraph；disabled/below_threshold 如实不动作
+  growthVerdict: (courseId: string) =>
+    httpRequest<import('./types').GrowthVerdictView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/growth/verdict`
+    ),
+  // 学习记录：批次时间线（倒序）
+  graphHistory: (courseId: string) =>
+    httpRequest<GraphHistoryView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/history`
+    ),
+  // 系统动作簿（y04）：自主/后台动作的终态留痕，按课程倒序（limit 缺省 50、
+  // 上限 200，由后端归一）
+  systemActions: (courseId: string, limit = 50) =>
+    httpRequest<SystemActionView[]>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/system-actions?limit=${limit}`
+    ),
+  // 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源
+  graphConcepts: (courseId: string) =>
+    httpRequest<GraphConceptRowView[]>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+  // 缺口片段/自指/互指环；概念表行级标记的数据源
+  conceptAudit: (courseId: string) =>
+    httpRequest<ConceptAuditReport>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/concepts/audit`
+    ),
+  // 全局概念总览（c7）：登记表非废弃概念 + 计数/审计旗标（概念是全局实体，
+  // 不挂课程路由）
+  conceptsOverview: () => httpRequest<ConceptOverviewRowView[]>('GET', `${BASE}/concepts`),
+  // 单概念详情（c7）：条目 + 读时推导关系 + 跨课程使用 + 声明使用；未知 id = 404
+  conceptDetail: (conceptId: string) =>
+    httpRequest<ConceptDetailView>('GET', `${BASE}/concepts/${encodeURIComponent(conceptId)}`),
+  // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
+  // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口
+  graphStructure: (courseId: string) =>
+    httpRequest<LearningStructureView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure`
+    ),
+  // 重跑知识结构生成（换参考地图不换课）；进度走 WS structure_* 事件
+  regenerateGraphStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<{ kicked: boolean }>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/regenerate`,
+      request
+    ),
+  // 结构挂载回合（j08）：把待挂集节点挂到结构块（导航事实）；同步返回
+  // 回合摘要（mounted | skipped）
+  mountStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<MountRoundSummary>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/mount`,
+      request
+    ),
+  // 结构修补回合（j09）：按留痕与观察输出七型修补意图；皆空 = skipped，
+  // ops 空 = noop；同步返回回合摘要
+  repairStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<StructureRepairSummary>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/repair`,
+      request
+    ),
+  // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点、
+  // 不排课、不计 XP）；幂等增量——已声明门口自动剔除，全已声明 = noop
+  // modelChoice 成对透传 provider_id+model；null/缺省两字段都不带 = 后端默认档
+  declareBasis: (
+    courseId: string,
+    doors: string[],
+    modelChoice?: { provider_id: string; model: string } | null
+  ) =>
+    httpRequest<DeclarationResultView>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
+      { doors, provider_id: modelChoice?.provider_id, model: modelChoice?.model }
+    ),
+  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露。
+  // 撤销（DELETE /basis）不在产品面（c3）：后端接口保留作纠错通道。
+  basisView: (courseId: string) =>
+    httpRequest<BasisView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
+    ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
-  enroll: (id: string) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/${encodeURIComponent(id)}/enroll`),
   getLesson: (id: string) =>
     httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
+  // y07 容量反馈：latest-wins 留痕，响应 saved view；回显随 lesson detail
+  // 读回（不另设 GET）。零结算零置位——只记账，不触发重生成/拆节。
+  recordCapacityFeedback: (lessonId: string, choice: CapacityFeedbackChoice) =>
+    httpRequest<CapacityFeedbackView>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(lessonId)}/capacity-feedback`,
+      { choice }
+    ),
+  // 按需生成课时内容（e4 双模化默认异步）：返回 202 面（任务键 + 轮询
+  // 提示），生成在后台任务执行——断开连接不中断；调用方以 generationTasks
+  // 轮询终态（或听 learning.lesson-generation WS 流）后拉课时详情。
+  // `?wait=true` 同步臂只保留给脚本/冒烟，前端一律走异步。
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
-    httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
+    httpRequest<LessonGenerationAccepted>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(id)}/generate`,
+      request
+    ),
+  // 长任务快照（课时异步生成的轮询面；响应体 `poll` 字段同指此处）
+  generationTasks: () =>
+    httpRequest<LearningGenerationTaskView[]>('GET', `${BASE}/generation-tasks`),
+  // 统一取消（按任务键，真取消）：取消胜出 = `{state: 'cancelled'}`；任务已
+  // 先到终态（竞速落败）= 如实回 done/failed；键不存在 = 404。生长悬浮
+  // Pill（g4）的取消入口——终态仍以随后的快照轮询为准。
+  cancelGenerationTask: (key: string) =>
+    httpRequest<{ state: string }>(
+      'POST',
+      `${BASE}/generation-tasks/${encodeURIComponent(key)}/cancel`,
+      {}
+    ),
   // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
   //（其余节与题目不动）；旧课时（无节清单）返回 400。feedback 为可选
   // 学习建议（ADR-0007），为空即同分布重生成。
@@ -103,11 +251,14 @@ export const learningApi = {
   listDueReviews: (
     limit = 30,
     courseId?: string | string[],
-    options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[] }
+    options?: { dueOnly?: boolean; orphan?: boolean; tags?: string[]; nodeIds?: string[] }
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     const courseIds = courseId === undefined ? [] : Array.isArray(courseId) ? courseId : [courseId];
     for (const id of courseIds) query.append('course_id', id);
+    // u9 节点过滤（R2）：多值 node_id 照 course_id 手工收集——薄弱集复习
+    // 会话只取供给/薄弱节点集合，scoped 会话不下发全量队列。
+    for (const id of options?.nodeIds ?? []) query.append('node_id', id);
     if (options?.dueOnly) query.set('due_only', 'true');
     if (options?.orphan) query.set('orphan', 'true');
     for (const tag of options?.tags ?? []) query.append('tag', tag);
@@ -115,13 +266,13 @@ export const learningApi = {
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
   checkinToday: () => httpRequest<CheckinStatus>('GET', `${BASE}/checkins/today`),
+  /** XP 读数（两把尺同源回放：今日 XP/目标 + 结算进度尺，ETA 纯投影） */
+  getXpReading: () => httpRequest<XpReading>('GET', `${BASE}/xp/reading`),
+  /** XP 日历：恒 weeks×7 桶含零桶、末桶 = 今日（缺省 12 周） */
+  getXpCalendar: (weeks = 12) =>
+    httpRequest<XpCalendar>('GET', `${BASE}/xp/calendar?weeks=${weeks}`),
   getMemoryStats: (tzOffset: number) =>
     httpRequest<MemoryHealthStats>('GET', `${BASE}/stats/memory?tz_offset=${tzOffset}`),
-  getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>
-    httpRequest<CalendarStats>(
-      'GET',
-      `${BASE}/stats/calendar?tz_offset=${tzOffset}&year=${year}${month ? `&month=${month}` : ''}`
-    ),
   setCourseTags: (id: string, request: SetTagsRequest) =>
     httpRequest<string[]>('PUT', `${BASE}/courses/${encodeURIComponent(id)}/tags`, request),
   setQuestionTags: (
@@ -204,9 +355,54 @@ export const learningApi = {
     httpRequest<string>('POST', `${BASE}/custom-questions`, request),
   deleteCustomQuestion: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
-  listConceptRefs: () => httpRequest<ConceptRef[]>('GET', `${BASE}/concepts`),
-  deleteCourse: (id: string, deleteReviews: boolean) =>
-    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
-      delete_reviews: deleteReviews,
-    }),
+  /** 删除课程（三轮 g3：账本永远保留，无连带删卡选项；内容移除、学习记录保留） */
+  deleteCourse: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`),
+  /** 课程改名（只动显示名；目标/快照/学习数据不动） */
+  renameCourse: (id: string, title: string) =>
+    httpRequest<CourseSummary>('PATCH', `${BASE}/courses/${encodeURIComponent(id)}`, { title }),
+  /** 归档课程（enabled 翻转，数据零删零改，可恢复） */
+  archiveCourse: (id: string) =>
+    httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/archive`),
+  /** 恢复归档课程 */
+  restoreCourse: (id: string) =>
+    httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/restore`),
+  // --- quiz（u1 接线层，路由实形见 nomifun-learning/src/routes.rs 912–995；
+  // u2–u3 消费。校准读面 GET /api/learning/quiz/calibration 本波不接——
+  // stats 源可能已覆盖校准 bins，呈现走 u4 票面裁决，不接没人消费的端点） ---
+  /** quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K（N = 距上次 quiz
+   * 结算的学新结算数，K = 阈值；due = N ≥ K） */
+  quizProgress: (courseId: string) =>
+    httpRequest<QuizProgressView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/progress`
+    ),
+  /** 首页检测聚合（u7，感知横幅数据面）：启用未删且 settled_count > 0 的
+   * 每课程 N/K 列表（GET /api/learning/quiz/overview），due 优先、课程名次
+   * 之（后端排好序）；无符合课程返回空数组 */
+  quizOverview: () => httpRequest<QuizOverviewCourse[]>('GET', `${BASE}/quiz/overview`),
+  /** quiz 开测命令（q2 载体落位）：due 门（Conflict 附 N/K）→ 脱敏题单
+   * （判底零字段）。无请求体；慢路径 = 变式链 LLM 调用（有凭据时内联
+   * 生成，零凭据只出 bank 旧题），调用方需容忍慢响应 */
+  quizStart: (courseId: string) =>
+    httpRequest<QuizRoundView>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/start`
+    ),
+  /** 逐题判分（q2，纯读零落账）：判底（answer/explanation）只随本反馈
+   * 下发；response 形状随题型，与课时作答同约定 */
+  quizGrade: (courseId: string, roundId: string, activityId: string, response: unknown) =>
+    httpRequest<QuizGradeFeedback>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/rounds/${encodeURIComponent(roundId)}/grade`,
+      { activity_id: activityId, response }
+    ),
+  /** 全卷结算（q2）：`answers = {activity_id: response}` 必作答（缺题拒绝）
+   * → 逐覆盖节点分级落账（同日折叠不计薪）+ 回合行首写为终 */
+  quizComplete: (courseId: string, roundId: string, answers: Record<string, unknown>) =>
+    httpRequest<QuizRoundReport>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/quiz/rounds/${encodeURIComponent(roundId)}/complete`,
+      { answers }
+    ),
 };

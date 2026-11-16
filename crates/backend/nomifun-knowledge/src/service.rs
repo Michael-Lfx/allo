@@ -5961,17 +5961,68 @@ const LIST_BASES_CONCURRENCY: usize = 8;
 /// gathered so far being dropped (empty) rather than hanging the agent tool.
 const SEARCH_WALK_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// Split a lowercased query into non-empty, deduped whitespace terms. For CJK
-/// (no spaces) this yields the whole query as one term, which still
-/// substring-matches — adequate for the keyword tier.
+/// Upper bound on the term list a single query expands to (the whole-query
+/// term plus CJK bigrams). A pasted paragraph would otherwise expand into
+/// hundreds of terms and turn every file scan into hundreds of substring
+/// searches; the head of the query carries its intent, so the tail is dropped.
+const MAX_QUERY_TERMS: usize = 64;
+
+/// Split a lowercased query into non-empty, deduped terms. Whitespace splits
+/// the query; every term whose CJK segment is longer than one character also
+/// contributes its **character bigrams** — a CJK sentence has no spaces, so as
+/// a single term it only matches documents containing that exact sentence, i.e.
+/// practically never. A whole-string hit implies its bigrams hit, so the
+/// bigrams only add recall; ASCII terms (and any whitespace-separated query)
+/// keep their exact former term list, and a two-character CJK term dedupes
+/// into itself.
 fn query_terms(query_lc: &str) -> Vec<String> {
     let mut seen = HashSet::new();
-    query_lc
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .filter(|t| seen.insert(t.to_string()))
-        .map(str::to_owned)
-        .collect()
+    let mut terms: Vec<String> = Vec::new();
+    for token in query_lc.split_whitespace().filter(|t| !t.is_empty()) {
+        if seen.insert(token.to_string()) {
+            terms.push(token.to_owned());
+        }
+        for bigram in cjk_bigrams(token) {
+            if terms.len() >= MAX_QUERY_TERMS {
+                return terms;
+            }
+            if seen.insert(bigram.clone()) {
+                terms.push(bigram);
+            }
+        }
+        if terms.len() >= MAX_QUERY_TERMS {
+            return terms;
+        }
+    }
+    terms
+}
+
+/// The adjacent-character bigrams of every CJK run inside one query term
+/// (non-CJK characters end a run, so no bigram spans a boundary). Empty for
+/// pure-ASCII terms — those keep the legacy whole-term behavior.
+fn cjk_bigrams(token: &str) -> Vec<String> {
+    let mut bigrams: Vec<String> = Vec::new();
+    let mut previous: Option<char> = None;
+    for ch in token.chars() {
+        if is_cjk(ch) {
+            if let Some(previous) = previous {
+                bigrams.push(format!("{previous}{ch}"));
+            }
+            previous = Some(ch);
+        } else {
+            previous = None;
+        }
+    }
+    bigrams
+}
+
+/// CJK unified ideographs (incl. extension A) — the same range
+/// `nomifun-learning/src/generation/terms.rs::is_cjk` uses, so both sides of
+/// the retrieval seam agree on what counts as "no word boundaries". The pair is
+/// deliberately kept duplicated (每个 crate 的三行私有判据；改一侧必须同步
+/// 另一侧——learning 侧的同名注释互指到这里).
+fn is_cjk(ch: char) -> bool {
+    matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
 }
 
 /// First markdown heading (`# ...`) text, trimmed of leading `#`/space, or "".
@@ -10568,6 +10619,75 @@ mod tests {
         std::fs::write(root.join("misc.md"), "# Misc\n\nthe word payments appears once\n").unwrap();
         let hits = svc.search_bases(&[info.knowledge_base_id.clone()], "payments", 8).await.unwrap();
         assert_eq!(hits[0].rel_path, "payments.md", "filename/heading match ranks first");
+    }
+
+    /// CJK 查询词条化：整句（无空格）今天退化成一个永不命中的长词条——
+    /// 生产文案/目标措辞落到检索上就是零召回。修法：对 CJK 段追加字符二元
+    /// （整句命中必然蕴含其全部二元命中），纯英文/含空格词条逐字不变；短语
+    /// 词（二元本身）不产生新词条、不重复计分。
+    #[test]
+    fn query_terms_adds_cjk_bigrams_and_keeps_ascii_terms_verbatim() {
+        assert_eq!(query_terms("rollback"), vec!["rollback"]);
+        assert_eq!(query_terms("payments api"), vec!["payments", "api"]);
+        // 纯英文/含空格：词条集与旧行为逐字一致。
+        assert_eq!(query_terms("rollback flow"), vec!["rollback", "flow"]);
+        // 中文整句：整句保留（长词条仍可能命中）+ 相邻二元（召回主来源）。
+        assert_eq!(
+            query_terms("生产环境回滚"),
+            vec!["生产环境回滚", "生产", "产环", "环境", "境回", "回滚"]
+        );
+        // 双字词：整句与二元同形，去重后只留一个词条（短词不劣化）。
+        assert_eq!(query_terms("回滚"), vec!["回滚"]);
+        // 词内标点/字母断开 CJK 段：跨越边界不产生二元。
+        assert_eq!(query_terms("回滚a流程"), vec!["回滚a流程", "回滚", "流程"]);
+        // 中英混排：两侧各自成词条。
+        assert_eq!(query_terms("回滚 rollback"), vec!["回滚", "rollback"]);
+    }
+
+    /// 中文整句查询必须有召回：整句不是任何文档的子串，但它的二元命中
+    /// 文档——这条今天失败（零召回），修好后是检索面接回知识库的前提。
+    #[tokio::test]
+    async fn search_bases_finds_a_cjk_sentence_query() {
+        let (svc, _tmp) = search_test_service().await;
+        let info = svc.create_base("运维手册", "", None, None).await.unwrap();
+        let root = svc.data_dir().join("knowledge").join(info.knowledge_base_id.as_str());
+        std::fs::create_dir_all(root.join("deploy")).unwrap();
+        std::fs::write(
+            root.join("deploy/rollback.md"),
+            "# 回滚流程\n\n生产环境回滚分三步：先停流量，再切换版本，最后恢复流量。\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("deploy/notes.md"), "# 值班记录\n\n今天无异常。\n").unwrap();
+
+        let hits = svc
+            .search_bases(
+                &[info.knowledge_base_id.clone()],
+                "生产环境回滚分三步该怎么做",
+                8,
+            )
+            .await
+            .unwrap();
+        assert!(
+            hits.iter().any(|hit| hit.rel_path == "deploy/rollback.md"),
+            "CJK 整句查询必须命中原文：{hits:?}"
+        );
+        assert!(
+            hits.iter().all(|hit| hit.rel_path != "deploy/notes.md"),
+            "无关文档不因二元而误命中：{hits:?}"
+        );
+    }
+
+    /// 短词不劣化：二元修法对词面命中（路径/标题加权）的排序无影响——
+    /// 中文双字查询的排序与旧行为同一把尺。
+    #[tokio::test]
+    async fn search_bases_ranks_cjk_filename_and_heading_above_body() {
+        let (svc, _tmp) = search_test_service().await;
+        let info = svc.create_base("库", "", None, None).await.unwrap();
+        let root = svc.data_dir().join("knowledge").join(info.knowledge_base_id.as_str());
+        std::fs::write(root.join("回滚.md"), "# 回滚流程\n\n停流量、切换版本。\n").unwrap();
+        std::fs::write(root.join("misc.md"), "# 杂记\n\n正文里出现过一次回滚。\n").unwrap();
+        let hits = svc.search_bases(&[info.knowledge_base_id.clone()], "回滚", 8).await.unwrap();
+        assert_eq!(hits[0].rel_path, "回滚.md", "词面命中（路径+标题）排第一");
     }
 
     #[tokio::test]

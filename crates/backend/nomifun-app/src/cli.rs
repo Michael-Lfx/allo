@@ -303,6 +303,13 @@ pub enum Command {
     /// app launched from confirms whether each backend is detectable
     /// before involving server logs.
     Doctor,
+    /// 无头真机冒烟：学习结构生成管线（wayfinder 票 s1）。缺省从零临时
+    /// SQLite 合龙；`--db` 指开发库（provider 凭据在库里）。观测存档落
+    /// `<data-dir>/observation/learning-smoke/`。
+    LearningSmoke {
+        #[command(subcommand)]
+        command: LearningSmokeCommand,
+    },
     /// List the capabilities exposed on the Remote surface (name + description),
     /// as JSON. Offline — reads the capability registry directly, no running
     /// instance required.
@@ -349,6 +356,240 @@ pub enum Command {
         /// Destination data directory (must be absent or empty).
         #[arg(long = "destination-data-dir")]
         destination_data_dir: PathBuf,
+    },
+}
+
+/// `learning-smoke` 的子命令（s1 四档：structure / json / grow / loop +
+/// j07 的 content 读数面 + q1 的 quiz 触发面）。
+#[derive(Debug, Clone, Subcommand)]
+pub enum LearningSmokeCommand {
+    /// XP 读数面冒烟（j05）：临时库结算几笔（教新 full + 复习线一笔）→
+    /// 读数/日历快照打印；读数面非门禁——唯一硬判据是管线真实走通。
+    Xp {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// quiz 触发面冒烟骨架（q1）：种一门 K 节点课程（零 LLM）→ 真实管线
+    /// 逐节点结算 → 断言 due 在恰 K 翻转 → 打印 N/K → quiz/start 到期时
+    /// 断言 501 占位；完整判据随 q2。
+    Quiz {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// 显式 provider（与 --db 内解出的凭据同效；变式在场判据随凭据启用）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 内容成色冒烟（j07）：立一门两节点学习图课程（概念挂接 + 别名池 +
+    /// 引用名），为汇合节点生成正文落观测面，读数 = 字数/小节数/题目数/
+    /// 首现标注——读数面非门禁。
+    Content {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 传统课程冒烟（知识库 → 课程）：把本地 md 目录写成新知识库 → 目标
+    /// 感知采样 → 双循环大纲 → 导入课程 →（可选）生成课时正文。机械判据
+    /// = 课程落库、课时来源可解析、采样披露可读；章节覆盖/顺序作为负优化
+    /// 读数打印，不单独判红。无凭据临时库如实失败。
+    ///
+    /// t5 变体：`--triage-only` 只跑清点+分诊（EXIT=0 即便有 warning）；
+    /// `--plan-only` 跑分诊+结构计划；`--report-json` 把 triage/plan/
+    /// coverage 落 JSON 便于对账（full 档落的是库里的快照信封）。
+    Course {
+        /// 知识库目录（递归读取 *.md；相对路径即库内路径）。
+        #[arg(long)]
+        dir: PathBuf,
+        /// 用户目标（必填）：目标即课程标题与采样主索引。
+        #[arg(long)]
+        goal: String,
+        /// 知识库名称（缺省 = 目录名）。
+        #[arg(long)]
+        name: Option<String>,
+        /// 生成正文的课时数（0 = 只生成大纲；缺省 1）。
+        #[arg(long, default_value_t = 1)]
+        lessons: usize,
+        /// 只跑清点+分诊（打印 counts/排除理由/uncertain；有 warning 也
+        /// EXIT=0——读数面非门禁）。
+        #[arg(long, conflicts_with = "plan_only")]
+        triage_only: bool,
+        /// 跑分诊+结构计划（打印 chapters/coverage 台账/gaps）。
+        #[arg(long)]
+        plan_only: bool,
+        /// 把 triage/plan/coverage 落 JSON 报告（可选，便于对账）。
+        #[arg(long)]
+        report_json: Option<PathBuf>,
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 结构挂载冒烟（j08）：落位 + hash 锚定 + 条数一致 + **重跑幂等**
+    /// （第二次必须 skipped，否则 EXIT=4）；无凭据临时库如实失败。
+    Mount {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 结构修补冒烟（j09）：留痕驱动回合 + **盘面复验**（磁盘重读独立跑
+    /// 全量 gd.* validator）+ **级联标记**（结构已改时挂载必须判 stale，
+    /// 否则 EXIT=3）；无凭据临时库如实失败。
+    Repair {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 自动维护回合冒烟（k02）：种一门图课程 + 两条 findings + 无挂载行，
+    /// 跑两轮 `run_maintenance_tick`——判据 = 纯读 needs 读数、回合 1 消费
+    /// 留痕并推进水位、回合 2 零工作零 LLM（skipped）、归档课不在扫描面。
+    /// 无凭据时回合 1 如实非零（mount/repair 档先例）。
+    Maintenance {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +
+    /// 门口对账 + structure_json 落列），机械判据自检（失败非零退出）。
+    Structure {
+        /// 学习目标（建课三项输入之一，必填）。
+        #[arg(long)]
+        goal: String,
+        /// 程度声明（可选；缺省由生成依据目标扩写）。
+        #[arg(long)]
+        proficiency: Option<String>,
+        /// 学习者基础声明（可选；缺省纯零基础）。
+        #[arg(long)]
+        basis: Option<String>,
+        /// SQLite 库路径（缺省从零临时库；指开发库时可解出已配置的 provider）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// json_object 能力读数：合法 JSON 率 / 空内容 / 怪癖分类；读数面非
+    /// 门禁，唯一硬判据 = 全灭 0/n。
+    Json {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+        /// 探测次数。
+        #[arg(long, default_value_t = 3)]
+        calls: usize,
+    },
+    /// 开放题评审判分冒烟（n5，ADR-0037 评审制移植）：布景（含判底
+    /// explanation 的开放题 + reflection 各一，零 LLM 落库）×真 LLM 判分
+    /// 四判据（语义覆盖判对 / 真误区判错+缺失非空 / 离题判错 / 断 LLM
+    /// 如实上抛）+ 脱敏回读进 EXIT（判底/作答原文在观测面零命中）。判据
+    /// 失败退出码 2；无凭据临时库如实失败。机制面开关臂：缺省走新评审
+    /// 链，`NOMI_LEARNING_OPEN_JUDGE=off` 同二进制跑旧路径对照臂。
+    Grade {
+        /// SQLite 库路径（缺省从零临时库；指开发库时可解出已配置的 provider）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 生长冒烟：立课 → 生长批 ×N（批间用确定性学习者替身完成节点驱动再
+    /// 生长），机械判据 = 首批 assumes 全空（空登记表机械地板）+ 每批就绪即
+    /// 发布（既往供给覆盖）+ 铸名不撞；失败非零退出。
+    Grow {
+        /// 学习目标（必填）。
+        #[arg(long)]
+        goal: String,
+        /// 生长批数（批间自动完成全部节点驱动下一批）。
+        #[arg(long, default_value_t = 1)]
+        batches: usize,
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 端到端合龙：结构生成 → 首批生长 → 教练循环 ×N（确定性学习者替身
+    /// 程序化完成节点驱动再生长）→ 逐项自检；EXIT=0 判据。
+    Loop {
+        /// 学习目标（必填）。
+        #[arg(long)]
+        goal: String,
+        /// 教练循环轮数（结构 + 生长批 ×N）。
+        #[arg(long, default_value_t = 2)]
+        rounds: usize,
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 已会声明冒烟（m2，ADR-0032 移植）：种一门带地形门口与 door_refs 的
+    /// 图课程 → 真实声明（LLM 铸概念）→ 硬判据：登记表增行且**零节点/批次
+    /// 写入**（计数守恒）、下游就绪投影翻转、幂等重跑 noop 零 LLM、撤销后
+    /// 投影复原（概念留池）、off 臂端点拒绝。无凭据时声明调用如实非零
+    /// （mount/repair 档先例）。
+    Basis {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -441,6 +682,78 @@ mod tests {
             rendered.contains(env!("CARGO_PKG_VERSION")),
             "version output should contain package version {}, got: {rendered:?}",
             env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn learning_smoke_course_parses_triage_plan_and_report_flags() {
+        // --triage-only + --report-json:只跑清点+分诊,报告落盘。
+        let cli = Cli::try_parse_from([
+            "nomicore",
+            "learning-smoke",
+            "course",
+            "--dir",
+            "/kb-dirty",
+            "--goal",
+            "学会排序",
+            "--triage-only",
+            "--report-json",
+            "/tmp/report.json",
+        ])
+        .unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        let super::LearningSmokeCommand::Course {
+            dir,
+            goal,
+            triage_only,
+            plan_only,
+            report_json,
+            ..
+        } = command
+        else {
+            panic!("expected course");
+        };
+        assert_eq!(dir, PathBuf::from("/kb-dirty"));
+        assert_eq!(goal, "学会排序");
+        assert!(triage_only);
+        assert!(!plan_only);
+        assert_eq!(report_json, Some(PathBuf::from("/tmp/report.json")));
+
+        // --plan-only 单独成档;两旗同开是用法错误(拒绝歧义)。
+        let cli = Cli::try_parse_from([
+            "nomicore",
+            "learning-smoke",
+            "course",
+            "--dir",
+            "/kb",
+            "--goal",
+            "g",
+            "--plan-only",
+        ])
+        .unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        assert!(matches!(
+            command,
+            super::LearningSmokeCommand::Course { plan_only: true, triage_only: false, .. }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "nomicore",
+                "learning-smoke",
+                "course",
+                "--dir",
+                "/kb",
+                "--goal",
+                "g",
+                "--triage-only",
+                "--plan-only",
+            ])
+            .is_err(),
+            "--triage-only 与 --plan-only 互斥"
         );
     }
 

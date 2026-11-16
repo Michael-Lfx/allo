@@ -28,6 +28,7 @@ import { rehypeIdeographTracking } from './ideographTracking';
 import { remarkSafeBreaks } from './remarkSafeBreaks';
 
 export type { MarkdownViewProps } from './markdownViewProps';
+export { InlineMarkdown, InlineRenderBoundary } from './InlineMarkdown';
 
 const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks, remarkSafeBreaks];
 

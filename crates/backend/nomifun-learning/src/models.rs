@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+
 use nomifun_common::{
-    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
-    LearningCourseId, LearningEnrollmentId, LearningLessonId, LearningModuleId,
-    LearningReviewItemId, ProviderId, TimestampMs,
+    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningCourseId,
+    LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId, ProviderId,
+    TimestampMs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,8 +19,6 @@ pub struct CoursePack {
     pub source_kb_id: Option<KnowledgeBaseId>,
     #[serde(default = "default_version")]
     pub version: i64,
-    #[serde(default)]
-    pub concepts: Vec<ConceptPack>,
     pub modules: Vec<ModulePack>,
     /// 讲解风格（课程级，ADR-0002）：决定节写作提示词变体；缺省 standard。
     #[serde(default)]
@@ -31,6 +31,13 @@ pub struct GenerateCourseRequest {
     /// `knowledge_base_id` / `description` must be provided.
     #[serde(default)]
     pub knowledge_base_id: Option<KnowledgeBaseId>,
+    /// 多知识库（t4）：来源库列表，首个 = 主来源（落库到
+    /// `learning_courses.source_kb_id`）。列表非空时以列表为准，单
+    /// `knowledge_base_id` 是旧客户端的单元素视图——两者同时给出时单值必须
+    /// 是列表成员（否则 400，不静默丢来源）。上限
+    /// [`COURSE_MAX_KNOWLEDGE_BASES`]。
+    #[serde(default)]
+    pub knowledge_base_ids: Vec<KnowledgeBaseId>,
     /// Free-text course brief (description flow): the course is generated
     /// from this briefing alone — no knowledge base is involved, sampled
     /// sources stay empty and lessons carry no `source` span.
@@ -44,36 +51,131 @@ pub struct GenerateCourseRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub mode: CourseGenerationMode,
-    /// 课程类型（beta）：`learning_graph` 走学习图生成（描述即学习目标），
+    /// 课程类型（beta）：`learning_graph` 走学习图生长（描述即学习目标），
     /// 缺省为传统课程。
     #[serde(default)]
     pub course_kind: CourseKind,
+    /// 学习图课程的程度声明（可选，g2 输入最小化）：达成后能独立做成什么；
+    /// 缺省由结构生成依据目标扩写。
+    #[serde(default)]
+    pub proficiency_statement: Option<String>,
+    /// 学习图课程的学习者基础声明（可选）：缺省按纯零基础画地形。
+    #[serde(default)]
+    pub learner_basis: Option<String>,
     /// 讲解风格（standard/socratic/feynman）；缺省 standard。
     #[serde(default)]
     pub teaching_style: Option<TeachingStyle>,
+    /// 用户目标（传统课程的知识库流，2026-10-13 裁决）：整体文本即目标——
+    /// 简单时即课程名称（课程名本身是高度抽象的目标），复杂时是目标描述/
+    /// 长说明，不做形态判断。旧直连客户端与 agent 旧调用不传，缺省时主题
+    /// 回退库名（不报错）。
+    #[serde(default)]
+    pub goal: Option<String>,
 }
 
-/// 续建学习图生成的请求体：全部字段可选——模型缺省走默认解析，草稿由
-/// 服务端按「最近活跃」自行定位（草稿仅在内存存活，TTL 1 小时）。
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ResumeLearningGraphRequest {
-    #[serde(default)]
-    pub provider_id: Option<ProviderId>,
-    #[serde(default)]
-    pub model: Option<String>,
+/// 用户目标的防御性限长（字符数）：整体文本即目标、要完整落库，因此只挡
+/// 滥用式的超长输入，不承担展示截断——课程标题的截断口径见
+/// [`goal_course_title`]。
+pub const COURSE_GOAL_MAX_CHARS: usize = 2000;
+
+/// 建课的来源库选择上限（t4）：按 t2 采样预算倒推——总量预算 40 文件在库间
+/// 等分（每库保底 [`crate::generation::MULTI_KB_PER_BASE_MIN_FILES`]），5 库
+/// 时每库 8 文件仍有完整的结构预算；再多的库只会把每库采样压到无意义的
+/// 零头。超限 400（在请求面拒绝，不进生成）。
+///
+/// 三处同值的两个镜像（跨层无法共享一个常量，改动时三处同步）：
+/// agent 引擎 `crates/agent/nomi-agent/src/learning_tools.rs::MAX_COURSE_BASES`
+/// （工具层先拒）与前端 `ui/src/renderer/pages/learning/hooks/
+/// useCourseCreation.ts::MAX_COURSE_KNOWLEDGE_BASES`（超限可见报错、不静默
+/// 截断）；这里是权威面。
+pub const COURSE_MAX_KNOWLEDGE_BASES: usize = 5;
+
+/// 课程标题的展示截断口径：目标文本折叠为单行（连续空白压成一个空格）、
+/// 去首尾空白，超过 [`COURSE_GOAL_TITLE_MAX_CHARS`] 字符时截断加省略号。
+/// 目标短时标题即目标全文（裁决：课程名默认即该文本，不引入 LLM 派名）。
+pub const COURSE_GOAL_TITLE_MAX_CHARS: usize = 60;
+
+/// 课程标题推导：目标文本 → 单行标题（折叠空白 + 限长）。空目标返回空串
+/// （调用方必须自行处理缺省回退），纯函数、确定性、可重放。
+pub fn goal_course_title(goal: &str) -> String {
+    let mut title = String::new();
+    let mut pending_space = false;
+    for ch in goal.trim().chars() {
+        if ch.is_whitespace() {
+            pending_space = !title.is_empty();
+            continue;
+        }
+        if pending_space {
+            title.push(' ');
+            pending_space = false;
+        }
+        title.push(ch);
+    }
+    if title.chars().count() > COURSE_GOAL_TITLE_MAX_CHARS {
+        let mut truncated: String = title.chars().take(COURSE_GOAL_TITLE_MAX_CHARS).collect();
+        truncated.push('…');
+        return truncated;
+    }
+    title
 }
 
-/// 课程生成状态（后台指示条/取消入口的数据源，学习图与大纲流共用）。生成
-/// 在 HTTP 请求内同步执行，但创建对话框可以随时关闭——注册表让运行对外
-/// 可发现、可取消。
-#[derive(Debug, Serialize)]
-pub struct LearningGraphGenerationStatus {
-    pub running: bool,
-    pub topic: Option<String>,
-    pub elapsed_secs: Option<u64>,
+/// 任务资源闸读数（m7，smoke 对照卡数据源）：闸状态 + 在跑/排队的当前值与
+/// 峰值。判据形态：on 臂 `running_peak <= limit` 恒成立；off 臂 `queued` 恒
+/// 0、`running_peak` 可超 limit（直跑形态读数）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningTaskGateReadout {
+    /// 闸是否在场（`NOMI_LEARNING_TASK_GATE` 未关）。
+    pub enabled: bool,
+    /// 在跑上限（常量 5）。
+    pub limit: usize,
+    pub running: usize,
+    pub running_peak: usize,
+    pub queued: usize,
+    pub queued_peak: usize,
 }
 
 impl GenerateCourseRequest {
+    /// 归一后的用户目标（知识库流）：trim 后为空即 `None`（缺省回退库名），
+    /// 超长按 [`COURSE_GOAL_MAX_CHARS`] 截断。整体文本即目标，不做形态判断。
+    pub fn goal_text(&self) -> Option<String> {
+        let goal = self.goal.as_deref()?.trim();
+        if goal.is_empty() {
+            return None;
+        }
+        Some(goal.chars().take(COURSE_GOAL_MAX_CHARS).collect())
+    }
+
+    /// 归一后的来源库列表（t4）：`knowledge_base_ids` 非空时以列表为准（按
+    /// 首次出现去重、保序——顺序有意义，首个 = 主来源）；列表为空时回退单
+    /// `knowledge_base_id` 的单元素视图（旧客户端逐字兼容）；都没有则空。
+    pub fn knowledge_base_ids_normalized(&self) -> Vec<KnowledgeBaseId> {
+        let mut ids: Vec<KnowledgeBaseId> = Vec::new();
+        for id in &self.knowledge_base_ids {
+            if !ids.iter().any(|existing| existing == id) {
+                ids.push(id.clone());
+            }
+        }
+        if ids.is_empty() {
+            if let Some(id) = &self.knowledge_base_id {
+                ids.push(id.clone());
+            }
+        }
+        ids
+    }
+
+    /// 生成去重键（t4）：库 id 排序后以 `+` 拼接（单库保持 t2 的
+    /// `kb:{id}` 形状）——乱序提交同一组库命中同一槽位，不会重复建课。无来源
+    /// （描述流）为 `None`。
+    pub fn knowledge_base_key(&self) -> Option<String> {
+        let ids = self.knowledge_base_ids_normalized();
+        if ids.is_empty() {
+            return None;
+        }
+        let mut parts: Vec<&str> = ids.iter().map(KnowledgeBaseId::as_str).collect();
+        parts.sort_unstable();
+        Some(format!("kb:{}", parts.join("+")))
+    }
+
     /// Shared request validation for the synchronous generate endpoint and
     /// the agent tool sink: model fields come as a pair and exactly one of
     /// the two generation sources is chosen.
@@ -90,10 +192,29 @@ impl GenerateCourseRequest {
         {
             return Err(AppError::BadRequest("model must not be empty".into()));
         }
+        let kb_ids = self.knowledge_base_ids_normalized();
+        // 两者同时给出时列表优先，但单值必须是列表成员——静默丢掉用户指定
+        // 的来源等于从错误的库建课（t4 裁决）。
+        if let (Some(single), false) = (
+            self.knowledge_base_id.as_ref(),
+            self.knowledge_base_ids.is_empty(),
+        ) {
+            if !kb_ids.iter().any(|candidate| candidate == single) {
+                return Err(AppError::BadRequest(
+                    "knowledge_base_id must be one of knowledge_base_ids".into(),
+                ));
+            }
+        }
+        if kb_ids.len() > COURSE_MAX_KNOWLEDGE_BASES {
+            return Err(AppError::BadRequest(format!(
+                "at most {COURSE_MAX_KNOWLEDGE_BASES} knowledge bases can ground one course, got {}",
+                kb_ids.len()
+            )));
+        }
         if self.course_kind == CourseKind::LearningGraph {
             // 学习图课程只走描述流：描述即学习目标，知识库采样与
             // 模块/课时数都不参与生成。
-            if self.knowledge_base_id.is_some() {
+            if !kb_ids.is_empty() {
                 return Err(AppError::BadRequest(
                     "learning graph courses ground in the description only".into(),
                 ));
@@ -108,9 +229,10 @@ impl GenerateCourseRequest {
             }
             return Ok(());
         }
-        if self.knowledge_base_id.is_some() == self.description.is_some() {
+        // 恰好一个来源：知识库（列表或单值归一后的列表）与描述互斥。
+        if !kb_ids.is_empty() == self.description.is_some() {
             return Err(AppError::BadRequest(
-                "exactly one of knowledge_base_id or description must be provided".into(),
+                "exactly one of knowledge_base_id(s) or description must be provided".into(),
             ));
         }
         if let Some(description) = &self.description {
@@ -124,10 +246,10 @@ impl GenerateCourseRequest {
 
 /// Course generation strategy. Only `on_demand` exists today: the outline is
 /// imported immediately and each lesson's body and activities are generated
-/// only when the learner opens it. The `mode` field and the
-/// `learning_course_jobs.generation_mode` column are kept as extension points
-/// for future generation strategies (e.g. a learning-graph-driven mode); any
-/// other value is rejected.
+/// only when the learner opens it. The `mode` field is kept as an extension
+/// point for future generation strategies (e.g. a learning-graph-driven mode);
+/// any other value is rejected. (The legacy `learning_course_jobs` table and
+/// its `generation_mode` column were retired with the table, x02.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CourseGenerationMode {
@@ -201,16 +323,6 @@ const fn default_version() -> i64 {
     1
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConceptPack {
-    pub key: String,
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub prerequisites: Vec<String>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModulePack {
     pub title: String,
@@ -226,18 +338,44 @@ pub struct LessonPack {
     pub summary: String,
     #[serde(default)]
     pub purpose: String,
-    #[serde(default = "default_estimated_minutes")]
-    pub estimated_minutes: i64,
+    /// 节点意图（absorb-8 z01）：导入包键名即 intent（不做别名）；缺省空串 =
+    /// 旧包容缺，落库透写（与生长批同列）。
+    #[serde(default)]
+    pub intent: String,
+    /// 教学范围（absorb-8 z01）：缺省空串 = 旧包容缺，落库透写。
+    #[serde(default)]
+    pub scope: String,
+    /// est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注）。键名统一 est
+    /// （j01）；`estimated_minutes` 是导入旧包的兼容别名（双读），DB 列
+    /// 保留旧名 `learning_lessons.estimated_minutes`。
+    #[serde(default = "default_est", alias = "estimated_minutes")]
+    pub est: i64,
+    /// 主来源（兼容位）：落库时写进既有的 `source_path/start/end` 三列，
+    /// 恒等于 [`LessonPack::sources`] 的首个。
     #[serde(default)]
     pub source: Option<SourceSpan>,
+    /// 课时的全部引用来源（t4 评审补齐）：位序即引用顺序，首个 = 主来源。
+    /// 空 = 只有兼容位 `source`（老形状导入），落库时归一。
     #[serde(default)]
-    pub concepts: Vec<String>,
+    pub sources: Vec<SourceSpan>,
     #[serde(default)]
     pub activities: Vec<ActivityPack>,
     /// 分节正文（ADR-0002）。缺省为空 = 旧导入课程无分节，读取端回退整篇
     /// summary 渲染（双读）。
     #[serde(default)]
     pub sections: Vec<SectionPack>,
+}
+
+impl LessonPack {
+    /// 课时的全部引用来源（归一）：`sources` 为准，为空时用兼容位升成
+    /// 单元素列表——落库只读这一份清单。
+    pub fn cited_sources(&self) -> Vec<&SourceSpan> {
+        if self.sources.is_empty() {
+            self.source.iter().collect()
+        } else {
+            self.sources.iter().collect()
+        }
+    }
 }
 
 /// 课时内部节段类型（ADR-0002 首期 5 种；交互节暂缓，见 ADR 妥协清单）。
@@ -333,6 +471,11 @@ pub struct SectionPack {
     /// 节正文（Markdown）。大纲阶段为空。
     #[serde(default)]
     pub body_md: String,
+    /// 终检系统剔块降声明的节级 degraded 标记（f3，系统 mutation 非模型
+    /// op）：demo 硬门对 degraded 节放行（唯一豁免通道）。模型 JSON 入口
+    /// 统一清零，走私的 degraded:true 不生效。
+    #[serde(default)]
+    pub degraded: bool,
 }
 
 impl SectionPack {
@@ -388,7 +531,10 @@ impl SectionPack {
             || body.contains("$$")
             || body.contains("| ---")
             || body.contains("| --- ");
-        if self.kind == SectionKind::Demo && !has_visual {
+        // demo 硬门不按 visual 声明豁免（声明「无」的 demo 仍须带可视化块）
+        // ——唯一例外是 f3 终检系统剔块的 degraded 节：坏块已被系统剔除、
+        // 声明已同步降级，正文不因图烂而整课失败。
+        if self.kind == SectionKind::Demo && !has_visual && !self.degraded {
             return Err(format!(
                 "section {} ({}) is a demo: it must carry its message in a visualization \
                  block (```svg / ```jsxgraph / ```mermaid / $$math$$), not prose",
@@ -411,6 +557,19 @@ impl SectionPack {
                 "section {} ({}) is a practice section: write only the capability goal and \
                  answering guidance (≤{PRACTICE_BODY_TARGET_CHARS} characters target); the \
                  questions come from the bank",
+                self.section_key, self.title
+            ));
+        }
+        // 可视化块机械 lint（f3）在共享汇点收口：坏块直接构成节违约，detail
+        // 进违约文本并附处置指引——打回由各线既有通道承载（传统线 attempts
+        // 循环、图线 op 拒绝重提）。
+        let issues = lint_visual_blocks(body);
+        if !issues.is_empty() {
+            let details = lint_issue_details(&issues);
+            return Err(format!(
+                "section {} ({}) has invalid visualization block syntax: {details} \
+                 — fix the fenced block, or carry the section in a table/formula \
+                 （修复该围栏块语法，或改用表格/公式承载该节讲解）",
                 self.section_key, self.title
             ));
         }
@@ -489,6 +648,457 @@ pub(crate) fn prose_char_count(body: &str) -> usize {
         count += trimmed.chars().filter(|c| !c.is_whitespace()).count();
     }
     count
+}
+
+/// 可视化块机械 lint 的查项类别（f3，最小机械闸——只做「明显是坏的」，
+/// 不追求全语法；语义碎裂/连通性明示非目标）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VizLintKind {
+    /// mermaid 括号不配平：六对 [ ] ( ) { } 块级累计任一对不配平（close-
+    /// before-open 也算），或行内双引号计数为奇（引号段内外无法可信切分）。
+    MermaidBalance,
+    /// flowchart/graph 的边端点引用了未带形状定义的节点 id。
+    MermaidNodeUndefined,
+    /// svg 空壳：块体为空或缺 `<svg` 根标签（防空壳过可视化门）。
+    SvgShell,
+}
+
+/// 一条 lint 结果：kind + 定位摘录（块序号与行内容摘录）——节级质检把它
+/// 并进违约文本，终检兜底按块剔除。
+#[derive(Debug, Clone)]
+pub struct VizLintIssue {
+    pub kind: VizLintKind,
+    pub detail: String,
+}
+
+/// 可视化块机械 lint（f3）：扫 ```mermaid / ```svg / ```jsxgraph 围栏，
+/// 返回机械化可判的语法问题——块级括号配平（引号段豁免）、flowchart/
+/// graph 节点定义、svg 非空壳。状态机形状同 `prose_char_count` 的围栏
+/// 遍历（自足实现，不引 mermaid 解析器）。普通代码围栏零动作；未闭合
+/// 围栏不新增判定（沿用 validate_body 现行行为）；空 mermaid 块合法
+/// （配平过+节点查过，由既有门管）。
+pub(crate) fn lint_visual_blocks(body: &str) -> Vec<VizLintIssue> {
+    let mut issues = Vec::new();
+    let mut ordinal = 0usize;
+    let mut fence: Option<VizFence> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if let Some(open) = fence.take() {
+                issues.extend(open.finish());
+            } else {
+                let language = trimmed[3..].trim();
+                ordinal += 1;
+                fence = match language {
+                    "mermaid" | "svg" | "jsxgraph" => Some(VizFence {
+                        lang: language,
+                        ordinal,
+                        lines: Vec::new(),
+                    }),
+                    _ => None,
+                };
+            }
+            continue;
+        }
+        if let Some(open) = fence.as_mut() {
+            open.lines.push(line);
+        }
+    }
+    issues
+}
+
+/// lint 违约 detail 的汇总串（「；」连接）：节级质检违约文本（validate_body）
+/// 与审计观察条（lesson_draft audit_findings）共用同一拼装——「；」分隔符
+/// 零第二真相，改拼装只动这里。
+pub(crate) fn lint_issue_details(issues: &[VizLintIssue]) -> String {
+    issues
+        .iter()
+        .map(|issue| issue.detail.as_str())
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
+/// f3 终检兜底的机械剔除：lint 仍报坏的围栏块整体剔除（节其余保留），
+/// 返回（剔后正文, 剔除块数）。未闭合围栏零动作（原样保留，与 lint 同
+/// 口径——交由节级质检/审计的既有判定处理）。
+pub(crate) fn strip_broken_visual_blocks(body: &str) -> (String, usize) {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut removed = 0usize;
+    let mut fence: Option<(&str, &str, Vec<&str>)> = None; // (opener, lang, content)
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if let Some((opener, _lang, content)) = fence.take() {
+                // 块级判定：把整块回喂 lint，坏块整体不走（fence 三行齐剔）。
+                let mut block = String::from(opener);
+                block.push('\n');
+                block.push_str(&content.join("\n"));
+                block.push('\n');
+                block.push_str(trimmed);
+                if lint_visual_blocks(&block).is_empty() {
+                    kept.push(opener);
+                    kept.extend(content);
+                    kept.push(line);
+                } else {
+                    removed += 1;
+                }
+            } else {
+                let language = trimmed[3..].trim();
+                if matches!(language, "mermaid" | "svg" | "jsxgraph") {
+                    fence = Some((line, language, Vec::new()));
+                } else {
+                    kept.push(line);
+                }
+            }
+            continue;
+        }
+        match fence.as_mut() {
+            Some((_, _, content)) => content.push(line),
+            None => kept.push(line),
+        }
+    }
+    // 未闭合围栏：整段原样保留（零动作），行序不变。
+    if let Some((opener, _, content)) = fence {
+        kept.push(opener);
+        kept.extend(content);
+    }
+    (kept.join("\n"), removed)
+}
+
+/// f3 剔后声明降级：按余块形态反查 visual 声明（余 mermaid → 流程图、
+/// svg/jsxgraph → 示意图、$$ → 公式、表格 → 表格、全无 → 无）——全部
+/// 落在 [`VISUAL_OPTIONS`] 菜单内，承诺门按新声明自然复审。
+pub(crate) fn declared_visual_after_strip(body: &str) -> &'static str {
+    if body.contains("```mermaid") {
+        VISUAL_FLOWCHART
+    } else if body.contains("```svg") || body.contains("```jsxgraph") {
+        VISUAL_DIAGRAM
+    } else if body.contains("$$") {
+        VISUAL_FORMULA
+    } else if body.contains("| ---") {
+        VISUAL_TABLE
+    } else {
+        VISUAL_NONE
+    }
+}
+
+/// 一个待判围栏块：语言 + 块序号 + 内容行。
+struct VizFence<'a> {
+    lang: &'a str,
+    ordinal: usize,
+    lines: Vec<&'a str>,
+}
+
+impl VizFence<'_> {
+    fn finish(self) -> Vec<VizLintIssue> {
+        match self.lang {
+            "mermaid" => lint_mermaid_block(self.ordinal, &self.lines),
+            "svg" => {
+                let joined = self.lines.join("\n");
+                let has_body = self.lines.iter().any(|line| !line.trim().is_empty());
+                if !joined.contains("<svg") || !has_body {
+                    vec![VizLintIssue {
+                        kind: VizLintKind::SvgShell,
+                        detail: format!(
+                            "可视化块 #{}（svg）：块体为空或缺 <svg 根标签——防空壳过可视化门",
+                            self.ordinal
+                        ),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            "jsxgraph" => {
+                // 顺带六对括号配平（零成本；不做引号/注释语义）。
+                let mut totals = [0i64; 3];
+                let mut depth = [0i64; 3];
+                for line in &self.lines {
+                    scan_brackets(line, &mut totals, &mut depth);
+                }
+                if brackets_broken(&totals, &depth) {
+                    let head = self
+                        .lines
+                        .iter()
+                        .find(|line| !line.trim().is_empty())
+                        .map(|line| line_excerpt(line))
+                        .unwrap_or_default();
+                    vec![VizLintIssue {
+                        kind: VizLintKind::MermaidBalance,
+                        detail: format!(
+                            "可视化块 #{}（jsxgraph）：括号不配平——「{head}」",
+                            self.ordinal
+                        ),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// mermaid 块级判项：①六对括号配平（引号段豁免、逐行跳过双引号段，行内
+/// 引号计数为奇记「引号不配平」）；②首行前缀 ∈ {flowchart, graph} 时做
+/// 节点定义查（`%%` 注释与引号段内容不参与扫描）。查项依据 A2：配平按块
+/// 累计（classDiagram 跨行块防误杀），节点查仅 flowchart/graph（sequence/
+/// state 参与者免定义防误杀）。
+fn lint_mermaid_block(ordinal: usize, lines: &[&str]) -> Vec<VizLintIssue> {
+    let mut issues = Vec::new();
+    let mut totals = [0i64; 3];
+    let mut depth = [0i64; 3];
+    let mut quote_line: Option<&str> = None;
+    let mut balance_line: Option<&str> = None;
+    let mut last_content: &str = "";
+    let mut clean: Vec<String> = Vec::new();
+    for line in lines {
+        if !line.trim().is_empty() {
+            last_content = line;
+        }
+        let (code, balanced) = outside_quote_text(line);
+        if !balanced {
+            // 引号计数为奇：内外切分不可信——本行不计括号、不进节点扫描。
+            quote_line.get_or_insert(line);
+            continue;
+        }
+        // `%%` 行内注释及以后整段忽略（注释里的括号/箭头不是语法）。
+        let code = match code.find("%%") {
+            Some(at) => code[..at].to_owned(),
+            None => code,
+        };
+        scan_brackets(&code, &mut totals, &mut depth);
+        if balance_line.is_none() && depth.iter().any(|&d| d < 0) {
+            balance_line = Some(line);
+        }
+        clean.push(code);
+    }
+
+    let mut reasons: Vec<String> = Vec::new();
+    if let Some(line) = quote_line {
+        reasons.push(format!("行内双引号计数为奇——「{}」", line_excerpt(line)));
+    }
+    if brackets_broken(&totals, &depth) {
+        let excerpt = balance_line.or(Some(last_content));
+        let pair_names = ["[ ]", "( )", "{ }"];
+        let diffs: Vec<String> = totals
+            .iter()
+            .zip(pair_names)
+            .filter(|(total, _)| **total != 0)
+            .map(|(total, name)| format!("{name} 净差 {total:+}"))
+            .collect();
+        let mut reason = if diffs.is_empty() {
+            "括号中途越界（close-before-open）".to_owned()
+        } else {
+            format!("括号不配平（{}）", diffs.join("、"))
+        };
+        if let Some(line) = excerpt.filter(|line| !line.trim().is_empty()) {
+            reason.push_str(&format!("——「{}」", line_excerpt(line)));
+        }
+        reasons.push(reason);
+    }
+    if !reasons.is_empty() {
+        issues.push(VizLintIssue {
+            kind: VizLintKind::MermaidBalance,
+            detail: format!("可视化块 #{ordinal}（mermaid）：{}", reasons.join("；")),
+        });
+    }
+
+    // 节点定义查仅 flowchart/graph 前缀生效。
+    let header = lines.iter().map(|line| line.trim()).find(|line| !line.is_empty());
+    if let Some(header) = header {
+        if header.starts_with("flowchart") || header.starts_with("graph") {
+            let mut defs = HashSet::new();
+            let mut refs = HashSet::new();
+            for code in &clean {
+                collect_node_defs(code, &mut defs);
+                collect_edge_refs(code, &mut refs);
+            }
+            let mut undefined: Vec<&String> = refs
+                .iter()
+                .filter(|id| !defs.contains(*id))
+                .collect();
+            undefined.sort();
+            for id in undefined {
+                issues.push(VizLintIssue {
+                    kind: VizLintKind::MermaidNodeUndefined,
+                    detail: format!(
+                        "可视化块 #{ordinal}（mermaid）：边端点节点「{id}」没有形状定义（id 后未紧跟 [ ( {{）"
+                    ),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// mermaid 行内双引号段外的代码文本：引号位占位为空格、引号段内容整段
+/// 跳过（`\"` 逃逸成对吞掉，不误开新引号段）；返回（代码文本, 引号计数
+/// 是否配平）。
+fn outside_quote_text(line: &str) -> (String, bool) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut quotes = 0usize;
+    let mut in_quote = false;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_quote {
+            if ch == '\\' && i + 1 < chars.len() {
+                i += 2;
+                continue;
+            }
+            if ch == '"' {
+                quotes += 1;
+                in_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            quotes += 1;
+            in_quote = true;
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    (out, quotes % 2 == 0)
+}
+
+/// 六对括号 [ ] ( ) { } 的块级累计：totals 记净差、depth 记运行深度——
+/// 中途深度为负（close-before-open）即使总数恰好抵消也算不配平。
+fn scan_brackets(code: &str, totals: &mut [i64; 3], depth: &mut [i64; 3]) {
+    for ch in code.chars() {
+        match ch {
+            '[' => {
+                totals[0] += 1;
+                depth[0] += 1;
+            }
+            ']' => {
+                totals[0] -= 1;
+                depth[0] -= 1;
+            }
+            '(' => {
+                totals[1] += 1;
+                depth[1] += 1;
+            }
+            ')' => {
+                totals[1] -= 1;
+                depth[1] -= 1;
+            }
+            '{' => {
+                totals[2] += 1;
+                depth[2] += 1;
+            }
+            '}' => {
+                totals[2] -= 1;
+                depth[2] -= 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn brackets_broken(totals: &[i64; 3], depth: &[i64; 3]) -> bool {
+    totals.iter().any(|&t| t != 0) || depth.iter().any(|&d| d < 0)
+}
+
+/// 违约摘录：行首尾空白裁掉、超长截断——定位够用、报告面不糊屏。
+fn line_excerpt(line: &str) -> String {
+    line.trim().chars().take(60).collect()
+}
+
+/// 节点定义 id 集：id 后紧跟 [ ( {（`[[`/`((`/`{{` 的首括号同样命中——
+/// 定义只看紧邻的开括号）。
+fn collect_node_defs(code: &str, defs: &mut HashSet<String>) {
+    let chars: Vec<char> = code.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if !matches!(ch, '[' | '(' | '{') {
+            continue;
+        }
+        let mut id = String::new();
+        let mut j = i;
+        while j > 0 && is_id_char(chars[j - 1]) {
+            id.push(chars[j - 1]);
+            j -= 1;
+        }
+        if !id.is_empty() {
+            defs.insert(id.chars().rev().collect());
+        }
+    }
+}
+
+/// 边语句端点 id 集：箭头左侧紧邻 id（紧邻字符是闭合括号 = 定义尾，该
+/// 节点已随形状定义入 defs，不重复记；`-`/`=`/`|` 前缀 = `A -- 文字 -->
+/// B` 形态的连线文字，不是端点）+ 右侧 id（越过箭头本体、紧贴残段与
+/// `|label|`）。连线记号最长优先（`-->` 先于 `--`）。
+fn collect_edge_refs(code: &str, refs: &mut HashSet<String>) {
+    const LINK_TOKENS: [&str; 6] = ["-.->", "-->", "==>", "---", "-.-", "--"];
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let len = LINK_TOKENS
+            .iter()
+            .find(|token| {
+                let bytes = token.chars().collect::<Vec<_>>();
+                i + bytes.len() <= chars.len() && chars[i..i + bytes.len()] == bytes[..]
+            })
+            .map(|token| token.chars().count());
+        let Some(len) = len else {
+            i += 1;
+            continue;
+        };
+        // 左端点。
+        let mut j = i;
+        while j > 0 && chars[j - 1].is_whitespace() {
+            j -= 1;
+        }
+        if j > 0 && !matches!(chars[j - 1], ']' | ')' | '}' | '-' | '=' | '|') {
+            let mut id = String::new();
+            let mut k = j;
+            while k > 0 && is_id_char(chars[k - 1]) {
+                id.push(chars[k - 1]);
+                k -= 1;
+            }
+            if !id.is_empty() {
+                refs.insert(id.chars().rev().collect());
+            }
+        }
+        // 右端点。
+        let mut j = i + len;
+        while j < chars.len() && matches!(chars[j], 'x' | 'o' | '>' | '.' | '=' | '-') {
+            j += 1;
+        }
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j < chars.len() && chars[j] == '|' {
+            // `-->|标签|` 形态：越过起始竖线后再找闭合竖线，标签内容不是端点。
+            j += 1;
+            while j < chars.len() && chars[j] != '|' {
+                j += 1;
+            }
+            j += 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+        }
+        let mut id = String::new();
+        while j < chars.len() && is_id_char(chars[j]) {
+            id.push(chars[j]);
+            j += 1;
+        }
+        if !id.is_empty() {
+            refs.insert(id);
+        }
+        i += len;
+    }
+}
+
+fn is_id_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
 }
 
 /// 节清单的 JSON 形状：`{"tier": "...", "sections": [...]}`，大纲阶段
@@ -586,9 +1196,29 @@ impl TryFrom<&str> for ComplexityTier {
 /// 节清单硬上限（大纲与清单护栏、提示词配比渲染共用）。
 pub(crate) const SECTION_OUTLINE_CAP: usize = 8;
 
+/// visual 菜单词的具名句柄（词面单源）：菜单 [`VISUAL_OPTIONS`] 与
+/// `declared_visual_after_strip` 的剔后反查共用同一份字面量——词表改动
+/// 只改这里；互钉测试（`visual_menu_and_strip_deduction_share_one_vocabulary`）
+/// 防两处漂移。
+pub const VISUAL_FORMULA: &str = "公式";
+pub const VISUAL_FUNCTION_GRAPH: &str = "函数图";
+pub const VISUAL_DIAGRAM: &str = "示意图";
+pub const VISUAL_FLOWCHART: &str = "流程图";
+pub const VISUAL_CHART: &str = "图表";
+pub const VISUAL_TABLE: &str = "表格";
+pub const VISUAL_NONE: &str = "无";
+
 /// 可视化声明菜单：大纲/清单 visual 字段的全部取值（几乎每节都有，确无
 /// 才写「无」）。两处质检门、提示词与工具 schema 枚举共用。
-pub const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
+pub const VISUAL_OPTIONS: [&str; 7] = [
+    VISUAL_FORMULA,
+    VISUAL_FUNCTION_GRAPH,
+    VISUAL_DIAGRAM,
+    VISUAL_FLOWCHART,
+    VISUAL_CHART,
+    VISUAL_TABLE,
+    VISUAL_NONE,
+];
 
 /// 练习节正文的作答引导目标字数（提示词口径；质检门硬拦 250）。
 pub const PRACTICE_BODY_TARGET_CHARS: usize = 120;
@@ -745,7 +1375,7 @@ impl TryFrom<&str> for TeachingStyle {
     }
 }
 
-const fn default_estimated_minutes() -> i64 {
+const fn default_est() -> i64 {
     10
 }
 
@@ -756,6 +1386,12 @@ pub struct SourceSpan {
     pub start: Option<i64>,
     #[serde(default)]
     pub end: Option<i64>,
+    /// 来源库（t4）：该 source 文件所属的知识库。多库课程的采样路径带
+    /// `{库名}/rel` 命名空间，本字段是命名空间解析出的库 id（蓝图 source
+    /// 与课时视图都写）；单库/旧课程的裸路径为 `None`，读侧回退课程的
+    /// 主来源（`CourseSummary.source_kb_id`）。
+    #[serde(default)]
+    pub kb_id: Option<KnowledgeBaseId>,
 }
 
 /// Serde helper: tolerate an explicit `null` where a string is expected by
@@ -796,8 +1432,6 @@ pub struct ActivityPack {
     pub answer: Value,
     #[serde(default, deserialize_with = "de_string_or_empty")]
     pub explanation: String,
-    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
-    pub concepts: Vec<String>,
     /// Near-synonym traps for fill_in_blank blanks (or physically adjacent
     /// quantities), forcing fine discrimination. Only fill_in_blank uses it.
     #[serde(default, deserialize_with = "de_vec_string_or_empty")]
@@ -810,9 +1444,16 @@ pub struct ActivityPack {
     /// 来源节的 section_key（如 s2）。None = 跨节综合题（通用）。
     #[serde(default)]
     pub section_key: Option<String>,
-    /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱），出题阶段声明。
+    /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱）。e5 消解案后**不
+    /// 由模型声明**（输出契约已撤）：装配面从节点 teaches 档位铸值覆盖；
+    /// 字段保留为存量 agent 输出/课程导入的兼容位，validate 仍咬 1-3。
     #[serde(default)]
     pub difficulty: Option<u8>,
+    /// 题干证据回引（t2）：objective 题从来源节正文/引用摘录里逐字摘的
+    /// 一小段（≤120 字），判底展示随 grade 下发。None = 未提供（读侧容缺
+    /// ——flash 遵循是概率性的，不做硬门）。
+    #[serde(default)]
+    pub evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,6 +1563,17 @@ impl ActivityPack {
                 if !self.answer.is_null() {
                     return Err(format!(
                         "{} \"{}\" answer must be null",
+                        self.kind.as_str(),
+                        self.prompt
+                    ));
+                }
+                // e5 explanation 三保险之一（机械校验面）：AI 批改题的解析是
+                // 判分反馈里唯一的讲解载体（grade 随分下发），空解析 = 学习者
+                // 只见对错不见为什么。装配（整课批校验 + 单节加题）与 agent
+                // 草稿审计共用本闸；存量空解析行读侧容错不变（serde 缺省）。
+                if self.explanation.trim().is_empty() {
+                    return Err(format!(
+                        "{} \"{}\" must carry a non-empty \"explanation\" — the AI-grade feedback shows it beneath the score; state why a good answer earns it",
                         self.kind.as_str(),
                         self.prompt
                     ));
@@ -1099,7 +1751,9 @@ impl ActivityPack {
         if self.prompt.trim().is_empty() {
             return Err("activity prompt is empty".into());
         }
-        // 难度分档 1-3(出题模板的难度递进:概念辨析→应用→综合陷阱)。
+        // 难度分档 1-3（e5 消解案：输出契约已撤——模型不再声明 difficulty，
+        // 值由装配面从节点 teaches 档位铸值注入；此处保留为注入后/存量
+        // 自报值的值域闸，越界仍打回）。
         if let Some(difficulty) = self.difficulty {
             if !(1..=3).contains(&difficulty) {
                 return Err(format!(
@@ -1212,9 +1866,62 @@ impl LessonStatus {
     }
 }
 
+/// 节点容量反馈三选一（y07；learnhub `EstFeedbackChoice` 吸收）：
+/// 接受现状 / 预算加长 / 拆成两节。**只是留痕**——不自动重生成、不拆节、
+/// 不改 est（est 同时是内容尺寸、XP 基数与水位）。
+///
+/// serde kebab（`accept` | `extend` | `split`）：写侧严格（未知值 400）、
+/// 读侧宽容（未知值按无回显处理）。枚举单源在 Rust，DB 无 CHECK（ADR-0015）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapacityFeedbackChoice {
+    Accept,
+    Extend,
+    Split,
+}
+
+impl CapacityFeedbackChoice {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Extend => "extend",
+            Self::Split => "split",
+        }
+    }
+
+    /// 读侧宽容解析：未知值返回 `None`（旧/未来版本写入的值不炸读路径）。
+    pub fn try_from_str(value: &str) -> Option<Self> {
+        match value {
+            "accept" => Some(Self::Accept),
+            "extend" => Some(Self::Extend),
+            "split" => Some(Self::Split),
+            _ => None,
+        }
+    }
+}
+
+/// 当前用户对某课时留下的容量反馈（latest-wins；只随 lesson detail 返回
+/// 本人那一行——聚合是内容级计数，不泄露他人选择）。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CapacityFeedbackView {
+    pub choice: CapacityFeedbackChoice,
+    /// 最近一次选择的时间（毫秒）。
+    pub at: i64,
+}
+
+/// `POST /api/learning/lessons/{id}/capacity-feedback` 请求体。
+/// `choice` 收原始字符串（而不是直接反序列化成枚举）：空/未知值要走
+/// 服务端 400 口径，而不是 axum 的 422 反序列化拒绝。
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordCapacityFeedbackRequest {
+    #[serde(default)]
+    pub choice: String,
+}
+
 /// 课程目录类型。`traditional` 为模块/课时大纲课程；`learning_graph`
-/// （beta）由 AI 把宽泛学习目标拆解为前置 DAG，课程大纲被
-/// 「下一步推荐学习的节点」取代。
+/// （beta）从学习目标出发：先生成知识结构快照（参考地图），再按批次生长，
+/// 依赖由概念网表达（ADR-0009/0010），
+/// 课程大纲被「下一步推荐学习的节点」取代。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CourseKind {
@@ -1251,56 +1958,720 @@ pub struct CourseSummary {
     pub description: String,
     pub domain: String,
     pub course_kind: CourseKind,
+    /// 主来源（t4）：列表首个**现存**库；老课程/已删库为 `None`（单列视图
+    /// 保留，读侧对已删库过滤后列表为空时即无来源）。
     pub source_kb_id: Option<KnowledgeBaseId>,
+    /// 来源库列表（t4）：多库选择的全量，读侧已剔除已删库 id（不外泄悬空
+    /// id）；空列表 = 描述流或老课程的单列回退视图为空。
+    pub source_kb_ids: Vec<KnowledgeBaseId>,
     pub version: i64,
     pub enrolled: bool,
     pub total_lessons: i64,
     pub completed_lessons: i64,
+    /// 课程级「现存且启用」口径（三轮 g3）：`false` = 已归档（可逆暂停），
+    /// 安排面（到期队列/就绪推荐/生成入口）不再出现本课，历史面如实保留。
+    pub enabled: bool,
+    /// 概况读数（三轮 g3）：已结算或已完成的课时/节点数——XP 账本（j05）
+    /// 落地前先行等于 `completed_lessons`，j05 切换为结算口径。
+    pub settled_or_completed: i64,
+    /// 概况读数：今日到期题数（本用户本课，与到期队列同口径）。
+    pub due_today: i64,
+    /// 概况读数：累计 XP——j05 结算账本落地前恒为 `None`（可空先行）。
+    pub total_xp: Option<i64>,
     pub updated_at: TimestampMs,
     pub tags: Vec<String>,
+    /// 用户目标（t1）：传统课程的知识库流目标文本；旧课程/描述流为空即
+    /// `None`（列上是空串，语义为空）。
+    pub learning_goal: Option<String>,
+    /// 目标感知采样的披露（t2）：无目标路径/旧课程为 `None`。
+    pub sampling: Option<CourseSamplingView>,
+    /// 来源计划快照的摘要（t4）：列上 NULL（旧课程/描述流/未走新管线）
+    /// 为 `None`——字段不出现;未知版本/坏形状 → `available=false` 降级,
+    /// 不报错、不伪造。DTO 细化归 t5,这里只读计数。
+    pub source_plan: Option<CourseSourcePlanView>,
+    /// 建课管线代际（x11）：graph 课程 `None`（步骤条不区分代际）；传统课程
+    /// 按 `course_source_plan_json` 列是否非空判定——非 NULL = source_plan，
+    /// 否则 sampling（老行 NULL 与今日嗅探结果一致）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<&'static str>,
 }
 
-/// 学习图课程视图的一个节点：底层课时（标题/摘要/估计分钟/生成状态）
-/// 加图坐标（拓扑序 position、depth 层深）与学习者进度状态。正文永远
-/// 不进全图载荷——内容经现有课时接口按需拉取。
+/// 采样披露的对外视图（t2）：计数 + 低分未采样的少量示例。完整文件树只
+/// 在库里（诊断用），列表/详情响应不背全量路径。`goal_fallback` = 目标与库
+/// 无交集，采样退回默认顺序（披露不得冒充"按目标采样"）。
 #[derive(Debug, Clone, Serialize)]
-pub struct GraphNodeView {
-    pub lesson_id: LearningLessonId,
+pub struct CourseSamplingView {
+    pub goal: Option<String>,
+    pub total_files: usize,
+    pub sampled_files: usize,
+    pub coherence_files: usize,
+    pub goal_fallback: bool,
+    pub low_score_files: usize,
+    pub low_score_examples: Vec<String>,
+    /// 多知识库（t4）：逐库归属与计数（单库/旧课程为空列表）。命名空间是
+    /// 采样路径的前缀（`{namespace}/rel`），路径归属与「来源：库A、库B」
+    /// 的展示都由它解析。
+    pub bases: Vec<CourseSamplingBaseView>,
+}
+
+/// 单库的采样归属（t4 披露）：库 id + 库名 + 路径命名空间 + 采样计数。
+#[derive(Debug, Clone, Serialize)]
+pub struct CourseSamplingBaseView {
+    pub kb_id: KnowledgeBaseId,
+    pub name: String,
+    pub namespace: String,
+    pub total_files: usize,
+    pub sampled_files: usize,
+    /// 该库目标零命中：采样退回默认顺序（逐库如实披露，不冒充按目标采样）。
+    pub goal_fallback: bool,
+}
+
+/// 来源计划快照的对外视图（t4 落地、t5 细化分面）：snapshot（版本/可用）+
+/// triage（七角色计数/degraded/warnings）+ plan（章/概念/边/gaps + 章节
+/// 来源映射摘要）+ coverage（topic 四态/前置练习去向/fallback）+ duplicates
+/// （计数 + ≤20 示例）。完整快照只在库里（诊断按 `rel_path` 回 KB 读原文），
+/// 列表/详情响应不背全量信封；`available=false` = 未知版本/坏形状（读侧
+/// 降级，不崩溃不伪造）；列上 NULL 时本视图整体不出现。详情端的诊断明细
+/// （全量 excluded/duplicates，限长）见 [`CourseSourcePlanDetailView`]。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanView {
+    pub snapshot: CourseSourcePlanSnapshotView,
+    pub triage: CourseSourcePlanTriageView,
+    pub plan: CourseSourcePlanPlanView,
+    pub coverage: CourseSourcePlanCoverageView,
+    pub duplicates: CourseSourcePlanDuplicatesView,
+}
+
+/// 快照信封的版本面：未知版本（读不出 version 的坏 JSON 同此）与 v1 形状
+/// 损坏都降级 `available=false`，读侧不报错不伪造。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanSnapshotView {
+    pub version: Option<u64>,
+    pub available: bool,
+}
+
+/// 快照里 t1 分诊的摘要面：七角色计数（总数守恒：各角色之和 =
+/// `total_files`）+ degraded（规则分诊，未做 LLM 判定）+ 警告（限长）。
+/// h1 新增补判/仍缺读数（可选序列化：零值不出现，旧读侧无感知）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanTriageView {
+    pub total_files: usize,
+    pub core: usize,
+    pub prerequisite: usize,
+    pub practice: usize,
+    pub mixed: usize,
+    pub noise: usize,
+    pub duplicate: usize,
+    pub uncertain: usize,
+    pub degraded: bool,
+    /// 批补判次数（拆半/缺条目子集的重发 LLM 调用次数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_repair_count: Option<usize>,
+    /// 仍缺条目数（穷尽补判后保守 uncertain 的文件数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub still_missing_count: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// h1 披露读数的零值抑制口径（单一实现，两处视图组装共用）：
+/// `batch_repair_count`/`still_missing_count` 为 0 时字段不序列化
+/// （`Option::is_none`，旧读侧无感知），非零才携带数值。
+pub(crate) fn disclosed(count: usize) -> Option<usize> {
+    (count > 0).then_some(count)
+}
+
+/// t2 计划的一章的来源映射摘要（章 → 概念数/课时数/来源文件数；零课时章
+/// 显式 skipped + reason——「为什么没进课程」在章节级也要能回答）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanChapterSummaryView {
     pub title: String,
-    pub summary: String,
-    pub purpose: String,
-    pub estimated_minutes: i64,
-    pub generated: bool,
-    /// 发布时的 Kahn 拓扑序（也是推荐排序键）。
-    pub position: i64,
-    /// 前置层深（零前置为 0），供分层渲染与宏观 LOD 使用。
-    pub depth: i64,
-    pub status: LessonStatus,
-    pub prerequisite_count: i64,
+    /// 该章覆盖的概念数（`PlannedChapter::covers`）。
+    pub concepts: usize,
+    /// 该章产出的课时数（来自 t3 覆盖报告的章 → 课时对账）。
+    pub lessons: usize,
+    pub skipped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+    /// 该章的去重来源文件数（`source_anchors` 的 rel_path 去重）。
+    pub source_files: usize,
 }
 
-/// 学习图课程视图的一条前置边：`from` 应先于 `to` 被满足（lesson_id 引用）。
-#[derive(Debug, Clone, Serialize)]
-pub struct GraphEdgeView {
-    pub from: LearningLessonId,
-    pub to: LearningLessonId,
+/// 快照里 t2 计划的摘要面：章/概念/边计数 + 证据 gaps + 章节来源映射
+/// 摘要（限长）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanPlanView {
+    pub chapters: usize,
+    pub concepts: usize,
+    pub edges: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<String>,
+    pub chapter_summaries: Vec<CourseSourcePlanChapterSummaryView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// 一个被显式跳过的 topic（label + 理由）——覆盖缺口的可见示例。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanSkippedTopicView {
+    pub label: String,
+    pub reason: Option<String>,
+}
+
+/// 快照里 t3 展开覆盖的摘要面：topic 四态计数（covered/skipped/uncertain）
+/// + 前置/练习角色的 topic 去向 + anchor_uncertain 计数 + 跳过示例（≤20）+
+/// 兜底课时数。文件级 role 只作诊断（详情端的明细视图），覆盖以 topic 为主。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanCoverageView {
+    pub topics_covered: usize,
+    pub topics_skipped: usize,
+    /// 前置角色文件上的 topic 进入课时的数量（「前置内容去了哪」）。
+    pub prerequisite_topics: usize,
+    /// 练习角色文件上的 topic 进入课时的数量（「练习内容去了哪」）。
+    pub practice_topics: usize,
+    /// 锚点无法精确定位的 topic 数（path 级兜底/标题对不上原文）。
+    pub anchor_uncertain_topics: usize,
+    /// 状态 uncertain 的 topic label（限长 ≤20）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub uncertain: Vec<String>,
+    /// 被显式跳过的 topic 示例（限长 ≤20；详情可看全量）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_examples: Vec<CourseSourcePlanSkippedTopicView>,
+    /// H1/文件名兜底课的数量（不伪装成正常设计，醒目披露）。
+    pub fallback_lessons: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// 一条重复/翻译副本的示例（path + 指向的 canonical + canonical 的入选
+/// 理由）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanDuplicateExampleView {
+    pub path: String,
+    pub duplicate_of: String,
+    pub canonical_reason: String,
+}
+
+/// 快照里 t1 分诊的重复面：计数（全量）+ 示例（≤20）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanDuplicatesView {
+    pub count: usize,
+    pub examples: Vec<CourseSourcePlanDuplicateExampleView>,
+}
+
+/// 详情端点的来源计划诊断明细（t5）：全量 `excluded`（path + role +
+/// reason）与全量 `duplicates`，均限长（≤200）——列表摘要只给计数/示例，
+/// 详情页看完整「为什么没进课程」。role 是 t1 的 snake_case 角色名
+/// （`noise`/`duplicate`/…）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanDetailView {
+    pub excluded: Vec<CourseSourcePlanExcludedView>,
+    pub duplicates: Vec<CourseSourcePlanDuplicateExampleView>,
+}
+
+/// 一条被排除出候选集的文件（`noise`/`duplicate`），必须能回答
+/// 「为什么没进课程」。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanExcludedView {
+    pub path: String,
+    pub role: String,
     pub reason: String,
 }
 
-/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：图结构的事实来源
-/// 是 lessons + prerequisites 两张表，这里只做投影；`recommended` 是
-/// 「下一步推荐学习的节点」（≤10，就绪集按拓扑序）。
+/// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
+/// ——建议先复习供给节点（候选仍可从学习记录进入，软闸只降推荐优先级）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphBlockedView {
+    /// 被挡的就绪候选节点。
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    /// 供给节点（教该候选所假定概念的节点，跨课程）。
+    pub supplier_lesson_id: LearningLessonId,
+    pub supplier_title: String,
+    /// 供给节点代表预测回忆率（该节点全部复习卡的最小值）。
+    pub r: f64,
+    /// 供给节点当前到期题数。
+    pub due_count: i64,
+}
+
+/// 学习结构读侧投影（`GET /courses/{id}/graph/structure`，wayfinder 票 t1）：
+/// 200 恒答、`structure: null` = 未生成（Missing 合法空状态，生成中态由 WS
+/// structure_* 事件表达）。投影运行时重算、永不落盘；**严格课程内**——只读
+/// 本课 structure_json，不 join 概念登记表。j08 起带挂载读侧三态投影
+/// （`mounts: null` = 从未跑过挂载回合）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningStructureView {
+    pub course_id: LearningCourseId,
+    pub structure: Option<StructureView>,
+    pub terrain: Option<TerrainView>,
+    /// 快照生成时刻（ms）；None = 未生成。
+    pub generated_at: Option<i64>,
+    /// 挂载三态投影（j08）：`None` = 挂载表无行（从未评估）。
+    pub mounts: Option<StructureMountsView>,
+}
+
+/// 结构产物的读侧视图（预计算面：主干分组 / 块名集 / 矩阵格 / 依赖分层 /
+/// 枢纽出入度；层号 = 依赖深度，不是排期）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureView {
+    pub scalars: StructureScalarsView,
+    pub domain: StructureDomainView,
+    pub spines: Vec<SpineView>,
+    pub blocks: Vec<BlockView>,
+    pub edges: Vec<EdgeView>,
+    pub gaps: Vec<GapView>,
+    pub quality: Vec<QualityView>,
+    /// 主干分组（块表序保持）。
+    pub groups: Vec<SpineGroupView>,
+    /// 块名集（升序）。
+    pub block_names: Vec<String>,
+    /// 主干×阶段矩阵格。
+    pub matrix: Vec<MatrixRowView>,
+    /// 枢纽 Top10（assumes + composes 出入度和降序）。
+    pub hubs: Vec<HubView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureScalarsView {
+    pub goal: String,
+    pub goal_type: String,
+    pub proficiency_statement: String,
+    pub domain_type: String,
+    pub form_reference: String,
+    pub source_tier: String,
+    pub generated_by: String,
+    pub disclaimer: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureDomainView {
+    pub core_definition: String,
+    pub includes: Vec<String>,
+    pub excludes: Vec<String>,
+    pub prerequisite_doors: Vec<String>,
+    pub audience: String,
+    pub scenarios: Vec<String>,
+    pub granularity: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpineView {
+    pub name: String,
+    pub definition: String,
+    pub key_points: Vec<String>,
+    pub instance: String,
+    pub thin_spine: Option<bool>,
+    pub reason: String,
+}
+
+/// 块视图行：`layer` = assumes 前置链深度（L0 起算，层号不是排期）；
+/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）；
+/// `door_refs` = 门位标签（m1，learnhub #165 v2.14：覆盖本块主题的门口
+/// 编号，语义 =「能满足判据必已会本块」；旧快照无键 = 空数组）。
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockView {
+    pub name: String,
+    pub slug: String,
+    pub spine: String,
+    pub stage: String,
+    pub note: String,
+    pub layer: usize,
+    pub no_prereq: bool,
+    #[serde(default)]
+    pub door_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EdgeView {
+    pub source: String,
+    pub target: String,
+    pub edge_type: String,
+    pub tier: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GapView {
+    pub item: String,
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityView {
+    pub check: String,
+    pub status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpineGroupView {
+    pub spine: String,
+    pub block_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MatrixRowView {
+    pub spine: String,
+    pub entryway: Vec<String>,
+    pub intermediate: Vec<String>,
+    pub advanced: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HubView {
+    pub name: String,
+    pub in_degree: usize,
+    pub out_degree: usize,
+}
+
+/// 前置地形的读侧视图：门口列表 + 标量回执。
+#[derive(Debug, Clone, Serialize)]
+pub struct TerrainView {
+    pub learner_basis_assumed: String,
+    pub disclaimer: String,
+    pub doors: Vec<TerrainDoorView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TerrainDoorView {
+    pub id: String,
+    pub criterion: String,
+    pub kind: String,
+    /// 块覆盖统计（m1）：本块结构中被该门口 door_refs 标注覆盖的块数
+    /// （过门自检读侧的机械读数；无标注 = 0）。
+    #[serde(default)]
+    pub covered_blocks: usize,
+}
+
+/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：就绪集推荐与水位
+/// 读数。没有先修边、没有锁定态——发布即就绪（ADR-0009）；节点本体就是
+/// 模块课时，图视图只承载生长语义。
 #[derive(Debug, Clone, Serialize)]
 pub struct LearningGraphView {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
-    /// 学习范围（scope 分析文本）。
-    pub scope: String,
-    pub nodes: Vec<GraphNodeView>,
-    pub edges: Vec<GraphEdgeView>,
+    /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序；被 R 软闸挡住的
+    /// 候选不出现在这里，进 `blocked`）。
     pub recommended: Vec<LearningLessonId>,
-    /// 课程行 graph_meta_json 透传（审计快照/生成留档/扩展备注）。
-    pub meta: Option<Value>,
+    /// R 软闸建议（≤3 条，按供给节点回忆率升序）。
+    pub blocked: Vec<GraphBlockedView>,
+    /// 当前就绪存量与水位契约（补货目标 7 / 自动触发线 3）。
+    pub ready_count: usize,
+    pub ready_target: usize,
+    pub ready_trigger: usize,
+    /// 是否有生成/生长运行进行中（共享注册表口径）。
+    pub growth_running: bool,
+}
+
+/// 学习记录视图：批次时间线（倒序）——生长史即课程史（ADR-0009）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphHistoryView {
+    pub batches: Vec<GraphBatchView>,
+}
+
+/// 一个生长批次的出生档案：序号/批注/时刻 + 节点行（含学习者进度）。
+/// status 是批行状态机：pending=生长进行中（或中断，见 failed）、
+/// applied=已落库、failed=生长失败（ADR-0009 Amendment 1）、
+/// cancelled=用户取消（y04 起的中性终态——取消不是失败，历史 failed 行不
+/// 回填）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphBatchView {
+    pub batch_id: String,
+    pub seq: i64,
+    pub status: String,
+    pub note: String,
+    pub created_at: i64,
+    pub nodes: Vec<GraphNodeHistoryView>,
+}
+
+/// 系统动作簿的一行（y04，`GET /courses/{id}/system-actions`）：自主/后台
+/// 动作的**终态**留痕。kind/trigger/result 是机器名（Rust 枚举单源），
+/// 人面文案由前端 i18n 承担；`basis` 是触发时的一句判据读数，`reason` 只在
+/// failed 时非空。动作对象（批次/审计行/挂载行）的技术 id 不跨表复制，
+/// 故无 ref 列。读侧宽容：未知 kind/trigger/result 原样透出，不报错。
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemActionView {
+    pub action_id: String,
+    pub kind: String,
+    pub trigger: String,
+    pub basis: String,
+    pub result: String,
+    pub reason: String,
+    /// 手动动作的操作者；自动动作（timer/settlement/auto_refill）为 NULL。
+    pub actor_user_id: Option<String>,
+    pub at: i64,
+}
+
+/// 批次内的一个节点行。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNodeHistoryView {
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    /// est：专注工作量尺寸锚（DB 列保留旧名 `estimated_minutes`）。
+    pub est: i64,
+    pub status: LessonStatus,
+    pub completed_at: Option<i64>,
+}
+
+/// 概念表行：登记表概念 + 本课程的教/假定引用 + 跨课程来源标注。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphConceptRowView {
+    pub concept_id: String,
+    pub canonical: String,
+    /// 活跃别名（j04 结构化记录：名字 + 投影定义 + 出处；退役名不列）。
+    pub aliases: Vec<GraphConceptAliasView>,
+    pub definition: String,
+    /// 本课程内教/假定该概念的节点（带学习者进度状态）。
+    pub refs: Vec<GraphConceptRefView>,
+    /// 其他还在教该概念的课程（跨课程就绪的来源可见性；带 course_id——
+    /// c7 形状升级：原 `Vec<String>` 只有标题，前端无法跳转）。
+    pub other_courses: Vec<ConceptCourseTitleView>,
+    /// 铸造出处（attestation 簿记，068：可空；`basis-declaration` =
+    /// 已会声明铸入——前端据此出「已会声明」来源徽标）。
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 本课已会声明覆盖该概念（声明锚反查；无节点也入表——声明概念的
+    /// 表内位置）。
+    #[serde(default)]
+    pub declared: bool,
+}
+
+/// 一条活跃别名（j04）：名字 + 该名字的意义（投影角度定义，缺席 = 与概念
+/// 定义同义）+ 出处（提名的 source）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphConceptAliasView {
+    pub name: String,
+    pub definition: Option<String>,
+    pub attestation: Option<String>,
+}
+
+/// 概念表行内的一条引用。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphConceptRefView {
+    pub lesson_id: LearningLessonId,
+    pub title: String,
+    /// teaches | assumes。
+    pub role: String,
+    /// know | apply | teach。
+    pub tier: String,
+    /// 投影名（j04）：节点引用该概念时使用的名字；老行为 None（读侧回退
+    /// 概念正名）。
+    pub ref_name: Option<String>,
+    pub status: LessonStatus,
+}
+
+// ── 概念详情 / 全局总览（c7）：registry 是全局表（无课程归属列），概念
+// 页面与其数据端点也是全局面（不挂课程路由）─────────────────────────────
+
+/// 一条概念 → 概念的关系边（互指/提及/被提及共用；canonical 名随行展示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptLinkView {
+    pub concept_id: String,
+    pub canonical: String,
+}
+
+/// other_courses 行：标题之外带 course_id（前端可点跳课程详情）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptCourseTitleView {
+    pub course_id: String,
+    pub title: String,
+}
+
+/// 一门课程内对该概念的全部节点引用（详情页按课程分组的使用面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptCourseRefsView {
+    pub course_id: String,
+    pub course_title: String,
+    pub refs: Vec<GraphConceptRefView>,
+}
+
+/// 一门课程声明过该概念（`learning_basis_declarations` 锚行反查）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptDeclaredInView {
+    pub course_id: String,
+    pub course_title: String,
+}
+
+/// 单概念详情（`GET /api/learning/concepts/{concept_id}`）：条目 + 读时推导
+/// 关系（零 LLM 零写库；CONTEXT：登记表不存关系）+ 跨课程使用 + 声明使用。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptDetailView {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 活跃别名（j04 结构化记录；退役名不列）。
+    pub aliases: Vec<GraphConceptAliasView>,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub deprecated: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// 定义包含自身正名（自指；audit 同口径）。
+    pub self_reference: bool,
+    /// 互指 partner（双向提及，全部）。
+    pub mutual: Vec<ConceptLinkView>,
+    /// 本概念定义提到的其他概念（单向；互指 partner 不重复计入）。
+    pub mentions: Vec<ConceptLinkView>,
+    /// 定义提到本概念的其他概念（单向；互指 partner 不重复计入）。
+    pub mentioned_by: Vec<ConceptLinkView>,
+    /// 按课程分组的节点引用（teaches + assumes 全量；未删课程）。
+    pub usages: Vec<ConceptCourseRefsView>,
+    /// 声明过它的课程。
+    pub declared_in: Vec<ConceptDeclaredInView>,
+}
+
+/// 全局概念总览行（`GET /api/learning/concepts`）：登记表非废弃条目 + 计数
+/// 与审计旗标（细节进详情页，总览只给计数）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptOverviewRowView {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 活跃别名数。
+    pub alias_count: u32,
+    /// 在教/引用该概念的未删课程数（teaches + assumes 去重）。
+    pub course_count: u32,
+    /// 节点引用行数（teaches + assumes）。
+    pub ref_count: u32,
+    /// 声明过它的课程数。
+    pub declared_course_count: u32,
+    pub self_reference: bool,
+    /// 互指 partner 数。
+    pub mutual_count: u32,
+}
+
+// ── 已会声明（Declared Known，m2 / ADR-0032 移植）────────────────────────
+
+/// 一次声明请求：勾选的地形门口编号（幂等增量——已声明门口自动剔除）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeclareBasisRequest {
+    pub doors: Vec<String>,
+    /// 可选 provider/model 覆盖（与建课/生长同款成对约束）。
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// 一次声明的返回面（幂等空跑 noop = true、全空清单）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DeclarationResultView {
+    pub course_id: LearningCourseId,
+    /// 本次实际声明的门口（差集；noop = 空）。
+    pub doors: Vec<String>,
+    /// 本次命中的目标块显示名（AND 口径；透明面）。
+    pub blocks: Vec<String>,
+    /// 本次铸出或复用的概念。
+    pub concepts: Vec<crate::learning_graph::basis_declaration::DeclaredConceptView>,
+    pub minted: u32,
+    pub reused: u32,
+    /// 幂等空跑（勾选全部已声明）：零 LLM 零写。
+    pub noop: bool,
+    /// 铸造软提示（人面，如清单截断）。
+    pub warnings: Vec<String>,
+}
+
+/// 已会声明读数（GET basis）：本课已声明什么、命中了什么、概念表反查。
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisView {
+    pub course_id: LearningCourseId,
+    /// 累计已声明门口（全部锚行并集）。
+    pub doors: Vec<String>,
+    /// 累计命中块 slug（全部锚行并集）。
+    pub blocks: Vec<String>,
+    /// 已声明概念（正名 + 铸造出处；声明可撤、概念不灭的回显面）。
+    pub concepts: Vec<BasisConceptView>,
+    /// 锚行里已无法在登记表解析的概念 id（概念被移除后的 Broken 如实降级
+    /// 计数——不炸、只披露）。
+    pub unresolved_concept_ids: Vec<String>,
+    /// 累计声明次数（锚行数）。
+    pub declarations: u32,
+    /// 机制开关状态（off 时端点 409，读数面照常可读——如实标注）。
+    pub enabled: bool,
+}
+
+/// 已声明概念的一行回显。
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisConceptView {
+    pub concept_id: String,
+    pub canonical: String,
+    /// 声明来源标记（恒 `basis-declaration`；来源保留不抹）。
+    pub source: Option<String>,
+    /// 该概念出现在几次声明里。
+    pub declaration_count: u32,
+}
+
+/// 定义审计条目（m9 只读报告）：概念 + 机械点名片段。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditEntry {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声；课程豁免过滤后）。
+    pub fragments: Vec<String>,
+}
+
+/// 定义审计自指条目：定义含自身正名（ISO 704 禁止）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditSelfRef {
+    pub concept_id: String,
+    pub name: String,
+}
+
+/// 定义审计互指对（循环定义的最短形态 A↔B）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditCycle {
+    pub a_concept_id: String,
+    pub a_name: String,
+    pub b_concept_id: String,
+    pub b_name: String,
+}
+
+/// 概念登记表检索命中（y03 只读自查通道）：一条 = 一个概念的当前视野。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ConceptSearchHit {
+    pub concept_id: String,
+    /// 登记表正名（canonical）。
+    pub canonical: String,
+    /// 活跃别名（退役名不占池）；detail 模式返回全部活跃别名。
+    pub aliases: Vec<String>,
+    /// 完整定义（search 与 detail 同一口径，不截断）。
+    pub definition: String,
+    /// 命中通道：exact | alias | nearname | fulltext（等级由高到低）。
+    /// detail 模式按 concept_id 精确取行，记为 exact。
+    pub matched_by: String,
+    /// 通道内相似度（exact/alias = 1.0；nearname = 名字相似分；
+    /// fulltext = query 在定义中的包含度，封顶 1）。
+    pub score: f64,
+}
+
+/// 概念检索结果（`not_found` 为 true 时 `hits` 恒空——零命中不抛错）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptSearchResults {
+    pub hits: Vec<ConceptSearchHit>,
+    pub not_found: bool,
+}
+
+/// 检索模式（工具入参 mode 的枚举面；serde kebab：search / detail）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConceptSearchMode {
+    Search,
+    Detail,
+}
+
+/// 定义审计报告（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
+/// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）的机械读数。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditReport {
+    /// 审计的概念总数（登记表全量、非废弃）。
+    pub concept_count: u32,
+    /// 有缺口的概念条目（零片段的概念不占行；按片段数降序）。
+    pub flagged: Vec<ConceptAuditEntry>,
+    /// 自指概念（定义含自身正名）。
+    pub self_refs: Vec<ConceptAuditSelfRef>,
+    /// 两两互指（按 (a, b) 字典序）。
+    pub mutual_cycles: Vec<ConceptAuditCycle>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1308,11 +2679,18 @@ pub struct CourseDetail {
     pub course: CourseSummary,
     pub enrollment_id: Option<LearningEnrollmentId>,
     pub modules: Vec<ModuleView>,
-    pub concepts: Vec<ConceptView>,
     pub next_lesson_id: Option<LearningLessonId>,
     pub due_review_count: i64,
-    /// 仅 `learning_graph` 课程携带：图结构 + 下一步推荐节点。
+    /// 课程内活跃课时中自报超容（`capacity_note` trim 后非空）的计数。
+    /// 纯读聚合、内容级口径（不泄露他人反馈）；0 = 零版面。
+    pub overloaded_lessons: usize,
+    /// 仅 `learning_graph` 课程携带：就绪集推荐与水位读数（结构投影走独立接口）。
     pub graph: Option<LearningGraphView>,
+    /// 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）。只挂在
+    /// 详情端点——列表摘要（`course.source_plan`）只给计数/示例；列上
+    /// NULL（旧课程/描述流）时本字段不出现。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_plan_detail: Option<CourseSourcePlanDetailView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1330,15 +2708,35 @@ pub struct LessonView {
     pub title: String,
     pub summary: String,
     pub purpose: String,
+    /// 节点意图（absorb-8 z01）：为何有这个学习点、课里承担什么角色，一句话。
+    /// 空串 = 旧档未声明（前端整行不渲染）；非空与 ≤200 字符约束在生成侧
+    /// （`ng.node.brief` 契约门），读侧不重验。
+    pub intent: String,
+    /// 教学范围（absorb-8 z01）：教什么/教到哪/明确不碰什么（「不教 X」是
+    /// 边界声明），一两句；空串 = 旧档未声明，同 [`LessonView::intent`]。
+    pub scope: String,
     pub position: i64,
-    pub estimated_minutes: i64,
+    /// est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注）。键名统一 est
+    /// （j01）；DB 列保留旧名 `estimated_minutes`。
+    pub est: i64,
     pub generated: bool,
+    /// 主来源（兼容位）：恒等于 [`LessonView::sources`] 的首个；无引用为
+    /// `None`（描述流/老课时无来源）。
     pub source: Option<SourceSpan>,
+    /// 课时的全部引用来源（t4 评审补齐）：位序即引用顺序，首个 = 主来源；
+    /// 每条都带解析出的库归属（`kb_id`）。空 = 无引用（描述流）。
+    pub sources: Vec<SourceSpan>,
     pub status: LessonStatus,
-    pub concepts: Vec<LearningConceptId>,
     pub activities: Vec<ActivityView>,
     /// 分节正文（ADR-0002）。空 = 旧课时的单篇 summary（双读回退）。
     pub sections: Vec<SectionView>,
+    /// 生成期超容自报（k03）：NULL = 无自报/旧课时。内容级共享元数据，
+    /// 不是个人预算；不参与 est/XP/水位。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_note: Option<String>,
+    /// 当前用户对本课的容量反馈（仅 lesson detail 填；其他视图为 None）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_feedback: Option<CapacityFeedbackView>,
 }
 
 /// API 视角的一个节段：清单字段 + 正文与生成状态。
@@ -1371,31 +2769,6 @@ pub struct ActivityView {
     #[serde(default)]
     pub matches: Vec<String>,
     pub position: i64,
-    pub concepts: Vec<LearningConceptId>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DiagnosticItem {
-    pub lesson_id: LearningLessonId,
-    pub lesson_title: String,
-    pub activity: ActivityView,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DiagnosticPlan {
-    pub course_id: LearningCourseId,
-    pub total_concepts: i64,
-    pub items: Vec<DiagnosticItem>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ConceptView {
-    pub id: LearningConceptId,
-    pub key: String,
-    pub title: String,
-    pub description: String,
-    pub prerequisites: Vec<LearningConceptId>,
-    pub mastery: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1421,6 +2794,12 @@ pub struct AttemptResult {
     pub score: f64,
     pub passed: bool,
     pub feedback: String,
+    /// 评审判错时点名的缺失要点（n4 D3：`score ≥ 及格 ⇔ missing 必空` 的
+    /// 连续分互斥适配；判对恒空，旧对照臂恒空）。API 层承载不落库（零迁
+    /// 移；EvidenceTier 同批豁免 n4 D5）；`serde(default)` = 反序列化面
+    /// 容缺（旧档位回放），对旧客户端是纯增量字段。
+    #[serde(default)]
+    pub missing_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1452,7 +2831,7 @@ pub struct RateReviewRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewSource {
-    /// Concept-bound review item coming from a course enrollment.
+    /// Review item coming from a course enrollment.
     Course,
     /// Learner-authored custom question with its own schedule.
     Custom,
@@ -1467,8 +2846,6 @@ pub struct DueReview {
     pub course_title: Option<String>,
     pub module_title: Option<String>,
     pub lesson_title: Option<String>,
-    pub concept_id: Option<LearningConceptId>,
-    pub concept_title: Option<String>,
     pub question: ReviewQuestion,
     pub due_at: TimestampMs,
     pub stability_days: f64,
@@ -1545,23 +2922,361 @@ pub struct ReviewResult {
     pub advanced: bool,
 }
 
-/// Daily check-in snapshot for the current review day: goal, progress and
-/// due count, with the completion flag derived from a locking snapshot
-/// persisted in `learning_checkins`.
+/// Daily check-in snapshot for the current review day, in the XP reading
+/// (j05 retires the `dailyCheckinGoal` review-count gauge — j05 后端的打卡
+/// 口径即 XP：goal 是日 XP 目标，`reviewed_count` 字段承载今日净入账，字段
+/// 名保留到 j06 换 UI 数据源)。
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckinStatus {
     /// Local review day as YYYYMMDD.
     pub review_day: i64,
-    /// Daily review goal snapshot (0 = clear-the-queue only).
+    /// Daily XP goal (application setting `learning.dailyXpGoal`, default 40).
     pub goal: i64,
-    /// Reviews already submitted this review day.
+    /// Net XP earned so far this review day (was: review-event count).
     pub reviewed_count: i64,
-    /// Cards currently due (`due_at <= now`), course + custom.
-    pub due_count: i64,
-    /// Whether the day is locked as completed (either condition met).
+    /// Whether the day is locked as completed (today's XP reached the goal).
     pub completed: bool,
     /// Lock moment in UTC milliseconds when completed, else null.
     pub locked_at: Option<i64>,
+}
+
+/// XP 读数（j05）：两把尺同源回放、互不换算——今日 XP/日目标（努力尺，
+/// 回放 `learning_xp_events`）与结算进度（进度尺，分子分母按现存且启用同
+/// 筛）。纯投影零新状态：ETA 由近 7 个学习日步伐派生，绝不回写。
+#[derive(Debug, Clone, Serialize)]
+pub struct XpReading {
+    /// Current local review day as YYYYMMDD (02:00 rollover).
+    pub review_day: i64,
+    /// Net XP earned so far this review day (negative settlements included).
+    pub today_xp: i64,
+    /// Daily XP goal (application setting `learning.dailyXpGoal`).
+    pub goal: i64,
+    /// Whether today's XP has reached the goal.
+    pub goal_achieved: bool,
+    /// Progress gauge numerator: settled nodes within existing-and-enabled
+    /// courses (same filter as the denominator).
+    pub settled_nodes: i64,
+    /// Progress gauge denominator: lessons of the user's existing-and-enabled
+    /// courses.
+    pub total_nodes: i64,
+    /// Remaining est minutes of unsettled lessons in the same scope.
+    pub remaining_est: i64,
+    /// Days to finish at the trailing-7-review-day pace; `null` when there is
+    /// no pace signal yet (or nothing remains → 0). Never written back.
+    pub eta_days: Option<i64>,
+}
+
+/// XP 日历的单日桶（学习日 02:00 翻转）：净入账，负账如实，含零桶。
+#[derive(Debug, Clone, Serialize)]
+pub struct XpCalendarDay {
+    /// Local review day as YYYYMMDD.
+    pub review_day: i64,
+    /// Net XP settled that review day (can be negative).
+    pub xp: i64,
+}
+
+/// XP 日历（j05）：恒 `weeks × 7` 桶、末桶 = 今日，不过课程筛。
+#[derive(Debug, Clone, Serialize)]
+pub struct XpCalendar {
+    /// Requested window length in weeks (1..=53).
+    pub weeks: i64,
+    /// tz offset (minutes east of UTC) the buckets were computed with.
+    pub tz_offset: i32,
+    /// Exactly `weeks * 7` day buckets, oldest first, today last.
+    pub days: Vec<XpCalendarDay>,
+}
+
+/// quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K——N = 距该课程上次
+/// quiz 结算之后的学新结算数（复习/quiz 账不推进；零存储，账本回放派生），
+/// K = 触发阈值。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizProgressView {
+    /// 学新结算计数 N（quiz 结算即清零重新积累）。
+    pub settled_count: i64,
+    /// 触发阈值 K（起步值 6，待校准）。
+    pub trigger_count: i64,
+    /// N ≥ K = 到期（测量面读数，非门禁）。
+    pub due: bool,
+}
+
+/// 首页检测聚合行（u7，读数面非门禁）：启用未删且 settled_count > 0 的
+/// 课程按 due 优先、课程名次之排序列出——N/K 口径与 [`QuizProgressView`]
+/// 逐字同源（同源 SQL 见 service::xp）。形态无关：traditional 与
+/// learning_graph 都返回（聚合只读台账与课程行，不看 course_kind）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizOverviewCourse {
+    pub course_id: LearningCourseId,
+    pub title: String,
+    /// 学新结算计数 N（quiz 结算即清零重新积累）。
+    pub settled_count: i64,
+    /// 触发阈值 K（起步值 6，待校准）。
+    pub trigger_count: i64,
+    /// N ≥ K = 到期（首页横幅只渲染 due 行）。
+    pub due: bool,
+}
+
+/// quiz 回合单题投影（q2，**判底零字段**：无 answer/explanation——解析与
+/// 答案只随 [`QuizGradeFeedback`] 判分后下发；learnhub SessionQuestionView
+/// 同红线）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundQuestionView {
+    /// 题 ULID（grade/complete 的引用键）。
+    pub activity_id: LearningActivityId,
+    pub kind: ActivityKind,
+    pub prompt: String,
+    /// 选择题选项（非选择型为空）。
+    pub options: Vec<String>,
+    /// 匹配题右列候选（打乱后；非匹配型为空）。
+    #[serde(default)]
+    pub matches: Vec<String>,
+    /// 题目所属学习节点（quiz 跨节点会话逐题携带）。
+    pub node_id: LearningLessonId,
+    pub node_name: String,
+    /// 难度档 1-3（e5 消解案：装配面从节点 teaches 档位铸值，随
+    /// `config_json.difficulty` 下发）。None = 存量行/变式题未铸值（读侧
+    /// 容错，serde 缺省）。
+    #[serde(default)]
+    pub difficulty: Option<u8>,
+}
+
+/// quiz 回合视图（q2 start 出参：情境快照 + 脱敏题单）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundView {
+    /// 回合 ULID（grade/complete 的回合键）。
+    pub round_id: String,
+    pub course_id: LearningCourseId,
+    /// active | completed | abandoned。
+    pub status: String,
+    /// 触发时刻的 N/K 读数（结算后自然清零，读数面非门禁）。
+    pub settled_count: i64,
+    pub trigger_count: i64,
+    /// 题量上限读数（q1 常量集中表）。
+    pub budget: usize,
+    pub questions: Vec<QuizRoundQuestionView>,
+}
+
+/// 单题判分反馈（q2：解析与判底揭示的唯一口；`evaluate` 确定性判分零 LLM，
+/// 纯判分不落账——结算在 complete 全卷面）。learnhub GradeFeedback 同形。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizGradeFeedback {
+    pub activity_id: LearningActivityId,
+    /// correct | incorrect。
+    pub correct: bool,
+    /// 判底揭示（判分已定，揭示不破持答案红线）。
+    pub answer: Value,
+    /// 解析（判分后下发）。
+    pub explanation: String,
+    /// 题干证据回引（t2 判底展示面；题源未提供则 None）。
+    #[serde(default)]
+    pub evidence: Option<String>,
+}
+
+/// quiz 回合逐节点对账行（q2；q3 扩逐题校准点）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundNodeReport {
+    pub node_id: LearningLessonId,
+    pub node_name: String,
+    pub answered: i64,
+    pub correct: i64,
+    /// 本节点净入账；`None` = 同日已结算折叠（coverage 保持不重复计薪，
+    /// learnhub quiz_settled_on_day 语义）。
+    pub earned_xp: Option<i64>,
+    /// 逐题校准点（q3：出题时刻的预测 R vs 实际对错；`serde(default)` 容
+    /// q2 时代旧档无此字段）。
+    #[serde(default)]
+    pub questions: Vec<QuizCalibrationPoint>,
+}
+
+/// 单题校准点（q3，喂校准读面的数据源；learnhub CalibrationPoint 同形——
+/// 无预测面不入预测均值）。
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+pub struct QuizCalibrationPoint {
+    pub activity_id: LearningActivityId,
+    pub correct: bool,
+    /// 作答时点该题卡的 FSRS 预测可提取性；无卡（变体/未建卡）= `None`。
+    pub predicted_r: Option<f64>,
+}
+
+/// quiz 回合结算报告（q2 complete 出参）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundReport {
+    pub round_id: String,
+    pub course_id: LearningCourseId,
+    /// 全卷净入账（Σ 逐节点；折叠不计薪）。
+    pub earned_xp: i64,
+    pub covered: Vec<QuizRoundNodeReport>,
+}
+
+/// 挂载回合摘要（j08）：status = mounted（有待挂并已落盘）/ skipped
+/// （待挂集空——零 LLM 零写）。挂载是导航事实：计数面只有条目统计。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountRoundSummary {
+    /// "mounted" | "skipped".
+    pub status: String,
+    /// 本轮评估的待挂节点数（skipped 时为 0）。
+    pub pending_nodes: usize,
+    /// 本轮挂入块的节点数。
+    pub mounted_nodes: usize,
+    /// 本轮声明结构外的节点数。
+    pub outside_nodes: usize,
+    /// 挂载行当前总条目数（含既有保留）。
+    pub total_entries: usize,
+    /// 回合开始时挂载是否处于失配（结构变过导致全量重评）。
+    pub stale: bool,
+    /// 落盘锚定的结构 hash（FNV-1a 64，有符号整型承载）。
+    pub structure_hash: i64,
+}
+
+/// 节点挂载三态（j08 单源派生）：Mounted（挂入可解析的块）/ Outside
+/// （已评估、声明结构外）/ NotEvaluated（未评估，或条目悬挂降级）。
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeMountStateView {
+    pub node: String,
+    /// "mounted" | "outside" | "not_evaluated".
+    pub state: String,
+}
+
+/// 一条挂载事实的读侧视图：条目携带块引用清单；悬挂 slug（块已不在当前
+/// 结构里）逐条标 `dangling = true` 降级，不使整体 Broken。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountEntryView {
+    pub node: String,
+    /// 挂入的块引用（空 = 已评估、声明结构外）。
+    pub blocks: Vec<MountBlockRefView>,
+    pub reason: String,
+}
+
+/// 单个块引用的解析结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountBlockRefView {
+    pub slug: String,
+    /// 块名（slug 在当前结构可解析时回填；悬挂为 None）。
+    pub block_name: Option<String>,
+    pub dangling: bool,
+}
+
+/// mount_index 单元：块 slug → 已挂节点清单（只含可解析块）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountIndexEntryView {
+    pub block: String,
+    pub block_name: Option<String>,
+    pub nodes: Vec<String>,
+}
+
+/// 挂载观察（修补输入源之一，纯读派生不打点）：outside-node / empty-block
+/// / overloaded-block（≥5 节点）。观察不构成编辑义务。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountObservationView {
+    pub kind: String,
+    pub detail: String,
+}
+
+/// 挂载读侧投影（挂载行 + 结构快照 + 现存节点的纯函数合成面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureMountsView {
+    /// 结构 hash 失配（挂载后结构又变过）——挂载整体显影为待重评。
+    pub stale: bool,
+    pub entries: Vec<MountEntryView>,
+    pub index: Vec<MountIndexEntryView>,
+    pub states: Vec<NodeMountStateView>,
+    pub observations: Vec<MountObservationView>,
+    pub mounted_count: usize,
+    pub outside_count: usize,
+    pub not_evaluated_count: usize,
+}
+
+/// 修补回合摘要（j09）：status = applied（有 ops 且已落盘）/ noop（ops 空，
+/// LLM 已跑不写盘）/ skipped（findings 与挂载观察皆空——零 LLM 零写）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureRepairSummary {
+    /// "applied" | "noop" | "skipped".
+    pub status: String,
+    /// 回合前的结构 hash（FNV-1a 64，有符号整型承载）。
+    pub old_hash: i64,
+    /// 回合后的结构 hash（noop/skipped = old）。
+    pub new_hash: i64,
+    /// 应用的 op 人面标签（依应用序）。
+    pub applied: Vec<String>,
+    /// 级联注记（改名跟改/拆块边退场/并块去重去自环）。
+    pub cascade: Vec<String>,
+    /// 结构已改 = 既有挂载待重评估（本回合不动挂载，下回合全量重挂）。
+    pub mounts_stale: bool,
+    pub noop: bool,
+    pub skipped: bool,
+}
+
+/// 维护需求的纯读判定（k02，learnhub ADR-0028 `maintenance_needs` 同构）：
+/// 零 LLM——只回答「这一课要不要修补/挂载」。归档/软删/非图课程/无结构 =
+/// `eligible = false`（不在扫描面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MaintenanceNeedsView {
+    pub eligible: bool,
+    /// 未消费 findings 条数（水位之后的留痕）。
+    pub unconsumed_findings: i64,
+    /// 待挂节点数（未评估 ∪ 失效 slug；stale 时 = 全部现存节点）。
+    pub pending_mounts: usize,
+    /// 结构 hash 与挂载行不一致（无挂载行 = stale）。
+    pub mounts_stale: bool,
+    pub needs_repair: bool,
+    pub needs_mount: bool,
+}
+
+impl MaintenanceNeedsView {
+    /// 无需求（零工作）——调度器据此跳过该课，零任务零 LLM。
+    pub fn is_idle(&self) -> bool {
+        !self.needs_repair && !self.needs_mount
+    }
+}
+
+/// 一课在一个维护回合里的结果（k02）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MaintenanceCourseOutcome {
+    pub course_id: String,
+    /// 回合前判定（修补后重新判定一次，见 `recheck`）。
+    pub needs: MaintenanceNeedsView,
+    /// 修补回合终态（applied/noop/skipped）；未跑 = None。
+    pub repair: Option<String>,
+    /// 挂载回合终态（mounted/skipped）；未跑 = None。
+    pub mount: Option<String>,
+    /// 修补改了结构 → 本回合内重判定后补挂。
+    pub recheck: Option<MaintenanceNeedsView>,
+    /// 因生成槽在途/失败跳过该课（含挂载）。
+    pub skipped_busy: bool,
+    /// 失败如实记（不吞）。
+    pub error: Option<String>,
+}
+
+/// 一次自动维护回合的报告（k02）：零工作 = courses 空。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MaintenanceTickReport {
+    /// 扫描的合格课程数（enabled + 未删 + 图课程 + 有结构）。
+    pub scanned: usize,
+    /// 无需求被跳过的课程数（零工作）。
+    pub idle: usize,
+    pub courses: Vec<MaintenanceCourseOutcome>,
+}
+
+/// 维护设置（k02）：缺省开、间隔 360 分钟；越界/坏值读侧回退缺省。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MaintenanceSettings {
+    pub enabled: bool,
+    pub interval_minutes: i64,
+}
+
+/// 自动补批判定读数（m10 触发②端点）：`verdict` ∈ due | below_threshold |
+/// disabled（[`crate::learning_graph::AutoRefillVerdict`] 的机器名）；纯读
+/// 零副作用，Disabled 臂与停摆臂都如实随行——前端据此决定是否自动补批。
+#[derive(Debug, Clone, Serialize)]
+pub struct GrowthVerdictView {
+    pub verdict: String,
+    /// 就绪存量（水位口径，裁决输入原样回显）。
+    pub ready_count: usize,
+    /// 触发水位（READY_TRIGGER，与门同源的唯一数字）。
+    pub trigger: usize,
+    /// 开关合力（环境闸 ∧ 设置开关）。
+    pub enabled: bool,
+    /// 停摆臂（空图）：自动触发不进入（ADR-0010 只留空图臂）。
+    pub stalled: bool,
 }
 
 /// Memory-health dashboard: one snapshot over the active card pool and the
@@ -1631,54 +3346,10 @@ pub struct MemoryCurvePoint {
     pub count: i64,
 }
 
-/// One lesson completed on a review day (calendar aggregation detail).
-#[derive(Debug, Clone, Serialize)]
-pub struct CalendarLessonRef {
-    pub lesson_id: String,
-    pub title: String,
-}
-
-/// One course created on a review day (calendar aggregation detail).
-#[derive(Debug, Clone, Serialize)]
-pub struct CalendarCourseRef {
-    pub course_id: String,
-    pub title: String,
-}
-
-/// One review day inside the requested calendar range, zero-filled when the
-/// user had no activity. `review_day` is the local YYYYMMDD of the review day
-/// (02:00 rollover), matching check-in and streak semantics.
-#[derive(Debug, Clone, Serialize)]
-pub struct CalendarDayStats {
-    pub review_day: i64,
-    pub reviewed_count: i64,
-    pub checkin_completed: bool,
-    /// Cards due on this review day; overdue cards roll into the current
-    /// day so the today cell matches the review banner's due queue.
-    pub due_count: i64,
-    pub completed_lessons: Vec<CalendarLessonRef>,
-    pub created_courses: Vec<CalendarCourseRef>,
-}
-
-/// Calendar aggregation for the learning page: review-day bucketed activity
-/// (review counts, check-in completion, completed lessons and created
-/// courses) plus the current streak.
-#[derive(Debug, Clone, Serialize)]
-pub struct CalendarStats {
-    pub year: i64,
-    /// 1..=12 for the month view, null for the year view.
-    pub month: Option<i64>,
-    pub tz_offset: i32,
-    /// Consecutive completed check-in days ending at the current review day;
-    /// 0 when today is not yet completed.
-    pub streak: i64,
-    pub days: Vec<CalendarDayStats>,
-}
-
 /// One row of the question management table. Course questions come from
-/// objective activities linked to concepts (review item optional: items
-/// only exist after the lesson is completed); custom questions are
-/// learner-authored and always carry their own schedule.
+/// objective activities (review item optional: items only exist after the
+/// lesson is completed); custom questions are learner-authored and always
+/// carry their own schedule.
 #[derive(Debug, Clone, Serialize)]
 pub struct QuestionEntry {
     pub source: ReviewSource,
@@ -1689,8 +3360,6 @@ pub struct QuestionEntry {
     pub state: String,
     pub course_id: Option<LearningCourseId>,
     pub course_title: Option<String>,
-    pub concept_id: Option<LearningConceptId>,
-    pub concept_title: Option<String>,
     pub question_kind: Option<ActivityKind>,
     pub prompt: Option<String>,
     pub options: Vec<String>,
@@ -1735,9 +3404,7 @@ pub struct MarkEditRequest {
 }
 
 /// Learner-authored question. Objective kinds (single choice, true/false,
-/// fill in the blank) are supported; the optional concept links the question
-/// back to an existing concept (including orphaned concepts from deleted
-/// courses).
+/// fill in the blank) are supported; each carries its own FSRS schedule.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCustomQuestionRequest {
     pub kind: ActivityKind,
@@ -1747,17 +3414,14 @@ pub struct CreateCustomQuestionRequest {
     pub answer: Value,
     #[serde(default)]
     pub explanation: String,
-    #[serde(default)]
-    pub concept_id: Option<LearningConceptId>,
     /// Near-synonym traps for fill_in_blank blanks (optional when the
     /// learner authors the question by hand).
     #[serde(default)]
     pub distractors: Vec<String>,
 }
 
-/// Manually appends an activity to an existing lesson. All four kinds are
-/// accepted; when `concept_ids` is empty the activity binds to every concept
-/// of the lesson, matching course-generation semantics.
+/// Manually appends an activity to an existing lesson. All kinds are
+/// accepted.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateLessonActivityRequest {
     pub kind: ActivityKind,
@@ -1771,8 +3435,6 @@ pub struct CreateLessonActivityRequest {
     /// Near-synonym traps for fill_in_blank blanks; empty for other kinds.
     #[serde(default)]
     pub distractors: Vec<String>,
-    #[serde(default)]
-    pub concept_ids: Vec<LearningConceptId>,
 }
 
 /// Asks the knowledge-backed generator for a single activity draft for an
@@ -1800,18 +3462,6 @@ pub struct GeneratedLessonActivity {
     pub answer: Value,
     pub explanation: String,
     pub distractors: Vec<String>,
-    /// Suggested concept bindings (the lesson's concepts by default).
-    pub concept_ids: Vec<LearningConceptId>,
-}
-
-/// Concept offered in the custom question form: any concept the learner
-/// has enrolled in, plus orphaned concepts still referenced by their
-/// surviving review items.
-#[derive(Debug, Clone, Serialize)]
-pub struct ConceptRef {
-    pub concept_id: LearningConceptId,
-    pub title: String,
-    pub course_title: Option<String>,
 }
 
 /// Replaces the tag set of a course or question. Unknown tag names are
@@ -1826,13 +3476,11 @@ pub struct SetTagsRequest {
     pub apply_to_children: bool,
 }
 
+/// 课程改名请求（三轮 g3）：只动显示名 `title`——目标原句/结构快照/学习
+/// 数据一个不动。
 #[derive(Debug, Clone, Deserialize)]
-pub struct DeleteCourseRequest {
-    /// Also remove the learner's review items, mastery, progress, attempts
-    /// and enrollment for this course. When false the content stays in the
-    /// database so orphaned concepts remain reviewable.
-    #[serde(default)]
-    pub delete_reviews: bool,
+pub struct RenameCourseRequest {
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1854,10 +3502,193 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub matches: Vec<String>,
-    /// Difficulty tier 1-3 declared at quiz time (概念辨析/应用/综合陷阱).
+    /// 难度档 1-3（e5 消解案：装配面从节点 teaches 档位铸值注入，quiz tier
+    /// 取数面；无 teaches 行的传统课/旧行 = None，serde 缺省容错）。
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub difficulty: Option<u8>,
+    /// 题干证据回引（t2，判底展示面）：出题阶段从来源正文/摘录逐字摘的
+    /// 一小段。旧行缺列，读侧默认 None。
+    #[serde(default)]
+    pub evidence: Option<String>,
+}
+
+#[cfg(test)]
+mod goal_tests {
+    //! 目标输入（t1）的归一化契约：整体文本即目标，缺省宽容、超长防御性
+    //! 截断；课程标题的截断是展示口径（单行 + 省略号），与落库全文分开。
+
+    use super::*;
+
+    fn request(goal: Option<&str>) -> GenerateCourseRequest {
+        GenerateCourseRequest {
+            knowledge_base_id: Some(
+                KnowledgeBaseId::parse("0190f5fe-7c00-7a00-8abc-000000000001").unwrap(),
+            ),
+            knowledge_base_ids: Vec::new(),
+            description: None,
+            domain: None,
+            provider_id: None,
+            model: None,
+            mode: CourseGenerationMode::OnDemand,
+            course_kind: CourseKind::Traditional,
+            teaching_style: None,
+            goal: goal.map(ToOwned::to_owned),
+        proficiency_statement: None,
+        learner_basis: None,
+        }
+    }
+
+    #[test]
+    fn goal_text_trims_and_treats_blank_as_absent() {
+        assert_eq!(request(None).goal_text(), None);
+        assert_eq!(request(Some("   ")).goal_text(), None);
+        assert_eq!(
+            request(Some("  零基础学 Python 数据分析 ")).goal_text(),
+            Some("零基础学 Python 数据分析".to_owned())
+        );
+    }
+
+    #[test]
+    fn goal_text_keeps_multiline_text_and_bounds_length() {
+        let long_goal = "零基础学 Python 数据分析。".repeat(400);
+        let normalized = request(Some(&long_goal)).goal_text().unwrap();
+        assert_eq!(normalized.chars().count(), COURSE_GOAL_MAX_CHARS);
+
+        // 多行长目标：换行原样保留（落库全文），不做单行折叠。
+        let multiline = "目标：学会 Python 数据分析\n受众：零基础\n产出：能独立完成一份分析报告";
+        assert_eq!(request(Some(multiline)).goal_text().unwrap(), multiline);
+    }
+
+    #[test]
+    fn goal_absent_keeps_the_legacy_kb_flow_valid() {
+        // 旧客户端路径（无 goal）必须仍然合法：主题回退库名，不报错。
+        assert!(request(None).validate().is_ok());
+    }
+
+    #[test]
+    fn goal_course_title_collapses_to_one_line_and_truncates() {
+        assert_eq!(goal_course_title("零基础学 Python 数据分析"), "零基础学 Python 数据分析");
+        assert_eq!(
+            goal_course_title("  目标：学会数据分析\n\n  受众：零基础  "),
+            "目标：学会数据分析 受众：零基础"
+        );
+        let long = "零基础学 Python 数据分析".repeat(10);
+        let title = goal_course_title(&long);
+        let expected: String = long.chars().take(COURSE_GOAL_TITLE_MAX_CHARS).collect();
+        assert_eq!(title, format!("{expected}…"));
+        assert_eq!(goal_course_title("   "), "");
+    }
+}
+
+#[cfg(test)]
+mod multi_kb_tests {
+    //! 多知识库选择（t4）的请求面契约：列表与单值并存时的优先级、去重、
+    //! 选择上限（按 t2 采样预算倒推）与去重键的乱序不敏感性。
+
+    use super::*;
+
+    fn kb(id: &str) -> KnowledgeBaseId {
+        KnowledgeBaseId::parse(id).unwrap()
+    }
+
+    fn request(single: Option<&str>, list: &[&str]) -> GenerateCourseRequest {
+        GenerateCourseRequest {
+            knowledge_base_id: single.map(kb),
+            knowledge_base_ids: list.iter().map(|id| kb(id)).collect(),
+            description: None,
+            domain: None,
+            provider_id: None,
+            model: None,
+            mode: CourseGenerationMode::OnDemand,
+            course_kind: CourseKind::Traditional,
+            teaching_style: None,
+            goal: None,
+        proficiency_statement: None,
+        learner_basis: None,
+        }
+    }
+
+    const A: &str = "0190f5fe-7c00-7a00-8abc-00000000000a";
+    const B: &str = "0190f5fe-7c00-7a00-8abc-00000000000b";
+    const C: &str = "0190f5fe-7c00-7a00-8abc-00000000000c";
+
+    /// 单值 / 列表两条输入路径归一成同一条列表：列表非空时以列表为准
+    /// （保序去重），列表为空时回退单值的单元素视图（旧客户端零变化）。
+    #[test]
+    fn multi_kb_list_normalizes_and_dedupes_in_order() {
+        assert_eq!(request(Some(A), &[]).knowledge_base_ids_normalized(), vec![kb(A)]);
+        assert_eq!(
+            request(None, &[B, A]).knowledge_base_ids_normalized(),
+            vec![kb(B), kb(A)],
+            "列表顺序原样保留（首个 = 主来源）"
+        );
+        assert_eq!(
+            request(Some(A), &[A, B, A]).knowledge_base_ids_normalized(),
+            vec![kb(A), kb(B)],
+            "重复项按首次出现去重"
+        );
+    }
+
+    /// 上限 5（t2 采样预算倒推）：第 6 个库 400，五个库合法。
+    #[test]
+    fn multi_kb_selection_is_capped_at_five() {
+        assert_eq!(COURSE_MAX_KNOWLEDGE_BASES, 5);
+        let five: Vec<String> = (0..5)
+            .map(|index| format!("0190f5fe-7c00-7a00-8abc-00000000001{index}"))
+            .collect();
+        let five_refs: Vec<&str> = five.iter().map(String::as_str).collect();
+        assert!(request(None, &five_refs).validate().is_ok());
+
+        let six: Vec<String> = (0..6)
+            .map(|index| format!("0190f5fe-7c00-7a00-8abc-00000000001{index}"))
+            .collect();
+        let six_refs: Vec<&str> = six.iter().map(String::as_str).collect();
+        let error = request(None, &six_refs).validate().unwrap_err();
+        assert!(error.to_string().contains('5'), "{error}");
+    }
+
+    /// 两者同时给出：单值必须是列表成员（列表优先，不静默丢来源）。
+    #[test]
+    fn multi_kb_and_single_field_must_agree() {
+        assert!(request(Some(A), &[A, B]).validate().is_ok(), "单值 ∈ 列表：列表生效");
+        let error = request(Some(C), &[A, B]).validate().unwrap_err();
+        assert!(error.to_string().contains("knowledge_base_ids"), "{error}");
+    }
+
+    /// 列表是与 description 互斥的知识库来源；学习图课程仍只走描述流。
+    #[test]
+    fn multi_kb_list_is_a_knowledge_base_source() {
+        let mut with_description = request(None, &[A, B]);
+        with_description.description = Some("brief".into());
+        assert!(with_description.validate().is_err(), "列表与描述互斥");
+
+        let mut graph = request(None, &[A, B]);
+        graph.course_kind = CourseKind::LearningGraph;
+        graph.description = Some("学会 Python".into());
+        let error = graph.validate().unwrap_err();
+        assert!(
+            error.to_string().contains("description only"),
+            "学习图课程不接库: {error}"
+        );
+    }
+
+    /// 去重键（生成槽位）：id 排序后拼接——乱序提交同一组库命中同一槽位；
+    /// 单库保持 t2 的 `kb:{id}` 形状。
+    #[test]
+    fn multi_kb_key_is_order_insensitive_and_single_compatible() {
+        assert_eq!(request(Some(A), &[]).knowledge_base_key().as_deref(), Some(&*format!("kb:{A}")));
+        assert_eq!(
+            request(None, &[A, B]).knowledge_base_key().as_deref(),
+            Some(&*format!("kb:{A}+{B}"))
+        );
+        assert_eq!(
+            request(None, &[B, A]).knowledge_base_key().as_deref(),
+            Some(&*format!("kb:{A}+{B}")),
+            "乱序提交同一组库 → 同一槽位"
+        );
+        assert_eq!(request(None, &[]).knowledge_base_key(), None);
+    }
 }
 
 #[cfg(test)]
@@ -1898,6 +3729,7 @@ mod contract_tests {
             points: String::new(),
             visual: "函数图".into(),
             body_md: body,
+            degraded: false,
         };
         // 计量断言：纯文字恰好过门（全字符口径会因图块文本虚高）。
         let prose_chars = prose_char_count(&pack.body_md);
@@ -1935,6 +3767,240 @@ mod contract_tests {
         assert!(
             budgets.contains(&format!("下限 {} 字", SectionKind::Concept.min_body_chars())),
             "{budgets}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod est_key_tests {
+    //! est 键名统一（j01）的双读契约：导入包新键 `est` 为准，旧键
+    //! `estimated_minutes` 是兼容别名——老导入文件不回归（缺省回退才可判）。
+
+    use super::*;
+
+    #[test]
+    fn lesson_pack_reads_new_key_and_legacy_alias() {
+        let new_key: LessonPack = serde_json::from_str(
+            r#"{"title": "t", "est": 42}"#,
+        )
+        .expect("new key parses");
+        assert_eq!(new_key.est, 42);
+
+        let legacy: LessonPack = serde_json::from_str(
+            r#"{"title": "t", "estimated_minutes": 25}"#,
+        )
+        .expect("legacy import packs keep parsing");
+        assert_eq!(legacy.est, 25);
+
+        let absent: LessonPack =
+            serde_json::from_str(r#"{"title": "t"}"#).expect("absent falls back");
+        assert_eq!(absent.est, 10, "缺省 10 不变");
+    }
+}
+
+#[cfg(test)]
+mod viz_lint_tests {
+    //! f3 可视化块机械 lint 的红绿样：法证原行必红（MermaidBalance）、
+    //! 括号不平衡必红、边端点引用未定义节点必红、svg 空壳必红；合法
+    //! flowchart/sequenceDiagram/stateDiagram/classDiagram（跨行块）/
+    //! 含引号文本全绿；空 mermaid 块、普通代码围栏、未闭合围栏零动作。
+
+    use super::*;
+
+    fn kinds(body: &str) -> Vec<VizLintKind> {
+        lint_visual_blocks(body).iter().map(|i| i.kind).collect()
+    }
+
+    /// 法证原行（e2e2「滚雪球」s1）：`[[` 开、单 `]` 收、行内三引号——
+    /// 引号计数为奇 → MermaidBalance，detail 带块序号与行摘录。
+    #[test]
+    fn forensic_unbalanced_line_is_flagged() {
+        let body = "## 概念：滚雪球\n\n```mermaid\nflowchart TD\n\
+                    A[[\"第1期 本金 P] -->|\"算利息 P×利率\"| B[利息1\"]\n```\n";
+        let issues = lint_visual_blocks(body);
+        assert_eq!(kinds(body), vec![VizLintKind::MermaidBalance], "{issues:?}");
+        assert!(issues[0].detail.contains("#1"), "{issues:?}");
+        assert!(issues[0].detail.contains("本金"), "{issues:?}");
+    }
+
+    /// 引号配平但括号不平衡（`[[` 开、单 `]` 收）：块级累计净差非零必红。
+    #[test]
+    fn bracket_imbalance_is_flagged_by_block_totals() {
+        let body = "```mermaid\nflowchart LR\nA[[\"复利公式\"] --> B[\"利息\"]\n```\n";
+        let issues = lint_visual_blocks(body);
+        assert_eq!(kinds(body), vec![VizLintKind::MermaidBalance], "{issues:?}");
+        assert!(issues[0].detail.contains("["), "{issues:?}");
+    }
+
+    /// flowchart 边端点引用了未带形状定义的 id → 每个未定义 id 一条
+    /// MermaidNodeUndefined；带形状的端点不误报。
+    #[test]
+    fn edge_referencing_undefined_node_is_flagged() {
+        let body = "```mermaid\nflowchart TD\nA[本金] --> 本息\n本息 --> B[本息和]\n```\n";
+        let issues = lint_visual_blocks(body);
+        assert_eq!(
+            kinds(body),
+            vec![VizLintKind::MermaidNodeUndefined],
+            "{issues:?}"
+        );
+        assert!(issues[0].detail.contains("本息"), "{issues:?}");
+    }
+
+    /// 合法 flowchart：全节点带形状、引号包裹特殊字符——零动作。
+    #[test]
+    fn legal_flowchart_with_quoted_labels_passes() {
+        let body = "```mermaid\nflowchart LR\n\
+                    A[\"本金 (P)\"] -->|\"利率 r\"| B[\"利息 {I}\"]\n\
+                    B --> C[\"本息和\"]\n```\n";
+        assert!(lint_visual_blocks(body).is_empty(), "{body}");
+    }
+
+    /// sequence/state/class 图全绿：`->>` 不在连线记号表、`[*]` 配平、
+    /// classDiagram 的花括号跨行块级累计（按行计会误杀）。
+    #[test]
+    fn sequence_state_and_multiline_class_diagrams_pass() {
+        let sequence = "```mermaid\nsequenceDiagram\n储户->>银行: 存入本金\n\
+                        银行-->>储户: 返还本息\n```\n";
+        assert!(lint_visual_blocks(sequence).is_empty());
+        let state = "```mermaid\nstateDiagram-v2\n[*] --> 活期\n活期 --> [*]: 销户\n```\n";
+        assert!(lint_visual_blocks(state).is_empty());
+        let class = "```mermaid\nclassDiagram\nclass 账户 {\n  +余额: 数值\n\
+                     +计息() 数值\n}\n```\n";
+        assert!(lint_visual_blocks(class).is_empty());
+    }
+
+    /// 空 mermaid 块：配平过 + 节点查过 → 合法（由既有门管）。
+    #[test]
+    fn empty_mermaid_block_passes() {
+        assert!(lint_visual_blocks("```mermaid\n```\n").is_empty());
+    }
+
+    /// svg：块体为空或缺 `<svg` 根 → SvgShell；真 svg 过。
+    #[test]
+    fn svg_shell_blocks_are_flagged_but_real_svg_passes() {
+        assert_eq!(kinds("```svg\n```\n"), vec![VizLintKind::SvgShell]);
+        assert_eq!(kinds("```svg\n占位文本\n```\n"), vec![VizLintKind::SvgShell]);
+        assert!(lint_visual_blocks("```svg\n<svg viewBox=\"0 0 10 10\"></svg>\n```\n").is_empty());
+    }
+
+    /// jsxgraph：顺带六对括号配平（零成本），配平即过。
+    #[test]
+    fn jsxgraph_bracket_balance_is_checked_incidentally() {
+        assert!(lint_visual_blocks("```jsxgraph\nboard.setBoundingBox([0, 10, 20, 30]);\n```\n").is_empty());
+        let body = "```jsxgraph\nJXG.createPoint(board, [1, 2);\n```\n";
+        assert_eq!(kinds(body), vec![VizLintKind::MermaidBalance], "{body}");
+    }
+
+    /// 普通代码围栏（非 mermaid/svg/jsxgraph）零动作；未闭合围栏不新增
+    /// 判定（沿用 validate_body 现行行为）。
+    #[test]
+    fn plain_code_fences_and_unclosed_fences_are_untouched() {
+        let python = "```python\npairs = {'a': [1]}\nprint(pairs['a']\n```\n";
+        assert!(lint_visual_blocks(python).is_empty(), "{python}");
+        let unclosed = "```mermaid\nflowchart TD\nA[本金 --> B[利息]\n";
+        assert!(
+            lint_visual_blocks(unclosed).is_empty(),
+            "未闭合围栏不新增判定"
+        );
+    }
+
+    /// 终检剔除：坏块整体剔除（fence 三行齐走）、节其余原样保留；剔后
+    /// 声明按余块形态降级（余 mermaid → 流程图，无余块 → 无）。
+    #[test]
+    fn strip_removes_only_broken_blocks_and_keeps_the_rest() {
+        let good = "```mermaid\nflowchart LR\nA[复利] -->|计息| B[本息]\n```\n";
+        let bad = "```mermaid\nflowchart TD\n\
+                   A[[\"第1期 本金 P] -->|\"算利息\"| B[利息1\"]\n```\n";
+        let prose = "这是终检剔除后仍保留的讲解正文，用于说明剔块不伤文字。";
+        let body = format!("开头旁注。\n\n{bad}\n中间说明。\n\n{good}\n\n{prose}\n");
+        let (stripped, removed) = strip_broken_visual_blocks(&body);
+        assert_eq!(removed, 1);
+        assert!(stripped.contains("开头旁注") && stripped.contains("中间说明"));
+        assert!(stripped.contains(good.trim_end()) && stripped.contains(prose), "{stripped}");
+        assert!(!stripped.contains("本金 P"), "{stripped}");
+        assert_eq!(
+            declared_visual_after_strip(&stripped),
+            "流程图",
+            "余块形态决定新声明"
+        );
+        let (only_bad, removed) = strip_broken_visual_blocks(&format!("{bad}\n{prose}\n"));
+        assert_eq!(removed, 1);
+        assert!(only_bad.contains(prose));
+        assert_eq!(declared_visual_after_strip(&only_bad), "无");
+    }
+
+    /// 互钉（Standards③）：菜单词表与剔后反查同源——`VISUAL_OPTIONS` 词面
+    /// 按提示词展示序逐字钉死（测试即独立事实源），任一词改名/换序/增删
+    /// 即红；`declared_visual_after_strip` 的五个反查返回值必须始终是菜单
+    /// 成员（剔后声明落回菜单，承诺门按新声明自然复审的前提）。
+    #[test]
+    fn visual_menu_and_strip_deduction_share_one_vocabulary() {
+        assert_eq!(
+            VISUAL_OPTIONS,
+            ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"]
+        );
+        let cases = [
+            ("```mermaid\nflowchart TD\nA[本金] --> B[本息]\n```", VISUAL_FLOWCHART),
+            ("```svg\n<svg viewBox=\"0 0 10 10\"></svg>\n```", VISUAL_DIAGRAM),
+            ("正文一句。\n\n$$E=mc^2$$", VISUAL_FORMULA),
+            ("| 一 | 二 |\n| --- | --- |\n| 1 | 2 |", VISUAL_TABLE),
+            ("纯文字，无任何可视化块。", VISUAL_NONE),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(declared_visual_after_strip(body), expected, "{body}");
+            assert!(VISUAL_OPTIONS.contains(&expected), "{expected} 必须仍在菜单内");
+        }
+    }
+
+    /// f3 lint 并入 validate_body（4.2）：坏 mermaid 围栏在两线共享汇点
+    /// 直接构成节违约，违约文本带 lint 定位与处置指引。
+    #[test]
+    fn validate_body_folds_lint_into_the_section_contract() {
+        let prose = "这是一个足够长的概念讲解正文段落，用于通过节级质检门的文字下限要求。".repeat(6);
+        let body = format!(
+            "## 概念：复利\n\n```mermaid\nflowchart TD\n\
+             A[[\"第1期 本金 P] -->|\"算利息\"| B[利息1\"]\n```\n\n{prose}"
+        );
+        let pack = SectionPack {
+            section_key: "s1".into(),
+            kind: SectionKind::Concept,
+            title: "概念：复利".into(),
+            points: String::new(),
+            visual: "流程图".into(),
+            body_md: body,
+            degraded: false,
+        };
+        let error = pack.validate_body().unwrap_err();
+        assert!(error.contains("invalid visualization block syntax"), "{error}");
+        assert!(error.contains("MermaidBalance") || error.contains("mermaid"), "{error}");
+        assert!(error.contains("修复该围栏块语法"), "{error}");
+    }
+
+    /// demo 硬门不按声明豁免；唯一例外是终检系统剔块的 degraded 节（f3
+    /// A4：正文不因图烂而整课失败）。
+    #[test]
+    fn demo_gate_exempts_only_degraded_sections() {
+        let prose = "演示节旁注，可视化块已被终检系统剔除后仅余讲解文字。".repeat(12);
+        let plain = SectionPack {
+            section_key: "s1".into(),
+            kind: SectionKind::Demo,
+            title: "演示：复利".into(),
+            points: String::new(),
+            visual: "无".into(),
+            body_md: prose,
+            degraded: false,
+        };
+        assert!(
+            plain.validate_body().is_err(),
+            "demo 无可视化块仍拒（不按声明豁免）"
+        );
+        let degraded = SectionPack {
+            degraded: true,
+            ..plain
+        };
+        assert!(
+            degraded.validate_body().is_ok(),
+            "degraded 节豁免 demo 硬门"
         );
     }
 }

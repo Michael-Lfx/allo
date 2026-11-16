@@ -40,24 +40,49 @@ pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
 /// Pre-generation scope analysis: a coarse block checklist JSON. Generous
 /// budget so a complex goal can enumerate a long, strictly-complete
 /// checklist without the reply being cut off mid-array.
-pub(crate) const LEARNING_GRAPH_SCOPE_MAX_TOKENS: u32 = 8192;
+pub(crate) const OUTLINE_SCOPE_MAX_TOKENS: u32 = 8192;
+/// Coach growth batch: ≤7 nodes with concept references + mints + notes.
+/// Coach calls run with thinking ON (see [`complete_json_coach`]) and reasoning
+/// tokens share this output ceiling with the JSON reply — learnhub's coach
+/// turns on the same model class emit 13k+ tokens of reasoning before the
+/// batch (and a truncated batch surfaces as MaxTokens → BadGateway), so the
+/// budget is generous on purpose.
+pub(crate) const COACH_MAX_TOKENS: u32 = 32768;
+/// Concept review verdict: pass marker or ≤8 problem entries. The review runs
+/// with thinking ON (see [`complete_json_coach`]) and reasoning shares this ceiling
+/// with the JSON verdict — a truncated verdict parses as garbage and the
+/// pipeline degrades to PASS, so give the deliberation room.
+pub(crate) const CONCEPT_REVIEW_MAX_TOKENS: u32 = 16384;
+/// Structure artifact generation (structure + terrain, gd.* contract): the
+/// reply carries 25–80 block entries (f2: hard floor 25, density floor 40
+/// warns) plus the terrain doors, with thinking ON
+/// sharing this ceiling (see [`complete_json_coach`]) — the same 13k+
+/// reasoning share applies here, and this is the pipeline's largest reply,
+/// so the budget sits at 2× the coach turn.
+pub(crate) const STRUCTURE_MAX_TOKENS: u32 = 65536;
+/// Name-bundle adjudication (y01): one tiny verdict row per suspect name,
+/// no thinking — a small budget covers the whole batch.
+pub(crate) const NAME_ADJUDICATION_MAX_TOKENS: u32 = 2048;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code
 /// plus the runtime error it produced and returns only corrected code. The
 /// rules mirror the lesson standard so a repair slots back into the renderer
 /// unchanged.
-const FIGURE_REPAIR_SYSTEM: &str = r#"You fix one broken lesson figure. You receive the figure language (svg or jsxgraph),
+const FIGURE_REPAIR_SYSTEM: &str = r#"You fix one broken lesson figure. You receive the figure language (svg, jsxgraph or mermaid),
 its source code, and the error it produced at render time. Reply with ONLY the corrected
 figure body — no Markdown fences, no commentary. Keep the original intent and layout,
 fix the error, and follow the figure rules:
 - svg: ONE self-contained <svg> element with viewBox, labels via <text>, no scripts or
-  external references.
+  external references. Keep every drawn element and label inside the viewBox.
 - jsxgraph: code that draws on the provided `board` variable (the `JXG` namespace is
   available too). Never call JXG.JSXGraph.initBoard. Element constructors take element
   parents, not raw numbers: board.create('line', [pointA, pointB]) needs two point
   elements or two [x, y] coordinate pairs; board.create('segment', ...) likewise; check
-  every parent type the error message lists as allowed."#;
+  every parent type the error message lists as allowed.
+- mermaid: a Mermaid diagram body without ``` fences. Keep the original diagram type
+  (flowchart, sequenceDiagram, classDiagram, ...), balance every bracket and quote in
+  node labels, and avoid directives the renderer does not support."#;
 
 
 /// Repair a figure that failed to render. Returns the corrected figure body
@@ -90,6 +115,50 @@ pub(crate) async fn repair_figure(
 /// can stall (busy free tier, hung proxy); without a bound the job would sit
 /// in `lessons` forever with no error, looking stuck to the user.
 const COMPLETE_CALL_TIMEOUT_SECS: u64 = 180;
+
+/// Coach calls deliberate with thinking ON (domain survey, prerequisite
+/// descent) before drafting — the observed single attempt runs ~2-3 minutes
+/// against a 32k budget, and the bound covers one transient-error retry on
+/// top (the retry lives inside the completer, so it shares this ceiling).
+const COACH_CALL_TIMEOUT_SECS: u64 = 480;
+
+
+/// JSON-mode sibling of other json-mode stages: artifact-contract generation
+/// (structure + terrain) runs the full prompt as the user message on the
+/// json seam with thinking ON, under the same timeout arithmetic — reasoning
+/// tokens share the ceiling with the JSON reply, and a truncated artifact
+/// surfaces as a contract violation instead of a parse hang.
+pub(crate) async fn complete_json_coach(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    temperature: Option<f32>,
+) -> Result<String, AppError> {
+    let call = async {
+        completer
+            .complete_json_with_thinking(
+                model_override.map(|(id, model)| (id.as_str(), model)),
+                system,
+                user,
+                max_tokens,
+                temperature,
+            )
+            .await
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(COACH_CALL_TIMEOUT_SECS), call)
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                timeout_secs = COACH_CALL_TIMEOUT_SECS,
+                "json coach call timed out"
+            );
+            AppError::Timeout(format!(
+                "json coach call exceeded {COACH_CALL_TIMEOUT_SECS}s"
+            ))
+        })?
+}
 
 
 pub(crate) async fn complete(
@@ -130,6 +199,11 @@ pub(crate) async fn complete_with_timeout(
     tokio::time::timeout(timeout, call)
         .await
         .map_err(|_| {
+            tracing::warn!(
+                timeout_secs = timeout.as_secs(),
+                model = ?model_override.map(|(id, model)| (id.as_str(), model)),
+                "model call timed out (course generation or concept graph)"
+            );
             AppError::Timeout(format!(
                 "model call exceeded {}s (course generation or concept graph)",
                 timeout.as_secs()
