@@ -570,6 +570,47 @@ async fn declared_basis_concept_makes_downstream_node_ready_without_any_teaching
     assert_eq!(basis_registry_count(&service).await, 2, "概念不灭");
 }
 
+/// 教练账面并网正向回归（2026-11-16 真机病历）：声明的活概念必须出现在
+/// `render_taught_summary`（coach/评审上下文的已教账块）并带「已会声明」
+/// 段注——此前并网 SQL 误写单参 `json_extract(je.value)`（缺路径参数静默
+/// 返回 NULL），join 永远空 match，声明的概念从未进过教练/评审提示面，
+/// 教练把已声明者当零基础重教。负向（幽灵降级）见下一条测试。
+#[tokio::test]
+#[serial_test::serial]
+async fn declared_basis_concept_reaches_coach_taught_summary() {
+    let completer = SequencedCompleter::new(vec![]);
+    let (service, _user, course) = seed_basis_course(completer).await;
+    let concept_id = LearningConceptId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_concept_registry \
+         (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+         VALUES (?, '赋值语句', '[]', '给已声明变量存上另一个值', 1, 1)",
+    )
+    .bind(&concept_id)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    seed_declaration_anchor(&service, &course, &["G1"], &[&concept_id]).await;
+
+    let summary = service.render_taught_summary().await.unwrap();
+    assert!(
+        summary.contains("赋值语句"),
+        "声明概念必须进教练已教账面：{summary}"
+    );
+    assert!(
+        summary.contains("已会声明") && summary.contains("不要再为其安排教学"),
+        "已会声明段注必须在场（无档位区分）：{summary}"
+    );
+
+    // 撤销锚行 → 并网面同步收缩（声明可撤，账面如实）。
+    service.revoke_basis(&_user, &course).await.unwrap();
+    let summary = service.render_taught_summary().await.unwrap();
+    assert!(
+        !summary.contains("赋值语句"),
+        "撤销后声明概念退出教练账面：{summary}"
+    );
+}
+
 /// Broken 如实降级：锚行里的概念已不在登记表（被删）→ 读数披露 unresolved、
 /// 已知投影与教练账面跳过它，不炸。
 #[tokio::test]

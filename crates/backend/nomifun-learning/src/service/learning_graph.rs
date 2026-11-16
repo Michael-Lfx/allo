@@ -5213,11 +5213,16 @@ impl LearningService {
             .collect::<Vec<_>>()
             .join("、");
         // 已会声明并网（m2）：声明概念进教练已教账面（同源已知集）——无档
-        // 位，单列一段钉「视为已掌握，不要再为其安排教学」。
+        // 位，单列一段钉「视为已掌握，不要再为其安排教学」。join 键直接用
+        // `je.value`（json_each 的元素标量本身就是文本）——此前误写成单参
+        // `json_extract(je.value)`（缺路径参数，SQLite 静默返回 NULL），
+        // join 永远空match：声明的概念从未进过教练/评审提示面（2026-11-16
+        // 真机病历：声明 5 项覆盖 45 概念，生长照教 赋值语句/变量声明 等
+        // 9 个已声明概念）。
         let declared_canonicals: Vec<String> = sqlx::query(
             "SELECT DISTINCT reg.canonical FROM learning_basis_declarations d, \
              json_each(d.concept_ids_json) je \
-             JOIN learning_concept_registry reg ON reg.concept_id = json_extract(je.value) \
+             JOIN learning_concept_registry reg ON reg.concept_id = je.value \
              JOIN learning_courses c ON c.course_id = d.course_id AND c.deleted_at IS NULL \
              WHERE reg.deprecated = 0 ORDER BY reg.canonical",
         )
