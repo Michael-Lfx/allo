@@ -1,8 +1,18 @@
 use crate::{Accent, Density};
-use gpui::{Pixels, Rgba, px, rgb};
+use gpui::{ColorExt, Pixels, Rgba, Size, px, rgb, size};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 pub const DOCK_WIDTH: f32 = 248.0;
+
+/// Modal scrim alpha over [`ink`].
+pub const SCRIM_ALPHA: f32 = 0.18;
+/// Backdrop blur radius for modal scrims.
+pub const SCRIM_BLUR: f32 = 4.0;
+/// Corner radius for modal popup shells.
+pub const MODAL_RADIUS: f32 = 20.0;
+/// Same fractional inset on both axes for large modals.
+/// Yields equal left/right and equal top/bottom; left ≠ top when the window is not square.
+pub const MODAL_INSET: f32 = 0.08;
 
 static DARK: AtomicBool = AtomicBool::new(false);
 static ACCENT: AtomicU8 = AtomicU8::new(0);
@@ -166,6 +176,23 @@ pub fn space(base: f32) -> Pixels {
         Density::Comfortable => 1.5,
     };
     px(base * scale)
+}
+
+pub fn scrim() -> Rgba {
+    ink().opacity(SCRIM_ALPHA)
+}
+
+pub fn scrim_blur() -> Pixels {
+    px(SCRIM_BLUR)
+}
+
+pub fn modal_radius() -> Pixels {
+    px(MODAL_RADIUS)
+}
+
+pub fn modal_size(viewport: Size<Pixels>) -> Size<Pixels> {
+    let scale = 1.0 - (2.0 * MODAL_INSET);
+    size(viewport.width * scale, viewport.height * scale)
 }
 
 fn dark() -> bool {
