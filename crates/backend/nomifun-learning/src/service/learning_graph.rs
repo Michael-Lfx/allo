@@ -2422,6 +2422,14 @@ impl LearningService {
                 prev_fingerprint = Some(fingerprint);
                 last = report.clone();
                 feedback = report;
+                // m1 铸名缺漏机械补全：refs-resolvable 红条附可照抄的 mints
+                // 补条形状——通用反馈（「先铸名」）在真机上两轮重裁都修不上
+                // （2026-11-16 病历），反馈须给到可执行的最小补丁。
+                let patch =
+                    crate::learning_graph::growth_retry::mint_completion_feedback(&outcome.errors);
+                if !patch.is_empty() {
+                    feedback.push_str(&patch);
+                }
                 previous = Some(candidate);
                 continue;
             }

@@ -29,7 +29,48 @@ use std::collections::{HashMap, HashSet};
 
 use nomifun_common::AppError;
 
-use super::{MAX_BATCH_NODES, ProposedBatch, ProposedNode, ReviewProblem};
+use super::{GateError, MAX_BATCH_NODES, ProposedBatch, ProposedNode, ReviewProblem};
+
+/// 铸名缺漏的机械补全指引（m1）：门红条 `ng.refs.resolvable`（无近形宿主
+/// 臂）逐名给出可照抄的 mints 补条形状。2026-11-16 真机病历：教练照结构
+/// 参考块名引用「共享状态」却不随批铸名，通用反馈（「先铸名或改用登记表
+/// 中的名字」）两轮重裁都没修上，同指纹早停耗尽整批——反馈升级为可照抄
+/// 的恰一次补全指令。多候选臂已有「逐字照抄其一」指引，不在此列；名字
+/// 抽取只认无宿主臂的固定消息形状（`mod.rs` validate_batch 单源）。
+pub(crate) fn mint_completion_feedback(errors: &[GateError]) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for error in errors {
+        if error.kind != "ng.refs.resolvable" || error.message.contains("有多个近形候选") {
+            continue;
+        }
+        let Some(start) = error.message.find("引用的概念「") else {
+            continue;
+        };
+        let rest = &error.message[start + "引用的概念「".len()..];
+        let Some(end) = rest.find('」') else {
+            continue;
+        };
+        let name = rest[..end].to_owned();
+        if !names.iter().any(|existing| existing == &name) {
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    let entries = names
+        .iter()
+        .map(|name| {
+            format!(
+                "- {{ \"canonical\": \"{name}\", \"aliases\": [], \"definition\": \"（按教该概念的节点 scope 一句话如实概括）\", \"source\": \"教练提名：补齐节点引用的缺名\" }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\n【铸名缺漏——恰一次机械补全】以下名字确要本批教/依赖：把它们逐条补进本批 mints（形状照抄，definition 按对应节点 scope 如实概括），其余内容逐字节保持不变；若该名字不必本批教，就把引用整体移出（节点移出本批，或改用已教账里已有的概念）：\n{entries}"
+    )
+}
 
 /// 一次 attempt 的失败面：`report` 进重试反馈与耗尽消息；`guard` = 机械
 /// 比对守卫失败（豁免早停 + 原地重试）；`review_history` = 前轮语义评审
@@ -367,6 +408,50 @@ mod tests {
         assert!(!should_stop_early(2, "a", Some("b"), false));
         // guard 永不早停（同指纹≠同输出前提不成立）。
         assert!(!should_stop_early(2, "a", Some("a"), true));
+    }
+
+    /// m1 铸名缺漏机械补全指引：无宿主臂逐名给可照抄补条（含名字抽取）；
+    /// 多候选臂/其它 kind 不在列；无名红条 = 空串（零附加段）。
+    #[test]
+    fn mint_completion_feedback_guides_the_exact_patch() {
+        use crate::learning_graph::GateError;
+        let errors = vec![
+            GateError {
+                kind: "ng.refs.resolvable",
+                message: "节点 共享状态：在代码中指认被多方访问的可变数据 引用的概念「共享状态」既不在概念登记表，也未随本批铸名——先铸名或改用登记表中的名字".into(),
+            },
+            GateError {
+                kind: "ng.refs.resolvable",
+                message: "节点 甲 引用的概念「歧义名」既不在概念登记表，也未随本批铸名；有多个近形候选无法自动判定：「甲一」、「甲二」——请逐字照抄其中一个，或先铸名".into(),
+            },
+            GateError {
+                kind: "ng.assumes.uncovered",
+                message: "节点 甲 assumes「未教概念」未被已教账覆盖".into(),
+            },
+        ];
+        let feedback = mint_completion_feedback(&errors);
+        assert!(feedback.contains("【铸名缺漏——恰一次机械补全】"), "{feedback}");
+        assert!(feedback.contains("共享状态"), "{feedback}");
+        assert!(
+            feedback.contains("\"canonical\": \"共享状态\""),
+            "补条形状可照抄：{feedback}"
+        );
+        assert!(
+            !feedback.contains("歧义名"),
+            "多候选臂已有逐字照抄指引，不进补全清单：{feedback}"
+        );
+        assert!(
+            !feedback.contains("未教概念"),
+            "其它 kind 不在列：{feedback}"
+        );
+        assert_eq!(mint_completion_feedback(&[]), "");
+        assert_eq!(
+            mint_completion_feedback(&[GateError {
+                kind: "ng.assumes.uncovered",
+                message: "无关".into(),
+            }]),
+            ""
+        );
     }
 
     #[test]
