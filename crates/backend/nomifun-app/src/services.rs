@@ -2770,13 +2770,42 @@ impl AppServices {
         // course generation / concept graphs / reflection grading must not
         // share the knowledge autogen instance, whose 8192-token cap is
         // tuned for README overviews and cannot be overridden per call.
+        let live_learning_completer = Arc::new(nomifun_ai_agent::LiveLearningCompleter {
+            provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+            provider_model_repo: provider_model_repo.clone(),
+            encryption_key,
+            workspace: data_dir.clone(),
+        });
+        // 调用留痕（o2，`NOMI_LEARNING_CALL_ARCHIVE`，缺省关）：开 = 包
+        // ArchivingCompleter，每次管线 LLM 调用一行 JSONL（system/user/
+        // response 全文 + per-call usage）落 `observation/learning-dev/
+        // run-*/`——与 learning-smoke 的必挂（同机制）同律不同目录，互不
+        // 混写。挂载失败只降级留痕，绝不阻断启动（观测面纪律同 smoke）。
         let learning_completer: Arc<dyn nomifun_learning::LearningCompleter> =
-            Arc::new(nomifun_ai_agent::LiveLearningCompleter {
-                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
-                provider_model_repo: provider_model_repo.clone(),
-                encryption_key,
-                workspace: data_dir.clone(),
-            });
+            if nomifun_learning::call_archive_enabled() {
+                let obs_root = data_dir.join("observation").join("learning-dev");
+                match nomifun_ai_agent::archiving_completer::ArchivingCompleter::new(
+                    live_learning_completer.clone(),
+                    &obs_root,
+                ) {
+                    Ok(archiving) => {
+                        tracing::info!(
+                            run_dir = %archiving.run_dir().display(),
+                            "learning call archive mounted (NOMI_LEARNING_CALL_ARCHIVE=on)"
+                        );
+                        Arc::new(archiving)
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "learning call archive mount failed — continuing unarchived"
+                        );
+                        live_learning_completer
+                    }
+                }
+            } else {
+                live_learning_completer
+            };
         // Recover profiles left by an interrupted earlier browser runtime
         // before constructing any Host authority. If ownership/termination
         // cannot be proven, Browser functionality remains degraded for this

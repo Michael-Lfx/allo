@@ -8,7 +8,7 @@ use std::sync::Arc;
 use nomi_config::config::{CliArgs, Config};
 use nomi_providers::{LlmProvider, ProviderError, create_provider};
 use nomi_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
-use nomi_types::message::{ContentBlock, Message, Role, StopReason};
+use nomi_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use nomifun_api_types::ModelTrait;
 use nomifun_common::{AppError, FLOWY_BUILTIN_PROVIDER_ID, ProviderId};
 use nomifun_db::{
@@ -598,6 +598,32 @@ pub async fn one_shot_completion_json_text_or_reasoning(
     disable_thinking: bool,
     temperature: Option<f32>,
 ) -> Result<String, AppError> {
+    // o2 调用留痕：usage 采集走 with_usage sibling；本薄壳保住既有调用方
+    // 签名（丢弃 usage——行为逐字节不变）。
+    one_shot_completion_json_text_or_reasoning_with_usage(
+        cfg,
+        system,
+        messages,
+        max_tokens,
+        disable_thinking,
+        temperature,
+    )
+    .await
+    .map(|(text, _)| text)
+}
+
+/// Usage-enriched sibling of [`one_shot_completion_json_text_or_reasoning`]
+/// (o2 调用留痕): identical request semantics, but the terminal `Done`
+/// usage row is surfaced instead of dropped. Providers that never deliver
+/// usage metadata yield `None`（缺席如实上报——归档行据此标 absent，不造数）.
+pub async fn one_shot_completion_json_text_or_reasoning_with_usage(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+    disable_thinking: bool,
+    temperature: Option<f32>,
+) -> Result<(String, Option<TokenUsage>), AppError> {
     let provider: Arc<dyn LlmProvider> = create_provider(cfg);
 
     let request = LlmRequest {
@@ -618,7 +644,7 @@ pub async fn one_shot_completion_json_text_or_reasoning(
         .stream(&request)
         .await
         .map_err(provider_error_to_app_error)?;
-    drain_text_or_reasoning(rx, |_, _| {}).await
+    drain_text_or_reasoning_with_usage(rx, |_, _| {}).await
 }
 
 /// Perform exactly one title-generation stream request. Providers that ignore
@@ -916,12 +942,27 @@ async fn drain_text_response_kinded(
 /// [`drain_text_response_with`] so the visible-answer one-shot semantics are
 /// unchanged.
 async fn drain_text_or_reasoning(
+    rx: tokio::sync::mpsc::Receiver<LlmEvent>,
+    on_delta: impl FnMut(DeltaKind, &str) + Send,
+) -> Result<String, AppError> {
+    // o2 调用留痕：usage 采集走 with_usage 变体；本薄壳保住既有调用方的
+    // 签名与语义（丢弃 usage——其余通道的读数面未迁移，行为逐字节不变）。
+    drain_text_or_reasoning_with_usage(rx, on_delta).await.map(|(text, _)| text)
+}
+
+/// Drain variant that additionally surfaces the terminal `Done` usage row
+/// (o2 调用留痕). Text/reasoning assembly semantics are byte-identical to
+/// [`drain_text_or_reasoning`]; the usage row is pass-through — providers
+/// that never send `stream_options.include_usage` data yield `None`（缺席
+/// 如实上报，不造数）。
+async fn drain_text_or_reasoning_with_usage(
     mut rx: tokio::sync::mpsc::Receiver<LlmEvent>,
     mut on_delta: impl FnMut(DeltaKind, &str) + Send,
-) -> Result<String, AppError> {
+) -> Result<(String, Option<TokenUsage>), AppError> {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut terminal: Option<StopReason> = None;
+    let mut usage: Option<TokenUsage> = None;
 
     while let Some(event) = rx.recv().await {
         if terminal.is_some() {
@@ -938,7 +979,10 @@ async fn drain_text_or_reasoning(
                 on_delta(DeltaKind::Reasoning, &delta);
                 reasoning.push_str(&delta);
             }
-            LlmEvent::Done { stop_reason, .. } => terminal = Some(stop_reason),
+            LlmEvent::Done { stop_reason, usage: row } => {
+                terminal = Some(stop_reason);
+                usage = Some(row);
+            }
             LlmEvent::Error(msg) => {
                 return Err(AppError::BadGateway(format!("LLM stream error: {msg}")));
             }
@@ -966,7 +1010,7 @@ async fn drain_text_or_reasoning(
         None => Err(AppError::BadGateway(
             "LLM stream ended without a terminal Done event".into(),
         )),
-        Some(StopReason::EndTurn) if !output.trim().is_empty() => Ok(output),
+        Some(StopReason::EndTurn) if !output.trim().is_empty() => Ok((output, usage)),
         Some(StopReason::EndTurn) => Err(AppError::BadGateway(
             "LLM EndTurn contained neither visible text nor reasoning".into(),
         )),

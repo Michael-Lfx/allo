@@ -96,11 +96,30 @@ impl ArchivingCompleter {
         out
     }
 
-    fn archive(&self, method: &str, started: Instant, outcome: Result<&str, &AppError>, system: &str, user: &str) {
+    fn archive(
+        &self,
+        method: &str,
+        started: Instant,
+        outcome: Result<&str, &AppError>,
+        system: &str,
+        user: &str,
+        usage: Option<nomifun_learning::CallUsage>,
+    ) {
         // 脱敏先于计量：chars 字段描述的是落盘文本。
         let system = self.redact(system);
         let user = self.redact(user);
         let elapsed_ms = started.elapsed().as_millis() as u64;
+        // usage 读数（o2）：provider 回报了就落对象；没回报如实标 "absent"
+        // （不造数不填零冒充）。失败臂无回包 → 无 usage 键（error 行形状
+        // 不变；ok 臂恒有 usage 键，旧行缺席该键 = o2 前存档，向后兼容）。
+        let usage_json = match usage {
+            Some(row) => serde_json::json!({
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "reasoning_tokens": row.reasoning_tokens,
+            }),
+            None => serde_json::json!("absent"),
+        };
         let record = match outcome {
             Ok(response) => serde_json::json!({
                 "ts": now_ms(),
@@ -110,6 +129,7 @@ impl ArchivingCompleter {
                 "system_chars": system.chars().count(),
                 "user_chars": user.chars().count(),
                 "response_chars": response.chars().count(),
+                "usage": usage_json,
                 "system": system,
                 "user": user,
                 "response": response,
@@ -154,7 +174,7 @@ impl LearningCompleter for ArchivingCompleter {
             .inner
             .complete(model_override, system, user, max_tokens)
             .await;
-        self.archive("complete", started, outcome.as_deref(), system, user);
+        self.archive("complete", started, outcome.as_deref(), system, user, None);
         outcome
     }
 
@@ -170,7 +190,14 @@ impl LearningCompleter for ArchivingCompleter {
             .inner
             .complete_with_thinking(model_override, system, user, max_tokens)
             .await;
-        self.archive("complete_with_thinking", started, outcome.as_deref(), system, user);
+        self.archive(
+            "complete_with_thinking",
+            started,
+            outcome.as_deref(),
+            system,
+            user,
+            None,
+        );
         outcome
     }
 
@@ -187,7 +214,14 @@ impl LearningCompleter for ArchivingCompleter {
             .inner
             .complete_json(model_override, system, user, max_tokens, temperature)
             .await;
-        self.archive("complete_json", started, outcome.as_deref(), system, user);
+        self.archive(
+            "complete_json",
+            started,
+            outcome.as_deref(),
+            system,
+            user,
+            None,
+        );
         outcome
     }
 
@@ -199,19 +233,30 @@ impl LearningCompleter for ArchivingCompleter {
         max_tokens: u32,
         temperature: Option<f32>,
     ) -> Result<String, AppError> {
+        // o2 调用留痕：coach 通道走 inner 的 usage 变体取数——未覆写的
+        // inner（测试替身/保守实现者）走默认实现如实缺席。
         let started = Instant::now();
-        let outcome = self
+        let result = self
             .inner
-            .complete_json_with_thinking(model_override, system, user, max_tokens, temperature)
+            .complete_json_with_thinking_usage(model_override, system, user, max_tokens, temperature)
             .await;
+        let usage = match &result {
+            Ok((_, usage)) => *usage,
+            Err(_) => None,
+        };
+        let outcome = match &result {
+            Ok((text, _)) => Ok(text.as_str()),
+            Err(error) => Err(error),
+        };
         self.archive(
             "complete_json_with_thinking",
             started,
-            outcome.as_deref(),
+            outcome,
             system,
             user,
+            usage,
         );
-        outcome
+        result.map(|(text, _)| text)
     }
 }
 
@@ -332,5 +377,76 @@ mod tests {
             .unwrap();
         let log = std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).unwrap();
         assert!(log.contains("\"sys raw\"") && log.contains("\"usr raw\""), "{log}");
+    }
+
+    /// o2 usage 读数：inner 覆写 usage 变体 → 行带用量对象；inner 走默认
+    /// 实现（Echo 未覆写）→ 行如实标 "absent"（不造数不填零冒充）。
+    #[tokio::test]
+    async fn usage_row_reflects_inner_report_or_absent() {
+        struct Reporting;
+        #[async_trait::async_trait]
+        impl LearningCompleter for Reporting {
+            async fn complete(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+            ) -> Result<String, AppError> {
+                unreachable!("本测试只走 json thinking 通道");
+            }
+
+            async fn complete_json_with_thinking_usage(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Option<f32>,
+            ) -> Result<(String, Option<nomifun_learning::CallUsage>), AppError> {
+                Ok((
+                    "{\"ok\":true}".into(),
+                    Some(nomifun_learning::CallUsage {
+                        input_tokens: Some(101),
+                        output_tokens: Some(202),
+                        reasoning_tokens: Some(87),
+                    }),
+                ))
+            }
+        }
+
+        let obs = tempfile::tempdir().unwrap();
+        let completer =
+            ArchivingCompleter::new(std::sync::Arc::new(Reporting), obs.path()).unwrap();
+        completer
+            .complete_json_with_thinking(None, "sys", "usr", 128, None)
+            .await
+            .unwrap();
+        let obs2 = tempfile::tempdir().unwrap();
+        let absent =
+            ArchivingCompleter::new(std::sync::Arc::new(Echo), obs2.path()).unwrap();
+        absent
+            .complete_json_with_thinking(None, "sys", "usr", 128, None)
+            .await
+            .unwrap();
+
+        let logged =
+            std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).unwrap();
+        let record: serde_json::Value = serde_json::from_str(logged.trim()).unwrap();
+        assert_eq!(record["method"], "complete_json_with_thinking");
+        assert_eq!(
+            record["usage"],
+            serde_json::json!({
+                "input_tokens": 101,
+                "output_tokens": 202,
+                "reasoning_tokens": 87,
+            }),
+            "{logged}"
+        );
+
+        let absent_log =
+            std::fs::read_to_string(absent.run_dir().join("calls.jsonl")).unwrap();
+        let absent_record: serde_json::Value = serde_json::from_str(absent_log.trim()).unwrap();
+        assert_eq!(absent_record["usage"], serde_json::json!("absent"), "{absent_log}");
     }
 }

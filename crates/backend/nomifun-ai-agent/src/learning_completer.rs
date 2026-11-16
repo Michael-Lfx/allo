@@ -29,7 +29,8 @@ use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use nomifun_learning::LearningCompleter;
 
 use crate::factory::provider_config::{
-    one_shot_completion_json_text_or_reasoning, one_shot_completion_no_thinking_text_or_reasoning,
+    one_shot_completion_json_text_or_reasoning, one_shot_completion_json_text_or_reasoning_with_usage,
+    one_shot_completion_no_thinking_text_or_reasoning,
     one_shot_completion_text_or_reasoning, resolve_provider_config_with_output_limit, user_message,
 };
 use crate::knowledge_completer::resolve_default_model;
@@ -220,12 +221,27 @@ impl LearningCompleter for LiveLearningCompleter {
         max_tokens: u32,
         temperature: Option<f32>,
     ) -> Result<String, AppError> {
+        // o2 调用留痕：唯一实现路径走 usage 变体，本方法丢弃 usage——文本
+        // 语义与留痕通道逐字节一致（重试语义共享，两臂不漂移）。
+        self.complete_json_with_thinking_usage(model_override, system, user, max_tokens, temperature)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    async fn complete_json_with_thinking_usage(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<(String, Option<nomifun_learning::CallUsage>), AppError> {
         let (provider_id, model) = self.resolve_model(model_override).await?;
         let (cfg, output_limit) = self.config_for(&provider_id, &model).await?;
         let max_tokens = Self::effective_max_tokens(max_tokens, output_limit);
         let mut attempt = 1;
         loop {
-            match one_shot_completion_json_text_or_reasoning(
+            match one_shot_completion_json_text_or_reasoning_with_usage(
                 &cfg,
                 system,
                 vec![user_message(user)],
@@ -246,7 +262,17 @@ impl LearningCompleter for LiveLearningCompleter {
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                 }
-                other => return other,
+                Ok((text, usage)) => {
+                    return Ok((
+                        text,
+                        usage.map(|row| nomifun_learning::CallUsage {
+                            input_tokens: Some(row.input_tokens),
+                            output_tokens: Some(row.output_tokens),
+                            reasoning_tokens: Some(row.reasoning_tokens),
+                        }),
+                    ));
+                }
+                Err(error) => return Err(error),
             }
         }
     }

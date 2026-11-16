@@ -105,6 +105,23 @@ pub fn lesson_history_compact_enabled() -> bool {
     lesson_history_compact_enabled_value(std::env::var(LESSON_HISTORY_COMPACT_SWITCH_ENV).ok().as_deref())
 }
 
+/// 调用留痕挂载开关（o2，`NOMI_LEARNING_CALL_ARCHIVE`）：未设/off/0/false =
+/// 关（生产缺省——挂载面零改动）；显式其它取值 = 开。开 = 生产/dev 接线把
+/// LiveLearningCompleter 包进 ArchivingCompleter（`observation/learning-dev/
+/// run-*/calls.jsonl` 逐调用一行，system/user/response 全文 + per-call
+/// usage）。与 learning-smoke 的挂载（必挂）同机制不同目录，互不混写。
+pub const CALL_ARCHIVE_SWITCH_ENV: &str = "NOMI_LEARNING_CALL_ARCHIVE";
+
+/// 调用留痕开关判定（取值注入面，纯函数——测试不触进程 env）。
+pub fn call_archive_enabled_value(value: Option<&str>) -> bool {
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(false)
+}
+
+/// 调用留痕开关的进程读数（[`call_archive_enabled_value`] 同款语义）。
+pub fn call_archive_enabled() -> bool {
+    call_archive_enabled_value(std::env::var(CALL_ARCHIVE_SWITCH_ENV).ok().as_deref())
+}
+
 /// 开放题评审执行器开关（n5 机制面开关臂，`NOMI_LEARNING_OPEN_JUDGE`）：
 /// 未设或其它取值 = 新评审链（重试环 N=2 带原因回灌 + 90s 显式超时 +
 /// complete_json_with_thinking 通道 + schema 互斥校验）；off/0/false =
@@ -371,6 +388,19 @@ mod tests {
         }
         for value in ["on", "1", "true", "yes", ""] {
             assert!(verify_batch_enabled_value(Some(value)), "{value:?} = 批量面");
+        }
+    }
+
+    /// 调用留痕挂载开关（o2）：**缺省 off**（生产缺省——正式包挂载面零
+    /// 改动）；显式非 off 取值 = 开。纯函数面测试（不触进程 env）。
+    #[test]
+    fn call_archive_switch_defaults_off_and_requires_explicit_on() {
+        assert!(!call_archive_enabled_value(None), "未设 = 关（生产缺省——挂载面零改动）");
+        for value in ["off", "OFF", "0", "false", " False ", " off "] {
+            assert!(!call_archive_enabled_value(Some(value)), "{value:?} = 关");
+        }
+        for value in ["on", "1", "true", "yes", ""] {
+            assert!(call_archive_enabled_value(Some(value)), "{value:?} = 开（挂 ArchivingCompleter）");
         }
     }
 

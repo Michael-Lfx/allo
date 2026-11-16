@@ -83,6 +83,18 @@ impl std::fmt::Debug for LlmUsageMeter {
     }
 }
 
+/// 单次调用的 provider 用量读数（o2 调用留痕）：token 面以 provider 回包
+/// 为准——缺席/未上报 = `None`（如实缺席，不造数不填零冒充）。定义在
+/// learning 侧（非 nomi-types）：backend crate 不引 agent 类型，实现方
+/// 自行映射。reasoning_tokens 是 output 的子集（provider 语义），读数面
+/// 各自独立呈现，不得相加。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+}
+
 #[async_trait::async_trait]
 pub trait LearningCompleter: Send + Sync {
     /// One completion call. `model_override` is the caller's explicit
@@ -150,5 +162,24 @@ pub trait LearningCompleter: Send + Sync {
     ) -> Result<String, AppError> {
         self.complete_json(model_override, system, user, max_tokens, temperature)
             .await
+    }
+
+    /// Usage-enriched JSON-mode thinking call（o2 调用留痕）：文本语义与
+    /// [`complete_json_with_thinking`] 逐字节一致，仅多带 per-call provider
+    /// 用量。默认实现委托后者并如实上报 usage 缺席——测试替身与保守实现者
+    /// 零改动；观测面（ArchivingCompleter）经本方法取数，未覆写者的归档行
+    /// 如实标 absent。
+    async fn complete_json_with_thinking_usage(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<(String, Option<CallUsage>), AppError> {
+        let text = self
+            .complete_json_with_thinking(model_override, system, user, max_tokens, temperature)
+            .await?;
+        Ok((text, None))
     }
 }
