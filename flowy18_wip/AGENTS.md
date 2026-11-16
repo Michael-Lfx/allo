@@ -9,7 +9,7 @@
 | `flowy-ui` | 主题色板、Accent/Density | `install` + token fns |
 | `flowy-shell` | deep link / tray / notify / autostart | `install(Brand, open_main)` / `configure_brand` |
 | `flowy-agent` | UI↔dsh 端口；多 session / 流式投影 / sidecar 标题；`Model`/`Plan`/`FlexProvider` | `AgentHandle` / `ChatLine` / `TurnStatus`；env：`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`；Flex BYOK：`LlmConfig::from_flex` + `apply_config` |
-| `flowy-i18n` | 12 locales + `{product}` | `I18n` / `Locale` |
+| `flowy-i18n` | 23 locales + `{product}` | `I18n` / `Locale` |
 | `flowy-studio` | Home / Chat / Automation Entity | `StudioPanel` / `StudioEvent`（含 `OpenFlex`）/ `StudioSurface` |
 | `flowy-app` | 域状态 + 壳装配；持有 `Entity<StudioPanel>`；登录 UI 只绑 auth ViewModel；Flex 模态 + `preferences.json` | `FlowyApp` / `app::run`；`pub use` agent/i18n |
 | `flowy-desktop` | 二进制入口（bin 名 `flowy-app`） | `dx serve --hot-patch` / `--hotpatch` 宿主 |
