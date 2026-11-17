@@ -175,11 +175,27 @@ test('full-call readiness exposes an explicit check and repair path', () => {
 });
 test('enabling after the model download re-runs the silent readiness check', () => {
   const source = readFileSync(componentUrl, 'utf8');
-  // First-run order is install -> enable. The model-ready effect runs while the
-  // host still rejects prepare with voice_disabled, so the enable transition
-  // must be a dependency of the auto-check effect.
-  expect(source).toMatch(/modelStatus !== 'Ready'[\s\S]{0,80}!voiceEnabled/);
+  // First-run order is install -> enable. The trigger decision keeps the enable
+  // transition in its dependencies and only fires for a fresh pack, a missing
+  // report or a report that is not ready - never for a ready page visit.
+  expect(source).toContain('shouldAutoCheckVoiceCapabilities');
+  expect(source).toContain('becameReady');
+  expect(source).toContain('capabilitiesLoaded');
   expect(source).toContain('voiceSnapshot?.self_check_active');
+});
+
+test('voice pack install and repair live only in the capability card', () => {
+  const feedbackSource = readFileSync(new URL('./VoiceFeedbackSettings.tsx', import.meta.url), 'utf8');
+  // The preferences section must never grow its own install/repair entry: the
+  // capability card is the single place that downloads or repairs the pack.
+  expect(feedbackSource).not.toContain('onFixLocalVoice');
+  expect(feedbackSource).not.toContain('localVoiceRepair');
+  expect(feedbackSource).not.toContain('localVoiceDownload');
+  // All three dependent controls (wake input, wake switch, premium switch) go
+  // through the shared gate; a partial revert would leave one of them editable
+  // while the local pack is missing.
+  const gateUses = feedbackSource.match(/voicePreferenceControlsDisabled\(\{/g) ?? [];
+  expect(gateUses.length).toBeGreaterThanOrEqual(3);
 });
 
 test('first-call failure exposes an explicit prepare action', () => {

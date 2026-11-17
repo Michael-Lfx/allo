@@ -13,6 +13,7 @@ import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { getVoiceCapabilities, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import { confirmVoiceModelRebuild, startVoiceModelSync } from './voiceModelSync';
+import { autoCheckVoiceCapabilities, shouldAutoCheckVoiceCapabilities } from './voiceAutoCheck';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey, voiceErrorTranslationKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
@@ -278,6 +279,13 @@ const VoiceSettings: React.FC = () => {
   const [operationError, setOperationError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<VoiceCapabilityReport | null>(null);
   const [checkingCapabilities, setCheckingCapabilities] = useState(false);
+  // True once the stored capability report has been read at least once; lets
+  // the automatic check skip page visits that already have a ready report.
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
+  // True while the automatic post-download check is still retrying. Keeps the
+  // pill chain and the manual button in their "checking" state instead of
+  // flashing "not ready" and making the user click 检查并准备 again.
+  const [autoCheckingCapabilities, setAutoCheckingCapabilities] = useState(false);
 
   // Diagnostics & testing state
   const [micStatus, setMicStatus] = useState<VoiceDeviceStatus | null>(null);
@@ -300,6 +308,18 @@ const VoiceSettings: React.FC = () => {
   // Tracks the host-side self-check flag so the page can refresh the stored
   // capability report the moment any check (user or automatic) finishes.
   const selfCheckActiveRef = useRef(false);
+  // Last stored report timestamp, used by the retrying auto-check to tell a
+  // fresh background report apart from the one already on screen.
+  const capabilitiesCheckedAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    capabilitiesCheckedAtRef.current = capabilities?.checked_at_ms ?? null;
+  }, [capabilities]);
+  // Latest report for the trigger decision, which must not re-run just because
+  // a check wrote a new report into state.
+  const capabilitiesRef = useRef<VoiceCapabilityReport | null>(capabilities);
+  useEffect(() => {
+    capabilitiesRef.current = capabilities;
+  }, [capabilities]);
 
   // Listen for prefers-reduced-motion OS changes
   useEffect(() => {
@@ -469,6 +489,8 @@ const VoiceSettings: React.FC = () => {
       setCapabilities(await getVoiceCapabilities());
     } catch {
       setCapabilities(null);
+    } finally {
+      setCapabilitiesLoaded(true);
     }
   }, []);
 
@@ -495,7 +517,7 @@ const VoiceSettings: React.FC = () => {
   }, []);
 
   const handleSelfCheck = useCallback(async () => {
-    if (checkingCapabilities || voiceSnapshot?.self_check_active) return;
+    if (checkingCapabilities || autoCheckingCapabilities || voiceSnapshot?.self_check_active) return;
     setCheckingCapabilities(true);
     try {
       // Explicit user action: may make one short, tool-free request through the
@@ -518,7 +540,7 @@ const VoiceSettings: React.FC = () => {
     } finally {
       setCheckingCapabilities(false);
     }
-  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, capabilities?.checked_at_ms, waitForFreshCapabilities]);
+  }, [t, checkingCapabilities, autoCheckingCapabilities, voiceSnapshot?.self_check_active, capabilities?.checked_at_ms, waitForFreshCapabilities]);
 
   useEffect(() => {
     if (modelStatus === 'Ready') {
@@ -530,19 +552,72 @@ const VoiceSettings: React.FC = () => {
   // The model-ready effect above therefore runs while prepare is still rejected
   // with `voice_disabled`; retry the silent readiness check when the explicit
   // enable switch turns on (PRD VC-02 / Journey A).
+  //
+  // The check right after a download can also fail once while the daemon is
+  // still bringing the audio pipeline up. Retry a few rounds within one budget
+  // and keep the "checking" state visible until one round succeeds, instead of
+  // leaving a stale not-ready report that forces a manual 检查并准备 click.
+  // A page visit that already has a ready report stays read-only.
+  const autoCheckRunRef = useRef(false);
+  const autoCheckPrevStatusRef = useRef<string | null>(modelStatus);
   useEffect(() => {
-    if (
-      modelStatus !== 'Ready' ||
-      !voiceEnabled ||
-      capabilities ||
-      voiceSnapshot?.self_check_active
-    ) {
+    const previousStatus = autoCheckPrevStatusRef.current;
+    autoCheckPrevStatusRef.current = modelStatus;
+    const becameReady = previousStatus !== 'Ready' && modelStatus === 'Ready';
+    if (!shouldAutoCheckVoiceCapabilities({
+      modelStatus,
+      voiceEnabled,
+      becameReady,
+      capabilitiesLoaded,
+      hasReadyReport: capabilitiesRef.current?.can_start_full_call === true,
+    })) {
       return;
     }
-    void runVoiceSelfCheck(false, undefined, 'silent')
-      .then((report) => setCapabilities(report))
-      .catch(() => {});
-  }, [modelStatus, voiceEnabled, capabilities, voiceSnapshot?.self_check_active]);
+    if (autoCheckRunRef.current) {
+      return;
+    }
+    autoCheckRunRef.current = true;
+    let cancelled = false;
+    setAutoCheckingCapabilities(true);
+    void autoCheckVoiceCapabilities({
+      runSelfCheck: () => runVoiceSelfCheck(false, undefined, 'silent'),
+      waitForFreshReport: async (previousCheckedAtMs, remainingMs) => {
+        const deadline = Date.now() + remainingMs;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, Math.min(1000, deadline - Date.now())));
+          if (cancelled) return null;
+          try {
+            const latest = await getVoiceCapabilities();
+            if (!latest) continue;
+            const checkedAt = typeof latest.checked_at_ms === 'number' ? latest.checked_at_ms : 0;
+            if (checkedAt > (previousCheckedAtMs ?? 0)) return latest;
+          } catch {
+            // Transient status failures keep polling until the budget runs out.
+          }
+        }
+        return null;
+      },
+      previousCheckedAtMs: capabilitiesCheckedAtRef.current,
+      attempts: 3,
+      retryDelayMs: 2000,
+      totalBudgetMs: 15_000,
+      isCancelled: () => cancelled,
+      onReport: (report) => {
+        if (!cancelled) setCapabilities(report);
+      },
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return;
+        autoCheckRunRef.current = false;
+        setAutoCheckingCapabilities(false);
+      });
+    return () => {
+      cancelled = true;
+      autoCheckRunRef.current = false;
+      setAutoCheckingCapabilities(false);
+    };
+  }, [modelStatus, voiceEnabled, capabilitiesLoaded]);
 
   // The host emits `self_check_active: true -> false` on the snapshot stream
   // exactly when the final report has been stored. Refresh then, so a check
@@ -799,7 +874,7 @@ const VoiceSettings: React.FC = () => {
   );
   // While a check runs, show neutral "checking" pills instead of the previous
   // report's evidence: the stale report must not look like the current verdict.
-  const selfCheckInFlight = checkingCapabilities || Boolean(voiceSnapshot?.self_check_active);
+  const selfCheckInFlight = checkingCapabilities || autoCheckingCapabilities || Boolean(voiceSnapshot?.self_check_active);
 
   let rowLabel = modelStatus === null ? t('voice.errors.modelStatusChecking') : t('voice.phases.notInstalled');
   let rowDescription: React.ReactNode = modelStatus === null ? t(modelSyncError ? 'voice.errors.modelStatusUnavailable' : 'voice.errors.modelStatusChecking') : t('voice.phases.notInstalledDesc');
@@ -955,8 +1030,8 @@ const VoiceSettings: React.FC = () => {
                           <Button
                             type='primary'
                             size='small'
-                            loading={checkingCapabilities || Boolean(voiceSnapshot?.self_check_active)}
-                            disabled={checkingCapabilities || Boolean(voiceSnapshot?.self_check_active)}
+                            loading={selfCheckInFlight}
+                            disabled={selfCheckInFlight}
                             onClick={handleSelfCheck}
                           >
                             {t('voice.capabilities.run')}
@@ -1082,8 +1157,6 @@ const VoiceSettings: React.FC = () => {
         <VoiceFeedbackSettingsSection
           connected={voiceSnapshot?.connection === 'connected'}
           localVoiceReady={modelStatus === 'Ready'}
-          localVoiceNeedsInstall={modelStatus === 'NotInstalled'}
-          onFixLocalVoice={() => void handleInstall(modelStatus !== 'NotInstalled')}
         />
 
         <p className='m-0 text-12px text-t-secondary' role='status'>

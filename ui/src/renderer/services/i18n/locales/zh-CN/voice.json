@@ -156,8 +156,6 @@
     "premiumVoiceHint": "开启后使用在线合成，音色更自然，但需要联网且回复稍慢；关闭时使用本地快速播报。",
     "premiumVoiceNextCall": "音色设置从下次通话生效。开启在线音色需等待语音服务确认。",
     "localVoiceMissing": "本地语音包未就绪，快速播报暂不可用。",
-    "localVoiceDownload": "下载并启用",
-    "localVoiceRepair": "修复",
     "ttsSpeed": "语速倍率",
     "ttsSpeedHint": "1.0 为原速，支持 0.5x 至 2.0x 动态微调。",
     "inputDevice": "麦克风输入设备",

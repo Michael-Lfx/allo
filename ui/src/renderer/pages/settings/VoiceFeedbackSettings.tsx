@@ -44,16 +44,25 @@ export function buildVoiceFeedbackPatch(
   );
 }
 
+/**
+ * Wake + premium-voice controls depend on the local voice suite. While the
+ * models are downloading or still missing the switches must stay disabled
+ * instead of accepting an edit that cannot take effect.
+ */
+export function voicePreferenceControlsDisabled(options: {
+  hasDraft: boolean;
+  busy: boolean;
+  localVoiceReady: boolean;
+}): boolean {
+  return !options.hasDraft || options.busy || !options.localVoiceReady;
+}
+
 export default function VoiceFeedbackSettingsSection({
   connected,
   localVoiceReady = true,
-  localVoiceNeedsInstall = false,
-  onFixLocalVoice,
 }: {
   connected: boolean;
   localVoiceReady?: boolean;
-  localVoiceNeedsInstall?: boolean;
-  onFixLocalVoice?: () => void;
 }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<VoiceFeedbackSettings | null>(null);
@@ -150,7 +159,7 @@ export default function VoiceFeedbackSettingsSection({
                     : draft.wake_words[0]
                 }
                 allowClear
-                disabled={!draft || !(draft.wake_enabled ?? true) || busy}
+                disabled={voicePreferenceControlsDisabled({ hasDraft: Boolean(draft), busy, localVoiceReady }) || !(draft?.wake_enabled ?? true)}
                 className={`w-160px transition-all ${wakeWordsDirty ? '!border-warning-5 shadow-[0_0_0_2px_rgba(var(--warning-5),0.4)] !bg-warning-1' : ''}`}
                 onChange={(val) => {
                   const word = val.trim();
@@ -160,7 +169,7 @@ export default function VoiceFeedbackSettingsSection({
               <Switch
                 aria-label={t('voice.feedback.wakeEnabled')}
                 checked={draft?.wake_enabled ?? true}
-                disabled={!draft || busy}
+                disabled={voicePreferenceControlsDisabled({ hasDraft: Boolean(draft), busy, localVoiceReady })}
                 onChange={(val) => edit({ wake_enabled: val })}
               />
             </div>
@@ -185,26 +194,15 @@ export default function VoiceFeedbackSettingsSection({
                 {t('voice.feedback.premiumVoiceNextCall')}
               </div>
               {!localVoiceReady && (
-                <div className='flex items-center gap-2 text-12px text-warning-6'>
-                  <span>{t('voice.feedback.localVoiceMissing')}</span>
-                  <Button
-                    size='mini'
-                    disabled={busy || !onFixLocalVoice}
-                    onClick={onFixLocalVoice}
-                  >
-                    {t(
-                      localVoiceNeedsInstall
-                        ? 'voice.feedback.localVoiceDownload'
-                        : 'voice.feedback.localVoiceRepair',
-                    )}
-                  </Button>
+                <div className='text-12px text-warning-6'>
+                  {t('voice.feedback.localVoiceMissing')}
                 </div>
               )}
             </div>
             <Switch
               aria-label={t('voice.feedback.premiumVoice')}
               checked={draft?.tts_backend === 'edge'}
-              disabled={!draft || busy}
+              disabled={voicePreferenceControlsDisabled({ hasDraft: Boolean(draft), busy, localVoiceReady })}
               onChange={(val) => edit({ tts_backend: val ? 'edge' : 'local' })}
             />
           </div>
