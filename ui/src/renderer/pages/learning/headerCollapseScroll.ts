@@ -40,6 +40,11 @@ export function resolveHeaderScrollCollapse(
 ): HeaderScrollCollapseOutput {
   const { scrollTop, persisted, collapsed, override } = input;
   // 偏好恒折叠：持久层在场吞掉临时层语义，否决臂一并复位（偏好接管）。
+  // 边界（F4 审查裁决钉，接线测试见 LearningGraphWorkspace.header-collapse
+  // .test.tsx「persisted 深滚态手动展开同样进否决臂」）：本臂只在**偏好仍
+  // 在场**时生效。用户在 persisted 深滚态手动展开走组件 collapseHeader 的
+  // 展开臂（持久层清条目 + 否决臂置位）——persisted 退场后本臂不再吞臂，
+  // 同深滚（≥ H）不被再折叠；滚回 < H/2 由回顶臂复位，自动层照常。
   if (persisted) return { collapsed: true, override: false };
   // 回顶（< H/2 迟滞下界）：临时展开，否决臂复位——新滚动周期开始。
   if (scrollTop < HEADER_COLLAPSE_SCROLL_EXPAND_PX) {

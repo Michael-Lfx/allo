@@ -529,6 +529,43 @@ describe('LearningGraphWorkspace 头部滚动自动折叠（a1，临时层不落
     expect(container.textContent).not.toContain('知识结构');
   });
 
+  test('F4 边界钉：persisted 深滚态手动展开同样进否决臂——同深滚不再折叠、回顶后自动层恢复', async () => {
+    // 审查矛盾裁决（F4）：spec 审查称 persisted 手动折叠 → 深滚（≥160）后
+    // 手动展开会被自动层再折叠；施工代理称已实现超集（persisted 深滚态
+    // 手动展开同样置否决臂）。本钉子裁决：走 toggle 持久层路径（存储条目
+    // 清除 + headerCollapsed 翻 false），断言
+    // a) 持久层路径已走：存储条目清除（persisted 退场）；
+    // b) 否决臂置位（行为面观察）：下一帧 scrollTop 仍 ≥160 不被再折叠；
+    // c) 滚回 <80 复位否决臂后，新周期自动层照常（自动折叠恢复且不落盘）。
+    await mountGraphWorkspace();
+    // persisted 手动折叠（f3 持久层写入）
+    await act(async () => {
+      headerToggle('收起头部')!.click();
+      await Promise.resolve();
+    });
+    expect(storageMap.get(GRAPH_HEADER_COLLAPSED_KEY)).toBe('{"course-graph-1":true}');
+    // persisted 深滚：偏好折叠吞临时层（状态机 persisted 臂，scrollAuto.collapsed 置 true）
+    await scrollPane(300);
+    expect(container.textContent).not.toContain('知识结构');
+    // persisted 态手动展开（超集关键步：否决臂置位）
+    await act(async () => {
+      headerToggle('展开头部')!.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('知识结构');
+    // a) 持久层路径已走：存储条目清除
+    expectStorageUntouched();
+    // b) 下一帧 scrollTop 仍 ≥160：否决臂在场，不被自动层再折叠
+    await scrollPane(300);
+    expect(container.textContent).toContain('知识结构');
+    // c) 滚回 <80 复位否决臂 → 新周期自动折叠照常（零落盘）
+    await scrollPane(0);
+    expect(container.textContent).toContain('知识结构');
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    expectStorageUntouched();
+  });
+
   test('persisted 恒折叠：偏好折叠下任何滚动深度都折叠（尊重偏好）', async () => {
     storageMap.set(GRAPH_HEADER_COLLAPSED_KEY, '{"course-graph-1":true}');
     await mountGraphWorkspace();
