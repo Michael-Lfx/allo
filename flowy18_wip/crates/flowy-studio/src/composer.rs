@@ -246,52 +246,42 @@ impl ChatComposer {
         has_draft: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let composer_theme = theme::ResolvedTheme::resolve(
+            theme::ThemeOptions {
+                mode: theme::ThemeMode::Dark,
+                ..self.theme.options
+            },
+            true,
+        );
         if running {
-            theme::interactive("chat-stop", self.t("chat.stop"), &self.theme)
-                .focus_visible(|style| {
-                    style.border_color(self.theme.on_composer())
-                })
-                .w(px(30.))
-                .h(px(30.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(self.theme.soft().opacity(0.55))
-                .text_color(self.theme.on_composer())
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.danger().opacity(0.35)))
-                .child(theme::icons::square())
-                .on_click(cx.listener(|_, _, _, cx| {
+            theme::IconButton::new(
+                "chat-stop",
+                self.t("chat.stop"),
+                theme::icons::square(),
+            )
+            .size(theme::ControlSize::Small)
+            .variant(theme::ControlVariant::Ghost)
+            .render(
+                &composer_theme,
+                cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::Stop);
-                }))
+                }),
+            )
         } else {
-            theme::button(
+            theme::IconButton::new(
                 "chat-send",
                 self.t("studio.send"),
-                !has_draft,
-                &self.theme,
-                cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Send)),
+                theme::icons::arrow_right(),
             )
-            .focus_visible(|style| style.border_color(self.theme.on_composer()))
-            .w(px(30.))
-            .h(px(30.))
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(if has_draft {
-                self.theme.on_composer()
-            } else {
-                self.theme.soft().opacity(0.45)
-            })
-            .text_color(if has_draft {
-                self.theme.composer()
-            } else {
-                self.theme.composer_muted()
-            })
-            .cursor_pointer()
-            .child(theme::icons::arrow_right())
+            .size(theme::ControlSize::Small)
+            .variant(theme::ControlVariant::Primary)
+            .disabled(!has_draft)
+            .render(
+                &composer_theme,
+                cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::Send);
+                }),
+            )
         }
     }
 }

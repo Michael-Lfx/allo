@@ -45,7 +45,6 @@ pub fn button(
 }
 
 /// Standard visual and behavior recipe for buttons. Loading retains the tab stop.
-#[derive(Debug)]
 #[must_use]
 pub struct Button {
     id: ElementId,
@@ -54,6 +53,8 @@ pub struct Button {
     size: ControlSize,
     disabled: bool,
     loading: bool,
+    icon: Option<AnyElement>,
+    full_width: bool,
 }
 impl Button {
     pub fn new(
@@ -63,10 +64,12 @@ impl Button {
         Self {
             id: id.into(),
             label: label.into(),
-            variant: ControlVariant::Primary,
+            variant: ControlVariant::Secondary,
             size: ControlSize::Medium,
             disabled: false,
             loading: false,
+            icon: None,
+            full_width: false,
         }
     }
     pub const fn variant(mut self, value: ControlVariant) -> Self {
@@ -85,15 +88,30 @@ impl Button {
         self.loading = value;
         self
     }
+    pub fn icon(mut self, value: impl IntoElement) -> Self {
+        self.icon = Some(value.into_any_element());
+        self
+    }
+    pub const fn full_width(mut self) -> Self {
+        self.full_width = true;
+        self
+    }
     pub fn render(
         self,
         theme: &ResolvedTheme,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> crate::A11yElement<Div> {
         let loading_id: ElementId = (self.id.clone(), "loading").into();
+        let icon_id: ElementId = (self.id.clone(), "icon").into();
         let colors = theme.control_colors(self.variant);
         let loading = self.loading;
         let label = self.label.clone();
+        let leading = if loading {
+            Some(crate::icons::loader_circle().into_any_element())
+        } else {
+            self.icon
+        };
+        let leading_id = if loading { loading_id } else { icon_id };
         let element = button(
             self.id,
             self.label,
@@ -105,7 +123,10 @@ impl Button {
                 }
             },
         )
+        .border_2()
+        .border_color(colors.border)
         .min_h(theme.control_height(self.size))
+        .when(self.full_width, Styled::w_full)
         .px(theme.control_padding(self.size))
         .py(px(4.))
         .rounded_lg()
@@ -115,21 +136,34 @@ impl Button {
         .gap_2()
         .bg(colors.background)
         .text_color(colors.foreground)
-        .text_sm()
+        .text_size(theme.label_size())
+        .font_weight(if self.variant == ControlVariant::Primary {
+            gpui::FontWeight::SEMIBOLD
+        } else {
+            gpui::FontWeight::MEDIUM
+        })
         .when(self.disabled, |el| el.opacity(0.5))
-        .when(!self.disabled, move |el| {
+        .when(!self.disabled && !loading, move |el| {
             el.hover(move |s| s.bg(colors.hover))
         })
-        .when(loading, |el| {
-            el.child(
-                div()
-                    .id(loading_id)
-                    .aria_hidden()
-                    .child(crate::icons::loader_circle()),
-            )
-        })
+        .when(loading, Styled::cursor_default)
+        .children(
+            leading.map(|icon| div().id(leading_id).aria_hidden().child(icon)),
+        )
         .child(label);
         crate::A11yElement::new(element.into_element()).busy(loading)
+    }
+}
+impl std::fmt::Debug for Button {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Button")
+            .field("id", &self.id)
+            .field("variant", &self.variant)
+            .field("size", &self.size)
+            .field("disabled", &self.disabled)
+            .field("loading", &self.loading)
+            .field("full_width", &self.full_width)
+            .finish_non_exhaustive()
     }
 }
 
@@ -153,6 +187,14 @@ impl IconButton {
         self.button = self.button.size(value);
         self
     }
+    pub fn variant(mut self, value: ControlVariant) -> Self {
+        self.button = self.button.variant(value);
+        self
+    }
+    pub fn loading(mut self, value: bool) -> Self {
+        self.button = self.button.loading(value);
+        self
+    }
     pub fn disabled(mut self, value: bool) -> Self {
         self.button = self.button.disabled(value);
         self
@@ -161,25 +203,45 @@ impl IconButton {
         self,
         theme: &ResolvedTheme,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> Stateful<Div> {
+    ) -> crate::A11yElement<Div> {
         let size = self.button.size;
         let icon_id: ElementId = (self.button.id.clone(), "icon").into();
         let label = self.button.label.clone();
         let colors = theme.control_colors(self.button.variant);
-        button(self.button.id, label, self.button.disabled, theme, on_click)
-            .min_w(theme.control_height(size))
-            .min_h(theme.control_height(size))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(colors.background)
-            .text_color(colors.foreground)
-            .when(self.button.disabled, |el| el.opacity(0.5))
-            .when(!self.button.disabled, move |el| {
-                el.hover(move |style| style.bg(colors.hover))
-            })
-            .child(div().id(icon_id).aria_hidden().child(self.icon))
+        let loading = self.button.loading;
+        let leading = if loading {
+            crate::icons::loader_circle().into_any_element()
+        } else {
+            self.icon
+        };
+        let element = button(
+            self.button.id,
+            label,
+            self.button.disabled,
+            theme,
+            move |event, window, cx| {
+                if !loading {
+                    on_click(event, window, cx);
+                }
+            },
+        )
+        .border_2()
+        .border_color(colors.border)
+        .min_w(theme.control_height(size))
+        .min_h(theme.control_height(size))
+        .rounded_lg()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(colors.background)
+        .text_color(colors.foreground)
+        .when(self.button.disabled, |el| el.opacity(0.5))
+        .when(!self.button.disabled && !loading, move |el| {
+            el.hover(move |style| style.bg(colors.hover))
+        })
+        .when(loading, Styled::cursor_default)
+        .child(div().id(icon_id).aria_hidden().child(leading));
+        crate::A11yElement::new(element.into_element()).busy(loading)
     }
 }
 impl std::fmt::Debug for IconButton {
@@ -230,6 +292,20 @@ mod tests {
         actions!(button_test, [Next, Previous]);
     }
     use bindings::{Next, Previous};
+
+    #[test]
+    fn buttons_default_to_secondary_and_allow_explicit_primary() {
+        assert_eq!(
+            Button::new("default-button", "Default").variant,
+            ControlVariant::Secondary
+        );
+        assert_eq!(
+            Button::new("primary-button", "Primary")
+                .variant(ControlVariant::Primary)
+                .variant,
+            ControlVariant::Primary
+        );
+    }
 
     pub(super) fn press(cx: &mut VisualTestContext, key: &str) {
         let keystroke = Keystroke::parse(key).unwrap();
@@ -315,6 +391,58 @@ mod tests {
                         .left(px(160.))
                         .top(px(10.))
                         .size(px(40.)),
+                )
+                .child(
+                    IconButton::new(
+                        "icon-action",
+                        "Icon action",
+                        crate::icons::check(),
+                    )
+                    .variant(ControlVariant::Primary)
+                    .render(
+                        &crate::ResolvedTheme::default(),
+                        cx.listener(|this, _, _, _| this.clicks.push("icon")),
+                    )
+                    .absolute()
+                    .left(px(10.))
+                    .top(px(60.))
+                    .size(px(40.)),
+                )
+                .child(
+                    IconButton::new(
+                        "icon-disabled",
+                        "Disabled icon",
+                        crate::icons::x(),
+                    )
+                    .disabled(true)
+                    .render(
+                        &crate::ResolvedTheme::default(),
+                        cx.listener(|this, _, _, _| {
+                            this.clicks.push("disabled-icon");
+                        }),
+                    )
+                    .absolute()
+                    .left(px(60.))
+                    .top(px(60.))
+                    .size(px(40.)),
+                )
+                .child(
+                    IconButton::new(
+                        "icon-loading",
+                        "Loading icon",
+                        crate::icons::refresh_cw(),
+                    )
+                    .loading(true)
+                    .render(
+                        &crate::ResolvedTheme::default(),
+                        cx.listener(|this, _, _, _| {
+                            this.clicks.push("loading-icon");
+                        }),
+                    )
+                    .absolute()
+                    .left(px(110.))
+                    .top(px(60.))
+                    .size(px(40.)),
                 )
         }
     }
@@ -422,5 +550,51 @@ mod tests {
         cx.read_entity(&view, |view, _| {
             assert_eq!(view.clicks, Vec::<&str>::new());
         });
+    }
+
+    #[gpui::test]
+    fn icon_buttons_keep_names_and_loading_blocks_activation(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("tab", Next, None),
+                KeyBinding::new("shift-tab", Previous, None),
+            ]);
+        });
+        let _initial_focus = cx.update(install_initial_tab_focus);
+        let (view, cx) = cx.add_window_view(|_, _| Harness::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for key in
+            ["tab", "tab", "tab", "tab", "enter", "tab", "enter", "space"]
+        {
+            press(cx, key);
+        }
+        cx.simulate_click(point(px(70.), px(70.)), Modifiers::none());
+        cx.simulate_click(point(px(120.), px(70.)), Modifiers::none());
+        let tree = cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.draw(cx).clear(cx);
+            window.a11y_tree().unwrap().clone()
+        });
+        for label in ["Icon action", "Disabled icon", "Loading icon"] {
+            let (_, node) = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .unwrap();
+            assert_eq!(node.role(), accesskit::Role::Button);
+            assert_eq!(node.is_disabled(), label == "Disabled icon");
+            assert_eq!(node.is_busy(), label == "Loading icon");
+        }
+        let (id, _) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Loading icon"))
+            .unwrap();
+        cx.update(|window, cx| {
+            window.perform_a11y_action(*id, accesskit::Action::Click, None, cx);
+        });
+        cx.read_entity(&view, |view, _| assert_eq!(view.clicks, ["icon"]));
     }
 }

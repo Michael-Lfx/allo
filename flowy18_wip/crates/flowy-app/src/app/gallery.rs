@@ -286,39 +286,32 @@ fn gallery_arrow(
     cx: &Context<'_, FlowyApp>,
 ) -> impl IntoElement {
     let theme = &app.theme;
-    let mut button = theme::interactive(
+    let mut button = theme::IconButton::new(
         id,
         app.t(if previous { "ui.previous" } else { "ui.next" }),
+        if previous {
+            theme::icons::chevron_left()
+        } else {
+            theme::icons::chevron_right()
+        },
+    )
+    .size(theme::ControlSize::Small)
+    .variant(theme::ControlVariant::Secondary)
+    .render(
         theme,
+        cx.listener(move |app, _event, _window, cx| {
+            cx.stop_propagation();
+            if previous {
+                app.gallery.page = app.gallery.page.saturating_sub(1);
+            } else {
+                let last = page_count().saturating_sub(1);
+                app.gallery.page = app.gallery.page.saturating_add(1).min(last);
+            }
+            cx.notify();
+        }),
     )
     .absolute()
-    .top(px(58.))
-    .size(px(32.))
-    .rounded_full()
-    .bg(theme.card())
-    .border_1()
-    .border_color(theme.line())
-    .shadow_md()
-    .flex()
-    .items_center()
-    .justify_center()
-    .cursor_pointer()
-    .hover(|arrow| arrow.bg(theme.soft()))
-    .child(if previous {
-        theme::icons::chevron_left()
-    } else {
-        theme::icons::chevron_right()
-    })
-    .on_click(cx.listener(move |app, _event, _window, cx| {
-        cx.stop_propagation();
-        if previous {
-            app.gallery.page = app.gallery.page.saturating_sub(1);
-        } else {
-            let last = page_count().saturating_sub(1);
-            app.gallery.page = app.gallery.page.saturating_add(1).min(last);
-        }
-        cx.notify();
-    }));
+    .top(px(58.));
     button = if previous {
         button.left(px(8.))
     } else {
@@ -446,26 +439,20 @@ impl FlowyApp {
                     .child(self.t("gallery.browse")),
             )
             .child(
-                theme::interactive(
+                theme::IconButton::new(
                     "ideas-close",
                     self.t("ui.close"),
-                    &self.theme,
+                    theme::icons::x(),
                 )
-                .size(px(28.))
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|mark| mark.bg(self.theme.soft()))
-                .child(theme::icons::x())
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.active_dialog = super::state::ActiveDialog::None;
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
     }
 
@@ -612,28 +599,18 @@ impl FlowyApp {
             })
             .child(
                 div().flex().justify_end().child(
-                    theme::interactive(
-                        "idea-use",
-                        self.t("gallery.use"),
-                        &self.theme,
-                    )
-                    .px_4()
-                    .py_2()
-                    .rounded_full()
-                    .bg(self.theme.fill())
-                    .text_color(self.theme.on_fill())
-                    .text_size(self.theme.body_size())
-                    .cursor_pointer()
-                    .child(self.t("gallery.use"))
-                    .on_click(cx.listener(
-                        move |app, _event, _window, cx| {
-                            cx.stop_propagation();
-                            app.active_dialog =
-                                super::state::ActiveDialog::None;
-                            app.gallery.idea_note = false;
-                            app.fill_prompt_key(body, cx);
-                        },
-                    )),
+                    theme::Button::new("idea-use", self.t("gallery.use"))
+                        .variant(theme::ControlVariant::Primary)
+                        .render(
+                            &self.theme,
+                            cx.listener(move |app, _event, _window, cx| {
+                                cx.stop_propagation();
+                                app.active_dialog =
+                                    super::state::ActiveDialog::None;
+                                app.gallery.idea_note = false;
+                                app.fill_prompt_key(body, cx);
+                            }),
+                        ),
                 ),
             )
             .child(self.similar_row(item, cx))
@@ -666,27 +643,21 @@ impl FlowyApp {
                     .child(self.t(item.key)),
             )
             .child(
-                theme::interactive(
+                theme::IconButton::new(
                     "idea-close",
                     self.t("ui.close"),
-                    &self.theme,
+                    theme::icons::x(),
                 )
-                .size(px(28.))
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|mark| mark.bg(self.theme.soft()))
-                .child(theme::icons::x())
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.active_dialog = super::state::ActiveDialog::None;
                         app.gallery.idea_note = false;
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
     }
 
@@ -737,23 +708,15 @@ impl FlowyApp {
                     .child(self.t("gallery.similar")),
             )
             .child(
-                theme::interactive(
+                theme::Button::new(
                     "idea-detail-all",
                     self.t("gallery.see_all"),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .icon(theme::icons::chevron_right())
+                .render(
                     &self.theme,
-                )
-                .text_size(self.theme.body_size())
-                .cursor_pointer()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(self.t("gallery.see_all"))
-                        .child(theme::icons::chevron_right()),
-                )
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
+                    cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.active_dialog = super::state::ActiveDialog::None;
                         app.gallery.idea_note = false;
@@ -763,8 +726,8 @@ impl FlowyApp {
                         );
                         app.gallery.idea_filter = Filter::All;
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             )
     }
 }

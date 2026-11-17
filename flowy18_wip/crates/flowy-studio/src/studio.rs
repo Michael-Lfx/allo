@@ -127,42 +127,28 @@ impl crate::panel::StudioPanel {
     }
 
     fn model_got_it(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let label = self.t("model.got_it");
-        theme::button(
-            "model-got-it",
-            label.clone(),
-            false,
-            &self.theme,
-            cx.listener(|app, _event, _window, cx| app.dismiss_model_info(cx)),
-        )
-        .px(self.theme.space(12.))
-        .py(self.theme.space(4.))
-        .rounded_full()
-        .bg(self.theme.soft())
-        .text_sm()
-        .hover(|style| style.bg(self.theme.line()))
-        .child(label)
+        theme::Button::new("model-got-it", self.t("model.got_it"))
+            .variant(theme::ControlVariant::Secondary)
+            .size(theme::ControlSize::Small)
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    app.dismiss_model_info(cx);
+                }),
+            )
     }
 
     fn model_upgrade(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        theme::interactive(
-            "model-upgrade-now",
-            self.t("model.upgrade"),
-            &self.theme,
-        )
-        .px(self.theme.space(12.))
-        .py(self.theme.space(4.))
-        .rounded_full()
-        .bg(self.theme.fill())
-        .text_color(self.theme.on_fill())
-        .text_sm()
-        .cursor_pointer()
-        .hover(|style| style.opacity(0.9))
-        .child(self.t("model.upgrade"))
-        .on_click(cx.listener(|app, _event, _window, cx| {
-            app.dismiss_model_info(cx);
-            app.note("notice.upgrade_later", cx);
-        }))
+        theme::Button::new("model-upgrade-now", self.t("model.upgrade"))
+            .variant(theme::ControlVariant::Primary)
+            .size(theme::ControlSize::Small)
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    app.dismiss_model_info(cx);
+                    app.note("notice.upgrade_later", cx);
+                }),
+            )
     }
 
     fn model_button_label(&self) -> impl IntoElement {
@@ -340,24 +326,15 @@ impl crate::panel::StudioPanel {
                         ),
                     )
                     .child(
-                        theme::interactive(
-                            "upgrade",
-                            self.t("studio.upgrade"),
-                            &self.theme,
-                        )
-                        .px(self.theme.space(12.))
-                        .py(self.theme.space(4.))
-                        .rounded_full()
-                        .bg(self.theme.fill())
-                        .text_color(self.theme.on_fill())
-                        .text_sm()
-                        .cursor_pointer()
-                        .child(self.t("studio.upgrade"))
-                        .on_click(cx.listener(
-                            |app, _event, _window, cx| {
-                                app.note("notice.upgrade_later", cx);
-                            },
-                        )),
+                        theme::Button::new("upgrade", self.t("studio.upgrade"))
+                            .variant(theme::ControlVariant::Secondary)
+                            .size(theme::ControlSize::Small)
+                            .render(
+                                &self.theme,
+                                cx.listener(|app, _event, _window, cx| {
+                                    app.note("notice.upgrade_later", cx);
+                                }),
+                            ),
                     )
                     .child(self.credit_pill(cx)),
             )
@@ -677,36 +654,28 @@ impl crate::panel::StudioPanel {
                             .items_center()
                             .justify_between()
                             .child(
-                                theme::interactive(
+                                theme::Button::new(
                                     "attach",
                                     self.t("studio.attach"),
-                                    &self.theme,
                                 )
-                                .text_sm()
-                                .text_color(self.theme.muted())
-                                .cursor_pointer()
-                                .child(self.t("studio.attach"))
-                                .on_click(
+                                .variant(theme::ControlVariant::Ghost)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
                                     cx.listener(|app, _event, _window, cx| {
                                         app.note("notice.attach_later", cx);
                                     }),
                                 ),
                             )
                             .child(
-                                theme::interactive(
+                                theme::Button::new(
                                     "send-prompt",
                                     self.t("studio.send"),
-                                    &self.theme,
                                 )
-                                .px(self.theme.space(12.))
-                                .py(self.theme.space(4.))
-                                .rounded_full()
-                                .bg(self.theme.fill())
-                                .text_color(self.theme.on_fill())
-                                .text_sm()
-                                .cursor_pointer()
-                                .child(self.t("studio.send"))
-                                .on_click(
+                                .variant(theme::ControlVariant::Primary)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
                                     cx.listener(|app, _event, _window, cx| {
                                         app.send_prompt(cx);
                                     }),

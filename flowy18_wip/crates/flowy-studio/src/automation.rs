@@ -106,27 +106,20 @@ impl crate::panel::StudioPanel {
                             ),
                     )
                     .child(
-                        theme::interactive(
+                        theme::IconButton::new(
                             "auto-send",
                             self.t("studio.send"),
-                            &self.theme,
+                            theme::icons::send(),
                         )
-                        .size(px(32.))
-                        .rounded_full()
-                        .bg(self.theme.fill())
-                        .text_color(self.theme.on_fill())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_sm()
-                        .cursor_pointer()
-                        .child(theme::icons::send())
-                        .on_click(cx.listener(
-                            |app, _e, _w, cx| {
+                        .size(theme::ControlSize::Medium)
+                        .variant(theme::ControlVariant::Primary)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _e, _w, cx| {
                                 app.notice = Some("auto.later");
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
     }
@@ -179,27 +172,20 @@ impl crate::panel::StudioPanel {
                             .child(self.t("auto.mode_label")),
                     )
                     .child(
-                        theme::interactive(
+                        theme::IconButton::new(
                             "auto-mode-close",
                             self.t("ui.close"),
-                            &self.theme,
+                            theme::icons::x(),
                         )
-                        .size(px(24.))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_sm()
-                        .text_color(self.theme.muted())
-                        .cursor_pointer()
-                        .hover(|style| style.bg(self.theme.soft()))
-                        .child(theme::icons::x())
-                        .on_click(cx.listener(
-                            |app, _e, _w, cx| {
+                        .size(theme::ControlSize::Small)
+                        .variant(theme::ControlVariant::Ghost)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _e, _w, cx| {
                                 app.notice = Some("auto.later");
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
             .child(
@@ -306,27 +292,20 @@ impl crate::panel::StudioPanel {
                             .child(self.t("auto.suggestions")),
                     )
                     .child(
-                        theme::interactive(
+                        theme::IconButton::new(
                             "auto-refresh",
                             self.t("ui.next"),
-                            &self.theme,
+                            theme::icons::refresh_cw(),
                         )
-                        .size(px(28.))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_sm()
-                        .text_color(self.theme.muted())
-                        .cursor_pointer()
-                        .hover(|style| style.bg(self.theme.soft()))
-                        .child(theme::icons::refresh_cw())
-                        .on_click(cx.listener(
-                            |app, _e, _w, cx| {
+                        .size(theme::ControlSize::Small)
+                        .variant(theme::ControlVariant::Ghost)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _e, _w, cx| {
                                 app.notice = Some("auto.later");
                                 cx.notify();
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
             .child(

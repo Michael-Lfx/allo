@@ -49,6 +49,30 @@ Also:
 - Prefer `flowy_ui::interactive` / `Button` / `TextField` over bare `div().on_click()` for operable controls.
 - Keep element ids stable across frames; do not key focus identity on translated labels.
 
+## Button hierarchy
+
+Choose a button's variant from its role in the current task, not its position or label length. Keep the existing neutral palette and use `ControlColors` for the complete foreground/background/border pairing.
+
+| Priority | Variant | Use |
+| --- | --- | --- |
+| Primary action | `Primary` | The action that completes or advances the current task: send, connect, create, confirm, or run. At most one per visible action group. |
+| Alternative action | `Secondary` | Cancel, go back, resend, or another available path. Also the safe default for `Button::new`. |
+| Supporting action | `Ghost` | Copy, share, reveal, expand, toolbar tools, and close. Icon-only actions use `IconButton` with a localized accessible name. |
+| Destructive action | `Danger` | An action that deletes or irreversibly discards user data. Stopping generation or closing a dialog is not destructive by itself. |
+
+- Mark every primary action explicitly with `.variant(ControlVariant::Primary)`; do not make all buttons in a footer equally prominent.
+- Use `Button` / `IconButton` for ordinary actions. Reserve `interactive()` for navigation, selection, custom cards, and other surfaces whose semantics require a separate component recipe.
+- Keep the primary variant while disabled or loading so its role stays recognizable. Disabled actions leave the Tab path; loading actions retain focus and reject repeat activation.
+- In a footer, place the alternative before the primary action in the existing reading order. Independent cards may each have a primary action, but a single toolbar or footer must not contain competing primary buttons.
+- Use `Small` for compact tools, `Medium` for standard actions, and `Large` for prominent full-width submissions. Text and icons inherit the variant's foreground; do not override it with `ink`, `on_ink`, or authored colors.
+- Keep toggle, selected, and navigation states separate from action priority. A selected filter or active navigation item is not a primary button.
+
+Current adoption: `Button` defaults to Secondary, and the component catalogue shows all four variants with a one-primary action group. Core actions in Login, Invite, Flex, More, OTA, Skills, Gallery, Dock, Studio, Automation, and the Chat Composer now use the shared hierarchy. Knowledge removal uses Danger; sign-out and stopping generation do not imply data deletion. Navigation, selection chips, and composite controls retain their dedicated interaction patterns.
+
+When a page's button hierarchy changes, update this adoption note in the same change. Keep unrelated architecture/history in `docs/ui-system.zh.md` intact.
+
+Validation on 2026-11-17: 41 UI/App/Studio tests passed, the desktop entry compiled, and strict `flowy-ui` clippy passed. The component catalogue was inspected in Light and Dark. Full-page platform acceptance remains separate; the existing three Skills illustration-color scanner failures are still open.
+
 ## Consistency checklist for new UI
 
 1. Popup uses `modal_layer` + `dialog` + `modal_radius`.

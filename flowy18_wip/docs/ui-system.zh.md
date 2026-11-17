@@ -109,6 +109,8 @@ TextField::new("name", localized_name, existing_state)
 | FormField / SettingsRow | 标签、帮助、错误和内容布局；业务负责校验规则 |
 | Notice / EmptyState | 内容、状态和可选操作；不虚构数据或调用服务 |
 
+按钮层级使用 [`DESIGN.md`](../DESIGN.md) 的 Primary / Secondary / Ghost / Danger 规则：`Button::new` 默认为 Secondary，主要操作必须显式指定 Primary；图标操作使用带本地化可访问名称的 `IconButton`。
+
 loading 保留焦点并禁止重复激活。disabled 不进入 Tab 路径。只读通过 `.accepts_input(false)` 实现，仍可选择和复制。低层 text_input/text_area 适用于现有编辑器配方，调用者必须附加名称及真实状态，不得仅降低 opacity。
 
 `interactive()` 用于组合自定义操作表面，提供共同的角色、Tab、焦点及可访问名称；它不代替显式的 disabled/loading 处理。普通布局容器不需要原子包装。
@@ -181,6 +183,79 @@ sequenceDiagram
 | D6 | 余额 Unavailable 为默认 | 演示值或零余额会伪造账户事实 |
 | D7 | 专属 GPUI 测试与源码扫描 | 主工程 bun run check 面向 React，不构成本子工程验收 |
 | D8 | 依赖补丁单独修复 | 删除 patch 或复制未审核 vendored 来源无法证明干净构建可复现 |
+
+### 4.1 当前提交的 UI 重构范围
+
+> **提交**：`9c7fce7932 feat(flowy18-wip): establish shared UI system and modal contracts`
+> **说明**：本节记录该提交实际覆盖范围，不把“组件已存在”误写为“页面已全部迁移”。统计范围为 `flowy-app` / `flowy-studio` 生产代码，排除 `#[cfg(test)]`。
+
+#### 4.1.1 已完成的 UI 重构
+
+| UI 区域 | 已完成内容 |
+|---|---|
+| 全局壳层 | 进程全局主题改为窗口级 `UiContext + ThemeState + ResolvedTheme`；App/Studio 大面积改用显式主题快照 |
+| 弹层体系 | 新增 `ModalLayer + Dialog`，迁移 Settings、Ideas、Idea detail、More、Legal、Invite、Flex 共 7 个弹层 |
+| 焦点与浮层 | `OverlayHost` 统一 Dialog/Popover 焦点作用域、Tab 循环、Escape 请求关闭、焦点恢复、外部点击关闭 |
+| Dock / 侧栏 | 导航行迁移到 `NavItem`；More 使用 measured anchor；用户资料菜单改为 anchored popover |
+| Settings | 设置弹层、菜单、搜索、Switch、设置行、语言/发送模式选择统一到主题和控件契约 |
+| Appearance | 主题模式、accent、density、字号和 Activity 开关改为窗口级主题状态及统一控件 |
+| Login / Legal | 登录页主题 token 统一；Legal 弹层迁移到 ModalLayer/Dialog；输入、错误和按钮状态收口 |
+| Invite | 弹层、关闭、分享/复制/发送按钮和状态提示统一到 ModalLayer、Dialog、Button |
+| Flex | Provider 菜单、API Key 输入、显示/隐藏、取消/连接按钮统一到主题和弹层体系 |
+| Gallery / Ideas | Ideas 与 Idea detail 迁移到 ModalLayer/Dialog；卡片、筛选、关闭和操作控件统一主题 token |
+| More / Persona / Knowledge | More/Import/Knowledge 弹层迁移；Persona 表单、知识输入、文本区域、菜单和操作按钮统一主题 |
+| Studio Home / Chat / Composer | 模型信息与菜单使用锚点；Composer 控件统一；Feed、Composer、WorkingIndicator 拆分为独立更新单元 |
+| Chat Feed | 改为可变高度 `ListState`；保留流式行身份、滚动锚定、展开状态和会话切换 |
+| Automation / OTA | Automation 页面和 OTA 操作区迁移到显式主题 token、统一控件与状态展示 |
+| 全局控件 | 新增/收口 Button、IconButton、TextField、Switch、RadioGroup、Tabs、Disclosure、Popover、Menu、Tooltip、Notice、EmptyState |
+| 积分 UI | 删除正常运行时固定 `2500` 与固定拆分；新增 `CreditsViewState` 的 Loading / Ready / Unavailable / Error |
+| 可访问性 | 增加键盘激活、焦点框、AccessKit 名称/角色/状态、read-only、disabled、invalid、busy/loading |
+| 展示与门禁 | 新增组件 catalog、UI contract scanner 和 Flowy 1.8 UI CI workflow |
+
+#### 4.1.2 已完成基础能力、但尚未完成全量采用
+
+| 项目 | 当前状态 |
+|---|---|
+| 原子控件采用 | `Button`、`NavItem` 等已开始使用，但业务代码仍以 `interactive().on_click()` 为主 |
+| 弹层迁移 | 7 个主弹层已迁移；仍存在部分页面内自定义浮层、菜单和卡片配方 |
+| Pattern 组件 | `FormField`、`SettingsRow`、`EmptyState` 已有实现，但生产页面暂无调用 |
+| Select / Menu | `MenuItem`、`SelectOption` 已提供基础契约，但尚未覆盖所有菜单、选择器和模型菜单 |
+| 输入控件 | `TextField` 已覆盖 editable/read-only/disabled/invalid；显式 focus ring 和 disabled + invalid 组合仍需补齐 |
+| Overlay 状态 | `ActiveDialog` 已收口主对话框，但 scope 仍是字符串，`close_overlay()` 仍用字符串 match |
+| 主题 API | `ControlColors` 已建立，但 `ResolvedTheme` 仍公开原始颜色角色，业务仍可自行组合前景/背景 |
+| 布局 Token | `space()`、`control_height()` 已统一入口，但密度偏移仍会生成非标准档位，typography/density 尚未完全分离 |
+| 源码扫描 | 能拦截裸 `div().on_click()`；尚未强制禁止 `interactive().on_click()`，也未覆盖所有原始颜色配对 |
+
+#### 4.1.3 尚未完成的 UI 重构
+
+- 尚未完成全页面迁移：Dock 历史项目/任务行、Studio 模型卡片、Automation 卡片、Gallery 细节、More/Persona 表单、Settings 菜单与 OTA 操作仍保留自定义配方。
+- 尚未完成 MenuItem、ActionRow、Chip、Composer toolbar、SelectTrigger 等 pattern 的全量落地。
+- 尚未完成组件模块分层：当前仍是 `button.rs`、`controls.rs`、`overlays.rs`、`feedback.rs`、`tooltip.rs`，未拆成 `foundations / primitives / patterns / services` 的显式目录。
+- 尚未完成主题 API 封口：feature 层仍可直接调用 `ink()`、`muted()`、`accent()`、`fill()`、`on_fill()`、`danger()`。
+- 尚未完成完整 TypeScale / SpacingScale / ControlMetrics 体系。
+- 尚未完成 MotionPolicy 与系统 reduced-motion 的配置接入。
+- 尚未完成全量平台视觉验收：Windows 100%/150%/200%、双主题、三种密度、12/14/16 字号、中文/英文/阿拉伯语整页、原生 IME、焦点恢复和 macOS 冒烟。
+- 尚未接入真实积分服务；本次只完成 UI 状态模型和未知/零值区分。
+- 本次不是整体 UI 改版，没有重排页面信息架构、导航结构或品牌视觉。
+
+#### 4.1.4 采用率快照
+
+| 指标 | 数量 |
+|---|---:|
+| `interactive()` 调用 | 64 |
+| `.on_click()` 调用 | 82 |
+| `Button::new()` | 4 |
+| `theme::button()` | 7 |
+| `modal_layer()` | 7 |
+| `TextField::new()` | 5 |
+| `Switch::new()` | 2 |
+| `RadioGroup::new()` | 0 |
+| `Tabs::new()` | 0 |
+| `FormField` / `SettingsRow` / `EmptyState` 生产调用 | 0 |
+
+这些数量是 grep 级采用率快照，不是缺陷数量；`.on_click()` 也包含遮罩、插画和基础设施例外。
+
+**结论**：本次提交完成了 UI 基础层和核心交互契约，属于“UI 系统骨架已落地、原子组件开始采用”；尚未完成全站视觉改版、全页面控件迁移和平台最终验收。
 
 ## 5. 验收标准与验证矩阵
 
@@ -263,6 +338,22 @@ cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-target
 - 干净检出构建、依赖严格 clippy、Windows 视觉矩阵、macOS 冒烟分别填写状态；某一项通过不得推导其余项通过。
 - 缺少系统或设备条件的验收保留“待执行”和具体原因，不填通过，也不以 mock-window 测试替代原生 IME、缩放或平台窗口行为。
 - 阶段测试数量是实施过程证据。最终交付时在本节追加最终结果，保留上方记录以追溯首次失败和修复。
+
+### 5.6 按钮层级调整验收（2026-11-17）
+
+本轮基于 `ef15f3642` 的未提交工作区，统一 Primary / Secondary / Ghost / Danger 优先级，并同步 `DESIGN.md`。保留上方 `9c7fce7932` 的历史采用率快照；它不代表本轮调整后的组件数量。
+
+| 检查 | 本轮结果 |
+|---|---|
+| `cargo check -p flowy-app -p flowy-studio --locked` | 退出码 0；既有依赖和可见性警告仍存在 |
+| `cargo test -p flowy-ui -p flowy-studio -p flowy-app --locked` | 退出码 0；UI 18、Studio 5、App 18，共 41 项通过；包含图标按钮的禁用、加载、键盘与 AccessKit 激活保护 |
+| `cargo clippy -p flowy-ui --all-targets --locked -- -D warnings` | 退出码 0；首次发现的新增冗余闭包和测试分号问题已修复；不代表依赖聚合严格 clippy 通过 |
+| `cargo check -p flowy-desktop --locked` | 退出码 0；不代表桌面打包或干净检出构建通过 |
+| 本轮 15 个 Rust 文件的定向 `rustfmt --check`、`git diff --check` | 退出码 0 |
+| `bun scripts/check-ui-contracts.mjs --self-test` | 退出码 0；18 项断言通过 |
+| `bun scripts/check-ui-contracts.mjs` | 退出码 1；仍有 Skills 的 `skill_cover`、`skill_hero`、`skill_mark` 三处既有素材颜色未采用 token 或列入精确素材例外；本轮未扩大白名单 |
+| 原生组件 catalog | 构建成功；在 Windows 检查 Light / Dark 的四种按钮层级、带图标按钮、禁用和加载外观；临时目录窗口已关闭 |
+| 全页面平台视觉矩阵 | 待执行；本轮组件目录检查不替代第 5.3 节的窗口、缩放、语言、字号、密度和原生 IME 验收 |
 
 ---
 

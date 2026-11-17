@@ -405,47 +405,29 @@ impl FlowyApp {
 
     fn import_footer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div().w_full().flex().justify_center().child(
-            theme::interactive(
-                "open-import-memory",
-                self.t("more.import"),
-                &self.theme,
-            )
-            .px_4()
-            .py_2()
-            .rounded_lg()
-            .bg(self.theme.soft())
-            .border_1()
-            .border_color(self.theme.line())
-            .cursor_pointer()
-            .text_size(self.theme.body_size())
-            .child(self.t("more.import"))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.open_import(cx);
-            })),
+            theme::Button::new("open-import-memory", self.t("more.import"))
+                .variant(theme::ControlVariant::Secondary)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
+                        app.open_import(cx);
+                    }),
+                ),
         )
     }
 
     fn knowledge_pane(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut pane = div().flex().flex_col().gap_3().child(
             div().flex().justify_end().child(
-                theme::interactive(
-                    "open-add-knowledge",
-                    self.t("more.knowledge"),
-                    &self.theme,
-                )
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(self.theme.fill())
-                .text_color(self.theme.on_fill())
-                .cursor_pointer()
-                .text_size(self.theme.body_size())
-                .child(self.t("more.add"))
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
-                        app.open_knowledge_dialog(cx);
-                    },
-                )),
+                theme::Button::new("open-add-knowledge", self.t("more.add"))
+                    .variant(theme::ControlVariant::Primary)
+                    .icon(theme::icons::plus())
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            app.open_knowledge_dialog(cx);
+                        }),
+                    ),
             ),
         );
         if self.persona.knowledge.is_empty() {
@@ -491,20 +473,18 @@ impl FlowyApp {
                             .child(item.name.clone()),
                     )
                     .child(
-                        theme::interactive(
+                        theme::Button::new(
                             format!("knowledge-remove-{index}"),
                             self.t("more.remove"),
-                            &self.theme,
                         )
-                        .text_size(self.theme.caption_size())
-                        .text_color(self.theme.muted())
-                        .cursor_pointer()
-                        .child(self.t("more.remove"))
-                        .on_click(cx.listener(
-                            move |app, _event, _window, cx| {
+                        .variant(theme::ControlVariant::Danger)
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(move |app, _event, _window, cx| {
                                 app.remove_knowledge(index, cx);
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
             .when(!item.usage.is_empty(), |row| {
@@ -668,46 +648,34 @@ impl FlowyApp {
                     .child(self.t(key)),
             )
             .child(
-                theme::interactive(
+                theme::IconButton::new(
                     "close-more-dialog",
                     self.t("ui.close"),
-                    &self.theme,
+                    theme::icons::x(),
                 )
-                .size(px(28.))
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .child(theme::icons::x())
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.close_more_dialog(cx);
-                    },
-                )),
+                    }),
+                ),
             )
     }
 
     fn copy_button(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        theme::interactive(
-            "copy-import-prompt",
-            self.t("more.copy"),
-            &self.theme,
-        )
-        .px_3()
-        .py_1()
-        .rounded_full()
-        .bg(self.theme.fill())
-        .text_color(self.theme.on_fill())
-        .text_size(self.theme.caption_size())
-        .cursor_pointer()
-        .child(self.t("more.copy"))
-        .on_click(cx.listener(|app, _event, _window, cx| {
-            cx.stop_propagation();
-            app.copy_import_prompt(cx);
-        }))
+        theme::Button::new("copy-import-prompt", self.t("more.copy"))
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.copy_import_prompt(cx);
+                }),
+            )
     }
 
     fn dialog_actions(
@@ -731,20 +699,15 @@ impl FlowyApp {
         id: &'static str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::interactive(id, self.t("more.cancel"), &self.theme)
-            .px_4()
-            .py_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(self.theme.line())
-            .bg(self.theme.card())
-            .text_size(self.theme.body_size())
-            .cursor_pointer()
-            .child(self.t("more.cancel"))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.close_more_dialog(cx);
-            }))
+        theme::Button::new(id, self.t("more.cancel"))
+            .variant(theme::ControlVariant::Secondary)
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.close_more_dialog(cx);
+                }),
+            )
     }
 
     fn confirm_button(
@@ -754,17 +717,20 @@ impl FlowyApp {
         ready: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::Button::new(id, self.t(key)).disabled(!ready).render(
-            &self.theme,
-            cx.listener(move |app, _, _, cx| {
-                cx.stop_propagation();
-                if key == "more.save" {
-                    app.commit_knowledge(cx);
-                } else {
-                    app.apply_import(cx);
-                }
-            }),
-        )
+        theme::Button::new(id, self.t(key))
+            .variant(theme::ControlVariant::Primary)
+            .disabled(!ready)
+            .render(
+                &self.theme,
+                cx.listener(move |app, _, _, cx| {
+                    cx.stop_propagation();
+                    if key == "more.save" {
+                        app.commit_knowledge(cx);
+                    } else {
+                        app.apply_import(cx);
+                    }
+                }),
+            )
     }
 
     fn open_import(&mut self, cx: &mut Context<'_, Self>) {

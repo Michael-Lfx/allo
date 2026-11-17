@@ -372,24 +372,18 @@ impl FlowyApp {
                     .items_center()
                     .justify_end()
                     .child(
-                        theme::interactive(
+                        theme::IconButton::new(
                             "close-settings",
                             self.t("ui.close"),
-                            &self.theme,
+                            theme::icons::x().size(px(16.)),
                         )
-                        .size(px(28.))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|style| style.bg(self.theme.soft()))
-                        .child(theme::icons::x().size(px(16.)))
-                        .on_click(cx.listener(
-                            |app, _event, _window, cx| {
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
                                 app.close_settings(cx);
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
             .child(

@@ -26,12 +26,12 @@ struct File {
 }
 
 const VERSION: u32 = 1;
-const SOCIAL: &[(&str, &str, u32)] = &[
-    ("wa", "W", 0x0025_d366),
-    ("fb", "f", 0x0018_77f2),
-    ("x", "X", 0x0011_1111),
-    ("in", "in", 0x000a_66c2),
-    ("rd", "r", 0x00ff_4500),
+const SOCIAL: &[(&str, &str)] = &[
+    ("wa", "W"),
+    ("fb", "f"),
+    ("x", "X"),
+    ("in", "in"),
+    ("rd", "r"),
 ];
 
 impl FlowyApp {
@@ -146,19 +146,20 @@ impl FlowyApp {
 
     fn invite_close(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div().flex().justify_end().child(
-            theme::interactive("close-invite", self.t("ui.close"), &self.theme)
-                .size(px(28.))
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .child(theme::icons::x())
-                .on_click(cx.listener(|app, _event, _window, cx| {
+            theme::IconButton::new(
+                "close-invite",
+                self.t("ui.close"),
+                theme::icons::x(),
+            )
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
                     cx.stop_propagation();
                     app.close_invite(cx);
-                })),
+                }),
+            ),
         )
     }
 
@@ -181,7 +182,12 @@ impl FlowyApp {
             .child(self.invite_copy("invite.body"))
             .child(self.invite_copy("invite.footnote"))
             .child(self.share_row(cx))
-            .child(self.primary_button("copy-invite", "invite.copy", true, cx))
+            .child(self.invite_action_button(
+                "copy-invite",
+                "invite.copy",
+                true,
+                cx,
+            ))
             .child(self.social_row(cx))
             .child(self.email_block(cx))
     }
@@ -223,30 +229,23 @@ impl FlowyApp {
 
     fn social_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut row = div().flex().items_center().justify_center().gap_3();
-        for (id, mark, color) in SOCIAL {
+        for (id, mark) in SOCIAL {
             let element_id = SharedString::from(format!("share-{id}"));
             row = row.child(
-                theme::interactive(
+                theme::IconButton::new(
                     element_id,
                     self.t("invite.share_web"),
-                    &self.theme,
+                    div().text_size(self.theme.caption_size()).child(*mark),
                 )
-                .size(px(32.))
-                .rounded_full()
-                .bg(rgb(*color))
-                .text_color(self.theme.on_ink())
-                .text_size(self.theme.caption_size())
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .child(*mark)
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Medium)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.share_invite(cx);
-                    },
-                )),
+                    }),
+                ),
             );
         }
         row
@@ -270,7 +269,7 @@ impl FlowyApp {
                     .items_center()
                     .gap_2()
                     .child(self.invite_email_field(cx))
-                    .child(self.primary_button(
+                    .child(self.invite_action_button(
                         "send-invite",
                         "invite.send",
                         false,
@@ -324,7 +323,8 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         theme::Button::new(id, self.t(key))
-            .variant(theme::ControlVariant::Secondary)
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Medium)
             .render(
                 &self.theme,
                 cx.listener(|app, _event, _window, cx| {
@@ -333,19 +333,25 @@ impl FlowyApp {
                 }),
             )
             .flex_1()
-            .h(px(36.))
             .text_size(self.theme.body_size())
     }
 
-    fn primary_button(
+    fn invite_action_button(
         &self,
         id: &'static str,
         key: &'static str,
         copy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::Button::new(id, self.t(key))
-            .size(theme::ControlSize::Large)
+        let button = theme::Button::new(id, self.t(key))
+            .variant(if copy {
+                theme::ControlVariant::Ghost
+            } else {
+                theme::ControlVariant::Primary
+            })
+            .size(theme::ControlSize::Large);
+        let button = if copy { button.full_width() } else { button };
+        button
             .render(
                 &self.theme,
                 cx.listener(move |app, _event, _window, cx| {
@@ -357,8 +363,6 @@ impl FlowyApp {
                     }
                 }),
             )
-            .when(copy, gpui::Styled::w_full)
-            .h(px(40.))
             .text_size(self.theme.body_size())
     }
 

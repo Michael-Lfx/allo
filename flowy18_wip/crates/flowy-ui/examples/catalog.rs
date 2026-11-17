@@ -1,8 +1,9 @@
 //! Isolated component catalogue. Run `cargo run -p flowy-ui --example catalog`.
 //! All demonstration values live here, outside production application state.
 use flowy_ui::{
-    Accent, Button, Choice, ControlVariant, Density, InputMode, RadioGroup,
-    ResolvedTheme, Switch, Tabs, TextField, ThemeMode, ThemeOptions,
+    Accent, Button, Choice, ControlVariant, Density, IconButton, InputMode,
+    RadioGroup, ResolvedTheme, Switch, Tabs, TextField, ThemeMode,
+    ThemeOptions,
 };
 use gpui::{
     Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled,
@@ -84,11 +85,22 @@ impl Render for Catalogue {
                     .gap_3()
                     .child(
                         Button::new("primary", "Primary")
+                            .variant(ControlVariant::Primary)
+                            .icon(flowy_ui::icons::check())
                             .render(&t, |_, _, _| {}),
                     )
                     .child(
                         Button::new("secondary", "Secondary")
                             .variant(ControlVariant::Secondary)
+                            .render(&t, |_, _, _| {}),
+                    )
+                    .child(
+                        Button::new("ghost", "Ghost")
+                            .variant(ControlVariant::Ghost)
+                            .render(&t, |_, _, _| {}),
+                    )
+                    .child(
+                        IconButton::new("close", "Close", flowy_ui::icons::x())
                             .render(&t, |_, _, _| {}),
                     )
                     .child(
@@ -104,6 +116,22 @@ impl Render for Catalogue {
                     .child(
                         Button::new("danger", "Danger")
                             .variant(ControlVariant::Danger)
+                            .render(&t, |_, _, _| {}),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("cancel", "Cancel")
+                            .render(&t, |_, _, _| {}),
+                    )
+                    .child(
+                        Button::new("confirm", "Confirm")
+                            .variant(ControlVariant::Primary)
                             .render(&t, |_, _, _| {}),
                     ),
             )

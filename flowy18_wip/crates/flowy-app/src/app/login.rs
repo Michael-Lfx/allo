@@ -142,14 +142,7 @@ impl FlowyApp {
                                             .into_any_element()
                                     } else {
                                         self.login_primary(
-                                            &primary,
-                                            can_send
-                                                || matches!(
-                                                    self.auth.phase,
-                                                    LoginPhase::Sending
-                                                ),
-                                            can_send,
-                                            cx,
+                                            &primary, can_send, cx,
                                         )
                                         .into_any_element()
                                     })
@@ -475,39 +468,25 @@ impl FlowyApp {
     fn login_primary(
         &self,
         label: &str,
-        emphasized: bool,
         enabled: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let label = label.to_string();
-        theme::button(
-            "sign-in",
-            label.clone(),
-            !enabled,
-            &self.theme,
-            cx.listener(|app, _, _, cx| app.submit_login(cx)),
-        )
-        .mt(px(20.))
-        .h(px(48.))
-        .w_full()
-        .rounded_lg()
-        .bg(if emphasized {
-            self.theme.auth_accent()
-        } else {
-            self.theme.soft()
-        })
-        .text_color(if emphasized {
-            self.theme.auth_on_accent()
-        } else {
-            self.theme.muted()
-        })
-        .font_weight(FontWeight::SEMIBOLD)
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|style| if enabled { style.opacity(0.92) } else { style })
-        .child(label)
+        let loading = matches!(
+            self.auth.phase,
+            LoginPhase::Sending | LoginPhase::Verifying
+        );
+        theme::Button::new("sign-in", label)
+            .variant(theme::ControlVariant::Primary)
+            .size(theme::ControlSize::Large)
+            .full_width()
+            .disabled(!enabled && !loading)
+            .loading(loading)
+            .render(
+                &self.theme,
+                cx.listener(|app, _, _, cx| app.submit_login(cx)),
+            )
+            .mt(px(20.))
+            .min_h(px(48.))
     }
 
     fn login_resend(
@@ -562,19 +541,15 @@ impl FlowyApp {
         busy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::button(
-            "network-diagnose",
-            self.t("login.diagnose"),
-            busy,
-            &self.theme,
-            cx.listener(|app, _, _, cx| app.run_login_diagnose(cx)),
-        )
-        .mt(px(24.))
-        .text_size(self.theme.body_size())
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(self.theme.auth_accent())
-        .cursor_pointer()
-        .child(self.t("login.diagnose"))
+        theme::Button::new("network-diagnose", self.t("login.diagnose"))
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .disabled(busy)
+            .render(
+                &self.theme,
+                cx.listener(|app, _, _, cx| app.run_login_diagnose(cx)),
+            )
+            .mt(px(24.))
     }
 
     fn change_email_link(
@@ -582,17 +557,14 @@ impl FlowyApp {
         busy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::button(
-            "change-email",
-            self.t("login.change_email"),
-            busy,
-            &self.theme,
-            cx.listener(|app, _, _, cx| app.reset_login_to_email(cx)),
-        )
-        .text_size(self.theme.caption_size())
-        .text_color(self.theme.auth_accent())
-        .cursor_pointer()
-        .child(self.t("login.change_email"))
+        theme::Button::new("change-email", self.t("login.change_email"))
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .disabled(busy)
+            .render(
+                &self.theme,
+                cx.listener(|app, _, _, cx| app.reset_login_to_email(cx)),
+            )
     }
 
     fn email_field(&self, locked: bool) -> impl gpui::IntoElement {

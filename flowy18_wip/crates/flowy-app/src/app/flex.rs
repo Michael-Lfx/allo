@@ -89,29 +89,22 @@ impl FlowyApp {
             .items_center()
             .gap_3()
             .child(
-                theme::interactive(
+                theme::IconButton::new(
                     "flex-close",
                     self.t("ui.close"),
+                    theme::icons::x(),
+                )
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render(
                     &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
+                        app.close_flex(cx);
+                    }),
                 )
                 .absolute()
                 .top_0()
-                .right_0()
-                .size(px(28.))
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(self.theme.body_size())
-                .text_color(self.theme.muted())
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .child(theme::icons::x())
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
-                        app.close_flex(cx);
-                    },
-                )),
+                .right_0(),
             )
             .child(
                 div()
@@ -313,32 +306,24 @@ impl FlowyApp {
                             .text_color(self.theme.ink()),
                     )
                     .child(
-                        theme::interactive(
+                        theme::IconButton::new(
                             "flex-toggle-key",
                             self.t("flex.api_key"),
-                            &self.theme,
+                            if hidden {
+                                theme::icons::eye_off()
+                            } else {
+                                theme::icons::eye()
+                            },
                         )
-                        .size(px(24.))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(self.theme.body_size())
-                        .text_color(self.theme.muted())
-                        .cursor_pointer()
-                        .hover(|style| style.bg(self.theme.line()))
-                        .child(if hidden {
-                            theme::icons::eye_off()
-                                .text_color(self.theme.muted())
-                        } else {
-                            theme::icons::eye().text_color(self.theme.muted())
-                        })
-                        .on_click(cx.listener(
-                            |app, _event, _window, cx| {
+                        .variant(theme::ControlVariant::Ghost)
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
                                 cx.stop_propagation();
                                 app.toggle_flex_key_visible(cx);
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
     }
@@ -414,53 +399,28 @@ impl FlowyApp {
             .flex()
             .gap_3()
             .child(
-                theme::interactive(
-                    "flex-cancel",
-                    self.t("flex.cancel"),
-                    &self.theme,
-                )
-                .flex_1()
-                .h(px(40.))
-                .rounded_lg()
-                .border_1()
-                .border_color(self.theme.line())
-                .bg(self.theme.card())
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(self.theme.body_size())
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .child(self.t("flex.cancel"))
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
-                        app.close_flex(cx);
-                    },
-                )),
+                theme::Button::new("flex-cancel", self.t("flex.cancel"))
+                    .variant(theme::ControlVariant::Secondary)
+                    .size(theme::ControlSize::Large)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            app.close_flex(cx);
+                        }),
+                    )
+                    .flex_1(),
             )
             .child(
-                theme::interactive(
-                    "flex-connect",
-                    self.t("flex.connect"),
-                    &self.theme,
-                )
-                .flex_1()
-                .h(px(40.))
-                .rounded_lg()
-                .bg(self.theme.fill())
-                .text_color(self.theme.on_fill())
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(self.theme.body_size())
-                .cursor_pointer()
-                .hover(|style| style.opacity(0.9))
-                .child(self.t("flex.connect"))
-                .on_click(cx.listener(
-                    |app, _event, _window, cx| {
-                        app.connect_flex(cx);
-                    },
-                )),
+                theme::Button::new("flex-connect", self.t("flex.connect"))
+                    .variant(theme::ControlVariant::Primary)
+                    .size(theme::ControlSize::Large)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            app.connect_flex(cx);
+                        }),
+                    )
+                    .flex_1(),
             )
     }
 

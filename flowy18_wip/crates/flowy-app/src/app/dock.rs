@@ -497,24 +497,19 @@ impl FlowyApp {
                             .child(self.t("credits.plan_free")),
                     )
                     .child(
-                        theme::interactive(
+                        theme::Button::new(
                             "user-upgrade",
                             self.t("studio.upgrade"),
-                            &self.theme,
                         )
-                        .px_3()
-                        .py_1()
-                        .rounded_lg()
-                        .bg(self.theme.fill())
-                        .text_color(self.theme.on_fill())
-                        .text_size(self.theme.body_size())
-                        .on_click(cx.listener(
-                            |app, _event, _window, cx| {
+                        .variant(theme::ControlVariant::Primary)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
                                 cx.stop_propagation();
                                 app.user_menu = false;
                                 app.note("notice.upgrade_later", cx);
-                            },
-                        )),
+                            }),
+                        ),
                     ),
             )
             .child(
@@ -604,30 +599,18 @@ impl FlowyApp {
     }
 
     fn user_menu_sign_out(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        theme::interactive(
-            "user-sign-out",
-            self.t("dock.sign_out"),
-            &self.theme,
-        )
-        .px_2()
-        .py_2()
-        .rounded_md()
-        .flex()
-        .items_center()
-        .gap_2()
-        .hover(|row| row.bg(self.theme.soft()))
-        .on_click(cx.listener(|app, _event, _window, cx| {
-            cx.stop_propagation();
-            app.user_menu = false;
-            app.sign_out(cx);
-        }))
-        .child(theme::icons::log_out().text_color(self.theme.danger()))
-        .child(
-            div()
-                .text_size(self.theme.body_size())
-                .text_color(self.theme.danger())
-                .child(self.t("dock.sign_out")),
-        )
+        theme::Button::new("user-sign-out", self.t("dock.sign_out"))
+            .variant(theme::ControlVariant::Ghost)
+            .icon(theme::icons::log_out())
+            .full_width()
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.user_menu = false;
+                    app.sign_out(cx);
+                }),
+            )
     }
 }
 

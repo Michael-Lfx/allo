@@ -93,11 +93,7 @@ const SKILLS: &[Skill] = &[
         date: "skills.excel_date",
         tint: 0x001e_7a46,
         mark: "X",
-        prompts: &[
-            "skills.excel_p1",
-            "skills.excel_p2",
-            "skills.excel_p3",
-        ],
+        prompts: &["skills.excel_p1", "skills.excel_p2", "skills.excel_p3"],
     },
     Skill {
         id: "traffic",
@@ -127,11 +123,7 @@ const SKILLS: &[Skill] = &[
         date: "skills.slides_date",
         tint: 0x00c4_5c26,
         mark: "SD",
-        prompts: &[
-            "skills.slides_p1",
-            "skills.slides_p2",
-            "skills.slides_p3",
-        ],
+        prompts: &["skills.slides_p1", "skills.slides_p2", "skills.slides_p3"],
     },
     Skill {
         id: "research",
@@ -161,11 +153,7 @@ const SKILLS: &[Skill] = &[
         date: "skills.nano_date",
         tint: 0x00f2_c94c,
         mark: "NB",
-        prompts: &[
-            "skills.nano_p1",
-            "skills.nano_p2",
-            "skills.nano_p3",
-        ],
+        prompts: &["skills.nano_p1", "skills.nano_p2", "skills.nano_p3"],
     },
     Skill {
         id: "flux",
@@ -178,11 +166,7 @@ const SKILLS: &[Skill] = &[
         date: "skills.flux_date",
         tint: 0x00d4_5a2a,
         mark: "FX",
-        prompts: &[
-            "skills.flux_p1",
-            "skills.flux_p2",
-            "skills.flux_p3",
-        ],
+        prompts: &["skills.flux_p1", "skills.flux_p2", "skills.flux_p3"],
     },
     Skill {
         id: "script",
@@ -195,11 +179,7 @@ const SKILLS: &[Skill] = &[
         date: "skills.script_date",
         tint: 0x0024_3b55,
         mark: "</>",
-        prompts: &[
-            "skills.script_p1",
-            "skills.script_p2",
-            "skills.script_p3",
-        ],
+        prompts: &["skills.script_p1", "skills.script_p2", "skills.script_p3"],
     },
     Skill {
         id: "pipeline",
@@ -229,11 +209,7 @@ const SKILLS: &[Skill] = &[
         date: "skills.clip_date",
         tint: 0x0011_1a28,
         mark: "AV",
-        prompts: &[
-            "skills.clip_p1",
-            "skills.clip_p2",
-            "skills.clip_p3",
-        ],
+        prompts: &["skills.clip_p1", "skills.clip_p2", "skills.clip_p3"],
     },
 ];
 
@@ -325,46 +301,26 @@ impl FlowyApp {
         key: &'static str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::interactive(id, self.t(key), &self.theme)
-            .px_3()
-            .py_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(self.theme.line())
-            .bg(self.theme.card())
-            .text_size(self.theme.body_size())
-            .hover(|btn| btn.bg(self.theme.soft()))
-            .child(self.t(key))
-            .on_click(cx.listener(|app, _event, _window, cx| {
+        theme::Button::new(id, self.t(key)).render(
+            &self.theme,
+            cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.open_skill("mine", cx);
-            }))
+            }),
+        )
     }
 
-    fn skills_create_button(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        theme::interactive("skills-create", self.t("skills.create"), &self.theme)
-            .px_3()
-            .py_1()
-            .rounded_lg()
-            .bg(self.theme.fill())
-            .text_color(self.theme.on_fill())
-            .text_size(self.theme.body_size())
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(self.t("skills.create"))
-            .child(
-                theme::icons::chevron_down()
-                    .size(px(14.))
-                    .text_color(self.theme.on_fill()),
+    fn skills_create_button(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        theme::Button::new("skills-create", self.t("skills.create"))
+            .variant(theme::ControlVariant::Primary)
+            .icon(theme::icons::plus())
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.open_skill("create", cx);
+                }),
             )
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.open_skill("create", cx);
-            }))
     }
 
     fn skills_filters(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -480,10 +436,12 @@ impl FlowyApp {
                             .mt_1()
                             .text_size(self.theme.caption_size())
                             .text_color(self.theme.muted())
-                            .child(self.tf(
-                                "skills.used",
-                                &[("count", skill.uses)],
-                            )),
+                            .child(
+                                self.tf(
+                                    "skills.used",
+                                    &[("count", skill.uses)],
+                                ),
+                            ),
                     ),
             )
     }
@@ -745,71 +703,40 @@ impl FlowyApp {
                             .size(px(12.))
                             .text_color(self.theme.muted()),
                     )
-                    .child(self.tf(
-                        "skills.used_short",
-                        &[("count", skill.uses)],
-                    )),
+                    .child(
+                        self.tf("skills.used_short", &[("count", skill.uses)]),
+                    ),
             )
     }
 
-    fn skill_dialog_actions(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
+    fn skill_dialog_actions(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap_2()
             .child(
-                theme::interactive(
-                    "skill-add",
-                    self.t("skills.add"),
-                    &self.theme,
-                )
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(self.theme.fill())
-                .text_color(self.theme.on_fill())
-                .text_size(self.theme.body_size())
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(
-                    theme::icons::plus()
-                        .size(px(14.))
-                        .text_color(self.theme.on_fill()),
-                )
-                .child(self.t("skills.add"))
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    app.note("skills.add_later", cx);
-                })),
+                theme::Button::new("skill-add", self.t("skills.add"))
+                    .variant(theme::ControlVariant::Primary)
+                    .icon(theme::icons::plus())
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            cx.stop_propagation();
+                            app.note("skills.add_later", cx);
+                        }),
+                    ),
             )
             .child(
-                theme::interactive(
-                    "skill-details",
-                    self.t("skills.details"),
-                    &self.theme,
-                )
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .border_1()
-                .border_color(self.theme.line())
-                .bg(self.theme.card())
-                .text_size(self.theme.body_size())
-                .flex()
-                .items_center()
-                .gap_1()
-                .hover(|btn| btn.bg(self.theme.soft()))
-                .child(theme::icons::book().size(px(14.)))
-                .child(self.t("skills.details"))
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    app.note("skills.details_later", cx);
-                })),
+                theme::Button::new("skill-details", self.t("skills.details"))
+                    .icon(theme::icons::book())
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            cx.stop_propagation();
+                            app.note("skills.details_later", cx);
+                        }),
+                    ),
             )
     }
 
@@ -889,21 +816,18 @@ impl FlowyApp {
         icon: theme::icons::Icon,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        theme::interactive(id, label, &self.theme)
-            .size(px(28.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_center()
-            .hover(|mark| mark.bg(self.theme.card()))
-            .child(icon.size(px(16.)).text_color(self.theme.muted()))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                cx.stop_propagation();
-                if id == "skill-close" || id == "skill-stub-close" {
-                    app.active_dialog = super::state::ActiveDialog::None;
-                    cx.notify();
-                }
-            }))
+        theme::IconButton::new(id, label, icon)
+            .size(theme::ControlSize::Small)
+            .render(
+                &self.theme,
+                cx.listener(move |app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    if id == "skill-close" || id == "skill-stub-close" {
+                        app.active_dialog = super::state::ActiveDialog::None;
+                        cx.notify();
+                    }
+                }),
+            )
     }
 }
 
@@ -922,10 +846,7 @@ fn skill_cover(
         .child(skill_mark(skill, theme, 24.))
 }
 
-fn skill_hero(
-    skill: &Skill,
-    theme: &theme::ResolvedTheme,
-) -> impl IntoElement {
+fn skill_hero(skill: &Skill, theme: &theme::ResolvedTheme) -> impl IntoElement {
     div()
         .size(px(112.))
         .rounded_2xl()
@@ -947,10 +868,6 @@ fn skill_mark(
     div()
         .text_size(px(size))
         .font_weight(gpui::FontWeight::BOLD)
-        .text_color(if light {
-            theme.ink()
-        } else {
-            rgb(0x00ff_ffff)
-        })
+        .text_color(if light { theme.ink() } else { rgb(0x00ff_ffff) })
         .child(skill.mark.to_string())
 }

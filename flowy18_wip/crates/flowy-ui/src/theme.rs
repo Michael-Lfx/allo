@@ -61,8 +61,8 @@ pub enum ControlSize {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ControlVariant {
-    #[default]
     Primary,
+    #[default]
     Secondary,
     Ghost,
     Danger,

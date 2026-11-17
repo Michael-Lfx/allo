@@ -380,70 +380,52 @@ impl FlowyApp {
                 | UpdateStatus::Available { .. }
                 | UpdateStatus::Ready { .. }
         );
+        let check_is_primary = matches!(
+            self.ota.status,
+            UpdateStatus::Idle
+                | UpdateStatus::Checking
+                | UpdateStatus::UpToDate
+                | UpdateStatus::Failed { .. }
+        );
+        let checking = matches!(self.ota.status, UpdateStatus::Checking);
         let mut row = div().flex().gap_2().flex_wrap().child(
-            div()
-                .id("ota-check")
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .text_size(self.theme.body_size())
-                .bg(if can_check {
-                    self.theme.fill()
+            theme::Button::new("ota-check", self.t("ota.check"))
+                .variant(if check_is_primary {
+                    theme::ControlVariant::Primary
                 } else {
-                    self.theme.soft()
+                    theme::ControlVariant::Secondary
                 })
-                .text_color(if can_check {
-                    self.theme.on_fill()
-                } else {
-                    self.theme.muted()
-                })
-                .when(can_check, |button| {
-                    button.cursor_pointer().on_click(cx.listener(
-                        |app, _event, _window, cx| {
-                            app.start_update_check(cx);
-                        },
-                    ))
-                })
-                .child(self.t("ota.check")),
+                .disabled(!can_check && !checking)
+                .loading(checking)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _event, _window, cx| {
+                        app.start_update_check(cx);
+                    }),
+                ),
         );
         if matches!(self.ota.status, UpdateStatus::Available { .. }) {
             row = row.child(
-                theme::interactive(
-                    "ota-download",
-                    self.t("ota.download"),
-                    &self.theme,
-                )
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .text_size(self.theme.body_size())
-                .bg(self.theme.fill())
-                .text_color(self.theme.on_fill())
-                .cursor_pointer()
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    app.start_update_download(cx);
-                }))
-                .child(self.t("ota.download")),
+                theme::Button::new("ota-download", self.t("ota.download"))
+                    .variant(theme::ControlVariant::Primary)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            app.start_update_download(cx);
+                        }),
+                    ),
             );
         }
         if matches!(self.ota.status, UpdateStatus::Ready { .. }) {
             row = row.child(
-                theme::interactive(
-                    "ota-install",
-                    self.t("ota.install"),
-                    &self.theme,
-                )
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .text_size(self.theme.body_size())
-                .bg(self.theme.fill())
-                .text_color(self.theme.on_fill())
-                .cursor_pointer()
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    app.start_update_install(cx);
-                }))
-                .child(self.t("ota.install")),
+                theme::Button::new("ota-install", self.t("ota.install"))
+                    .variant(theme::ControlVariant::Primary)
+                    .render(
+                        &self.theme,
+                        cx.listener(|app, _event, _window, cx| {
+                            app.start_update_install(cx);
+                        }),
+                    ),
             );
         }
         row
