@@ -738,7 +738,7 @@ const LearningGraphWorkspace: React.FC<{
   const processingSecondaryParts: string[] = [];
   if (processingPrimary !== null) {
     if (graph.growth_running && processingPrimary !== 'growth') {
-      processingSecondaryParts.push(t('learning.learningGraphGrowing'));
+      processingSecondaryParts.push(t('learning.learningGraphAddingNodes'));
     }
     if (autoPreparing && processingPrimary !== 'auto') {
       processingSecondaryParts.push(t('learning.learningGraphAutoPreparing'));
@@ -762,7 +762,7 @@ const LearningGraphWorkspace: React.FC<{
         {t(structureBadge.key, 'vars' in structureBadge ? structureBadge.vars : undefined)}
       </ProcessingStateTag>
     ) : processingPrimary === 'growth' ? (
-      <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
+      <ProcessingStateTag>{t('learning.learningGraphAddingNodes')}</ProcessingStateTag>
     ) : processingPrimary === 'auto' ? (
       <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
     ) : null;

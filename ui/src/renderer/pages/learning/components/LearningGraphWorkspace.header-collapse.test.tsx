@@ -404,8 +404,9 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     const toggle = headerToggle('展开头部');
     expect(toggle).not.toBeNull();
     expect(toggle!.disabled).toBe(false);
-    // processing 徽章不可被折叠吞：摘要条兜底渲染生长徽章
-    expect(text).toContain('生长中…');
+    // processing 徽章不可被折叠吞：摘要条兜底渲染补充节点徽章（b2：
+    // 键名随值更名 learningGraphAddingNodes，动作名与按钮「补充节点」对齐）
+    expect(text).toContain('补充节点中…');
   });
 
   test('本地 growing 不再禁用折叠（a3）：生长在途可折叠、落持久化', async () => {
@@ -444,6 +445,15 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     expect(text).not.toContain('收起头部');
     expect(text).not.toContain('条主线');
     expect(container.querySelector('button[aria-label="收起头部"]')).toBeNull();
+  });
+
+  test('growth 徽章 en-US：Adding nodes…（b2 键名随值更名，与按钮 Grow nodes 同动作名）', async () => {
+    await mountGraphWorkspace({ growthRunning: true, locale: 'en-US' });
+    const text = container.textContent ?? '';
+    // 徽章值走 en-US 词典新值（learningGraphAddingNodes）
+    expect(text).toContain('Adding nodes…');
+    // 旧值零残留
+    expect(text).not.toContain('Growing…');
   });
 });
 

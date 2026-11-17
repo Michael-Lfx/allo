@@ -456,7 +456,7 @@
   "learningGraphTier_apply": "会用",
   "learningGraphTier_teach": "能教",
   "learningGraphGrow": "补充节点（就绪 {{ready}}/{{target}}）",
-  "learningGraphGrowing": "生长中…",
+  "learningGraphAddingNodes": "补充节点中…",
   "learningGraphAutoPreparing": "自动准备中…",
   "learningGraphWeakAdvice": "薄弱节点：{{nodes}}（预测回忆最低 {{percent}}%）——{{dueText}}",
   "learningGraphWeakAdviceDue": "{{count}} 道到期卡",
