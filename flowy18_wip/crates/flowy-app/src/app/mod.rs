@@ -101,6 +101,7 @@ pub struct FlowyApp {
     pub persona: PersonaState,
     pub appearance: AppearanceChrome,
     pub flex: FlexState,
+    pub user_menu: bool,
     pub prefs: Preferences,
     pub i18n: I18n,
     locale_watch: Option<Task<()>>,
@@ -291,6 +292,7 @@ impl FlowyApp {
                 secret: prefs.flex_api_key.clone(),
                 key_visible: false,
             },
+            user_menu: false,
             prefs,
             i18n,
             locale_watch: None,
@@ -619,6 +621,7 @@ impl FlowyApp {
         self.persona.menu = false;
         self.persona.dialog = more::Dialog::None;
         self.persona.status = None;
+        self.user_menu = false;
         self.notice = None;
         self.studio.update(cx, |panel, cx| panel.reset_session(cx));
         self.gallery.page = 0;
@@ -819,6 +822,9 @@ impl FlowyApp {
         };
         if self.persona.menu && self.section == Section::More {
             canvas = canvas.child(self.more_flyout(cx));
+        }
+        if self.user_menu {
+            canvas = canvas.child(self.user_menu_layer(cx));
         }
         canvas
     }

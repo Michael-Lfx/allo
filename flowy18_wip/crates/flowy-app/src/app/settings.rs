@@ -103,10 +103,19 @@ const BOTTOM: &[Page] = &[Page::Team, Page::About, Page::Help];
 
 impl FlowyApp {
     pub(super) fn open_settings(&mut self, cx: &mut Context<'_, Self>) {
+        self.open_settings_page(Page::General, cx);
+    }
+
+    pub(super) fn open_settings_page(
+        &mut self,
+        page: Page,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.settings.open = true;
         self.invite.open = false;
         self.flex.open = false;
         self.flex.provider_menu = false;
+        self.user_menu = false;
         self.studio.update(cx, |panel, cx| {
             panel.model_menu_open = false;
             panel.credits_hover = false;
@@ -118,7 +127,7 @@ impl FlowyApp {
         self.gallery.idea_note = false;
         self.persona.menu = false;
         self.persona.dialog = super::more::Dialog::None;
-        self.settings.page = Page::General;
+        self.settings.page = page;
         self.settings.picker = Picker::None;
         cx.notify();
     }

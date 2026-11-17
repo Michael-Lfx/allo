@@ -42,6 +42,7 @@ impl FlowyApp {
         self.invite.open = true;
         self.invite.panel = Panel::Share;
         self.invite.status = None;
+        self.user_menu = false;
         self.persona.dialog = super::more::Dialog::None;
         cx.notify();
     }

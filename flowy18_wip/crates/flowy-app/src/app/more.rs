@@ -46,6 +46,7 @@ impl FlowyApp {
             panel.model_menu_open = false;
             cx.notify();
         });
+        self.user_menu = false;
         if self.section == Section::More {
             self.persona.menu = !self.persona.menu;
         } else {

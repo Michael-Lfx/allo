@@ -57,6 +57,9 @@ const NAV: &[(&str, &str, Section, DockIcon)] = &[
     ("more", "dock.more", Section::More, DockIcon::More),
 ];
 
+const USER_MENU_WIDTH: f32 = 280.0;
+const USER_MENU_BOTTOM: f32 = 64.0;
+
 impl FlowyApp {
     pub fn dock(
         &self,
@@ -68,8 +71,6 @@ impl FlowyApp {
             |session| session.display_name.clone(),
         );
         let initial = name.chars().next().unwrap_or('F').to_string();
-        let studio = self.studio.read(cx);
-        let credits = grouped(studio.credits);
 
         div()
             .id("dock")
@@ -81,12 +82,12 @@ impl FlowyApp {
             .border_r_1()
             .border_color(theme::line())
             .child(self.dock_scroll(&name, cx))
-            .child(self.dock_footer(&name, &initial, &credits, cx))
+            .child(self.dock_footer(&name, &initial, cx))
     }
 
     fn dock_scroll(
         &self,
-        name: &str,
+        _name: &str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let mut column = div()
@@ -110,7 +111,7 @@ impl FlowyApp {
         // Independent Agent App entry — deferred.
         // .child(Self::nav_item(
         //     "agent",
-        //     self.tf("dock.agent", &[("name", name)]),
+        //     self.tf("dock.agent", &[("name", _name)]),
         //     false,
         //     cx,
         // ));
@@ -148,27 +149,19 @@ impl FlowyApp {
     ) -> impl IntoElement {
         item_row(id, label, selected, icon).on_click(cx.listener(
             move |app, _event, _window, cx| {
-                app.select_navigation(id, section, cx);
+                app.section = section;
+                app.persona.menu = false;
+                app.user_menu = false;
+                if id == "new-task" {
+                    app.studio.update(cx, |panel, cx| panel.new_task(cx));
+                    app.section = Section::Studio;
+                } else if section == Section::Studio {
+                    app.notice = None;
+                }
+                app.sync_studio_surface(cx);
+                cx.notify();
             },
         ))
-    }
-
-    pub(super) fn select_navigation(
-        &mut self,
-        id: &str,
-        section: Section,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.section = section;
-        self.persona.menu = false;
-        if id == "new-task" {
-            self.studio.update(cx, |panel, cx| panel.new_task(cx));
-            self.section = Section::Studio;
-        } else if section == Section::Studio {
-            self.notice = None;
-        }
-        self.sync_studio_surface(cx);
-        cx.notify();
     }
 
     fn more_dock_item(
@@ -179,6 +172,7 @@ impl FlowyApp {
         let selected = self.section == Section::More;
         item_row("more", self.t("dock.more"), selected, icon).on_click(
             cx.listener(|app, _event, _window, cx| {
+                app.user_menu = false;
                 app.toggle_more(cx);
             }),
         )
@@ -194,6 +188,7 @@ impl FlowyApp {
                 DockIcon::NewProject,
             )
             .on_click(cx.listener(|app, _event, _window, cx| {
+                app.user_menu = false;
                 app.add_project(cx);
             })),
         );
@@ -232,6 +227,7 @@ impl FlowyApp {
             rows = rows.child(
                 item_row(id, title, selected, DockIcon::Task).on_click(
                     cx.listener(move |app, _event, _window, cx| {
+                        app.user_menu = false;
                         app.section = Section::Studio;
                         app.studio.update(cx, |panel, cx| {
                             panel.open_session(&session_id, cx);
@@ -248,7 +244,6 @@ impl FlowyApp {
         &self,
         name: &str,
         initial: &str,
-        credits: &str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         div()
@@ -256,71 +251,369 @@ impl FlowyApp {
             .border_color(theme::line())
             .px_3()
             .py_3()
+            .child(
+                div()
+                    .id("dock-user")
+                    .px_1()
+                    .py_1()
+                    .rounded_lg()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .hover(|row| row.bg(theme::soft()))
+                    .on_click(cx.listener(|app, _event, _window, cx| {
+                        cx.stop_propagation();
+                        app.toggle_user_menu(cx);
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(avatar(initial))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(name.to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                theme::icons::monitor()
+                                    .text_color(theme::muted()),
+                            )
+                            .child(
+                                theme::icons::bell().text_color(theme::muted()),
+                            ),
+                    ),
+            )
+    }
+
+    pub(super) fn toggle_user_menu(&mut self, cx: &mut Context<'_, Self>) {
+        self.studio.update(cx, |panel, cx| {
+            panel.model_menu_open = false;
+            cx.notify();
+        });
+        self.persona.menu = false;
+        self.user_menu = !self.user_menu;
+        cx.notify();
+    }
+
+    pub(super) fn close_user_menu(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.user_menu {
+            return;
+        }
+        self.user_menu = false;
+        cx.notify();
+    }
+
+    pub fn user_menu_layer(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let name = self.auth.session.as_ref().map_or_else(
+            || self.t("dock.user_fallback"),
+            |session| session.display_name.clone(),
+        );
+        let initial = name.chars().next().unwrap_or('F').to_string();
+        let credits = grouped(self.studio.read(cx).credits);
+
+        div()
+            .id("user-menu-layer")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                cx.stop_propagation();
+                app.close_user_menu(cx);
+            }))
+            .child(self.user_menu_card(&name, &initial, &credits, cx))
+    }
+
+    fn user_menu_card(
+        &self,
+        name: &str,
+        initial: &str,
+        credits: &str,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        div()
+            .id("user-menu")
+            .occlude()
+            .absolute()
+            .left(px(8.))
+            .bottom(px(USER_MENU_BOTTOM))
+            .w(px(USER_MENU_WIDTH))
+            .rounded_xl()
+            .bg(theme::card())
+            .border_1()
+            .border_color(theme::line())
+            .shadow_md()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .on_click(cx.listener(|_app, _event, _window, cx| {
+                cx.stop_propagation();
+            }))
+            .child(self.user_menu_header(name, initial))
+            .child(self.user_menu_credits(credits, cx))
+            .child(self.user_menu_row(
+                "user-account",
+                theme::icons::user(),
+                self.t("settings.account"),
+                false,
+                cx,
+                |app, cx| {
+                    app.open_settings_page(super::settings::Page::Account, cx);
+                },
+            ))
+            .child(self.user_menu_row(
+                "user-settings",
+                theme::icons::sliders_horizontal(),
+                self.t("dock.settings"),
+                false,
+                cx,
+                |app, cx| {
+                    app.open_settings_page(super::settings::Page::General, cx);
+                },
+            ))
+            .child(menu_divider())
+            .child(self.user_menu_row(
+                "user-home",
+                theme::icons::house(),
+                self.t("dock.home"),
+                true,
+                cx,
+                |app, cx| {
+                    app.user_menu = false;
+                    app.note("notice.cloud_later", cx);
+                },
+            ))
+            .child(self.user_menu_row(
+                "user-help",
+                theme::icons::circle_help(),
+                self.t("settings.help"),
+                true,
+                cx,
+                |app, cx| {
+                    app.open_settings_page(super::settings::Page::Help, cx);
+                },
+            ))
+            .child(self.user_menu_row(
+                "user-docs",
+                theme::icons::book(),
+                self.t("dock.docs"),
+                true,
+                cx,
+                |app, cx| {
+                    app.user_menu = false;
+                    app.note("notice.cloud_later", cx);
+                },
+            ))
+            .child(menu_divider())
+            .child(self.user_menu_sign_out(cx))
+    }
+
+    fn user_menu_header(&self, name: &str, initial: &str) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(avatar(initial))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(name.to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::muted())
+                            .child(self.t("settings.personal_plan")),
+                    ),
+            )
+            .child(
+                theme::icons::chevrons_up_down().text_color(theme::muted()),
+            )
+    }
+
+    fn user_menu_credits(
+        &self,
+        credits: &str,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        div()
+            .mx_1()
+            .mb_1()
+            .px_3()
+            .py_3()
+            .rounded_lg()
+            .bg(theme::soft())
             .flex()
             .flex_col()
             .gap_2()
             .child(
                 div()
-                    .id("credits")
-                    .px_2()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(theme::soft())
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.open_invite(cx);
-                    }))
+                    .items_center()
+                    .justify_between()
                     .child(
-                        div().text_sm().child(
-                            self.tf("dock.credits", &[("count", credits)]),
-                        ),
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(self.t("credits.plan_free")),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .child(self.t("dock.invite")),
+                            .id("user-upgrade")
+                            .px_3()
+                            .py_1()
+                            .rounded_lg()
+                            .bg(theme::fill())
+                            .text_color(theme::on_fill())
+                            .text_sm()
+                            .cursor_pointer()
+                            .child(self.t("studio.upgrade"))
+                            .on_click(cx.listener(
+                                |app, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    app.user_menu = false;
+                                    app.note("notice.upgrade_later", cx);
+                                },
+                            )),
                     ),
             )
             .child(
                 div()
+                    .id("user-credits")
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px_1()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|app, _event, _window, cx| {
+                        cx.stop_propagation();
+                        app.user_menu = false;
+                        app.open_invite(cx);
+                    }))
                     .child(
                         div()
-                            .id("open-settings")
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(avatar(initial))
-                            .child(div().text_sm().child(name.to_string()))
-                            .on_click(cx.listener(
-                                |app, _event, _window, cx| {
-                                    app.open_settings(cx);
-                                },
-                            )),
+                            .gap_1()
+                            .child(theme::icons::sparkles())
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(self.t("credits.balance")),
+                            )
+                            .child(
+                                theme::icons::info()
+                                    .size(px(14.))
+                                    .text_color(theme::muted()),
+                            ),
                     )
                     .child(
                         div()
-                            .id("sign-out")
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .cursor_pointer()
-                            .child(self.t("dock.sign_out"))
-                            .on_click(cx.listener(
-                                |app, _event, _window, cx| {
-                                    app.sign_out(cx);
-                                },
-                            )),
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(credits.to_string()),
+                            )
+                            .child(
+                                theme::icons::chevron_right()
+                                    .text_color(theme::muted()),
+                            ),
                     ),
             )
     }
+
+    fn user_menu_row(
+        &self,
+        id: &'static str,
+        icon: gpui::Svg,
+        label: String,
+        external: bool,
+        cx: &Context<'_, Self>,
+        action: impl Fn(&mut Self, &mut Context<'_, Self>) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .px_2()
+            .py_2()
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .hover(|row| row.bg(theme::soft()))
+            .on_click(cx.listener(move |app, _event, _window, cx| {
+                cx.stop_propagation();
+                action(app, cx);
+            }))
+            .child(icon)
+            .child(div().flex_1().text_sm().child(label))
+            .when(external, |row| {
+                row.child(
+                    theme::icons::arrow_up_right().text_color(theme::muted()),
+                )
+            })
+    }
+
+    fn user_menu_sign_out(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        div()
+            .id("user-sign-out")
+            .px_2()
+            .py_2()
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .hover(|row| row.bg(theme::soft()))
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                cx.stop_propagation();
+                app.user_menu = false;
+                app.sign_out(cx);
+            }))
+            .child(theme::icons::log_out().text_color(theme::danger()))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme::danger())
+                    .child(self.t("dock.sign_out")),
+            )
+    }
+
 }
 
 fn brand() -> impl IntoElement {
@@ -385,13 +678,21 @@ fn avatar(initial: &str) -> impl IntoElement {
     div()
         .size(px(28.))
         .rounded_full()
-        .bg(theme::ink())
+        .bg(theme::accent())
         .text_color(theme::on_ink())
         .flex()
         .items_center()
         .justify_center()
         .text_xs()
         .child(initial.to_string())
+}
+
+fn menu_divider() -> impl IntoElement {
+    div()
+        .my_1()
+        .mx_1()
+        .h(px(1.))
+        .bg(theme::line())
 }
 
 fn grouped(value: u32) -> String {
