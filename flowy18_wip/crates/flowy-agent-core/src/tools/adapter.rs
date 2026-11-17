@@ -10,9 +10,11 @@ use rpi_agent::{AgentError, AgentTool, AgentToolResult, TextContentOrImage};
 use rpi_ai::types::Tool;
 use tokio_util::sync::CancellationToken;
 
-use crate::tools::registry::ToolRegistry;
 use crate::tools::ToolDefinition;
-use crate::types::{CancelToken, ContentBlock, ToolExecutionResult, ToolRunContext};
+use crate::tools::registry::ToolRegistry;
+use crate::types::{
+    CancelToken, ContentBlock, ToolExecutionResult, ToolRunContext,
+};
 
 /// One registered host tool exposed to the loop.
 pub struct RegistryTool {
@@ -38,7 +40,12 @@ impl RegistryTool {
     ) -> Result<Self, String> {
         let core_schema = definition.schema();
         let parameters = serde_json::from_value(core_schema.parameters)
-            .map_err(|error| format!("tool {} has an invalid schema: {error}", core_schema.name))?;
+            .map_err(|error| {
+                format!(
+                    "tool {} has an invalid schema: {error}",
+                    core_schema.name
+                )
+            })?;
         Ok(Self {
             registry,
             definition,
@@ -82,11 +89,13 @@ impl AgentTool for RegistryTool {
             )
             .await;
         match result {
-            ToolExecutionResult::Success { content, value, .. } => Ok(AgentToolResult {
-                content: to_loop_content(&content),
-                details: value,
-                ..AgentToolResult::default()
-            }),
+            ToolExecutionResult::Success { content, value, .. } => {
+                Ok(AgentToolResult {
+                    content: to_loop_content(&content),
+                    details: value,
+                    ..AgentToolResult::default()
+                })
+            }
             ToolExecutionResult::Error {
                 message,
                 code,
@@ -104,9 +113,15 @@ fn to_loop_content(content: &[ContentBlock]) -> Vec<TextContentOrImage> {
     content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(TextContentOrImage::text(text.clone())),
-            ContentBlock::Reasoning { text } => Some(TextContentOrImage::text(text.clone())),
-            ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => None,
+            ContentBlock::Text { text } => {
+                Some(TextContentOrImage::text(text.clone()))
+            }
+            ContentBlock::Reasoning { text } => {
+                Some(TextContentOrImage::text(text.clone()))
+            }
+            ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => {
+                None
+            }
         })
         .collect()
 }
@@ -117,12 +132,13 @@ mod tests {
     use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
     use crate::tools::{ToolDefinition, ToolRegistry};
     use crate::types::{
-        CancelToken, ContentBlock, ToolCallArgs, ToolExecutionResult, ToolRunContext,
+        CancelToken, ContentBlock, ToolCallArgs, ToolExecutionResult,
+        ToolRunContext,
     };
     use rpi_agent::CollectorEmitter;
     use rpi_ai::types::{
-        Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason, StopReason, ToolCall,
-        ToolCallType,
+        Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason,
+        StopReason, ToolCall, ToolCallType,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -137,7 +153,10 @@ mod tests {
                 let calls = calls.clone();
                 Box::pin(async move {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    let text = args.arguments["text"].as_str().unwrap_or_default().to_owned();
+                    let text = args.arguments["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
                     ToolExecutionResult::success_text(text, args.arguments)
                 })
             },
@@ -188,7 +207,8 @@ mod tests {
                 })];
                 message.stop_reason = StopReason::ToolUse;
             } else {
-                let rpi_ai::types::Message::ToolResult(result) = context.messages.last().unwrap()
+                let rpi_ai::types::Message::ToolResult(result) =
+                    context.messages.last().unwrap()
                 else {
                     panic!("second request must carry the tool result");
                 };
@@ -218,6 +238,7 @@ mod tests {
                     provider: "flowy".into(),
                     model: "m".into(),
                     base_url: "https://example.invalid".into(),
+                    ..ModelRoute::default()
                 },
                 tools: vec![Arc::new(tool)],
                 signal: CancelToken::new(),
@@ -233,15 +254,17 @@ mod tests {
             .messages
             .iter()
             .find(|message| {
-                message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                message.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolResult { .. })
+                })
             })
             .expect("tool result stored in host history");
         assert!(matches!(
             &tool_result.content[0],
-            ContentBlock::ToolResult { is_error: Some(false), .. }
+            ContentBlock::ToolResult {
+                is_error: Some(false),
+                ..
+            }
         ));
     }
 }

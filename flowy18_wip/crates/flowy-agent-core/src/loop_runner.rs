@@ -7,32 +7,42 @@
 use std::sync::Arc;
 
 use rpi_agent::hooks::AgentLoopConfig;
-use rpi_agent::{AgentContext, AgentEmitter, AgentMessage, AgentTool, StreamFn, run_agent_loop};
+use rpi_agent::{
+    AgentContext, AgentEmitter, AgentMessage, AgentTool, StreamFn,
+    run_agent_loop,
+};
 use rpi_ai::types::{
-    Api, AssistantMessage, Content, StopReason, ThinkingContent, ToolCall, ToolCallType,
-    ToolResultMessage, ToolResultRole, UserContent, UserMessage,
+    Api, AssistantMessage, Content, StopReason, ThinkingContent, ToolCall,
+    ToolCallType, ToolResultMessage, ToolResultRole, UserContent, UserMessage,
 };
 
 use crate::types::{CancelToken, ContentBlock, Message, MessageSource, Role};
 
 /// Provider route for one run. Credentials live in the stream function.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelRoute {
     pub provider: String,
     pub model: String,
     pub base_url: String,
+    /// Catalog-declared context window; 0 means "provider default".
+    pub context_window: u64,
+    /// Catalog-declared visible output allowance; 0 means "provider default".
+    pub max_tokens: u64,
 }
 
 impl ModelRoute {
     #[must_use]
     pub fn rpi_model(&self) -> rpi_ai::Model {
-        rpi_ai::Model::new(
+        let mut model = rpi_ai::Model::new(
             self.model.clone(),
             self.model.clone(),
             Api::OpenaiCompletions,
             self.provider.clone(),
             self.base_url.clone(),
-        )
+        );
+        model.context_window = self.context_window;
+        model.max_tokens = self.max_tokens;
+        model
     }
 }
 
@@ -123,12 +133,46 @@ pub async fn run_turn(
         session_id: None,
         signal,
     };
-    let new_messages = run_agent_loop(prompts, context, config, emit, stream_fn)
-        .await
-        .map_err(|error| error.to_string())?;
+    let new_messages =
+        run_agent_loop(prompts, context, config, emit, stream_fn)
+            .await
+            .map_err(|error| error.to_string())?;
     let outcome = outcome_of(&new_messages);
     let messages = to_host_messages(&new_messages);
     Ok(TurnResult { messages, outcome })
+}
+
+/// One-shot text completion with no tools or history, used for sidecar tasks
+/// such as title generation.
+pub async fn complete_text(
+    system: &str,
+    prompt: &str,
+    route: ModelRoute,
+    api_key: Option<String>,
+    signal: CancelToken,
+) -> Result<String, String> {
+    let stream = crate::transport::openai_stream_fn(&route, api_key);
+    let (emitter, _events) = rpi_agent::CollectorEmitter::new();
+    let result = run_turn(
+        TurnRequest {
+            system: system.to_owned(),
+            history: Vec::new(),
+            prompt: prompt.to_owned(),
+            route,
+            tools: Vec::new(),
+            signal,
+        },
+        stream,
+        Arc::new(emitter),
+    )
+    .await?;
+    Ok(result
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::Assistant)
+        .map(|message| message.text())
+        .unwrap_or_default())
 }
 
 fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
@@ -145,11 +189,11 @@ fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
 
 /// Convert stored messages to pi agent messages. Tool results must carry the
 /// originating tool name via [`MessageSource::Tool`].
-pub fn to_agent_message(message: &Message) -> Result<Option<AgentMessage>, String> {
-    if let Some(tool_result) = message
-        .content
-        .iter()
-        .find_map(|block| match block {
+pub fn to_agent_message(
+    message: &Message,
+) -> Result<Option<AgentMessage>, String> {
+    if let Some(tool_result) =
+        message.content.iter().find_map(|block| match block {
             ContentBlock::ToolResult {
                 tool_call_id,
                 content,
@@ -160,23 +204,31 @@ pub fn to_agent_message(message: &Message) -> Result<Option<AgentMessage>, Strin
     {
         let tool_name = match &message.source {
             MessageSource::Tool { tool } => tool.clone(),
-            _ => return Err("tool result message is missing its tool name".into()),
+            _ => {
+                return Err(
+                    "tool result message is missing its tool name".into()
+                );
+            }
         };
         let (tool_call_id, content, is_error) = tool_result;
-        return Ok(Some(AgentMessage::ToolResult(Box::new(ToolResultMessage {
-            role: ToolResultRole,
-            tool_call_id: tool_call_id.clone(),
-            tool_name,
-            content: to_pi_content(content)?,
-            details: None,
-            usage: None,
-            added_tool_names: Vec::new(),
-            is_error: is_error.unwrap_or(false),
-            timestamp: now_ms(),
-        }))));
+        return Ok(Some(AgentMessage::ToolResult(Box::new(
+            ToolResultMessage {
+                role: ToolResultRole,
+                tool_call_id: tool_call_id.clone(),
+                tool_name,
+                content: to_pi_content(content)?,
+                details: None,
+                usage: None,
+                added_tool_names: Vec::new(),
+                is_error: is_error.unwrap_or(false),
+                timestamp: now_ms(),
+            },
+        ))));
     }
     match message.role {
-        Role::System => Err("system messages belong in the system prompt".into()),
+        Role::System => {
+            Err("system messages belong in the system prompt".into())
+        }
         Role::User => Ok(Some(AgentMessage::User(UserMessage::new(
             UserContent::Text(message.text()),
             now_ms(),
@@ -214,19 +266,25 @@ fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
         .iter()
         .map(|block| match block {
             ContentBlock::Text { text } => Ok(Content::text(text.clone())),
-            ContentBlock::Reasoning { text } => Ok(Content::Thinking(ThinkingContent {
-                kind: rpi_ai::types::ThinkingContentType,
-                thinking: text.clone(),
-                thinking_signature: None,
-                redacted: false,
-            })),
+            ContentBlock::Reasoning { text } => {
+                Ok(Content::Thinking(ThinkingContent {
+                    kind: rpi_ai::types::ThinkingContentType,
+                    thinking: text.clone(),
+                    thinking_signature: None,
+                    redacted: false,
+                }))
+            }
             ContentBlock::ToolCall {
                 id,
                 name,
                 arguments,
             } => {
-                let arguments: serde_json::Value = serde_json::from_str(arguments)
-                    .map_err(|error| format!("tool call {id} has invalid JSON arguments: {error}"))?;
+                let arguments: serde_json::Value =
+                    serde_json::from_str(arguments).map_err(|error| {
+                        format!(
+                            "tool call {id} has invalid JSON arguments: {error}"
+                        )
+                    })?;
                 Ok(Content::ToolCall(ToolCall {
                     kind: ToolCallType,
                     id: id.clone(),
@@ -263,15 +321,21 @@ pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                     .content
                     .iter()
                     .filter_map(|content| match content {
-                        Content::Text(text) => Some(ContentBlock::text(text.text.clone())),
-                        Content::Thinking(thinking) => Some(ContentBlock::Reasoning {
-                            text: thinking.thinking.clone(),
-                        }),
-                        Content::ToolCall(call) => Some(ContentBlock::ToolCall {
-                            id: call.id.clone(),
-                            name: call.name.clone(),
-                            arguments: call.arguments.to_string(),
-                        }),
+                        Content::Text(text) => {
+                            Some(ContentBlock::text(text.text.clone()))
+                        }
+                        Content::Thinking(thinking) => {
+                            Some(ContentBlock::Reasoning {
+                                text: thinking.thinking.clone(),
+                            })
+                        }
+                        Content::ToolCall(call) => {
+                            Some(ContentBlock::ToolCall {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments: call.arguments.to_string(),
+                            })
+                        }
                         Content::Image(_) => None,
                     })
                     .collect();
@@ -290,10 +354,12 @@ pub fn to_host_messages(new_messages: &[AgentMessage]) -> Vec<Message> {
                     .content
                     .iter()
                     .filter_map(|content| match content {
-                        Content::Text(text) => Some(ContentBlock::text(text.text.clone())),
-                        Content::Thinking(thinking) => Some(ContentBlock::text(
-                            thinking.thinking.clone(),
-                        )),
+                        Content::Text(text) => {
+                            Some(ContentBlock::text(text.text.clone()))
+                        }
+                        Content::Thinking(thinking) => {
+                            Some(ContentBlock::text(thinking.thinking.clone()))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -333,7 +399,11 @@ fn user_text(content: &UserContent) -> String {
 fn next_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!("m-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "m-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn now_ms() -> i64 {
@@ -345,14 +415,17 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelRoute, TurnRequest, to_agent_message, to_host_messages, run_turn, LoopOutcome};
+    use super::{
+        LoopOutcome, ModelRoute, TurnRequest, run_turn, to_agent_message,
+        to_host_messages,
+    };
     use crate::types::{
         CancelToken, ContentBlock, Message, MessageSource, Role,
     };
     use rpi_agent::{AgentMessage, CollectorEmitter};
     use rpi_ai::types::{
-        Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason, ErrorReason,
-        StopReason,
+        Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason,
+        ErrorReason, StopReason,
     };
     use std::sync::Arc;
 
@@ -361,7 +434,20 @@ mod tests {
             provider: "flowy".into(),
             model: "AIPC-deepseek-v4-flash".into(),
             base_url: "https://example.invalid/claw/v1".into(),
+            ..ModelRoute::default()
         }
+    }
+
+    #[test]
+    fn catalog_limits_reach_the_pi_model() {
+        let route = ModelRoute {
+            context_window: 1234,
+            max_tokens: 567,
+            ..route()
+        };
+        let model = route.rpi_model();
+        assert_eq!(model.context_window, 1234);
+        assert_eq!(model.max_tokens, 567);
     }
 
     #[test]
@@ -414,14 +500,19 @@ mod tests {
         assert_eq!(assistant.stop_reason, StopReason::ToolUse);
 
         let back = to_host_messages(&[AgentMessage::Assistant(assistant)]);
-        let ContentBlock::ToolCall { arguments, .. } = &back[0].content[0] else {
+        let ContentBlock::ToolCall { arguments, .. } = &back[0].content[0]
+        else {
             panic!("expected tool call after round trip");
         };
-        let parsed: serde_json::Value = serde_json::from_str(arguments).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(arguments).unwrap();
         assert_eq!(parsed["path"], "a.txt");
     }
 
-    fn scripted_stream(text: &'static str, stop: StopReason) -> rpi_agent::StreamFn {
+    fn scripted_stream(
+        text: &'static str,
+        stop: StopReason,
+    ) -> rpi_agent::StreamFn {
         rpi_agent::stream_fn(move |model, _, _| {
             let mut message = AssistantMessage::empty(
                 Api::Other("test".into()),
@@ -481,7 +572,10 @@ mod tests {
         .unwrap();
         assert_eq!(result.outcome, LoopOutcome::Completed);
         assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[1].content, vec![ContentBlock::text("hello")]);
+        assert_eq!(
+            result.messages[1].content,
+            vec![ContentBlock::text("hello")]
+        );
     }
 
     #[tokio::test]

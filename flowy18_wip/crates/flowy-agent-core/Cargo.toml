@@ -15,6 +15,7 @@ regex = "1"
 reqwest = { workspace = true }
 rpi-agent = { workspace = true }
 rpi-ai = { workspace = true }
+rpi-tools = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = [

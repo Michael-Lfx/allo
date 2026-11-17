@@ -48,6 +48,7 @@ flowy-agent = { path = "crates/flowy-agent" }
 flowy-agent-core = { path = "crates/flowy-agent-core" }
 rpi-agent = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
 rpi-ai = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7", default-features = false, features = ["providers"] }
+rpi-tools = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
 flowy-chat = { path = "crates/flowy-chat" }
 flowy-i18n = { path = "crates/flowy-i18n" }
 flowy-ui = { path = "crates/flowy-ui" }

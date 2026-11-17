@@ -1,6 +1,6 @@
 # 早期环境调查记录（已被新记录取代）
 
-当前状态见 [cloud-model-catalog/BLOCKED.md](cloud-model-catalog/BLOCKED.md)。以下保留开工时原始观察，MSVC初始化和下载问题现已解除；真实会话路由仍阻塞。
+当前状态见 [cloud-model-catalog/BLOCKED.md](../cloud-model-catalog/BLOCKED.md)。以下保留开工时原始观察，MSVC初始化和下载问题现已解除；真实会话路由仍阻塞。
 
 1. 基线命令未能进入测试：
    - 命令：`RUSTUP_TOOLCHAIN=1.97.1-x86_64-pc-windows-msvc CC=cl.exe CXX=cl.exe CARGO_PROFILE_DEV_DEBUG=0 cargo test -p flowy-auth --ignore-rust-version`

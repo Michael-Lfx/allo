@@ -38,4 +38,4 @@
 - core：`cargo test -p flowy-agent-core` → 26 passed。
 - agent：`cargo test -p flowy-agent`（TEMP 重定向）→ 17 passed / 1 ignored。
 - 依赖树：`cargo tree -p flowy-agent --depth 1` → core / serde / serde_json / tokio。
-- 进度记录：[agent-core-migration.md](agent-core-migration.md)。
+- 进度记录：[agent-core-migration.md](../architecture/agent-core-migration.md)。

@@ -13,7 +13,9 @@ pub mod transport;
 pub mod types;
 
 pub use engine::{Engine, EngineConfig, RunError, TurnObserver};
-pub use loop_runner::{LoopOutcome, ModelRoute, TurnRequest, TurnResult, run_turn};
+pub use loop_runner::{
+    LoopOutcome, ModelRoute, TurnRequest, TurnResult, complete_text, run_turn,
+};
 pub use run_fence::{RunFence, RunTicket};
 pub use session::{SessionIndex, SessionRecord, TurnState};
 pub use transport::{echo_stream_fn, openai_stream_fn};

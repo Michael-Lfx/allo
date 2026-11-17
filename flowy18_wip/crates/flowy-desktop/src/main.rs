@@ -3,8 +3,25 @@ use std::sync::{Arc, OnceLock};
 
 static LOG_GUARDS: OnceLock<LogGuards> = OnceLock::new();
 
+/// Point pi-rust's temp staging and child shells at the app runtime directory.
+///
+/// SAFETY: called from `main` before GPUI, tracing, telemetry, or any worker
+/// thread starts, so no other thread can read the environment concurrently.
+#[allow(unsafe_code)]
+fn set_temp_env(dir: &std::path::Path) {
+    unsafe {
+        std::env::set_var("TMP", dir);
+        std::env::set_var("TEMP", dir);
+        std::env::set_var("TMPDIR", dir);
+    }
+}
+
 fn main() {
     let data_root = flowy_app::app::default_store_root();
+    let runtime_temp = flowy_app::session::ensure_runtime_temp(&data_root);
+    if let Ok(dir) = &runtime_temp {
+        set_temp_env(dir);
+    }
     flowy_obs::record_boot_note(
         BootNoteLevel::Info,
         format!(
@@ -24,6 +41,18 @@ fn main() {
         path = %log_dir.display(),
         "logging ready"
     );
+    match &runtime_temp {
+        Ok(dir) => tracing::info!(
+            target: "flowy.boot",
+            path = %dir.display(),
+            "runtime temp ready"
+        ),
+        Err(error) => tracing::warn!(
+            target: "flowy.boot",
+            %error,
+            "runtime temp unavailable; using system temp"
+        ),
+    }
 
     let prefs = flowy_app::prefs::Preferences::load(&data_root);
     let telemetry = Arc::new(Telemetry::open(TelemetryConfig {
@@ -49,8 +78,8 @@ fn main() {
         let _ = flowy_shell::set_autostart(prefs.launch_at_login);
     }
 
-    let application = gpui_platform::application()
-        .with_quit_mode(gpui::QuitMode::Explicit);
+    let application =
+        gpui_platform::application().with_quit_mode(gpui::QuitMode::Explicit);
     application.on_open_urls(|urls| {
         flowy_shell::enqueue_urls(urls);
     });

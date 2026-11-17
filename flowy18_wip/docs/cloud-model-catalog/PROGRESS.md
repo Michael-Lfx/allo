@@ -1,5 +1,12 @@
 # 账号模型目录执行进度
 
+## 收尾状态（2026-11-17 晚）
+
+- 分支已 rebase 到最新 `origin/main`（`0cccfec79`），4 个提交线性重放，仅 `app/mod.rs` 的 `sign_out` 冲突（保留 main 的 `pub(super)` + 本分支的目录清理）。
+- 代码审查收尾：修复「未入库的 pi.rs 被已暂存代码引用」与「错误提示当模型名展示」两项 Required；补齐空目录提示、`apply_config` 失败路径、StorageError 去重、刷新入口 i18n/禁用态、品牌 chip 语义；清理死代码 `sync_agent_llm`。
+- 验证：`flowy-app` 21 passed、`flowy-studio` 5 passed、`flowy-agent-core` 24 passed/1 ignored、`flowy-agent` 34 passed/2 ignored、`flowy-auth` 11 passed；Windows 桌面入口实跑可启动。
+- 遗留：真实云端推理、macOS/Linux、Windows MSVC D8050 根因（下个分支）。
+
 ## 最新状态（2026-11-17，覆盖下方历史状态）
 用户明确授权全部修复并提交。多轮复核撤销未证实的跨账号目录问题；确认并修复已有会话路由不更新。修改范围增补handle.rs及dsh-rs的services/agent/loop_driver。通过Mutex options原地更新，保留session身份及历史；先验证adapter再替换，在线切换拒绝busy，断开取消所有agents。cloud_ready已恢复成功后开放。新增路由回归1/1通过，auth目录5/5、agent目录3/3通过；相关库check通过，最终上层含tests check退出0(5.43s)。旧21个test函数逐字一致。独立复审最终确认两项Required（替换原子性、退出失败路径）均闭环，无新增必修项：运行时新增同锁replace_adapter，断开路径无注册失败分支。最终dsh --lib 6/6绿，上层含tests check退出0(5.42s)。本轮完成已授权提交，不推送；真实云调用和其他平台仍未验证。
 

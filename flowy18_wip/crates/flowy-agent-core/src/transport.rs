@@ -7,11 +7,14 @@
 
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use rpi_agent::StreamFn;
 use rpi_ai::provider::Provider;
 use rpi_ai::providers::openai_completions::OpenAiCompletionsProvider;
 use rpi_ai::types::{
-    Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason, StopReason,
+    Api, AssistantMessage, AssistantMessageEvent, Content, DoneReason,
+    StopReason,
 };
 
 use crate::loop_runner::ModelRoute;
@@ -23,8 +26,12 @@ use crate::loop_runner::ModelRoute;
 #[must_use]
 pub fn echo_stream_fn(text: String) -> StreamFn {
     rpi_agent::stream_fn(move |model, _, _| {
-        let mut message =
-            AssistantMessage::empty(Api::OpenaiCompletions, "flowy", model.id.clone(), 0);
+        let mut message = AssistantMessage::empty(
+            Api::OpenaiCompletions,
+            "flowy",
+            model.id.clone(),
+            0,
+        );
         message.content = vec![Content::text(text.clone())];
         message.stop_reason = StopReason::Stop;
         let (mut producer, consumer) =
@@ -46,18 +53,32 @@ pub fn echo_stream_fn(text: String) -> StreamFn {
     })
 }
 
+fn http_client() -> reqwest::Client {
+    // pi's provider already applies its own request timeout (600s) and stream
+    // idle timeout (300s); do not add a shorter blanket timeout here or long
+    // streaming turns get cut off.
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .expect("build flowy HTTP client")
+}
+
 /// Build the stream function for one turn.
 ///
 /// `api_key` is the account token for this run only; the provider is created
 /// per run so a logout cannot leave a live credential in a long-lived client.
-pub fn openai_stream_fn(route: &ModelRoute, api_key: Option<String>) -> StreamFn {
+pub fn openai_stream_fn(
+    route: &ModelRoute,
+    api_key: Option<String>,
+) -> StreamFn {
     let model = route.rpi_model();
-    let provider = Arc::new(OpenAiCompletionsProvider::with_models_without_env_api_key(
-        route.provider.clone(),
-        api_key,
-        reqwest::Client::new(),
-        vec![model.clone()],
-    ));
+    let provider =
+        Arc::new(OpenAiCompletionsProvider::with_models_without_env_api_key(
+            route.provider.clone(),
+            api_key,
+            http_client(),
+            vec![model.clone()],
+        ));
     rpi_agent::stream_fn(move |_requested, context, options| {
         let provider = Arc::clone(&provider);
         let model = model.clone();
@@ -66,7 +87,8 @@ pub fn openai_stream_fn(route: &ModelRoute, api_key: Option<String>) -> StreamFn
         let (mut producer, consumer) =
             rpi_ai::event_stream::create_assistant_message_event_stream();
         tokio::spawn(async move {
-            let mut inner = provider.stream_simple(&model, &context, &options).await;
+            let mut inner =
+                provider.stream_simple(&model, &context, &options).await;
             while let Some(event) = inner.next().await {
                 producer.push(event).await;
             }
@@ -87,6 +109,7 @@ mod tests {
             provider: "flowy".into(),
             model: "AIPC-deepseek-v4-flash".into(),
             base_url: "https://example.invalid/claw/v1".into(),
+            ..ModelRoute::default()
         }
     }
 
@@ -109,7 +132,7 @@ mod tests {
             rpi_ai::providers::openai_completions::OpenAiCompletionsProvider::with_models_without_env_api_key(
                 "flowy",
                 Some("token".into()),
-                reqwest::Client::new(),
+                super::http_client(),
                 vec![model.clone()],
             );
         assert_eq!(provider.id(), "flowy");

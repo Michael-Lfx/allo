@@ -158,8 +158,8 @@ impl ChatComposer {
                                 cx,
                             ))
                             .child(self.chat_composer_chip(
-                                "composer-plan",
-                                self.composer_plan_label(),
+                                "composer-brand",
+                                "Flowy".to_owned(),
                                 false,
                                 cx,
                             ))
@@ -191,10 +191,6 @@ impl ChatComposer {
         }
     }
 
-    fn composer_plan_label(&self) -> String {
-        "Flowy".to_owned()
-    }
-
     fn chat_composer_chip(
         &self,
         id: &'static str,
@@ -202,6 +198,10 @@ impl ChatComposer {
         primary: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let interactive = matches!(
+            id,
+            "composer-model" | "composer-access" | "composer-mode"
+        );
         let control = theme::interactive(id, label.clone(), &self.theme)
             .focus_visible(|style| style.border_color(self.theme.on_composer()))
             .min_h(self.theme.control_height(theme::ControlSize::Small))
@@ -216,36 +216,28 @@ impl ChatComposer {
             } else {
                 self.theme.composer_muted()
             })
-            .cursor_pointer()
-            .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
             .when(primary, |el| el.child(theme::icons::sparkles()))
-            .aria_expanded(
-                self.model_menu_open
-                    && (id == "composer-model" || id == "composer-plan"),
-            )
             .child(label)
-            .on_click(cx.listener(move |_, _, _, cx| {
-                if id == "composer-model" || id == "composer-plan" {
-                    cx.emit(ComposerEvent::ModelMenu(
-                        if id == "composer-plan" {
-                            "composer-plan-trigger"
-                        } else {
-                            "composer-model-trigger"
-                        },
-                    ));
-                } else {
-                    cx.emit(ComposerEvent::Access);
-                }
-            }));
+            .when(interactive, |el| {
+                el.cursor_pointer()
+                    .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
+            })
+            .when(id == "composer-model", |el| {
+                el.aria_expanded(self.model_menu_open)
+            });
+        let control = match id {
+            "composer-model" => control.on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
+            })),
+            "composer-access" | "composer-mode" => control.on_click(
+                cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Access)),
+            ),
+            _ => control,
+        };
         match id {
             "composer-model" => theme::anchor_trigger(
                 control,
                 "composer-model-trigger",
-                &self.ui,
-            ),
-            "composer-plan" => theme::anchor_trigger(
-                control,
-                "composer-plan-trigger",
                 &self.ui,
             ),
             _ => control,
@@ -267,8 +259,7 @@ impl ChatComposer {
         );
         // A missing cloud model means no live routing is configured; keep the
         // send affordance disabled instead of failing after the click.
-        let has_draft =
-            has_draft && self.cloud_ready && !self.model_label.is_empty();
+        let has_draft = has_draft && self.cloud_ready;
         if running {
             theme::IconButton::new(
                 "chat-stop",

@@ -1,25 +1,25 @@
-//! Built-in host tools: `bash`, `read_file`, `write_file`, `edit_file`, `glob`,
-//! `grep`, and `todo_write`.
+//! Built-in host tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
+//! and `todo_write`.
 //!
 //! Ported from the MIT-licensed `dsh-rs` tool set; the kernel dependency is
-//! gone. `todo_write` reports through a host-owned [`crate::types::TodoSink`].
+//! gone. `bash` is not here: it comes from pi-rust's `rpi-tools` (see
+//! [`crate::tools::pi`]). `todo_write` reports through a host-owned
+//! [`crate::types::TodoSink`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::tools::matcher::glob_match;
 use crate::tools::registry::{ToolDefinition, ToolRegistry};
 use crate::types::{
-    ContentBlock, TodoItem, TodoStatus, ToolCallArgs, ToolExecutionResult, ToolRunContext,
+    TodoItem, TodoStatus, ToolCallArgs, ToolExecutionResult, ToolRunContext,
 };
 
 /// Register every built-in tool on the registry.
 pub fn register_builtin_tools(registry: &ToolRegistry) {
-    registry.register(bash_tool());
     registry.register(read_file_tool());
     registry.register(write_file_tool());
     registry.register(edit_file_tool());
@@ -54,15 +54,27 @@ fn todo_write_tool() -> Arc<ToolDefinition> {
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
-                let parsed: serde_json::Value = match serde_json::from_value(args.arguments.clone()) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
+                let parsed: serde_json::Value =
+                    match serde_json::from_value(args.arguments.clone()) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                err.to_string(),
+                            );
+                        }
+                    };
                 let Some(agent_id) = run_ctx.agent_id.clone() else {
-                    return ToolExecutionResult::error("NO_AGENT", "tool called without an agent");
+                    return ToolExecutionResult::error(
+                        "NO_AGENT",
+                        "tool called without an agent",
+                    );
                 };
                 let Some(sink) = run_ctx.todos.clone() else {
-                    return ToolExecutionResult::error("NO_TODOS", "todo store unavailable");
+                    return ToolExecutionResult::error(
+                        "NO_TODOS",
+                        "todo store unavailable",
+                    );
                 };
                 let todos: Vec<TodoItem> = parsed
                     .get("todos")
@@ -79,7 +91,9 @@ fn todo_write_tool() -> Arc<ToolDefinition> {
                                     .get("status")
                                     .and_then(|s| s.as_str())
                                 {
-                                    Some("in_progress") => TodoStatus::InProgress,
+                                    Some("in_progress") => {
+                                        TodoStatus::InProgress
+                                    }
                                     Some("completed") => TodoStatus::Completed,
                                     _ => TodoStatus::Pending,
                                 },
@@ -109,136 +123,6 @@ fn resolve_path(run_ctx: &ToolRunContext, raw: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// bash
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct BashArgs {
-    command: String,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-    #[serde(default)]
-    cwd: Option<String>,
-}
-
-fn bash_tool() -> Arc<ToolDefinition> {
-    let parameters = json!({
-        "type": "object",
-        "properties": {
-            "command": { "type": "string", "description": "The shell command to execute." },
-            "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds." },
-            "cwd": { "type": "string", "description": "Optional working directory." }
-        },
-        "required": ["command"]
-    });
-    Arc::new(ToolDefinition::new(
-        "bash",
-        "Run a shell command and capture its output. Use for anything requiring a terminal, process execution, or system access.",
-        parameters,
-        |args: ToolCallArgs, run_ctx: ToolRunContext| {
-            Box::pin(async move {
-                let parsed: BashArgs = match serde_json::from_value(args.arguments) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
-                let workdir = parsed
-                    .cwd
-                    .clone()
-                    .map(|c| resolve_path(&run_ctx, &c))
-                    .or_else(|| run_ctx.cwd.clone().map(PathBuf::from));
-                let mut command = tokio::process::Command::new("sh");
-                command.arg("-c").arg(&parsed.command);
-                if let Some(dir) = &workdir {
-                    command.current_dir(dir);
-                }
-                command.stdout(std::process::Stdio::piped());
-                command.stderr(std::process::Stdio::piped());
-                command.kill_on_drop(true);
-
-                let child = match command.spawn() {
-                    Ok(child) => child,
-                    Err(err) => return ToolExecutionResult::error("SPAWN", err.to_string()),
-                };
-
-                let timeout = parsed.timeout_ms.map(Duration::from_millis);
-                let wait_fut = async {
-                    let output = child.wait_with_output().await?;
-                    Ok::<_, std::io::Error>(output)
-                };
-
-                // Race cancellation against the (optionally bounded) wait.
-                // `kill_on_drop(true)` kills the child whenever the wait
-                // future is dropped — cancellation and timeout both drop it.
-                let outcome = run_ctx
-                    .signal
-                    .race(async {
-                        match timeout {
-                            Some(d) => match tokio::time::timeout(d, wait_fut).await {
-                                Ok(Ok(output)) => Ok(Some(output)),
-                                Ok(Err(err)) => Err(err),
-                                Err(_) => Ok(None), // timed out; child killed on drop
-                            },
-                            None => match wait_fut.await {
-                                Ok(output) => Ok(Some(output)),
-                                Err(err) => Err(err),
-                            },
-                        }
-                    })
-                    .await;
-
-                let output = match outcome {
-                    None => {
-                        return ToolExecutionResult::error(
-                            "CANCELLED",
-                            format!("command cancelled: {}", parsed.command),
-                        );
-                    }
-                    Some(Ok(Some(output))) => output,
-                    Some(Ok(None)) => {
-                        return ToolExecutionResult::error(
-                            "TIMEOUT",
-                            format!(
-                                "command timed out after {}ms: {}",
-                                parsed.timeout_ms.unwrap_or(0),
-                                parsed.command
-                            ),
-                        );
-                    }
-                    Some(Err(err)) => {
-                        return ToolExecutionResult::error("EXEC", err.to_string());
-                    }
-                };
-
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let exit_code = output.status.code().unwrap_or(-1);
-                let value = json!({
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": exit_code,
-                });
-                if output.status.success() {
-                    let mut text = stdout.clone();
-                    if !stderr.is_empty() {
-                        text.push_str(&format!("\n[stderr]\n{stderr}"));
-                    }
-                    ToolExecutionResult::success_text(text.trim().to_string(), value)
-                } else {
-                    let message = format!(
-                        "command exited with code {exit_code}\n{stdout}\n[stderr]\n{stderr}"
-                    );
-                    ToolExecutionResult::Error {
-                        message: message.trim().to_string(),
-                        code: "EXIT".to_string(),
-                        content: vec![ContentBlock::text(message.trim().to_string())],
-                    }
-                }
-            })
-        },
-    ))
-}
-
-// ---------------------------------------------------------------------------
 // read_file
 // ---------------------------------------------------------------------------
 
@@ -259,10 +143,16 @@ fn read_file_tool() -> Arc<ToolDefinition> {
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
-                let parsed: ReadArgs = match serde_json::from_value(args.arguments) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
+                let parsed: ReadArgs =
+                    match serde_json::from_value(args.arguments) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                err.to_string(),
+                            );
+                        }
+                    };
                 let path = resolve_path(&run_ctx, &parsed.path);
                 match tokio::fs::read_to_string(&path).await {
                     Ok(content) => {
@@ -304,16 +194,25 @@ fn write_file_tool() -> Arc<ToolDefinition> {
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
-                let parsed: WriteArgs = match serde_json::from_value(args.arguments) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
+                let parsed: WriteArgs =
+                    match serde_json::from_value(args.arguments) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                err.to_string(),
+                            );
+                        }
+                    };
                 let path = resolve_path(&run_ctx, &parsed.path);
                 if let Some(parent) = path.parent() {
                     if let Err(err) = tokio::fs::create_dir_all(parent).await {
                         return ToolExecutionResult::error(
                             "MKDIR_FAILED",
-                            format!("cannot create {}: {err}", parent.display()),
+                            format!(
+                                "cannot create {}: {err}",
+                                parent.display()
+                            ),
                         );
                     }
                 }
@@ -321,7 +220,11 @@ fn write_file_tool() -> Arc<ToolDefinition> {
                     Ok(()) => {
                         let value = json!({ "path": path.display().to_string(), "bytes": parsed.content.len() });
                         ToolExecutionResult::success_text(
-                            format!("wrote {} bytes to {}", parsed.content.len(), path.display()),
+                            format!(
+                                "wrote {} bytes to {}",
+                                parsed.content.len(),
+                                path.display()
+                            ),
                             value,
                         )
                     }
@@ -365,10 +268,16 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
-                let parsed: EditArgs = match serde_json::from_value(args.arguments) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
+                let parsed: EditArgs =
+                    match serde_json::from_value(args.arguments) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                err.to_string(),
+                            );
+                        }
+                    };
                 let path = resolve_path(&run_ctx, &parsed.path);
                 let content = match tokio::fs::read_to_string(&path).await {
                     Ok(content) => content,
@@ -383,17 +292,27 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
                     if !content.contains(&parsed.old_string) {
                         return ToolExecutionResult::error(
                             "NOT_FOUND",
-                            format!("old_string not found in {}", path.display()),
+                            format!(
+                                "old_string not found in {}",
+                                path.display()
+                            ),
                         );
                     }
                     content.replace(&parsed.old_string, &parsed.new_string)
                 } else {
                     match content.find(&parsed.old_string) {
-                        Some(_) => content.replacen(&parsed.old_string, &parsed.new_string, 1),
+                        Some(_) => content.replacen(
+                            &parsed.old_string,
+                            &parsed.new_string,
+                            1,
+                        ),
                         None => {
                             return ToolExecutionResult::error(
                                 "NOT_FOUND",
-                                format!("old_string not found in {}", path.display()),
+                                format!(
+                                    "old_string not found in {}",
+                                    path.display()
+                                ),
                             );
                         }
                     }
@@ -406,7 +325,10 @@ fn edit_file_tool() -> Arc<ToolDefinition> {
                             value,
                         )
                     }
-                    Err(err) => ToolExecutionResult::error("WRITE_FAILED", err.to_string()),
+                    Err(err) => ToolExecutionResult::error(
+                        "WRITE_FAILED",
+                        err.to_string(),
+                    ),
                 }
             })
         },
@@ -445,10 +367,16 @@ fn glob_tool() -> Arc<ToolDefinition> {
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
-                let parsed: GlobArgs = match serde_json::from_value(args.arguments) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
+                let parsed: GlobArgs =
+                    match serde_json::from_value(args.arguments) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                err.to_string(),
+                            );
+                        }
+                    };
                 let base = parsed
                     .path
                     .map(|p| resolve_path(&run_ctx, &p))
@@ -484,7 +412,9 @@ async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![base.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else { continue };
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
         let mut collected = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             collected.push(entry);
@@ -493,7 +423,9 @@ async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
         collected.sort_by_key(|e| e.file_name());
         for entry in collected {
             let path = entry.path();
-            let Ok(meta) = entry.metadata().await else { continue };
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
             if meta.is_dir() {
                 stack.push(path.clone());
             }
@@ -545,14 +477,23 @@ fn grep_tool() -> Arc<ToolDefinition> {
         parameters,
         |args: ToolCallArgs, run_ctx: ToolRunContext| {
             Box::pin(async move {
-                let parsed: GrepArgs = match serde_json::from_value(args.arguments) {
-                    Ok(parsed) => parsed,
-                    Err(err) => return ToolExecutionResult::error("INVALID_ARGS", err.to_string()),
-                };
+                let parsed: GrepArgs =
+                    match serde_json::from_value(args.arguments) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            return ToolExecutionResult::error(
+                                "INVALID_ARGS",
+                                err.to_string(),
+                            );
+                        }
+                    };
                 let re = match regex::Regex::new(&parsed.pattern) {
                     Ok(re) => re,
                     Err(err) => {
-                        return ToolExecutionResult::error("BAD_REGEX", err.to_string());
+                        return ToolExecutionResult::error(
+                            "BAD_REGEX",
+                            err.to_string(),
+                        );
                     }
                 };
                 let base = parsed
@@ -564,12 +505,18 @@ fn grep_tool() -> Arc<ToolDefinition> {
                 let mut matches: Vec<GrepMatch> = Vec::new();
                 for file in files {
                     if let Some(include) = &parsed.include {
-                        let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                        let name = file
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
                         if !glob_match(include, &name) {
                             continue;
                         }
                     }
-                    let Ok(content) = tokio::fs::read_to_string(&file).await else { continue };
+                    let Ok(content) = tokio::fs::read_to_string(&file).await
+                    else {
+                        continue;
+                    };
                     for (idx, line) in content.lines().enumerate() {
                         if re.is_match(line) {
                             matches.push(GrepMatch {
@@ -586,7 +533,8 @@ fn grep_tool() -> Arc<ToolDefinition> {
                         break;
                     }
                 }
-                let value = serde_json::to_value(&matches).unwrap_or(Value::Null);
+                let value =
+                    serde_json::to_value(&matches).unwrap_or(Value::Null);
                 let text = if matches.is_empty() {
                     format!("no matches for {}", parsed.pattern)
                 } else {
@@ -609,7 +557,9 @@ async fn collect_files(base: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![base.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else { continue };
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
         let mut collected = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             collected.push(entry);
@@ -617,7 +567,9 @@ async fn collect_files(base: &Path) -> Vec<PathBuf> {
         collected.sort_by_key(|e| e.file_name());
         for entry in collected {
             let path = entry.path();
-            let Ok(meta) = entry.metadata().await else { continue };
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
             if meta.is_dir() {
                 stack.push(path.clone());
             } else {
@@ -631,9 +583,10 @@ async fn collect_files(base: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{register_builtin_tools, ToolRegistry};
+    use super::{ToolRegistry, register_builtin_tools};
     use crate::types::{
-        CancelToken, TodoItem, TodoSink, TodoStatus, ToolExecutionResult, ToolRunContext,
+        CancelToken, TodoItem, TodoSink, TodoStatus, ToolExecutionResult,
+        ToolRunContext,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -691,11 +644,20 @@ mod tests {
     #[tokio::test]
     async fn malformed_arguments_are_rejected_before_touching_the_filesystem() {
         let result = registry()
-            .execute("c2".into(), "read_file".into(), json!({}), ctx(manifest()))
+            .execute(
+                "c2".into(),
+                "read_file".into(),
+                json!({}),
+                ctx(manifest()),
+            )
             .await;
         match result {
-            ToolExecutionResult::Error { code, .. } => assert_eq!(code, "INVALID_ARGS"),
-            ToolExecutionResult::Success { .. } => panic!("missing path must not succeed"),
+            ToolExecutionResult::Error { code, .. } => {
+                assert_eq!(code, "INVALID_ARGS")
+            }
+            ToolExecutionResult::Success { .. } => {
+                panic!("missing path must not succeed")
+            }
         }
     }
 
@@ -750,8 +712,12 @@ mod tests {
             )
             .await;
         match result {
-            ToolExecutionResult::Error { code, .. } => assert_eq!(code, "NO_TODOS"),
-            ToolExecutionResult::Success { .. } => panic!("missing todo sink must not succeed"),
+            ToolExecutionResult::Error { code, .. } => {
+                assert_eq!(code, "NO_TODOS")
+            }
+            ToolExecutionResult::Success { .. } => {
+                panic!("missing todo sink must not succeed")
+            }
         }
     }
 }

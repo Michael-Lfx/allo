@@ -1,4 +1,4 @@
-use flowy_agent::{Model, Plan};
+use flowy_agent::Plan;
 use flowy_ui as theme;
 use flowy_ui::text_area;
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
@@ -217,17 +217,15 @@ impl crate::panel::StudioPanel {
                 .when(selected, |row| row.child(theme::icons::check())),
             );
         }
-        menu = menu.child(
-            theme::menu_item(
-                "refresh-cloud-models",
-                "↻",
-                false,
-                &self.theme,
-                cx.listener(|_, _, _, cx| {
-                    cx.emit(crate::panel::StudioEvent::RefreshModels);
-                }),
-            ),
-        );
+        menu = menu.child(theme::menu_item(
+            "refresh-cloud-models",
+            format!("↻ {}", self.t("model.refresh")),
+            self.catalog_loading,
+            &self.theme,
+            cx.listener(|_, _, _, cx| {
+                cx.emit(crate::panel::StudioEvent::RefreshModels);
+            }),
+        ));
         menu
     }
 

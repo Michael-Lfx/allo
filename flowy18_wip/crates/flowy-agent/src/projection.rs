@@ -80,6 +80,8 @@ impl TurnStatus {
 pub struct ChatProjection {
     pub lines: Vec<ChatLine>,
     pending: String,
+    pending_reasoning: String,
+    reasoning_started: Option<std::time::Instant>,
 }
 
 impl ChatProjection {
@@ -92,7 +94,7 @@ impl ChatProjection {
     pub fn from_lines(lines: Vec<ChatLine>) -> Self {
         Self {
             lines,
-            pending: String::new(),
+            ..Self::default()
         }
     }
 
@@ -104,13 +106,43 @@ impl ChatProjection {
         self.lines.push(ChatLine::Status { text: text.into() });
     }
 
-    /// Accumulate streamed assistant text until the turn ends.
+    /// Accumulate streamed assistant text; ends the reasoning clock on the
+    /// first text delta so the reported thinking duration excludes generation.
     pub fn apply_text(&mut self, delta: &str) {
+        self.flush_reasoning();
         self.pending.push_str(delta);
     }
 
-    /// Move accumulated text into a durable assistant row.
+    /// Accumulate streamed reasoning; it is finalized when the turn ends.
+    pub fn apply_reasoning(&mut self, delta: &str) {
+        if self.reasoning_started.is_none() {
+            self.reasoning_started = Some(std::time::Instant::now());
+        }
+        self.pending_reasoning.push_str(delta);
+    }
+
+    /// Move accumulated reasoning into a durable row.
+    pub fn flush_reasoning(&mut self) {
+        if self.pending_reasoning.is_empty() {
+            self.reasoning_started = None;
+            return;
+        }
+        let duration_secs = self
+            .reasoning_started
+            .take()
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or(0);
+        let text = std::mem::take(&mut self.pending_reasoning);
+        self.lines.push(ChatLine::Reasoning {
+            text,
+            duration_secs,
+            live: false,
+        });
+    }
+
+    /// Move accumulated reasoning and text into durable rows.
     pub fn flush(&mut self) {
+        self.flush_reasoning();
         if self.pending.is_empty() {
             return;
         }
@@ -118,10 +150,21 @@ impl ChatProjection {
         self.lines.push(ChatLine::Assistant { text });
     }
 
-    /// Rows the UI should render now, including the in-flight assistant text.
+    /// Rows the UI should render now, including in-flight rows.
     #[must_use]
     pub fn visible_lines(&self) -> Vec<ChatLine> {
         let mut lines = self.lines.clone();
+        if !self.pending_reasoning.is_empty() {
+            let duration_secs = self
+                .reasoning_started
+                .map(|started| started.elapsed().as_secs())
+                .unwrap_or(0);
+            lines.push(ChatLine::Reasoning {
+                text: self.pending_reasoning.clone(),
+                duration_secs,
+                live: true,
+            });
+        }
         if !self.pending.is_empty() {
             lines.push(ChatLine::Assistant {
                 text: self.pending.clone(),
@@ -152,7 +195,12 @@ impl ChatProjection {
         is_error: bool,
     ) {
         for line in self.lines.iter_mut().rev() {
-            if let ChatLine::ToolCall { call_id: id, running, .. } = line {
+            if let ChatLine::ToolCall {
+                call_id: id,
+                running,
+                ..
+            } = line
+            {
                 if id == call_id {
                     *running = false;
                     break;
@@ -197,6 +245,40 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_is_visible_live_and_finalized_on_flush() {
+        let mut projection = ChatProjection::new();
+        projection.apply_reasoning("think");
+        projection.apply_reasoning("ing");
+        let visible = projection.visible_lines();
+        assert!(matches!(
+            visible.last(),
+            Some(ChatLine::Reasoning { text, live: true, .. }) if text == "thinking"
+        ));
+        projection.flush();
+        assert!(matches!(
+            projection.lines.last(),
+            Some(ChatLine::Reasoning { text, live: false, .. }) if text == "thinking"
+        ));
+    }
+
+    #[test]
+    fn first_text_delta_ends_the_reasoning_row() {
+        let mut projection = ChatProjection::new();
+        projection.apply_reasoning("think");
+        projection.apply_text("answer");
+        assert!(matches!(
+            projection.lines.first(),
+            Some(ChatLine::Reasoning { text, live: false, .. }) if text == "think"
+        ));
+        assert_eq!(
+            projection.visible_lines().last(),
+            Some(&ChatLine::Assistant {
+                text: "answer".into()
+            })
+        );
+    }
+
+    #[test]
     fn tool_result_marks_the_matching_call_finished() {
         let mut projection = ChatProjection::new();
         projection.push_tool_call("read_file", "a.txt", "call-1");
@@ -216,10 +298,22 @@ mod tests {
 
     #[test]
     fn legacy_rows_keep_their_wire_shape() {
-        let line: ChatLine = serde_json::from_str(r#"{"kind":"tool","text":"legacy"}"#).unwrap();
-        assert_eq!(line, ChatLine::Tool { text: "legacy".into() });
+        let line: ChatLine =
+            serde_json::from_str(r#"{"kind":"tool","text":"legacy"}"#).unwrap();
+        assert_eq!(
+            line,
+            ChatLine::Tool {
+                text: "legacy".into()
+            }
+        );
         let status: TurnStatus =
-            serde_json::from_str(r#"{"kind":"error","message":"boom"}"#).unwrap();
-        assert_eq!(status, TurnStatus::Error { message: "boom".into() });
+            serde_json::from_str(r#"{"kind":"error","message":"boom"}"#)
+                .unwrap();
+        assert_eq!(
+            status,
+            TurnStatus::Error {
+                message: "boom".into()
+            }
+        );
     }
 }

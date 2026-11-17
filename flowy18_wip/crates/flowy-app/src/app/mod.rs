@@ -50,10 +50,17 @@ actions!(
     ]
 );
 
-fn cloud_model_config(model: &flowy_agent::CatalogModel, token: &str) -> flowy_agent::LlmConfig {
+fn cloud_model_config(
+    model: &flowy_agent::CatalogModel,
+    token: &str,
+) -> flowy_agent::LlmConfig {
     flowy_agent::LlmConfig {
         api_key: (!token.trim().is_empty()).then(|| token.to_owned()),
-        base_url: model.endpoint.clone(), model: model.id.clone(), provider: "flowy".into(),
+        base_url: model.endpoint.clone(),
+        model: model.id.clone(),
+        provider: "flowy".into(),
+        context_window: model.context_window,
+        max_tokens: model.max_tokens,
     }
 }
 
@@ -62,7 +69,8 @@ mod cloud_config_tests {
     #[test]
     fn selected_cloud_model_sets_fixed_provider_and_account_credential() {
         let model = flowy_agent::CatalogModel {
-            id: "selected-model".into(), endpoint: "https://example.com/claw/v1".into(),
+            id: "selected-model".into(),
+            endpoint: "https://example.com/claw/v1".into(),
             ..Default::default()
         };
         let config = super::cloud_model_config(&model, "account-token");
@@ -421,46 +429,92 @@ impl FlowyApp {
 
     fn disconnected_config() -> flowy_agent::LlmConfig {
         flowy_agent::LlmConfig {
-            api_key: None, base_url: String::new(), model: String::new(), provider: "flowy".into(),
+            api_key: None,
+            base_url: String::new(),
+            model: String::new(),
+            provider: "flowy".into(),
+            ..flowy_agent::LlmConfig::default()
         }
     }
 
     fn select_cloud_model(&mut self, id: &str, cx: &mut Context<'_, Self>) {
-        if self.catalog_loading { return; }
-        let Some(session) = self.auth.session.as_ref() else { return; };
-        if session.access_token.trim().is_empty() { return; }
-        if self.studio.read(cx).agent.turn_status().is_busy() { return; }
-        let Some(model) = self.studio.read(cx).catalog.models.iter().find(|m| m.id == id).cloned() else { return; };
+        if self.catalog_loading {
+            return;
+        }
+        let Some(session) = self.auth.session.as_ref() else {
+            return;
+        };
+        if session.access_token.trim().is_empty() {
+            return;
+        }
+        if self.studio.read(cx).agent.turn_status().is_busy() {
+            return;
+        }
+        let Some(model) = self
+            .studio
+            .read(cx)
+            .catalog
+            .models
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+        else {
+            return;
+        };
         let config = cloud_model_config(&model, &session.access_token);
         match self.studio.read(cx).agent.apply_config(config) {
             Ok(()) => {
                 self.prefs.model_id = model.id.clone();
-                let save_failed = self.prefs.save_checked(self.store.root()).is_err();
+                let save_failed =
+                    self.prefs.save_checked(self.store.root()).is_err();
                 self.studio.update(cx, |panel, cx| {
                     panel.catalog.select(model.id);
                     panel.cloud_ready = true;
-                    panel.set_notice(save_failed.then_some("notice.session_storage_failed"), cx);
+                    panel.set_notice(
+                        save_failed.then_some("notice.session_storage_failed"),
+                        cx,
+                    );
                 });
             }
             Err(key) => {
-                self.studio.update(cx, |panel, cx| { panel.cloud_ready = false; panel.set_notice(Some(key), cx); });
+                self.studio.update(cx, |panel, cx| {
+                    panel.cloud_ready = false;
+                    panel.set_notice(Some(key), cx);
+                });
             }
         }
     }
 
     fn refresh_models(&mut self, cx: &mut Context<'_, Self>) {
-        if self.catalog_loading { return; }
-        let Some(session) = self.auth.session.clone() else { return; };
-        if self.studio.read(cx).agent.turn_status().is_busy() { return; }
+        if self.catalog_loading {
+            return;
+        }
+        let Some(session) = self.auth.session.clone() else {
+            return;
+        };
+        if self.studio.read(cx).agent.turn_status().is_busy() {
+            return;
+        }
         let client = AuthClient::from_env();
-        let account = session.user_id.map(|id| format!("{}:{id}", client.config().effective_base_url()));
+        let account = session
+            .user_id
+            .map(|id| format!("{}:{id}", client.config().effective_base_url()));
         self.catalog_loading = true;
         let was_ready = self.studio.read(cx).cloud_ready;
-        self.studio.update(cx, |panel, cx| { panel.cloud_ready = false; cx.notify(); });
-        let saved_id = if account.as_deref() == Some(self.prefs.model_account.as_str()) {
-            self.prefs.model_id.clone()
-        } else { String::new() };
-        if account.is_some() && account.as_deref() != Some(self.prefs.model_account.as_str()) {
+        self.studio.update(cx, |panel, cx| {
+            panel.cloud_ready = false;
+            panel.catalog_loading = true;
+            cx.notify();
+        });
+        let saved_id =
+            if account.as_deref() == Some(self.prefs.model_account.as_str()) {
+                self.prefs.model_id.clone()
+            } else {
+                String::new()
+            };
+        if account.is_some()
+            && account.as_deref() != Some(self.prefs.model_account.as_str())
+        {
             self.studio.update(cx, |panel, _| {
                 panel.cloud_ready = false;
                 panel.catalog = flowy_agent::ProviderCatalog::new();
@@ -473,40 +527,73 @@ impl FlowyApp {
         let writer = Arc::clone(&outcome);
         std::thread::spawn(move || {
             let result = client.available_models(&token);
-            if let Ok(mut guard) = writer.lock() { *guard = Some(result); }
+            if let Ok(mut guard) = writer.lock() {
+                *guard = Some(result);
+            }
         });
         self.catalog_task = Some(cx.spawn(async move |weak, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(40)).await;
-                let Some(result) = outcome.lock().ok().and_then(|mut guard| guard.take()) else { continue; };
+                cx.background_executor()
+                    .timer(Duration::from_millis(40))
+                    .await;
+                let Some(result) =
+                    outcome.lock().ok().and_then(|mut guard| guard.take())
+                else {
+                    continue;
+                };
                 let _ = weak.update(cx, |app, cx| {
-                    if generation != app.catalog_generation || app.auth.session.is_none() { return; }
+                    if generation != app.catalog_generation
+                        || app.auth.session.is_none()
+                    {
+                        return;
+                    }
                     app.catalog_loading = false;
+                    app.studio.update(cx, |panel, _| {
+                        panel.catalog_loading = false;
+                    });
                     match result {
                         Ok(result) => {
-                            let models = result.cloud.into_iter().map(|m| flowy_agent::CatalogModel {
-                                id: m.id, name: m.name, endpoint: m.endpoint,
-                                context_window: m.context_window, max_tokens: m.max_tokens, credit_rate: m.credit_rate,
-                            }).collect();
+                            let models = result
+                                .cloud
+                                .into_iter()
+                                .map(|m| flowy_agent::CatalogModel {
+                                    id: m.id,
+                                    name: m.name,
+                                    endpoint: m.endpoint,
+                                    context_window: m.context_window,
+                                    max_tokens: m.max_tokens,
+                                    credit_rate: m.credit_rate,
+                                })
+                                .collect();
                             app.studio.update(cx, |panel, cx| {
                                 panel.cloud_ready = false;
                                 panel.catalog.replace(models);
-                                if !saved_id.is_empty() { panel.catalog.select(saved_id); }
+                                if !saved_id.is_empty() {
+                                    panel.catalog.select(saved_id);
+                                }
                                 cx.notify();
                             });
-                            app.prefs.model_account = account.unwrap_or_default();
-                            let selected = app.studio.read(cx).catalog.selected.clone();
-                            if let Some(id) = selected { app.select_cloud_model(&id, cx); }
-                            else {
+                            app.prefs.model_account =
+                                account.unwrap_or_default();
+                            let selected =
+                                app.studio.read(cx).catalog.selected.clone();
+                            if let Some(id) = selected {
+                                app.select_cloud_model(&id, cx);
+                            } else {
                                 app.prefs.model_id.clear();
                                 app.prefs.save(app.store.root());
-                                let _ = app.studio.read(cx).agent.apply_config(Self::disconnected_config());
-                                app.note("notice.agent_failed", cx);
+                                let _ =
+                                    app.studio.read(cx).agent.apply_config(
+                                        Self::disconnected_config(),
+                                    );
+                                app.note("notice.model_unavailable", cx);
                             }
                         }
                         Err(AuthError::AuthRequired) => app.sign_out(cx),
                         Err(error) => {
-                            app.studio.update(cx, |panel, _| { panel.cloud_ready = was_ready; });
+                            app.studio.update(cx, |panel, _| {
+                                panel.cloud_ready = was_ready;
+                            });
                             app.note(error.key(), cx);
                         }
                     }
@@ -820,6 +907,7 @@ impl FlowyApp {
         self.catalog_loading = false;
         self.studio.update(cx, |panel, cx| {
             panel.cloud_ready = false;
+            panel.catalog_loading = false;
             panel.catalog = flowy_agent::ProviderCatalog::new();
             panel.agent.stop();
             let _ = panel.agent.apply_config(Self::disconnected_config());
@@ -1009,7 +1097,9 @@ impl FlowyApp {
             StudioEvent::OpenFlex => {
                 self.open_flex(cx);
             }
-            StudioEvent::CloudModelSelected(id) => self.select_cloud_model(id, cx),
+            StudioEvent::CloudModelSelected(id) => {
+                self.select_cloud_model(id, cx)
+            }
             StudioEvent::RefreshModels => self.refresh_models(cx),
             StudioEvent::OpenIdeas => {
                 self.activate_dialog(state::ActiveDialog::Ideas, cx);
@@ -1661,7 +1751,26 @@ mod tests {
         let root = test_root();
         let sessions = root.join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
+        // A broken index must be quarantined and rebuilt from structured history.
         std::fs::write(sessions.join("index.json"), b"{broken").unwrap();
+        std::fs::write(
+            sessions.join("history.json"),
+            br#"{
+                "active": "hist-1",
+                "sessions": [
+                    {
+                        "id": "hist-1",
+                        "title": "Recovered",
+                        "titled": true,
+                        "updated_at": 1,
+                        "status": { "kind": "idle" },
+                        "messages": [],
+                        "todos": []
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
         let app = cx.update(|cx| {
             cx.new(|cx| {
                 FlowyApp::new(SessionStore::new(root.clone()), false, cx)
@@ -1672,12 +1781,54 @@ mod tests {
                 app.select_navigation("new-task", Section::Studio, cx);
             });
         });
+        // The storage error is delivered by the 33ms Studio pump; advance the
+        // test executor until it lands instead of assuming one fixed tick.
+        let mut delivered = false;
+        for _ in 0..8 {
+            cx.run_until_parked();
+            cx.background_executor
+                .advance_clock(Duration::from_millis(33));
+            cx.run_until_parked();
+            delivered = cx.update(|cx| app.read(cx).storage_error);
+            if delivered {
+                break;
+            }
+        }
+        assert!(delivered, "storage error should reach the app via the pump");
+        // Navigation after the notice arrived must not clear it.
         cx.update(|cx| {
-            assert!(app.read(cx).storage_error);
+            app.update(cx, |app, cx| {
+                app.select_navigation("automation", Section::Automation, cx);
+            });
         });
-        assert_eq!(
-            std::fs::read(sessions.join("index.json")).unwrap(),
-            b"{broken"
+        assert!(cx.update(|cx| app.read(cx).storage_error));
+        // The damaged original is kept under a corrupt-* name.
+        let quarantined: Vec<_> = std::fs::read_dir(&sessions)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("index.corrupt-")
+            })
+            .collect();
+        assert_eq!(quarantined.len(), 1, "broken index should be quarantined");
+        assert_eq!(std::fs::read(quarantined[0].path()).unwrap(), b"{broken");
+        // A fresh index is rebuilt and keeps the session recovered from history.
+        let rebuilt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sessions.join("index.json")).unwrap(),
+        )
+        .expect("rebuilt index should be valid JSON");
+        let ids: Vec<&str> = rebuilt["sessions"]
+            .as_array()
+            .expect("rebuilt index has sessions")
+            .iter()
+            .filter_map(|session| session["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&"hist-1"),
+            "history session should survive the rebuild: {ids:?}"
         );
         drop(app);
         let _ = std::fs::remove_dir_all(root);

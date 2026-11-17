@@ -16,14 +16,23 @@ use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
 use crate::run_fence::RunFence;
 use crate::session::{SessionIndex, SessionRecord, TurnState};
 use crate::tools::{RegistryTool, ToolRegistry};
-use crate::types::{CancelToken, Message, MessageSource, Role, TodoSink, ToolRunContext};
+use crate::types::{
+    CancelToken, Message, MessageSource, Role, TodoSink, ToolRunContext,
+};
 
 /// UI-facing turn events. All methods have no-op defaults so a caller may
 /// implement only what it renders.
 pub trait TurnObserver: Send + Sync {
     fn text(&self, _session: &str, _delta: &str) {}
+    fn reasoning(&self, _session: &str, _delta: &str) {}
     fn assistant_text(&self, _session: &str, _text: &str) {}
-    fn tool_start(&self, _session: &str, _call_id: &str, _name: &str, _args: &serde_json::Value) {
+    fn tool_start(
+        &self,
+        _session: &str,
+        _call_id: &str,
+        _name: &str,
+        _args: &serde_json::Value,
+    ) {
     }
     fn tool_end(
         &self,
@@ -35,6 +44,8 @@ pub trait TurnObserver: Send + Sync {
     ) {
     }
     fn finished(&self, _session: &str, _outcome: LoopOutcome) {}
+    /// The engine could not persist this session's history.
+    fn storage_error(&self, _session: &str) {}
 }
 
 /// Everything needed to run a turn in this engine.
@@ -72,7 +83,9 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Busy => write!(f, "session already has an active run"),
             RunError::NotFound(id) => write!(f, "session {id} not found"),
-            RunError::NoCredential => write!(f, "no account credential for this run"),
+            RunError::NoCredential => {
+                write!(f, "no account credential for this run")
+            }
             RunError::Loop(message) => write!(f, "{message}"),
         }
     }
@@ -168,6 +181,31 @@ impl Engine {
         snapshot.save(&self.root)
     }
 
+    /// Update the durable title of one session.
+    ///
+    /// Titles are UI-facing metadata but live in the structured history too, so
+    /// an index rebuild can restore the model-generated title instead of a
+    /// fallback.
+    pub fn set_session_title(
+        &self,
+        id: &str,
+        title: String,
+        titled: bool,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let record = inner.index.get_mut(id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("session {id} not found"),
+            )
+        })?;
+        record.title = title;
+        record.titled = titled;
+        let snapshot = inner.index.clone();
+        drop(inner);
+        snapshot.save(&self.root)
+    }
+
     pub fn remove_session(&self, id: &str) -> std::io::Result<bool> {
         let mut inner = self.inner.lock().unwrap();
         let removed = inner.index.remove(id).is_some();
@@ -198,14 +236,21 @@ impl Engine {
 
     /// Run one turn against the configured provider. The caller spawns this;
     /// it is `async` so a host runtime owns scheduling.
-    pub async fn run(&self, session_id: &str, prompt: &str) -> Result<LoopOutcome, RunError> {
+    pub async fn run(
+        &self,
+        session_id: &str,
+        prompt: &str,
+    ) -> Result<LoopOutcome, RunError> {
         let stream = {
             let inner = self.inner.lock().unwrap();
             let config = &inner.config;
             if config.api_key.is_none() {
                 return Err(RunError::NoCredential);
             }
-            crate::transport::openai_stream_fn(&config.route, config.api_key.clone())
+            crate::transport::openai_stream_fn(
+                &config.route,
+                config.api_key.clone(),
+            )
         };
         self.run_with_stream(session_id, prompt, stream).await
     }
@@ -234,7 +279,8 @@ impl Engine {
             };
             let config = inner.config.clone();
             let now = now_ms();
-            let record = inner.index.get_mut(session_id).expect("record exists");
+            let record =
+                inner.index.get_mut(session_id).expect("record exists");
             let history = record.messages.clone();
             record.messages.push(Message {
                 id: format!("u-{now}"),
@@ -246,11 +292,14 @@ impl Engine {
             record.updated_at = now;
             let snapshot = inner.index.clone();
             drop(inner);
-            snapshot.save(&self.root).ok();
+            if snapshot.save(&self.root).is_err() {
+                self.observer.storage_error(session_id);
+            }
             (ticket, history, config)
         };
 
-        let tools = build_tools(&request_config, session_id, ticket.signal().clone());
+        let tools =
+            build_tools(&request_config, session_id, ticket.signal().clone());
         let request = TurnRequest {
             system: request_config.system.clone(),
             history,
@@ -281,12 +330,10 @@ impl Engine {
                         let mut new_messages = result.messages;
                         // The loop echoes the prompt back; the engine already
                         // stored it, so drop the duplicate.
-                        if new_messages
-                            .first()
-                            .is_some_and(|message| {
-                                message.role == Role::User && message.text() == prompt
-                            })
-                        {
+                        if new_messages.first().is_some_and(|message| {
+                            message.role == Role::User
+                                && message.text() == prompt
+                        }) {
                             new_messages.remove(0);
                         }
                         record.messages.extend(new_messages);
@@ -295,7 +342,9 @@ impl Engine {
                     }
                     let snapshot = inner.index.clone();
                     drop(inner);
-                    snapshot.save(&self.root).ok();
+                    if snapshot.save(&self.root).is_err() {
+                        self.observer.storage_error(session_id);
+                    }
                     self.observer.finished(session_id, result.outcome);
                     result.outcome
                 } else {
@@ -313,7 +362,9 @@ impl Engine {
                     }
                     let snapshot = inner.index.clone();
                     drop(inner);
-                    snapshot.save(&self.root).ok();
+                    if snapshot.save(&self.root).is_err() {
+                        self.observer.storage_error(session_id);
+                    }
                 }
                 return Err(RunError::Loop(message));
             }
@@ -339,12 +390,16 @@ fn build_tools(
         .into_iter()
         .filter_map(|name| {
             let definition = config.registry.get(&name)?;
-            RegistryTool::new(config.registry.clone(), definition, run_ctx.clone())
-                .ok()
-                .map(|tool| {
-                    let tool: Arc<dyn rpi_agent::AgentTool> = Arc::new(tool);
-                    tool
-                })
+            RegistryTool::new(
+                config.registry.clone(),
+                definition,
+                run_ctx.clone(),
+            )
+            .ok()
+            .map(|tool| {
+                let tool: Arc<dyn rpi_agent::AgentTool> = Arc::new(tool);
+                tool
+            })
         })
         .collect()
 }
@@ -382,11 +437,21 @@ impl AgentEmitter for EngineEmitter {
                         AssistantMessageEvent::TextDelta { delta, .. },
                     ..
                 } => observer.text(&session, &delta),
+                AgentEvent::MessageUpdate {
+                    assistant_message_event:
+                        AssistantMessageEvent::ThinkingDelta { delta, .. },
+                    ..
+                } => observer.reasoning(&session, &delta),
                 AgentEvent::ToolExecutionStart {
                     tool_call_id,
                     tool_name,
                     args,
-                } => observer.tool_start(&session, &tool_call_id, &tool_name, &args),
+                } => observer.tool_start(
+                    &session,
+                    &tool_call_id,
+                    &tool_name,
+                    &args,
+                ),
                 AgentEvent::ToolExecutionEnd {
                     tool_call_id,
                     tool_name,
@@ -404,7 +469,13 @@ impl AgentEmitter for EngineEmitter {
                         })
                         .collect::<Vec<_>>()
                         .join("");
-                    observer.tool_end(&session, &tool_call_id, &tool_name, &text, is_error);
+                    observer.tool_end(
+                        &session,
+                        &tool_call_id,
+                        &tool_name,
+                        &text,
+                        is_error,
+                    );
                 }
                 _ => {}
             }
@@ -453,15 +524,23 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         text: Mutex<String>,
+        reasoning: Mutex<String>,
         finished: Mutex<Vec<LoopOutcome>>,
+        storage_errors: Mutex<usize>,
     }
 
     impl TurnObserver for Recorder {
         fn text(&self, _session: &str, delta: &str) {
             self.text.lock().unwrap().push_str(delta);
         }
+        fn reasoning(&self, _session: &str, delta: &str) {
+            self.reasoning.lock().unwrap().push_str(delta);
+        }
         fn finished(&self, _session: &str, outcome: LoopOutcome) {
             self.finished.lock().unwrap().push(outcome);
+        }
+        fn storage_error(&self, _session: &str) {
+            *self.storage_errors.lock().unwrap() += 1;
         }
     }
 
@@ -471,6 +550,7 @@ mod tests {
                 provider: "flowy".into(),
                 model: "m".into(),
                 base_url: "https://example.invalid".into(),
+                ..ModelRoute::default()
             },
             api_key: Some("token".into()),
             system: "be brief".into(),
@@ -482,8 +562,12 @@ mod tests {
 
     fn text_stream(text: &'static str) -> StreamFn {
         rpi_agent::stream_fn(move |model, _, _| {
-            let mut message =
-                AssistantMessage::empty(Api::OpenaiCompletions, "flowy", model.id.clone(), 0);
+            let mut message = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
             message.content = vec![rpi_ai::types::Content::text(text)];
             message.stop_reason = StopReason::Stop;
             let (mut producer, consumer) =
@@ -513,11 +597,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reasoning_deltas_reach_the_observer() {
+        let scratch = Scratch::new("reasoning");
+        let recorder = Arc::new(Recorder::default());
+        let engine =
+            Engine::open(scratch.0.clone(), config(), recorder.clone())
+                .unwrap();
+        engine.create_session("s1".into(), 1).unwrap();
+        let stream = rpi_agent::stream_fn(|model, _, _| {
+            let mut message = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            message.content = vec![rpi_ai::types::Content::text("hi")];
+            message.stop_reason = StopReason::Stop;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Start {
+                        partial: Arc::new(message.clone()),
+                    })
+                    .await;
+                producer
+                    .push(AssistantMessageEvent::ThinkingDelta {
+                        content_index: 0,
+                        delta: "think".into(),
+                        partial: Arc::new(message.clone()),
+                    })
+                    .await;
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message,
+                    })
+                    .await;
+            });
+            consumer
+        });
+        engine.run_with_stream("s1", "hello", stream).await.unwrap();
+        assert_eq!(*recorder.reasoning.lock().unwrap(), "think");
+    }
+
+    #[tokio::test]
+    async fn config_switch_applies_to_the_next_run_on_the_same_session() {
+        let scratch = Scratch::new("switch");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorder = Arc::new(Recorder::default());
+        let mut first = config();
+        first.route.model = "m1".into();
+        let engine =
+            Engine::open(scratch.0.clone(), first, recorder.clone()).unwrap();
+        engine.create_session("s1".into(), 1).unwrap();
+        let stream = {
+            let seen = Arc::clone(&seen);
+            rpi_agent::stream_fn(move |model, _, _| {
+                seen.lock().unwrap().push(model.id.clone());
+                let mut message = AssistantMessage::empty(
+                    Api::OpenaiCompletions,
+                    "flowy",
+                    model.id.clone(),
+                    0,
+                );
+                message.content = vec![rpi_ai::types::Content::text("hi")];
+                message.stop_reason = StopReason::Stop;
+                let (mut producer, consumer) =
+                    rpi_ai::event_stream::create_assistant_message_event_stream(
+                    );
+                tokio::spawn(async move {
+                    producer
+                        .push(AssistantMessageEvent::Start {
+                            partial: Arc::new(message.clone()),
+                        })
+                        .await;
+                    producer
+                        .push(AssistantMessageEvent::Done {
+                            reason: DoneReason::Stop,
+                            message,
+                        })
+                        .await;
+                });
+                consumer
+            })
+        };
+        engine
+            .run_with_stream("s1", "one", stream.clone())
+            .await
+            .unwrap();
+        let mut second = config();
+        second.route.model = "m2".into();
+        engine.set_config(second);
+        engine.run_with_stream("s1", "two", stream).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["m1", "m2"]);
+    }
+
+    #[tokio::test]
+    async fn history_save_failure_is_reported_to_the_host() {
+        let scratch = Scratch::new("storage");
+        let recorder = Arc::new(Recorder::default());
+        let engine =
+            Engine::open(scratch.0.clone(), config(), recorder.clone())
+                .unwrap();
+        engine.create_session("s1".into(), 1).unwrap();
+        let sessions = scratch.0.join("sessions");
+        std::fs::remove_dir_all(&sessions).unwrap();
+        std::fs::write(&sessions, b"blocked").unwrap();
+        let outcome = engine
+            .run_with_stream("s1", "hello", text_stream("hi"))
+            .await
+            .unwrap();
+        assert_eq!(outcome, LoopOutcome::Completed);
+        assert!(*recorder.storage_errors.lock().unwrap() >= 1);
+    }
+
+    #[test]
+    fn session_title_is_persisted_in_history() {
+        let scratch = Scratch::new("title");
+        let recorder = Arc::new(Recorder::default());
+        let engine =
+            Engine::open(scratch.0.clone(), config(), recorder.clone())
+                .unwrap();
+        engine.create_session("s1".into(), 1).unwrap();
+        engine
+            .set_session_title("s1", "Model title".into(), true)
+            .unwrap();
+        drop(engine);
+        let reopened =
+            Engine::open(scratch.0.clone(), config(), recorder).unwrap();
+        let record = reopened.session("s1").expect("session");
+        assert_eq!(record.title, "Model title");
+        assert!(record.titled);
+    }
+
+    #[tokio::test]
     async fn turn_is_persisted_and_reported_once() {
         let scratch = Scratch::new("persist");
         let recorder = Arc::new(Recorder::default());
         let engine =
-            Engine::open(scratch.0.clone(), config(), recorder.clone()).unwrap();
+            Engine::open(scratch.0.clone(), config(), recorder.clone())
+                .unwrap();
         engine.create_session("s1".into(), 1).unwrap();
         let outcome = engine
             .run_with_stream("s1", "hello", text_stream("hi"))
@@ -525,10 +745,17 @@ mod tests {
             .unwrap();
         assert_eq!(outcome, LoopOutcome::Completed);
         assert_eq!(*recorder.text.lock().unwrap(), "hi");
-        assert_eq!(*recorder.finished.lock().unwrap(), vec![LoopOutcome::Completed]);
+        assert_eq!(
+            *recorder.finished.lock().unwrap(),
+            vec![LoopOutcome::Completed]
+        );
 
-        let reopened =
-            Engine::open(scratch.0.clone(), config(), Arc::new(Recorder::default())).unwrap();
+        let reopened = Engine::open(
+            scratch.0.clone(),
+            config(),
+            Arc::new(Recorder::default()),
+        )
+        .unwrap();
         let record = reopened.session("s1").unwrap();
         assert_eq!(record.status, TurnState::Completed);
         assert_eq!(record.messages.len(), 2);
@@ -539,16 +766,24 @@ mod tests {
     #[tokio::test]
     async fn second_run_is_refused_while_one_is_active() {
         let scratch = Scratch::new("busy");
-        let engine = Engine::open(scratch.0.clone(), config(), Arc::new(Recorder::default()))
-            .unwrap();
+        let engine = Engine::open(
+            scratch.0.clone(),
+            config(),
+            Arc::new(Recorder::default()),
+        )
+        .unwrap();
         engine.create_session("s1".into(), 1).unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let rx = std::sync::Arc::new(Mutex::new(Some(rx)));
         let waiter = rpi_agent::stream_fn(move |model, _, _| {
             let (mut producer, consumer) =
                 rpi_ai::event_stream::create_assistant_message_event_stream();
-            let mut message =
-                AssistantMessage::empty(Api::OpenaiCompletions, "flowy", model.id.clone(), 0);
+            let mut message = AssistantMessage::empty(
+                Api::OpenaiCompletions,
+                "flowy",
+                model.id.clone(),
+                0,
+            );
             message.content = vec![rpi_ai::types::Content::text("late")];
             let rx = std::sync::Arc::clone(&rx);
             tokio::spawn(async move {
@@ -570,7 +805,9 @@ mod tests {
         let run = {
             let engine = Arc::clone(&engine);
             let stream = waiter.clone();
-            tokio::spawn(async move { engine.run_with_stream("s1", "first", stream).await })
+            tokio::spawn(async move {
+                engine.run_with_stream("s1", "first", stream).await
+            })
         };
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         match engine.run_with_stream("s1", "second", waiter).await {

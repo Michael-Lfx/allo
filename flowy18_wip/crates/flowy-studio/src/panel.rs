@@ -91,6 +91,7 @@ pub struct StudioPanel {
     pub model: Model,
     pub catalog: ProviderCatalog,
     pub cloud_ready: bool,
+    pub catalog_loading: bool,
     pub plan: Plan,
     pub model_info_version: String,
     pub store_root: PathBuf,
@@ -225,6 +226,7 @@ impl StudioPanel {
             model,
             catalog: ProviderCatalog::new(),
             cloud_ready: false,
+            catalog_loading: false,
             plan,
             model_info_version,
             store_root,
@@ -360,7 +362,8 @@ impl StudioPanel {
         self.catalog
             .selected_model()
             .map(|model| model.name.clone())
-            .unwrap_or_else(|| self.t("notice.agent_failed"))
+            // No catalog model yet: show nothing rather than an error notice.
+            .unwrap_or_else(|| "—".to_owned())
     }
 
     pub(crate) fn t(&self, key: &str) -> String {
@@ -599,6 +602,7 @@ mod tests {
                             base_url: String::new(),
                             model: String::new(),
                             provider: String::new(),
+                            ..LlmConfig::default()
                         },
                     },
                     ui,
@@ -619,6 +623,12 @@ mod tests {
         });
         cx.update(|cx| {
             panel.update(cx, |panel, cx| {
+                panel.catalog.replace(vec![flowy_agent::CatalogModel {
+                    id: "test-model".into(),
+                    name: "Test model".into(),
+                    ..Default::default()
+                }]);
+                panel.cloud_ready = true;
                 panel.fill_prompt("hello", cx);
                 panel.send_prompt(cx);
                 assert_eq!(panel.surface, StudioSurface::Chat);
@@ -676,6 +686,7 @@ mod tests {
                                 base_url: String::new(),
                                 model: String::new(),
                                 provider: String::new(),
+                                ..LlmConfig::default()
                             },
                         },
                         ui,
