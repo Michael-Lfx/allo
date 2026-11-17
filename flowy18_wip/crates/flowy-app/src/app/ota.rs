@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
-pub(super) enum UpdateStatus {
+pub enum UpdateStatus {
     Idle,
     Checking,
     UpToDate,
@@ -32,11 +32,21 @@ pub(super) enum UpdateStatus {
 }
 
 pub struct OtaController {
-    pub status: UpdateStatus,
+    pub(crate) status: UpdateStatus,
     pub cache: Arc<UpdatePackageCache>,
     pub error_detail: Option<String>,
     pub task: Option<Task<()>>,
     pub checked: bool,
+}
+
+impl std::fmt::Debug for OtaController {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtaController")
+            .field("status", &self.status)
+            .field("error_detail", &self.error_detail)
+            .field("checked", &self.checked)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OtaController {

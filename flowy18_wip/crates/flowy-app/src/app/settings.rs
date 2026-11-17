@@ -103,10 +103,6 @@ const GROUPS: &[(&str, &[Page])] = &[
 const BOTTOM: &[Page] = &[Page::Team, Page::About, Page::Help];
 
 impl FlowyApp {
-    pub(super) fn open_settings(&mut self, cx: &mut Context<'_, Self>) {
-        self.open_settings_page(Page::General, cx);
-    }
-
     pub(super) fn open_settings_page(
         &mut self,
         page: Page,
@@ -169,7 +165,7 @@ impl FlowyApp {
 
     pub(super) fn settings_layer(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let frame = self.theme.modal_size(window.viewport_size());
@@ -687,7 +683,7 @@ impl FlowyApp {
             .child(theme::Switch::new(id, self.t(key), on).render(
                 &self.theme,
                 cx.listener(move |app, _event, _window, cx| {
-                    app.toggle_pref(which, cx)
+                    app.toggle_pref(which, cx);
                 }),
             ))
     }
@@ -720,8 +716,7 @@ impl FlowyApp {
             .session
             .as_ref()
             .and_then(|session| session.user_id)
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "—".into());
+            .map_or_else(|| "—".into(), |id| id.to_string());
         div().flex_1().min_h_0().child(
             div()
                 .id("settings-account")
@@ -872,9 +867,10 @@ impl FlowyApp {
         };
         let (free_label, daily_label, daily_note) = match &studio.credits {
             flowy_studio::CreditsViewState::Ready { free, daily, .. } => {
-                let free = free
-                    .map(flowy_studio::grouped_credits)
-                    .unwrap_or_else(|| studio.credits_label());
+                let free = free.map_or_else(
+                    || studio.credits_label(),
+                    flowy_studio::grouped_credits,
+                );
                 let daily = daily.map(flowy_studio::grouped_credits);
                 let note = daily.as_ref().map(|count| {
                     self.tf("credits.daily_note", &[("count", count)])

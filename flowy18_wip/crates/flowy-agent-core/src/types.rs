@@ -69,7 +69,9 @@ impl CancelToken {
 
     /// Adopt a token owned by another component (for example a loop signal).
     #[must_use]
-    pub fn from_inner(inner: tokio_util::sync::CancellationToken) -> Self {
+    pub const fn from_inner(
+        inner: tokio_util::sync::CancellationToken,
+    ) -> Self {
         Self { inner }
     }
 }
@@ -92,7 +94,7 @@ pub enum ContentBlock {
     },
     ToolResult {
         tool_call_id: CallId,
-        content: Vec<ContentBlock>,
+        content: Vec<Self>,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
@@ -100,13 +102,13 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text { text: text.into() }
+        Self::Text { text: text.into() }
     }
 
     #[must_use]
     pub fn as_text(&self) -> Option<&str> {
         match self {
-            ContentBlock::Text { text } => Some(text),
+            Self::Text { text } => Some(text),
             _ => None,
         }
     }
@@ -149,7 +151,7 @@ impl Message {
 }
 
 /// Model-facing tool schema.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
@@ -183,7 +185,7 @@ pub enum ToolExecutionResult {
 
 impl ToolExecutionResult {
     pub fn success_text(text: impl Into<String>, value: Value) -> Self {
-        ToolExecutionResult::Success {
+        Self::Success {
             content: vec![ContentBlock::text(text)],
             value,
             meta: None,
@@ -193,13 +195,13 @@ impl ToolExecutionResult {
     pub fn success_value(value: Value) -> Self {
         let text = serde_json::to_string_pretty(&value)
             .unwrap_or_else(|_| value.to_string());
-        ToolExecutionResult::success_text(text, value)
+        Self::success_text(text, value)
     }
 
     pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
         let message: String = message.into();
         let code: String = code.into();
-        ToolExecutionResult::Error {
+        Self::Error {
             content: vec![ContentBlock::text(format!("Error: {message}"))],
             message,
             code,
@@ -207,15 +209,16 @@ impl ToolExecutionResult {
     }
 
     #[must_use]
-    pub fn is_error(&self) -> bool {
-        matches!(self, ToolExecutionResult::Error { .. })
+    pub const fn is_error(&self) -> bool {
+        matches!(self, Self::Error { .. })
     }
 
     #[must_use]
     pub fn content(&self) -> Vec<ContentBlock> {
         match self {
-            ToolExecutionResult::Success { content, .. }
-            | ToolExecutionResult::Error { content, .. } => content.clone(),
+            Self::Success { content, .. } | Self::Error { content, .. } => {
+                content.clone()
+            }
         }
     }
 }

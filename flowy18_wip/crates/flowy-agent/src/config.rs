@@ -61,7 +61,7 @@ impl LlmConfig {
     }
 
     #[must_use]
-    pub fn uses_live(&self) -> bool {
+    pub const fn uses_live(&self) -> bool {
         self.api_key.is_some()
     }
 
@@ -77,7 +77,7 @@ impl LlmConfig {
     }
 
     #[must_use]
-    pub fn agent_provider(&self) -> &str {
+    pub const fn agent_provider(&self) -> &str {
         if self.uses_live() {
             self.provider.as_str()
         } else {
@@ -86,7 +86,7 @@ impl LlmConfig {
     }
 
     #[must_use]
-    pub fn agent_model(&self) -> &str {
+    pub const fn agent_model(&self) -> &str {
         if self.uses_live() {
             self.model.as_str()
         } else {

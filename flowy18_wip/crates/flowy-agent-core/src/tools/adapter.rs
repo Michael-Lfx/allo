@@ -113,10 +113,7 @@ fn to_loop_content(content: &[ContentBlock]) -> Vec<TextContentOrImage> {
     content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => {
-                Some(TextContentOrImage::text(text.clone()))
-            }
-            ContentBlock::Reasoning { text } => {
+            ContentBlock::Text { text } | ContentBlock::Reasoning { text } => {
                 Some(TextContentOrImage::text(text.clone()))
             }
             ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => {

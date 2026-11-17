@@ -1,6 +1,7 @@
 use crate::channel::ChannelConfig;
 use crate::error::UpdateError;
 use crate::hosts::host_allowed;
+#[cfg(target_os = "macos")]
 use crate::install_gate;
 use crate::manifest::{self, Manifest};
 use crate::mirrors;

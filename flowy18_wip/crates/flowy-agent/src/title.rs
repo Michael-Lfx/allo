@@ -43,7 +43,7 @@ pub fn clamp_title(raw: &str, max_chars: usize) -> String {
 }
 
 #[must_use]
-pub fn title_system_prompt() -> &'static str {
+pub const fn title_system_prompt() -> &'static str {
     TITLE_SYSTEM
 }
 

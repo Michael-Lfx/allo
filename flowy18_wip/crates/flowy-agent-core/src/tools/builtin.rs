@@ -205,16 +205,13 @@ fn write_file_tool() -> Arc<ToolDefinition> {
                         }
                     };
                 let path = resolve_path(&run_ctx, &parsed.path);
-                if let Some(parent) = path.parent() {
-                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                        return ToolExecutionResult::error(
-                            "MKDIR_FAILED",
-                            format!(
-                                "cannot create {}: {err}",
-                                parent.display()
-                            ),
-                        );
-                    }
+                if let Some(parent) = path.parent()
+                    && let Err(err) = tokio::fs::create_dir_all(parent).await
+                {
+                    return ToolExecutionResult::error(
+                        "MKDIR_FAILED",
+                        format!("cannot create {}: {err}", parent.display()),
+                    );
                 }
                 match tokio::fs::write(&path, &parsed.content).await {
                     Ok(()) => {
@@ -420,7 +417,7 @@ async fn walk_and_match(base: &Path, pattern: &str) -> Vec<PathBuf> {
             collected.push(entry);
         }
         // Sort for determinism.
-        collected.sort_by_key(|e| e.file_name());
+        collected.sort_by_key(tokio::fs::DirEntry::file_name);
         for entry in collected {
             let path = entry.path();
             let Ok(meta) = entry.metadata().await else {
@@ -564,7 +561,7 @@ async fn collect_files(base: &Path) -> Vec<PathBuf> {
         while let Ok(Some(entry)) = entries.next_entry().await {
             collected.push(entry);
         }
-        collected.sort_by_key(|e| e.file_name());
+        collected.sort_by_key(tokio::fs::DirEntry::file_name);
         for entry in collected {
             let path = entry.path();
             let Ok(meta) = entry.metadata().await else {

@@ -12,7 +12,7 @@ const LEFT_INSET: f32 = 8.0;
 impl FlowyApp {
     pub(super) fn titlebar(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let maximized = window.is_maximized();

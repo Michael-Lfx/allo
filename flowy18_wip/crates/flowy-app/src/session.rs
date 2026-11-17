@@ -46,8 +46,7 @@ mod tests {
     fn runtime_temp_dir_is_created_and_writable() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let root = std::env::temp_dir()
             .join(format!("flowy-runtime-temp-{}-{stamp}", std::process::id()));
         let dir = ensure_runtime_temp(&root).unwrap();

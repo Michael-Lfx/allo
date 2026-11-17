@@ -102,10 +102,6 @@ impl ChatProjection {
         self.lines.push(ChatLine::User { text: text.into() });
     }
 
-    pub fn push_status(&mut self, text: impl Into<String>) {
-        self.lines.push(ChatLine::Status { text: text.into() });
-    }
-
     /// Accumulate streamed assistant text; ends the reasoning clock on the
     /// first text delta so the reported thinking duration excludes generation.
     pub fn apply_text(&mut self, delta: &str) {
@@ -130,8 +126,7 @@ impl ChatProjection {
         let duration_secs = self
             .reasoning_started
             .take()
-            .map(|started| started.elapsed().as_secs())
-            .unwrap_or(0);
+            .map_or(0, |started| started.elapsed().as_secs());
         let text = std::mem::take(&mut self.pending_reasoning);
         self.lines.push(ChatLine::Reasoning {
             text,
@@ -157,8 +152,7 @@ impl ChatProjection {
         if !self.pending_reasoning.is_empty() {
             let duration_secs = self
                 .reasoning_started
-                .map(|started| started.elapsed().as_secs())
-                .unwrap_or(0);
+                .map_or(0, |started| started.elapsed().as_secs());
             lines.push(ChatLine::Reasoning {
                 text: self.pending_reasoning.clone(),
                 duration_secs,
@@ -200,11 +194,10 @@ impl ChatProjection {
                 running,
                 ..
             } = line
+                && id == call_id
             {
-                if id == call_id {
-                    *running = false;
-                    break;
-                }
+                *running = false;
+                break;
             }
         }
         self.lines.push(ChatLine::ToolResult {

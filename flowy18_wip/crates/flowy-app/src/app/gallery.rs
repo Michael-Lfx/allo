@@ -386,7 +386,7 @@ impl FlowyApp {
 
     pub(super) fn ideas_layer(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let frame = self.theme.modal_size(window.viewport_size());
@@ -547,7 +547,7 @@ impl FlowyApp {
 
     pub(super) fn idea_layer(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let frame = self.theme.modal_size(window.viewport_size());

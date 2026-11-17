@@ -361,9 +361,8 @@ impl StudioPanel {
     pub(crate) fn model_label(&self) -> String {
         self.catalog
             .selected_model()
-            .map(|model| model.name.clone())
             // No catalog model yet: show nothing rather than an error notice.
-            .unwrap_or_else(|| "—".to_owned())
+            .map_or_else(|| "—".to_owned(), |model| model.name.clone())
     }
 
     pub(crate) fn t(&self, key: &str) -> String {

@@ -198,6 +198,7 @@ fn command_stdout_with_timeout(
     }
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn parse_scutil_proxy(text: &str) -> Option<SystemProxyConfig> {
     let mut http_enable = false;
     let mut https_enable = false;
@@ -280,6 +281,7 @@ fn parse_scutil_proxy(text: &str) -> Option<SystemProxyConfig> {
     })
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn enabled_proxy_url(
     enabled: bool,
     scheme: &str,
@@ -294,6 +296,7 @@ fn enabled_proxy_url(
     Some(format!("{scheme}://{host}:{port}"))
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 fn non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())

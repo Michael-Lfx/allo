@@ -10,9 +10,11 @@ mod cache;
 mod channel;
 mod error;
 mod hosts;
+#[cfg(target_os = "macos")]
 mod install_gate;
 #[cfg(target_os = "linux")]
 mod linux_install;
+#[cfg(target_os = "macos")]
 mod macos_swap;
 mod manifest;
 mod mirrors;

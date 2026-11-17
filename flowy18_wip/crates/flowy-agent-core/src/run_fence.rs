@@ -22,18 +22,18 @@ impl std::fmt::Debug for RunTicket {
         f.debug_struct("RunTicket")
             .field("generation", &self.generation)
             .field("current", &self.is_current())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl RunTicket {
     #[must_use]
-    pub fn generation(&self) -> u64 {
+    pub const fn generation(&self) -> u64 {
         self.generation
     }
 
     #[must_use]
-    pub fn signal(&self) -> &CancelToken {
+    pub const fn signal(&self) -> &CancelToken {
         &self.signal
     }
 
@@ -73,7 +73,7 @@ impl std::fmt::Debug for RunFence {
         f.debug_struct("RunFence")
             .field("current", &self.current.load(Ordering::SeqCst))
             .field("active", &self.active.lock().unwrap().is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -94,6 +94,7 @@ impl RunFence {
         let signal = CancelToken::new();
         *active = Some((generation, signal.clone()));
         self.current.store(generation, Ordering::SeqCst);
+        drop(active);
         Some(RunTicket {
             generation,
             signal,
@@ -109,6 +110,7 @@ impl RunFence {
         }
         *active = None;
         self.current.fetch_add(1, Ordering::SeqCst);
+        drop(active);
     }
 
     #[must_use]

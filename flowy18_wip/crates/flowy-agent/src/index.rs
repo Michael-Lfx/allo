@@ -67,10 +67,11 @@ impl SessionIndex {
                 .open(&tmp)
             {
                 Ok(file) => break (tmp, file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    continue;
+                Err(error) => {
+                    if error.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(error);
+                    }
                 }
-                Err(error) => return Err(error),
             }
         };
         let result = (|| {
@@ -83,26 +84,6 @@ impl SessionIndex {
             let _ = fs::remove_file(&tmp);
         }
         result
-    }
-
-    pub fn upsert(&mut self, record: SessionRecord) {
-        if let Some(slot) =
-            self.sessions.iter_mut().find(|row| row.id == record.id)
-        {
-            *slot = record;
-        } else {
-            self.sessions.push(record);
-        }
-        self.sessions
-            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    }
-
-    pub fn get_mut(&mut self, id: &str) -> Option<&mut SessionRecord> {
-        self.sessions.iter_mut().find(|row| row.id == id)
-    }
-
-    pub fn get(&self, id: &str) -> Option<&SessionRecord> {
-        self.sessions.iter().find(|row| row.id == id)
     }
 }
 

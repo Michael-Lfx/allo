@@ -268,8 +268,8 @@ mod tests {
             let value = serde_json::json!({"version":1,"locale":"en","send_mode":"quiet",
                 "notify_browser":true,"sound":true,"early_access":false,"model":tier});
             let file: super::File = serde_json::from_value(value).unwrap();
-            assert!(file.model_id.is_empty());
-            assert!(file.model_account.is_empty());
+            assert_eq!(file.model_id, "");
+            assert_eq!(file.model_account, "");
             assert_eq!(file.locale, "en");
             let mut saved = file;
             saved.model_id = "cloud-selected".into();

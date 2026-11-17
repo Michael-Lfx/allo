@@ -10,14 +10,14 @@ use gpui::{
 use gpui_ce_elements::editable_text::{EditableTextState, TextChanged};
 
 #[derive(Clone, Copy, Debug)]
-pub(super) enum ComposerEvent {
+pub enum ComposerEvent {
     Send,
     Stop,
     ModelMenu(&'static str),
     Access,
 }
 
-pub(super) struct ChatComposer {
+pub struct ChatComposer {
     ui: theme::UiContext,
     theme: theme::ResolvedTheme,
     prompt: Entity<EditableTextState>,

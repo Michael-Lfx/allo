@@ -47,6 +47,7 @@ pub fn parse_available_models(
 ) -> Result<AvailableModels, AuthError> {
     let raw: RawAvailableModels = serde_json::from_value(value.clone())
         .map_err(|_| AuthError::Server("model catalog decode failed".into()))?;
+    let mut seen = std::collections::HashSet::new();
     let cloud = raw
         .cloud
         .into_iter()
@@ -62,10 +63,6 @@ pub fn parse_available_models(
             model
         })
         .filter(|model| !model.id.trim().is_empty())
-        .collect::<Vec<_>>();
-    let mut seen = std::collections::HashSet::new();
-    let cloud = cloud
-        .into_iter()
         .filter(|model| seen.insert(model.id.clone()))
         .collect();
     Ok(AvailableModels {

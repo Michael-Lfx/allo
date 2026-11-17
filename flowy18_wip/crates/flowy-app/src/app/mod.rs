@@ -118,11 +118,11 @@ pub struct FlowyApp {
     gallery: GalleryState,
     skills: SkillsState,
     pub ota: ota::OtaController,
-    pub settings: SettingsState,
-    pub invite: InviteState,
-    pub persona: PersonaState,
-    pub appearance: AppearanceChrome,
-    pub flex: FlexState,
+    pub(crate) settings: SettingsState,
+    pub(crate) invite: InviteState,
+    pub(crate) persona: PersonaState,
+    pub(crate) appearance: AppearanceChrome,
+    pub(crate) flex: FlexState,
     pub user_menu: bool,
     pub prefs: Preferences,
     pub i18n: I18n,
@@ -168,20 +168,32 @@ impl FlowyApp {
     fn close_overlay(&mut self, scope: &str, cx: &mut Context<'_, Self>) {
         match scope {
             "language-menu" | "send-menu" | "accent-menu" | "density-menu" => {
-                self.settings.picker = settings::Picker::None
+                self.settings.picker = settings::Picker::None;
             }
-            "flex-provider-menu" => self.flex.provider_menu = false,
-            "more-flyout" => self.persona.menu = false,
-            "user-menu" => self.close_user_menu(cx),
+            "flex-provider-menu" => {
+                self.flex.provider_menu = false;
+            }
+            "more-flyout" => {
+                self.persona.menu = false;
+            }
+            "user-menu" => {
+                self.close_user_menu(cx);
+            }
             "model-list" | "model-info" | "credit-card" => {
                 self.studio.update(cx, |panel, cx| {
                     match scope {
-                        "model-list" => panel.model_menu_open = false,
-                        "model-info" => panel.model_info_open = false,
-                        _ => panel.credits_hover = false,
+                        "model-list" => {
+                            panel.model_menu_open = false;
+                        }
+                        "model-info" => {
+                            panel.model_info_open = false;
+                        }
+                        _ => {
+                            panel.credits_hover = false;
+                        }
                     }
                     cx.notify();
-                })
+                });
             }
             _ if self.active_dialog.scope() == Some(scope) => {
                 self.active_dialog = state::ActiveDialog::None;
@@ -464,7 +476,7 @@ impl FlowyApp {
         let config = cloud_model_config(&model, &session.access_token);
         match self.studio.read(cx).agent.apply_config(config) {
             Ok(()) => {
-                self.prefs.model_id = model.id.clone();
+                self.prefs.model_id.clone_from(&model.id);
                 let save_failed =
                     self.prefs.save_checked(self.store.root()).is_err();
                 self.studio.update(cx, |panel, cx| {
@@ -878,6 +890,10 @@ impl FlowyApp {
         }));
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI Context is forwarded to entity updates and task spawning"
+    )]
     fn start_login_cooldown(&mut self, cx: &mut Context<'_, Self>) {
         self.auth.cooldown_left = EMAIL_OTP_COOLDOWN_SECS;
         self.auth.cooldown_task = Some(cx.spawn(async move |weak, cx| {
@@ -982,6 +998,10 @@ impl FlowyApp {
             .update(cx, flowy_studio::StudioPanel::clear_thread);
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI Context is forwarded to entity updates"
+    )]
     fn sync_studio_surface(&mut self, cx: &mut Context<'_, Self>) {
         let notice = self.notice;
         match self.section {
@@ -1098,7 +1118,7 @@ impl FlowyApp {
                 self.open_flex(cx);
             }
             StudioEvent::CloudModelSelected(id) => {
-                self.select_cloud_model(id, cx)
+                self.select_cloud_model(id, cx);
             }
             StudioEvent::RefreshModels => self.refresh_models(cx),
             StudioEvent::OpenIdeas => {
@@ -1454,7 +1474,7 @@ impl Render for FlowyApp {
 }
 
 impl FlowyApp {
-    fn theme_options(prefs: &Preferences) -> flowy_ui::ThemeOptions {
+    const fn theme_options(prefs: &Preferences) -> flowy_ui::ThemeOptions {
         flowy_ui::ThemeOptions {
             mode: prefs.theme,
             accent: prefs.accent,
@@ -1679,6 +1699,10 @@ mod tests {
     }
 
     #[gpui::test]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI test harness passes &mut TestAppContext"
+    )]
     fn new_task_reconciles_deferred_studio_notice(cx: &mut TestAppContext) {
         let root = test_root();
         let app = cx.update(|cx| {
@@ -1709,6 +1733,10 @@ mod tests {
     }
 
     #[gpui::test]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI test harness passes &mut TestAppContext"
+    )]
     fn storage_error_survives_login_settings_and_navigation_until_dismissed(
         cx: &mut TestAppContext,
     ) {
@@ -1747,6 +1775,10 @@ mod tests {
     }
 
     #[gpui::test]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI test harness passes &mut TestAppContext"
+    )]
     fn failed_new_task_is_not_hidden_by_navigation(cx: &mut TestAppContext) {
         let root = test_root();
         let sessions = root.join("sessions");

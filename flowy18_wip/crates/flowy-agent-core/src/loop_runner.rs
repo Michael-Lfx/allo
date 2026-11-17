@@ -82,8 +82,10 @@ pub enum LoopOutcome {
     Aborted,
 }
 
-/// Run one turn. `Err` means the loop itself failed to start or returned an
-/// error; a provider failure that settled as a terminal message yields
+/// Run one turn.
+///
+/// `Err` means the loop itself failed to start or returned an error; a provider
+/// failure that settled as a terminal message yields
 /// `Ok(TurnResult { outcome: Failed, .. })` so callers cannot mistake it for
 /// success.
 pub async fn run_turn(
@@ -171,7 +173,7 @@ pub async fn complete_text(
         .iter()
         .rev()
         .find(|message| message.role == Role::Assistant)
-        .map(|message| message.text())
+        .map(Message::text)
         .unwrap_or_default())
 }
 
@@ -409,8 +411,9 @@ fn next_id() -> String {
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 #[cfg(test)]

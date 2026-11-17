@@ -30,8 +30,8 @@ pub enum TurnState {
 
 impl TurnState {
     #[must_use]
-    pub fn is_busy(&self) -> bool {
-        matches!(self, TurnState::Running)
+    pub const fn is_busy(&self) -> bool {
+        matches!(self, Self::Running)
     }
 }
 
@@ -102,10 +102,11 @@ impl SessionIndex {
                 .open(&tmp)
             {
                 Ok(file) => break (tmp, file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    continue;
+                Err(error) => {
+                    if error.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(error);
+                    }
                 }
-                Err(error) => return Err(error),
             }
         };
         let result = (|| {
@@ -129,7 +130,7 @@ impl SessionIndex {
             self.sessions.push(record);
         }
         self.sessions
-            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            .sort_by_key(|row| std::cmp::Reverse(row.updated_at));
     }
 
     pub fn get(&self, id: &str) -> Option<&SessionRecord> {

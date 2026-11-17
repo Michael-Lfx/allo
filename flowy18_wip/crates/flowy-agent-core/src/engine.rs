@@ -81,12 +81,12 @@ pub enum RunError {
 impl std::fmt::Display for RunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RunError::Busy => write!(f, "session already has an active run"),
-            RunError::NotFound(id) => write!(f, "session {id} not found"),
-            RunError::NoCredential => {
+            Self::Busy => write!(f, "session already has an active run"),
+            Self::NotFound(id) => write!(f, "session {id} not found"),
+            Self::NoCredential => {
                 write!(f, "no account credential for this run")
             }
-            RunError::Loop(message) => write!(f, "{message}"),
+            Self::Loop(message) => write!(f, "{message}"),
         }
     }
 }
@@ -224,10 +224,10 @@ impl Engine {
         if let Some(fence) = inner.fences.get(id) {
             fence.cancel_active();
         }
-        if let Some(record) = inner.index.get_mut(id) {
-            if record.status.is_busy() {
-                record.status = TurnState::Stopped;
-            }
+        if let Some(record) = inner.index.get_mut(id)
+            && record.status.is_busy()
+        {
+            record.status = TurnState::Stopped;
         }
         let snapshot = inner.index.clone();
         drop(inner);
@@ -242,15 +242,14 @@ impl Engine {
         prompt: &str,
     ) -> Result<LoopOutcome, RunError> {
         let stream = {
-            let inner = self.inner.lock().unwrap();
-            let config = &inner.config;
-            if config.api_key.is_none() {
-                return Err(RunError::NoCredential);
-            }
-            crate::transport::openai_stream_fn(
-                &config.route,
-                config.api_key.clone(),
-            )
+            let (route, api_key) = {
+                let inner = self.inner.lock().unwrap();
+                if inner.config.api_key.is_none() {
+                    return Err(RunError::NoCredential);
+                }
+                (inner.config.route.clone(), inner.config.api_key.clone())
+            };
+            crate::transport::openai_stream_fn(&route, api_key)
         };
         self.run_with_stream(session_id, prompt, stream).await
     }
@@ -273,9 +272,8 @@ impl Engine {
                     .entry(session_id.to_owned())
                     .or_insert_with(|| Arc::new(RunFence::new())),
             );
-            let ticket = match fence.try_begin() {
-                Some(ticket) => ticket,
-                None => return Err(RunError::Busy),
+            let Some(ticket) = fence.try_begin() else {
+                return Err(RunError::Busy);
             };
             let config = inner.config.clone();
             let now = now_ms();
@@ -320,7 +318,7 @@ impl Engine {
                         .iter()
                         .rev()
                         .find(|message| message.role == Role::Assistant)
-                        .map(|message| message.text())
+                        .map(Message::text)
                         .unwrap_or_default();
                     if !final_text.is_empty() {
                         self.observer.assistant_text(session_id, &final_text);
@@ -417,8 +415,9 @@ fn status_for(outcome: LoopOutcome) -> TurnState {
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 struct EngineEmitter {

@@ -172,17 +172,16 @@ impl AgentHandle {
                     return;
                 }
                 state.report_storage_error();
-                match Engine::open(
+                if let Ok(engine) = Engine::open(
                     state.root.clone(),
                     engine_config(&config, &tool_cwd),
                     observer,
                 ) {
-                    Ok(engine) => Arc::new(engine),
-                    Err(_) => {
-                        *lock(&state.load_failed) = true;
-                        state.report_storage_error();
-                        return;
-                    }
+                    Arc::new(engine)
+                } else {
+                    *lock(&state.load_failed) = true;
+                    state.report_storage_error();
+                    return;
                 }
             }
             Err(_) => {
@@ -215,6 +214,7 @@ impl AgentHandle {
                     },
                 );
             }
+            drop(live);
             *lock(&state.active) = active;
         }
         // If the UI index was lost or quarantined, rebuild the visible sessions
@@ -256,7 +256,8 @@ impl AgentHandle {
                 updated_at: session.updated_at,
             })
             .collect();
-        rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        drop(live);
+        rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
         rows
     }
 
@@ -405,6 +406,7 @@ impl AgentHandle {
                     title_signal = Some(signal);
                 }
             }
+            drop(live);
         }
         if persist_index(&self.inner.state).is_err() {
             self.inner.state.report_storage_error();
@@ -420,13 +422,13 @@ impl AgentHandle {
         if ensure_engine_session(&engine, &session_id).is_err() {
             self.inner.state.report_storage_error();
         }
-        if let Some(title) = fallback_title {
-            if engine.set_session_title(&session_id, title, true).is_err() {
-                self.inner.state.report_storage_error();
-            }
+        if let Some(title) = fallback_title
+            && engine.set_session_title(&session_id, title, true).is_err()
+        {
+            self.inner.state.report_storage_error();
         }
         let prompt = text.to_owned();
-        let id = session_id.clone();
+        let id = session_id;
         let state = Arc::clone(&self.inner.state);
         let is_live = config.api_key.is_some();
         let runtime = &self.inner.runtime;
@@ -464,7 +466,8 @@ impl AgentHandle {
         let Some(id) = lock(&self.inner.state.active).clone() else {
             return;
         };
-        if let Some(engine) = lock(&self.inner.engine).clone() {
+        let engine = lock(&self.inner.engine).clone();
+        if let Some(engine) = engine {
             let _ = engine.cancel(&id);
         }
         {
@@ -486,10 +489,11 @@ impl AgentHandle {
     }
 
     fn ensure_active_session(&self) -> Result<String, &'static str> {
-        if let Some(id) = lock(&self.inner.state.active).clone() {
-            if lock(&self.inner.state.live).contains_key(&id) {
-                return Ok(id);
-            }
+        let active = lock(&self.inner.state.active).clone();
+        if let Some(id) = active
+            && lock(&self.inner.state.live).contains_key(&id)
+        {
+            return Ok(id);
         }
         self.create_session()
     }
@@ -686,7 +690,7 @@ fn persist_index(state: &UiState) -> Result<(), &'static str> {
             titled: session.titled,
         })
         .collect();
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
     let index = SessionIndex {
         active: lock(&state.active).clone(),
         sessions,
@@ -822,9 +826,8 @@ fn lines_from_messages(messages: &[Message]) -> Vec<ChatLine> {
 fn live_status(state: TurnState) -> TurnStatus {
     match state {
         TurnState::Idle => TurnStatus::Idle,
-        TurnState::Running => TurnStatus::Stopped,
+        TurnState::Running | TurnState::Stopped => TurnStatus::Stopped,
         TurnState::Completed => TurnStatus::Completed,
-        TurnState::Stopped => TurnStatus::Stopped,
         TurnState::Error { message } => TurnStatus::Error { message },
     }
 }
@@ -891,7 +894,7 @@ fn messages_from_lines(lines: &[ChatLine], config: &LlmConfig) -> Vec<Message> {
                     role: Role::User,
                     content: vec![ContentBlock::text(text.clone())],
                     source: MessageSource::User,
-                })
+                });
             }
             ChatLine::Assistant { text } => messages.push(Message {
                 id: format!("legacy-a-{index}"),
@@ -1016,10 +1019,9 @@ fn confined_to(root: &Path, raw: &str) -> bool {
     }
     if let (Some(parent), Some(name)) =
         (normalized.parent(), normalized.file_name())
+        && let Ok(parent) = std::fs::canonicalize(parent)
     {
-        if let Ok(parent) = std::fs::canonicalize(parent) {
-            return within(&root, &parent.join(name));
-        }
+        return within(&root, &parent.join(name));
     }
     within(&root, &normalized)
 }
@@ -1067,14 +1069,15 @@ fn next_stamp() -> u64 {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]

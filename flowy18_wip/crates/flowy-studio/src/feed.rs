@@ -8,7 +8,7 @@ use gpui::{
 };
 use std::collections::{HashMap, HashSet};
 
-pub(super) struct ChatFeed {
+pub struct ChatFeed {
     lines: Vec<ChatLine>,
     session: String,
     states: HashMap<String, StoredFeed>,
@@ -540,7 +540,7 @@ impl Render for ChatFeed {
     }
 }
 
-pub(super) struct WorkingIndicator {
+pub struct WorkingIndicator {
     label: String,
     visible: bool,
     theme: ResolvedTheme,

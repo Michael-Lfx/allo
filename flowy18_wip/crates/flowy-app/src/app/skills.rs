@@ -44,7 +44,7 @@ impl Category {
         }
     }
 
-    fn matches(self, categories: &[Category]) -> bool {
+    fn matches(self, categories: &[Self]) -> bool {
         match self {
             Self::All => true,
             other => categories.contains(&other),
@@ -499,7 +499,7 @@ impl FlowyApp {
 
     pub(super) fn skill_layer(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let frame = self.theme.modal_size(window.viewport_size());
