@@ -4,5 +4,5 @@
 # the same version (see .github/workflows), and `make lint` needs clippy and
 # rustfmt, so they come with it.
 [toolchain]
-channel = "1.99"
+channel = "1.100"
 components = ["clippy", "rustfmt"]
