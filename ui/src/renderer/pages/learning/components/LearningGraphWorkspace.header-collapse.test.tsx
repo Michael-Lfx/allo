@@ -9,9 +9,9 @@
  *   一行摘要条（课程名 + structureSummaryText + processing 徽章 + 展开
  *   钮）；默认展开；per-course 持久化（localStorage，键
  *   learning.graph.headerCollapsed，存储注入式——测试装内存 mock）；缓头
- *   返回行 / 检测区 / Tabs 常驻折叠区之外；structure/growth 运行中强制
- *   展开（processingPrimary / growing 任一为真时不可折叠、processing
- *   徽章照常渲染）。
+ *   返回行 / 检测区 / Tabs 常驻折叠区之外；processing（a3 修订）：后台
+ *   运行不再强制展开、不再禁用折叠钮——徽章在展开/折叠两态照常渲染，
+ *   折叠判定与 processing 解耦。
  * - Q6 去重：graph.goal trim 后与 course.title 逐字相同 → 目标段不渲染；
  *   不同（含仅空白差异）才渲染。
  * jsdom 宿主：LearningGraphWorkspace.quiz-entry.test 同仪式——挂载期读数
@@ -384,21 +384,22 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     expect(loadGraphHeaderCollapsed('course-graph-2')).toBe(false);
   });
 
-  test('growth_running 强制展开：持久化折叠被压住，折叠钮禁用，processing 徽章在场', async () => {
+  test('growth_running 不再强制展开（a3）：持久化折叠保持折叠，展开钮不禁用，摘要条徽章在场', async () => {
     storageMap.set(GRAPH_HEADER_COLLAPSED_KEY, '{"course-graph-1":true}');
     await mountGraphWorkspace({ growthRunning: true });
     const text = container.textContent ?? '';
-    // 强制展开：折叠态摘要被完整头部替代
-    expect(text).toContain('知识结构');
-    expect(text).toContain('补充节点（就绪 1/7）');
-    expect(headerToggle('收起头部')).not.toBeNull();
-    // 不可折叠：钮禁用
-    expect(headerToggle('收起头部')!.disabled).toBe(true);
-    // processing 徽章不可被折叠吞
+    // 持久化折叠不被 processing 压住：仍是折叠态（完整头部退场）
+    expect(text).not.toContain('知识结构');
+    expect(text).not.toContain('补充节点（就绪 1/7）');
+    // 展开钮在场且恒可点（后台运行不剥夺折叠控制权）
+    const toggle = headerToggle('展开头部');
+    expect(toggle).not.toBeNull();
+    expect(toggle!.disabled).toBe(false);
+    // processing 徽章不可被折叠吞：摘要条兜底渲染生长徽章
     expect(text).toContain('生长中…');
   });
 
-  test('本地 growing 强制展开：生长在途时折叠钮禁用（点击不落持久化）', async () => {
+  test('本地 growing 不再禁用折叠（a3）：生长在途可折叠、落持久化', async () => {
     await mountGraphWorkspace();
     learningApi.growGraph = () => new Promise(() => undefined);
     await act(async () => {
@@ -409,14 +410,16 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     });
     const toggle = headerToggle('收起头部');
     expect(toggle).not.toBeNull();
-    expect(toggle!.disabled).toBe(true);
+    // 钮恒可点（growing 在途不进折叠判定；o6：徽章只认服务端 growth_running
+    // 真相，本地在途态不点亮徽章——徽章兜底断言在 growth_running 用例）
+    expect(toggle!.disabled).toBe(false);
     await act(async () => {
       toggle!.click();
       await Promise.resolve();
     });
-    // 点击无效：仍展开，持久化无写入
-    expect(container.textContent).toContain('知识结构');
-    expect(storageMap.get(GRAPH_HEADER_COLLAPSED_KEY)).toBeUndefined();
+    // 折叠生效且持久化写入
+    expect(container.textContent).not.toContain('知识结构');
+    expect(storageMap.get(GRAPH_HEADER_COLLAPSED_KEY)).toBe('{"course-graph-1":true}');
   });
 
   test('en-US：摘要条/展开钮同走词典（零中文回落）', async () => {

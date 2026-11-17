@@ -184,13 +184,15 @@ const LearningGraphWorkspace: React.FC<{
     };
   }, [quizEntryRenderable, detail.course.id, quizProgressToken]);
 
-  // ── 头部折叠（f3 Q5）：标题块 + 目标段 + 知识结构/生长控制条收进一行摘要
-  // 条；默认展开、per-course 持久化（localStorage，存取注入式可降级——
-  // headerCollapse.ts）；structure/growth 运行中强制展开（processing 徽章
-  // 不可被折叠吞）。返回行 / 检测区 / Tabs 常驻折叠区之外；折叠区是 Tabs
-  // 之上的自然流（shrink-0 语义保留，d1 高链不受影响）。折叠态含模型选择
-  // 等右列控件一并收起——展开即回，不在摘要条复刻（摘要条只留课程名 +
-  // 结构摘要 + processing 徽章 + 展开钮）。
+  // ── 头部折叠（f3 Q5；a3 修订）：标题块 + 目标段 + 知识结构/生长控制条收
+  // 进一行摘要条；默认展开、per-course 持久化（localStorage，存取注入式可
+  // 降级——headerCollapse.ts）。processing（结构生成 / 生长 / 自动准备）
+  // **不进折叠判定**——后台运行不剥夺用户折叠控制权；徽章在展开/折叠两态
+  // 照常渲染（信息不丢），processingPrimary 只作徽章/次要行渲染源。返回
+  // 行 / 检测区 / Tabs 常驻折叠区之外；折叠区是 Tabs 之上的自然流（shrink-0
+  // 语义保留，d1 高链不受影响）。折叠态含模型选择等右列控件一并收起——
+  // 展开即回，不在摘要条复刻（摘要条只留课程名 + 结构摘要 + processing
+  // 徽章 + 展开钮）。
   const [headerCollapsed, setHeaderCollapsed] = useState<boolean>(() =>
     loadGraphHeaderCollapsed(detail.course.id)
   );
@@ -716,13 +718,12 @@ const LearningGraphWorkspace: React.FC<{
       <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
     ) : null;
 
-  // ── 头部折叠派生面（f3 Q5）：缓跑态（结构生成 / 生长 / 自动准备任一、
-  // 含本地 growing 在途）强制展开——processing 徽章不可被折叠吞，折叠钮
-  // 同步禁用（运行中不可折叠）。
-  const headerForceExpanded = processingPrimary !== null || growing;
-  const headerExpanded = headerForceExpanded || !headerCollapsed;
+  // ── 头部折叠派生面（f3 Q5；a3 修订）：processing 不再是否决输入——
+  // 后台运行（结构生成 / 生长 / 自动准备，含本地 growing 在途）不强制
+  // 展开、不禁用折叠钮；徽章两态照常渲染（强制展开的初衷已由摘要条自身
+  // 兜底徽章满足），processingPrimary 保留作徽章/次要行渲染源。
+  const headerExpanded = !headerCollapsed;
   const collapseHeader = () => {
-    if (headerForceExpanded) return;
     const next = !headerCollapsed;
     saveGraphHeaderCollapsed(detail.course.id, next);
     setHeaderCollapsed(next);
@@ -752,9 +753,9 @@ const LearningGraphWorkspace: React.FC<{
       >
       {/* 头部：返回 + 标题/Beta + 学习目标 + 模型选择（对齐传统课程工作区）。
           f3 Q5：标题块 + 目标段 + 知识结构/生长控制条（含软闸 Alert）收进可
-          折叠头部——默认展开、per-course 持久化、缓跑态强制展开（徽章不被
-          折叠吞）；收起后一行摘要条（课程名 + 结构摘要 + 展开钮）。返回行
-          常驻折叠区之外。 */}
+          折叠头部——默认展开、per-course 持久化（a3 修订：processing 不再
+          强制展开，徽章两态照常渲染）；收起后一行摘要条（课程名 + 结构摘要
+          + 展开钮）。返回行常驻折叠区之外。 */}
       <Button type='text' className='self-start !px-0' onClick={onBack}>
         {t('learning.back')}
       </Button>
@@ -769,7 +770,6 @@ const LearningGraphWorkspace: React.FC<{
               className='!px-2px'
               aria-label={t('learning.learningGraphHeaderCollapse')}
               aria-expanded={true}
-              disabled={headerForceExpanded}
               onClick={collapseHeader}
             >
               <IconDown className='text-12px' />
@@ -946,11 +946,11 @@ const LearningGraphWorkspace: React.FC<{
       </div>
       </React.Fragment>
       ) : (
-      /* 折叠摘要条（f3 Q5）：一行收纳标题块 + 目标段 + 结构/生长控制条。
-          课程名（truncate）+ 结构摘要（structureSummaryText；读侧其余态复
-          用结构条文案，折叠不吞状态）+ processing 徽章（缓跑态实际已被强
-          制展开，此处兜底防竞态吞徽章）+ 展开钮。shrink-0 自然流于 Tabs
-          之上（d1 高链不变）；运行中钮禁用（不可折叠）。 */
+      /* 折叠摘要条（f3 Q5；a3 修订）：一行收纳标题块 + 目标段 + 结构/生长
+          控制条。课程名（truncate）+ 结构摘要（structureSummaryText；读侧
+          其余态复用结构条文案，折叠不吞状态）+ processing 徽章（后台运行
+          时在此兜底渲染——徽章不被折叠吞）+ 展开钮。shrink-0 自然流于
+          Tabs 之上（d1 高链不变）；钮恒可点（a3：后台运行不禁用）。 */
       <div className='flex shrink-0 flex-wrap items-center gap-8px'>
         <Button
           type='text'
@@ -958,7 +958,6 @@ const LearningGraphWorkspace: React.FC<{
           className='!px-2px'
           aria-label={t('learning.learningGraphHeaderExpand')}
           aria-expanded={false}
-          disabled={headerForceExpanded}
           onClick={collapseHeader}
         >
           <span className='flex min-w-0 items-center gap-4px'>
