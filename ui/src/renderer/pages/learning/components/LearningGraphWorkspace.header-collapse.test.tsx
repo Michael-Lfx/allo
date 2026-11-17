@@ -232,7 +232,12 @@ const noop = () => undefined;
 /** 挂载图工作区：检测进度注入 due:false（检测区与折叠语义解耦）、结构投影
  * 给就绪夹具（摘要条文本面）、补批判定拒绝（防自动补批 POST 真发）。 */
 const mountGraphWorkspace = async (
-  options?: { goal?: string; growthRunning?: boolean; locale?: 'zh-CN' | 'en-US' } | string,
+  options?: {
+    goal?: string;
+    growthRunning?: boolean;
+    courseId?: string;
+    locale?: 'zh-CN' | 'en-US';
+  } | string,
   locale: 'zh-CN' | 'en-US' = 'zh-CN'
 ) => {
   const opts = typeof options === 'string' ? { goal: options } : (options ?? {});
