@@ -3737,6 +3737,8 @@ export type I18nKey =
   | 'learning.learningGraphGrowFailed'
   | 'learning.learningGraphGrowReady'
   | 'learning.learningGraphGrowing'
+  | 'learning.learningGraphHeaderCollapse'
+  | 'learning.learningGraphHeaderExpand'
   | 'learning.learningGraphHistoryEmpty'
   | 'learning.learningGraphMountCounts'
   | 'learning.learningGraphMountDetails'

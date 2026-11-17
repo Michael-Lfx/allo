@@ -16,6 +16,7 @@ import {
   Tooltip,
   Typography,
 } from '@arco-design/web-react';
+import { IconDown, IconRight } from '@arco-design/web-react/icon';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -40,6 +41,10 @@ import {
   shouldPresentStructure,
 } from '../structurePresentation';
 import {
+  loadGraphHeaderCollapsed,
+  saveGraphHeaderCollapsed,
+} from '../headerCollapse';
+import {
   hasActiveStructureRow,
   startStructureReadoutPolling,
   structureBadgeCopy,
@@ -59,6 +64,7 @@ import type {
   LearningStructureView,
   Lesson,
   LessonStatus,
+  QuizProgressView,
   SystemActionView,
 } from '../types';
 import { LessonBlock } from './LessonStudy';
@@ -134,6 +140,48 @@ const LearningGraphWorkspace: React.FC<{
     () => new Map(lessons.map((lesson) => [lesson.id, lesson])),
     [lessons]
   );
+  // 零节点 = 首批未生长（e3 声明窗分支；原读点在早退之后，f3 因检测区
+  // 渲染门与检测读数拉取都挂在它上，上提到 hooks 区——hooks 不可跨早退）。
+  const zeroNodes = lessons.length === 0;
+
+  // ── 知识检测 due 判定上提（f3 Q4）：渲染条件从「恒渲染、卡内自降级」改
+  // 为「due 才整段渲染」——not-due 时语境句 + 入口卡 ≈100px 纯死空间，整
+  // 段不渲染；「已就绪」主信号由学习首页横幅承担。数据源照抄 QuizEntryCard
+  // （quizProgress + 进页/令牌 bump 各拉一次、无轮询），读数经 progress 外
+  // 供下发，避免同端点双请求；拉取失败按 not-due 同臂（整段不渲染，图工作
+  // 区不为检测读数另设失败面）。存在性语义沿用：归档 / 零节点不拉不渲染。
+  const [quizProgress, setQuizProgress] = useState<QuizProgressView | null>(null);
+  const quizEntryRenderable = !zeroNodes && detail.course.enabled;
+  useEffect(() => {
+    if (!quizEntryRenderable) return;
+    let cancelled = false;
+    learningApi
+      .quizProgress(detail.course.id)
+      .then((view) => {
+        if (!cancelled) setQuizProgress(view);
+      })
+      .catch(() => {
+        if (!cancelled) setQuizProgress(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [quizEntryRenderable, detail.course.id, quizProgressToken]);
+
+  // ── 头部折叠（f3 Q5）：标题块 + 目标段 + 知识结构/生长控制条收进一行摘要
+  // 条；默认展开、per-course 持久化（localStorage，存取注入式可降级——
+  // headerCollapse.ts）；structure/growth 运行中强制展开（processing 徽章
+  // 不可被折叠吞）。返回行 / 检测区 / Tabs 常驻折叠区之外；折叠区是 Tabs
+  // 之上的自然流（shrink-0 语义保留，d1 高链不受影响）。折叠态含模型选择
+  // 等右列控件一并收起——展开即回，不在摘要条复刻（摘要条只留课程名 +
+  // 结构摘要 + processing 徽章 + 展开钮）。
+  const [headerCollapsed, setHeaderCollapsed] = useState<boolean>(() =>
+    loadGraphHeaderCollapsed(detail.course.id)
+  );
+  // 课程切换重读持久值（useState 初始化只在挂载跑一次）。
+  useEffect(() => {
+    setHeaderCollapsed(loadGraphHeaderCollapsed(detail.course.id));
+  }, [detail.course.id]);
 
   // 后台结构生成/生长的 WS 事件触发刷新：结构启动翻出「生成中」徽章、
   // 画完立即上屏、终结（完成/失败/取消）落定状态——思考化之后结构与生长
@@ -597,9 +645,6 @@ const LearningGraphWorkspace: React.FC<{
   }
   const readyCount = graph.ready_count;
   const readyStockFull = readyCount >= graph.ready_target;
-  // 声明窗口（e3）：零节点（结构完成、首批未生长）时学习 Tab 落在门口
-  // 声明画面——生长不再自动抢跑，首批由「开始学习」显式触发。
-  const zeroNodes = lessons.length === 0;
 
   // ── 顶条单一状态徽章（o6 呈现收敛）：结构生成 / 生长 / 自动准备三个
   // processing 态此前可并排亮三个 Tag——现在按优先级（结构生成 > 生长 >
@@ -639,6 +684,27 @@ const LearningGraphWorkspace: React.FC<{
   }
   const processingSecondaryLine = processingSecondaryParts.join(' · ');
 
+  // ── 头部折叠派生面（f3 Q5）：缓跑态（结构生成 / 生长 / 自动准备任一、
+  // 含本地 growing 在途）强制展开——processing 徽章不可被折叠吞，折叠钮
+  // 同步禁用（运行中不可折叠）。
+  const headerForceExpanded = processingPrimary !== null || growing;
+  const headerExpanded = headerForceExpanded || !headerCollapsed;
+  const collapseHeader = () => {
+    if (headerForceExpanded) return;
+    const next = !headerCollapsed;
+    saveGraphHeaderCollapsed(detail.course.id, next);
+    setHeaderCollapsed(next);
+  };
+  // 摘要条文本：结构就绪 → structureSummaryText；读侧其余态（失败 / 拉取
+  // 中 / 未生成）复用结构条同名案文——折叠不吞状态，只收版面。
+  const headerSummaryText =
+    structureSummaryText ??
+    (structureError
+      ? t('learning.learningGraphStructureLoadFailed')
+      : structure === null
+        ? t('learning.learningGraphStructureTitle')
+        : t('learning.learningGraphStructureMissing'));
+
   // 离场兜底臂挂载（零节点 + 拉到新结构 → 呈现一次；见 presentStructureOnce）。
   const zeroNodesAutoPresentedRef = React.useRef(false);
   useEffect(() => {
@@ -652,13 +718,30 @@ const LearningGraphWorkspace: React.FC<{
       <div
         className={`mx-auto flex h-full w-full flex-col gap-10px ${contentColumnWidth(wideContent, STANDARD_GRAPH_MAX_WIDTH)}`}
       >
-      {/* 头部：返回 + 标题/Beta + 学习目标 + 模型选择（对齐传统课程工作区） */}
+      {/* 头部：返回 + 标题/Beta + 学习目标 + 模型选择（对齐传统课程工作区）。
+          f3 Q5：标题块 + 目标段 + 知识结构/生长控制条（含软闸 Alert）收进可
+          折叠头部——默认展开、per-course 持久化、缓跑态强制展开（徽章不被
+          折叠吞）；收起后一行摘要条（课程名 + 结构摘要 + 展开钮）。返回行
+          常驻折叠区之外。 */}
       <Button type='text' className='self-start !px-0' onClick={onBack}>
         {t('learning.back')}
       </Button>
+      {headerExpanded ? (
+      <React.Fragment>
       <div className='flex flex-wrap items-start justify-between gap-12px'>
         <div className='min-w-0 flex-1'>
           <div className='flex items-center gap-8px'>
+            <Button
+              type='text'
+              size='small'
+              className='!px-2px'
+              aria-label={t('learning.learningGraphHeaderCollapse')}
+              aria-expanded={true}
+              disabled={headerForceExpanded}
+              onClick={collapseHeader}
+            >
+              <IconDown className='text-12px' />
+            </Button>
             <Title heading={3} className='!m-0'>
               {detail.course.title}
             </Title>
@@ -678,7 +761,9 @@ const LearningGraphWorkspace: React.FC<{
               </Tooltip>
             )}
           </div>
-          {graph.goal.trim() !== '' && (
+          {/* f3 Q6 目标段去重：goal trim 后与 title 逐字相同（建课时逐字
+              复读标题的常见形态）不渲染——白占一行 ~60px；不做相似度阈值。 */}
+          {graph.goal.trim() !== '' && graph.goal.trim() !== detail.course.title.trim() && (
             <Paragraph className='!mb-0 !mt-4px text-t-secondary'>{graph.goal}</Paragraph>
           )}
         </div>
@@ -837,18 +922,54 @@ const LearningGraphWorkspace: React.FC<{
           />
         )}
       </div>
+      </React.Fragment>
+      ) : (
+      /* 折叠摘要条（f3 Q5）：一行收纳标题块 + 目标段 + 结构/生长控制条。
+          课程名（truncate）+ 结构摘要（structureSummaryText；读侧其余态复
+          用结构条文案，折叠不吞状态）+ processing 徽章（缓跑态实际已被强
+          制展开，此处兜底防竞态吞徽章）+ 展开钮。shrink-0 自然流于 Tabs
+          之上（d1 高链不变）；运行中钮禁用（不可折叠）。 */
+      <div className='flex shrink-0 flex-wrap items-center gap-8px'>
+        <Button
+          type='text'
+          size='small'
+          className='!px-2px'
+          aria-label={t('learning.learningGraphHeaderExpand')}
+          aria-expanded={false}
+          disabled={headerForceExpanded}
+          onClick={collapseHeader}
+        >
+          <span className='flex min-w-0 items-center gap-4px'>
+            <IconRight className='shrink-0 text-12px' />
+            <span className='min-w-0 max-w-360px truncate text-[var(--color-text-1)]'>
+              {detail.course.title}
+            </span>
+          </span>
+        </Button>
+        {processingPrimary === 'structure' ? (
+          <ProcessingStateTag>
+            {t(structureBadge.key, 'vars' in structureBadge ? structureBadge.vars : undefined)}
+          </ProcessingStateTag>
+        ) : processingPrimary === 'growth' ? (
+          <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
+        ) : processingPrimary === 'auto' ? (
+          <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
+        ) : null}
+        <Text type='secondary' className='min-w-0 text-12px'>
+          {headerSummaryText}
+        </Text>
+      </div>
+      )}
 
-      {/* 知识检测入口（u10 R5，自 u6 学习 Tab 两栏区之后上移）：页签头部
-          区——知识结构/生长控制条（含软闸建议条）之下、Tabs 之上，自然流
-          位置恒可见、不随两栏区内容滚动没入。QuizEntryCard 自带 N/K 读数
-          与开测按钮（quiz* 既有词条）；回向语境句原样随迁——图工作区推荐
-          = 前向学新，检测 = 回向考已结算节点，方向由文案点破。存在性语义
-          原样随迁：归档课程不渲染也不拉读数（与 CourseWorkspace 挂点同
-          存在性语义）；零节点臂（声明窗分支）同样不渲染——原挂点即在学习
-          Tab 非零节点分支内，上移后显式补 !zeroNodes 保持等价。头部区是
-          Tabs 之上的自然流：shrink-0 保证极矮视口下压缩的是 Tabs 的 flex-1
-          内容区（各 Pane 自管滚动，d1 高链不变），入口本体不被挤压变形。 */}
-      {!zeroNodes && detail.course.enabled && (
+      {/* 知识检测入口（u10 R5 上移页签头部区；f3 Q4 改版——due 判定上提，
+          not-due 整段不渲染）：未到期时语境句 + 入口卡 ≈100px 纯死空间，
+          无任何可执行动作，整段让位正文；due 时整卡自然出现，「已就绪」
+          主信号由学习首页横幅承担（u10 R2 点行直开检测会话）。正式替代
+          u10 R5「入口恒可见」摆位。读数经 progress 外供下发（工作区已拉，
+          卡内不再双请求）；QuizEntryCard 本体语义不动（CourseWorkspace 挂
+          点原样）。存在性语义沿用：归档 / 零节点不渲染也不拉读数。挂点
+          仍在折叠区之外、Tabs 之上（shrink-0 自然流，d1 高链不变）。 */}
+      {quizEntryRenderable && quizProgress?.due === true && (
         <section className='flex shrink-0 flex-col gap-4px'>
           <Text type='secondary' className='text-12px'>
             {t('learning.quizGraphEntryContext')}
@@ -857,6 +978,7 @@ const LearningGraphWorkspace: React.FC<{
             courseId={detail.course.id}
             refreshToken={quizProgressToken}
             onStartQuiz={onStartQuiz}
+            progress={quizProgress}
           />
         </section>
       )}

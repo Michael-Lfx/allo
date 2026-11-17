@@ -28,21 +28,33 @@ const { Text } = Typography;
  * 接线为同步 setState，不 reject）——本区块不再有 loading 态与失败兜底；
  * start 409（due 门竞态）的完整边界态归会话容器 QuizSession（u5 R2）：
  * toast 未到期文案 + onConflict bump 令牌（本卡随 refreshToken 重拉归零
- * 读数）+ 关闭会话。 */
+ * 读数）+ 关闭会话。
+ *
+ * 读数外供（f3 Q4，可选）：图工作区挂点为 due 摆位自行上提了 due 判定
+ * （同数据源 quizProgress、同刷新时机）——经 progress 外供下发，本卡跳过
+ * 内部拉取，避免同端点双请求。缺省（传统 CourseWorkspace 挂点等消费面）
+ * 不传即原样：进页 + 令牌 bump 各拉一次，语义零变化。 */
 export function QuizEntryCard({
   courseId,
   refreshToken,
   onStartQuiz,
+  progress: externalProgress,
 }: {
   courseId: string;
   /** 进度刷新令牌：进页初值；测验会话结束/冲突回调后 +1（u3/u5 接线）驱动重拉 */
   refreshToken: number;
   /** u3 接线位：打开会话容器（同步；409 边界态在容器内处理，u5 R2） */
   onStartQuiz: () => void;
+  /** 读数外供（f3 Q4）：提供（含 null）时跳过内部拉取、直接呈现该读数；
+   * 缺省 = 自拉（原行为）。 */
+  progress?: QuizProgressView | null;
 }) {
   const { t } = useTranslation();
-  const [progress, setProgress] = useState<QuizProgressView | null>(null);
+  const [selfProgress, setSelfProgress] = useState<QuizProgressView | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  // 外供面判定（f3 Q4）：prop 是否在场——在场即外供模式，读数直用。
+  const external = externalProgress !== undefined;
+  const progress = external ? externalProgress : selfProgress;
   // 并发重拉 last-wins 序号：令牌 bump / 冲突重拉与进页拉并行时，
   // 只让最新一次写读数，旧响应不得回写陈旧 N/K。
   const pullSeqRef = useRef(0);
@@ -52,7 +64,7 @@ export function QuizEntryCard({
     try {
       const view = await learningApi.quizProgress(courseId);
       if (seq === pullSeqRef.current) {
-        setProgress(view);
+        setSelfProgress(view);
         setLoadFailed(false);
       }
     } catch {
@@ -61,10 +73,12 @@ export function QuizEntryCard({
     }
   }, [courseId]);
 
-  // R2 刷新时机：进页（挂载）+ 令牌变化各拉一次；无定时器即无轮询面
+  // R2 刷新时机：进页（挂载）+ 令牌变化各拉一次；无定时器即无轮询面。
+  // 外供模式（f3 Q4）不拉——读数由宿主下发。
   useEffect(() => {
+    if (external) return;
     void pullProgress();
-  }, [pullProgress, refreshToken]);
+  }, [external, pullProgress, refreshToken]);
 
   const due = progress?.due ?? false;
   const handleStart = () => {
