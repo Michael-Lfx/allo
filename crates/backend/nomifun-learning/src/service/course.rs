@@ -218,7 +218,7 @@ impl LearningService {
         // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
         // due_today 徽标（t1，ADR-0017 可服务性计数面）：归档课卡不可复服务，
         // 计数如实滤归档——子查询接外层现存课 c 补 enabled = 1（deleted_at 外层已滤）。
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
@@ -231,8 +231,7 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
-                    (SELECT COUNT(*) FROM learning_lesson_progress p \
-                     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+                    (SELECT COUNT(*) {SKIPPED_LESSON_FILTER} \
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped') AS skipped_lessons, \
@@ -248,7 +247,7 @@ impl LearningService {
                        AND r.due_at <= ?) AS due_today \
              FROM learning_courses c WHERE c.deleted_at IS NULL \
              ORDER BY c.updated_at DESC, c.course_id",
-        )
+        ))
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -278,7 +277,7 @@ impl LearningService {
         let user_value = user_id.map(UserId::as_str);
         // due_today 徽标（t1，ADR-0017 可服务性计数面）：归档课卡不可复服务，
         // 计数如实滤归档——子查询接外层现存课 c 补 enabled = 1（deleted_at 外层已滤）。
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
@@ -291,8 +290,7 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
-                    (SELECT COUNT(*) FROM learning_lesson_progress p \
-                     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+                    (SELECT COUNT(*) {SKIPPED_LESSON_FILTER} \
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped') AS skipped_lessons, \
@@ -313,7 +311,7 @@ impl LearningService {
                        AND trim(l.capacity_note) <> '') AS overloaded_lessons \
              FROM learning_courses c \
              WHERE c.course_id = ? AND c.deleted_at IS NULL",
-        )
+        ))
         .bind(user_value)
         .bind(user_value)
         .bind(user_value)

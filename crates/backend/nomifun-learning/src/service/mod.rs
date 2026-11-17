@@ -61,6 +61,19 @@ pub(super) use crate::scheduler::{
 pub(super) const COURSE_ARRANGEMENT_JOIN: &str = "JOIN learning_courses c \
      ON c.course_id = e.course_id AND c.deleted_at IS NULL AND c.enabled = 1";
 
+/// skipped 课时进度扫描骨架（单源口径，比照 COURSE_ARRANGEMENT_JOIN）：
+/// f2 课程卡进度分母（course.rs 两处 COUNT 相关子查询）与 c1 XP 进度尺
+/// （xp.rs 的 NOT IN 子查询）按同一形状扫 `learning_lesson_progress`。
+/// 别名依赖：进度行必须注册为 `p`、报名行必须注册为 `e`（进度归属经
+/// `enrollment_id` 关联到人，多用户库下他人进度不越尺）。
+/// `p.status = 'skipped'` 谓词与站点特有过滤留在各调用点：三处消费形状
+/// 不同（相关 COUNT vs NOT IN 清单，且 course 卡在骨架与 WHERE 之间还
+/// 要续接 lessons/modules 连接），谓词并入片段需重排站点 WHERE 文本，
+/// 违背本次收敛「改前改后 SQL 文本逐字节不变（仅空白差异可容忍）」的
+/// 硬约束——骨架单源、谓词同形逐点可见，语义漂移仍可 grep 钉住。
+pub(super) const SKIPPED_LESSON_FILTER: &str = "FROM learning_lesson_progress p \
+     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id";
+
 /// 大纲建课的落库快照：蓝图与采样维持旧形状（`blueprint_json` /
 /// `samples_json`，既有消费方按原格式解析），目标与采样披露走独立列
 /// （`learning_goal` / `samples_meta_json`，t1/t2）。无目标路径的

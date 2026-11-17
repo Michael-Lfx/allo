@@ -267,13 +267,20 @@ impl LearningService {
         // 共享口径 + c1/f2 分母决议：已归档 enabled = 0 与已删除墓碑的
         // 课程都不进尺，当前被跳过的课时不进分母也不计剩余；历史面日历
         // 不过筛）。进度行按报名归属过滤（enrollment → user）——与课程卡
-        // f2 skipped 子查询同形状，多用户库下他人进度不越尺。
-        let enabled_scope = "SELECT e.course_id FROM learning_enrollments e \
-             JOIN learning_courses c ON c.course_id = e.course_id \
-             WHERE e.user_id = ? AND c.deleted_at IS NULL AND c.enabled = 1";
-        let skipped_scope = "SELECT p.lesson_id FROM learning_lesson_progress p \
-             JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
-             WHERE e.user_id = ? AND p.status = 'skipped'";
+        // f2 skipped 子查询同形状，多用户库下他人进度不越尺。「现存且
+        // 启用」段收编共享片段 COURSE_ARRANGEMENT_JOIN（单源实现，报名行
+        // 别名 `e` 恰合片段依赖；谓词随片段落 JOIN ON，内连接与 WHERE
+        // 等价）。
+        let enabled_scope = format!(
+            "SELECT e.course_id FROM learning_enrollments e \
+             {COURSE_ARRANGEMENT_JOIN} \
+             WHERE e.user_id = ?"
+        );
+        let skipped_scope = format!(
+            "SELECT p.lesson_id \
+             {SKIPPED_LESSON_FILTER} \
+             WHERE e.user_id = ? AND p.status = 'skipped'"
+        );
         let total_nodes: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
