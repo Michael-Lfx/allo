@@ -131,15 +131,45 @@ describe('deriveStep / lessonProgressLine', () => {
     expect(deriveStep([]).step).toBe(1);
   });
 
-  test('行内进度：round/audit 出文案，终态清空', () => {
-    expect(lessonProgressLine({ phase: PHASE.round, round: 3 } as never, t)).toContain(
-      'learning.lessonGenRound'
-    );
-    expect(lessonProgressLine({ phase: PHASE.audit, danger: 1 } as never, t)).toContain(
-      'learning.lessonGenAudit'
-    );
+  test('行内进度：裸 round 出通用「生成中」不带轮次数字，audit 按环区分，终态清空', () => {
+    // f1：裸轮次数字退出学习者面——round 帧只出通用词条（向后兼容兜底）。
+    const bareRound = lessonProgressLine({ phase: PHASE.round, round: 3 } as never, t);
+    expect(bareRound).toContain('learning.lessonGenRunning');
+    expect(bareRound).not.toContain('learning.lessonGenRound');
+    expect(bareRound).toBe('learning.lessonGenRunning');
+    // 生成环审计：既有质量检查词条。
+    expect(
+      lessonProgressLine({ phase: PHASE.audit, loop: PHASE.generate, danger: 1 } as never, t)
+    ).toContain('learning.lessonGenAudit');
+    // 修复环审计：独立「修复审校」词条（不再与生成环计数混淆）。
+    expect(
+      lessonProgressLine({ phase: PHASE.audit, loop: PHASE.repair, danger: 2 } as never, t)
+    ).toContain('learning.lessonGenAuditRepair');
+    // 终态与发布清空。
     expect(lessonProgressLine({ phase: PHASE.completed } as never, t)).toBeNull();
     expect(lessonProgressLine({ phase: PHASE.failed } as never, t)).toBeNull();
+    expect(lessonProgressLine({ phase: PHASE.publishing } as never, t)).toBeNull();
+  });
+
+  test('f1 相位帧：plan 出「规划节清单」，section 出「写第 k/N 节」带耗时', () => {
+    // plan 帧：N 不上学习者面（节数在 stepper 面自现），只报相位。
+    const plan = lessonProgressLine({ phase: PHASE.plan, total: 5 } as never, t);
+    expect(plan).toBe('learning.lessonGenPlan');
+    // section 帧 + 耗时：写第 k/N 节 · 已 elapsed。
+    expect(
+      lessonProgressLine(
+        { phase: PHASE.section, index: 2, total: 5, title: '概念：期权的定义' } as never,
+        t,
+        '1:00'
+      )
+    ).toBe(
+      'learning.lessonGenSectionElapsed:' +
+        JSON.stringify({ index: 2, total: 5, elapsed: '1:00' })
+    );
+    // 耗时缺席（started 帧丢失/订阅中途）：退无耗时词条，不渲染空「已 」。
+    expect(
+      lessonProgressLine({ phase: PHASE.section, index: 3, total: 5 } as never, t)
+    ).toBe('learning.lessonGenSection:' + JSON.stringify({ index: 3, total: 5 }));
   });
 });
 

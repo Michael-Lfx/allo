@@ -17,11 +17,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
+import type { ILearningLessonGenerationEvent } from '@/common/adapter/ipcBridge';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import MarkdownEditor from '@renderer/pages/conversation/Preview/components/editors/MarkdownEditor';
 import Markdown, { InlineMarkdown } from '@renderer/components/Markdown';
 import { learningApi } from '../api';
+import { formatGrowthElapsed } from '../growthTaskPill';
 import { CapacityFeedbackCard } from './CapacityFeedbackCard';
 import {
   buildSteps,
@@ -744,9 +746,30 @@ export function LessonBlock({
       cancelled = true;
     };
   }, [lesson.id, lesson.generated]);
-  // 按需生成课时的行内迷你进度：按 lesson 过滤 round/audit 事件，
-  // 一行文本轻量更新（不展开完整 timeline）；终态事件清空文本
-  const [progressText, setProgressText] = useState<string | null>(null);
+  // 按需生成课时的行内迷你进度：按 lesson 过滤相位事件，一行文本轻量
+  // 更新（不展开完整 timeline）；终态事件清空文本。
+  // f1 相位化：文案由 model.lessonProgressLine 单源产出——plan → 「规划节
+  // 清单」；section → 「写第 k/N 节」；audit 按环区分（生成环质量检查 /
+  // 修复环修复审校）；裸 round 兜底通用「生成中」，轮次数字不再上学习者
+  // 面。耗时照 structure 徽章的计时模式：started 起表、生成期间 interval
+  // 刷新（5s 一拍，与 STRUCTURE_PILL_POLL_MS 同口径）、终态停表清零（本
+  // 组件只存最近一帧进度事件，elapsed 变化经 useMemo 重算文案）。
+  const [progressEvent, setProgressEvent] =
+    useState<ILearningLessonGenerationEvent | null>(null);
+  const [genStartedAt, setGenStartedAt] = useState<number | null>(null);
+  const [genElapsed, setGenElapsed] = useState<string | null>(null);
+  useEffect(() => {
+    if (genStartedAt == null) return;
+    const tick = () =>
+      setGenElapsed(formatGrowthElapsed(Math.floor((Date.now() - genStartedAt) / 1000)));
+    tick();
+    const timer = setInterval(tick, 5_000);
+    return () => clearInterval(timer);
+  }, [genStartedAt]);
+  const progressText = useMemo(
+    () => (progressEvent ? lessonProgressLine(progressEvent, t, genElapsed) : null),
+    [progressEvent, genElapsed, t]
+  );
   // t3 降级披露：grounding 帧报「源库不可达 → 快照兜底」时，生成期间显示一行
   // 提示——课时照常生成，但用户该知道这次没读库（新一次生成重置）。
   const [groundingDegraded, setGroundingDegraded] = useState(false);
@@ -755,25 +778,26 @@ export function LessonBlock({
       if (event.lesson_id && event.lesson_id !== lesson.id) return;
       if (event.phase === PHASE.grounding) {
         setGroundingDegraded(event.degraded === true);
-      } else if (event.phase === 'started') {
-        // 新一次生成从零开始：上一轮的降级状态不残留。
+      } else if (event.phase === PHASE.started) {
+        // 新一次生成从零开始：上一轮的降级状态与计时表不残留。
         setGroundingDegraded(false);
-      } else if (event.phase === 'round') {
-        setProgressText(
-          `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`
-        );
-      } else if (event.phase === 'audit') {
-        setProgressText(
-          `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenAudit', {
-            danger: event.danger ?? 0,
-            warning: event.warning ?? 0,
-          })}`
-        );
-      } else if (event.phase === 'completed' || event.phase === 'failed') {
-        setProgressText(null);
+        setGenStartedAt(Date.now());
+        setGenElapsed(formatGrowthElapsed(0));
+        setProgressEvent(event);
+      } else if (event.phase === PHASE.completed || event.phase === PHASE.failed) {
+        setProgressEvent(null);
+        setGenStartedAt(null);
+        setGenElapsed(null);
+      } else if (
+        event.phase === PHASE.plan ||
+        event.phase === PHASE.section ||
+        event.phase === PHASE.round ||
+        event.phase === PHASE.audit
+      ) {
+        setProgressEvent(event);
       }
     });
-  }, [lesson.id, t]);
+  }, [lesson.id]);
   // 单节重写：一次有界调用（确定性管线），返回的最新课时详情整体替换
   // 本地详情（sections 随之更新），无需整页刷新。feedback 为可选学习
   // 建议（ADR-0007），留空即同分布重生成。

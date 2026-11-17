@@ -154,19 +154,40 @@ export function summarizeTools(tools: ILearningGenerationToolCall[] | undefined)
 }
 
 /** 课时生成的行内迷你进度行（按 lesson 过滤后的事件 → 一句话）；
- * 终态事件返回 null（清空文本）。 */
+ * 终态与未知事件返回 null（清空文本）。
+ *
+ * f1 相位化呈现：plan → 「规划节清单」；section → 「写第 {{index}}/
+ * {{total}} 节」（elapsed 在场时拼耗时词条，缺省退无耗时词条）；audit
+ * 按环区分（生成环质量检查 / 修复环独立「修复审校」词条）；裸 round 帧
+ * 的轮次数字退出学习者面——向后兼容兜底只出通用「生成中」，不带数字。 */
 export function lessonProgressLine(
   event: ILearningCourseGenerationEvent,
-  t: Translate
+  t: Translate,
+  elapsed: string | null = null
 ): string | null {
-  if (event.phase === PHASE.round) {
-    return `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`;
+  if (event.phase === PHASE.plan) {
+    return t('learning.lessonGenPlan');
+  }
+  if (event.phase === PHASE.section) {
+    const vars = { index: event.index ?? 0, total: event.total ?? 0 };
+    return elapsed
+      ? t('learning.lessonGenSectionElapsed', { ...vars, elapsed })
+      : t('learning.lessonGenSection', vars);
   }
   if (event.phase === PHASE.audit) {
+    if (event.loop === PHASE.repair) {
+      return t('learning.lessonGenAuditRepair', {
+        danger: event.danger ?? 0,
+        warning: event.warning ?? 0,
+      });
+    }
     return `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenAudit', {
       danger: event.danger ?? 0,
       warning: event.warning ?? 0,
     })}`;
+  }
+  if (event.phase === PHASE.round) {
+    return t('learning.lessonGenRunning');
   }
   return null;
 }

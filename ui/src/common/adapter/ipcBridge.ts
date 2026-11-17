@@ -1774,6 +1774,10 @@ export interface ILearningCourseGenerationEvent {
   warning?: number;
   info?: number;
   top?: string[];
+  /** f1 课时节进度帧（仅课时流）：plan/section 相位的清单读数——
+   * section 帧 k = 本节在清单中的位次（1 起）、N = 当前清单节数。 */
+  index?: number;
+  total?: number;
   /** t5 triage_completed 帧：七角色计数（各角色之和 = total）。 */
   counts?: {
     total: number;
@@ -1828,6 +1832,10 @@ export interface ILearningLessonGenerationEvent {
   warning?: number;
   info?: number;
   top?: string[];
+  /** f1 课时节进度帧：section 相位的清单读数（k = 位次 1 起、N = 清单节数；
+   * `title` 在 section 帧里是节标题，在 started 帧里是课时标题）。 */
+  index?: number;
+  total?: number;
   activities?: number;
   /** est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注） */
   est?: number;
