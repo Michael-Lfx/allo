@@ -24,7 +24,7 @@ text-12px !px-2px`，:766-776），折叠态是摘要条最左 12px `IconRight`
 
 ## Terms（方案草案，施工前过裁决）
 
-- **R-a（荐，最小组合）**：
+- **R-a（裁决 2026-11-17：按推荐，最小组合先行）**：
   - 两钮 hit area 加大（`!px-2px` → 常规 small 钮 padding，图标 12px→14px）；
   - 各加 Tooltip（「收起头部」/「展开头部」——复用 aria-label 同源词条，
     不新增键）；

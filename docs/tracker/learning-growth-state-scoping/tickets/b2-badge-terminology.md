@@ -30,10 +30,11 @@ part_of: map.md
 
 ## Terms（方案草案，施工前过裁决）
 
-- **R-a（主修）**：growth 徽章值改与按钮动作名对齐——zh「补充节点中…」/
-  en "Adding nodes…"；**键名随值更名** `learningGraphGrowing` →
-  `learningGraphAddingNodes`（名实一致；`bun run gen:i18n` 更新键面；两
-  消费点 :690/:714 同步）。两 locale 对称（红线 2）。
+- **R-a（裁决 2026-11-17：按推荐，键名随更）**：growth 徽章值改与按钮动
+  作名对齐——zh「补充节点中…」/ en "Adding nodes…"；**键名随值更名**
+  `learningGraphGrowing` → `learningGraphAddingNodes`（grilling 定案；
+  `bun run gen:i18n` 更新键面；两消费点 :690/:714 同步）。两 locale 对称
+  （红线 2）。
 - **R-b（词汇落册）**：GLOSSARY 增补两词条精确定义——「结构生成」（首次
   建 gd.* 结构）与「补充节点」（生长批次加节点）；「生长」从用户面文案
   退役（领域文档可留）。

@@ -25,15 +25,20 @@ part_of: map.md
 
 ## Terms（方案草案，施工前过裁决）
 
-- **R-a（主方案）滚动自动折叠 = 临时层**：
-  - 触发：正文 pane `scrollTop` 下滑超过 H（荐 ≈160px，可调参）→ 临时折
-    叠；回滚 <H/2（迟滞防临界抖动）→ 临时展开。rAF 节流，不逐帧 setState。
+- **R-a（裁决 2026-11-17：按推荐）滚动自动折叠 = 临时层**：
+  - 触发：正文 pane `scrollTop` 下滑超过 **H=160px** → 临时折叠；回滚
+    **<80px**（H/2 迟滞防临界抖动）→ 临时展开。常量进 constants.ts 可
+    调参；rAF 节流，不逐帧 setState。
   - **不落盘**：`autoCollapsed` 不写 headerCollapse 存储——滚动深度是视口
     语境不是偏好；有效折叠 = `persisted || auto`；手动 chevron 仍走 f3
     持久层语义。
   - **用户否决臂**：临时折叠后用户手动点展开 → 本滚动周期抑制自动折叠
     （override 标记，滚回顶部阈值区复位）——否则自动层与用户意图打架。
-  - `headerForceExpanded` 优先级不变（processing/growth 期间永不折叠）。
+  - **processing 优先级行已被 a3 修订**：processing 不再是折叠状态机的
+    否决输入（a3 删 headerForceExpanded），只是徽章信息源——a1 施工按
+    此合并。
+  - 触发源**只挂学习 Tab 正文阅读容器**（:1107 正文 pane）；大纲列表/
+    其它页签滚动不触发。
   - 切课 / 切 TabPane / 卸载正文容器时复位临时态。
 - **R-b 语义矩阵（实现对照表）**：
   - persisted=collapsed：任何滚动状态都折叠（尊重偏好）。

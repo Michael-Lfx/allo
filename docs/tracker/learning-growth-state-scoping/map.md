@@ -37,9 +37,9 @@ f1–f3 关波后用户发现处理态呈现的两个缺陷：跨课程串扰（
 | b1 | growth_running 按课程+kind 收窄（跨课程串扰） | 高（处理态系统性失真） | 后端口径 |
 | b2 | 徽章动作名与按钮对齐（生长中→补充节点中） | 中（术语误导） | i18n/术语 |
 
-## 裁决待定
+## 裁决（2026-11-17 grilling 收口）
 
-- b1 修法口径（票内荐：按 course_id + KIND_GROWTH 过滤，快照行已带
-  course_id，零 schema 变更）。
-- b2 键名是否随值更名（learningGraphGrowing → learningGraphAddingNodes，
-  荐改名求名实一致；gen:i18n 承担键面更新）。
+- b1：纯后端口径修复，无裁决点——course_id + KIND_GROWTH 过滤直接施工
+  （auto 补批同走 begin_growth_task → KIND_GROWTH，:4993，两臂天然覆盖）。
+- b2：**键名随值更名** learningGraphGrowing → learningGraphAddingNodes
+  （Q5 按推荐）；zh「补充节点中…」/ en "Adding nodes…"。
