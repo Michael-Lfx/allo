@@ -2,7 +2,11 @@ use super::FlowyApp;
 use crate::i18n::Locale;
 use crate::prefs::SendMode;
 use flowy_ui as theme;
-use gpui::{Context, Pixels, SharedString, Size, Window, div, prelude::*, px};
+use gpui::{
+    ClipboardItem, Context, Pixels, SharedString, Size, Window, div, prelude::*,
+    px,
+};
+use flowy_agent::Plan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -235,14 +239,18 @@ impl FlowyApp {
             .flex()
             .items_center()
             .gap_2()
-            .child(initial_mark(&self.theme, initial))
+            .child(initial_mark(&self.theme, initial, px(32.)))
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .child(
                         div()
                             .text_size(self.theme.body_size())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .child(name.to_string()),
                     )
                     .child(
@@ -251,6 +259,11 @@ impl FlowyApp {
                             .text_color(self.theme.muted())
                             .child(self.t("settings.personal_plan")),
                     ),
+            )
+            .child(
+                theme::icons::chevron_down()
+                    .size(px(14.))
+                    .text_color(self.theme.muted()),
             )
     }
 
@@ -398,6 +411,9 @@ impl FlowyApp {
     }
 
     fn settings_body(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        if self.settings.page == Page::Account {
+            return self.account_body(cx);
+        }
         if self.settings.page == Page::Appearance {
             return self.appearance_body(cx);
         }
@@ -687,6 +703,378 @@ enum PrefToggle {
 }
 
 impl FlowyApp {
+    fn account_body(&self, cx: &Context<'_, Self>) -> gpui::Div {
+        let name = self.auth.session.as_ref().map_or_else(
+            || self.t("dock.user_fallback"),
+            |session| session.display_name.clone(),
+        );
+        let initial = name.chars().next().unwrap_or('F').to_string();
+        let email = self
+            .auth
+            .session
+            .as_ref()
+            .map(|session| session.email.clone())
+            .unwrap_or_default();
+        let user_id = self
+            .auth
+            .session
+            .as_ref()
+            .and_then(|session| session.user_id)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "—".into());
+        div()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .id("settings-account")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .px_8()
+                    .pt_4()
+                    .pb_8()
+                    .flex()
+                    .flex_col()
+                    .gap_6()
+                    .child(self.account_profile_row(&name, &initial, cx))
+                    .child(self.account_plan_card(cx))
+                    .child(self.account_info_row(
+                        "settings.email",
+                        email,
+                        theme::Button::new(
+                            "account-change-email",
+                            self.t("settings.change"),
+                        )
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _, _, cx| {
+                                app.note("notice.account_change_later", cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.account_info_row(
+                        "settings.user_id",
+                        user_id.clone(),
+                        theme::Button::new(
+                            "account-copy-id",
+                            self.t("settings.copy"),
+                        )
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(move |app, _, _, cx| {
+                                cx.write_to_clipboard(
+                                    ClipboardItem::new_string(user_id.clone()),
+                                );
+                                app.note("more.copied", cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.account_action_row(
+                        "settings.login_methods",
+                        "settings.login_methods_help",
+                        false,
+                        theme::Button::new(
+                            "account-login-methods",
+                            self.t("settings.manage"),
+                        )
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _, _, cx| {
+                                app.note("notice.account_manage_later", cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.account_action_row(
+                        "settings.connected_devices",
+                        "settings.connected_devices_help",
+                        false,
+                        theme::Button::new(
+                            "account-devices",
+                            self.t("settings.manage"),
+                        )
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _, _, cx| {
+                                app.note("notice.account_manage_later", cx);
+                            }),
+                        ),
+                    ))
+                    .child(self.account_action_row(
+                        "settings.delete_account",
+                        "settings.delete_account_help",
+                        true,
+                        self.account_delete_button(cx),
+                    )),
+            )
+    }
+
+    fn account_profile_row(
+        &self,
+        name: &str,
+        initial: &str,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_4()
+            .child(initial_mark(&self.theme, initial, px(56.)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
+                            .child(self.t("settings.full_name")),
+                    )
+                    .child(
+                        div()
+                            .text_size(self.theme.body_size())
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(name.to_string()),
+                    ),
+            )
+            .child(
+                theme::IconButton::new(
+                    "account-sign-out",
+                    self.t("dock.sign_out"),
+                    theme::icons::log_out().size(px(16.)),
+                )
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(|app, _, _, cx| {
+                        app.sign_out(cx);
+                    }),
+                ),
+            )
+    }
+
+    fn account_plan_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let studio = self.studio.read(cx);
+        let plan_key = match studio.plan {
+            Plan::Free => "credits.plan_free",
+            Plan::Paid => "credits.plan_paid",
+        };
+        let (free_label, daily_label, daily_note) = match &studio.credits {
+            flowy_studio::CreditsViewState::Ready { free, daily, .. } => {
+                let free = free
+                    .map(flowy_studio::grouped_credits)
+                    .unwrap_or_else(|| studio.credits_label());
+                let daily = daily.map(flowy_studio::grouped_credits);
+                let note = daily.as_ref().map(|count| {
+                    self.tf("credits.daily_note", &[("count", count)])
+                });
+                (free, daily.unwrap_or_else(|| "—".into()), note)
+            }
+            _ => (
+                studio.credits_label(),
+                "—".into(),
+                Some(self.t("credits.unavailable")),
+            ),
+        };
+        div()
+            .w_full()
+            .rounded_xl()
+            .border_1()
+            .border_color(self.theme.line())
+            .bg(self.theme.card())
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(self.theme.soft())
+                            .text_size(self.theme.caption_size())
+                            .child(self.t(plan_key)),
+                    )
+                    .child(
+                        theme::Button::new(
+                            "account-upgrade",
+                            self.t("studio.upgrade"),
+                        )
+                        .variant(theme::ControlVariant::Primary)
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _, _, cx| {
+                                app.note("notice.upgrade_later", cx);
+                            }),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_8()
+                    .child(self.account_credit_stat(
+                        free_label,
+                        self.t("credits.free"),
+                        None,
+                    ))
+                    .child(self.account_credit_stat(
+                        daily_label,
+                        self.t("credits.daily"),
+                        daily_note,
+                    )),
+            )
+    }
+
+    fn account_credit_stat(
+        &self,
+        value: String,
+        label: String,
+        note: Option<String>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(self.theme.heading_size())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(value),
+            )
+            .child(
+                div()
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
+                    .child(label),
+            )
+            .when(note.is_some(), |col| {
+                col.child(
+                    div()
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
+                        .child(note.unwrap_or_default()),
+                )
+            })
+    }
+
+    fn account_info_row(
+        &self,
+        label_key: &'static str,
+        value: String,
+        action: impl IntoElement,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .pt_4()
+            .border_t_1()
+            .border_color(self.theme.line())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
+                            .child(self.t(label_key)),
+                    )
+                    .child(
+                        div()
+                            .text_size(self.theme.body_size())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(value),
+                    ),
+            )
+            .child(action)
+    }
+
+    fn account_action_row(
+        &self,
+        title_key: &'static str,
+        help_key: &'static str,
+        danger: bool,
+        action: impl IntoElement,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .pt_4()
+            .border_t_1()
+            .border_color(self.theme.line())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(self.theme.body_size())
+                            .when(danger, |el| el.text_color(self.theme.danger()))
+                            .child(self.t(title_key)),
+                    )
+                    .child(
+                        div()
+                            .text_size(self.theme.caption_size())
+                            .text_color(if danger {
+                                self.theme.danger()
+                            } else {
+                                self.theme.muted()
+                            })
+                            .child(self.t(help_key)),
+                    ),
+            )
+            .child(action)
+    }
+
+    fn account_delete_button(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        theme::interactive(
+            "account-delete",
+            self.t("settings.delete_account"),
+            &self.theme,
+        )
+        .px_3()
+        .py_1()
+        .rounded_lg()
+        .border_1()
+        .border_color(self.theme.danger())
+        .bg(self.theme.card())
+        .text_color(self.theme.danger())
+        .text_size(self.theme.caption_size())
+        .hover(|style| style.bg(self.theme.soft()))
+        .child(self.t("settings.delete_account"))
+        .on_click(cx.listener(|app, _, _, cx| {
+            app.note("notice.account_delete_later", cx);
+        }))
+    }
+
     fn data_body(&self, cx: &Context<'_, Self>) -> gpui::Div {
         div()
             .flex_1()
@@ -739,15 +1127,20 @@ fn group_label(
 fn initial_mark(
     theme: &flowy_ui::ResolvedTheme,
     initial: &str,
+    size: Pixels,
 ) -> impl IntoElement {
     div()
-        .size(px(32.))
+        .size(size)
         .rounded_full()
         .bg(theme.fill())
         .text_color(theme.on_fill())
         .flex()
         .items_center()
         .justify_center()
-        .text_size(theme.body_size())
+        .text_size(if size > px(40.) {
+            theme.heading_size()
+        } else {
+            theme.body_size()
+        })
         .child(initial.to_string())
 }

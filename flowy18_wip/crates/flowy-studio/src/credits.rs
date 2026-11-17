@@ -25,7 +25,8 @@ impl CreditsViewState {
     }
 }
 
-pub(super) fn grouped(value: u32) -> String {
+#[must_use]
+pub fn grouped(value: u32) -> String {
     let raw = value.to_string();
     let mut out = String::new();
     for (index, ch) in raw.chars().rev().enumerate() {

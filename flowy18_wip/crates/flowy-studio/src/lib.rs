@@ -10,4 +10,4 @@ mod studio;
 
 pub use panel::{StudioConfig, StudioEvent, StudioPanel, StudioSurface};
 
-pub use credits::CreditsViewState;
+pub use credits::{CreditsViewState, grouped as grouped_credits};

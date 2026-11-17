@@ -11,6 +11,7 @@ mod ota;
 mod settings;
 mod skills;
 mod state;
+mod titlebar;
 
 use crate::i18n::{I18n, file_stamps};
 use crate::prefs::Preferences;
@@ -36,7 +37,18 @@ use state::{
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-actions!(flowy, [SignIn, FocusNext, FocusPrevious]);
+actions!(
+    flowy,
+    [
+        SignIn,
+        FocusNext,
+        FocusPrevious,
+        ToggleDock,
+        NavigateBack,
+        NavigateForward,
+        OpenSearch,
+    ]
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -64,6 +76,9 @@ pub struct FlowyApp {
     pub store: SessionStore,
     pub screen: Screen,
     pub section: Section,
+    pub dock_visible: bool,
+    pub nav_back: Vec<Section>,
+    pub nav_forward: Vec<Section>,
     pub notice: Option<&'static str>,
     storage_error: bool,
     auth: AuthState,
@@ -291,6 +306,9 @@ impl FlowyApp {
             store,
             screen,
             section: Section::Studio,
+            dock_visible: true,
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
             notice: None,
             storage_error: false,
             auth: AuthState {
@@ -664,7 +682,7 @@ impl FlowyApp {
         }));
     }
 
-    fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn sign_out(&mut self, cx: &mut Context<'_, Self>) {
         self.store.clear();
         self.auth
             .email
@@ -682,6 +700,9 @@ impl FlowyApp {
         self.active_dialog = state::ActiveDialog::None;
         self.screen = Screen::Login;
         self.section = Section::Studio;
+        self.dock_visible = true;
+        self.nav_back.clear();
+        self.nav_forward.clear();
         self.persona.menu = false;
         self.persona.status = None;
         self.user_menu = false;
@@ -721,8 +742,7 @@ impl FlowyApp {
     }
 
     pub fn open_thread(&mut self, title: String, cx: &mut Context<'_, Self>) {
-        self.section = Section::Studio;
-        self.sync_studio_surface(cx);
+        self.push_section(Section::Studio, cx);
         self.studio
             .update(cx, |panel, cx| panel.open_thread(title, cx));
     }
@@ -879,8 +899,10 @@ impl FlowyApp {
             .flex()
             .flex_row()
             .bg(self.theme.canvas())
-            .text_color(self.theme.ink())
-            .child(self.dock(window, cx));
+            .text_color(self.theme.ink());
+        if self.dock_visible {
+            canvas = canvas.child(self.dock(window, cx));
+        }
         canvas = if self.section == Section::More {
             canvas.child(self.more_canvas(cx))
         } else {
@@ -1035,29 +1057,47 @@ impl Render for FlowyApp {
         let mut root = div()
             .id("flowy")
             .size_full()
+            .flex()
+            .flex_col()
             .bg(self.theme.canvas())
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             // Single-line inputs propagate their Tab action to this handler;
             // multiline inputs retain their normal tab insertion behavior.
-            .on_action(|_: &Tab, window, cx| window.focus_next(cx));
+            .on_action(|_: &Tab, window, cx| window.focus_next(cx))
+            .on_action(cx.listener(|app, _: &ToggleDock, _, cx| {
+                app.toggle_dock(cx);
+            }))
+            .on_action(cx.listener(|app, _: &NavigateBack, _, cx| {
+                app.navigate_back(cx);
+            }))
+            .on_action(cx.listener(|app, _: &NavigateForward, _, cx| {
+                app.navigate_forward(cx);
+            }))
+            .on_action(cx.listener(|app, _: &OpenSearch, _, cx| {
+                app.open_search(cx);
+            }));
         root = if self.i18n.locale().is_rtl() {
             root.rtl()
         } else {
             root.ltr()
         };
-        root = root.relative();
+        root = root.relative().child(self.titlebar(window, cx));
         let modal = self.active_dialog != state::ActiveDialog::None;
         let background = if self.screen == Screen::Login {
             div()
                 .id("login-root")
-                .size_full()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .relative()
                 .child(self.login_canvas(window, cx))
         } else {
             div()
                 .id("main-background")
-                .size_full()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .child(self.main_canvas(window, cx))
         };
         root = root.child(
@@ -1254,6 +1294,17 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("enter", SignIn, Some("Login")),
         KeyBinding::new("tab", FocusNext, None),
         KeyBinding::new("shift-tab", FocusPrevious, None),
+        // Cursor / VS Code: toggle primary side bar
+        KeyBinding::new("secondary-b", ToggleDock, None),
+        // Cursor / VS Code: navigate back / forward
+        KeyBinding::new("ctrl--", NavigateBack, None),
+        KeyBinding::new("alt-left", NavigateBack, None),
+        KeyBinding::new("secondary-[", NavigateBack, None),
+        KeyBinding::new("ctrl-shift--", NavigateForward, None),
+        KeyBinding::new("alt-right", NavigateForward, None),
+        KeyBinding::new("secondary-]", NavigateForward, None),
+        // Cursor / VS Code: search view
+        KeyBinding::new("secondary-shift-f", OpenSearch, None),
     ]);
     cx.set_reduce_motion(true);
     flowy_ui::install_initial_tab_focus(cx).detach();
@@ -1280,7 +1331,8 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(gpui::TitlebarOptions {
             title: Some(gpui::SharedString::from(crate::brand::product())),
-            ..gpui::TitlebarOptions::default()
+            appears_transparent: true,
+            traffic_light_position: Some(gpui::point(px(12.), px(12.))),
         }),
         window_min_size: Some(size(px(960.), px(640.))),
         ..WindowOptions::default()
@@ -1297,6 +1349,10 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         .expect("open main window");
     window
         .update(cx, |app, window, cx| {
+            window.on_window_should_close(cx, |window, _cx| {
+                window.set_visible(false);
+                false
+            });
             app.apply_appearance(window, cx);
             app.start_locale_watch(cx);
             app.start_shell_watch(cx);
@@ -1335,6 +1391,7 @@ fn ensure_shell_main_window(cx: &mut App) {
     if let Some(window) = existing {
         let alive = window
             .update(cx, |_app, window, _cx| {
+                window.set_visible(true);
                 window.activate();
             })
             .is_ok();

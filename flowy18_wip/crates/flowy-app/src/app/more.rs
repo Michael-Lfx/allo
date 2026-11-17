@@ -37,13 +37,12 @@ impl FlowyApp {
         self.user_menu = false;
         if self.section == Section::More {
             self.persona.menu = !self.persona.menu;
-        } else {
-            self.section = Section::More;
-            self.persona.menu = true;
-            self.notice = None;
+            cx.notify();
+            return;
         }
-        self.sync_studio_surface(cx);
-        cx.notify();
+        self.persona.menu = true;
+        self.notice = None;
+        self.push_section(Section::More, cx);
     }
 
     pub fn more_flyout(&self, cx: &Context<'_, Self>) -> impl IntoElement {

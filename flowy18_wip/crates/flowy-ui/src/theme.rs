@@ -4,6 +4,7 @@ use gpui::{ColorExt, Context, Pixels, Rgba, Size, px, rgb, size};
 use serde::{Deserialize, Serialize};
 
 pub const DOCK_WIDTH: f32 = 248.0;
+pub const TITLEBAR_HEIGHT: f32 = 40.0;
 pub const MODAL_INSET: f32 = 0.08;
 
 #[derive(

@@ -162,17 +162,14 @@ impl FlowyApp {
         section: Section,
         cx: &mut Context<'_, Self>,
     ) {
-        self.section = section;
         self.persona.menu = false;
         self.user_menu = false;
         if id == "new-task" {
             self.studio.update(cx, flowy_studio::StudioPanel::new_task);
-            self.section = Section::Studio;
-        } else if section == Section::Studio {
-            self.notice = None;
+            self.push_section(Section::Studio, cx);
+            return;
         }
-        self.sync_studio_surface(cx);
-        cx.notify();
+        self.push_section(section, cx);
     }
 
     fn more_dock_item(
