@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::pcm_util::resample_mono;
 
@@ -35,6 +35,38 @@ impl SpeakerAudioSink {
     ///
     /// Returns an error when the physical stream cannot actually start.
     pub fn open_default() -> Result<Self, String> {
+        // A device released by a previous process can take several seconds to
+        // become available again (observed: speaker init timed out at 3s right
+        // after a daemon restart, then succeeded at ~4.6s). Retry a few times
+        // within a bounded budget instead of leaving the daemon without audio.
+        const MAX_ATTEMPTS: u32 = 3;
+        let budget = std::time::Duration::from_secs(10);
+        let started = std::time::Instant::now();
+        let mut last_error = String::from("speaker_init_not_attempted");
+        for attempt in 1..=MAX_ATTEMPTS {
+            let remaining = budget.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                last_error = format!("speaker_init_budget_exhausted: {last_error}");
+                break;
+            }
+            match Self::open_default_attempt(remaining) {
+                Ok(sink) => {
+                    info!(attempt, elapsed_ms = started.elapsed().as_millis() as u64, "speaker_init_succeeded");
+                    return Ok(sink);
+                }
+                Err(error) => {
+                    warn!(attempt, error = %error, elapsed_ms = started.elapsed().as_millis() as u64, "speaker_init_attempt_failed");
+                    last_error = error;
+                    if attempt < MAX_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    fn open_default_attempt(budget: std::time::Duration) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = match host.default_output_device() {
             Some(dev) => dev,
@@ -157,7 +189,7 @@ impl SpeakerAudioSink {
             .map_err(|err| format!("speaker_thread_failed: {err}"))?;
 
         if let Err(error) = init_rx
-            .recv_timeout(std::time::Duration::from_secs(3))
+            .recv_timeout(budget)
             .map_err(|err| err.to_string())
             .and_then(|result| result)
         {

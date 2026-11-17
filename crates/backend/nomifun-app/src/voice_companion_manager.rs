@@ -714,6 +714,9 @@ impl VoiceCompanionProcessManager {
             VoiceCapabilityEvidence, VoiceCapabilityReport, VoiceCapabilityStatus,
             VoiceEngineSelfCheckResponse, VoiceTtsSelfCheckResponse,
         };
+        // Keep the caller-provided stage for the report log; `stage` itself is
+        // moved into the daemon request payload later in this function.
+        let check_stage = stage.clone().unwrap_or_default();
         let _guard = self.self_check_lock.try_lock().map_err(|_| "self_check_in_progress")?;
         {
             let _admission = self.call_start_lock.lock().await;
@@ -1111,6 +1114,45 @@ impl VoiceCompanionProcessManager {
             },
         )
         .await;
+        let status_label = |value: &nomifun_api_types::voice::VoiceCapabilityEvidence| format!("{:?}", value.status);
+        let failed = [
+            ("capture", &report.capture),
+            ("kws", &report.kws),
+            ("vad", &report.vad),
+            ("asr", &report.asr),
+            ("llm", &report.llm),
+            ("tts", &report.tts),
+            ("playback", &report.playback),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !ready(value))
+        .map(|(name, value)| (name, status_label(value), value.reason_code.clone()))
+        .collect::<Vec<_>>();
+        info!(
+            include_llm,
+            stage = %check_stage,
+            can_start_full_call = report.can_start_full_call,
+            can_wake = report.can_wake,
+            can_transcribe = report.can_transcribe,
+            capture = %status_label(&report.capture),
+            kws = %status_label(&report.kws),
+            vad = %status_label(&report.vad),
+            asr = %status_label(&report.asr),
+            llm = %status_label(&report.llm),
+            tts = %status_label(&report.tts),
+            playback = %status_label(&report.playback),
+            "voice_self_check_report"
+        );
+        if !failed.is_empty() {
+            warn!(
+                include_llm,
+                stage = %check_stage,
+                can_start_full_call = report.can_start_full_call,
+                reason_code = report.reason_code.as_deref().unwrap_or(""),
+                failed = ?failed,
+                "voice_self_check_report_not_ready"
+            );
+        }
         Ok(report)
     }
 

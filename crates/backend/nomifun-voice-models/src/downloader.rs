@@ -264,9 +264,21 @@ async fn rollback_replacement(target: &Path, staged: &Path, backup: &Path) -> st
     Ok(())
 }
 
+/// Outcome of one verified file pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadOutcome {
+    /// Target already matched the expected identity; no network GET was issued.
+    Reused,
+    /// A leftover backup was promoted because it matched the expected identity.
+    Restored,
+    /// Bytes were fetched or staged, then promoted after verification.
+    Downloaded,
+}
+
 impl ModelDownloader {
     /// Reuse verified targets and promote only content with the expected identity.
-    pub async fn download_verified(&self, relative: &str, target: &Path, hash: &str, size: Option<u64>) -> Result<(), DownloaderError> {
+    pub async fn download_verified(&self, relative: &str, target: &Path, hash: &str, size: Option<u64>) -> Result<DownloadOutcome, DownloaderError> {
+        let started = Instant::now();
         let [staged, part, backup] = transaction_paths(target, hash, size.unwrap_or(0));
         let matches = |path: PathBuf| async move {
             if let Some(size) = size {
@@ -276,16 +288,35 @@ impl ModelDownloader {
         };
         if matches(target.to_path_buf()).await {
             if backup.exists() { tokio::fs::remove_file(&backup).await?; }
-            return Ok(());
+            let bytes = tokio::fs::metadata(&target).await.map(|m| m.len()).unwrap_or(0);
+            tracing::info!(
+                relative,
+                outcome = "reused",
+                bytes,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "voice_model_download_file"
+            );
+            return Ok(DownloadOutcome::Reused);
         }
         if backup.exists() {
             if !target.exists() {
                 tokio::fs::rename(&backup, target).await?;
-                if matches(target.to_path_buf()).await { return Ok(()); }
+                if matches(target.to_path_buf()).await {
+                    let bytes = tokio::fs::metadata(&target).await.map(|m| m.len()).unwrap_or(0);
+                    tracing::info!(
+                        relative,
+                        outcome = "restored",
+                        bytes,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "voice_model_download_file"
+                    );
+                    return Ok(DownloadOutcome::Restored);
+                }
             } else {
                 return Err(DownloaderError::ProtocolViolation(format!("recovery: {relative}: both target and backup require review")));
             }
         }
+        let mut used_mirror: Option<String> = None;
         if !matches(staged.clone()).await {
             if staged.exists() { tokio::fs::remove_file(&staged).await?; }
             if let Some(size) = size {
@@ -303,13 +334,20 @@ impl ModelDownloader {
                 for (index, mirror) in candidates.iter().enumerate() {
                     let result = self.download_file_bounded(mirror, relative, &staged, index + 1 == candidates.len(), size).await;
                     match result {
-                        Ok(_) if matches(staged.clone()).await => break,
+                        Ok(_) if matches(staged.clone()).await => {
+                            used_mirror = Some(mirror.id.clone());
+                            break;
+                        }
                         Ok(_) => {
                             let actual = crate::verifier::compute_file_sha256(&staged).await?;
                             tokio::fs::remove_file(&staged).await?;
+                            tracing::warn!(relative, mirror_id = %mirror.id, "voice_model_download_attempt_rejected");
                             last_error = DownloaderError::ProtocolViolation(format!("verify: {relative}: source_id={}: expected {hash}, actual {actual}", mirror.id));
                         }
-                        Err(error) => last_error = error,
+                        Err(error) => {
+                            tracing::warn!(relative, mirror_id = %mirror.id, error = %error, "voice_model_download_attempt_failed");
+                            last_error = error;
+                        }
                     }
                 }
                 if !staged.exists() { return Err(last_error); }
@@ -332,7 +370,16 @@ impl ModelDownloader {
             return Err(DownloaderError::ProtocolViolation(format!("replace: {relative}: final verification failed; previous target restored")));
         }
         if backup.exists() { tokio::fs::remove_file(&backup).await?; }
-        Ok(())
+        let bytes = tokio::fs::metadata(target).await.map(|m| m.len()).unwrap_or(0);
+        tracing::info!(
+            relative,
+            outcome = "downloaded",
+            mirror_id = used_mirror.as_deref().unwrap_or("unknown"),
+            bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "voice_model_download_file"
+        );
+        Ok(DownloadOutcome::Downloaded)
     }
 
     /// Initializes a downloader with the provided mirror candidate list.

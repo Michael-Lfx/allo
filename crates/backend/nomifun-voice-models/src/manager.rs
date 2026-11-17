@@ -83,6 +83,34 @@ impl DirectoryWriteLease {
     }
 }
 
+/// Best-effort read of the cross-process write lease holder recorded in the
+/// lock file. The file content is diagnostic only; the OS lock remains the
+/// authority.
+/// Per-run file accounting, emitted by the install wrapper so the end log
+/// alone answers what the install actually did (no need to stitch the summary).
+#[derive(Debug, Default, Clone, Copy)]
+struct InstallCounts {
+    reused: usize,
+    restored: usize,
+    downloaded: usize,
+}
+
+fn read_write_lease_holder(models_dir: &Path) -> Option<(u32, i64)> {
+    let path = models_dir.join(".voice-suite-write.lock");
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut pid = None;
+    let mut at_ms = None;
+    for part in text.split_whitespace() {
+        if let Some(value) = part.strip_prefix("pid=") {
+            pid = value.parse::<u32>().ok();
+        }
+        if let Some(value) = part.strip_prefix("at_ms=") {
+            at_ms = value.parse::<i64>().ok();
+        }
+    }
+    Some((pid?, at_ms?))
+}
+
 #[derive(Clone)]
 struct InUseGuard(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
 
@@ -211,8 +239,22 @@ impl ModelManager {
         let current = self.state.read().await.clone();
         let read_lease = if current.is_busy() { None } else { DirectoryWriteLease::acquire(&self.models_dir).ok() };
         let state = if !current.is_busy() && read_lease.is_none() {
-            *self.checked_files.write().await = None;
-            ModelInstallState::Failed { reason: "models_directory_busy: external model writer is active; retry status after it completes".into(), recoverable: true }
+            // Another process (typically the voice daemon's own provision check)
+            // holds the directory write lease. Keep the last known state so a
+            // transient read/write overlap never surfaces as an install failure.
+            let holder = read_write_lease_holder(&self.models_dir);
+            let (holder_pid, holder_at_ms) = match holder {
+                Some((pid, at_ms)) => (Some(pid), Some(at_ms)),
+                None => (None, None),
+            };
+            tracing::warn!(
+                state = ?current,
+                holder_pid,
+                holder_at_ms,
+                models_dir = %self.models_dir.display(),
+                "voice_model_status_busy"
+            );
+            current.clone()
         } else if current.is_busy() {
             // Never turn a running download into NotInstalled just because the
             // TTS subtree is not complete yet.
@@ -448,6 +490,23 @@ impl ModelManager {
 
     /// Internal asynchronous install pipeline execution.
     async fn run_install_pipeline(&self, force: bool, rebuild_default_kws: bool) {
+        let started = Instant::now();
+        info!(kind = "install", force, rebuild_default_kws, "voice_model_write_started");
+        let counts = self.run_install_pipeline_inner(force, rebuild_default_kws).await;
+        let state = self.state.read().await.clone();
+        info!(
+            kind = "install",
+            state = ?state,
+            duration_ms = started.elapsed().as_millis() as u64,
+            reused = counts.reused,
+            restored = counts.restored,
+            downloaded = counts.downloaded,
+            "voice_model_write_finished"
+        );
+    }
+
+    async fn run_install_pipeline_inner(&self, force: bool, rebuild_default_kws: bool) -> InstallCounts {
+        let mut counts = InstallCounts::default();
         info!("Starting voice model installation pipeline (force={force})");
 
         // Recover interrupted target->backup moves before KWS group inference.
@@ -457,7 +516,7 @@ impl ModelManager {
             if !target.exists() && backup.exists() {
                 if let Err(error) = tokio::fs::rename(&backup, &target).await {
                     self.set_state(ModelInstallState::Failed { reason: format!("recovery: {}: {error}", file.path), recoverable: true }).await;
-                    return;
+                    return counts;
                 }
             }
         }
@@ -470,11 +529,11 @@ impl ModelManager {
                     // Legacy artifacts are recovered only when their full hash proves identity.
                     if crate::verifier::compute_file_sha256(&backup).await.ok().as_ref() != Some(hash) {
                         self.set_state(ModelInstallState::Failed { reason: format!("recovery: {relative}: legacy backup identity mismatch"), recoverable: true }).await;
-                        return;
+                        return counts;
                     }
                     if let Err(error) = tokio::fs::rename(&backup, &target).await {
                         self.set_state(ModelInstallState::Failed { reason: format!("recovery: {relative}: {error}"), recoverable: true }).await;
-                        return;
+                        return counts;
                     }
                 }
             }
@@ -498,7 +557,7 @@ impl ModelManager {
                 Ok(group) => group,
                 Err(reason) => {
                     self.set_state(ModelInstallState::Failed { reason, recoverable: true }).await;
-                    return;
+                    return counts;
                 }
             }
         };
@@ -523,7 +582,7 @@ impl ModelManager {
                     recoverable: true,
                 })
                 .await;
-                return;
+                return counts;
             }
         }
         let kws_identities: HashMap<String, (String, Option<u64>)> = target_group
@@ -580,21 +639,26 @@ impl ModelManager {
                         recoverable: false,
                     })
                     .await;
-                    return;
+                    return counts;
                 };
-                if let Err(error) = self
+                match self
                     .downloader
                     .download_verified(rel_path, &target_path, hash, *size)
                     .await
                 {
-                    self.set_state(ModelInstallState::Failed { reason: format!("recovery: {rel_path}: {error}"), recoverable: true }).await;
-                    return;
+                    Ok(crate::downloader::DownloadOutcome::Reused) => counts.reused += 1,
+                    Ok(crate::downloader::DownloadOutcome::Restored) => counts.restored += 1,
+                    Ok(crate::downloader::DownloadOutcome::Downloaded) => counts.downloaded += 1,
+                    Err(error) => {
+                        self.set_state(ModelInstallState::Failed { reason: format!("recovery: {rel_path}: {error}"), recoverable: true }).await;
+                        return counts;
+                    }
                 }
                 continue;
             }
             let Some(expected_hash) = baseline.get(rel_path) else {
                 self.set_state(ModelInstallState::Failed { reason: format!("manifest: missing identity for {rel_path}"), recoverable: false }).await;
-                return;
+                return counts;
             };
             // download_verified re-hashes even force requests and recovers owned
             // transaction artifacts before deciding whether any GET is needed.
@@ -622,8 +686,8 @@ impl ModelManager {
                 .download_verified(rel_path, &target_path, expected_hash, if baseline.get(rel_path) == crate::verifier::embedded_manifest().files.iter().find(|f| f.path == rel_path).map(|f| &f.sha256) { crate::verifier::pinned_size(rel_path) } else { None })
                 .await;
 
-            let success = match download_result {
-                Ok(_) => true,
+            let outcome = match download_result {
+                Ok(outcome) => outcome,
                 Err(e) => {
                     let reason = match &e {
                         crate::downloader::DownloaderError::AllMirrorsFailed => {
@@ -637,11 +701,16 @@ impl ModelManager {
                         recoverable: true,
                     })
                     .await;
-                    return;
+                    return counts;
                 }
             };
+            match outcome {
+                crate::downloader::DownloadOutcome::Reused => counts.reused += 1,
+                crate::downloader::DownloadOutcome::Restored => counts.restored += 1,
+                crate::downloader::DownloadOutcome::Downloaded => counts.downloaded += 1,
+            }
 
-            if success {
+            {
                 if let Ok(meta) = tokio::fs::metadata(&target_path).await {
                     file_downloaded_bytes = meta.len();
                 }
@@ -668,12 +737,21 @@ impl ModelManager {
             }
         }
 
+        info!(
+            kind = "install",
+            total_files,
+            reused = counts.reused,
+            restored = counts.restored,
+            downloaded = counts.downloaded,
+            "voice_model_download_summary"
+        );
+
         let checksums_path = self.models_dir.join("checksums.sha256");
         if !checksums_path.exists() {
             let content = baseline.iter().map(|(p,h)| format!("{h}  {p}\n")).collect::<String>();
             if let Err(error) = tokio::fs::write(&checksums_path, content).await {
                 self.set_state(ModelInstallState::Failed { reason: format!("metadata: checksums.sha256: {error}"), recoverable: true }).await;
-                return;
+                return counts;
             }
         }
         let keywords_path = self.models_dir.join("kws/keywords.txt");
@@ -681,7 +759,7 @@ impl ModelManager {
             const DEFAULT: &str = "▁HE Y ▁F L OW Y :1.5 #0.15 @1\n";
             if let Err(error) = tokio::fs::write(&keywords_path, DEFAULT).await {
                 self.set_state(ModelInstallState::Failed { reason: format!("configuration: kws/keywords.txt: {error}"), recoverable: true }).await;
-                return;
+                return counts;
             }
         }
 
@@ -716,7 +794,7 @@ impl ModelManager {
                         recoverable: true,
                     })
                     .await;
-                    return;
+                    return counts;
                 }
             }
             let group = target_group.group_id.as_str();
@@ -724,13 +802,14 @@ impl ModelManager {
             if marker.trim() != group {
                 if let Err(error) = tokio::fs::write(&marker_path, format!("{group}\n")).await {
                     self.set_state(ModelInstallState::Failed { reason: format!("configuration: KWS group marker: {error}"), recoverable: true }).await;
-                    return;
+                    return counts;
                 }
             }
             if let Err(error) = crate::intent::clear(&self.models_dir) {
                 self.set_state(ModelInstallState::Failed { reason: error, recoverable: true }).await;
             }
         }
+        counts
     }
 
     /// Deletes installed model files and reports what was actually removed.
@@ -901,13 +980,28 @@ mod write_lease_tests {
         );
     }
 
+    #[test]
+    fn lock_holder_parser_reads_pid_and_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".voice-suite-write.lock"),
+            "pid=4242 at_ms=123456789\n",
+        )
+        .unwrap();
+        assert_eq!(read_write_lease_holder(dir.path()), Some((4242, 123456789)));
+        assert_eq!(read_write_lease_holder(dir.path().join("missing").as_path()), None);
+    }
+
     #[tokio::test]
-    async fn status_fails_closed_while_external_writer_holds_directory() {
+    async fn status_keeps_last_known_state_while_external_writer_holds_directory() {
         let dir = tempfile::tempdir().unwrap();
         let manager = ModelManager::new(dir.path());
         manager.set_state(ModelInstallState::Ready { models_dir: dir.path().to_path_buf(), total_size_bytes: 0 }).await;
         let lease = DirectoryWriteLease::acquire(dir.path()).unwrap();
-        assert!(manager.get_status().await.state.is_failed());
+        // A transient cross-process read/write overlap must not surface as an
+        // install failure: the page keeps the last known state and the next
+        // poll re-verifies once the external writer releases the lease.
+        assert!(manager.get_status().await.state.is_ready());
         assert!(manager.wait_for_completion().await.is_failed());
         drop(lease);
         assert_eq!(manager.get_status().await.state, ModelInstallState::NotInstalled);
