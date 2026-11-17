@@ -684,6 +684,22 @@ const LearningGraphWorkspace: React.FC<{
   }
   const processingSecondaryLine = processingSecondaryParts.join(' · ');
 
+  // S2 共享徽章渲染面：processingPrimary 三分支（结构生成实时读数徽章 /
+  // 生长 / 自动准备）的 Tag 装配——展开头部与折叠摘要条两处消费同一份，
+  // 不再复制三元级联。null = 无 processing 态（展开臂落到结构读数链，
+  // 折叠臂不渲染）。渲染结果与抽离前逐字节一致。
+  const processingBadge =
+    processingPrimary === 'structure' ? (
+      // v2 实时读数徽章：文案与插值仍出自 structureBadge（数据源不动）。
+      <ProcessingStateTag>
+        {t(structureBadge.key, 'vars' in structureBadge ? structureBadge.vars : undefined)}
+      </ProcessingStateTag>
+    ) : processingPrimary === 'growth' ? (
+      <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
+    ) : processingPrimary === 'auto' ? (
+      <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
+    ) : null;
+
   // ── 头部折叠派生面（f3 Q5）：缓跑态（结构生成 / 生长 / 自动准备任一、
   // 含本地 growing 在途）强制展开——processing 徽章不可被折叠吞，折叠钮
   // 同步禁用（运行中不可折叠）。
@@ -801,18 +817,8 @@ const LearningGraphWorkspace: React.FC<{
           <Text bold className='text-13px'>
             {t('learning.learningGraphStructureTitle')}
           </Text>
-          {processingPrimary === 'structure' ? (
-            // v2 实时读数徽章：文案与插值仍出自 structureBadge（数据源不动）。
-            <ProcessingStateTag>
-              {t(
-                structureBadge.key,
-                'vars' in structureBadge ? structureBadge.vars : undefined
-              )}
-            </ProcessingStateTag>
-          ) : processingPrimary === 'growth' ? (
-            <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
-          ) : processingPrimary === 'auto' ? (
-            <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
+          {processingBadge !== null ? (
+            processingBadge
           ) : structureError ? (
             <Text type='secondary' className='text-12px'>
               {t('learning.learningGraphStructureLoadFailed')}
@@ -946,15 +952,7 @@ const LearningGraphWorkspace: React.FC<{
             </span>
           </span>
         </Button>
-        {processingPrimary === 'structure' ? (
-          <ProcessingStateTag>
-            {t(structureBadge.key, 'vars' in structureBadge ? structureBadge.vars : undefined)}
-          </ProcessingStateTag>
-        ) : processingPrimary === 'growth' ? (
-          <ProcessingStateTag>{t('learning.learningGraphGrowing')}</ProcessingStateTag>
-        ) : processingPrimary === 'auto' ? (
-          <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
-        ) : null}
+        {processingBadge}
         <Text type='secondary' className='min-w-0 text-12px'>
           {headerSummaryText}
         </Text>

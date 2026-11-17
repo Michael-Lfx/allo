@@ -2,7 +2,6 @@ import {
   Alert,
   Button,
   Card,
-  Progress,
   Tag,
   Tooltip,
   Typography,
@@ -22,7 +21,13 @@ import type {
   LessonStatus,
   Section,
 } from '../types';
-import { lessonStatusTagColors, progressDenominator, progressPercent } from '../model';
+import {
+  lessonStatusTagColors,
+  progressDenominator,
+  progressPercent,
+  progressReadoutText,
+} from '../model';
+import { ProgressReadout } from './ProgressReadout';
 import { CourseSourceCoverageCard } from './CourseSourceCoverageCard';
 import {
   contentColumnWidth,
@@ -296,10 +301,10 @@ export function CourseWorkspace({
             <div className='mb-8px flex items-baseline justify-between gap-8px'>
               <span className='font-600'>{t('learning.outline')}</span>
               <span className='text-12px text-t-tertiary'>
-                {percent === null ? '—' : `${course.completed_lessons}/${denominator}`}
+                {progressReadoutText(course.completed_lessons, denominator)}
               </span>
             </div>
-            {percent !== null && <Progress percent={percent} size='small' showText={false} />}
+            <ProgressReadout percent={percent} />
             {detail.modules.map((module) => {
               const completedCount = module.lessons.filter(
                 (lesson) => lesson.status === 'completed'

@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Button, Card, Input, Modal, Progress, Tag, Tooltip, Typography } from '@arco-design/web-react';
+import { Button, Card, Input, Modal, Tag, Tooltip, Typography } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
 import type { CourseSummary } from '../types';
-import { progressDenominator, progressPercent } from '../model';
+import { progressDenominator, progressPercent, progressReadoutText } from '../model';
+import { ProgressReadout } from './ProgressReadout';
 import { errorMessage } from '../utils';
 
 const { Text, Paragraph } = Typography;
@@ -192,12 +193,14 @@ export function CourseCard({
           <div className='mb-6px flex justify-between text-12px text-t-secondary'>
             <span>{t('learning.progress')}</span>
             <span>
-              {percent === null
-                ? '—'
-                : `${course.settled_or_completed}/${denominator} ${t('learning.lessons')}`}
+              {progressReadoutText(
+                course.settled_or_completed,
+                denominator,
+                ` ${t('learning.lessons')}`
+              )}
             </span>
           </div>
-          {percent !== null && <Progress percent={percent} showText={false} size='small' />}
+          <ProgressReadout percent={percent} />
           <div className='mt-4px flex flex-wrap gap-12px text-12px text-t-tertiary'>
             <span>{t('learning.courseDueToday', { count: course.due_today })}</span>
             {course.total_xp !== null && (
