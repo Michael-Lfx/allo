@@ -1,6 +1,4 @@
 //! Process-global tracing + Sentry panic hook.
-//!
-//! Adapted from allo `tracing_init` / `nomi-config::logging` for Flowy targets.
 
 use crate::boot::{BootNoteLevel, drain_boot_notes};
 use std::path::{Path, PathBuf};
