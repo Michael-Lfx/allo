@@ -120,6 +120,24 @@ impl LearningService {
         Ok(body.clone())
     }
 
+    /// f1 相位化进度的清单读数：draft 当前节清单的 (section_key, title)
+    /// 快照，按清单序——课时代理的 `ls_set_section_body` handler 据此换算
+    /// 本节位次（k/N）与节标题，组装 section 进度帧。无清单（单篇旧草稿）、
+    /// 草稿已过期/不存在都返回空表：调用面空表即不发帧（best-effort，
+    /// 观测面绝不 fail 工具调用）。
+    pub fn lesson_draft_manifest(&self, draft_id: &str) -> Vec<(String, String)> {
+        self.lesson_draft(draft_id)
+            .ok()
+            .and_then(|draft| draft.section_manifest)
+            .map(|manifest| {
+                manifest
+                    .into_iter()
+                    .map(|section| (section.section_key, section.title))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Full findings text — the repair loop's primary input. The audit is
     /// re-run live so the report never reflects a stale cached snapshot.
     pub fn audit_lesson_draft(&self, draft_id: &str) -> Result<String, AppError> {
@@ -531,5 +549,42 @@ mod tests {
             .finish_lesson_draft(&view.draft_id, 0)
             .expect("scope findings 是观察条，不挡发布");
         assert_eq!(output.activities.len(), 3, "发布成功（管线照常走完）");
+    }
+
+    /// f1 相位化进度的清单读数：`lesson_draft_manifest` 返回 (section_key,
+    /// title) 快照（清单序）；无清单的草稿与未知 draft_id 都返回空表——
+    /// 课时代理的 section 帧据此换算位次（k/N）与节标题，空表 = 不发帧。
+    #[tokio::test]
+    async fn manifest_readout_lists_keys_and_titles_in_order() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        assert!(service.lesson_draft_manifest("no-such-draft").is_empty());
+
+        let view = service.create_lesson_draft(context()).unwrap();
+        assert!(
+            service.lesson_draft_manifest(&view.draft_id).is_empty(),
+            "no manifest yet"
+        );
+
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![LessonOp::SetSectionManifest {
+                    sections: vec![
+                        planned_pack("s1", crate::models::SectionKind::Concept, "表格"),
+                        planned_pack("s2", crate::models::SectionKind::Practice, "无"),
+                    ],
+                    capacity_note: None,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            service.lesson_draft_manifest(&view.draft_id),
+            vec![
+                ("s1".to_owned(), "t-s1".to_owned()),
+                ("s2".to_owned(), "t-s2".to_owned()),
+            ],
+            "(key, title) pairs in manifest order"
+        );
     }
 }

@@ -1410,6 +1410,7 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                     .get("capacity_note")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned);
+                let section_total = sections.len();
                 let report = ctx
                     .service
                     .patch_lesson_draft(
@@ -1420,6 +1421,18 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                         }],
                     )
                     .map_err(|error| error.to_string())?;
+                // f1 相位化进度：op 接纳才发 plan 帧（`{"phase":"plan",
+                // "total":N}`，N = 新清单节数；重规划随新清单重发）——学习
+                // 面呈现「规划节清单」，裸轮次数字退出学习者面。
+                if report.rejected.is_empty() {
+                    ctx.log(
+                        "plan",
+                        serde_json::json!({
+                            "phase": nomifun_learning::phase::PLAN,
+                            "total": section_total,
+                        }),
+                    );
+                }
                 Ok(json_compact(&report))
             }
         }),
@@ -1504,6 +1517,27 @@ fn ls_set_section_body(ctx: Arc<LoopContext>, repair_face: bool) -> OneShotTool 
                 // （与 ls_inspect/续跑开场同一读数源），压缩钩子据此换占位
                 // 符。op 被拒（lint 打回等）不记账——历史原样留给模型看。
                 if report.rejected.is_empty() {
+                    // f1 相位化进度：op 接纳才发 section 帧
+                    // `{"phase":"section","index":k,"total":N,"title":节标题}`
+                    // （k = 清单位次 1 起、N = 当前清单节数）——学习面呈现
+                    // 「写第 k/N 节」。清单缺席（单篇旧草稿修复轮）读数落空
+                    // 即不发帧：best-effort 观测，绝不 fail 工具调用。
+                    let manifest = ctx.service.lesson_draft_manifest(&draft_id);
+                    if let Some((position, (_, title))) = manifest
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (key, _))| *key == last_section_key)
+                    {
+                        ctx.log(
+                            "section",
+                            serde_json::json!({
+                                "phase": nomifun_learning::phase::SECTION,
+                                "index": position + 1,
+                                "total": manifest.len(),
+                                "title": title.trim(),
+                            }),
+                        );
+                    }
                     let view = ctx
                         .service
                         .inspect_lesson_draft(&draft_id)
@@ -2754,6 +2788,120 @@ mod tests {
             after_repair.section_bodies[0].chars, original_chars,
             "the repair face must be able to rewrite a flagged section"
         );
+    }
+
+    /// f1 相位化进度的帧捕获 sink：翻译器测试直接断言 lesson 流帧。
+    #[derive(Default)]
+    struct FrameSink(Mutex<Vec<serde_json::Value>>);
+
+    impl FrameSink {
+        fn frames(&self) -> Vec<serde_json::Value> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl nomifun_realtime::UserEventSink for FrameSink {
+        fn send_to_user(
+            &self,
+            _user_id: &str,
+            event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
+        ) {
+            self.0.lock().unwrap().push(event.data);
+        }
+    }
+
+    /// f1 帧测试的三件套：带 FrameSink 的服务 + LoopContext + 预建草稿
+    /// （draft_slot 已指向活动草稿，handler 直调即走真实 patch 路径）。
+    async fn recording_context() -> (
+        Arc<LearningService>,
+        tempfile::TempDir,
+        Arc<FrameSink>,
+        Arc<LoopContext>,
+        String,
+    ) {
+        let (service, dir) = test_service().await;
+        let sink = Arc::new(FrameSink::default());
+        service.set_event_sink(nomifun_learning::LearningEventEmitter::new(
+            Arc::clone(&sink) as Arc<dyn nomifun_realtime::UserEventSink>,
+            Arc::from("0190f5fe-7c00-7a00-8000-000000000001"),
+        ));
+        let (ctx, draft_slot, _published) = context(Arc::clone(&service));
+        let view = service.create_lesson_draft(ctx.context.clone()).unwrap();
+        *draft_slot.lock().unwrap() = Some(view.draft_id.clone());
+        (service, dir, sink, ctx, view.draft_id)
+    }
+
+    /// f1 相位化进度（帧侧）：`ls_set_section_manifest` handler 成功路径发
+    /// plan 帧 `{"phase":"plan","total":N}`（N = 清单节数）；被拒的 op
+    /// （空清单）不发帧——「成功路径」限定；清单重设随新清单重发新 N。
+    #[tokio::test]
+    async fn manifest_success_emits_plan_frame_but_rejection_does_not() {
+        let (_service, _dir, sink, ctx, _draft_id) = recording_context().await;
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_set_section_manifest")
+            .unwrap();
+
+        (tool.handler)(section_manifest_ops()).await.unwrap();
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 1, "exactly one plan frame: {frames:?}");
+        assert_eq!(frames[0]["phase"], nomifun_learning::phase::PLAN);
+        assert_eq!(frames[0]["total"], 2, "N = manifest section count");
+
+        // 被拒 op（空清单）零帧。
+        (tool.handler)(serde_json::json!({ "sections": [] })).await.unwrap();
+        assert_eq!(sink.frames().len(), 1, "rejected op must not emit a frame");
+
+        // 清单重设：新 N 随之重发（重规划面）。
+        let replan = serde_json::json!({ "sections": [
+            { "section_key": "s1", "kind": "concept", "title": "概念：期权的定义", "points": "权利义务不对称", "visual": "表格" },
+            { "section_key": "s2", "kind": "example", "title": "例题：保护性看跌", "points": "套保直觉", "visual": "表格" },
+            { "section_key": "s3", "kind": "practice", "title": "练习：期权判断", "points": "判断题自测", "visual": "无" }
+        ] });
+        (tool.handler)(replan).await.unwrap();
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 2, "re-plan re-emits: {frames:?}");
+        assert_eq!(frames[1]["phase"], nomifun_learning::phase::PLAN);
+        assert_eq!(frames[1]["total"], 3, "new manifest size rides the re-plan");
+    }
+
+    /// f1 相位化进度（帧侧）：`ls_set_section_body` handler 成功路径发
+    /// section 帧 `{"phase":"section","index":k,"total":N,"title":节标题}`
+    /// （k = 清单位次、N = 当前清单节数）；被拒 op（越权 key）不发帧。
+    #[tokio::test]
+    async fn section_body_success_emits_section_frame_with_position_and_title() {
+        let (service, _dir, sink, ctx, draft_id) = recording_context().await;
+        // 预置清单（直走 service 面，不经 handler——plan 帧面另测）。
+        service
+            .patch_lesson_draft(
+                &draft_id,
+                vec![nomifun_learning::LessonOp::SetSectionManifest {
+                    sections: serde_json::from_value(section_manifest_ops()["sections"].clone())
+                        .unwrap(),
+                    capacity_note: None,
+                }],
+            )
+            .unwrap();
+
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_set_section_body")
+            .unwrap();
+        (tool.handler)(serde_json::json!({ "section_key": "s2", "body": practice_body() }))
+            .await
+            .unwrap();
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 1, "exactly one section frame: {frames:?}");
+        assert_eq!(frames[0]["phase"], nomifun_learning::phase::SECTION);
+        assert_eq!(frames[0]["index"], 2, "k = position in the manifest (1-based)");
+        assert_eq!(frames[0]["total"], 2, "N = current manifest size");
+        assert_eq!(frames[0]["title"], "练习：期权判断");
+
+        // 被拒 op（key 不在清单）零帧（op 拒绝是 Ok report，不是 Err）。
+        (tool.handler)(serde_json::json!({ "section_key": "s9", "body": practice_body() }))
+            .await
+            .unwrap();
+        assert_eq!(sink.frames().len(), 1, "rejected op must not emit a frame");
     }
 
     /// verify_math 工具 op（w1/蓝图 4.2）handler 直调样：解析边界是 Err
