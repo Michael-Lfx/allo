@@ -468,6 +468,28 @@ pub trait IConversationRepository: Send + Sync {
         ))
     }
 
+    /// Seals one idle imported Conversation as `finished`.
+    ///
+    /// Historical import creates a normal Pending row, then copies a transcript
+    /// that has already ended. Generic updates cannot write lifecycle status,
+    /// and inventing a turn receipt would publish an execution that never ran.
+    /// This compare-and-set is the exact Pending-to-Finished operation for that
+    /// copy: it advances the admission epoch, and it commits only while the row
+    /// is still idle Pending. An already Finished idle row is
+    /// [`TurnLifecycleTransition::AlreadyApplied`], so a resumed import can
+    /// stamp metadata again. A live generation stays untouched.
+    async fn seal_imported_history(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        updated_at: TimestampMs,
+    ) -> Result<TurnLifecycleTransition, DbError> {
+        let _ = (user_id, conversation_id, updated_at);
+        Err(DbError::Init(
+            "Conversation repository does not implement imported-history sealing".to_owned(),
+        ))
+    }
+
     /// Atomically register or load a receiver-side idempotency receipt.
     async fn claim_delivery_receipt(
         &self,

@@ -30,6 +30,7 @@ mod goal;
 mod idmm;
 mod insights;
 mod knowledge;
+mod legacy_import;
 mod lifecycle;
 mod managed_model;
 mod mcp;
@@ -279,6 +280,7 @@ pub use knowledge::{
     KnowledgeSource, KnowledgeSourceEntry, KnowledgeSourceMode, KnowledgeTag,
     ReorderKnowledgeTagsRequest, UpdateKnowledgeTagRequest,
 };
+pub use legacy_import::{LegacyImportPhase, LegacyImportPreview, LegacyImportReport};
 pub use lifecycle::{
     GitHubReleaseAsset, PackSupportLogsRequest, SupportLogsPackResponse, SystemInfoResponse,
     UpdateCheckRequest,

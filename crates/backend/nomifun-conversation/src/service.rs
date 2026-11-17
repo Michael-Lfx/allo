@@ -3466,6 +3466,10 @@ impl ConversationService {
         }
     }
 
+    pub(crate) fn knowledge_service_handle(&self) -> Option<Arc<nomifun_knowledge::KnowledgeService>> {
+        self.knowledge_service.read().ok().and_then(|guard| guard.clone())
+    }
+
     pub fn with_preset_service(&self, service: Arc<nomifun_preset::PresetService>) {
         if let Ok(mut guard) = self.preset_service.write() {
             *guard = Some(service);

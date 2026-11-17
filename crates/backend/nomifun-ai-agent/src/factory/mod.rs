@@ -10,6 +10,7 @@ mod context;
 pub mod mcp_oauth;
 pub(crate) mod moa;
 mod nanobot;
+pub(crate) mod flowyclaw_seed;
 pub(crate) mod nomi;
 pub(crate) mod platform_table;
 mod openclaw;
