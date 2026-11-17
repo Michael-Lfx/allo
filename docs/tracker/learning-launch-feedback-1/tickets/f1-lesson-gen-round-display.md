@@ -57,6 +57,19 @@ part_of: map.md
 - **R-c（不做）**：不先砍 GENERATE_MAX_ROUNDS（无证据支撑下调）；不把轮次
   明细搬回学习者面。
 
+## 裁决（2026-11-17 grilling，全按推荐收口）
+
+- **Q2 相位化呈现**：学习面进度行改相位化（规划节清单 → 写第 k/N 节 →
+  出题 → 审校 / 修复审校 → 发布 + 已耗时），裸轮次数字退出学习者面。
+  后端在 handler 侧新增节进度帧（帧词汇表现无 plan/section，`events.rs`
+  补相位于 const + ADR-0004 翻译差异表纪律 + 测试）；audit 帧已带
+  `loop` 可区分修复审校。帧上 `loop`/`max_rounds`/`tools` 学习面不再消费
+  裸 round。
+- **Q3 取证先行**：施工期开 `NOMI_LEARNING_CALL_ARCHIVE=on` 用同模型
+  （AIPC-deepseek-v4.1-flash）重放一个 5 节课时生成，逐轮表（轮号/工具/
+  usage/耗时）落 `assets/`；仅当证据显示可治理浪费才另立效率票；不预设
+  砍 GENERATE_MAX_ROUNDS。
+
 ## Acceptance
 
 - 呈现面：双 locale 词条 + 现有渲染测试更新；修复环轮次有可辨识标记

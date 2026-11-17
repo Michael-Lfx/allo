@@ -52,6 +52,22 @@ part_of: map.md
 - **R-d（不做）**：不动 d1 内容区高链；不动软闸建议条语义（其本身有
   「选中节点在薄弱集时整条收起」降噪，R-a 的折叠不吞它的 processing 态）。
 
+## 裁决（2026-11-17 grilling，全按推荐收口）
+
+- **Q4 检测卡摆位**：not-due 时语境句 + QuizEntryCard **整段不渲染**；
+  due 时整卡自然出现；「已就绪」主信号继续由学习首页横幅承担（u10 R2 点
+  行直开检测会话）。**正式替代 u10 R5「入口恒可见」摆位**。传统工作区
+  （CourseWorkspace）挂点行为**不变**（Q7 本波不动）。
+- **Q5 头部折叠**：标题 + 目标段 + 知识结构/生长控制条（含软闸 Alert）
+  收进一行摘要条（如「结构就绪 · 8 主线 · 63 知识组 ▸」+ 展开钮）；
+  默认展开、**per-course 持久化**（localStorage——注意 bun test 无
+  localStorage，存储访问须可注入/可降级，测试注入 mock）；structure/
+  growth 运行中**强制展开**（processing 徽章不可被折叠吞）；返回行与
+  Tabs 常驻；检测区（due 时渲染）在折叠区之外，不受折叠影响。
+- **Q6 目标段去重**：`graph.goal` 与 title **trim 后逐字相同**不渲染目标
+  段；不做相似度阈值。
+- **Q7 传统课程工作区本波不动**。
+
 ## Acceptance
 
 - 渲染测试：折叠/展开两态 + processing 强制展开；检测卡 due/not-due 两态；

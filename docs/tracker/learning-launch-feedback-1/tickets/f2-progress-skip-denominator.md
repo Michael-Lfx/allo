@@ -41,6 +41,20 @@ part_of: map.md
 - **C：双读数不改分母**——「已完成 a · 已跳过 b / 共 N」。信息全但卡片
   数字失去「进度」含义，且 19 分母的「永不可能满」仍在。作 fallback。
 
+## 裁决（2026-11-17 grilling）
+
+- **选 A**：分母剔除 skipped（progress = completed / (total − skipped)）；
+  全跳课程分母 0 → 显示「—」、不渲染进度条；unskip 自动回分母。B（算分
+  子）/ C（双读数）按 Terms 理由否决。
+- **后端单源**：`CourseSummary`（models.rs:1955）加 `skipped_lessons`；
+  `list_courses`（course.rs:226-233）与 `course_detail`（:280-287）两处 SQL
+  各加 skipped 子查询；前端类型（ui types.ts:257-258 邻位）加字段，分母由
+  前端派生（total − skipped，钳 ≥0）。
+- **消费点全集（2026-11-17 对码）**：`CourseCard.tsx:110-112`（percent，
+  分子 completed_lessons）+ `:194`（计数行，分子 settled_or_completed——
+  两处分母同口径剔除 skipped）；`CourseWorkspace.tsx:90` + `:299`。图工作区
+  无 completed/total 读数（grep 无命中），不涉及。
+
 ## Acceptance
 
 - 后端口径单源：分母 = total − skipped（或裁决结果），`nomifun-learning`
