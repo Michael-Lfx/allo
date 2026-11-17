@@ -98,7 +98,9 @@ part_of: map.md
 - **验证**：nomifun-ai-agent 1169 绿 / nomifun-learning 969 绿 / learning
   前端 428 绿 / typecheck+i18n+theme+dead-css 绿 / `cargo check --workspace`
   + `bun run check` 广谱绿。
-- **R-b 取证重放：待真机**。装置确认支持（learning_smoke `archive` 开关 +
-  lesson observer，`learning_smoke.rs:210-213`）；需真模型凭据与配额（5 节
-  课时 ≈10–30 分钟真实调用）。取证报告落 assets/ 后，若见可治理浪费（空
-  转/重写轮）再立效率票；不预设砍 GENERATE_MAX_ROUNDS。
+- **R-b 取证重放：已回填（2026-11-17 当日完成）**。`learning-smoke content`
+  真机重放 EXIT=0：零失败 6 节课时 = **24 次模型调用 / 71.4s**（负臂旧形
+  状 28 次 / 74.2s）——轮数 ≈ 2×节数 + 常数开销，用户截图「第 14 轮」（5
+  节课）在合同成本带内，**不是失败重试环**；71s vs 用户 10–29min 纯云端
+  方差。**效率票不立**（无空转/重写证据；减轮须动 ADR-0002 合同，另议）。
+  详见 [assets/2026-11-17-f1-round-composition.md](../assets/2026-11-17-f1-round-composition.md)。
