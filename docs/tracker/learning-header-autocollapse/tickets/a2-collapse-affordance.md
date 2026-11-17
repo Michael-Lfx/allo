@@ -2,7 +2,7 @@
 id: a2
 title: 折叠钮显性化（hit area + Tooltip；右移备选）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -43,4 +43,15 @@ text-12px !px-2px`，:766-776），折叠态是摘要条最左 12px `IconRight`
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`4ad5c47dc`）。
+
+- 两钮 hit area：`!px-2px` → 常规 small padding，图标 12px→14px；各加
+  Tooltip（复用 aria 词条 learningGraphHeaderCollapse/Expand，零新
+  键——12555 键面不变经 gen:i18n 确认）；折叠态展开钮移到摘要文本之
+  后、课程名转纯文本 truncate span（R-a 首选位）。
+- 测试面裁量（留痕）：bun test 宿主 Tooltip 悬停显形不可测（ESM 提升
+  先于 jsdom globals 注入 → arco isServerRendering 加载期恒 true，
+  Portal 恒 null）——按仓库先例改 structure test 断 Tooltip 接线 +
+  渲染测试断 DOM 面（hit area / 图标尺寸 / 钮序 / 点击往返）。
+- 真机可发现性欠账随波走查；不显眼再升级右移方案（票面 R-b 备选在
+  案）。

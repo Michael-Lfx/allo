@@ -2,7 +2,7 @@
 id: a3
 title: 后台运行不再禁用折叠钮 / 不强制展开（修订 f3 Q5 子项）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -50,4 +50,14 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`c553974fe`）。
+
+- `headerForceExpanded` 删除：`headerExpanded` 回到 `!headerCollapsed`
+  （a1 落地后 = persisted ∪ auto 的结果）；两钮恒可点（disabled 干预
+  删）；processingBadge 两态渲染零改动（:836 展开 / 折叠摘要条兜底本
+  就在）。processingPrimary 变量保留（徽章/次要行信息源）。
+- 测试反转落地：processing 期间可折叠、折叠后摘要条徽章仍在、钮不禁
+  用；本地 growing 与服务端 growth_running 分用例覆盖（o6 徽章只认服
+  务端真相）。
+- f3 Q5「强制展开」子项正式废除留痕（本票裁决）；b1 修复后徽章只在
+  本课真有任务时出现，双保险成立。

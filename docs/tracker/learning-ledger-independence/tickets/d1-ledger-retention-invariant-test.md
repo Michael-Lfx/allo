@@ -2,7 +2,7 @@
 id: d1
 title: 账本保留不变式测试钉死
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -43,4 +43,17 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`99ed8cbc2`）。
+
+- R-a 用户路径不变式：`course_delete_preserves_the_learning_ledger` —
+  造课 + xp_events 两类 kind 各一笔 + 真实服务面打卡 + 复习卡两张 →
+  delete_course → 账本两表行数不变（kind × course_id 逐类核对）、复习
+  卡行数不变且 archived_at 全部打标（死卡语义顺带钉住）；删除以墓碑 +
+  内容清空自证，杜绝空转绿。
+- R-b 种子路径不变式：`delete_courses_by_title_preserves_the_learning_
+  ledger` — 宽面（enrollments/progress/attempts/复习卡/内容表/课程行）
+  清零自证 + 账本两表凭 course_id 归账行原样保留，两面对照。
+- 落库裁量留痕：复习卡 2 张各挂一活动（UNIQUE(enrollment_id, activity_id)
+  约束）；进度行直插不走服务路径（避免结算搅浑账本种子）。
+- 审查批顺带：F6 两用例种子 helper 去重（`290190742`）；F5 预存 flaky
+  测试补 serial（同文件测试卫生家族）。

@@ -2,7 +2,7 @@
 id: b1
 title: growth_running 按课程+kind 收窄（跨课程串扰）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -50,4 +50,15 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`42a77a47a`）。
+
+- `generation_running()` 更名 `growth_running(course_id)`（方法名随语义
+  更名，全仓唯一调用点同步）——快照过滤 `state == RUNNING && course_id
+  == 本课 && kind == KIND_GROWTH`；零 schema 变更（快照行自带
+  course_id，resolved_course_id 优先取法核实过 outline 键段口径）。
+- auto 补批与手动生长同走 begin_growth_task → KIND_GROWTH（:4993），两
+  臂天然覆盖；同族排查干净（其余 snapshot 消费均为正当全局面）。
+- 回归三隔离：跨课（A growth RUNNING → B false）/ kind（B LESSON
+  RUNNING → A true 不受扰）/ 终态消解，全绿（nomifun-learning 970→975
+  绿经审查修复批）。
+- 真机复验欠账：建新课跑结构期间旧课徽章不亮、按钮可点。

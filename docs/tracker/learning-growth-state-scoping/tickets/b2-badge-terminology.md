@@ -2,7 +2,7 @@
 id: b2
 title: 徽章动作名与按钮对齐（生长中→补充节点中）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -52,4 +52,15 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`f634ddf23` + 预存缺口顺带修
+`947530dc5` + 审查批 F3 `f6b42e219`）。
+
+- 键名随值更名 `learningGraphGrowing` → `learningGraphAddingNodes`，
+  zh「补充节点中…」/ en "Adding nodes…"；两消费点（次要行 + 徽章分支）
+  同步；渲染断言含 en 用例 + 旧值负断言；TDD 红→绿 18 pass。
+- 审查批 F3 补齐漏网三键**值**对齐（键名不动）：growthPillRunning /
+  learningGraphBatchPending / learningGraphWindowGrowing →「补充节点」
+  族（GrowthTaskPill.render 测试 11 pass）。
+- 残留 grep：用户面「生长」措辞零残留（docs 票面与一处后端历史注释豁
+  免）；GLOSSARY「结构生成/补充节点」词条已落册。
+- 顺带修：a 批带入的挂载函数 options 类型缺口（947530dc5 单拆保 blame）。

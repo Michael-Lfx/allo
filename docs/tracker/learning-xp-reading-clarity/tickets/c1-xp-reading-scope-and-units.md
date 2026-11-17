@@ -2,7 +2,7 @@
 id: c1
 title: XP 读数作用域标注 + 单位词统一 + ETA 语境
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -63,4 +63,20 @@ XP 读数行「已结算 0/21 节点 · 剩余 430 est 分钟 · 现步伐约 19
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`b98ee0c98` + 审查批 F1/F2
+`49a97ca57`）。
+
+- **R-b 缺陷修复落地**：xp_reading 的 total_nodes / remaining_est 两查询
+  剔 skipped（NOT IN enrollment 归属子查询——与 f2 课程卡同形状，非票
+  面字面的 LEFT JOIN：不带 user 过滤会让他课进度越尺，审查确认）；**分
+  子 settled_nodes 同剔**（完成后再跳过防 1/0 倒挂，合理外延留痕 + 钉
+  子测试）。对数兑现：单课 21 课时 skipped 17 → 面板 0/4 · ≈100min，
+  与课程卡对上。
+- **R-d ETA 语境落地**：XpReading 透出 pace_xp；ETA 行披露步伐基数；
+  低步伐降级（地板 = 周 XP 35，注释起步值待校准）——191 天病例必被降
+  级。渲染测试正常臂/降级臂/全跳分支 × zh/en 五例。
+- **审查批**：F1 enabled_scope 回归 COURSE_ARRANGEMENT_JOIN 单源常量
+  （硬违规收口）；F2 skipped 过滤片段收敛共享常量（字节安全最长公共片
+  段，'skipped' 谓词逐点可见——字面量枚举单源化留另议）。
+- R-a 作用域标注 = C 裁决本票不做；R-c 节点词保留（GLOSSARY 词条在
+  册）。真机目验欠账：单课 skipped 场景读数可对应。

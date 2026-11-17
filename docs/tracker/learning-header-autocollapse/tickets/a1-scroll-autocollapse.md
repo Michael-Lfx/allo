@@ -2,7 +2,7 @@
 id: a1
 title: 滚动深度驱动自动折叠（临时层，不落盘）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -63,4 +63,17 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`9d6dd6ce4` + 审查批 F4 钉子
+`3e3c74f91`）。
+
+- 纯函数状态机 `headerCollapseScroll.ts`（零 React）：H=160 折叠 /
+  <80 展开（常量 `HEADER_COLLAPSE_SCROLL_COLLAPSE_PX` / `..._EXPAND_PX`
+  进 constants.ts）；rAF 节流；临时层**不落盘**（存储层零改动断言）；
+  用户否决臂（含 persisted 深滚态手动展开的超集——F4 钉子裁决绿：spec
+  审查的「再折叠」担忧不成立，组件展开臂清持久层并置 override）；触发
+  源只挂正文 pane；切课/切 Tab/卸载复位。
+- persisted 折叠偏好恒折叠（尊重语义）；processing 不再进折叠判定
+  （a3 修订合并）。
+- 测试：纯函数表驱动 + 渲染（滚过阈值折叠/回顶展开/否决臂/切课复位/
+  存储零落盘）50+ pass；typecheck / i18n / theme / dead-css 绿。
+- 真机目验欠账：滚动跟手不闪烁、临界区不抖动。
