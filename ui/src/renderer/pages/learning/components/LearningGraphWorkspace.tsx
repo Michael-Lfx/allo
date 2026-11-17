@@ -44,6 +44,7 @@ import {
   loadGraphHeaderCollapsed,
   saveGraphHeaderCollapsed,
 } from '../headerCollapse';
+import { resolveHeaderScrollCollapse } from '../headerCollapseScroll';
 import {
   hasActiveStructureRow,
   startStructureReadoutPolling,
@@ -196,10 +197,58 @@ const LearningGraphWorkspace: React.FC<{
   const [headerCollapsed, setHeaderCollapsed] = useState<boolean>(() =>
     loadGraphHeaderCollapsed(detail.course.id)
   );
-  // 课程切换重读持久值（useState 初始化只在挂载跑一次）。
+  // ── 滚动自动折叠临时层（a1）：auto 折叠 + 用户否决臂。**不落盘**——滚动
+  // 深度是视口语境不是偏好，存储层（headerCollapse.ts）只承载手动 chevron
+  // 的 f3 持久语义；有效折叠 = persisted ∪ auto（a3 修订：processing 不进
+  // 判定）。触发源只挂学习 Tab 正文阅读容器（rAF 节流，输出变化才
+  // setState）；否决臂 = auto 折叠态点展开钮，滚回顶部阈值区由状态机复位；
+  // 切课 / 切 TabPane / 卸载清零。
+  const [scrollAuto, setScrollAuto] = useState({ collapsed: false, override: false });
+  // 课程切换重读持久值（useState 初始化只在挂载跑一次）；a1：切课同步清
+  // 滚动临时态（临时层不跨课存活）。
   useEffect(() => {
     setHeaderCollapsed(loadGraphHeaderCollapsed(detail.course.id));
+    setScrollAuto({ collapsed: false, override: false });
   }, [detail.course.id]);
+  // rAF 回调读现态用 ref（事件闭包可能滞后一拍——点击展开与待发 rAF 竞态
+  // 时不得用过期 persisted 覆盖否决臂）。
+  const headerCollapsedRef = React.useRef(headerCollapsed);
+  useEffect(() => {
+    headerCollapsedRef.current = headerCollapsed;
+  }, [headerCollapsed]);
+  const scrollRafRef = React.useRef<number | null>(null);
+  const handleReadingScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    if (scrollRafRef.current !== null) return;
+    // currentTarget 在事件处理外即失效，scrollTop 必须同步捕获。
+    const { scrollTop } = event.currentTarget;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      setScrollAuto((prev) => {
+        const next = resolveHeaderScrollCollapse({
+          scrollTop,
+          persisted: headerCollapsedRef.current,
+          collapsed: prev.collapsed,
+          override: prev.override,
+        });
+        // 输出不变即复用现态对象——滚动流不逐帧重渲染。
+        return next.collapsed === prev.collapsed && next.override === prev.override
+          ? prev
+          : next;
+      });
+    });
+  }, []);
+  // 卸载兜底：取消待发 rAF（组件亡则临时态随之亡）。
+  useEffect(
+    () => () => {
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+    },
+    []
+  );
+  // 切 TabPane 清临时态（阅读语境切走即弃；学习页签回来后由下一次滚动
+  // 重新起步）。
+  useEffect(() => {
+    setScrollAuto({ collapsed: false, override: false });
+  }, [activeTab]);
 
   // 后台结构生成/生长的 WS 事件触发刷新：结构启动翻出「生成中」徽章、
   // 画完立即上屏、终结（完成/失败/取消）落定状态——思考化之后结构与生长
@@ -718,15 +767,27 @@ const LearningGraphWorkspace: React.FC<{
       <ProcessingStateTag>{t('learning.learningGraphAutoPreparing')}</ProcessingStateTag>
     ) : null;
 
-  // ── 头部折叠派生面（f3 Q5；a3 修订）：processing 不再是否决输入——
-  // 后台运行（结构生成 / 生长 / 自动准备，含本地 growing 在途）不强制
-  // 展开、不禁用折叠钮；徽章两态照常渲染（强制展开的初衷已由摘要条自身
-  // 兜底徽章满足），processingPrimary 保留作徽章/次要行渲染源。
-  const headerExpanded = !headerCollapsed;
+  // ── 头部折叠派生面（f3 Q5；a3 修订 + a1 临时层合并）：processing 不再是
+  // 否决输入——后台运行（结构生成 / 生长 / 自动准备，含本地 growing 在途）
+  // 不强制展开、不禁用折叠钮；徽章两态照常渲染（强制展开的初衷已由摘要条
+  // 自身兜底徽章满足），processingPrimary 保留作徽章/次要行渲染源。
+  // 有效折叠 = persisted ∪ auto（滚动临时层，a1）。
+  const headerExpanded = !(headerCollapsed || scrollAuto.collapsed);
   const collapseHeader = () => {
-    const next = !headerCollapsed;
-    saveGraphHeaderCollapsed(detail.course.id, next);
-    setHeaderCollapsed(next);
+    if (headerExpanded) {
+      // 展开 → 折叠：手动 chevron 走 f3 持久层语义（偏好落盘），临时态清零。
+      saveGraphHeaderCollapsed(detail.course.id, true);
+      setHeaderCollapsed(true);
+      setScrollAuto({ collapsed: false, override: false });
+    } else {
+      // 折叠 → 展开：清持久条目；从 auto 折叠态点出 → 否决臂置位（本滚动
+      // 周期压制自动折叠，滚回顶部阈值区由状态机复位）。
+      saveGraphHeaderCollapsed(detail.course.id, false);
+      setHeaderCollapsed(false);
+      setScrollAuto((prev) =>
+        prev.collapsed ? { collapsed: false, override: true } : { ...prev, collapsed: false }
+      );
+    }
   };
   // 摘要条文本：结构就绪 → structureSummaryText；读侧其余态（失败 / 拉取
   // 中 / 未生成）复用结构条同名案文——折叠不吞状态，只收版面。
@@ -1103,7 +1164,10 @@ const LearningGraphWorkspace: React.FC<{
                   <Empty description={t('learning.learningGraphContentEmpty')} />
                 </div>
               ) : (
-                <div className='h-full overflow-y-auto p-16px'>
+                <div className='h-full overflow-y-auto p-16px' onScroll={handleReadingScroll}>
+                  {/* a1 触发源唯一挂点（见上方容器 onScroll）：正文阅读容器
+                      的滚动深度驱动头部自动折叠；大纲列表 / 其它页签滚动不
+                      触发。 */}
                   <div className='flex flex-wrap items-center gap-8px'>
                     <Title heading={4} className='!m-0'>
                       {selectedLesson.title}

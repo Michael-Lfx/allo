@@ -174,10 +174,14 @@ const structureView = {
   mounts: null,
 } as unknown as LearningStructureView;
 
-const graphDetail = (options?: { goal?: string; growthRunning?: boolean }): CourseDetail =>
+const graphDetail = (options?: {
+  goal?: string;
+  growthRunning?: boolean;
+  courseId?: string;
+}): CourseDetail =>
   ({
     course: {
-      id: 'course-graph-1',
+      id: options?.courseId ?? 'course-graph-1',
       title: '图课程',
       description: '',
       domain: '',
@@ -435,6 +439,113 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     expect(text).not.toContain('收起头部');
     expect(text).not.toContain('条主线');
     expect(container.querySelector('button[aria-label="收起头部"]')).toBeNull();
+  });
+});
+
+describe('LearningGraphWorkspace 头部滚动自动折叠（a1，临时层不落盘）', () => {
+  /** 学习 Tab 正文阅读容器（a1 唯一触发源）：h-full overflow-y-auto p-16px。 */
+  const readingPane = (): HTMLDivElement | null =>
+    container.querySelector<HTMLDivElement>('div.overflow-y-auto.p-16px');
+
+  /** 模拟滚动：置 scrollTop 后派发冒泡 scroll 事件，等 rAF 节拍落地
+   * （宿主 requestAnimationFrame = 16ms setTimeout）。 */
+  const scrollPane = async (scrollTop: number) => {
+    const pane = readingPane();
+    expect(pane).not.toBeNull();
+    pane!.scrollTop = scrollTop;
+    await act(async () => {
+      pane!.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+  };
+
+  /** 存储零改动断言（a1 核心：自动层不落盘）：键下本课永不出现 true 条目
+   * （手动展开写回 false 删条目为 f3 既有语义，不视为自动层落盘）。 */
+  const expectStorageUntouched = () => {
+    const raw = storageMap.get(GRAPH_HEADER_COLLAPSED_KEY);
+    const parsed: unknown = raw === undefined ? null : JSON.parse(raw!);
+    expect((parsed as Record<string, unknown> | null)?.['course-graph-1']).toBeUndefined();
+  };
+
+  const tabByTitle = (title: string): HTMLElement | null =>
+    Array.from(container.querySelectorAll<HTMLElement>('.arco-tabs-header-title')).find(
+      (tab) => (tab.textContent ?? '').includes(title)
+    ) ?? null;
+
+  test('滚过阈值（200 ≥ 160）自动折叠：摘要条在场、存储零改动', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    const text = container.textContent ?? '';
+    // 完整头部退场，摘要条接管
+    expect(text).not.toContain('知识结构');
+    expect(text).toContain('3 条主线');
+    expect(headerToggle('展开头部')).not.toBeNull();
+    // 自动态不落盘（滚动深度是视口语境不是偏好）
+    expectStorageUntouched();
+  });
+
+  test('回顶（0 < 80）展开：完整头部恢复', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    await scrollPane(0);
+    expect(container.textContent).toContain('知识结构');
+    expect(headerToggle('收起头部')).not.toBeNull();
+    expectStorageUntouched();
+  });
+
+  test('否决臂：自动折叠中手动展开 → 深滚不再自动折叠；回顶复位后新周期恢复', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    // auto 折叠态点展开钮：否决臂置位（本滚动周期压制自动折叠）
+    await act(async () => {
+      headerToggle('展开头部')!.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('知识结构');
+    expectStorageUntouched();
+    // 深滚：否决臂在场，不自动折叠
+    await scrollPane(300);
+    expect(container.textContent).toContain('知识结构');
+    // 回顶复位 → 再下滑：自动折叠恢复
+    await scrollPane(0);
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+  });
+
+  test('persisted 恒折叠：偏好折叠下任何滚动深度都折叠（尊重偏好）', async () => {
+    storageMap.set(GRAPH_HEADER_COLLAPSED_KEY, '{"course-graph-1":true}');
+    await mountGraphWorkspace();
+    expect(container.textContent).not.toContain('知识结构');
+    await scrollPane(0);
+    expect(container.textContent).not.toContain('知识结构');
+    await scrollPane(300);
+    expect(container.textContent).not.toContain('知识结构');
+  });
+
+  test('切 TabPane 复位：滚深自动折叠后切走页签，临时态清零', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    await act(async () => {
+      tabByTitle('学习记录')!.click();
+      await Promise.resolve();
+    });
+    // 临时态清零：头部展开（摘要条退场）
+    expect(container.textContent).toContain('知识结构');
+    expectStorageUntouched();
+  });
+
+  test('切课复位：自动折叠不落盘，换课重挂载从展开态起步', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    expectStorageUntouched();
+    // 换课（重挂载另一课）：临时层随卸载消亡 + 无持久折叠 → 展开
+    await mountGraphWorkspace({ courseId: 'course-graph-2' });
+    expect(container.textContent).toContain('知识结构');
+    expect(headerToggle('收起头部')).not.toBeNull();
   });
 });
 
