@@ -67,7 +67,7 @@ const renderPill = async (
 describe('GrowthTaskPill', () => {
   test('运行中：状态 + 已运行时长 + 课程名 + 步骤文案，可回图工作区与取消', async () => {
     const html = await renderPill('zh-CN', item());
-    expect(html).toContain('学习图生长中 · 3:12');
+    expect(html).toContain('学习图补充节点中 · 3:12');
     expect(html).toContain('线性代数');
     expect(html).not.toContain('学习图生长 · 线性代数');
     expect(html).toContain('教练正在起草本批节点…');
@@ -132,7 +132,7 @@ describe('GrowthTaskPill', () => {
 
   test('en-US 文案同样齐备', async () => {
     const running = await renderPill('en-US', item());
-    expect(running).toContain('Growing learning graph · 3:12');
+    expect(running).toContain('Adding nodes to learning graph · 3:12');
     expect(running).toContain('Coach is drafting this batch of nodes…');
     expect(running).toContain('Open workspace');
     const done = await renderPill('en-US', item({ status: 'done', elapsedSecs: null }));
