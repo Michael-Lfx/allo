@@ -411,5 +411,18 @@
   "thread.confirm_rights": "이 미디어를 사용할 권리가 있음을 확인합니다.",
   "thread.confirm_terms": "서비스 약관 및 개인정보 처리방침에 동의합니다.",
   "thread.confirm_title": "미디어 사용 확인",
-  "thread.prompt_placeholder": "{product}에게 메시지 보내기"
+  "thread.prompt_placeholder": "{product}에게 메시지 보내기",
+  "credits.error": "크레딧을 불러오지 못했습니다",
+  "credits.loading": "크레딧을 불러오는 중",
+  "credits.unavailable": "크레딧을 사용할 수 없습니다",
+  "ui.close": "닫기",
+  "ui.document_nodes": "{title} · 노드 {count}개",
+  "ui.fullscreen": "전체 화면",
+  "ui.loading": "불러오는 중",
+  "ui.next": "다음",
+  "ui.play": "재생",
+  "ui.previous": "이전",
+  "ui.rating": "별 {n}개",
+  "ui.remove": "제거",
+  "ui.volume": "음량"
 }

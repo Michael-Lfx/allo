@@ -9,10 +9,12 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+gpui_ce_elements = { workspace = true }
 gpui = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+gpui_platform = { workspace = true }
 gpui = { workspace = true, features = ["test-support"] }
 
 [lints]

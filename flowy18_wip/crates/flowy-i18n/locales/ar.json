@@ -411,5 +411,18 @@
   "thread.confirm_rights": "أؤكد أن لدي الحق في استخدام هذه الوسائط.",
   "thread.confirm_terms": "أوافق على شروط الخدمة وسياسة الخصوصية.",
   "thread.confirm_title": "تأكيد استخدام الوسائط",
-  "thread.prompt_placeholder": "أرسل رسالة إلى {product}"
+  "thread.prompt_placeholder": "أرسل رسالة إلى {product}",
+  "credits.error": "تعذر تحميل الرصيد",
+  "credits.loading": "جارٍ تحميل الرصيد",
+  "credits.unavailable": "الرصيد غير متاح",
+  "ui.close": "إغلاق",
+  "ui.document_nodes": "{title} · {count} عقد",
+  "ui.fullscreen": "ملء الشاشة",
+  "ui.loading": "جارٍ التحميل",
+  "ui.next": "التالي",
+  "ui.play": "تشغيل",
+  "ui.previous": "السابق",
+  "ui.rating": "{n} نجوم",
+  "ui.remove": "إزالة",
+  "ui.volume": "مستوى الصوت"
 }

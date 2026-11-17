@@ -4,12 +4,8 @@ use crate::persona::{
     limited, read_patch, save,
 };
 use flowy_ui as theme;
-use gpui::{
-    AnyElement, ClipboardItem, ColorExt, Context, Entity, div, prelude::*, px,
-};
-use gpui_ce_elements::editable_text::{
-    EditableTextState, text_area, text_input,
-};
+use gpui::{AnyElement, ClipboardItem, Context, Entity, div, prelude::*, px};
+use gpui_ce_elements::editable_text::EditableTextState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -24,14 +20,6 @@ pub(super) enum Tab {
     Knowledge,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Dialog {
-    None,
-    Import,
-    Knowledge,
-}
-
-const FLYOUT_TOP: f32 = 242.0;
 const PASTE_MAX: usize = 8000;
 
 const MENU: &[(&str, &str, Page)] = &[
@@ -62,14 +50,11 @@ impl FlowyApp {
         let mut menu = div()
             .id("more-flyout")
             .occlude()
-            .absolute()
-            .left(px(theme::DOCK_WIDTH - 16.))
-            .top(px(FLYOUT_TOP))
             .w(px(196.))
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
-            .rounded(theme::modal_radius())
+            .border_color(self.theme.line())
+            .rounded(self.theme.modal_radius())
             .shadow_md()
             .p_1()
             .flex()
@@ -99,28 +84,13 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut layer = div()
-            .id("more-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.close_more_dialog(cx);
-            }));
-        layer = if self.persona.dialog == Dialog::Knowledge {
-            layer.child(self.knowledge_dialog(cx))
-        } else {
-            layer.child(self.import_dialog(cx))
-        };
-        layer
+        let content =
+            if self.active_dialog == super::state::ActiveDialog::Knowledge {
+                self.knowledge_dialog(cx).into_any_element()
+            } else {
+                self.import_dialog(cx).into_any_element()
+            };
+        theme::modal_layer("more-layer", &self.theme, &self.ui, content)
     }
 
     pub(super) fn touch_profile(&self, cx: &mut Context<'_, Self>) {
@@ -160,8 +130,7 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let selected = self.persona.page == page;
-        div()
-            .id(id)
+        theme::interactive(id, self.t(key), &self.theme)
             .px_2()
             .py_2()
             .rounded_md()
@@ -169,7 +138,7 @@ impl FlowyApp {
             .items_center()
             .gap_2()
             .cursor_pointer()
-            .hover(|row| row.bg(theme::soft()))
+            .hover(|row| row.bg(self.theme.soft()))
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.persona.page = page;
@@ -179,7 +148,12 @@ impl FlowyApp {
                 cx.notify();
             }))
             .child(menu_icon(page))
-            .child(div().flex_1().text_sm().child(self.t(key)))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(self.theme.body_size())
+                    .child(self.t(key)),
+            )
             .when(selected, |row| row.child(theme::icons::check()))
     }
 
@@ -197,14 +171,14 @@ impl FlowyApp {
                 .gap_3()
                 .child(
                     div()
-                        .text_2xl()
+                        .text_size(self.theme.heading_size())
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(self.t(title_key)),
                 )
                 .child(
                     div()
-                        .text_sm()
-                        .text_color(theme::muted())
+                        .text_size(self.theme.body_size())
+                        .text_color(self.theme.muted())
                         .child(self.t(body_key)),
                 ),
         )
@@ -236,7 +210,7 @@ impl FlowyApp {
             .gap_5()
             .child(
                 div()
-                    .text_2xl()
+                    .text_size(self.theme.heading_size())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(self.t("more.personal")),
             )
@@ -258,7 +232,7 @@ impl FlowyApp {
             .flex()
             .gap_6()
             .border_b_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .child(self.personal_tab(
                 "more-tab-profile",
                 "more.profile",
@@ -281,21 +255,22 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let selected = self.persona.tab == tab;
-        div()
-            .id(id)
+        theme::interactive(id, self.t(key), &self.theme)
+            .role(gpui::Role::Tab)
+            .aria_selected(selected)
             .pb_2()
             .cursor_pointer()
-            .text_sm()
+            .text_size(self.theme.body_size())
             .text_color(if selected {
-                theme::ink()
+                self.theme.ink()
             } else {
-                theme::muted()
+                self.theme.muted()
             })
             .border_b_2()
             .border_color(if selected {
-                theme::ink()
+                self.theme.ink()
             } else {
-                theme::canvas()
+                self.theme.canvas()
             })
             .child(self.t(key))
             .on_click(cx.listener(move |app, _event, _window, cx| {
@@ -305,41 +280,48 @@ impl FlowyApp {
     }
 
     fn import_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("import-memory-card")
-            .w_full()
-            .px_4()
-            .py_3()
-            .rounded_xl()
-            .border_1()
-            .border_color(theme::line())
-            .bg(theme::card())
-            .flex()
-            .items_center()
-            .gap_3()
-            .cursor_pointer()
-            .hover(|card| card.bg(theme::soft()))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.open_import(cx);
-            }))
-            .child(card_mark())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_sm().child(self.t("more.import_card")))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .whitespace_normal()
-                            .child(self.t("more.import_card_body")),
-                    ),
-            )
-            .child(theme::icons::chevron_right().text_color(theme::muted()))
+        theme::interactive(
+            "import-memory-card",
+            self.t("more.import_card"),
+            &self.theme,
+        )
+        .w_full()
+        .px_4()
+        .py_3()
+        .rounded_xl()
+        .border_1()
+        .border_color(self.theme.line())
+        .bg(self.theme.card())
+        .flex()
+        .items_center()
+        .gap_3()
+        .cursor_pointer()
+        .hover(|card| card.bg(self.theme.soft()))
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.open_import(cx);
+        }))
+        .child(card_mark(&self.theme))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(self.theme.body_size())
+                        .child(self.t("more.import_card")),
+                )
+                .child(
+                    div()
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
+                        .whitespace_normal()
+                        .child(self.t("more.import_card_body")),
+                ),
+        )
+        .child(theme::icons::chevron_right().text_color(self.theme.muted()))
     }
 
     fn profile_fields(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -356,16 +338,19 @@ impl FlowyApp {
                         "more.nickname",
                         "more.nickname_placeholder",
                         &self.persona.nickname,
+                        cx,
                     ))
                     .child(self.named_field(
                         "more-occupation",
                         "more.occupation",
                         "more.occupation_placeholder",
                         &self.persona.occupation,
+                        cx,
                     )),
             )
             .child(labeled_area(
-                self.t("more.about"),
+                self,
+                cx,
                 "more-about",
                 self.persona.about.clone(),
                 self.t("more.about_placeholder"),
@@ -377,12 +362,13 @@ impl FlowyApp {
             ))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("more.about_hint")),
             )
             .child(labeled_area(
-                self.t("more.instructions"),
+                self,
+                cx,
                 "more-instructions",
                 self.persona.instructions.clone(),
                 self.t("more.instructions_placeholder"),
@@ -400,6 +386,7 @@ impl FlowyApp {
         label_key: &'static str,
         placeholder_key: &'static str,
         state: &Entity<EditableTextState>,
+        cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         div()
             .flex_1()
@@ -407,51 +394,65 @@ impl FlowyApp {
             .flex()
             .flex_col()
             .child(field_label(self.t(label_key)))
-            .child(single_line(id, state.clone(), self.t(placeholder_key)))
+            .child(single_line(
+                cx,
+                &self.theme,
+                id,
+                state.clone(),
+                self.t(placeholder_key),
+            ))
     }
 
     fn import_footer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div().w_full().flex().justify_center().child(
-            div()
-                .id("open-import-memory")
-                .px_4()
-                .py_2()
-                .rounded_lg()
-                .bg(theme::soft())
-                .border_1()
-                .border_color(theme::line())
-                .cursor_pointer()
-                .text_sm()
-                .child(self.t("more.import"))
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    app.open_import(cx);
-                })),
+            theme::interactive(
+                "open-import-memory",
+                self.t("more.import"),
+                &self.theme,
+            )
+            .px_4()
+            .py_2()
+            .rounded_lg()
+            .bg(self.theme.soft())
+            .border_1()
+            .border_color(self.theme.line())
+            .cursor_pointer()
+            .text_size(self.theme.body_size())
+            .child(self.t("more.import"))
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                app.open_import(cx);
+            })),
         )
     }
 
     fn knowledge_pane(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut pane = div().flex().flex_col().gap_3().child(
             div().flex().justify_end().child(
-                div()
-                    .id("open-add-knowledge")
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(theme::fill())
-                    .text_color(theme::on_fill())
-                    .cursor_pointer()
-                    .text_sm()
-                    .child(self.t("more.add"))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "open-add-knowledge",
+                    self.t("more.knowledge"),
+                    &self.theme,
+                )
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .bg(self.theme.fill())
+                .text_color(self.theme.on_fill())
+                .cursor_pointer()
+                .text_size(self.theme.body_size())
+                .child(self.t("more.add"))
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         app.open_knowledge_dialog(cx);
-                    })),
+                    },
+                )),
             ),
         );
         if self.persona.knowledge.is_empty() {
             pane = pane.child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("more.knowledge_empty")),
             );
         }
@@ -473,8 +474,8 @@ impl FlowyApp {
             .py_3()
             .rounded_xl()
             .border_1()
-            .border_color(theme::line())
-            .bg(theme::card())
+            .border_color(self.theme.line())
+            .bg(self.theme.card())
             .flex()
             .flex_col()
             .gap_1()
@@ -483,33 +484,41 @@ impl FlowyApp {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().text_sm().child(item.name.clone()))
                     .child(
                         div()
-                            .id(format!("knowledge-remove-{index}"))
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .cursor_pointer()
-                            .child(self.t("more.remove"))
-                            .on_click(cx.listener(
-                                move |app, _event, _window, cx| {
-                                    app.remove_knowledge(index, cx);
-                                },
-                            )),
+                            .flex_1()
+                            .text_size(self.theme.body_size())
+                            .child(item.name.clone()),
+                    )
+                    .child(
+                        theme::interactive(
+                            format!("knowledge-remove-{index}"),
+                            self.t("more.remove"),
+                            &self.theme,
+                        )
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
+                        .cursor_pointer()
+                        .child(self.t("more.remove"))
+                        .on_click(cx.listener(
+                            move |app, _event, _window, cx| {
+                                app.remove_knowledge(index, cx);
+                            },
+                        )),
                     ),
             )
             .when(!item.usage.is_empty(), |row| {
                 row.child(
                     div()
-                        .text_xs()
-                        .text_color(theme::muted())
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
                         .child(item.usage.clone()),
                 )
             })
             .when(!item.body.is_empty(), |row| {
                 row.child(
                     div()
-                        .text_sm()
+                        .text_size(self.theme.body_size())
                         .whitespace_normal()
                         .child(item.body.clone()),
                 )
@@ -525,12 +534,12 @@ impl FlowyApp {
             .as_str()
             .trim()
             .is_empty();
-        let mut card = dialog_shell("import-memory-dialog", cx)
+        let mut card = dialog_shell(self, "import-memory-dialog", cx)
             .child(self.dialog_title("more.import_title", cx))
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(self.t("more.import_lead")),
             )
@@ -540,47 +549,57 @@ impl FlowyApp {
                     .items_center()
                     .justify_between()
                     .gap_3()
-                    .child(step_heading("1", self.t("more.import_step_copy")))
+                    .child(step_heading(
+                        &self.theme,
+                        "1",
+                        self.t("more.import_step_copy"),
+                    ))
                     .child(self.copy_button(cx)),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(self.t("more.import_step_copy_body")),
             )
-            .child(prompt_box(&prompt));
+            .child(prompt_box(&self.theme, &prompt));
         if let Some(key) = self.persona.status {
             card = card.child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .child(self.t(key)),
             );
         }
-        card.child(step_heading("2", self.t("more.import_step_paste")))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::muted())
-                    .whitespace_normal()
-                    .child(self.t("more.import_step_paste_body")),
-            )
-            .child(counted_area(
-                "import-paste",
-                self.persona.import_paste.clone(),
-                self.t("more.import_placeholder"),
-                String::new(),
-                120.,
-            ))
-            .child(self.dialog_actions(
-                "cancel-import",
-                "confirm-import",
-                "more.import_action",
-                ready,
-                cx,
-            ))
+        card.child(step_heading(
+            &self.theme,
+            "2",
+            self.t("more.import_step_paste"),
+        ))
+        .child(
+            div()
+                .text_size(self.theme.caption_size())
+                .text_color(self.theme.muted())
+                .whitespace_normal()
+                .child(self.t("more.import_step_paste_body")),
+        )
+        .child(counted_area(
+            cx,
+            &self.theme,
+            "import-paste",
+            self.persona.import_paste.clone(),
+            self.t("more.import_placeholder"),
+            String::new(),
+            120.,
+        ))
+        .child(self.dialog_actions(
+            "cancel-import",
+            "confirm-import",
+            "more.import_action",
+            ready,
+            cx,
+        ))
     }
 
     fn knowledge_dialog(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -595,22 +614,28 @@ impl FlowyApp {
             self.persona.knowledge_body.read(cx).as_str(),
             KNOWLEDGE_MAX,
         );
-        dialog_shell("add-knowledge-dialog", cx)
+        dialog_shell(self, "add-knowledge-dialog", cx)
             .child(self.dialog_title("more.add_title", cx))
             .child(field_label(self.t("more.knowledge_name")))
             .child(single_line(
+                cx,
+                &self.theme,
                 "knowledge-name",
                 self.persona.knowledge_name.clone(),
                 self.t("more.knowledge_name_placeholder"),
             ))
             .child(field_label(self.t("more.knowledge_when")))
             .child(single_line(
+                cx,
+                &self.theme,
                 "knowledge-usage",
                 self.persona.knowledge_usage.clone(),
                 self.t("more.knowledge_when_placeholder"),
             ))
             .child(field_label(self.t("more.knowledge_body")))
             .child(counted_area(
+                cx,
+                &self.theme,
                 "knowledge-body",
                 self.persona.knowledge_body.clone(),
                 self.t("more.knowledge_body_placeholder"),
@@ -638,43 +663,51 @@ impl FlowyApp {
             .gap_3()
             .child(
                 div()
-                    .text_lg()
+                    .text_size(self.theme.heading_size())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(self.t(key)),
             )
             .child(
-                div()
-                    .id("close-more-dialog")
-                    .size(px(28.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::soft()))
-                    .child(theme::icons::x())
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "close-more-dialog",
+                    self.t("ui.close"),
+                    &self.theme,
+                )
+                .size(px(28.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(theme::icons::x())
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.close_more_dialog(cx);
-                    })),
+                    },
+                )),
             )
     }
 
     fn copy_button(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("copy-import-prompt")
-            .px_3()
-            .py_1()
-            .rounded_full()
-            .bg(theme::fill())
-            .text_color(theme::on_fill())
-            .text_xs()
-            .cursor_pointer()
-            .child(self.t("more.copy"))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.copy_import_prompt(cx);
-            }))
+        theme::interactive(
+            "copy-import-prompt",
+            self.t("more.copy"),
+            &self.theme,
+        )
+        .px_3()
+        .py_1()
+        .rounded_full()
+        .bg(self.theme.fill())
+        .text_color(self.theme.on_fill())
+        .text_size(self.theme.caption_size())
+        .cursor_pointer()
+        .child(self.t("more.copy"))
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            cx.stop_propagation();
+            app.copy_import_prompt(cx);
+        }))
     }
 
     fn dialog_actions(
@@ -698,15 +731,14 @@ impl FlowyApp {
         id: &'static str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id(id)
+        theme::interactive(id, self.t("more.cancel"), &self.theme)
             .px_4()
             .py_2()
             .rounded_lg()
             .border_1()
-            .border_color(theme::line())
-            .bg(theme::card())
-            .text_sm()
+            .border_color(self.theme.line())
+            .bg(self.theme.card())
+            .text_size(self.theme.body_size())
             .cursor_pointer()
             .child(self.t("more.cancel"))
             .on_click(cx.listener(|app, _event, _window, cx| {
@@ -722,37 +754,21 @@ impl FlowyApp {
         ready: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut button = div()
-            .id(id)
-            .px_4()
-            .py_2()
-            .rounded_lg()
-            .text_sm()
-            .bg(if ready { theme::fill() } else { theme::line() })
-            .text_color(if ready {
-                theme::on_fill()
-            } else {
-                theme::muted()
-            })
-            .child(self.t(key));
-        if ready {
-            button = button.cursor_pointer().on_click(cx.listener(
-                move |app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    if key == "more.save" {
-                        app.commit_knowledge(cx);
-                    } else {
-                        app.apply_import(cx);
-                    }
-                },
-            ));
-        }
-        button
+        theme::Button::new(id, self.t(key)).disabled(!ready).render(
+            &self.theme,
+            cx.listener(move |app, _, _, cx| {
+                cx.stop_propagation();
+                if key == "more.save" {
+                    app.commit_knowledge(cx);
+                } else {
+                    app.apply_import(cx);
+                }
+            }),
+        )
     }
 
     fn open_import(&mut self, cx: &mut Context<'_, Self>) {
-        self.invite.open = false;
-        self.persona.dialog = Dialog::Import;
+        self.activate_dialog(super::state::ActiveDialog::Import, cx);
         self.persona.status = None;
         self.persona
             .import_paste
@@ -761,8 +777,7 @@ impl FlowyApp {
     }
 
     fn open_knowledge_dialog(&mut self, cx: &mut Context<'_, Self>) {
-        self.invite.open = false;
-        self.persona.dialog = Dialog::Knowledge;
+        self.activate_dialog(super::state::ActiveDialog::Knowledge, cx);
         self.persona.status = None;
         self.persona
             .knowledge_name
@@ -777,7 +792,7 @@ impl FlowyApp {
     }
 
     fn close_more_dialog(&mut self, cx: &mut Context<'_, Self>) {
-        self.persona.dialog = Dialog::None;
+        self.active_dialog = super::state::ActiveDialog::None;
         self.persona.status = None;
         cx.notify();
     }
@@ -835,7 +850,7 @@ impl FlowyApp {
         self.persona
             .import_paste
             .update(cx, |state, cx| state.emplace("", cx));
-        self.persona.dialog = Dialog::None;
+        self.active_dialog = super::state::ActiveDialog::None;
         self.persona.status = None;
         self.persona.page = Page::Personal;
         self.persona.tab = Tab::Profile;
@@ -874,7 +889,7 @@ impl FlowyApp {
         self.persona
             .knowledge_body
             .update(cx, |state, cx| state.emplace("", cx));
-        self.persona.dialog = Dialog::None;
+        self.active_dialog = super::state::ActiveDialog::None;
         self.write_profile(cx);
         self.notice = Some("more.knowledge_saved");
         self.sync_studio_surface(cx);
@@ -931,15 +946,16 @@ impl FlowyApp {
 }
 
 fn dialog_shell(
+    app: &FlowyApp,
     id: &'static str,
     cx: &Context<'_, FlowyApp>,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
+    let theme = &app.theme;
+    theme::dialog(id, app.t("more.personal"), theme, &app.ui, cx)
         .w(px(480.))
         .max_h(px(640.))
         .overflow_y_scroll()
-        .bg(theme::card())
+        .bg(theme.card())
         .rounded_xl()
         .shadow_md()
         .px_6()
@@ -954,75 +970,42 @@ fn dialog_shell(
 }
 
 fn single_line(
+    cx: &Context<'_, FlowyApp>,
+    theme: &flowy_ui::ResolvedTheme,
     id: &'static str,
     state: Entity<EditableTextState>,
     placeholder: String,
 ) -> impl IntoElement {
-    text_input(id)
-        .state(state.downgrade())
+    theme::TextField::new(id, placeholder.clone(), state)
         .placeholder(placeholder)
-        .placeholder_color(theme::muted())
-        .caret_color(gpui::rgb_to_hsla(theme::ink()))
-        .caret_blink_interval_500ms()
-        .w_full()
-        .min_h_auto()
-        .whitespace_nowrap()
-        .px_3()
-        .py_2()
-        .rounded_lg()
-        .border_1()
-        .border_color(theme::line())
-        .bg(theme::soft())
-        .text_color(theme::ink())
+        .render(theme, cx)
 }
 
 fn counted_area(
+    cx: &Context<'_, FlowyApp>,
+    theme: &flowy_ui::ResolvedTheme,
     id: &'static str,
     state: Entity<EditableTextState>,
     placeholder: String,
     count: String,
     height: f32,
 ) -> impl IntoElement {
-    let mut area = div()
-        .w_full()
-        .rounded_lg()
-        .border_1()
-        .border_color(theme::line())
-        .bg(theme::soft())
-        .px_3()
-        .pt_2()
-        .pb_1()
-        .flex()
-        .flex_col()
-        .child(
-            text_area(id)
-                .state(state.downgrade())
-                .placeholder(placeholder)
-                .placeholder_color(theme::muted())
-                .caret_color(gpui::rgb_to_hsla(theme::ink()))
-                .caret_blink_interval_500ms()
-                .w_full()
-                .h(px(height))
-                .whitespace_normal()
-                .overflow_y_scroll()
-                .text_color(theme::ink()),
-        );
-    if !count.is_empty() {
-        area = area.child(
-            div()
-                .w_full()
-                .flex()
-                .justify_end()
-                .text_xs()
-                .text_color(theme::muted())
-                .child(count),
-        );
-    }
-    area
+    let input = theme::TextField::new(id, placeholder.clone(), state)
+        .placeholder(placeholder)
+        .multiline(true)
+        .render(theme, cx)
+        .min_h(px(height));
+    div().w_full().flex().flex_col().child(input).child(
+        div()
+            .text_size(theme.caption_size())
+            .text_color(theme.muted())
+            .child(count),
+    )
 }
 
 fn labeled_area(
-    label: String,
+    app: &FlowyApp,
+    cx: &Context<'_, FlowyApp>,
     id: &'static str,
     state: Entity<EditableTextState>,
     placeholder: String,
@@ -1032,15 +1015,31 @@ fn labeled_area(
     div()
         .flex()
         .flex_col()
-        .child(field_label(label))
-        .child(counted_area(id, state, placeholder, count, height))
+        .child(field_label(app.t(if id == "more-about" {
+            "more.about"
+        } else {
+            "more.instructions"
+        })))
+        .child(counted_area(
+            cx,
+            &app.theme,
+            id,
+            state,
+            placeholder,
+            count,
+            height,
+        ))
 }
 
 fn field_label(text: String) -> impl IntoElement {
     div().pb_1().text_sm().child(text)
 }
 
-fn step_heading(number: &str, title: String) -> impl IntoElement {
+fn step_heading(
+    theme: &flowy_ui::ResolvedTheme,
+    number: &str,
+    title: String,
+) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -1049,32 +1048,34 @@ fn step_heading(number: &str, title: String) -> impl IntoElement {
             div()
                 .size(px(22.))
                 .rounded_full()
-                .bg(theme::soft())
+                .bg(theme.soft())
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
+                .text_size(theme.caption_size())
                 .child(number.to_string()),
         )
         .child(
             div()
-                .text_sm()
+                .text_size(theme.body_size())
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(title),
         )
 }
 
-fn prompt_box(text: &str) -> impl IntoElement {
+fn prompt_box(theme: &flowy_ui::ResolvedTheme, text: &str) -> impl IntoElement {
     let mut box_ = div()
         .w_full()
         .p_3()
         .rounded_lg()
-        .bg(theme::soft())
+        .bg(theme.soft())
         .flex()
         .flex_col()
         .gap_1();
     for line in text.lines() {
-        let mut row = div().text_xs().text_color(theme::muted());
+        let mut row = div()
+            .text_size(theme.caption_size())
+            .text_color(theme.muted());
         row = if line.is_empty() {
             row.h(px(8.))
         } else {
@@ -1085,11 +1086,11 @@ fn prompt_box(text: &str) -> impl IntoElement {
     box_
 }
 
-fn card_mark() -> impl IntoElement {
+fn card_mark(theme: &flowy_ui::ResolvedTheme) -> impl IntoElement {
     div()
         .size(px(28.))
         .rounded_md()
-        .bg(theme::soft())
+        .bg(theme.soft())
         .flex()
         .items_center()
         .justify_center()

@@ -411,5 +411,18 @@
   "thread.confirm_rights": "Ich bestätige, dass ich diese Medien nutzen darf.",
   "thread.confirm_terms": "Ich stimme den Nutzungsbedingungen und der Datenschutzrichtlinie zu.",
   "thread.confirm_title": "Bestätigung zur Mediennutzung",
-  "thread.prompt_placeholder": "Nachricht an {product} senden"
+  "thread.prompt_placeholder": "Nachricht an {product} senden",
+  "credits.error": "Guthaben konnte nicht geladen werden",
+  "credits.loading": "Guthaben wird geladen",
+  "credits.unavailable": "Guthaben nicht verfügbar",
+  "ui.close": "Schließen",
+  "ui.document_nodes": "{title} · {count} Knoten",
+  "ui.fullscreen": "Vollbild",
+  "ui.loading": "Wird geladen",
+  "ui.next": "Weiter",
+  "ui.play": "Abspielen",
+  "ui.previous": "Zurück",
+  "ui.rating": "{n} Sterne",
+  "ui.remove": "Entfernen",
+  "ui.volume": "Lautstärke"
 }

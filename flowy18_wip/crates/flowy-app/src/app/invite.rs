@@ -1,9 +1,6 @@
 use super::FlowyApp;
 use flowy_ui as theme;
-use gpui::{
-    ClipboardItem, Context, SharedString, div, prelude::*, px, rgb,
-};
-use gpui_ce_elements::editable_text::text_input;
+use gpui::{ClipboardItem, Context, SharedString, div, prelude::*, px, rgb};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -39,16 +36,15 @@ const SOCIAL: &[(&str, &str, u32)] = &[
 
 impl FlowyApp {
     pub(super) fn open_invite(&mut self, cx: &mut Context<'_, Self>) {
-        self.invite.open = true;
+        self.activate_dialog(super::state::ActiveDialog::Invite, cx);
         self.invite.panel = Panel::Share;
         self.invite.status = None;
         self.user_menu = false;
-        self.persona.dialog = super::more::Dialog::None;
         cx.notify();
     }
 
     pub(super) fn close_invite(&mut self, cx: &mut Context<'_, Self>) {
-        self.invite.open = false;
+        self.active_dialog = super::state::ActiveDialog::None;
         self.invite.status = None;
         cx.notify();
     }
@@ -97,71 +93,67 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("invite-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.close_invite(cx);
-            }))
-            .child(self.invite_card(cx))
+        theme::modal_layer(
+            "invite-layer",
+            &self.theme,
+            &self.ui,
+            self.invite_card(cx),
+        )
     }
 
     fn invite_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("invite-card")
-            .w(px(440.))
-            .max_h(px(640.))
-            .overflow_y_scroll()
-            .bg(theme::card())
-            .rounded(theme::modal_radius())
-            .shadow_md()
-            .px_6()
-            .pt_4()
-            .pb_5()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .on_click(cx.listener(|_app, _event, _window, cx| {
-                cx.stop_propagation();
-            }))
-            .child(Self::invite_close(cx))
-            .child(self.invite_body(cx))
-            .children(self.invite.status.map(|key| {
-                let text = if key == "invite.deep_link_received" {
-                    if let Some(code) = &self.invite.inbound_code {
-                        self.tf(key, &[("code", code)])
-                    } else {
-                        self.t(key)
-                    }
+        theme::dialog(
+            "invite-card",
+            self.t("invite.title"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(440.))
+        .max_h(px(640.))
+        .overflow_y_scroll()
+        .bg(self.theme.card())
+        .rounded(self.theme.modal_radius())
+        .shadow_md()
+        .px_6()
+        .pt_4()
+        .pb_5()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .on_click(cx.listener(|_app, _event, _window, cx| {
+            cx.stop_propagation();
+        }))
+        .child(self.invite_close(cx))
+        .child(self.invite_body(cx))
+        .children(self.invite.status.map(|key| {
+            let text = if key == "invite.deep_link_received" {
+                if let Some(code) = &self.invite.inbound_code {
+                    self.tf(key, &[("code", code)])
                 } else {
                     self.t(key)
-                };
-                div().text_xs().text_color(theme::muted()).child(text)
-            }))
-            .child(self.invite_footer(cx))
+                }
+            } else {
+                self.t(key)
+            };
+            div()
+                .text_size(self.theme.caption_size())
+                .text_color(self.theme.muted())
+                .child(text)
+        }))
+        .child(self.invite_footer(cx))
     }
 
-    fn invite_close(cx: &Context<'_, Self>) -> impl IntoElement {
+    fn invite_close(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div().flex().justify_end().child(
-            div()
-                .id("close-invite")
+            theme::interactive("close-invite", self.t("ui.close"), &self.theme)
                 .size(px(28.))
                 .rounded_md()
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .hover(|style| style.bg(theme::soft()))
+                .hover(|style| style.bg(self.theme.soft()))
                 .child(theme::icons::x())
                 .on_click(cx.listener(|app, _event, _window, cx| {
                     cx.stop_propagation();
@@ -184,13 +176,13 @@ impl FlowyApp {
             .flex_col()
             .items_center()
             .gap_3()
-            .child(envelope())
+            .child(envelope(&self.theme))
             .child(self.invite_heading("invite.title"))
             .child(self.invite_copy("invite.body"))
             .child(self.invite_copy("invite.footnote"))
             .child(self.share_row(cx))
             .child(self.primary_button("copy-invite", "invite.copy", true, cx))
-            .child(Self::social_row(cx))
+            .child(self.social_row(cx))
             .child(self.email_block(cx))
     }
 
@@ -213,7 +205,9 @@ impl FlowyApp {
             column = column.child(self.invite_copy("invite.history_empty"));
         }
         for email in &self.invite.emails {
-            column = column.child(div().text_sm().child(email.clone()));
+            column = column.child(
+                div().text_size(self.theme.body_size()).child(email.clone()),
+            );
         }
         column
     }
@@ -227,27 +221,32 @@ impl FlowyApp {
             .child(self.quiet_button("share-phone", "invite.share_phone", cx))
     }
 
-    fn social_row(cx: &Context<'_, Self>) -> impl IntoElement {
+    fn social_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut row = div().flex().items_center().justify_center().gap_3();
         for (id, mark, color) in SOCIAL {
             let element_id = SharedString::from(format!("share-{id}"));
             row = row.child(
-                div()
-                    .id(element_id)
-                    .size(px(32.))
-                    .rounded_full()
-                    .bg(rgb(*color))
-                    .text_color(theme::on_ink())
-                    .text_xs()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .child(*mark)
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    element_id,
+                    self.t("invite.share_web"),
+                    &self.theme,
+                )
+                .size(px(32.))
+                .rounded_full()
+                .bg(rgb(*color))
+                .text_color(self.theme.on_ink())
+                .text_size(self.theme.caption_size())
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(*mark)
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.share_invite(cx);
-                    })),
+                    },
+                )),
             );
         }
         row
@@ -261,8 +260,8 @@ impl FlowyApp {
             .gap_2()
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("invite.email_title")),
             )
             .child(
@@ -270,7 +269,7 @@ impl FlowyApp {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(self.invite_email_field())
+                    .child(self.invite_email_field(cx))
                     .child(self.primary_button(
                         "send-invite",
                         "invite.send",
@@ -280,24 +279,15 @@ impl FlowyApp {
             )
     }
 
-    fn invite_email_field(&self) -> impl IntoElement {
-        text_input("invite-email")
-            .state(self.invite.email.downgrade())
-            .placeholder(self.t("invite.email_placeholder"))
-            .placeholder_color(theme::muted())
-            .caret_color(gpui::rgb_to_hsla(theme::ink()))
-            .caret_blink_interval_500ms()
-            .flex_1()
-            .min_h_auto()
-            .whitespace_nowrap()
-            .px_3()
-            .py_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme::line())
-            .bg(theme::soft())
-            .text_sm()
-            .text_color(theme::ink())
+    fn invite_email_field(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        theme::TextField::new(
+            "invite-email",
+            self.t("invite.email_title"),
+            self.invite.email.clone(),
+        )
+        .placeholder(self.t("invite.email_placeholder"))
+        .render(&self.theme, cx)
+        .flex_1()
     }
 
     fn invite_footer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -333,23 +323,18 @@ impl FlowyApp {
         key: &'static str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id(id)
+        theme::Button::new(id, self.t(key))
+            .variant(theme::ControlVariant::Secondary)
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.share_invite(cx);
+                }),
+            )
             .flex_1()
             .h(px(36.))
-            .rounded_lg()
-            .bg(theme::soft())
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_sm()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::line()))
-            .child(self.t(key))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.share_invite(cx);
-            }))
+            .text_size(self.theme.body_size())
     }
 
     fn primary_button(
@@ -359,30 +344,22 @@ impl FlowyApp {
         copy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id(id)
-            .h(px(40.))
+        theme::Button::new(id, self.t(key))
+            .size(theme::ControlSize::Large)
+            .render(
+                &self.theme,
+                cx.listener(move |app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    if copy {
+                        app.copy_invite(cx);
+                    } else {
+                        app.send_invite(cx);
+                    }
+                }),
+            )
             .when(copy, gpui::Styled::w_full)
-            .px_4()
-            .rounded_lg()
-            .bg(theme::fill())
-            .text_color(theme::on_fill())
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .text_sm()
-            .cursor_pointer()
-            .hover(|style| style.opacity(0.9))
-            .child(self.t(key))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                cx.stop_propagation();
-                if copy {
-                    app.copy_invite(cx);
-                } else {
-                    app.send_invite(cx);
-                }
-            }))
+            .h(px(40.))
+            .text_size(self.theme.body_size())
     }
 
     fn text_button(
@@ -392,21 +369,22 @@ impl FlowyApp {
         panel: Panel,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id(id)
-            .text_sm()
-            .text_color(theme::muted())
-            .cursor_pointer()
-            .child(self.t(key))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.show_panel(panel, cx);
-            }))
+        theme::Button::new(id, self.t(key))
+            .variant(theme::ControlVariant::Ghost)
+            .size(theme::ControlSize::Small)
+            .render(
+                &self.theme,
+                cx.listener(move |app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.show_panel(panel, cx);
+                }),
+            )
+            .text_size(self.theme.body_size())
     }
 
     fn invite_heading(&self, key: &str) -> impl IntoElement {
         div()
-            .text_lg()
+            .text_size(self.theme.heading_size())
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_center()
             .child(self.t(key))
@@ -414,15 +392,15 @@ impl FlowyApp {
 
     fn invite_copy(&self, key: &str) -> impl IntoElement {
         div()
-            .text_sm()
-            .text_color(theme::muted())
+            .text_size(self.theme.body_size())
+            .text_color(self.theme.muted())
             .text_center()
             .whitespace_normal()
             .child(self.t(key))
     }
 }
 
-fn envelope() -> impl IntoElement {
+fn envelope(theme: &flowy_ui::ResolvedTheme) -> impl IntoElement {
     div()
         .size(px(72.))
         .rounded(px(20.))
@@ -435,7 +413,7 @@ fn envelope() -> impl IntoElement {
                 .w(px(40.))
                 .h(px(28.))
                 .rounded(px(4.))
-                .bg(theme::card())
+                .bg(theme.card())
                 .border_1()
                 .border_color(rgb(0x00e4_c98a))
                 .relative()

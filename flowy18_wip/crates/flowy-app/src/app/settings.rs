@@ -2,10 +2,7 @@ use super::FlowyApp;
 use crate::i18n::Locale;
 use crate::prefs::SendMode;
 use flowy_ui as theme;
-use gpui::{
-    Context, Pixels, SharedString, Size, Window, div, prelude::*, px,
-};
-use gpui_ce_elements::editable_text::text_input;
+use gpui::{Context, Pixels, SharedString, Size, Window, div, prelude::*, px};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -111,29 +108,14 @@ impl FlowyApp {
         page: Page,
         cx: &mut Context<'_, Self>,
     ) {
-        self.settings.open = true;
-        self.invite.open = false;
-        self.flex.open = false;
-        self.flex.provider_menu = false;
-        self.user_menu = false;
-        self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
-            panel.credits_hover = false;
-            panel.credits_close = None;
-            cx.notify();
-        });
-        self.gallery.ideas_open = false;
-        self.gallery.idea_id = None;
-        self.gallery.idea_note = false;
-        self.persona.menu = false;
-        self.persona.dialog = super::more::Dialog::None;
+        self.activate_dialog(super::state::ActiveDialog::Settings, cx);
         self.settings.page = page;
         self.settings.picker = Picker::None;
         cx.notify();
     }
 
     pub(super) fn close_settings(&mut self, cx: &mut Context<'_, Self>) {
-        self.settings.open = false;
+        self.active_dialog = super::state::ActiveDialog::None;
         self.settings.picker = Picker::None;
         cx.notify();
     }
@@ -186,24 +168,13 @@ impl FlowyApp {
         window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let frame = theme::modal_size(window.viewport_size());
-        div()
-            .id("settings-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.close_settings(cx);
-            }))
-            .child(self.settings_panel(frame, cx))
+        let frame = self.theme.modal_size(window.viewport_size());
+        theme::modal_layer(
+            "settings-layer",
+            &self.theme,
+            &self.ui,
+            self.settings_panel(frame, cx),
+        )
     }
 
     fn settings_panel(
@@ -211,21 +182,26 @@ impl FlowyApp {
         frame: Size<Pixels>,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("settings-panel")
-            .w(frame.width)
-            .h(frame.height)
-            .rounded(theme::modal_radius())
-            .bg(theme::card())
-            .shadow_md()
-            .overflow_hidden()
-            .flex()
-            .text_color(theme::ink())
-            .on_click(cx.listener(|_app, _event, _window, cx| {
-                cx.stop_propagation();
-            }))
-            .child(self.settings_nav(cx))
-            .child(self.settings_main(cx))
+        theme::dialog(
+            "settings-panel",
+            self.t("settings.general"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(frame.width)
+        .h(frame.height)
+        .rounded(self.theme.modal_radius())
+        .bg(self.theme.card())
+        .shadow_md()
+        .overflow_hidden()
+        .flex()
+        .text_color(self.theme.ink())
+        .on_click(cx.listener(|_app, _event, _window, cx| {
+            cx.stop_propagation();
+        }))
+        .child(self.settings_nav(cx))
+        .child(self.settings_main(cx))
     }
 
     fn settings_nav(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -240,14 +216,14 @@ impl FlowyApp {
             .h_full()
             .flex()
             .flex_col()
-            .rounded_l(theme::modal_radius())
+            .rounded_l(self.theme.modal_radius())
             .overflow_hidden()
-            .pb(theme::modal_radius())
+            .pb(self.theme.modal_radius())
             .border_r_1()
-            .border_color(theme::line())
-            .bg(theme::dock())
+            .border_color(self.theme.line())
+            .bg(self.theme.dock())
             .child(self.profile_block(&name, &initial))
-            .child(self.settings_search())
+            .child(self.settings_search(cx))
             .child(self.settings_links(&query, cx))
     }
 
@@ -259,40 +235,34 @@ impl FlowyApp {
             .flex()
             .items_center()
             .gap_2()
-            .child(initial_mark(initial))
+            .child(initial_mark(&self.theme, initial))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .child(div().text_sm().child(name.to_string()))
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme::muted())
+                            .text_size(self.theme.body_size())
+                            .child(name.to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
                             .child(self.t("settings.personal_plan")),
                     ),
             )
     }
 
-    fn settings_search(&self) -> impl IntoElement {
+    fn settings_search(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div().px_3().pb_2().child(
-            text_input("settings-search")
-                .state(self.settings.query.downgrade())
-                .placeholder(SharedString::from(self.t("settings.search")))
-                .placeholder_color(theme::muted())
-                .caret_color(gpui::rgb_to_hsla(theme::ink()))
-                .caret_blink_interval_500ms()
-                .w_full()
-                .min_h_auto()
-                .whitespace_nowrap()
-                .px_3()
-                .py_1()
-                .rounded_lg()
-                .bg(theme::card())
-                .border_1()
-                .border_color(theme::line())
-                .text_sm()
-                .text_color(theme::ink()),
+            theme::TextField::new(
+                "settings-search",
+                self.t("settings.search"),
+                self.settings.query.clone(),
+            )
+            .placeholder(self.t("settings.search"))
+            .render(&self.theme, cx),
         )
     }
 
@@ -315,11 +285,17 @@ impl FlowyApp {
                 continue;
             }
             column = column
-                .child(group_label(&self.t(title)))
+                .child(group_label(&self.theme, &self.t(title)))
                 .child(self.link_list(pages, query, cx));
         }
         column
-            .child(div().mt_4().pt_2().border_t_1().border_color(theme::line()))
+            .child(
+                div()
+                    .mt_4()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(self.theme.line()),
+            )
             .child(self.link_list(BOTTOM, query, cx))
     }
 
@@ -336,32 +312,38 @@ impl FlowyApp {
                 continue;
             }
             let selected = self.settings.page == *page;
-            list = list.child(Self::nav_link(*page, label, selected, cx));
+            list = list.child(self.nav_link(*page, label, selected, cx));
         }
         list
     }
 
     fn nav_link(
+        &self,
         page: Page,
         label: String,
         selected: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let id = SharedString::from(format!("settings-{}", page.key()));
-        div()
-            .id(id)
+        theme::interactive(id, label.clone(), &self.theme)
+            .role(gpui::Role::MenuItemRadio)
+            .aria_toggled(if selected {
+                gpui::accesskit::Toggled::True
+            } else {
+                gpui::accesskit::Toggled::False
+            })
             .mx_2()
-            .px(theme::space(8.))
-            .py(theme::space(4.))
+            .px(self.theme.space(8.))
+            .py(self.theme.space(4.))
             .rounded_md()
-            .text_sm()
+            .text_size(self.theme.body_size())
             .cursor_pointer()
             .bg(if selected {
-                theme::soft()
+                self.theme.soft()
             } else {
-                theme::dock()
+                self.theme.dock()
             })
-            .hover(|row| row.bg(theme::soft()))
+            .hover(|row| row.bg(self.theme.soft()))
             .child(label)
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.settings.page = page;
@@ -378,10 +360,10 @@ impl FlowyApp {
             .h_full()
             .flex()
             .flex_col()
-            .rounded_r(theme::modal_radius())
+            .rounded_r(self.theme.modal_radius())
             .overflow_hidden()
-            .pb(theme::modal_radius())
-            .bg(theme::card())
+            .pb(self.theme.modal_radius())
+            .bg(self.theme.card())
             .child(
                 div()
                     .h(px(48.))
@@ -390,28 +372,31 @@ impl FlowyApp {
                     .items_center()
                     .justify_end()
                     .child(
-                        div()
-                            .id("close-settings")
-                            .size(px(28.))
-                            .rounded_md()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::soft()))
-                            .child(theme::icons::x().size(px(16.)))
-                            .on_click(cx.listener(
-                                |app, _event, _window, cx| {
-                                    app.close_settings(cx);
-                                },
-                            )),
+                        theme::interactive(
+                            "close-settings",
+                            self.t("ui.close"),
+                            &self.theme,
+                        )
+                        .size(px(28.))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(self.theme.soft()))
+                        .child(theme::icons::x().size(px(16.)))
+                        .on_click(cx.listener(
+                            |app, _event, _window, cx| {
+                                app.close_settings(cx);
+                            },
+                        )),
                     ),
             )
             .child(
                 div()
                     .px_8()
                     .pb_2()
-                    .text_2xl()
+                    .text_size(self.theme.heading_size())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(title),
             )
@@ -433,11 +418,11 @@ impl FlowyApp {
             return div()
                 .px_8()
                 .pt_4()
-                .text_sm()
-                .text_color(theme::muted())
+                .text_size(self.theme.body_size())
+                .text_color(self.theme.muted())
                 .child(self.tf("settings.later", &[("title", &title)]));
         }
-        let mut body = div()
+        div()
             .relative()
             .flex_1()
             .min_h_0()
@@ -476,15 +461,7 @@ impl FlowyApp {
                 self.prefs.launch_at_login,
                 PrefToggle::LaunchAtLogin,
                 cx,
-            ));
-        if self.settings.picker == Picker::Language {
-            body =
-                body.child(self.language_menu(cx).top(px(72.)).left(px(32.)));
-        }
-        if self.settings.picker == Picker::Send {
-            body = body.child(self.send_menu(cx).top(px(148.)).right(px(32.)));
-        }
-        body
+            ))
     }
 
     fn language_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -492,8 +469,12 @@ impl FlowyApp {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_sm().child(self.t("settings.language")))
-            .child(Self::menu_button(
+            .child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .child(self.t("settings.language")),
+            )
+            .child(self.menu_button(
                 "language-button",
                 Locale::endonym(self.i18n.locale()).to_string(),
                 Picker::Language,
@@ -508,15 +489,15 @@ impl FlowyApp {
             .justify_between()
             .gap_6()
             .border_t_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .pt_4()
             .child(
                 div()
                     .flex_1()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .child(self.t("settings.send_label")),
             )
-            .child(Self::menu_button(
+            .child(self.menu_button(
                 "send-button",
                 self.t(self.prefs.send_mode.key()),
                 Picker::Send,
@@ -525,72 +506,96 @@ impl FlowyApp {
     }
 
     fn menu_button(
+        &self,
         id: &'static str,
         label: String,
         picker: Picker,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id(id)
-            .min_w(px(220.))
-            .px_3()
-            .py_2()
-            .rounded_lg()
-            .bg(theme::soft())
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::line()))
-            .child(div().text_sm().child(label))
-            .child(
-                theme::icons::chevron_down()
-                    .size(px(14.))
-                    .text_color(theme::muted()),
-            )
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                app.settings.picker = if app.settings.picker == picker {
-                    Picker::None
-                } else {
-                    picker
-                };
-                cx.notify();
-            }))
+        theme::anchor_trigger(
+            theme::select_trigger(
+                id,
+                label.clone(),
+                self.settings.picker == picker,
+                &self.theme,
+            ),
+            id,
+            &self.ui,
+        )
+        .min_w(px(220.))
+        .px_3()
+        .py_2()
+        .rounded_lg()
+        .bg(self.theme.soft())
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .cursor_pointer()
+        .hover(|style| style.bg(self.theme.line()))
+        .child(div().text_size(self.theme.body_size()).child(label))
+        .child(
+            theme::icons::chevron_down()
+                .size(px(14.))
+                .text_color(self.theme.muted()),
+        )
+        .on_click(cx.listener(move |app, _event, _window, cx| {
+            app.settings.picker = if app.settings.picker == picker {
+                Picker::None
+            } else {
+                picker
+            };
+            cx.notify();
+        }))
     }
 
-    fn language_menu(
+    pub(super) fn language_menu(
         &self,
         cx: &Context<'_, Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let mut menu = menu_shell("language-menu").w(px(260.));
+        let mut menu = theme::menu(
+            "language-menu",
+            self.t("settings.language"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(240.))
+        .max_h(px(320.))
+        .overflow_y_scroll()
+        .w(px(260.));
         for locale in Locale::ALL {
             let selected = self.i18n.locale() == locale;
             let id = SharedString::from(format!("locale-{}", locale.code()));
             menu = menu.child(
-                div()
-                    .id(id)
+                theme::interactive(id, locale.endonym(), &self.theme)
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_toggled(if selected {
+                        gpui::accesskit::Toggled::True
+                    } else {
+                        gpui::accesskit::Toggled::False
+                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .cursor_pointer()
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap_2()
                     .bg(if selected {
-                        theme::soft()
+                        self.theme.soft()
                     } else {
-                        theme::card()
+                        self.theme.card()
                     })
-                    .hover(|row| row.bg(theme::soft()))
+                    .hover(|row| row.bg(self.theme.soft()))
                     .child(div().flex_1().min_w_0().child(locale.endonym()))
                     .when(selected, |row| {
                         row.child(
                             theme::icons::check()
                                 .size(px(14.))
-                                .text_color(theme::accent()),
+                                .text_color(self.theme.accent()),
                         )
                     })
                     .on_click(cx.listener(move |app, _event, _window, cx| {
@@ -601,26 +606,43 @@ impl FlowyApp {
         menu
     }
 
-    fn send_menu(&self, cx: &Context<'_, Self>) -> gpui::Stateful<gpui::Div> {
-        let mut menu = menu_shell("send-menu");
+    pub(super) fn send_menu(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut menu = theme::menu(
+            "send-menu",
+            self.t("settings.send_label"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(240.))
+        .max_h(px(320.))
+        .overflow_y_scroll();
         for mode in [SendMode::Quiet, SendMode::Queue, SendMode::Interrupt] {
             let selected = self.prefs.send_mode == mode;
             let label = self.t(mode.key());
             let id = SharedString::from(format!("send-{}", mode.key()));
             menu = menu.child(
-                div()
-                    .id(id)
+                theme::interactive(id, label.clone(), &self.theme)
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_toggled(if selected {
+                        gpui::accesskit::Toggled::True
+                    } else {
+                        gpui::accesskit::Toggled::False
+                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .cursor_pointer()
                     .bg(if selected {
-                        theme::soft()
+                        self.theme.soft()
                     } else {
-                        theme::card()
+                        self.theme.card()
                     })
-                    .hover(|row| row.bg(theme::soft()))
+                    .hover(|row| row.bg(self.theme.soft()))
                     .child(label)
                     .on_click(cx.listener(move |app, _event, _window, cx| {
                         app.choose_send(mode, cx);
@@ -644,12 +666,20 @@ impl FlowyApp {
             .justify_between()
             .gap_6()
             .border_t_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .pt_4()
-            .child(div().flex_1().text_sm().child(self.t(key)))
-            .child(toggle_switch(id, on).on_click(cx.listener(
-                move |app, _event, _window, cx| app.toggle_pref(which, cx),
-            )))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(self.theme.body_size())
+                    .child(self.t(key)),
+            )
+            .child(theme::Switch::new(id, self.t(key), on).render(
+                &self.theme,
+                cx.listener(move |app, _event, _window, cx| {
+                    app.toggle_pref(which, cx)
+                }),
+            ))
     }
 }
 
@@ -675,8 +705,8 @@ impl FlowyApp {
             .gap_5()
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("settings.telemetry_help")),
             )
             .child(self.toggle_row(
@@ -699,60 +729,31 @@ fn matches_query(label: &str, query: &str) -> bool {
     query.is_empty() || label.to_lowercase().contains(&query.to_lowercase())
 }
 
-fn group_label(text: &str) -> impl IntoElement {
+fn group_label(
+    theme: &flowy_ui::ResolvedTheme,
+    text: &str,
+) -> impl IntoElement {
     div()
         .px_4()
         .pt_4()
         .pb_1()
-        .text_xs()
-        .text_color(theme::muted())
+        .text_size(theme.caption_size())
+        .text_color(theme.muted())
         .child(text.to_string())
 }
 
-fn initial_mark(initial: &str) -> impl IntoElement {
+fn initial_mark(
+    theme: &flowy_ui::ResolvedTheme,
+    initial: &str,
+) -> impl IntoElement {
     div()
         .size(px(32.))
         .rounded_full()
-        .bg(theme::accent())
-        .text_color(theme::on_ink())
+        .bg(theme.fill())
+        .text_color(theme.on_fill())
         .flex()
         .items_center()
         .justify_center()
-        .text_sm()
+        .text_size(theme.body_size())
         .child(initial.to_string())
-}
-
-pub(super) fn menu_shell(id: &'static str) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .absolute()
-        .w(px(240.))
-        .max_h(px(320.))
-        .overflow_y_scroll()
-        .p_1()
-        .rounded_lg()
-        .bg(theme::card())
-        .border_1()
-        .border_color(theme::line())
-        .shadow_md()
-        .flex()
-        .flex_col()
-}
-
-pub(super) fn toggle_switch(
-    id: &'static str,
-    on: bool,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .w(px(40.))
-        .h(px(22.))
-        .rounded_full()
-        .px(px(2.))
-        .bg(if on { theme::accent() } else { theme::line() })
-        .flex()
-        .items_center()
-        .when(on, gpui::Styled::justify_end)
-        .cursor_pointer()
-        .child(div().size(px(18.)).rounded_full().bg(theme::on_ink()))
 }

@@ -300,6 +300,7 @@
   "notice.project_created": "Project alleen voor deze sessie gemaakt",
   "notice.prompt_empty": "Schrijf eerst een taak",
   "notice.prompt_filled": "Taak ingevuld. Verstuur wanneer je klaar bent.",
+  "notice.session_storage_failed": "Sessiegegevens konden niet worden gelezen of opgeslagen. Controleer de toegang tot de opslag.",
   "notice.task_added": "Toegevoegd aan de takenlijst van deze sessie",
   "notice.upgrade_later": "Upgraden is nog niet beschikbaar",
   "ota.available": "Update {version} is beschikbaar",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "Ik bevestig dat ik deze media mag gebruiken.",
   "thread.confirm_terms": "Ik ga akkoord met de servicevoorwaarden en het privacybeleid.",
   "thread.confirm_title": "Bevestiging van mediagebruik",
-  "thread.prompt_placeholder": "Stuur een bericht naar {product}"
+  "thread.prompt_placeholder": "Stuur een bericht naar {product}",
+  "credits.error": "Tegoed kon niet worden geladen",
+  "credits.loading": "Tegoed laden",
+  "credits.unavailable": "Tegoed niet beschikbaar",
+  "ui.close": "Sluiten",
+  "ui.document_nodes": "{title} · {count} knooppunten",
+  "ui.fullscreen": "Volledig scherm",
+  "ui.loading": "Laden",
+  "ui.next": "Volgende",
+  "ui.play": "Afspelen",
+  "ui.previous": "Vorige",
+  "ui.rating": "{n} sterren",
+  "ui.remove": "Verwijderen",
+  "ui.volume": "Volume"
 }

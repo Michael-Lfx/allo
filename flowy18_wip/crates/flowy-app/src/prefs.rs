@@ -1,6 +1,6 @@
 use flowy_i18n::Locale;
 pub use flowy_agent::{FlexProvider, LlmConfig, Model, Plan};
-pub use flowy_ui::{Accent, Density};
+pub use flowy_ui::{Accent, Density, ThemeMode};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -26,28 +26,6 @@ impl SendMode {
     }
 }
 
-
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ThemeMode {
-    Light,
-    Dark,
-    #[default]
-    Auto,
-}
-
-impl ThemeMode {
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Light => "look.light",
-            Self::Dark => "look.dark",
-            Self::Auto => "look.auto",
-        }
-    }
-}
 
 
 
@@ -152,13 +130,11 @@ impl Preferences {
 
     #[must_use]
     pub fn llm_config(&self) -> LlmConfig {
-        if self.model == Model::Flex {
-            if let Some(provider) = self.flex_provider {
+        if self.model == Model::Flex && let Some(provider) = self.flex_provider {
                 let config = LlmConfig::from_flex(provider, self.flex_api_key.clone());
                 if config.uses_live() {
                     return config;
                 }
-            }
         }
         LlmConfig::from_env()
     }

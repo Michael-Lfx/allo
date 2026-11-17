@@ -1,9 +1,9 @@
 use super::FlowyApp;
-use flowy_ui as theme;
 use flowy_ota::{
     AvailableUpdate, BeginUpdateDownload, DownloadProgress, ReadyPackage,
     TakeReadyError, UpdateError, UpdatePackageCache, Updater,
 };
+use flowy_ui as theme;
 use gpui::{Context, Task, div, prelude::*};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -290,9 +290,7 @@ impl FlowyApp {
         let title = self.t(title_key);
         let body = self.tf(body_key, &[("version", version)]);
         let open = self.t("shell.notify_open");
-        flowy_shell::show_update_notification(
-            cx, kind, &title, &body, &open,
-        );
+        flowy_shell::show_update_notification(cx, kind, &title, &body, &open);
     }
 
     pub(super) fn about_body(&self, cx: &Context<'_, Self>) -> gpui::Div {
@@ -308,7 +306,7 @@ impl FlowyApp {
             .gap_4()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .child(self.tf("ota.current", &[("version", version)])),
             )
             .child(self.update_status_line())
@@ -316,8 +314,8 @@ impl FlowyApp {
         if let Some(detail) = &self.ota.error_detail {
             column = column.child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(detail.clone()),
             );
@@ -328,8 +326,8 @@ impl FlowyApp {
         {
             column = column.child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(notes.clone()),
             );
@@ -367,7 +365,10 @@ impl FlowyApp {
             UpdateStatus::Installing => self.t("ota.installing"),
             UpdateStatus::Failed { key } => self.t(key),
         };
-        div().text_sm().text_color(theme::muted()).child(text)
+        div()
+            .text_size(self.theme.body_size())
+            .text_color(self.theme.muted())
+            .child(text)
     }
 
     fn update_actions(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -385,16 +386,16 @@ impl FlowyApp {
                 .px_3()
                 .py_2()
                 .rounded_lg()
-                .text_sm()
+                .text_size(self.theme.body_size())
                 .bg(if can_check {
-                    theme::fill()
+                    self.theme.fill()
                 } else {
-                    theme::soft()
+                    self.theme.soft()
                 })
                 .text_color(if can_check {
-                    theme::on_fill()
+                    self.theme.on_fill()
                 } else {
-                    theme::muted()
+                    self.theme.muted()
                 })
                 .when(can_check, |button| {
                     button.cursor_pointer().on_click(cx.listener(
@@ -407,36 +408,42 @@ impl FlowyApp {
         );
         if matches!(self.ota.status, UpdateStatus::Available { .. }) {
             row = row.child(
-                div()
-                    .id("ota-download")
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .text_sm()
-                    .bg(theme::fill())
-                    .text_color(theme::on_fill())
-                    .cursor_pointer()
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.start_update_download(cx);
-                    }))
-                    .child(self.t("ota.download")),
+                theme::interactive(
+                    "ota-download",
+                    self.t("ota.download"),
+                    &self.theme,
+                )
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .text_size(self.theme.body_size())
+                .bg(self.theme.fill())
+                .text_color(self.theme.on_fill())
+                .cursor_pointer()
+                .on_click(cx.listener(|app, _event, _window, cx| {
+                    app.start_update_download(cx);
+                }))
+                .child(self.t("ota.download")),
             );
         }
         if matches!(self.ota.status, UpdateStatus::Ready { .. }) {
             row = row.child(
-                div()
-                    .id("ota-install")
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .text_sm()
-                    .bg(theme::fill())
-                    .text_color(theme::on_fill())
-                    .cursor_pointer()
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.start_update_install(cx);
-                    }))
-                    .child(self.t("ota.install")),
+                theme::interactive(
+                    "ota-install",
+                    self.t("ota.install"),
+                    &self.theme,
+                )
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .text_size(self.theme.body_size())
+                .bg(self.theme.fill())
+                .text_color(self.theme.on_fill())
+                .cursor_pointer()
+                .on_click(cx.listener(|app, _event, _window, cx| {
+                    app.start_update_install(cx);
+                }))
+                .child(self.t("ota.install")),
             );
         }
         row

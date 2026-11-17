@@ -411,5 +411,18 @@
   "thread.confirm_rights": "Je confirme avoir le droit d’utiliser ces médias.",
   "thread.confirm_terms": "J’accepte les Conditions d’utilisation et la Politique de confidentialité.",
   "thread.confirm_title": "Confirmation d’utilisation des médias",
-  "thread.prompt_placeholder": "Envoyer un message à {product}"
+  "thread.prompt_placeholder": "Envoyer un message à {product}",
+  "credits.error": "Impossible de charger les crédits",
+  "credits.loading": "Chargement des crédits",
+  "credits.unavailable": "Crédits indisponibles",
+  "ui.close": "Fermer",
+  "ui.document_nodes": "{title} · {count} nœuds",
+  "ui.fullscreen": "Plein écran",
+  "ui.loading": "Chargement",
+  "ui.next": "Suivant",
+  "ui.play": "Lire",
+  "ui.previous": "Précédent",
+  "ui.rating": "{n} étoiles",
+  "ui.remove": "Supprimer",
+  "ui.volume": "Volume"
 }

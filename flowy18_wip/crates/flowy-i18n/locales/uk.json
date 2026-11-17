@@ -300,6 +300,7 @@
   "notice.project_created": "Проєкт створено лише для цього сеансу",
   "notice.prompt_empty": "Спершу напишіть завдання",
   "notice.prompt_filled": "Завдання заповнено. Надішліть, коли будете готові.",
+  "notice.session_storage_failed": "Не вдалося прочитати або зберегти дані сеансу. Перевірте доступ до сховища.",
   "notice.task_added": "Додано до списку завдань цього сеансу",
   "notice.upgrade_later": "Покращення плану ще недоступне",
   "ota.available": "Доступне оновлення {version}",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "Підтверджую, що маю права на використання цього медіа.",
   "thread.confirm_terms": "Погоджуюся з Умовами використання та Політикою конфіденційності.",
   "thread.confirm_title": "Підтвердження використання медіа",
-  "thread.prompt_placeholder": "Надішліть повідомлення {product}"
+  "thread.prompt_placeholder": "Надішліть повідомлення {product}",
+  "credits.error": "Не вдалося завантажити кредити",
+  "credits.loading": "Завантаження кредитів",
+  "credits.unavailable": "Кредити недоступні",
+  "ui.close": "Закрити",
+  "ui.document_nodes": "{title} · {count} вузлів",
+  "ui.fullscreen": "Повний екран",
+  "ui.loading": "Завантаження",
+  "ui.next": "Наступний",
+  "ui.play": "Відтворити",
+  "ui.previous": "Попередній",
+  "ui.rating": "{n} зірок",
+  "ui.remove": "Видалити",
+  "ui.volume": "Гучність"
 }

@@ -2,10 +2,8 @@ use super::state::{LegalDoc, LoginPhase, LoginStep};
 use super::{FlowyApp, Screen, SignIn};
 use flowy_auth::{EMAIL_OTP_LENGTH, valid_email};
 use flowy_ui as theme;
-use gpui::{
-    Context, FontWeight, Rgba, Window, div, prelude::*, px, rgb,
-};
-use gpui_ce_elements::editable_text::text_input;
+use flowy_ui::text_input;
+use gpui::{Context, FontWeight, Window, div, prelude::*, px, rgb};
 
 impl FlowyApp {
     pub(super) fn login_canvas(
@@ -59,25 +57,29 @@ impl FlowyApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::canvas())
+            .bg(self.theme.canvas())
             .p_6()
             .on_action(cx.listener(|app, _: &SignIn, _window, cx| {
-                if app.screen == Screen::Login {
+                if app.screen == Screen::Login
+                    && app.active_dialog == super::state::ActiveDialog::None
+                {
                     app.submit_login(cx);
                 }
             }))
             .child(
                 div()
                     .id("login-shell")
-                    .w(px(1040.))
-                    .h(px(600.))
+                    .w_full()
+                    .max_w(px(1040.))
+                    .h_full()
+                    .max_h(px(600.))
                     .flex()
                     .flex_row()
                     .overflow_hidden()
                     .rounded_xl()
                     .border_1()
-                    .border_color(theme::line())
-                    .bg(theme::card())
+                    .border_color(self.theme.line())
+                    .bg(self.theme.card())
                     .shadow_lg()
                     .child(self.login_brand_pane(cx))
                     .child(
@@ -85,10 +87,11 @@ impl FlowyApp {
                             .id("login-panel")
                             .flex_1()
                             .h_full()
-                            .min_w(px(360.))
-                            .bg(theme::card())
-                            .px(px(56.))
-                            .py(px(48.))
+                            .min_w_0()
+                            .overflow_y_scroll()
+                            .bg(self.theme.card())
+                            .px(self.theme.space(32.))
+                            .py(self.theme.space(24.))
                             .flex()
                             .flex_col()
                             .child(
@@ -103,15 +106,15 @@ impl FlowyApp {
                                             .text_3xl()
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .letter_spacing(px(-0.6))
-                                            .text_color(theme::ink())
+                                            .text_color(self.theme.ink())
                                             .child(heading),
                                     )
                                     .child(
                                         div()
                                             .mt_2()
                                             .mb_8()
-                                            .text_sm()
-                                            .text_color(theme::muted())
+                                            .text_size(self.theme.body_size())
+                                            .text_color(self.theme.muted())
                                             .child(description),
                                     )
                                     .child(if on_otp {
@@ -124,11 +127,13 @@ impl FlowyApp {
                                     .children(message.map(|text| {
                                         div()
                                             .mt_3()
-                                            .text_xs()
+                                            .text_size(
+                                                self.theme.caption_size(),
+                                            )
                                             .text_color(if errorish {
-                                                theme::danger()
+                                                self.theme.danger()
                                             } else {
-                                                theme::muted()
+                                                self.theme.muted()
                                             })
                                             .child(text)
                                     }))
@@ -163,8 +168,8 @@ impl FlowyApp {
             .h_full()
             .relative()
             .overflow_hidden()
-            .bg(auth_brand_canvas())
-            .child(blueprint_scene())
+            .bg(self.theme.auth_brand_canvas())
+            .child(blueprint_scene(&self.theme))
             .child(
                 div()
                     .absolute()
@@ -179,8 +184,8 @@ impl FlowyApp {
                             .size(px(48.))
                             .rounded_lg()
                             .border_1()
-                            .border_color(theme::line())
-                            .bg(theme::card())
+                            .border_color(self.theme.line())
+                            .bg(self.theme.card())
                             .flex()
                             .items_center()
                             .justify_center()
@@ -188,10 +193,10 @@ impl FlowyApp {
                     )
                     .child(
                         div()
-                            .text_2xl()
+                            .text_size(self.theme.heading_size())
                             .font_weight(FontWeight::SEMIBOLD)
                             .letter_spacing(px(-0.6))
-                            .text_color(theme::ink())
+                            .text_color(self.theme.ink())
                             .child(crate::brand::product().to_string()),
                     ),
             )
@@ -206,22 +211,22 @@ impl FlowyApp {
                     .gap_3()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(theme::ink())
+                            .text_size(self.theme.body_size())
+                            .text_color(self.theme.ink())
                             .opacity(0.78)
                             .child(self.t("login.brand_tagline")),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme::muted())
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
                             .font_family("Menlo")
                             .child(self.t("login.brand_flow")),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme::muted())
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
                             .child(self.t("login.brand_meta")),
                     )
                     .child(
@@ -230,8 +235,8 @@ impl FlowyApp {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .text_xs()
-                            .text_color(theme::muted())
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
                             .child(self.legal_link(
                                 "login-legal-privacy",
                                 &self.t("login.legal_privacy"),
@@ -253,27 +258,16 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let Some(doc) = self.auth.legal else {
+        let super::state::ActiveDialog::Legal(doc) = self.active_dialog else {
             return div().id("legal-layer-empty").into_any_element();
         };
-        div()
-            .id("legal-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.close_legal(cx);
-            }))
-            .child(self.legal_dialog(doc, cx))
-            .into_any_element()
+        theme::modal_layer(
+            "legal-layer",
+            &self.theme,
+            &self.ui,
+            self.legal_dialog(doc, cx),
+        )
+        .into_any_element()
     }
 
     fn legal_dialog(
@@ -281,69 +275,77 @@ impl FlowyApp {
         doc: LegalDoc,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("legal-dialog")
-            .w(px(560.))
-            .max_h(px(520.))
-            .rounded(theme::modal_radius())
-            .bg(theme::card())
-            .shadow_lg()
-            .px_8()
-            .pt_6()
-            .pb_6()
+        theme::dialog(
+            "legal-dialog",
+            self.t(doc.title_key()),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(560.))
+        .max_h(px(520.))
+        .rounded(self.theme.modal_radius())
+        .bg(self.theme.card())
+        .shadow_lg()
+        .px_8()
+        .pt_6()
+        .pb_6()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .on_click(cx.listener(|_app, _event, _window, cx| {
+            cx.stop_propagation();
+        }))
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(self.theme.ink())
+                .child(self.t(doc.title_key())),
+        )
+        .child(
+            div()
+                .id("legal-body")
+                .flex_1()
+                .min_h(px(180.))
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .rounded_lg()
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.soft())
+                .px_4()
+                .py_3()
+                .child(
+                    div()
+                        .text_size(self.theme.body_size())
+                        .text_color(self.theme.ink())
+                        .whitespace_normal()
+                        .child(doc.body().to_string()),
+                ),
+        )
+        .child(
+            theme::interactive(
+                "legal-confirm",
+                self.t("model.got_it"),
+                &self.theme,
+            )
+            .h(px(40.))
+            .rounded_lg()
+            .bg(self.theme.auth_accent())
+            .text_color(self.theme.auth_on_accent())
+            .font_weight(FontWeight::SEMIBOLD)
             .flex()
-            .flex_col()
-            .gap_4()
-            .on_click(cx.listener(|_app, _event, _window, cx| {
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.opacity(0.92))
+            .child(self.t("model.got_it"))
+            .on_click(cx.listener(|app, _event, _window, cx| {
                 cx.stop_propagation();
-            }))
-            .child(
-                div()
-                    .text_xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::ink())
-                    .child(self.t(doc.title_key())),
-            )
-            .child(
-                div()
-                    .id("legal-body")
-                    .flex_1()
-                    .min_h(px(280.))
-                    .max_h(px(360.))
-                    .overflow_hidden()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme::line())
-                    .bg(theme::soft())
-                    .px_4()
-                    .py_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::ink())
-                            .whitespace_normal()
-                            .child(doc.body().to_string()),
-                    ),
-            )
-            .child(
-                div()
-                    .id("legal-confirm")
-                    .h(px(40.))
-                    .rounded_lg()
-                    .bg(auth_accent())
-                    .text_color(auth_on_accent())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|style| style.opacity(0.92))
-                    .child(self.t("model.got_it"))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        cx.stop_propagation();
-                        app.close_legal(cx);
-                    })),
-            )
+                app.close_legal(cx);
+            })),
+        )
     }
 
     fn legal_link(
@@ -354,13 +356,14 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let label = label.to_string();
-        div()
-            .id(id)
+        theme::interactive(id, label.clone(), &self.theme)
             .underline()
-            .text_color(theme::ink())
+            .text_color(self.theme.ink())
             .opacity(0.72)
             .cursor_pointer()
-            .hover(|style| style.text_color(auth_accent()).opacity(1.))
+            .hover(|style| {
+                style.text_color(self.theme.auth_accent()).opacity(1.)
+            })
             .child(label)
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 cx.stop_propagation();
@@ -375,6 +378,7 @@ impl FlowyApp {
             .items_center()
             .gap_2()
             .child(progress_step(
+                &self.theme,
                 if on_otp {
                     StepMark::Done
                 } else {
@@ -383,8 +387,15 @@ impl FlowyApp {
                 &self.t("login.step_email"),
                 true,
             ))
-            .child(div().flex_1().h(px(1.)).min_w(px(20.)).bg(theme::line()))
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(1.))
+                    .min_w(px(20.))
+                    .bg(self.theme.line()),
+            )
             .child(progress_step(
+                &self.theme,
                 StepMark::Number("2"),
                 &self.t("login.step_otp"),
                 on_otp,
@@ -403,16 +414,16 @@ impl FlowyApp {
             .gap_2()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::ink())
+                    .text_color(self.theme.ink())
                     .child(self.t("login.email")),
             )
             .child(self.email_field(busy))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("login.auto_register")),
             )
     }
@@ -434,15 +445,15 @@ impl FlowyApp {
                     .justify_between()
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(self.theme.body_size())
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::ink())
+                            .text_color(self.theme.ink())
                             .child(self.t("login.otp")),
                     )
                     .child(self.change_email_link(busy, cx)),
             )
             .child(
-                div().relative().child(otp_cells(code)).child(
+                div().relative().child(otp_cells(&self.theme, code)).child(
                     div()
                         .absolute()
                         .top_0()
@@ -455,8 +466,8 @@ impl FlowyApp {
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("login.otp_hint")),
             )
     }
@@ -469,34 +480,34 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let label = label.to_string();
-        div()
-            .id("sign-in")
-            .mt(px(20.))
-            .h(px(48.))
-            .w_full()
-            .rounded_lg()
-            .bg(if emphasized {
-                auth_accent()
-            } else {
-                theme::soft()
-            })
-            .text_color(if emphasized {
-                auth_on_accent()
-            } else {
-                theme::muted()
-            })
-            .font_weight(FontWeight::SEMIBOLD)
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|style| if enabled { style.opacity(0.92) } else { style })
-            .child(label)
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                if enabled {
-                    app.submit_login(cx);
-                }
-            }))
+        theme::button(
+            "sign-in",
+            label.clone(),
+            !enabled,
+            &self.theme,
+            cx.listener(|app, _, _, cx| app.submit_login(cx)),
+        )
+        .mt(px(20.))
+        .h(px(48.))
+        .w_full()
+        .rounded_lg()
+        .bg(if emphasized {
+            self.theme.auth_accent()
+        } else {
+            self.theme.soft()
+        })
+        .text_color(if emphasized {
+            self.theme.auth_on_accent()
+        } else {
+            self.theme.muted()
+        })
+        .font_weight(FontWeight::SEMIBOLD)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|style| if enabled { style.opacity(0.92) } else { style })
+        .child(label)
     }
 
     fn login_resend(
@@ -513,32 +524,37 @@ impl FlowyApp {
         } else {
             self.t("login.resend_code")
         };
-        div()
-            .id("resend-code")
-            .mt(px(20.))
-            .h(px(48.))
-            .w_full()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme::line())
-            .bg(theme::card())
-            .text_color(if can_resend {
-                theme::ink()
-            } else {
-                theme::muted()
-            })
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_4()
-            .cursor_pointer()
-            .child(div().child(self.t("login.resend_code")))
-            .child(div().text_xs().text_color(theme::muted()).child(label))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                if can_resend {
-                    app.send_login_code(cx);
-                }
-            }))
+        theme::button(
+            "resend-code",
+            self.t("login.resend_code"),
+            !can_resend,
+            &self.theme,
+            cx.listener(|app, _, _, cx| app.send_login_code(cx)),
+        )
+        .mt(px(20.))
+        .h(px(48.))
+        .w_full()
+        .rounded_lg()
+        .border_1()
+        .border_color(self.theme.line())
+        .bg(self.theme.card())
+        .text_color(if can_resend {
+            self.theme.ink()
+        } else {
+            self.theme.muted()
+        })
+        .flex()
+        .items_center()
+        .justify_between()
+        .px_4()
+        .cursor_pointer()
+        .child(div().child(self.t("login.resend_code")))
+        .child(
+            div()
+                .text_size(self.theme.caption_size())
+                .text_color(self.theme.muted())
+                .child(label),
+        )
     }
 
     fn login_diagnose(
@@ -546,19 +562,19 @@ impl FlowyApp {
         busy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("network-diagnose")
-            .mt(px(24.))
-            .text_sm()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(auth_accent())
-            .cursor_pointer()
-            .child(self.t("login.diagnose"))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                if !busy {
-                    app.run_login_diagnose(cx);
-                }
-            }))
+        theme::button(
+            "network-diagnose",
+            self.t("login.diagnose"),
+            busy,
+            &self.theme,
+            cx.listener(|app, _, _, cx| app.run_login_diagnose(cx)),
+        )
+        .mt(px(24.))
+        .text_size(self.theme.body_size())
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(self.theme.auth_accent())
+        .cursor_pointer()
+        .child(self.t("login.diagnose"))
     }
 
     fn change_email_link(
@@ -566,25 +582,27 @@ impl FlowyApp {
         busy: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("change-email")
-            .text_xs()
-            .text_color(auth_accent())
-            .cursor_pointer()
-            .child(self.t("login.change_email"))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                if !busy {
-                    app.reset_login_to_email(cx);
-                }
-            }))
+        theme::button(
+            "change-email",
+            self.t("login.change_email"),
+            busy,
+            &self.theme,
+            cx.listener(|app, _, _, cx| app.reset_login_to_email(cx)),
+        )
+        .text_size(self.theme.caption_size())
+        .text_color(self.theme.auth_accent())
+        .cursor_pointer()
+        .child(self.t("login.change_email"))
     }
 
     fn email_field(&self, locked: bool) -> impl gpui::IntoElement {
         let field = text_input("email")
+            .aria_label(self.t("login.email"))
             .state(self.auth.email.downgrade())
+            .accepts_input(!locked)
             .placeholder(self.t("login.email_placeholder"))
-            .placeholder_color(theme::muted())
-            .caret_color(gpui::rgb_to_hsla(theme::ink()))
+            .placeholder_color(self.theme.muted())
+            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
             .caret_blink_interval_500ms()
             .w_full()
             .min_h_auto()
@@ -593,18 +611,20 @@ impl FlowyApp {
             .py(px(10.))
             .rounded_lg()
             .border_1()
-            .border_color(theme::line())
-            .bg(theme::soft())
-            .text_color(theme::ink());
+            .border_color(self.theme.line())
+            .bg(self.theme.soft())
+            .text_color(self.theme.ink());
         if locked { field.opacity(0.7) } else { field }
     }
 
     fn code_field(&self, locked: bool) -> impl gpui::IntoElement {
         let field = text_input("otp")
+            .aria_label(self.t("login.step_otp"))
             .state(self.auth.code.downgrade())
+            .accepts_input(!locked)
             .placeholder("")
-            .placeholder_color(theme::muted())
-            .caret_color(gpui::rgb_to_hsla(theme::ink()))
+            .placeholder_color(self.theme.muted())
+            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
             .caret_blink_interval_500ms()
             .w_full()
             .h_full()
@@ -613,9 +633,9 @@ impl FlowyApp {
             .py(px(12.))
             .rounded_lg()
             .border_1()
-            .border_color(theme::line())
-            .bg(theme::soft())
-            .text_color(theme::ink());
+            .border_color(self.theme.line())
+            .bg(self.theme.soft())
+            .text_color(self.theme.ink());
         if locked { field.opacity(0.7) } else { field }
     }
 }
@@ -626,28 +646,37 @@ enum StepMark {
 }
 
 fn progress_step(
+    theme: &flowy_ui::ResolvedTheme,
     mark: StepMark,
     label: &str,
     active: bool,
 ) -> impl IntoElement {
     let fg = if active {
-        auth_on_accent()
+        theme.auth_on_accent()
     } else {
-        theme::muted()
+        theme.muted()
     };
     let badge = div()
         .size(px(26.))
         .rounded_full()
         .border_1()
-        .border_color(if active { auth_accent() } else { theme::line() })
-        .bg(if active { auth_accent() } else { theme::card() })
+        .border_color(if active {
+            theme.auth_accent()
+        } else {
+            theme.line()
+        })
+        .bg(if active {
+            theme.auth_accent()
+        } else {
+            theme.card()
+        })
         .text_color(fg)
         .flex()
         .items_center()
         .justify_center();
     let badge = match mark {
         StepMark::Number(number) => badge
-            .text_xs()
+            .text_size(theme.caption_size())
             .font_family("Menlo")
             .child(number.to_string())
             .into_any_element(),
@@ -657,18 +686,18 @@ fn progress_step(
     };
     div().flex().items_center().gap_2().child(badge).child(
         div()
-            .text_xs()
+            .text_size(theme.caption_size())
             .font_weight(if active {
                 FontWeight::SEMIBOLD
             } else {
                 FontWeight::NORMAL
             })
-            .text_color(if active { theme::ink() } else { theme::muted() })
+            .text_color(if active { theme.ink() } else { theme.muted() })
             .child(label.to_string()),
     )
 }
 
-fn otp_cells(code: &str) -> impl IntoElement {
+fn otp_cells(theme: &flowy_ui::ResolvedTheme, code: &str) -> impl IntoElement {
     let mut row = div().flex().gap_2().w_full();
     for index in 0..EMAIL_OTP_LENGTH {
         let ch = code.chars().nth(index).unwrap_or(' ');
@@ -681,18 +710,18 @@ fn otp_cells(code: &str) -> impl IntoElement {
                 .rounded_lg()
                 .border_1()
                 .border_color(if filled {
-                    auth_accent()
+                    theme.auth_accent()
                 } else {
-                    theme::line()
+                    theme.line()
                 })
-                .bg(theme::soft())
+                .bg(theme.soft())
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_lg()
+                .text_size(theme.heading_size())
                 .font_weight(FontWeight::SEMIBOLD)
                 .font_family("Menlo")
-                .text_color(theme::ink())
+                .text_color(theme.ink())
                 .child(if filled {
                     ch.to_string()
                 } else {
@@ -703,7 +732,7 @@ fn otp_cells(code: &str) -> impl IntoElement {
     row
 }
 
-fn blueprint_scene() -> impl IntoElement {
+fn blueprint_scene(theme: &flowy_ui::ResolvedTheme) -> impl IntoElement {
     div()
         .absolute()
         .top_0()
@@ -717,9 +746,9 @@ fn blueprint_scene() -> impl IntoElement {
         .child(wire_card(390., 240., 120., 84.))
         .child(wire_card(140., 360., 140., 90.))
         .child(wire_card(330., 380., 160., 100.))
-        .child(wire_dot(270., 160.))
-        .child(wire_dot(310., 250.))
-        .child(wire_dot(250., 340.))
+        .child(wire_dot(theme, 270., 160.))
+        .child(wire_dot(theme, 310., 250.))
+        .child(wire_dot(theme, 250., 340.))
         .child(wire_line(195., 140., 100., 1.))
         .child(wire_line(270., 160., 1., 90.))
         .child(wire_line(250., 265., 140., 1.))
@@ -766,7 +795,11 @@ fn wire_card(x: f32, y: f32, w: f32, h: f32) -> impl IntoElement {
         )
 }
 
-fn wire_dot(x: f32, y: f32) -> impl IntoElement {
+fn wire_dot(
+    theme: &flowy_ui::ResolvedTheme,
+    x: f32,
+    y: f32,
+) -> impl IntoElement {
     div()
         .absolute()
         .left(px(x))
@@ -775,7 +808,7 @@ fn wire_dot(x: f32, y: f32) -> impl IntoElement {
         .rounded_full()
         .border_1()
         .border_color(rgb(0x00a8_a49c))
-        .bg(theme::card())
+        .bg(theme.card())
 }
 
 fn wire_line(x: f32, y: f32, w: f32, h: f32) -> impl IntoElement {
@@ -786,16 +819,4 @@ fn wire_line(x: f32, y: f32, w: f32, h: f32) -> impl IntoElement {
         .w(px(w))
         .h(px(h))
         .bg(rgb(0x00c4_c0b8))
-}
-
-fn auth_accent() -> Rgba {
-    rgb(0x000f_766e)
-}
-
-fn auth_on_accent() -> Rgba {
-    rgb(0x00ff_ffff)
-}
-
-fn auth_brand_canvas() -> Rgba {
-    rgb(0x00e8_e6e1)
 }

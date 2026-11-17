@@ -2129,6 +2129,8 @@ name = "flowy-ui"
 version = "1.8.0"
 dependencies = [
  "gpui-ce",
+ "gpui_ce_elements",
+ "gpui_ce_platform",
  "serde",
 ]
 

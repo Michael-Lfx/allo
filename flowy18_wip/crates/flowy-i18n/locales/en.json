@@ -411,5 +411,18 @@
   "thread.confirm_rights": "I confirm I have the rights to use this media.",
   "thread.confirm_terms": "I agree to the Terms of Service and Privacy Policy.",
   "thread.confirm_title": "Media use confirmation",
-  "thread.prompt_placeholder": "Send a message to {product}"
+  "thread.prompt_placeholder": "Send a message to {product}",
+  "credits.error": "Could not load credits",
+  "credits.loading": "Loading credits",
+  "credits.unavailable": "Credits unavailable",
+  "ui.close": "Close",
+  "ui.document_nodes": "{title} · {count} nodes",
+  "ui.fullscreen": "Full screen",
+  "ui.loading": "Loading",
+  "ui.next": "Next",
+  "ui.play": "Play",
+  "ui.previous": "Previous",
+  "ui.rating": "{n} stars",
+  "ui.remove": "Remove",
+  "ui.volume": "Volume"
 }

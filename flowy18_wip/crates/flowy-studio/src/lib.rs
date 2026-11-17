@@ -3,8 +3,11 @@
 mod automation;
 mod chat;
 mod composer;
+mod credits;
+mod feed;
 mod panel;
 mod studio;
-mod thread;
 
-pub use panel::{StudioEvent, StudioPanel, StudioSurface};
+pub use panel::{StudioConfig, StudioEvent, StudioPanel, StudioSurface};
+
+pub use credits::CreditsViewState;

@@ -300,6 +300,7 @@
   "notice.project_created": "Proje yalnızca bu oturum için oluşturuldu",
   "notice.prompt_empty": "Önce bir görev yazın",
   "notice.prompt_filled": "Görev dolduruldu. Hazır olunca gönderin.",
+  "notice.session_storage_failed": "Oturum verileri okunamadı veya kaydedilemedi. Depolama erişimini kontrol edin.",
   "notice.task_added": "Bu oturumun görev listesine eklendi",
   "notice.upgrade_later": "Yükseltme henüz kullanılamıyor",
   "ota.available": "{version} güncellemesi var",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "Bu medyayı kullanma hakkına sahip olduğumu onaylıyorum.",
   "thread.confirm_terms": "Hizmet Şartları ve Gizlilik Politikası'nı kabul ediyorum.",
   "thread.confirm_title": "Medya kullanımı onayı",
-  "thread.prompt_placeholder": "{product} ürününe mesaj gönderin"
+  "thread.prompt_placeholder": "{product} ürününe mesaj gönderin",
+  "credits.error": "Krediler yüklenemedi",
+  "credits.loading": "Krediler yükleniyor",
+  "credits.unavailable": "Kredi kullanılamıyor",
+  "ui.close": "Kapat",
+  "ui.document_nodes": "{title} · {count} düğüm",
+  "ui.fullscreen": "Tam ekran",
+  "ui.loading": "Yükleniyor",
+  "ui.next": "Sonraki",
+  "ui.play": "Oynat",
+  "ui.previous": "Önceki",
+  "ui.rating": "{n} yıldız",
+  "ui.remove": "Kaldır",
+  "ui.volume": "Ses düzeyi"
 }

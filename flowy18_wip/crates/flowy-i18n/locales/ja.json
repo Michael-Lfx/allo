@@ -300,6 +300,7 @@
   "notice.project_created": "このセッションだけのプロジェクトを作りました",
   "notice.prompt_empty": "先にタスクを書いてください",
   "notice.prompt_filled": "タスクを入れました。準備ができたら送信してください。",
+  "notice.session_storage_failed": "セッションデータを読み取りまたは保存できませんでした。ストレージへのアクセス権を確認してください。",
   "notice.task_added": "このセッションのタスク一覧に追加しました",
   "notice.upgrade_later": "アップグレードはまだ使えません",
   "ota.available": "アップデート {version} があります",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "このメディアを使う権利があることを確認します。",
   "thread.confirm_terms": "利用規約とプライバシーポリシーに同意します。",
   "thread.confirm_title": "メディア使用の確認",
-  "thread.prompt_placeholder": "{product} にメッセージを送る"
+  "thread.prompt_placeholder": "{product} にメッセージを送る",
+  "credits.error": "クレジットの読み込みに失敗しました",
+  "credits.loading": "クレジットを読み込み中",
+  "credits.unavailable": "クレジットを利用できません",
+  "ui.close": "閉じる",
+  "ui.document_nodes": "{title} · {count} ノード",
+  "ui.fullscreen": "全画面",
+  "ui.loading": "読み込み中",
+  "ui.next": "次へ",
+  "ui.play": "再生",
+  "ui.previous": "前へ",
+  "ui.rating": "{n} つ星",
+  "ui.remove": "削除",
+  "ui.volume": "音量"
 }

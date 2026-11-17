@@ -1,9 +1,8 @@
-use super::settings::{Picker, toggle_switch};
+use super::settings::Picker;
 use super::{FlowyApp, place};
 use crate::prefs::{Accent, Density, ThemeMode};
 use flowy_ui as theme;
 use gpui::{Context, SharedString, div, prelude::*, px};
-use gpui_ce_elements::editable_text::text_input;
 
 impl FlowyApp {
     pub(super) fn touch_font_size(&mut self, cx: &mut Context<'_, Self>) {
@@ -34,6 +33,12 @@ impl FlowyApp {
         }
         self.prefs.font_size = clamped;
         self.prefs.save(self.store.root());
+        let options = Self::theme_options(&self.prefs);
+        let dark = self.theme.dark;
+        self.ui
+            .theme
+            .update(cx, |theme, cx| theme.update(options, dark, cx));
+        self.theme = self.ui.theme.read(cx).resolved();
         cx.notify();
     }
 
@@ -50,21 +55,14 @@ impl FlowyApp {
                 .pb_8()
                 .flex()
                 .flex_col()
-                .gap(theme::space(20.))
+                .gap(self.theme.space(20.))
                 .child(self.theme_block(cx))
                 .child(self.accent_block(cx))
-                .child(self.font_block())
+                .child(self.font_block(cx))
                 .child(self.density_block(cx))
                 .child(self.activity_block(cx)),
         );
-        if self.settings.picker == Picker::Accent {
-            page =
-                page.child(self.accent_menu(cx).top(px(188.)).right(px(32.)));
-        }
-        if self.settings.picker == Picker::Density {
-            page =
-                page.child(self.density_menu(cx).top(px(312.)).right(px(32.)));
-        }
+
         page
     }
 
@@ -77,23 +75,23 @@ impl FlowyApp {
             .w(px(240.))
             .p_3()
             .rounded_xl()
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .shadow_md()
             .flex()
             .flex_col()
             .gap_1()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(self.t("look.activity")),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(self.t("look.idle")),
             )
@@ -104,7 +102,7 @@ impl FlowyApp {
             .flex()
             .flex_col()
             .gap_3()
-            .child(heading("look.theme", "look.theme_body", self))
+            .child(heading(&self.theme, "look.theme", "look.theme_body", self))
             .child(
                 div()
                     .flex()
@@ -122,8 +120,13 @@ impl FlowyApp {
     ) -> impl IntoElement {
         let selected = self.prefs.theme == mode;
         let id = SharedString::from(format!("theme-{}", mode.key()));
-        div()
-            .id(id)
+        theme::interactive(id, self.t(mode.key()), &self.theme)
+            .role(gpui::Role::RadioButton)
+            .aria_toggled(if selected {
+                gpui::accesskit::Toggled::True
+            } else {
+                gpui::accesskit::Toggled::False
+            })
             .w(px(108.))
             .h(px(76.))
             .rounded_xl()
@@ -132,28 +135,38 @@ impl FlowyApp {
             .items_center()
             .justify_center()
             .gap_1()
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
             .border_color(if selected {
-                theme::ink()
+                self.theme.ink()
             } else {
-                theme::line()
+                self.theme.line()
             })
             .when(selected, gpui::Styled::border_2)
             .cursor_pointer()
-            .hover(|card| card.bg(theme::soft()))
+            .hover(|card| card.bg(self.theme.soft()))
             .child(theme_icon(mode))
-            .child(div().text_sm().child(self.t(mode.key())))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
+            .child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .child(self.t(mode.key())),
+            )
+            .on_click(cx.listener(move |app, _event, window, cx| {
                 app.prefs.theme = mode;
                 app.settings.picker = Picker::None;
                 app.prefs.save(app.store.root());
+                app.apply_appearance(window, cx);
                 cx.notify();
             }))
     }
 
     fn accent_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        split_row(heading("look.accent", "look.accent_body", self)).child(chip(
+        split_row(
+            self.theme,
+            heading(&self.theme, "look.accent", "look.accent_body", self),
+        )
+        .child(chip(
+            self,
             "accent-button",
             self.t(self.prefs.accent.key()),
             Some(self.prefs.accent),
@@ -162,92 +175,118 @@ impl FlowyApp {
         ))
     }
 
-    fn font_block(&self) -> impl IntoElement {
-        split_row(heading("look.font", "look.font_body", self)).child(
+    fn font_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        split_row(
+            self.theme,
+            heading(&self.theme, "look.font", "look.font_body", self),
+        )
+        .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(self.font_field())
+                .child(self.font_field(cx))
                 .child(
                     div()
-                        .text_sm()
-                        .text_color(theme::muted())
+                        .text_size(self.theme.body_size())
+                        .text_color(self.theme.muted())
                         .child(self.t("look.unit")),
                 ),
         )
     }
 
-    fn font_field(&self) -> impl IntoElement {
-        text_input("font-size")
-            .state(self.appearance.font_size_field.downgrade())
-            .caret_color(gpui::rgb_to_hsla(theme::ink()))
-            .caret_blink_interval_500ms()
-            .w(px(48.))
-            .min_h_auto()
-            .whitespace_nowrap()
-            .px_3()
-            .py_1()
-            .rounded_lg()
-            .bg(theme::card())
-            .border_1()
-            .border_color(theme::line())
-            .text_sm()
-            .text_color(theme::ink())
+    fn font_field(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        theme::TextField::new(
+            "font-size",
+            self.t("look.font"),
+            self.appearance.font_size_field.clone(),
+        )
+        .render(&self.theme, cx)
+        .w(px(76.))
     }
 
     fn density_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        split_row(heading("look.density", "look.density_body", self)).child(
-            chip(
-                "density-button",
-                self.t(self.prefs.density.key()),
-                None,
-                Picker::Density,
-                cx,
-            ),
+        split_row(
+            self.theme,
+            heading(&self.theme, "look.density", "look.density_body", self),
         )
+        .child(chip(
+            self,
+            "density-button",
+            self.t(self.prefs.density.key()),
+            None,
+            Picker::Density,
+            cx,
+        ))
     }
 
     fn activity_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        split_row(heading("look.activity", "look.activity_body", self)).child(
-            toggle_switch("pref-activity", self.prefs.activity).on_click(
-                cx.listener(|app, _event, _window, cx| {
+        split_row(
+            self.theme,
+            heading(&self.theme, "look.activity", "look.activity_body", self),
+        )
+        .child(
+            theme::Switch::new(
+                "pref-activity",
+                self.t("look.activity"),
+                self.prefs.activity,
+            )
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, window, cx| {
                     app.prefs.activity = !app.prefs.activity;
                     app.prefs.save(app.store.root());
+                    app.apply_appearance(window, cx);
                     cx.notify();
                 }),
             ),
         )
     }
 
-    fn accent_menu(&self, cx: &Context<'_, Self>) -> gpui::Stateful<gpui::Div> {
-        let mut menu = super::settings::menu_shell("accent-menu");
+    pub(super) fn accent_menu(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut menu = theme::menu(
+            "accent-menu",
+            self.t("look.accent"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(240.));
         for accent in Accent::ALL {
             let selected = self.prefs.accent == accent;
             let id = SharedString::from(format!("accent-{}", accent.key()));
             menu = menu.child(
-                div()
-                    .id(id)
+                theme::interactive(id, self.t(accent.key()), &self.theme)
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_toggled(if selected {
+                        gpui::accesskit::Toggled::True
+                    } else {
+                        gpui::accesskit::Toggled::False
+                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .cursor_pointer()
                     .bg(if selected {
-                        theme::soft()
+                        self.theme.soft()
                     } else {
-                        theme::card()
+                        self.theme.card()
                     })
-                    .hover(|row| row.bg(theme::soft()))
-                    .child(dot(accent))
+                    .hover(|row| row.bg(self.theme.soft()))
+                    .child(dot(&self.theme, accent))
                     .child(self.t(accent.key()))
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
+                    .on_click(cx.listener(move |app, _event, window, cx| {
                         app.prefs.accent = accent;
                         app.settings.picker = Picker::None;
                         app.prefs.save(app.store.root());
+                        app.apply_appearance(window, cx);
                         cx.notify();
                     })),
             );
@@ -255,33 +294,46 @@ impl FlowyApp {
         menu
     }
 
-    fn density_menu(
+    pub(super) fn density_menu(
         &self,
         cx: &Context<'_, Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let mut menu = super::settings::menu_shell("density-menu");
+        let mut menu = theme::menu(
+            "density-menu",
+            self.t("look.density"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(px(240.));
         for density in Density::ALL {
             let selected = self.prefs.density == density;
             let id = SharedString::from(format!("density-{}", density.key()));
             menu = menu.child(
-                div()
-                    .id(id)
+                theme::interactive(id, self.t(density.key()), &self.theme)
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_toggled(if selected {
+                        gpui::accesskit::Toggled::True
+                    } else {
+                        gpui::accesskit::Toggled::False
+                    })
                     .px_3()
                     .py_1()
                     .rounded_md()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .cursor_pointer()
                     .bg(if selected {
-                        theme::soft()
+                        self.theme.soft()
                     } else {
-                        theme::card()
+                        self.theme.card()
                     })
-                    .hover(|row| row.bg(theme::soft()))
+                    .hover(|row| row.bg(self.theme.soft()))
                     .child(self.t(density.key()))
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
+                    .on_click(cx.listener(move |app, _event, window, cx| {
                         app.prefs.density = density;
                         app.settings.picker = Picker::None;
                         app.prefs.save(app.store.root());
+                        app.apply_appearance(window, cx);
                         cx.notify();
                     })),
             );
@@ -291,6 +343,7 @@ impl FlowyApp {
 }
 
 fn heading(
+    theme: &flowy_ui::ResolvedTheme,
     title: &'static str,
     body: &'static str,
     app: &FlowyApp,
@@ -301,68 +354,81 @@ fn heading(
         .gap_1()
         .child(
             div()
-                .text_sm()
+                .text_size(theme.body_size())
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(app.t(title)),
         )
         .child(
             div()
-                .text_sm()
-                .text_color(theme::muted())
+                .text_size(theme.body_size())
+                .text_color(theme.muted())
                 .whitespace_normal()
                 .child(app.t(body)),
         )
 }
 
-fn split_row(label: impl IntoElement) -> gpui::Div {
+fn split_row(
+    theme: flowy_ui::ResolvedTheme,
+    label: impl IntoElement,
+) -> gpui::Div {
     div()
         .flex()
         .items_start()
         .justify_between()
         .gap_6()
         .border_t_1()
-        .border_color(theme::line())
-        .pt(theme::space(16.))
+        .border_color(theme.line())
+        .pt(theme.space(16.))
         .child(div().flex_1().child(label))
 }
 
 fn chip(
+    app: &FlowyApp,
     id: &'static str,
     label: String,
     accent: Option<Accent>,
     picker: Picker,
     cx: &Context<'_, FlowyApp>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .px_3()
-        .py_1()
-        .rounded_lg()
-        .bg(theme::soft())
-        .flex()
-        .items_center()
-        .gap_2()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme::line()))
-        .children(accent.map(dot))
-        .child(div().text_sm().child(label))
-        .child(
-            theme::icons::chevron_down()
-                .size(px(14.))
-                .text_color(theme::muted()),
-        )
-        .on_click(cx.listener(move |app, _event, _window, cx| {
-            app.settings.picker = if app.settings.picker == picker {
-                Picker::None
-            } else {
-                picker
-            };
-            cx.notify();
-        }))
+    let theme = &app.theme;
+    theme::anchor_trigger(
+        theme::select_trigger(
+            id,
+            label.clone(),
+            app.settings.picker == picker,
+            theme,
+        ),
+        id,
+        &app.ui,
+    )
+    .px_3()
+    .py_1()
+    .rounded_lg()
+    .bg(theme.soft())
+    .flex()
+    .items_center()
+    .gap_2()
+    .cursor_pointer()
+    .hover(|style| style.bg(theme.line()))
+    .children(accent.map(|accent| dot(theme, accent)))
+    .child(div().text_size(app.theme.body_size()).child(label))
+    .child(
+        theme::icons::chevron_down()
+            .size(px(14.))
+            .text_color(theme.muted()),
+    )
+    .on_click(cx.listener(move |app, _event, _window, cx| {
+        app.settings.picker = if app.settings.picker == picker {
+            Picker::None
+        } else {
+            picker
+        };
+        cx.notify();
+    }))
 }
 
-fn dot(accent: Accent) -> impl IntoElement {
-    div().size(px(8.)).rounded_full().bg(theme::swatch(accent))
+fn dot(theme: &flowy_ui::ResolvedTheme, accent: Accent) -> impl IntoElement {
+    div().size(px(8.)).rounded_full().bg(theme.swatch(accent))
 }
 
 fn theme_icon(mode: ThemeMode) -> gpui::AnyElement {

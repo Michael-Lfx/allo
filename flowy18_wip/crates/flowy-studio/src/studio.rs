@@ -1,11 +1,15 @@
 use flowy_agent::{Model, Plan};
 use flowy_ui as theme;
-use gpui::{Context, SharedString, div, prelude::*, px};
-use gpui_ce_elements::editable_text::text_area;
+use flowy_ui::text_area;
+use gpui::{Context, SharedString, Window, div, prelude::*, px};
 use std::time::Duration;
 
 impl crate::panel::StudioPanel {
-    pub(crate) fn workspace(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(crate) fn workspace(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let mut column = div()
             .id("workspace")
             .flex_1()
@@ -14,18 +18,17 @@ impl crate::panel::StudioPanel {
             .relative()
             .flex()
             .flex_col();
-        let chrome =
-            true && self.surface != crate::panel::StudioSurface::Automation;
+        let chrome = self.surface != crate::panel::StudioSurface::Automation;
         if chrome {
             column = column.child(self.top_bar(cx));
         }
         if let Some(notice) = self.notice {
             column = column.child(
                 div()
-                    .px_8()
-                    .py_2()
+                    .px(self.theme.space(32.))
+                    .py(self.theme.space(8.))
                     .text_sm()
-                    .text_color(theme::muted())
+                    .text_color(self.theme.muted())
                     .child(self.t(notice)),
             );
         }
@@ -39,13 +42,41 @@ impl crate::panel::StudioPanel {
             column.child(self.section_page())
         };
         if self.model_info_open && !self.model_menu_open && chrome {
-            column = column.child(self.model_info(cx));
+            column = column.child(theme::popover(
+                "model-info",
+                "model-menu-trigger",
+                self.model_info(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
         }
         if self.model_menu_open && chrome {
-            column = column.child(self.model_menu(cx));
+            column = column.child(theme::popover(
+                "model-list",
+                self.model_menu_anchor,
+                self.model_menu(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
         }
-        if self.credits_hover && chrome {
-            column = column.child(self.credit_card(cx));
+        if self.credits_hover
+            && !self.model_info_open
+            && !self.model_menu_open
+            && chrome
+        {
+            column = column.child(theme::popover(
+                "credit-card",
+                "credit-pill-trigger",
+                self.credit_card(cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
         }
         column
     }
@@ -54,24 +85,21 @@ impl crate::panel::StudioPanel {
         div()
             .id("model-info")
             .occlude()
-            .absolute()
-            .top(px(64.))
-            .left(px(24.))
             .w(px(320.))
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .rounded_xl()
             .shadow_md()
-            .p_4()
+            .p(self.theme.space(16.))
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(self.theme.space(12.))
             .child(
                 div()
                     .flex()
                     .items_start()
-                    .gap_2()
+                    .gap(self.theme.space(8.))
                     .child(theme::icons::sparkles())
                     .child(
                         div()
@@ -84,7 +112,7 @@ impl crate::panel::StudioPanel {
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme::muted())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(self.t("model.body")),
             )
@@ -92,7 +120,7 @@ impl crate::panel::StudioPanel {
                 div()
                     .flex()
                     .justify_end()
-                    .gap_2()
+                    .gap(self.theme.space(8.))
                     .child(self.model_got_it(cx))
                     .child(self.model_upgrade(cx)),
             )
@@ -104,40 +132,44 @@ impl crate::panel::StudioPanel {
             "model-got-it",
             label.clone(),
             false,
+            &self.theme,
             cx.listener(|app, _event, _window, cx| app.dismiss_model_info(cx)),
         )
-        .px_3()
-        .py_1()
+        .px(self.theme.space(12.))
+        .py(self.theme.space(4.))
         .rounded_full()
-        .bg(theme::soft())
+        .bg(self.theme.soft())
         .text_sm()
-        .hover(|style| style.bg(theme::line()))
+        .hover(|style| style.bg(self.theme.line()))
         .child(label)
     }
 
     fn model_upgrade(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("model-upgrade-now")
-            .px_3()
-            .py_1()
-            .rounded_full()
-            .bg(theme::fill())
-            .text_color(theme::on_fill())
-            .text_sm()
-            .cursor_pointer()
-            .hover(|style| style.opacity(0.9))
-            .child(self.t("model.upgrade"))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.dismiss_model_info(cx);
-                app.note("notice.upgrade_later", cx);
-            }))
+        theme::interactive(
+            "model-upgrade-now",
+            self.t("model.upgrade"),
+            &self.theme,
+        )
+        .px(self.theme.space(12.))
+        .py(self.theme.space(4.))
+        .rounded_full()
+        .bg(self.theme.fill())
+        .text_color(self.theme.on_fill())
+        .text_sm()
+        .cursor_pointer()
+        .hover(|style| style.opacity(0.9))
+        .child(self.t("model.upgrade"))
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.dismiss_model_info(cx);
+            app.note("notice.upgrade_later", cx);
+        }))
     }
 
     fn model_button_label(&self) -> impl IntoElement {
         div()
             .flex()
             .items_center()
-            .gap_1()
+            .gap(self.theme.space(4.))
             .child(self.t(self.model.name_key()))
             .child(if self.model_menu_open {
                 theme::icons::chevron_up()
@@ -147,22 +179,24 @@ impl crate::panel::StudioPanel {
     }
 
     fn model_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut menu = div()
-            .id("model-list")
-            .occlude()
-            .absolute()
-            .top(px(60.))
-            .left(px(24.))
-            .w(px(400.))
-            .bg(theme::card())
-            .border_1()
-            .border_color(theme::line())
-            .rounded_xl()
-            .shadow_md()
-            .p_2()
-            .flex()
-            .flex_col()
-            .gap_1();
+        let mut menu = theme::menu(
+            "model-list-content",
+            self.t("model.title"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .occlude()
+        .w(px(400.))
+        .bg(self.theme.card())
+        .border_1()
+        .border_color(self.theme.line())
+        .rounded_xl()
+        .shadow_md()
+        .p(self.theme.space(8.))
+        .flex()
+        .flex_col()
+        .gap(self.theme.space(4.));
         for model in Model::ALL {
             menu = menu.child(self.model_row(model, cx));
         }
@@ -176,59 +210,62 @@ impl crate::panel::StudioPanel {
     ) -> impl IntoElement {
         let selected = self.model == model;
         let id = SharedString::from(format!("model-row-{}", model.name_key()));
-        div()
-            .id(id)
-            .px_3()
-            .py_2()
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .cursor_pointer()
-            .hover(|row| row.bg(theme::soft()))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                app.choose_model(model, cx);
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
+        theme::menu_item(
+            id,
+            self.t(model.name_key()),
+            false,
+            &self.theme,
+            cx.listener(move |app, _, _, cx| app.choose_model(model, cx)),
+        )
+        .aria_selected(selected)
+        .px(self.theme.space(12.))
+        .py(self.theme.space(8.))
+        .rounded_lg()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(self.theme.space(12.))
+        .cursor_pointer()
+        .hover(|row| row.bg(self.theme.soft()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(self.theme.space(4.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(self.theme.space(8.))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(self.t(model.name_key())),
+                        )
+                        .when(model.is_pro(), |row| {
+                            row.child(
                                 div()
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(self.t(model.name_key())),
+                                    .px(self.theme.space(4.))
+                                    .rounded_md()
+                                    .bg(self.theme.line())
+                                    .text_xs()
+                                    .text_color(self.theme.muted())
+                                    .child(self.t("model.pro")),
                             )
-                            .when(model.is_pro(), |row| {
-                                row.child(
-                                    div()
-                                        .px_1()
-                                        .rounded_md()
-                                        .bg(theme::line())
-                                        .text_xs()
-                                        .text_color(theme::muted())
-                                        .child(self.t("model.pro")),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .whitespace_normal()
-                            .child(self.t(model.detail_key())),
-                    ),
-            )
-            .when(selected, |row| row.child(theme::icons::check()))
+                        }),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(self.theme.muted())
+                        .whitespace_normal()
+                        .child(self.t(model.detail_key())),
+                ),
+        )
+        .when(selected, |row| row.child(theme::icons::check()))
     }
 
     fn choose_model(&mut self, model: Model, cx: &mut Context<'_, Self>) {
@@ -260,53 +297,67 @@ impl crate::panel::StudioPanel {
     fn top_bar(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
             .h(px(56.))
-            .px_6()
+            .px(self.theme.space(24.))
             .flex()
             .items_center()
             .justify_between()
             .border_b_1()
-            .border_color(theme::line())
-            .child(
-                div()
-                    .id("model-menu")
-                    .px_3()
-                    .py_1()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::soft()))
-                    .child(self.model_button_label())
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.model_menu_open = !app.model_menu_open;
+            .border_color(self.theme.line())
+            .child(theme::anchor_trigger(
+                theme::interactive(
+                    "model-menu",
+                    self.t(self.model.name_key()),
+                    &self.theme,
+                )
+                .px(self.theme.space(12.))
+                .py(self.theme.space(4.))
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(self.model_button_label())
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
+                        app.model_menu_open = !app.model_menu_open
+                            || app.model_menu_anchor != "model-menu-trigger";
+                        app.model_menu_anchor = "model-menu-trigger";
                         cx.notify();
-                    })),
-            )
+                    },
+                )),
+                "model-menu-trigger",
+                &self.ui,
+            ))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap(self.theme.space(12.))
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .child(self.t("studio.free_plan")),
+                        div().text_sm().text_color(self.theme.muted()).child(
+                            self.t(match self.plan {
+                                Plan::Free => "credits.plan_free",
+                                Plan::Paid => "credits.plan_paid",
+                            }),
+                        ),
                     )
                     .child(
-                        div()
-                            .id("upgrade")
-                            .px_3()
-                            .py_1()
-                            .rounded_full()
-                            .bg(theme::fill())
-                            .text_color(theme::on_fill())
-                            .text_sm()
-                            .cursor_pointer()
-                            .child(self.t("studio.upgrade"))
-                            .on_click(cx.listener(
-                                |app, _event, _window, cx| {
-                                    app.note("notice.upgrade_later", cx);
-                                },
-                            )),
+                        theme::interactive(
+                            "upgrade",
+                            self.t("studio.upgrade"),
+                            &self.theme,
+                        )
+                        .px(self.theme.space(12.))
+                        .py(self.theme.space(4.))
+                        .rounded_full()
+                        .bg(self.theme.fill())
+                        .text_color(self.theme.on_fill())
+                        .text_sm()
+                        .cursor_pointer()
+                        .child(self.t("studio.upgrade"))
+                        .on_click(cx.listener(
+                            |app, _event, _window, cx| {
+                                app.note("notice.upgrade_later", cx);
+                            },
+                        )),
                     )
                     .child(self.credit_pill(cx)),
             )
@@ -336,17 +387,25 @@ impl crate::panel::StudioPanel {
     }
 
     fn credit_pill(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("credit-pill")
-            .px_3()
-            .py_1()
+        theme::anchor_trigger(
+            theme::interactive(
+                "credit-pill",
+                self.credits_label(),
+                &self.theme,
+            )
+            .px(self.theme.space(12.))
+            .py(self.theme.space(4.))
             .rounded_full()
-            .bg(theme::soft())
+            .bg(self.theme.soft())
             .flex()
             .items_center()
-            .gap_1()
+            .gap(self.theme.space(4.))
             .cursor_pointer()
-            .hover(|pill| pill.bg(theme::line()))
+            .hover(|pill| pill.bg(self.theme.line()))
+            .on_click(cx.listener(|app, _, _, cx| {
+                app.credits_hover = !app.credits_hover;
+                cx.notify();
+            }))
             .on_hover(cx.listener(|app, hovered: &bool, _window, cx| {
                 app.set_credit_hover(*hovered, cx);
             }))
@@ -355,112 +414,58 @@ impl crate::panel::StudioPanel {
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(Self::grouped(self.credits)),
-            )
+                    .child(self.credits_label()),
+            ),
+            "credit-pill-trigger",
+            &self.ui,
+        )
     }
 
     fn credit_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let (free, daily) = Self::credit_split(self.credits);
         let plan = match self.plan {
             Plan::Free => "credits.plan_free",
             Plan::Paid => "credits.plan_paid",
         };
-        let daily_note = Self::grouped(Self::DAILY_GRANT);
-        div()
+        let mut card = div()
             .id("credit-card")
             .occlude()
-            .absolute()
-            .top(px(48.))
-            .right(px(24.))
             .w(px(280.))
-            .p_4()
+            .p(self.theme.space(16.))
             .rounded_xl()
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .shadow_md()
             .flex()
             .flex_col()
-            .gap_3()
-            .on_hover(cx.listener(|app, hovered: &bool, _window, cx| {
+            .gap(self.theme.space(12.))
+            .on_hover(cx.listener(|app, hovered: &bool, _, cx| {
                 app.set_credit_hover(*hovered, cx);
             }))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(self.t(plan)),
-                    )
-                    .child(
-                        div()
-                            .id("credit-upgrade")
-                            .px_4()
-                            .py_1()
-                            .rounded_lg()
-                            .bg(theme::fill())
-                            .text_color(theme::on_fill())
-                            .text_sm()
-                            .cursor_pointer()
-                            .child(self.t("studio.upgrade"))
-                            .on_click(cx.listener(
-                                |app, _event, _window, cx| {
-                                    app.note("notice.upgrade_later", cx);
-                                },
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .border_t_1()
-                    .border_dashed()
-                    .border_dashed_length(4.)
-                    .border_dashed_gap(3.)
-                    .border_color(theme::line()),
-            )
-            .child(Self::credit_row(
+            .child(div().text_lg().child(self.t(plan)))
+            .child(self.credit_row(
                 theme::icons::sparkles(),
                 self.t("credits.balance"),
-                Self::grouped(free),
-                true,
-            ))
-            .child(Self::credit_sub(
-                self.t("credits.free"),
-                Some(Self::grouped(free)),
-            ))
-            .child(Self::credit_row(
-                theme::icons::square(),
-                self.t("credits.daily"),
-                Self::grouped(daily),
-                true,
-            ))
-            .child(Self::credit_sub(
-                self.tf("credits.daily_note", &[("count", &daily_note)]),
-                None,
-            ))
-            .child(
-                div()
-                    .id("credit-usage")
-                    .pt_1()
-                    .text_sm()
-                    .cursor_pointer()
-                    .hover(|row| row.text_color(theme::muted()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(self.t("credits.usage"))
-                            .child(theme::icons::chevron_right()),
-                    )
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.note("credits.usage_later", cx);
-                    })),
-            )
+                self.credits_label(),
+                false,
+            ));
+        if let crate::CreditsViewState::Ready { free, daily, .. } =
+            &self.credits
+        {
+            if let Some(free) = free {
+                card = card.child(self.credit_sub(
+                    self.t("credits.free"),
+                    Some(crate::credits::grouped(*free)),
+                ));
+            }
+            if let Some(daily) = daily {
+                card = card.child(self.credit_sub(
+                    self.t("credits.daily"),
+                    Some(crate::credits::grouped(*daily)),
+                ));
+            }
+        }
+        card
     }
 
     fn studio(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -486,18 +491,22 @@ impl crate::panel::StudioPanel {
             .w_full()
             .max_w(px(980.))
             .mx_auto()
-            .px_8()
-            .pt_10()
-            .pb_6()
+            .px(self.theme.space(32.))
+            .pt(self.theme.space(40.))
+            .pb(self.theme.space(24.))
             .flex()
             .flex_col()
-            .gap_6()
+            .gap(self.theme.space(24.))
             .child(self.title_row(cx))
-            .child(div().text_xs().text_color(theme::muted()).child(format!(
-                "{} · {} nodes",
-                doc.title,
-                doc.nodes.len()
-            )))
+            .child(div().text_xs().text_color(self.theme.muted()).child(
+                self.tf(
+                    "ui.document_nodes",
+                    &[
+                        ("title", &doc.title),
+                        ("count", &doc.nodes.len().to_string()),
+                    ],
+                ),
+            ))
             .child(self.feature_row(cx))
             .child(self.ideas_entry(cx))
     }
@@ -507,7 +516,7 @@ impl crate::panel::StudioPanel {
             .flex()
             .items_end()
             .justify_between()
-            .gap_6()
+            .gap(self.theme.space(24.))
             .child(
                 div()
                     .font_family("Georgia")
@@ -516,65 +525,65 @@ impl crate::panel::StudioPanel {
                     .child(self.t("studio.brand")),
             )
             .child(
-                div()
-                    .id("creative-video")
-                    .w(px(220.))
-                    .h(px(92.))
-                    .rounded_xl()
-                    .bg(theme::ink())
-                    .text_color(theme::on_ink())
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .hover(|style| style.opacity(0.92))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.fill_prompt_key("prompt.creative", cx);
-                    }))
-                    .child(
-                        div().text_sm().child(self.t("studio.creative_title")),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::on_ink())
-                            .child(self.t("studio.creative_hint")),
-                    ),
+                theme::interactive(
+                    "creative-video",
+                    self.t("studio.creative_title"),
+                    &self.theme,
+                )
+                .w(px(220.))
+                .h(px(92.))
+                .rounded_xl()
+                .bg(self.theme.ink())
+                .text_color(self.theme.on_ink())
+                .p(self.theme.space(16.))
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap(self.theme.space(4.))
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.92))
+                .on_click(cx.listener(|app, _event, _window, cx| {
+                    app.fill_prompt_key("prompt.creative", cx);
+                }))
+                .child(div().text_sm().child(self.t("studio.creative_title")))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.on_ink())
+                        .child(self.t("studio.creative_hint")),
+                ),
             )
     }
 
     fn feature_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
             .flex()
-            .gap_4()
+            .gap(self.theme.space(16.))
             .child(self.build_card(cx))
             .child(self.create_card(cx))
     }
 
     fn build_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .id("build-card")
+        theme::interactive("build-card", self.t("studio.build"), &self.theme)
             .flex_1()
             .h(px(156.))
             .rounded_xl()
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
-            .p_5()
+            .border_color(self.theme.line())
+            .p(self.theme.space(20.))
             .flex()
             .flex_col()
             .justify_between()
             .cursor_pointer()
-            .hover(|style| style.bg(theme::soft()))
+            .hover(|style| style.bg(self.theme.soft()))
             .on_click(cx.listener(|app, _event, _window, cx| {
                 app.fill_prompt_key("prompt.build", cx);
             }))
             .child(
                 div()
                     .text_sm()
-                    .text_color(theme::muted())
+                    .text_color(self.theme.muted())
                     .child(self.t("studio.build")),
             )
             .child(div().text_lg().child(self.t("studio.build_body")))
@@ -585,76 +594,82 @@ impl crate::panel::StudioPanel {
             .flex_1()
             .h(px(156.))
             .rounded_xl()
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .flex()
             .overflow_hidden()
             .child(
-                div()
-                    .id("create-card")
-                    .flex_1()
-                    .p_5()
-                    .flex()
-                    .flex_col()
-                    .justify_between()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::soft()))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.fill_prompt_key("prompt.create", cx);
-                    }))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .child(self.t("studio.create")),
-                    )
-                    .child(div().text_lg().child(self.t("studio.create_body"))),
+                theme::interactive(
+                    "create-card",
+                    self.t("studio.create"),
+                    &self.theme,
+                )
+                .flex_1()
+                .p(self.theme.space(20.))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .on_click(cx.listener(|app, _event, _window, cx| {
+                    app.fill_prompt_key("prompt.create", cx);
+                }))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(self.theme.muted())
+                        .child(self.t("studio.create")),
+                )
+                .child(div().text_lg().child(self.t("studio.create_body"))),
             )
-            .child(div().w(px(1.)).h_full().bg(theme::line()))
+            .child(div().w(px(1.)).h_full().bg(self.theme.line()))
             .child(
-                div()
-                    .id("local-files")
-                    .flex_1()
-                    .p_5()
-                    .flex()
-                    .flex_col()
-                    .justify_between()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::soft()))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        app.note("notice.local_later", cx);
-                    }))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .child(self.t("studio.local_title")),
-                    )
-                    .child(div().text_sm().child(self.t("studio.local_body"))),
+                theme::interactive(
+                    "local-files",
+                    self.t("studio.local_title"),
+                    &self.theme,
+                )
+                .flex_1()
+                .p(self.theme.space(20.))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .on_click(cx.listener(|app, _event, _window, cx| {
+                    app.note("notice.local_later", cx);
+                }))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(self.theme.muted())
+                        .child(self.t("studio.local_title")),
+                )
+                .child(div().text_sm().child(self.t("studio.local_body"))),
             )
     }
 
     fn composer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
-            .px_8()
-            .pb_4()
+            .px(self.theme.space(32.))
+            .pb(self.theme.space(16.))
             .child(
                 div()
                     .w_full()
                     .max_w(px(760.))
                     .mx_auto()
-                    .bg(theme::card())
+                    .bg(self.theme.card())
                     .border_1()
-                    .border_color(theme::line())
+                    .border_color(self.theme.line())
                     .rounded_xl()
                     .shadow_sm()
-                    .px_4()
-                    .pt_3()
-                    .pb_2()
+                    .px(self.theme.space(16.))
+                    .pt(self.theme.space(12.))
+                    .pb(self.theme.space(8.))
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap(self.theme.space(8.))
                     .child(self.prompt_field())
                     .child(
                         div()
@@ -662,34 +677,40 @@ impl crate::panel::StudioPanel {
                             .items_center()
                             .justify_between()
                             .child(
-                                div()
-                                    .id("attach")
-                                    .text_sm()
-                                    .text_color(theme::muted())
-                                    .cursor_pointer()
-                                    .child(self.t("studio.attach"))
-                                    .on_click(cx.listener(
-                                        |app, _event, _window, cx| {
-                                            app.note("notice.attach_later", cx);
-                                        },
-                                    )),
+                                theme::interactive(
+                                    "attach",
+                                    self.t("studio.attach"),
+                                    &self.theme,
+                                )
+                                .text_sm()
+                                .text_color(self.theme.muted())
+                                .cursor_pointer()
+                                .child(self.t("studio.attach"))
+                                .on_click(
+                                    cx.listener(|app, _event, _window, cx| {
+                                        app.note("notice.attach_later", cx);
+                                    }),
+                                ),
                             )
                             .child(
-                                div()
-                                    .id("send-prompt")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_full()
-                                    .bg(theme::fill())
-                                    .text_color(theme::on_fill())
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .child(self.t("studio.send"))
-                                    .on_click(cx.listener(
-                                        |app, _event, _window, cx| {
-                                            app.send_prompt(cx);
-                                        },
-                                    )),
+                                theme::interactive(
+                                    "send-prompt",
+                                    self.t("studio.send"),
+                                    &self.theme,
+                                )
+                                .px(self.theme.space(12.))
+                                .py(self.theme.space(4.))
+                                .rounded_full()
+                                .bg(self.theme.fill())
+                                .text_color(self.theme.on_fill())
+                                .text_sm()
+                                .cursor_pointer()
+                                .child(self.t("studio.send"))
+                                .on_click(
+                                    cx.listener(|app, _event, _window, cx| {
+                                        app.send_prompt(cx);
+                                    }),
+                                ),
                             ),
                     ),
             )
@@ -698,9 +719,9 @@ impl crate::panel::StudioPanel {
                     .w_full()
                     .max_w(px(760.))
                     .mx_auto()
-                    .pt_2()
+                    .pt(self.theme.space(8.))
                     .text_xs()
-                    .text_color(theme::muted())
+                    .text_color(self.theme.muted())
                     .child(self.t("studio.disclaimer")),
             )
     }
@@ -709,19 +730,19 @@ impl crate::panel::StudioPanel {
         div().flex_1().flex().items_center().justify_center().child(
             div()
                 .w(px(460.))
-                .bg(theme::card())
+                .bg(self.theme.card())
                 .border_1()
-                .border_color(theme::line())
+                .border_color(self.theme.line())
                 .rounded_xl()
-                .p_8()
+                .p(self.theme.space(32.))
                 .flex()
                 .flex_col()
-                .gap_3()
+                .gap(self.theme.space(12.))
                 .child(div().text_2xl().child(self.placeholder_title()))
                 .child(
                     div()
                         .text_sm()
-                        .text_color(theme::muted())
+                        .text_color(self.theme.muted())
                         .child(self.placeholder_detail()),
                 ),
         )
@@ -729,27 +750,22 @@ impl crate::panel::StudioPanel {
 
     fn prompt_field(&self) -> impl gpui::IntoElement {
         text_area("prompt")
+            .aria_label(self.t("studio.prompt_placeholder"))
             .state(self.prompt.downgrade())
             .placeholder(self.t("studio.prompt_placeholder"))
-            .placeholder_color(theme::muted())
-            .caret_color(gpui::rgb_to_hsla(theme::ink()))
+            .placeholder_color(self.theme.muted())
+            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
             .caret_blink_interval_500ms()
             .w_full()
             .h(px(72.))
             .whitespace_normal()
             .overflow_y_scroll()
-            .text_color(theme::ink())
-    }
-
-    const DAILY_GRANT: u32 = 300;
-
-    fn credit_split(total: u32) -> (u32, u32) {
-        let daily = Self::DAILY_GRANT.min(total);
-        (total - daily, daily)
+            .text_color(self.theme.ink())
     }
 
     fn credit_row(
-        mark: gpui::Svg,
+        &self,
+        mark: theme::icons::Icon,
         label: String,
         value: String,
         help: bool,
@@ -757,57 +773,49 @@ impl crate::panel::StudioPanel {
         div()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(self.theme.space(8.))
             .child(
                 div()
                     .flex_1()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(self.theme.space(8.))
                     .child(mark)
                     .child(div().text_sm().child(label))
-                    .when(help, |row| row.child(Self::help_mark())),
+                    .when(help, |row| row.child(self.help_mark())),
             )
             .child(div().text_sm().child(value))
     }
 
-    fn credit_sub(label: String, value: Option<String>) -> impl IntoElement {
+    fn credit_sub(
+        &self,
+        label: String,
+        value: Option<String>,
+    ) -> impl IntoElement {
         div()
             .flex()
             .items_center()
             .justify_between()
             .pl(px(22.))
-            .child(div().text_xs().text_color(theme::muted()).child(label))
+            .child(div().text_xs().text_color(self.theme.muted()).child(label))
             .children(value.map(|text| div().text_xs().child(text)))
     }
 
-    fn help_mark() -> impl IntoElement {
+    fn help_mark(&self) -> impl IntoElement {
         div()
             .size(px(14.))
             .rounded_full()
             .border_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .flex()
             .items_center()
             .justify_center()
             .text_xs()
-            .text_color(theme::muted())
+            .text_color(self.theme.muted())
             .child(
                 theme::icons::circle_help()
                     .size(px(14.))
-                    .text_color(theme::muted()),
+                    .text_color(self.theme.muted()),
             )
-    }
-
-    fn grouped(value: u32) -> String {
-        let raw = value.to_string();
-        let mut out = String::new();
-        for (index, ch) in raw.chars().rev().enumerate() {
-            if index > 0 && index.is_multiple_of(3) {
-                out.push(',');
-            }
-            out.push(ch);
-        }
-        out.chars().rev().collect()
     }
 }

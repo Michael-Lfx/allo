@@ -56,45 +56,18 @@ pub enum Section {
     More,
 }
 
-impl Section {
-    pub(crate) const fn title_key(self) -> &'static str {
-        match self {
-            Self::Studio => "studio.brand",
-            // Self::Computer => "dock.computer",
-            // Self::Agent => "dock.agent",
-            Self::Search => "dock.search",
-            Self::Library => "dock.library",
-            Self::Create => "dock.create",
-            Self::Automation => "dock.automation",
-            Self::Plugins => "dock.plugins",
-            Self::More => "dock.more",
-        }
-    }
-
-    pub(crate) const fn detail_key(self) -> &'static str {
-        match self {
-            Self::Studio => "studio.brand",
-            // Self::Computer => "section.computer",
-            // Self::Agent => "section.agent",
-            Self::Search => "section.search",
-            Self::Library => "section.library",
-            Self::Create => "section.create",
-            Self::Automation => "section.automation",
-            Self::Plugins => "section.plugins",
-            Self::More => "section.more",
-        }
-    }
-}
-
 pub struct FlowyApp {
+    active_dialog: state::ActiveDialog,
+    pub ui: flowy_ui::UiContext,
+    pub theme: flowy_ui::ResolvedTheme,
     pub store: SessionStore,
     pub screen: Screen,
     pub section: Section,
     pub notice: Option<&'static str>,
     storage_error: bool,
-    pub auth: AuthState,
+    auth: AuthState,
     pub studio: Entity<StudioPanel>,
-    pub gallery: GalleryState,
+    gallery: GalleryState,
     pub ota: ota::OtaController,
     pub settings: SettingsState,
     pub invite: InviteState,
@@ -109,8 +82,70 @@ pub struct FlowyApp {
     subscriptions: Vec<Subscription>,
 }
 
+impl std::fmt::Debug for FlowyApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlowyApp")
+            .field("screen", &self.screen)
+            .field("section", &self.section)
+            .field("active_dialog", &self.active_dialog)
+            .finish_non_exhaustive()
+    }
+}
+
 impl FlowyApp {
-    fn new(store: SessionStore, cx: &mut Context<'_, Self>) -> Self {
+    fn activate_dialog(
+        &mut self,
+        dialog: state::ActiveDialog,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.settings.picker = settings::Picker::None;
+        self.flex.provider_menu = false;
+        self.persona.menu = false;
+        self.user_menu = false;
+        self.gallery.idea_note = false;
+        self.studio.update(cx, |panel, cx| {
+            panel.model_menu_open = false;
+            panel.credits_hover = false;
+            panel.credits_close = None;
+            cx.notify();
+        });
+        self.active_dialog = dialog;
+        cx.notify();
+    }
+
+    fn close_overlay(&mut self, scope: &str, cx: &mut Context<'_, Self>) {
+        match scope {
+            "language-menu" | "send-menu" | "accent-menu" | "density-menu" => {
+                self.settings.picker = settings::Picker::None
+            }
+            "flex-provider-menu" => self.flex.provider_menu = false,
+            "more-flyout" => self.persona.menu = false,
+            "user-menu" => self.close_user_menu(cx),
+            "model-list" | "model-info" | "credit-card" => {
+                self.studio.update(cx, |panel, cx| {
+                    match scope {
+                        "model-list" => panel.model_menu_open = false,
+                        "model-info" => panel.model_info_open = false,
+                        _ => panel.credits_hover = false,
+                    }
+                    cx.notify();
+                })
+            }
+            _ if self.active_dialog.scope() == Some(scope) => {
+                self.active_dialog = state::ActiveDialog::None;
+                self.settings.picker = settings::Picker::None;
+                self.flex.provider_menu = false;
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn new(
+        store: SessionStore,
+        system_dark: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> Self {
         let session = store.load();
         let screen = if session.is_some() {
             Screen::Main
@@ -118,6 +153,12 @@ impl FlowyApp {
             Screen::Login
         };
         let prefs = Preferences::load(store.root());
+        let ui = flowy_ui::UiContext::new(
+            Self::theme_options(&prefs),
+            system_dark,
+            cx,
+        );
+        let theme = ui.theme.read(cx).resolved();
         let model_info_open =
             screen == Screen::Main && prefs.shows_model_info();
         let mut i18n = I18n::embedded(crate::brand::product());
@@ -159,21 +200,40 @@ impl FlowyApp {
             let plan = prefs.plan;
             let model_info_version = prefs.model_info_version.clone();
             let llm = prefs.llm_config();
+            let ui = ui.clone();
             cx.new(move |cx| {
                 StudioPanel::new(
-                    product,
-                    i18n,
-                    model,
-                    plan,
-                    model_info_version,
-                    model_info_open,
-                    store_root,
-                    llm,
+                    flowy_studio::StudioConfig {
+                        product,
+                        i18n,
+                        model,
+                        plan,
+                        model_info_version,
+                        model_info_open,
+                        store_root,
+                        llm,
+                    },
+                    ui,
                     cx,
                 )
             })
         };
         let subscriptions = vec![
+            cx.subscribe(
+                &ui.overlays,
+                |app, _, event: &flowy_ui::OverlayEvent, cx| {
+                    let flowy_ui::OverlayEvent::CloseRequested {
+                        scope, ..
+                    } = event;
+                    app.close_overlay(scope.as_ref(), cx);
+                },
+            ),
+            cx.observe(&studio, |_, _, cx| cx.notify()),
+            cx.observe(&ui.overlays, |_, _, cx| cx.notify()),
+            cx.observe(&ui.theme, |app, _, cx| {
+                app.theme = app.ui.theme.read(cx).resolved();
+                cx.notify();
+            }),
             cx.subscribe(&email, |_, _, _: &TextChanged, cx| cx.notify()),
             cx.subscribe(&code, |app, _, _: &TextChanged, cx| {
                 app.on_otp_changed(cx);
@@ -219,6 +279,9 @@ impl FlowyApp {
             }),
         ];
         Self {
+            active_dialog: state::ActiveDialog::None,
+            ui,
+            theme,
             store,
             screen,
             section: Section::Studio,
@@ -237,25 +300,20 @@ impl FlowyApp {
                 generation: 0,
                 task: None,
                 cooldown_task: None,
-                legal: None,
             },
             studio,
             gallery: GalleryState {
                 page: 0,
-                ideas_open: false,
                 idea_filter: gallery::Filter::All,
-                idea_id: None,
                 idea_note: false,
             },
             ota: ota::OtaController::new(),
             settings: SettingsState {
-                open: false,
                 page: settings::Page::General,
                 picker: settings::Picker::None,
                 query: settings_query,
             },
             invite: InviteState {
-                open: false,
                 panel: invite::Panel::Share,
                 status: None,
                 code: invite_book.code,
@@ -267,7 +325,6 @@ impl FlowyApp {
                 menu: false,
                 page: more::Page::Personal,
                 tab: more::Tab::Profile,
-                dialog: more::Dialog::None,
                 status: None,
                 knowledge: saved.knowledge,
                 nickname,
@@ -285,7 +342,6 @@ impl FlowyApp {
                 font_size_field,
             },
             flex: FlexState {
-                open: false,
                 provider_menu: false,
                 draft_provider: prefs.flex_provider,
                 api_key: flex_api_key,
@@ -397,7 +453,7 @@ impl FlowyApp {
             cx.notify();
             return;
         }
-        self.auth.attempted_code = code.clone();
+        self.auth.attempted_code.clone_from(&code);
         self.auth.generation = self.auth.generation.saturating_add(1);
         let generation = self.auth.generation;
         self.auth.phase = LoginPhase::Verifying;
@@ -520,12 +576,12 @@ impl FlowyApp {
     }
 
     fn open_legal(&mut self, doc: LegalDoc, cx: &mut Context<'_, Self>) {
-        self.auth.legal = Some(doc);
+        self.activate_dialog(state::ActiveDialog::Legal(doc), cx);
         cx.notify();
     }
 
     fn close_legal(&mut self, cx: &mut Context<'_, Self>) {
-        self.auth.legal = None;
+        self.active_dialog = state::ActiveDialog::None;
         cx.notify();
     }
 
@@ -613,20 +669,16 @@ impl FlowyApp {
         self.auth.cooldown_left = 0;
         self.auth.task = None;
         self.auth.cooldown_task = None;
-        self.auth.legal = None;
+        self.active_dialog = state::ActiveDialog::None;
         self.screen = Screen::Login;
         self.section = Section::Studio;
-        self.settings.open = false;
-        self.invite.open = false;
         self.persona.menu = false;
-        self.persona.dialog = more::Dialog::None;
         self.persona.status = None;
         self.user_menu = false;
         self.notice = None;
-        self.studio.update(cx, |panel, cx| panel.reset_session(cx));
+        self.studio
+            .update(cx, flowy_studio::StudioPanel::reset_session);
         self.gallery.page = 0;
-        self.gallery.ideas_open = false;
-        self.gallery.idea_id = None;
         self.gallery.idea_note = false;
         self.ota.reset();
         cx.notify();
@@ -634,7 +686,8 @@ impl FlowyApp {
 
     pub fn send_prompt(&mut self, cx: &mut Context<'_, Self>) {
         self.sync_studio_surface(cx);
-        self.studio.update(cx, |panel, cx| panel.send_prompt(cx));
+        self.studio
+            .update(cx, flowy_studio::StudioPanel::send_prompt);
     }
 
     pub fn fill_prompt(&mut self, text: &str, cx: &mut Context<'_, Self>) {
@@ -652,7 +705,8 @@ impl FlowyApp {
     }
 
     pub fn add_project(&mut self, cx: &mut Context<'_, Self>) {
-        self.studio.update(cx, |panel, cx| panel.add_project(cx));
+        self.studio
+            .update(cx, flowy_studio::StudioPanel::add_project);
     }
 
     pub fn open_thread(&mut self, title: String, cx: &mut Context<'_, Self>) {
@@ -663,7 +717,8 @@ impl FlowyApp {
     }
 
     pub fn clear_thread(&mut self, cx: &mut Context<'_, Self>) {
-        self.studio.update(cx, |panel, cx| panel.clear_thread(cx));
+        self.studio
+            .update(cx, flowy_studio::StudioPanel::clear_thread);
     }
 
     fn sync_studio_surface(&mut self, cx: &mut Context<'_, Self>) {
@@ -773,7 +828,7 @@ impl FlowyApp {
             } => {
                 self.prefs.model = *model;
                 self.prefs.plan = *plan;
-                self.prefs.model_info_version = model_info_version.clone();
+                self.prefs.model_info_version.clone_from(model_info_version);
                 self.prefs.save(self.store.root());
                 self.sync_agent_llm(cx);
                 cx.notify();
@@ -782,7 +837,7 @@ impl FlowyApp {
                 self.open_flex(cx);
             }
             StudioEvent::OpenIdeas => {
-                self.gallery.ideas_open = true;
+                self.activate_dialog(state::ActiveDialog::Ideas, cx);
                 cx.notify();
             }
             StudioEvent::SessionsChanged => {
@@ -812,8 +867,8 @@ impl FlowyApp {
             .relative()
             .flex()
             .flex_row()
-            .bg(flowy_ui::canvas())
-            .text_color(flowy_ui::ink())
+            .bg(self.theme.canvas())
+            .text_color(self.theme.ink())
             .child(self.dock(window, cx));
         canvas = if self.section == Section::More {
             canvas.child(self.more_canvas(cx))
@@ -822,9 +877,6 @@ impl FlowyApp {
         };
         if self.persona.menu && self.section == Section::More {
             canvas = canvas.child(self.more_flyout(cx));
-        }
-        if self.user_menu {
-            canvas = canvas.child(self.user_menu_layer(cx));
         }
         canvas
     }
@@ -915,7 +967,56 @@ impl Render for FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        self.apply_appearance(window, cx);
+        let modal = self.active_dialog.scope().map(gpui::SharedString::from);
+        let popup = match self.settings.picker {
+            settings::Picker::Language => Some("language-menu"),
+            settings::Picker::Send => Some("send-menu"),
+            settings::Picker::Accent => Some("accent-menu"),
+            settings::Picker::Density => Some("density-menu"),
+            settings::Picker::None if self.flex.provider_menu => {
+                Some("flex-provider-menu")
+            }
+            settings::Picker::None if self.persona.menu => Some("more-flyout"),
+            settings::Picker::None if self.user_menu => Some("user-menu"),
+            settings::Picker::None
+                if self.active_dialog == state::ActiveDialog::None
+                    && self.screen == Screen::Main
+                    && self.section != Section::More
+                    && self.studio.read(cx).surface
+                        != StudioSurface::Automation
+                    && self.studio.read(cx).model_menu_open =>
+            {
+                Some("model-list")
+            }
+            settings::Picker::None
+                if self.active_dialog == state::ActiveDialog::None
+                    && self.screen == Screen::Main
+                    && self.section != Section::More
+                    && self.studio.read(cx).surface
+                        != StudioSurface::Automation
+                    && self.studio.read(cx).model_info_open =>
+            {
+                Some("model-info")
+            }
+            settings::Picker::None
+                if self.active_dialog == state::ActiveDialog::None
+                    && self.screen == Screen::Main
+                    && self.section != Section::More
+                    && self.studio.read(cx).surface
+                        != StudioSurface::Automation
+                    && self.studio.read(cx).credits_hover =>
+            {
+                Some("credit-card")
+            }
+            settings::Picker::None => None,
+        }
+        .map(gpui::SharedString::from);
+        self.ui.overlays.update(cx, |host, cx| {
+            host.begin_frame(window);
+            host.set_modal(modal, window, cx);
+            host.set_popup(popup, window, cx);
+        });
+        window.set_rem_size(px(f32::from(self.prefs.font_size) / 0.875));
         if self.screen == Screen::Main && !self.ota.checked {
             self.ota.checked = true;
             self.start_update_check(cx);
@@ -923,7 +1024,7 @@ impl Render for FlowyApp {
         let mut root = div()
             .id("flowy")
             .size_full()
-            .bg(flowy_ui::canvas())
+            .bg(self.theme.canvas())
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             // Single-line inputs propagate their Tab action to this handler;
@@ -935,47 +1036,89 @@ impl Render for FlowyApp {
             root.ltr()
         };
         root = root.relative();
-        root = if self.screen == Screen::Login {
-            let mut login = div()
+        let modal = self.active_dialog != state::ActiveDialog::None;
+        let background = if self.screen == Screen::Login {
+            div()
                 .id("login-root")
                 .size_full()
                 .relative()
-                .child(self.login_canvas(window, cx));
-            if self.auth.legal.is_some() {
-                login = login.child(self.legal_layer(cx));
-            }
-            root.child(login)
+                .child(self.login_canvas(window, cx))
         } else {
-            root.child(self.main_canvas(window, cx))
+            div()
+                .id("main-background")
+                .size_full()
+                .child(self.main_canvas(window, cx))
         };
-        if self.gallery.ideas_open
-            && self.screen == Screen::Main
-            && !self.settings.open
-        {
-            root = root.child(self.ideas_layer(window, cx));
-        }
-        if self.gallery.idea_id.is_some()
-            && self.screen == Screen::Main
-            && !self.settings.open
-        {
-            root = root.child(self.idea_layer(window, cx));
-        }
-        if self.invite.open && self.screen == Screen::Main && !self.settings.open
-        {
-            root = root.child(self.invite_layer(cx));
-        }
-        if self.persona.dialog != more::Dialog::None
-            && self.screen == Screen::Main
-            && !self.settings.open
-        {
-            root = root.child(self.more_layer(cx));
-        }
-        if self.flex.open && self.screen == Screen::Main && !self.settings.open
-        {
-            root = root.child(self.flex_layer(cx));
-        }
-        if self.settings.open && self.screen == Screen::Main {
-            root = root.child(self.settings_layer(window, cx));
+        root = root.child(
+            background
+                .when(modal, gpui::StatefulInteractiveElement::aria_hidden),
+        );
+        root = match self.active_dialog {
+            state::ActiveDialog::None => root,
+            state::ActiveDialog::Settings => {
+                root.child(self.settings_layer(window, cx))
+            }
+            state::ActiveDialog::Ideas => {
+                root.child(self.ideas_layer(window, cx))
+            }
+            state::ActiveDialog::Idea(_) => {
+                root.child(self.idea_layer(window, cx))
+            }
+            state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
+            state::ActiveDialog::Flex => root.child(self.flex_layer(cx)),
+            state::ActiveDialog::Import | state::ActiveDialog::Knowledge => {
+                root.child(self.more_layer(cx))
+            }
+            state::ActiveDialog::Legal(_) => root.child(self.legal_layer(cx)),
+        };
+        let menu = match self.settings.picker {
+            settings::Picker::Language => Some((
+                "language-menu",
+                "language-button",
+                self.language_menu(cx).into_any_element(),
+            )),
+            settings::Picker::Send => Some((
+                "send-menu",
+                "send-button",
+                self.send_menu(cx).into_any_element(),
+            )),
+            settings::Picker::Accent => Some((
+                "accent-menu",
+                "accent-button",
+                self.accent_menu(cx).into_any_element(),
+            )),
+            settings::Picker::Density => Some((
+                "density-menu",
+                "density-button",
+                self.density_menu(cx).into_any_element(),
+            )),
+            settings::Picker::None if self.flex.provider_menu => Some((
+                "flex-provider-menu",
+                "flex-provider",
+                self.flex_provider_menu(cx).into_any_element(),
+            )),
+            settings::Picker::None if self.persona.menu => Some((
+                "more-flyout",
+                "more-trigger",
+                self.more_flyout(cx).into_any_element(),
+            )),
+            settings::Picker::None if self.user_menu => Some((
+                "user-menu",
+                "dock-user",
+                self.user_menu_content(cx).into_any_element(),
+            )),
+            settings::Picker::None => None,
+        };
+        if let Some((id, anchor, content)) = menu {
+            root = root.child(flowy_ui::popover(
+                id,
+                anchor,
+                content,
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
         }
         if self.prefs.activity && self.screen == Screen::Main {
             root = root.child(self.activity_floater());
@@ -991,10 +1134,10 @@ impl Render for FlowyApp {
                     .max_w(px(480.))
                     .p_3()
                     .rounded_lg()
-                    .bg(flowy_ui::card())
+                    .bg(self.theme.card())
                     .border_1()
-                    .border_color(flowy_ui::danger())
-                    .text_color(flowy_ui::ink())
+                    .border_color(self.theme.danger())
+                    .text_color(self.theme.ink())
                     .flex()
                     .items_center()
                     .gap_3()
@@ -1004,15 +1147,16 @@ impl Render for FlowyApp {
                             "dismiss-session-storage-error",
                             dismiss.clone(),
                             false,
+                            &self.theme,
                             cx.listener(|app, _, _, cx| {
-                                app.dismiss_storage_error(cx)
+                                app.dismiss_storage_error(cx);
                             }),
                         )
                         .px_3()
                         .py_1()
                         .rounded_lg()
-                        .bg(flowy_ui::fill())
-                        .text_color(flowy_ui::on_fill())
+                        .bg(self.theme.fill())
+                        .text_color(self.theme.on_fill())
                         .child(dismiss),
                     ),
             );
@@ -1022,10 +1166,19 @@ impl Render for FlowyApp {
 }
 
 impl FlowyApp {
+    fn theme_options(prefs: &Preferences) -> flowy_ui::ThemeOptions {
+        flowy_ui::ThemeOptions {
+            mode: prefs.theme,
+            accent: prefs.accent,
+            density: prefs.density,
+            font_size: prefs.font_size,
+        }
+    }
+
     fn apply_appearance(
         &mut self,
         window: &mut Window,
-        cx: &Context<'_, Self>,
+        cx: &mut Context<'_, Self>,
     ) {
         let forced = match self.prefs.theme {
             crate::prefs::ThemeMode::Light => Some(WindowAppearance::Light),
@@ -1046,7 +1199,11 @@ impl FlowyApp {
             crate::prefs::ThemeMode::Light => false,
             crate::prefs::ThemeMode::Auto => system_dark,
         };
-        flowy_ui::install(dark, self.prefs.accent, self.prefs.density);
+        let options = Self::theme_options(&self.prefs);
+        self.ui
+            .theme
+            .update(cx, |state, cx| state.update(options, dark, cx));
+        self.theme = self.ui.theme.read(cx).resolved();
         window.set_rem_size(px(f32::from(self.prefs.font_size) / 0.875));
     }
 }
@@ -1084,6 +1241,7 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("tab", FocusNext, None),
         KeyBinding::new("shift-tab", FocusPrevious, None),
     ]);
+    cx.set_reduce_motion(true);
     flowy_ui::install_initial_tab_focus(cx).detach();
     flowy_shell::install(
         flowy_shell::Brand {
@@ -1115,12 +1273,17 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
     };
     let store = SessionStore::new(crate::session::default_root());
     let window = cx
-        .open_window(options, |_window, cx| {
-            cx.new(|cx| FlowyApp::new(store, cx))
+        .open_window(options, |window, cx| {
+            let dark = matches!(
+                window.appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            );
+            cx.new(|cx| FlowyApp::new(store, dark, cx))
         })
         .expect("open main window");
     window
         .update(cx, |app, window, cx| {
+            app.apply_appearance(window, cx);
             app.start_locale_watch(cx);
             app.start_shell_watch(cx);
             let subscription =
@@ -1214,20 +1377,22 @@ mod tests {
     fn new_task_reconciles_deferred_studio_notice(cx: &mut TestAppContext) {
         let root = test_root();
         let app = cx.update(|cx| {
-            cx.new(|cx| FlowyApp::new(SessionStore::new(root.clone()), cx))
+            cx.new(|cx| {
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx)
+            })
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 app.studio.update(cx, |panel, cx| {
-                    panel.note("notice.attach_later", cx)
+                    panel.note("notice.attach_later", cx);
                 });
-            })
+            });
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 assert_eq!(app.notice, Some("notice.attach_later"));
                 app.select_navigation("new-task", Section::Studio, cx);
-            })
+            });
         });
         cx.update(|cx| {
             let app = app.read(cx);
@@ -1244,31 +1409,33 @@ mod tests {
     ) {
         let root = test_root();
         let app = cx.update(|cx| {
-            cx.new(|cx| FlowyApp::new(SessionStore::new(root.clone()), cx))
+            cx.new(|cx| {
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx)
+            })
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 assert_eq!(app.screen, Screen::Login);
                 app.studio.update(cx, |panel, cx| {
-                    panel.note("notice.session_storage_failed", cx)
+                    panel.note("notice.session_storage_failed", cx);
                 });
-            })
+            });
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 assert!(app.storage_error);
                 app.screen = Screen::Main;
-                app.settings.open = true;
+                app.activate_dialog(state::ActiveDialog::Settings, cx);
                 app.select_navigation("automation", Section::Automation, cx);
                 app.select_navigation("new-task", Section::Studio, cx);
-            })
+            });
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 assert!(app.storage_error);
                 app.dismiss_storage_error(cx);
                 assert!(!app.storage_error);
-            })
+            });
         });
         drop(app);
         let _ = std::fs::remove_dir_all(root);
@@ -1281,12 +1448,14 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("index.json"), b"{broken").unwrap();
         let app = cx.update(|cx| {
-            cx.new(|cx| FlowyApp::new(SessionStore::new(root.clone()), cx))
+            cx.new(|cx| {
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx)
+            })
         });
         cx.update(|cx| {
             app.update(cx, |app, cx| {
                 app.select_navigation("new-task", Section::Studio, cx);
-            })
+            });
         });
         cx.update(|cx| {
             assert!(app.read(cx).storage_error);

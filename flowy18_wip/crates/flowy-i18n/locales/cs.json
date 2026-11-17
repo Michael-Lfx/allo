@@ -411,5 +411,18 @@
   "thread.confirm_rights": "Potvrzuji, že mám právo tato média použít.",
   "thread.confirm_terms": "Souhlasím s podmínkami služby a zásadami ochrany soukromí.",
   "thread.confirm_title": "Potvrzení použití médií",
-  "thread.prompt_placeholder": "Odeslat zprávu do {product}"
+  "thread.prompt_placeholder": "Odeslat zprávu do {product}",
+  "credits.error": "Kredity se nepodařilo načíst",
+  "credits.loading": "Načítání kreditů",
+  "credits.unavailable": "Kredity nejsou dostupné",
+  "ui.close": "Zavřít",
+  "ui.document_nodes": "{title} · {count} uzlů",
+  "ui.fullscreen": "Celá obrazovka",
+  "ui.loading": "Načítání",
+  "ui.next": "Další",
+  "ui.play": "Přehrát",
+  "ui.previous": "Předchozí",
+  "ui.rating": "{n} hvězdiček",
+  "ui.remove": "Odebrat",
+  "ui.volume": "Hlasitost"
 }

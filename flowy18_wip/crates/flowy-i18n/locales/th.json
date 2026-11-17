@@ -300,6 +300,7 @@
   "notice.project_created": "สร้างโปรเจกต์สำหรับเซสชันนี้เท่านั้น",
   "notice.prompt_empty": "เขียนงานก่อน",
   "notice.prompt_filled": "เติมงานแล้ว ส่งเมื่อพร้อม",
+  "notice.session_storage_failed": "ไม่สามารถอ่านหรือบันทึกข้อมูลเซสชันได้ โปรดตรวจสอบสิทธิ์การเข้าถึงพื้นที่จัดเก็บ",
   "notice.task_added": "เพิ่มในรายการงานของเซสชันนี้แล้ว",
   "notice.upgrade_later": "ยังอัปเกรดไม่ได้",
   "ota.available": "มีอัปเดต {version}",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "ฉันยืนยันว่ามีสิทธิ์ใช้สื่อนี้",
   "thread.confirm_terms": "ฉันยอมรับข้อกำหนดการใช้บริการและนโยบายความเป็นส่วนตัว",
   "thread.confirm_title": "ยืนยันการใช้สื่อ",
-  "thread.prompt_placeholder": "ส่งข้อความถึง {product}"
+  "thread.prompt_placeholder": "ส่งข้อความถึง {product}",
+  "credits.error": "โหลดเครดิตไม่สำเร็จ",
+  "credits.loading": "กำลังโหลดเครดิต",
+  "credits.unavailable": "เครดิตไม่พร้อมใช้งาน",
+  "ui.close": "ปิด",
+  "ui.document_nodes": "{title} · {count} โหนด",
+  "ui.fullscreen": "เต็มหน้าจอ",
+  "ui.loading": "กำลังโหลด",
+  "ui.next": "ถัดไป",
+  "ui.play": "เล่น",
+  "ui.previous": "ก่อนหน้า",
+  "ui.rating": "{n} ดาว",
+  "ui.remove": "นำออก",
+  "ui.volume": "ระดับเสียง"
 }

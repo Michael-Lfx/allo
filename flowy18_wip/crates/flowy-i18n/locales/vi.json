@@ -300,6 +300,7 @@
   "notice.project_created": "Đã tạo dự án chỉ cho phiên này",
   "notice.prompt_empty": "Hãy viết tác vụ trước",
   "notice.prompt_filled": "Đã điền tác vụ. Gửi khi sẵn sàng.",
+  "notice.session_storage_failed": "Không thể đọc hoặc lưu dữ liệu phiên. Hãy kiểm tra quyền truy cập bộ nhớ.",
   "notice.task_added": "Đã thêm vào danh sách tác vụ của phiên này",
   "notice.upgrade_later": "Chưa thể nâng cấp",
   "ota.available": "Đã có bản cập nhật {version}",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "Tôi xác nhận có quyền dùng nội dung đa phương tiện này.",
   "thread.confirm_terms": "Tôi đồng ý với Điều khoản dịch vụ và Chính sách quyền riêng tư.",
   "thread.confirm_title": "Xác nhận dùng nội dung đa phương tiện",
-  "thread.prompt_placeholder": "Gửi tin nhắn cho {product}"
+  "thread.prompt_placeholder": "Gửi tin nhắn cho {product}",
+  "credits.error": "Không thể tải tín dụng",
+  "credits.loading": "Đang tải tín dụng",
+  "credits.unavailable": "Không có thông tin tín dụng",
+  "ui.close": "Đóng",
+  "ui.document_nodes": "{title} · {count} nút",
+  "ui.fullscreen": "Toàn màn hình",
+  "ui.loading": "Đang tải",
+  "ui.next": "Tiếp",
+  "ui.play": "Phát",
+  "ui.previous": "Trước",
+  "ui.rating": "{n} sao",
+  "ui.remove": "Xóa",
+  "ui.volume": "Âm lượng"
 }

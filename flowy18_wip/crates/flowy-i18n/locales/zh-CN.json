@@ -411,5 +411,18 @@
   "thread.confirm_rights": "我确认有权使用这些媒体内容。",
   "thread.confirm_terms": "我同意服务条款与隐私政策。",
   "thread.confirm_title": "媒体使用确认",
-  "thread.prompt_placeholder": "向 {product} 发送消息"
+  "thread.prompt_placeholder": "向 {product} 发送消息",
+  "credits.error": "积分加载失败",
+  "credits.loading": "正在加载积分",
+  "credits.unavailable": "积分暂不可用",
+  "ui.close": "关闭",
+  "ui.document_nodes": "{title} · {count} 个节点",
+  "ui.fullscreen": "全屏",
+  "ui.loading": "正在加载",
+  "ui.next": "下一项",
+  "ui.play": "播放",
+  "ui.previous": "上一项",
+  "ui.rating": "{n} 星",
+  "ui.remove": "移除",
+  "ui.volume": "音量"
 }

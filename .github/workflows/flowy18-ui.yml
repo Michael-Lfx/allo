@@ -1,0 +1,133 @@
+name: Flowy 1.8 UI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "flowy18_wip/**"
+      - ".github/workflows/flowy18-ui.yml"
+  push:
+    branches: [main]
+    paths:
+      - "flowy18_wip/**"
+      - ".github/workflows/flowy18-ui.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flowy18-ui-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch-readiness:
+    name: GPUI dependency readiness (not a build check)
+    runs-on: ubuntu-24.04
+    outputs:
+      source_ready: ${{ steps.patch.outputs.source_ready }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Inventory tracked patch source
+        id: patch
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          root = pathlib.Path('flowy18_wip')
+          manifest = (root / 'Cargo.toml').read_text(encoding='utf-8')
+          patch = re.search(r'gpui_ce_macos\s*=\s*\{\s*path\s*=\s*"([^"]+)"', manifest)
+          source = root / patch.group(1) / 'Cargo.toml' if patch else None
+          tracked = source is None or (
+              source.is_file() and subprocess.run(
+                  ['git', 'ls-files', '--error-unmatch', '--', source.as_posix()],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              ).returncode == 0
+          )
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'source_ready={str(tracked).lower()}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('## Flowy 1.8 dependency inventory\n\n')
+              if tracked:
+                  summary.write('Patch source manifest is tracked. Windows build/tests may run; this inventory is not a build result.\n')
+              else:
+                  summary.write('**BLOCKED — Windows build/tests skipped automatically.** The existing `gpui_ce_macos` path patch has no tracked source manifest. Source contracts still run. Resolve the dependency in a dedicated change; a green source/inventory job does not mean GPUI build/tests passed. A manual workflow run repeats the Windows preflight and fails explicitly while the source is missing. See `flowy18_wip/docs/ui-system.zh.md`.\n')
+                  print('::warning::GPUI Windows build/tests are blocked by missing tracked patch source; dependency inventory is not a build check.')
+
+  source-contracts:
+    name: GPUI source contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - name: Verify scanner fixtures
+        run: bun flowy18_wip/scripts/check-ui-contracts.mjs --self-test
+      - name: Verify production UI contracts
+        run: bun flowy18_wip/scripts/check-ui-contracts.mjs
+
+  windows-ui:
+    name: GPUI Windows tests and compile
+    needs: patch-readiness
+    if: ${{ needs.patch-readiness.outputs.source_ready == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: flowy18_wip
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+    steps:
+      - uses: actions/checkout@v5
+      # Manual runs retain this explicit failure while automatic runs report
+      # the dependency blocker and skip this job. Neither is a passing build.
+      - name: Validate clean-checkout patch source
+        run: |
+          $manifest = Get-Content -LiteralPath Cargo.toml -Raw
+          $patch = [regex]::Match($manifest, 'gpui_ce_macos\s*=\s*\{\s*path\s*=\s*"([^"]+)"')
+          if ($patch.Success) {
+            $patchManifest = Join-Path $patch.Groups[1].Value 'Cargo.toml'
+            if (-not (Test-Path -LiteralPath $patchManifest)) {
+              throw 'Clean checkout is missing the existing gpui_ce_macos patch source. Resolve its tracked, licensed dependency source in a dedicated change; do not delete or bypass the patch to make UI CI green. See flowy18_wip/docs/ui-system.zh.md.'
+            }
+            git ls-files --error-unmatch -- $patchManifest | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw 'The existing gpui_ce_macos patch source manifest is present but untracked. This is not a reproducible clean-checkout build.'
+            }
+          }
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+          components: rustfmt, clippy
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Use crates.io from GitHub
+        working-directory: .
+        run: bun scripts/ci-use-crates-io.mjs
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: flowy18-windows-ui
+          workspaces: "flowy18_wip -> build.noindex"
+          cache-on-failure: true
+      # Cargo operations are intentionally sequential, including the tests.
+      - name: UI primitives and overlays
+        run: cargo test -p flowy-ui --locked
+      - name: All 23 locale dictionaries
+        run: cargo test -p flowy-i18n --locked
+      - name: Studio regression tests
+        run: cargo test -p flowy-studio --locked
+      - name: Application regression tests
+        run: cargo test -p flowy-app --locked
+      - name: Desktop compile
+        run: cargo check -p flowy-desktop --locked
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+      - name: UI clippy
+        run: cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-targets --locked -- -D warnings

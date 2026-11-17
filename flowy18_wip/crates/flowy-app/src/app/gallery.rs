@@ -271,49 +271,54 @@ impl FlowyApp {
             .relative()
             .child(row)
             .when(page > 0, |strip| {
-                strip.child(gallery_arrow("gallery-prev", true, cx))
+                strip.child(gallery_arrow(self, "gallery-prev", true, cx))
             })
             .when(page + 1 < pages, |strip| {
-                strip.child(gallery_arrow("gallery-next", false, cx))
+                strip.child(gallery_arrow(self, "gallery-next", false, cx))
             })
     }
 }
 
 fn gallery_arrow(
+    app: &FlowyApp,
     id: &'static str,
     previous: bool,
     cx: &Context<'_, FlowyApp>,
 ) -> impl IntoElement {
-    let mut button = div()
-        .id(id)
-        .absolute()
-        .top(px(58.))
-        .size(px(32.))
-        .rounded_full()
-        .bg(theme::card())
-        .border_1()
-        .border_color(theme::line())
-        .shadow_md()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|arrow| arrow.bg(theme::soft()))
-        .child(if previous {
-            theme::icons::chevron_left()
+    let theme = &app.theme;
+    let mut button = theme::interactive(
+        id,
+        app.t(if previous { "ui.previous" } else { "ui.next" }),
+        theme,
+    )
+    .absolute()
+    .top(px(58.))
+    .size(px(32.))
+    .rounded_full()
+    .bg(theme.card())
+    .border_1()
+    .border_color(theme.line())
+    .shadow_md()
+    .flex()
+    .items_center()
+    .justify_center()
+    .cursor_pointer()
+    .hover(|arrow| arrow.bg(theme.soft()))
+    .child(if previous {
+        theme::icons::chevron_left()
+    } else {
+        theme::icons::chevron_right()
+    })
+    .on_click(cx.listener(move |app, _event, _window, cx| {
+        cx.stop_propagation();
+        if previous {
+            app.gallery.page = app.gallery.page.saturating_sub(1);
         } else {
-            theme::icons::chevron_right()
-        })
-        .on_click(cx.listener(move |app, _event, _window, cx| {
-            cx.stop_propagation();
-            if previous {
-                app.gallery.page = app.gallery.page.saturating_sub(1);
-            } else {
-                let last = page_count().saturating_sub(1);
-                app.gallery.page = app.gallery.page.saturating_add(1).min(last);
-            }
-            cx.notify();
-        }));
+            let last = page_count().saturating_sub(1);
+            app.gallery.page = app.gallery.page.saturating_add(1).min(last);
+        }
+        cx.notify();
+    }));
     button = if previous {
         button.left(px(8.))
     } else {
@@ -329,19 +334,18 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let id = item.id;
-        div()
-            .id(item.id)
+        theme::interactive(item.id, self.t(item.kind.key()), &self.theme)
             .flex_1()
             .min_w_0()
             .cursor_pointer()
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 app.open_idea(id, cx);
             }))
-            .child(thumb(item.tint, self.t(item.kind.key())))
+            .child(thumb(&self.theme, item.tint, self.t(item.kind.key())))
             .child(
                 div()
                     .mt_2()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .whitespace_normal()
                     .child(self.t(item.key)),
             )
@@ -349,34 +353,42 @@ impl FlowyApp {
 
     fn see_all_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let count = GALLERY.len().to_string();
-        div()
-            .id("gallery-see-all")
-            .flex_1()
-            .min_w_0()
-            .cursor_pointer()
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.gallery.ideas_open = true;
-                app.gallery.idea_filter = Filter::All;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .h(px(148.))
-                    .rounded_xl()
-                    .bg(theme::soft())
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .child(grid_mark())
-                    .child(div().text_sm().child(self.t("gallery.see_all")))
-                    .child(
-                        div().text_xs().text_color(theme::muted()).child(
-                            self.tf("gallery.count", &[("count", &count)]),
-                        ),
-                    ),
-            )
+        theme::interactive(
+            "gallery-see-all",
+            self.t("gallery.see_all"),
+            &self.theme,
+        )
+        .flex_1()
+        .min_w_0()
+        .cursor_pointer()
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            app.activate_dialog(super::state::ActiveDialog::Ideas, cx);
+            app.gallery.idea_filter = Filter::All;
+            cx.notify();
+        }))
+        .child(
+            div()
+                .h(px(148.))
+                .rounded_xl()
+                .bg(self.theme.soft())
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(grid_mark())
+                .child(
+                    div()
+                        .text_size(self.theme.body_size())
+                        .child(self.t("gallery.see_all")),
+                )
+                .child(
+                    div()
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
+                        .child(self.tf("gallery.count", &[("count", &count)])),
+                ),
+        )
     }
 
     pub(super) fn ideas_layer(
@@ -384,25 +396,13 @@ impl FlowyApp {
         window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let frame = theme::modal_size(window.viewport_size());
-        div()
-            .id("ideas-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.gallery.ideas_open = false;
-                cx.notify();
-            }))
-            .child(self.ideas_card(frame, cx))
+        let frame = self.theme.modal_size(window.viewport_size());
+        theme::modal_layer(
+            "ideas-layer",
+            &self.theme,
+            &self.ui,
+            self.ideas_card(frame, cx),
+        )
     }
 
     fn ideas_card(
@@ -410,23 +410,28 @@ impl FlowyApp {
         frame: Size<Pixels>,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("ideas-card")
-            .w(frame.width)
-            .h(frame.height)
-            .rounded(theme::modal_radius())
-            .bg(theme::card())
-            .shadow_md()
-            .p_5()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .on_click(cx.listener(|_app, _event, _window, cx| {
-                cx.stop_propagation();
-            }))
-            .child(self.ideas_heading(cx))
-            .child(self.idea_filters(cx))
-            .child(self.idea_grid(cx))
+        theme::dialog(
+            "ideas-card",
+            self.t("gallery.see_all"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .w(frame.width)
+        .h(frame.height)
+        .rounded(self.theme.modal_radius())
+        .bg(self.theme.card())
+        .shadow_md()
+        .p_5()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .on_click(cx.listener(|_app, _event, _window, cx| {
+            cx.stop_propagation();
+        }))
+        .child(self.ideas_heading(cx))
+        .child(self.idea_filters(cx))
+        .child(self.idea_grid(cx))
     }
 
     fn ideas_heading(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -436,26 +441,31 @@ impl FlowyApp {
             .justify_between()
             .child(
                 div()
-                    .text_lg()
+                    .text_size(self.theme.heading_size())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(self.t("gallery.browse")),
             )
             .child(
-                div()
-                    .id("ideas-close")
-                    .size(px(28.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|mark| mark.bg(theme::soft()))
-                    .child(theme::icons::x())
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "ideas-close",
+                    self.t("ui.close"),
+                    &self.theme,
+                )
+                .size(px(28.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|mark| mark.bg(self.theme.soft()))
+                .child(theme::icons::x())
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         cx.stop_propagation();
-                        app.gallery.ideas_open = false;
+                        app.active_dialog = super::state::ActiveDialog::None;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
     }
 
@@ -466,28 +476,27 @@ impl FlowyApp {
             let id =
                 SharedString::from(format!("idea-filter-{}", filter.key()));
             row = row.child(
-                div()
-                    .id(id)
+                theme::interactive(id, self.t(filter.key()), &self.theme)
                     .px_3()
                     .py_1()
                     .rounded_full()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .cursor_pointer()
                     .bg(if selected {
-                        theme::ink()
+                        self.theme.ink()
                     } else {
-                        theme::card()
+                        self.theme.card()
                     })
                     .text_color(if selected {
-                        theme::on_ink()
+                        self.theme.on_ink()
                     } else {
-                        theme::ink()
+                        self.theme.ink()
                     })
                     .border_1()
                     .border_color(if selected {
-                        theme::ink()
+                        self.theme.ink()
                     } else {
-                        theme::line()
+                        self.theme.line()
                     })
                     .child(self.t(filter.key()))
                     .on_click(cx.listener(move |app, _event, _window, cx| {
@@ -526,28 +535,26 @@ impl FlowyApp {
     ) -> impl IntoElement {
         let idea = item.id;
         let id = SharedString::from(format!("idea-{}", item.id));
-        div()
-            .id(id)
+        theme::interactive(id, self.t(item.kind.key()), &self.theme)
             .w(px(260.))
             .cursor_pointer()
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 cx.stop_propagation();
                 app.open_idea(idea, cx);
             }))
-            .child(thumb(item.tint, self.t(item.kind.key())))
+            .child(thumb(&self.theme, item.tint, self.t(item.kind.key())))
             .child(
                 div()
                     .mt_2()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .whitespace_normal()
                     .child(self.t(item.key)),
             )
     }
 
     fn open_idea(&mut self, id: &'static str, cx: &mut Context<'_, Self>) {
-        self.gallery.idea_id = Some(id);
+        self.activate_dialog(super::state::ActiveDialog::Idea(id), cx);
         self.gallery.idea_note = false;
-        self.gallery.ideas_open = false;
         cx.notify();
     }
 
@@ -556,30 +563,13 @@ impl FlowyApp {
         window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let frame = theme::modal_size(window.viewport_size());
-        let item = self.gallery.idea_id.and_then(item_by_id);
-        let mut layer = div()
-            .id("idea-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.gallery.idea_id = None;
-                app.gallery.idea_note = false;
-                cx.notify();
-            }));
-        if let Some(item) = item {
-            layer = layer.child(self.idea_card(item, frame, cx));
-        }
-        layer
+        let frame = self.theme.modal_size(window.viewport_size());
+        let item = self.active_dialog.idea().and_then(item_by_id);
+        let content = item.map_or_else(
+            || div().into_any_element(),
+            |item| self.idea_card(item, frame, cx).into_any_element(),
+        );
+        theme::modal_layer("idea-layer", &self.theme, &self.ui, content)
     }
 
     fn idea_card(
@@ -589,12 +579,12 @@ impl FlowyApp {
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let body = item.body;
-        div()
-            .id("idea-card")
+        theme::dialog("idea-card", self.t(item.key), &self.theme, &self.ui, cx)
             .w(frame.width)
             .max_h(frame.height)
-            .rounded(theme::modal_radius())
-            .bg(theme::card())
+            .overflow_y_scroll()
+            .rounded(self.theme.modal_radius())
+            .bg(self.theme.card())
             .shadow_md()
             .p_5()
             .flex()
@@ -606,40 +596,44 @@ impl FlowyApp {
             .child(self.idea_heading(item, cx))
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .whitespace_normal()
                     .child(self.t(item.body)),
             )
-            .child(idea_stage(item, cx))
+            .child(idea_stage(self, item, cx))
             .when(self.gallery.idea_note && item.kind == Kind::Video, |card| {
                 card.child(
                     div()
-                        .text_xs()
-                        .text_color(theme::muted())
+                        .text_size(self.theme.caption_size())
+                        .text_color(self.theme.muted())
                         .child(self.t("gallery.play_later")),
                 )
             })
             .child(
                 div().flex().justify_end().child(
-                    div()
-                        .id("idea-use")
-                        .px_4()
-                        .py_2()
-                        .rounded_full()
-                        .bg(theme::fill())
-                        .text_color(theme::on_fill())
-                        .text_sm()
-                        .cursor_pointer()
-                        .child(self.t("gallery.use"))
-                        .on_click(cx.listener(
-                            move |app, _event, _window, cx| {
-                                cx.stop_propagation();
-                                app.gallery.idea_id = None;
-                                app.gallery.idea_note = false;
-                                app.fill_prompt_key(body, cx);
-                            },
-                        )),
+                    theme::interactive(
+                        "idea-use",
+                        self.t("gallery.use"),
+                        &self.theme,
+                    )
+                    .px_4()
+                    .py_2()
+                    .rounded_full()
+                    .bg(self.theme.fill())
+                    .text_color(self.theme.on_fill())
+                    .text_size(self.theme.body_size())
+                    .cursor_pointer()
+                    .child(self.t("gallery.use"))
+                    .on_click(cx.listener(
+                        move |app, _event, _window, cx| {
+                            cx.stop_propagation();
+                            app.active_dialog =
+                                super::state::ActiveDialog::None;
+                            app.gallery.idea_note = false;
+                            app.fill_prompt_key(body, cx);
+                        },
+                    )),
                 ),
             )
             .child(self.similar_row(item, cx))
@@ -659,35 +653,40 @@ impl FlowyApp {
                     .px_2()
                     .py(px(2.))
                     .rounded_md()
-                    .bg(theme::soft())
-                    .text_xs()
+                    .bg(self.theme.soft())
+                    .text_size(self.theme.caption_size())
                     .child(self.t(item.kind.key())),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_sm()
+                    .text_size(self.theme.body_size())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(self.t(item.key)),
             )
             .child(
-                div()
-                    .id("idea-close")
-                    .size(px(28.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|mark| mark.bg(theme::soft()))
-                    .child(theme::icons::x())
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "idea-close",
+                    self.t("ui.close"),
+                    &self.theme,
+                )
+                .size(px(28.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|mark| mark.bg(self.theme.soft()))
+                .child(theme::icons::x())
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         cx.stop_propagation();
-                        app.gallery.idea_id = None;
+                        app.active_dialog = super::state::ActiveDialog::None;
                         app.gallery.idea_note = false;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
     }
 
@@ -701,19 +700,18 @@ impl FlowyApp {
             let id = other.id;
             let element_id = SharedString::from(format!("similar-{id}"));
             row = row.child(
-                div()
-                    .id(element_id)
+                theme::interactive(element_id, self.t(other.key), &self.theme)
                     .w(px(168.))
                     .cursor_pointer()
                     .on_click(cx.listener(move |app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.open_idea(id, cx);
                     }))
-                    .child(poster(other.tint, 84.))
+                    .child(poster(&self.theme, other.tint, 84.))
                     .child(
                         div()
                             .mt_1()
-                            .text_xs()
+                            .text_size(self.theme.caption_size())
                             .whitespace_normal()
                             .child(self.t(other.key)),
                     ),
@@ -734,36 +732,48 @@ impl FlowyApp {
             .justify_between()
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme::muted())
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
                     .child(self.t("gallery.similar")),
             )
             .child(
-                div()
-                    .id("idea-detail-all")
-                    .text_sm()
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(self.t("gallery.see_all"))
-                            .child(theme::icons::chevron_right()),
-                    )
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "idea-detail-all",
+                    self.t("gallery.see_all"),
+                    &self.theme,
+                )
+                .text_size(self.theme.body_size())
+                .cursor_pointer()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(self.t("gallery.see_all"))
+                        .child(theme::icons::chevron_right()),
+                )
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         cx.stop_propagation();
-                        app.gallery.idea_id = None;
+                        app.active_dialog = super::state::ActiveDialog::None;
                         app.gallery.idea_note = false;
-                        app.gallery.ideas_open = true;
+                        app.activate_dialog(
+                            super::state::ActiveDialog::Ideas,
+                            cx,
+                        );
                         app.gallery.idea_filter = Filter::All;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
     }
 }
 
-fn idea_stage(item: &Item, cx: &Context<'_, FlowyApp>) -> impl IntoElement {
+fn idea_stage(
+    app: &FlowyApp,
+    item: &Item,
+    cx: &Context<'_, FlowyApp>,
+) -> impl IntoElement {
     let mut stage = div()
         .relative()
         .h(px(280.))
@@ -771,12 +781,12 @@ fn idea_stage(item: &Item, cx: &Context<'_, FlowyApp>) -> impl IntoElement {
         .overflow_hidden()
         .bg(rgb(item.tint));
     if item.kind == Kind::Video {
-        stage = stage.child(transport(cx));
+        stage = stage.child(transport(app, cx));
     }
     stage
 }
 
-fn transport(cx: &Context<'_, FlowyApp>) -> impl IntoElement {
+fn transport(app: &FlowyApp, cx: &Context<'_, FlowyApp>) -> impl IntoElement {
     div()
         .absolute()
         .bottom_0()
@@ -792,68 +802,95 @@ fn transport(cx: &Context<'_, FlowyApp>) -> impl IntoElement {
                 .items_center()
                 .gap_3()
                 .bg(rgb(0x0000_0000).opacity(0.55))
-                .child(transport_hit("idea-play", theme::icons::play(), cx))
+                .child(transport_hit(
+                    app,
+                    "idea-play",
+                    theme::icons::play(),
+                    cx,
+                ))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(app.theme.caption_size())
                         .text_color(rgb(0x00ff_ffff))
                         .child("0:00 / 0:12"),
                 )
                 .child(div().flex_1())
-                .child(transport_hit("idea-volume", volume_mark(), cx))
-                .child(transport_hit("idea-more", theme::icons::ellipsis(), cx))
-                .child(transport_hit("idea-full", full_mark(), cx)),
+                .child(transport_hit(app, "idea-volume", volume_mark(), cx))
+                .child(transport_hit(
+                    app,
+                    "idea-more",
+                    theme::icons::ellipsis(),
+                    cx,
+                ))
+                .child(transport_hit(app, "idea-full", full_mark(), cx)),
         )
 }
 
 fn transport_hit(
+    app: &FlowyApp,
     id: &'static str,
     mark: impl IntoElement,
     cx: &Context<'_, FlowyApp>,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .h(px(24.))
-        .px_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(rgb(0x00ff_ffff))
-        .text_xs()
-        .cursor_pointer()
-        .child(mark)
-        .on_click(cx.listener(|app, _event, _window, cx| {
-            cx.stop_propagation();
-            app.gallery.idea_note = true;
-            cx.notify();
-        }))
+    let theme = &app.theme;
+    theme::interactive(
+        id,
+        app.t(match id {
+            "idea-volume" => "ui.volume",
+            "idea-full" => "ui.fullscreen",
+            _ => "ui.play",
+        }),
+        theme,
+    )
+    .h(px(24.))
+    .px_1()
+    .flex()
+    .items_center()
+    .justify_center()
+    .text_color(rgb(0x00ff_ffff))
+    .text_size(app.theme.caption_size())
+    .cursor_pointer()
+    .child(mark)
+    .on_click(cx.listener(|app, _event, _window, cx| {
+        cx.stop_propagation();
+        app.gallery.idea_note = true;
+        cx.notify();
+    }))
 }
 
-fn volume_mark() -> gpui::Svg {
+fn volume_mark() -> theme::icons::Icon {
     theme::icons::volume_2().text_color(rgb(0x00ff_ffff))
 }
 
-fn full_mark() -> gpui::Svg {
+fn full_mark() -> theme::icons::Icon {
     theme::icons::maximize().text_color(rgb(0x00ff_ffff))
 }
 
-fn poster(tint: u32, height: f32) -> impl IntoElement {
+fn poster(
+    theme: &flowy_ui::ResolvedTheme,
+    tint: u32,
+    height: f32,
+) -> impl IntoElement {
     div()
         .h(px(height))
         .rounded_lg()
         .bg(rgb(tint))
         .border_1()
-        .border_color(theme::line())
+        .border_color(theme.line())
 }
 
-fn thumb(tint: u32, kind: String) -> impl IntoElement {
+fn thumb(
+    theme: &flowy_ui::ResolvedTheme,
+    tint: u32,
+    kind: String,
+) -> impl IntoElement {
     div()
         .relative()
         .h(px(148.))
         .rounded_xl()
         .bg(rgb(tint))
         .border_1()
-        .border_color(theme::line())
+        .border_color(theme.line())
         .child(
             div()
                 .absolute()
@@ -864,12 +901,12 @@ fn thumb(tint: u32, kind: String) -> impl IntoElement {
                 .rounded_md()
                 .bg(rgb(0x001c_1c1c).opacity(0.72))
                 .text_color(rgb(0x00ff_ffff))
-                .text_xs()
+                .text_size(theme.caption_size())
                 .child(kind),
         )
 }
 
-fn grid_mark() -> gpui::Svg {
+fn grid_mark() -> theme::icons::Icon {
     theme::icons::layout_grid().size(px(24.))
 }
 

@@ -6,7 +6,7 @@
 | `flowy-core` | 文档图模型、历史、原子写、`DocumentSession` | 会话命令 API |
 | `flowy-auth` | 云登录 Email OTP + JWT 会话落盘；经 `flowy-net` 调 Flowy `/user/*` | `AuthClient` / `SessionStore` / `Session`；env：`FLOWY_API_BASE_URL` / `FLOWY_AUTH_CHANNEL` / `FLOWY_AUTH_APP` |
 | `flowy-chat` | 任务线程投影 + mock stream | `Thread` / `Item` / `Beat` / `MockStream` |
-| `flowy-ui` | 主题色板、Accent/Density | `install` + token fns |
+| `flowy-ui` | 窗口主题、控件与弹层契约、Accent/Density | `UiContext` / `ThemeState` / `ResolvedTheme` / `ModalLayer` / 控件 builders / `OverlayHost` |
 | `flowy-shell` | deep link / tray / notify / autostart | `install(Brand, open_main)` / `configure_brand` |
 | `flowy-agent` | UI↔dsh 端口；多 session / 流式投影 / sidecar 标题；`Model`/`Plan`/`FlexProvider` | `AgentHandle` / `ChatLine` / `TurnStatus`；env：`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`；Flex BYOK：`LlmConfig::from_flex` + `apply_config` |
 | `flowy-i18n` | 23 locales + `{product}` | `I18n` / `Locale` |

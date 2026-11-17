@@ -29,7 +29,7 @@ pub enum LegalDoc {
 
 impl LegalDoc {
     #[must_use]
-    pub const fn title_key(self) -> &'static str {
+    pub(super) const fn title_key(self) -> &'static str {
         match self {
             Self::Privacy => "login.legal_privacy",
             Self::Terms => "login.legal_terms",
@@ -37,7 +37,7 @@ impl LegalDoc {
     }
 
     #[must_use]
-    pub const fn body(self) -> &'static str {
+    pub(super) const fn body(self) -> &'static str {
         match self {
             Self::Privacy => include_str!("../../res/legal/privacy.txt"),
             Self::Terms => include_str!("../../res/legal/terms.txt"),
@@ -45,77 +45,108 @@ impl LegalDoc {
     }
 }
 
-pub struct AuthState {
-    pub session: Option<Session>,
-    pub email: Entity<EditableTextState>,
-    pub code: Entity<EditableTextState>,
-    pub step: LoginStep,
-    pub phase: LoginPhase,
-    pub message: Option<&'static str>,
-    pub pending_req_no: Option<String>,
-    pub attempted_code: String,
-    pub cooldown_left: u64,
-    pub generation: u64,
-    pub task: Option<Task<()>>,
-    pub cooldown_task: Option<Task<()>>,
-    pub legal: Option<LegalDoc>,
+pub(super) struct AuthState {
+    pub(super) session: Option<Session>,
+    pub(super) email: Entity<EditableTextState>,
+    pub(super) code: Entity<EditableTextState>,
+    pub(super) step: LoginStep,
+    pub(super) phase: LoginPhase,
+    pub(super) message: Option<&'static str>,
+    pub(super) pending_req_no: Option<String>,
+    pub(super) attempted_code: String,
+    pub(super) cooldown_left: u64,
+    pub(super) generation: u64,
+    pub(super) task: Option<Task<()>>,
+    pub(super) cooldown_task: Option<Task<()>>,
 }
 
-pub struct GalleryState {
-    pub page: usize,
-    pub ideas_open: bool,
-    pub idea_filter: gallery::Filter,
-    pub idea_id: Option<&'static str>,
-    pub idea_note: bool,
+pub(super) struct GalleryState {
+    pub(super) page: usize,
+    pub(super) idea_filter: gallery::Filter,
+    pub(super) idea_note: bool,
 }
 
-pub struct SettingsState {
-    pub open: bool,
-    pub page: settings::Page,
-    pub picker: settings::Picker,
-    pub query: Entity<EditableTextState>,
+pub(super) struct SettingsState {
+    pub(super) page: settings::Page,
+    pub(super) picker: settings::Picker,
+    pub(super) query: Entity<EditableTextState>,
 }
 
-pub struct InviteState {
-    pub open: bool,
-    pub panel: invite::Panel,
-    pub status: Option<&'static str>,
-    pub code: String,
-    pub inbound_code: Option<String>,
-    pub emails: Vec<String>,
-    pub email: Entity<EditableTextState>,
+pub(super) struct InviteState {
+    pub(super) panel: invite::Panel,
+    pub(super) status: Option<&'static str>,
+    pub(super) code: String,
+    pub(super) inbound_code: Option<String>,
+    pub(super) emails: Vec<String>,
+    pub(super) email: Entity<EditableTextState>,
 }
 
-pub struct PersonaState {
-    pub menu: bool,
-    pub page: more::Page,
-    pub tab: more::Tab,
-    pub dialog: more::Dialog,
-    pub status: Option<&'static str>,
-    pub knowledge: Vec<crate::persona::Knowledge>,
-    pub nickname: Entity<EditableTextState>,
-    pub occupation: Entity<EditableTextState>,
-    pub about: Entity<EditableTextState>,
-    pub instructions: Entity<EditableTextState>,
-    pub import_paste: Entity<EditableTextState>,
-    pub knowledge_name: Entity<EditableTextState>,
-    pub knowledge_usage: Entity<EditableTextState>,
-    pub knowledge_body: Entity<EditableTextState>,
+pub(super) struct PersonaState {
+    pub(super) menu: bool,
+    pub(super) page: more::Page,
+    pub(super) tab: more::Tab,
+    pub(super) status: Option<&'static str>,
+    pub(super) knowledge: Vec<crate::persona::Knowledge>,
+    pub(super) nickname: Entity<EditableTextState>,
+    pub(super) occupation: Entity<EditableTextState>,
+    pub(super) about: Entity<EditableTextState>,
+    pub(super) instructions: Entity<EditableTextState>,
+    pub(super) import_paste: Entity<EditableTextState>,
+    pub(super) knowledge_name: Entity<EditableTextState>,
+    pub(super) knowledge_usage: Entity<EditableTextState>,
+    pub(super) knowledge_body: Entity<EditableTextState>,
 }
 
-pub struct AppearanceChrome {
-    pub known: bool,
-    pub forced: Option<WindowAppearance>,
-    pub font_size_field: Entity<EditableTextState>,
+pub(super) struct AppearanceChrome {
+    pub(super) known: bool,
+    pub(super) forced: Option<WindowAppearance>,
+    pub(super) font_size_field: Entity<EditableTextState>,
 }
 
-pub struct FlexState {
-    pub open: bool,
-    pub provider_menu: bool,
-    pub draft_provider: Option<FlexProvider>,
+pub(super) struct FlexState {
+    pub(super) provider_menu: bool,
+    pub(super) draft_provider: Option<FlexProvider>,
     /// Field contents (plaintext when visible, `*` mask when hidden).
-    pub api_key: Entity<EditableTextState>,
+    pub(super) api_key: Entity<EditableTextState>,
     /// Real API key while the field shows a mask.
-    pub secret: String,
-    pub key_visible: bool,
+    pub(super) secret: String,
+    pub(super) key_visible: bool,
+}
+
+/// The sole business owner of the window's main dialog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ActiveDialog {
+    #[default]
+    None,
+    Settings,
+    Ideas,
+    Idea(&'static str),
+    Invite,
+    Flex,
+    Import,
+    Knowledge,
+    Legal(LegalDoc),
+}
+
+impl ActiveDialog {
+    pub(super) const fn scope(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Settings => Some("settings"),
+            Self::Ideas => Some("ideas"),
+            Self::Idea(_) => Some("idea"),
+            Self::Invite => Some("invite"),
+            Self::Flex => Some("flex"),
+            Self::Import => Some("import"),
+            Self::Knowledge => Some("knowledge"),
+            Self::Legal(_) => Some("legal"),
+        }
+    }
+    pub(super) const fn idea(self) -> Option<&'static str> {
+        if let Self::Idea(id) = self {
+            Some(id)
+        } else {
+            None
+        }
+    }
 }

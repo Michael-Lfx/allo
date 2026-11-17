@@ -300,6 +300,7 @@
   "notice.project_created": "प्रोजेक्ट केवल इस सत्र के लिए बना",
   "notice.prompt_empty": "पहले एक कार्य लिखें",
   "notice.prompt_filled": "कार्य भर दिया गया। तैयार हों तो भेजें।",
+  "notice.session_storage_failed": "सत्र का डेटा पढ़ा या सहेजा नहीं जा सका। संग्रहण की अनुमति जाँचें।",
   "notice.task_added": "इस सत्र की कार्य सूची में जोड़ा गया",
   "notice.upgrade_later": "अपग्रेड अभी उपलब्ध नहीं है",
   "ota.available": "अपडेट {version} उपलब्ध है",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "मैं पुष्टि करता हूँ कि मुझे इस मीडिया के इस्तेमाल का अधिकार है।",
   "thread.confirm_terms": "मैं सेवा की शर्तों और गोपनीयता नीति से सहमत हूँ।",
   "thread.confirm_title": "मीडिया उपयोग की पुष्टि",
-  "thread.prompt_placeholder": "{product} को संदेश भेजें"
+  "thread.prompt_placeholder": "{product} को संदेश भेजें",
+  "credits.error": "क्रेडिट लोड नहीं हो सके",
+  "credits.loading": "क्रेडिट लोड हो रहे हैं",
+  "credits.unavailable": "क्रेडिट उपलब्ध नहीं हैं",
+  "ui.close": "बंद करें",
+  "ui.document_nodes": "{title} · {count} नोड",
+  "ui.fullscreen": "पूर्ण स्क्रीन",
+  "ui.loading": "लोड हो रहा है",
+  "ui.next": "अगला",
+  "ui.play": "चलाएँ",
+  "ui.previous": "पिछला",
+  "ui.rating": "{n} सितारे",
+  "ui.remove": "हटाएँ",
+  "ui.volume": "आवाज़"
 }

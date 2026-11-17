@@ -300,6 +300,7 @@
   "notice.project_created": "Projeto criado apenas para esta sessão",
   "notice.prompt_empty": "Escreva primeiro uma tarefa",
   "notice.prompt_filled": "Tarefa preenchida. Envie quando estiver pronto.",
+  "notice.session_storage_failed": "Não foi possível ler ou guardar os dados da sessão. Verifique o acesso ao armazenamento.",
   "notice.task_added": "Adicionado à lista de tarefas desta sessão",
   "notice.upgrade_later": "A atualização de plano ainda não está disponível",
   "ota.available": "A atualização {version} está disponível",
@@ -410,5 +411,18 @@
   "thread.confirm_rights": "Confirmo que tenho o direito de usar estes média.",
   "thread.confirm_terms": "Concordo com os Termos de Serviço e a Política de Privacidade.",
   "thread.confirm_title": "Confirmação de utilização de média",
-  "thread.prompt_placeholder": "Envie uma mensagem a {product}"
+  "thread.prompt_placeholder": "Envie uma mensagem a {product}",
+  "credits.error": "Não foi possível carregar os créditos",
+  "credits.loading": "A carregar créditos",
+  "credits.unavailable": "Créditos indisponíveis",
+  "ui.close": "Fechar",
+  "ui.document_nodes": "{title} · {count} nós",
+  "ui.fullscreen": "Ecrã inteiro",
+  "ui.loading": "A carregar",
+  "ui.next": "Seguinte",
+  "ui.play": "Reproduzir",
+  "ui.previous": "Anterior",
+  "ui.rating": "{n} estrelas",
+  "ui.remove": "Remover",
+  "ui.volume": "Volume"
 }

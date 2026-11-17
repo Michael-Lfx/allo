@@ -3,16 +3,111 @@
 //! The SVG sources are vendored under `assets/icons` so icon rendering stays
 //! deterministic and does not depend on a network request at runtime.
 
-use gpui::{Styled, Svg, px, svg};
+use gpui::{
+    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId,
+    InteractiveElement, Interactivity, IntoElement, LayoutId, Pixels,
+    StyleRefinement, Styled, Svg, Window, px, svg,
+};
 
-fn icon(data: &'static [u8]) -> Svg {
-    svg().data(data).size(px(16.)).text_color(crate::ink())
+/// A local SVG mask whose default color follows the surrounding text.
+///
+/// GPUI's raw SVG renderer requires an explicit local color to paint; resolving
+/// that color at paint time preserves both inherited and caller-specified colors.
+#[must_use]
+pub struct Icon {
+    svg: Svg,
+}
+
+impl std::fmt::Debug for Icon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Icon").finish_non_exhaustive()
+    }
+}
+
+impl IntoElement for Icon {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Styled for Icon {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.svg.style()
+    }
+}
+
+impl InteractiveElement for Icon {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.svg.interactivity()
+    }
+}
+
+impl Element for Icon {
+    type RequestLayoutState = <Svg as Element>::RequestLayoutState;
+    type PrepaintState = <Svg as Element>::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        Element::id(&self.svg)
+    }
+    fn source_location(
+        &self,
+    ) -> Option<&'static std::panic::Location<'static>> {
+        self.svg.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.svg.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.svg.prepaint(id, inspector, bounds, layout, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        state: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let explicit = self.svg.style().text.color;
+        if explicit.is_none() {
+            self.svg.style().text.color = Some(window.text_style().color);
+        }
+        self.svg
+            .paint(id, inspector, bounds, layout, state, window, cx);
+        self.svg.style().text.color = explicit;
+    }
+}
+
+fn icon(data: &'static [u8]) -> Icon {
+    Icon {
+        svg: svg().data(data).size(px(16.)),
+    }
 }
 
 macro_rules! lucide_icons {
     ($($name:ident => $file:literal),+ $(,)?) => {
         $(
-            pub fn $name() -> Svg {
+            pub fn $name() -> Icon {
                 icon(include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
                     "/assets/icons/",

@@ -2,12 +2,12 @@ use super::FlowyApp;
 use crate::prefs::FlexProvider;
 use flowy_agent::{LlmConfig, Model};
 use flowy_ui as theme;
-use gpui::{ColorExt, Context, SharedString, div, prelude::*, px};
-use gpui_ce_elements::editable_text::text_input;
+use flowy_ui::text_input;
+use gpui::{Context, SharedString, div, prelude::*, px};
 
 impl FlowyApp {
     pub(super) fn open_flex(&mut self, cx: &mut Context<'_, Self>) {
-        self.flex.open = true;
+        self.activate_dialog(super::state::ActiveDialog::Flex, cx);
         self.flex.provider_menu = false;
         self.flex.draft_provider = self.prefs.flex_provider;
         self.flex.secret = self.prefs.flex_api_key.clone();
@@ -24,7 +24,7 @@ impl FlowyApp {
     }
 
     pub(super) fn close_flex(&mut self, cx: &mut Context<'_, Self>) {
-        self.flex.open = false;
+        self.active_dialog = super::state::ActiveDialog::None;
         self.flex.provider_menu = false;
         cx.notify();
     }
@@ -33,62 +33,52 @@ impl FlowyApp {
         &self,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        div()
-            .id("flex-layer")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(theme::scrim())
-            .backdrop_blur(theme::scrim_blur())
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.close_flex(cx);
-            }))
-            .child(self.flex_dialog(cx))
+        theme::modal_layer(
+            "flex-layer",
+            &self.theme,
+            &self.ui,
+            self.flex_dialog(cx),
+        )
     }
 
     fn flex_dialog(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         // Menu is appended last so it paints above later form rows (api key).
-        let mut card = div()
-            .id("flex-dialog")
-            .relative()
-            .w(px(440.))
-            .rounded(theme::modal_radius())
-            .bg(theme::card())
-            .shadow_lg()
-            .px_8()
-            .pt_6()
-            .pb_6()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                if app.flex.provider_menu {
-                    app.flex.provider_menu = false;
-                    cx.notify();
-                }
-            }))
-            .child(self.flex_header(cx))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme::muted())
-                    .whitespace_normal()
-                    .child(self.t("flex.body")),
-            )
-            .child(self.flex_provider_block(cx))
-            .child(self.flex_key_block(cx))
-            .child(self.flex_actions(cx));
-        if self.flex.provider_menu {
-            card = card.child(self.flex_provider_menu(cx));
-        }
-        card
+        theme::dialog(
+            "flex-dialog",
+            self.t("flex.title"),
+            &self.theme,
+            &self.ui,
+            cx,
+        )
+        .relative()
+        .w(px(440.))
+        .rounded(self.theme.modal_radius())
+        .bg(self.theme.card())
+        .shadow_lg()
+        .px_8()
+        .pt_6()
+        .pb_6()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .on_click(cx.listener(|app, _event, _window, cx| {
+            cx.stop_propagation();
+            if app.flex.provider_menu {
+                app.flex.provider_menu = false;
+                cx.notify();
+            }
+        }))
+        .child(self.flex_header(cx))
+        .child(
+            div()
+                .text_size(self.theme.body_size())
+                .text_color(self.theme.muted())
+                .whitespace_normal()
+                .child(self.t("flex.body")),
+        )
+        .child(self.flex_provider_block(cx))
+        .child(self.flex_key_block(cx))
+        .child(self.flex_actions(cx))
     }
 
     fn flex_header(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -99,34 +89,39 @@ impl FlowyApp {
             .items_center()
             .gap_3()
             .child(
-                div()
-                    .id("flex-close")
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .size(px(28.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(theme::muted())
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::soft()))
-                    .child(theme::icons::x())
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "flex-close",
+                    self.t("ui.close"),
+                    &self.theme,
+                )
+                .absolute()
+                .top_0()
+                .right_0()
+                .size(px(28.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(self.theme.body_size())
+                .text_color(self.theme.muted())
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(theme::icons::x())
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         app.close_flex(cx);
-                    })),
+                    },
+                )),
             )
             .child(
                 div()
                     .size(px(56.))
                     .rounded_full()
-                    .bg(theme::soft())
+                    .bg(self.theme.soft())
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_2xl()
+                    .text_size(self.theme.heading_size())
                     .child(theme::icons::infinity().size(px(28.))),
             )
             .child(
@@ -145,80 +140,94 @@ impl FlowyApp {
                             .px_2()
                             .py_0()
                             .rounded_full()
-                            .bg(theme::line())
-                            .text_xs()
-                            .text_color(theme::muted())
+                            .bg(self.theme.line())
+                            .text_size(self.theme.caption_size())
+                            .text_color(self.theme.muted())
                             .child(self.t("flex.beta")),
                     ),
             )
     }
 
     fn flex_provider_block(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let label = self
-            .flex
-            .draft_provider
-            .map(|provider| self.t(provider.name_key()))
-            .unwrap_or_else(|| self.t("flex.provider_placeholder"));
+        let label = self.flex.draft_provider.map_or_else(
+            || self.t("flex.provider_placeholder"),
+            |provider| self.t(provider.name_key()),
+        );
         let muted = self.flex.draft_provider.is_none();
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_sm().child(self.t("flex.provider")))
             .child(
                 div()
-                    .id("flex-provider")
-                    .w_full()
-                    .h(px(40.))
-                    .px_3()
-                    .rounded_lg()
-                    .bg(theme::soft())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::line()))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
-                        cx.stop_propagation();
-                        app.flex.provider_menu = !app.flex.provider_menu;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(if muted {
-                                theme::muted()
-                            } else {
-                                theme::ink()
-                            })
-                            .child(label),
-                    )
-                    .child(div().text_sm().text_color(theme::muted()).child(
-                        if self.flex.provider_menu {
+                    .text_size(self.theme.body_size())
+                    .child(self.t("flex.provider")),
+            )
+            .child(
+                theme::anchor_trigger(
+                    theme::select_trigger(
+                        "flex-provider",
+                        self.t("flex.provider"),
+                        self.flex.provider_menu,
+                        &self.theme,
+                    ),
+                    "flex-provider",
+                    &self.ui,
+                )
+                .w_full()
+                .h(px(40.))
+                .px_3()
+                .rounded_lg()
+                .bg(self.theme.soft())
+                .flex()
+                .items_center()
+                .justify_between()
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.line()))
+                .on_click(cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.flex.provider_menu = !app.flex.provider_menu;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .text_size(self.theme.body_size())
+                        .text_color(if muted {
+                            self.theme.muted()
+                        } else {
+                            self.theme.ink()
+                        })
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(self.theme.body_size())
+                        .text_color(self.theme.muted())
+                        .child(if self.flex.provider_menu {
                             theme::icons::chevron_up()
-                                .text_color(theme::muted())
+                                .text_color(self.theme.muted())
                         } else {
                             theme::icons::chevron_down()
-                                .text_color(theme::muted())
-                        },
-                    )),
+                                .text_color(self.theme.muted())
+                        }),
+                ),
             )
     }
 
-    fn flex_provider_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub(super) fn flex_provider_menu(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         // Anchored to the dialog (last paint child), not the provider row.
         let mut menu = div()
             .id("flex-provider-menu")
             .occlude()
-            .absolute()
-            .left(px(32.))
-            .right(px(32.))
-            .top(px(260.))
+            .w(px(360.))
             .p_1()
             .rounded_lg()
-            .bg(theme::card())
+            .bg(self.theme.card())
             .border_1()
-            .border_color(theme::line())
+            .border_color(self.theme.line())
             .shadow_md()
             .flex()
             .flex_col()
@@ -228,26 +237,37 @@ impl FlowyApp {
             let id =
                 SharedString::from(format!("flex-provider-{}", provider.id()));
             menu = menu.child(
-                div()
-                    .id(id)
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(if selected {
-                        theme::soft()
-                    } else {
-                        theme::card()
-                    })
-                    .hover(|row| row.bg(theme::soft()))
-                    .child(self.t(provider.name_key()))
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
+                theme::interactive(
+                    id,
+                    self.t(provider.name_key()),
+                    &self.theme,
+                )
+                .role(gpui::Role::MenuItemRadio)
+                .aria_toggled(if selected {
+                    gpui::accesskit::Toggled::True
+                } else {
+                    gpui::accesskit::Toggled::False
+                })
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .text_size(self.theme.body_size())
+                .cursor_pointer()
+                .bg(if selected {
+                    self.theme.soft()
+                } else {
+                    self.theme.card()
+                })
+                .hover(|row| row.bg(self.theme.soft()))
+                .child(self.t(provider.name_key()))
+                .on_click(cx.listener(
+                    move |app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.flex.draft_provider = Some(provider);
                         app.flex.provider_menu = false;
                         cx.notify();
-                    })),
+                    },
+                )),
             );
         }
         menu.on_click(cx.listener(|_app, _event, _window, cx| {
@@ -263,54 +283,62 @@ impl FlowyApp {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_sm().child(self.t("flex.api_key")))
+            .child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .child(self.t("flex.api_key")),
+            )
             .child(
                 div()
                     .w_full()
                     .h(px(40.))
                     .px_3()
                     .rounded_lg()
-                    .bg(theme::soft())
+                    .bg(self.theme.soft())
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(
                         text_input("flex-api-key")
+                            .aria_label(self.t("flex.api_key"))
                             .state(self.flex.api_key.downgrade())
                             .placeholder(self.t("flex.api_key_placeholder"))
-                            .placeholder_color(theme::muted())
-                            .caret_color(gpui::rgb_to_hsla(theme::ink()))
+                            .placeholder_color(self.theme.muted())
+                            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
                             .caret_blink_interval_500ms()
                             .flex_1()
                             .min_w_0()
                             .min_h_auto()
                             .whitespace_nowrap()
-                            .text_color(theme::ink()),
+                            .text_color(self.theme.ink()),
                     )
                     .child(
-                        div()
-                            .id("flex-toggle-key")
-                            .size(px(24.))
-                            .rounded_md()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_sm()
-                            .text_color(theme::muted())
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::line()))
-                            .child(if hidden {
-                                theme::icons::eye_off()
-                                    .text_color(theme::muted())
-                            } else {
-                                theme::icons::eye().text_color(theme::muted())
-                            })
-                            .on_click(cx.listener(
-                                |app, _event, _window, cx| {
-                                    cx.stop_propagation();
-                                    app.toggle_flex_key_visible(cx);
-                                },
-                            )),
+                        theme::interactive(
+                            "flex-toggle-key",
+                            self.t("flex.api_key"),
+                            &self.theme,
+                        )
+                        .size(px(24.))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(self.theme.body_size())
+                        .text_color(self.theme.muted())
+                        .cursor_pointer()
+                        .hover(|style| style.bg(self.theme.line()))
+                        .child(if hidden {
+                            theme::icons::eye_off()
+                                .text_color(self.theme.muted())
+                        } else {
+                            theme::icons::eye().text_color(self.theme.muted())
+                        })
+                        .on_click(cx.listener(
+                            |app, _event, _window, cx| {
+                                cx.stop_propagation();
+                                app.toggle_flex_key_visible(cx);
+                            },
+                        )),
                     ),
             )
     }
@@ -386,43 +414,53 @@ impl FlowyApp {
             .flex()
             .gap_3()
             .child(
-                div()
-                    .id("flex-cancel")
-                    .flex_1()
-                    .h(px(40.))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme::line())
-                    .bg(theme::card())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::soft()))
-                    .child(self.t("flex.cancel"))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "flex-cancel",
+                    self.t("flex.cancel"),
+                    &self.theme,
+                )
+                .flex_1()
+                .h(px(40.))
+                .rounded_lg()
+                .border_1()
+                .border_color(self.theme.line())
+                .bg(self.theme.card())
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(self.theme.body_size())
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft()))
+                .child(self.t("flex.cancel"))
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         app.close_flex(cx);
-                    })),
+                    },
+                )),
             )
             .child(
-                div()
-                    .id("flex-connect")
-                    .flex_1()
-                    .h(px(40.))
-                    .rounded_lg()
-                    .bg(theme::fill())
-                    .text_color(theme::on_fill())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .cursor_pointer()
-                    .hover(|style| style.opacity(0.9))
-                    .child(self.t("flex.connect"))
-                    .on_click(cx.listener(|app, _event, _window, cx| {
+                theme::interactive(
+                    "flex-connect",
+                    self.t("flex.connect"),
+                    &self.theme,
+                )
+                .flex_1()
+                .h(px(40.))
+                .rounded_lg()
+                .bg(self.theme.fill())
+                .text_color(self.theme.on_fill())
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(self.theme.body_size())
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.9))
+                .child(self.t("flex.connect"))
+                .on_click(cx.listener(
+                    |app, _event, _window, cx| {
                         app.connect_flex(cx);
-                    })),
+                    },
+                )),
             )
     }
 

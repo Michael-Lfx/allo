@@ -411,5 +411,18 @@
   "thread.confirm_rights": "Saya mengonfirmasi berhak menggunakan media ini.",
   "thread.confirm_terms": "Saya menyetujui Ketentuan Layanan dan Kebijakan Privasi.",
   "thread.confirm_title": "Konfirmasi penggunaan media",
-  "thread.prompt_placeholder": "Kirim pesan ke {product}"
+  "thread.prompt_placeholder": "Kirim pesan ke {product}",
+  "credits.error": "Gagal memuat kredit",
+  "credits.loading": "Memuat kredit",
+  "credits.unavailable": "Kredit tidak tersedia",
+  "ui.close": "Tutup",
+  "ui.document_nodes": "{title} · {count} simpul",
+  "ui.fullscreen": "Layar penuh",
+  "ui.loading": "Memuat",
+  "ui.next": "Berikutnya",
+  "ui.play": "Putar",
+  "ui.previous": "Sebelumnya",
+  "ui.rating": "{n} bintang",
+  "ui.remove": "Hapus",
+  "ui.volume": "Volume"
 }
