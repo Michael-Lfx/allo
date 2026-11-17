@@ -318,8 +318,7 @@ impl Engine {
                         .iter()
                         .rev()
                         .find(|message| message.role == Role::Assistant)
-                        .map(Message::text)
-                        .unwrap_or_default();
+                        .map_or_default(Message::text);
                     if !final_text.is_empty() {
                         self.observer.assistant_text(session_id, &final_text);
                     }

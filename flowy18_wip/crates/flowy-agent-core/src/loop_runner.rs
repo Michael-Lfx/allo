@@ -173,8 +173,7 @@ pub async fn complete_text(
         .iter()
         .rev()
         .find(|message| message.role == Role::Assistant)
-        .map(Message::text)
-        .unwrap_or_default())
+        .map_or_default(Message::text))
 }
 
 fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {

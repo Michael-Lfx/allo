@@ -79,7 +79,7 @@ fn todo_write_tool() -> Arc<ToolDefinition> {
                 let todos: Vec<TodoItem> = parsed
                     .get("todos")
                     .and_then(|t| t.as_array())
-                    .map(|arr| {
+                    .map_or_default(|arr| {
                         arr.iter()
                             .map(|entry| TodoItem {
                                 content: entry
@@ -99,8 +99,7 @@ fn todo_write_tool() -> Arc<ToolDefinition> {
                                 },
                             })
                             .collect()
-                    })
-                    .unwrap_or_default();
+                    });
                 sink.replace_todos(Some(&agent_id), todos.clone());
                 ToolExecutionResult::success_text(
                     format!("todo list updated ({} items)", todos.len()),
@@ -502,10 +501,9 @@ fn grep_tool() -> Arc<ToolDefinition> {
                 let mut matches: Vec<GrepMatch> = Vec::new();
                 for file in files {
                     if let Some(include) = &parsed.include {
-                        let name = file
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
+                        let name = file.file_name().map_or_default(|n| {
+                            n.to_string_lossy().to_string()
+                        });
                         if !glob_match(include, &name) {
                             continue;
                         }

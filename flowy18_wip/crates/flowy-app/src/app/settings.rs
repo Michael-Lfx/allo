@@ -709,8 +709,7 @@ impl FlowyApp {
             .auth
             .session
             .as_ref()
-            .map(|session| session.email.clone())
-            .unwrap_or_default();
+            .map_or_default(|session| session.email.clone());
         let user_id = self
             .auth
             .session
