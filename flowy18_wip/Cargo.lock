@@ -2821,6 +2821,8 @@ dependencies = [
 [[package]]
 name = "gpui_ce_macos"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3956b3383e204f0455aea6129da9676c4ffbf09351bf685df5ec8c2bb8572d36"
 dependencies = [
  "accesskit",
  "accesskit_macos",
