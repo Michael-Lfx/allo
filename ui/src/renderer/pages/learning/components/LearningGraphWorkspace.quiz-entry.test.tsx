@@ -4,14 +4,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/** 图工作区的知识检测入口挂点（u6 挂点、u10 R5 上移）：入口挂在页签头部
- * 区——知识结构/生长控制条（含软闸建议条）之下、Tabs 之前，自然流位置
- * 恒可见；前向推荐（继续学习）与回向检测（知识检测）靠语境句区分方向。
+/** 图工作区的知识检测入口挂点（u6 挂点、u10 R5 上移，f3 Q4 改版）：入口
+ * 挂在页签头部区——知识结构/生长控制条（含软闸建议条）之下、Tabs 之前。
+ * f3 Q4 裁决（正式替代 u10 R5「入口恒可见」摆位）：due 判定上提到工作区
+ * ——not-due 时语境句 + 入口卡整段不渲染（未到期整卡 ≈100px 纯死空间，
+ * 无任何可执行动作）；due 时整卡自然出现，「已就绪」主信号由学习首页
+ * 横幅承担。读数数据源照抄 QuizEntryCard（quizProgress + 进页/令牌各拉
+ * 一次），经 progress 外供 prop 下发避免同端点双请求。
  * 用例面：①due 态——入口卡渲染 N/K 读数 + 开测可点（onStartQuiz 透传）
- * 且位于结构条之后 Tabs 之前；②not-due 态——按钮禁用 + 未到期提示；
- * ③归档课程（enabled=0）不渲染也不拉读数（与 CourseWorkspace 挂点同
- * 存在性语义，上移后原样保留）；④en-US 态——语境句/读数/开测钮同走
- * 词典零中文回落（QuizOverviewBanner.render.test 双语模式）。
+ * 且位于结构条之后 Tabs 之前，读数恰拉一次；②not-due 态——整段不渲染
+ * （语境句/未到期提示/开测钮全部缺席）；③归档课程（enabled=0）不渲染
+ * 也不拉读数（与 CourseWorkspace 挂点同存在性语义，上移后原样保留）；
+ * ④en-US 态——语境句/读数/开测钮同走词典零中文回落
+ * （QuizOverviewBanner.render.test 双语模式）。
  * jsdom 宿主：CourseWorkspace.quiz-entry.test 同仪式——进度经
  * learningApi.quizProgress 逐用例打补丁并还原（HTTP 边界）；图工作区挂载
  * 期的结构/声明/注册表/补批判定读数一概打补丁（补批判定必须拒绝，防自动
@@ -312,22 +317,19 @@ describe('LearningGraphWorkspace 知识检测入口挂点（u6）', () => {
     expect(starts()).toBe(1);
   });
 
-  test('not-due 态：入口卡渲染未到期提示，开测按钮禁用', async () => {
+  test('not-due 态（f3 Q4）：语境句与入口卡整段不渲染（无死空间），读数仍拉一次', async () => {
     const { pulls, starts, html } = await mountGraphWorkspace(true, {
       settled_count: 2,
       trigger_count: 6,
       due: false,
     });
+    // 工作区上提的 due 判定恰拉一次（入口卡经 progress 外供不再自拉）
     expect(pulls()).toBe(1);
     const markup = html();
-    expect(markup).toContain('距上次检测已积累 2/6 次学新结算');
-    expect(markup).toContain('尚未到期，满 6 次学新结算后开放检测');
-    const startButton = buttonWithText('开始检测');
-    expect(startButton).not.toBeNull();
-    expect(startButton!.disabled).toBe(true);
-    await act(async () => {
-      startButton!.click();
-    });
+    // 整段不渲染：回向语境句、未到期提示、开测按钮全部缺席
+    expect(markup).not.toContain('检测与推荐方向相反');
+    expect(markup).not.toContain('尚未到期');
+    expect(markup).not.toContain('开始检测');
     expect(starts()).toBe(0);
   });
 
