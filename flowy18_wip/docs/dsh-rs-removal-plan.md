@@ -1,6 +1,6 @@
 # 删除 dsh-rs、只保留 pi-rust 的计划
 
-状态：待确认。本文只做规划，不删除任何文件。
+状态：已完成（2026-11-17）。
 
 ## 一、结论
 
@@ -88,7 +88,18 @@ P3 收尾：
 
 总计半天内可完成，主要时间在编译验证。
 
-## 九、待确认
+## 九、执行结果（2026-11-17）
+
+1. Checkpoint 提交：`257ad975e`（迁移、`flowy-agent-core`、docs、忽略规则）。
+2. 回滚标签：`archive/dsh-rs-20261117`，指向删除前提交。
+3. 已删除 `flowy18_wip/crates/dsh-rs`（含两个插件子 crate），并从 workspace `members` 与 `[workspace.dependencies]` 移除引用。
+4. `flowy18_wip/AGENTS.md` 已移除 dsh-rs 行，新增 `flowy-agent-core`，`flowy-agent` 描述改为 UI↔core 端口。
+5. 验证：`cargo tree -i dsh-rs --workspace` 返回 “did not match any packages”；`Cargo.lock` 中 dsh 条目为 0；`cargo check --workspace` 退出 0；`flowy-agent-core` 26 passed；`flowy-agent` 17 passed / 1 ignored。
+6. pi-loop 实验目录已删除，文档与证据归档到 `docs/pi-loop/`（含固定 GitHub 提交与复现说明）。
+7. 按用户要求，`build:gc`（原第 3 项）未执行；`build.noindex` 保留。
+8. 实验构建缓存、`build-test`、旧 `fetch-evaluation-raw` 已删除，约回收 1.1G。
+
+## 十、待确认（原计划）
 
 1. 是否先提交当前迁移改动作为 checkpoint（需要明确授权提交）？
 2. 删除前是否打 `archive/dsh-rs-<日期>` 标签？

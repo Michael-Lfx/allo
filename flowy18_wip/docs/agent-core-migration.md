@@ -21,6 +21,7 @@
 - core：`cargo test -p flowy-agent-core` → **26 passed / 0 failed**（真实 loop 执行宿主工具、错误终态、工具历史无损往返、传输构造、闸门、引擎持久化与并发拒绝）。
 - agent：`cargo test -p flowy-agent`（TEMP 重定向到工作区可写目录）→ **17 passed / 0 failed / 1 ignored**（恢复、中断修复、损坏索引保护、保存失败上报、mock 回显、标题回退）。原测试全部保留并通过。
 - 依赖树：`cargo tree -p flowy-agent --depth 1` → `flowy-agent-core` / `serde` / `serde_json` / `tokio`，无 `dsh-rs`。
+- 删除：`dsh-rs` 目录与 workspace 引用已移除，回滚标签 `archive/dsh-rs-20261117`；验证见 [dsh-rs-removal-plan.md](dsh-rs-removal-plan.md)。
 - 收尾项与验收标准：[agent-core-migration-handoff.md](agent-core-migration-handoff.md)。
 
 ## 上层 API 审计

@@ -15,12 +15,7 @@ members = [
     "crates/flowy-net",
     "crates/flowy-ota",
     "crates/flowy-obs",
-    "crates/dsh-rs",
-    "crates/dsh-rs/crates/dsh-plugin-contract",
-    "crates/dsh-rs/crates/dsh-plugin-hello",
 ]
-# dsh-rs is copied source we will keep editing. It is not on the Flowy clippy
-# gate yet, so a bare `cargo clippy` stays on the app crates.
 default-members = [
     "crates/flowy-core",
     "crates/flowy-app",
@@ -61,7 +56,6 @@ flowy-studio = { path = "crates/flowy-studio" }
 flowy-net = { path = "crates/flowy-net" }
 flowy-ota = { path = "crates/flowy-ota" }
 flowy-obs = { path = "crates/flowy-obs" }
-dsh-rs = { path = "crates/dsh-rs" }
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "json",
