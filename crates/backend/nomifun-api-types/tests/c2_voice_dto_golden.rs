@@ -68,6 +68,7 @@ fn test_c2_02_install_request_golden() {
         prefer_mirror: Some("modelscope".to_string()),
         models_dir: Some(PathBuf::from("/var/lib/voice-companion/models")),
         force: None,
+        rebuild_default_kws: None,
     };
 
     let expected_json = json!({

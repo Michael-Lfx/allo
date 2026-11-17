@@ -1426,9 +1426,122 @@
             .expect_err("a new call must be rejected while models are being written");
         assert_eq!(error.0, axum::http::StatusCode::CONFLICT);
         assert!(error.1.contains("voice_resource_write_in_progress"));
+        assert_eq!(manager.run_self_check(false).await.unwrap_err(), "voice_resource_write_in_progress");
         drop(guard);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(!manager.resource_write_active.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn model_write_gate_remains_closed_until_resume_attempt_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path(),
+        ));
+        manager.write_autostart_config(true).unwrap();
+        manager.resource_write_active.store(true, Ordering::Release);
+        let child = manager.child.lock().await;
+        let resumed = manager.clone();
+        let task = tokio::spawn(async move { resumed.resume_after_model_write(true).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(manager.resource_write_active.load(Ordering::Acquire));
+        assert_eq!(manager.begin_model_write().await.unwrap_err(), "voice_resource_write_in_progress");
+        drop(child);
+        assert!(task.await.unwrap().is_err(), "missing models must prevent launch");
+        assert!(!manager.resource_write_active.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn enabling_voice_during_model_write_defers_process_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path(),
+        ));
+        manager.write_autostart_config(false).unwrap();
+        let guard = manager.begin_model_write().await.unwrap();
+        assert!(manager.toggle(true).await.unwrap(), "enable intent must survive the pending install");
+        assert!(manager.read_autostart_config());
+        assert!(manager.child.lock().await.is_none());
+        manager.toggle(false).await.unwrap();
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn model_write_keeps_admission_closed_for_disabled_voice_until_task_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            vec![nomifun_voice_models::MirrorConfig {
+                id: "stalled-loopback".into(),
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+                probe_url: None,
+                is_modelscope: false,
+                is_fallback_cdn: false,
+            }],
+            nomifun_voice_models::verifier::DOWNLOAD_FILES.iter()
+                .map(|path| (path.to_string(), nomifun_voice_models::verifier::compute_sha256(b"fixture")))
+                .collect(),
+        ));
+        let manager = Arc::new(VoiceCompanionProcessManager::new(models.clone(), dir.path()));
+        manager.write_autostart_config(false).unwrap();
+        let guard = manager.begin_model_write().await.unwrap();
+        assert!(models.install(None).await.unwrap().accepted);
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(manager.resource_write_active.load(Ordering::Acquire),
+            "disabled voice must not release admission while the writer is still active");
+        models.remove().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while manager.resource_write_active.load(Ordering::Acquire) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("cancelled writer must release the host gate");
+        assert!(manager.child.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn model_write_admission_stays_closed_while_resume_holds_start_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path(),
+        ));
+        manager.write_autostart_config(true).unwrap();
+        let guard = manager.begin_model_write().await.unwrap();
+        for explicit in [true, false] {
+            assert_eq!(
+                manager.start_child(explicit).await.unwrap_err(),
+                "voice_resource_write_in_progress",
+                "every ordinary start path must observe the write gate under admission"
+            );
+        }
+        let child = manager.child.lock().await;
+        let resumed = manager.clone();
+        let task = tokio::spawn(async move { resumed.resume_after_model_write(true).await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if manager.call_start_lock.try_lock().is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("resume must acquire admission before its start attempt");
+        let blocked = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            manager.start_child(false),
+        )
+        .await;
+        assert!(blocked.is_err(), "a new start must wait for the resume admission boundary");
+        drop(child);
+        let resume_error = task.await.unwrap().unwrap_err();
+        assert!(!resume_error.contains("voice_resource_write_in_progress"),
+            "resume is the controlled bypass, not a second writer: {resume_error}");
+        assert!(!manager.resource_write_active.load(Ordering::Acquire));
+        let after = manager.start_child(false).await.unwrap_err();
+        assert!(after.contains("not installed"), "admission must reopen only after resume settles: {after}");
+        drop(guard);
     }
 
     #[tokio::test]

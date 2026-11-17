@@ -1167,9 +1167,13 @@ pub struct VoiceModelInstallRequest {
     /// Optional custom models directory override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models_dir: Option<PathBuf>,
-    /// Force re-download and re-verification even if files or state appear ready
+    /// Force a fresh integrity scan and repair; valid files are never purged or re-downloaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force: Option<bool>,
+    /// Explicit user confirmation to reconstruct an unidentifiable KWS group.
+    /// Never implied by force; existing user wake phrases are preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild_default_kws: Option<bool>,
 }
 
 /// Response DTO for `POST /api/voice/models/install`.

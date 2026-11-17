@@ -385,6 +385,11 @@
     "componentMissing": "This installation is missing the voice service component. Repair or upgrade {{brandName}} with the latest installer, then enable voice again.",
     "componentMissingDev": "This source checkout has not built the voice service component yet. Run bun run dev (it builds it automatically), or run bun run ensure:voice-companion and retry.",
     "operationFailed": "The voice suite operation failed. The installed state below is unchanged.",
+    "kwsRebuildTitle": "Rebuild the wake-word model group?",
+    "kwsRebuildContent": "The existing wake-word model group cannot be identified. Rebuilding with the supported default English wake-word group may change previous wake-word capabilities. Custom keywords will be preserved; incompatible keywords will cause an explicit failure. Continue?",
+    "kwsRebuildConfirm": "Rebuild with the default English group",
+    "modelStatusChecking": "Reading voice model status…",
+    "modelStatusUnavailable": "Voice model status is temporarily unavailable. Keeping the last known state and retrying automatically.",
     "suiteInUse": "A voice call, task or approval is using the models. Finish it before downloading or deleting.",
     "resourceBusy": "Another model write is in progress for this directory. Wait for it to finish.",
     "deleteIncomplete": "Delete did not complete; some files are still present: {{reason}}"

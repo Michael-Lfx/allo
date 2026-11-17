@@ -11,7 +11,8 @@ import { Button, Dropdown, Menu, Modal, Switch } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
-import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
+import { getVoiceCapabilities, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
+import { confirmVoiceModelRebuild, startVoiceModelSync } from './voiceModelSync';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey, voiceErrorTranslationKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
@@ -97,9 +98,6 @@ export interface VoiceModelDeleteResponse {
   state: ModelInstallStateWire;
   message?: string;
 }
-
-/** 200ms throttle window per ui-motion.zh.md §3 */
-const SSE_PROGRESS_THROTTLE_MS = 200;
 
 
 export interface VoiceDeviceStatus {
@@ -265,7 +263,8 @@ export const VoiceModelOperationAlert: React.FC<{ message: string | null; hidden
 const VoiceSettings: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [modelStatus, setModelStatus] = useState<VoiceModelInstallStatus>('NotInstalled');
+  const [modelStatus, setModelStatus] = useState<VoiceModelInstallStatus | null>(null);
+  const [modelSyncError, setModelSyncError] = useState(false);
   const [downloadDetail, setDownloadDetail] = useState<DownloadingDetail | null>(null);
   const [verifyDetail, setVerifyDetail] = useState<VerifyingDetail | null>(null);
   const [failedDetail, setFailedDetail] = useState<FailedDetail | null>(null);
@@ -297,8 +296,7 @@ const VoiceSettings: React.FC = () => {
   const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
   const [readyIconScaled, setReadyIconScaled] = useState(false);
 
-  const lastProgressUpdateRef = useRef<number>(0);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const modelSyncRef = useRef<ReturnType<typeof startVoiceModelSync> | null>(null);
   // Tracks the host-side self-check flag so the page can refresh the stored
   // capability report the moment any check (user or automatic) finishes.
   const selfCheckActiveRef = useRef(false);
@@ -366,15 +364,8 @@ const VoiceSettings: React.FC = () => {
     });
     return () => { disposed = true; unsubscribe?.(); };
   }, [t, voiceStatusRefresh]);
-  // Apply SSE state update with 200ms throttle for continuous downloading progress events
-  const applyStateUpdate = useCallback((stateWire: ModelInstallStateWire, immediate = false) => {
-    const isProgress = stateWire.status === 'Downloading';
-    const now = Date.now();
-    if (!immediate && isProgress && now - lastProgressUpdateRef.current < SSE_PROGRESS_THROTTLE_MS) {
-      return;
-    }
-    lastProgressUpdateRef.current = now;
-
+  // Progress notifications are coalesced for 200ms before the authoritative read.
+  const applyStateUpdate = useCallback((stateWire: ModelInstallStateWire) => {
     setModelStatus(stateWire.status);
     if (stateWire.status === 'Downloading') {
       setDownloadDetail(stateWire.detail);
@@ -393,81 +384,14 @@ const VoiceSettings: React.FC = () => {
     }
   }, []);
 
-  // Subscribe to /api/voice/models/progress SSE stream
-  const connectProgressStream = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    void (async () => {
-      try {
-        const response = await fetch(`${getBaseUrl()}/api/voice/models/progress`, {
-          headers: {
-            Accept: 'text/event-stream',
-            ...buildBackendAuthHeaders('GET'),
-          },
-          signal: controller.signal,
-        });
-
-        if (!response.ok || !response.body) return;
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('data:')) {
-              const statePayload = parseVoiceModelProgressLine(trimmed);
-              if (statePayload) {
-                applyStateUpdate(statePayload as ModelInstallStateWire);
-              }
-            }
-          }
-        }
-      } catch {
-        // SSE connection closed or aborted, exit gracefully
-      }
-    })();
+  useEffect(() => {
+    const sync = startVoiceModelSync(
+      applyStateUpdate,
+      (unavailable) => { setModelSyncError(unavailable); setLoading(false); },
+    );
+    modelSyncRef.current = sync;
+    return () => { modelSyncRef.current = null; sync.dispose(); };
   }, [applyStateUpdate]);
-
-  // Initial status fetch on mount
-  const fetchStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${getBaseUrl()}/api/voice/models/status`, {
-        headers: buildBackendAuthHeaders('GET'),
-      });
-      if (response.ok) {
-        const data = (await response.json()) as VoiceModelStatusResponse;
-        if (data?.state?.status) {
-          applyStateUpdate(data.state, true);
-          // If already in an active transition, keep SSE progress stream subscribed
-          if (
-            data.state.status === 'ProbingSource' ||
-            data.state.status === 'Downloading' ||
-            data.state.status === 'VerifyingSha256'
-          ) {
-            connectProgressStream();
-          }
-        }
-      }
-    } catch {
-      // Backend status probe is best-effort in skeleton stage; default to NotInstalled
-      setModelStatus('NotInstalled');
-    } finally {
-      setLoading(false);
-    }
-  }, [applyStateUpdate, connectProgressStream]);
 
   const fetchCompanionStatus = useCallback(async () => {
     try {
@@ -483,15 +407,7 @@ const VoiceSettings: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => {
-    void fetchStatus();
-    void fetchCompanionStatus();
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [fetchStatus, fetchCompanionStatus]);
+  useEffect(() => { void fetchCompanionStatus(); }, [fetchCompanionStatus]);
 
   const operationErrorText = useCallback((fallback: string, error?: string, code?: string) => {
     if (code === 'voice_suite_in_use') return t('voice.errors.suiteInUse');
@@ -499,82 +415,51 @@ const VoiceSettings: React.FC = () => {
     return error || fallback;
   }, [t]);
 
-  // Trigger POST /api/voice/models/install
+  // Only explicit actions write models; status recovery never retries installation.
   const handleInstall = useCallback(async (force = false) => {
-    setIsStarting(true);
-    setOperationError(null);
-    try {
-      const response = await fetch(`${getBaseUrl()}/api/voice/models/install`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...buildBackendAuthHeaders('POST'),
-        },
-        body: JSON.stringify({ prefer_mirror: 'auto', force: Boolean(force) }),
-      });
-      // Decode exactly once: a second response.json() would consume the body and
-      // erase the backend's 409 / removal-failure reason.
-      const outcome = parseVoiceModelOperation('install', response.status, await response.text());
-      if (!outcome.ok) {
-        setOperationError(operationErrorText(t('voice.errors.downloadFailed'), outcome.error, outcome.code));
-        return;
-      }
-      const state = outcome.receipt?.state as ModelInstallStateWire | undefined;
-      if (!state) {
-        setOperationError(t('voice.errors.operationFailed'));
-        return;
-      }
-      // The backend may reject a duplicate/already-ready request; always render
-      // the authoritative state it returned instead of forcing ProbingSource.
-      applyStateUpdate(state, true);
-      if (outcome.connectProgressStream) {
-        connectProgressStream();
-      } else if (state.status === 'Failed') {
-        setFailedDetail({
-          reason: outcome.receipt?.message || t('voice.errors.downloadFailed'),
-          recoverable: true,
+    const sync = modelSyncRef.current;
+    if (!sync) return;
+    await confirmVoiceModelRebuild(
+      modelStatus === 'Failed' && failedDetail ? { status: 'Failed', detail: failedDetail } : null,
+      () => new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: t('voice.errors.kwsRebuildTitle'),
+          content: t('voice.errors.kwsRebuildContent'),
+          okText: t('voice.errors.kwsRebuildConfirm'),
+          cancelText: t('common.cancel'),
+          onOk: () => { resolve(true); },
+          onCancel: () => { resolve(false); },
         });
-      }
-    } catch (e) {
-      setOperationError(e instanceof Error ? e.message : t('voice.errors.downloadFailed'));
-    } finally {
-      setIsStarting(false);
-    }
-  }, [applyStateUpdate, connectProgressStream, operationErrorText, t]);
+      }),
+      async (rebuildDefaultKws) => {
+        if (modelSyncRef.current !== sync) return;
+        setIsStarting(true);
+        setOperationError(null);
+        const outcome = await sync.operate('install', force, rebuildDefaultKws);
+        if (!outcome || modelSyncRef.current !== sync) return;
+        if (!outcome.ok) {
+          setOperationError(operationErrorText(t('voice.errors.downloadFailed'), outcome.error, outcome.code));
+        }
+        setIsStarting(false);
+      },
+    );
+  }, [modelStatus, failedDetail, operationErrorText, t]);
 
-  // Trigger DELETE /api/voice/models to free disk space
   const handleDelete = useCallback(async () => {
+    const sync = modelSyncRef.current;
+    if (!sync) return;
     setOperationError(null);
-    try {
-      const response = await fetch(`${getBaseUrl()}/api/voice/models`, {
-        method: 'DELETE',
-        headers: buildBackendAuthHeaders('DELETE'),
-      });
-      const outcome = parseVoiceModelOperation('delete', response.status, await response.text());
-      if (!outcome.ok) {
-        setOperationError(operationErrorText(t('voice.errors.unknownError'), outcome.error, outcome.code));
-        return;
-      }
-      const state = outcome.receipt?.state as ModelInstallStateWire | undefined;
-      if (!state) {
-        setOperationError(t('voice.errors.operationFailed'));
-        return;
-      }
-      // Never claim NotInstalled from a bare 2xx: honor the deletion receipt.
-      applyStateUpdate(state, true);
-      if (outcome.receipt?.success) {
-        setDownloadDetail(null);
-        setVerifyDetail(null);
-        setFailedDetail(null);
-      } else {
-        setOperationError(t('voice.errors.deleteIncomplete', {
-          reason: outcome.receipt?.message || t('voice.errors.unknownError'),
-        }));
-      }
-    } catch (e) {
-      setOperationError(e instanceof Error ? e.message : t('voice.errors.unknownError'));
+    const outcome = await sync.operate('delete');
+    if (!outcome || modelSyncRef.current !== sync) return;
+    setIsStarting(false);
+    if (!outcome.ok) {
+      setOperationError(operationErrorText(t('voice.errors.unknownError'), outcome.error, outcome.code));
+    } else if (!outcome.receipt?.success) {
+      setOperationError(t('voice.errors.deleteIncomplete', {
+        reason: outcome.receipt?.message || t('voice.errors.unknownError'),
+      }));
     }
-  }, [applyStateUpdate, operationErrorText, t]);
+  }, [operationErrorText, t]);
 
   // Uninstalling the voice suite removes ~450MB of local models, so the
   // destructive action always goes through the shared confirmation dialog
@@ -916,8 +801,8 @@ const VoiceSettings: React.FC = () => {
   // report's evidence: the stale report must not look like the current verdict.
   const selfCheckInFlight = checkingCapabilities || Boolean(voiceSnapshot?.self_check_active);
 
-  let rowLabel = t('voice.phases.notInstalled');
-  let rowDescription: React.ReactNode = t('voice.phases.notInstalledDesc');
+  let rowLabel = modelStatus === null ? t('voice.errors.modelStatusChecking') : t('voice.phases.notInstalled');
+  let rowDescription: React.ReactNode = modelStatus === null ? t(modelSyncError ? 'voice.errors.modelStatusUnavailable' : 'voice.errors.modelStatusChecking') : t('voice.phases.notInstalledDesc');
 
   if (modelStatus === 'ProbingSource') {
     rowLabel = t('voice.phases.probingSource');
@@ -1152,7 +1037,8 @@ const VoiceSettings: React.FC = () => {
               </div>
             </div>
 
-            <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
+            <VoiceModelOperationAlert message={modelSyncError ? t('voice.errors.modelStatusUnavailable') : null} />
+            <VoiceModelOperationAlert message={operationError} />
 
             {modelStatus === 'Ready' && (
               <div

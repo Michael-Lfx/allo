@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "suite_version": "2026.11.16-rc.1",
+  "candidate_version": "2026.11.16-rc.1",
+  "status": "candidate-not-release-certified",
+  "default_kws_group": "gigaspeech-zipformer-3.3m-2024-01-01",
+  "kws_groups": [
+    {
+      "group_id": "gigaspeech-zipformer-3.3m-2024-01-01",
+      "files": {
+        "kws/encoder.int8.onnx": "1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678",
+        "kws/decoder.int8.onnx": "e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a",
+        "kws/joiner.int8.onnx": "eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c",
+        "kws/tokens.txt": "fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53"
+      }
+    },
+    {
+      "group_id": "bilingual-zipformer-legacy",
+      "provenance": "repository commit fcd497dd0a1cc3197f47d9f98192d1bddba9383f; retained complete group only; repair source unverified",
+      "files": {
+        "kws/encoder.int8.onnx": "408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48",
+        "kws/decoder.int8.onnx": "63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21",
+        "kws/joiner.int8.onnx": "190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1",
+        "kws/tokens.txt": "2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0"
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "asr/model.int8.onnx",
+      "repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+      "revision": "2365baeacb507f821a0c8120fcee3d484dba7a07",
+      "url": "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/model.int8.onnx",
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+      "size": 239233841,
+      "production_match": true,
+      "provenance_check": "LFS_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/model.int8.onnx"
+      ]
+    },
+    {
+      "path": "asr/tokens.txt",
+      "repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+      "revision": "2365baeacb507f821a0c8120fcee3d484dba7a07",
+      "url": "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/tokens.txt",
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+      "size": 315894,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/tokens.txt"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
+      "repo": "csukuangfj/matcha-icefall-zh-baker",
+      "revision": "6ccce73a41f1f4be966c485c75bcbf9d13df4819",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/model-steps-3.onnx",
+      "sha256": "47e82b11454edeeb65adc4e44a24fd54c6715cd4d875cc2a20f75545ecc32d4d",
+      "size": 75624188,
+      "production_match": true,
+      "provenance_check": "LFS_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/model-steps-3.onnx"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-zh-baker/tokens.txt",
+      "repo": "csukuangfj/matcha-icefall-zh-baker",
+      "revision": "6ccce73a41f1f4be966c485c75bcbf9d13df4819",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/tokens.txt",
+      "sha256": "56209b2bf609d5ac1d66ede6dae7bf5254bd3f8aa24c4a6823713d5b884d87ba",
+      "size": 19591,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/tokens.txt"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-zh-baker/lexicon.txt",
+      "repo": "csukuangfj/matcha-icefall-zh-baker",
+      "revision": "6ccce73a41f1f4be966c485c75bcbf9d13df4819",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/lexicon.txt",
+      "sha256": "38b886d46aefa50da6322a64d72fd595d5f4fae1051adb160d647541b1e0a4a2",
+      "size": 1363705,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/lexicon.txt"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-zh-baker/date.fst",
+      "repo": "csukuangfj/matcha-icefall-zh-baker",
+      "revision": "6ccce73a41f1f4be966c485c75bcbf9d13df4819",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/date.fst",
+      "sha256": "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718",
+      "size": 59154,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/date.fst"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-zh-baker/number.fst",
+      "repo": "csukuangfj/matcha-icefall-zh-baker",
+      "revision": "6ccce73a41f1f4be966c485c75bcbf9d13df4819",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/number.fst",
+      "sha256": "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd",
+      "size": 64482,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/number.fst"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-zh-baker/phone.fst",
+      "repo": "csukuangfj/matcha-icefall-zh-baker",
+      "revision": "6ccce73a41f1f4be966c485c75bcbf9d13df4819",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/phone.fst",
+      "sha256": "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7",
+      "size": 88630,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-zh-baker/resolve/6ccce73a41f1f4be966c485c75bcbf9d13df4819/phone.fst"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/model-steps-3.onnx",
+      "sha256": "f8e8bae6f731310a1cda0012871ed5e91b0d19f1e2ceff077f62922bba95e3c1",
+      "size": 74157257,
+      "production_match": true,
+      "provenance_check": "LFS_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/model-steps-3.onnx"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/tokens.txt",
+      "sha256": "bcb4a50830e9402112fe8cb57d53ae8523908868a5015f2040dde5f5fd231697",
+      "size": 954,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/tokens.txt"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/en_dict",
+      "sha256": "71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35",
+      "size": 166944,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/en_dict"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/phontab",
+      "sha256": "886f3fa402cb0ba73d483aa8ad000af47a6b7cc06293c75a97913fba68a530f6",
+      "size": 55796,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/phontab"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/phonindex",
+      "sha256": "3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4",
+      "size": 39074,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/phonindex"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/phondata",
+      "sha256": "4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3",
+      "size": 550424,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/phondata"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/intonations",
+      "sha256": "3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc",
+      "size": 2040,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/intonations"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/lang/gmw/en",
+      "sha256": "4605d5330801de3641c6e366d15f129ea1f5ffbce8722642aba01ace07ab9c83",
+      "size": 140,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/lang/gmw/en"
+      ]
+    },
+    {
+      "path": "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
+      "repo": "csukuangfj/matcha-icefall-en_US-ljspeech",
+      "revision": "75e35f8d4e001e53fa998a8642685d28b8b3ba3e",
+      "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/lang/gmw/en-US",
+      "sha256": "41534c2a22df5dd4f1052ff9e1a33a3ea7bff5a26b5c02bdad5ba8ddb7524704",
+      "size": 257,
+      "production_match": true,
+      "provenance_check": "GIT_BLOB_SHA1_PLUS_LOCAL_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/75e35f8d4e001e53fa998a8642685d28b8b3ba3e/espeak-ng-data/lang/gmw/en-US"
+      ]
+    },
+    {
+      "path": "tts/vocos-22khz-univ.onnx",
+      "repo": "k2-fsa/sherpa-onnx-models",
+      "revision": "bee11a0c31f3054fa7e73752e59f50d1e05340af",
+      "url": "https://hf-mirror.com/k2-fsa/sherpa-onnx-models/resolve/bee11a0c31f3054fa7e73752e59f50d1e05340af/vocoder-models/vocos-22khz-univ.onnx",
+      "sha256": "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081",
+      "size": 53884024,
+      "production_match": true,
+      "provenance_check": "LFS_SHA256",
+      "fallback_urls": [
+        "https://huggingface.co/k2-fsa/sherpa-onnx-models/resolve/bee11a0c31f3054fa7e73752e59f50d1e05340af/vocoder-models/vocos-22khz-univ.onnx"
+      ]
+    },
+    {
+      "path": "kws/encoder.int8.onnx",
+      "repo": "pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+      "revision": "d4664d22a51cefcb2232047e72a21cff36797c53",
+      "url": "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=d4664d22a51cefcb2232047e72a21cff36797c53&FilePath=encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "sha256": "1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678",
+      "size": 4807159,
+      "production_match": true,
+      "provenance_check": "MODELSCOPE_SHA256"
+    },
+    {
+      "path": "kws/decoder.int8.onnx",
+      "repo": "pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+      "revision": "d4664d22a51cefcb2232047e72a21cff36797c53",
+      "url": "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=d4664d22a51cefcb2232047e72a21cff36797c53&FilePath=decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "sha256": "e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a",
+      "size": 277985,
+      "production_match": true,
+      "provenance_check": "MODELSCOPE_SHA256"
+    },
+    {
+      "path": "kws/joiner.int8.onnx",
+      "repo": "pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+      "revision": "d4664d22a51cefcb2232047e72a21cff36797c53",
+      "url": "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=d4664d22a51cefcb2232047e72a21cff36797c53&FilePath=joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+      "sha256": "eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c",
+      "size": 163380,
+      "production_match": true,
+      "provenance_check": "MODELSCOPE_SHA256"
+    },
+    {
+      "path": "kws/tokens.txt",
+      "repo": "pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+      "revision": "d4664d22a51cefcb2232047e72a21cff36797c53",
+      "url": "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=d4664d22a51cefcb2232047e72a21cff36797c53&FilePath=tokens.txt",
+      "sha256": "fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53",
+      "size": 5006,
+      "production_match": true,
+      "provenance_check": "MODELSCOPE_SHA256"
+    },
+    {
+      "path": "vad/silero_vad.onnx",
+      "repo": "manyeyes/silero-vad-onnx",
+      "revision": "2df0657b173bba4dc2ea97e51ef496aee5596cf2",
+      "url": "https://modelscope.cn/api/v1/models/manyeyes/silero-vad-onnx/repo?Revision=2df0657b173bba4dc2ea97e51ef496aee5596cf2&FilePath=silero_vad.onnx",
+      "sha256": "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+      "size": 1807522,
+      "production_match": true,
+      "provenance_check": "MODELSCOPE_SHA256"
+    }
+  ]
+}

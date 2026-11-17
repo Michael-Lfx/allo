@@ -103,192 +103,28 @@ impl MirrorConfig {
 
     /// Resolves default production mirrors for explicitly specified network environment.
     pub fn mirrors_for_environment(is_cn: bool) -> Vec<Self> {
-        let mut mirrors = Vec::new();
-
-        // Support custom mirror override via environment variable
-        if let Ok(custom_url) = std::env::var("VOICE_COMPANION_MODEL_MIRROR_URL") {
-            let custom_url = custom_url.trim().to_string();
-            if !custom_url.is_empty() {
-                mirrors.push(Self {
-                    id: "custom_mirror".to_string(),
-                    base_url: custom_url.clone(),
-                    probe_url: Some(format!("{}/probe", custom_url.trim_end_matches('/'))),
-                    is_modelscope: false,
-                    is_fallback_cdn: false,
-                });
-            }
-        }
-
-        let modelscope = Self {
-            id: "modelscope".to_string(),
-            base_url: "https://modelscope.cn".to_string(),
-            probe_url: Some(
-                "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=tokens.txt"
-                    .to_string(),
-            ),
-            is_modelscope: true,
-            is_fallback_cdn: false,
-        };
-
-        let hf_mirror = Self {
-            id: "hf_mirror".to_string(),
-            base_url: "https://hf-mirror.com".to_string(),
-            probe_url: Some(
-                "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"
-                    .to_string(),
-            ),
-            is_modelscope: false,
-            is_fallback_cdn: false,
-        };
-
-        let hf_official = Self {
-            id: "hf_official".to_string(),
-            base_url: "https://huggingface.co".to_string(),
-            probe_url: Some(
-                "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"
-                    .to_string(),
-            ),
-            is_modelscope: false,
-            is_fallback_cdn: is_cn,
-        };
-
-        if is_cn {
-            // China environment: ModelScope (fastest domestic) -> hf-mirror -> huggingface official
-            mirrors.push(modelscope);
-            mirrors.push(hf_mirror);
-            mirrors.push(hf_official);
-        } else {
-            // Global environment: ModelScope (primary authorized upstream) -> huggingface official -> hf-mirror
-            mirrors.push(modelscope);
-            mirrors.push(hf_official);
-            mirrors.push(hf_mirror);
-        }
-
+        let mut mirrors = vec![
+            Self { id: "pinned".into(), base_url: String::new(), probe_url: None, is_modelscope: false, is_fallback_cdn: false },
+            Self { id: "pinned_fallback".into(), base_url: String::new(), probe_url: None, is_modelscope: false, is_fallback_cdn: true },
+        ];
+        if !is_cn { mirrors.reverse(); }
         mirrors
     }
 
     /// Resolves concrete download URL for a relative model asset path.
     pub fn resolve_url(&self, rel_path: &str) -> String {
-        let clean_path = rel_path.replace('\\', "/");
-        if self.is_modelscope && self.base_url.contains("modelscope.cn") {
-            match clean_path.as_str() {
-                "kws/encoder.int8.onnx" => {
-                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx".to_string()
-                }
-                "kws/decoder.int8.onnx" => {
-                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx".to_string()
-                }
-                "kws/joiner.int8.onnx" => {
-                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx".to_string()
-                }
-                "kws/tokens.txt" => {
-                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=tokens.txt".to_string()
-                }
-                "kws/keywords.txt" => {
-                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=keywords.txt".to_string()
-                }
-                "vad/silero_vad.onnx" => {
-                    "https://modelscope.cn/api/v1/models/manyeyes/silero-vad-onnx/repo?Revision=master&FilePath=silero_vad.onnx".to_string()
-                }
-                "asr/model.int8.onnx" => {
-                    "https://modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=model.int8.onnx".to_string()
-                }
-                "asr/tokens.txt" => {
-                    "https://modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=tokens.txt".to_string()
-                }
-                "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=model-steps-3.onnx".to_string()
-                }
-                "tts/matcha-icefall-zh-baker/tokens.txt" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=tokens.txt".to_string()
-                }
-                "tts/matcha-icefall-zh-baker/lexicon.txt" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=lexicon.txt".to_string()
-                }
-                "tts/matcha-icefall-zh-baker/date.fst" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=date.fst".to_string()
-                }
-                "tts/matcha-icefall-zh-baker/number.fst" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=number.fst".to_string()
-                }
-                "tts/matcha-icefall-zh-baker/phone.fst" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=phone.fst".to_string()
-                }
-                "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=model-steps-3.onnx".to_string()
-                }
-                "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=tokens.txt".to_string()
-                }
-                "tts/vocos-22khz-univ.onnx" => {
-                    "https://modelscope.cn/api/v1/models/csukuangfj/sherpa-onnx-models/repo?Revision=master&FilePath=vocoder-models/vocos-22khz-univ.onnx".to_string()
-                }
-                other => {
-                    format!("{}/{}", self.base_url.trim_end_matches('/'), other)
-                }
-            }
-        } else if self.id == "hf_mirror"
-            || self.id == "hf_official"
-            || self.base_url.contains("hf-mirror.com")
-            || self.base_url.contains("huggingface.co")
-        {
-            let base = self.base_url.trim_end_matches('/');
-            match clean_path.as_str() {
-                "vad/silero_vad.onnx" => {
-                    format!("{base}/csukuangfj/vad/resolve/main/silero_vad.onnx")
-                }
-                "asr/model.int8.onnx" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx")
-                }
-                "asr/tokens.txt" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt")
-                }
-                "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => {
-                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/model-steps-3.onnx")
-                }
-                "tts/matcha-icefall-zh-baker/tokens.txt" => {
-                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/tokens.txt")
-                }
-                "tts/matcha-icefall-zh-baker/lexicon.txt" => {
-                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/lexicon.txt")
-                }
-                "tts/matcha-icefall-zh-baker/date.fst" => {
-                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/date.fst")
-                }
-                "tts/matcha-icefall-zh-baker/number.fst" => {
-                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/number.fst")
-                }
-                "tts/matcha-icefall-zh-baker/phone.fst" => {
-                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/phone.fst")
-                }
-                "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/model-steps-3.onnx")
-                }
-                "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
-                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/tokens.txt")
-                }
-                // The whole `espeak-ng-data/` tree lives in the same HF repo; a
-                // prefix rule keeps dictionaries, voice definitions and future
-                // data files on one URL shape instead of one arm per file.
-                path if path.starts_with("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/") => {
-                    format!(
-                        "{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/{}",
-                        path.trim_start_matches("tts/matcha-icefall-en_US-ljspeech/")
-                    )
-                }
-                "tts/vocos-22khz-univ.onnx" => {
-                    format!("{base}/k2-fsa/sherpa-onnx-models/resolve/main/vocoder-models/vocos-22khz-univ.onnx")
-                }
-                other => {
-                    format!("{base}/{other}")
-                }
-            }
-        } else {
-            format!("{}/{}", self.base_url.trim_end_matches('/'), clean_path)
+        if self.id == "pinned" {
+            return crate::verifier::pinned_source_url(rel_path).unwrap_or("").to_string();
         }
+        if self.id == "pinned_fallback" {
+            return crate::verifier::embedded_manifest().files.iter().find(|f| f.path == rel_path)
+                .and_then(|f| f.fallback_urls.first()).cloned().unwrap_or_default();
+        }
+        format!("{}/{}", self.base_url.trim_end_matches('/'), rel_path)
     }
 
     pub fn supports(&self, rel_path: &str) -> bool {
+        if self.id.starts_with("pinned") { return !self.resolve_url(rel_path).is_empty(); }
         let clean_path = rel_path.replace('\\', "/");
         if self.is_modelscope && self.base_url.contains("modelscope.cn") {
             // ModelScope upstream hosts ASR, KWS and VAD models directly.
@@ -392,13 +228,113 @@ pub struct ModelDownloader {
     speed_gate_max_delay: Duration,
 }
 
+#[cfg(test)]
+mod replacement_tests {
+    #[tokio::test]
+    async fn failed_final_verification_restores_old_target_and_preserves_rejected_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("model");
+        let staged = dir.path().join("model.verified");
+        let backup = dir.path().join("model.backup");
+        std::fs::write(&target, b"post-promotion corruption").unwrap();
+        std::fs::write(&backup, b"previous valid model").unwrap();
+        super::rollback_replacement(&target, &staged, &backup).await.unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"previous valid model");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"post-promotion corruption");
+        assert!(!backup.exists());
+    }
+}
+
 impl Default for ModelDownloader {
     fn default() -> Self {
         Self::new(MirrorConfig::default_mirrors())
     }
 }
 
+/// Owned transaction artifacts; names bind a partial to both expected hash and size.
+pub fn transaction_paths(target: &Path, hash: &str, size: u64) -> [PathBuf; 3] {
+    let prefix = format!("{}.{hash}.{size}", target.display());
+    [PathBuf::from(format!("{prefix}.verified")), PathBuf::from(format!("{prefix}.verified.part")), PathBuf::from(format!("{prefix}.backup"))]
+}
+
+async fn rollback_replacement(target: &Path, staged: &Path, backup: &Path) -> std::io::Result<()> {
+    // Keep the rejected new bytes for diagnosis; never unlink the old backup.
+    tokio::fs::rename(target, staged).await?;
+    if backup.exists() { tokio::fs::rename(backup, target).await?; }
+    Ok(())
+}
+
 impl ModelDownloader {
+    /// Reuse verified targets and promote only content with the expected identity.
+    pub async fn download_verified(&self, relative: &str, target: &Path, hash: &str, size: Option<u64>) -> Result<(), DownloaderError> {
+        let [staged, part, backup] = transaction_paths(target, hash, size.unwrap_or(0));
+        let matches = |path: PathBuf| async move {
+            if let Some(size) = size {
+                if tokio::fs::metadata(&path).await.map(|m| m.len()).ok() != Some(size) { return false; }
+            }
+            crate::verifier::compute_file_sha256(&path).await.ok().is_some_and(|h| h == hash)
+        };
+        if matches(target.to_path_buf()).await {
+            if backup.exists() { tokio::fs::remove_file(&backup).await?; }
+            return Ok(());
+        }
+        if backup.exists() {
+            if !target.exists() {
+                tokio::fs::rename(&backup, target).await?;
+                if matches(target.to_path_buf()).await { return Ok(()); }
+            } else {
+                return Err(DownloaderError::ProtocolViolation(format!("recovery: {relative}: both target and backup require review")));
+            }
+        }
+        if !matches(staged.clone()).await {
+            if staged.exists() { tokio::fs::remove_file(&staged).await?; }
+            if let Some(size) = size {
+                if tokio::fs::metadata(&part).await.map(|m| m.len() >= size).unwrap_or(false) {
+                    if matches(part.clone()).await {
+                        tokio::fs::rename(&part, &staged).await?;
+                    } else {
+                        tokio::fs::remove_file(&part).await?;
+                    }
+                }
+            }
+            if !staged.exists() {
+                let candidates: Vec<_> = self.mirrors.iter().filter(|m| m.supports(relative)).collect();
+                let mut last_error = DownloaderError::AllMirrorsFailed;
+                for (index, mirror) in candidates.iter().enumerate() {
+                    let result = self.download_file_bounded(mirror, relative, &staged, index + 1 == candidates.len(), size).await;
+                    match result {
+                        Ok(_) if matches(staged.clone()).await => break,
+                        Ok(_) => {
+                            let actual = crate::verifier::compute_file_sha256(&staged).await?;
+                            tokio::fs::remove_file(&staged).await?;
+                            last_error = DownloaderError::ProtocolViolation(format!("verify: {relative}: source_id={}: expected {hash}, actual {actual}", mirror.id));
+                        }
+                        Err(error) => last_error = error,
+                    }
+                }
+                if !staged.exists() { return Err(last_error); }
+            }
+        }
+        if !matches(staged.clone()).await {
+            let actual = crate::verifier::compute_file_sha256(&staged).await?;
+            tokio::fs::remove_file(&staged).await?;
+            return Err(DownloaderError::ProtocolViolation(format!("verify: {relative}: expected {hash}, actual {actual}; retry this file")));
+        }
+        if target.exists() { tokio::fs::rename(target, &backup).await?; }
+        if let Err(error) = tokio::fs::rename(&staged, target).await {
+            if backup.exists() {
+                tokio::fs::rename(&backup, target).await.map_err(|rollback| DownloaderError::ProtocolViolation(format!("replace: {relative}: {error}; rollback failed: {rollback}")))?;
+            }
+            return Err(error.into());
+        }
+        if !matches(target.to_path_buf()).await {
+            rollback_replacement(target, &staged, &backup).await.map_err(|error| DownloaderError::ProtocolViolation(format!("replace: {relative}: final verification failed; rollback failed: {error}; artifacts retained")))?;
+            return Err(DownloaderError::ProtocolViolation(format!("replace: {relative}: final verification failed; previous target restored")));
+        }
+        if backup.exists() { tokio::fs::remove_file(&backup).await?; }
+        Ok(())
+    }
+
     /// Initializes a downloader with the provided mirror candidate list.
     pub fn new(mirrors: Vec<MirrorConfig>) -> Self {
         let client = reqwest::Client::builder()
@@ -459,7 +395,7 @@ impl ModelDownloader {
         if self.mirrors.is_empty() {
             return Err(DownloaderError::AllMirrorsFailed);
         }
-        if self.mirrors.len() == 1 {
+        if self.mirrors.len() == 1 || self.mirrors[0].id.starts_with("pinned") {
             return Ok(self.mirrors[0].clone());
         }
 
@@ -529,6 +465,17 @@ impl ModelDownloader {
         target_path: &Path,
         is_last_fallback: bool,
     ) -> Result<u64, DownloaderError> {
+        self.download_file_bounded(mirror, rel_path, target_path, is_last_fallback, None).await
+    }
+
+    async fn download_file_bounded(
+        &self,
+        mirror: &MirrorConfig,
+        rel_path: &str,
+        target_path: &Path,
+        is_last_fallback: bool,
+        trusted_size: Option<u64>,
+    ) -> Result<u64, DownloaderError> {
         let url = mirror.resolve_url(rel_path);
         let part_path = PathBuf::from(format!("{}.part", target_path.display()));
 
@@ -549,7 +496,8 @@ impl ModelDownloader {
             req = req.header(RANGE, format!("bytes={existing_bytes}-"));
         }
 
-        let resp = req.send().await?;
+        let resp = tokio::time::timeout(Duration::from_secs(20), req.send()).await
+            .map_err(|_| DownloaderError::Interrupted("response header timeout".into()))??;
         let resp = if resp.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             // A 416 means the local partial no longer matches the remote object.
             // Never promote it from a size guess: discard it and fetch from zero.
@@ -560,7 +508,8 @@ impl ModelDownloader {
             );
             remove_if_exists(&part_path).await;
             requested_start = 0;
-            self.client.get(&url).send().await?
+            tokio::time::timeout(Duration::from_secs(20), self.client.get(&url).send()).await
+                .map_err(|_| DownloaderError::Interrupted("response header timeout".into()))??
         } else {
             resp
         };
@@ -626,8 +575,12 @@ impl ModelDownloader {
                     }
                 }
 
+                if trusted_size.is_some_and(|size| total.is_some_and(|total| total != size) || range_end.checked_add(1) != Some(size)) {
+                    return Err(DownloaderError::ProtocolViolation("Content-Range conflicts with trusted size".into()));
+                }
                 let file = tokio::fs::OpenOptions::new()
                     .write(true)
+                    .create(true)
                     .append(true)
                     .open(&part_path)
                     .await?;
@@ -647,6 +600,9 @@ impl ModelDownloader {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok());
 
+                if trusted_size.is_some_and(|size| total.is_some_and(|total| total != size)) {
+                    return Err(DownloaderError::ProtocolViolation("Content-Length conflicts with trusted size".into()));
+                }
                 let file = tokio::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
@@ -677,7 +633,6 @@ impl ModelDownloader {
                     ));
                 }
             };
-            file.write_all(&chunk_opt).await?;
             let chunk_len = chunk_opt.len() as u64;
             stream_bytes_received = stream_bytes_received.saturating_add(chunk_len);
             body_bytes = body_bytes.checked_add(chunk_len).ok_or_else(|| {
@@ -686,6 +641,16 @@ impl ModelDownloader {
             downloaded_bytes = downloaded_bytes.checked_add(chunk_len).ok_or_else(|| {
                 DownloaderError::ProtocolViolation("Downloaded length overflows u64".into())
             })?;
+
+            if trusted_size.is_some_and(|size| downloaded_bytes > size)
+                || expected_total.is_some_and(|size| downloaded_bytes > size)
+                || expected_body.is_some_and(|size| body_bytes > size)
+            {
+                drop(file);
+                remove_if_exists(&part_path).await;
+                return Err(DownloaderError::ProtocolViolation("Response body exceeds permitted size".into()));
+            }
+            file.write_all(&chunk_opt).await?;
 
             // Speed gate inspection: during observation window (e.g. 12s~30s), if throughput is below threshold
             // and this is not the last fallback mirror, abort to allow faster failover.
@@ -727,7 +692,7 @@ impl ModelDownloader {
             }
         }
 
-        if let Some(expected) = expected_total {
+        if let Some(expected) = trusted_size.or(expected_total) {
             if downloaded_bytes != expected {
                 if downloaded_bytes > expected {
                     remove_if_exists(&part_path).await;
@@ -741,8 +706,10 @@ impl ModelDownloader {
             }
         }
 
+        // Raw transfer targets are staging paths; never unlink an existing target.
+        // Production promotion belongs exclusively to download_verified.
         if target_path.exists() {
-            remove_if_exists(target_path).await;
+            return Err(DownloaderError::ProtocolViolation("transfer target already exists; use verified replacement".into()));
         }
         tokio::fs::rename(&part_path, target_path).await?;
         Ok(downloaded_bytes)
