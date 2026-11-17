@@ -4055,7 +4055,7 @@ impl LearningService {
             ready_count,
             ready_target: crate::learning_graph::READY_TARGET,
             ready_trigger: crate::learning_graph::READY_TRIGGER,
-            growth_running: self.generation_running(),
+            growth_running: self.growth_running(course_id),
         })
     }
 
@@ -4969,11 +4969,18 @@ impl LearningService {
         self.generation_cancel_flag().is_cancelled()
     }
 
-    fn generation_running(&self) -> bool {
+    /// 本课生长读数（b1 收窄）：只有**本课的 KIND_GROWTH 在跑**才算。
+    /// 修复前对任务快照做全局 `any(RUNNING)`——任何课程的任何任务在跑
+    /// 都点亮所有课程的 graph 视图（跨课程串扰 + kind 混计，tickets/b1）。
+    fn growth_running(&self, course_id: &LearningCourseId) -> bool {
         self.generation_tasks
             .snapshot()
             .iter()
-            .any(|task| task.state == crate::service::STATE_RUNNING)
+            .any(|task| {
+                task.state == crate::service::STATE_RUNNING
+                    && task.course_id == course_id.as_str()
+                    && task.kind == crate::service::KIND_GROWTH
+            })
     }
 
     /// 生长任务的注册：主题取课程标题前缀，便于前端指示条展示。
@@ -6497,5 +6504,72 @@ mod structure_attempt_init_tests {
             Some(1),
             "启动后、循环前 attempt 已在场（set_step 处同步初始化，非循环回写）"
         );
+    }
+}
+
+/// b1 回归：`growth_running` 按课程 + kind 收窄（learning-growth-state-scoping
+/// /tickets/b1）。修复前 `generation_running()` 对任务快照做全局
+/// `any(RUNNING)`——任何课程的任何任务在跑都点亮所有课程的 graph 视图
+/// （真机病历：别课建课跑结构期间，本课知识结构卡标「生长中…」且补充
+/// 节点钮禁用）。语义基准：只有**本课的 KIND_GROWTH 在跑**才点亮本课。
+#[cfg(test)]
+mod growth_running_scope_tests {
+    use crate::service::LearningService;
+    use crate::service::tests::{job_test_service, seed_graph_course};
+
+    async fn view_growth_running(service: &LearningService, course_id: &str) -> bool {
+        let course = nomifun_common::LearningCourseId::parse(course_id).unwrap();
+        service
+            .assemble_learning_graph_view(&course, None)
+            .await
+            .unwrap()
+            .growth_running
+    }
+
+    /// 三段时序一次跑完（同一夹具内状态机推进）：
+    /// 1. A 课 KIND_GROWTH 在跑 → A true、B false（跨课程隔离）；
+    /// 2. B 课 KIND_LESSON 在跑 → A 仍 true、B 仍 false（kind 隔离——
+    ///    lesson 任务既不点亮别课也不点亮本课的 growth_running）；
+    /// 3. A 课 growth 终态（guard drop = failed 留痕）→ A 回落 false。
+    #[tokio::test]
+    async fn growth_running_scopes_to_own_course_own_kind_running_only() {
+        let (service, _knowledge, _owner) = job_test_service().await;
+        let (course_a, _lesson_a1, _lesson_a2) = seed_graph_course(&service).await;
+        let (course_b, _lesson_b1, _lesson_b2) = seed_graph_course(&service).await;
+
+        let growth_a = service
+            .generation_tasks
+            .begin(crate::service::KIND_GROWTH, &course_a, None, "生长 A")
+            .await
+            .expect("A 课 growth 任务注册即 running");
+        assert!(
+            view_growth_running(&service, &course_a).await,
+            "本课 growth 在跑 → growth_running = true"
+        );
+        assert!(
+            !view_growth_running(&service, &course_b).await,
+            "别课 growth 在跑不得点亮本课（跨课程串扰即本票病历）"
+        );
+
+        let lesson_b = service
+            .generation_tasks
+            .begin(crate::service::KIND_LESSON, &course_b, None, "课时 B")
+            .await
+            .expect("B 课 lesson 任务注册即 running");
+        assert!(
+            view_growth_running(&service, &course_a).await,
+            "别课 lesson 在跑不得干扰本课 growth 读数（跨课程隔离）"
+        );
+        assert!(
+            !view_growth_running(&service, &course_b).await,
+            "本课 lesson 在跑也不算 growth_running（kind 隔离）"
+        );
+
+        drop(growth_a);
+        assert!(
+            !view_growth_running(&service, &course_a).await,
+            "本课 growth 终态（guard drop = failed 留痕）→ 读数回落 false"
+        );
+        drop(lesson_b);
     }
 }
