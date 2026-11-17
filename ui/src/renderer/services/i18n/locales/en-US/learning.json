@@ -456,7 +456,7 @@
   "learningGraphTier_apply": "Apply",
   "learningGraphTier_teach": "Teach",
   "learningGraphGrow": "Grow nodes (ready {{ready}}/{{target}})",
-  "learningGraphGrowing": "Growing…",
+  "learningGraphAddingNodes": "Adding nodes…",
   "learningGraphAutoPreparing": "Auto-preparing…",
   "learningGraphWeakAdvice": "Weak nodes: {{nodes}} (lowest predicted recall {{percent}}%) — {{dueText}}",
   "learningGraphWeakAdviceDue": "{{count}} due cards",

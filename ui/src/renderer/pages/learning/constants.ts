@@ -40,6 +40,14 @@ export const STRUCTURE_PRESENTED_KEY = 'learning.structurePresented';
  * （只记折叠；缺席 = 展开——默认展开语义）。 */
 export const GRAPH_HEADER_COLLAPSED_KEY = 'learning.graph.headerCollapsed';
 
+/** 图工作区头部滚动自动折叠阈值（a1，px）：学习 Tab 正文滚动深度 ≥ 该值时
+ * 临时折叠头部（让位正文版面）。临时层不落盘（滚动深度是视口语境不是偏好），
+ * 常量可调参（真机目验欠账：跟手不闪烁、临界不抖动）。 */
+export const HEADER_COLLAPSE_SCROLL_COLLAPSE_PX = 160;
+/** 图工作区头部滚动自动展开阈值（a1，px）= 折叠阈值的 H/2 迟滞：滚动深度
+ * 低于该值恢复展开并复位用户否决臂（迟滞带 [H/2, H) 内维持现态，防临界抖动）。 */
+export const HEADER_COLLAPSE_SCROLL_EXPAND_PX = HEADER_COLLAPSE_SCROLL_COLLAPSE_PX / 2;
+
 /**
  * 归档确认的"算法数据达标"阈值：复习次数不少于该值，且记忆稳定性不低于
  * 该天数（天）。任一不满足即视为"未达标"，归档前需二次确认——归档等于

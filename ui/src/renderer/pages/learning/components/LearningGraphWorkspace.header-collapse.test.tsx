@@ -9,9 +9,9 @@
  *   一行摘要条（课程名 + structureSummaryText + processing 徽章 + 展开
  *   钮）；默认展开；per-course 持久化（localStorage，键
  *   learning.graph.headerCollapsed，存储注入式——测试装内存 mock）；缓头
- *   返回行 / 检测区 / Tabs 常驻折叠区之外；structure/growth 运行中强制
- *   展开（processingPrimary / growing 任一为真时不可折叠、processing
- *   徽章照常渲染）。
+ *   返回行 / 检测区 / Tabs 常驻折叠区之外；processing（a3 修订）：后台
+ *   运行不再强制展开、不再禁用折叠钮——徽章在展开/折叠两态照常渲染，
+ *   折叠判定与 processing 解耦。
  * - Q6 去重：graph.goal trim 后与 course.title 逐字相同 → 目标段不渲染；
  *   不同（含仅空白差异）才渲染。
  * jsdom 宿主：LearningGraphWorkspace.quiz-entry.test 同仪式——挂载期读数
@@ -174,10 +174,14 @@ const structureView = {
   mounts: null,
 } as unknown as LearningStructureView;
 
-const graphDetail = (options?: { goal?: string; growthRunning?: boolean }): CourseDetail =>
+const graphDetail = (options?: {
+  goal?: string;
+  growthRunning?: boolean;
+  courseId?: string;
+}): CourseDetail =>
   ({
     course: {
-      id: 'course-graph-1',
+      id: options?.courseId ?? 'course-graph-1',
       title: '图课程',
       description: '',
       domain: '',
@@ -228,7 +232,12 @@ const noop = () => undefined;
 /** 挂载图工作区：检测进度注入 due:false（检测区与折叠语义解耦）、结构投影
  * 给就绪夹具（摘要条文本面）、补批判定拒绝（防自动补批 POST 真发）。 */
 const mountGraphWorkspace = async (
-  options?: { goal?: string; growthRunning?: boolean; locale?: 'zh-CN' | 'en-US' } | string,
+  options?: {
+    goal?: string;
+    growthRunning?: boolean;
+    courseId?: string;
+    locale?: 'zh-CN' | 'en-US';
+  } | string,
   locale: 'zh-CN' | 'en-US' = 'zh-CN'
 ) => {
   const opts = typeof options === 'string' ? { goal: options } : (options ?? {});
@@ -384,21 +393,23 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     expect(loadGraphHeaderCollapsed('course-graph-2')).toBe(false);
   });
 
-  test('growth_running 强制展开：持久化折叠被压住，折叠钮禁用，processing 徽章在场', async () => {
+  test('growth_running 不再强制展开（a3）：持久化折叠保持折叠，展开钮不禁用，摘要条徽章在场', async () => {
     storageMap.set(GRAPH_HEADER_COLLAPSED_KEY, '{"course-graph-1":true}');
     await mountGraphWorkspace({ growthRunning: true });
     const text = container.textContent ?? '';
-    // 强制展开：折叠态摘要被完整头部替代
-    expect(text).toContain('知识结构');
-    expect(text).toContain('补充节点（就绪 1/7）');
-    expect(headerToggle('收起头部')).not.toBeNull();
-    // 不可折叠：钮禁用
-    expect(headerToggle('收起头部')!.disabled).toBe(true);
-    // processing 徽章不可被折叠吞
-    expect(text).toContain('生长中…');
+    // 持久化折叠不被 processing 压住：仍是折叠态（完整头部退场）
+    expect(text).not.toContain('知识结构');
+    expect(text).not.toContain('补充节点（就绪 1/7）');
+    // 展开钮在场且恒可点（后台运行不剥夺折叠控制权）
+    const toggle = headerToggle('展开头部');
+    expect(toggle).not.toBeNull();
+    expect(toggle!.disabled).toBe(false);
+    // processing 徽章不可被折叠吞：摘要条兜底渲染补充节点徽章（b2：
+    // 键名随值更名 learningGraphAddingNodes，动作名与按钮「补充节点」对齐）
+    expect(text).toContain('补充节点中…');
   });
 
-  test('本地 growing 强制展开：生长在途时折叠钮禁用（点击不落持久化）', async () => {
+  test('本地 growing 不再禁用折叠（a3）：生长在途可折叠、落持久化', async () => {
     await mountGraphWorkspace();
     learningApi.growGraph = () => new Promise(() => undefined);
     await act(async () => {
@@ -409,14 +420,16 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     });
     const toggle = headerToggle('收起头部');
     expect(toggle).not.toBeNull();
-    expect(toggle!.disabled).toBe(true);
+    // 钮恒可点（growing 在途不进折叠判定；o6：徽章只认服务端 growth_running
+    // 真相，本地在途态不点亮徽章——徽章兜底断言在 growth_running 用例）
+    expect(toggle!.disabled).toBe(false);
     await act(async () => {
       toggle!.click();
       await Promise.resolve();
     });
-    // 点击无效：仍展开，持久化无写入
-    expect(container.textContent).toContain('知识结构');
-    expect(storageMap.get(GRAPH_HEADER_COLLAPSED_KEY)).toBeUndefined();
+    // 折叠生效且持久化写入
+    expect(container.textContent).not.toContain('知识结构');
+    expect(storageMap.get(GRAPH_HEADER_COLLAPSED_KEY)).toBe('{"course-graph-1":true}');
   });
 
   test('en-US：摘要条/展开钮同走词典（零中文回落）', async () => {
@@ -432,6 +445,169 @@ describe('LearningGraphWorkspace 头部折叠（f3 Q5）', () => {
     expect(text).not.toContain('收起头部');
     expect(text).not.toContain('条主线');
     expect(container.querySelector('button[aria-label="收起头部"]')).toBeNull();
+  });
+
+  test('growth 徽章 en-US：Adding nodes…（b2 键名随值更名，与按钮 Grow nodes 同动作名）', async () => {
+    await mountGraphWorkspace({ growthRunning: true, locale: 'en-US' });
+    const text = container.textContent ?? '';
+    // 徽章值走 en-US 词典新值（learningGraphAddingNodes）
+    expect(text).toContain('Adding nodes…');
+    // 旧值零残留
+    expect(text).not.toContain('Growing…');
+  });
+});
+
+describe('LearningGraphWorkspace 头部滚动自动折叠（a1，临时层不落盘）', () => {
+  /** 学习 Tab 正文阅读容器（a1 唯一触发源）：h-full overflow-y-auto p-16px。 */
+  const readingPane = (): HTMLDivElement | null =>
+    container.querySelector<HTMLDivElement>('div.overflow-y-auto.p-16px');
+
+  /** 模拟滚动：置 scrollTop 后派发冒泡 scroll 事件，等 rAF 节拍落地
+   * （宿主 requestAnimationFrame = 16ms setTimeout）。 */
+  const scrollPane = async (scrollTop: number) => {
+    const pane = readingPane();
+    expect(pane).not.toBeNull();
+    pane!.scrollTop = scrollTop;
+    await act(async () => {
+      pane!.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+  };
+
+  /** 存储零改动断言（a1 核心：自动层不落盘）：键下本课永不出现 true 条目
+   * （手动展开写回 false 删条目为 f3 既有语义，不视为自动层落盘）。 */
+  const expectStorageUntouched = () => {
+    const raw = storageMap.get(GRAPH_HEADER_COLLAPSED_KEY);
+    const parsed: unknown = raw === undefined ? null : JSON.parse(raw!);
+    expect((parsed as Record<string, unknown> | null)?.['course-graph-1']).toBeUndefined();
+  };
+
+  const tabByTitle = (title: string): HTMLElement | null =>
+    Array.from(container.querySelectorAll<HTMLElement>('.arco-tabs-header-title')).find(
+      (tab) => (tab.textContent ?? '').includes(title)
+    ) ?? null;
+
+  test('滚过阈值（200 ≥ 160）自动折叠：摘要条在场、存储零改动', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    const text = container.textContent ?? '';
+    // 完整头部退场，摘要条接管
+    expect(text).not.toContain('知识结构');
+    expect(text).toContain('3 条主线');
+    expect(headerToggle('展开头部')).not.toBeNull();
+    // 自动态不落盘（滚动深度是视口语境不是偏好）
+    expectStorageUntouched();
+  });
+
+  test('回顶（0 < 80）展开：完整头部恢复', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    await scrollPane(0);
+    expect(container.textContent).toContain('知识结构');
+    expect(headerToggle('收起头部')).not.toBeNull();
+    expectStorageUntouched();
+  });
+
+  test('否决臂：自动折叠中手动展开 → 深滚不再自动折叠；回顶复位后新周期恢复', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    // auto 折叠态点展开钮：否决臂置位（本滚动周期压制自动折叠）
+    await act(async () => {
+      headerToggle('展开头部')!.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('知识结构');
+    expectStorageUntouched();
+    // 深滚：否决臂在场，不自动折叠
+    await scrollPane(300);
+    expect(container.textContent).toContain('知识结构');
+    // 回顶复位 → 再下滑：自动折叠恢复
+    await scrollPane(0);
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+  });
+
+  test('persisted 恒折叠：偏好折叠下任何滚动深度都折叠（尊重偏好）', async () => {
+    storageMap.set(GRAPH_HEADER_COLLAPSED_KEY, '{"course-graph-1":true}');
+    await mountGraphWorkspace();
+    expect(container.textContent).not.toContain('知识结构');
+    await scrollPane(0);
+    expect(container.textContent).not.toContain('知识结构');
+    await scrollPane(300);
+    expect(container.textContent).not.toContain('知识结构');
+  });
+
+  test('切 TabPane 复位：滚深自动折叠后切走页签，临时态清零', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    await act(async () => {
+      tabByTitle('学习记录')!.click();
+      await Promise.resolve();
+    });
+    // 临时态清零：头部展开（摘要条退场）
+    expect(container.textContent).toContain('知识结构');
+    expectStorageUntouched();
+  });
+
+  test('切课复位：自动折叠不落盘，换课重挂载从展开态起步', async () => {
+    await mountGraphWorkspace();
+    await scrollPane(200);
+    expect(container.textContent).not.toContain('知识结构');
+    expectStorageUntouched();
+    // 换课（重挂载另一课）：临时层随卸载消亡 + 无持久折叠 → 展开
+    await mountGraphWorkspace({ courseId: 'course-graph-2' });
+    expect(container.textContent).toContain('知识结构');
+    expect(headerToggle('收起头部')).not.toBeNull();
+  });
+});
+
+describe('LearningGraphWorkspace 折叠钮显性化（a2）', () => {
+  // Tooltip 弹层断言走 LearningGraphWorkspace.header-collapse.structure.test.ts
+  // （仓库先例：bun test 宿主 import 提升先于 jsdom globals 注入，arco
+  // isServerRendering 在加载期恒 true → portal 弹层不渲染，悬停显形无法在
+  // 本宿主观察；DOM 面断 hit area / 图标 / 摘要条钮序，接线面断 Tooltip）。
+  test('展开态收起钮：hit area 常规（无 !px-2px）、图标 14px', async () => {
+    await mountGraphWorkspace();
+    const toggle = headerToggle('收起头部')!;
+    expect(toggle.className).not.toContain('!px-2px');
+    const icon = toggle.querySelector('.arco-icon');
+    expect(icon).not.toBeNull();
+    // arco 图标是 <svg>（className 为 SVGAnimatedString），走 classList 断言
+    expect(icon!.classList.contains('text-14px')).toBe(true);
+    expect(icon!.classList.contains('text-12px')).toBe(false);
+  });
+
+  test('折叠态展开钮：移到摘要文本之后、图标 14px、课程名转纯文本', async () => {
+    await mountGraphWorkspace();
+    await act(async () => {
+      headerToggle('收起头部')!.click();
+      await Promise.resolve();
+    });
+    const toggle = headerToggle('展开头部')!;
+    expect(toggle.className).not.toContain('!px-2px');
+    const icon = toggle.querySelector('.arco-icon');
+    expect(icon).not.toBeNull();
+    expect(icon!.classList.contains('text-14px')).toBe(true);
+    // 视觉动线：先读摘要再见钮——展开钮 DOM 位置在摘要文本之后
+    const summary = Array.from(
+      container.querySelectorAll('.arco-typography')
+    ).find((node) => (node.textContent ?? '').includes('条主线'));
+    expect(summary).toBeDefined();
+    expect(
+      summary!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    // 课程名从钮内图标+文本组合转纯文本 span（truncate 保留）
+    expect(container.textContent).toContain('图课程');
+    expect(toggle.textContent).not.toContain('图课程');
+    // 点击仍生效（折叠 ⇄ 展开）
+    await act(async () => {
+      toggle.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('知识结构');
   });
 });
 
