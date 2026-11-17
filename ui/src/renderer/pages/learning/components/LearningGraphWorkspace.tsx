@@ -77,6 +77,10 @@ import { DeclarationWindow } from './structure/DeclarationWindow';
 
 const { Text, Title, Paragraph } = Typography;
 
+/** C1 检测读数失败重试的延时（2s）：首拉失败不立即按 not-due 收臂——
+ * 给一次缓冲窗口内的重试，仍失败才落隐藏臂（命名常量，测试按同节拍推进）。 */
+const QUIZ_PROGRESS_RETRY_DELAY_MS = 2_000;
+
 /** 顶条在跑态徽章（o6 顶条单一状态；F7 去重）：同一枚 processing Tag 渲染
  * 结构生成（v2 实时读数徽章）/ 生长 / 自动准备三种态——文案由调用方渲染，
  * 数据源（structureBadge 等）留在调用处，徽章只负责外观。 */
@@ -148,23 +152,35 @@ const LearningGraphWorkspace: React.FC<{
   // 为「due 才整段渲染」——not-due 时语境句 + 入口卡 ≈100px 纯死空间，整
   // 段不渲染；「已就绪」主信号由学习首页横幅承担。数据源照抄 QuizEntryCard
   // （quizProgress + 进页/令牌 bump 各拉一次、无轮询），读数经 progress 外
-  // 供下发，避免同端点双请求；拉取失败按 not-due 同臂（整段不渲染，图工作
-  // 区不为检测读数另设失败面）。存在性语义沿用：归档 / 零节点不拉不渲染。
+  // 供下发，避免同端点双请求。C1：拉取失败 ≠ not-due——按 not-due 同臂静
+  // 默消失会让真 due 的检测入口蒸发（临时抖动即永久丢卡），故失败先延时
+  // 重试恰一次（2s 节拍），仍失败才落隐藏臂（不为检测读数另设失败面）。
+  // 存在性语义沿用：归档 / 零节点不拉不渲染。
   const [quizProgress, setQuizProgress] = useState<QuizProgressView | null>(null);
   const quizEntryRenderable = !zeroNodes && detail.course.enabled;
   useEffect(() => {
     if (!quizEntryRenderable) return;
     let cancelled = false;
-    learningApi
-      .quizProgress(detail.course.id)
-      .then((view) => {
-        if (!cancelled) setQuizProgress(view);
-      })
-      .catch(() => {
-        if (!cancelled) setQuizProgress(null);
-      });
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const pull = (isRetry: boolean) => {
+      learningApi
+        .quizProgress(detail.course.id)
+        .then((view) => {
+          if (!cancelled) setQuizProgress(view);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (isRetry) {
+            setQuizProgress(null);
+            return;
+          }
+          retryTimer = setTimeout(() => pull(true), QUIZ_PROGRESS_RETRY_DELAY_MS);
+        });
+    };
+    pull(false);
     return () => {
       cancelled = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
     };
   }, [quizEntryRenderable, detail.course.id, quizProgressToken]);
 

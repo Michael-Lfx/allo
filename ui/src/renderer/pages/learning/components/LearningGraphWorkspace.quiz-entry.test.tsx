@@ -198,13 +198,15 @@ const graphDetail = (enabled: boolean): CourseDetail =>
 const noop = () => undefined;
 
 /** 挂载图工作区：返回进度拉取计数、开测回调计数与标记读取器。
- * quizProgress 按用例注入 due 态；挂载期其余读数（结构投影/声明/注册表
- * 快照/补批判定）统一打离场补丁——growthVerdict 必须拒绝（防自动补批
- * POST 真发），结构投影给 Missing 空投影（合法空状态）。 */
+ * quizProgress 按用例注入 due 态（progressImpl 在场时以它为准——C1 失败
+ * 重试用例需要「首拉失败/重试成功」的脚本化实现）；挂载期其余读数（结构
+ * 投影/声明/注册表快照/补批判定）统一打离场补丁——growthVerdict 必须拒绝
+ * （防自动补批 POST 真发），结构投影给 Missing 空投影（合法空状态）。 */
 const mountGraphWorkspace = async (
   enabled: boolean,
   progress: { settled_count: number; trigger_count: number; due: boolean },
-  locale: 'zh-CN' | 'en-US' = 'zh-CN'
+  locale: 'zh-CN' | 'en-US' = 'zh-CN',
+  progressImpl?: () => Promise<{ settled_count: number; trigger_count: number; due: boolean }>
 ) => {
   if (root) {
     await act(async () => {
@@ -216,6 +218,7 @@ const mountGraphWorkspace = async (
   let pulls = 0;
   learningApi.quizProgress = async () => {
     pulls += 1;
+    if (progressImpl) return progressImpl();
     return progress;
   };
   learningApi.graphStructure = async () =>
@@ -367,5 +370,86 @@ describe('LearningGraphWorkspace 知识检测入口挂点（u6）', () => {
     const markup = html();
     expect(markup).not.toContain('开始检测');
     expect(markup).not.toContain('检测与推荐方向相反');
+  });
+});
+
+// ── C1：due 门拉取失败重试 ────────────────────────────────────────────────
+// 拉取失败 ≠ not-due：按 not-due 同臂静默消失会让真 due 的检测入口蒸发
+// （临时网络抖动即永久丢卡，直到下次令牌 bump）。补救：一次延时重试
+// （QUIZ_PROGRESS_RETRY_DELAY_MS），仍失败才落隐藏臂——失败面不新设，
+// 隐藏语义保持。
+describe('LearningGraphWorkspace 知识检测 due 门：拉取失败重试（C1）', () => {
+  const timers = (bunTest as unknown as { jest: FakeTimerApi }).jest;
+
+  interface FakeTimerApi {
+    useFakeTimers: () => void;
+    useRealTimers: () => void;
+    clearAllTimers: () => void;
+    advanceTimersByTime: (milliseconds: number) => void;
+  }
+
+  /** 冲刷微任务队列（structurePillWatch.test 同仪式）：重试 promise 链
+   * 逐跳推进，随后 act 内落 React 状态。 */
+  const flushPromises = async () => {
+    for (let hop = 0; hop < 20; hop += 1) await Promise.resolve();
+  };
+
+  afterEach(() => {
+    timers.clearAllTimers();
+    timers.useRealTimers();
+  });
+
+  test('失败 → 一次延时重试成功 → 入口卡照常渲染（恰拉 2 次）', async () => {
+    timers.useFakeTimers();
+    let calls = 0;
+    const { pulls, html } = await mountGraphWorkspace(
+      true,
+      { settled_count: 8, trigger_count: 6, due: true },
+      'zh-CN',
+      () => {
+        calls += 1;
+        if (calls === 1) return Promise.reject(new Error('transient (test fixture)'));
+        return Promise.resolve({ settled_count: 8, trigger_count: 6, due: true });
+      }
+    );
+    // 首拉失败：隐藏臂（不渲染入口卡），此时尚未重试。
+    expect(pulls()).toBe(1);
+    expect(html()).not.toContain('开始检测');
+    // 节拍前不重试。
+    timers.advanceTimersByTime(1999);
+    await flushPromises();
+    expect(pulls()).toBe(1);
+    // 重试触发（2s 节拍）→ 成功 → 入口卡出现。
+    timers.advanceTimersByTime(1);
+    await flushPromises();
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(pulls()).toBe(2);
+    expect(html()).toContain('距上次检测已积累 8/6 次学新结算');
+    expect(buttonWithText('开始检测')).not.toBeNull();
+  });
+
+  test('失败 → 重试仍失败 → 落隐藏臂（整段不渲染，恰拉 2 次不再重试）', async () => {
+    timers.useFakeTimers();
+    const { pulls, html } = await mountGraphWorkspace(
+      true,
+      { settled_count: 8, trigger_count: 6, due: true },
+      'zh-CN',
+      () => Promise.reject(new Error('down (test fixture)'))
+    );
+    expect(pulls()).toBe(1);
+    timers.advanceTimersByTime(2000);
+    await flushPromises();
+    await act(async () => {
+      await flushPromises();
+    });
+    // 重试恰一次：仍失败 → 隐藏臂收敛，不再续拍。
+    expect(pulls()).toBe(2);
+    expect(html()).not.toContain('开始检测');
+    expect(html()).not.toContain('检测与推荐方向相反');
+    timers.advanceTimersByTime(10_000);
+    await flushPromises();
+    expect(pulls()).toBe(2);
   });
 });
