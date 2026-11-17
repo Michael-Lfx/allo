@@ -2,7 +2,7 @@
 id: f2
 title: 课程进度分母含 skipped → 进度永不可能满
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -64,4 +64,23 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`719febde6`+审查修复 `c1396bb9c`）。
+
+- **A 口径落地**：`CourseSummary.skipped_lessons` 后端单源（list_courses /
+  course_detail 两处 SQL 各加 skipped 子查询，无 schema 迁移）；前端
+  `progressDenominator`（total − skipped，钳 ≥0）+ `progressPercent`
+  （分母 0 → null）纯函数；CourseCard percent 与计数行（分子
+  settled_or_completed）、CourseWorkspace percent 与大纲头全部换新分母；
+  **分母 0（全跳/0 课时）→ 计数行「—」、不渲染 Progress 条**；unskip 回
+  分母有 service 级测试（skip 1 → 1、unskip → 0、全跳 3、可逆断言、skip
+  不动 completed）。0 课时课程同走「—」分支系裁决 A 自然外延，与
+  GLOSSARY「无可计进度」一致（审查留痕）。
+- **审查收口**：「—」+Progress 双写收敛为共享 `ProgressReadout` 组件 +
+  `progressReadoutText`（分子作参数，保留 settled/completed 真实语义差
+  异）；skipped SQL 两处复制照 incumbent completed 子查询既有形状不抽
+  （仓库「优先既有模式」覆盖基线 smell）。
+- **验证**：nomifun-learning 969 绿 / 前端 model+渲染测试绿 / typecheck /
+  i18n / theme / dead-css 绿 / 广谱闸（cargo check --workspace +
+  `bun run check`）绿。
+- 真机目验：课程卡进度行与大纲头读数随删课/跳课流转的实机走查，随本波
+  真机欠账一并留观。

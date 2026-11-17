@@ -2,7 +2,7 @@
 id: f1
 title: 课时生成轮次呈现语义失真 + 14 轮构成取证
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -80,4 +80,25 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`09f1495d6`+`cec0127db`+审查修复
+`45e9b22ff`）。
+
+- **相位化落地**：后端 handler 侧四帧——`plan`（manifest 定稿，N=节数）、
+  `section`（k/N+title，清单经 `lesson_draft_manifest` 单源直读，断点续跑
+  正确）、`activities`（出题批次有 op 接纳即发）、`publishing`（ls_finish
+  门禁尝试前发）；ADR-0004 翻译差异表同步 + wire 放行测试。前端
+  `lessonProgressLine` 相位化（规划节清单 → 写第 k/N 节 → 出题中 →
+  审校/修复审校（带计数）→ 发布中，全程「· 已 {{elapsed}}」），completed/
+  failed 清行；裸轮次退出学习者面（`lessonGenRound` 词条双语退役；旧帧兜
+  底「生成中」不带数字）。
+- **审查收口**（双轴：Standards 0 硬违规 / Spec 缺口两项）：出题+发布相位
+  端到端补齐（M1）、耗时全程挂（M2）、计时常量复用（S6）；跳过项留痕——
+  `max_rounds`/`tools` 不上学习面（Q2 相位化裁决覆盖 R-a 草案措辞）、
+  started 帧缺失降级无耗时（已测试接受）、宠物面相位别名 creep 接受。
+- **验证**：nomifun-ai-agent 1169 绿 / nomifun-learning 969 绿 / learning
+  前端 428 绿 / typecheck+i18n+theme+dead-css 绿 / `cargo check --workspace`
+  + `bun run check` 广谱绿。
+- **R-b 取证重放：待真机**。装置确认支持（learning_smoke `archive` 开关 +
+  lesson observer，`learning_smoke.rs:210-213`）；需真模型凭据与配额（5 节
+  课时 ≈10–30 分钟真实调用）。取证报告落 assets/ 后，若见可治理浪费（空
+  转/重写轮）再立效率票；不预设砍 GENERATE_MAX_ROUNDS。

@@ -2,7 +2,7 @@
 id: f3
 title: 图课程详情页头部常驻占屏 + 检测卡未到期死空间
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -77,4 +77,28 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-17，feat/learn1116：`10fee24e8`+审查修复 `e734244b9`/
+`c1396bb9c`）。
+
+- **Q4 检测区消隐**：图工作区 due 判定上提（进页+令牌 bump 各拉一次），
+  not-due → 语境句+QuizEntryCard 整段不渲染；**拉取失败延时重试恰一次，
+  仍失败才落隐藏臂**（C1 审查修复，缩小「实际已 due 却静默消失」窗口）；
+  就绪主信号由学习首页横幅承担（u10 R2）。**u10 R5「入口恒可见」摆位正式
+  替代**，GLOSSARY「检测就绪」词条同步。CourseWorkspace 挂点行为不变
+  （Q7）。
+- **Q5 头部折叠**：标题块+目标段+结构/生长条（含软闸 Alert）收进一行摘要
+  条（课程名 + structureSummaryText + processing 徽章兜底 + 展开钮）；
+  默认展开、per-course 持久化（注入式存取层 `headerCollapse.ts`，损坏/写
+  失败降级展开；bun test 无 localStorage 坑已注入 mock 落地）；processing/
+  growth 运行中强制展开且钮禁用；返回行/检测区/Tabs 常驻区外，d1 高链未
+  动。实现裁量留痕：摘要条含课程名（折叠后保留身份标识）、右列控件随标题
+  块收起。
+- **Q6 去重**：`graph.goal` 与 title trim 逐字相同不渲染目标段。
+- **审查收口**：processing 徽章三元级联两处复现收敛为共享 `processingBadge`
+  渲染面（渲染逐字节不变）；QuizEntryCard 外供 progress prop（免同端点双
+  请求）creep 接受留痕。
+- **验证**：header-collapse 9 例 + quiz-entry 4 例 + soft-gate 回归 9 例 +
+  CourseWorkspace 回归 3 例 + C1 重试两臂 fake-timer 用例全绿；
+  typecheck/i18n/theme/dead-css 绿；广谱闸绿。
+- **真机目验欠账**：学习 Tab 首屏正文可见（正文标题不需滚动）、折叠态跨
+  会话持久、双主题目测——Acceptance 真机项留观，目验 FAIL 则重开本票。
