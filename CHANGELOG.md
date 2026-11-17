@@ -5,6 +5,14 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.7.2 - 2026-11-17
+
+- The voice suite now repairs incrementally: when a model file fails its pinned SHA256 check, only the missing or corrupted files are downloaded again, and the readiness check reruns automatically after the repair finishes.
+- Voice companion settings disable the wake-word and premium-voice switches until the local suite is ready, and the duplicate download/repair button under the premium voice row is gone.
+- Suite-not-ready, prepare-failed, and start-failed voice states now share one notification bar instead of per-component popups.
+- The tray no longer exposes the hidden meeting controls or their global shortcuts, and the idle meeting status poller (which enumerated processes every 800ms) is removed.
+- Speaker playback reopens with exponential backoff (5s/15s/60s/300s) instead of hot-retrying a missing audio device, and simple modals stay opaque in the light theme.
+
 ## v1.7.1 - 2026-11-12
 
 - The home stage is rebuilt around capability entries, an ambient gallery, a video entry, and a membership card that flips to check-in. Generated images stay in the conversation, and preview downloads go through the system save dialog.
