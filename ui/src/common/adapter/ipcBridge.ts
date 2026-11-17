@@ -1293,20 +1293,8 @@ export const application = {
   applyKeepAwake: shellProvider<void, { enabled: boolean }>(({ enabled }) => tauriSystem.setKeepAwake(enabled), undefined),
   // Localize the native system-tray menu. Desktop-only OS effect (no-op on web),
   // mirroring applyKeepAwake — the renderer calls it on mount / language change.
-  setTrayLabels: shellProvider<
-    void,
-    {
-      show: string;
-      quit: string;
-      start?: string;
-      pause?: string;
-      resume?: string;
-      stop?: string;
-      open?: string;
-    }
-  >(
-    ({ show, quit, start, pause, resume, stop, open }) =>
-      tauriSystem.setTrayLabels(show, quit, { start, pause, resume, stop, open }),
+  setTrayLabels: shellProvider<void, { show: string; quit: string }>(
+    ({ show, quit }) => tauriSystem.setTrayLabels(show, quit),
     undefined
   ),
   getStartOnBootStatus: shellProvider<IBridgeResponse<IStartOnBootStatus>, void>(

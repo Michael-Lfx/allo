@@ -35,7 +35,6 @@ describe('Primary sider structure', () => {
       './SiderNav/SiderKnowledgeEntry.tsx',
       './SiderNav/SiderLearningEntry.tsx',
       './SiderNav/SiderScheduledEntry.tsx',
-      './SiderNav/SiderMeetingEntry.tsx',
     ];
 
     for (const relativePath of dockEntries) {

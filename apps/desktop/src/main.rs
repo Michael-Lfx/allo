@@ -2694,10 +2694,10 @@ fn complete_main_thread_setup(
     }
     win_builder.build()?;
 
-    // System tray + Y1 meeting controls / global shortcuts. Closing the main
-    // window HIDES it (CloseRequested) instead of quitting; capture continues
-    // while the process lives. Process exits only via tray Quit.
-    meeting_tray::install_tray_and_shortcuts(&app)?;
+    // System tray (Show / Quit). Closing the main window HIDES it
+    // (CloseRequested) instead of quitting; the process exits only via tray
+    // Quit. Meeting controls are intentionally not exposed here.
+    meeting_tray::install_tray(&app)?;
     voice_session_bridge::install(app.clone());
 
     // Desktop-companion windows are NOT created here anymore. They are
@@ -3076,7 +3076,6 @@ fn main() -> std::process::ExitCode {
             None::<Vec<&str>>,
         ))
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(meeting_tray::global_shortcut_plugin())
         .setup(move |app| {
             // Register AUMID before any toast can fire so Action Center brands
             // notifications as Flowy instead of Windows PowerShell (dev + install).

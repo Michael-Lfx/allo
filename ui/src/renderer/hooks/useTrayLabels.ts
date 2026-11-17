@@ -5,8 +5,9 @@ import { ipcBridge } from '@/common';
 import { isDesktopShell } from '@/renderer/utils/platform';
 
 /**
- * Sync native system-tray menu labels (Show / Quit / meeting controls) to the
- * current UI locale. No-op outside the Tauri desktop shell.
+ * Sync native system-tray menu labels (Show / Quit) to the current UI locale.
+ * Meeting controls are intentionally not part of the tray menu.
+ * No-op outside the Tauri desktop shell.
  */
 export function useTrayLabels(): void {
   const { t, i18n } = useTranslation();
@@ -16,11 +17,6 @@ export function useTrayLabels(): void {
       .invoke({
         show: t('common.tray.showWindow'),
         quit: t('common.tray.quit'),
-        start: t('common.tray.meetingStart'),
-        pause: t('common.tray.meetingPause'),
-        resume: t('common.tray.meetingResume'),
-        stop: t('common.tray.meetingStop'),
-        open: t('common.tray.meetingOpen'),
       })
       .catch(() => {});
   }, [t, i18n.language]);

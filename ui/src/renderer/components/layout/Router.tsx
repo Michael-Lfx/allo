@@ -228,7 +228,6 @@ const ProtectedLayout: React.FC<{ layout: React.ReactElement }> = ({ layout }) =
   return (
     <>
       <CompanionNavigateListener />
-      <MeetingOpenListener />
       <CompanionWindowsSyncMount />
       <TrayLabelsMount />
       {/* Learning-graph growth floating pill (g4): visible on every protected
@@ -282,35 +281,6 @@ const CompanionNavigateListener: React.FC = () => {
         if (disposed) fn();
         else unlisten = fn;
       })
-      .catch(() => {
-        // Native event listeners are best-effort; a missing Tauri bridge must
-        // not become an unhandled rejection on the route shell.
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [navigate]);
-  return null;
-};
-
-// Tray / global-shortcut "Open Meeting Page" → `/meeting`.
-const MeetingOpenListener: React.FC = () => {
-  const navigate = useNavigate();
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void tauriEvents.listen<string>('meeting-open', (payload) => {
-      const path =
-        typeof payload === 'string' && payload.startsWith('/')
-          ? payload
-          : '/meeting';
-      void navigate(path);
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    })
       .catch(() => {
         // Native event listeners are best-effort; a missing Tauri bridge must
         // not become an unhandled rejection on the route shell.
