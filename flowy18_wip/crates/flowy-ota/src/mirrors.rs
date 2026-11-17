@@ -158,7 +158,11 @@ pub fn github_manifest_url(repo: &str, channel: &str) -> String {
     )
 }
 
-pub fn github_artifact_url(repo: &str, version: &str, filename: &str) -> String {
+pub fn github_artifact_url(
+    repo: &str,
+    version: &str,
+    filename: &str,
+) -> String {
     let tag = version_tag(version);
     format!("https://github.com/{repo}/releases/download/{tag}/{filename}")
 }
@@ -208,9 +212,7 @@ pub fn check_endpoints(
                 config.prefix,
                 channel,
             ),
-            OtaHost::Github => {
-                github_manifest_url(config.github_repo, channel)
-            }
+            OtaHost::Github => github_manifest_url(config.github_repo, channel),
         })
         .collect()
 }

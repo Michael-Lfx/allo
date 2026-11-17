@@ -1,4 +1,4 @@
-UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面时必须遵守。架构细节见 [`docs/ui-system.zh.md`](docs/ui-system.zh.md)。
+UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面时必须遵守。架构细节见 [`docs/ui-system.zh.md`](docs/ui-system.zh.md)。Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试的环境问题，先看 [`docs/plans/windows-build-rebase-pitfalls.md`](docs/plans/windows-build-rebase-pitfalls.md)；文档总索引在 [`docs/README.md`](docs/README.md)。
 
 | Crate | 职责 | 对外 |
 | ----------- | ------------------------- | ------------------ |
@@ -10,12 +10,12 @@ UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面�
 | `flowy-chat` | 任务线程投影 + mock stream | `Thread` / `Item` / `Beat` / `MockStream` |
 | `flowy-ui` | 窗口主题、控件与弹层契约、Accent/Density | `UiContext` / `ThemeState` / `ResolvedTheme` / `ModalLayer` / 控件 builders / `OverlayHost` |
 | `flowy-shell` | deep link / tray / notify / autostart | `install(Brand, open_main)` / `configure_brand` |
-| `flowy-agent` | UI↔dsh 端口；多 session / 流式投影 / sidecar 标题；`Model`/`Plan`/`FlexProvider` | `AgentHandle` / `ChatLine` / `TurnStatus`；env：`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`；Flex BYOK：`LlmConfig::from_flex` + `apply_config` |
+| `flowy-agent` | UI↔core 端口；多 session / 流式投影 / 标题回退；`Model`/`Plan`/`FlexProvider` | `AgentHandle` / `ChatLine` / `TurnStatus`；env：`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`；Flex BYOK 入口当前未接线（`LlmConfig::from_flex` 保留） |
+| `flowy-agent-core` | 自有 agent 内核：类型、工具注册、结构化历史、pi loop、OpenAI 兼容传输 | `Engine` / `ToolRegistry` / `run_turn` / `TurnObserver` |
 | `flowy-i18n` | 23 locales + `{product}` | `I18n` / `Locale` |
 | `flowy-studio` | Home / Chat / Automation Entity | `StudioPanel` / `StudioEvent`（含 `OpenFlex`）/ `StudioSurface` |
 | `flowy-app` | 域状态 + 壳装配；持有 `Entity<StudioPanel>`；登录 UI 只绑 auth ViewModel；Flex 模态 + `preferences.json` | `FlowyApp` / `app::run`；`pub use` agent/i18n |
 | `flowy-desktop` | 二进制入口（bin 名 `flowy-app`） | `dx serve --hot-patch` / `--hotpatch` 宿主 |
-| `dsh-rs` | Agent harness | 仅 `api` / `types` / `bundle`（`unstable` 给 CLI/测试） |
 
 热补丁入口：
 

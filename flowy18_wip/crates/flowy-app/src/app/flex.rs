@@ -456,9 +456,4 @@ impl FlowyApp {
             .update(cx, |panel, cx| panel.set_notice(None, cx));
         self.close_flex(cx);
     }
-
-    pub(super) fn sync_agent_llm(&self, cx: &Context<'_, Self>) {
-        let config = self.prefs.llm_config();
-        let _ = self.studio.read(cx).agent.apply_config(config);
-    }
 }

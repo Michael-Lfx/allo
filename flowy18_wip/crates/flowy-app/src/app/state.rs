@@ -72,13 +72,13 @@ pub(super) struct SkillsState {
     pub(super) query: Entity<EditableTextState>,
 }
 
-pub(super) struct SettingsState {
+pub struct SettingsState {
     pub(super) page: settings::Page,
     pub(super) picker: settings::Picker,
     pub(super) query: Entity<EditableTextState>,
 }
 
-pub(super) struct InviteState {
+pub struct InviteState {
     pub(super) panel: invite::Panel,
     pub(super) status: Option<&'static str>,
     pub(super) code: String,
@@ -87,7 +87,7 @@ pub(super) struct InviteState {
     pub(super) email: Entity<EditableTextState>,
 }
 
-pub(super) struct PersonaState {
+pub struct PersonaState {
     pub(super) menu: bool,
     pub(super) page: more::Page,
     pub(super) tab: more::Tab,
@@ -103,13 +103,13 @@ pub(super) struct PersonaState {
     pub(super) knowledge_body: Entity<EditableTextState>,
 }
 
-pub(super) struct AppearanceChrome {
+pub struct AppearanceChrome {
     pub(super) known: bool,
     pub(super) forced: Option<WindowAppearance>,
     pub(super) font_size_field: Entity<EditableTextState>,
 }
 
-pub(super) struct FlexState {
+pub struct FlexState {
     pub(super) provider_menu: bool,
     pub(super) draft_provider: Option<FlexProvider>,
     /// Field contents (plaintext when visible, `*` mask when hidden).

@@ -10,19 +10,23 @@ use gpui::{
 use gpui_ce_elements::editable_text::{EditableTextState, TextChanged};
 
 #[derive(Clone, Copy, Debug)]
-pub(super) enum ComposerEvent {
+pub enum ComposerEvent {
     Send,
     Stop,
     ModelMenu(&'static str),
     Access,
 }
 
-pub(super) struct ChatComposer {
+pub struct ChatComposer {
     ui: theme::UiContext,
     theme: theme::ResolvedTheme,
     prompt: Entity<EditableTextState>,
     i18n: I18n,
     model: Model,
+    /// Live cloud-catalog label. The catalog lives on `StudioPanel`, so the
+    /// selected model name is pushed down while the composer stays cached.
+    model_label: SharedString,
+    cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
     _theme_sub: Subscription,
@@ -52,6 +56,8 @@ impl ChatComposer {
             prompt,
             i18n,
             model,
+            model_label: SharedString::default(),
+            cloud_ready: false,
             model_menu_open: false,
             running: false,
             _theme_sub: theme_sub,
@@ -64,15 +70,22 @@ impl ChatComposer {
         model: Model,
         menu_open: bool,
         running: bool,
+        model_label: String,
+        cloud_ready: bool,
         cx: &mut Context<'_, Self>,
     ) {
+        let model_label = SharedString::from(model_label);
         if self.model != model
             || self.model_menu_open != menu_open
             || self.running != running
+            || self.model_label != model_label
+            || self.cloud_ready != cloud_ready
         {
             self.model = model;
             self.model_menu_open = menu_open;
             self.running = running;
+            self.model_label = model_label;
+            self.cloud_ready = cloud_ready;
             cx.notify();
         }
     }
@@ -145,8 +158,8 @@ impl ChatComposer {
                                 cx,
                             ))
                             .child(self.chat_composer_chip(
-                                "composer-plan",
-                                self.composer_plan_label(),
+                                "composer-brand",
+                                "Flowy".to_owned(),
                                 false,
                                 cx,
                             ))
@@ -170,16 +183,11 @@ impl ChatComposer {
             )
     }
 
-    fn composer_model_label(&self) -> String {
-        self.t(self.model.name_key())
-    }
-
-    fn composer_plan_label(&self) -> String {
-        match self.model {
-            Model::Max => self.t("chat.plan_max"),
-            Model::Standard => self.t("chat.plan_standard"),
-            Model::Lite => self.t("chat.plan_lite"),
-            Model::Flex => self.t("model.flex"),
+    pub(crate) fn composer_model_label(&self) -> String {
+        if self.model_label.is_empty() {
+            self.t(self.model.name_key())
+        } else {
+            self.model_label.to_string()
         }
     }
 
@@ -190,6 +198,10 @@ impl ChatComposer {
         primary: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let interactive = matches!(
+            id,
+            "composer-model" | "composer-access" | "composer-mode"
+        );
         let control = theme::interactive(id, label.clone(), &self.theme)
             .focus_visible(|style| style.border_color(self.theme.on_composer()))
             .min_h(self.theme.control_height(theme::ControlSize::Small))
@@ -204,36 +216,28 @@ impl ChatComposer {
             } else {
                 self.theme.composer_muted()
             })
-            .cursor_pointer()
-            .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
             .when(primary, |el| el.child(theme::icons::sparkles()))
-            .aria_expanded(
-                self.model_menu_open
-                    && (id == "composer-model" || id == "composer-plan"),
-            )
             .child(label)
-            .on_click(cx.listener(move |_, _, _, cx| {
-                if id == "composer-model" || id == "composer-plan" {
-                    cx.emit(ComposerEvent::ModelMenu(
-                        if id == "composer-plan" {
-                            "composer-plan-trigger"
-                        } else {
-                            "composer-model-trigger"
-                        },
-                    ));
-                } else {
-                    cx.emit(ComposerEvent::Access);
-                }
-            }));
+            .when(interactive, |el| {
+                el.cursor_pointer()
+                    .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
+            })
+            .when(id == "composer-model", |el| {
+                el.aria_expanded(self.model_menu_open)
+            });
+        let control = match id {
+            "composer-model" => control.on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
+            })),
+            "composer-access" | "composer-mode" => control.on_click(
+                cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Access)),
+            ),
+            _ => control,
+        };
         match id {
             "composer-model" => theme::anchor_trigger(
                 control,
                 "composer-model-trigger",
-                &self.ui,
-            ),
-            "composer-plan" => theme::anchor_trigger(
-                control,
-                "composer-plan-trigger",
                 &self.ui,
             ),
             _ => control,
@@ -253,6 +257,9 @@ impl ChatComposer {
             },
             true,
         );
+        // A missing cloud model means no live routing is configured; keep the
+        // send affordance disabled instead of failing after the click.
+        let has_draft = has_draft && self.cloud_ready;
         if running {
             theme::IconButton::new(
                 "chat-stop",
@@ -303,7 +310,9 @@ impl crate::panel::StudioPanel {
 
     pub(crate) fn working_label(&self, status: &TurnStatus) -> String {
         match status {
-            TurnStatus::Error { message } => message.clone(),
+            TurnStatus::Error { message } => {
+                status_error_label(message, &|key: &str| self.t(key))
+            }
             TurnStatus::Running => {
                 let duration = self.agent.working_elapsed_secs().map_or_else(
                     || self.format_duration_secs(1),
@@ -313,5 +322,41 @@ impl crate::panel::StudioPanel {
             }
             other => self.t(other.key()),
         }
+    }
+}
+
+/// Error status stores an i18n key; older indices may still hold a raw message.
+/// Never render either one verbatim: translate keys and mask raw text behind a
+/// generic, localized error line.
+fn status_error_label(message: &str, t: &dyn Fn(&str) -> String) -> String {
+    if message.starts_with("notice.") || message.starts_with("chat.") {
+        t(message)
+    } else {
+        t("chat.status_error")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_error_label;
+
+    fn fake_t(key: &str) -> String {
+        format!("<{key}>")
+    }
+
+    #[test]
+    fn error_status_translates_keys_and_masks_raw_messages() {
+        assert_eq!(
+            status_error_label("chat.status_error", &fake_t),
+            "<chat.status_error>"
+        );
+        assert_eq!(
+            status_error_label("notice.agent_failed", &fake_t),
+            "<notice.agent_failed>"
+        );
+        assert_eq!(
+            status_error_label("model reported an error", &fake_t),
+            "<chat.status_error>"
+        );
     }
 }

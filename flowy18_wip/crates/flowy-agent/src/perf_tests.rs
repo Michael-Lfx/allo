@@ -38,6 +38,7 @@ fn mock_config() -> LlmConfig {
         base_url: String::new(),
         model: String::new(),
         provider: String::new(),
+        ..LlmConfig::default()
     }
 }
 

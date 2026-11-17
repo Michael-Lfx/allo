@@ -43,7 +43,7 @@ pub fn clamp_title(raw: &str, max_chars: usize) -> String {
 }
 
 #[must_use]
-pub fn title_system_prompt() -> &'static str {
+pub const fn title_system_prompt() -> &'static str {
     TITLE_SYSTEM
 }
 
@@ -53,7 +53,10 @@ mod tests {
 
     #[test]
     fn fallback_takes_first_line() {
-        assert_eq!(fallback_title("  npm run build  \n more", 40), "npm run build");
+        assert_eq!(
+            fallback_title("  npm run build  \n more", 40),
+            "npm run build"
+        );
     }
 
     #[test]

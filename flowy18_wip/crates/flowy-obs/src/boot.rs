@@ -19,8 +19,7 @@ pub fn record_boot_note(level: BootNoteLevel, message: impl Into<String>) {
 pub fn drain_boot_notes() -> Vec<(BootNoteLevel, String)> {
     BOOT_NOTES
         .lock()
-        .map(|mut notes| std::mem::take(&mut *notes))
-        .unwrap_or_default()
+        .map_or_default(|mut notes| std::mem::take(&mut *notes))
 }
 
 #[cfg(test)]

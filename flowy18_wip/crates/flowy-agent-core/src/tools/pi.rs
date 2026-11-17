@@ -1,0 +1,388 @@
+//! Bridge to pi-rust's native tool layer (`rpi-tools`).
+//!
+//! Host tools stay behind [`ToolDefinition`] so the registry policy, guards,
+//! cancellation, and UI projection keep working. Only the tool body is pi's
+//! implementation; bash in particular comes from `rpi-tools`, which owns shell
+//! discovery, streaming output capture, truncation, and process cleanup.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use rpi_agent::{AgentError, AgentTool, AgentToolResult, TextContentOrImage};
+use rpi_tools::{
+    BashToolOptions, ExecutionEnv, ExecutionToolContext, OsExecutionEnv,
+    create_bash_tool, create_powershell_tool,
+};
+
+use crate::tools::registry::ToolDefinition;
+use crate::types::{ContentBlock, ToolExecutionResult};
+
+/// pi-rust's bash tool running in `cwd`.
+///
+/// Non-Windows production uses this; Windows keeps it available for explicit
+/// use/tests when a POSIX bash exists. pi applies its own default deadline
+/// (120s), POSIX bash discovery, streaming capture, tail truncation, and
+/// full-output spill to a temporary file.
+#[must_use]
+pub fn pi_bash_definition(cwd: &Path) -> Arc<ToolDefinition> {
+    let env: Arc<dyn ExecutionEnv> =
+        Arc::new(OsExecutionEnv::with_cwd(cwd.to_path_buf()));
+    let context = ExecutionToolContext::new(env, None);
+    let tool = create_bash_tool(
+        &context,
+        Some(BashToolOptions {
+            default_timeout: Some(120.0),
+            ..BashToolOptions::default()
+        }),
+    );
+    agent_tool_definition(tool)
+}
+
+/// Production shell tool for the current platform.
+///
+/// Windows uses pi's PowerShell tool because a POSIX bash is not guaranteed and
+/// Git Bash may be absent; every other platform keeps pi's bash tool.
+#[must_use]
+pub fn pi_shell_definition(cwd: &Path) -> Arc<ToolDefinition> {
+    #[cfg(windows)]
+    {
+        pi_powershell_definition(cwd)
+    }
+    #[cfg(not(windows))]
+    {
+        pi_bash_definition(cwd)
+    }
+}
+
+/// Windows-only fallback: pi-rust's PowerShell tool in `cwd`.
+#[cfg(windows)]
+#[must_use]
+pub fn pi_powershell_definition(cwd: &Path) -> Arc<ToolDefinition> {
+    let env: Arc<dyn ExecutionEnv> =
+        Arc::new(OsExecutionEnv::with_cwd(cwd.to_path_buf()));
+    let context = ExecutionToolContext::new(env, None);
+    let tool = create_powershell_tool(&context);
+    agent_tool_definition_with(tool, Some(POWERSHELL_DESCRIPTION.to_owned()))
+}
+
+#[cfg(windows)]
+const POWERSHELL_DESCRIPTION: &str = "Execute a PowerShell command on Windows. \
+Returns stdout and stderr. This is the only shell tool on this platform: use \
+PowerShell syntax (Get-ChildItem, Select-String, ...), not POSIX bash syntax. \
+Always pass `description`: a concise 5-10 word summary of the command's purpose; \
+hosts show it in the collapsed tool row.";
+
+/// Adapt one pi `AgentTool` into the host registry's [`ToolDefinition`].
+///
+/// Kept private: the host surface is the platform shell definition. A future
+/// generic bridge must also map image content, usage, and termination metadata.
+fn agent_tool_definition(tool: Arc<dyn AgentTool>) -> Arc<ToolDefinition> {
+    agent_tool_definition_with(tool, None)
+}
+
+fn agent_tool_definition_with(
+    tool: Arc<dyn AgentTool>,
+    description: Option<String>,
+) -> Arc<ToolDefinition> {
+    let schema = tool.schema().clone();
+    let description = description.unwrap_or(schema.description);
+    let parameters = schema.parameters.as_value().clone();
+    Arc::new(ToolDefinition::new(
+        schema.name,
+        description,
+        parameters,
+        move |args, run_ctx| {
+            let tool = Arc::clone(&tool);
+            Box::pin(async move {
+                let signal = run_ctx.signal.inner();
+                match tool
+                    .execute(
+                        &args.call_id,
+                        args.arguments,
+                        signal,
+                        Arc::new(|_update| {}),
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        let AgentToolResult {
+                            content, details, ..
+                        } = result;
+                        ToolExecutionResult::Success {
+                            content: to_host_content(content),
+                            value: details,
+                            meta: None,
+                        }
+                    }
+                    Err(AgentError::StructuredTool(result)) => {
+                        let AgentToolResult {
+                            content, details, ..
+                        } = *result;
+                        let message = text_of(&content);
+                        let code = details
+                            .get("failure_kind")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("TOOL_FAILED")
+                            .to_owned();
+                        ToolExecutionResult::Error {
+                            message: if message.is_empty() {
+                                "tool failed".to_owned()
+                            } else {
+                                message
+                            },
+                            code,
+                            content: to_host_content(content),
+                        }
+                    }
+                    Err(AgentError::Abort) => ToolExecutionResult::error(
+                        "CANCELLED",
+                        "tool call aborted",
+                    ),
+                    Err(error) => {
+                        ToolExecutionResult::error("PI_TOOL", error.to_string())
+                    }
+                }
+            })
+        },
+    ))
+}
+
+fn text_of(content: &[TextContentOrImage]) -> String {
+    content
+        .iter()
+        .filter_map(|content| match content {
+            TextContentOrImage::Text(text) => Some(text.text.as_str()),
+            TextContentOrImage::Image(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn to_host_content(content: Vec<TextContentOrImage>) -> Vec<ContentBlock> {
+    content
+        .into_iter()
+        .filter_map(|content| match content {
+            TextContentOrImage::Text(text) => {
+                Some(ContentBlock::text(text.text))
+            }
+            // pi image content has no host block type yet; bash never emits it.
+            TextContentOrImage::Image(_) => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{agent_tool_definition, pi_bash_definition};
+    use crate::tools::ToolRegistry;
+    use crate::types::{CancelToken, ToolRunContext};
+    use async_trait::async_trait;
+    use rpi_agent::{
+        AgentError, AgentTool, AgentToolResult, TextContentOrImage,
+        ToolResultPartial,
+    };
+    use rpi_ai::types::{Schema, Tool};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    struct EchoTool {
+        schema: Tool,
+    }
+
+    #[async_trait]
+    impl AgentTool for EchoTool {
+        fn schema(&self) -> &Tool {
+            &self.schema
+        }
+
+        fn label(&self) -> &str {
+            "echo"
+        }
+
+        async fn execute(
+            &self,
+            _tool_call_id: &str,
+            params: serde_json::Value,
+            _signal: CancellationToken,
+            _on_update: Arc<dyn Fn(ToolResultPartial) + Send + Sync>,
+        ) -> Result<AgentToolResult, AgentError> {
+            Ok(AgentToolResult {
+                content: vec![TextContentOrImage::text(
+                    params
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(""),
+                )],
+                details: json!({ "echo": true }),
+                ..AgentToolResult::default()
+            })
+        }
+    }
+
+    struct FailingTool {
+        schema: Tool,
+    }
+
+    #[async_trait]
+    impl AgentTool for FailingTool {
+        fn schema(&self) -> &Tool {
+            &self.schema
+        }
+
+        fn label(&self) -> &str {
+            "failing"
+        }
+
+        async fn execute(
+            &self,
+            _tool_call_id: &str,
+            _params: serde_json::Value,
+            _signal: CancellationToken,
+            _on_update: Arc<dyn Fn(ToolResultPartial) + Send + Sync>,
+        ) -> Result<AgentToolResult, AgentError> {
+            Err(AgentError::StructuredTool(Box::new(AgentToolResult {
+                content: vec![TextContentOrImage::text("boom")],
+                details: json!({
+                    "exit_code": 1,
+                    "failure_kind": "command_failed"
+                }),
+                ..AgentToolResult::default()
+            })))
+        }
+    }
+
+    fn run_ctx() -> ToolRunContext {
+        ToolRunContext {
+            signal: CancelToken::new(),
+            agent_id: None,
+            cwd: None,
+            todos: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn pi_tool_results_keep_host_content_and_details() {
+        let registry = ToolRegistry::new();
+        registry.register(agent_tool_definition(Arc::new(EchoTool {
+            schema: Tool {
+                name: "echo".into(),
+                description: "echo text".into(),
+                parameters: Schema::empty_object(),
+                constrained_sampling: None,
+            },
+        })));
+        let result = registry
+            .execute(
+                "call-1".into(),
+                "echo".into(),
+                json!({ "text": "pong" }),
+                run_ctx(),
+            )
+            .await;
+        assert!(!result.is_error());
+        assert_eq!(
+            result.content(),
+            vec![crate::types::ContentBlock::text("pong")]
+        );
+        assert_eq!(
+            result,
+            crate::types::ToolExecutionResult::Success {
+                content: vec![crate::types::ContentBlock::text("pong")],
+                value: json!({ "echo": true }),
+                meta: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pi_structured_failure_keeps_output_and_code() {
+        let registry = ToolRegistry::new();
+        registry.register(agent_tool_definition(Arc::new(FailingTool {
+            schema: Tool {
+                name: "failing".into(),
+                description: "fail".into(),
+                parameters: Schema::empty_object(),
+                constrained_sampling: None,
+            },
+        })));
+        let result = registry
+            .execute("call-1".into(), "failing".into(), json!({}), run_ctx())
+            .await;
+        match result {
+            crate::types::ToolExecutionResult::Error {
+                code,
+                content,
+                message,
+            } => {
+                assert_eq!(code, "command_failed");
+                assert_eq!(message, "boom");
+                assert_eq!(
+                    content,
+                    vec![crate::types::ContentBlock::text("boom")]
+                );
+            }
+            other => panic!("expected structured error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_shell_matches_the_platform() {
+        let name = super::pi_shell_definition(std::path::Path::new("."))
+            .name
+            .clone();
+        if cfg!(windows) {
+            assert_eq!(name, "powershell");
+        } else {
+            assert_eq!(name, "bash");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a bash executable recognized by pi-rust"]
+    async fn pi_bash_runs_and_returns_output() {
+        let cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("build-test")
+            .join("pi-bash");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let definition = pi_bash_definition(&cwd);
+        let registry = ToolRegistry::new();
+        registry.register(definition);
+        let result = registry
+            .execute(
+                "call-1".into(),
+                "bash".into(),
+                json!({ "command": "printf hi" }),
+                run_ctx(),
+            )
+            .await;
+        assert!(!result.is_error(), "{result:?}");
+        assert!(result.content().iter().any(|block| {
+            block.as_text().is_some_and(|text| text.contains("hi"))
+        }));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires Windows PowerShell"]
+    async fn pi_powershell_runs_and_returns_output() {
+        let cwd = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("build-test")
+            .join("pi-powershell");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let registry = ToolRegistry::new();
+        registry.register(super::pi_powershell_definition(&cwd));
+        let result = registry
+            .execute(
+                "call-1".into(),
+                "powershell".into(),
+                json!({ "command": "Write-Output 'ps-ok'" }),
+                run_ctx(),
+            )
+            .await;
+        assert!(!result.is_error(), "{result:?}");
+        assert!(result.content().iter().any(|block| {
+            block.as_text().is_some_and(|text| text.contains("ps-ok"))
+        }));
+    }
+}

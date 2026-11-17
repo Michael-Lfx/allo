@@ -1,6 +1,7 @@
 use crate::channel::ChannelConfig;
 use crate::error::UpdateError;
 use crate::hosts::host_allowed;
+#[cfg(target_os = "macos")]
 use crate::install_gate;
 use crate::manifest::{self, Manifest};
 use crate::mirrors;
@@ -93,8 +94,7 @@ impl Updater {
     pub fn check(&self) -> Result<Option<AvailableUpdate>, UpdateError> {
         let channel = mirrors::host_channel();
         let bucket = mirrors::region_bucket(None, self.locale.as_deref());
-        let endpoints =
-            mirrors::check_endpoints(&self.config, bucket, channel);
+        let endpoints = mirrors::check_endpoints(&self.config, bucket, channel);
         let mut last_error = None;
         for endpoint in endpoints {
             match self.fetch_manifest(&endpoint) {

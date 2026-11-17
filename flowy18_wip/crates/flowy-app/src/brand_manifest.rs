@@ -127,8 +127,14 @@ fn validate(brand: &BrandManifest) -> Result<(), String> {
     }
     for (name, value) in [
         ("ota_github_repo", brand.ota_github_repo.as_str()),
-        ("ota_modelscope_cn_repo", brand.ota_modelscope_cn_repo.as_str()),
-        ("ota_modelscope_ai_repo", brand.ota_modelscope_ai_repo.as_str()),
+        (
+            "ota_modelscope_cn_repo",
+            brand.ota_modelscope_cn_repo.as_str(),
+        ),
+        (
+            "ota_modelscope_ai_repo",
+            brand.ota_modelscope_ai_repo.as_str(),
+        ),
         ("ota_prefix", brand.ota_prefix.as_str()),
     ] {
         if value.chars().any(char::is_control) || value.contains(' ') {

@@ -1,10 +1,11 @@
-//! Agent host port. UI depends on this crate only — never on `dsh_rs::llm`.
+//! Agent host port. UI depends on this crate only — never on an agent kernel.
 //!
-//! Boots the dsh base bundle with OpenAI-compatible config from env
-//! (`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`), Flex
-//! BYOK prefs, or mock when no key is set. Projects session events into chat
-//! lines for Studio.
+//! Turns run through `flowy-agent-core` (pi loop + provider transport) with
+//! config from env (`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` /
+//! `FLOWY_LLM_MODEL`), Flex BYOK prefs, or local echo when no key is set.
+//! Loop events are projected into chat lines for Studio.
 
+mod catalog;
 mod config;
 mod flex;
 mod handle;
@@ -13,6 +14,7 @@ mod model;
 mod projection;
 mod title;
 
+pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use handle::{AgentHandle, AgentUpdate, SessionSummary};
@@ -47,6 +49,7 @@ mod tests {
                 base_url: String::new(),
                 model: String::new(),
                 provider: String::new(),
+                ..LlmConfig::default()
             },
         )
     }
@@ -118,7 +121,7 @@ mod tests {
     #[test]
     fn title_fallback_used_without_live_key() {
         let root = temp_root("title");
-        let handle = AgentHandle::new(root);
+        let handle = mock_handle(&root);
         handle.create_session().unwrap();
         handle.send("build a slide deck about cats").unwrap();
         for _ in 0..50 {
@@ -134,6 +137,15 @@ mod tests {
                 || title.contains("cats"),
             "title={title}"
         );
+        let history = flowy_agent_core::SessionIndex::load(&root).unwrap();
+        let active = handle.active_session_id().expect("active session");
+        let record = history
+            .sessions
+            .iter()
+            .find(|record| record.id == active)
+            .expect("session history");
+        assert_eq!(record.title, title);
+        assert!(record.titled);
     }
 
     #[test]
@@ -277,20 +289,86 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_index_is_preserved_and_cannot_be_overwritten() {
+    fn corrupt_index_is_quarantined_and_app_still_opens() {
         let root = ScratchRoot::new("corrupt");
         let path = crate::index::SessionIndex::path(&root.0);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"{broken").unwrap();
 
         let handle = mock_handle(&root.0);
-        assert!(handle.create_session().is_err());
-        assert!(matches!(
-            handle.drain_updates().as_slice(),
-            [AgentUpdate::StorageError]
-        ));
-        assert!(handle.create_session().is_err());
-        assert_eq!(std::fs::read(path).unwrap(), b"{broken");
+        assert!(handle.create_session().is_ok());
+        assert!(
+            handle
+                .drain_updates()
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::StorageError))
+        );
+        let backup = std::fs::read_dir(root.0.join("sessions"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("index.corrupt-")
+            })
+            .expect("corrupt index backup");
+        assert_eq!(std::fs::read(backup.path()).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn corrupt_index_is_quarantined_and_history_sessions_are_restored() {
+        let root = ScratchRoot::new("corrupt-index-history");
+        let history = flowy_agent_core::SessionIndex {
+            active: None,
+            sessions: vec![flowy_agent_core::SessionRecord {
+                id: "history-only".into(),
+                title: "From history".into(),
+                titled: true,
+                updated_at: 1,
+                status: flowy_agent_core::TurnState::Completed,
+                messages: vec![
+                    flowy_agent_core::Message {
+                        id: "m1".into(),
+                        role: flowy_agent_core::Role::User,
+                        content: vec![flowy_agent_core::ContentBlock::text(
+                            "hello",
+                        )],
+                        source: flowy_agent_core::MessageSource::User,
+                    },
+                    flowy_agent_core::Message {
+                        id: "m2".into(),
+                        role: flowy_agent_core::Role::Assistant,
+                        content: vec![flowy_agent_core::ContentBlock::text(
+                            "hi",
+                        )],
+                        source: flowy_agent_core::MessageSource::Model {
+                            provider: "flowy".into(),
+                            model: "m".into(),
+                        },
+                    },
+                ],
+                todos: Vec::new(),
+            }],
+        };
+        history.save(&root.0).unwrap();
+        std::fs::write(crate::index::SessionIndex::path(&root.0), b"{broken")
+            .unwrap();
+
+        let handle = mock_handle(&root.0);
+        let sessions = handle.list_sessions();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "history-only");
+        handle.select_session("history-only").unwrap();
+        assert_eq!(
+            handle.lines(),
+            vec![
+                ChatLine::User {
+                    text: "hello".into()
+                },
+                ChatLine::Assistant { text: "hi".into() }
+            ]
+        );
     }
 
     #[test]
@@ -308,6 +386,50 @@ mod tests {
                 .drain_updates()
                 .iter()
                 .any(|update| matches!(update, AgentUpdate::StorageError))
+        );
+    }
+
+    #[test]
+    fn corrupt_history_is_quarantined_and_projection_still_loads() {
+        let root = ScratchRoot::new("corrupt-history");
+        let lines = vec![
+            ChatLine::User {
+                text: "Earlier prompt".into(),
+            },
+            ChatLine::Assistant {
+                text: "Earlier answer".into(),
+            },
+        ];
+        crate::index::SessionIndex {
+            active: Some("history-session".into()),
+            sessions: vec![crate::index::SessionRecord {
+                id: "history-session".into(),
+                title: "Existing".into(),
+                updated_at: 1,
+                lines: lines.clone(),
+                status: TurnStatus::Completed,
+                titled: true,
+            }],
+        }
+        .save(&root.0)
+        .unwrap();
+        std::fs::write(
+            flowy_agent_core::SessionIndex::path(&root.0),
+            b"{broken",
+        )
+        .unwrap();
+
+        let handle = mock_handle(&root.0);
+        assert_eq!(handle.lines(), lines);
+        assert!(handle.create_session().is_ok());
+        assert!(
+            std::fs::read_dir(root.0.join("sessions"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("history.corrupt-"))
         );
     }
 }

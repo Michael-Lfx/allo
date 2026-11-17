@@ -1,8 +1,6 @@
 use super::{FlowyApp, Screen, Section};
 use flowy_ui as theme;
-use gpui::{
-    Context, Window, WindowControlArea, div, prelude::*, px,
-};
+use gpui::{Context, Window, WindowControlArea, div, prelude::*, px};
 
 pub(super) const HEIGHT: f32 = theme::TITLEBAR_HEIGHT;
 
@@ -14,7 +12,7 @@ const LEFT_INSET: f32 = 8.0;
 impl FlowyApp {
     pub(super) fn titlebar(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let maximized = window.is_maximized();
@@ -143,11 +141,7 @@ impl FlowyApp {
         label_key: &'static str,
         icon: theme::icons::Icon,
         enabled: bool,
-        on_click: impl Fn(
-                &gpui::ClickEvent,
-                &mut Window,
-                &mut gpui::App,
-            ) + 'static,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> impl IntoElement {
         theme::IconButton::new(id, self.t(label_key), icon)
             .size(theme::ControlSize::Small)
@@ -161,11 +155,7 @@ impl FlowyApp {
         label_key: &'static str,
         icon: theme::icons::Icon,
         area: WindowControlArea,
-        on_click: impl Fn(
-                &gpui::ClickEvent,
-                &mut Window,
-                &mut gpui::App,
-            ) + 'static,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> impl IntoElement {
         theme::IconButton::new(id, self.t(label_key), icon)
             .size(theme::ControlSize::Small)
@@ -221,11 +211,7 @@ impl FlowyApp {
         self.apply_section(section, cx);
     }
 
-    fn apply_section(
-        &mut self,
-        section: Section,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn apply_section(&mut self, section: Section, cx: &mut Context<'_, Self>) {
         self.section = section;
         self.persona.menu = false;
         self.user_menu = false;

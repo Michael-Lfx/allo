@@ -1,4 +1,4 @@
-use flowy_agent::{Model, Plan};
+use flowy_agent::Plan;
 use flowy_ui as theme;
 use flowy_ui::text_area;
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
@@ -156,7 +156,7 @@ impl crate::panel::StudioPanel {
             .flex()
             .items_center()
             .gap(self.theme.space(4.))
-            .child(self.t(self.model.name_key()))
+            .child(self.model_label())
             .child(if self.model_menu_open {
                 theme::icons::chevron_up()
             } else {
@@ -183,94 +183,50 @@ impl crate::panel::StudioPanel {
         .flex()
         .flex_col()
         .gap(self.theme.space(4.));
-        for model in Model::ALL {
-            menu = menu.child(self.model_row(model, cx));
-        }
-        menu
-    }
-
-    fn model_row(
-        &self,
-        model: Model,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let selected = self.model == model;
-        let id = SharedString::from(format!("model-row-{}", model.name_key()));
-        theme::menu_item(
-            id,
-            self.t(model.name_key()),
-            false,
-            &self.theme,
-            cx.listener(move |app, _, _, cx| app.choose_model(model, cx)),
-        )
-        .aria_selected(selected)
-        .px(self.theme.space(12.))
-        .py(self.theme.space(8.))
-        .rounded_lg()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(self.theme.space(12.))
-        .cursor_pointer()
-        .hover(|row| row.bg(self.theme.soft()))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(self.theme.space(4.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(self.theme.space(8.))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(self.t(model.name_key())),
-                        )
-                        .when(model.is_pro(), |row| {
-                            row.child(
-                                div()
-                                    .px(self.theme.space(4.))
-                                    .rounded_md()
-                                    .bg(self.theme.line())
-                                    .text_xs()
-                                    .text_color(self.theme.muted())
-                                    .child(self.t("model.pro")),
-                            )
-                        }),
+        for model in &self.catalog.models {
+            let id = model.id.clone();
+            let selected =
+                self.catalog.selected.as_deref() == Some(model.id.as_str());
+            menu = menu.child(
+                theme::menu_item(
+                    SharedString::from(format!("cloud-model-{}", model.id)),
+                    model.name.clone(),
+                    false,
+                    &self.theme,
+                    cx.listener(move |panel, _, _, cx| {
+                        if !panel.agent.turn_status().is_busy() {
+                            cx.emit(
+                                crate::panel::StudioEvent::CloudModelSelected(
+                                    id.clone(),
+                                ),
+                            );
+                            panel.model_menu_open = false;
+                            cx.notify();
+                        }
+                    }),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(self.theme.muted())
-                        .whitespace_normal()
-                        .child(self.t(model.detail_key())),
-                ),
-        )
-        .when(selected, |row| row.child(theme::icons::check()))
-    }
-
-    fn choose_model(&mut self, model: Model, cx: &mut Context<'_, Self>) {
-        if model == Model::Flex {
-            self.model_menu_open = false;
-            self.emit_notice(None, cx);
-            cx.emit(crate::panel::StudioEvent::OpenFlex);
-            cx.notify();
-            return;
+                .aria_selected(selected)
+                .px(self.theme.space(12.))
+                .py(self.theme.space(8.))
+                .rounded_lg()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(self.theme.space(12.))
+                .hover(|row| row.bg(self.theme.soft()))
+                .when(selected, |row| row.child(theme::icons::check())),
+            );
         }
-        if !model.can_use(self.plan) {
-            self.emit_notice(Some("notice.upgrade_later"), cx);
-            return;
-        }
-        self.model = model;
-        self.emit_model(cx);
-        self.model_menu_open = false;
-        self.emit_notice(None, cx);
-        cx.notify();
+        menu = menu.child(theme::menu_item(
+            "refresh-cloud-models",
+            format!("↻ {}", self.t("model.refresh")),
+            self.catalog_loading,
+            &self.theme,
+            cx.listener(|_, _, _, cx| {
+                cx.emit(crate::panel::StudioEvent::RefreshModels);
+            }),
+        ));
+        menu
     }
 
     fn dismiss_model_info(&mut self, cx: &mut Context<'_, Self>) {
@@ -292,7 +248,7 @@ impl crate::panel::StudioPanel {
             .child(theme::anchor_trigger(
                 theme::interactive(
                     "model-menu",
-                    self.t(self.model.name_key()),
+                    self.model_label(),
                     &self.theme,
                 )
                 .px(self.theme.space(12.))

@@ -1,16 +1,20 @@
 use crate::flex::FlexProvider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DEFAULT_BASE_URL: &str = "https://test.flowyaipc.cn/claw/v1";
 const DEFAULT_MODEL: &str = "flowy/gml-5.1";
 const PROVIDER: &str = "openai";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LlmConfig {
     pub api_key: Option<String>,
     pub base_url: String,
     pub model: String,
     pub provider: String,
+    /// Catalog-declared context window; 0 means "provider default".
+    pub context_window: u64,
+    /// Catalog-declared visible output allowance; 0 means "provider default".
+    pub max_tokens: u64,
 }
 
 impl LlmConfig {
@@ -35,22 +39,29 @@ impl LlmConfig {
             base_url,
             model,
             provider: PROVIDER.to_owned(),
+            context_window: 0,
+            max_tokens: 0,
         }
     }
 
     #[must_use]
-    pub fn from_flex(provider: FlexProvider, api_key: impl Into<String>) -> Self {
+    pub fn from_flex(
+        provider: FlexProvider,
+        api_key: impl Into<String>,
+    ) -> Self {
         let api_key = api_key.into().trim().to_owned();
         Self {
             api_key: (!api_key.is_empty()).then_some(api_key),
             base_url: provider.base_url().to_owned(),
             model: provider.default_model().to_owned(),
             provider: provider.id().to_owned(),
+            context_window: 0,
+            max_tokens: 0,
         }
     }
 
     #[must_use]
-    pub fn uses_live(&self) -> bool {
+    pub const fn uses_live(&self) -> bool {
         self.api_key.is_some()
     }
 
@@ -66,7 +77,7 @@ impl LlmConfig {
     }
 
     #[must_use]
-    pub fn agent_provider(&self) -> &str {
+    pub const fn agent_provider(&self) -> &str {
         if self.uses_live() {
             self.provider.as_str()
         } else {
@@ -75,7 +86,7 @@ impl LlmConfig {
     }
 
     #[must_use]
-    pub fn agent_model(&self) -> &str {
+    pub const fn agent_model(&self) -> &str {
         if self.uses_live() {
             self.model.as_str()
         } else {

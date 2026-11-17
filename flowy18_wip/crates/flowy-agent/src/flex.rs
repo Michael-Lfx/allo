@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Bring-your-own-key provider presets (OpenAI-compatible endpoints).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
 pub enum FlexProvider {
     #[default]
     #[serde(rename = "openai")]

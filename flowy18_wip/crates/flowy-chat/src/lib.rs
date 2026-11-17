@@ -139,7 +139,10 @@ impl MockStream {
 }
 
 fn push_text(queue: &mut VecDeque<(Duration, Beat)>, text: &str, char_ms: u64) {
-    queue.push_back((Duration::from_millis(char_ms.saturating_mul(2)), Beat::BreakText));
+    queue.push_back((
+        Duration::from_millis(char_ms.saturating_mul(2)),
+        Beat::BreakText,
+    ));
     for ch in text.chars() {
         queue.push_back((
             Duration::from_millis(char_ms),
@@ -162,8 +165,18 @@ mod tests {
         assert!(!thread.streaming);
         assert!(thread.waiting);
         assert_eq!(thread.context_chip.as_deref(), Some("script.md"));
-        assert!(thread.items.iter().any(|item| matches!(item, Item::Confirm)));
-        assert!(thread.items.iter().any(|item| matches!(item, Item::Status { .. })));
+        assert!(
+            thread
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Confirm))
+        );
+        assert!(
+            thread
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Status { .. }))
+        );
         let text: String = thread
             .items
             .iter()

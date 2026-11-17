@@ -1,0 +1,28 @@
+   Compiling flowy-pi-loop-probe v0.1.0 (D:\workSpace\git_clone_test\allo\experiments\pi-loop)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.36s
+     Running unittests src\lib.rs (experiments\pi-loop/build.noindex\debug\deps\flowy_pi_loop_probe-8bbdf518b2b4c1f2.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\loop_probe.rs (experiments\pi-loop/build.noindex\debug\deps\loop_probe-e3e96345b07db3c3.exe)
+
+running 1 test
+test existing_text_wire_events_cross_bridge_into_real_loop ... FAILED
+
+failures:
+
+---- existing_text_wire_events_cross_bridge_into_real_loop stdout ----
+
+thread 'existing_text_wire_events_cross_bridge_into_real_loop' (19148) panicked at tests\loop_probe.rs:110:102:
+called `Result::unwrap()` on an `Err` value: "block differs from accumulated deltas"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    existing_text_wire_events_cross_bridge_into_real_loop
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test loop_probe`

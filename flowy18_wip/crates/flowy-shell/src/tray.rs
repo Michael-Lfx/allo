@@ -3,10 +3,8 @@ use gpui::{App, Image, ImageFormat, MenuItem};
 use gpui_tray::{Icon, Tray};
 
 pub fn build(cx: &mut App) -> Result<Tray, gpui_tray::Error> {
-    let image = Image::from_bytes(
-        ImageFormat::Png,
-        crate::brand().logo_png.to_vec(),
-    );
+    let image =
+        Image::from_bytes(ImageFormat::Png, crate::brand().logo_png.to_vec());
     let icon = Icon::from_gpui(&image, cx).build()?;
     let product = crate::brand().product;
     Tray::builder()

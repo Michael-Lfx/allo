@@ -10,16 +10,12 @@ members = [
     "crates/flowy-shell",
     "crates/flowy-studio",
     "crates/flowy-agent",
+    "crates/flowy-agent-core",
     "crates/flowy-i18n",
     "crates/flowy-net",
     "crates/flowy-ota",
     "crates/flowy-obs",
-    "crates/dsh-rs",
-    "crates/dsh-rs/crates/dsh-plugin-contract",
-    "crates/dsh-rs/crates/dsh-plugin-hello",
 ]
-# dsh-rs is copied source we will keep editing. It is not on the Flowy clippy
-# gate yet, so a bare `cargo clippy` stays on the app crates.
 default-members = [
     "crates/flowy-core",
     "crates/flowy-app",
@@ -30,6 +26,7 @@ default-members = [
     "crates/flowy-shell",
     "crates/flowy-studio",
     "crates/flowy-agent",
+    "crates/flowy-agent-core",
     "crates/flowy-i18n",
     "crates/flowy-net",
     "crates/flowy-ota",
@@ -48,6 +45,10 @@ flowy-core = { path = "crates/flowy-core" }
 flowy-app = { path = "crates/flowy-app" }
 flowy-auth = { path = "crates/flowy-auth" }
 flowy-agent = { path = "crates/flowy-agent" }
+flowy-agent-core = { path = "crates/flowy-agent-core" }
+rpi-agent = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
+rpi-ai = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7", default-features = false, features = ["providers"] }
+rpi-tools = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
 flowy-chat = { path = "crates/flowy-chat" }
 flowy-i18n = { path = "crates/flowy-i18n" }
 flowy-ui = { path = "crates/flowy-ui" }
@@ -56,7 +57,6 @@ flowy-studio = { path = "crates/flowy-studio" }
 flowy-net = { path = "crates/flowy-net" }
 flowy-ota = { path = "crates/flowy-ota" }
 flowy-obs = { path = "crates/flowy-obs" }
-dsh-rs = { path = "crates/dsh-rs" }
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "json",
@@ -162,8 +162,3 @@ overflow-checks = true
 # gated on debug_assertions; enable it for the host proc-macro only.
 [profile.release.package.gpui-pre-macros]
 debug-assertions = true
-
-# Local fix for a self-deadlock in gpui-ce 0.3.0: the macOS launch callback
-# kept the platform mutex locked, so the first open_window never returned.
-[patch.crates-io]
-gpui_ce_macos = { path = ".scratch/gpui_ce_macos-0.3.0" }

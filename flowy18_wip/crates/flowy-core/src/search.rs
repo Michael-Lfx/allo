@@ -57,7 +57,8 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
             }
             // Keep word-boundary rewards, but do not let a series of widely
             // separated word starts outrank a compact consecutive match.
-            let skipped = (position - cursor).min(20) as i32;
+            let skipped =
+                i32::try_from((position - cursor).min(20)).unwrap_or(20);
             score += bonus - skipped;
             previous_match = Some(position);
             cursor = position + 1;
@@ -84,7 +85,8 @@ fn fuzzy_score_unicode(query: &str, haystack: &[char]) -> Option<i32> {
             let rest = lower.get(cursor..)?;
             let offset = rest.find(needle)?;
             let position = cursor + offset;
-            score += 1 - (rest[..offset].chars().count().min(20) as i32);
+            score += 1 - i32::try_from(rest[..offset].chars().count().min(20))
+                .unwrap_or(20);
             if first {
                 score += 3;
                 first = false;
