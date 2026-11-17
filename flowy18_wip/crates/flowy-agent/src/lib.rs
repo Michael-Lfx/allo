@@ -1,9 +1,9 @@
-//! Agent host port. UI depends on this crate only — never on `dsh_rs::llm`.
+//! Agent host port. UI depends on this crate only — never on an agent kernel.
 //!
-//! Boots the dsh base bundle with OpenAI-compatible config from env
-//! (`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` / `FLOWY_LLM_MODEL`), Flex
-//! BYOK prefs, or mock when no key is set. Projects session events into chat
-//! lines for Studio.
+//! Turns run through `flowy-agent-core` (pi loop + provider transport) with
+//! config from env (`FLOWY_LLM_API_KEY` / `FLOWY_LLM_BASE_URL` /
+//! `FLOWY_LLM_MODEL`), Flex BYOK prefs, or local echo when no key is set.
+//! Loop events are projected into chat lines for Studio.
 
 mod catalog;
 mod config;

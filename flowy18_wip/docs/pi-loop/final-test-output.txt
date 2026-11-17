@@ -1,0 +1,24 @@
+   Compiling flowy-pi-loop-probe v0.1.0 (D:\workSpace\git_clone_test\allo\experiments\pi-loop)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.17s
+     Running unittests src\lib.rs (experiments\pi-loop/build.noindex\debug\deps\flowy_pi_loop_probe-8bbdf518b2b4c1f2.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\loop_probe.rs (experiments\pi-loop/build.noindex\debug\deps\loop_probe-e3e96345b07db3c3.exe)
+
+running 4 tests
+test existing_text_wire_events_cross_bridge_into_real_loop ... ok
+test cancel_reaches_provider_and_late_output_cannot_change_terminal_state ... ok
+test text_stream_finishes_once_and_next_run_uses_new_model_with_history ... ok
+test tool_result_is_correlated_and_sent_to_next_model_request ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests flowy_pi_loop_probe
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
