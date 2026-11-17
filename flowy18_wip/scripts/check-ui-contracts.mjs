@@ -25,6 +25,9 @@ const authoredColors = new Map([
   ["flowy-app/src/app/gallery.rs", new Set(["idea_stage", "transport", "transport_hit", "volume_mark", "full_mark", "poster", "thumb"])],
   ["flowy-app/src/app/invite.rs", new Set(["social_row", "envelope"])],
   ["flowy-app/src/app/login.rs", new Set(["wire_card", "wire_dot", "wire_line"])],
+  // Fixed skill cover/hero artwork and its lettermark; action controls in the
+  // same file must still use theme tokens and shared interaction primitives.
+  ["flowy-app/src/app/skills.rs", new Set(["skill_cover", "skill_hero", "skill_mark"])],
 ]);
 
 /** Preserve offsets while hiding Rust comments and literal contents. */
@@ -185,6 +188,12 @@ function selfTest() {
   assert.equal(inspect("flowy-app/src/example.rs", `// theme::install(false)\nfn a() { let x = r#"rgb(0); div().on_click(c)"#; }`).length, 0);
   assert.equal(inspect("flowy-app/src/example.rs", `fn a() { rgb(0xffffff); }`).length, 1);
   assert.equal(inspect("flowy-app/src/app/gallery.rs", `fn poster() { rgb(tint); }`).length, 0);
+  for (const name of ["skill_cover", "skill_hero", "skill_mark"]) {
+    assert.deepEqual(inspect("flowy-app/src/app/skills.rs", `fn ${name}() { rgb(tint); rgba(tint); }`), [], `${name} retains authored artwork colors`);
+  }
+  assert.deepEqual(inspect("flowy-app/src/app/skills.rs", `fn skill_cover() { rgb(tint); } fn skills_create_button() { rgb(0xffffff); }`), ["flowy-app/src/app/skills.rs:1: raw UI color outside an explicitly named illustration/media function"], "ordinary Skills controls still require theme tokens");
+  assert.deepEqual(inspect("flowy-app/src/example.rs", `fn skill_cover() { rgb(tint); }`), ["flowy-app/src/example.rs:1: raw UI color outside an explicitly named illustration/media function"], "artwork color exceptions are scoped to the exact source file");
+  assert.deepEqual(inspect("flowy-app/src/app/skills.rs", `fn skill_cover() { div().bg(rgb(tint)).on_click(callback); }`), ["flowy-app/src/app/skills.rs:1: operation controls must use flowy_ui primitives (raw div id=dynamic/absent)"], "artwork color exceptions do not exempt raw operation controls");
   assert.equal(inspect("flowy-app/src/example.rs", `fn a() { theme::canvas(); }`).length, 1);
   assert.equal(inspect("flowy-studio/src/panel.rs", `fn a() { State { credits: 2500 } }`).length, 1);
   assert.equal(inspect("flowy-ui/src/theme.rs", `static DARK: AtomicBool = AtomicBool::new(false);`).length, 3);
@@ -196,7 +205,7 @@ function selfTest() {
   assert.match(compareLocale("en.json", { save: "Save", other: "Other" }, { save: "保存" })[0], /unexpected locale key other/);
   assert.match(compareLocale("en.json", { save: " " }, { save: "保存" })[0], /non-empty string/);
   assert.match(compareLocale("en.json", [], { save: "保存" })[0], /must be an object/);
-  console.log("UI contract scanner: 18 fixture assertions passed");
+  console.log("UI contract scanner: 24 fixture assertions passed");
 }
 
 function rustFiles(directory) {
