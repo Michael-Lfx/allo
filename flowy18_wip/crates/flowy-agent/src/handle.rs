@@ -566,8 +566,10 @@ impl TurnObserver for UiObserver {
                 live.status = match outcome {
                     LoopOutcome::Completed => TurnStatus::Completed,
                     LoopOutcome::Aborted => TurnStatus::Stopped,
+                    // Store an i18n key, never a raw English message: this value
+                    // is persisted in the index and may be rendered later.
                     LoopOutcome::Failed => TurnStatus::Error {
-                        message: "notice.agent_failed".into(),
+                        message: "chat.status_error".into(),
                     },
                 };
                 live.turn_started_at = None;
@@ -656,7 +658,7 @@ fn mark_failure(state: &UiState, session_id: &str, error: &RunError) {
             }
             session.projection.flush();
             session.status = TurnStatus::Error {
-                message: error.to_string(),
+                message: "chat.status_error".into(),
             };
             session.auto_title_pending = false;
             session.turn_started_at = None;

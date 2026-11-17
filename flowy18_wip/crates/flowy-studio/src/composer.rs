@@ -310,7 +310,9 @@ impl crate::panel::StudioPanel {
 
     pub(crate) fn working_label(&self, status: &TurnStatus) -> String {
         match status {
-            TurnStatus::Error { message } => message.clone(),
+            TurnStatus::Error { message } => {
+                status_error_label(message, &|key: &str| self.t(key))
+            }
             TurnStatus::Running => {
                 let duration = self.agent.working_elapsed_secs().map_or_else(
                     || self.format_duration_secs(1),
@@ -320,5 +322,41 @@ impl crate::panel::StudioPanel {
             }
             other => self.t(other.key()),
         }
+    }
+}
+
+/// Error status stores an i18n key; older indices may still hold a raw message.
+/// Never render either one verbatim: translate keys and mask raw text behind a
+/// generic, localized error line.
+fn status_error_label(message: &str, t: &dyn Fn(&str) -> String) -> String {
+    if message.starts_with("notice.") || message.starts_with("chat.") {
+        t(message)
+    } else {
+        t("chat.status_error")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_error_label;
+
+    fn fake_t(key: &str) -> String {
+        format!("<{key}>")
+    }
+
+    #[test]
+    fn error_status_translates_keys_and_masks_raw_messages() {
+        assert_eq!(
+            status_error_label("chat.status_error", &fake_t),
+            "<chat.status_error>"
+        );
+        assert_eq!(
+            status_error_label("notice.agent_failed", &fake_t),
+            "<notice.agent_failed>"
+        );
+        assert_eq!(
+            status_error_label("model reported an error", &fake_t),
+            "<chat.status_error>"
+        );
     }
 }

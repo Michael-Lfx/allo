@@ -25,6 +25,8 @@ Windows 桌面入口实跑可启动（窗口出现、目录模型名同步到顶
 - 本机 auth/agent 的部分存储测试需要把 `TEMP`/`TMP` 指到工作区内可写目录
   （默认临时目录权限拒绝），属环境限制，不是产品缺陷。
 - 目录 fixture 为固定 JSON 样本（首条来自已知样本，其余合成），不是完整云端真实目录。
+- 历史工具结果消息缺少 `MessageSource::Tool` 时会让整轮失败
+  （`flowy-agent-core/src/loop_runner.rs::to_agent_message`）；容错修复留到下个分支。
 - 未逐条核对 23 个 locale 的翻译质量（新增 key 见 `flowy-i18n` 变更）。
 
 ## 历史记录
