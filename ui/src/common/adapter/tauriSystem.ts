@@ -93,18 +93,8 @@ export const tauriSystem = {
     if (isTauriRuntime()) await tauriSetKeepAwake(enabled);
   },
 
-  async setTrayLabels(
-    show: string,
-    quit: string,
-    meeting?: {
-      start?: string;
-      pause?: string;
-      resume?: string;
-      stop?: string;
-      open?: string;
-    }
-  ): Promise<void> {
-    if (isTauriRuntime()) await tauriSetTrayLabels(show, quit, meeting);
+  async setTrayLabels(show: string, quit: string): Promise<void> {
+    if (isTauriRuntime()) await tauriSetTrayLabels(show, quit);
   },
 
   async openDialog(options?: ShellOpenDialogOptions): Promise<string[] | undefined> {
