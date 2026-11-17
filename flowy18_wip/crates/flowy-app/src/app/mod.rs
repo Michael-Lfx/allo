@@ -101,6 +101,16 @@ pub enum Section {
     More,
 }
 
+/// Refresh is single-flight: one request at a time, for a signed-in session
+/// that is not running a turn.
+const fn catalog_refresh_allowed(
+    loading: bool,
+    has_session: bool,
+    busy: bool,
+) -> bool {
+    !loading && has_session && !busy
+}
+
 pub struct FlowyApp {
     active_dialog: state::ActiveDialog,
     pub ui: flowy_ui::UiContext,
@@ -498,15 +508,17 @@ impl FlowyApp {
     }
 
     fn refresh_models(&mut self, cx: &mut Context<'_, Self>) {
-        if self.catalog_loading {
+        let busy = self.studio.read(cx).agent.turn_status().is_busy();
+        if !catalog_refresh_allowed(
+            self.catalog_loading,
+            self.auth.session.is_some(),
+            busy,
+        ) {
             return;
         }
         let Some(session) = self.auth.session.clone() else {
             return;
         };
-        if self.studio.read(cx).agent.turn_status().is_busy() {
-            return;
-        }
         let client = AuthClient::from_env();
         let account = session
             .user_id
@@ -1696,6 +1708,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn catalog_refresh_gate_is_single_flight_for_idle_sessions() {
+        assert!(catalog_refresh_allowed(false, true, false));
+        assert!(!catalog_refresh_allowed(true, true, false));
+        assert!(!catalog_refresh_allowed(false, false, false));
+        assert!(!catalog_refresh_allowed(false, true, true));
     }
 
     #[gpui::test]

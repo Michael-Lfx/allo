@@ -111,6 +111,11 @@ error occurred in cc-rs: command did not execute successfully ... "cl.exe" ... -
   （内存/job 约束一类）。
 - **处理决定（2026-11-17）**：本分支不再追根因，留到下一个专门分支处理；
   本分支只用上面的 workaround 完成验证。下次在普通 VS 终端用默认配置复测一次。
+- **复测结果（2026-11-18，后续分支）**：在 VS 环境（`vsenv.sh`）、**独立 target 目录**、
+  **默认 profile（不关调试信息）** 下执行 `cargo check -p flowy-net`（33.52s，含 `ring`）
+  与 `cargo check -p flowy-app --locked`（7m29s，含 `cc`/`ring`/`gpui`），**均未复现 D8050**。
+  结论：当前机器 + Rust 1.100 工具链下默认配置可用，workaround 仍保留在本文件备用，
+  但不应固化为仓库默认；换机器或 VS 升级后若复现，按上面的方式 B 处理。
 - 副作用：第三方依赖无调试信息；切换 profile 会触发一次重编。
 
 ## 四、运行测试
@@ -120,10 +125,14 @@ error occurred in cc-rs: command did not execute successfully ... "cl.exe" ... -
 
 ```bash
 mkdir -p build-test/rebase-validation-tmp
-TEMP=<repo>/flowy18_wip/build-test/rebase-validation-tmp \
-TMP=<repo>/flowy18_wip/build-test/rebase-validation-tmp \
-  ./build.noindex/debug/deps/flowy_app-*.exe --test-threads=1
+export TEMP=<repo>/flowy18_wip/build-test/rebase-validation-tmp
+export TMP="$TEMP"   # 必须分成两条：同一行 export 里的 $TMP 会取旧值
+cargo test -p flowy-app -- --test-threads=1
 ```
+
+> 2026-11-18 复测补充：`export TEMP=... TMP=$TEMP` 写在**同一条** export 里时，
+> `$TEMP` 在赋值前展开，`TMP` 仍是旧的用户 Temp，测试目录会落到 `C:\Users\...\Temp`
+> 并被当前沙箱拒绝（表现为 `PermissionDenied (os error 5)`）。务必分两条 export。
 
 2. 本次最终结果：`flowy-app` 共 21 个测试，**21 passed / 0 failed**；
    其中 `failed_new_task_is_not_hidden_by_navigation` 已按

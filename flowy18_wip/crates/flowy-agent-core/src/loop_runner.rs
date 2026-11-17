@@ -188,8 +188,11 @@ fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
     }
 }
 
-/// Convert stored messages to pi agent messages. Tool results must carry the
-/// originating tool name via [`MessageSource::Tool`].
+/// Convert stored messages to pi agent messages.
+///
+/// A tool result must carry its originating tool name via
+/// [`MessageSource::Tool`]; legacy rows that predate that field are skipped so
+/// one stale history entry cannot fail a whole turn.
 pub fn to_agent_message(
     message: &Message,
 ) -> Result<Option<AgentMessage>, String> {
@@ -203,14 +206,10 @@ pub fn to_agent_message(
             _ => None,
         })
     {
-        let tool_name = match &message.source {
-            MessageSource::Tool { tool } => tool.clone(),
-            _ => {
-                return Err(
-                    "tool result message is missing its tool name".into()
-                );
-            }
+        let MessageSource::Tool { tool } = &message.source else {
+            return Ok(None);
         };
+        let tool_name = tool.clone();
         let (tool_call_id, content, is_error) = tool_result;
         return Ok(Some(AgentMessage::ToolResult(Box::new(
             ToolResultMessage {
@@ -450,6 +449,21 @@ mod tests {
         let model = route.rpi_model();
         assert_eq!(model.context_window, 1234);
         assert_eq!(model.max_tokens, 567);
+    }
+
+    #[test]
+    fn legacy_tool_result_without_tool_source_is_skipped() {
+        let message = Message {
+            id: "t-legacy".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "call-9".into(),
+                content: vec![ContentBlock::text("data")],
+                is_error: Some(false),
+            }],
+            source: MessageSource::User,
+        };
+        assert!(to_agent_message(&message).unwrap().is_none());
     }
 
     #[test]

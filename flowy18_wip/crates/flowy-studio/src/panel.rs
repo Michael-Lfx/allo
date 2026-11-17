@@ -66,6 +66,11 @@ impl std::fmt::Debug for StudioConfig {
     }
 }
 
+/// A failed turn keeps its localized error line visible until the next turn.
+const fn working_line_visible(status: &flowy_agent::TurnStatus) -> bool {
+    status.is_busy() || matches!(status, flowy_agent::TurnStatus::Error { .. })
+}
+
 pub struct StudioPanel {
     pub ui: UiContext,
     pub theme: ResolvedTheme,
@@ -302,9 +307,12 @@ impl StudioPanel {
 
     fn refresh_working(&self, cx: &mut Context<'_, Self>) {
         let label = self.working_label(&self.status);
-        let visible = self.status.is_busy();
-        self.working
-            .update(cx, |working, cx| working.set_label(label, visible, cx));
+        let error =
+            matches!(self.status, flowy_agent::TurnStatus::Error { .. });
+        let visible = working_line_visible(&self.status);
+        self.working.update(cx, |working, cx| {
+            working.set_label(label, visible, error, cx);
+        });
     }
 
     pub fn set_surface(
@@ -566,6 +574,19 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn failed_turn_keeps_the_working_line_visible() {
+        use flowy_agent::TurnStatus;
+
+        assert!(working_line_visible(&TurnStatus::Running));
+        assert!(working_line_visible(&TurnStatus::Error {
+            message: "chat.status_error".into(),
+        }));
+        assert!(!working_line_visible(&TurnStatus::Idle));
+        assert!(!working_line_visible(&TurnStatus::Completed));
+        assert!(!working_line_visible(&TurnStatus::Stopped));
+    }
 
     #[gpui::test]
     #[expect(

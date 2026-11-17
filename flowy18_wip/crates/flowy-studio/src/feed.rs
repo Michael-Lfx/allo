@@ -543,6 +543,7 @@ impl Render for ChatFeed {
 pub struct WorkingIndicator {
     label: String,
     visible: bool,
+    error: bool,
     theme: ResolvedTheme,
     _theme_sub: Subscription,
 }
@@ -557,6 +558,7 @@ impl WorkingIndicator {
         Self {
             label: String::new(),
             visible: false,
+            error: false,
             theme,
             _theme_sub: theme_sub,
         }
@@ -566,11 +568,14 @@ impl WorkingIndicator {
         &mut self,
         label: String,
         visible: bool,
+        error: bool,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.label != label || self.visible != visible {
+        if self.label != label || self.visible != visible || self.error != error
+        {
             self.label = label;
             self.visible = visible;
+            self.error = error;
             cx.notify();
         }
     }
@@ -585,7 +590,11 @@ impl Render for WorkingIndicator {
         div()
             .id("chat-working")
             .role(gpui::Role::Status)
-            .aria_live(gpui::accesskit::Live::Off)
+            .aria_live(if self.error {
+                gpui::accesskit::Live::Polite
+            } else {
+                gpui::accesskit::Live::Off
+            })
             .when(self.visible, |element| {
                 element
                     .px(self.theme.space(32.))
@@ -594,8 +603,16 @@ impl Render for WorkingIndicator {
                     .items_center()
                     .gap(self.theme.space(8.))
                     .text_xs()
-                    .text_color(self.theme.muted())
-                    .child(theme::icons::loader_circle())
+                    .text_color(if self.error {
+                        self.theme.danger()
+                    } else {
+                        self.theme.muted()
+                    })
+                    .child(if self.error {
+                        theme::icons::circle_alert()
+                    } else {
+                        theme::icons::loader_circle()
+                    })
                     .child(self.label.clone())
             })
     }
