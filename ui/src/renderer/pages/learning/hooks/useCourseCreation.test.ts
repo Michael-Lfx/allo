@@ -104,6 +104,7 @@ const courseDetail = (id: string): CourseDetail => ({
     enrolled: false,
     total_lessons: 0,
     completed_lessons: 0,
+    skipped_lessons: 0,
     enabled: true,
     settled_or_completed: 0,
     due_today: 0,

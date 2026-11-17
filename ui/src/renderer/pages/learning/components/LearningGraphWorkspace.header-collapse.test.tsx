@@ -187,6 +187,7 @@ const graphDetail = (options?: { goal?: string; growthRunning?: boolean }): Cour
       enrolled: true,
       total_lessons: 1,
       completed_lessons: 0,
+      skipped_lessons: 0,
       enabled: true,
       settled_or_completed: 0,
       due_today: 0,

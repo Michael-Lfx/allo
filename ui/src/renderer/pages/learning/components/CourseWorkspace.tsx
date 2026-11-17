@@ -22,7 +22,7 @@ import type {
   LessonStatus,
   Section,
 } from '../types';
-import { lessonStatusTagColors } from '../model';
+import { lessonStatusTagColors, progressDenominator, progressPercent } from '../model';
 import { CourseSourceCoverageCard } from './CourseSourceCoverageCard';
 import {
   contentColumnWidth,
@@ -84,10 +84,10 @@ export function CourseWorkspace({
     flatLessons.forEach((lesson, index) => numbers.set(lesson.id, index + 1));
     return numbers;
   }, [flatLessons]);
-  const percent =
-    course.total_lessons === 0
-      ? 0
-      : Math.round((course.completed_lessons / course.total_lessons) * 100);
+  // f2 进度口径：分母剔除 skipped（可计课时 = total − skipped）；全跳 →
+  // 分母 0 → percent 为 null，大纲头计数呈「—」且不渲染进度条。
+  const denominator = progressDenominator(course);
+  const percent = progressPercent(course.completed_lessons, denominator);
   const recommendedLesson = useMemo(
     () => flatLessons.find((lesson) => lesson.id === detail.next_lesson_id) ?? null,
     [flatLessons, detail.next_lesson_id]
@@ -296,10 +296,10 @@ export function CourseWorkspace({
             <div className='mb-8px flex items-baseline justify-between gap-8px'>
               <span className='font-600'>{t('learning.outline')}</span>
               <span className='text-12px text-t-tertiary'>
-                {course.completed_lessons}/{course.total_lessons}
+                {percent === null ? '—' : `${course.completed_lessons}/${denominator}`}
               </span>
             </div>
-            <Progress percent={percent} size='small' showText={false} />
+            {percent !== null && <Progress percent={percent} size='small' showText={false} />}
             {detail.modules.map((module) => {
               const completedCount = module.lessons.filter(
                 (lesson) => lesson.status === 'completed'

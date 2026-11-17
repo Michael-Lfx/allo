@@ -4,6 +4,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
 import type { CourseSummary } from '../types';
+import { progressDenominator, progressPercent } from '../model';
 import { errorMessage } from '../utils';
 
 const { Text, Paragraph } = Typography;
@@ -106,10 +107,10 @@ export function CourseCard({
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
-  const percent =
-    course.total_lessons === 0
-      ? 0
-      : Math.round((course.completed_lessons / course.total_lessons) * 100);
+  // f2 进度口径：分母剔除 skipped（可计课时 = total − skipped）；全跳 →
+  // 分母 0 → percent 为 null，计数行呈「—」且不渲染进度条。
+  const denominator = progressDenominator(course);
+  const percent = progressPercent(course.completed_lessons, denominator);
 
   const archive = () => {
     setBusy(true);
@@ -191,10 +192,12 @@ export function CourseCard({
           <div className='mb-6px flex justify-between text-12px text-t-secondary'>
             <span>{t('learning.progress')}</span>
             <span>
-              {course.settled_or_completed}/{course.total_lessons} {t('learning.lessons')}
+              {percent === null
+                ? '—'
+                : `${course.settled_or_completed}/${denominator} ${t('learning.lessons')}`}
             </span>
           </div>
-          <Progress percent={percent} showText={false} size='small' />
+          {percent !== null && <Progress percent={percent} showText={false} size='small' />}
           <div className='mt-4px flex flex-wrap gap-12px text-12px text-t-tertiary'>
             <span>{t('learning.courseDueToday', { count: course.due_today })}</span>
             {course.total_xp !== null && (

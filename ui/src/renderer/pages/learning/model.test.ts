@@ -6,6 +6,8 @@ import {
   coverageTopicTotals,
   deriveModernStep,
   isModernPipeline,
+  progressDenominator,
+  progressPercent,
   sourceCoverageState,
   triageCountsLine,
   triageDetailCountsLine,
@@ -321,5 +323,32 @@ describe('t5 来源覆盖卡三态', () => {
         uncertain: ['a', 'b'],
       } as never)
     ).toEqual({ covered: 3, skipped: 1, total: 6 });
+  });
+});
+
+// ── f2：课程进度分母（剔除 skipped）────────────────────────────────────
+
+describe('f2 进度分母与百分比', () => {
+  test('分母 = total − skipped：无跳过时与旧口径一致，跳过逐课退出分母', () => {
+    expect(progressDenominator({ total_lessons: 19, skipped_lessons: 0 })).toBe(19);
+    expect(progressDenominator({ total_lessons: 19, skipped_lessons: 15 })).toBe(4);
+    expect(progressDenominator({ total_lessons: 3, skipped_lessons: 1 })).toBe(2);
+  });
+
+  test('全跳 → 分母 0（无可计进度，消费面呈「—」不渲染进度条）', () => {
+    expect(progressDenominator({ total_lessons: 3, skipped_lessons: 3 })).toBe(0);
+    expect(progressDenominator({ total_lessons: 0, skipped_lessons: 0 })).toBe(0);
+  });
+
+  test('脏数据钳制：skipped > total 分母不为负（钳 ≥0）', () => {
+    expect(progressDenominator({ total_lessons: 3, skipped_lessons: 5 })).toBe(0);
+  });
+
+  test('percent：completed ÷ 分母四舍五入；分母 0 → null（「—」分支）', () => {
+    expect(progressPercent(2, 4)).toBe(50);
+    expect(progressPercent(1, 3)).toBe(33);
+    expect(progressPercent(3, 3)).toBe(100);
+    expect(progressPercent(0, 0)).toBeNull();
+    expect(progressPercent(3, 0)).toBeNull();
   });
 });

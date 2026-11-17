@@ -3255,6 +3255,103 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    /// f2（进度分母剔除 skipped）：`CourseSummary.skipped_lessons` 是跳过
+    /// 读数的后端单源——3 课时课 skip 1 → 两面（list/detail）同见 1；
+    /// unskip 可逆归 0；全跳 → 3（分母 0 的呈现分支在前端）。
+    /// 跳过不进分子：completed_lessons 不因 skip 而动。
+    #[tokio::test]
+    async fn course_summary_counts_skipped_lessons_and_unskip_restores_denominator() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let mut pack = valid_pack();
+        pack.modules[0].lessons = (0..3)
+            .map(|index| LessonPack {
+                title: format!("Lesson {index}"),
+                ..pack.modules[0].lessons[0].clone()
+            })
+            .collect();
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lessons: Vec<_> = detail.modules[0].lessons.to_vec();
+        assert_eq!(lessons.len(), 3, "fixture is a three-lesson course");
+
+        // 基线：无人跳过，两面读数 0。
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let summary = listed.iter().find(|c| c.id == course.course.id).unwrap();
+        assert_eq!(summary.skipped_lessons, 0, "baseline list reads 0");
+        assert_eq!(summary.total_lessons, 3);
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.course.skipped_lessons, 0, "baseline detail reads 0");
+
+        // skip 1：两面同口径见 1；total 不动（跳过 ≠ 删课），分子不动。
+        service
+            .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::Skipped)
+            .await
+            .unwrap();
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let summary = listed.iter().find(|c| c.id == course.course.id).unwrap();
+        assert_eq!(summary.skipped_lessons, 1, "list face counts the skip");
+        assert_eq!(summary.total_lessons, 3, "skip does not delete lessons");
+        assert_eq!(summary.completed_lessons, 0, "skip never enters the numerator");
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.course.skipped_lessons, 1, "detail face counts the skip");
+
+        // unskip：跳过可逆，读数归 0（课时回分母）。
+        service
+            .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::NotStarted)
+            .await
+            .unwrap();
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let summary = listed.iter().find(|c| c.id == course.course.id).unwrap();
+        assert_eq!(summary.skipped_lessons, 0, "unskip restores the list face");
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.course.skipped_lessons, 0, "unskip restores the detail face");
+
+        // 全跳：读数 3（前端分母 0 → 「—」分支）。
+        for lesson in &lessons {
+            service
+                .update_lesson_progress(&lesson.id, &user_id, LessonStatus::Skipped)
+                .await
+                .unwrap();
+        }
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let summary = listed.iter().find(|c| c.id == course.course.id).unwrap();
+        assert_eq!(summary.skipped_lessons, 3, "full skip reads 3 on the list face");
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.course.skipped_lessons, 3, "full skip reads 3 on the detail face");
+
+        // 全跳后 unskip 一课：读数 2（可逆对账不因全跳而卡死）。
+        service
+            .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::NotStarted)
+            .await
+            .unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        assert_eq!(detail.course.skipped_lessons, 2, "unskip after full skip reverses");
+    }
+
     /// x11：CourseSummary 显式带 pipeline——传统课程按来源计划列判定
     /// （NULL = sampling），学习图课程不标（None）。
     #[tokio::test]

@@ -231,6 +231,11 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
+                    (SELECT COUNT(*) FROM learning_lesson_progress p \
+                     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+                     JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped') AS skipped_lessons, \
                     (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
                      WHERE x.course_id = c.course_id AND x.user_id = ? \
                        AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
@@ -244,6 +249,7 @@ impl LearningService {
              FROM learning_courses c WHERE c.deleted_at IS NULL \
              ORDER BY c.updated_at DESC, c.course_id",
         )
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -285,6 +291,11 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
+                    (SELECT COUNT(*) FROM learning_lesson_progress p \
+                     JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+                     JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
+                     JOIN learning_modules m ON m.module_id = l.module_id \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'skipped') AS skipped_lessons, \
                     (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
                      WHERE x.course_id = c.course_id AND x.user_id = ? \
                        AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
@@ -303,6 +314,7 @@ impl LearningService {
              FROM learning_courses c \
              WHERE c.course_id = ? AND c.deleted_at IS NULL",
         )
+        .bind(user_value)
         .bind(user_value)
         .bind(user_value)
         .bind(user_value)
@@ -1074,6 +1086,8 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         enrolled: row.try_get::<i64, _>("enrolled").map_err(internal)? != 0,
         total_lessons: row.try_get("total_lessons").map_err(internal)?,
         completed_lessons: row.try_get("completed_lessons").map_err(internal)?,
+        // f2：跳过读数单源——进度分母的剔除项（前端 total − skipped，钳 ≥0）。
+        skipped_lessons: row.try_get("skipped_lessons").map_err(internal)?,
         enabled: row.try_get::<i64, _>("enabled").map_err(internal)? != 0,
         // 进度尺 = 结算口径（j05 账本落地）：结算节点数；账本无记录（存量
         // 课程/未结算）回退完成数——不因切换口径把卡片进度归零。

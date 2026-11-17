@@ -256,6 +256,9 @@ export interface CourseSummary {
   enrolled: boolean;
   total_lessons: number;
   completed_lessons: number;
+  /** 跳过课时读数（f2）：本课 status='skipped' 的课时数；进度分母派生为
+   * total − skipped（可计课时；全跳 → 分母 0 呈「—」），unskip 自动回分母。 */
+  skipped_lessons: number;
   /** 课程级「现存且启用」（三轮 g3）：false = 已归档（可逆暂停），安排面不再出现本课 */
   enabled: boolean;
   /** 概况：已结算或已完成的课时/节点数（XP 账本落地前 = completed_lessons） */

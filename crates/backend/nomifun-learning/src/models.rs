@@ -1968,6 +1968,10 @@ pub struct CourseSummary {
     pub enrolled: bool,
     pub total_lessons: i64,
     pub completed_lessons: i64,
+    /// 跳过课时读数（f2）：本用户本课 `status='skipped'` 的课时数——进度
+    /// 分母在前端派生为 `total_lessons − skipped_lessons`（可计课时；全跳
+    /// → 分母 0 呈「—」不渲染进度条）。跳过可逆，读数随 unskip 回落。
+    pub skipped_lessons: i64,
     /// 课程级「现存且启用」口径（三轮 g3）：`false` = 已归档（可逆暂停），
     /// 安排面（到期队列/就绪推荐/生成入口）不再出现本课，历史面如实保留。
     pub enabled: bool,

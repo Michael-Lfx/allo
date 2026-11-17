@@ -100,7 +100,7 @@ const initTestI18n = async (locale: 'zh-CN' | 'en-US' = 'zh-CN') => {
   return instance;
 };
 
-const detail = (enabled: boolean): CourseDetail =>
+const detail = (enabled: boolean, courseOverrides: Record<string, unknown> = {}): CourseDetail =>
   ({
     course: {
       id: 'course-1',
@@ -113,6 +113,7 @@ const detail = (enabled: boolean): CourseDetail =>
       enrolled: true,
       total_lessons: 1,
       completed_lessons: 0,
+      skipped_lessons: 0,
       enabled,
       settled_or_completed: 0,
       due_today: 0,
@@ -123,6 +124,7 @@ const detail = (enabled: boolean): CourseDetail =>
       learning_goal: null,
       sampling: null,
       source_plan: null,
+      ...courseOverrides,
     },
     enrollment_id: null,
     modules: [
@@ -160,7 +162,11 @@ const detail = (enabled: boolean): CourseDetail =>
 const noop = () => undefined;
 
 /** 挂载课程工作区：返回进度拉取计数与标记读取器 */
-const mountWorkspace = async (enabled: boolean, locale: 'zh-CN' | 'en-US' = 'zh-CN') => {
+const mountWorkspace = async (
+  enabled: boolean,
+  locale: 'zh-CN' | 'en-US' = 'zh-CN',
+  courseOverrides: Record<string, unknown> = {}
+) => {
   if (root) {
     await act(async () => {
       root!.unmount();
@@ -181,7 +187,7 @@ const mountWorkspace = async (enabled: boolean, locale: 'zh-CN' | 'en-US' = 'zh-
         <CloudAuthProvider>
           <MemoryRouter>
             <CourseWorkspace
-            detail={detail(enabled)}
+            detail={detail(enabled, courseOverrides)}
             busyId={null}
             attemptResults={{}}
             onBack={noop}
@@ -238,5 +244,30 @@ describe('CourseWorkspace 测验入口挂点（u2 R4）', () => {
     const markup = html();
     expect(markup).not.toContain('开始检测');
     expect(markup).not.toContain('知识检测');
+  });
+});
+
+// ── f2：进度分母剔除 skipped（大纲头计数与进度条同口径）────────────────────
+
+describe('CourseWorkspace 进度分母（f2 剔除 skipped）', () => {
+  test('常规课：分母 = total − skipped，计数与进度条照常渲染', async () => {
+    const { html } = await mountWorkspace(true, 'zh-CN', {
+      total_lessons: 3,
+      skipped_lessons: 1,
+    });
+    const markup = html();
+    expect(markup).toContain('0/2');
+    expect(markup).toContain('arco-progress');
+  });
+
+  test('全跳 → 分母 0：大纲头计数呈「—」，不渲染进度条（不出 0/0）', async () => {
+    const { html } = await mountWorkspace(true, 'zh-CN', {
+      total_lessons: 3,
+      skipped_lessons: 3,
+    });
+    const markup = html();
+    expect(markup).toContain('—');
+    expect(markup).not.toContain('arco-progress');
+    expect(markup).not.toContain('0/0');
   });
 });

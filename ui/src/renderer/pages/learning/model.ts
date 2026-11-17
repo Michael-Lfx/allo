@@ -347,3 +347,26 @@ export function sourceRoleLabel(role: string, t: Translate): string {
   const key = SOURCE_ROLE_KEYS[role] ?? 'learning.sourceCoverageRoleOther';
   return t(key);
 }
+
+// ── f2：课程进度分母（剔除 skipped）──────────────────────────────────
+
+/** 进度读数入参面：CourseSummary 的最小投影（CourseDetail.course 同形，
+ * 课程卡与工作区大纲头共用同一组读数函数）。 */
+export interface ProgressCountersLike {
+  total_lessons: number;
+  skipped_lessons: number;
+}
+
+/** 进度分母（f2 裁决 A）：可计课时 = total − skipped，钳 ≥0。被跳过的
+ * 课时退出分母（跳过 ≠ 完成，永不进分子）；unskip 自动回分母；全跳 →
+ * 0 = 无可计进度（GLOSSARY「进度」「跳过」词条口径）。 */
+export function progressDenominator(course: ProgressCountersLike): number {
+  return Math.max(0, course.total_lessons - course.skipped_lessons);
+}
+
+/** 进度百分比：completed ÷ 可计分母，四舍五入取整；无可计课时（分母 0）
+ * 返回 null——消费面呈「—」（em-dash）且不渲染进度条。 */
+export function progressPercent(completedLessons: number, denominator: number): number | null {
+  if (denominator <= 0) return null;
+  return Math.round((completedLessons / denominator) * 100);
+}

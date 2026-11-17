@@ -171,6 +171,7 @@ const graphDetail = (options?: {
       enrolled: true,
       total_lessons: 4,
       completed_lessons: 1,
+      skipped_lessons: 0,
       enabled: true,
       settled_or_completed: 1,
       due_today: 0,

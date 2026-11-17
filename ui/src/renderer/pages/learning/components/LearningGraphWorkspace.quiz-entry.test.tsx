@@ -142,6 +142,7 @@ const graphDetail = (enabled: boolean): CourseDetail =>
       enrolled: true,
       total_lessons: 1,
       completed_lessons: 0,
+      skipped_lessons: 0,
       enabled,
       settled_or_completed: 0,
       due_today: 0,
