@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Message, Modal, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { Button, Input, Modal, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import type { CreationPhase } from '../coursePlan';
 import { MAX_COURSE_KNOWLEDGE_BASES, type CourseGenerationState } from '../hooks/useCourseCreation';
