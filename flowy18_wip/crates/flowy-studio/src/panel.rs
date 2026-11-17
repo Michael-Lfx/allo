@@ -577,6 +577,78 @@ mod tests {
     use gpui::TestAppContext;
     use std::{cell::RefCell, rc::Rc};
 
+    #[gpui::test]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI test functions use the harness-provided mutable test context"
+    )]
+    fn persisted_error_is_visible_on_the_first_frame(cx: &mut TestAppContext) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-working-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        // The agent boots from its structured index, the panel projection from
+        // the UI index; both must agree that the active session ended in error.
+        std::fs::write(
+            sessions.join("history.json"),
+            r#"{"active":"s1","sessions":[{"id":"s1","status":{"kind":"error","message":"chat.status_error"}}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sessions.join("index.json"),
+            r#"{"active":"s1","sessions":[{"id":"s1","title":"t","updated_at":1,"titled":true,"lines":[],"status":{"kind":"error","message":"chat.status_error"}}]}"#,
+        )
+        .unwrap();
+        let panel = cx.update(|cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            cx.new(|cx| {
+                StudioPanel::new(
+                    StudioConfig {
+                        product: "Flowy",
+                        i18n: I18n::embedded("Flowy"),
+                        model: Model::Lite,
+                        plan: Plan::Free,
+                        model_info_version: String::new(),
+                        model_info_open: false,
+                        store_root: root.clone(),
+                        llm: LlmConfig {
+                            api_key: None,
+                            base_url: String::new(),
+                            model: String::new(),
+                            provider: String::new(),
+                            ..LlmConfig::default()
+                        },
+                    },
+                    ui,
+                    cx,
+                )
+            })
+        });
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(
+                panel.status,
+                flowy_agent::TurnStatus::Error {
+                    message: "chat.status_error".into(),
+                }
+            );
+            let working = panel.working.read(cx);
+            assert!(working.is_visible());
+            assert!(working.is_error());
+            let expected = panel.i18n.t("chat.status_error");
+            assert_ne!(expected, "chat.status_error");
+            assert_eq!(working.label(), expected);
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn failed_turn_keeps_the_working_line_visible() {
         use flowy_agent::TurnStatus;

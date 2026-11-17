@@ -564,6 +564,21 @@ impl WorkingIndicator {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_error(&self) -> bool {
+        self.error
+    }
+
+    #[cfg(test)]
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
     pub(crate) fn set_label(
         &mut self,
         label: String,
@@ -629,7 +644,9 @@ mod tests {
         clippy::needless_pass_by_ref_mut,
         reason = "GPUI test harness passes &mut TestAppContext"
     )]
-    fn working_indicator_keeps_and_clears_the_error_state(cx: &mut TestAppContext) {
+    fn working_indicator_keeps_and_clears_the_error_state(
+        cx: &mut TestAppContext,
+    ) {
         let indicator = cx.update(|cx| {
             let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
             cx.new(|cx| WorkingIndicator::new(ui, cx))

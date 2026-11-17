@@ -5,7 +5,7 @@
 主分支已合并 PR #458（merge commit `86fcd6c32`），包含账号模型目录、会话路由修复、
 pi-rust 内核迁移与 CI 门禁修复（格式 + 1.100 clippy）。后续分支 `feat/flowy18-wip-followups`
 继续收尾遗留项。最新验证（Windows，Rust 1.100）：`flowy-app` 22 passed、
-`flowy-studio` 7 passed、`flowy-agent-core` 35 passed/2 ignored、
+`flowy-studio` 9 passed、`flowy-agent-core` 39 passed/2 ignored、
 `flowy-agent` 24 passed/1 ignored、`flowy-auth` 11 passed、`flowy-core` 33 passed、
 `flowy-net` 3 passed、`flowy-ota` 23 passed、`flowy-obs` 6 passed；
 Windows 桌面入口实跑可启动（窗口出现、目录模型名同步到顶栏/输入框）。

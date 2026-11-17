@@ -270,14 +270,16 @@ const RECOVERY_TOOL_RESULT: &str = concat!(
 
 /// Repair tool-call pairing before history reaches the provider.
 ///
+/// Policy mirrors pi-rust `rpi-harness/src/messages.rs`
+/// (`repair_orphaned_tool_calls`, MIT licensed), adapted to the host message
+/// vocabulary instead of depending on the harness crate.
+///
 /// Stored history can be truncated mid-turn or predate the current schema, and
 /// strict OpenAI-compatible gateways reject both orphaned tool results and
 /// unanswered tool calls. Keep matching results next to their assistant, drop
 /// unmatched results, and synthesize an error result for a call that never
 /// recorded one (same policy as the pi harness repair).
-fn repair_tool_call_history(
-    history: Vec<AgentMessage>,
-) -> Vec<AgentMessage> {
+fn repair_tool_call_history(history: Vec<AgentMessage>) -> Vec<AgentMessage> {
     let mut input = history.into_iter().peekable();
     let mut repaired: Vec<AgentMessage> = Vec::new();
     while let Some(message) = input.next() {
@@ -301,10 +303,9 @@ fn repair_tool_call_history(
             .collect();
         repaired.push(message);
         let mut interleaved = Vec::new();
-        while input
-            .peek()
-            .is_some_and(|message| !matches!(message, AgentMessage::Assistant(_)))
-        {
+        while input.peek().is_some_and(|message| {
+            !matches!(message, AgentMessage::Assistant(_))
+        }) {
             let message = input.next().expect("peeked message");
             if let AgentMessage::ToolResult(result) = &message {
                 if let Some(index) = pending.iter().position(|(id, name)| {
@@ -355,13 +356,12 @@ fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
                 name,
                 arguments,
             } => {
-                // Legacy rows may hold truncation or manual edits; an invalid
-                // blob must not fail the whole turn, so degrade to an empty
-                // object and let the tool adapter report bad arguments.
-                let arguments: serde_json::Value = serde_json::from_str(
-                    arguments,
-                )
-                .unwrap_or_else(|_| serde_json::json!({}));
+                // Legacy rows may hold truncation or manual edits; the
+                // provider requires syntactically valid JSON, so a corrupted
+                // blob degrades to an empty object instead of failing replay.
+                let arguments: serde_json::Value =
+                    serde_json::from_str(arguments)
+                        .unwrap_or_else(|_| serde_json::json!({}));
                 Ok(Content::ToolCall(ToolCall {
                     kind: ToolCallType,
                     id: id.clone(),
@@ -697,6 +697,42 @@ mod tests {
         assert_eq!(parsed["path"], "a.txt");
     }
 
+    fn scripted_stream_capturing(
+        text: &'static str,
+        stop: StopReason,
+        captured: Arc<std::sync::Mutex<Vec<rpi_ai::types::Message>>>,
+    ) -> rpi_agent::StreamFn {
+        rpi_agent::stream_fn(move |model, context, _| {
+            if let Ok(mut guard) = captured.lock() {
+                *guard = context.messages.clone();
+            }
+            let mut message = AssistantMessage::empty(
+                Api::Other("test".into()),
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            message.content = vec![Content::text(text)];
+            message.stop_reason = stop;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Start {
+                        partial: Arc::new(message.clone()),
+                    })
+                    .await;
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message,
+                    })
+                    .await;
+            });
+            consumer
+        })
+    }
+
     fn scripted_stream(
         text: &'static str,
         stop: StopReason,
@@ -739,6 +775,82 @@ mod tests {
             });
             consumer
         })
+    }
+
+    #[tokio::test]
+    async fn orphaned_tool_call_is_repaired_before_the_provider_request() {
+        let assistant = Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            }],
+            source: MessageSource::Model {
+                provider: "flowy".into(),
+                model: "m".into(),
+            },
+        };
+        // Legacy row without MessageSource::Tool: converted to None, so the
+        // assistant tool call would otherwise reach the provider unanswered.
+        let legacy_result = Message {
+            id: "t1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "call-1".into(),
+                content: vec![ContentBlock::text("data")],
+                is_error: Some(false),
+            }],
+            source: MessageSource::User,
+        };
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                system: String::new(),
+                history: vec![assistant, legacy_result],
+                prompt: "hi".into(),
+                route: route(),
+                tools: Vec::new(),
+                signal: CancelToken::new(),
+            },
+            scripted_stream_capturing(
+                "ok",
+                StopReason::Stop,
+                Arc::clone(&captured),
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Completed);
+        let messages = captured.lock().unwrap().clone();
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            rpi_ai::types::Message::Assistant(assistant)
+                if assistant.content.iter().any(|content| matches!(
+                    content,
+                    Content::ToolCall(call) if call.id == "call-1"
+                ))
+        )));
+        let repaired = messages
+            .iter()
+            .find_map(|message| match message {
+                rpi_ai::types::Message::ToolResult(result)
+                    if result.tool_call_id == "call-1" =>
+                {
+                    Some(result)
+                }
+                _ => None,
+            })
+            .expect("provider request must carry a result for call-1");
+        assert_eq!(repaired.tool_name, "read_file");
+        assert!(repaired.is_error);
+        assert!(
+            Content::text_only(&repaired.content, "")
+                .contains("not re-executed")
+        );
     }
 
     #[tokio::test]
