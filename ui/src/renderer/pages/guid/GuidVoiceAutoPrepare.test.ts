@@ -34,6 +34,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     'startVoiceCallIntent',
     'isMountedRef',
     'Message',
+    'showVoiceSuiteNotice',
     't',
     'prepareVoiceSession',
     'discardPendingVoiceCallIntent',
@@ -53,6 +54,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     warning: [] as any[],
     error: [] as any[],
     discard: [] as any[],
+    notices: [] as any[],
     connectingStates: [] as boolean[],
   };
 
@@ -96,6 +98,12 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
       info: (msg: string) => calls.info.push(msg),
       warning: (msg: string) => calls.warning.push(msg),
       error: (msg: string) => calls.error.push(msg),
+    },
+    showVoiceSuiteNotice: (input: any) => {
+      calls.notices.push(input);
+      const line = `${input?.kind}:${input?.reasonCode ?? ''}`;
+      if (input?.kind === 'prepare-failed' || input?.kind === 'start-failed') calls.error.push(line);
+      else calls.warning.push(line);
     },
     t: (s: string) => s,
     prepareVoiceSession: async (includeLlm: boolean, loc: string, stg: string) => {
@@ -242,6 +250,7 @@ describe('GuidPage Voice Auto Prepare (UX-01 & UX-02)', () => {
     await missing.handler();
     expect(missing.calls.start.length).toBe(0);
     expect(missing.calls.navigate).toEqual(['/settings/voice']);
+    expect(missing.calls.notices[0]?.kind).toBe('not-installed');
 
     const loading = createProductionHandler({ voicePrerequisite: 'loading' });
     await loading.handler();

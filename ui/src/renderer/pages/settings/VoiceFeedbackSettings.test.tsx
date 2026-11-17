@@ -3,7 +3,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createInstance } from 'i18next';
 import { I18nextProvider } from 'react-i18next';
-import VoiceFeedbackSettings, { buildVoiceFeedbackPatch, isVoiceChoiceSynced } from './VoiceFeedbackSettings';
+import VoiceFeedbackSettings, { buildVoiceFeedbackPatch, isVoiceChoiceSynced, voicePreferenceControlsDisabled } from './VoiceFeedbackSettings';
 import VoiceAudioStatus from '../voiceSession/VoiceAudioStatus';
 import zh from '@renderer/services/i18n/locales/zh-CN/voice.json';
 import en from '@renderer/services/i18n/locales/en-US/voice.json';
@@ -58,13 +58,20 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
     await i18n.init({ lng: locale, resources: { [locale]: { translation: { voice: dictionary } } }, initImmediate: false });
     const html = renderToStaticMarkup(
       <I18nextProvider i18n={i18n}>
-        <VoiceFeedbackSettings connected={false} localVoiceReady={false} localVoiceNeedsInstall />
+        <VoiceFeedbackSettings connected={false} localVoiceReady={false} />
       </I18nextProvider>,
     );
     expect(html).toContain(dictionary.feedback.premiumVoice);
     expect(html).toContain(dictionary.feedback.localVoiceMissing);
-    expect(html.replace(/&amp;/g, '&')).toContain(dictionary.feedback.localVoiceDownload);
+    // Install/repair is owned by the capability card only; this section keeps
+    // the switch disabled and a plain hint, with no standalone action button.
     expect(html).not.toMatch(/Matcha|Vocos|Kokoro|Microsoft|sherpa/i);
+  });
+  test(`${locale}: wake and premium controls are disabled until the voice pack is ready`, () => {
+    expect(voicePreferenceControlsDisabled({ hasDraft: true, busy: false, localVoiceReady: false })).toBe(true);
+    expect(voicePreferenceControlsDisabled({ hasDraft: true, busy: false, localVoiceReady: true })).toBe(false);
+    expect(voicePreferenceControlsDisabled({ hasDraft: false, busy: false, localVoiceReady: true })).toBe(true);
+    expect(voicePreferenceControlsDisabled({ hasDraft: true, busy: true, localVoiceReady: true })).toBe(true);
   });
   test(`${locale}: voice dictionary never exposes model names`, () => {
     expect(JSON.stringify(dictionary)).not.toMatch(/Matcha|Vocos|Kokoro|Microsoft|sherpa/i);

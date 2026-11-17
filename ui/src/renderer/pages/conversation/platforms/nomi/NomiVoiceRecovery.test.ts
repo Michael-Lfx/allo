@@ -17,6 +17,7 @@ function createHandler(
     'isVoiceActiveElsewhere', 'activeVoiceConversationId', 'Message', 't', 'navigate', 'localeKey',
     'prepareVoiceSession', 'retryAbandonedVoiceCallIntent', 'setIsVoiceConnecting', 'lifecycleGenerationRef',
     'startVoiceCallIntent', 'conversation_id', 'mountedRef', 'discardPendingVoiceCallIntent', 'voiceStartNeedsPrepare',
+    'showVoiceSuiteNotice',
   ];
   const code = new Bun.Transpiler({ loader: 'ts' }).transformSync(
     `function create(env: any) { const { ${fields.join(', ')} } = env; return async () => { ${source.slice(begin, end)}\n }; }`,
@@ -27,6 +28,10 @@ function createHandler(
   const handler = factory({
     isVoiceActiveElsewhere: false, activeVoiceConversationId: null,
     Message: { info: () => {}, warning: (value: string) => warnings.push(value), error: (value: string) => errors.push(value) },
+    showVoiceSuiteNotice: (input: any) => {
+      if (input?.kind === 'prepare-failed' || input?.kind === 'start-failed') errors.push(`${input.kind}:${input.reasonCode ?? ''}`);
+      else warnings.push(`${input?.kind}:${input?.reasonCode ?? ''}`);
+    },
     t: (value: string) => value, navigate: async () => {}, localeKey: 'en-US',
     prepareVoiceSession: prepare, retryAbandonedVoiceCallIntent: voice.retryAbandonedVoiceCallIntent,
     setIsVoiceConnecting: () => {}, lifecycleGenerationRef: { current: 1 },

@@ -8,6 +8,7 @@
 //! - `docs/architecture/voice-agent/model-management.zh.md` §4
 
 pub mod downloader;
+pub mod intent;
 pub mod layout;
 pub mod manager;
 pub mod routes;

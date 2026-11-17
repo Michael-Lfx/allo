@@ -41,6 +41,15 @@ describe('Arco ↔ Flowy theme bridge', () => {
     );
   });
 
+  test('simple confirm dialogs keep an opaque themed surface in both color schemes', () => {
+    // Modal.confirm/Modal.info share .arco-modal-simple, whose transparent-parts
+    // rule also targets the root element. Without this rule the dialog loses its
+    // surface and the dimmed scrim shows through in light mode.
+    const surfaceRule =
+      /\.arco-modal-simple\s*\{\s*background:\s*var\(--flowy-surface-1,\s*var\(--dialog-fill-0\)\)\s*!important;/;
+    expect(surfaceRule.test(arcoOverride)).toBe(true);
+  });
+
   test('custom-theme updates re-read the applied token instead of caching a palette', () => {
     expect(arcoPrimaryHook.includes("getPropertyValue('--flowy-ink-button')")).toBe(true);
     expect(arcoPrimaryHook.includes("'theme.custom-css.updated'")).toBe(true);

@@ -83,6 +83,34 @@ impl DirectoryWriteLease {
     }
 }
 
+/// Best-effort read of the cross-process write lease holder recorded in the
+/// lock file. The file content is diagnostic only; the OS lock remains the
+/// authority.
+/// Per-run file accounting, emitted by the install wrapper so the end log
+/// alone answers what the install actually did (no need to stitch the summary).
+#[derive(Debug, Default, Clone, Copy)]
+struct InstallCounts {
+    reused: usize,
+    restored: usize,
+    downloaded: usize,
+}
+
+fn read_write_lease_holder(models_dir: &Path) -> Option<(u32, i64)> {
+    let path = models_dir.join(".voice-suite-write.lock");
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut pid = None;
+    let mut at_ms = None;
+    for part in text.split_whitespace() {
+        if let Some(value) = part.strip_prefix("pid=") {
+            pid = value.parse::<u32>().ok();
+        }
+        if let Some(value) = part.strip_prefix("at_ms=") {
+            at_ms = value.parse::<i64>().ok();
+        }
+    }
+    Some((pid?, at_ms?))
+}
+
 #[derive(Clone)]
 struct InUseGuard(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
 
@@ -209,7 +237,25 @@ impl ModelManager {
         // pretending the suite is usable.
         let tts_suite_is_pinned = self.tts_suite_is_pinned();
         let current = self.state.read().await.clone();
-        let state = if current.is_busy() {
+        let read_lease = if current.is_busy() { None } else { DirectoryWriteLease::acquire(&self.models_dir).ok() };
+        let state = if !current.is_busy() && read_lease.is_none() {
+            // Another process (typically the voice daemon's own provision check)
+            // holds the directory write lease. Keep the last known state so a
+            // transient read/write overlap never surfaces as an install failure.
+            let holder = read_write_lease_holder(&self.models_dir);
+            let (holder_pid, holder_at_ms) = match holder {
+                Some((pid, at_ms)) => (Some(pid), Some(at_ms)),
+                None => (None, None),
+            };
+            tracing::warn!(
+                state = ?current,
+                holder_pid,
+                holder_at_ms,
+                models_dir = %self.models_dir.display(),
+                "voice_model_status_busy"
+            );
+            current.clone()
+        } else if current.is_busy() {
             // Never turn a running download into NotInstalled just because the
             // TTS subtree is not complete yet.
             current
@@ -251,6 +297,30 @@ impl ModelManager {
                 return state;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Wait for the actual writer task to terminate, including lease destruction.
+    /// Does not hold admission while waiting, so remove can abort and join it.
+    pub async fn wait_for_completion(&self) -> ModelInstallState {
+        loop {
+            let task = self.install_task.lock().await;
+            let finished = task.as_ref().is_none_or(|task| task.is_finished());
+            if finished {
+                let _lease = match DirectoryWriteLease::acquire(&self.models_dir) {
+                    Ok(lease) => lease,
+                    Err(_) => return ModelInstallState::Failed { reason: "models_directory_busy: external writer active; daemon resume deferred".into(), recoverable: true },
+                };
+                let state = self.state.read().await.clone();
+                if state.is_busy() {
+                    let failed = ModelInstallState::Failed { reason: "model_writer_cancelled: installation task ended before completion".into(), recoverable: true };
+                    self.set_state(failed.clone()).await;
+                    return failed;
+                }
+                return state;
+            }
+            drop(task);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }
 
@@ -357,6 +427,7 @@ impl ModelManager {
         let mut task_guard = self.install_task.lock().await;
         let current_state = self.state.read().await.clone();
         let force = req.as_ref().and_then(|r| r.force).unwrap_or(false);
+        let rebuild_default_kws = req.as_ref().and_then(|r| r.rebuild_default_kws).unwrap_or(false);
 
         // 1. Idempotency check: if already busy (in progress), reject duplicate request
         if current_state.is_busy() || task_guard.as_ref().is_some_and(|task| !task.is_finished()) {
@@ -374,27 +445,28 @@ impl ModelManager {
             ));
         }
 
-        // 2. Check actual disk layout state in addition to in-memory state
-        let (disk_state, _, _) = inspect_model_files(&self.models_dir);
-        let current_state = self.refresh_integrity(disk_state.clone()).await;
-
-        // If not force requested, and both memory state and physical on-disk files
-        // are Ready, still re-hash TTS directly: a metadata cache must not turn a
-        // silent TTS bit-flip into "already installed".
+        // Admission and verification share the directory lease with every writer.
+        let lease = DirectoryWriteLease::acquire(&self.models_dir)?;
+        // A persisted confirmation is followed by ordinary retries; an explicit
+        // request publishes its target before the first model write.
+        let persisted_rebuild = crate::intent::confirmed_default_rebuild(&self.models_dir)
+            .map_err(ModelManagerError::Conflict)?;
+        if rebuild_default_kws {
+            crate::intent::persist_default_rebuild(&self.models_dir)
+                .map_err(ModelManagerError::Conflict)?;
+        }
+        let confirmed_rebuild = rebuild_default_kws || persisted_rebuild;
         if !force
-            && current_state.is_ready()
-            && disk_state.is_ready()
+            && !confirmed_rebuild
+            && self.verify_files().await.is_ready()
             && self.tts_integrity_ready().await
         {
             return Ok(VoiceModelInstallResponse {
                 accepted: false,
-                state: current_state,
+                state: self.state.read().await.clone(),
                 message: Some("Models already installed and ready".into()),
             });
         }
-
-        // 3. Take the cross-process directory lease before changing any file.
-        let lease = DirectoryWriteLease::acquire(&self.models_dir)?;
 
         // 4. Mark state as ProbingSource and broadcast event
         *self.checked_files.write().await = None;
@@ -404,7 +476,7 @@ impl ModelManager {
         let this = self.clone();
         let handle = tokio::spawn(async move {
             let _lease = lease;
-            this.run_install_pipeline(force).await;
+            this.run_install_pipeline(force, confirmed_rebuild).await;
         });
 
         *task_guard = Some(handle);
@@ -417,59 +489,130 @@ impl ModelManager {
     }
 
     /// Internal asynchronous install pipeline execution.
-    async fn run_install_pipeline(&self, force: bool) {
+    async fn run_install_pipeline(&self, force: bool, rebuild_default_kws: bool) {
+        let started = Instant::now();
+        info!(kind = "install", force, rebuild_default_kws, "voice_model_write_started");
+        let counts = self.run_install_pipeline_inner(force, rebuild_default_kws).await;
+        let state = self.state.read().await.clone();
+        info!(
+            kind = "install",
+            state = ?state,
+            duration_ms = started.elapsed().as_millis() as u64,
+            reused = counts.reused,
+            restored = counts.restored,
+            downloaded = counts.downloaded,
+            "voice_model_write_finished"
+        );
+    }
+
+    async fn run_install_pipeline_inner(&self, force: bool, rebuild_default_kws: bool) -> InstallCounts {
+        let mut counts = InstallCounts::default();
         info!("Starting voice model installation pipeline (force={force})");
 
-        if force {
-            info!(
-                "Force re-install: purging existing model files and .part artifacts in {:?}",
-                self.models_dir
-            );
-            for &rel in EXPECTED_FILES {
-                let p = self.models_dir.join(rel);
-                if p.exists() {
-                    if let Err(e) = tokio::fs::remove_file(&p).await {
-                        // On Windows, if a file handle is briefly held, rename to a disposable tombstone
-                        let tombstone = p.with_extension(format!(
-                            "old.{}",
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis()
-                        ));
-                        if let Err(rename_err) = tokio::fs::rename(&p, &tombstone).await {
-                            warn!(
-                                "Failed to remove or tombstone file {}: remove_err={}, rename_err={}",
-                                p.display(),
-                                e,
-                                rename_err
-                            );
-                        } else {
-                            let _ = tokio::fs::remove_file(&tombstone).await;
-                        }
-                    }
-                }
-                let part = PathBuf::from(format!("{}.part", p.display()));
-                if part.exists() {
-                    let _ = tokio::fs::remove_file(&part).await;
+        // Recover interrupted target->backup moves before KWS group inference.
+        for file in &crate::verifier::embedded_manifest().files {
+            let target = self.models_dir.join(&file.path);
+            let [_, _, backup] = crate::downloader::transaction_paths(&target, &file.sha256, file.size);
+            if !target.exists() && backup.exists() {
+                if let Err(error) = tokio::fs::rename(&backup, &target).await {
+                    self.set_state(ModelInstallState::Failed { reason: format!("recovery: {}: {error}", file.path), recoverable: true }).await;
+                    return counts;
                 }
             }
         }
-
-        // Step 1: Probe mirror sources
-        let mirror = match self.downloader.probe_best_source().await {
-            Ok(m) => {
-                info!("Selected mirror: {} ({})", m.id, m.base_url);
-                Some(m)
+        for group in &crate::verifier::embedded_manifest().kws_groups {
+            for (relative, hash) in &group.files {
+                let target = self.models_dir.join(relative);
+                let size = crate::verifier::embedded_manifest().files.iter().find(|f| f.path == *relative && f.sha256 == *hash).map(|f| f.size).unwrap_or(0);
+                let [_, _, backup] = crate::downloader::transaction_paths(&target, hash, size);
+                if !target.exists() && backup.exists() {
+                    // Legacy artifacts are recovered only when their full hash proves identity.
+                    if crate::verifier::compute_file_sha256(&backup).await.ok().as_ref() != Some(hash) {
+                        self.set_state(ModelInstallState::Failed { reason: format!("recovery: {relative}: legacy backup identity mismatch"), recoverable: true }).await;
+                        return counts;
+                    }
+                    if let Err(error) = tokio::fs::rename(&backup, &target).await {
+                        self.set_state(ModelInstallState::Failed { reason: format!("recovery: {relative}: {error}"), recoverable: true }).await;
+                        return counts;
+                    }
+                }
             }
-            Err(e) => {
-                warn!(
-                    "All candidate mirror probes failed ({e}). Proceeding with offline local fallback if remote download fails."
-                );
-                None
+        }
+        // Existing complete supported KWS groups are retained. A partial group is
+        // repaired only when the present files identify exactly one target; a
+        // persisted confirmation overrides ambiguity but is still validated
+        // against the embedded default identity.
+        let mut kws_actual = HashMap::new();
+        for path in DOWNLOAD_FILES.iter().filter(|p| p.starts_with("kws/")) {
+            if let Ok(hash) = crate::verifier::compute_file_sha256(&self.models_dir.join(path)).await {
+                kws_actual.insert((*path).to_string(), hash);
+            }
+        }
+        let baseline = self.verifier.baseline_manifest();
+        let marker = tokio::fs::read_to_string(self.models_dir.join("kws/.voice-suite-group")).await.unwrap_or_default();
+        let target_group = if rebuild_default_kws {
+            crate::verifier::default_kws_group()
+        } else {
+            match crate::verifier::infer_kws_group(&kws_actual, baseline, &marker) {
+                Ok(group) => group,
+                Err(reason) => {
+                    self.set_state(ModelInstallState::Failed { reason, recoverable: true }).await;
+                    return counts;
+                }
             }
         };
-
+        // A complete legacy group may be kept, but a damaged member without a
+        // pinned repair source must block before any other resource changes.
+        for (relative, expected) in &target_group.files {
+            let pinned = crate::verifier::embedded_manifest()
+                .files
+                .iter()
+                .any(|file| file.path == *relative && file.sha256 == *expected);
+            if pinned {
+                continue;
+            }
+            let target = self.models_dir.join(relative);
+            let valid = crate::verifier::compute_file_sha256(&target)
+                .await
+                .ok()
+                .is_some_and(|hash| hash.eq_ignore_ascii_case(expected));
+            if !valid {
+                self.set_state(ModelInstallState::Failed {
+                    reason: format!("configuration: {relative}: selected KWS group has no verified repair source"),
+                    recoverable: true,
+                })
+                .await;
+                return counts;
+            }
+        }
+        let kws_identities: HashMap<String, (String, Option<u64>)> = target_group
+            .files
+            .iter()
+            .map(|(relative, expected)| {
+                let pinned = crate::verifier::embedded_manifest()
+                    .files
+                    .iter()
+                    .find(|file| file.path == *relative && file.sha256 == *expected);
+                let identity = match pinned {
+                    Some(file) => {
+                        // The manager baseline is authoritative for a pinned path;
+                        // the intent document never supplies verification hashes.
+                        let hash = baseline
+                            .get(relative)
+                            .cloned()
+                            .unwrap_or_else(|| expected.clone());
+                        let size = if hash.eq_ignore_ascii_case(&file.sha256) {
+                            Some(file.size)
+                        } else {
+                            None
+                        };
+                        (hash, size)
+                    }
+                    None => (expected.clone(), None),
+                };
+                (relative.clone(), identity)
+            })
+            .collect();
         // Step 2: Download files with progress tracking
         let all_files: Vec<&str> = if self.tts_suite_is_pinned() {
             DOWNLOAD_FILES
@@ -489,6 +632,36 @@ impl ModelManager {
             let file_index = idx + 1;
             let target_path = self.models_dir.join(rel_path);
 
+            if rel_path.starts_with("kws/") {
+                let Some((hash, size)) = kws_identities.get(rel_path) else {
+                    self.set_state(ModelInstallState::Failed {
+                        reason: format!("manifest: missing identity for {rel_path}"),
+                        recoverable: false,
+                    })
+                    .await;
+                    return counts;
+                };
+                match self
+                    .downloader
+                    .download_verified(rel_path, &target_path, hash, *size)
+                    .await
+                {
+                    Ok(crate::downloader::DownloadOutcome::Reused) => counts.reused += 1,
+                    Ok(crate::downloader::DownloadOutcome::Restored) => counts.restored += 1,
+                    Ok(crate::downloader::DownloadOutcome::Downloaded) => counts.downloaded += 1,
+                    Err(error) => {
+                        self.set_state(ModelInstallState::Failed { reason: format!("recovery: {rel_path}: {error}"), recoverable: true }).await;
+                        return counts;
+                    }
+                }
+                continue;
+            }
+            let Some(expected_hash) = baseline.get(rel_path) else {
+                self.set_state(ModelInstallState::Failed { reason: format!("manifest: missing identity for {rel_path}"), recoverable: false }).await;
+                return counts;
+            };
+            // download_verified re-hashes even force requests and recovers owned
+            // transaction artifacts before deciding whether any GET is needed.
             let start_time = Instant::now();
             let mut file_downloaded_bytes: u64 = 0;
 
@@ -510,11 +683,11 @@ impl ModelManager {
 
             let download_result = self
                 .downloader
-                .download_with_failover(rel_path, &target_path, 0)
+                .download_verified(rel_path, &target_path, expected_hash, if baseline.get(rel_path) == crate::verifier::embedded_manifest().files.iter().find(|f| f.path == rel_path).map(|f| &f.sha256) { crate::verifier::pinned_size(rel_path) } else { None })
                 .await;
 
-            let success = match download_result {
-                Ok(_) => true,
+            let outcome = match download_result {
+                Ok(outcome) => outcome,
                 Err(e) => {
                     let reason = match &e {
                         crate::downloader::DownloaderError::AllMirrorsFailed => {
@@ -528,11 +701,16 @@ impl ModelManager {
                         recoverable: true,
                     })
                     .await;
-                    return;
+                    return counts;
                 }
             };
+            match outcome {
+                crate::downloader::DownloadOutcome::Reused => counts.reused += 1,
+                crate::downloader::DownloadOutcome::Restored => counts.restored += 1,
+                crate::downloader::DownloadOutcome::Downloaded => counts.downloaded += 1,
+            }
 
-            if success {
+            {
                 if let Ok(meta) = tokio::fs::metadata(&target_path).await {
                     file_downloaded_bytes = meta.len();
                 }
@@ -559,51 +737,29 @@ impl ModelManager {
             }
         }
 
-        // Also fetch checksums.sha256 from mirror if available, or write authoritative checksums
-        let checksums_path = self.models_dir.join("checksums.sha256");
-        let mut fetched_checksums = false;
-        if let Some(ref m) = mirror {
-            if self
-                .downloader
-                .download_file_with_resume(m, "checksums.sha256", &checksums_path)
-                .await
-                .is_ok()
-            {
-                fetched_checksums = true;
-            }
-        }
-        if !fetched_checksums && !checksums_path.exists() {
-            let mut content = String::new();
-            for (path, hash) in self.verifier.baseline_manifest() {
-                content.push_str(&format!("{hash}  {path}\n"));
-            }
-            let _ = tokio::fs::write(&checksums_path, content).await;
-        }
+        info!(
+            kind = "install",
+            total_files,
+            reused = counts.reused,
+            restored = counts.restored,
+            downloaded = counts.downloaded,
+            "voice_model_download_summary"
+        );
 
-        // Ensure keywords.txt is present and properly tokenized for Zipformer KWS
-        const DEFAULT_KWS_KEYWORDS: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HE Y  ▁F L OW :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HI  ▁F L OW :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
+        let checksums_path = self.models_dir.join("checksums.sha256");
+        if !checksums_path.exists() {
+            let content = baseline.iter().map(|(p,h)| format!("{h}  {p}\n")).collect::<String>();
+            if let Err(error) = tokio::fs::write(&checksums_path, content).await {
+                self.set_state(ModelInstallState::Failed { reason: format!("metadata: checksums.sha256: {error}"), recoverable: true }).await;
+                return counts;
+            }
+        }
         let keywords_path = self.models_dir.join("kws/keywords.txt");
         if !keywords_path.exists() {
-            let mut fetched_keywords = false;
-            if let Some(ref m) = mirror {
-                if self
-                    .downloader
-                    .download_file_with_resume(m, "kws/keywords.txt", &keywords_path)
-                    .await
-                    .is_ok()
-                {
-                    fetched_keywords = true;
-                }
-            }
-            if !fetched_keywords {
-                if let Some(parent) = keywords_path.parent() {
-                    let _ = tokio::fs::create_dir_all(parent).await;
-                }
-                let _ = tokio::fs::write(&keywords_path, DEFAULT_KWS_KEYWORDS).await;
-            }
-        } else if let Ok(content) = tokio::fs::read_to_string(&keywords_path).await {
-            if !content.contains('\u{2581}') {
-                let _ = tokio::fs::write(&keywords_path, DEFAULT_KWS_KEYWORDS).await;
+            const DEFAULT: &str = "▁HE Y ▁F L OW Y :1.5 #0.15 @1\n";
+            if let Err(error) = tokio::fs::write(&keywords_path, DEFAULT).await {
+                self.set_state(ModelInstallState::Failed { reason: format!("configuration: kws/keywords.txt: {error}"), recoverable: true }).await;
+                return counts;
             }
         }
 
@@ -618,7 +774,42 @@ impl ModelManager {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
 
-        self.verify_files().await;
+        let verified = self.verify_files().await;
+        if verified.is_ready() {
+            // Clearing the confirmation is allowed only after the complete target
+            // group re-hashes successfully; otherwise a retry must keep following it.
+            for (relative, (hash, size)) in &kws_identities {
+                let target = self.models_dir.join(relative);
+                let size_matches = match size {
+                    Some(size) => tokio::fs::metadata(&target).await.map(|meta| meta.len()).ok() == Some(*size),
+                    None => true,
+                };
+                let hash_matches = crate::verifier::compute_file_sha256(&target)
+                    .await
+                    .ok()
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(hash));
+                if !size_matches || !hash_matches {
+                    self.set_state(ModelInstallState::Failed {
+                        reason: format!("verify: {relative}: KWS group is incomplete; rebuild confirmation retained"),
+                        recoverable: true,
+                    })
+                    .await;
+                    return counts;
+                }
+            }
+            let group = target_group.group_id.as_str();
+            let marker_path = self.models_dir.join("kws/.voice-suite-group");
+            if marker.trim() != group {
+                if let Err(error) = tokio::fs::write(&marker_path, format!("{group}\n")).await {
+                    self.set_state(ModelInstallState::Failed { reason: format!("configuration: KWS group marker: {error}"), recoverable: true }).await;
+                    return counts;
+                }
+            }
+            if let Err(error) = crate::intent::clear(&self.models_dir) {
+                self.set_state(ModelInstallState::Failed { reason: error, recoverable: true }).await;
+            }
+        }
+        counts
     }
 
     /// Deletes installed model files and reports what was actually removed.
@@ -655,7 +846,22 @@ impl ModelManager {
             targets.push(path.clone());
             targets.push(PathBuf::from(format!("{}.part", path.display())));
         }
+        for (rel, hash) in self.verifier.baseline_manifest() {
+            let target = self.models_dir.join(rel);
+            let size = crate::verifier::embedded_manifest().files.iter()
+                .find(|f| f.path == *rel && f.sha256 == *hash).map(|f| f.size).unwrap_or(0);
+            targets.extend(crate::downloader::transaction_paths(&target, hash, size));
+        }
+        for group in &crate::verifier::embedded_manifest().kws_groups {
+            for (relative, hash) in &group.files {
+                let size = crate::verifier::embedded_manifest().files.iter().find(|f| f.path == *relative && f.sha256 == *hash).map(|f| f.size).unwrap_or(0);
+                targets.extend(crate::downloader::transaction_paths(&self.models_dir.join(relative), hash, size));
+            }
+        }
         targets.push(self.models_dir.join("checksums.sha256"));
+        targets.push(self.models_dir.join("kws/.voice-suite-group"));
+        targets.push(self.models_dir.join(crate::intent::REBUILD_INTENT_REL));
+        targets.push(self.models_dir.join(crate::intent::REBUILD_INTENT_TMP_REL));
 
         for path in targets {
             if !path.exists() {
@@ -772,6 +978,67 @@ mod write_lease_tests {
             DirectoryWriteLease::acquire(&models).is_ok(),
             "the lease must be reusable after the first writer finishes"
         );
+    }
+
+    #[test]
+    fn lock_holder_parser_reads_pid_and_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".voice-suite-write.lock"),
+            "pid=4242 at_ms=123456789\n",
+        )
+        .unwrap();
+        assert_eq!(read_write_lease_holder(dir.path()), Some((4242, 123456789)));
+        assert_eq!(read_write_lease_holder(dir.path().join("missing").as_path()), None);
+    }
+
+    #[tokio::test]
+    async fn status_keeps_last_known_state_while_external_writer_holds_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelManager::new(dir.path());
+        manager.set_state(ModelInstallState::Ready { models_dir: dir.path().to_path_buf(), total_size_bytes: 0 }).await;
+        let lease = DirectoryWriteLease::acquire(dir.path()).unwrap();
+        // A transient cross-process read/write overlap must not surface as an
+        // install failure: the page keeps the last known state and the next
+        // poll re-verifies once the external writer releases the lease.
+        assert!(manager.get_status().await.state.is_ready());
+        assert!(manager.wait_for_completion().await.is_failed());
+        drop(lease);
+        assert_eq!(manager.get_status().await.state, ModelInstallState::NotInstalled);
+    }
+
+    #[tokio::test]
+    async fn completion_waits_past_ready_until_lease_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelManager::new(dir.path());
+        let lease = DirectoryWriteLease::acquire(dir.path()).unwrap();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let writer = manager.clone();
+        *manager.install_task.lock().await = Some(tokio::spawn(async move {
+            let _lease = lease;
+            writer.set_state(ModelInstallState::Ready { models_dir: writer.models_dir.clone(), total_size_bytes: 0 }).await;
+            let _ = release_rx.await;
+        }));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(80), manager.wait_for_completion()).await.is_err());
+        release_tx.send(()).unwrap();
+        assert!(manager.wait_for_completion().await.is_ready());
+        assert!(DirectoryWriteLease::acquire(dir.path()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn panic_and_remove_cancellation_do_not_leave_busy_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelManager::new(dir.path());
+        manager.set_state(ModelInstallState::ProbingSource).await;
+        *manager.install_task.lock().await = Some(tokio::spawn(async { panic!("injected writer panic") }));
+        assert!(manager.wait_for_completion().await.is_failed());
+        assert!(!manager.get_status().await.state.is_busy());
+        manager.set_state(ModelInstallState::ProbingSource).await;
+        *manager.install_task.lock().await = Some(tokio::spawn(std::future::pending()));
+        let waiter = manager.clone();
+        let waiting = tokio::spawn(async move { waiter.wait_for_completion().await });
+        manager.remove().await.unwrap();
+        assert_eq!(waiting.await.unwrap(), ModelInstallState::NotInstalled);
     }
 
     #[test]

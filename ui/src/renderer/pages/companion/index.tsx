@@ -12,6 +12,7 @@ import { tauriDragDrop } from '@/common/adapter/tauriDragDrop';
 import { tauriSystem } from '@/common/adapter/tauriSystem';
 import { tauriWindows } from '@/common/adapter/tauriWindows';
 import { openVoiceTask, startVoiceConversation, stopVoiceSession } from '@/common/adapter/voiceCompanion';
+import { buildVoiceSuiteNotice } from '@/renderer/services/voice/voiceSuiteNotice';
 import VoicePetInput from './VoicePetInput';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import type { ICompanionProfile, ICompanionSuggestion, IResponseMessage } from '@/common/adapter/ipcBridge';
@@ -2074,9 +2075,15 @@ const CompanionPage: React.FC = () => {
               {unread > 99 ? '99+' : unread}
             </button>
           )}
+          {/* The companion window paints itself through the click-through hit
+              set ([data-companion-hit]); a portal notification would be visible
+              but not clickable, so this window keeps the inline surface while
+              sharing the unified copy and reason mapping. */}
           <div className='nomi-companion-status-slot'>
             {(voiceStopFailed || (voiceEntryFailed && !voiceActive)) ? (
-              <p role='alert' className='nomi-companion-voice-error'>{t('voice.session.unavailable')}</p>
+              <p role='alert' className='nomi-companion-voice-error'>
+                {buildVoiceSuiteNotice({ kind: 'unavailable' }).content}
+              </p>
             ) : (
               <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
             )}

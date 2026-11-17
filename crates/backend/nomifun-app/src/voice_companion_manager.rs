@@ -394,16 +394,10 @@ impl Drop for SelfCheckFlight {
         });
     }
 }
-/// Upper bound for waiting for the model manager's background install/remove
-/// task before deciding whether the daemon can be restarted.
-const MODEL_WRITE_SETTLE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(30 * 60);
-
 /// Holds the host-side model-write gate. Dropping it re-opens call admission
 /// and restarts the daemon only when the user's enable intent is still valid.
 pub struct ModelWriteGuard {
     manager: std::sync::Weak<VoiceCompanionProcessManager>,
-    resume_daemon: bool,
     released: bool,
 }
 
@@ -411,7 +405,6 @@ impl std::fmt::Debug for ModelWriteGuard {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ModelWriteGuard")
-            .field("resume_daemon", &self.resume_daemon)
             .field("released", &self.released)
             .finish()
     }
@@ -426,34 +419,19 @@ impl Drop for ModelWriteGuard {
         let Some(manager) = self.manager.upgrade() else {
             return;
         };
-        if !self.resume_daemon {
-            manager.resource_write_active.store(false, Ordering::Release);
-            return;
-        }
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    // `/install` acknowledges the request before its background
-                    // download finishes. Keep the write gate closed until the
-                    // manager reaches a terminal state, otherwise start_child()
-                    // observes ProbingSource/Downloading and never retries.
-                    let settled = manager
-                        .models_manager
-                        .wait_until_settled(MODEL_WRITE_SETTLE_TIMEOUT)
-                        .await;
-                    if settled.is_busy() {
-                        warn!(
-                            state = ?settled,
-                            "voice_model_write_did_not_settle_before_daemon_resume"
-                        );
-                    } else if settled.is_ready() {
-                        if let Err(error) = manager.clone().resume_after_model_write().await {
-                            warn!(%error, "voice_daemon_restart_after_model_write_failed");
-                        }
-                    } else {
+                    // Ready may be published before the writer releases its lease.
+                    // Keep admission closed until the actual task has completed,
+                    // including when voice was disabled when installation began.
+                    let settled = manager.models_manager.wait_for_completion().await;
+                    if !settled.is_ready() {
                         info!(state = ?settled, "voice_model_write_finished_not_ready");
                     }
-                    manager.resource_write_active.store(false, Ordering::Release);
+                    if let Err(error) = manager.clone().resume_after_model_write(settled.is_ready()).await {
+                        warn!(%error, "voice_daemon_restart_after_model_write_failed");
+                    }
                 });
             }
             Err(error) => {
@@ -520,6 +498,8 @@ pub struct VoiceCompanionProcessManager {
     generation: AtomicU64,
     process_changed: Notify,
     shutdown_requested: AtomicBool,
+    // Lock order: lifecycle (when needed) -> call/start admission -> child.
+    // Model writes never acquire lifecycle while holding admission.
     call_start_lock: tokio::sync::Mutex<()>,
     handled_start_requests: std::sync::RwLock<std::collections::HashMap<String, HandledStartOutcome>>,
     viewed_conversation: RwLock<(u64, Option<String>)>,
@@ -734,9 +714,15 @@ impl VoiceCompanionProcessManager {
             VoiceCapabilityEvidence, VoiceCapabilityReport, VoiceCapabilityStatus,
             VoiceEngineSelfCheckResponse, VoiceTtsSelfCheckResponse,
         };
+        // Keep the caller-provided stage for the report log; `stage` itself is
+        // moved into the daemon request payload later in this function.
+        let check_stage = stage.clone().unwrap_or_default();
         let _guard = self.self_check_lock.try_lock().map_err(|_| "self_check_in_progress")?;
         {
             let _admission = self.call_start_lock.lock().await;
+            if self.resource_write_active.load(Ordering::Acquire) {
+                return Err("voice_resource_write_in_progress".into());
+            }
             if self.self_check_active.load(Ordering::Acquire) {
                 return Err("self_check_in_progress".into());
             }
@@ -1128,6 +1114,45 @@ impl VoiceCompanionProcessManager {
             },
         )
         .await;
+        let status_label = |value: &nomifun_api_types::voice::VoiceCapabilityEvidence| format!("{:?}", value.status);
+        let failed = [
+            ("capture", &report.capture),
+            ("kws", &report.kws),
+            ("vad", &report.vad),
+            ("asr", &report.asr),
+            ("llm", &report.llm),
+            ("tts", &report.tts),
+            ("playback", &report.playback),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !ready(value))
+        .map(|(name, value)| (name, status_label(value), value.reason_code.clone()))
+        .collect::<Vec<_>>();
+        info!(
+            include_llm,
+            stage = %check_stage,
+            can_start_full_call = report.can_start_full_call,
+            can_wake = report.can_wake,
+            can_transcribe = report.can_transcribe,
+            capture = %status_label(&report.capture),
+            kws = %status_label(&report.kws),
+            vad = %status_label(&report.vad),
+            asr = %status_label(&report.asr),
+            llm = %status_label(&report.llm),
+            tts = %status_label(&report.tts),
+            playback = %status_label(&report.playback),
+            "voice_self_check_report"
+        );
+        if !failed.is_empty() {
+            warn!(
+                include_llm,
+                stage = %check_stage,
+                can_start_full_call = report.can_start_full_call,
+                reason_code = report.reason_code.as_deref().unwrap_or(""),
+                failed = ?failed,
+                "voice_self_check_report_not_ready"
+            );
+        }
         Ok(report)
     }
 
@@ -1164,6 +1189,10 @@ impl VoiceCompanionProcessManager {
     /// Atomically closes call/task admission, verifies nothing owns the suite,
     /// then releases the daemon (and its native model handles) before a write.
     pub async fn begin_model_write(self: &Arc<Self>) -> Result<ModelWriteGuard, String> {
+        // Resume keeps the gate closed while holding admission through startup.
+        if self.resource_write_active.load(Ordering::Acquire) {
+            return Err("voice_resource_write_in_progress".into());
+        }
         let _call = self.call_start_lock.lock().await;
         if self.resource_write_active.load(Ordering::Acquire) {
             return Err("voice_resource_write_in_progress".into());
@@ -1176,9 +1205,6 @@ impl VoiceCompanionProcessManager {
         }
         self.resource_write_active.store(true, Ordering::Release);
         self.invalidate_capabilities();
-        let resume_daemon =
-            !self.shutdown_requested.load(Ordering::Acquire) && self.read_autostart_config();
-
         let released = {
             let mut child = self.child.lock().await;
             match child.take() {
@@ -1195,16 +1221,24 @@ impl VoiceCompanionProcessManager {
         self.disconnected();
         Ok(ModelWriteGuard {
             manager: Arc::downgrade(self),
-            resume_daemon,
             released: false,
         })
     }
 
-    async fn resume_after_model_write(self: Arc<Self>) -> Result<(), String> {
-        if self.shutdown_requested.load(Ordering::Acquire) || !self.read_autostart_config() {
-            return Ok(());
-        }
-        self.start_child(false).await
+    async fn resume_after_model_write(self: Arc<Self>, models_ready: bool) -> Result<(), String> {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        let admission = self.call_start_lock.lock().await;
+        // Only the completed writer may bypass its gate, under startup admission.
+        let result = if models_ready
+            && !self.shutdown_requested.load(Ordering::Acquire)
+            && self.read_autostart_config()
+        {
+            self.start_child_admitted(false, &admission).await
+        } else {
+            Ok(())
+        };
+        self.resource_write_active.store(false, Ordering::Release);
+        result
     }
 
     pub fn global() -> Option<Arc<Self>> {
@@ -3362,10 +3396,28 @@ impl VoiceCompanionProcessManager {
     pub async fn start(self: &Arc<Self>) -> Result<(), String> {
         self.shutdown_requested.store(false, Ordering::Release);
         self.reset_restart_budget();
-        self.start_child(true).await
+        // Preserve the enable intent; the model-write owner resumes after release.
+        match self.start_child(true).await {
+            Err(error) if error == "voice_resource_write_in_progress" => Ok(()),
+            result => result,
+        }
     }
 
     async fn start_child(self:&Arc<Self>, explicit:bool)->Result<(),String> {
+        let admission = self.call_start_lock.lock().await;
+        if self.resource_write_active.load(Ordering::Acquire) {
+            return Err("voice_resource_write_in_progress".into());
+        }
+        self.start_child_admitted(explicit, &admission).await
+    }
+
+    // The caller holds admission through spawn; resume alone bypasses the write gate
+    // after ModelWriteGuard has awaited the actual model task's completion.
+    async fn start_child_admitted(
+        self: &Arc<Self>,
+        explicit: bool,
+        _admission: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<(), String> {
         let mut lock = self.child.lock().await;
         if !explicit && (self.shutdown_requested.load(Ordering::Acquire) || !self.read_autostart_config()) {
             return Err("voice_stopped".into());

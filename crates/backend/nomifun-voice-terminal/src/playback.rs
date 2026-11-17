@@ -41,6 +41,8 @@ pub trait AudioSink: Send + Sync {
     fn is_available(&self) -> bool {
         true
     }
+    /// Optional background recovery hook for transient device failures.
+    fn ensure_ready(&self) {}
     async fn drain(&self) -> Result<(), AudioSinkError> {
         Ok(())
     }
@@ -48,43 +50,126 @@ pub trait AudioSink: Send + Sync {
     async fn flush(&self) -> Result<(), AudioSinkError>;
 }
 
+/// Backoff for reopening a speaker that keeps failing to open. A permanently
+/// missing device must not turn the audio loop into a hot retry loop: the first
+/// retry stays quick (the device is usually released within a second), later
+/// retries back off until they are rare enough to cost nothing.
+fn speaker_reopen_backoff(failures: u32) -> Duration {
+    match failures {
+        0 => Duration::from_secs(5),
+        1 => Duration::from_secs(15),
+        2 => Duration::from_secs(60),
+        _ => Duration::from_secs(300),
+    }
+}
+
 /// The production sink owns physical queue writes, cancellation and completion.
 pub struct PhysicalAudioSink {
-    speaker: Option<Arc<nomifun_audio::SpeakerAudioSink>>,
+    speaker: Arc<std::sync::Mutex<Option<Arc<nomifun_audio::SpeakerAudioSink>>>>,
+    last_reopen_attempt: std::sync::Mutex<Option<std::time::Instant>>,
+    reopening: Arc<std::sync::atomic::AtomicBool>,
+    reopen_failures: Arc<std::sync::atomic::AtomicU32>,
 }
 impl PhysicalAudioSink {
     pub fn open_default() -> Self {
-        match nomifun_audio::open_default_speaker() {
-            Ok(speaker) => Self {
-                speaker: Some(Arc::new(speaker)),
-            },
+        let speaker = match nomifun_audio::open_default_speaker() {
+            Ok(speaker) => Some(Arc::new(speaker)),
             Err(error) => {
                 tracing::warn!(error = %error, "voice_speaker_unavailable");
-                Self { speaker: None }
+                None
             }
+        };
+        Self {
+            speaker: Arc::new(std::sync::Mutex::new(speaker)),
+            last_reopen_attempt: std::sync::Mutex::new(None),
+            reopening: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reopen_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        }
+    }
+
+    fn current(&self) -> Option<Arc<nomifun_audio::SpeakerAudioSink>> {
+        self.speaker.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+
+    /// Reopen the physical speaker in the background after a transient startup
+    /// failure. Throttled, single-flight and backed off so the audio loop never
+    /// blocks and a permanently missing device stays cheap.
+    fn ensure_reopen(&self) {
+        if self.current().is_some() {
+            return;
+        }
+        let failures = self
+            .reopen_failures
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let interval = speaker_reopen_backoff(failures);
+        {
+            let mut last = self
+                .last_reopen_attempt
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if last.is_some_and(|instant| instant.elapsed() < interval) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        if self.reopening.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let holder = Arc::clone(&self.speaker);
+        let reopening = Arc::clone(&self.reopening);
+        let reopen_failures = Arc::clone(&self.reopen_failures);
+        let spawned = std::thread::Builder::new()
+            .name("nomifun-speaker-reopen".into())
+            .spawn(move || {
+                match nomifun_audio::open_default_speaker() {
+                    Ok(speaker) => {
+                        *holder.lock().unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(speaker));
+                        reopen_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!("voice_speaker_reopened");
+                    }
+                    Err(error) => {
+                        let failures = reopen_failures
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+                        tracing::warn!(
+                            error = %error,
+                            failures,
+                            retry_in_ms = speaker_reopen_backoff(failures).as_millis() as u64,
+                            "voice_speaker_reopen_failed"
+                        );
+                    }
+                }
+                reopening.store(false, std::sync::atomic::Ordering::Release);
+            });
+        if let Err(error) = spawned {
+            // Never leave the single-flight flag set when the thread could not
+            // be created, otherwise recovery stops for the rest of the process.
+            self.reopening
+                .store(false, std::sync::atomic::Ordering::Release);
+            tracing::warn!(error = %error, "voice_speaker_reopen_thread_failed");
         }
     }
 }
 #[async_trait]
 impl AudioSink for PhysicalAudioSink {
     fn has_pending_audio(&self) -> bool {
-        self.speaker.as_ref().is_some_and(|speaker| speaker.buffered_samples() > 0)
+        self.current().is_some_and(|speaker| speaker.buffered_samples() > 0)
     }
     fn is_available(&self) -> bool {
-        self.speaker
-            .as_ref()
-            .is_some_and(|speaker| speaker.is_ready())
+        self.current().is_some_and(|speaker| speaker.is_ready())
+    }
+    fn ensure_ready(&self) {
+        self.ensure_reopen();
     }
     async fn write_frame(&self, frame: Vec<u8>) -> Result<(), AudioSinkError> {
-        self.speaker
-            .as_ref()
+        self.current()
             .ok_or_else(|| AudioSinkError::Write("speaker_unavailable".into()))?
             .write_frame(frame)
             .await
             .map_err(AudioSinkError::Write)
     }
     async fn flush(&self) -> Result<(), AudioSinkError> {
-        if let Some(speaker) = &self.speaker {
+        if let Some(speaker) = self.current() {
             speaker.flush().await.map_err(AudioSinkError::Flush)?;
         }
         Ok(())
@@ -92,8 +177,7 @@ impl AudioSink for PhysicalAudioSink {
     async fn drain(&self) -> Result<(), AudioSinkError> {
         let start = std::time::Instant::now();
         let speaker = self
-            .speaker
-            .as_ref()
+            .current()
             .ok_or_else(|| AudioSinkError::Write("speaker_unavailable".into()))?;
         while speaker.buffered_samples() > 0 {
             if !speaker.is_ready() {
@@ -289,6 +373,9 @@ impl PlaybackPipeline {
         Ok(())
     }
     pub fn is_available(&self) -> bool {
+        // Retry a transient speaker failure in-process so the host does not
+        // have to restart the whole daemon.
+        self.sink.ensure_ready();
         self.sink.is_available()
     }
     pub fn new(sink: Arc<dyn AudioSink>) -> Self {
@@ -677,6 +764,18 @@ impl PlaybackPipeline {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn speaker_reopen_backoff_grows_then_caps() {
+        assert_eq!(speaker_reopen_backoff(0), Duration::from_secs(5));
+        assert_eq!(speaker_reopen_backoff(1), Duration::from_secs(15));
+        assert_eq!(speaker_reopen_backoff(2), Duration::from_secs(60));
+        assert_eq!(speaker_reopen_backoff(3), Duration::from_secs(300));
+        // A permanently missing device keeps the most conservative interval.
+        assert_eq!(speaker_reopen_backoff(u32::MAX), Duration::from_secs(300));
+    }
+
     #[derive(Default)]
     struct CountingSink {
         queued: std::sync::Mutex<usize>,

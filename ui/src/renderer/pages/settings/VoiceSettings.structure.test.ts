@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 
 const componentUrl = new URL('./VoiceSettings.tsx', import.meta.url);
+const syncUrl = new URL('./voiceModelSync.ts', import.meta.url);
 const navUrl = new URL('./components/settingsNavigation.ts', import.meta.url);
 const routerUrl = new URL('../../components/layout/Router.tsx', import.meta.url);
 
@@ -57,7 +58,8 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
   test('fetches real status from /api/voice/models/status', () => {
     const source = readFileSync(componentUrl, 'utf8');
 
-    expect(source).toContain('/api/voice/models/status');
+    expect(source).toContain('startVoiceModelSync');
+    expect(readFileSync(syncUrl, 'utf8')).toContain('/api/voice/models/status');
   });
 
   test('settings navigation includes voice in capabilities group with voice icon', () => {
@@ -80,8 +82,8 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
   test('T1-09: connects to /api/voice/models/progress SSE and triggers /install POST', () => {
     const source = readFileSync(componentUrl, 'utf8');
 
-    expect(source).toContain('/api/voice/models/progress');
-    expect(source).toContain('/api/voice/models/install');
+    expect(readFileSync(syncUrl, 'utf8')).toContain('/api/voice/models/progress');
+    expect(source).toContain("sync.operate('install', force, rebuildDefaultKws)");
   });
 
   test('T1-09: supports all visual states (Probing, Downloading, Verifying, Ready, Failed) with inline retry', () => {
@@ -134,8 +136,8 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(source).not.toContain('confirmRelease');
     expect(source).not.toContain('isConfirmingRelease');
     // Confirming still triggers DELETE /api/voice/models with DELETE auth headers
-    expect(source).toContain('/api/voice/models');
-    expect(source).toMatch(/DELETE/);
+    expect(source).toContain("sync.operate('delete')");
+    expect(readFileSync(syncUrl, 'utf8')).toContain("'DELETE'");
   });
 
   test('T2-08: prefers-reduced-motion disables transitions and scales instantaneously', () => {
@@ -151,10 +153,11 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
 
 test('install/delete render the backend receipt instead of a bare 2xx success', () => {
   const source = readFileSync(componentUrl, 'utf8');
-  expect(source).toContain('parseVoiceModelOperation');
-  expect(source).toContain('await response.text()');
+  const syncSource = readFileSync(syncUrl, 'utf8');
+  expect(syncSource).toContain('parseVoiceModelOperation');
+  expect(syncSource).toContain('await response.text()');
   expect(source).toContain('outcome.receipt');
-  expect(source).toContain('connectProgressStream');
+  expect(source).toContain('startVoiceModelSync');
   // The old unconditional 2xx rewrite must stay gone.
   expect(source).not.toMatch(/response\.ok\s*\|\|\s*response\.status === 202/);
 });
@@ -172,11 +175,27 @@ test('full-call readiness exposes an explicit check and repair path', () => {
 });
 test('enabling after the model download re-runs the silent readiness check', () => {
   const source = readFileSync(componentUrl, 'utf8');
-  // First-run order is install -> enable. The model-ready effect runs while the
-  // host still rejects prepare with voice_disabled, so the enable transition
-  // must be a dependency of the auto-check effect.
-  expect(source).toMatch(/modelStatus !== 'Ready'[\s\S]{0,80}!voiceEnabled/);
+  // First-run order is install -> enable. The trigger decision keeps the enable
+  // transition in its dependencies and only fires for a fresh pack, a missing
+  // report or a report that is not ready - never for a ready page visit.
+  expect(source).toContain('shouldAutoCheckVoiceCapabilities');
+  expect(source).toContain('becameReady');
+  expect(source).toContain('capabilitiesLoaded');
   expect(source).toContain('voiceSnapshot?.self_check_active');
+});
+
+test('voice pack install and repair live only in the capability card', () => {
+  const feedbackSource = readFileSync(new URL('./VoiceFeedbackSettings.tsx', import.meta.url), 'utf8');
+  // The preferences section must never grow its own install/repair entry: the
+  // capability card is the single place that downloads or repairs the pack.
+  expect(feedbackSource).not.toContain('onFixLocalVoice');
+  expect(feedbackSource).not.toContain('localVoiceRepair');
+  expect(feedbackSource).not.toContain('localVoiceDownload');
+  // All three dependent controls (wake input, wake switch, premium switch) go
+  // through the shared gate; a partial revert would leave one of them editable
+  // while the local pack is missing.
+  const gateUses = feedbackSource.match(/voicePreferenceControlsDisabled\(\{/g) ?? [];
+  expect(gateUses.length).toBeGreaterThanOrEqual(3);
 });
 
 test('first-call failure exposes an explicit prepare action', () => {

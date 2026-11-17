@@ -348,78 +348,27 @@ async fn test_modelscope_deterministic_404_does_not_retry() {
     assert_eq!(request_count.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
-async fn test_default_mirrors_order_matches_environment() {
-    // 1. Explicit global preference (ModelScope is primary authorized source, with official HF as first fallback)
-    let global_mirrors = MirrorConfig::mirrors_for_environment(false);
-    assert_eq!(global_mirrors[0].id, "modelscope");
-    assert_eq!(global_mirrors[1].id, "hf_official");
-    assert_eq!(global_mirrors[2].id, "hf_mirror");
-
-    // 2. Explicit China preference
-    let china_mirrors = MirrorConfig::mirrors_for_environment(true);
-    assert_eq!(china_mirrors[0].id, "modelscope");
-    assert_eq!(china_mirrors[1].id, "hf_mirror");
-    assert_eq!(china_mirrors[2].id, "hf_official");
-
-    assert!(!global_mirrors[0].is_fallback_cdn);
-    assert!(!china_mirrors[0].is_fallback_cdn);
-    assert!(china_mirrors[2].is_fallback_cdn);
-    assert!(global_mirrors[0].supports("kws/encoder.int8.onnx"));
-    assert!(!global_mirrors[1].supports("kws/encoder.int8.onnx"));
-}
-
 #[test]
-fn test_default_mirror_urls_match_verified_assets() {
-    let global_mirrors = MirrorConfig::mirrors_for_environment(false);
-    let hf_official = global_mirrors
-        .iter()
-        .find(|mirror| mirror.id == "hf_official")
-        .expect("hf official mirror");
-    assert!(hf_official
-        .probe_url
-        .as_deref()
-        .is_some_and(|url| url.contains("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt")));
-    assert!(hf_official
-        .resolve_url("asr/model.int8.onnx")
-        .contains("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx"));
-    assert!(hf_official
-        .resolve_url("vad/silero_vad.onnx")
-        .contains("csukuangfj/vad/resolve/main/silero_vad.onnx"));
-    assert!(!hf_official.supports("kws/encoder.int8.onnx"));
-
-    let hf_mirror = global_mirrors
-        .iter()
-        .find(|mirror| mirror.id == "hf_mirror")
-        .expect("hf mirror");
-    assert!(hf_mirror
-        .resolve_url("asr/tokens.txt")
-        .contains("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"));
-    assert!(!hf_mirror.supports("kws/encoder.int8.onnx"));
-    // espeak-ng-data lives under the same HF repo; the prefix rule must keep the
-    // repository path (not just the bare relative path) for lang/ files too.
-    for asset in [
-        "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
-        "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en",
-        "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/lang/gmw/en-US",
-    ] {
-        assert!(hf_mirror.supports(asset), "hf mirror must serve {asset}");
-        let url = hf_mirror.resolve_url(asset);
-        let expected = asset.trim_start_matches("tts/matcha-icefall-en_US-ljspeech/");
-        assert!(
-            url.contains(&format!("/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/{expected}")),
-            "unexpected url for {asset}: {url}"
-        );
+fn default_sources_are_verified_immutable_manifest_urls_in_every_environment() {
+    for china in [false, true] {
+        let mirrors = MirrorConfig::mirrors_for_environment(china);
+        assert_eq!(mirrors.len(), 2, "same-identity official fallback remains available");
+        let mirror = mirrors.iter().find(|m| m.id == "pinned").unwrap();
+        let fallback_mirror = mirrors.iter().find(|m| m.id == "pinned_fallback").unwrap();
+        assert_eq!(mirrors[0].id, if china { "pinned" } else { "pinned_fallback" });
+        for file in &nomifun_voice_models::verifier::embedded_manifest().files {
+            assert!(mirror.supports(&file.path));
+            assert_eq!(mirror.resolve_url(&file.path), *file.url.as_ref().unwrap());
+            assert!(mirror.resolve_url(&file.path).contains(file.revision.as_ref().unwrap()));
+            if let Some(fallback) = file.fallback_urls.first() {
+                assert!(fallback_mirror.supports(&file.path));
+                assert_eq!(fallback_mirror.resolve_url(&file.path), *fallback);
+                assert!(fallback.contains(file.revision.as_ref().unwrap()));
+            } else {
+                assert!(!fallback_mirror.supports(&file.path));
+            }
+        }
     }
-
-    let modelscope = global_mirrors
-        .iter()
-        .find(|mirror| mirror.id == "modelscope")
-        .expect("modelscope mirror");
-    assert!(modelscope.supports("kws/encoder.int8.onnx"));
-    assert!(modelscope
-        .resolve_url("kws/encoder.int8.onnx")
-        .contains("pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"));
 }
 
 #[tokio::test]

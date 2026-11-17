@@ -167,6 +167,133 @@ async fn unknown_total_206_body_must_match_its_content_range() {
 }
 
 #[tokio::test]
+async fn chunked_body_longer_than_trusted_size_preserves_old_target() {
+    let (url, server) = one_shot_server(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nHELLO\r\n5\r\nEXTRA\r\n0\r\n\r\n",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("asset.onnx");
+    std::fs::write(&target, b"old usable target").unwrap();
+    let desired = b"HELLO";
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ModelDownloader::new(vec![mirror_for(url)]).download_verified(
+            "asset.onnx",
+            &target,
+            &compute_sha256(desired),
+            Some(desired.len() as u64),
+        ),
+    )
+    .await
+    .expect("loopback download must finish");
+    let _ = server.await.unwrap();
+
+    assert!(result.is_err(), "a chunked body over the trusted size must fail closed");
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"old usable target",
+        "trusted-size violation must never touch the existing target"
+    );
+    let [staged, part, _] = nomifun_voice_models::downloader::transaction_paths(
+        &target,
+        &compute_sha256(desired),
+        desired.len() as u64,
+    );
+    for artifact in [staged, part] {
+        if artifact.exists() {
+            assert!(std::fs::metadata(&artifact).unwrap().len() <= desired.len() as u64);
+        }
+    }
+}
+
+#[tokio::test]
+async fn forged_content_length_above_trusted_size_is_rejected_without_writing() {
+    let (url, server) = one_shot_server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nHELLOEXTRA",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("asset.onnx");
+    std::fs::write(&target, b"old usable target").unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ModelDownloader::new(vec![mirror_for(url)]).download_verified(
+            "asset.onnx",
+            &target,
+            &compute_sha256(b"HELLO"),
+            Some(5),
+        ),
+    )
+    .await
+    .expect("loopback download must finish");
+    let _ = server.await.unwrap();
+
+    assert!(result.is_err(), "Content-Length above the trusted size must be rejected");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old usable target");
+}
+
+#[tokio::test]
+async fn content_length_below_trusted_size_is_rejected() {
+    let (url, server) = one_shot_server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHELLO",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("asset.onnx");
+    std::fs::write(&target, b"old usable target").unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ModelDownloader::new(vec![mirror_for(url)]).download_verified(
+            "asset.onnx",
+            &target,
+            &compute_sha256(b"HELLO!"),
+            Some(6),
+        ),
+    )
+    .await
+    .expect("loopback download must finish");
+    let _ = server.await.unwrap();
+
+    assert!(result.is_err(), "a body shorter than the trusted size must not become Ready");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old usable target");
+}
+
+#[tokio::test]
+async fn content_range_conflicting_with_trusted_size_preserves_old_target() {
+    let (url, server) = one_shot_server(
+        b"HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nContent-Range: bytes 4-8/20\r\nConnection: close\r\n\r\nHELLO",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("asset.onnx");
+    let desired = b"HELLOHELLO";
+    let [staged, part, _] = nomifun_voice_models::downloader::transaction_paths(
+        &target,
+        &compute_sha256(desired),
+        desired.len() as u64,
+    );
+    std::fs::write(&target, b"old usable target").unwrap();
+    std::fs::write(&part, b"HELL").unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ModelDownloader::new(vec![mirror_for(url)]).download_verified(
+            "asset.onnx",
+            &target,
+            &compute_sha256(desired),
+            Some(desired.len() as u64),
+        ),
+    )
+    .await
+    .expect("loopback download must finish");
+    let _ = server.await.unwrap();
+
+    assert!(result.is_err(), "a Content-Range total that conflicts with the trusted size must fail");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old usable target");
+    assert!(!staged.exists(), "no staged file may claim a conflicting total");
+}
+
+#[tokio::test]
 async fn unsatisfiable_range_rechecks_local_state_instead_of_trusting_min_size() {
     let (url, server) = one_shot_server(
         b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */6\r\nConnection: close\r\n\r\n",
