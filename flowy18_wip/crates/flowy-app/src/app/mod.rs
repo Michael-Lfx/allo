@@ -9,6 +9,7 @@ mod login;
 mod more;
 mod ota;
 mod settings;
+mod skills;
 mod state;
 
 use crate::i18n::{I18n, file_stamps};
@@ -30,7 +31,7 @@ use gpui_ce_elements::editable_text::{
 };
 use state::{
     AppearanceChrome, AuthState, FlexState, GalleryState, InviteState,
-    LegalDoc, LoginPhase, LoginStep, PersonaState, SettingsState,
+    LegalDoc, LoginPhase, LoginStep, PersonaState, SettingsState, SkillsState,
 };
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -68,6 +69,7 @@ pub struct FlowyApp {
     auth: AuthState,
     pub studio: Entity<StudioPanel>,
     gallery: GalleryState,
+    skills: SkillsState,
     pub ota: ota::OtaController,
     pub settings: SettingsState,
     pub invite: InviteState,
@@ -186,6 +188,7 @@ impl FlowyApp {
         let knowledge_body = text_field(cx);
         let font_size_field = text_field(cx);
         let flex_api_key = text_field(cx);
+        let skills_query = text_field(cx);
         place(&nickname, &saved.nickname, cx);
         place(&occupation, &saved.occupation, cx);
         place(&about, &saved.about, cx);
@@ -274,6 +277,9 @@ impl FlowyApp {
             cx.subscribe(&font_size_field, |app, _, _: &TextChanged, cx| {
                 app.touch_font_size(cx);
             }),
+            cx.subscribe(&skills_query, |_, _, _: &TextChanged, cx| {
+                cx.notify();
+            }),
             cx.subscribe(&studio, |app, _, event: &StudioEvent, cx| {
                 app.on_studio_event(event, cx);
             }),
@@ -306,6 +312,10 @@ impl FlowyApp {
                 page: 0,
                 idea_filter: gallery::Filter::All,
                 idea_note: false,
+            },
+            skills: SkillsState {
+                filter: skills::Category::All,
+                query: skills_query,
             },
             ota: ota::OtaController::new(),
             settings: SettingsState {
@@ -680,6 +690,7 @@ impl FlowyApp {
             .update(cx, flowy_studio::StudioPanel::reset_session);
         self.gallery.page = 0;
         self.gallery.idea_note = false;
+        self.skills.filter = skills::Category::All;
         self.ota.reset();
         cx.notify();
     }
@@ -1063,6 +1074,9 @@ impl Render for FlowyApp {
             }
             state::ActiveDialog::Idea(_) => {
                 root.child(self.idea_layer(window, cx))
+            }
+            state::ActiveDialog::Skill(_) => {
+                root.child(self.skill_layer(window, cx))
             }
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
             state::ActiveDialog::Flex => root.child(self.flex_layer(cx)),

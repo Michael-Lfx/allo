@@ -73,7 +73,7 @@ impl FlowyApp {
         page = if self.persona.page == Page::Personal {
             page.child(self.personal_canvas(cx))
         } else if self.persona.page == Page::Skills {
-            page.child(self.more_note("more.skills", "more.skills_body"))
+            page.child(self.skills_canvas(cx))
         } else {
             page.child(self.more_note("more.computer", "more.computer_body"))
         };

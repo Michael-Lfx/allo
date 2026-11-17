@@ -1,0 +1,13 @@
+---
+description: Flowy GPUI modal/card corner and layout rules
+globs: flowy18_wip/crates/flowy-app/**/*.rs, flowy18_wip/crates/flowy-studio/**/*.rs, flowy18_wip/crates/flowy-ui/**/*.rs
+alwaysApply: false
+---
+
+# GPUI UI consistency
+
+Follow `flowy18_wip/DESIGN.md`.
+
+Critical: GPUI `overflow_hidden` clips rectangles only, not corner radii. Opaque children that sit on a rounded edge must set matching `rounded_t` / `rounded_b` / `rounded_l` / `rounded_r` (modals use `theme.modal_radius()`).
+
+Popup shells use `flowy_ui::modal_layer` + `flowy_ui::dialog` + `modal_radius`. Do not invent one-off modal radii.

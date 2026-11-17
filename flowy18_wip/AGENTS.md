@@ -1,3 +1,5 @@
+UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面时必须遵守。架构细节见 [`docs/ui-system.zh.md`](docs/ui-system.zh.md)。
+
 | Crate | 职责 | 对外 |
 | ----------- | ------------------------- | ------------------ |
 | `flowy-net` | 代理 + Client 工厂 | 传输钩子 |

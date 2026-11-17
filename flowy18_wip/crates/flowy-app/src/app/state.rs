@@ -2,6 +2,7 @@ use super::gallery;
 use super::invite;
 use super::more;
 use super::settings;
+use super::skills;
 use crate::prefs::FlexProvider;
 use crate::session::Session;
 use gpui::{Entity, Task, WindowAppearance};
@@ -66,6 +67,11 @@ pub(super) struct GalleryState {
     pub(super) idea_note: bool,
 }
 
+pub(super) struct SkillsState {
+    pub(super) filter: skills::Category,
+    pub(super) query: Entity<EditableTextState>,
+}
+
 pub(super) struct SettingsState {
     pub(super) page: settings::Page,
     pub(super) picker: settings::Picker,
@@ -121,6 +127,7 @@ pub(super) enum ActiveDialog {
     Settings,
     Ideas,
     Idea(&'static str),
+    Skill(&'static str),
     Invite,
     Flex,
     Import,
@@ -135,6 +142,7 @@ impl ActiveDialog {
             Self::Settings => Some("settings"),
             Self::Ideas => Some("ideas"),
             Self::Idea(_) => Some("idea"),
+            Self::Skill(_) => Some("skill"),
             Self::Invite => Some("invite"),
             Self::Flex => Some("flex"),
             Self::Import => Some("import"),
@@ -144,6 +152,13 @@ impl ActiveDialog {
     }
     pub(super) const fn idea(self) -> Option<&'static str> {
         if let Self::Idea(id) = self {
+            Some(id)
+        } else {
+            None
+        }
+    }
+    pub(super) const fn skill(self) -> Option<&'static str> {
+        if let Self::Skill(id) = self {
             Some(id)
         } else {
             None
