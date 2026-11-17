@@ -149,6 +149,7 @@ import {
 } from './editResubmitRecovery';
 import { Alert, Button, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
+import { showVoiceSuiteNotice } from '@/renderer/services/voice/voiceSuiteNotice';
 import { Brain, Lightning, Shield } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -441,12 +442,12 @@ const NomiSendBox: React.FC<{
           if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
           if (!report.can_start_full_call) {
             discardPendingVoiceCallIntent(errorObj?.call_request_id);
-            const reason = report.reason_code
-              ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
-              : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
-            Message.warning(
-              `${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}${report.degraded_text_only ? ` ${t('voice.capabilities.textOnly')}` : ''}`
-            );
+            showVoiceSuiteNotice({
+              kind: 'not-ready',
+              reasonCode: report.reason_code ?? errorObj?.reason_code,
+              degradedTextOnly: report.degraded_text_only,
+              onOpenSettings: () => void navigate('/settings/voice'),
+            });
             return;
           }
           await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
@@ -455,17 +456,24 @@ const NomiSendBox: React.FC<{
           const failure = prepareError as { code?: string; message?: string };
           if (failure.code === 'voice_call_superseded') return;
           discardPendingVoiceCallIntent(errorObj?.call_request_id);
-          Message.error(
-            failure.code === 'models_not_installed'
-              ? t('voice.errors.modelMissing')
-              : failure.message || t('voice.capabilities.checkFailed'),
-          );
+          showVoiceSuiteNotice({
+            kind: failure.code === 'models_not_installed' ? 'not-installed' : 'prepare-failed',
+            reasonCode: failure.code,
+            detail: failure.message,
+            onOpenSettings: () => void navigate('/settings/voice'),
+          });
         }
       } else if (errorObj?.code === 'voice_suite_not_ready') {
-        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
-        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+        showVoiceSuiteNotice({
+          kind: 'not-ready',
+          reasonCode: errorObj.reason_code,
+          onOpenSettings: () => void navigate('/settings/voice'),
+        });
       } else {
-        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+        showVoiceSuiteNotice({
+          kind: 'start-failed',
+          onOpenSettings: () => void navigate('/settings/voice'),
+        });
       }
     } finally {
       if (mountedRef.current && lifecycleGenerationRef.current===generation) setIsVoiceConnecting(false);

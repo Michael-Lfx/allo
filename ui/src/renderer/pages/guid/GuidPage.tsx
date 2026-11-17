@@ -116,6 +116,7 @@ import { markLaunchInteractive } from '@/renderer/utils/analytics/launchTelemetr
 import { resolveGuidReadiness } from './readiness/guidReadiness';
 import { ConfigProvider } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
+import { showVoiceSuiteNotice } from '@/renderer/services/voice/voiceSuiteNotice';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -832,14 +833,15 @@ const GuidPage: React.FC = () => {
       return;
     }
     if (voicePrerequisite === 'unavailable') {
-      Message.warning(t('voice.entry.setupRequired'));
+      // The page navigates to settings right below; the notice only carries the
+      // reason, so do not also render a redundant "open settings" action.
+      showVoiceSuiteNotice({ kind: 'setup-required' });
       releaseGate();
       await navigate('/settings/voice');
       return;
     }
     if (voicePrerequisite === 'failed') {
-      const reason = voiceFailureReason ? t(`voice.capabilities.reason.${voiceFailureReason}`, { defaultValue: voiceFailureReason }) : '';
-      Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      showVoiceSuiteNotice({ kind: 'not-ready', reasonCode: voiceFailureReason });
       releaseGate();
       await navigate('/settings/voice');
       return;
@@ -860,12 +862,12 @@ const GuidPage: React.FC = () => {
           releaseGate();
           return;
         }
-        const failure = error as { code?: string };
-        Message.warning(
-          failure.code === 'models_not_installed'
-            ? t('voice.errors.modelMissing')
-            : t('voice.capabilities.notReady'),
-        );
+        const failure = error as { code?: string; message?: string };
+        showVoiceSuiteNotice({
+          kind: failure.code === 'models_not_installed' ? 'not-installed' : 'prepare-failed',
+          reasonCode: failure.code,
+          detail: failure.message,
+        });
         releaseGate();
         await navigate('/settings/voice');
         return;
@@ -926,12 +928,12 @@ const GuidPage: React.FC = () => {
           if (!isMountedRef.current) return;
           if (!report.can_start_full_call) {
             discardPendingVoiceCallIntent(errorObj?.call_request_id);
-            const reason = report.reason_code
-              ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
-              : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
-            Message.warning(
-              `${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}${report.degraded_text_only ? ` ${t('voice.capabilities.textOnly')}` : ''}`
-            );
+            showVoiceSuiteNotice({
+              kind: 'not-ready',
+              reasonCode: report.reason_code ?? errorObj?.reason_code,
+              degradedTextOnly: report.degraded_text_only,
+              onOpenSettings: () => void navigate('/settings/voice'),
+            });
             return;
           }
           const retry = await startVoiceCallIntent(target, sessionMode, localeKey);
@@ -942,17 +944,24 @@ const GuidPage: React.FC = () => {
           const failure = prepareError as { code?: string; message?: string };
           if (failure.code === 'voice_call_superseded') return;
           discardPendingVoiceCallIntent(errorObj?.call_request_id);
-          Message.error(
-            failure.code === 'models_not_installed'
-              ? t('voice.errors.modelMissing')
-              : failure.message || t('voice.capabilities.checkFailed'),
-          );
+          showVoiceSuiteNotice({
+            kind: failure.code === 'models_not_installed' ? 'not-installed' : 'prepare-failed',
+            reasonCode: failure.code,
+            detail: failure.message,
+            onOpenSettings: () => void navigate('/settings/voice'),
+          });
         }
       } else if (errorObj?.code === 'voice_suite_not_ready') {
-        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
-        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+        showVoiceSuiteNotice({
+          kind: 'not-ready',
+          reasonCode: errorObj.reason_code,
+          onOpenSettings: () => void navigate('/settings/voice'),
+        });
       } else {
-        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+        showVoiceSuiteNotice({
+          kind: 'start-failed',
+          onOpenSettings: () => void navigate('/settings/voice'),
+        });
       }
     } finally {
       inFlightVoiceCallRef.current = false;
