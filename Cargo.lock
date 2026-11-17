@@ -7522,6 +7522,8 @@ version = "1.0.8"
 dependencies = [
  "async-trait",
  "axum",
+ "chrono",
+ "dirs 6.0.0",
  "futures-util",
  "fuzzy-matcher",
  "nomi-agent-eval",
@@ -7547,6 +7549,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

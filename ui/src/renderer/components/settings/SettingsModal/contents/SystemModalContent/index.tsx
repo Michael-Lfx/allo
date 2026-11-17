@@ -172,6 +172,13 @@ const SystemModalContent: React.FC = () => {
   );
 
   const { data: systemInfo } = useSWR('system.dir.info', () => ipcBridge.application.systemInfo.invoke());
+  const desktop = isDesktopShell();
+  const {
+    data: legacyImport,
+    error: legacyImportError,
+    mutate: refreshLegacyImport,
+  } = useSWR(desktop ? 'system.legacy-import.preview' : null, () => ipcBridge.application.legacyImportPreview.invoke());
+  const [importingLegacy, setImportingLegacy] = useState(false);
   const { data: relocation, mutate: refreshRelocation } = useSWR(
     'system.work-dir.relocation',
     () => ipcBridge.application.workDirRelocation.get.invoke()
@@ -217,6 +224,47 @@ const SystemModalContent: React.FC = () => {
         setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
       });
   }, [systemInfo?.logDir]);
+
+  const handleLegacyImport = useCallback(() => {
+    modal.confirm({
+      title: t('settings.legacyImportConfirmTitle'),
+      content: t('settings.legacyImportConfirmBody'),
+      okText: legacyImport?.phase === 'frozen' ? t('settings.legacyImportResume') : t('settings.legacyImportAction'),
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        setImportingLegacy(true);
+        try {
+          const result = await ipcBridge.application.legacyImportExecute.invoke();
+          if (result.phase === 'absent') {
+            Message.info(t('settings.legacyImportEmpty'));
+          } else {
+            Message.success(
+              t('settings.legacyImportResult', {
+                conversations: result.conversationsImported,
+                documents: result.documentsImported,
+              })
+            );
+            if (result.failedCount > 0) {
+              Message.warning(t('settings.legacyImportFailedSome', { count: result.failedCount }));
+            }
+          }
+          await refreshLegacyImport();
+        } catch (caughtError: unknown) {
+          const text = caughtError instanceof Error ? caughtError.message : String(caughtError);
+          const message = text.includes('legacy_import_busy')
+            ? t('settings.legacyImportBusy')
+            : text.includes('legacy_import_completed')
+              ? t('settings.legacyImportCompleted')
+              : text;
+          Message.error(message);
+          await refreshLegacyImport();
+          throw caughtError;
+        } finally {
+          setImportingLegacy(false);
+        }
+      },
+    });
+  }, [legacyImport?.phase, modal, refreshLegacyImport, t]);
 
   useEffect(() => {
     if (!systemInfo) return;
@@ -419,6 +467,42 @@ const SystemModalContent: React.FC = () => {
         )}
         {error && <SettingsStatus tone='error' className='mt-8px'>{error} <FeedbackButton className='ml-6px' /></SettingsStatus>}
       </SettingsGroup>
+
+      {desktop && (legacyImportError || (legacyImport && (legacyImport.phase !== 'absent' || legacyImport.sourceFound))) && (
+        <SettingsGroup title={t('settings.legacyImportSection')}>
+          <SettingsList>
+            <SettingsRow
+              label={t('settings.legacyImportTitle')}
+              description={
+                legacyImportError
+                  ? t('settings.legacyImportUnavailable')
+                  : legacyImport?.phase === 'sealed'
+                    ? t('settings.legacyImportSealedDesc')
+                    : `${t('settings.legacyImportDesc')} ${t('settings.legacyImportCounts', {
+                        sessions: legacyImport?.sessionCount ?? 0,
+                        bases: legacyImport?.knowledgeBaseCount ?? 0,
+                        documents: legacyImport?.documentCount ?? 0,
+                      })}`
+              }
+              control={
+                <Button
+                  type='primary'
+                  loading={importingLegacy}
+                  disabled={legacyImport?.phase === 'sealed' || Boolean(legacyImportError)}
+                  onClick={handleLegacyImport}
+                >
+                  {legacyImport?.phase === 'sealed'
+                    ? t('settings.legacyImportDone')
+                    : legacyImport?.phase === 'frozen'
+                      ? t('settings.legacyImportResume')
+                      : t('settings.legacyImportAction')}
+                </Button>
+              }
+              controlLayout='actions'
+            />
+          </SettingsList>
+        </SettingsGroup>
+      )}
 
       {uiEnabled && (
         <SettingsGroup title={t('settings.sectionDeveloper')}>

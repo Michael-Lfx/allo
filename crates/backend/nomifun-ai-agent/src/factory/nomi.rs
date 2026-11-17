@@ -650,8 +650,33 @@ pub(super) async fn build(
 
     let resume_session = {
         let session_mgr = SessionManager::new(session_directory.clone(), 100);
-        match session_mgr.load(&ctx.conversation_id) {
-            Ok(mut session) => {
+        let loaded = match session_mgr.load(&ctx.conversation_id) {
+            Ok(session) => Some(session),
+            Err(error) => {
+                let seeded = crate::factory::flowyclaw_seed::materialize_import_seed(
+                    &session_mgr,
+                    &crate::factory::flowyclaw_seed::ImportSeedContext {
+                        data_dir: &deps.data_dir,
+                        conversation_id: &ctx.conversation_id,
+                        cwd: &ctx.workspace,
+                        provider: &fields.provider,
+                        model: &fields.model,
+                        owner_token: owner_token.as_deref().unwrap_or(""),
+                        conv_created_ms,
+                    },
+                );
+                if seeded.is_none() {
+                    debug!(
+                        conversation_id = %ctx.conversation_id,
+                        error = %error,
+                        "No current-generation nomi session found, starting fresh"
+                    );
+                }
+                seeded
+            }
+        };
+        match loaded {
+            Some(mut session) => {
                 // Drop orphaned assistant tool-calls left behind when the user
                 // pressed Stop mid-stream. Strict providers (Ollama-style,
                 // some OpenAI-compatible proxies) reject replayed assistants
@@ -685,14 +710,7 @@ pub(super) async fn build(
                 }
                 accepted
             }
-            Err(e) => {
-                debug!(
-                    conversation_id = %ctx.conversation_id,
-                    error = %e,
-                    "No current-generation nomi session found, starting fresh"
-                );
-                None
-            }
+            None => None,
         }
     };
 

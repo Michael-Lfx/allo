@@ -2435,6 +2435,111 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(TurnLifecycleTransition::Committed)
     }
 
+    async fn seal_imported_history(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        updated_at: TimestampMs,
+    ) -> Result<TurnLifecycleTransition, DbError> {
+        let mut tx = self.pool.begin().await?;
+        // The no-op write takes SQLite's lock before the idle check, so a
+        // turn cannot be admitted between validation and the status CAS.
+        let owned = sqlx::query(
+            "UPDATE conversations SET updated_at = updated_at \
+             WHERE conversation_id = ? AND user_id = ?",
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        if owned.rows_affected() == 0 {
+            return Err(DbError::NotFound("conversation".to_owned()));
+        }
+
+        let (status, epoch, active_operation_id, edit_fence): (
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT status, admission_epoch, active_turn_operation_id, \
+                    json_type(extra, '$._edit_resubmit_fence') \
+             FROM conversations WHERE conversation_id = ? AND user_id = ?",
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let accepted_turns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM conversation_delivery_receipts \
+             WHERE conversation_id = ? AND user_id = ? \
+               AND kind = 'turn' AND status = 'accepted'",
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let retained_attempt: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM conversation_execution_links \
+             WHERE conversation_id = ? AND relation = 'attempt')",
+        )
+        .bind(conversation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let idle = active_operation_id.is_none()
+            && edit_fence.is_none()
+            && accepted_turns == 0
+            && retained_attempt == 0;
+        if status == "finished" && idle {
+            tx.rollback().await?;
+            return Ok(TurnLifecycleTransition::AlreadyApplied);
+        }
+        if status != "pending" || !idle {
+            tx.rollback().await?;
+            return Ok(TurnLifecycleTransition::Stale);
+        }
+        if epoch == i64::MAX {
+            return Err(DbError::Conflict(
+                "imported Conversation admission epoch cannot advance".to_owned(),
+            ));
+        }
+
+        let sealed = sqlx::query(
+            "UPDATE conversations \
+             SET status = 'finished', admission_epoch = admission_epoch + 1, \
+                 updated_at = MAX(updated_at, ?) \
+             WHERE conversation_id = ? AND user_id = ? \
+               AND status = 'pending' AND active_turn_operation_id IS NULL \
+               AND json_type(extra, '$._edit_resubmit_fence') IS NULL \
+               AND admission_epoch = ? \
+               AND admission_epoch < 9223372036854775807 \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM conversation_delivery_receipts receipt \
+                    WHERE receipt.conversation_id = conversations.conversation_id \
+                      AND receipt.user_id = conversations.user_id \
+                      AND receipt.kind = 'turn' AND receipt.status = 'accepted' \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM conversation_execution_links execution_link \
+                    WHERE execution_link.conversation_id = conversations.conversation_id \
+                      AND execution_link.relation = 'attempt' \
+               )",
+        )
+        .bind(updated_at)
+        .bind(conversation_id)
+        .bind(user_id)
+        .bind(epoch)
+        .execute(&mut *tx)
+        .await?;
+        if sealed.rows_affected() != 1 {
+            return Err(DbError::Conflict(
+                "imported Conversation lifecycle changed while sealing history".to_owned(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(TurnLifecycleTransition::Committed)
+    }
+
     async fn claim_delivery_receipt(
         &self,
         user_id: &str,

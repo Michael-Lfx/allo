@@ -29,7 +29,12 @@ async-trait.workspace = true
 fuzzy-matcher.workspace = true
 futures-util.workspace = true
 sha2.workspace = true
+chrono.workspace = true
+dirs.workspace = true
 nomi-skills.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

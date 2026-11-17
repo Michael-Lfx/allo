@@ -682,6 +682,160 @@ async fn generic_update_allows_metadata_but_rejects_every_lifecycle_status_write
 }
 
 #[tokio::test]
+async fn seal_imported_history_finishes_an_idle_pending_conversation_once() {
+    let (repo, db) = setup().await;
+    let mut pending = make_conversation("import-seal");
+    pending.name = "Imported chat".to_owned();
+    pending.conversation_id = repo.create(&pending).await.unwrap();
+    let sealed_at = nomifun_common::now_ms();
+
+    assert_eq!(
+        repo.seal_imported_history(USER_ID, &pending.conversation_id, sealed_at)
+            .await
+            .unwrap(),
+        TurnLifecycleTransition::Committed
+    );
+    let sealed = repo.get(&pending.conversation_id).await.unwrap().unwrap();
+    assert_eq!(sealed.status.as_deref(), Some("finished"));
+    assert_eq!(sealed.name, "Imported chat");
+    assert_eq!(
+        repo.get_turn_admission_state(USER_ID, &pending.conversation_id)
+            .await
+            .unwrap()
+            .epoch,
+        1
+    );
+
+    assert_eq!(
+        repo.seal_imported_history(USER_ID, &pending.conversation_id, sealed_at + 1)
+            .await
+            .unwrap(),
+        TurnLifecycleTransition::AlreadyApplied
+    );
+    assert_eq!(
+        repo.get_turn_admission_state(USER_ID, &pending.conversation_id)
+            .await
+            .unwrap()
+            .epoch,
+        1,
+        "replaying an imported seal must not open another generation"
+    );
+
+    let mut already_finished = make_conversation("import-already-finished");
+    already_finished.status = Some("finished".to_owned());
+    already_finished.conversation_id = repo.create(&already_finished).await.unwrap();
+    assert_eq!(
+        repo.seal_imported_history(USER_ID, &already_finished.conversation_id, sealed_at)
+            .await
+            .unwrap(),
+        TurnLifecycleTransition::AlreadyApplied
+    );
+    assert_eq!(
+        repo.get_turn_admission_state(USER_ID, &already_finished.conversation_id)
+            .await
+            .unwrap()
+            .epoch,
+        0
+    );
+
+    let missing = repo
+        .seal_imported_history(
+            "0190f5fe-7c00-7a00-8000-000000000099",
+            &pending.conversation_id,
+            sealed_at,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, nomifun_db::DbError::NotFound(_)));
+
+    let mut running = make_conversation("import-running");
+    running.conversation_id = repo.create(&running).await.unwrap();
+    repo.claim_turn_delivery_receipt_and_admit(
+        USER_ID,
+        &running.conversation_id,
+        "turn:import-must-not-seal",
+        r#"{"content":"live"}"#,
+        0,
+        sealed_at,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.seal_imported_history(USER_ID, &running.conversation_id, sealed_at)
+            .await
+            .unwrap(),
+        TurnLifecycleTransition::Stale
+    );
+    assert_eq!(
+        repo.get(&running.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("running")
+    );
+
+    let mut reserved = make_conversation("import-accepted-receipt");
+    reserved.conversation_id = repo.create(&reserved).await.unwrap();
+    repo.claim_delivery_receipt_once(
+        USER_ID,
+        &reserved.conversation_id,
+        "turn:accepted-before-import-seal",
+        "turn",
+        "{}",
+        sealed_at,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        repo.seal_imported_history(USER_ID, &reserved.conversation_id, sealed_at)
+            .await
+            .unwrap(),
+        TurnLifecycleTransition::Stale
+    );
+    assert_eq!(
+        repo.get(&reserved.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("pending")
+    );
+
+    let mut saturated = make_conversation("import-epoch-max");
+    saturated.conversation_id = repo.create(&saturated).await.unwrap();
+    sqlx::query(
+        "UPDATE conversations SET admission_epoch = ? \
+         WHERE conversation_id = ? AND user_id = ?",
+    )
+    .bind(i64::MAX)
+    .bind(&saturated.conversation_id)
+    .bind(USER_ID)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let overflow = repo
+        .seal_imported_history(USER_ID, &saturated.conversation_id, sealed_at)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(overflow, nomifun_db::DbError::Conflict(ref message)
+            if message.contains("admission epoch cannot advance"))
+    );
+    assert_eq!(
+        repo.get(&saturated.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .as_deref(),
+        Some("pending")
+    );
+}
+
+#[tokio::test]
 async fn delete_conversation_cleans_up_messages() {
     let (repo, _db) = setup().await;
     let mut conv = make_conversation("cascade");

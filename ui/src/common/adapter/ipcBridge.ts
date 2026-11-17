@@ -1152,6 +1152,44 @@ export const application = {
   // on the next boot (see nomifun_common::factory_reset). Callers should relaunch
   // (application.restart) right after this resolves.
   factoryReset: httpPost<void, void>('/api/system/factory-reset'),
+  legacyImportPreview: withResponseMap(
+    httpGet<{
+      phase: 'absent' | 'frozen' | 'sealed';
+      source_found: boolean;
+      session_count: number;
+      knowledge_base_count: number;
+      document_count: number;
+      pending_count: number;
+      failed_count: number;
+    }>('/api/imports/flowyclaw/preview'),
+    (raw) => ({
+      phase: raw.phase,
+      sourceFound: raw.source_found,
+      sessionCount: raw.session_count,
+      knowledgeBaseCount: raw.knowledge_base_count,
+      documentCount: raw.document_count,
+      pendingCount: raw.pending_count,
+      failedCount: raw.failed_count,
+    })
+  ),
+  legacyImportExecute: withResponseMap(
+    httpPost<{
+      phase: 'absent' | 'frozen' | 'sealed';
+      conversations_imported: number;
+      messages_imported: number;
+      knowledge_bases_imported: number;
+      documents_imported: number;
+      failed_count: number;
+    }, void>('/api/imports/flowyclaw'),
+    (raw) => ({
+      phase: raw.phase,
+      conversationsImported: raw.conversations_imported,
+      messagesImported: raw.messages_imported,
+      knowledgeBasesImported: raw.knowledge_bases_imported,
+      documentsImported: raw.documents_imported,
+      failedCount: raw.failed_count,
+    })
+  ),
   // DEGRADE_STUB: Tauri v2 has no public JS API to toggle the webview devtools.
   openDevTools: stubShellProvider<boolean, void>(false),
   systemInfo: withResponseMap(

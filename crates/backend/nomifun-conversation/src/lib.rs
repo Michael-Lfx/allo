@@ -5,6 +5,7 @@ mod agent_execution_port;
 mod convert;
 mod execution_conversation_boundary;
 mod failover_seam;
+mod flowyclaw_import;
 mod message_persistence;
 mod orphan_recovery;
 pub mod model_failover;

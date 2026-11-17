@@ -9,7 +9,8 @@ use nomifun_api_types::{
     ForkConversationRequest,
     CodingTurnRollbackAvailability, CodingTurnRollbackResponse, ConfirmRequest, ConfirmationListResponse,
     ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse,
-    ConversationResponse, CreateConversationRequest, ListConversationsQuery, EditResubmitReceiptState,
+    ConversationResponse, CreateConversationRequest, LegacyImportPreview, LegacyImportReport,
+    ListConversationsQuery, EditResubmitReceiptState,
     EditResubmitStateResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse,
     SearchMessagesQuery, SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest,
     UpdateConversationRequest,
@@ -105,6 +106,8 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
         .route("/api/conversations/active-count", get(active_runtime_count))
         .route("/api/conversations/clone", post(clone))
         .route("/api/messages/search", get(search_messages))
+        .route("/api/imports/flowyclaw/preview", get(flowyclaw_import_preview))
+        .route("/api/imports/flowyclaw", post(flowyclaw_import_execute))
         .merge(crate::routes_trace::conversation_trace_routes())
         .with_state(state)
 }
@@ -834,6 +837,22 @@ async fn check_approval(
         )
         .await?;
     Ok(Json(ApiResponse::ok(result)))
+}
+
+async fn flowyclaw_import_preview(
+    State(state): State<ConversationRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<LegacyImportPreview>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.legacy_import_preview().await?)))
+}
+
+async fn flowyclaw_import_execute(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<LegacyImportReport>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.legacy_import_execute(&user.id).await?,
+    )))
 }
 
 async fn active_runtime_count(
