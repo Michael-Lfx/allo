@@ -77,7 +77,10 @@ mod tests {
     fn matches_basic_patterns() {
         assert!(glob_match("*.rs", "lib.rs"));
         assert!(!glob_match("*.rs", "lib.rs.bak"));
-        assert!(!glob_match("*.rs", "src/lib.rs"), "* must not cross separators");
+        assert!(
+            !glob_match("*.rs", "src/lib.rs"),
+            "* must not cross separators"
+        );
         assert!(glob_match("**/*.rs", "src/lib.rs"));
         assert!(glob_match("**/*.rs", "lib.rs"));
         assert!(glob_match("src/**", "src/a/b/c"));

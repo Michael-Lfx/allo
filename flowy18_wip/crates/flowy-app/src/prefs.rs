@@ -1,5 +1,5 @@
-use flowy_i18n::Locale;
 pub use flowy_agent::{FlexProvider, LlmConfig, Model, Plan};
+use flowy_i18n::Locale;
 pub use flowy_ui::{Accent, Density, ThemeMode};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -25,9 +25,6 @@ impl SendMode {
         }
     }
 }
-
-
-
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
@@ -138,11 +135,14 @@ impl Preferences {
 
     #[must_use]
     pub fn llm_config(&self) -> LlmConfig {
-        if self.model == Model::Flex && let Some(provider) = self.flex_provider {
-                let config = LlmConfig::from_flex(provider, self.flex_api_key.clone());
-                if config.uses_live() {
-                    return config;
-                }
+        if self.model == Model::Flex
+            && let Some(provider) = self.flex_provider
+        {
+            let config =
+                LlmConfig::from_flex(provider, self.flex_api_key.clone());
+            if config.uses_live() {
+                return config;
+            }
         }
         LlmConfig::from_env()
     }
@@ -181,11 +181,7 @@ impl Preferences {
         let flex_ready = file.flex_provider.is_some()
             && !file.flex_api_key.trim().is_empty();
         let model = if file.model == Model::Flex {
-            if flex_ready {
-                Model::Flex
-            } else {
-                Model::Lite
-            }
+            if flex_ready { Model::Flex } else { Model::Lite }
         } else if file.model.can_use(file.plan) {
             file.model
         } else {
@@ -252,7 +248,8 @@ impl Preferences {
             flex_provider: self.flex_provider,
             flex_api_key: self.flex_api_key.clone(),
         };
-        let bytes = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
+        let bytes =
+            serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
         crate::disk::commit(&root.join("preferences.json"), &bytes)
     }
 }
@@ -277,7 +274,9 @@ mod tests {
             let mut saved = file;
             saved.model_id = "cloud-selected".into();
             saved.model_account = "https://example.com/claw:42".into();
-            let restored: super::File = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+            let restored: super::File =
+                serde_json::from_str(&serde_json::to_string(&saved).unwrap())
+                    .unwrap();
             assert_eq!(restored.model_id, "cloud-selected");
             assert_eq!(restored.model_account, "https://example.com/claw:42");
             assert_eq!(restored.locale, "en");

@@ -28,7 +28,9 @@ pub struct Brand {
     pub logo_png: &'static [u8],
 }
 
-pub use autostart::{is_enabled as autostart_enabled, set_enabled as set_autostart};
+pub use autostart::{
+    is_enabled as autostart_enabled, set_enabled as set_autostart,
+};
 pub use deep_link::{DeepLink, parse as parse_deep_link, take_pending};
 pub use notify::{NotifyKind, show_update_notification};
 

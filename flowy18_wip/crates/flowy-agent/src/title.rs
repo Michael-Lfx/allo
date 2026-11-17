@@ -53,7 +53,10 @@ mod tests {
 
     #[test]
     fn fallback_takes_first_line() {
-        assert_eq!(fallback_title("  npm run build  \n more", 40), "npm run build");
+        assert_eq!(
+            fallback_title("  npm run build  \n more", 40),
+            "npm run build"
+        );
     }
 
     #[test]

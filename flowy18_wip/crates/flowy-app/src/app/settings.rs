@@ -1,12 +1,12 @@
 use super::FlowyApp;
 use crate::i18n::Locale;
 use crate::prefs::SendMode;
+use flowy_agent::Plan;
 use flowy_ui as theme;
 use gpui::{
-    ClipboardItem, Context, Pixels, SharedString, Size, Window, div, prelude::*,
-    px,
+    ClipboardItem, Context, Pixels, SharedString, Size, Window, div,
+    prelude::*, px,
 };
-use flowy_agent::Plan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
@@ -722,23 +722,21 @@ impl FlowyApp {
             .and_then(|session| session.user_id)
             .map(|id| id.to_string())
             .unwrap_or_else(|| "—".into());
-        div()
-            .flex_1()
-            .min_h_0()
-            .child(
-                div()
-                    .id("settings-account")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .px_8()
-                    .pt_4()
-                    .pb_8()
-                    .flex()
-                    .flex_col()
-                    .gap_6()
-                    .child(self.account_profile_row(&name, &initial, cx))
-                    .child(self.account_plan_card(cx))
-                    .child(self.account_info_row(
+        div().flex_1().min_h_0().child(
+            div()
+                .id("settings-account")
+                .size_full()
+                .overflow_y_scroll()
+                .px_8()
+                .pt_4()
+                .pb_8()
+                .flex()
+                .flex_col()
+                .gap_6()
+                .child(self.account_profile_row(&name, &initial, cx))
+                .child(self.account_plan_card(cx))
+                .child(
+                    self.account_info_row(
                         "settings.email",
                         email,
                         theme::Button::new(
@@ -752,8 +750,10 @@ impl FlowyApp {
                                 app.note("notice.account_change_later", cx);
                             }),
                         ),
-                    ))
-                    .child(self.account_info_row(
+                    ),
+                )
+                .child(
+                    self.account_info_row(
                         "settings.user_id",
                         user_id.clone(),
                         theme::Button::new(
@@ -770,8 +770,10 @@ impl FlowyApp {
                                 app.note("more.copied", cx);
                             }),
                         ),
-                    ))
-                    .child(self.account_action_row(
+                    ),
+                )
+                .child(
+                    self.account_action_row(
                         "settings.login_methods",
                         "settings.login_methods_help",
                         false,
@@ -786,8 +788,10 @@ impl FlowyApp {
                                 app.note("notice.account_manage_later", cx);
                             }),
                         ),
-                    ))
-                    .child(self.account_action_row(
+                    ),
+                )
+                .child(
+                    self.account_action_row(
                         "settings.connected_devices",
                         "settings.connected_devices_help",
                         false,
@@ -802,14 +806,15 @@ impl FlowyApp {
                                 app.note("notice.account_manage_later", cx);
                             }),
                         ),
-                    ))
-                    .child(self.account_action_row(
-                        "settings.delete_account",
-                        "settings.delete_account_help",
-                        true,
-                        self.account_delete_button(cx),
-                    )),
-            )
+                    ),
+                )
+                .child(self.account_action_row(
+                    "settings.delete_account",
+                    "settings.delete_account_help",
+                    true,
+                    self.account_delete_button(cx),
+                )),
+        )
     }
 
     fn account_profile_row(
@@ -1034,7 +1039,9 @@ impl FlowyApp {
                     .child(
                         div()
                             .text_size(self.theme.body_size())
-                            .when(danger, |el| el.text_color(self.theme.danger()))
+                            .when(danger, |el| {
+                                el.text_color(self.theme.danger())
+                            })
                             .child(self.t(title_key)),
                     )
                     .child(

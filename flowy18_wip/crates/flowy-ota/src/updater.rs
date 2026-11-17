@@ -93,8 +93,7 @@ impl Updater {
     pub fn check(&self) -> Result<Option<AvailableUpdate>, UpdateError> {
         let channel = mirrors::host_channel();
         let bucket = mirrors::region_bucket(None, self.locale.as_deref());
-        let endpoints =
-            mirrors::check_endpoints(&self.config, bucket, channel);
+        let endpoints = mirrors::check_endpoints(&self.config, bucket, channel);
         let mut last_error = None;
         for endpoint in endpoints {
             match self.fetch_manifest(&endpoint) {

@@ -73,7 +73,9 @@ impl SessionIndex {
         let path = Self::path(root);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
             Err(error) => return Err(error),
         };
         serde_json::from_slice(&bytes)
@@ -85,7 +87,8 @@ impl SessionIndex {
         let dir = root.join("sessions");
         fs::create_dir_all(&dir)?;
         let path = Self::path(root);
-        let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
+        let bytes =
+            serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
         let (tmp, mut file) = loop {
             let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             let tmp = dir.join(format!(
@@ -99,7 +102,9 @@ impl SessionIndex {
                 .open(&tmp)
             {
                 Ok(file) => break (tmp, file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    continue;
+                }
                 Err(error) => return Err(error),
             }
         };
@@ -116,12 +121,15 @@ impl SessionIndex {
     }
 
     pub fn upsert(&mut self, record: SessionRecord) {
-        if let Some(slot) = self.sessions.iter_mut().find(|row| row.id == record.id) {
+        if let Some(slot) =
+            self.sessions.iter_mut().find(|row| row.id == record.id)
+        {
             *slot = record;
         } else {
             self.sessions.push(record);
         }
-        self.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        self.sessions
+            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     }
 
     pub fn get(&self, id: &str) -> Option<&SessionRecord> {
@@ -190,7 +198,8 @@ mod tests {
                         id: "call-1".into(),
                         name: "read_file".into(),
                         // Exact raw argument string must survive a round trip.
-                        arguments: r#"{"path":"config/app.json","limit":10}"#.into(),
+                        arguments: r#"{"path":"config/app.json","limit":10}"#
+                            .into(),
                     },
                 ],
                 source: MessageSource::Model {

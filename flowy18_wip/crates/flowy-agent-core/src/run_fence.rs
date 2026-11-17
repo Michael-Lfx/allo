@@ -89,7 +89,8 @@ impl RunFence {
         if active.is_some() {
             return None;
         }
-        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation =
+            self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let signal = CancelToken::new();
         *active = Some((generation, signal.clone()));
         self.current.store(generation, Ordering::SeqCst);

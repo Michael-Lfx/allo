@@ -19,14 +19,21 @@ pub struct ProviderCatalog {
 
 impl Default for ProviderCatalog {
     fn default() -> Self {
-        Self { provider: "flowy".into(), models: Vec::new(), selected: None }
+        Self {
+            provider: "flowy".into(),
+            models: Vec::new(),
+            selected: None,
+        }
     }
 }
 
 impl ProviderCatalog {
     #[must_use]
     pub fn new() -> Self {
-        Self { provider: "flowy".to_owned(), ..Self::default() }
+        Self {
+            provider: "flowy".to_owned(),
+            ..Self::default()
+        }
     }
 
     pub fn replace(&mut self, models: Vec<CatalogModel>) {
@@ -34,14 +41,23 @@ impl ProviderCatalog {
         self.selected = self.selected_model_id().map(str::to_owned);
     }
 
-    pub fn refresh<E>(&mut self, result: Result<Vec<CatalogModel>, E>) -> Result<(), E> {
+    pub fn refresh<E>(
+        &mut self,
+        result: Result<Vec<CatalogModel>, E>,
+    ) -> Result<(), E> {
         self.replace(result?);
         Ok(())
     }
 
-    pub fn select(&mut self, requested: impl Into<String>) -> Option<&CatalogModel> {
+    pub fn select(
+        &mut self,
+        requested: impl Into<String>,
+    ) -> Option<&CatalogModel> {
         let requested = requested.into();
-        self.selected = self.models.iter().find(|model| model.id == requested)
+        self.selected = self
+            .models
+            .iter()
+            .find(|model| model.id == requested)
             .map(|model| model.id.clone())
             .or_else(|| self.models.first().map(|model| model.id.clone()));
         self.selected_model()
@@ -50,7 +66,8 @@ impl ProviderCatalog {
     #[must_use]
     pub fn selected_model(&self) -> Option<&CatalogModel> {
         let selected = self.selected.as_deref();
-        selected.and_then(|id| self.models.iter().find(|model| model.id == id))
+        selected
+            .and_then(|id| self.models.iter().find(|model| model.id == id))
             .or_else(|| self.models.first())
     }
 
@@ -65,8 +82,16 @@ mod tests {
 
     fn models() -> Vec<CatalogModel> {
         vec![
-            CatalogModel { id: "first".into(), name: "First".into(), ..Default::default() },
-            CatalogModel { id: "second".into(), name: "Second".into(), ..Default::default() },
+            CatalogModel {
+                id: "first".into(),
+                name: "First".into(),
+                ..Default::default()
+            },
+            CatalogModel {
+                id: "second".into(),
+                name: "Second".into(),
+                ..Default::default()
+            },
         ]
     }
 

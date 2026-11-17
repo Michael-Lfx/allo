@@ -21,6 +21,7 @@ pub use session::{SessionIndex, SessionRecord, TurnState};
 pub use transport::{echo_stream_fn, openai_stream_fn};
 
 pub use types::{
-    CancelToken, ContentBlock, Message, MessageId, MessageSource, Role, TodoItem, TodoSink,
-    TodoStatus, ToolCallArgs, ToolExecutionResult, ToolRunContext, ToolSchema,
+    CancelToken, ContentBlock, Message, MessageId, MessageSource, Role,
+    TodoItem, TodoSink, TodoStatus, ToolCallArgs, ToolExecutionResult,
+    ToolRunContext, ToolSchema,
 };

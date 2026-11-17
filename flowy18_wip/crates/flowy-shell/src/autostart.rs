@@ -89,7 +89,10 @@ fn launch_body() -> Result<String, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        Ok(format!("@echo off\r\nstart \"\" \"{}\"\r\n", exe.replace('"', "")))
+        Ok(format!(
+            "@echo off\r\nstart \"\" \"{}\"\r\n",
+            exe.replace('"', "")
+        ))
     }
     #[cfg(not(any(
         target_os = "macos",

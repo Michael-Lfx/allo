@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::types::{ToolCallArgs, ToolExecutionResult, ToolRunContext, ToolSchema};
+use crate::types::{
+    ToolCallArgs, ToolExecutionResult, ToolRunContext, ToolSchema,
+};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -21,8 +23,11 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema object for the arguments.
     pub parameters: Value,
-    pub execute:
-        Arc<dyn Fn(ToolCallArgs, ToolRunContext) -> BoxFuture<ToolExecutionResult> + Send + Sync>,
+    pub execute: Arc<
+        dyn Fn(ToolCallArgs, ToolRunContext) -> BoxFuture<ToolExecutionResult>
+            + Send
+            + Sync,
+    >,
     pub is_concurrency_safe: bool,
 }
 
@@ -40,10 +45,13 @@ impl ToolDefinition {
         name: impl Into<String>,
         description: impl Into<String>,
         parameters: Value,
-        execute: impl Fn(ToolCallArgs, ToolRunContext) -> BoxFuture<ToolExecutionResult>
-            + Send
-            + Sync
-            + 'static,
+        execute: impl Fn(
+            ToolCallArgs,
+            ToolRunContext,
+        ) -> BoxFuture<ToolExecutionResult>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             name: name.into(),
@@ -77,7 +85,8 @@ pub enum ToolPolicyDecision {
 }
 
 /// Host policy hook. `None` means "no policy configured: allow".
-pub type ToolPolicy = Arc<dyn Fn(&ToolCallArgs) -> ToolPolicyDecision + Send + Sync>;
+pub type ToolPolicy =
+    Arc<dyn Fn(&ToolCallArgs) -> ToolPolicyDecision + Send + Sync>;
 
 struct Inner {
     tools: Mutex<HashMap<String, Arc<ToolDefinition>>>,
@@ -152,7 +161,8 @@ impl ToolRegistry {
 
     #[must_use]
     pub fn list(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.inner.tools.lock().unwrap().keys().cloned().collect();
+        let mut names: Vec<String> =
+            self.inner.tools.lock().unwrap().keys().cloned().collect();
         names.sort();
         names
     }
@@ -192,7 +202,10 @@ impl ToolRegistry {
                 return ToolExecutionResult::error("DENIED", reason);
             }
             Some(ToolPolicyDecision::ApprovalRequired) => {
-                return ToolExecutionResult::error("APPROVAL", "tool call requires approval");
+                return ToolExecutionResult::error(
+                    "APPROVAL",
+                    "tool call requires approval",
+                );
             }
         }
 
@@ -204,7 +217,10 @@ impl ToolRegistry {
         }
 
         if run_ctx.signal.is_cancelled() {
-            return ToolExecutionResult::error("CANCELLED", "tool call cancelled before start");
+            return ToolExecutionResult::error(
+                "CANCELLED",
+                "tool call cancelled before start",
+            );
         }
 
         (tool.execute)(args, run_ctx).await
@@ -213,13 +229,13 @@ impl ToolRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ToolDefinition, ToolPolicyDecision, ToolRegistry,
+    use super::{ToolDefinition, ToolPolicyDecision, ToolRegistry};
+    use crate::types::{
+        ContentBlock, ToolCallArgs, ToolExecutionResult, ToolRunContext,
     };
-    use crate::types::{ContentBlock, ToolCallArgs, ToolExecutionResult, ToolRunContext};
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn echo_tool(executed: Arc<AtomicBool>) -> Arc<ToolDefinition> {
         Arc::new(ToolDefinition::new(
@@ -230,7 +246,10 @@ mod tests {
                 let executed = executed.clone();
                 Box::pin(async move {
                     executed.store(true, Ordering::SeqCst);
-                    let text = args.arguments["text"].as_str().unwrap_or_default().to_owned();
+                    let text = args.arguments["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
                     ToolExecutionResult::success_text(text, args.arguments)
                 })
             },
@@ -274,7 +293,12 @@ mod tests {
             (args.arguments["text"] == "secret").then(|| "blocked".to_owned())
         }));
         let result = registry
-            .execute("call-2".into(), "echo".into(), json!({"text":"secret"}), ctx())
+            .execute(
+                "call-2".into(),
+                "echo".into(),
+                json!({"text":"secret"}),
+                ctx(),
+            )
             .await;
         assert!(result.is_error());
         assert!(!executed.load(Ordering::SeqCst));
@@ -288,7 +312,12 @@ mod tests {
         let cancelled = ctx();
         cancelled.signal.cancel();
         let result = registry
-            .execute("call-3".into(), "echo".into(), json!({"text":"x"}), cancelled)
+            .execute(
+                "call-3".into(),
+                "echo".into(),
+                json!({"text":"x"}),
+                cancelled,
+            )
             .await;
         assert!(result.is_error());
         assert!(!executed.load(Ordering::SeqCst));
@@ -297,8 +326,12 @@ mod tests {
             .execute("call-4".into(), "missing".into(), json!({}), ctx())
             .await;
         match missing {
-            ToolExecutionResult::Error { code, .. } => assert_eq!(code, "UNKNOWN_TOOL"),
-            ToolExecutionResult::Success { .. } => panic!("unknown tool must not succeed"),
+            ToolExecutionResult::Error { code, .. } => {
+                assert_eq!(code, "UNKNOWN_TOOL")
+            }
+            ToolExecutionResult::Success { .. } => {
+                panic!("unknown tool must not succeed")
+            }
         }
     }
 
@@ -308,7 +341,12 @@ mod tests {
         let registry = ToolRegistry::new();
         registry.register(echo_tool(executed.clone()));
         let result = registry
-            .execute("call-5".into(), "echo".into(), json!({"text":"hello"}), ctx())
+            .execute(
+                "call-5".into(),
+                "echo".into(),
+                json!({"text":"hello"}),
+                ctx(),
+            )
             .await;
         assert_eq!(
             result.content(),

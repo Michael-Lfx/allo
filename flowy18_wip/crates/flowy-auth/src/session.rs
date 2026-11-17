@@ -101,8 +101,8 @@ mod tests {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let root =
-            std::env::temp_dir().join(format!("flowy-auth-session-{nanos}-{id}"));
+        let root = std::env::temp_dir()
+            .join(format!("flowy-auth-session-{nanos}-{id}"));
         let _ = std::fs::remove_dir_all(&root);
         SessionStore::new(root)
     }

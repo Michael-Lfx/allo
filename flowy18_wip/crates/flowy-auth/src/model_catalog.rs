@@ -42,7 +42,9 @@ struct RawCloudModel {
     extra: Value,
 }
 
-pub fn parse_available_models(value: &Value) -> Result<AvailableModels, AuthError> {
+pub fn parse_available_models(
+    value: &Value,
+) -> Result<AvailableModels, AuthError> {
     let raw: RawAvailableModels = serde_json::from_value(value.clone())
         .map_err(|_| AuthError::Server("model catalog decode failed".into()))?;
     let cloud = raw
@@ -62,7 +64,10 @@ pub fn parse_available_models(value: &Value) -> Result<AvailableModels, AuthErro
         .filter(|model| !model.id.trim().is_empty())
         .collect::<Vec<_>>();
     let mut seen = std::collections::HashSet::new();
-    let cloud = cloud.into_iter().filter(|model| seen.insert(model.id.clone())).collect();
+    let cloud = cloud
+        .into_iter()
+        .filter(|model| seen.insert(model.id.clone()))
+        .collect();
     Ok(AvailableModels {
         cloud,
         effective_model_tier: raw.effective_model_tier,
@@ -122,7 +127,12 @@ mod tests {
     fn missing_cloud_is_not_a_successful_empty_snapshot() {
         assert!(parse_available_models(&json!({"auto": []})).is_err());
         assert!(parse_available_models(&json!({"cloud": null})).is_err());
-        assert!(parse_available_models(&json!({"cloud": []})).unwrap().cloud.is_empty());
+        assert!(
+            parse_available_models(&json!({"cloud": []}))
+                .unwrap()
+                .cloud
+                .is_empty()
+        );
     }
 
     #[test]

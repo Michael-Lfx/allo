@@ -18,9 +18,9 @@ pub fn enqueue(urls: Vec<String>) {
 }
 
 pub fn take_pending() -> Vec<String> {
-    PENDING.lock().map_or_else(|_| Vec::new(), |mut guard| {
-        std::mem::take(&mut *guard)
-    })
+    PENDING
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut guard| std::mem::take(&mut *guard))
 }
 
 pub fn parse(url: &str) -> Option<DeepLink> {

@@ -6,16 +6,16 @@
 mod client;
 mod config;
 mod error;
-mod session;
 mod model_catalog;
+mod session;
 
 pub use client::{
-    AuthClient, UserProfile, display_name_from_email, normalize_email, normalize_otp,
-    valid_email,
+    AuthClient, UserProfile, display_name_from_email, normalize_email,
+    normalize_otp, valid_email,
 };
 pub use config::{
-    Config, DEFAULT_APP, DEFAULT_BASE_URL, DEFAULT_CHANNEL, EMAIL_OTP_COOLDOWN_SECS,
-    EMAIL_OTP_LENGTH,
+    Config, DEFAULT_APP, DEFAULT_BASE_URL, DEFAULT_CHANNEL,
+    EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
 };
 pub use error::AuthError;
 pub use model_catalog::{AvailableModels, CloudModel, parse_available_models};

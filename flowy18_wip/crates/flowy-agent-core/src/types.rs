@@ -51,7 +51,10 @@ impl CancelToken {
     }
 
     /// Run `fut` until the token fires; `None` means cancelled first.
-    pub async fn race<T>(&self, fut: impl std::future::Future<Output = T>) -> Option<T> {
+    pub async fn race<T>(
+        &self,
+        fut: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
         tokio::select! {
             () = self.cancelled() => None,
             value = fut => Some(value),
@@ -138,7 +141,10 @@ pub struct Message {
 impl Message {
     #[must_use]
     pub fn text(&self) -> String {
-        self.content.iter().filter_map(ContentBlock::as_text).collect()
+        self.content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .collect()
     }
 }
 
@@ -185,7 +191,8 @@ impl ToolExecutionResult {
     }
 
     pub fn success_value(value: Value) -> Self {
-        let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+        let text = serde_json::to_string_pretty(&value)
+            .unwrap_or_else(|_| value.to_string());
         ToolExecutionResult::success_text(text, value)
     }
 
