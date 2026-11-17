@@ -116,6 +116,8 @@ error occurred in cc-rs: command did not execute successfully ... "cl.exe" ... -
   与 `cargo check -p flowy-app --locked`（7m29s，含 `cc`/`ring`/`gpui`），**均未复现 D8050**。
   结论：当前机器 + Rust 1.100 工具链下默认配置可用，workaround 仍保留在本文件备用，
   但不应固化为仓库默认；换机器或 VS 升级后若复现，按上面的方式 B 处理。
+  复测命令：`CARGO_TARGET_DIR=<repo>/flowy18_wip/build-test/d8050-target cargo check -p flowy-app --locked`
+  （注意：仓库若配置了 `[build] build-dir`，实际产物仍可能落在共享 build 目录，不要据此判断隔离成功）。
 - 副作用：第三方依赖无调试信息；切换 profile 会触发一次重编。
 
 ## 四、运行测试
@@ -134,7 +136,8 @@ cargo test -p flowy-app -- --test-threads=1
 > `$TEMP` 在赋值前展开，`TMP` 仍是旧的用户 Temp，测试目录会落到 `C:\Users\...\Temp`
 > 并被当前沙箱拒绝（表现为 `PermissionDenied (os error 5)`）。务必分两条 export。
 
-2. 本次最终结果：`flowy-app` 共 21 个测试，**21 passed / 0 failed**；
+2. 2026-11-17 记录：`flowy-app` 共 21 个测试，**21 passed / 0 failed**
+   （2026-11-18 收尾分支新增 1 个刷新门禁测试后为 22 passed）；
    其中 `failed_new_task_is_not_hidden_by_navigation` 已按
    [session-index-storage-error-test.md](session-index-storage-error-test.md) 重写为
    「隔离损坏索引 + 从 history 重建 + 导航不清提示」的断言，不再依赖旧磁盘状态。

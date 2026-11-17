@@ -103,6 +103,7 @@ pub async fn run_turn(
             history.push(converted);
         }
     }
+    let history = repair_tool_call_history(history);
     let context = AgentContext {
         system_prompt: request.system,
         messages: history,
@@ -261,6 +262,81 @@ pub fn to_agent_message(
     }
 }
 
+/// Text recorded for a tool call whose result never made it to disk.
+const RECOVERY_TOOL_RESULT: &str = concat!(
+    "Tool call was interrupted before its result was persisted. ",
+    "The tool was not re-executed during session recovery."
+);
+
+/// Repair tool-call pairing before history reaches the provider.
+///
+/// Stored history can be truncated mid-turn or predate the current schema, and
+/// strict OpenAI-compatible gateways reject both orphaned tool results and
+/// unanswered tool calls. Keep matching results next to their assistant, drop
+/// unmatched results, and synthesize an error result for a call that never
+/// recorded one (same policy as the pi harness repair).
+fn repair_tool_call_history(
+    history: Vec<AgentMessage>,
+) -> Vec<AgentMessage> {
+    let mut input = history.into_iter().peekable();
+    let mut repaired: Vec<AgentMessage> = Vec::new();
+    while let Some(message) = input.next() {
+        let AgentMessage::Assistant(assistant) = &message else {
+            // A tool result never matched a call: providers reject it.
+            if !matches!(message, AgentMessage::ToolResult(_)) {
+                repaired.push(message);
+            }
+            continue;
+        };
+        let timestamp = assistant.timestamp;
+        let mut pending: Vec<(String, String)> = assistant
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                Content::ToolCall(call) => {
+                    Some((call.id.clone(), call.name.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        repaired.push(message);
+        let mut interleaved = Vec::new();
+        while input
+            .peek()
+            .is_some_and(|message| !matches!(message, AgentMessage::Assistant(_)))
+        {
+            let message = input.next().expect("peeked message");
+            if let AgentMessage::ToolResult(result) = &message {
+                if let Some(index) = pending.iter().position(|(id, name)| {
+                    id == &result.tool_call_id && name == &result.tool_name
+                }) {
+                    pending.remove(index);
+                    repaired.push(message);
+                }
+            } else {
+                interleaved.push(message);
+            }
+        }
+        for (tool_call_id, tool_name) in pending {
+            repaired.push(AgentMessage::ToolResult(Box::new(
+                ToolResultMessage {
+                    role: ToolResultRole,
+                    tool_call_id,
+                    tool_name,
+                    content: vec![Content::text(RECOVERY_TOOL_RESULT)],
+                    details: None,
+                    usage: None,
+                    added_tool_names: Vec::new(),
+                    is_error: true,
+                    timestamp,
+                },
+            )));
+        }
+        repaired.extend(interleaved);
+    }
+    repaired
+}
+
 fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
     blocks
         .iter()
@@ -279,12 +355,13 @@ fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
                 name,
                 arguments,
             } => {
-                let arguments: serde_json::Value =
-                    serde_json::from_str(arguments).map_err(|error| {
-                        format!(
-                            "tool call {id} has invalid JSON arguments: {error}"
-                        )
-                    })?;
+                // Legacy rows may hold truncation or manual edits; an invalid
+                // blob must not fail the whole turn, so degrade to an empty
+                // object and let the tool adapter report bad arguments.
+                let arguments: serde_json::Value = serde_json::from_str(
+                    arguments,
+                )
+                .unwrap_or_else(|_| serde_json::json!({}));
                 Ok(Content::ToolCall(ToolCall {
                     kind: ToolCallType,
                     id: id.clone(),
@@ -417,8 +494,8 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LoopOutcome, ModelRoute, TurnRequest, run_turn, to_agent_message,
-        to_host_messages,
+        LoopOutcome, ModelRoute, TurnRequest, repair_tool_call_history,
+        run_turn, to_agent_message, to_host_messages,
     };
     use crate::types::{
         CancelToken, ContentBlock, Message, MessageSource, Role,
@@ -449,6 +526,101 @@ mod tests {
         let model = route.rpi_model();
         assert_eq!(model.context_window, 1234);
         assert_eq!(model.max_tokens, 567);
+    }
+
+    #[test]
+    fn orphan_tool_call_gets_placeholder_and_orphan_results_are_dropped() {
+        let assistant = Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            }],
+            source: MessageSource::Model {
+                provider: "flowy".into(),
+                model: "m".into(),
+            },
+        };
+        let user = Message {
+            id: "u1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("next")],
+            source: MessageSource::User,
+        };
+        let mut history: Vec<AgentMessage> = Vec::new();
+        for message in [&assistant, &user] {
+            if let Some(converted) = to_agent_message(message).unwrap() {
+                history.push(converted);
+            }
+        }
+        let repaired = repair_tool_call_history(history);
+        assert_eq!(repaired.len(), 3);
+        let AgentMessage::ToolResult(result) = &repaired[1] else {
+            panic!("placeholder tool result expected right after assistant");
+        };
+        assert_eq!(result.tool_call_id, "call-1");
+        assert_eq!(result.tool_name, "read_file");
+        assert!(result.is_error);
+        let AgentMessage::User(next) = &repaired[2] else {
+            panic!("user message must stay after the repaired batch");
+        };
+        assert_eq!(super::user_text(&next.content), "next");
+    }
+
+    #[test]
+    fn unmatched_tool_result_is_dropped_from_provider_history() {
+        let mut history: Vec<AgentMessage> = Vec::new();
+        let user = Message {
+            id: "u1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("hi")],
+            source: MessageSource::User,
+        };
+        history.push(to_agent_message(&user).unwrap().unwrap());
+        history.push(AgentMessage::ToolResult(Box::new(
+            rpi_ai::types::ToolResultMessage {
+                role: rpi_ai::types::ToolResultRole,
+                tool_call_id: "call-9".into(),
+                tool_name: "read_file".into(),
+                content: vec![Content::text("stale")],
+                details: None,
+                usage: None,
+                added_tool_names: Vec::new(),
+                is_error: false,
+                timestamp: 0,
+            },
+        )));
+        let repaired = repair_tool_call_history(history);
+        assert_eq!(repaired.len(), 1);
+        assert!(matches!(repaired[0], AgentMessage::User(_)));
+    }
+
+    #[test]
+    fn invalid_tool_arguments_degrade_to_an_empty_object() {
+        let assistant = Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: "{not json".into(),
+            }],
+            source: MessageSource::Model {
+                provider: "flowy".into(),
+                model: "m".into(),
+            },
+        };
+        let converted = to_agent_message(&assistant).unwrap().unwrap();
+        let AgentMessage::Assistant(assistant) = converted else {
+            panic!("assistant message expected");
+        };
+        let Content::ToolCall(call) = &assistant.content[0] else {
+            panic!("tool call expected");
+        };
+        assert!(call.arguments.is_object());
+        assert_eq!(call.arguments, serde_json::json!({}));
     }
 
     #[test]

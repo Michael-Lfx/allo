@@ -3,8 +3,8 @@
 ## 后续分支收尾（2026-11-18，PR #458 合并后）
 
 - PR #458 已合并（merge commit `86fcd6c32`）；合并前修复了 Windows job 的格式门禁与 1.100 clippy 门禁（格式 24 文件；clippy 全量清零）。
-- 后续分支 `feat/flowy18-wip-followups`：① 历史工具结果缺少 `MessageSource::Tool` 时跳过而非整轮失败；② 失败状态在 working indicator 可见（本地化、脱敏、aria_live=Polite）；③ 刷新门禁抽纯函数并补单测；④ D8050 默认 profile 复测（未复现，workaround 保留备用）；⑤ 文档同步（BLOCKED / 踩坑文档 / 本文件）。
-- 验证（Rust 1.100，CI 同款）：`cargo fmt --check`=0；全量 clippy（`-p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-targets --locked -- -D warnings`）=0；测试 flowy-app 22、flowy-studio 7、flowy-agent-core 35（1 ignored）、flowy-agent 34（2 ignored）、flowy-auth 11、flowy-core 33、flowy-net 3、flowy-ota 23、flowy-obs 6 全绿。
+- 后续分支 `feat/flowy18-wip-followups`：① 历史工具结果容错——`to_agent_message` 跳过缺 `MessageSource::Tool` 的条目，`repair_tool_call_history` 在请求前补齐配对（缺 result 的 call 补 `is_error=true` 占位、无 call 的 result 丢弃、坏 JSON arguments 降级空对象）；② 失败状态在 working indicator 可见（本地化、脱敏、aria_live=Polite，重启首帧也刷新）；③ 刷新门禁抽纯函数并补单测；④ D8050 默认 profile 复测（未复现，workaround 保留备用）；⑤ 文档同步（BLOCKED / 踩坑文档 / plans 索引 / 本文件）。
+- 验证（Rust 1.100）：`cargo fmt --check`=0；`cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-targets --locked -- -D warnings`=0；测试 flowy-app 22、flowy-studio 7、flowy-agent-core 35（2 ignored）、flowy-agent 24（1 ignored）、flowy-auth 11、flowy-core 33、flowy-net 3、flowy-ota 23、flowy-obs 6 全绿。
 
 
 ## 收尾状态（2026-11-17 晚）

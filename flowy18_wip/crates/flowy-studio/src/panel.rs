@@ -242,6 +242,8 @@ impl StudioPanel {
             pump: None,
         };
         panel.start_pump(cx);
+        // A persisted failed status must be visible on the first frame too.
+        panel.refresh_working(cx);
         panel
     }
 

@@ -595,6 +595,7 @@ impl Render for WorkingIndicator {
             } else {
                 gpui::accesskit::Live::Off
             })
+            .aria_live_atomic(true)
             .when(self.visible, |element| {
                 element
                     .px(self.theme.space(32.))
@@ -622,6 +623,38 @@ impl Render for WorkingIndicator {
 mod tests {
     use super::*;
     use gpui::{ListOffset, TestAppContext};
+
+    #[gpui::test]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI test harness passes &mut TestAppContext"
+    )]
+    fn working_indicator_keeps_and_clears_the_error_state(cx: &mut TestAppContext) {
+        let indicator = cx.update(|cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            cx.new(|cx| WorkingIndicator::new(ui, cx))
+        });
+        cx.update(|cx| {
+            indicator.update(cx, |working, cx| {
+                working.set_label("boom".into(), true, true, cx);
+            });
+        });
+        cx.read_entity(&indicator, |working, _| {
+            assert!(working.visible);
+            assert!(working.error);
+            assert_eq!(working.label, "boom");
+        });
+        cx.update(|cx| {
+            indicator.update(cx, |working, cx| {
+                working.set_label("working".into(), true, false, cx);
+            });
+        });
+        cx.read_entity(&indicator, |working, _| {
+            assert!(working.visible);
+            assert!(!working.error);
+            assert_eq!(working.label, "working");
+        });
+    }
 
     #[gpui::test]
     fn thousand_rows_are_lazy_and_session_scroll_is_restored(

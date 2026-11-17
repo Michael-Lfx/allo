@@ -4,8 +4,10 @@
 
 主分支已合并 PR #458（merge commit `86fcd6c32`），包含账号模型目录、会话路由修复、
 pi-rust 内核迁移与 CI 门禁修复（格式 + 1.100 clippy）。后续分支 `feat/flowy18-wip-followups`
-继续收尾遗留项。最新验证：`flowy-app` 22 passed、`flowy-studio` 7 passed、
-`flowy-agent-core` 35 passed/1 ignored、`flowy-agent` 34 passed/2 ignored、`flowy-auth` 11 passed；
+继续收尾遗留项。最新验证（Windows，Rust 1.100）：`flowy-app` 22 passed、
+`flowy-studio` 7 passed、`flowy-agent-core` 35 passed/2 ignored、
+`flowy-agent` 24 passed/1 ignored、`flowy-auth` 11 passed、`flowy-core` 33 passed、
+`flowy-net` 3 passed、`flowy-ota` 23 passed、`flowy-obs` 6 passed；
 Windows 桌面入口实跑可启动（窗口出现、目录模型名同步到顶栏/输入框）。
 
 ## 已闭环
@@ -15,15 +17,23 @@ Windows 桌面入口实跑可启动（窗口出现、目录模型名同步到顶
   `config_switch_applies_to_the_next_run_on_the_same_session` 覆盖该回归。
 - 选择保存成功后恢复 `cloud_ready` 并允许发送；目录空/刷新失败/未选择时保持发送关闭并给出提示。
 - 损坏 `index.json` 的隔离与 history 重建已由测试覆盖（`failed_new_task_is_not_hidden_by_navigation`）。
-- 历史工具结果缺少 `MessageSource::Tool` 时不再让整轮失败：`to_agent_message` 跳过该条，
-  回归测试 `legacy_tool_result_without_tool_source_is_skipped`。
-- 失败状态在输入框与工作行都可见：`WorkingIndicator` 对 `TurnStatus::Error` 显示本地化错误行
+- 历史工具结果缺失时不再拖垮整轮：`to_agent_message` 跳过缺 `MessageSource::Tool` 的条目，
+  `repair_tool_call_history` 在请求前补齐配对——缺结果的 tool call 合成 `is_error=true` 占位
+  （与 pi harness 的 `repair_orphaned_tool_calls` 同策略）、无 call 的 tool result 丢弃、
+  坏 JSON arguments 降级为空对象；回归测试
+  `orphan_tool_call_gets_placeholder_and_orphan_results_are_dropped`、
+  `unmatched_tool_result_is_dropped_from_provider_history`、
+  `invalid_tool_arguments_degrade_to_an_empty_object`、
+  `legacy_tool_result_without_tool_source_is_skipped`。
+- 失败状态在工作行（feed 与 composer 之间）可见：`WorkingIndicator` 对 `TurnStatus::Error` 显示本地化错误行
   （`circle_alert` + danger 色，`aria_live=Polite`），key/raw 文本继续由 `status_error_label` 脱敏；
   单测 `failed_turn_keeps_the_working_line_visible`。
 - 模型刷新门禁抽成纯函数 `catalog_refresh_allowed`（单飞、需登录、非 busy），
   单测 `catalog_refresh_gate_is_single_flight_for_idle_sessions`。
-- CI 门禁（`flowy18_wip` 的 Windows job）已修复：格式 `cargo fmt --check` 与
-  `cargo clippy --all-targets --locked -- -D warnings` 在 1.100 工具链下均通过。
+- CI 门禁（`flowy18_wip` 的 Windows job）已修复：`cargo fmt --check` 与
+  `cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-targets --locked -- -D warnings`
+  在 1.100 工具链下均通过。注意 `flowy-agent-core` / `flowy-agent` 不在该 job 的 clippy 与测试步骤内，
+  它们的门禁清理与回归测试是本地按同口径验证的；把两者纳入 CI 需要改 workflow，留待后续单独决定。
 
 ## 当前限制
 
@@ -37,7 +47,7 @@ Windows 桌面入口实跑可启动（窗口出现、目录模型名同步到顶
 - 本机 auth/agent 的部分存储测试需要把 `TEMP`/`TMP` 指到工作区内可写目录
   （默认临时目录权限拒绝），属环境限制，不是产品缺陷。
 - 目录 fixture 为固定 JSON 样本（首条来自已知样本，其余合成），不是完整云端真实目录。
-- 未逐条核对 23 个 locale 的翻译质量（新增 key 见 `flowy-i18n` 变更）。
+- 未逐条核对 23 个 locale 的翻译质量；本分支未新增 key，错误行复用既有 `chat.status_error`。
 
 ## 历史记录
 
