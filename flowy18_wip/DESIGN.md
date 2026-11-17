@@ -67,12 +67,6 @@ Choose a button's variant from its role in the current task, not its position or
 - Use `Small` for compact tools, `Medium` for standard actions, and `Large` for prominent full-width submissions. Text and icons inherit the variant's foreground; do not override it with `ink`, `on_ink`, or authored colors.
 - Keep toggle, selected, and navigation states separate from action priority. A selected filter or active navigation item is not a primary button.
 
-Current adoption: `Button` defaults to Secondary, and the component catalogue shows all four variants with a one-primary action group. Core actions in Login, Invite, Flex, More, OTA, Skills, Gallery, Dock, Studio, Automation, and the Chat Composer now use the shared hierarchy. Knowledge removal uses Danger; sign-out and stopping generation do not imply data deletion. Navigation, selection chips, and composite controls retain their dedicated interaction patterns.
-
-When a page's button hierarchy changes, update this adoption note in the same change. Keep unrelated architecture/history in `docs/ui-system.zh.md` intact.
-
-Validation on 2026-11-17: 41 UI/App/Studio tests passed, the desktop entry compiled, and strict `flowy-ui` clippy passed. The component catalogue was inspected in Light and Dark. Full-page platform acceptance remains separate; the existing three Skills illustration-color scanner failures are still open.
-
 ## Consistency checklist for new UI
 
 1. Popup uses `modal_layer` + `dialog` + `modal_radius`.

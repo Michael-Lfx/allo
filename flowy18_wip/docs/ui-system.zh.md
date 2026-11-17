@@ -167,6 +167,7 @@ sequenceDiagram
 | Gallery 的 poster、thumb、idea_stage 与视频 transport | 媒体和插画本身的 authored tint、黑色遮罩、白色媒体图标 |
 | Invite 的 social_row、envelope | 固定品牌色和信封插画素材 |
 | Login 的 wire_card、wire_dot、wire_line | 登录蓝图插画，不承载普通控件状态 |
+| Skills 的 skill_cover、skill_hero、skill_mark | 技能封面与详情图标的固定素材底色及字标颜色；不包括创建、添加、筛选等操作控件 |
 | 指定的 layer、panel、card ID | 遮罩关闭或阻止点击传播；操作按钮不得列入 |
 
 普通控件新增 rgb/rgba 必须改用主题 token。新增例外要说明具体视觉用途，不能仅为了通过检查扩大文件级豁免。
@@ -354,6 +355,14 @@ cargo clippy -p flowy-ui -p flowy-studio -p flowy-app -p flowy-i18n --all-target
 | `bun scripts/check-ui-contracts.mjs` | 退出码 1；仍有 Skills 的 `skill_cover`、`skill_hero`、`skill_mark` 三处既有素材颜色未采用 token 或列入精确素材例外；本轮未扩大白名单 |
 | 原生组件 catalog | 构建成功；在 Windows 检查 Light / Dark 的四种按钮层级、带图标按钮、禁用和加载外观；临时目录窗口已关闭 |
 | 全页面平台视觉矩阵 | 待执行；本轮组件目录检查不替代第 5.3 节的窗口、缩放、语言、字号、密度和原生 IME 验收 |
+
+### 5.7 Skills 素材色门禁修复（2026-11-17）
+
+CI 的 source-contracts 步骤复现第 5.6 节记录的三处失败：Skills 的封面、详情图标和字标已有固定素材色，但未登记到文件及函数级的素材例外。修复只补充 `skills.rs` 的 `skill_cover`、`skill_hero`、`skill_mark`，保留原有视觉实现，不增加文件级豁免或关闭扫描规则。
+
+新增回归用例先在未登记例外时失败，修复后 `bun scripts/check-ui-contracts.mjs --self-test` 的 24 项断言及 `bun scripts/check-ui-contracts.mjs` 生产源码/locale 扫描均以退出码 0 通过。反例继续拦截同文件普通按钮的原始颜色、其他文件的同名函数，以及素材函数内的裸点击操作。上节的三处失败保留为修复前历史记录。
+
+本轮不修改 Rust 源码，因此不重复此前的 Cargo 与原生视觉检查；源码门禁恢复不代表 Windows job 已执行，未跟踪的 macOS path patch 与完整平台验收仍按第 5.4 节单独记录。
 
 ---
 
