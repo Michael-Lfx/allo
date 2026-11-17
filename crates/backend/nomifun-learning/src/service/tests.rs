@@ -3066,6 +3066,57 @@ teaching_style: crate::models::TeachingStyle::Standard,
     // 删除路径，此处即红报警。断言期望值均为字面量（种子自证先行，删后
     // 断言不因种子缺席而空转绿）。
 
+    /// d1 两用例共享的账本种子（语义零变化，原地种子原样收拢）：学习账本
+    /// 两笔（GLOSSARY「学习账本」：XP 记录，两类 kind 各一笔，锚在目标
+    /// 课程 `node_lesson` 节点上，凭 course_id 归账）+ 日目标降为 1 的
+    /// 偏好行（打卡走真实服务面的 j05 XP 口径前置）。两用例仅 anchor
+    /// 后缀区分（`d1:1` / `d1:2`）。
+    async fn seed_d1_ledger(
+        pool: &SqlitePool,
+        user_id: &UserId,
+        now: i64,
+        course_id: &str,
+        node_lesson: &str,
+        anchor_suffix: &str,
+    ) {
+        let anchors = [format!("review:{anchor_suffix}"), format!("node:{anchor_suffix}")];
+        for ((kind, earned, bonus, origin), anchor) in [
+            ("review-completed", 9i64, 1i64, "review-course"),
+            ("node-completed", 12i64, 2i64, "lesson-progress"),
+        ]
+        .into_iter()
+        .zip(anchors)
+        {
+            sqlx::query(
+                "INSERT INTO learning_xp_events \
+                 (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', NULL, ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(now)
+            .bind(course_id)
+            .bind(node_lesson)
+            .bind(kind)
+            .bind(earned)
+            .bind(bonus)
+            .bind(origin)
+            .bind(&anchor)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) \
+             VALUES ('learning.dailyXpGoal', '1', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     /// R-a 用户路径不变式：目录删除 [`LearningService::delete_course`]
     /// 之后，学习账本三行原样——xp_events 两类 kind 各一笔行数不变、
     /// checkins 一笔行数不变；复习卡行数不变且 archived_at 已打标（死卡
@@ -3101,41 +3152,10 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
         }
-        // 学习账本两笔（GLOSSARY「学习账本」：XP 记录），两类 kind 各一笔，
-        // 锚在被删课程上——不变式钉的正是这些凭 course_id 归账的行。
-        for (kind, earned, bonus, origin, anchor) in [
-            ("review-completed", 9i64, 1i64, "review-course", "review:d1:1"),
-            ("node-completed", 12, 2, "lesson-progress", "node:d1:1"),
-        ] {
-            sqlx::query(
-                "INSERT INTO learning_xp_events \
-                 (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', NULL, ?, ?)",
-            )
-            .bind(generate_id())
-            .bind(user_id.as_str())
-            .bind(now)
-            .bind(&course_id)
-            .bind(&lessons[0])
-            .bind(kind)
-            .bind(earned)
-            .bind(bonus)
-            .bind(origin)
-            .bind(anchor)
-            .execute(pool)
-            .await
-            .unwrap();
-        }
+        // 账本两笔 + 日目标降为 1（共享种子 helper [`seed_d1_ledger`]）——
+        // 不变式钉的正是这些凭 course_id 归账的账本行。
+        seed_d1_ledger(pool, &user_id, now, &course_id, &lessons[0], "d1:1").await;
         // 打卡一笔：走真实服务面（j05 XP 口径——目标降为 1，XP 已达标）。
-        sqlx::query(
-            "INSERT INTO client_preferences (key, value, updated_at) \
-             VALUES ('learning.dailyXpGoal', '1', ?) \
-             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at",
-        )
-        .bind(now)
-        .execute(pool)
-        .await
-        .unwrap();
         let checkin = service.checkin_today(&user_id).await.unwrap();
         assert!(checkin.completed, "seeded XP must complete the day into one checkin row");
         // 种子自证（不变式断言才有牙齿）：账本三行 + 两张卡在册。
@@ -3302,40 +3322,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .execute(pool)
         .await
         .unwrap();
-        // 学习账本两笔（两类 kind 各一笔，锚在被替换标题的课程上）+ 打卡
-        // 一笔（经真实服务面），同 [`course_delete_preserves_the_learning_ledger`]。
-        for (kind, earned, bonus, origin, anchor) in [
-            ("review-completed", 9i64, 1i64, "review-course", "review:d1:2"),
-            ("node-completed", 12, 2, "lesson-progress", "node:d1:2"),
-        ] {
-            sqlx::query(
-                "INSERT INTO learning_xp_events \
-                 (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', NULL, ?, ?)",
-            )
-            .bind(generate_id())
-            .bind(user_id.as_str())
-            .bind(now)
-            .bind(&course_id)
-            .bind(&lessons[0])
-            .bind(kind)
-            .bind(earned)
-            .bind(bonus)
-            .bind(origin)
-            .bind(anchor)
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-        sqlx::query(
-            "INSERT INTO client_preferences (key, value, updated_at) \
-             VALUES ('learning.dailyXpGoal', '1', ?) \
-             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at",
-        )
-        .bind(now)
-        .execute(pool)
-        .await
-        .unwrap();
+        // 账本两笔 + 日目标降为 1（共享种子 helper [`seed_d1_ledger`]），
+        // 打卡经真实服务面，同 [`course_delete_preserves_the_learning_ledger`]。
+        seed_d1_ledger(pool, &user_id, now, &course_id, &lessons[0], "d1:2").await;
         let checkin = service.checkin_today(&user_id).await.unwrap();
         assert!(checkin.completed, "seeded XP must complete the day into one checkin row");
         // 种子自证：账本三行在册；宽面四表各有一行可清（删后断言不因种子
@@ -8844,6 +8833,7 @@ async fn review_advice_mechanically_converts_to_reuse() {
 /// 解析失败（宿主不可登记表解析）的 advice 照常打回：同指纹两轮早停，
 /// 不做机械转化。
 #[tokio::test]
+#[serial_test::serial]
 async fn unparseable_advice_stays_a_rejection() {
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
@@ -9200,6 +9190,7 @@ async fn review_removal_advice_drops_the_node_instead_of_redrafting() {
 /// 窄面：advice 无「移出本批」信号或 node 不匹配批内标题 → 照常打回
 /// （同指纹两轮早停）。
 #[tokio::test]
+#[serial_test::serial]
 async fn removal_advice_without_exact_match_stays_a_rejection() {
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _a, _b) = seed_graph_course(&service).await;
