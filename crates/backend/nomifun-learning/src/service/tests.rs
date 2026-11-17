@@ -3056,6 +3056,374 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    // —— 账本独立性不变式（票 d1，GLOSSARY「学习账本」） ——
+    //
+    // 「已发生的学习行为记录独立于课程存在——课程的删除、归档不影响账本」
+    // （GLOSSARY 学习账本词条）。该语义现状已由实现保证（删课触面 = 死卡
+    // 打标 + 回合废弃 + 内容八表 purge + 课程行处置，无账本表；全域无
+    // learning_xp_events / learning_checkins 删除语句），以下两条用例是
+    // **不变式钉死而非缺陷修复**：绿 = 现状符合不变式；若未来重构误加账本
+    // 删除路径，此处即红报警。断言期望值均为字面量（种子自证先行，删后
+    // 断言不因种子缺席而空转绿）。
+
+    /// R-a 用户路径不变式：目录删除 [`LearningService::delete_course`]
+    /// 之后，学习账本三行原样——xp_events 两类 kind 各一笔行数不变、
+    /// checkins 一笔行数不变；复习卡行数不变且 archived_at 已打标（死卡
+    /// 语义顺带钉住：账本保留、永不复服务）。打卡经真实服务面
+    /// （j05 XP 口径：目标降为 1，XP 达标即落一行）。
+    #[tokio::test]
+    async fn course_delete_preserves_the_learning_ledger() {
+        let (service, user_id) = checkin_test_service().await;
+        let pool = service.pool_for_tests();
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 2).await;
+        let enrollment_id: String = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let now = now_ms();
+        // 该课复习卡两张，各挂一个活动（UNIQUE(enrollment_id, activity_id)）；
+        // 删课语义：打死卡标、行保留。
+        for activity in &activities {
+            sqlx::query(
+                "INSERT INTO learning_review_items \
+                 (review_item_id, enrollment_id, activity_id, due_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(LearningReviewItemId::new().into_string())
+            .bind(&enrollment_id)
+            .bind(activity)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // 学习账本两笔（GLOSSARY「学习账本」：XP 记录），两类 kind 各一笔，
+        // 锚在被删课程上——不变式钉的正是这些凭 course_id 归账的行。
+        for (kind, earned, bonus, origin, anchor) in [
+            ("review-completed", 9i64, 1i64, "review-course", "review:d1:1"),
+            ("node-completed", 12, 2, "lesson-progress", "node:d1:1"),
+        ] {
+            sqlx::query(
+                "INSERT INTO learning_xp_events \
+                 (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', NULL, ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(now)
+            .bind(&course_id)
+            .bind(&lessons[0])
+            .bind(kind)
+            .bind(earned)
+            .bind(bonus)
+            .bind(origin)
+            .bind(anchor)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // 打卡一笔：走真实服务面（j05 XP 口径——目标降为 1，XP 已达标）。
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) \
+             VALUES ('learning.dailyXpGoal', '1', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        let checkin = service.checkin_today(&user_id).await.unwrap();
+        assert!(checkin.completed, "seeded XP must complete the day into one checkin row");
+        // 种子自证（不变式断言才有牙齿）：账本三行 + 两张卡在册。
+        let xp_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_xp_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let checkins_before = checkin_rows(&service, &user_id).await;
+        let cards_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE e.course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(xp_before, 2, "seed must place two xp_events rows (one per kind)");
+        assert_eq!(checkins_before, 1, "seed must place one checkin row");
+        assert_eq!(cards_before, 2, "seed must place two review cards");
+
+        service
+            .delete_course(&LearningCourseId::parse(&course_id).unwrap(), &user_id)
+            .await
+            .unwrap();
+
+        // 删除确已发生：墓碑 + 内容清空——否则下面的「行数不变」是空转绿。
+        let (deleted_at, enabled): (Option<i64>, i64) = sqlx::query_as(
+            "SELECT deleted_at, enabled FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(
+            deleted_at.is_some() && enabled == 0,
+            "delete must tombstone the course row (deleted_at set, enabled = 0)"
+        );
+        let lessons_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(lessons_left, 0, "course content must be purged by the delete");
+
+        // 账本独立性不变式（GLOSSARY 学习账本）：xp_events / checkins 删课
+        // 前后行数不变，两类 kind 各自原样（凭 course_id 归账的历史贡献保留）。
+        let xp_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_xp_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            xp_after, xp_before,
+            "xp_events are ledger face — course delete must not touch them"
+        );
+        for kind in ["review-completed", "node-completed"] {
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_xp_events WHERE kind = ? AND course_id = ?",
+            )
+            .bind(kind)
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(rows, 1, "each ledger kind survives the delete untouched ({kind})");
+        }
+        assert_eq!(
+            checkin_rows(&service, &user_id).await,
+            checkins_before,
+            "checkins are ledger face — course delete must not touch them"
+        );
+        // 死卡语义顺带钉住：复习卡行数不变且 archived_at 已打标。
+        let cards_after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE e.course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(cards_after, cards_before, "review card rows survive the delete");
+        let archived: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE e.course_id = ? AND r.archived_at IS NOT NULL",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            archived, cards_before,
+            "every surviving card must carry the dead-card archived_at mark"
+        );
+    }
+
+    /// R-b 种子路径不变式：教程种子替换 [`LearningService::delete_courses_by_title`]
+    /// 的 wipe 面更宽（enrollments / progress / attempts / 复习卡 + 内容
+    /// 八表 + 课程行硬删），但账本表（learning_xp_events / learning_checkins）
+    /// 同样零触碰——该路径是种子设施非用户路径，wipe 面更宽是既有裁决。
+    /// 两面对照钉死：宽面清零 + 账本保留（凭 course_id 归账的历史贡献保留）。
+    #[tokio::test]
+    async fn delete_courses_by_title_preserves_the_learning_ledger() {
+        let (service, user_id) = checkin_test_service().await;
+        let pool = service.pool_for_tests();
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 2).await;
+        let title = "d1 种子替换课";
+        sqlx::query("UPDATE learning_courses SET title = ? WHERE course_id = ?")
+            .bind(title)
+            .bind(&course_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let enrollment_id: String = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let now = now_ms();
+        // 复习卡两张，各挂一个活动（UNIQUE(enrollment_id, activity_id)）；
+        // 宽面：删后清零。
+        for activity in &activities {
+            sqlx::query(
+                "INSERT INTO learning_review_items \
+                 (review_item_id, enrollment_id, activity_id, due_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(LearningReviewItemId::new().into_string())
+            .bind(&enrollment_id)
+            .bind(activity)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // 课时进度一行（宽面：删后清零；按落库形状直插，不走结算面——
+        // 结算会写入 xp_events，搅浑账本种子的计数）。
+        sqlx::query(
+            "INSERT INTO learning_lesson_progress \
+             (enrollment_id, lesson_id, status, started_at, completed_at, updated_at) \
+             VALUES (?, ?, 'completed', ?, ?, ?)",
+        )
+        .bind(&enrollment_id)
+        .bind(&lessons[0])
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        // 作答一行（宽面：删后清零；落库形状直插，判分链不在本测范围）。
+        sqlx::query(
+            "INSERT INTO learning_attempts \
+             (attempt_id, enrollment_id, activity_id, response_json, score, passed, feedback, created_at) \
+             VALUES (?, ?, ?, '{}', 0.8, 1, 'smoke', ?)",
+        )
+        .bind(LearningAttemptId::new().as_str())
+        .bind(&enrollment_id)
+        .bind(&activities[0])
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        // 学习账本两笔（两类 kind 各一笔，锚在被替换标题的课程上）+ 打卡
+        // 一笔（经真实服务面），同 [`course_delete_preserves_the_learning_ledger`]。
+        for (kind, earned, bonus, origin, anchor) in [
+            ("review-completed", 9i64, 1i64, "review-course", "review:d1:2"),
+            ("node-completed", 12, 2, "lesson-progress", "node:d1:2"),
+        ] {
+            sqlx::query(
+                "INSERT INTO learning_xp_events \
+                 (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'full', NULL, ?, ?)",
+            )
+            .bind(generate_id())
+            .bind(user_id.as_str())
+            .bind(now)
+            .bind(&course_id)
+            .bind(&lessons[0])
+            .bind(kind)
+            .bind(earned)
+            .bind(bonus)
+            .bind(origin)
+            .bind(anchor)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) \
+             VALUES ('learning.dailyXpGoal', '1', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        let checkin = service.checkin_today(&user_id).await.unwrap();
+        assert!(checkin.completed, "seeded XP must complete the day into one checkin row");
+        // 种子自证：账本三行在册；宽面四表各有一行可清（删后断言不因种子
+        // 缺席而空转绿）。
+        let xp_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_xp_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let checkins_before = checkin_rows(&service, &user_id).await;
+        let (enrollments_before, progress_before, attempts_before, cards_before): (i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT \
+                 (SELECT COUNT(*) FROM learning_enrollments), \
+                 (SELECT COUNT(*) FROM learning_lesson_progress), \
+                 (SELECT COUNT(*) FROM learning_attempts), \
+                 (SELECT COUNT(*) FROM learning_review_items)",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(xp_before, 2, "seed must place two xp_events rows (one per kind)");
+        assert_eq!(checkins_before, 1, "seed must place one checkin row");
+        assert_eq!(
+            (enrollments_before, progress_before, attempts_before, cards_before),
+            (1, 1, 1, 2),
+            "seed must fill the wipe face before the delete"
+        );
+
+        service.delete_courses_by_title(title).await.unwrap();
+
+        // 宽面清零（既有裁决）：课程行硬删、注册/进度/作答/复习卡清空、
+        // 内容删净——证明替换确已发生。
+        let (courses_left, enrollments, progress, attempts, cards, lessons_left): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT \
+             (SELECT COUNT(*) FROM learning_courses WHERE title = ?), \
+             (SELECT COUNT(*) FROM learning_enrollments), \
+             (SELECT COUNT(*) FROM learning_lesson_progress), \
+             (SELECT COUNT(*) FROM learning_attempts), \
+             (SELECT COUNT(*) FROM learning_review_items), \
+             (SELECT COUNT(*) FROM learning_lessons)",
+        )
+        .bind(title)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (courses_left, enrollments, progress, attempts, cards, lessons_left),
+            (0, 0, 0, 0, 0, 0),
+            "by-title replace must wipe the wide face (course/enrollments/progress/attempts/cards/content)"
+        );
+        // 账本独立性不变式（GLOSSARY 学习账本）：xp_events / checkins 原样，
+        // 两类 kind 各自保留——课程行已硬删，账本行凭 course_id 归账仍在。
+        let xp_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_xp_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            xp_after, xp_before,
+            "xp_events are ledger face — seed replacement must not touch them"
+        );
+        for kind in ["review-completed", "node-completed"] {
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM learning_xp_events WHERE kind = ? AND course_id = ?",
+            )
+            .bind(kind)
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                rows, 1,
+                "each ledger kind survives the seed replacement untouched ({kind})"
+            );
+        }
+        assert_eq!(
+            checkin_rows(&service, &user_id).await,
+            checkins_before,
+            "checkins are ledger face — seed replacement must not touch them"
+        );
+    }
+
     /// 安排面收窄（三轮 g3「现存且启用」）：归档课的卡离开到期队列、恢复后
     /// 回来；队列收窄不拦已出卡的作答提交（历史面如实落账）；概况读数随
     /// enabled 与 due_today 反映。
