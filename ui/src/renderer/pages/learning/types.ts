@@ -422,7 +422,8 @@ export interface CheckinStatus {
 }
 
 /** XP 读数（对齐后端 XpReading）：两把尺同源回放、互不换算——努力尺
- *  （今日 XP/目标）与进度尺（结算/总节点，现存且启用双筛）。纯投影。 */
+ *  （今日 XP/目标）与进度尺（结算/总节点，现存且启用、剔 skipped 同筛）。
+ *  纯投影。 */
 export interface XpReading {
   /** 当前本地复习日 YYYYMMDD */
   review_day: number;
@@ -432,14 +433,18 @@ export interface XpReading {
   goal: number;
   /** 今日 XP 是否已达标（实时判定，未含锁定语义） */
   goal_achieved: boolean;
-  /** 进度尺分子：现存且启用课程内已结算节点数 */
+  /** 进度尺分子：现存且启用课程内已结算节点数（当前被跳过的课时不计） */
   settled_nodes: number;
-  /** 进度尺分母：现存且启用课程总节点数 */
+  /** 进度尺分母：现存且启用课程总节点数（剔 skipped，跳过可逆 unskip 回尺） */
   total_nodes: number;
-  /** 未结算节点的剩余 est 分钟 */
+  /** 未结算且未跳过节点的剩余 est 分钟 */
   remaining_est: number;
-  /** 按近 7 个学习日步伐的剩余天数估计；无步伐信号为 null；纯投影绝不回写 */
+  /** 按近 7 个学习日步伐的剩余天数估计；步伐近零（周 XP 低于后端步伐地板）
+   *  或无步伐信号为 null；纯投影绝不回写 */
   eta_days: number | null;
+  /** 近 7 个学习日日均 XP（周 XP ÷ 7 四舍五入）——ETA 行步伐基数披露，
+   *  低步伐降级时也照实透出 */
+  pace_xp: number;
 }
 
 /** XP 日历单日桶（学习日 02:00 翻转）：净入账，负账如实 */

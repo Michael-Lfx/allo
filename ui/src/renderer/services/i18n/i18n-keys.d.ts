@@ -4196,6 +4196,7 @@ export type I18nKey =
   | 'learning.xpEta'
   | 'learning.xpEtaNone'
   | 'learning.xpExpand'
+  | 'learning.xpGaugeNone'
   | 'learning.xpGaugeRemaining'
   | 'learning.xpGaugeSettled'
   | 'learning.xpGoalLink'

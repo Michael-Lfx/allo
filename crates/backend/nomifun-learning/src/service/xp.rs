@@ -243,8 +243,9 @@ impl LearningService {
     }
 
     /// XP 读数（两把尺同源回放、互不换算）：今日 XP + 日目标（努力尺），
-    /// 结算节点/总节点/剩余 est/ETA（进度尺，现存且启用同筛）。纯投影，
-    /// 零新状态——ETA 绝不回写。
+    /// 结算节点/总节点/剩余 est/ETA（进度尺，现存且启用、剔 skipped 同筛
+    /// ——c1：f2 课程卡分母决议补齐消费面，跳过可逆、unskip 回尺）。纯
+    /// 投影，零新状态——ETA 绝不回写。
     pub async fn xp_reading(&self, user_id: &UserId) -> Result<XpReading, AppError> {
         let now = now_ms();
         let tz_offset_minutes = self.tz_offset_minutes().await;
@@ -262,28 +263,36 @@ impl LearningService {
         .map_err(internal)?;
         let goal = self.daily_xp_goal().await;
 
-        // 进度尺：分子分母同筛「现存且启用」（已归档 enabled = 0 与已删除
-        // 墓碑的课程都不进尺；历史面日历不过筛）。
+        // 进度尺：分子分母同筛「现存且启用，剔 skipped」（ADR-0017 前瞻面
+        // 共享口径 + c1/f2 分母决议：已归档 enabled = 0 与已删除墓碑的
+        // 课程都不进尺，当前被跳过的课时不进分母也不计剩余；历史面日历
+        // 不过筛）。进度行按报名归属过滤（enrollment → user）——与课程卡
+        // f2 skipped 子查询同形状，多用户库下他人进度不越尺。
         let enabled_scope = "SELECT e.course_id FROM learning_enrollments e \
              JOIN learning_courses c ON c.course_id = e.course_id \
              WHERE e.user_id = ? AND c.deleted_at IS NULL AND c.enabled = 1";
+        let skipped_scope = "SELECT p.lesson_id FROM learning_lesson_progress p \
+             JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
+             WHERE e.user_id = ? AND p.status = 'skipped'";
         let total_nodes: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE m.course_id IN ({enabled_scope})"
+             WHERE m.course_id IN ({enabled_scope}) \
+               AND l.lesson_id NOT IN ({skipped_scope})"
         ))
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
-        let settled_nodes: i64 = sqlx::query_scalar(
+        let settled_nodes: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(DISTINCT node_id) FROM learning_xp_events \
              WHERE user_id = ? AND kind = 'node-completed' \
                AND node_id IS NOT NULL \
-               AND course_id IN (SELECT e.course_id FROM learning_enrollments e \
-                 JOIN learning_courses c ON c.course_id = e.course_id \
-                 WHERE e.user_id = ? AND c.deleted_at IS NULL AND c.enabled = 1)",
-        )
+               AND course_id IN ({enabled_scope}) \
+               AND node_id NOT IN ({skipped_scope})"
+        ))
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .fetch_one(&self.pool)
@@ -293,9 +302,11 @@ impl LearningService {
             "SELECT COALESCE(SUM(l.estimated_minutes), 0) FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
              WHERE m.course_id IN ({enabled_scope}) \
+               AND l.lesson_id NOT IN ({skipped_scope}) \
                AND l.lesson_id NOT IN (SELECT node_id FROM learning_xp_events \
                  WHERE user_id = ? AND kind = 'node-completed' AND node_id IS NOT NULL)"
         ))
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .fetch_one(&self.pool)
@@ -303,7 +314,9 @@ impl LearningService {
         .map_err(internal)?;
 
         // ETA：过去 7 个学习日的日均 XP 为步伐（同量纲：1 XP = 1 est 分钟），
-        // 步伐为零（无历史）如实返回 null；绝不回写。
+        // pace_xp 照实透出供前端披露步伐基数。步伐近零（周 XP 低于地板）
+        // 时 eta_days 如实返回 null——巨大天数不直出（2026-11-17 真机实证：
+        // 周 XP ≈ 16 直出 191 天），由前端降级为「暂无步伐」；绝不回写。
         let pace_window_start = day_start - 6 * 86_400_000;
         let week_xp: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
@@ -315,10 +328,12 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let pace = week_xp as f64 / 7.0;
+        let pace_xp = pace.round() as i64;
         let eta_days = if remaining_est <= 0 {
             // 学完（有课且无剩余）= 0 天；空账（无课）没有 ETA 可言。
             (total_nodes > 0).then_some(0)
-        } else if pace <= 0.0 {
+        } else if week_xp < XP_PACE_MIN_WEEK_XP {
+            // 低步伐（含零步伐）：天数直出只会是几十上百天的噪声 → null。
             None
         } else {
             Some((remaining_est as f64 / pace).ceil() as i64)
@@ -333,6 +348,7 @@ impl LearningService {
             total_nodes,
             remaining_est,
             eta_days,
+            pace_xp,
         })
     }
 
@@ -504,6 +520,13 @@ const QUIZ_SETTLED_SINCE_LAST_QUIZ: &str = "AND e.node_id IS NOT NULL \
    AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
      WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
        AND q.kind = 'quiz-completed' AND q.rowid > e.rowid)";
+
+/// ETA 步伐地板（c1/R-d，起步值待校准）：近 7 个学习日 XP 总和低于此值 =
+/// 无有效学习节奏（日均 < 5 XP，约为缺省日目标 40 的 1/8、不足半条最小
+/// 课时 est 10 的结算）——此时「剩 est ÷ 日均」直出只会是几十上百天的
+/// 噪声（2026-11-17 真机实证：周 XP ≈ 16 → 直出 191 天），eta_days 返回
+/// null 由前端降级为「暂无步伐」。pace_xp 披露不受地板影响（照实透出）。
+const XP_PACE_MIN_WEEK_XP: i64 = 35;
 
 /// N/K 读数公共段（u6 修复消重）：trigger_count 恒等于触发阈值常量、
 /// due = settled ≥ 阈值——quiz_progress 与 quiz_overview 两处同源赋值。

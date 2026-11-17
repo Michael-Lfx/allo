@@ -36,6 +36,40 @@ function reviewDayToDate(reviewDay: number): Date {
 }
 
 /**
+ * 进度尺读数行（c1）：分母与剩余 est 同剔 skipped（后端与课程卡 f2 分母
+ * 同源口径，跳过可逆 unskip 回尺）；全跳（total 0）= 无可计节点，计数与
+ * 剩余退场不渲染 0/0 噪声；ETA 直出披露步伐基数（近 7 天均 pace_xp），
+ * 步伐近零（后端 eta_days = null）降级为「暂无步伐」，巨大天数不直出。
+ * 只报事实与安排，不承诺效果。
+ */
+export function XpGaugeReadout({ reading }: { reading: XpReading }) {
+  const { t } = useTranslation();
+  const countable = reading.total_nodes > 0;
+  return (
+    <div className='flex flex-wrap items-center gap-x-16px gap-y-4px'>
+      <Text type='secondary' className='text-12px'>
+        {countable
+          ? t('learning.xpGaugeSettled', {
+              settled: reading.settled_nodes,
+              total: reading.total_nodes,
+            })
+          : t('learning.xpGaugeNone')}
+      </Text>
+      {countable && (
+        <Text type='secondary' className='text-12px'>
+          {t('learning.xpGaugeRemaining', { count: reading.remaining_est })}
+        </Text>
+      )}
+      <Text type='secondary' className='text-12px'>
+        {reading.eta_days === null
+          ? t('learning.xpEtaNone')
+          : t('learning.xpEta', { count: reading.eta_days, pace: reading.pace_xp })}
+      </Text>
+    </div>
+  );
+}
+
+/**
  * XP 读数面板（复习横幅展开区域）：今日 XP 卡 + 进度尺 + 84 格学习日历。
  * 措辞纪律：只报安排与事实（已得/目标/已结算/剩余/现步伐），不承诺记忆
  * 效果。打卡计数口径已退役（j05），本面板即其接管位置；读数与日历数据
@@ -162,25 +196,9 @@ export function XpPanel({
               : t('learning.xpRemaining', { count: Math.max(0, goal - todayXp) })}
           </Text>
         </div>
-        {/* 进度尺行（现存且启用口径，与分子分母同筛）：只报事实与安排 */}
-        {reading && (
-          <div className='flex flex-wrap items-center gap-x-16px gap-y-4px'>
-            <Text type='secondary' className='text-12px'>
-              {t('learning.xpGaugeSettled', {
-                settled: reading.settled_nodes,
-                total: reading.total_nodes,
-              })}
-            </Text>
-            <Text type='secondary' className='text-12px'>
-              {t('learning.xpGaugeRemaining', { count: reading.remaining_est })}
-            </Text>
-            <Text type='secondary' className='text-12px'>
-              {reading.eta_days === null
-                ? t('learning.xpEtaNone')
-                : t('learning.xpEta', { count: reading.eta_days })}
-            </Text>
-          </div>
-        )}
+        {/* 进度尺行（现存且启用、剔 skipped 口径，与课程卡 f2 分母同源）：
+            只报事实与安排 */}
+        {reading && <XpGaugeReadout reading={reading} />}
       </div>
 
       {/* 二级：84 格学习日历（近 {weeks} 周，末桶 = 今日；不过课程筛） */}

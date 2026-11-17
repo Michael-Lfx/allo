@@ -263,8 +263,9 @@
   "xpBadgeDone": "✓ {{xp}}/{{goal}}",
   "xpGaugeSettled": "{{settled}}/{{total}} nodes settled",
   "xpGaugeRemaining": "{{count}} est minutes left",
-  "xpEta": "~{{count}} days to finish at current pace",
-  "xpEtaNone": "No pace signal yet",
+  "xpGaugeNone": "No countable nodes",
+  "xpEta": "~{{count}} days to finish at current pace · {{pace}} XP/day over the last 7 days",
+  "xpEtaNone": "No pace yet — it can be estimated once you start learning",
   "xpWeekdays": [
     "S",
     "M",

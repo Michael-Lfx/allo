@@ -9512,6 +9512,230 @@ async fn xp_reading_gauges_never_invert() {
     assert_eq!(calendar.days.first().unwrap().xp, 0);
 }
 
+/// c1/R-b（f2 漏改消费面的缺陷收尾）：进度尺分母与剩余 est 同步剔
+/// skipped——与课程卡分母（total − skipped）同源口径。票面场景对数：
+/// 21 课时课 skip 17 → 面板 total=4；全跳 → total=0（前端「—」分支）；
+/// unskip 1 → total=5（跳过可逆，unskip 回尺）；remaining_est 只剩未跳
+/// 未结算课时的 est（跳过的 391 分钟不入账）。
+#[tokio::test]
+async fn xp_reading_gauge_excludes_skipped_lessons() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    // 21 课时：前 17 课 est 23（skip 组，计 391 分钟）、后 4 课 est 25
+    // （可计组，计 100 分钟）——票面「剩余 ≈100 分钟」场景的形状复刻。
+    let mut pack = valid_pack();
+    pack.modules[0].lessons = (0..21)
+        .map(|index| LessonPack {
+            title: format!("Lesson {index}"),
+            est: if index < 17 { 23 } else { 25 },
+            ..pack.modules[0].lessons[0].clone()
+        })
+        .collect();
+    let course = service.import_course(pack).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lessons: Vec<_> = detail.modules[0].lessons.to_vec();
+    assert_eq!(lessons.len(), 21, "fixture is a twenty-one-lesson course");
+
+    // 基线：无跳过，面板读全量（21 节点 · 491 分钟）。
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (reading.total_nodes, reading.settled_nodes, reading.remaining_est),
+        (21, 0, 491)
+    );
+
+    // skip 17：分母 21−17=4、剩余只剩可计组 100 分钟（391 分钟退出读数）。
+    for lesson in &lessons[..17] {
+        service
+            .update_lesson_progress(&lesson.id, &user_id, LessonStatus::Skipped)
+            .await
+            .unwrap();
+    }
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (reading.total_nodes, reading.settled_nodes, reading.remaining_est),
+        (4, 0, 100),
+        "denominator and remaining est both drop the skipped 17"
+    );
+
+    // unskip 1（票面对数 4 → 5）：可逆，回尺（分母 5、剩余 100+23=123 分钟）。
+    service
+        .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::NotStarted)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (reading.total_nodes, reading.settled_nodes, reading.remaining_est),
+        (5, 0, 123),
+        "unskip restores the lesson to the gauge"
+    );
+
+    // 全跳：无可计节点（分母 0，前端「—」分支），剩余归 0。
+    for lesson in &lessons {
+        service
+            .update_lesson_progress(&lesson.id, &user_id, LessonStatus::Skipped)
+            .await
+            .unwrap();
+    }
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (reading.total_nodes, reading.settled_nodes, reading.remaining_est),
+        (0, 0, 0),
+        "full skip empties the gauge"
+    );
+
+    // 全跳后 unskip 1：可逆对账不因全跳卡死（f2 同款断言，21 课尺回 1/23）。
+    service
+        .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::NotStarted)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (reading.total_nodes, reading.settled_nodes, reading.remaining_est),
+        (1, 0, 23),
+        "unskip after full skip reverses"
+    );
+}
+
+/// c1/R-b 分子端：settled_nodes 与新分母同口径剔 skipped——完成过的课时
+/// 再被跳过（图工作区对已完成节点也开跳过钮）时，其结算不进分子，尺
+/// 永不倒挂（settled ≤ total 恒真）；unskip 后结算回分子。
+#[tokio::test]
+async fn xp_reading_settled_nodes_follow_skip_denominator() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let mut pack = valid_pack();
+    pack.modules[0].lessons = (0..2)
+        .map(|index| LessonPack {
+            title: format!("Lesson {index}"),
+            ..pack.modules[0].lessons[0].clone()
+        })
+        .collect();
+    let course = service.import_course(pack).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lessons: Vec<_> = detail.modules[0].lessons.to_vec();
+
+    // 完成第 1 课：分子 1、分母 2。
+    service
+        .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!((reading.settled_nodes, reading.total_nodes), (1, 2));
+
+    // 完成后跳过同一课：分母剔它（2→1），分子同步剔它的结算（1→0）——
+    // 若分子照旧数账本，尺会读出 1/1 对 0 的倒挂。
+    service
+        .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::Skipped)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (reading.settled_nodes, reading.total_nodes),
+        (0, 1),
+        "numerator drops the settled-then-skipped lesson; gauge never inverts"
+    );
+    assert!(reading.settled_nodes <= reading.total_nodes, "尺永不倒挂");
+
+    // unskip：课时回分母，历史结算回分子（账本永远保留，尺口径可逆）。
+    service
+        .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::NotStarted)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!((reading.settled_nodes, reading.total_nodes), (1, 2));
+}
+
+/// c1/R-d（ETA 语境）：步伐近零（近 7 学习日 XP 总和低于步伐地板）时
+/// eta_days 如实返回 null（前端降级「暂无步伐」），巨大天数不直出；
+/// 跨过地板后 ETA 恢复直出且 pace_xp 披露日均步伐（周 XP ÷ 7，四舍五入）。
+#[tokio::test]
+async fn xp_reading_eta_degrades_below_pace_floor_and_discloses_pace() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    // 4 课时 est 10：完成一笔 node 结算 = est 10 + 全对 bonus 2 = 12 XP。
+    let mut pack = valid_pack();
+    pack.modules[0].lessons = (0..4)
+        .map(|index| LessonPack {
+            title: format!("Lesson {index}"),
+            ..pack.modules[0].lessons[0].clone()
+        })
+        .collect();
+    let course = service.import_course(pack).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lessons: Vec<_> = detail.modules[0].lessons.to_vec();
+    let activity_ids: Vec<_> = lessons
+        .iter()
+        .map(|lesson| lesson.activities[0].id.clone())
+        .collect();
+
+    // 完成走真实结算（先正确作答 → est 10 + 全对 bonus 2 = 12 XP）。
+    // 1 笔（周 XP 12 < 地板 35）：步伐近零 → eta null；pace_xp 照实
+    // 披露日均 2（12/7 四舍五入）。
+    service
+        .submit_attempt(&activity_ids[0], &user_id, Value::Bool(true), None, None)
+        .await
+        .unwrap();
+    service
+        .update_lesson_progress(&lessons[0].id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(reading.remaining_est, 30, "three lessons remain");
+    assert_eq!(reading.eta_days, None, "week XP below pace floor → no ETA");
+    assert_eq!(reading.pace_xp, 2, "daily pace disclosed as-is");
+
+    // 2 笔（周 XP 24）：仍在地板下，巨大天数继续不直出。
+    service
+        .submit_attempt(&activity_ids[1], &user_id, Value::Bool(true), None, None)
+        .await
+        .unwrap();
+    service
+        .update_lesson_progress(&lessons[1].id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(reading.eta_days, None);
+    assert_eq!(reading.pace_xp, 3, "24/7 rounds to 3");
+
+    // 3 笔（周 XP 36 ≥ 地板 35）：ETA 恢复直出 ceil(10 / (36/7)) = 2 天，
+    // pace_xp = 5。
+    service
+        .submit_attempt(&activity_ids[2], &user_id, Value::Bool(true), None, None)
+        .await
+        .unwrap();
+    service
+        .update_lesson_progress(&lessons[2].id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(reading.eta_days, Some(2), "real pace → ETA disclosed");
+    assert_eq!(reading.pace_xp, 5, "36/7 rounds to 5");
+}
+
 /// 打卡口径退役：日达标按 XP（dailyXpGoal），锁定快照记 XP 口径。
 #[tokio::test]
 async fn checkin_today_locks_on_xp_gauge() {

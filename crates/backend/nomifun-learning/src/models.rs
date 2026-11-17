@@ -2958,16 +2958,24 @@ pub struct XpReading {
     /// Whether today's XP has reached the goal.
     pub goal_achieved: bool,
     /// Progress gauge numerator: settled nodes within existing-and-enabled
-    /// courses (same filter as the denominator).
+    /// courses, excluding currently-skipped lessons (same filter as the
+    /// denominator; c1/f2 shared gauge scope).
     pub settled_nodes: i64,
     /// Progress gauge denominator: lessons of the user's existing-and-enabled
-    /// courses.
+    /// courses, excluding currently-skipped ones (skip is reversible — unskip
+    /// returns the lesson to the gauge; c1/f2 shared denominator).
     pub total_nodes: i64,
-    /// Remaining est minutes of unsettled lessons in the same scope.
+    /// Remaining est minutes of unsettled, non-skipped lessons in the same
+    /// scope.
     pub remaining_est: i64,
     /// Days to finish at the trailing-7-review-day pace; `null` when there is
-    /// no pace signal yet (or nothing remains → 0). Never written back.
+    /// no pace signal yet (week XP below the pace floor, or nothing remains →
+    /// 0). Never written back.
     pub eta_days: Option<i64>,
+    /// Trailing-7-review-day daily pace in XP (week XP ÷ 7, rounded) —
+    /// disclosed alongside the ETA so the day count is auditable. Reported
+    /// as-is even when `eta_days` is `null` (below the pace floor).
+    pub pace_xp: i64,
 }
 
 /// XP 日历的单日桶（学习日 02:00 翻转）：净入账，负账如实，含零桶。

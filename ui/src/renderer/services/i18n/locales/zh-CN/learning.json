@@ -263,8 +263,9 @@
   "xpBadgeDone": "✓ {{xp}}/{{goal}}",
   "xpGaugeSettled": "已结算 {{settled}}/{{total}} 节点",
   "xpGaugeRemaining": "剩余 {{count}} est 分钟",
-  "xpEta": "现步伐约 {{count}} 天学完",
-  "xpEtaNone": "暂无步伐信号",
+  "xpGaugeNone": "无可计节点",
+  "xpEta": "现步伐约 {{count}} 天学完 · 按近 7 天均 {{pace}} XP",
+  "xpEtaNone": "暂无步伐，开始学习后可估算",
   "xpWeekdays": [
     "日",
     "一",
