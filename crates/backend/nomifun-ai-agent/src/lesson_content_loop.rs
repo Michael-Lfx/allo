@@ -1652,6 +1652,16 @@ fn ls_patch_activities(ctx: Arc<LoopContext>) -> OneShotTool {
                     .service
                     .patch_lesson_draft(&draft_id, ops)
                     .map_err(|error| error.to_string())?;
+                // f1 相位化进度：批次有 op 被接纳才发 activities 帧
+                // `{"phase":"activities"}`（出题相位——学习面呈现「出题中」；
+                // 出题与逐节写作交错进行，帧随批如实重复）。全拒批次不发帧
+                // ——「成功路径」限定，与 plan/section 帧同纪律。
+                if !report.accepted.is_empty() {
+                    ctx.log(
+                        "activities",
+                        serde_json::json!({ "phase": nomifun_learning::phase::ACTIVITIES }),
+                    );
+                }
                 Ok(json_compact(&report))
             }
         }),
@@ -1706,6 +1716,13 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
                 // w1：verify_math 留痕随发布面穿出（finish 门后 warning，
                 // A3——不挡发布、不重放核验）。w1 评审修复口径：传未复核
                 // 修正数（unresolved），自修正会话零 warning。
+                // f1 相位化进度：发布起点（门禁尝试前）发 publishing 帧
+                // `{"phase":"publishing"}`——被门禁打回也是一次如实的发布
+                // 尝试，帧照发（修复后重发）。复用课程流同名相位字面量。
+                ctx.log(
+                    "publishing",
+                    serde_json::json!({ "phase": nomifun_learning::phase::PUBLISHING }),
+                );
                 match ctx
                     .service
                     .finish_lesson_draft(&draft_id, ctx.math_verify.unresolved_u32())
@@ -2902,6 +2919,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sink.frames().len(), 1, "rejected op must not emit a frame");
+    }
+
+    /// f1 相位化进度（帧侧）：`ls_patch_activities` handler 成功路径发
+    /// activities 帧 `{"phase":"activities"}`（出题相位——学习面呈现
+    /// 「出题中」）；被拒 op（题型损坏）不发帧——「成功路径」限定。
+    #[tokio::test]
+    async fn activities_patch_success_emits_activities_frame_but_rejection_does_not() {
+        let (_service, _dir, sink, ctx, _draft_id) = recording_context().await;
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_patch_activities")
+            .unwrap();
+
+        (tool.handler)(valid_activity_ops()).await.unwrap();
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 1, "exactly one activities frame: {frames:?}");
+        assert_eq!(frames[0]["phase"], nomifun_learning::phase::ACTIVITIES);
+
+        // 被拒 op（分钟数越界）零帧（op 拒绝是 Ok report，不是 Err）。
+        (tool.handler)(serde_json::json!({ "operations": [
+            { "op": "set_estimated_minutes", "minutes": 1000 }
+        ] }))
+        .await
+        .unwrap();
+        assert_eq!(sink.frames().len(), 1, "rejected op must not emit a frame");
+    }
+
+    /// f1 相位化进度（帧侧）：`ls_finish` handler 在发布起点（门禁尝试前）
+    /// 发 publishing 帧 `{"phase":"publishing"}`——门禁拒绝（danger findings
+    /// 仍在，发布打回修复环）也是一次如实的发布尝试，帧照发；发布成功后
+    /// publish_ok 帧紧随。此前 publishing 相位只存在于课程流（大纲组装
+    /// 起点），课时流从未到达——学习面「发布」相位缺位。
+    #[tokio::test]
+    async fn finish_emits_publishing_frame_at_the_publish_start() {
+        let (service, _dir, sink, ctx, draft_id) = recording_context().await;
+        let tool = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_finish")
+            .unwrap();
+
+        // 第一次尝试：门禁拒绝（草稿尚无正文与活动）——publishing 帧照发，
+        // handler 返回阻塞报告（Err）。
+        let blocked = (tool.handler)(serde_json::json!({})).await.unwrap_err();
+        assert!(blocked.contains("danger"), "gate blocks a bare draft: {blocked}");
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 1, "blocked gate still emits publishing: {frames:?}");
+        assert_eq!(frames[0]["phase"], nomifun_learning::phase::PUBLISHING);
+
+        // 补齐草稿（直走 service 面，op 复用既有合法活动样张）→ 第二次
+        // ls_finish 发布成功——publishing 帧再次发出（每次发布尝试都从
+        // 起点如实报相位）。
+        let body = "这是一个足够长的正文段落，用于通过课时级文档契约的长度下限要求。".repeat(12);
+        let mut ops: Vec<nomifun_learning::LessonOp> =
+            serde_json::from_value(valid_activity_ops()["operations"].clone()).unwrap();
+        ops.insert(
+            0,
+            nomifun_learning::LessonOp::SetDocument {
+                document: format!("## 描述\n{body}\n## 例子\n{body}\n## 验证\n{body}\n"),
+            },
+        );
+        service.patch_lesson_draft(&draft_id, ops).unwrap();
+        (tool.handler)(serde_json::json!({})).await.unwrap();
+        let frames = sink.frames();
+        assert_eq!(frames.len(), 2, "publish attempt re-emits: {frames:?}");
+        assert_eq!(frames[1]["phase"], nomifun_learning::phase::PUBLISHING);
     }
 
     /// verify_math 工具 op（w1/蓝图 4.2）handler 直调样：解析边界是 Err

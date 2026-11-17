@@ -30,9 +30,11 @@ export const PHASE = {
   audit: 'audit',
   generate: 'generate',
   repair: 'repair',
-  // 课时节进度帧（f1 相位化进度，handler 侧直发，仅课时流）。
+  // 课时节进度帧（f1 相位化进度，handler 侧直发，仅课时流；publishing
+  // 复用上方课程流同名字面量——ls_finish 发布起点直发课时流）。
   plan: 'plan',
   section: 'section',
+  activities: 'activities',
 } as const;
 
 export type Phase = (typeof PHASE)[keyof typeof PHASE];
@@ -75,5 +77,6 @@ export const PET_PHASE_ALIAS: Record<string, string> = {
   [PHASE.repair]: PHASE.round,
   [PHASE.plan]: PHASE.started,
   [PHASE.section]: PHASE.started,
+  [PHASE.activities]: PHASE.started,
   [PHASE.cancelled]: PHASE.failed,
 };

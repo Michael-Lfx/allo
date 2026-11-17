@@ -677,6 +677,7 @@
         "started": "开始生成课时",
         "round": "正在撰写课时 {{title}}（{{round}}/{{max}}）",
         "audit": "正在审校课时",
+        "publishing": "正在发布课时",
         "completed": "课时已生成",
         "failed": "课时生成失败"
       }

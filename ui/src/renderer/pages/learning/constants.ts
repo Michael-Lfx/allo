@@ -47,3 +47,8 @@ export const GRAPH_HEADER_COLLAPSED_KEY = 'learning.graph.headerCollapsed';
  */
 export const ARCHIVE_STABLE_REVIEW_COUNT = 2;
 export const ARCHIVE_STABLE_DAYS = 30;
+
+/** 学习页轮询节拍共享常量（S6）：图课程流结构徽章轮询（structurePillWatch）
+ * 与课时生成耗时计时拍（LessonStudy genElapsed interval）同口径——5s 一拍，
+ * 终态即停。定义在共享 constants，两处消费同名常量（魔数不再两处手写）。 */
+export const STRUCTURE_PILL_POLL_MS = 5_000;

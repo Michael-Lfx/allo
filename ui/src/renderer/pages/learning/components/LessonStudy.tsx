@@ -23,6 +23,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import MarkdownEditor from '@renderer/pages/conversation/Preview/components/editors/MarkdownEditor';
 import Markdown, { InlineMarkdown } from '@renderer/components/Markdown';
 import { learningApi } from '../api';
+import { STRUCTURE_PILL_POLL_MS } from '../constants';
 import { formatGrowthElapsed } from '../growthTaskPill';
 import { CapacityFeedbackCard } from './CapacityFeedbackCard';
 import {
@@ -749,11 +750,13 @@ export function LessonBlock({
   // 按需生成课时的行内迷你进度：按 lesson 过滤相位事件，一行文本轻量
   // 更新（不展开完整 timeline）；终态事件清空文本。
   // f1 相位化：文案由 model.lessonProgressLine 单源产出——plan → 「规划节
-  // 清单」；section → 「写第 k/N 节」；audit 按环区分（生成环质量检查 /
+  // 清单」；section → 「写第 k/N 节」；activities → 「出题中」；publishing
+  // → 「发布中」（发布帧不再清行）；audit 按环区分（生成环质量检查 /
   // 修复环修复审校）；裸 round 兜底通用「生成中」，轮次数字不再上学习者
   // 面。耗时照 structure 徽章的计时模式：started 起表、生成期间 interval
-  // 刷新（5s 一拍，与 STRUCTURE_PILL_POLL_MS 同口径）、终态停表清零（本
-  // 组件只存最近一帧进度事件，elapsed 变化经 useMemo 重算文案）。
+  // 刷新（STRUCTURE_PILL_POLL_MS 一拍，共享常量）、终态停表清零（本组件
+  // 只存最近一帧进度事件，elapsed 变化经 useMemo 重算文案）；M2：全部
+  // 相位帧统一拼共享耗时后缀（lessonProgressLine 内单源拼装）。
   const [progressEvent, setProgressEvent] =
     useState<ILearningLessonGenerationEvent | null>(null);
   const [genStartedAt, setGenStartedAt] = useState<number | null>(null);
@@ -763,7 +766,7 @@ export function LessonBlock({
     const tick = () =>
       setGenElapsed(formatGrowthElapsed(Math.floor((Date.now() - genStartedAt) / 1000)));
     tick();
-    const timer = setInterval(tick, 5_000);
+    const timer = setInterval(tick, STRUCTURE_PILL_POLL_MS);
     return () => clearInterval(timer);
   }, [genStartedAt]);
   const progressText = useMemo(
@@ -791,6 +794,8 @@ export function LessonBlock({
       } else if (
         event.phase === PHASE.plan ||
         event.phase === PHASE.section ||
+        event.phase === PHASE.activities ||
+        event.phase === PHASE.publishing ||
         event.phase === PHASE.round ||
         event.phase === PHASE.audit
       ) {

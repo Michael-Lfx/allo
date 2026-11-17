@@ -153,38 +153,57 @@ export function summarizeTools(tools: ILearningGenerationToolCall[] | undefined)
     .join(' · ');
 }
 
+/** M2 共享耗时后缀：started 起表的耗时在场时统一拼「 · 已 {{elapsed}}」
+ * ——plan/section/activities/audit/修复审校/publishing 各相位共用一份拼
+ * 装（词条拆基句 + 后缀，不再逐相位复制整句）。elapsed 缺席（started 帧
+ * 丢失/订阅中途的降级路径）返回空串——退无耗时文案。 */
+function elapsedSuffix(elapsed: string | null, t: Translate): string {
+  return elapsed ? ` · ${t('learning.lessonGenElapsed', { elapsed })}` : '';
+}
+
 /** 课时生成的行内迷你进度行（按 lesson 过滤后的事件 → 一句话）；
  * 终态与未知事件返回 null（清空文本）。
  *
  * f1 相位化呈现：plan → 「规划节清单」；section → 「写第 {{index}}/
- * {{total}} 节」（elapsed 在场时拼耗时词条，缺省退无耗时词条）；audit
- * 按环区分（生成环质量检查 / 修复环独立「修复审校」词条）；裸 round 帧
- * 的轮次数字退出学习者面——向后兼容兜底只出通用「生成中」，不带数字。 */
+ * {{total}} 节」；activities → 「出题中」；publishing → 「发布中」（发布
+ * 帧不再清行）；audit 按环区分（生成环质量检查 / 修复环独立「修复审校」
+ * 词条）；裸 round 帧的轮次数字退出学习者面——向后兼容兜底只出通用
+ * 「生成中」，不带数字。M2：前述相位全部拼共享耗时后缀（elapsed 缺席退
+ * 无耗时），round 兜底不带。 */
 export function lessonProgressLine(
   event: ILearningCourseGenerationEvent,
   t: Translate,
   elapsed: string | null = null
 ): string | null {
+  const suffix = elapsedSuffix(elapsed, t);
   if (event.phase === PHASE.plan) {
-    return t('learning.lessonGenPlan');
+    return t('learning.lessonGenPlan') + suffix;
   }
   if (event.phase === PHASE.section) {
     const vars = { index: event.index ?? 0, total: event.total ?? 0 };
-    return elapsed
-      ? t('learning.lessonGenSectionElapsed', { ...vars, elapsed })
-      : t('learning.lessonGenSection', vars);
+    return t('learning.lessonGenSection', vars) + suffix;
+  }
+  if (event.phase === PHASE.activities) {
+    return t('learning.lessonGenActivities') + suffix;
+  }
+  if (event.phase === PHASE.publishing) {
+    return t('learning.lessonGenPublishing') + suffix;
   }
   if (event.phase === PHASE.audit) {
     if (event.loop === PHASE.repair) {
-      return t('learning.lessonGenAuditRepair', {
+      return (
+        t('learning.lessonGenAuditRepair', {
+          danger: event.danger ?? 0,
+          warning: event.warning ?? 0,
+        }) + suffix
+      );
+    }
+    return (
+      `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenAudit', {
         danger: event.danger ?? 0,
         warning: event.warning ?? 0,
-      });
-    }
-    return `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenAudit', {
-      danger: event.danger ?? 0,
-      warning: event.warning ?? 0,
-    })}`;
+      })}` + suffix
+    );
   }
   if (event.phase === PHASE.round) {
     return t('learning.lessonGenRunning');
@@ -369,4 +388,16 @@ export function progressDenominator(course: ProgressCountersLike): number {
 export function progressPercent(completedLessons: number, denominator: number): number | null {
   if (denominator <= 0) return null;
   return Math.round((completedLessons / denominator) * 100);
+}
+
+/** S3 进度读数文本（共享展示面）：a/N 计数行，分母 0 → 「—」。分子作参数
+ * ——CourseCard 计数行用 settled_or_completed、CourseWorkspace 用
+ * completed_lessons（percent 一律 completed_lessons，调方各自组合）。尾缀
+ * 供 CourseCard 追加课时单位词条，只在 a/N 臂拼（「—」臂不带）。 */
+export function progressReadoutText(
+  numerator: number,
+  denominator: number,
+  suffix = ''
+): string {
+  return denominator <= 0 ? '—' : `${numerator}/${denominator}${suffix}`;
 }

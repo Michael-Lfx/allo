@@ -35,12 +35,15 @@
 import { useEffect, useState } from 'react';
 
 import { learningApi } from './api';
+import { STRUCTURE_PILL_POLL_MS } from './constants';
 import { formatGrowthElapsed } from './growthTaskPill';
 import type { LearningGenerationTaskView } from './types';
 import type { Translate } from './utils';
 
-/** 轮询节拍（与恢复态收敛循环同口径）：非终态期间 5s 一拍，终态即停。 */
-export const STRUCTURE_PILL_POLL_MS = 5_000;
+/** 轮询节拍（与恢复态收敛循环同口径）：非终态期间 5s 一拍，终态即停。
+ * 定义在 ./constants（S6：与 LessonStudy 课时生成耗时计时拍共享同名常量），
+ * 此处再出口维持本模块既有公共面。 */
+export { STRUCTURE_PILL_POLL_MS };
 
 /** v3 新增的悬浮 Pill 词典键（红线 2：双语对称由真实词典 JSON 断言钉住）。 */
 export const STRUCTURE_PILL_I18N_KEYS = [

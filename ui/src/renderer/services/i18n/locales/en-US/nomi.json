@@ -677,6 +677,7 @@
         "started": "Starting a lesson",
         "round": "Writing lesson {{title}} ({{round}}/{{max}})",
         "audit": "Reviewing the lesson",
+        "publishing": "Publishing the lesson",
         "completed": "Lesson ready",
         "failed": "Lesson generation failed"
       }

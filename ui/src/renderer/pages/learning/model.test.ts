@@ -17,6 +17,7 @@ import {
   deriveStep,
   lessonStatusTagColors,
   lessonProgressLine,
+  progressReadoutText,
   sectionStatusTagColors,
   stepActivities,
   stepLocked,
@@ -147,17 +148,23 @@ describe('deriveStep / lessonProgressLine', () => {
     expect(
       lessonProgressLine({ phase: PHASE.audit, loop: PHASE.repair, danger: 2 } as never, t)
     ).toContain('learning.lessonGenAuditRepair');
-    // 终态与发布清空。
+    // 终态清空；发布相位不再清空（出「发布中」——M1 相位链补全）。
     expect(lessonProgressLine({ phase: PHASE.completed } as never, t)).toBeNull();
     expect(lessonProgressLine({ phase: PHASE.failed } as never, t)).toBeNull();
-    expect(lessonProgressLine({ phase: PHASE.publishing } as never, t)).toBeNull();
+    expect(lessonProgressLine({ phase: PHASE.publishing } as never, t)).toBe(
+      'learning.lessonGenPublishing'
+    );
+    // 出题相位（ls_patch_activities 成功路径帧）。
+    expect(lessonProgressLine({ phase: PHASE.activities } as never, t)).toBe(
+      'learning.lessonGenActivities'
+    );
   });
 
   test('f1 相位帧：plan 出「规划节清单」，section 出「写第 k/N 节」带耗时', () => {
     // plan 帧：N 不上学习者面（节数在 stepper 面自现），只报相位。
     const plan = lessonProgressLine({ phase: PHASE.plan, total: 5 } as never, t);
     expect(plan).toBe('learning.lessonGenPlan');
-    // section 帧 + 耗时：写第 k/N 节 · 已 elapsed。
+    // section 帧 + 耗时：写第 k/N 节 · 已 elapsed（共享耗时后缀拼装）。
     expect(
       lessonProgressLine(
         { phase: PHASE.section, index: 2, total: 5, title: '概念：期权的定义' } as never,
@@ -165,13 +172,52 @@ describe('deriveStep / lessonProgressLine', () => {
         '1:00'
       )
     ).toBe(
-      'learning.lessonGenSectionElapsed:' +
-        JSON.stringify({ index: 2, total: 5, elapsed: '1:00' })
+      'learning.lessonGenSection:' +
+        JSON.stringify({ index: 2, total: 5 }) +
+        ' · learning.lessonGenElapsed:' +
+        JSON.stringify({ elapsed: '1:00' })
     );
     // 耗时缺席（started 帧丢失/订阅中途）：退无耗时词条，不渲染空「已 」。
     expect(
       lessonProgressLine({ phase: PHASE.section, index: 3, total: 5 } as never, t)
     ).toBe('learning.lessonGenSection:' + JSON.stringify({ index: 3, total: 5 }));
+  });
+
+  test('M2 耗时全程挂：plan/activities/audit/修复审校/publishing 全带耗时，round 兜底不带', () => {
+    // 耗时后缀统一「 · 已 elapsed」，与 section 帧同一份拼装。
+    expect(lessonProgressLine({ phase: PHASE.plan } as never, t, '0:30')).toBe(
+      'learning.lessonGenPlan · learning.lessonGenElapsed:' + JSON.stringify({ elapsed: '0:30' })
+    );
+    expect(lessonProgressLine({ phase: PHASE.activities } as never, t, '2:00')).toBe(
+      'learning.lessonGenActivities · learning.lessonGenElapsed:' +
+        JSON.stringify({ elapsed: '2:00' })
+    );
+    expect(lessonProgressLine({ phase: PHASE.publishing } as never, t, '3:00')).toBe(
+      'learning.lessonGenPublishing · learning.lessonGenElapsed:' +
+        JSON.stringify({ elapsed: '3:00' })
+    );
+    expect(
+      lessonProgressLine({ phase: PHASE.audit, loop: PHASE.generate, danger: 1 } as never, t, '4:00')
+    ).toBe(
+      'learning.lessonGenRunning · learning.lessonGenAudit:' +
+        JSON.stringify({ danger: 1, warning: 0 }) +
+        ' · learning.lessonGenElapsed:' +
+        JSON.stringify({ elapsed: '4:00' })
+    );
+    expect(
+      lessonProgressLine({ phase: PHASE.audit, loop: PHASE.repair, danger: 0 } as never, t, '5:00')
+    ).toBe(
+      'learning.lessonGenAuditRepair:' +
+        JSON.stringify({ danger: 0, warning: 0 }) +
+        ' · learning.lessonGenElapsed:' +
+        JSON.stringify({ elapsed: '5:00' })
+    );
+    // 裸 round 兜底（向后兼容）不带耗时——保持既有语义。
+    expect(lessonProgressLine({ phase: PHASE.round } as never, t, '6:00')).toBe(
+      'learning.lessonGenRunning'
+    );
+    // 耗时缺席：全部退无耗时词条（降级路径语义不变）。
+    expect(lessonProgressLine({ phase: PHASE.plan } as never, t)).toBe('learning.lessonGenPlan');
   });
 });
 
@@ -350,5 +396,16 @@ describe('f2 进度分母与百分比', () => {
     expect(progressPercent(3, 3)).toBe(100);
     expect(progressPercent(0, 0)).toBeNull();
     expect(progressPercent(3, 0)).toBeNull();
+  });
+});
+
+describe('S3 进度读数文本（共享展示面）', () => {
+  test('有分母出 a/N，分母 0 出「—」；尾缀只在 a/N 臂拼（「—」臂不带）', () => {
+    expect(progressReadoutText(2, 4)).toBe('2/4');
+    expect(progressReadoutText(0, 4)).toBe('0/4');
+    expect(progressReadoutText(1, 0)).toBe('—');
+    // CourseCard 形：a/N 后随「 N 课时」词条；分母 0 臂只有「—」不带尾缀。
+    expect(progressReadoutText(2, 4, ' 4 课时')).toBe('2/4 4 课时');
+    expect(progressReadoutText(2, 0, ' 4 课时')).toBe('—');
   });
 });

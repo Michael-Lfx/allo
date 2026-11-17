@@ -9,10 +9,13 @@
 //! reconnect, so the frontend treats the HTTP response as the single source
 //! of truth for the terminal state.
 //!
-//! 课时节进度帧（f1 相位化进度）：`plan` / `section` 由课时代理的
-//! `ls_set_section_manifest` / `ls_set_section_body` handler 在 op 接纳后
-//! 直发（学习面呈现「规划节清单 → 写第 k/N 节」，裸轮次数字退出学习者面）。
-//! 帧词汇表与本 const 组互钉，前端单源在 `pages/learning/phaseMeta.ts`。
+//! 课时节进度帧（f1 相位化进度）：`plan` / `section` / `activities` 由课
+//! 时代理的 `ls_set_section_manifest` / `ls_set_section_body` /
+//! `ls_patch_activities` handler 在 op 接纳后直发，`publishing`（复用
+//! [`phase::PUBLISHING`] 字面量）在 `ls_finish` 发布起点直发——学习面呈现
+//! 「规划节清单 → 写第 k/N 节 → 出题 → 审校/修复审校 → 发布」，裸轮次数
+//! 字退出学习者面。帧词汇表与本 const 组互钉，前端单源在
+//! `pages/learning/phaseMeta.ts`。
 
 use std::sync::Arc;
 
@@ -54,6 +57,7 @@ pub mod phase {
     // 课时节进度帧（f1 相位化进度，handler 侧直发）。
     pub const PLAN: &str = "plan";
     pub const SECTION: &str = "section";
+    pub const ACTIVITIES: &str = "activities";
 
     pub const CORE: &[&str] = &[STARTED, COMPLETED, FAILED, CANCELLED];
     pub const COURSE: &[&str] = &[
@@ -67,8 +71,10 @@ pub mod phase {
         BASIS_REVOKED,
     ];
     pub const LESSON: &[&str] = &[RESUMED, RETRY, GROUNDING, DEGRADED];
-    pub const LOOP: &[&str] = &[ROUND, AUDIT, GENERATE, REPAIR, PLAN, SECTION];
-    /// 四组去重拼接（22 值）。
+    // 课时流的 publishing 帧复用本 const（ls_finish 发布起点直发；课程流的
+    // 同名相位在大纲组装起点——两流各自携带，字面量单源不重复）。
+    pub const LOOP: &[&str] = &[ROUND, AUDIT, GENERATE, REPAIR, PLAN, SECTION, ACTIVITIES];
+    /// 四组去重拼接（23 值）。
     pub const ALL: &[&str] = &[
         STARTED,
         COMPLETED,
@@ -92,6 +98,7 @@ pub mod phase {
         REPAIR,
         PLAN,
         SECTION,
+        ACTIVITIES,
     ];
 }
 
@@ -167,11 +174,11 @@ mod tests {
         )
         .expect("write manifest");
 
-        // 清单自检：四组去重拼接 = ALL（22 值）。
+        // 清单自检：四组去重拼接 = ALL（23 值）。
         let mut unique = phase::ALL.to_vec();
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), phase::ALL.len(), "phase manifest has duplicates");
-        assert_eq!(phase::ALL.len(), 22);
+        assert_eq!(phase::ALL.len(), 23);
     }
 }

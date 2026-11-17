@@ -195,13 +195,16 @@ pub(crate) struct LoopBudgets {
 /// WebSocket 上的形状各不相同——哪些差异存在、哪些流携带哪些字段，以此
 /// 表为准。修改任何一项都是显式的行为变更，须有测试与理由。
 ///
-/// f1 相位化进度补充：课时流另有 handler 侧直发的 `plan` / `section` 帧
-/// （`ls_set_section_manifest` / `ls_set_section_body` 成功路径，词汇表在
-/// [`nomifun_learning::phase`]）——经本翻译器的 catch-all phase 放行臂
-/// 原样上 `learning.lesson-generation`，不加 kind、不重排（放行断言见
-/// `ls_wire_passes_plan_and_section_frames_to_the_lesson_stream`）。学习面
-/// 以相位帧呈现「规划节清单 → 写第 k/N 节」，裸 round 帧的轮次数字退出
-/// 学习者面（仅 dev/观测面消费）。
+/// f1 相位化进度补充：课时流另有 handler 侧直发的 `plan` / `section` /
+/// `activities` / `publishing` 帧（`ls_set_section_manifest` /
+/// `ls_set_section_body` / `ls_patch_activities` 成功路径与 `ls_finish`
+/// 发布起点，词汇表在 [`nomifun_learning::phase`]）——经本翻译器的
+/// catch-all phase 放行臂原样上 `learning.lesson-generation`，不加 kind、
+/// 不重排（放行断言见 learning_loop 测试模块的
+/// `ls_wire_passes_plan_and_section_frames_to_the_lesson_stream` 与
+/// `ls_wire_passes_activities_and_publishing_frames_to_the_lesson_stream`）。
+/// 学习面以相位帧呈现「规划节清单 → 写第 k/N 节 → 出题 → 审校/修复审校
+/// → 发布」，裸 round 帧的轮次数字退出学习者面（仅 dev/观测面消费）。
 #[derive(Clone, Copy)]
 pub(crate) struct WireConfig {
     /// 每个上线帧的 `kind` 标记（学习图 `"learning_graph"`；大纲/课时无）。
@@ -952,6 +955,33 @@ mod tests {
         assert_eq!(frames[1]["index"], 2);
         assert_eq!(frames[1]["total"], 5);
         assert_eq!(frames[1]["title"], "概念：期权的定义");
+    }
+
+    /// f1 相位化进度（wire 面）：handler 侧新发的 activities / publishing
+    /// 帧同走 catch-all phase 放行臂，原样上 lesson 流（不加 kind、不重
+    /// 排），课程流零污染——词汇表见 nomifun_learning::phase::ACTIVITIES
+    /// 与复用的 phase::PUBLISHING（课程流同名相位，两流各自直发）。
+    #[tokio::test]
+    async fn ls_wire_passes_activities_and_publishing_frames_to_the_lesson_stream() {
+        let (service, _dir, sink) = recording_service().await;
+        let channel = LoopChannel::new(LS_WIRE, LS_BUDGETS.generate_max_rounds);
+        channel.emit(
+            &service,
+            "activities",
+            &serde_json::json!({ "phase": nomifun_learning::phase::ACTIVITIES }),
+        );
+        channel.emit(
+            &service,
+            "publishing",
+            &serde_json::json!({ "phase": nomifun_learning::phase::PUBLISHING }),
+        );
+        assert!(sink.frames("learning.course-generation").is_empty());
+        let frames = sink.frames("learning.lesson-generation");
+        assert_eq!(frames.len(), 2, "{frames:?}");
+        assert_eq!(frames[0]["phase"], nomifun_learning::phase::ACTIVITIES);
+        assert!(frames[0].get("kind").is_none());
+        assert_eq!(frames[1]["phase"], nomifun_learning::phase::PUBLISHING);
+        assert!(frames[1].get("kind").is_none());
     }
 
     /// u07 修复轮开场组装四象限（纯函数）：opening 只属于课时流（大纲流
