@@ -549,6 +549,53 @@ describe('LearningGraphWorkspace 头部滚动自动折叠（a1，临时层不落
   });
 });
 
+describe('LearningGraphWorkspace 折叠钮显性化（a2）', () => {
+  // Tooltip 弹层断言走 LearningGraphWorkspace.header-collapse.structure.test.ts
+  // （仓库先例：bun test 宿主 import 提升先于 jsdom globals 注入，arco
+  // isServerRendering 在加载期恒 true → portal 弹层不渲染，悬停显形无法在
+  // 本宿主观察；DOM 面断 hit area / 图标 / 摘要条钮序，接线面断 Tooltip）。
+  test('展开态收起钮：hit area 常规（无 !px-2px）、图标 14px', async () => {
+    await mountGraphWorkspace();
+    const toggle = headerToggle('收起头部')!;
+    expect(toggle.className).not.toContain('!px-2px');
+    const icon = toggle.querySelector('.arco-icon');
+    expect(icon).not.toBeNull();
+    // arco 图标是 <svg>（className 为 SVGAnimatedString），走 classList 断言
+    expect(icon!.classList.contains('text-14px')).toBe(true);
+    expect(icon!.classList.contains('text-12px')).toBe(false);
+  });
+
+  test('折叠态展开钮：移到摘要文本之后、图标 14px、课程名转纯文本', async () => {
+    await mountGraphWorkspace();
+    await act(async () => {
+      headerToggle('收起头部')!.click();
+      await Promise.resolve();
+    });
+    const toggle = headerToggle('展开头部')!;
+    expect(toggle.className).not.toContain('!px-2px');
+    const icon = toggle.querySelector('.arco-icon');
+    expect(icon).not.toBeNull();
+    expect(icon!.classList.contains('text-14px')).toBe(true);
+    // 视觉动线：先读摘要再见钮——展开钮 DOM 位置在摘要文本之后
+    const summary = Array.from(
+      container.querySelectorAll('.arco-typography')
+    ).find((node) => (node.textContent ?? '').includes('条主线'));
+    expect(summary).toBeDefined();
+    expect(
+      summary!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    // 课程名从钮内图标+文本组合转纯文本 span（truncate 保留）
+    expect(container.textContent).toContain('图课程');
+    expect(toggle.textContent).not.toContain('图课程');
+    // 点击仍生效（折叠 ⇄ 展开）
+    await act(async () => {
+      toggle.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('知识结构');
+  });
+});
+
 describe('LearningGraphWorkspace 目标段去重（f3 Q6）', () => {
   test('goal 与 title 不同：目标段渲染', async () => {
     await mountGraphWorkspace();

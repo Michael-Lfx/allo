@@ -825,16 +825,19 @@ const LearningGraphWorkspace: React.FC<{
       <div className='flex flex-wrap items-start justify-between gap-12px'>
         <div className='min-w-0 flex-1'>
           <div className='flex items-center gap-8px'>
-            <Button
-              type='text'
-              size='small'
-              className='!px-2px'
-              aria-label={t('learning.learningGraphHeaderCollapse')}
-              aria-expanded={true}
-              onClick={collapseHeader}
-            >
-              <IconDown className='text-12px' />
-            </Button>
+            {/* a2 显性化：hit area 走常规 small padding（原裸图标极小点击面
+                难发现）、图标 14px、Tooltip 复用 aria 同源词条（零新键）。 */}
+            <Tooltip content={t('learning.learningGraphHeaderCollapse')}>
+              <Button
+                type='text'
+                size='small'
+                aria-label={t('learning.learningGraphHeaderCollapse')}
+                aria-expanded={true}
+                onClick={collapseHeader}
+              >
+                <IconDown className='text-14px' />
+              </Button>
+            </Tooltip>
             <Title heading={3} className='!m-0'>
               {detail.course.title}
             </Title>
@@ -1007,31 +1010,33 @@ const LearningGraphWorkspace: React.FC<{
       </div>
       </React.Fragment>
       ) : (
-      /* 折叠摘要条（f3 Q5；a3 修订）：一行收纳标题块 + 目标段 + 结构/生长
-          控制条。课程名（truncate）+ 结构摘要（structureSummaryText；读侧
-          其余态复用结构条文案，折叠不吞状态）+ processing 徽章（后台运行
-          时在此兜底渲染——徽章不被折叠吞）+ 展开钮。shrink-0 自然流于
-          Tabs 之上（d1 高链不变）；钮恒可点（a3：后台运行不禁用）。 */
+      /* 折叠摘要条（f3 Q5；a3 修订 + a2 显性化）：一行收纳标题块 + 目标段 +
+          结构/生长控制条。课程名（truncate）+ 结构摘要（structureSummaryText；
+          读侧其余态复用结构条文案，折叠不吞状态）+ processing 徽章（后台
+          运行时在此兜底渲染——徽章不被折叠吞）+ 展开钮。a2：展开钮从最左
+          移到摘要文本之后（视觉动线：先读摘要再见钮），hit area 走常规
+          small padding、图标 14px、Tooltip 复用 aria 同源词条（零新键）。
+          shrink-0 自然流于 Tabs 之上（d1 高链不变）；钮恒可点（a3：后台
+          运行不禁用）。 */
       <div className='flex shrink-0 flex-wrap items-center gap-8px'>
-        <Button
-          type='text'
-          size='small'
-          className='!px-2px'
-          aria-label={t('learning.learningGraphHeaderExpand')}
-          aria-expanded={false}
-          onClick={collapseHeader}
-        >
-          <span className='flex min-w-0 items-center gap-4px'>
-            <IconRight className='shrink-0 text-12px' />
-            <span className='min-w-0 max-w-360px truncate text-[var(--color-text-1)]'>
-              {detail.course.title}
-            </span>
-          </span>
-        </Button>
+        <span className='min-w-0 max-w-360px truncate text-[var(--color-text-1)]'>
+          {detail.course.title}
+        </span>
         {processingBadge}
         <Text type='secondary' className='min-w-0 text-12px'>
           {headerSummaryText}
         </Text>
+        <Tooltip content={t('learning.learningGraphHeaderExpand')}>
+          <Button
+            type='text'
+            size='small'
+            aria-label={t('learning.learningGraphHeaderExpand')}
+            aria-expanded={false}
+            onClick={collapseHeader}
+          >
+            <IconRight className='shrink-0 text-14px' />
+          </Button>
+        </Tooltip>
       </div>
       )}
 
