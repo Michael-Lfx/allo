@@ -6,12 +6,8 @@
 //! is currently hidden from the product UI (`fix(ui): 隐藏首页侧栏的会议入口`,
 //! 2026-10-15), so the tray must not keep a hidden entrance (menu items or
 //! global shortcuts) to it. The `/meeting` route itself is kept for deep links
-//! and previews, so the caption overlay still follows the backend state below.
+//! and previews; the desktop shell does not poll meeting status for the tray.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use nomifun_app::{DesktopServer, MeetingTrayPhase, MeetingTrayStatus};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
@@ -79,8 +75,6 @@ pub fn install_tray(app: &AppHandle) -> anyhow::Result<()> {
         tray_builder = tray_builder.icon(icon.clone());
     }
     tray_builder.build(app)?;
-
-    spawn_status_poller(app.clone());
     Ok(())
 }
 
@@ -94,60 +88,6 @@ pub fn set_tray_labels(
     items.show.set_text(show).map_err(|e| e.to_string())?;
     items.quit.set_text(quit).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// Tray tooltip and meeting captions follow the backend recording state. The
-/// tray itself no longer exposes meeting actions; this keeps the overlay working
-/// for anyone who reaches the hidden `/meeting` page through a deep link.
-fn apply_tray_status(app: &AppHandle, status: &MeetingTrayStatus) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(status.tooltip()));
-    }
-
-    let caption_text = status.latest_caption.clone().unwrap_or_default();
-    let visible = status.phase != MeetingTrayPhase::Idle && !caption_text.trim().is_empty();
-    crate::meeting_captions::update_meeting_captions(
-        app,
-        crate::meeting_captions::MeetingCaptionsPayload {
-            visible,
-            text: caption_text,
-            speaker: String::new(),
-            is_partial: status.latest_caption_partial,
-            phase: match status.phase {
-                MeetingTrayPhase::Idle => "idle".into(),
-                MeetingTrayPhase::Recording => "recording".into(),
-                MeetingTrayPhase::Paused => "paused".into(),
-            },
-        },
-    );
-    if status.phase == MeetingTrayPhase::Idle {
-        crate::meeting_captions::hide_meeting_captions(app);
-    }
-}
-
-fn spawn_status_poller(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_millis(800));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            // Quit in progress: stop polling. Later ticks would only query the
-            // backend after its database pool has closed and spam closed-pool
-            // warnings while the process shuts down (the tray-quit wedge itself
-            // was a main-thread issue; this loop was never the blocker).
-            if app
-                .try_state::<crate::QuitFlag>()
-                .is_some_and(|flag| flag.0.load(std::sync::atomic::Ordering::SeqCst))
-            {
-                break;
-            }
-            let Some(server) = app.try_state::<Arc<DesktopServer>>() else {
-                continue;
-            };
-            let status = server.inner().meeting_tray_status().await;
-            apply_tray_status(&app, &status);
-        }
-    });
 }
 
 #[cfg(test)]
