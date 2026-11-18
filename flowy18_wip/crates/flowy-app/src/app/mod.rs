@@ -20,6 +20,7 @@ use flowy_auth::{
     AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
     normalize_otp,
 };
+use flowy_studio::library::{LibraryItem, LibraryPanel};
 use flowy_studio::{StudioEvent, StudioPanel, StudioSurface};
 use gpui::{
     App, Bounds, Context, Entity, KeyBinding, Subscription, Task, Window,
@@ -125,6 +126,7 @@ pub struct FlowyApp {
     storage_error: bool,
     auth: AuthState,
     pub studio: Entity<StudioPanel>,
+    library: Entity<LibraryPanel>,
     gallery: GalleryState,
     skills: SkillsState,
     pub ota: ota::OtaController,
@@ -295,6 +297,12 @@ impl FlowyApp {
                 )
             })
         };
+        let library = {
+            let items = library_items();
+            let i18n = i18n.clone();
+            let ui = ui.clone();
+            cx.new(move |cx| LibraryPanel::new(items, i18n, ui, cx))
+        };
         let subscriptions = vec![
             cx.subscribe(
                 &ui.overlays,
@@ -306,6 +314,7 @@ impl FlowyApp {
                 },
             ),
             cx.observe(&studio, |_, _, cx| cx.notify()),
+            cx.observe(&library, |_, _, cx| cx.notify()),
             cx.observe(&ui.overlays, |_, _, cx| cx.notify()),
             cx.observe(&ui.theme, |app, _, cx| {
                 app.theme = app.ui.theme.read(cx).resolved();
@@ -385,6 +394,7 @@ impl FlowyApp {
                 cooldown_task: None,
             },
             studio,
+            library,
             gallery: GalleryState {
                 page: 0,
                 idea_filter: gallery::Filter::All,
@@ -1051,13 +1061,9 @@ impl FlowyApp {
             }
             Section::Library => {
                 self.studio.update(cx, |panel, cx| {
-                    panel.set_surface(
-                        StudioSurface::Placeholder {
-                            title_key: "dock.library",
-                            detail_key: "section.library",
-                        },
-                        cx,
-                    );
+                    panel.model_menu_open = false;
+                    panel.model_info_open = false;
+                    panel.credits_hover = false;
                     panel.set_notice(notice, cx);
                 });
             }
@@ -1171,6 +1177,8 @@ impl FlowyApp {
         }
         canvas = if self.section == Section::More {
             canvas.child(self.more_canvas(cx))
+        } else if self.section == Section::Library {
+            canvas.child(self.library.clone())
         } else {
             canvas.child(self.studio.clone())
         };
@@ -1222,6 +1230,10 @@ impl FlowyApp {
                     app.studio.update(cx, |panel, cx| {
                         panel.sync_i18n(i18n, cx);
                     });
+                    let i18n = app.i18n.clone();
+                    app.library.update(cx, |panel, cx| {
+                        panel.set_i18n(i18n, cx);
+                    });
                     cx.notify();
                 });
                 if updated.is_err() {
@@ -1266,7 +1278,16 @@ impl Render for FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let modal = self.active_dialog.scope().map(gpui::SharedString::from);
+        let modal = self
+            .active_dialog
+            .scope()
+            .map(gpui::SharedString::from)
+            .or_else(|| {
+                (self.screen == Screen::Main
+                    && self.section == Section::Library)
+                    .then(|| self.library.read(cx).modal_scope())
+                    .flatten()
+            });
         let popup = match self.settings.picker {
             settings::Picker::Language => Some("language-menu"),
             settings::Picker::Send => Some("send-menu"),
@@ -1281,6 +1302,7 @@ impl Render for FlowyApp {
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
                     && self.section != Section::More
+                    && self.section != Section::Library
                     && self.studio.read(cx).surface
                         != StudioSurface::Automation
                     && self.studio.read(cx).model_menu_open =>
@@ -1291,6 +1313,7 @@ impl Render for FlowyApp {
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
                     && self.section != Section::More
+                    && self.section != Section::Library
                     && self.studio.read(cx).surface
                         != StudioSurface::Automation
                     && self.studio.read(cx).model_info_open =>
@@ -1301,6 +1324,7 @@ impl Render for FlowyApp {
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
                     && self.section != Section::More
+                    && self.section != Section::Library
                     && self.studio.read(cx).surface
                         != StudioSurface::Automation
                     && self.studio.read(cx).credits_hover =>
@@ -1309,7 +1333,12 @@ impl Render for FlowyApp {
             }
             settings::Picker::None => None,
         }
-        .map(gpui::SharedString::from);
+        .map(gpui::SharedString::from)
+        .or_else(|| {
+            (self.screen == Screen::Main && self.section == Section::Library)
+                .then(|| self.library.read(cx).popup_scope())
+                .flatten()
+        });
         self.ui.overlays.update(cx, |host, cx| {
             host.begin_frame(window);
             host.set_modal(modal, window, cx);
@@ -1530,6 +1559,26 @@ impl FlowyApp {
 
 fn text_field(cx: &mut Context<'_, FlowyApp>) -> Entity<EditableTextState> {
     cx.new(|cx| EditableTextState::new(StringStorage::default(), cx))
+}
+
+/// An explicit host data source; examples supply their own isolated fixture.
+/// The normal application starts with an empty library until a source is given.
+fn library_items() -> Vec<LibraryItem> {
+    let Some(path) = std::env::var_os("FLOWY_LIBRARY_DATA") else {
+        return Vec::new();
+    };
+    let result = std::fs::read(path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(items) => items,
+        Err(error) => {
+            tracing::warn!(%error, "could not load library data source");
+            Vec::new()
+        }
+    }
 }
 
 fn place(

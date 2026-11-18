@@ -15,9 +15,12 @@ flowy-i18n = { workspace = true }
 flowy-ui = { workspace = true }
 gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+gpui_platform = { workspace = true, features = ["test-support"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -2178,6 +2178,9 @@ dependencies = [
  "flowy-ui",
  "gpui-ce",
  "gpui_ce_elements",
+ "gpui_ce_platform",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2901,6 +2904,7 @@ dependencies = [
  "gpui_ce_parley",
  "gpui_ce_scheduler",
  "gpui_ce_util",
+ "gpui_ce_wgpu",
  "image",
  "itertools",
  "log",
@@ -2995,6 +2999,7 @@ dependencies = [
  "gpui_ce_macos",
  "gpui_ce_mobile",
  "gpui_ce_web",
+ "gpui_ce_wgpu",
  "gpui_ce_windows",
 ]
 
@@ -3110,6 +3115,7 @@ dependencies = [
  "gpui_ce_collections",
  "gpui_ce_render",
  "gpui_ce_util",
+ "image",
  "js-sys",
  "log",
  "metal",
