@@ -1,0 +1,250 @@
+[
+  {
+    "id": "1104-byd-presentation",
+    "title": "比亚迪海豹06 DM-i：开启工业奇迹新篇章",
+    "description": "搜集素材并介绍一款比亚迪车型",
+    "category": "slides",
+    "date": "2026-11-04",
+    "time": "17:22"
+  },
+  {
+    "id": "1104-dew-stone-hero",
+    "title": "dew-stone-hero-river-stones.jpg",
+    "description": "制作Dew & Stone保湿精华上新照片",
+    "category": "image",
+    "date": "2026-11-04",
+    "time": "09:58",
+    "pending": true
+  },
+  {
+    "id": "1104-dew-stone-lifestyle",
+    "title": "dew-stone-lifestyle-travertine-bathroom.jpg",
+    "description": "制作Dew & Stone保湿精华上新照片",
+    "category": "image",
+    "date": "2026-11-04",
+    "time": "09:58",
+    "pending": true
+  },
+  {
+    "id": "1104-dew-stone-texture",
+    "title": "dew-stone-serum-texture-macro.jpg",
+    "description": "制作Dew & Stone保湿精华上新照片",
+    "category": "image",
+    "date": "2026-11-04",
+    "time": "09:58",
+    "pending": true
+  },
+  {
+    "id": "1103-shanxi-guide",
+    "title": "山西旅游攻略",
+    "description": "整理山西旅游攻略并生成Markdown",
+    "category": "document",
+    "date": "2026-11-03",
+    "time": "15:13"
+  },
+  {
+    "id": "1102-sport-runner",
+    "title": "sport_earbuds_runner_worn.png",
+    "description": "打造高性能运动耳机上市宣传视觉",
+    "category": "image",
+    "date": "2026-11-02",
+    "time": "17:41",
+    "pending": true
+  },
+  {
+    "id": "1102-sport-hero",
+    "title": "sport_earbuds_hero.png",
+    "description": "打造高性能运动耳机上市宣传视觉",
+    "category": "image",
+    "date": "2026-11-02",
+    "time": "17:21",
+    "pending": true
+  },
+  {
+    "id": "1102-sport-rain",
+    "title": "sport_earbuds_rain_run.png",
+    "description": "打造高性能运动耳机上市宣传视觉",
+    "category": "image",
+    "date": "2026-11-02",
+    "time": "17:21",
+    "pending": true
+  },
+  {
+    "id": "1102-sport-texture",
+    "title": "sport_earbuds_macro.png",
+    "description": "打造高性能运动耳机上市宣传视觉",
+    "category": "image",
+    "date": "2026-11-02",
+    "time": "17:21",
+    "pending": true
+  },
+  {
+    "id": "1102-personal-budget",
+    "title": "个人预算",
+    "description": "制作支持分类预算与CSV的个人预算应用",
+    "category": "website",
+    "date": "2026-11-02",
+    "time": "15:45"
+  },
+  {
+    "id": "1102-image-prompt",
+    "title": "image_prompt_concept.png",
+    "description": "获取设计图的图片生成提示词",
+    "category": "image",
+    "date": "2026-11-02",
+    "time": "15:41",
+    "pending": true
+  },
+  {
+    "id": "1028-community-manager",
+    "title": "社区管家 · 欢迎与成员管理",
+    "description": "创建社区成员欢迎与管理机器人",
+    "category": "website",
+    "date": "2026-10-28",
+    "time": "09:55"
+  },
+  {
+    "id": "1020-01-battle-hud",
+    "title": "战斗HUD_v0.4_统一组件.png",
+    "description": "查找 Defengo 的塔防游戏",
+    "category": "image",
+    "date": "2026-10-20",
+    "time": "16:37"
+  },
+  {
+    "id": "1020-02-defengo-game",
+    "title": "Defengo 塔防原型",
+    "description": "试玩关卡、升级防御塔并保护基地",
+    "category": "game",
+    "date": "2026-10-20",
+    "time": "16:30"
+  },
+  {
+    "id": "1020-03-battle-map",
+    "title": "defengo_forest_map.png",
+    "description": "绘制塔防游戏森林关卡地图",
+    "category": "image",
+    "date": "2026-10-20",
+    "time": "16:26"
+  },
+  {
+    "id": "1020-04-tower-icons",
+    "title": "defengo_tower_icons.png",
+    "description": "整理防御塔图标与升级状态",
+    "category": "image",
+    "date": "2026-10-20",
+    "time": "16:24"
+  },
+  {
+    "id": "1020-05-enemy-sprites",
+    "title": "defengo_enemy_sprites.png",
+    "description": "制作塔防游戏敌人角色图集",
+    "category": "image",
+    "date": "2026-10-20",
+    "time": "16:21"
+  },
+  {
+    "id": "1020-06-balancing",
+    "title": "防御塔数值平衡表.xlsx",
+    "description": "比较攻击、射程、花费与升级收益",
+    "category": "table",
+    "date": "2026-10-20",
+    "time": "16:18"
+  },
+  {
+    "id": "1020-07-level-guide",
+    "title": "Defengo 关卡设计说明.pdf",
+    "description": "汇总路线、敌人波次与通关目标",
+    "category": "document",
+    "date": "2026-10-20",
+    "time": "16:15"
+  },
+  {
+    "id": "1020-08-preview-video",
+    "title": "defengo_gameplay_preview.mp4",
+    "description": "展示塔防原型的建造与战斗流程",
+    "category": "video",
+    "date": "2026-10-20",
+    "time": "16:12"
+  },
+  {
+    "id": "1020-09-game-audio",
+    "title": "defengo_forest_ambient.wav",
+    "description": "制作森林关卡环境音效",
+    "category": "audio",
+    "date": "2026-10-20",
+    "time": "16:09"
+  },
+  {
+    "id": "1020-10-mobile-preview",
+    "title": "Defengo 移动端预览",
+    "description": "检查塔防游戏的触屏操作与横屏布局",
+    "category": "mobile_app",
+    "date": "2026-10-20",
+    "time": "16:06"
+  },
+  {
+    "id": "1020-11-sprite-package",
+    "title": "defengo_assets.zip",
+    "description": "打包关卡地图、图标与角色素材",
+    "category": "other",
+    "date": "2026-10-20",
+    "time": "16:03"
+  },
+  {
+    "id": "1020-12-design-review",
+    "title": "Defengo 视觉与玩法评审",
+    "description": "展示塔防游戏的美术方向与交互方案",
+    "category": "slides",
+    "date": "2026-10-20",
+    "time": "16:00"
+  },
+  {
+    "id": "1019-campaign-plan",
+    "title": "秋季新品发布计划",
+    "description": "梳理发布节奏、渠道分工与素材清单",
+    "category": "slides",
+    "date": "2026-10-19",
+    "time": "14:20"
+  },
+  {
+    "id": "1019-campaign-calendar",
+    "title": "新品宣传排期.xlsx",
+    "description": "安排图文、视频和社交媒体发布日程",
+    "category": "table",
+    "date": "2026-10-19",
+    "time": "13:45"
+  },
+  {
+    "id": "1018-product-video",
+    "title": "product_launch_teaser.mp4",
+    "description": "剪辑新品发布预告与产品细节画面",
+    "category": "video",
+    "date": "2026-10-18",
+    "time": "11:28"
+  },
+  {
+    "id": "1018-product-narration",
+    "title": "product_launch_narration.mp3",
+    "description": "录制新品发布预告的中文旁白",
+    "category": "audio",
+    "date": "2026-10-18",
+    "time": "10:36"
+  },
+  {
+    "id": "1017-reading-mobile",
+    "title": "每日阅读 · 移动应用",
+    "description": "管理阅读目标、收藏摘录与阅读进度",
+    "category": "mobile_app",
+    "date": "2026-10-17",
+    "time": "15:08"
+  },
+  {
+    "id": "1017-brand-assets",
+    "title": "brand_assets.zip",
+    "description": "整理品牌标志、颜色与发布素材源文件",
+    "category": "other",
+    "date": "2026-10-17",
+    "time": "09:12"
+  }
+]

@@ -33,7 +33,7 @@ impl DockIcon {
     }
 }
 
-const USER_MENU_WIDTH: f32 = 280.0;
+const USER_MENU_WIDTH: f32 = 224.0;
 
 const NAV: &[(&str, &str, Section, DockIcon)] = &[
     ("search", "dock.search", Section::Search, DockIcon::Search),

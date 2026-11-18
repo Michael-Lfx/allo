@@ -1,6 +1,6 @@
 # Flowy GPUI Design Rules
 
-Rules for desktop UI in `flowy18_wip`. Prefer these over inventing new layout or chrome patterns. Broader architecture lives in `docs/ui-system.zh.md`.
+Rules for desktop UI in `flowy18_wip`. Prefer these over inventing new layout or chrome patterns.
 
 ## Modal shells
 

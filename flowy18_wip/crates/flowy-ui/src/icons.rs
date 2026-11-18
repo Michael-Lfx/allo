@@ -4,10 +4,11 @@
 //! deterministic and does not depend on a network request at runtime.
 
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId,
-    InteractiveElement, Interactivity, IntoElement, LayoutId, Pixels,
-    StyleRefinement, Styled, Svg, Window, px, svg,
+    App, Bounds, Element, ElementId, GlobalElementId, Image, ImageFormat, Img,
+    InspectorElementId, InteractiveElement, Interactivity, IntoElement,
+    LayoutId, Pixels, StyleRefinement, Styled, Svg, Window, img, px, svg,
 };
+use std::sync::{Arc, OnceLock};
 
 /// A local SVG mask whose default color follows the surrounding text.
 ///
@@ -145,6 +146,15 @@ lucide_icons! {
     infinity => "infinity.svg",
     info => "info.svg",
     layout_grid => "layout-grid.svg",
+    list => "list.svg",
+    sort_desc => "sort-desc.svg",
+    image_file => "image-file.svg",
+    document_file => "document-file.svg",
+    file_fold => "file-fold.svg",
+    file_image_mark => "file-image-mark.svg",
+    file_document_mark => "file-document-mark.svg",
+    globe => "globe.svg",
+    app_window => "app-window.svg",
     library => "library.svg",
     list_check => "list-check.svg",
     loader_circle => "loader-circle.svg",
@@ -172,4 +182,40 @@ lucide_icons! {
     wand_sparkles => "wand-sparkles.svg",
     workflow => "workflow.svg",
     x => "x.svg",
+}
+
+/// Full-color file-type artwork. Unlike [`Icon`], these SVGs must be decoded as
+/// images so their authored fills survive instead of becoming a text-color mask.
+macro_rules! file_type_icons {
+    ($($name:ident => $file:literal),+ $(,)?) => {
+        $(
+            pub fn $name() -> Img {
+                static IMAGE: OnceLock<Arc<Image>> = OnceLock::new();
+                img(IMAGE.get_or_init(|| {
+                    Arc::new(Image::from_bytes(
+                        ImageFormat::Svg,
+                        include_bytes!(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/assets/file-types/",
+                            $file
+                        )).to_vec(),
+                    ))
+                }).clone())
+                .size(px(16.))
+            }
+        )+
+    };
+}
+
+file_type_icons! {
+    code_file => "CODE.svg",
+    docx_file => "DOCX.svg",
+    java_file => "JAVA.svg",
+    jpg_file => "JPG.svg",
+    mp3_file => "MP3.svg",
+    mp4_file => "MP4.svg",
+    pdf_file => "PDF.svg",
+    ppt_file => "PPT.svg",
+    xls_file => "XLS.svg",
+    zip_file => "ZIP.svg",
 }

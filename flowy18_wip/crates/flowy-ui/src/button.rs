@@ -19,6 +19,7 @@ pub fn interactive(
         .aria_label(label)
         .tab_index(0)
         .cursor_pointer()
+        .font(crate::ui_font())
         .border_2()
         .border_color(theme.line().opacity(0.))
         .focus_visible(move |style| style.border_color(focus))
@@ -39,6 +40,7 @@ pub fn button(
             .role(Role::Button)
             .aria_label(label)
             .aria_disabled(true)
+            .font(crate::ui_font())
     } else {
         interactive(id, label, theme).on_click(on_click)
     }
@@ -171,6 +173,7 @@ impl std::fmt::Debug for Button {
 pub struct IconButton {
     button: Button,
     icon: AnyElement,
+    framed: bool,
 }
 impl IconButton {
     pub fn new(
@@ -181,7 +184,13 @@ impl IconButton {
         Self {
             button: Button::new(id, label).variant(ControlVariant::Ghost),
             icon: icon.into_any_element(),
+            framed: false,
         }
+    }
+    /// Draws the control's own border and square hit target.
+    pub const fn framed(mut self) -> Self {
+        self.framed = true;
+        self
     }
     pub fn size(mut self, value: ControlSize) -> Self {
         self.button = self.button.size(value);
@@ -240,6 +249,19 @@ impl IconButton {
             el.hover(move |style| style.bg(colors.hover))
         })
         .when(loading, Styled::cursor_default)
+        .when(self.framed, |element| {
+            let side = theme.control_height(size);
+            element
+                .border_1()
+                .border_color(theme.chrome_line())
+                .bg(theme.card())
+                .text_color(theme.toolbar_icon())
+                .rounded(px(10.))
+                .w(side)
+                .h(side)
+                .min_w(side)
+                .min_h(side)
+        })
         .child(div().id(icon_id).aria_hidden().child(leading));
         crate::A11yElement::new(element.into_element()).busy(loading)
     }

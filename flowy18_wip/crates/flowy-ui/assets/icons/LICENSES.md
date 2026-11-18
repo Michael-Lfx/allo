@@ -1,6 +1,8 @@
 # Lucide icon licenses
 
-The SVG files in this directory are selected from [Lucide](https://github.com/lucide-icons/lucide).
+The SVG files in this directory are selected from [Lucide](https://github.com/lucide-icons/lucide), except the original Flowy geometry listed below.
+
+`list.svg`, `sort-desc.svg`, `image-file.svg`, `document-file.svg`, `file-fold.svg`, `file-image-mark.svg`, `file-document-mark.svg`, `globe.svg`, and `app-window.svg` are original geometric marks authored for Flowy and use the repository's MIT license.
 
 The vendored files are pinned to Lucide commit
 [`55782beff3a0133df79c417eb68f96e8f19e2404`](https://github.com/lucide-icons/lucide/tree/55782beff3a0133df79c417eb68f96e8f19e2404).

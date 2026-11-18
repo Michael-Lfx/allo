@@ -127,6 +127,9 @@ impl FlowyApp {
         self.studio.update(cx, |panel, cx| {
             panel.sync_i18n(i18n, cx);
         });
+        let i18n = self.i18n.clone();
+        self.library
+            .update(cx, |panel, cx| panel.set_i18n(i18n, cx));
         self.settings.picker = Picker::None;
         self.prefs.save(self.store.root());
         cx.notify();

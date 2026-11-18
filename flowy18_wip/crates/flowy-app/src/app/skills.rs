@@ -220,24 +220,32 @@ fn skill_by_id(id: &str) -> Option<&'static Skill> {
 impl FlowyApp {
     pub(super) fn skills_canvas(
         &self,
+        window: &mut Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         div()
-            .id("skills-scroll")
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .overflow_y_scroll()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.skills_header(window, cx))
             .child(
                 div()
-                    .w_full()
-                    .min_h_full()
+                    .id("skills-scroll")
+                    .flex_1()
                     .min_w_0()
-                    .px_10()
-                    .pr_12()
-                    .pt_8()
-                    .pb_8()
-                    .child(self.skills_column(cx)),
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .w_full()
+                            .min_h_full()
+                            .min_w_0()
+                            .px_10()
+                            .pr_12()
+                            .pt_2()
+                            .pb_8()
+                            .child(self.skills_column(cx)),
+                    ),
             )
     }
 
@@ -249,50 +257,27 @@ impl FlowyApp {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.skills_header(cx))
             .child(self.skills_filters(cx))
             .child(self.skills_grid(cx))
     }
 
-    fn skills_header(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(self.theme.heading_size())
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(self.t("more.skills")),
-            )
-            .child(div().flex_1())
-            .child(self.skills_search(cx))
-            .child(self.skills_ghost_button("skills-mine", "skills.mine", cx))
-            .child(self.skills_create_button(cx))
-    }
-
-    fn skills_search(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .w(px(220.))
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                theme::icons::search()
-                    .size(px(14.))
-                    .text_color(self.theme.muted()),
-            )
-            .child(
-                theme::TextField::new(
+    fn skills_header(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        theme::PageHeader::new(self.t("more.skills"))
+            .trailing(
+                theme::ToolbarSearch::new(
                     "skills-search",
                     self.t("skills.search"),
                     self.skills.query.clone(),
                 )
-                .placeholder(self.t("skills.search"))
-                .render(&self.theme, cx),
+                .render(&self.theme),
             )
+            .trailing(self.skills_ghost_button("skills-mine", "skills.mine", cx))
+            .trailing(self.skills_create_button(cx))
+            .render(&self.theme, window)
     }
 
     fn skills_ghost_button(
@@ -324,33 +309,20 @@ impl FlowyApp {
     }
 
     fn skills_filters(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut row = div().flex().gap_1().flex_wrap();
+        let mut row = div()
+            .id("skills-tabs")
+            .w_full()
+            .flex()
+            .gap_1()
+            .flex_wrap()
+            .border_b_1()
+            .border_color(self.theme.line());
         for category in Category::ALL {
             let selected = self.skills.filter == category;
             let id =
                 SharedString::from(format!("skill-filter-{}", category.key()));
             row = row.child(
-                theme::interactive(id, self.t(category.key()), &self.theme)
-                    .px_3()
-                    .py_1()
-                    .rounded_lg()
-                    .text_size(self.theme.body_size())
-                    .bg(if selected {
-                        self.theme.soft()
-                    } else {
-                        self.theme.canvas()
-                    })
-                    .text_color(if selected {
-                        self.theme.ink()
-                    } else {
-                        self.theme.muted()
-                    })
-                    .font_weight(if selected {
-                        gpui::FontWeight::MEDIUM
-                    } else {
-                        gpui::FontWeight::NORMAL
-                    })
-                    .child(self.t(category.key()))
+                theme::filter_chip(id, self.t(category.key()), selected, &self.theme)
                     .on_click(cx.listener(move |app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.skills.filter = category;

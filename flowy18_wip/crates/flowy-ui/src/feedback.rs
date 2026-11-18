@@ -1,9 +1,9 @@
 //! Layout patterns shared by settings and forms. Content is supplied by the caller.
-use crate::ResolvedTheme;
+use crate::{ResolvedTheme, Text, TextRole, Title, TitleLevel};
 use gpui::StatefulInteractiveElement;
 use gpui::{
-    Div, ElementId, InteractiveElement, IntoElement, ParentElement, Role,
-    SharedString, Stateful, Styled, accesskit, div, prelude::*,
+    AnyElement, Div, ElementId, InteractiveElement, IntoElement, ParentElement,
+    Role, SharedString, Stateful, Styled, accesskit, div, prelude::*,
 };
 
 pub fn form_field(
@@ -136,24 +136,65 @@ pub fn notice(
         })
         .child(message.into())
 }
+#[must_use]
+pub struct EmptyState {
+    title: SharedString,
+    description: SharedString,
+    icon: Option<AnyElement>,
+}
+
+impl EmptyState {
+    pub fn new(
+        title: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            description: description.into(),
+            icon: None,
+        }
+    }
+
+    pub fn icon(mut self, icon: impl IntoElement) -> Self {
+        self.icon = Some(icon.into_any_element());
+        self
+    }
+
+    pub fn render(self, theme: &ResolvedTheme) -> Div {
+        let mut state = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6();
+        if let Some(icon) = self.icon {
+            state = state.child(div().text_color(theme.muted()).child(icon));
+        }
+        state
+            .child(Title::new(TitleLevel::Section, self.title).render(theme))
+            .child(
+                Text::new(TextRole::Body, self.description)
+                    .render(theme)
+                    .whitespace_normal(),
+            )
+    }
+}
+
+impl std::fmt::Debug for EmptyState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EmptyState")
+            .field("title", &self.title)
+            .field("description", &self.description)
+            .finish_non_exhaustive()
+    }
+}
+
 pub fn empty_state(
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
     theme: &ResolvedTheme,
 ) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap_3()
-        .p_6()
-        .child(div().text_lg().text_color(theme.ink()).child(title.into()))
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme.muted())
-                .whitespace_normal()
-                .child(description.into()),
-        )
+    EmptyState::new(title, description).render(theme)
 }

@@ -5,6 +5,7 @@ mod chat;
 mod composer;
 mod credits;
 mod feed;
+pub mod library;
 mod panel;
 mod studio;
 
