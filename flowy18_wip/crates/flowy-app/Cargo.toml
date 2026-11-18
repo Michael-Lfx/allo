@@ -12,7 +12,6 @@ publish = false
 directories = { workspace = true }
 flowy-agent = { workspace = true }
 flowy-auth = { workspace = true }
-flowy-chat = { workspace = true }
 flowy-core = { workspace = true }
 flowy-i18n = { workspace = true }
 flowy-obs = { workspace = true }
@@ -24,7 +23,6 @@ tracing = { workspace = true }
 getrandom = { workspace = true }
 gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
-gpui_platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
