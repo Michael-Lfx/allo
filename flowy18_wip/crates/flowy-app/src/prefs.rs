@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -175,14 +176,16 @@ impl Preferences {
             flex_provider: None,
             flex_api_key: String::new(),
         });
-        if file.version != VERSION {
+        if !(MIN_SUPPORTED_VERSION..=VERSION).contains(&file.version) {
             return Self::default();
         }
-        let flex_ready = file.flex_provider.is_some()
-            && !file.flex_api_key.trim().is_empty();
-        let model = if file.model == Model::Flex {
-            if flex_ready { Model::Flex } else { Model::Lite }
-        } else if file.model.can_use(file.plan) {
+        // v1 -> v2: `paid` deserializes to `Plan::Pro` through the serde
+        // alias; the tier is the single routing source, so a stored tier is
+        // kept even when the cached plan looks lower. The app gates Pro tiers
+        // against the live effective tier instead of rewriting the choice.
+        // Flex BYOK is deferred: keep `flex_provider`/`flex_api_key` for the
+        // future, but never restore Flex as an active route yet.
+        let model = if file.model.is_cloud() {
             file.model
         } else {
             Model::Lite
@@ -290,7 +293,9 @@ mod tests {
         prefs.model_info_version = Preferences::app_version().to_string();
         assert!(!prefs.shows_model_info());
         prefs.model_info_version.clear();
-        prefs.plan = Plan::Paid;
+        prefs.plan = Plan::Pro;
+        assert!(!prefs.shows_model_info());
+        prefs.plan = Plan::Ultra;
         assert!(!prefs.shows_model_info());
     }
 
@@ -325,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn free_plan_does_not_keep_a_pro_model() {
+    fn stored_tier_is_kept_and_flex_is_deferred() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
@@ -341,21 +346,25 @@ mod tests {
             r#"{"version":1,"locale":"zh-CN","send_mode":"quiet","notify_browser":true,"sound":true,"early_access":true,"plan":"free","model":"max"}"#,
         )
         .unwrap();
-        assert_eq!(Preferences::load(&dir).model, Model::Lite);
+        // The tier survives; gating happens against the live effective tier.
+        assert_eq!(Preferences::load(&dir).model, Model::Max);
         fs::write(
             &path,
             r#"{"version":1,"locale":"zh-CN","send_mode":"quiet","notify_browser":true,"sound":true,"early_access":true,"plan":"paid","model":"max"}"#,
         )
         .unwrap();
-        assert_eq!(Preferences::load(&dir).model, Model::Max);
-        assert!(!Model::Flex.can_use(Plan::Paid));
+        let paid = Preferences::load(&dir);
+        assert_eq!(paid.model, Model::Max);
+        assert_eq!(paid.plan, Plan::Pro);
+        assert!(!Model::Flex.can_use(Plan::Pro));
         fs::write(
             &path,
             r#"{"version":1,"locale":"zh-CN","send_mode":"quiet","notify_browser":true,"sound":true,"early_access":true,"plan":"free","model":"flex","flex_provider":"deepseek","flex_api_key":"sk-test"}"#,
         )
         .unwrap();
         let flex = Preferences::load(&dir);
-        assert_eq!(flex.model, Model::Flex);
+        // Flex is deferred; legacy fields are retained for the later rollout.
+        assert_eq!(flex.model, Model::Lite);
         assert_eq!(flex.flex_provider, Some(FlexProvider::DeepSeek));
         assert_eq!(flex.flex_api_key, "sk-test");
         assert!(flex.flex_ready());

@@ -491,7 +491,9 @@ impl FlowyApp {
                         div()
                             .text_size(self.theme.body_size())
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(self.t("credits.plan_free")),
+                            .child(
+                                self.t(self.studio.read(cx).plan.label_key()),
+                            ),
                     )
                     .child(
                         theme::Button::new(

@@ -8,6 +8,8 @@ pub struct CatalogModel {
     pub context_window: u64,
     pub max_tokens: u64,
     pub credit_rate: f64,
+    /// Catalog-declared plan gate (`minTierLevel`); `0` means unrestricted.
+    pub min_tier_level: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]

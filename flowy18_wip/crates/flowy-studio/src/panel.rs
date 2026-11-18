@@ -26,6 +26,21 @@ pub enum StudioSurface {
     },
 }
 
+/// One rendered tier row.
+///
+/// Built by `flowy-app` from the local tier directory plus the current
+/// catalog/entitlement, so the menu never inspects raw model ids or account
+/// data itself. Labels are resolved from the row's tier at render time so a
+/// locale switch is reflected immediately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TierView {
+    pub tier: Model,
+    pub pro_badge: bool,
+    pub locked: bool,
+    pub unavailable: bool,
+    pub selected: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum StudioEvent {
     Notice(Option<&'static str>),
@@ -35,7 +50,7 @@ pub enum StudioEvent {
         model_info_version: String,
     },
     OpenFlex,
-    CloudModelSelected(String),
+    TierSelected(Model),
     RefreshModels,
     OpenIdeas,
     SessionsChanged,
@@ -93,6 +108,7 @@ pub struct StudioPanel {
     pub credits_close: Option<Task<()>>,
     pub model_info_open: bool,
     pub model_menu_open: bool,
+    pub tiers: Vec<TierView>,
     pub(crate) model_menu_anchor: &'static str,
     pub i18n: I18n,
     pub model: Model,
@@ -228,6 +244,7 @@ impl StudioPanel {
             credits_close: None,
             model_info_open,
             model_menu_open: false,
+            tiers: Vec::new(),
             model_menu_anchor: "model-menu-trigger",
             i18n,
             model,
@@ -371,14 +388,22 @@ impl StudioPanel {
         self.credits.label(&self.i18n)
     }
 
-    /// Label for the selected cloud model. The catalog is the single source of
-    /// truth for model routing; the legacy `Model` enum only remains as the
-    /// pre-login fallback surface.
+    /// Label for the selected tier. Model ids stay inside the routing layer;
+    /// the menu and chip only ever show product tier names.
     pub(crate) fn model_label(&self) -> String {
-        self.catalog
-            .selected_model()
-            // No catalog model yet: show nothing rather than an error notice.
-            .map_or_else(|| "—".to_owned(), |model| model.name.clone())
+        self.t(self.model.name_key())
+    }
+
+    /// Replaces the tier rows after a catalog or entitlement refresh.
+    pub fn set_tiers(
+        &mut self,
+        tiers: Vec<TierView>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.tiers != tiers {
+            self.tiers = tiers;
+            cx.notify();
+        }
     }
 
     pub(crate) fn t(&self, key: &str) -> String {
