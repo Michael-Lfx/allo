@@ -99,9 +99,12 @@ function MatchingInput({
     <div className='flex flex-col gap-6px'>
       {options.map((left, index) => (
         <div key={left} className='flex items-center gap-8px'>
-          <span className='min-w-80px flex-1'>{left}</span>
+          {/* l1：label 给真实基准宽 40%（原 flex-1 = 基准 0，Arco Select 默认
+              width:100% 的 basis 吸收全部收缩量 → label 塌缩到 min-width
+              80px 竖排长短语）；select 60% 基准 + min-w 防极窄。 */}
+          <span className='min-w-80px flex-[1_1_40%]'>{left}</span>
           <Select
-            className='min-w-140px'
+            className='min-w-140px flex-[1_1_60%]'
             disabled={disabled}
             allowClear
             placeholder={t('learning.matchingPickPlaceholder')}

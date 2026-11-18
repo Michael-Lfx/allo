@@ -96,4 +96,22 @@ describe('题面作答面渲染管线（n1 页面集成断言）', () => {
     expect(markup).toContain('arco-input');
     expect(markup).not.toContain('data-blank-slot');
   });
+
+  test('matching 行布局（l1）：label 40% 真实基准 + select 60% 有界——label 不再塌缩 80px 窄柱', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='matching'
+        options={['执行「新创建一个对象」后得到的对象']}
+        matches={['堆区']}
+        value={undefined}
+        onChange={noop}
+      />
+    );
+    // label 列 40% 真实基准（原 flex-1 = 基准 0，被 Arco Select width:100%
+    // 的 basis 吸收全部收缩量 → 塌缩到 min-width 80px 竖排长短语）。
+    expect(markup).toContain('flex-[1_1_40%]');
+    // select 60% 基准 + min-w 有界。
+    expect(markup).toContain('flex-[1_1_60%]');
+    expect(markup).toContain('min-w-140px');
+  });
 });

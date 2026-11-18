@@ -2,7 +2,7 @@
 id: l1
 title: 匹配题行布局——label 列基准宽修正 + select 宽度约束
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -45,4 +45,11 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-18，feat/learn1116）：MatchingInput 行布局 label
+`min-w-80px flex-[1_1_40%]`（40% 真实基准，长短语在 40% 宽度换行而非
+80px 竖排）+ Select `min-w-140px flex-[1_1_60%]`（余下 60% 有界）；
+注释留痕根因（flex-1 基准 0 被 Arco Select width:100% 的 basis 吸收全
+部收缩量）。渲染测试 +1（长短语断言 flex-[1_1_40%]/flex-[1_1_60%]/
+min-w-140px），6 pass；typecheck / theme / dead-css 绿。课时练习 +
+复习卡两消费面同组件同修（R-c 判分数据面零改动；R-b InlineMarkdown 一
+致性留观不在本票）。真机复验：匹配题左列正常换行、select 宽度合理。
