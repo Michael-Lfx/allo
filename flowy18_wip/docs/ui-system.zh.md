@@ -1,7 +1,7 @@
 # Flowy 1.8 UI 系统 · 架构、修改与验收规范
 
 > **状态**：🔧 实施中的架构基线；自动化与视觉验证分开记录。
-> **日期**：2026-11-17。
+> **日期**：2026-11-18。
 > **核心原则**：窗口持有主题和弹层服务，组件提供完整的视觉、键盘和无障碍契约；业务模块提供真实数据与事件。
 
 ## 1. 背景与核心痛点
@@ -36,8 +36,8 @@ UIArc 是设计与交互参考，不引入 React、Radix、Motion，也不复制
 flowchart TD
     App["flowy-app<br/>窗口、偏好与业务协调"]
     Studio["flowy-studio<br/>工作区、Composer 与 ChatFeed"]
-    Patterns["flowy-ui / patterns<br/>Dialog、Popover、Menu、FormField"]
-    Primitives["flowy-ui / primitives<br/>Button、Input、Switch、Tabs"]
+    Patterns["flowy-ui / patterns<br/>Dialog、Popover、Menu、PageHeader、SectionHeader"]
+    Primitives["flowy-ui / primitives<br/>Button、Input、Title、Text、Switch、Tabs"]
     Foundations["flowy-ui / foundations<br/>ThemeState、ResolvedTheme、尺寸、图标"]
     App --> Studio
     App --> Patterns
@@ -84,9 +84,71 @@ pub struct ThemeOptions {
 
 颜色角色包括表面、内容、控件、边界、焦点和遮罩。控件通过 `ControlColors` 获取背景、前景和边框，不能组合任意 accent 与 on-ink。scrim 始终使用独立 token；深色模式不从文字 ink 推导遮罩。
 
-默认字号 14，用户范围 12–16。间距采用离散档位，控件尺寸使用 Small / Medium / Large 与密度配方。控件采用最小高度，允许语言换行和字号增长。图标继承所在控件的文字颜色。
+默认字号 14，用户范围 12–16。间距采用离散档位，控件尺寸使用 Small / Medium / Large 与密度配方。控件采用最小高度，允许语言换行和字号增长。图标继承所在控件的文字颜色。页面上的标题和正文走下方的排版模块；按钮、输入、导航和筛选自己负责控件文字，页面不再另写一套字号。
 
 MotionPolicy 默认 Reduced；UI 组件不得用位移动效阻碍焦点或点击反馈。GPUI 的 reduce-motion 标志不会自动读取系统偏好，平台桥接需独立验证，不能宣称已经接入。
+
+### 3.1.1 排版模块
+
+页面不直接写 `.text_size(px(...))`、`.line_height(...)`、`.font_weight(...)` 来做标题、正文和辅助文字。这些职责收进 `flowy-ui` 的排版模块。页面选择模块和层级，传入已经本地化的文字。字号、行高、字重、字色和窄视口降级都在模块内部，并跟随 `ThemeOptions.font_size`。
+
+Manus「资料库」「自动化」以及 [Manus 自动化页面](https://manus.im/app/automation?tab=updates) 只用来校准模块内部的度量。主题 token、交互语义和无障碍契约仍以本文件为准。
+
+```rust
+PageHeader::new(Title::new(TitleLevel::Page, localized_library))
+    .trailing(search)
+    .trailing(sort)
+    .trailing(view_switch)
+    .render(&theme);
+
+SectionHeader::new(Title::new(TitleLevel::Section, date_label))
+    .meta(count_label)
+    .render(&theme);
+
+Title::new(TitleLevel::Item, file_name).render(&theme);
+Text::new(TextRole::Body, summary).render(&theme);
+Text::new(TextRole::Meta, time_label).render(&theme);
+```
+
+| 模块 | 层级 | 页面怎么用 | 模块内部度量 |
+|---|---|---|---|
+| `Title` | `Page` | 页面左上主标题，只通过 `PageHeader` 放置 | 20 / 28px，600；视口小于 768px 时改为 18 / 24px |
+| `Title` | `Hero` | 空状态或同等级页面引导的主标题 | 32 / 40px，600 |
+| `Title` | `Section` | 二级标题、日期分组、模式区块标题 | 16 / 24px，600 |
+| `Title` | `Card` | 卡片标题 | 16 / 24px，600 |
+| `Title` | `Item` | 列表条目标题、侧栏任务标题 | 14 / 20px，500 |
+| `Text` | `Body` | 描述、说明、空状态正文 | 14 / 20px，400，正文色 |
+| `Text` | `Meta` | 时间、计数、辅助信息 | 12 / 18px，400，次要色 |
+| `Text` | `Caption` | 状态补充和紧凑标签 | 11 / 16px，400，次要色 |
+
+`Title::Page` 只出现在资料库、自动化以及同等级页面的 `PageHeader` 里。`Title::Hero` 只用于空状态或同等级引导。分组计数用 `SectionHeader` 的 `meta`，不要在标题旁边再放一个手写字号的 `div`。卡片和列表行分别使用 `Title::Card`、`Title::Item` 与 `Text::Body` / `Text::Meta`。
+
+控件文字不属于这张表。搜索框、筛选项、按钮和导航项的 14 / 20px、500 由 `TextField`、`Tabs`、`Button`、`NavItem` 自己绘制。页面不得再为它们写 `text_size`。空状态使用已有的 `EmptyState`，由它内部放置 `Title` 与 `Text`。
+
+字体也属于排版模块：Latin 用 `Segoe UI`，中文按 `Microsoft YaHei`、`PingFang SC`、`Noto Sans CJK SC` 回退。产品 UI 用正体和默认字距，代码和等宽数据沿用现有 mono token。页面不设置字体。
+
+重复出现的页面骨架同样是模块，内部持有自己的标题和间距：
+
+| 模块 | 组合 | 模块内部布局 |
+|---|---|---|
+| `PageHeader` | `Title::Page` + 尾部操作 | 高度 56px，左右内边距 32px。标题垂直居中，与搜索、排序、视图切换同一基线 |
+| `SectionHeader` | `Title::Section` + 可选 `Text::Meta` | 分组之间 24px，标题与第一条内容之间 12px |
+| `PageColumn` | 页面内容列 | 资料库最大宽度 960px，左右内边距至少 32px；小于 768px 时内边距 20px。筛选栏在页头下方 16px |
+| 侧栏 | 品牌、导航、项目、任务 | `DOCK_WIDTH = 248px`，同一左边界。导航行高 44px，左右 16px，图标 20px，图标与文字 12px。导航文字由 `NavItem` 负责 |
+| 列表行 / 网格卡片 | `Title::Item` 或 `Title::Card`，加上 `Text` | 列表行最小高度 64px，图标 24px，1px 结构分隔。悬停和选中只改表面色。卡片最小宽度 270px，列间距和内边距 16px，同一行等高 |
+| 引导区 | `Title::Hero`、`Text::Body`、模式卡片、主按钮 | 最大宽度 1180px 居中。标题下 8px 为正文，与卡片间距 32px。卡片三列、间距 20px，变窄时改为两列、单列。主按钮最大宽度 480px、高度 48px，与卡片间距 32px。按钮文字由 `Button` 的 Large 尺寸负责 |
+
+页头、内容列和侧栏共用一条水平网格。标题留在正常流里。弹层、菜单和输入继续使用 3.3 节的锚点、焦点和状态契约。
+
+约束：
+
+- 生产页面不为标题、正文、辅助文字调用 `text_size`、`line_height`、`font_weight` 或自行指定字色。这些调用只允许出现在排版模块，以及 `Button`、`TextField`、`Tabs`、`NavItem` 等控件内部。
+- 新页面先组合 `PageHeader`、`Title`、`Text`、`SectionHeader`、`EmptyState`。只有模块表达不了、并且经过视觉验收的角色，才允许增加新的 `TitleLevel` 或 `TextRole`。
+- `ThemeOptions.font_size` 的 12、14、16 三档只缩放排版模块和正文间距，不改变侧栏信息架构。三档都要验证中文、英文和阿拉伯语的换行与基线。
+- 视口不小于 1024px 时使用桌面侧栏和三列引导卡片；768–1023px 为两列；小于 768px 为单列。列数和页标题降级写在对应模块里。
+- 悬停和按下保持布局边界稳定。键盘焦点始终可见。图标按钮提供本地化可访问名称。
+
+`Title`、`Text`、`PageHeader`、`SectionHeader`、`PageColumn` 在 `flowy-ui` 中提供。资料库页面通过这些模块绘制页头、分组、列表、卡片、空状态、预览和重命名，不再在视图里写标题字号。搜索框、筛选芯片、分段图标和带边框的图标按钮也由控件自己绘制文字和尺寸。视觉验收仍覆盖 1280×820 与 1920×1080、浅色与深色、100% 与 150% 缩放，以及资料库列表、网格和自动化三列、两列、单列。验收对象是模块组合后的页面。
 
 ### 3.2 基础控件
 
@@ -103,7 +165,9 @@ TextField::new("name", localized_name, existing_state)
 
 | 组件 | 契约 |
 |---|---|
-| Button / IconButton | 稳定 ID、可访问名称、变体、尺寸、禁用、加载及回调 |
+| Title / Text | 层级或角色、已本地化文字；字号、行高、字重和字色由模块决定 |
+| PageHeader / SectionHeader | 标题模块加尾部操作或计数；页面不单独摆标题字号 |
+| Button / IconButton | 稳定 ID、可访问名称、变体、尺寸、禁用、加载及回调。控件文字由按钮负责 |
 | TextField / text_input / text_area | 使用已有 EditableTextState；本地化标签；编辑、只读和禁用分离 |
 | Switch / Radio / Tabs / Disclosure | 受控值、状态变更回调、选中或展开语义、键盘行为 |
 | FormField / SettingsRow | 标签、帮助、错误和内容布局；业务负责校验规则 |
@@ -184,6 +248,7 @@ sequenceDiagram
 | D6 | 余额 Unavailable 为默认 | 演示值或零余额会伪造账户事实 |
 | D7 | 专属 GPUI 测试与源码扫描 | 主工程 bun run check 面向 React，不构成本子工程验收 |
 | D8 | 依赖补丁单独修复 | 删除 patch 或复制未审核 vendored 来源无法证明干净构建可复现 |
+| D9 | 标题和正文是 `Title` / `Text` 模块，页头和分组是组合模块 | 页面按字号表手写 `text_size`、`line_height`、`font_weight`，每个页面各复制一套像素，也无法跟随用户字号 |
 
 ### 4.1 当前提交的 UI 重构范围
 
@@ -225,6 +290,7 @@ sequenceDiagram
 | Overlay 状态 | `ActiveDialog` 已收口主对话框，但 scope 仍是字符串，`close_overlay()` 仍用字符串 match |
 | 主题 API | `ControlColors` 已建立，但 `ResolvedTheme` 仍公开原始颜色角色，业务仍可自行组合前景/背景 |
 | 布局 Token | `space()`、`control_height()` 已统一入口，但密度偏移仍会生成非标准档位，typography/density 尚未完全分离 |
+| 排版模块 | `Title`、`Text`、`PageHeader`、`SectionHeader`、`PageColumn` 已落地；资料库已改用这些模块。其他页面仍可能手写 `text_size` |
 | 源码扫描 | 能拦截裸 `div().on_click()`；尚未强制禁止 `interactive().on_click()`，也未覆盖所有原始颜色配对 |
 
 #### 4.1.3 尚未完成的 UI 重构
@@ -233,7 +299,8 @@ sequenceDiagram
 - 尚未完成 MenuItem、ActionRow、Chip、Composer toolbar、SelectTrigger 等 pattern 的全量落地。
 - 尚未完成组件模块分层：当前仍是 `button.rs`、`controls.rs`、`overlays.rs`、`feedback.rs`、`tooltip.rs`，未拆成 `foundations / primitives / patterns / services` 的显式目录。
 - 尚未完成主题 API 封口：feature 层仍可直接调用 `ink()`、`muted()`、`accent()`、`fill()`、`on_fill()`、`danger()`。
-- 尚未完成完整 TypeScale / SpacingScale / ControlMetrics 体系。
+- 资料库已改用 `Title`、`Text`、`PageHeader`、`SectionHeader`、`PageColumn`。其他页面尚未迁移，仍可能手写字号。
+- 尚未完成完整 SpacingScale / ControlMetrics 体系。排版度量属于上述模块的内部实现，不再作为页面可调用的 token 表。
 - 尚未完成 MotionPolicy 与系统 reduced-motion 的配置接入。
 - 尚未完成全量平台视觉验收：Windows 100%/150%/200%、双主题、三种密度、12/14/16 字号、中文/英文/阿拉伯语整页、原生 IME、焦点恢复和 macOS 冒烟。
 - 尚未接入真实积分服务；本次只完成 UI 状态模型和未知/零值区分。
@@ -436,3 +503,53 @@ crates/flowy-ota/src/updater.rs、install_gate.rs:
 ```
 
 `dsh-rs` 还报告既有 `result_large_err`、`unnecessary_min_or_max` 和 `module_inception`。这些记录说明聚合命令为何不能被标记通过，不构成本轮扩大修改 Agent 引擎或更新安装逻辑的授权。
+
+### E. 2026-11-18 页面层级像素配方
+
+> 以下完整保留替换前的 §3.1.1。该节把标题写成页面内的 token 和 `text_size(px(...))` 配方。现行规则改为 `Title`、`Text`、`PageHeader`、`SectionHeader` 模块，度量只存在于模块内部。
+
+### 3.1.1 Manus 参考的桌面页面层级
+
+本节把用户提供的 Manus「资料库」与「自动化」截图，以及 [Manus 自动化页面](https://manus.im/app/automation?tab=updates) 作为页面层级、留白和定位的参考。参考素材服务于视觉校准，Flowy 的主题 token、交互语义和无障碍契约仍以本文件为准。
+
+#### 字体与层级
+
+桌面端使用 `Segoe UI` 作为 Latin 主字体，中文按 `Microsoft YaHei`、`PingFang SC`、`Noto Sans CJK SC` 顺序回退。页面标题和内容标题使用 600，导航选中项与卡片标题使用 500 或 600，正文使用 400。产品 UI 采用正体和默认字距，代码和等宽数据沿用现有 mono token。
+
+| Token | 用途 | 字号 / 行高 | 字重 | 示例 |
+|---|---|---:|---:|---|
+| `page-title` | 页面左上主标题 | 20 / 28px | 600 | 资料库、自动化 |
+| `hero-title` | 页面中部主标题 | 32 / 40px | 600 | 创建你的第一个自动化 |
+| `section-title` | 二级标题、日期分组、模式区块标题 | 16 / 24px | 600 | 定时任务、触发器、11月4日 |
+| `card-title` | 自动化卡片和资料库卡片标题 | 16 / 24px | 600 | 高级自动化、文件名称 |
+| `item-title` | 资料库列表条目标题、侧栏任务标题 | 14 / 20px | 500 | 比亚迪海豹06 DM-i |
+| `body` | 描述、说明、空状态正文 | 14 / 20px | 400 | 卡片描述和文件摘要 |
+| `control` | 搜索框、筛选项、按钮和导航项 | 14 / 20px | 500 | 全部、文档和 PDF |
+| `meta` | 时间、计数、辅助信息 | 12 / 18px | 400 | 17:22、(4) |
+| `caption` | 仅用于状态补充和紧凑标签 | 11 / 16px | 400 | Beta、文件类型 |
+
+`page-title` 是资料库和自动化页面的统一主标题。`hero-title` 只用于自动化空状态或同等级的页面引导。二级标题统一使用 `section-title`，局部字号保持在正文与辅助信息的职责范围内。`body` 和 `item-title` 保持足够的中文阅读尺寸，`meta` 和 `caption` 承载辅助信息，操作和错误说明使用正文层级。
+
+#### 页面定位与尺寸
+
+| 区域 | 规范 |
+|---|---|
+| 应用侧栏 | 使用 `DOCK_WIDTH = 248px`。品牌区、主导航、项目和任务保持同一左边界。导航行高 44px，左右内边距 16px，图标 20px，图标与文字间距 12px。 |
+| 页面头部 | 高度 56px，左右内边距 32px。`page-title` 垂直居中，标题与搜索、排序、视图切换保持同一水平基线。 |
+| 资料库内容 | 内容区最大宽度 960px，左右内边距至少 32px。筛选栏位于页面头部下方 16px，日期分组之间使用 24px，分组标题与第一条内容之间使用 12px。 |
+| 资料库列表行 | 最小高度 64px。文件图标 24px，标题使用 `item-title`，摘要和时间使用 `body` 或 `meta`。行分隔线使用 1px 结构边界，悬停和选中只改变表面色，行高保持稳定。 |
+| 资料库网格 | 卡片最小宽度 270px，列间距 16px，卡片内边距 16px。标题使用 `card-title`，摘要使用 `body`，卡片同一行保持等高。 |
+| 自动化引导区 | 使用最大宽度 1180px 并居中。`hero-title` 与说明文字居中排列，标题下方 8px 放置 `body` 或 18 / 28px 的引导正文，模式卡片与引导文字之间使用 32px。 |
+| 自动化模式卡片 | 三列布局优先，列间距 20px，卡片标题使用 `card-title`，说明使用 `body`。视口不足时按 2 列、1 列顺序收缩。 |
+| 主要操作 | 自动化引导底部的主按钮最大宽度 480px，高度 48px，按钮文案使用 16 / 24px、600。按钮与上方卡片保持 32px 垂直间距。 |
+
+页面头部、内容区和侧栏使用同一条水平网格线。标题使用正常流布局，内容宽度变化时保持居中和左右内边距稳定。弹层、菜单和输入控件继续使用 3.3 节的锚点、焦点和状态契约。
+
+#### 响应式与实现约束
+
+- 视口宽度不小于 1024px 时使用桌面侧栏和三列自动化卡片。768–1023px 时自动化卡片改为两列，资料库网格降低为两列。小于 768px 时改为单列，页面标题降为 18 / 24px，主内容左右内边距保持 20px。
+- GPUI 视图中的 `text_size(px(...))` 必须对应本节 token。新增页面先复用 `page-title`、`section-title`、`body` 和 `meta`，只有经过视觉验收的特殊场景才允许增加局部 token。
+- `ThemeOptions.font_size` 只缩放排版 token 和正文间距，不改变侧栏信息架构。字号 12、14、16 三档都要验证中文、英文和阿拉伯语的换行与基线。
+- 交互反馈使用现有 MotionPolicy。悬停和按下保持布局边界稳定，键盘焦点始终可见，图标按钮必须提供本地化可访问名称。
+
+视觉验收至少覆盖 1280×820 和 1920×1080 两个窗口尺寸、浅色与深色、100% 与 150% 系统缩放，并分别检查资料库的列表视图、网格视图和自动化的三列、两列、单列布局。
