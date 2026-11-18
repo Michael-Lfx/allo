@@ -1,6 +1,8 @@
 use crate::composer::{ChatComposer, ComposerEvent};
-use crate::feed::{ChatFeed, WorkingIndicator};
-use flowy_agent::{AgentHandle, LlmConfig, Model, Plan, ProviderCatalog};
+use crate::feed::{ChatFeed, OpenTask, WorkingIndicator};
+use flowy_agent::{
+    AgentHandle, InventorySummary, LlmConfig, Model, Plan, ProviderCatalog,
+};
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
 use flowy_ui::{ResolvedTheme, UiContext};
@@ -13,6 +15,17 @@ use gpui_ce_elements::editable_text::{
 };
 use std::path::PathBuf;
 use std::time::Duration;
+
+fn new_submission_id() -> u128 {
+    static NEXT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    (timestamp << 32) | u128::from(std::process::id() ^ (sequence as u32))
+}
 
 /// Which workspace surface the panel should show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +108,11 @@ pub struct StudioPanel {
     pub(crate) feed: Entity<ChatFeed>,
     pub(crate) composer: Entity<ChatComposer>,
     _composer_sub: gpui::Subscription,
+    _feed_sub: gpui::Subscription,
+    pub(crate) inventory: Option<InventorySummary>,
+    inventory_draft: bool,
+    selected_folder: Option<PathBuf>,
+    submission: Option<u128>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
     last_elapsed: Option<u64>,
@@ -159,12 +177,14 @@ impl StudioPanel {
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
         let prompt_sub =
             cx.subscribe(&prompt, |panel, _, _: &TextChanged, cx| {
+                panel.submission = None;
                 if panel.surface != StudioSurface::Chat {
                     cx.notify();
                 }
             });
         let agent = AgentHandle::with_config(store_root.clone(), llm);
-        let surface = if agent.has_messages() {
+        let inventory = agent.active_inventory();
+        let surface = if agent.has_messages() || inventory.is_some() {
             StudioSurface::Chat
         } else {
             StudioSurface::Home
@@ -198,6 +218,9 @@ impl StudioPanel {
             )
         });
         let working = cx.new(|cx| WorkingIndicator::new(ui.clone(), cx));
+        let feed_sub = cx.subscribe(&feed, |panel, _, event: &OpenTask, cx| {
+            panel.open_session(&event.0, cx);
+        });
         let composer = cx.new(|cx| {
             ChatComposer::new(
                 ui.clone(),
@@ -219,7 +242,10 @@ impl StudioPanel {
                         cx.notify();
                     }
                     ComposerEvent::Access => {
-                        panel.note("notice.attach_later", cx);
+                        panel.pick_inventory_folder(false, cx);
+                    }
+                    ComposerEvent::InventoryMode => {
+                        panel.set_inventory_draft(!panel.inventory_draft, cx);
                     }
                 }
             });
@@ -230,6 +256,11 @@ impl StudioPanel {
             feed,
             composer,
             _composer_sub: composer_sub,
+            _feed_sub: feed_sub,
+            inventory,
+            inventory_draft: false,
+            selected_folder: None,
+            submission: None,
             working,
             status,
             last_elapsed: None,
@@ -318,6 +349,11 @@ impl StudioPanel {
         let lines = self.agent.lines();
         self.feed
             .update(cx, |feed, cx| feed.sync_rows(session, lines, cx));
+        let inventory = self.agent.active_inventory();
+        if inventory != self.inventory {
+            self.inventory = inventory;
+            cx.notify();
+        }
         let status = self.agent.turn_status();
         if status != self.status {
             let was_busy = self.status.is_busy();
@@ -437,7 +473,8 @@ impl StudioPanel {
         self.model_menu_open = false;
         self.projects.clear();
         self.document = DocumentSession::new(self.product);
-        let _ = self.agent.create_session();
+        let _ = self.agent.clear_active();
+        self.set_inventory_draft(false, cx);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.emit_notice(None, cx);
@@ -448,9 +485,10 @@ impl StudioPanel {
     }
 
     pub fn new_task(&mut self, cx: &mut Context<'_, Self>) {
-        match self.agent.create_session() {
-            Ok(_) => {
+        match self.agent.clear_active() {
+            Ok(()) => {
                 self.surface = StudioSurface::Home;
+                self.set_inventory_draft(false, cx);
                 self.refresh_chat(cx);
                 self.emit_notice(None, cx);
                 self.prompt.update(cx, |state, cx| state.emplace("", cx));
@@ -464,11 +502,14 @@ impl StudioPanel {
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
         match self.agent.select_session(id) {
             Ok(()) => {
-                self.surface = if self.agent.has_messages() {
+                self.surface = if self.agent.has_messages()
+                    || self.agent.active_inventory().is_some()
+                {
                     StudioSurface::Chat
                 } else {
                     StudioSurface::Home
                 };
+                self.set_inventory_draft(false, cx);
                 self.refresh_chat(cx);
                 cx.emit(StudioEvent::SessionsChanged);
                 cx.notify();
@@ -487,8 +528,37 @@ impl StudioPanel {
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
-        match self.agent.send(&text) {
+        let id = *self.submission.get_or_insert_with(new_submission_id);
+        let result = if self.inventory_draft {
+            let origin = if self.surface == StudioSurface::Chat {
+                self.agent.active_session_id()
+            } else {
+                None
+            };
+            self.agent
+                .submit_inventory(
+                    id,
+                    &text,
+                    self.selected_folder.as_deref(),
+                    origin.clone(),
+                )
+                .and_then(|task_id| {
+                    if origin.is_none() {
+                        self.agent.select_session(&task_id)?;
+                    }
+                    Ok(())
+                })
+        } else {
+            self.agent.submit_chat(id, &text).and_then(|session| {
+                if self.agent.active_session_id().as_deref() != Some(&session) {
+                    self.agent.select_session(&session)?;
+                }
+                Ok(())
+            })
+        };
+        match result {
             Ok(()) => {
+                self.set_inventory_draft(false, cx);
                 self.prompt.update(cx, |state, cx| state.emplace("", cx));
                 self.surface = StudioSurface::Chat;
                 self.refresh_chat(cx);
@@ -498,6 +568,77 @@ impl StudioPanel {
             }
             Err(key) => self.emit_notice(Some(key), cx),
         }
+    }
+
+    pub(crate) fn set_inventory_draft(
+        &mut self,
+        inventory: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.inventory_draft = inventory;
+        self.submission = None;
+        if !inventory {
+            self.selected_folder = None;
+        }
+        let folder = self
+            .selected_folder
+            .as_ref()
+            .map(|path| path.display().to_string());
+        self.composer.update(cx, |composer, cx| {
+            composer.sync_inventory(inventory, folder, cx);
+        });
+    }
+
+    pub(crate) fn pick_inventory_folder(
+        &self,
+        resume: bool,
+        cx: &Context<'_, Self>,
+    ) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(self.t("inventory.pick_folder").into()),
+        });
+        let session = self.agent.active_session_id();
+        let surface = self.surface;
+        cx.spawn(async move |weak, cx| {
+            let result = picked.await;
+            let _ = weak.update(cx, |panel, cx| {
+                if panel.agent.active_session_id() != session
+                    || panel.surface != surface
+                {
+                    return;
+                }
+                match result {
+                    Ok(Ok(Some(mut paths))) => {
+                        if let Some(folder) = paths.pop() {
+                            if resume {
+                                panel.resume_inventory(Some(&folder), cx);
+                            } else {
+                                panel.selected_folder = Some(folder);
+                                panel.set_inventory_draft(true, cx);
+                            }
+                        }
+                    }
+                    Ok(Ok(None)) => (),
+                    _ => {
+                        panel.emit_notice(Some("inventory.invalid_folder"), cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn resume_inventory(
+        &mut self,
+        folder: Option<&std::path::Path>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let notice = self.agent.resume_inventory(folder).err();
+        self.emit_notice(notice, cx);
+        self.refresh_chat(cx);
     }
 
     pub fn stop_turn(&mut self, cx: &mut Context<'_, Self>) {

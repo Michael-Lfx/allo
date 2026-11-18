@@ -26,6 +26,10 @@ pub struct ChatFeed {
     rendered_rows: HashSet<u64>,
 }
 
+pub struct OpenTask(pub String);
+
+impl gpui::EventEmitter<OpenTask> for ChatFeed {}
+
 struct StoredFeed {
     lines: Vec<ChatLine>,
     row_ids: Vec<u64>,
@@ -296,6 +300,20 @@ impl ChatFeed {
                     .child(theme::icons::check())
                     .child(label)
                     .into_any_element()
+            }
+            ChatLine::TaskReceipt { task_id, goal } => {
+                let task_id = task_id.clone();
+                theme::Button::new(
+                    ("chat-task-receipt", self.row_ids[index]),
+                    self.i18n.tf("inventory.receipt", &[("goal", goal)]),
+                )
+                .render(
+                    &self.theme,
+                    cx.listener(move |_, _, _, cx| {
+                        cx.emit(OpenTask(task_id.clone()));
+                    }),
+                )
+                .into_any_element()
             }
         }
     }

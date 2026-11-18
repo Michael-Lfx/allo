@@ -1,5 +1,4 @@
 use flowy_ui as theme;
-use flowy_ui::text_area;
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
 use std::time::Duration;
 
@@ -460,263 +459,51 @@ impl crate::panel::StudioPanel {
 
     fn studio(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
+            .id("studio-scroll")
             .flex_1()
             .min_h_0()
-            .flex()
-            .flex_col()
+            .overflow_y_scroll()
             .child(
                 div()
-                    .id("studio-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(self.studio_body(cx)),
-            )
-            .child(self.composer(cx))
-    }
-
-    fn studio_body(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let doc = self.document.document();
-        div()
-            .w_full()
-            .max_w(px(theme::PAGE_MAX_WIDTH))
-            .mx_auto()
-            .px(self.theme.space(32.))
-            .pt(self.theme.space(40.))
-            .pb(self.theme.space(24.))
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(24.))
-            .child(self.title_row(cx))
-            .child(div().text_xs().text_color(self.theme.muted()).child(
-                self.tf(
-                    "ui.document_nodes",
-                    &[
-                        ("title", &doc.title),
-                        ("count", &doc.nodes.len().to_string()),
-                    ],
-                ),
-            ))
-            .child(self.feature_row(cx))
-            .child(self.ideas_entry(cx))
-    }
-
-    fn title_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .items_end()
-            .justify_between()
-            .gap(self.theme.space(24.))
-            .child(
-                div()
-                    .font_family("Georgia")
-                    .font_weight(gpui::FontWeight::LIGHT)
-                    .text_size(px(56.))
-                    .child(self.t("studio.brand")),
-            )
-            .child(
-                theme::interactive(
-                    "creative-video",
-                    self.t("studio.creative_title"),
-                    &self.theme,
-                )
-                .w(px(220.))
-                .h(px(92.))
-                .rounded_xl()
-                .bg(self.theme.ink())
-                .text_color(self.theme.on_ink())
-                .p(self.theme.space(16.))
-                .flex()
-                .flex_col()
-                .justify_center()
-                .gap(self.theme.space(4.))
-                .cursor_pointer()
-                .hover(|style| style.opacity(0.92))
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    app.fill_prompt_key("prompt.creative", cx);
-                }))
-                .child(div().text_sm().child(self.t("studio.creative_title")))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(self.theme.on_ink())
-                        .child(self.t("studio.creative_hint")),
-                ),
-            )
-    }
-
-    fn feature_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .gap(self.theme.space(16.))
-            .child(self.build_card(cx))
-            .child(self.create_card(cx))
-    }
-
-    fn build_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        theme::interactive("build-card", self.t("studio.build"), &self.theme)
-            .flex_1()
-            .h(px(156.))
-            .rounded_xl()
-            .bg(self.theme.card())
-            .border_1()
-            .border_color(self.theme.line())
-            .p(self.theme.space(20.))
-            .flex()
-            .flex_col()
-            .justify_between()
-            .cursor_pointer()
-            .hover(|style| style.bg(self.theme.soft()))
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.fill_prompt_key("prompt.build", cx);
-            }))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(self.theme.muted())
-                    .child(self.t("studio.build")),
-            )
-            .child(div().text_lg().child(self.t("studio.build_body")))
-    }
-
-    fn create_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .flex_1()
-            .h(px(156.))
-            .rounded_xl()
-            .bg(self.theme.card())
-            .border_1()
-            .border_color(self.theme.line())
-            .flex()
-            .overflow_hidden()
-            .child(
-                theme::interactive(
-                    "create-card",
-                    self.t("studio.create"),
-                    &self.theme,
-                )
-                .flex_1()
-                .p(self.theme.space(20.))
-                .flex()
-                .flex_col()
-                .justify_between()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    app.fill_prompt_key("prompt.create", cx);
-                }))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(self.theme.muted())
-                        .child(self.t("studio.create")),
-                )
-                .child(div().text_lg().child(self.t("studio.create_body"))),
-            )
-            .child(div().w(px(1.)).h_full().bg(self.theme.line()))
-            .child(
-                theme::interactive(
-                    "local-files",
-                    self.t("studio.local_title"),
-                    &self.theme,
-                )
-                .flex_1()
-                .p(self.theme.space(20.))
-                .flex()
-                .flex_col()
-                .justify_between()
-                .cursor_pointer()
-                .hover(|style| style.bg(self.theme.soft()))
-                .on_click(cx.listener(|app, _event, _window, cx| {
-                    app.note("notice.local_later", cx);
-                }))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(self.theme.muted())
-                        .child(self.t("studio.local_title")),
-                )
-                .child(div().text_sm().child(self.t("studio.local_body"))),
-            )
-    }
-
-    fn composer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .on_action(cx.listener(
-                |panel, _: &crate::SubmitComposer, _window, cx| {
-                    // The home surface has its own composer; Enter submits here
-                    // too, matching the chat composer's binding.
-                    let draft =
-                        !panel.prompt.read(cx).as_str().trim().is_empty();
-                    if panel.status.is_busy() || !draft || !panel.cloud_ready {
-                        return;
-                    }
-                    panel.send_prompt(cx);
-                },
-            ))
-            .px(self.theme.space(32.))
-            .pb(self.theme.space(16.))
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(760.))
-                    .mx_auto()
-                    .bg(self.theme.card())
-                    .border_1()
-                    .border_color(self.theme.line())
-                    .rounded_xl()
-                    .shadow_sm()
-                    .px(self.theme.space(16.))
-                    .pt(self.theme.space(12.))
-                    .pb(self.theme.space(8.))
+                    .min_h(gpui::relative(1.))
                     .flex()
                     .flex_col()
-                    .gap(self.theme.space(8.))
-                    .child(self.prompt_field())
+                    .justify_center()
+                    .py(self.theme.space(32.))
+                    .gap(self.theme.space(12.))
+                    .child(
+                        div()
+                            .px(self.theme.space(32.))
+                            .text_center()
+                            .text_size(px(36.))
+                            .child(self.t("inventory.home_title")),
+                    )
+                    .child(self.composer.clone())
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
+                            .justify_center()
                             .items_center()
-                            .justify_between()
+                            .gap(self.theme.space(8.))
                             .child(
                                 theme::Button::new(
-                                    "attach",
-                                    self.t("studio.attach"),
+                                    "inventory-example",
+                                    self.t("inventory.mode"),
                                 )
-                                .variant(theme::ControlVariant::Ghost)
-                                .size(theme::ControlSize::Small)
                                 .render(
                                     &self.theme,
-                                    cx.listener(|app, _event, _window, cx| {
-                                        app.note("notice.attach_later", cx);
+                                    cx.listener(|panel, _, _, cx| {
+                                        panel.set_inventory_draft(true, cx);
+                                        panel.fill_prompt_key(
+                                            "inventory.example",
+                                            cx,
+                                        );
                                     }),
                                 ),
                             )
-                            .child(
-                                theme::Button::new(
-                                    "send-prompt",
-                                    self.t("studio.send"),
-                                )
-                                .variant(theme::ControlVariant::Primary)
-                                .size(theme::ControlSize::Small)
-                                .render(
-                                    &self.theme,
-                                    cx.listener(|app, _event, _window, cx| {
-                                        app.send_prompt(cx);
-                                    }),
-                                ),
-                            ),
+                            .child(self.ideas_entry(cx)),
                     ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(760.))
-                    .mx_auto()
-                    .pt(self.theme.space(8.))
-                    .text_xs()
-                    .text_color(self.theme.muted())
-                    .child(self.t("studio.disclaimer")),
             )
     }
 
@@ -740,21 +527,6 @@ impl crate::panel::StudioPanel {
                         .child(self.placeholder_detail()),
                 ),
         )
-    }
-
-    fn prompt_field(&self) -> impl gpui::IntoElement {
-        text_area("prompt")
-            .aria_label(self.t("studio.prompt_placeholder"))
-            .state(self.prompt.downgrade())
-            .placeholder(self.t("studio.prompt_placeholder"))
-            .placeholder_color(self.theme.muted())
-            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
-            .caret_blink_interval_500ms()
-            .w_full()
-            .h(px(72.))
-            .whitespace_normal()
-            .overflow_y_scroll()
-            .text_color(self.theme.ink())
     }
 
     fn credit_row(
