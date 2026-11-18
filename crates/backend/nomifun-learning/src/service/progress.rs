@@ -626,6 +626,10 @@ pub(super) async fn update_mastery_and_review(
 /// Creates one review item per objective question of a lesson when the learner
 /// completes it, due on the next review day. Each question carries its own
 /// memory curve. Existing items keep their schedule untouched.
+/// pf5 注册表派生（消费点⑥）：`review_eligible=false` 的 deprecated 活动
+/// （首例 matching）不种卡——给永不抽出的活动种卡 = due 徽标虚高 + 死卡堆
+/// 积。客观题轨不变（AI 批改题仍不入队列）；清单从 ActivityKind::ALL ×
+/// capability 方法派生，不手写题型串。
 async fn seed_lesson_review_items(
     transaction: &mut Transaction<'_, Sqlite>,
     enrollment_id: &LearningEnrollmentId,
@@ -633,9 +637,15 @@ async fn seed_lesson_review_items(
     now: i64,
     tz_offset_minutes: i32,
 ) -> Result<(), AppError> {
+    let reviewable_sql = ActivityKind::ALL
+        .iter()
+        .filter(|kind| kind.is_objective() && kind.review_eligible())
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
     let activity_ids: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT activity_id FROM learning_activities \
-         WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST}) \
+         WHERE lesson_id = ? AND kind IN ({reviewable_sql}) \
          ORDER BY position, activity_id"
     ))
     .bind(lesson_id.as_str())

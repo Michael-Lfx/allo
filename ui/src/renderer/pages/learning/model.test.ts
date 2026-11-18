@@ -105,6 +105,54 @@ describe('stepActivities / 门禁', () => {
   });
 });
 
+describe('stepActivities / deprecated 题型过滤（pf5 注册表派生）', () => {
+  const matchingActivity = (id: string, section_key: string | null): Activity =>
+    ({
+      id,
+      kind: 'matching',
+      prompt: `m-${id}`,
+      options: ['左列A', '左列B'],
+      matches: ['右1', '右2'],
+      answer: ['右1', '右2'],
+      section_key,
+    }) as unknown as Activity;
+
+  test('matching 行不计节完成门槛：练习轮 round 过滤 countsTowardSection=false', () => {
+    const steps = buildSteps(
+      [section('s1', 'concept'), section('s2', 'practice')],
+      [activity('a1', 's2')]
+    );
+    const round = stepActivities(steps, 1, [activity('a1', 's2'), matchingActivity('m1', 's2')]);
+    expect(round.map((a) => a.id)).toEqual(['a1']);
+  });
+
+  test('全 deprecated 节自动视为完成：round.length>0 守卫不触发（Q3 裁决）', () => {
+    const steps = buildSteps(
+      [section('s1', 'concept'), section('s2', 'practice'), section('s3', 'summary')],
+      [matchingActivity('m1', 's2')]
+    );
+    expect(stepActivities(steps, 1, [matchingActivity('m1', 's2')])).toEqual([]);
+    expect(stepLocked(steps, 1, [matchingActivity('m1', 's2')], answered([]))).toBe(false);
+    expect(canGoToStep(steps, 2, [matchingActivity('m1', 's2')], answered([]))).toBe(true);
+  });
+
+  test('非 deprecated 活动照常设门；收尾轮的过滤不吞综合题', () => {
+    const steps = buildSteps(
+      [section('s1', 'concept'), section('s2', 'practice')],
+      [activity('a1', 's2')]
+    );
+    const round = stepActivities(steps, 1, [
+      activity('a1', 's2'),
+      activity('a2', null),
+      matchingActivity('m1', 's2'),
+      matchingActivity('m2', null),
+    ]);
+    expect(round.map((a) => a.id)).toEqual(['a1', 'a2']);
+    expect(stepLocked(steps, 1, round, answered(['a1', 'a2']))).toBe(false);
+    expect(stepLocked(steps, 1, round, answered(['a1']))).toBe(true);
+  });
+});
+
 describe('状态映射', () => {
   test('状态调色板覆盖全部状态键', () => {
     for (const status of ['pending', 'ready', 'failed'] as const) {

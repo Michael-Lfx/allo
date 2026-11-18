@@ -2342,7 +2342,14 @@ impl LearningService {
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
-        if completed.is_some() && request.kind != ActivityKind::Reflection {
+        // pf5 注册表派生（消费点⑥ 同裁决）：deprecated 题型（review_eligible
+        // =false，首例 matching）不即时种卡——该卡永远不被抽队，而 due_today
+        // 徽标直数 review_items 行，种了 = 徽标虚高 + 死卡。活动本身照常创
+        // 建（自拟题型不受废弃约束）。
+        if completed.is_some()
+            && request.kind != ActivityKind::Reflection
+            && request.kind.review_eligible()
+        {
             let now = now_ms();
             let tz_offset_minutes = self.tz_offset_minutes().await;
             ensure_review_item(

@@ -4,6 +4,7 @@
  * 合与展示，业务决策都收在这里（避免决策逻辑埋在渲染体里无法测试）。
  */
 import type { ILearningCourseGenerationEvent, ILearningGenerationToolCall } from '@/common/adapter/ipcBridge';
+import { ACTIVITY_KIND_REGISTRY } from './activityKindRegistry';
 import { PHASE } from './phaseMeta';
 import type { Activity, LessonStatus, Section } from './types';
 import type { Translate } from './utils';
@@ -47,7 +48,13 @@ export function buildSteps(sections: Section[], activities: Activity[]): LessonS
 
 /** 某一步的作答轮：练习节出自己绑定的题；收尾练习轮（最后一个练习步）
  * 收编更早练习节未出的题 + 内容节绑定题 + 通用综合题；内容步与综合步不
- * 设门（门禁只拦练习步，见 ADR-0002 追加决策）。 */
+ * 设门（门禁只拦练习步，见 ADR-0002 追加决策）。
+ *
+ * pf5 注册表派生：`countsTowardSection=false` 的活动（首例 deprecated
+ * matching）不入作答轮——练习流不再出现是本过滤的下游结果（Q2 隐藏裁
+ * 决不加额外逻辑）；节内全是 deprecated 题时 round 为空，`stepLocked`
+ * 的 `round.length > 0` 守卫天然放行 = 全 deprecated 节自动视为完成
+ * （Q3 裁决零成本落地）。 */
 export function stepActivities(
   steps: LessonStep[],
   index: number,
@@ -55,9 +62,14 @@ export function stepActivities(
 ): Activity[] {
   const entry = steps[index];
   if (!entry?.section || entry.section.kind !== 'practice') return [];
+  const countsTowardSection = (activity: Activity) =>
+    ACTIVITY_KIND_REGISTRY[activity.kind].countsTowardSection;
   const lastPracticeIndex = findLastPracticeIndex(steps);
   if (index !== lastPracticeIndex) {
-    return activities.filter((activity) => activity.section_key === entry.section?.section_key);
+    return activities.filter(
+      (activity) =>
+        activity.section_key === entry.section?.section_key && countsTowardSection(activity)
+    );
   }
   // 收尾轮：除更早练习节已出的题外全部归此（本节绑定 + 内容节绑定 + 通用）
   const earlierPracticeKeys = new Set<string>();
@@ -66,7 +78,8 @@ export function stepActivities(
   });
   return activities.filter(
     (activity) =>
-      activity.section_key === null || !earlierPracticeKeys.has(activity.section_key)
+      (activity.section_key === null || !earlierPracticeKeys.has(activity.section_key)) &&
+      countsTowardSection(activity)
   );
 }
 

@@ -1509,6 +1509,63 @@ impl ActivityKind {
     pub const fn is_ai_graded(self) -> bool {
         matches!(self, Self::Reflection | Self::OpenQuestion)
     }
+
+    /// 全部九种题型——题型注册表（pf5）的遍历枚举源：SQL 派生清单、契约
+    /// 一致性测试与审计都从这里枚举，新增题型只改此表与 serde/try_from。
+    pub const ALL: [ActivityKind; 9] = [
+        Self::SingleChoice,
+        Self::TrueFalse,
+        Self::Reflection,
+        Self::FillInBlank,
+        Self::MultiChoice,
+        Self::Numeric,
+        Self::Ordering,
+        Self::Matching,
+        Self::OpenQuestion,
+    ];
+
+    /// 题型注册表（pf5）：deprecated = 存量兼容保留（判分 evaluate 臂/渲染
+    /// 分支/已作答 attempt 与账本原样不动），但新生成契约不再提供、不计节
+    /// 完成门槛、复习抽题不再出队。matching 是第一例，接替者 classify
+    /// （pf2 落地）。消费面一律从本表派生，不做一次性清单。
+    pub const fn is_deprecated(self) -> bool {
+        matches!(self, Self::Matching)
+    }
+
+    /// deprecated 题型的接替者（pf2 落地 classify 后收窄为 `ActivityKind`，
+    /// 现以字符串留痕——不引入不存在的枚举值）。active 题型为 None。
+    pub const fn replaced_by(self) -> Option<&'static str> {
+        match self {
+            Self::Matching => Some("classify"),
+            _ => None,
+        }
+    }
+
+    /// 进生成契约（LLM 出题面提供该题型）。deprecated 题型退出新生成契约
+    /// ——生成 prose 面手调、由契约一致性测试钉住与注册表相等。
+    pub const fn llm_generatable(self) -> bool {
+        !self.is_deprecated()
+    }
+
+    /// 计节完成门槛（练习轮出题面）。deprecated 题型不入作答轮——节内全
+    /// deprecated 时轮空，完成门槛天然放行（全 deprecated 节自动视为完成）。
+    pub const fn counts_toward_section(self) -> bool {
+        !self.is_deprecated()
+    }
+
+    /// 进复习抽题（复习队列出队该题型的卡）。deprecated 题型存量卡原样
+    /// 保留（账本零触碰），只是不再被抽到；种卡面（OBJECTIVE_KIND_SQL_LIST）
+    /// 与自拟题白名单不受本表约束。
+    pub const fn review_eligible(self) -> bool {
+        !self.is_deprecated()
+    }
+
+    /// 逐项反馈能力（pf1 挂靠点）：reflection/open_question 是 AI 批改的
+    /// 整体判分语义，没有逐项结果；其余题型（含 deprecated matching 的存量
+    /// 判分）支持逐项。
+    pub const fn per_item_feedback(self) -> bool {
+        !matches!(self, Self::Reflection | Self::OpenQuestion)
+    }
 }
 
 impl ActivityPack {
@@ -4014,5 +4071,80 @@ mod viz_lint_tests {
             degraded.validate_body().is_ok(),
             "degraded 节豁免 demo 硬门"
         );
+    }
+}
+
+#[cfg(test)]
+mod activity_kind_registry_tests {
+    //! 题型注册表（pf5）：ActivityKind capability 方法表的九 kind 全量单测。
+    //! 首例数据 = matching deprecated（接替 classify，pf2 落地）——生成契约/
+    //! 节完成门槛/复习抽题全关、存量判分与逐项反馈保留；其余八 kind active
+    //! 全能力，reflection/open_question 无逐项反馈（AI 批改整体判分语义）。
+    //! 与前端 activityKindRegistry.ts 同源对齐，改任一侧须回改另一侧。
+
+    use super::*;
+
+    /// 独立真值表（字面源，不派生自实现）：九 kind × 五能力逐条对账。
+    const EXPECTED: [(
+        ActivityKind,
+        bool, // is_deprecated
+        bool, // llm_generatable
+        bool, // counts_toward_section
+        bool, // review_eligible
+        bool, // per_item_feedback
+    ); 9] = [
+        (ActivityKind::SingleChoice, false, true, true, true, true),
+        (ActivityKind::TrueFalse, false, true, true, true, true),
+        (ActivityKind::Reflection, false, true, true, true, false),
+        (ActivityKind::FillInBlank, false, true, true, true, true),
+        (ActivityKind::MultiChoice, false, true, true, true, true),
+        (ActivityKind::Numeric, false, true, true, true, true),
+        (ActivityKind::Ordering, false, true, true, true, true),
+        (ActivityKind::Matching, true, false, false, false, true),
+        (ActivityKind::OpenQuestion, false, true, true, true, false),
+    ];
+
+    #[test]
+    fn all_nine_kinds_are_enumerated_and_round_trip() {
+        assert_eq!(ActivityKind::ALL.len(), 9, "ALL 是注册表遍历的唯一枚举源");
+        for (kind, _, _, _, _, _) in EXPECTED {
+            assert_eq!(ActivityKind::try_from(kind.as_str()), Ok(kind));
+            assert!(ActivityKind::ALL.contains(&kind), "{} 缺席 ALL", kind.as_str());
+        }
+    }
+
+    #[test]
+    fn registry_descriptor_table_matches_literal_truth() {
+        for (kind, deprecated, llm, section, review, per_item) in EXPECTED {
+            assert_eq!(kind.is_deprecated(), deprecated, "{}", kind.as_str());
+            assert_eq!(kind.llm_generatable(), llm, "{}", kind.as_str());
+            assert_eq!(kind.counts_toward_section(), section, "{}", kind.as_str());
+            assert_eq!(kind.review_eligible(), review, "{}", kind.as_str());
+            assert_eq!(kind.per_item_feedback(), per_item, "{}", kind.as_str());
+        }
+    }
+
+    #[test]
+    fn deprecated_kinds_carry_replacement_and_active_kinds_do_not() {
+        for (kind, deprecated, _, _, _, _) in EXPECTED {
+            if deprecated {
+                assert!(
+                    kind.replaced_by().is_some(),
+                    "deprecated {} 必须留痕接替者",
+                    kind.as_str()
+                );
+            } else {
+                assert_eq!(kind.replaced_by(), None, "{}", kind.as_str());
+            }
+        }
+        assert_eq!(ActivityKind::Matching.replaced_by(), Some("classify"));
+    }
+
+    #[test]
+    fn deprecated_kind_keeps_legacy_faces_objective_and_gradable() {
+        // 存量兼容面保留：deprecated matching 仍是规则判卷客观题（evaluate
+        // Matching 臂 / 复习卡映射原样）——注册表只收敛消费面，不动判分。
+        assert!(ActivityKind::Matching.is_objective());
+        assert!(!ActivityKind::Matching.is_ai_graded());
     }
 }

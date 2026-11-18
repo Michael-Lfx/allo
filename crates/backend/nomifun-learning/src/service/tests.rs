@@ -1636,6 +1636,319 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(before.0, after.0, "rating one card must not move its sibling");
     }
 
+    /// pf5 消费点⑥ 种卡面跳过 deprecated：完成含旧 matching 活动的课时，
+    /// matching 活动零种卡（注册表 review_eligible=false 派生——否则给永不
+    /// 抽出的活动种卡 = due 徽标虚高 + 死卡堆积）；非 deprecated 活动照常
+    /// 种卡。存量已有卡的出队排除另测覆盖（draw 面）。
+    #[tokio::test]
+    async fn lesson_completion_skips_deprecated_kinds_when_seeding_review_cards() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "Deprecated seed".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Matching legacy".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![
+                        ActivityPack {
+                            difficulty: None,
+                            kind: ActivityKind::SingleChoice,
+                            prompt: "Which term names the size of a vector?".into(),
+                            options: vec![
+                                "magnitude".into(),
+                                "speed".into(),
+                                "velocity".into(),
+                            ],
+                            answer: json!("magnitude"),
+                            explanation: String::new(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: None,
+                        },
+                        ActivityPack {
+                            difficulty: None,
+                            kind: ActivityKind::Matching,
+                            prompt: "Match each quantity to where it lives.".into(),
+                            options: vec!["局部变量".into(), "动态分配".into()],
+                            answer: json!(["栈区", "堆区"]),
+                            explanation: String::new(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: None,
+                        },
+                    ],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+        service
+            .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        // 种卡面跳过 deprecated：matching 活动零种卡（活动行本身原样保留，
+        // 学习账本零触碰——只有 review_items 不再新增行）；非 deprecated
+        // 照常种卡。
+        let kinds: Vec<(String,)> = sqlx::query_as(
+            "SELECT a.kind FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             WHERE e.user_id = ?",
+        )
+        .bind(user_id.as_str())
+        .fetch_all(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            kinds,
+            vec![("single_choice".to_owned(),)],
+            "matching activity gets no card; active activity seeds normally"
+        );
+        make_all_due(&service, &user_id).await;
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1, "only the active card is drawn");
+        assert_eq!(due[0].question.kind, ActivityKind::SingleChoice);
+    }
+
+    /// pf5 draw 面排除存量卡：种卡跳过只防未来，历史已种下的 deprecated 卡
+    /// （本测用 raw SQL 植入模拟旧档）原样保留在 learning_review_items（账
+    /// 本零触碰），但复习抽题不再出队（注册表 review_eligible 派生）。
+    #[tokio::test]
+    async fn due_reviews_excludes_legacy_deprecated_cards() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "Legacy card".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![ActivityPack {
+                        difficulty: None,
+                        kind: ActivityKind::SingleChoice,
+                        prompt: "Which term names the size of a vector?".into(),
+                        options: vec!["magnitude".into(), "speed".into(), "velocity".into()],
+                        answer: json!("magnitude"),
+                        explanation: String::new(),
+                        distractors: Vec::new(),
+                        tol: None,
+                        section_key: None,
+                        evidence: None,
+                    }],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson = &detail.modules[0].lessons[0];
+        service
+            .update_lesson_progress(&lesson.id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        // 旧档模拟：matching 活动上已存在的复习卡（pf5 前种下的存量死卡）。
+        let matching_id = LearningActivityId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, 'matching', '旧匹配题', ?, 1)",
+        )
+        .bind(&matching_id)
+        .bind(lesson.id.as_str())
+        .bind(r#"{"answer":[],"options":[],"explanation":"","distractors":[],"matches":[]}"#)
+        .execute(database.pool())
+        .await
+        .unwrap();
+        let enrollment_id: String = sqlx::query_scalar(
+            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ?",
+        )
+        .bind(course.course.id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_review_items \
+             (review_item_id, enrollment_id, activity_id, due_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(LearningReviewItemId::new().into_string())
+        .bind(&enrollment_id)
+        .bind(&matching_id)
+        .bind(now_ms())
+        .bind(now_ms())
+        .execute(database.pool())
+        .await
+        .unwrap();
+        make_all_due(&service, &user_id).await;
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, false, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1, "legacy matching card stays off the queue");
+        assert_eq!(due[0].question.kind, ActivityKind::SingleChoice);
+        // 账本零触碰：存量卡行原样保留，不被清理。
+        let stored: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             WHERE e.user_id = ?",
+        )
+        .bind(user_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(stored.0, 2, "the legacy card row is kept, not purged");
+    }
+
+    /// pf5 消费点⑥ 的另一条种卡路径：已完成课时手动加题即时种卡
+    /// （lesson.rs create_lesson_activity）同样跳过 deprecated——该卡永远
+    /// 不被抽队（due_today 徽标直数 review_items 行，不出队的卡 = 徽标虚
+    /// 高 + 死卡）。活动本身照常创建（自拟题型不受废弃约束）。
+    #[tokio::test]
+    async fn manual_activity_add_to_completed_lesson_skips_deprecated_seeding() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "Manual add".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    intent: String::new(),
+                    scope: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: Vec::new(),
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson = &detail.modules[0].lessons[0];
+        service
+            .update_lesson_progress(&lesson.id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        // 已完成课时手动加 matching 题：活动创建成功（题型全支持不收缩），
+        // 但不种复习卡。
+        service
+            .create_lesson_activity(
+                &user_id,
+                &lesson.id,
+                CreateLessonActivityRequest {
+                    kind: ActivityKind::Matching,
+                    prompt: "Match each quantity to where it lives.".into(),
+                    options: vec!["局部变量".into(), "动态分配".into()],
+                    answer: json!(["栈区", "堆区"]),
+                    explanation: "局部变量在栈区，动态分配在堆区。".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let matching_rows: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             WHERE a.kind = 'matching'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(matching_rows.0, 0, "deprecated kind gets no card on manual add");
+        // 非 deprecated 对照臂：同路径照常种卡。
+        service
+            .create_lesson_activity(
+                &user_id,
+                &lesson.id,
+                CreateLessonActivityRequest {
+                    kind: ActivityKind::SingleChoice,
+                    prompt: "Which term names the size of a vector?".into(),
+                    options: vec!["magnitude".into(), "speed".into(), "velocity".into()],
+                    answer: json!("magnitude"),
+                    explanation: "向量的大小叫 magnitude。".into(),
+                    distractors: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let active_rows: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM learning_review_items r \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             WHERE a.kind = 'single_choice'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(active_rows.0, 1, "active kind seeds normally on manual add");
+    }
+
     #[tokio::test]
     async fn custom_questions_persist_config_and_join_the_review_queue() {
         // 自建题契约：config 落库、进题库、按同一判卷器判分；填空题走 038

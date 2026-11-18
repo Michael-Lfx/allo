@@ -129,11 +129,12 @@ const SEGMENTED_EXAMPLES_PLANNING_CN: &str = "\n- 分段例组（R18，规划面
 
 /// 干扰项五型菜单的图线孪生（y06，learnhub #201；CN 版进活动契约，长菜单
 /// 不进工具描述）：每型只在正文材料足以支撑自然负例时使用；fill_in_blank
-/// 既有近义干扰与必填 distractors 不动，ordering / matching / numeric 不适用。
-const DISTRACTOR_MENU_CN: &str = "\n- 干扰项五型（R21，选择题面）：single_choice / multi_choice / true_false 的诱惑项按五型设计——近邻负例（只破一个条件）、部分条件满足（满足部分条件却写成全部满足）、判联错配（结论对但对象或关系错）、表述转换陷阱（量词/方向/范围被同义改写悄悄翻转）、集合关系检查（子集/超集/相交/相离混淆）。每型只在正文材料足以支撑一个自然负例时使用，正文没有该对照就不写。fill_in_blank 的近义干扰与必填 distractors 规则不变；ordering / matching / numeric 不适用。适用时优先自然负例，无自然负例不得硬造。";
+/// 既有近义干扰与必填 distractors 不动，ordering / numeric 不适用（matching
+/// 已废弃退出生成契约，pf5——不再出现在任何 LLM 面文本，契约一致性测试钉）。
+const DISTRACTOR_MENU_CN: &str = "\n- 干扰项五型（R21，选择题面）：single_choice / multi_choice / true_false 的诱惑项按五型设计——近邻负例（只破一个条件）、部分条件满足（满足部分条件却写成全部满足）、判联错配（结论对但对象或关系错）、表述转换陷阱（量词/方向/范围被同义改写悄悄翻转）、集合关系检查（子集/超集/相交/相离混淆）。每型只在正文材料足以支撑一个自然负例时使用，正文没有该对照就不写。fill_in_blank 的近义干扰与必填 distractors 规则不变；ordering / numeric 不适用。适用时优先自然负例，无自然负例不得硬造。";
 
 /// 题库两考向（y06，learnhub #202）：认一认与推一推都要有份量——取向不是
-/// 题量配额（9 种题型 + 多样性 + reflection/open 配额已定，绝不加数）。
+/// 题量配额（生成契约 8 种题型 + 多样性 + reflection/open 配额已定，绝不加数）。
 const QUESTION_COVERAGE_CN: &str = "\n- 两个考向都要有份量（R20，题库面）：认一认（名称与边界）与推一推（结论与成立条件）两类问题在题组里都要有份量；这是取向不是题量配额，不为凑数加题。";
 
 /// 时长预算面（k03，开关 `NOMI_LEARNING_EST_BUDGET` 的语义臂，learnhub
@@ -223,8 +224,8 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 规划即雄心：节数、题量与练习形态照节清单填充，不自行加码——规划收敛过的容量不再膨胀；练习不引入清单未安排的方法论或推理链（那是后续节点的事）；题目考察的概念域照节清单（已知概念名单优先），情境载体按受众取向。{discipline_v2}
 
 【活动契约】
-- 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
-- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}
+- 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
+- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
@@ -1609,7 +1610,8 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
 }
 
 /// `ls_patch_activities` 的基础描述（y06 前原文：off 臂逐字回退旧文本）。
-const PATCH_ACTIVITIES_DESCRIPTION: &str = "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；matching 的 options 是左列、answer 是一一对应右列数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。";
+/// pf5：matching 移出题型规则（deprecated，生成契约一致性测试钉住）。
+const PATCH_ACTIVITIES_DESCRIPTION: &str = "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（8 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。";
 
 /// y06（learnhub #201）：工具面只补一句负例总闸——长菜单进系统提示词的
 /// 活动契约，不塞工具描述（避免工具面注意力被五型菜单挤占）。
@@ -2445,6 +2447,30 @@ mod tests {
             PATCH_ACTIVITIES_DISTRACTOR_NOTE_CN.contains("负例优先自然，无自然负例不硬造")
         );
         assert!(!PATCH_ACTIVITIES_DESCRIPTION.contains("无自然负例不得硬造"));
+    }
+
+    /// pf5 生成契约一致性：LLM 面文本（系统提示词 ×2 + 工具描述面）出现的
+    /// 题型集合 == 注册表 llm_generatable 集合。prose 是手调的（不机械派生
+    /// 自注册表），本测试从反面钉住不漂移——deprecated 题型（首例 matching）
+    /// 在生成契约的任何一处出现即失败；新增题型只有同步补 prose 才能过闸。
+    #[test]
+    fn generation_contract_prose_matches_llm_generatable_registry() {
+        use nomifun_learning::ActivityKind;
+        let prose = format!(
+            "{}{}{}{}",
+            *GENERATE_LESSON_AGENT_SYSTEM,
+            REPAIR_LESSON_AGENT_SYSTEM,
+            PATCH_ACTIVITIES_DESCRIPTION,
+            PATCH_ACTIVITIES_DISTRACTOR_NOTE_CN
+        );
+        for kind in ActivityKind::ALL {
+            assert_eq!(
+                prose.contains(kind.as_str()),
+                kind.llm_generatable(),
+                "kind「{}」在生成契约的出现必须恰等 llm_generatable()",
+                kind.as_str()
+            );
+        }
     }
 
     /// n3（#177/#178 条款移植）：规划面四条款（构件词边界 / 练习形态按

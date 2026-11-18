@@ -1393,6 +1393,20 @@ fn audit_findings(
         if let Err(error) = activity.validate_shape((3, 5), true) {
             findings.push(danger("activity_shape_invalid", format!("{at}: {error}")));
         }
+        // pf5 注册表面：deprecated 题型（注册表 is_deprecated 派生）发
+        // warning finding——存量兼容、不挡发布（「随重生成自然消失」）；
+        // 修复轮看见即可，不强制动作。新生成契约已不再提供该题型。
+        if activity.kind.is_deprecated() {
+            findings.push(warning(
+                "activity_kind_deprecated",
+                format!(
+                    "{at}: 题型「{}」已废弃（接替者 {}）——存量题判分与作答原样保留，\
+                     随课时重生成自然消失，无需修复动作",
+                    activity.kind.as_str(),
+                    activity.kind.replaced_by().unwrap_or("（无）")
+                ),
+            ));
+        }
         // 重复题面（k04 升级）：三口径相似度 ≥0.7 命中即点名命中对与
         // 分值；开关 off 臂退回规范化精确相等（旧观察口径）。
         let prompt = activity.prompt.trim().to_owned();
@@ -1632,6 +1646,53 @@ mod tests {
         assert!(kinds.contains(&"activities_too_few"));
         assert!(kinds.contains(&"objective_activities_too_few"));
         assert!(draft.audit_report().contains("[danger]"));
+    }
+
+    /// pf5 审计面：deprecated 题型（首例 matching）的活动行发 warning
+    /// finding——「存量兼容，随重生成自然消失」语义，不挡发布（只有
+    /// danger 挡 finish 闸）；非 deprecated 活动不发该 finding。
+    #[test]
+    fn deprecated_kind_activity_audits_as_warning_without_blocking() {
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "matching",
+                    serde_json::json!({ "options": ["左列A", "左列B"], "answer": ["右一", "右二"] }),
+                ),
+            },
+        ]);
+        let finding = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "activity_kind_deprecated")
+            .expect("deprecated matching row is named by an audit finding");
+        assert_eq!(finding.severity, SEV_WARNING, "advisory, not gate-blocking");
+        assert!(finding.message.contains("matching"), "finding names the kind");
+
+        // 对照臂：active 题型不发 deprecated finding。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({ "options": ["权利", "义务", "债务"], "answer": "权利" }),
+                ),
+            },
+        ]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "activity_kind_deprecated"),
+            "active kinds carry no deprecated finding"
+        );
     }
 
     /// 成色观察条（j07，观察面非阻断）：概念面（用名混用/只用正名/首现

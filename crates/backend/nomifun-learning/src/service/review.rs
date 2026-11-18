@@ -41,6 +41,18 @@ impl LearningService {
         // 的课程——已归档（enabled = 0）与已删除（墓碑）的课程卡都不再出队
         // （共享片段 COURSE_ARRANGEMENT_JOIN 收编）；回望历史面不过筛。已出
         // 卡的单卡入口（review_entry）不在此列，作答提交不因归档失败。
+        // pf5 注册表派生：review_eligible=false 的题型（首例 deprecated
+        // matching）不再出队——排除清单从 ActivityKind::ALL × capability
+        // 方法派生（不手写题型串）。种卡面已同步跳过 deprecated（消费点
+        // ⑥），本闸兜住 pf5 前已种下的存量卡（行保留、账本零触碰，只是不
+        // 出队）；自拟题（custom questions）不在本查询的 activities join
+        // 面上，不受注册表约束。
+        let review_ineligible_sql = ActivityKind::ALL
+            .iter()
+            .filter(|kind| !kind.review_eligible())
+            .map(|kind| format!("'{}'", kind.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
         let base = format!(
             "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.activity_id, a.kind, a.prompt, a.config_json, \
@@ -53,7 +65,8 @@ impl LearningService {
              JOIN learning_activities a ON a.activity_id = r.activity_id \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL"
+             WHERE e.user_id = ? AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
+             AND a.kind NOT IN ({review_ineligible_sql})"
         );
         // Course reviews: scoped by one or more courses (all queued, or due
         // only when requested), by lesson nodes (u9 weak-set sessions), or
