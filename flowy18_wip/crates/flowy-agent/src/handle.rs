@@ -25,6 +25,8 @@ use crate::index::{SessionIndex, SessionRecord as IndexRecord};
 use crate::projection::{ChatLine, ChatProjection, TurnStatus};
 use crate::title::{self, TITLE_MAX_CHARS};
 
+mod task;
+
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
     pub id: String,
@@ -61,6 +63,7 @@ struct UiState {
     active: Mutex<Option<String>>,
     updates: Mutex<VecDeque<AgentUpdate>>,
     load_failed: Mutex<bool>,
+    dispatch: Mutex<()>,
 }
 
 impl UiState {
@@ -71,6 +74,7 @@ impl UiState {
             active: Mutex::new(None),
             updates: Mutex::new(VecDeque::new()),
             load_failed: Mutex::new(false),
+            dispatch: Mutex::new(()),
         }
     }
 
@@ -88,7 +92,6 @@ struct Harness {
     state: Arc<UiState>,
     engine: Mutex<Option<Arc<Engine>>>,
     config: Mutex<LlmConfig>,
-    dispatch: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -129,7 +132,6 @@ impl AgentHandle {
                 state: Arc::clone(&state),
                 engine: Mutex::new(None),
                 config: Mutex::new(config.clone()),
-                dispatch: Mutex::new(()),
             }),
         };
         handle.boot(config);
@@ -222,6 +224,7 @@ impl AgentHandle {
         // If the UI index was lost or quarantined, rebuild the visible sessions
         // from the structured history instead of hiding them.
         import_engine_sessions(&engine, &state);
+        task::restore_inventories(&engine, &state);
         // A crash leaves the old status in the file; persist the repaired view.
         if persist_index(&state).is_err() {
             state.report_storage_error();
@@ -370,102 +373,135 @@ impl AgentHandle {
         Ok(())
     }
 
+    pub fn clear_active(&self) -> Result<(), &'static str> {
+        *lock(&self.inner.state.active) = None;
+        persist_index(&self.inner.state)?;
+        self.inner.state.push_update(AgentUpdate::Sessions);
+        Ok(())
+    }
+
     pub fn send(&self, text: &str) -> Result<(), &'static str> {
+        self.submit_message(text, None).map(|_| ())
+    }
+
+    /// Return this submission's existing session when its receipt is retried.
+    pub fn submit_chat(
+        &self,
+        submission: u128,
+        text: &str,
+    ) -> Result<String, &'static str> {
+        self.submit_message(text, Some(submission))
+    }
+
+    fn submit_message(
+        &self,
+        text: &str,
+        submission: Option<u128>,
+    ) -> Result<String, &'static str> {
         let text = text.trim();
         if text.is_empty() {
             return Err("notice.prompt_empty");
         }
-        if *lock(&self.inner.state.load_failed) {
+        let state = &self.inner.state;
+        if *lock(&state.load_failed) {
             return Err("notice.storage_error");
         }
-        let _dispatch = lock(&self.inner.dispatch);
+        let _dispatch = lock(&state.dispatch);
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
-        let session_id = self.ensure_active_session()?;
+        if let Some(session) =
+            submission.and_then(|id| engine.submitted_session(id))
+        {
+            return Ok(session);
+        }
+        let id = self.ensure_active_session()?;
+        if crate::inventory::valid_id(&id) {
+            return Err("inventory.use_task_controls");
+        }
+        if lock(&state.live)
+            .get(&id)
+            .is_some_and(|session| session.status.is_busy())
+        {
+            return Err("notice.agent_busy");
+        }
+        if ensure_engine_session(&engine, &id).is_err() {
+            state.report_storage_error();
+        }
         let config = lock(&self.inner.config).clone();
-        let mut title_signal = None;
-        let mut fallback_title = None;
-        {
-            let mut live = lock(&self.inner.state.live);
-            let session =
-                live.get_mut(&session_id).ok_or("notice.agent_failed")?;
-            if session.status.is_busy() {
-                return Err("notice.agent_busy");
-            }
-            let now = now_ms();
-            session.status = TurnStatus::Running;
-            session.turn_started_at = Some(now);
-            session.updated_at = now;
-            session.projection.push_user(text);
-            if !session.titled {
-                session.title = title::clamp_title(
-                    &title::fallback_title(text, TITLE_MAX_CHARS),
-                    TITLE_MAX_CHARS,
-                );
-                session.titled = true;
-                fallback_title = Some(session.title.clone());
-                if config.api_key.is_some() {
-                    let signal = CancelToken::new();
-                    session.title_signal = signal.clone();
-                    session.auto_title_pending = true;
-                    title_signal = Some(signal);
-                }
-            }
-            drop(live);
-        }
-        if persist_index(&self.inner.state).is_err() {
-            self.inner.state.report_storage_error();
-        }
-        self.inner.state.push_update(AgentUpdate::Session {
-            id: session_id.clone(),
-        });
-        self.inner.state.push_update(AgentUpdate::Sessions);
-
-        if ensure_engine_session(&engine, &session_id).is_err() {
-            self.inner.state.report_storage_error();
-        }
-        if let Some(title) = fallback_title
-            && engine.set_session_title(&session_id, title, true).is_err()
-        {
-            self.inner.state.report_storage_error();
-        }
         let prompt = text.to_owned();
-        let id = session_id;
-        let state = Arc::clone(&self.inner.state);
         let stream = config
             .api_key
             .is_none()
             .then(|| echo_stream_fn(prompt.clone()));
         let cwd = ensure_tool_cwd(&state.root);
-        let turn = match engine.start_with_config(
-            id.clone(),
-            prompt.clone(),
-            engine_config(&config, &cwd),
-            stream,
-        ) {
-            Ok(turn) => turn,
-            Err(error) => {
-                mark_failure(&state, &id, &error);
-                return Err("notice.agent_failed");
-            }
+        let turn = engine
+            .start_with_config(
+                id.clone(),
+                prompt.clone(),
+                engine_config(&config, &cwd),
+                stream,
+                submission,
+            )
+            .map_err(|error| match error {
+                RunError::Storage(_) => "notice.storage_error",
+                RunError::Busy => "notice.agent_busy",
+                _ => "notice.agent_failed",
+            })?;
+        let (fallback_title, title_signal) = {
+            let mut live = lock(&state.live);
+            let session = live.get_mut(&id).expect("active session exists");
+            let now = now_ms();
+            session.status = TurnStatus::Running;
+            session.turn_started_at = Some(now);
+            session.updated_at = now;
+            session.projection.push_user(text);
+            let title = if session.titled {
+                (None, None)
+            } else {
+                session.title = title::clamp_title(
+                    &title::fallback_title(text, TITLE_MAX_CHARS),
+                    TITLE_MAX_CHARS,
+                );
+                session.titled = true;
+                let signal = config.api_key.is_some().then(CancelToken::new);
+                if let Some(signal) = &signal {
+                    session.title_signal = signal.clone();
+                    session.auto_title_pending = true;
+                }
+                (Some(session.title.clone()), signal)
+            };
+            drop(live);
+            title
         };
-        let runtime = &self.inner.runtime;
-        runtime.spawn(async move {
+        if let Some(title) = fallback_title
+            && engine.set_session_title(&id, title, true).is_err()
+        {
+            state.report_storage_error();
+        }
+        if persist_index(state).is_err() {
+            state.report_storage_error();
+        }
+        state.push_update(AgentUpdate::Session { id: id.clone() });
+        state.push_update(AgentUpdate::Sessions);
+        let state = Arc::clone(state);
+        let receipt = id.clone();
+        self.inner.runtime.spawn(async move {
             if matches!(turn.await, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
             {
                 generate_title(engine, state, config, signal, id, prompt).await;
             }
         });
-        Ok(())
+        Ok(receipt)
     }
 
     pub fn stop(&self) {
-        let _dispatch = lock(&self.inner.dispatch);
+        let _dispatch = lock(&self.inner.state.dispatch);
         let Some(id) = lock(&self.inner.state.active).clone() else {
             return;
         };
+        task::cancel_inventory(&self.inner.state, &id);
         let engine = lock(&self.inner.engine).clone();
         if let Some(engine) = engine {
             let _ = engine.cancel(&id);
@@ -652,35 +688,6 @@ fn clear_auto_title(state: &UiState, id: &str) {
     }
 }
 
-fn mark_failure(state: &UiState, session_id: &str, error: &RunError) {
-    if matches!(error, RunError::Busy) {
-        return;
-    }
-    {
-        let mut live = lock(&state.live);
-        if let Some(session) = live.get_mut(session_id) {
-            // A cancelled run may surface a late error after `stop` already set
-            // `Stopped`; never overwrite that terminal state.
-            if !session.status.is_busy() {
-                return;
-            }
-            session.projection.flush();
-            session.status = TurnStatus::Error {
-                message: "chat.status_error".into(),
-            };
-            session.auto_title_pending = false;
-            session.turn_started_at = None;
-            session.updated_at = now_ms();
-        }
-    }
-    if persist_index(state).is_err() {
-        state.report_storage_error();
-    }
-    state.push_update(AgentUpdate::Session {
-        id: session_id.to_owned(),
-    });
-}
-
 fn persist_index(state: &UiState) -> Result<(), &'static str> {
     let live = lock(&state.live);
     let mut sessions: Vec<IndexRecord> = live
@@ -728,7 +735,34 @@ fn import_engine_sessions(engine: &Engine, state: &UiState) {
     let records = engine.sessions();
     let mut live = lock(&state.live);
     for record in records {
-        if live.contains_key(&record.id) {
+        if let Some(existing) = live.get_mut(&record.id) {
+            let mut visible =
+                existing.projection.lines.iter().filter_map(|line| {
+                    if let ChatLine::User { text } = line {
+                        Some(text)
+                    } else {
+                        None
+                    }
+                });
+            for (index, message) in record
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.role == Role::User)
+            {
+                match visible.next() {
+                    Some(text) if *text == message.text() => (),
+                    None if message.id.starts_with("submission-") => {
+                        existing.projection.lines.extend(lines_from_messages(
+                            &record.messages[index..],
+                        ));
+                        existing.status = live_status(record.status);
+                        existing.updated_at = record.updated_at;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
             continue;
         }
         let lines = lines_from_messages(&record.messages);

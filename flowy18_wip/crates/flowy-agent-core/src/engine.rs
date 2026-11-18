@@ -76,6 +76,7 @@ pub enum RunError {
     Busy,
     NotFound(String),
     NoCredential,
+    Storage(std::io::Error),
     Loop(String),
 }
 
@@ -86,6 +87,9 @@ impl std::fmt::Display for RunError {
             Self::NotFound(id) => write!(f, "session {id} not found"),
             Self::NoCredential => {
                 write!(f, "no account credential for this run")
+            }
+            Self::Storage(error) => {
+                write!(f, "could not save the submission: {error}")
             }
             Self::Loop(message) => write!(f, "{message}"),
         }
@@ -160,6 +164,26 @@ impl Engine {
     #[must_use]
     pub fn active(&self) -> Option<String> {
         self.inner.lock().unwrap().index.active.clone()
+    }
+
+    #[must_use]
+    pub fn submitted_session(&self, submission: u128) -> Option<String> {
+        let message_id = format!("submission-{submission:032x}");
+        self.inner
+            .lock()
+            .unwrap()
+            .index
+            .sessions
+            .iter()
+            .find_map(|record| {
+                record
+                    .messages
+                    .iter()
+                    .any(|message| {
+                        message.role == Role::User && message.id == message_id
+                    })
+                    .then(|| record.id.clone())
+            })
     }
 
     pub fn set_active(&self, id: Option<String>) -> std::io::Result<()> {
@@ -241,7 +265,7 @@ impl Engine {
         session_id: &str,
         prompt: &str,
     ) -> Result<LoopOutcome, RunError> {
-        let prepared = self.prepare(session_id, prompt, None, true)?;
+        let prepared = self.prepare(session_id, prompt, None, true, None)?;
         self.run_prepared(session_id, prompt, prepared, None).await
     }
 
@@ -252,7 +276,7 @@ impl Engine {
         prompt: &str,
         stream: StreamFn,
     ) -> Result<LoopOutcome, RunError> {
-        let prepared = self.prepare(session_id, prompt, None, false)?;
+        let prepared = self.prepare(session_id, prompt, None, false, None)?;
         self.run_prepared(session_id, prompt, prepared, Some(stream))
             .await
     }
@@ -264,10 +288,16 @@ impl Engine {
         prompt: String,
         config: EngineConfig,
         stream: Option<StreamFn>,
+        submission: Option<u128>,
     ) -> Result<BoxFuture<'static, Result<LoopOutcome, RunError>>, RunError>
     {
-        let prepared =
-            self.prepare(&session_id, &prompt, Some(config), stream.is_none())?;
+        let prepared = self.prepare(
+            &session_id,
+            &prompt,
+            Some(config),
+            stream.is_none(),
+            submission,
+        )?;
         let engine = Arc::clone(self);
         Ok(Box::pin(async move {
             engine
@@ -282,6 +312,7 @@ impl Engine {
         prompt: &str,
         config: Option<EngineConfig>,
         needs_credential: bool,
+        submission: Option<u128>,
     ) -> Result<PreparedTurn, RunError> {
         let (prepared, saved) = {
             let mut inner = self.inner.lock().unwrap();
@@ -305,20 +336,37 @@ impl Engine {
             let record =
                 inner.index.get_mut(session_id).expect("record exists");
             let history = record.messages.clone();
+            let previous = (record.status.clone(), record.updated_at);
             record.messages.push(Message {
-                id: format!("u-{now}"),
+                id: submission.map_or_else(
+                    || format!("u-{now}"),
+                    |id| format!("submission-{id:032x}"),
+                ),
                 role: Role::User,
                 content: vec![crate::types::ContentBlock::text(prompt)],
                 source: MessageSource::User,
             });
             record.status = TurnState::Running;
             record.updated_at = now;
+            let saved = inner.index.save(&self.root);
+            if submission.is_some()
+                && let Err(error) = saved
+            {
+                let record =
+                    inner.index.get_mut(session_id).expect("record exists");
+                record.messages.pop();
+                (record.status, record.updated_at) = previous;
+                ticket.finish();
+                drop(inner);
+                return Err(RunError::Storage(error));
+            }
             let prepared = PreparedTurn {
                 ticket: Arc::new(ticket),
                 history,
                 config,
             };
-            (prepared, inner.index.save(&self.root))
+            drop(inner);
+            (prepared, saved)
         };
         if saved.is_err() {
             self.observer.storage_error(session_id);
@@ -873,7 +921,7 @@ mod tests {
             Engine::open(scratch.0.clone(), config(), recorder.clone())
                 .unwrap();
         engine.create_session("s1".into(), 1).unwrap();
-        let old = engine.prepare("s1", "old", None, false).unwrap();
+        let old = engine.prepare("s1", "old", None, false, None).unwrap();
         let emitter = EngineEmitter {
             session: "s1".into(),
             observer: recorder.clone(),
@@ -895,7 +943,8 @@ mod tests {
             },
         });
         engine.cancel("s1").unwrap();
-        let replacement = engine.prepare("s1", "new", None, false).unwrap();
+        let replacement =
+            engine.prepare("s1", "new", None, false, None).unwrap();
         late.await;
         engine
             .run_prepared("s1", "new", replacement, Some(text_stream("fresh")))
@@ -943,6 +992,7 @@ mod tests {
                 "one".into(),
                 config(),
                 Some(stream.clone()),
+                None,
             )
             .unwrap();
         let second = engine
@@ -951,6 +1001,7 @@ mod tests {
                 "two".into(),
                 config(),
                 Some(stream),
+                None,
             )
             .unwrap();
         let first = tokio::spawn(first);
