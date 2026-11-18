@@ -5,9 +5,9 @@ use flowy_i18n::I18n;
 pub enum CreditsViewState {
     Loading,
     Ready {
-        total: u32,
-        free: Option<u32>,
-        daily: Option<u32>,
+        total: u64,
+        free: Option<u64>,
+        daily: Option<u64>,
     },
     #[default]
     Unavailable,
@@ -26,7 +26,7 @@ impl CreditsViewState {
 }
 
 #[must_use]
-pub fn grouped(value: u32) -> String {
+pub fn grouped(value: u64) -> String {
     let raw = value.to_string();
     let mut out = String::new();
     for (index, ch) in raw.chars().rev().enumerate() {

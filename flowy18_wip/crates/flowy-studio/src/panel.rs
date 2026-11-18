@@ -39,6 +39,8 @@ pub enum StudioEvent {
     RefreshModels,
     OpenIdeas,
     SessionsChanged,
+    /// A turn reached a terminal state; credit balance may have changed.
+    TurnFinished,
     Rated {
         stars: u32,
     },
@@ -301,9 +303,13 @@ impl StudioPanel {
             .update(cx, |feed, cx| feed.sync_rows(session, lines, cx));
         let status = self.agent.turn_status();
         if status != self.status {
+            let was_busy = self.status.is_busy();
             self.status = status;
             self.refresh_working(cx);
             cx.notify();
+            if was_busy && !self.status.is_busy() {
+                cx.emit(StudioEvent::TurnFinished);
+            }
         }
     }
 
@@ -645,6 +651,150 @@ mod tests {
             assert_ne!(expected, "chat.status_error");
             assert_eq!(working.label(), expected);
         });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn chat_surface_enter_submits_through_the_chat_composer(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-chat-enter-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                cx,
+            )
+        });
+        cx.update(|window, cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "enter",
+                crate::SubmitComposer,
+                Some("EditableText"),
+            )]);
+            panel.update(cx, |panel, cx| {
+                panel.catalog.replace(vec![flowy_agent::CatalogModel {
+                    id: "mock-model".into(),
+                    name: "Mock model".into(),
+                    ..Default::default()
+                }]);
+                panel.cloud_ready = true;
+                panel.set_surface(StudioSurface::Chat, cx);
+                panel.fill_prompt("hello", cx);
+            });
+            use gpui::Focusable;
+            let handle = panel.read(cx).prompt.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        });
+        cx.simulate_keystrokes("enter");
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            assert!(panel.agent.has_messages());
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn enter_submits_the_draft_and_shift_enter_inserts_a_newline(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-enter-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            StudioPanel::new(
+                StudioConfig {
+                    product: "Flowy",
+                    i18n: I18n::embedded("Flowy"),
+                    model: Model::Lite,
+                    plan: Plan::Free,
+                    model_info_version: String::new(),
+                    model_info_open: false,
+                    store_root: root.clone(),
+                    llm: LlmConfig {
+                        api_key: None,
+                        base_url: String::new(),
+                        model: String::new(),
+                        provider: String::new(),
+                        ..LlmConfig::default()
+                    },
+                },
+                ui,
+                cx,
+            )
+        });
+        cx.update(|window, cx| {
+            // The app installs these in `flowy_app::app::run`; a studio-only
+            // test has to install the same bindings to exercise the handler.
+            cx.bind_keys([
+                gpui::KeyBinding::new(
+                    "enter",
+                    crate::SubmitComposer,
+                    Some("EditableText"),
+                ),
+                gpui::KeyBinding::new(
+                    "shift-enter",
+                    gpui_ce_elements::editable_text::actions::Enter,
+                    Some("EditableText"),
+                ),
+            ]);
+            panel.update(cx, |panel, cx| {
+                panel.catalog.replace(vec![flowy_agent::CatalogModel {
+                    id: "mock-model".into(),
+                    name: "Mock model".into(),
+                    ..Default::default()
+                }]);
+                panel.cloud_ready = true;
+                panel.fill_prompt("hello", cx);
+            });
+            use gpui::Focusable;
+            let handle = panel.read(cx).prompt.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        });
+        // Home surface: Shift+Enter inserts a newline, Enter submits.
+        cx.simulate_keystrokes("shift-enter");
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(panel.prompt.read(cx).as_str(), "hello\n");
+        });
+        cx.simulate_keystrokes("enter");
+        cx.read_entity(&panel, |panel, cx| {
+            assert_eq!(panel.prompt.read(cx).as_str(), "");
+            assert!(panel.agent.has_messages());
+        });
+
         drop(panel);
         let _ = std::fs::remove_dir_all(root);
     }

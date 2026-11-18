@@ -141,6 +141,9 @@ pub struct FlowyApp {
     catalog_task: Option<Task<()>>,
     catalog_generation: u64,
     catalog_loading: bool,
+    credits_task: Option<Task<()>>,
+    credits_generation: u64,
+    credits_poll: Option<Task<()>>,
     locale_watch: Option<Task<()>>,
     shell_watch: Option<Task<()>>,
     subscriptions: Vec<Subscription>,
@@ -451,11 +454,16 @@ impl FlowyApp {
             catalog_task: None,
             catalog_generation: 0,
             catalog_loading: false,
+            credits_task: None,
+            credits_generation: 0,
+            credits_poll: None,
             locale_watch: None,
             shell_watch: None,
             subscriptions,
         };
         app.refresh_models(cx);
+        app.refresh_credits(cx);
+        app.start_credits_poll(cx);
         app
     }
 
@@ -637,6 +645,111 @@ impl FlowyApp {
         }));
     }
 
+    /// Refresh the account-scoped credit balance. Results are keyed by a
+    /// generation and by the session token that produced them, so a slow
+    /// response can never overwrite a newer refresh or another account's
+    /// balance. Background failures only affect the display state; they never
+    /// sign the user out.
+    fn refresh_credits(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(session) = self.auth.session.clone() else {
+            self.studio.update(cx, |panel, cx| {
+                if panel.credits != flowy_studio::CreditsViewState::Unavailable
+                {
+                    panel.credits = flowy_studio::CreditsViewState::Unavailable;
+                    cx.notify();
+                }
+            });
+            return;
+        };
+        let client = AuthClient::from_env();
+        self.credits_generation = self.credits_generation.wrapping_add(1);
+        let generation = self.credits_generation;
+        let token = session.access_token;
+        let token_marker = token.clone();
+        if matches!(
+            self.studio.read(cx).credits,
+            flowy_studio::CreditsViewState::Unavailable
+                | flowy_studio::CreditsViewState::Error
+        ) {
+            self.studio.update(cx, |panel, cx| {
+                panel.credits = flowy_studio::CreditsViewState::Loading;
+                cx.notify();
+            });
+        }
+        let outcome = Arc::new(Mutex::new(None));
+        let writer = Arc::clone(&outcome);
+        std::thread::spawn(move || {
+            let result = client.credits_balance(&token);
+            if let Ok(mut guard) = writer.lock() {
+                *guard = Some(result);
+            }
+        });
+        self.credits_task = Some(cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(40))
+                    .await;
+                let Some(result) =
+                    outcome.lock().ok().and_then(|mut guard| guard.take())
+                else {
+                    continue;
+                };
+                let _ = weak.update(cx, |app, cx| {
+                    if generation != app.credits_generation {
+                        return;
+                    }
+                    let same_session = app
+                        .auth
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.access_token == token_marker);
+                    if !same_session {
+                        return;
+                    }
+                    let next = if let Ok(balance) = result {
+                        credits_state_from_balance(balance)
+                    } else {
+                        if matches!(
+                            app.studio.read(cx).credits,
+                            flowy_studio::CreditsViewState::Ready { .. }
+                        ) {
+                            // Keep the last confirmed balance; a single failed
+                            // poll must not blank it.
+                            return;
+                        }
+                        flowy_studio::CreditsViewState::Error
+                    };
+                    app.studio.update(cx, |panel, cx| {
+                        panel.credits = next;
+                        cx.notify();
+                    });
+                });
+                break;
+            }
+        }));
+    }
+
+    /// Poll the balance every ten minutes while a session exists.
+    fn start_credits_poll(&mut self, cx: &Context<'_, Self>) {
+        self.credits_poll = Some(cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(600))
+                    .await;
+                if weak
+                    .update(cx, |app, cx| {
+                        if app.auth.session.is_some() {
+                            app.refresh_credits(cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
     pub fn receive_invite_code(
         &mut self,
         code: String,
@@ -783,6 +896,7 @@ impl FlowyApp {
                             app.notice = None;
                             app.screen = Screen::Main;
                             app.refresh_models(cx);
+                            app.refresh_credits(cx);
                             let open = false;
                             app.studio.update(cx, |panel, cx| {
                                 panel.model_info_open = open;
@@ -943,10 +1057,13 @@ impl FlowyApp {
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_task = None;
         self.catalog_loading = false;
+        self.credits_generation = self.credits_generation.wrapping_add(1);
+        self.credits_task = None;
         self.studio.update(cx, |panel, cx| {
             panel.cloud_ready = false;
             panel.catalog_loading = false;
             panel.catalog = flowy_agent::ProviderCatalog::new();
+            panel.credits = flowy_studio::CreditsViewState::Unavailable;
             panel.agent.stop();
             let _ = panel.agent.apply_config(Self::disconnected_config());
             cx.notify();
@@ -1138,7 +1255,11 @@ impl FlowyApp {
             StudioEvent::CloudModelSelected(id) => {
                 self.select_cloud_model(id, cx);
             }
-            StudioEvent::RefreshModels => self.refresh_models(cx),
+            StudioEvent::RefreshModels => {
+                self.refresh_models(cx);
+                self.refresh_credits(cx);
+            }
+            StudioEvent::TurnFinished => self.refresh_credits(cx),
             StudioEvent::OpenIdeas => {
                 self.activate_dialog(state::ActiveDialog::Ideas, cx);
                 cx.notify();
@@ -1631,6 +1752,18 @@ pub fn run(cx: &mut App) {
     );
     cx.bind_keys([
         KeyBinding::new("enter", SignIn, Some("Login")),
+        // The composer submits on Enter; Shift+Enter falls through to the
+        // editable-text binding so multi-line drafts keep working.
+        KeyBinding::new(
+            "enter",
+            flowy_studio::SubmitComposer,
+            Some(DEFAULT_INPUT_CONTEXT),
+        ),
+        KeyBinding::new(
+            "shift-enter",
+            gpui_ce_elements::editable_text::actions::Enter,
+            Some(DEFAULT_INPUT_CONTEXT),
+        ),
         KeyBinding::new("tab", FocusNext, None),
         KeyBinding::new("shift-tab", FocusPrevious, None),
         // Cursor / VS Code: toggle primary side bar
@@ -1758,6 +1891,17 @@ fn apply_pending_deep_links(
     }
 }
 
+/// Maps the cloud's signed balance onto the display state. Negative values
+/// are clamped to zero and values above `u64::MAX` saturate.
+fn credits_state_from_balance(balance: i64) -> flowy_studio::CreditsViewState {
+    let total = u64::try_from(balance.max(0)).unwrap_or(u64::MAX);
+    flowy_studio::CreditsViewState::Ready {
+        total,
+        free: None,
+        daily: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1781,6 +1925,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn credits_balance_maps_to_a_ready_total_without_ui_side_effects() {
+        use flowy_studio::CreditsViewState;
+
+        assert_eq!(
+            credits_state_from_balance(179_620),
+            CreditsViewState::Ready {
+                total: 179_620,
+                free: None,
+                daily: None,
+            }
+        );
+        assert_eq!(
+            credits_state_from_balance(-5),
+            CreditsViewState::Ready {
+                total: 0,
+                free: None,
+                daily: None,
+            }
+        );
+        assert_eq!(
+            credits_state_from_balance(i64::MAX),
+            CreditsViewState::Ready {
+                total: u64::try_from(i64::MAX).unwrap(),
+                free: None,
+                daily: None,
+            }
+        );
     }
 
     #[test]

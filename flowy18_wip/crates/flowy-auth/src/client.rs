@@ -46,6 +46,12 @@ struct FlowyEnvelope {
     data: Value,
 }
 
+/// Account-scoped credit balance, in points.
+#[derive(Debug, Deserialize)]
+struct CreditsBalance {
+    balance: i64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {
@@ -155,6 +161,18 @@ impl AuthClient {
                 user_id: None,
             }),
         }
+    }
+
+    /// Reads the account-scoped credit balance. This never mutates the
+    /// session: callers must treat `AuthRequired` as a display error, not as
+    /// a reason to sign the user out from a background refresh.
+    pub fn credits_balance(
+        &self,
+        access_token: &str,
+    ) -> Result<i64, AuthError> {
+        let env = self.get("/credits/balance", Some(access_token))?;
+        let data: CreditsBalance = env.into_data()?;
+        Ok(data.balance)
     }
 
     pub fn fetch_me(
@@ -434,6 +452,33 @@ mod tests {
     use super::{
         is_invalid_otp, is_session_expired_message, normalize_otp, valid_email,
     };
+
+    #[test]
+    fn credits_balance_requires_the_success_envelope_and_a_balance() {
+        use super::FlowyEnvelope;
+
+        let ok = FlowyEnvelope {
+            code: 200,
+            msg: "Success".into(),
+            data: serde_json::json!({ "balance": 179_620 }),
+        };
+        let balance: super::CreditsBalance = ok.into_data().unwrap();
+        assert_eq!(balance.balance, 179_620);
+
+        let failed = FlowyEnvelope {
+            code: 500,
+            msg: "boom".into(),
+            data: serde_json::json!({ "balance": 1 }),
+        };
+        assert!(failed.into_data::<super::CreditsBalance>().is_err());
+
+        let malformed = FlowyEnvelope {
+            code: 200,
+            msg: String::new(),
+            data: serde_json::json!({ "not_balance": 1 }),
+        };
+        assert!(malformed.into_data::<super::CreditsBalance>().is_err());
+    }
 
     #[test]
     fn email_and_otp_helpers() {

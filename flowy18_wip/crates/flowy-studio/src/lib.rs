@@ -9,6 +9,7 @@ pub mod library;
 mod panel;
 mod studio;
 
+pub use composer::SubmitComposer;
 pub use panel::{StudioConfig, StudioEvent, StudioPanel, StudioSurface};
 
 pub use credits::{CreditsViewState, grouped as grouped_credits};
