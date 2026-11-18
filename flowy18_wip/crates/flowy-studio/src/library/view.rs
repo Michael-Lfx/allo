@@ -17,8 +17,84 @@ enum Popup {
     Item(String),
 }
 
+/// IconPark file-type artwork copied from the parent UI assets so library
+/// documents use the same language as the chat deliverables cards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibraryFileIcon {
+    Code,
+    Document,
+    Java,
+    Image,
+    Audio,
+    Video,
+    Pdf,
+    Presentation,
+    Spreadsheet,
+    Archive,
+}
+
+impl LibraryFileIcon {
+    fn from_item(item: &LibraryItem) -> Option<Self> {
+        let extension = item
+            .title
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .unwrap_or_default();
+        let by_extension = match extension.as_str() {
+            "java" => Some(Self::Java),
+            "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
+            | "html" | "js" | "json" | "jsx" | "kt" | "kts" | "log" | "md"
+            | "markdown" | "php" | "ps1" | "py" | "rb" | "rs" | "scss"
+            | "sh" | "swift" | "toml" | "ts" | "tsx" | "txt" | "xml"
+            | "yaml" | "yml" => Some(Self::Code),
+            "doc" | "docx" | "odt" | "rtf" => Some(Self::Document),
+            "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp"
+            | "avif" => Some(Self::Image),
+            "aac" | "flac" | "m4a" | "mp3" | "ogg" | "wav" => Some(Self::Audio),
+            "avi" | "mkv" | "mov" | "mp4" | "webm" => Some(Self::Video),
+            "pdf" => Some(Self::Pdf),
+            "odp" | "ppt" | "pptx" => Some(Self::Presentation),
+            "csv" | "ods" | "xls" | "xlsx" => Some(Self::Spreadsheet),
+            "7z" | "bz2" | "gz" | "rar" | "tar" | "tgz" | "xz" | "zip" => {
+                Some(Self::Archive)
+            }
+            _ => None,
+        };
+        by_extension.or(match item.category {
+            Category::Document => Some(Self::Document),
+            Category::Table => Some(Self::Spreadsheet),
+            Category::Image => Some(Self::Image),
+            Category::Slides => Some(Self::Presentation),
+            Category::Video => Some(Self::Video),
+            Category::Audio => Some(Self::Audio),
+            Category::Other => Some(Self::Archive),
+            Category::All
+            | Category::Website
+            | Category::Game
+            | Category::MobileApp => None,
+        })
+    }
+
+    fn icon(self) -> gpui::Img {
+        match self {
+            Self::Code => theme::icons::code_file(),
+            Self::Document => theme::icons::docx_file(),
+            Self::Java => theme::icons::java_file(),
+            Self::Image => theme::icons::jpg_file(),
+            Self::Audio => theme::icons::mp3_file(),
+            Self::Video => theme::icons::mp4_file(),
+            Self::Pdf => theme::icons::pdf_file(),
+            Self::Presentation => theme::icons::ppt_file(),
+            Self::Spreadsheet => theme::icons::xls_file(),
+            Self::Archive => theme::icons::zip_file(),
+        }
+    }
+}
+
 const LIST_ROW_HEIGHT: f32 = 64.0;
-const CARD_MIN_WIDTH: f32 = 270.0;
+/// Two-up at the 960px content cap (`3 * 320 + 2 * 16 > 960`) and one-up on
+/// narrow windows. Keep in sync with the library reference notes.
+const CARD_MIN_WIDTH: f32 = 320.0;
 
 /// A resource library whose contents are supplied by its host.
 pub struct LibraryPanel {
@@ -373,12 +449,13 @@ impl LibraryPanel {
         .border_0()
         .border_b_1()
         .border_color(t.library_line())
+        .rounded(px(12.))
         .px(px(12.))
         .flex()
         .items_center()
         .gap(px(10.))
-        .hover(move |style| style.bg(t.library_selected()))
-        .child(self.file_icon(item.category, cx))
+        .hover(move |style| style.bg(t.library_selected()).shadow_sm())
+        .child(self.file_icon(item, 24., cx))
         .child(
             div()
                 .flex_1()
@@ -435,72 +512,39 @@ impl LibraryPanel {
 
     fn file_icon(
         &self,
-        category: Category,
+        item: &LibraryItem,
+        size: f32,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let t = self.theme(cx);
-        let document = matches!(category, Category::Document | Category::Table);
-        let file = document || category == Category::Image;
-        let color = if document {
-            t.library_document()
-        } else if category == Category::Image {
-            t.library_image()
-        } else if category == Category::Website {
-            t.library_website()
+        let mark = if let Some(icon) = LibraryFileIcon::from_item(item) {
+            icon.icon().size(px(size)).into_any_element()
         } else {
-            t.library_app()
+            let color = if item.category == Category::Website {
+                t.library_website()
+            } else {
+                t.library_app()
+            };
+            let glyph = if item.category == Category::Website {
+                theme::icons::globe()
+            } else {
+                theme::icons::app_window()
+            };
+            div()
+                .size(px(size))
+                .bg(color)
+                .rounded(px(size * 0.22))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    glyph.size(px(size * 0.58)).text_color(t.library_on_file()),
+                )
+                .into_any_element()
         };
-        let mut mark = div()
-            .w(px(20.))
-            .h(px(22.))
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center();
-        if file {
-            mark = mark
-                .child(
-                    theme::icons::image_file()
-                        .w(px(18.))
-                        .h(px(20.))
-                        .text_color(color),
-                )
-                .child(
-                    theme::icons::file_fold()
-                        .absolute()
-                        .top_0()
-                        .right_0()
-                        .size(px(6.))
-                        .text_color(t.library_on_file())
-                        .opacity(0.4),
-                )
-                .child(
-                    if document {
-                        theme::icons::file_document_mark()
-                    } else {
-                        theme::icons::file_image_mark()
-                    }
-                    .absolute()
-                    .left(px(4.))
-                    .bottom(px(2.))
-                    .w(px(11.))
-                    .h(px(10.))
-                    .text_color(t.library_on_file()),
-                );
-        } else {
-            mark = mark.h(px(20.)).bg(color).rounded(px(5.)).child(
-                if category == Category::Website {
-                    theme::icons::globe()
-                } else {
-                    theme::icons::app_window()
-                }
-                .size(px(14.))
-                .text_color(t.library_on_file()),
-            );
-        }
         div()
-            .w(px(24.))
-            .h(px(24.))
+            .w(px(size))
+            .h(px(size))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -515,11 +559,34 @@ impl LibraryPanel {
     ) -> impl IntoElement {
         let t = self.theme(cx);
         let id = item.id.clone();
+        let menu_item = item.id.clone();
+        let more_id =
+            SharedString::from(format!("library-card-more-{}", item.id));
+        let more = theme::IconButton::new(
+            more_id.clone(),
+            self.t("library.more"),
+            theme::icons::ellipsis().size(px(12.)),
+        )
+        .size(theme::ControlSize::Small)
+        .render(
+            &t,
+            cx.listener(move |panel, _, _, cx| {
+                cx.stop_propagation();
+                let popup = Popup::Item(menu_item.clone());
+                panel.popup = if panel.popup.as_ref() == Some(&popup) {
+                    None
+                } else {
+                    Some(popup)
+                };
+                cx.notify();
+            }),
+        );
         theme::interactive(
             SharedString::from(format!("library-card-{}", item.id)),
             item.title.clone(),
             &t,
         )
+        .relative()
         .min_w(px(CARD_MIN_WIDTH))
         .flex_1()
         .min_h(px(176.))
@@ -531,8 +598,15 @@ impl LibraryPanel {
         .flex()
         .flex_col()
         .gap(px(10.))
-        .hover(move |style| style.bg(t.library_selected()))
-        .child(self.file_icon(item.category, cx))
+        .hover(move |style| style.bg(t.library_selected()).shadow_md())
+        .child(
+            div()
+                .absolute()
+                .top(px(10.))
+                .right(px(10.))
+                .child(theme::anchor_trigger(more, more_id, &self.ui)),
+        )
+        .child(self.file_icon(item, 28., cx))
         .child(
             theme::Title::new(theme::TitleLevel::Card, item.title.clone())
                 .truncate()
@@ -554,6 +628,28 @@ impl LibraryPanel {
         }))
     }
 
+    /// Same 14px text and 32px row as the view-options button menu.
+    fn menu_row(
+        item: gpui::Stateful<gpui::Div>,
+        theme: &theme::ResolvedTheme,
+    ) -> gpui::Stateful<gpui::Div> {
+        let metrics = theme.control_metrics();
+        let hover = theme.soft();
+        item.h(px(32.))
+            .max_h(px(32.))
+            .px(px(8.))
+            .border_0()
+            .rounded(px(6.))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .text_size(metrics.size)
+            .line_height(metrics.line_height)
+            .font_weight(gpui::FontWeight::NORMAL)
+            .text_color(theme.tab_selected())
+            .hover(move |style| style.bg(hover))
+    }
+
     fn popup(
         &self,
         window: &Window,
@@ -561,6 +657,7 @@ impl LibraryPanel {
     ) -> Option<gpui::AnyElement> {
         let popup = self.popup.as_ref()?;
         let t = self.theme(cx);
+        let metrics = t.control_metrics();
         let mut menu = theme::menu(
             "library-menu",
             self.t("library.more"),
@@ -568,7 +665,10 @@ impl LibraryPanel {
             &self.ui,
             cx,
         )
-        .min_w(px(150.));
+        .p(px(4.))
+        .text_size(metrics.size)
+        .line_height(metrics.line_height)
+        .font_weight(gpui::FontWeight::NORMAL);
         let (scope, anchor) = match popup {
             Popup::Sort => {
                 for sort in [
@@ -577,29 +677,28 @@ impl LibraryPanel {
                     LibrarySort::Name,
                 ] {
                     menu = menu.child(
-                        theme::menu_item(
-                            SharedString::from(format!(
-                                "library-sort-{}",
-                                sort.key()
-                            )),
-                            self.t(sort.key()),
-                            false,
+                        Self::menu_row(
+                            theme::menu_item(
+                                SharedString::from(format!(
+                                    "library-sort-{}",
+                                    sort.key()
+                                )),
+                                self.t(sort.key()),
+                                false,
+                                &t,
+                                cx.listener(move |panel, _, _, cx| {
+                                    panel.model.sort = sort;
+                                    panel.popup = None;
+                                    cx.notify();
+                                }),
+                            ),
                             &t,
-                            cx.listener(move |panel, _, _, cx| {
-                                panel.model.sort = sort;
-                                panel.popup = None;
-                                cx.notify();
-                            }),
                         )
-                        .h(px(30.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
                         .gap(px(8.))
-                        .child(div().w(px(14.)).when(
+                        .child(div().w(px(16.)).when(
                             sort == self.model.sort,
                             |mark| {
-                                mark.child(theme::icons::check().size(px(12.)))
+                                mark.child(theme::icons::check().size(px(14.)))
                             },
                         ))
                         .child(self.t(sort.key())),
@@ -613,62 +712,66 @@ impl LibraryPanel {
                 let remove_id = id.clone();
                 menu = menu
                     .child(
-                        theme::menu_item(
-                            "library-menu-preview",
-                            self.t("library.preview"),
-                            false,
+                        Self::menu_row(
+                            theme::menu_item(
+                                "library-menu-preview",
+                                self.t("library.preview"),
+                                false,
+                                &t,
+                                cx.listener(move |panel, _, _, cx| {
+                                    panel.preview = Some(preview_id.clone());
+                                    panel.popup = None;
+                                    cx.notify();
+                                }),
+                            ),
                             &t,
-                            cx.listener(move |panel, _, _, cx| {
-                                panel.preview = Some(preview_id.clone());
-                                panel.popup = None;
-                                cx.notify();
-                            }),
                         )
-                        .px(px(10.))
-                        .py(px(7.))
                         .child(self.t("library.preview")),
                     )
                     .child(
-                        theme::menu_item(
-                            "library-menu-rename",
-                            self.t("library.rename"),
-                            false,
+                        Self::menu_row(
+                            theme::menu_item(
+                                "library-menu-rename",
+                                self.t("library.rename"),
+                                false,
+                                &t,
+                                cx.listener(move |panel, _, _, cx| {
+                                    if let Some(item) = panel
+                                        .model
+                                        .items
+                                        .iter()
+                                        .find(|item| item.id == rename_id)
+                                    {
+                                        let title = item.title.clone();
+                                        panel.rename.update(cx, |state, cx| {
+                                            state.emplace(&title, cx);
+                                        });
+                                        panel.renaming =
+                                            Some(rename_id.clone());
+                                    }
+                                    panel.popup = None;
+                                    cx.notify();
+                                }),
+                            ),
                             &t,
-                            cx.listener(move |panel, _, _, cx| {
-                                if let Some(item) = panel
-                                    .model
-                                    .items
-                                    .iter()
-                                    .find(|item| item.id == rename_id)
-                                {
-                                    let title = item.title.clone();
-                                    panel.rename.update(cx, |state, cx| {
-                                        state.emplace(&title, cx);
-                                    });
-                                    panel.renaming = Some(rename_id.clone());
-                                }
-                                panel.popup = None;
-                                cx.notify();
-                            }),
                         )
-                        .px(px(10.))
-                        .py(px(7.))
                         .child(self.t("library.rename")),
                     )
                     .child(
-                        theme::menu_item(
-                            "library-menu-remove",
-                            self.t("library.remove"),
-                            false,
+                        Self::menu_row(
+                            theme::menu_item(
+                                "library-menu-remove",
+                                self.t("library.remove"),
+                                false,
+                                &t,
+                                cx.listener(move |panel, _, _, cx| {
+                                    panel.model.remove(&remove_id);
+                                    panel.popup = None;
+                                    cx.notify();
+                                }),
+                            ),
                             &t,
-                            cx.listener(move |panel, _, _, cx| {
-                                panel.model.remove(&remove_id);
-                                panel.popup = None;
-                                cx.notify();
-                            }),
                         )
-                        .px(px(10.))
-                        .py(px(7.))
                         .text_color(t.danger())
                         .child(self.t("library.remove")),
                     );
@@ -713,7 +816,7 @@ impl LibraryPanel {
             .flex()
             .flex_col()
             .gap(px(18.))
-            .child(self.file_icon(item.category, cx))
+            .child(self.file_icon(item, 28., cx))
             .child(
                 theme::Title::new(
                     theme::TitleLevel::Section,
@@ -1000,6 +1103,35 @@ mod tests {
         });
         cx.simulate_event(gpui::KeyUpEvent { keystroke });
         draw(cx);
+    }
+
+    #[test]
+    fn file_icons_follow_the_parent_file_type_assets() {
+        let records: Vec<LibraryItem> = serde_json::from_str(include_str!(
+            "../../examples/fixtures/library.json"
+        ))
+        .expect("the isolated library fixture must parse");
+        let expected = [
+            ("1104-byd-presentation", LibraryFileIcon::Presentation),
+            ("1104-dew-stone-hero", LibraryFileIcon::Image),
+            ("1020-07-level-guide", LibraryFileIcon::Pdf),
+            ("1020-06-balancing", LibraryFileIcon::Spreadsheet),
+            ("1020-08-preview-video", LibraryFileIcon::Video),
+            ("1020-09-game-audio", LibraryFileIcon::Audio),
+            ("1020-11-sprite-package", LibraryFileIcon::Archive),
+        ];
+        for (id, icon) in expected {
+            let item = records
+                .iter()
+                .find(|item| item.id == id)
+                .expect("fixture item");
+            assert_eq!(LibraryFileIcon::from_item(item), Some(icon));
+        }
+        let website = records
+            .iter()
+            .find(|item| item.category == Category::Website)
+            .expect("website fixture item");
+        assert_eq!(LibraryFileIcon::from_item(website), None);
     }
 
     #[gpui::test]
