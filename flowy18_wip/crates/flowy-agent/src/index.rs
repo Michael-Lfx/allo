@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::projection::{ChatLine, TurnStatus};
@@ -45,46 +46,57 @@ impl SessionIndex {
     }
 
     pub fn save(&self, root: &Path) -> io::Result<()> {
-        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-        let dir = root.join("sessions");
-        fs::create_dir_all(&dir)?;
-        let path = Self::path(root);
-        let bytes =
-            serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        // Separate handles can save concurrently into the same directory.
-        // Claim each temporary file exclusively so they never truncate or
-        // remove one another's pending write.
-        let (tmp, mut file) = loop {
-            let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let tmp = dir.join(format!(
-                ".index.json.{}.{}.tmp",
-                std::process::id(),
-                number
-            ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)
-            {
-                Ok(file) => break (tmp, file),
-                Err(error) => {
-                    if error.kind() != io::ErrorKind::AlreadyExists {
-                        return Err(error);
-                    }
+        save_json(&Self::path(root), self)
+    }
+}
+
+pub fn save_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    static REPLACE: Mutex<()> = Mutex::new(());
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("missing parent"))?;
+    fs::create_dir_all(dir).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("create {}: {error}", dir.display()),
+        )
+    })?;
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    let (tmp, mut file) = loop {
+        let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let tmp =
+            dir.join(format!(".flowy.{}.{}.tmp", std::process::id(), number));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => break (tmp, file),
+            Err(error) => {
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(error);
                 }
             }
-        };
-        let result = (|| {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&tmp, &path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
         }
-        result
+    };
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        // Windows can deny two simultaneous replacements of the same file.
+        let _replace = REPLACE.lock().unwrap();
+        fs::rename(&tmp, path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("replace {}: {error}", path.display()),
+            )
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
+    result
 }
 
 #[cfg(test)]
