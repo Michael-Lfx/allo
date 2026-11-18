@@ -5,7 +5,7 @@ use gpui::{Context, Window, div, prelude::*, px};
 #[derive(Clone, Copy)]
 enum DockIcon {
     NewTask,
-    Search,
+    // Search,
     Library,
     Create,
     Automation,
@@ -20,7 +20,7 @@ impl DockIcon {
     fn render(self) -> theme::icons::Icon {
         match self {
             Self::NewTask => theme::icons::square_pen(),
-            Self::Search => theme::icons::search(),
+            // Self::Search => theme::icons::search(),
             Self::Library => theme::icons::library(),
             Self::Create => theme::icons::plus(),
             Self::Automation => theme::icons::workflow(),
@@ -36,7 +36,7 @@ impl DockIcon {
 const USER_MENU_WIDTH: f32 = 224.0;
 
 const NAV: &[(&str, &str, Section, DockIcon)] = &[
-    ("search", "dock.search", Section::Search, DockIcon::Search),
+    // ("search", "dock.search", Section::Search, DockIcon::Search),
     (
         "library",
         "dock.library",
