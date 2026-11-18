@@ -170,7 +170,7 @@ impl LearningService {
                         explanation: activity.explanation.clone(),
                         distractors: activity.distractors.clone(),
                         tol: activity.tol,
-                        matches: super::lesson::matching_candidates(activity),
+                        matches: super::lesson::pairing_candidates(activity),
                         difficulty: activity.difficulty,
                         evidence: activity
                             .evidence

@@ -1203,7 +1203,7 @@ fn variant_stored_config(
         tol: pack.tol,
         // 变式与原题同型：matching 右列候选 / classify 类别集合（pf2）随
         // 候选管道照带（其余题型为空）。
-        matches: super::lesson::matching_candidates(pack),
+        matches: super::lesson::pairing_candidates(pack),
         difficulty: bank_difficulty,
         evidence: pack
             .evidence

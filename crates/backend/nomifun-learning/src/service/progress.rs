@@ -478,15 +478,20 @@ pub(super) fn evaluate(
     }
     // Per-item correctness (pf1): judged positionally against the stored
     // answer. Positions past the stored answer are wrong (malformed shape
-    // stays a binary 0 without panicking).
-    let positional = |got: &[Value], want: &[Value]| -> Vec<bool> {
-        got.iter()
+    // stays a binary 0 without panicking). Shared by the ordering / matching
+    // / classify arms — one helper, one semantics (whole-correct = same
+    // length AND every position equal).
+    let positional_matches = |got: &[Value], want: &[Value]| -> (bool, Vec<bool>) {
+        let item_results: Vec<bool> = got
+            .iter()
             .enumerate()
             .map(|(index, item)| {
                 want.get(index)
                     .is_some_and(|expected| item.as_str() == expected.as_str())
             })
-            .collect()
+            .collect();
+        let correct = got.len() == want.len() && item_results.iter().all(|ok| *ok);
+        (correct, item_results)
     };
     let (correct, item_results) = match kind {
         ActivityKind::SingleChoice => {
@@ -574,8 +579,7 @@ pub(super) fn evaluate(
                     "ordering activity has a malformed stored answer".into(),
                 ));
             };
-            let item_results = positional(sequence, expected);
-            let correct = sequence.len() == expected.len() && item_results.iter().all(|ok| *ok);
+            let (correct, item_results) = positional_matches(sequence, expected);
             (correct, item_results)
         }
         // Right-column values aligned with the left column (options).
@@ -591,8 +595,7 @@ pub(super) fn evaluate(
                     "matching activity has a malformed stored answer".into(),
                 ));
             };
-            let item_results = positional(alignment, expected);
-            let correct = alignment.len() == expected.len() && item_results.iter().all(|ok| *ok);
+            let (correct, item_results) = positional_matches(alignment, expected);
             (correct, item_results)
         }
         // classify（pf2 判别题）：逐对象类别精确比对——类别是短规范标签
@@ -609,8 +612,7 @@ pub(super) fn evaluate(
                     "classify activity has a malformed stored answer".into(),
                 ));
             };
-            let item_results = positional(alignment, expected);
-            let correct = alignment.len() == expected.len() && item_results.iter().all(|ok| *ok);
+            let (correct, item_results) = positional_matches(alignment, expected);
             (correct, item_results)
         }
     };

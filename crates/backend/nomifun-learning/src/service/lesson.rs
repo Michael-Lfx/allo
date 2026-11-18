@@ -2214,7 +2214,7 @@ impl LearningService {
                 explanation: activity.explanation.clone(),
                 distractors: activity.distractors.clone(),
                 tol: activity.tol,
-                matches: matching_candidates(activity),
+                matches: pairing_candidates(activity),
                 difficulty: injected_difficulty.or(activity.difficulty),
                 evidence: activity
                     .evidence
@@ -2777,11 +2777,12 @@ fn render_forbidden_descendants(descendants: &[(String, String, String)]) -> Str
     text
 }
 
-/// 左列行的候选值集（落 `matches` 列发 UI）：matching = 右列候选（answer
-/// 自身值集，保序——客户端渲染时本地打乱防对齐泄漏）；classify（pf2）=
-/// 类别标签集合（categories，存储序不打乱——类别集不是对齐泄漏）。其余
-/// 题型不存候选。
-pub(super) fn matching_candidates(activity: &crate::models::ActivityPack) -> Vec<String> {
+/// 配对类题型的候选值集（落 `matches` 列发 UI；命名如实——本函数兼返
+/// matching 与 classify 两型的候选，不只服务 matching）：matching = 右列
+/// 候选（answer 自身值集，保序——客户端渲染时本地打乱防对齐泄漏）；
+/// classify（pf2）= 类别标签集合（categories，存储序不打乱——类别集不是
+/// 对齐泄漏）。其余题型不存候选。
+pub(super) fn pairing_candidates(activity: &crate::models::ActivityPack) -> Vec<String> {
     match activity.kind {
         ActivityKind::Matching => activity
             .answer
@@ -2846,7 +2847,7 @@ pub(super) fn validate_question_payload(
     // fill_in_blank keeps its distractor rule through validate_shape; the
     // numeric tol is learner-authored so it rides in the config as given.
     // 手工编辑面没有 evidence 字段：保留原值（t2 证据回引不随编辑抹除）。
-    let matches = matching_candidates(&pack);
+    let matches = pairing_candidates(&pack);
     let config = StoredActivityConfig {
         options: pack.options,
         answer: pack.answer,
