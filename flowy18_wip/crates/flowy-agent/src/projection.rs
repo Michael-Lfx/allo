@@ -43,6 +43,10 @@ pub enum ChatLine {
     Status {
         text: String,
     },
+    TaskReceipt {
+        task_id: String,
+        goal: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
