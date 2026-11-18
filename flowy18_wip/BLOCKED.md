@@ -1,5 +1,22 @@
 # BLOCKED — 待裁决/越界事项（不阻塞已交付部分）
 
+## 2026-11-18 · 后续审查已解除 Clippy 阻塞
+
+- rebase 后的首次 Clippy 退出 101，恰好报任务书的 4 条 `flowy-ui` lint。应用四处修复后，原命令通过了 `flowy-ui` 检查，继续检查 `flowy-studio` 时退出 101。
+- `crates/flowy-studio/src/library/view.rs:20`：`doc_markdown`，文档中的 `IconPark` 缺少反引号。
+- `crates/flowy-studio/src/library/view.rs:38`：`map_unwrap_or`，对 `Option` 调用 `map(...).unwrap_or_default()`。
+- `crates/flowy-studio/src/library/view.rs:634`：`trivially_copy_pass_by_ref`，通过引用传递 5 字节的 `ResolvedTheme`。
+- 后续获准扩展到验收阻塞文件，已修复上述 3 条和继续编译发现的 Library 示例日志、技能页共享借用两条。最终 Clippy、反向验证、fmt 和原四 crate 测试均通过。
+- 保留本地既有特性提交和只读方案文档。从 `origin/main` 建立独立 PR 分支，范围限于本轮修复和本轮验证记录。
+
+## 2026-11-18 · Clippy 任务的整分支差异验收
+
+- rebase 前实测 `git rev-list --left-right --count origin/main...HEAD` 为 `1 5`，rebase 到 `9f51499af` 后为 `0 5`，既有 5 个提交涉及 49 个文件。要求整分支对 `origin/main` 的差异仅有本轮四个白名单文件，与保留既有特性提交冲突。
+- 工作区进入任务时已有两份未跟踪文档 `docs/plans/model-tiers-and-flex-final.zh.md`、`docs/plans/model-tiers-and-flex-recommendation.md`。按只读要求保留，两份文档会继续出现在 `git status`。
+- 本轮使用 rebase 后 HEAD `3195aa82f` 核对新增提交范围，仍执行任务指定的整分支差异命令并如实报告。
+
+## 三挡位模型选择器 — 历史记录
+
 ## 1. flowy-ui/src/overlays.rs 在改动集内但不在原白名单
 - 现状：`flowy18_wip/crates/flowy-ui/src/overlays.rs` 有 9 行未提交改动（`menu_item` 把 label 渲染成可见文本），属上一轮遗留，本次未改动。
 - 影响：菜单行文字依赖此改动才可见；回滚会导致菜单行空白，违反验收第 4 条。
