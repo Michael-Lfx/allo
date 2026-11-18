@@ -3773,8 +3773,8 @@ impl AppServices {
                 )
                 .await
                 {
-                    Ok(synced) => {
-                        if synced {
+                    Ok(sync) => {
+                        if sync.synced {
                             if let Err(error) = nomifun_cloud::migrate_free_model_preferences(
                                 &provider_repo,
                                 &provider_model_repo,
@@ -3790,7 +3790,8 @@ impl AppServices {
                         }
                         tracing::info!(
                             elapsed_ms = started.elapsed().as_millis(),
-                            synced,
+                            synced = sync.synced,
+                            effective_model_tier = sync.effective_model_tier,
                             "startup: background Flowy catalog sync finished"
                         );
                     }

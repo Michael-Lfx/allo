@@ -39,6 +39,16 @@ export function isPlanLocked(minTierLevel: number, effectiveTier: number): boole
   return minTierLevel > effectiveTier;
 }
 
+/** Keep a finite positive plan tier. Anything else is "no paid tier". */
+export function normalizeEffectiveModelTier(tier: number | undefined): number {
+  return typeof tier === 'number' && Number.isFinite(tier) && tier > 0 ? Math.trunc(tier) : 0;
+}
+
+/** Highest tier learned so far. A later `0` does not wipe a known paid tier. */
+export function higherEffectiveModelTier(current: number | undefined, incoming: number | undefined): number {
+  return Math.max(normalizeEffectiveModelTier(current), normalizeEffectiveModelTier(incoming));
+}
+
 /** Label for a model that requires a plan. Absent when the model is open to everyone. */
 export function requiredPlanBadgeLabel(
   minTierLevel: number | undefined,

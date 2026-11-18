@@ -76,7 +76,7 @@ pub struct UserMe {
     #[serde(default)]
     pub current_plan: Option<UserCurrentPlan>,
     /// Highest unexpired personal or team-seat plan tier. `0` means no paid tier.
-    #[serde(default)]
+    #[serde(default, alias = "effective_model_tier")]
     pub effective_model_tier: i32,
 }
 
@@ -490,7 +490,7 @@ pub struct AvailableModelsClaw {
     #[serde(default)]
     pub cloud: Vec<ClawModelEntry>,
     /// Caller's effective plan tier, used by the client to lock rows locally.
-    #[serde(default, rename = "effectiveModelTier")]
+    #[serde(default, rename = "effectiveModelTier", alias = "effective_model_tier")]
     pub effective_model_tier: i32,
 }
 
@@ -537,7 +537,7 @@ pub struct ClawModelEntry {
     #[serde(skip)]
     pub catalog_auto_tier: Option<String>,
     /// Minimum plan tier required to call this model. `0` is unrestricted.
-    #[serde(default, rename = "minTierLevel")]
+    #[serde(default, rename = "minTierLevel", alias = "min_tier_level")]
     pub min_tier_level: i32,
     /// Shortest published plan name at `min_tier_level`, when the catalog has one.
     #[serde(default, rename = "requiredPlanName")]
@@ -702,7 +702,7 @@ impl ClawModelEntry {
 
 #[cfg(test)]
 mod plan_label_tests {
-    use super::{format_plan_tier, strip_plan_suffix, UserCurrentPlan};
+    use super::{format_plan_tier, strip_plan_suffix, UserCurrentPlan, UserMe};
 
     #[test]
     fn strip_plan_suffix_removes_english_plan() {
@@ -722,6 +722,31 @@ mod plan_label_tests {
         assert_eq!(format_plan_tier("free"), "Free");
         assert_eq!(format_plan_tier("Pro"), "Pro");
         assert_eq!(format_plan_tier("ULTRA"), "Ultra");
+    }
+
+    #[test]
+    fn user_me_reads_effective_tier_from_either_wire_name() {
+        let camel: UserMe = serde_json::from_str(
+            r#"{"id":7,"currentPlan":{"name":"Ultra","code":"UltraPlan"},"effectiveModelTier":2}"#,
+        )
+        .unwrap();
+        assert_eq!(camel.effective_model_tier, 2);
+        assert_eq!(
+            camel.current_plan.as_ref().and_then(|plan| plan.display_label()).as_deref(),
+            Some("Ultra")
+        );
+
+        let snake: UserMe = serde_json::from_str(
+            r#"{"id":7,"currentPlan":{"name":"Ultra"},"effective_model_tier":3}"#,
+        )
+        .unwrap();
+        assert_eq!(snake.effective_model_tier, 3);
+
+        let missing: UserMe = serde_json::from_str(
+            r#"{"id":7,"currentPlan":{"name":"Ultra","code":"UltraPlan"}}"#,
+        )
+        .unwrap();
+        assert_eq!(missing.effective_model_tier, 0);
     }
 
     #[test]

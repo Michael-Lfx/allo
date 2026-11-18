@@ -990,8 +990,8 @@ async fn sync_models(
     )
     .await
     {
-        Ok(synced) => {
-            if synced {
+        Ok(sync) => {
+            if sync.synced {
                 if let Err(error) = crate::migrate_free_model_preferences(
                     &state.provider_repo,
                     &state.provider_model_repo,
@@ -1002,10 +1002,14 @@ async fn sync_models(
                     warn!(error = %error, "Failed to migrate active free-model preferences to Flowy Cloud");
                 }
             }
-            Ok(Json(ApiResponse::ok(CloudSyncModelsResponse { synced })))
+            Ok(Json(ApiResponse::ok(CloudSyncModelsResponse {
+                synced: sync.synced,
+                effective_model_tier: sync.effective_model_tier,
+            })))
         }
         Err(e) if e.contains("not logged in") => Ok(Json(ApiResponse::ok(CloudSyncModelsResponse {
             synced: false,
+            effective_model_tier: 0,
         }))),
         Err(e) => {
             warn!(error = %e, "Failed to sync Flowy chat model catalog");

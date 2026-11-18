@@ -7978,6 +7978,8 @@ export interface ICloudDeviceActivationRetryResponse {
 
 export interface ICloudSyncModelsResponse {
   synced: boolean;
+  /** Caller's plan tier from the same catalog response as each model's minimum. */
+  effectiveModelTier?: number;
 }
 
 export interface ICloudWebsiteEntry {

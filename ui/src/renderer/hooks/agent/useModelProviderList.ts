@@ -42,6 +42,8 @@ export interface ProviderCatalogRefreshResult {
   providers: IProvider[];
   syncError?: Error;
   stale?: boolean;
+  /** Positive catalog tier from this sync. `0` means the sync did not learn one. */
+  effectiveModelTier?: number;
 }
 
 export interface ProviderCatalogRefreshOptions {
@@ -120,10 +122,14 @@ export async function refreshProvidersCatalog(
   await clearAvailableModelsCache();
   const requestGeneration = providerCatalogGeneration;
   let syncError: Error | undefined;
+  let effectiveModelTier = 0;
   try {
     const syncResult = await ipcBridge.cloud.syncModels.invoke();
     if (!syncResult?.synced) {
       throw new Error('The cloud model catalog was not synchronized');
+    }
+    if (typeof syncResult.effectiveModelTier === 'number' && Number.isFinite(syncResult.effectiveModelTier)) {
+      effectiveModelTier = Math.max(0, Math.trunc(syncResult.effectiveModelTier));
     }
   } catch (error) {
     syncError = error instanceof Error ? error : new Error(String(error));
@@ -135,7 +141,7 @@ export async function refreshProvidersCatalog(
     requestGeneration !== providerCatalogGeneration ||
     contextKey !== `${providerCatalogAccountId}:${providerCatalogStorageGeneration}`
   ) {
-    return { providers, syncError, stale: true };
+    return { providers, syncError, stale: true, effectiveModelTier };
   }
   await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
   await mutate(
@@ -143,7 +149,7 @@ export async function refreshProvidersCatalog(
     undefined,
     { revalidate: true }
   );
-  const result = { providers, syncError };
+  const result = { providers, syncError, effectiveModelTier };
   lastProviderCatalogRefreshAt = Date.now();
   lastProviderCatalogRefreshResult = result;
   return result;
