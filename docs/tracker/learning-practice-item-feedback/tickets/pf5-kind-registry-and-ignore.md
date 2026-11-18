@@ -2,7 +2,7 @@
 id: pf5
 title: 题型注册表与忽略机制（descriptor 单源 + 五消费面派生）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 blocked_note: pf1/pf2/pf3/pf4 的题型能力消费全部挂靠本票 descriptor，施工最前
@@ -82,4 +82,27 @@ perItemFeedback: true`（存量兼容渲染面保留）；其余八 kind = activ
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-18，feat/learn1116：`09ef4ac67` + 审查批 F1
+`6ce130f06` + F4 手动加题 422 闸同票）。
+
+- **注册表落地**：TS `activityKindRegistry.ts`（九 kind descriptor 单
+  源）+ Rust `ALL` 常量 + capability 方法（`is_deprecated` /
+  `replaced_by: Option<ActivityKind>` / `llm_generatable` /
+  `counts_toward_section` / `review_eligible` / `per_item_feedback`）+
+  字面真值表全量单测（含 deprecated 仍 is_objective 的存量兼容钉）。
+- **五消费面接通**：①节门槛 round 过滤（全 deprecated 节自动过有测试
+  钉）；②复习抽题 SQL 排除；③生成契约 prose 手工移除 matching + 一致
+  性测试（审查批 F1 **扩到 bank 面**——审查抓出题库管道仍可新产
+  matching 的契约分裂，已清）；④审计 warning finding；⑤
+  perItemFeedback 就位（pf1 消费）。**⑥复习卡种子跳过 deprecated**
+  （兼容性复核补入，且正确延伸到 lesson.rs 手动加题路径——due 徽标直
+  数 review_items，不补会复现虚高）+ F4 手动 LLM 加题 `!llm_generatable()`
+  422 闸（契约表删行后该路径本会踩防漂移 panic，转为带 replaced_by 提
+  示的 422）。
+- **保留项确认零回归**：evaluate Matching 臂 / ActivityInput 分支 /
+  custom 白名单含 Matching / 教程种子零 matching / quiz 判分不透逐项 /
+  settle 与 AI 批改不受影响——审查 (c) 节逐条核对落实。
+- **账本零触碰有测试钉**（存量卡 raw SQL 植入后 draw 不出队且行保留）。
+- 验证：nomifun-learning 991 绿 / nomifun-ai-agent 1174 绿 / typecheck /
+  i18n / theme / dead-css 绿；广谱闸（cargo check --workspace + bun run
+  check）绿；真机 smoke EXIT=0。

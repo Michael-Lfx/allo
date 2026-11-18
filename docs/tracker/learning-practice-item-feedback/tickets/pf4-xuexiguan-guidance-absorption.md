@@ -2,7 +2,7 @@
 id: pf4
 title: 学习观教学法吸收进节规划/正文/全题型生成指导（提示词面）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [pf2, pf3]
 blocked_note: classify 题型与判别节模板先行，本票做全量指导面收编
@@ -68,4 +68,25 @@ framework.md 速查表）收编进我们的生成面提示词，而不引入概�
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-18，feat/learn1116：`61ad8ef1f`）。
+
+- **R-a 节规划面**：`UNIT_ORGANIZATION_CN` 插 manifest 规划段——「单
+  元围绕一个可辨识的概念或可应用的关系组织」+ 要认出什么/从什么推测什
+  么（引用 R20 三面不展开）+ 未讲过的新情况验证。
+- **R-b 正文写作面**：`TEACHING_METHOD_WRITING_CN` 三条——条件/性质分
+  开说、推导依据标注+模型边界（并一行）、例子下上对齐+例题收尾通用结
+  构提取+「换材料，而非无限同义解释」。「选有区分力的正负例」由 pf3
+  对比例组条款承载（合并不另起炉灶）。
+- **R-c 全题型面**：`VERIFICATION_DISCIPLINE_CN`（可控差异升全题型通用
+  + 验证题六型清单进 practice 配比）；`LINKING_MATERIALS_CN`
+  （ordering/fill_in_blank 依据→目标→条件语法）；`DISTRACTOR_MENU_CN`
+  尾扩 classify 判别轴句（R21 五型名与编号不动）。
+- **篇幅留痕**：渲染后系统提示净增 487 chars = **8.25%**（票面目标
+  <8%，残差 0.25pp≈15 chars——三轮精简后剩余全是票面要求的上游原文锚
+  点短语，再压即截断锚点）。两票合计 +858 = 15.5%（pf3 的 371 属其票
+  范围）。
+- **开关纪律**：全部新条款挂 `content_discipline_v2` 同命（y06 先
+  例）；未占 R 编号；UI 面零术语透传（R-c 词汇纪律落实）。
+- 验证：nomifun-ai-agent 1174 绿（含 pf5 一致性测试与 y06 双臂）；
+  nomifun-learning 990 绿；真机 smoke EXIT=0（新提示词全管线产出）。
+- 失效类型学全量吸收：挂起为未来独立波（map 留痕）。

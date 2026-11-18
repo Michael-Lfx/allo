@@ -2,7 +2,7 @@
 id: pf2
 title: 判别题专有题型 classify + matching 候选语法写作面指导
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -77,4 +77,25 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-18，feat/learn1116：`49c0dab13` + 审查批 F1
+`6ce130f06`）。
+
+- **classify 端到端落地**：Rust `ActivityKind::Classify`（serde
+  `"classify"`，capability 全能力，`replaced_by` 收窄为
+  `Option<ActivityKind>` 兑现 pf5 留痕）+ config 校验（objects 非空 /
+  categories 2-6 且 normalize-distinct / answer ∈ categories 对齐）+
+  判分（逐对象精确比对 + pf1 item_results）+ 审计 danger finding（近
+  重复类别机械打回实测）+ bank 链契约表行（防变式装配 panic 的必要抓
+  漏）+ 契约 prose 恢复 9 题型（**pf5 一致性测试转绿为验收线**）+ 前端
+  ClassifyInput（l1 同款布局 + itemResults 逐行标红）。
+- **R-a2 旧 matching 废弃面确认**：生成契约 prose/schema/bank 面全部
+  移除（审查批 F1 清除 bank 契约分裂——契约表 matching 行/TAIL 清
+  单/EN 注记）；四臂保留（判分臂/渲染分支/custom 白名单/存量数据）+
+  手动 LLM 加题 `!llm_generatable()` 422 闸（F4 裁决：契约表删行后该
+  路径会踩防漂移 panic，转 422 + replaced_by 提示）。
+- **存储裁量留痕**：内部存储键复用 `options` 承载 objects（serde
+  alias 接受契约键），候选集复用 `matches` 列——三视图零新字段。
+- **真机采纳证据**：pf 波尾 smoke（新提示词首跑）真实产出 **1 道
+  classify 判别题**，全管线（校验/审计/判分/发布）EXIT=0。
+- 验证：nomifun-learning 990 绿 / nomifun-ai-agent 1174 绿 / 聚焦前端
+  35 绿 / typecheck / i18n / theme / dead-css 绿。

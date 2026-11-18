@@ -2,7 +2,7 @@
 id: pf3
 title: 判别练习节——节契约内的判别题模板（v1 指导面，v2 契约面待裁决）
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [pf2]
 blocked_note: 判别节的活动面依赖 classify 题型先落地
@@ -55,4 +55,16 @@ part_of: map.md
 
 ## Resolution
 
-（未结案）
+已施工收口（2026-11-18，feat/learn1116：`6194b7bf6`）。
+
+- **v1 指导面落地**：`DISCRIMINATION_TEMPLATE_CN` 插分节契约段——判别
+  模板 + 对比例组语法（近邻正负例只破一个条件 / 集合关系组织含共有+
+  独有对象 / 负例揭示边界）+ classify 优先 + 可控差异原则 + 验证题六
+  型清单（新对象分类/对照情境/条件变化/结果预测/推导补步/实际操作）。
+- **词汇纪律（R-c）落实并有反向断言钉**：条款用「判别/分类判断」措
+  辞；测试断言书内术语（判别模型/联结模型/知识坍缩/失效类型学）不得进
+  生成面。
+- 条款挂 `content_discipline_v2` 开关同命（y06 先例）；未占 R 编号
+  （避免 R15–R21 两宿互钉约束波及传统线）。
+- 验证：nomifun-ai-agent 1174 绿（含反向断言）；真机抽验欠账（pf 波
+  尾 smoke 已验证新提示词管线 EXIT=0）。
