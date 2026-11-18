@@ -131,7 +131,27 @@ const SEGMENTED_EXAMPLES_PLANNING_CN: &str = "\n- 分段例组（R18，规划面
 /// 不进工具描述）：每型只在正文材料足以支撑自然负例时使用；fill_in_blank
 /// 既有近义干扰与必填 distractors 不动，ordering / numeric 不适用（matching
 /// 已废弃退出生成契约，pf5——不再出现在任何 LLM 面文本，契约一致性测试钉）。
-const DISTRACTOR_MENU_CN: &str = "\n- 干扰项五型（R21，选择题面）：single_choice / multi_choice / true_false 的诱惑项按五型设计——近邻负例（只破一个条件）、部分条件满足（满足部分条件却写成全部满足）、判联错配（结论对但对象或关系错）、表述转换陷阱（量词/方向/范围被同义改写悄悄翻转）、集合关系检查（子集/超集/相交/相离混淆）。每型只在正文材料足以支撑一个自然负例时使用，正文没有该对照就不写。fill_in_blank 的近义干扰与必填 distractors 规则不变；ordering / numeric 不适用。适用时优先自然负例，无自然负例不得硬造。";
+const DISTRACTOR_MENU_CN: &str = "\n- 干扰项五型（R21，选择题面）：single_choice / multi_choice / true_false 的诱惑项按五型设计——近邻负例（只破一个条件）、部分条件满足（满足部分条件却写成全部满足）、判联错配（结论对但对象或关系错）、表述转换陷阱（量词/方向/范围被同义改写悄悄翻转）、集合关系检查（子集/超集/相交/相离混淆）。每型只在正文材料足以支撑一个自然负例时使用，正文没有该对照就不写。fill_in_blank 的近义干扰与必填 distractors 规则不变；ordering / numeric 不适用。适用时优先自然负例，无自然负例不得硬造。classify 判别题同走负例语法：objects 取近邻与边界对象，按性质特征可区分，不拿明显无关对象凑数。";
+
+/// 单元组织（pf4 学习观教学法吸收 R-a，SKILL.md/textbook-teaching 单元划分
+/// 原文锚点）：节序列围绕可辨识的概念或可应用的关系组织，不机械按来源
+/// 推进；描述侧「要认出什么/从什么推测什么」与 R20 完备性三面同源（引用
+/// 不展开），练习验证=未讲过的新情况（SKILL.md 五步循环语义）。y06 先例：
+/// 与写作成色块同命（content_discipline_v2 off 时整条摘除）。
+const UNIT_ORGANIZATION_CN: &str = "\n- 单元组织：节序列围绕一个可辨识的概念或可应用的关系组织，而非机械地一页一课；concept/summary 节回答「要认出什么、从什么推测什么」（三面照旧），practice 节用未讲过的新情况验证（概念域照取材池条款）。";
+
+/// 正文写作三条（pf4 学习观教学法吸收 R-b，textbook-teaching 原文锚点）：
+/// 概念的条件/性质区分（逐项核对不混写）、推导依据标注（关键等号/不等号/
+/// 近似号各有什么依据）与模型边界（省略了哪些因素及为何此处可省略，与推导
+/// 依据并一行控篇幅）、例子下上对齐（与概念逐项对应不只报名目）+ 例题收尾
+/// 提取通用结构 + 换材料而非无限同义解释。「选有区分力的正负例或近邻对比」
+/// 由 pf3 对比例组条款承载（同语义不另起炉灶）。y06 先例：与写作成色块
+/// 同命。
+const TEACHING_METHOD_WRITING_CN: &str = "
+- 条件与性质分开说：逐项核对——「属于概念的条件」与「属于之后可推出的性质」分开陈述，不混写。
+- 推导依据标注：关键等号、不等号、近似号各有什么依据，步骤旁写明；简化或近似处说明解释省略了哪些因素及为何此处可省略。
+- 例子下上对齐：例子与概念逐项对应，每个特征指得出落在例中哪处，不只报名目；例题收尾提取本例的通用结构，指出换掉哪些表面细节仍可使用；同类例子换材料，而非无限同义解释。
+";
 
 /// 题库两考向（y06，learnhub #202）：认一认与推一推都要有份量——取向不是
 /// 题量配额（生成契约 9 种题型 + 多样性 + reflection/open 配额已定，绝不加数）。
@@ -140,11 +160,26 @@ const QUESTION_COVERAGE_CN: &str = "\n- 两个考向都要有份量（R20，题�
 /// 判别类内容的节与练习模板（pf3 判别练习节 v1 指导面，上游 textbook-teaching
 /// / 对比材料学原文锚点）：正文侧对比例组语法——近邻正负例只破一个条件、
 /// 按类别间集合关系组织（包含时用共有 + 独有对象）、负例揭示边界；题库侧
-/// classify 判别题优先；验证题可控差异原则 + 六型清单。词汇纪律（pf3 R-c）：
-/// 条款面向生成模型，用「判别/分类判断」措辞，书内术语不上生成面（测试钉
-/// 反向断言——生成面无源可抄，学习者面不透传）。y06 先例：与写作成色块
-/// 同命（content_discipline_v2 off 时整条摘除）。
-const DISCRIMINATION_TEMPLATE_CN: &str = "\n- 判别类内容的节与练习模板：教学习者「辨认对象属于哪个类别」的内容（值落在哪类存储、情境属于哪类问题），概念/例题节的叙述用对比例组承载判别依据——近邻正负例只破一个条件（两例除目标特征外其余相同），对比例组按类别间的集合关系组织（一个类别包含另一个时，例组用共有对象 + 被包含类独有对象对比），负例要揭示边界（差哪个条件、为什么落到界外），不只拿明显无关的对象充当反例；practice 节的能力目标写成「能判断 X 属于哪个类别」，题库优先产 classify 判别题——categories 用正文实际建立的类别轴、objects 用正文出现过的对象、解析写按哪个特征判定；验证性的题目只增加可控差异，避免把大量新先修知识引入验证，使失败无法定位（可选验证题类型：新对象分类、对照情境、条件变化、结果预测、推导补步、实际操作）。";
+/// classify 判别题优先。pf4 已声明变更：验证题可控差异原则 + 六型清单原随
+/// 本条款落地，pf4 R-c 升为全题型通用条款（VERIFICATION_DISCIPLINE_CN）后
+/// 从本条款挪出——判别条款只保留判别专属语法。词汇纪律（pf3 R-c）：条款
+/// 面向生成模型，用「判别/分类判断」措辞，书内术语不上生成面（测试钉反向
+/// 断言——生成面无源可抄，学习者面不透传）。y06 先例：与写作成色块同命
+/// （content_discipline_v2 off 时整条摘除）。
+const DISCRIMINATION_TEMPLATE_CN: &str = "\n- 判别类内容的节与练习模板：教学习者「辨认对象属于哪个类别」的内容（值落在哪类存储、情境属于哪类问题），概念/例题节的叙述用对比例组承载判别依据——近邻正负例只破一个条件（两例除目标特征外其余相同），对比例组按类别间的集合关系组织（一个类别包含另一个时，例组用共有对象 + 被包含类独有对象对比），负例要揭示边界（差哪个条件、为什么落到界外），不只拿明显无关的对象充当反例；practice 节的能力目标写成「能判断 X 属于哪个类别」，题库优先产 classify 判别题——categories 用正文实际建立的类别轴、objects 用正文出现过的对象、解析写按哪个特征判定。";
+
+/// 验证题纪律（pf4 学习观教学法吸收 R-c，textbook-teaching 原文锚点）：
+/// 可控差异原则全题型通用（题目只增加可控差异，失败可定位）+ 验证题六型
+/// 清单进 practice 配比。pf3 时两者随判别模板条款落地（判别绑定版），本票
+/// 升为通用并挪出（已声明变更——pf3/pf4 条款测试同步钉归属）。
+const VERIFICATION_DISCIPLINE_CN: &str = "\n- 验证题纪律（全题型通用）：题目只增加可控差异，避免把大量新先修知识引入验证，使失败无法定位；practice 验证题可选类型：新对象分类、对照情境、条件变化、结果预测、推导补步、实际操作。";
+
+/// 联结类题目材料语法（pf4 学习观教学法吸收 R-c，上游「依据→目标→条件」
+/// 联结材料语法）：ordering / fill_in_blank 考推理链的联结，每空/每序位
+/// 对应一个可从已教依据推出的环节。既有近义干扰规则不变；判别类
+/// （single_choice / true_false / classify）的负例语法由 R21 菜单与 pf3
+/// 判别模板条款承载，本条只管联结轴。
+const LINKING_MATERIALS_CN: &str = "\n- 联结类题目（ordering / fill_in_blank）的材料按「依据 → 目标 → 条件」组织：每空每序位对应一个可从已教依据推出的环节，条件给足、不让学习者凭空猜；既有近义干扰规则不变。";
 
 /// 时长预算面（k03，开关 `NOMI_LEARNING_EST_BUDGET` 的语义臂，learnhub
 /// #178 换血版）：预算行照读之外，意图画像四角（预算 × teaches 档位 ×
@@ -207,6 +242,30 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     } else {
         ""
     };
+    // pf4（学习观教学法吸收）：单元组织条款与写作成色块同命（y06 先例）。
+    let unit_organization = if content_discipline_v2 {
+        UNIT_ORGANIZATION_CN
+    } else {
+        ""
+    };
+    // pf4（R-b 正文写作三条）：同命装配。
+    let teaching_method_writing = if content_discipline_v2 {
+        TEACHING_METHOD_WRITING_CN
+    } else {
+        ""
+    };
+    // pf4（R-c 全题型面）：验证题纪律（可控差异升通用 + 六型清单）与联结类
+    // 材料语法——同命装配。
+    let verification_discipline = if content_discipline_v2 {
+        VERIFICATION_DISCIPLINE_CN
+    } else {
+        ""
+    };
+    let linking_materials = if content_discipline_v2 {
+        LINKING_MATERIALS_CN
+    } else {
+        ""
+    };
     // 时长预算面（k03/#178）：开关 off 臂整段回退旧语义（同二进制双臂）。
     let budget_clause = if nomifun_learning::est_budget_enabled() {
         EST_INTENT_CLAUSE_CN
@@ -219,7 +278,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
         r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
 【分节契约（每节一次工具调用）】
-- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：{section_ranges}；相邻节要有学习递进；最后一节必须是练习节（恰好 1 个）——学习者读完即进入统一练习轮。
+- 先 ls_set_section_manifest 规划节清单：每节带 section_key（s1、s2……）、kind（concept 概念 / example 例题 / demo 演示 / summary 小结 / practice 练习）、title（带类型前缀，如「概念：…」）、points（一句话要点）。节数按课时复杂度自定：{section_ranges}；相邻节要有学习递进；最后一节必须是练习节（恰好 1 个）——学习者读完即进入统一练习轮。{unit_organization}
 - 每节带 visual 字段（该节承载核心讲解的可视化形态：{visual_menu} 之一，内容确实非视觉才可用 无）。
 - 可视化为主、文字为辅是硬规则：概念/例题节的正文必须以至少一个可视化块（$$公式$$、```svg、```jsxgraph、```mermaid、对比表格）承载核心讲解，文字只作旁注；短段落、枚举用列表/表格、不写过渡废话。纯文字的概念/例题节会被质检门拒绝。
 - 再逐节调用 ls_set_section_body 写正文：一次调用只写一节，body 直接以该节 `## ` 标题行开头（标题照抄清单），不要 JSON、不要包裹围栏、节内禁止 ### 子标题、不要自设练习环节（题目由题库承载）。
@@ -236,12 +295,12 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 档位决定内容形态：标到「知道」的概念做认识性介绍，标到「会用」以应用示范为主，标到「能教」才给完整推导与反例；没有档位声明的课时按节任务命名的内容形态把握深浅。
 {tier_priority_clause}- 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
 - 对照要真对照：比较必须落在可核查的维度（适用范围、代价、失败形态），不写「X 更好」式的空对照。
-- 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。
+- 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。{teaching_method_writing}
 - 规划即雄心：节数、题量与练习形态照节清单填充，不自行加码——规划收敛过的容量不再膨胀；练习不引入清单未安排的方法论或推理链（那是后续节点的事）；题目考察的概念域照节清单（已知概念名单优先），情境载体按受众取向。{discipline_v2}
 
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / classify）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
-- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}
+- 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}{verification_discipline}{linking_materials}
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
@@ -2468,8 +2527,10 @@ mod tests {
 
     /// pf3（判别练习节 v1 指导面）：判别模板条款进分节契约段——判别类内容
     /// 正文侧对比例组语法（近邻正负例只破一个条件 / 集合关系组织 / 负例揭
-    /// 示边界）、题库侧 classify 判别题优先、验证题可控差异原则与六型清单
-    /// （textbook-teaching 原文锚点）。条款与写作成色块同命（y06 先例）：
+    /// 示边界）、题库侧 classify 判别题优先（textbook-teaching 原文锚点）。
+    /// pf4 已声明变更：验证题可控差异原则与六型清单升全题型通用条款
+    /// （VERIFICATION_DISCIPLINE_CN）后挪出本条款——system 级短语断言不受
+    /// 影响（短语仍在生成面，归属变了）。条款与写作成色块同命（y06 先例）：
     /// content_discipline_v2 off 臂整条摘除（常量对照锁形状）。
     #[test]
     fn lesson_agent_system_prompt_carries_the_discrimination_practice_template() {
@@ -2497,6 +2558,83 @@ mod tests {
         assert!(DISCRIMINATION_TEMPLATE_CN.contains("判别类内容的节与练习模板"));
         assert!(DISCRIMINATION_TEMPLATE_CN.contains("只破一个条件"));
         assert!(DISCRIMINATION_TEMPLATE_CN.contains("揭示边界"));
+    }
+
+    /// pf4（学习观教学法吸收，R-a 节规划面）：节序列围绕可辨识的概念或可
+    /// 应用的关系组织（SKILL.md/textbook-teaching 单元划分原文锚点），描述
+    /// 节承载「要认出什么/从什么推测什么」（与 R20 完备性三面同源，不重复
+    /// 展开），练习节用未讲过的新情况验证（概念域仍取已教内容）。条款与
+    /// 写作成色块同命（y06 先例）。
+    #[test]
+    fn lesson_agent_system_prompt_carries_the_unit_organization_clause() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "围绕一个可辨识的概念或可应用的关系组织",
+            "而非机械地一页一课",
+            "要认出什么、从什么推测什么",
+            "未讲过的新情况",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        assert!(UNIT_ORGANIZATION_CN.contains("单元组织"));
+    }
+
+    /// pf4（学习观教学法吸收，R-b 正文写作面，textbook-teaching 原文锚点）：
+    /// 条件/性质区分、推导依据标注（关键等号/不等号/近似号各有什么依据）、
+    /// 模型边界（省略了哪些因素及为何此处可省略）、例子下上对齐（逐项对应
+    /// 不只报名目）、例题收尾提取通用结构、「换材料，而非无限同义解释」。
+    /// 与写作成色块同命（y06 先例）。
+    #[test]
+    fn lesson_agent_system_prompt_carries_the_teaching_method_writing_clauses() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "属于概念的条件",
+            "属于之后可推出的性质",
+            "等号、不等号、近似号各有什么依据",
+            "省略了哪些因素",
+            "为何此处可省略",
+            "逐项对应",
+            "不只报名目",
+            "提取本例的通用结构",
+            "换掉哪些表面细节仍可使用",
+            "换材料，而非无限同义解释",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        assert!(TEACHING_METHOD_WRITING_CN.contains("条件与性质分开说"));
+    }
+
+    /// pf4（学习观教学法吸收，R-c 全题型面，textbook-teaching 原文锚点）：
+    /// 可控差异原则升全题型通用条款 + 验证题六型清单进 practice 配比（pf3
+    /// 时两者在判别模板条款内——本票升通用并挪出，已声明变更：判别条款
+    /// 瘦身，纪律归属 VERIFICATION_DISCIPLINE_CN）；联结类（ordering /
+    /// fill_in_blank）材料按「依据 → 目标 → 条件」组织；R21 五型菜单扩判
+    /// 别轴——classify 同走负例语法（对象取近邻与边界对象，按性质特征可
+    /// 区分），扩充而非重写，既有五型名与 R 编号不动。
+    #[test]
+    fn lesson_agent_system_prompt_carries_the_question_kind_axis_clauses() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "验证题纪律（全题型通用）",
+            "只增加可控差异",
+            "新对象分类、对照情境、条件变化、结果预测、推导补步、实际操作",
+            "联结类题目",
+            "依据 → 目标 → 条件",
+            "classify 判别题同走负例语法",
+            "按性质特征可区分",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        // R21 扩充不重写：既有五型名与编号不动（y06 既有断言照旧通过）。
+        assert!(DISTRACTOR_MENU_CN.contains("干扰项五型（R21"));
+        assert!(DISTRACTOR_MENU_CN.contains("近邻负例（只破一个条件）"));
+        assert!(DISTRACTOR_MENU_CN.contains("集合关系检查"));
+        // 已声明变更（pf3 → pf4）：可控差异 + 六型清单从判别条款挪出为通用
+        // 条款——判别条款不再携带。
+        assert!(!DISCRIMINATION_TEMPLATE_CN.contains("只增加可控差异"));
+        assert!(VERIFICATION_DISCIPLINE_CN.contains("只增加可控差异"));
+        assert!(VERIFICATION_DISCIPLINE_CN.contains("新对象分类"));
+        assert!(LINKING_MATERIALS_CN.contains("依据 → 目标 → 条件"));
     }
 
     /// pf5 生成契约一致性：LLM 面文本（系统提示词 ×2 + 工具描述面）出现的
