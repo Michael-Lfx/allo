@@ -1,4 +1,4 @@
-UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面时必须遵守。架构细节见 [`docs/ui-system.zh.md`](docs/ui-system.zh.md)。Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试的环境问题，先看 [`docs/plans/windows-build-rebase-pitfalls.md`](docs/plans/windows-build-rebase-pitfalls.md)；文档总索引在 [`docs/README.md`](docs/README.md)。
+UI / 弹窗 / 圆角裁切规则见 [`DESIGN.md`](DESIGN.md)。做 GPUI 界面时必须遵守。Windows 上 rebase / 依赖 / MSVC 编译 / 跑测试的环境问题，先看 [`docs/plans/windows-build-rebase-pitfalls.md`](docs/plans/windows-build-rebase-pitfalls.md)；文档总索引在 [`docs/README.md`](docs/README.md)。
 
 | Crate | 职责 | 对外 |
 | ----------- | ------------------------- | ------------------ |
