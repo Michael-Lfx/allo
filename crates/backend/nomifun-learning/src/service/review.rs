@@ -1116,16 +1116,16 @@ impl LearningService {
         )
         .map_err(internal)?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
-        let (feedback, correct) = if forgot {
+        let (feedback, correct, item_results) = if forgot {
             let feedback = if config.explanation.is_empty() {
                 "Review the material before retrieving this question again.".to_string()
             } else {
                 config.explanation.clone()
             };
-            (feedback, false)
+            (feedback, false, Vec::new())
         } else {
-            let (score, feedback) = evaluate(kind, &config, &response)?;
-            (feedback, score >= 0.6)
+            let (score, feedback, item_results) = evaluate(kind, &config, &response)?;
+            (feedback, score >= 0.6, item_results)
         };
         let now = now_ms();
         let settings = self.scheduler_settings().await;
@@ -1178,6 +1178,7 @@ impl LearningService {
             },
             rated,
             advanced: !correct && allowed,
+            item_results,
         })
     }
 
@@ -1566,16 +1567,16 @@ impl LearningService {
         .map_err(internal)?;
         // `forgot` skips grading entirely: learners must never be forced to
         // guess, so the lapse is recorded with the revealed answer instead.
-        let (score, feedback, correct) = if forgot {
+        let (score, feedback, correct, item_results) = if forgot {
             let feedback = if config.explanation.is_empty() {
                 "Review the source material before retrieving this question again.".to_string()
             } else {
                 config.explanation.clone()
             };
-            (0.0, feedback, false)
+            (0.0, feedback, false, Vec::new())
         } else {
-            let (score, feedback) = evaluate(kind, &config, &response)?;
-            (score, feedback, score >= 0.6)
+            let (score, feedback, item_results) = evaluate(kind, &config, &response)?;
+            (score, feedback, score >= 0.6, item_results)
         };
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
@@ -1711,6 +1712,7 @@ impl LearningService {
             },
             rated,
             advanced: !correct && allowed,
+            item_results,
         })
     }
 

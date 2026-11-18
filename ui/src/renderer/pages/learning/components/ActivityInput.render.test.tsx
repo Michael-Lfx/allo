@@ -115,3 +115,162 @@ describe('题面作答面渲染管线（n1 页面集成断言）', () => {
     expect(markup).toContain('min-w-140px');
   });
 });
+
+describe('提交后逐项判分标记（pf1）', () => {
+  // 语义 token（danger/success 族）双主题适配；类串逐字面落源码供 dead-css 提取。
+  const MARKED_SUCCESS = 'border-[var(--color-success-light-3)] bg-[var(--color-success-light-1)]';
+  const MARKED_DANGER = 'border-[var(--color-danger-light-3)] bg-[var(--color-danger-light-1)]';
+
+  test('matching 逐行：错行红、对行绿（本波动机源头：哪行错必须可见）', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='matching'
+        options={['左一', '左二', '左三']}
+        matches={['右甲']}
+        value={['右甲', '右甲', '右甲']}
+        itemResults={[false, true, true]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(1);
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(2);
+  });
+
+  test('ordering 逐位：错位次红、对位绿', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='ordering'
+        options={['甲', '乙', '丙']}
+        value={['甲', '丙', '乙']}
+        itemResults={[true, false, false]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(2);
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(1);
+  });
+
+  test('single_choice：错选标红，未选项不染色', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='single_choice'
+        options={['甲', '乙']}
+        value='甲'
+        itemResults={[false]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(1);
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(0);
+  });
+
+  test('single_choice：选对标绿', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='single_choice'
+        options={['甲', '乙']}
+        value='乙'
+        itemResults={[true]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(1);
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(0);
+  });
+
+  test('true_false：错选标红', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='true_false'
+        options={[]}
+        value={true}
+        itemResults={[false]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(1);
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(0);
+  });
+
+  test('multi_choice：整体对错标色（picked 随单元素结果统一染色）', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='multi_choice'
+        options={['甲', '乙', '丙']}
+        value={['甲', '乙']}
+        itemResults={[false]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(2);
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(0);
+  });
+
+  test('fill_in_blank：错值红', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='fill_in_blank'
+        options={[]}
+        value='堆区'
+        itemResults={[false]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(markup).toContain(MARKED_DANGER);
+    expect(markup).not.toContain(MARKED_SUCCESS);
+  });
+
+  test('numeric：对值绿', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='numeric'
+        options={[]}
+        value={42}
+        itemResults={[true]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(markup).toContain(MARKED_SUCCESS);
+    expect(markup).not.toContain(MARKED_DANGER);
+  });
+
+  test('reflection / open_question：registry 门关闭，给了 itemResults 也不染色', async () => {
+    for (const kind of ['reflection', 'open_question'] as const) {
+      const markup = await renderInput(
+        <ActivityInput
+          kind={kind}
+          options={[]}
+          value='学员的回答'
+          itemResults={[false]}
+          disabled
+          onChange={noop}
+        />
+      );
+      expect(markup).not.toContain(MARKED_DANGER);
+      expect(markup).not.toContain(MARKED_SUCCESS);
+    }
+  });
+
+  test('降级：无 itemResults（旧 attempt / 旧后端）保持全局文案，不染色', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='matching'
+        options={['左一', '左二']}
+        matches={['右甲']}
+        value={['右甲', '右甲']}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(markup).not.toContain(MARKED_DANGER);
+    expect(markup).not.toContain(MARKED_SUCCESS);
+  });
+});

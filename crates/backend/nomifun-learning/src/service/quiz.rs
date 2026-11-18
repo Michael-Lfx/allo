@@ -507,7 +507,9 @@ impl LearningService {
                 ))
             })?;
         let (kind, config) = self.item_kind_and_config(item).await?;
-        let (score, explanation) = evaluate(kind, &config, response)?;
+        // 逐项结果（pf1）是练习/复习作答面的增量；检测卷判分面维持
+        // 对错 + 揭底形状，不透出逐项。
+        let (score, explanation, _) = evaluate(kind, &config, response)?;
         Ok(QuizGradeFeedback {
             activity_id: parse_id(activity_id.to_owned())?,
             correct: score >= 1.0,
@@ -567,7 +569,7 @@ impl LearningService {
         let mut by_node: HashMap<String, NodeAgg> = HashMap::new();
         for item in &plan {
             let (kind, config) = self.item_kind_and_config(item).await?;
-            let (score, _) = evaluate(kind, &config, &answers[&item.activity])?;
+            let (score, _, _) = evaluate(kind, &config, &answers[&item.activity])?;
             let correct = score >= 1.0;
             // 校准点（q3）：作答时点该题卡的预测可提取性（变式/无卡 =
             // None，不入预测均值——learnhub CalibrationPoint 同形）。

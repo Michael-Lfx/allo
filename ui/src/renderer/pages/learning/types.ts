@@ -351,6 +351,10 @@ export interface AttemptResult {
   /** AI 评审判错时点名的缺失要点（判对恒空；判对-缺失互斥，n4 D3）。
    * 旧后端/对照臂不带此字段，可选承载。 */
   missing_points?: string[];
+  /** 逐项判分结果（pf1）：与题型对齐的 bool 数组——matching 逐行、
+   * ordering 逐位、单结果题型单元素、AI 批改恒空。旧后端/旧记录不带
+   * 此字段（可选承载），缺席 = 前端降级为全局文案。 */
+  item_results?: boolean[];
 }
 
 /** 作答记录 = 判卷结果 + 提交的原始作答；response 用于回看时回显用户答案 */
@@ -472,6 +476,9 @@ export interface ReviewAnswerResult {
   rated: ReviewResult | null;
   /** 本次作答是否真实推进了排期；被到期门拦下的重复作答为 false */
   advanced: boolean;
+  /** 逐项判分结果（pf1，与 AttemptResult.item_results 同形）；「忘记」
+   * 申报与 AI 批改题恒空，缺席 = 降级为全局文案。 */
+  item_results?: boolean[];
 }
 
 export interface QuestionEntry {

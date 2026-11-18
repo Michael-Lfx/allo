@@ -596,8 +596,196 @@ teaching_style: crate::models::TeachingStyle::Standard,
             difficulty: None,
         evidence: None,
         };
-        let (score, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
+        let (score, _, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
         assert_eq!(score, 0.0);
+    }
+
+    /// pf1 逐项结果契约：evaluate 第三元产出与题型对齐的 bool 数组——
+    /// matching 逐行（本波动机源头：哪行错必须可见）、ordering 逐位、
+    /// choice/fill/numeric 单元素。二元得分语义不变，第三元只是把判分时
+    /// 已知但不透出的信息显式化。
+    #[test]
+    fn evaluate_item_results_pin_every_objective_kind() {
+        let config = |answer: Value, options: Vec<String>| StoredActivityConfig {
+            options,
+            matches: Vec::new(),
+            answer,
+            explanation: String::new(),
+            distractors: Vec::new(),
+            tol: None,
+            difficulty: None,
+            evidence: None,
+        };
+
+        // single_choice：单元素，选对/选错。
+        let (score, _, items) = evaluate(
+            ActivityKind::SingleChoice,
+            &config(Value::String("B".into()), vec!["A".into(), "B".into()]),
+            &Value::String("B".into()),
+        )
+        .unwrap();
+        assert_eq!((score, items.as_slice()), (1.0, &[true][..]));
+        let (_, _, items) = evaluate(
+            ActivityKind::SingleChoice,
+            &config(Value::String("B".into()), vec!["A".into(), "B".into()]),
+            &Value::String("A".into()),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[false][..]);
+
+        // true_false：单元素。
+        let (_, _, items) = evaluate(
+            ActivityKind::TrueFalse,
+            &config(Value::Bool(true), Vec::new()),
+            &Value::Bool(false),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[false][..]);
+
+        // fill_in_blank：单元素，候选任一命中（trim + ASCII 忽略大小写）。
+        let (_, _, items) = evaluate(
+            ActivityKind::FillInBlank,
+            &config(json!(["栈区", "stack"]), Vec::new()),
+            &Value::String(" stack ".into()),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[true][..]);
+        let (_, _, items) = evaluate(
+            ActivityKind::FillInBlank,
+            &config(json!(["栈区", "stack"]), Vec::new()),
+            &Value::String("堆区".into()),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[false][..]);
+
+        // multi_choice：集合比对 → 单元素（整体对错；漏选/多选同为 false）。
+        let (_, _, items) = evaluate(
+            ActivityKind::MultiChoice,
+            &config(json!(["a", "b"]), Vec::new()),
+            &json!(["b", "a"]),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[true][..]);
+        let (_, _, items) = evaluate(
+            ActivityKind::MultiChoice,
+            &config(json!(["a", "b"]), Vec::new()),
+            &json!(["a"]),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[false][..]);
+
+        // numeric：单元素；缺省 epsilon 只吸收浮点表示误差，显式 tol 内
+        // 判对、外判错。
+        let (_, _, items) = evaluate(
+            ActivityKind::Numeric,
+            &config(Value::from(0.1 + 0.2), Vec::new()),
+            &Value::from(0.3),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[true][..], "缺省 epsilon 吸收浮点表示误差");
+        let tolerant = StoredActivityConfig {
+            tol: Some(0.5),
+            ..config(Value::from(10.0), Vec::new())
+        };
+        let (_, _, items) = evaluate(
+            ActivityKind::Numeric,
+            &tolerant,
+            &Value::from(9.7),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[true][..], "tol 0.5 内判对");
+        let strict = StoredActivityConfig {
+            tol: Some(0.5),
+            ..config(Value::from(10.0), Vec::new())
+        };
+        let (_, _, items) = evaluate(
+            ActivityKind::Numeric,
+            &strict,
+            &Value::from(9.0),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[false][..], "tol 0.5 外判错");
+
+        // ordering：逐位（错位次可见）。
+        let (_, _, items) = evaluate(
+            ActivityKind::Ordering,
+            &config(json!(["1", "2", "3"]), Vec::new()),
+            &json!(["1", "3", "2"]),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[true, false, false][..]);
+
+        // matching：逐行（map.md 取证场景：三行里哪行错必须可见）。
+        let (_, _, items) = evaluate(
+            ActivityKind::Matching,
+            &config(json!(["堆区", "栈区", "堆区"]), Vec::new()),
+            &json!(["栈区", "栈区", "堆区"]),
+        )
+        .unwrap();
+        assert_eq!(items.as_slice(), &[false, true, true][..]);
+
+        // 长度不齐（坏形状）：不 panic，逐响应行对位判，得分二元不变。
+        let (score, _, items) = evaluate(
+            ActivityKind::Matching,
+            &config(json!(["堆区", "栈区"]), Vec::new()),
+            &json!(["堆区"]),
+        )
+        .unwrap();
+        assert_eq!((score, items.as_slice()), (0.0, &[true][..]));
+    }
+
+    /// AI 批改语义无逐项：reflection/open_question 第三元恒空——前端按
+    /// 空数组降级为全局反馈（与 pf5 注册表 perItemFeedback=false 对齐）。
+    #[test]
+    fn evaluate_item_results_empty_for_ai_graded_kinds() {
+        let config = |answer: Value| StoredActivityConfig {
+            options: Vec::new(),
+            matches: Vec::new(),
+            answer,
+            explanation: "graded by the model".into(),
+            distractors: Vec::new(),
+            tol: None,
+            difficulty: None,
+            evidence: None,
+        };
+        for kind in [ActivityKind::Reflection, ActivityKind::OpenQuestion] {
+            let (score, _, items) = evaluate(
+                kind,
+                &config(Value::Null),
+                &Value::String("learner prose".into()),
+            )
+            .unwrap();
+            assert_eq!((score, items.as_slice()), (1.0, &[][..]));
+        }
+    }
+
+    /// pf1 提交链透传：客观题 submit_attempt 的 AttemptResult 携带逐项
+    /// 结果；判分/落库二元语义不变（attempt 表零迁移，字段只在 API 层）。
+    #[tokio::test]
+    async fn attempt_result_carries_item_results_through_submission() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        let wrong = service
+            .submit_attempt(&activity_id, &user_id, Value::Bool(false), None, None)
+            .await
+            .unwrap();
+        assert_eq!((wrong.score, wrong.item_results.as_slice()), (0.0, &[false][..]));
+        let right = service
+            .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+            .await
+            .unwrap();
+        assert_eq!((right.score, right.item_results.as_slice()), (1.0, &[true][..]));
     }
 
     #[test]
@@ -1159,6 +1347,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert!(result.feedback.contains("方向正确"));
         // 判对-缺失互斥（n4 D3）：判对 ⇒ 缺失要点为空。
         assert!(result.missing_points.is_empty());
+        // AI 批改语义无逐项（pf1）：AttemptResult.item_results 恒空，
+        // 前端按缺席/空降级为全局反馈。
+        assert!(result.item_results.is_empty());
         assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
         // The grading prompt carries the answer AND the lesson topic
         // (title/summary) — never a concept list (ADR-0009). The judge

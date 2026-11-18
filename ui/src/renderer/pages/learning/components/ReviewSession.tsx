@@ -190,6 +190,7 @@ export function ReviewCard({
         matches={question.matches}
         value={response}
         disabled={result !== null || locked}
+        itemResults={result?.item_results}
         onChange={setResponse}
       />
       {result === null && (

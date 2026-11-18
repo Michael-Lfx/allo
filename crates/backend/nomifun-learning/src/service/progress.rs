@@ -170,12 +170,12 @@ impl LearningService {
         // learner. The old silent fallback passed every non-empty answer
         // with a score of 1.0, hiding grading failures behind a fake
         // success.
-        let (score, feedback, missing_points) = if kind.is_ai_graded() {
+        let (score, feedback, missing_points, item_results) = if kind.is_ai_graded() {
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
                 // Always rejected: the evaluator errors on empty responses.
                 evaluate(kind, &config, &response)
-                    .map(|(score, feedback)| (score, feedback, Vec::new()))?
+                    .map(|(score, feedback, items)| (score, feedback, Vec::new(), items))?
             } else {
                 let lesson_title: String = row.try_get("lesson_title").map_err(internal)?;
                 let lesson_summary: String = row.try_get("lesson_summary").map_err(internal)?;
@@ -190,8 +190,10 @@ impl LearningService {
                         lesson_summary: &lesson_summary,
                         explanation: Some(&config.explanation),
                     };
+                    // AI 批改是整体判分语义，无逐项（pf1）：item_results 恒空。
                     self.judge_answer(input, provider_id.as_ref(), model.as_deref())
-                        .await?
+                        .await
+                        .map(|(score, feedback, missing)| (score, feedback, missing, Vec::new()))?
                 } else {
                     // 旧路径对照臂（`NOMI_LEARNING_OPEN_JUDGE=off`）：单次
                     // 裸调、无重试无超时、`{score,feedback}` 两键解析、
@@ -209,12 +211,12 @@ impl LearningService {
                     let (score, feedback) = self
                         .grade_open_answer(input, provider_id.as_ref(), model.as_deref())
                         .await?;
-                    (score, feedback, Vec::new())
+                    (score, feedback, Vec::new(), Vec::new())
                 }
             }
         } else {
-            evaluate(kind, &config, &response)
-                .map(|(score, feedback)| (score, feedback, Vec::new()))?
+            let (score, feedback, item_results) = evaluate(kind, &config, &response)?;
+            (score, feedback, Vec::new(), item_results)
         };
         let passed = score >= 0.6;
         let attempt_id = LearningAttemptId::new();
@@ -253,6 +255,9 @@ impl LearningService {
             feedback,
             // missing_points 走 API 层不落库（n4 D5/票面：零迁移）。
             missing_points,
+            // 逐项结果（pf1）同走 API 层不落库：判分即产出，随提交响应
+            // 透传；AI 批改题恒空，attempt 表零迁移。
+            item_results,
         })
     }
 
@@ -442,11 +447,18 @@ fn parse_open_grading(raw: &str) -> Result<(f64, String), AppError> {
     Ok((reply.score, reply.feedback))
 }
 
+/// Rule-based judge for objective kinds. Returns `(score, feedback,
+/// item_results)` where `item_results` is the per-item correctness the
+/// judge already knows, aligned with the kind's response shape (pf1):
+/// matching per left-column row, ordering per position, and a single
+/// element for the single-result kinds (choice/true_false/fill/numeric/
+/// multi_choice whole-set). AI-graded kinds carry no items (empty vec) —
+/// their grading is holistic. Shape errors surface as `Err` as before.
 pub(super) fn evaluate(
     kind: ActivityKind,
     config: &StoredActivityConfig,
     response: &Value,
-) -> Result<(f64, String), AppError> {
+) -> Result<(f64, String, Vec<bool>), AppError> {
     // AI-graded kinds never enter this rule-based evaluator with a
     // meaningful score: reflection is graded by `grade_reflection`, and the
     // empty-response rejection for both AI-graded kinds is enforced here.
@@ -462,11 +474,29 @@ pub(super) fn evaluate(
         }
         // Unreachable in production: callers route AI-graded kinds to the
         // completer first and only fall back here for the empty check.
-        return Ok((1.0, config.explanation.clone()));
+        return Ok((1.0, config.explanation.clone(), Vec::new()));
     }
-    let correct = match kind {
-        ActivityKind::SingleChoice => response.as_str() == config.answer.as_str(),
-        ActivityKind::TrueFalse => response.as_bool() == config.answer.as_bool(),
+    // Per-item correctness (pf1): judged positionally against the stored
+    // answer. Positions past the stored answer are wrong (malformed shape
+    // stays a binary 0 without panicking).
+    let positional = |got: &[Value], want: &[Value]| -> Vec<bool> {
+        got.iter()
+            .enumerate()
+            .map(|(index, item)| {
+                want.get(index)
+                    .is_some_and(|expected| item.as_str() == expected.as_str())
+            })
+            .collect()
+    };
+    let (correct, item_results) = match kind {
+        ActivityKind::SingleChoice => {
+            let correct = response.as_str() == config.answer.as_str();
+            (correct, vec![correct])
+        }
+        ActivityKind::TrueFalse => {
+            let correct = response.as_bool() == config.answer.as_bool();
+            (correct, vec![correct])
+        }
         ActivityKind::Reflection | ActivityKind::OpenQuestion => unreachable!(
             "AI-graded kinds are handled above"
         ),
@@ -481,16 +511,18 @@ pub(super) fn evaluate(
                     "fill_in_blank response must not be empty".into(),
                 ));
             }
-            config.answer.as_array().is_some_and(|accepted| {
+            let correct = config.answer.as_array().is_some_and(|accepted| {
                 accepted.iter().any(|candidate| {
                     candidate
                         .as_str()
                         .is_some_and(|text| text.trim().eq_ignore_ascii_case(answer))
                 })
-            })
+            });
+            (correct, vec![correct])
         }
         // Order-insensitive selection: every picked option must be part of
         // the stored answer and every stored answer picked (exact set match).
+        // Whole-set semantics → a single element (pf1 minimal shape).
         ActivityKind::MultiChoice => {
             let Some(picked) = response.as_array() else {
                 return Err(AppError::BadRequest(
@@ -508,7 +540,8 @@ pub(super) fn evaluate(
                     .filter_map(|value| value.as_str().map(|text| text.trim().to_owned()))
                     .collect()
             };
-            normalize(picked) == normalize(expected)
+            let correct = normalize(picked) == normalize(expected);
+            (correct, vec![correct])
         }
         // |response − answer| ≤ tol (tiny epsilon when tol is absent so
         // decimal answers are not punished for float representation).
@@ -524,10 +557,12 @@ pub(super) fn evaluate(
                 ));
             };
             let tol = config.tol.unwrap_or(1e-9).max(1e-9);
-            (value - expected).abs() <= tol
+            let correct = (value - expected).abs() <= tol;
+            (correct, vec![correct])
         }
         // Sequence equality over the presented items (the UI shuffles
         // `options` for display; the response is the learner's order).
+        // Per-position correctness (pf1): which slot is misplaced is visible.
         ActivityKind::Ordering => {
             let Some(sequence) = response.as_array() else {
                 return Err(AppError::BadRequest(
@@ -539,13 +574,12 @@ pub(super) fn evaluate(
                     "ordering activity has a malformed stored answer".into(),
                 ));
             };
-            sequence.len() == expected.len()
-                && sequence
-                    .iter()
-                    .zip(expected.iter())
-                    .all(|(got, want)| got.as_str() == want.as_str())
+            let item_results = positional(sequence, expected);
+            let correct = sequence.len() == expected.len() && item_results.iter().all(|ok| *ok);
+            (correct, item_results)
         }
         // Right-column values aligned with the left column (options).
+        // Per-row correctness (pf1): which row is mismatched is visible.
         ActivityKind::Matching => {
             let Some(alignment) = response.as_array() else {
                 return Err(AppError::BadRequest(
@@ -557,11 +591,9 @@ pub(super) fn evaluate(
                     "matching activity has a malformed stored answer".into(),
                 ));
             };
-            alignment.len() == expected.len()
-                && alignment
-                    .iter()
-                    .zip(expected.iter())
-                    .all(|(got, want)| got.as_str() == want.as_str())
+            let item_results = positional(alignment, expected);
+            let correct = alignment.len() == expected.len() && item_results.iter().all(|ok| *ok);
+            (correct, item_results)
         }
     };
     let score = if correct { 1.0 } else { 0.0 };
@@ -572,7 +604,7 @@ pub(super) fn evaluate(
     } else {
         config.explanation.clone()
     };
-    Ok((score, feedback))
+    Ok((score, feedback, item_results))
 }
 
 /// Rates a review item `again` on a wrong/forgotten answer: reschedules the

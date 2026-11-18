@@ -2861,6 +2861,12 @@ pub struct AttemptResult {
     /// 容缺（旧档位回放），对旧客户端是纯增量字段。
     #[serde(default)]
     pub missing_points: Vec<String>,
+    /// 逐项判分结果（pf1）：与题型对齐的 bool 数组——matching 逐行、
+    /// ordering 逐位、choice/fill/numeric/multi_choice 单元素；AI 批改题
+    /// 恒空。API 层承载不落库（missing_points 同款零迁移）；`serde(default)`
+    /// = 反序列化面容缺（旧档位回放），对旧客户端是纯增量字段。
+    #[serde(default)]
+    pub item_results: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2967,6 +2973,11 @@ pub struct ReviewAnswerResult {
     /// recorded for accuracy/diagnostics, but scheduling and the review log
     /// are untouched.
     pub advanced: bool,
+    /// 逐项判分结果（pf1）：与题型对齐的 bool 数组（matching 逐行、
+    /// ordering 逐位、单结果题型单元素）；「忘记」申报与 AI 批改题恒空。
+    /// API 层承载不落库，对旧客户端是纯增量字段。
+    #[serde(default)]
+    pub item_results: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]

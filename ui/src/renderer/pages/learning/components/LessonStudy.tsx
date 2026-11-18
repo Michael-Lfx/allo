@@ -89,6 +89,7 @@ export function ActivityBlock({
         matches={activity.matches}
         value={response}
         disabled={disabled}
+        itemResults={result?.item_results}
         onChange={setResponse}
       />
       <div className='mt-12px flex items-center gap-10px'>
