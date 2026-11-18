@@ -220,7 +220,7 @@ fn skill_by_id(id: &str) -> Option<&'static Skill> {
 impl FlowyApp {
     pub(super) fn skills_canvas(
         &self,
-        window: &mut Window,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         div()
@@ -275,7 +275,11 @@ impl FlowyApp {
                 )
                 .render(&self.theme),
             )
-            .trailing(self.skills_ghost_button("skills-mine", "skills.mine", cx))
+            .trailing(self.skills_ghost_button(
+                "skills-mine",
+                "skills.mine",
+                cx,
+            ))
             .trailing(self.skills_create_button(cx))
             .render(&self.theme, window)
     }
@@ -322,12 +326,19 @@ impl FlowyApp {
             let id =
                 SharedString::from(format!("skill-filter-{}", category.key()));
             row = row.child(
-                theme::filter_chip(id, self.t(category.key()), selected, &self.theme)
-                    .on_click(cx.listener(move |app, _event, _window, cx| {
+                theme::filter_chip(
+                    id,
+                    self.t(category.key()),
+                    selected,
+                    &self.theme,
+                )
+                .on_click(cx.listener(
+                    move |app, _event, _window, cx| {
                         cx.stop_propagation();
                         app.skills.filter = category;
                         cx.notify();
-                    })),
+                    },
+                )),
             );
         }
         row

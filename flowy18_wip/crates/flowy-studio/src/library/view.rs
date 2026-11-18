@@ -17,7 +17,7 @@ enum Popup {
     Item(String),
 }
 
-/// IconPark file-type artwork copied from the parent UI assets so library
+/// `IconPark` file-type artwork copied from the parent UI assets so library
 /// documents use the same language as the chat deliverables cards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryFileIcon {
@@ -38,8 +38,7 @@ impl LibraryFileIcon {
         let extension = item
             .title
             .rsplit_once('.')
-            .map(|(_, extension)| extension.to_ascii_lowercase())
-            .unwrap_or_default();
+            .map_or_default(|(_, extension)| extension.to_ascii_lowercase());
         let by_extension = match extension.as_str() {
             "java" => Some(Self::Java),
             "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
@@ -631,7 +630,7 @@ impl LibraryPanel {
     /// Same 14px text and 32px row as the view-options button menu.
     fn menu_row(
         item: gpui::Stateful<gpui::Div>,
-        theme: &theme::ResolvedTheme,
+        theme: theme::ResolvedTheme,
     ) -> gpui::Stateful<gpui::Div> {
         let metrics = theme.control_metrics();
         let hover = theme.soft();
@@ -692,7 +691,7 @@ impl LibraryPanel {
                                     cx.notify();
                                 }),
                             ),
-                            &t,
+                            t,
                         )
                         .gap(px(8.))
                         .child(div().w(px(16.)).when(
@@ -724,7 +723,7 @@ impl LibraryPanel {
                                     cx.notify();
                                 }),
                             ),
-                            &t,
+                            t,
                         )
                         .child(self.t("library.preview")),
                     )
@@ -753,7 +752,7 @@ impl LibraryPanel {
                                     cx.notify();
                                 }),
                             ),
-                            &t,
+                            t,
                         )
                         .child(self.t("library.rename")),
                     )
@@ -770,7 +769,7 @@ impl LibraryPanel {
                                     cx.notify();
                                 }),
                             ),
-                            &t,
+                            t,
                         )
                         .text_color(t.danger())
                         .child(self.t("library.remove")),
