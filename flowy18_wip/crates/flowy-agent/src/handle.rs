@@ -88,6 +88,7 @@ struct Harness {
     state: Arc<UiState>,
     engine: Mutex<Option<Arc<Engine>>>,
     config: Mutex<LlmConfig>,
+    dispatch: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -128,6 +129,7 @@ impl AgentHandle {
                 state: Arc::clone(&state),
                 engine: Mutex::new(None),
                 config: Mutex::new(config.clone()),
+                dispatch: Mutex::new(()),
             }),
         };
         handle.boot(config);
@@ -376,6 +378,10 @@ impl AgentHandle {
         if *lock(&self.inner.state.load_failed) {
             return Err("notice.storage_error");
         }
+        let _dispatch = lock(&self.inner.dispatch);
+        let engine = lock(&self.inner.engine)
+            .clone()
+            .ok_or("notice.agent_failed")?;
         let session_id = self.ensure_active_session()?;
         let config = lock(&self.inner.config).clone();
         let mut title_signal = None;
@@ -416,9 +422,6 @@ impl AgentHandle {
         });
         self.inner.state.push_update(AgentUpdate::Sessions);
 
-        let engine = lock(&self.inner.engine)
-            .clone()
-            .ok_or("notice.agent_failed")?;
         if ensure_engine_session(&engine, &session_id).is_err() {
             self.inner.state.report_storage_error();
         }
@@ -430,39 +433,36 @@ impl AgentHandle {
         let prompt = text.to_owned();
         let id = session_id;
         let state = Arc::clone(&self.inner.state);
-        let is_live = config.api_key.is_some();
+        let stream = config
+            .api_key
+            .is_none()
+            .then(|| echo_stream_fn(prompt.clone()));
+        let cwd = ensure_tool_cwd(&state.root);
+        let turn = match engine.start_with_config(
+            id.clone(),
+            prompt.clone(),
+            engine_config(&config, &cwd),
+            stream,
+        ) {
+            Ok(turn) => turn,
+            Err(error) => {
+                mark_failure(&state, &id, &error);
+                return Err("notice.agent_failed");
+            }
+        };
         let runtime = &self.inner.runtime;
         runtime.spawn(async move {
-            if is_live {
-                match engine.run(&id, &prompt).await {
-                    Ok(LoopOutcome::Completed) => {
-                        if let Some(signal) = title_signal {
-                            generate_title(
-                                Arc::clone(&engine),
-                                Arc::clone(&state),
-                                config,
-                                signal,
-                                id,
-                                prompt,
-                            )
-                            .await;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(error) => mark_failure(&state, &id, &error),
-                }
-            } else {
-                let stream = echo_stream_fn(prompt.clone());
-                match engine.run_with_stream(&id, &prompt, stream).await {
-                    Ok(_) => clear_auto_title(&state, &id),
-                    Err(error) => mark_failure(&state, &id, &error),
-                }
+            if matches!(turn.await, Ok(LoopOutcome::Completed))
+                && let Some(signal) = title_signal
+            {
+                generate_title(engine, state, config, signal, id, prompt).await;
             }
         });
         Ok(())
     }
 
     pub fn stop(&self) {
+        let _dispatch = lock(&self.inner.dispatch);
         let Some(id) = lock(&self.inner.state.active).clone() else {
             return;
         };
@@ -576,6 +576,9 @@ impl TurnObserver for UiObserver {
                         message: "chat.status_error".into(),
                     },
                 };
+                if outcome != LoopOutcome::Completed {
+                    live.auto_title_pending = false;
+                }
                 live.turn_started_at = None;
                 live.updated_at = now_ms();
             }
@@ -611,6 +614,7 @@ async fn generate_title(
     }
     let prompt: String = prompt.chars().take(2000).collect();
     let generated = complete_text(
+        Some(format!("title-{id}")),
         title::title_system_prompt(),
         &prompt,
         model_route(&config),
@@ -695,11 +699,9 @@ fn persist_index(state: &UiState) -> Result<(), &'static str> {
         active: lock(&state.active).clone(),
         sessions,
     };
+    let saved = index.save(&state.root);
     drop(live);
-    if index.save(&state.root).is_err() {
-        return Err("notice.storage_error");
-    }
-    Ok(())
+    saved.map_err(|_| "notice.storage_error")
 }
 
 fn finish_interrupted_lines(lines: &mut [ChatLine]) {

@@ -228,6 +228,7 @@ mod tests {
         let (emitter, _events) = CollectorEmitter::new();
         let result = run_turn(
             TurnRequest {
+                session_id: None,
                 system: String::new(),
                 history: vec![],
                 prompt: "echo payload".into(),

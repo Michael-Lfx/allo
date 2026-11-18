@@ -48,6 +48,7 @@ impl ModelRoute {
 
 /// Inputs for one turn.
 pub struct TurnRequest {
+    pub session_id: Option<String>,
     pub system: String,
     pub history: Vec<Message>,
     pub prompt: String,
@@ -133,7 +134,7 @@ pub async fn run_turn(
         max_retries: Some(0),
         max_retry_delay: None,
         cache_retention: rpi_ai::provider::CacheRetention::default(),
-        session_id: None,
+        session_id: request.session_id,
         signal,
     };
     let new_messages =
@@ -148,6 +149,7 @@ pub async fn run_turn(
 /// One-shot text completion with no tools or history, used for sidecar tasks
 /// such as title generation.
 pub async fn complete_text(
+    session_id: Option<String>,
     system: &str,
     prompt: &str,
     route: ModelRoute,
@@ -158,6 +160,7 @@ pub async fn complete_text(
     let (emitter, _events) = rpi_agent::CollectorEmitter::new();
     let result = run_turn(
         TurnRequest {
+            session_id,
             system: system.to_owned(),
             history: Vec::new(),
             prompt: prompt.to_owned(),
@@ -808,6 +811,7 @@ mod tests {
         let (emitter, _events) = CollectorEmitter::new();
         let result = run_turn(
             TurnRequest {
+                session_id: None,
                 system: String::new(),
                 history: vec![assistant, legacy_result],
                 prompt: "hi".into(),
@@ -858,6 +862,7 @@ mod tests {
         let (emitter, _events) = CollectorEmitter::new();
         let result = run_turn(
             TurnRequest {
+                session_id: None,
                 system: "be brief".into(),
                 history: vec![],
                 prompt: "hi".into(),
@@ -883,6 +888,7 @@ mod tests {
         let (emitter, _events) = CollectorEmitter::new();
         let result = run_turn(
             TurnRequest {
+                session_id: None,
                 system: String::new(),
                 history: vec![],
                 prompt: "hi".into(),

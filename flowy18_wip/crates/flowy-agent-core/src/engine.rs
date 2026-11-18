@@ -13,7 +13,7 @@ use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
 use rpi_ai::types::AssistantMessageEvent;
 
 use crate::loop_runner::{LoopOutcome, ModelRoute, TurnRequest, run_turn};
-use crate::run_fence::RunFence;
+use crate::run_fence::{RunFence, RunTicket};
 use crate::session::{SessionIndex, SessionRecord, TurnState};
 use crate::tools::{RegistryTool, ToolRegistry};
 use crate::types::{
@@ -21,7 +21,8 @@ use crate::types::{
 };
 
 /// UI-facing turn events. All methods have no-op defaults so a caller may
-/// implement only what it renders.
+/// implement only what it renders. Callbacks are synchronous and must not
+/// call back into the engine.
 pub trait TurnObserver: Send + Sync {
     fn text(&self, _session: &str, _delta: &str) {}
     fn reasoning(&self, _session: &str, _delta: &str) {}
@@ -97,6 +98,12 @@ struct Inner {
     fences: HashMap<String, Arc<RunFence>>,
 }
 
+struct PreparedTurn {
+    ticket: Arc<RunTicket>,
+    history: Vec<Message>,
+    config: EngineConfig,
+}
+
 /// Owns the durable index and the per-session run fences.
 pub struct Engine {
     root: PathBuf,
@@ -158,9 +165,7 @@ impl Engine {
     pub fn set_active(&self, id: Option<String>) -> std::io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.index.active = id;
-        let snapshot = inner.index.clone();
-        drop(inner);
-        snapshot.save(&self.root)
+        inner.index.save(&self.root)
     }
 
     /// Create an empty session and persist its record.
@@ -176,9 +181,7 @@ impl Engine {
     pub fn insert_session(&self, record: SessionRecord) -> std::io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.index.upsert(record);
-        let snapshot = inner.index.clone();
-        drop(inner);
-        snapshot.save(&self.root)
+        inner.index.save(&self.root)
     }
 
     /// Update the durable title of one session.
@@ -201,20 +204,19 @@ impl Engine {
         })?;
         record.title = title;
         record.titled = titled;
-        let snapshot = inner.index.clone();
-        drop(inner);
-        snapshot.save(&self.root)
+        inner.index.save(&self.root)
     }
 
     pub fn remove_session(&self, id: &str) -> std::io::Result<bool> {
         let mut inner = self.inner.lock().unwrap();
         let removed = inner.index.remove(id).is_some();
-        inner.fences.remove(id);
-        let snapshot = inner.index.clone();
-        drop(inner);
-        if removed {
-            snapshot.save(&self.root)?;
+        if let Some(fence) = inner.fences.remove(id) {
+            fence.cancel_active();
         }
+        if removed {
+            inner.index.save(&self.root)?;
+        }
+        drop(inner);
         Ok(removed)
     }
 
@@ -229,9 +231,7 @@ impl Engine {
         {
             record.status = TurnState::Stopped;
         }
-        let snapshot = inner.index.clone();
-        drop(inner);
-        snapshot.save(&self.root)
+        inner.index.save(&self.root)
     }
 
     /// Run one turn against the configured provider. The caller spawns this;
@@ -241,17 +241,8 @@ impl Engine {
         session_id: &str,
         prompt: &str,
     ) -> Result<LoopOutcome, RunError> {
-        let stream = {
-            let (route, api_key) = {
-                let inner = self.inner.lock().unwrap();
-                if inner.config.api_key.is_none() {
-                    return Err(RunError::NoCredential);
-                }
-                (inner.config.route.clone(), inner.config.api_key.clone())
-            };
-            crate::transport::openai_stream_fn(&route, api_key)
-        };
-        self.run_with_stream(session_id, prompt, stream).await
+        let prepared = self.prepare(session_id, prompt, None, true)?;
+        self.run_prepared(session_id, prompt, prepared, None).await
     }
 
     /// Run with an explicit stream function (scripted stream in tests).
@@ -261,8 +252,43 @@ impl Engine {
         prompt: &str,
         stream: StreamFn,
     ) -> Result<LoopOutcome, RunError> {
-        let (ticket, history, request_config) = {
+        let prepared = self.prepare(session_id, prompt, None, false)?;
+        self.run_prepared(session_id, prompt, prepared, Some(stream))
+            .await
+    }
+
+    /// Reserve the turn before scheduling it so an immediate stop can cancel it.
+    pub fn start_with_config(
+        self: &Arc<Self>,
+        session_id: String,
+        prompt: String,
+        config: EngineConfig,
+        stream: Option<StreamFn>,
+    ) -> Result<BoxFuture<'static, Result<LoopOutcome, RunError>>, RunError>
+    {
+        let prepared =
+            self.prepare(&session_id, &prompt, Some(config), stream.is_none())?;
+        let engine = Arc::clone(self);
+        Ok(Box::pin(async move {
+            engine
+                .run_prepared(&session_id, &prompt, prepared, stream)
+                .await
+        }))
+    }
+
+    fn prepare(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        config: Option<EngineConfig>,
+        needs_credential: bool,
+    ) -> Result<PreparedTurn, RunError> {
+        let (prepared, saved) = {
             let mut inner = self.inner.lock().unwrap();
+            let config = config.unwrap_or_else(|| inner.config.clone());
+            if needs_credential && config.api_key.is_none() {
+                return Err(RunError::NoCredential);
+            }
             if inner.index.get(session_id).is_none() {
                 return Err(RunError::NotFound(session_id.to_owned()));
             }
@@ -275,7 +301,6 @@ impl Engine {
             let Some(ticket) = fence.try_begin() else {
                 return Err(RunError::Busy);
             };
-            let config = inner.config.clone();
             let now = now_ms();
             let record =
                 inner.index.get_mut(session_id).expect("record exists");
@@ -288,85 +313,106 @@ impl Engine {
             });
             record.status = TurnState::Running;
             record.updated_at = now;
-            let snapshot = inner.index.clone();
-            drop(inner);
-            if snapshot.save(&self.root).is_err() {
-                self.observer.storage_error(session_id);
-            }
-            (ticket, history, config)
+            let prepared = PreparedTurn {
+                ticket: Arc::new(ticket),
+                history,
+                config,
+            };
+            (prepared, inner.index.save(&self.root))
         };
+        if saved.is_err() {
+            self.observer.storage_error(session_id);
+        }
+        Ok(prepared)
+    }
 
-        let tools =
-            build_tools(&request_config, session_id, ticket.signal().clone());
+    async fn run_prepared(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        prepared: PreparedTurn,
+        stream: Option<StreamFn>,
+    ) -> Result<LoopOutcome, RunError> {
+        let PreparedTurn {
+            ticket,
+            history,
+            config,
+        } = prepared;
+        if !ticket.is_current() {
+            return Ok(LoopOutcome::Aborted);
+        }
+        let stream = stream.unwrap_or_else(|| {
+            crate::transport::openai_stream_fn(
+                &config.route,
+                config.api_key.clone(),
+            )
+        });
+        let tools = build_tools(&config, session_id, ticket.signal().clone());
         let request = TurnRequest {
-            system: request_config.system.clone(),
+            session_id: Some(session_id.to_owned()),
+            system: config.system,
             history,
             prompt: prompt.to_owned(),
-            route: request_config.route.clone(),
+            route: config.route,
             tools,
             signal: ticket.signal().clone(),
         };
         let emitter = Arc::new(EngineEmitter {
             session: session_id.to_owned(),
             observer: Arc::clone(&self.observer),
+            ticket: Arc::clone(&ticket),
         });
-        let outcome = match run_turn(request, stream, emitter).await {
+        let result = run_turn(request, stream, emitter).await;
+        let mut inner = self.inner.lock().unwrap();
+        if !ticket.finish() {
+            return Ok(LoopOutcome::Aborted);
+        }
+        let record = inner
+            .index
+            .get_mut(session_id)
+            .expect("current session exists");
+        record.updated_at = now_ms();
+        let outcome = match result {
             Ok(result) => {
-                if ticket.finish() {
-                    let final_text = result
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|message| message.role == Role::Assistant)
-                        .map_or_default(Message::text);
-                    if !final_text.is_empty() {
-                        self.observer.assistant_text(session_id, &final_text);
-                    }
-                    let mut inner = self.inner.lock().unwrap();
-                    if let Some(record) = inner.index.get_mut(session_id) {
-                        let mut new_messages = result.messages;
-                        // The loop echoes the prompt back; the engine already
-                        // stored it, so drop the duplicate.
-                        if new_messages.first().is_some_and(|message| {
-                            message.role == Role::User
-                                && message.text() == prompt
-                        }) {
-                            new_messages.remove(0);
-                        }
-                        record.messages.extend(new_messages);
-                        record.status = status_for(result.outcome);
-                        record.updated_at = now_ms();
-                    }
-                    let snapshot = inner.index.clone();
-                    drop(inner);
-                    if snapshot.save(&self.root).is_err() {
-                        self.observer.storage_error(session_id);
-                    }
-                    self.observer.finished(session_id, result.outcome);
-                    result.outcome
-                } else {
-                    LoopOutcome::Aborted
+                let final_text = result
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == Role::Assistant)
+                    .map_or_default(Message::text);
+                if !final_text.is_empty() {
+                    self.observer.assistant_text(session_id, &final_text);
                 }
+                let mut new_messages = result.messages;
+                // The loop echoes the prompt back; the engine already
+                // stored it, so drop the duplicate.
+                if new_messages.first().is_some_and(|message| {
+                    message.role == Role::User && message.text() == prompt
+                }) {
+                    new_messages.remove(0);
+                }
+                record.messages.extend(new_messages);
+                record.status = status_for(result.outcome);
+                if inner.index.save(&self.root).is_err() {
+                    self.observer.storage_error(session_id);
+                }
+                self.observer.finished(session_id, result.outcome);
+                Ok(result.outcome)
             }
             Err(message) => {
-                if ticket.finish() {
-                    let mut inner = self.inner.lock().unwrap();
-                    if let Some(record) = inner.index.get_mut(session_id) {
-                        record.status = TurnState::Error {
-                            message: message.clone(),
-                        };
-                        record.updated_at = now_ms();
-                    }
-                    let snapshot = inner.index.clone();
-                    drop(inner);
-                    if snapshot.save(&self.root).is_err() {
-                        self.observer.storage_error(session_id);
-                    }
+                record.status = TurnState::Error {
+                    message: message.clone(),
+                };
+                if inner.index.save(&self.root).is_err() {
+                    self.observer.storage_error(session_id);
                 }
-                return Err(RunError::Loop(message));
+                self.observer.finished(session_id, LoopOutcome::Failed);
+                Err(RunError::Loop(message))
             }
         };
-        Ok(outcome)
+        // The terminal notification must be visible before a replacement turn starts.
+        drop(inner);
+        outcome
     }
 }
 
@@ -422,14 +468,16 @@ fn now_ms() -> u64 {
 struct EngineEmitter {
     session: String,
     observer: Arc<dyn TurnObserver>,
+    ticket: Arc<RunTicket>,
 }
 
 impl AgentEmitter for EngineEmitter {
     fn emit(&self, event: AgentEvent) -> BoxFuture<'static, ()> {
         let session = self.session.clone();
         let observer = Arc::clone(&self.observer);
+        let ticket = Arc::clone(&self.ticket);
         Box::pin(async move {
-            match event {
+            ticket.publish(|| match event {
                 AgentEvent::MessageUpdate {
                     assistant_message_event:
                         AssistantMessageEvent::TextDelta { delta, .. },
@@ -476,18 +524,18 @@ impl AgentEmitter for EngineEmitter {
                     );
                 }
                 _ => {}
-            }
+            });
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, EngineConfig, RunError, TurnObserver};
+    use super::{Engine, EngineConfig, EngineEmitter, RunError, TurnObserver};
     use crate::loop_runner::{LoopOutcome, ModelRoute};
     use crate::session::TurnState;
     use crate::tools::ToolRegistry;
-    use rpi_agent::StreamFn;
+    use rpi_agent::{AgentEmitter, AgentEvent, StreamFn};
     use rpi_ai::types::{
         Api, AssistantMessage, AssistantMessageEvent, DoneReason, StopReason,
     };
@@ -815,6 +863,109 @@ mod tests {
         engine.cancel("s1").unwrap();
         drop(_hold);
         let _ = run.await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_stream_cannot_publish_into_a_replacement_run() {
+        let scratch = Scratch::new("late");
+        let recorder = Arc::new(Recorder::default());
+        let engine =
+            Engine::open(scratch.0.clone(), config(), recorder.clone())
+                .unwrap();
+        engine.create_session("s1".into(), 1).unwrap();
+        let old = engine.prepare("s1", "old", None, false).unwrap();
+        let emitter = EngineEmitter {
+            session: "s1".into(),
+            observer: recorder.clone(),
+            ticket: Arc::clone(&old.ticket),
+        };
+        let message = Arc::new(AssistantMessage::empty(
+            Api::OpenaiCompletions,
+            "flowy",
+            "m",
+            0,
+        ));
+        let late = emitter.emit(AgentEvent::MessageUpdate {
+            message_id: None,
+            message: Arc::clone(&message),
+            assistant_message_event: AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "stale".into(),
+                partial: message,
+            },
+        });
+        engine.cancel("s1").unwrap();
+        let replacement = engine.prepare("s1", "new", None, false).unwrap();
+        late.await;
+        engine
+            .run_prepared("s1", "new", replacement, Some(text_stream("fresh")))
+            .await
+            .unwrap();
+        assert_eq!(*recorder.text.lock().unwrap(), "fresh");
+        assert_eq!(
+            engine
+                .run_prepared("s1", "old", old, Some(text_stream("old")))
+                .await
+                .unwrap(),
+            LoopOutcome::Aborted
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_turns_persist_both_results_and_use_session_ids() {
+        let scratch = Scratch::new("parallel");
+        let engine = Arc::new(
+            Engine::open(
+                scratch.0.clone(),
+                config(),
+                Arc::new(Recorder::default()),
+            )
+            .unwrap(),
+        );
+        for id in ["s1", "s2"] {
+            engine.create_session(id.into(), 1).unwrap();
+        }
+        let streams = Arc::new(Mutex::new(Vec::new()));
+        let stream = {
+            let streams = Arc::clone(&streams);
+            let reply = text_stream("ready");
+            rpi_agent::stream_fn(move |model, context, options| {
+                streams
+                    .lock()
+                    .unwrap()
+                    .push(options.session_id.clone().unwrap());
+                reply(model, context, options)
+            })
+        };
+        let first = engine
+            .start_with_config(
+                "s1".into(),
+                "one".into(),
+                config(),
+                Some(stream.clone()),
+            )
+            .unwrap();
+        let second = engine
+            .start_with_config(
+                "s2".into(),
+                "two".into(),
+                config(),
+                Some(stream),
+            )
+            .unwrap();
+        let first = tokio::spawn(first);
+        let second = tokio::spawn(second);
+        assert_eq!(first.await.unwrap().unwrap(), LoopOutcome::Completed);
+        assert_eq!(second.await.unwrap().unwrap(), LoopOutcome::Completed);
+        streams.lock().unwrap().sort_unstable();
+        assert_eq!(*streams.lock().unwrap(), ["s1", "s2"]);
+        let index = crate::session::SessionIndex::load(&scratch.0).unwrap();
+        for (id, prompt) in [("s1", "one"), ("s2", "two")] {
+            let record = index.get(id).unwrap();
+            assert_eq!(record.messages[0].text(), prompt);
+            assert_eq!(record.messages[1].text(), "ready");
+            assert_eq!(record.status, TurnState::Completed);
+        }
     }
 
     #[test]

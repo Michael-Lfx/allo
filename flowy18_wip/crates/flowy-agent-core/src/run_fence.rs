@@ -27,6 +27,16 @@ impl std::fmt::Debug for RunTicket {
 }
 
 impl RunTicket {
+    pub(crate) fn publish(&self, update: impl FnOnce()) {
+        let active = self.fence.active.lock().unwrap();
+        if active
+            .as_ref()
+            .is_some_and(|(generation, _)| *generation == self.generation)
+        {
+            update();
+        }
+    }
+
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
