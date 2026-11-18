@@ -549,8 +549,12 @@ const createInitStyle = (
     display: flex;
     justify-content: center;
     overflow-x: auto;
-    background: var(--bg-1);
-    color: var(--text-primary);
+    /* 固定浅色画布（e1，双主题一致）：模型图形按白画布作画（生成契约无
+       背景条款，深色文字 + 浅色盒 fill 是默认形态）——画布是图形的一部
+       分而非主题面，暗色主题下不随 bg 翻转，否则画布上裸文字黑字隐形。
+       刻意偏离 token 面，勿改回 var(--bg-*)。 */
+    background: #ffffff;
+    color: #24292f;
     padding: 12px;
   }
   .markdown-figure-svg svg {
