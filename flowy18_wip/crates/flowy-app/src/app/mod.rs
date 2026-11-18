@@ -20,7 +20,7 @@ use flowy_auth::{
     AuthClient, AuthError, EMAIL_OTP_COOLDOWN_SECS, EMAIL_OTP_LENGTH,
     normalize_otp,
 };
-use flowy_studio::library::{LibraryItem, LibraryPanel};
+use flowy_studio::library::{Category, LibraryItem, LibraryPanel};
 use flowy_studio::{StudioEvent, StudioPanel, StudioSurface};
 use gpui::{
     App, Bounds, Context, Entity, KeyBinding, Subscription, Task, Window,
@@ -1176,7 +1176,7 @@ impl FlowyApp {
             canvas = canvas.child(self.dock(window, cx));
         }
         canvas = if self.section == Section::More {
-            canvas.child(self.more_canvas(cx))
+            canvas.child(self.more_canvas(window, cx))
         } else if self.section == Section::Library {
             canvas.child(self.library.clone())
         } else {
@@ -1561,11 +1561,10 @@ fn text_field(cx: &mut Context<'_, FlowyApp>) -> Entity<EditableTextState> {
     cx.new(|cx| EditableTextState::new(StringStorage::default(), cx))
 }
 
-/// An explicit host data source; examples supply their own isolated fixture.
-/// The normal application starts with an empty library until a source is given.
+/// An explicit host data source. `FLOWY_LIBRARY_DATA` replaces the two demo rows.
 fn library_items() -> Vec<LibraryItem> {
     let Some(path) = std::env::var_os("FLOWY_LIBRARY_DATA") else {
-        return Vec::new();
+        return demo_library_items();
     };
     let result = std::fs::read(path)
         .map_err(|error| error.to_string())
@@ -1576,9 +1575,34 @@ fn library_items() -> Vec<LibraryItem> {
         Ok(items) => items,
         Err(error) => {
             tracing::warn!(%error, "could not load library data source");
-            Vec::new()
+            demo_library_items()
         }
     }
+}
+
+fn demo_library_items() -> Vec<LibraryItem> {
+    vec![
+        LibraryItem {
+            id: "demo-slides".into(),
+            title: "比亚迪海豹06 DM-i：开启工业奇迹新篇章".into(),
+            description: "搜集素材并介绍一款比亚迪车型".into(),
+            category: Category::Slides,
+            date: "2026-11-04".into(),
+            time: "17:22".into(),
+            pending: false,
+            preview: None,
+        },
+        LibraryItem {
+            id: "demo-image".into(),
+            title: "dew-stone-hero-river-stones.jpg".into(),
+            description: "制作Dew & Stone保湿精华上新照片".into(),
+            category: Category::Image,
+            date: "2026-11-04".into(),
+            time: "09:58".into(),
+            pending: false,
+            preview: None,
+        },
+    ]
 }
 
 fn place(

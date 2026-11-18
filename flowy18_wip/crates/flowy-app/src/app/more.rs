@@ -67,12 +67,16 @@ impl FlowyApp {
         menu
     }
 
-    pub fn more_canvas(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub fn more_canvas(
+        &self,
+        window: &mut gpui::Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let mut page = div().id("more-page").size_full().flex().flex_col();
         page = if self.persona.page == Page::Personal {
             page.child(self.personal_canvas(cx))
         } else if self.persona.page == Page::Skills {
-            page.child(self.skills_canvas(cx))
+            page.child(self.skills_canvas(window, cx))
         } else {
             page.child(self.more_note("more.computer", "more.computer_body"))
         };
