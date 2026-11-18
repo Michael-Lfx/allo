@@ -2,7 +2,12 @@
  * 题型注册表（pf5 地基票）：每种题型一条 descriptor 的单源表。废弃状态与
  * 能力消费面——生成契约（llmGeneratable）、节完成门槛（countsTowardSection）、
  * 复习抽题（reviewEligible）、逐项反馈（perItemFeedback）——全部从表派生，
- * 未来题型废弃/新增/变更 = 改一条 descriptor 的单点操作。
+ * 未来题型的废弃/能力变更 = 改一条 descriptor 的单点操作。
+ *
+ * 「新增题型」不是单点操作——除本表 descriptor 外还须同步：后端 serde
+ * 键与 try_from、validate_shape 形状闸、判分 evaluate 分支、渲染分支
+ * （ActivityInput 等），以及生成契约 prose（bank 契约块/TAIL——由一致性
+ * 测试钉住漏补，漏改 prose 直接红）。
  *
  * 与后端同源：nomifun-learning models.rs 的 ActivityKind capability 方法
  * （is_deprecated / llm_generatable / review_eligible / counts_toward_section /

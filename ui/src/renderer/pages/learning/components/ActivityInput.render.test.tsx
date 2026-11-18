@@ -134,7 +134,19 @@ describe('题面作答面渲染管线（n1 页面集成断言）', () => {
     expect(markup).toContain('flex-[1_1_60%]');
     expect(markup).toContain('min-w-140px');
     // placeholder 走 i18n（类别候选在弹出层渲染，静态 markup 不可见）。
+    // 双 locale 断言（red-line §2.3）：zh 与 en 各钉一条。
     expect(markup).toContain('选择类别');
+    const markupEn = await renderInput(
+      <ActivityInput
+        kind='classify'
+        options={['对象一', '对象二']}
+        matches={['堆区', '栈区']}
+        value={undefined}
+        onChange={noop}
+      />,
+      'en-US'
+    );
+    expect(markupEn).toContain('Pick a category');
   });
 });
 

@@ -1529,7 +1529,10 @@ impl ActivityKind {
     }
 
     /// 全部十种题型——题型注册表（pf5）的遍历枚举源：SQL 派生清单、契约
-    /// 一致性测试与审计都从这里枚举，新增题型只改此表与 serde/try_from。
+    /// 一致性测试与审计都从这里枚举。废弃/能力变更 = 改 capability 方法
+    /// 的单点操作；「新增题型」不是单点——除本表与 serde/try_from 外还须
+    /// 同步 validate_shape、判分 evaluate 分支、渲染分支与生成契约 prose
+    ///（bank 契约块/TAIL——一致性测试钉住漏补）。
     pub const ALL: [ActivityKind; 10] = [
         Self::SingleChoice,
         Self::TrueFalse,
