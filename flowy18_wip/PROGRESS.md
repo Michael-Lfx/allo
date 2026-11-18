@@ -1,4 +1,24 @@
-# flowy18_wip 三挡位模型选择器 — 进度
+# flowy18_wip — 进度
+
+## 2026-11-18 · 共享排版和工具栏 Clippy 修复
+
+- 目标：消除 rebase 后的 4 条 Clippy 报错，保持运行行为，以 1 个独立提交交付。
+- 顺序：rebase 和红灯基线 → 四处修复 → 移除并恢复 `Eq` 验证红绿 → fmt 和四 crate 测试 → 核对提交范围。
+- 最大风险：既有分支提交和未跟踪文档与整分支差异验收条件冲突，详见 BLOCKED。
+- [x] 任务 0：`git fetch origin main && git rebase origin/main` 无冲突，将既有 5 个提交重放到 `9f51499af`，rebase 后 HEAD 为 `3195aa82f`。
+- [x] Clippy 红灯基线：退出 101，恰好 4 条任务书列出的 lint；使用任务指定的路径变量和原命令。
+- [x] 任务 1 源码：用 `gpui::Styled::shadow_sm`、为 `TypeMetrics` 派生 `Eq`、更名私有字段 `Text.content`、把 `PageColumn::new` 声明为 `const fn`。
+- [x] 首次修复后复查：`flowy-ui` 的 4 条报错消失，方法引用可编译；Clippy 在白名单外的 `flowy-studio/src/library/view.rs` 报 3 条 lint，退出 101。见 BLOCKED 顶部。
+- [x] 按后续指示审查并修复 Library 的 3 条 lint。扩展名仍用最后一个点分段、同样小写化、缺失时同样是空字符串；菜单的四个调用传入同一个 `Copy` 主题值。
+- [x] 全目标 Clippy 在下游又暴露 2 条 lint。为 Library 示例的成功日志补分号，将技能页只读使用的窗口参数改为共享借用。
+- [x] 当前特性分支的完整 Clippy 首次退出 0。
+- [x] 反向验证：临时移除 `TypeMetrics` 的 `Eq`，原命令退出 101，只有 `derive_partial_eq_without_eq`；恢复后同命令退出 0。
+- [x] 特性分支：fmt 退出 0；原测试命令退出 0，agent 28 / app 24 / auth 12 / studio 20，均为 0 failed。另行执行原标记 ignored 的 agent 离线性能用例，1 passed。
+- [x] 隔离 PR 分支从 `9f51499af` 建立，补齐技能页在 main 上的两处既有 rustfmt 差异。原 Clippy、fmt、四 crate 测试均退出 0，agent 24 / app 22 / auth 11 / studio 18，0 failed。
+- [x] Library 示例独立构建通过。Windows Library Demo 已构建。原生截图与 UIA 交互未取得完整通过证据；Studio 既有 GPUI 排序菜单测试通过。
+- [x] #463 rebase 到 `69bb639e9`，合并两份验证记录，`flowy18_wip` 代码与 rebase 前一致。Windows fmt、原 Clippy 和四 crate 测试退出 0，agent 28 / app 24 / auth 12 / studio 20。
+
+## 三挡位模型选择器 — 历史进度
 
 ## 理解（≤10 行）
 - 目标：把平铺 12 云模型改成三挡位 Flowy 2.0 Max / Flowy 2.0 / Flowy 2.0 Lite；按账号 effectiveModelTier 锁定 Pro 挡位；Flex 留档不可达；Lite 可发消息。
