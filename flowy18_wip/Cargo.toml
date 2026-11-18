@@ -36,7 +36,7 @@ default-members = [
 [workspace.package]
 version = "1.8.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/flowy-app/flowy"
 
@@ -49,7 +49,6 @@ flowy-agent-core = { path = "crates/flowy-agent-core" }
 rpi-agent = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
 rpi-ai = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7", default-features = false, features = ["providers"] }
 rpi-tools = { git = "https://github.com/bigfish1913/pi-rust", rev = "300c1f3b560b653b812a8877956dc1a1776629b7" }
-flowy-chat = { path = "crates/flowy-chat" }
 flowy-i18n = { path = "crates/flowy-i18n" }
 flowy-ui = { path = "crates/flowy-ui" }
 flowy-shell = { path = "crates/flowy-shell" }
@@ -63,10 +62,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "socks",
 ] }
-anyhow = "1"
 directories = "6"
 getrandom = "0.3"
-sha2 = "0.10"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = [
@@ -86,7 +83,6 @@ gpui = { package = "gpui-ce", version = "0.3.0", features = ["hot-patching"] }
 gpui_platform = { package = "gpui_ce_platform", version = "0.3.0" }
 gpui_ce_elements = "0.3.0"
 gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
-rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
