@@ -100,6 +100,74 @@ function OrderingInput({
   );
 }
 
+/** 判别题（pf2）：objects 左列每行选一个类别（value = 与 options 对齐的
+ * 数组）。类别是短规范标签集合（后端校验闸 2-6 个、互不相同），展示顺序
+ * 即存储顺序——类别集不是对齐泄漏，无需打乱；行布局与 MatchingInput 同款
+ * l1 基准（label 40% / select 60%）。 */
+function ClassifyInput({
+  options,
+  matches,
+  value,
+  disabled,
+  itemResults,
+  onChange,
+}: {
+  options: string[];
+  /** 类别标签集合（后端随 matches 列下发） */
+  matches: string[];
+  value: unknown;
+  disabled?: boolean;
+  itemResults?: boolean[];
+  onChange: (value: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const alignment: (string | undefined)[] = Array.isArray(value)
+    ? value.map((item) => (typeof item === 'string' ? item : undefined))
+    : [];
+  const pick = (index: number, category: string | undefined) => {
+    const next = [...alignment];
+    while (next.length < options.length) next.push(undefined);
+    next[index] = category;
+    onChange(next);
+  };
+  return (
+    <div className='flex flex-col gap-6px'>
+      {options.map((object, index) => {
+        // 提交后定格（pf1）：错对象行红、对对象行绿，逐行可见
+        const mark = itemMarkAt('classify', itemResults, index);
+        return (
+          <div
+            key={object}
+            className={
+              mark === undefined
+                ? 'flex items-center gap-8px'
+                : `flex items-center gap-8px rounded-6px border border-solid px-8px py-2px ${mark === 'success' ? MARK_SUCCESS : MARK_DANGER}`
+            }
+          >
+            {/* l1 布局同 MatchingInput：label 真实基准 40%，select 60% +
+                min-w 防极窄（Arco Select width:100% 的 basis 收缩陷阱）。 */}
+            <span className='min-w-80px flex-[1_1_40%]'>{object}</span>
+            <Select
+              className='min-w-140px flex-[1_1_60%]'
+              disabled={disabled}
+              allowClear
+              placeholder={t('learning.classifyPickPlaceholder')}
+              value={alignment[index]}
+              onChange={(next) => pick(index, next)}
+            >
+              {matches.map((category) => (
+                <Select.Option key={category} value={category}>
+                  {category}
+                </Select.Option>
+              ))}
+            </Select>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** 匹配题：左列每个条目选一个右列候选（value = 与 options 对齐的数组）；
  * 右列候选在本地打乱，避免展示顺序泄漏答案对齐 */
 function MatchingInput({
@@ -176,11 +244,11 @@ function MatchingInput({
   );
 }
 
-/** 题型作答输入：覆盖全部九种题型。
+/** 题型作答输入：覆盖全部十种题型。
  * 复习卡片与课时活动共用，保证同一种题型在两处交互一致。
- * itemResults（pf1）：提交后的逐项判分结果——matching 逐行、ordering 逐
- * 位、单结果题型单元素；经题型注册表 perItemFeedback 门控（reflection/
- * open_question 不逐项），缺席 = 降级全局文案（旧 attempt 兼容）。 */
+ * itemResults（pf1）：提交后的逐项判分结果——matching/classify 逐行、
+ * ordering 逐位、单结果题型单元素；经题型注册表 perItemFeedback 门控
+ * （reflection/open_question 不逐项），缺席 = 降级全局文案（旧 attempt 兼容）。 */
 export function ActivityInput({
   kind,
   options,
@@ -194,7 +262,7 @@ export function ActivityInput({
 }: {
   kind: ActivityKind;
   options: string[];
-  /** matching 题的右列候选；其余题型忽略 */
+  /** matching 题的右列候选 / classify 题的类别标签集合（pf2）；其余题型忽略 */
   matches?: string[];
   value: unknown;
   disabled?: boolean;
@@ -315,6 +383,18 @@ export function ActivityInput({
   if (kind === 'matching') {
     return (
       <MatchingInput
+        options={options}
+        matches={matches}
+        value={value}
+        disabled={disabled}
+        itemResults={itemResults}
+        onChange={onChange}
+      />
+    );
+  }
+  if (kind === 'classify') {
+    return (
+      <ClassifyInput
         options={options}
         matches={matches}
         value={value}

@@ -1201,7 +1201,9 @@ fn variant_stored_config(
         explanation: pack.explanation.clone(),
         distractors: pack.distractors.clone(),
         tol: pack.tol,
-        matches: Vec::new(),
+        // 变式与原题同型：matching 右列候选 / classify 类别集合（pf2）随
+        // 候选管道照带（其余题型为空）。
+        matches: super::lesson::matching_candidates(pack),
         difficulty: bank_difficulty,
         evidence: pack
             .evidence
@@ -1321,6 +1323,7 @@ mod tests {
             explanation: "sqrt of mean square".into(),
             distractors: vec![],
             tol,
+            categories: Vec::new(),
             section_key: None,
             difficulty: None,
             evidence: evidence.map(str::to_owned),

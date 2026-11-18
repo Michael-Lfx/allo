@@ -62,8 +62,8 @@ pub const QUIZ_PASS_RATIO: f64 = 0.6;
 pub const QUIZ_HALF_RATIO: f64 = 0.3;
 
 /// 题型工作量当量（分钟/题，起步值待校准；learnhub 1/2/3 骨架按认知负荷
-/// 分档）：单选/判断 = 1；多选/填空/数值/匹配/排序 = 2（构造完整答案集合
-/// 的作答与填空同级）；简答/开放/AI 批改 = 3。
+/// 分档）：单选/判断 = 1；多选/填空/数值/匹配/排序/判别 = 2（构造完整答案
+/// 集合的作答与填空同级）；简答/开放/AI 批改 = 3。
 pub const fn question_equivalent(kind: ActivityKind) -> i64 {
     match kind {
         ActivityKind::SingleChoice | ActivityKind::TrueFalse => 1,
@@ -71,7 +71,8 @@ pub const fn question_equivalent(kind: ActivityKind) -> i64 {
         | ActivityKind::FillInBlank
         | ActivityKind::Numeric
         | ActivityKind::Matching
-        | ActivityKind::Ordering => 2,
+        | ActivityKind::Ordering
+        | ActivityKind::Classify => 2,
         ActivityKind::Reflection | ActivityKind::OpenQuestion => 3,
     }
 }

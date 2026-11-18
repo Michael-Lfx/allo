@@ -19,9 +19,8 @@ export type ActivityKindStatus = 'active' | 'deprecated';
 
 export interface ActivityKindDescriptor {
   status: ActivityKindStatus;
-  /** deprecated 题型的接替者。classify（pf2 判别题专有题型）尚未落地——
-   * 先以字符串字面量留痕，pf2 落地后收窄为 ActivityKind。 */
-  replacedBy?: string;
+  /** deprecated 题型的接替者。classify（pf2）落地后收窄为 ActivityKind。 */
+  replacedBy?: ActivityKind;
   /** 进生成契约：LLM 出题面提供该题型。 */
   llmGeneratable: boolean;
   /** 计入节完成门槛：练习轮出题面包含该题型（不计入的行随过滤退场——
@@ -85,13 +84,24 @@ export const ACTIVITY_KIND_REGISTRY: Record<ActivityKind, ActivityKindDescriptor
     perItemFeedback: true,
   },
   /** 首例废弃（pf5）：生成近重复候选 × 逐位置精确比对 × 无逐项反馈的探针
-   * 设计缺陷，接替者 classify（pf2）。存量判分/渲染/账本保留，消费面派生退场。 */
+   * 设计缺陷，接替者 classify（pf2 已落地）。存量判分/渲染/账本保留，消费面
+   * 派生退场。 */
   matching: {
     status: 'deprecated',
     replacedBy: 'classify',
     llmGeneratable: false,
     countsTowardSection: false,
     reviewEligible: false,
+    perItemFeedback: true,
+  },
+  /** 判别题（pf2）：objects 左列 + categories 短规范标签集合（2-6 个、互不
+   * 相同）+ answer 逐对象类别数组。候选 = 短标签，matching 的近重复长句
+   * 候选缺陷在题型上不可能再现；逐对象判分天然带逐项结果（pf1 合流）。 */
+  classify: {
+    status: 'active',
+    llmGeneratable: true,
+    countsTowardSection: true,
+    reviewEligible: true,
     perItemFeedback: true,
   },
   open_question: {

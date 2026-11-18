@@ -2777,22 +2777,25 @@ fn render_forbidden_descendants(descendants: &[(String, String, String)]) -> Str
     text
 }
 
-/// Matching questions expose their right-column candidates to the UI (a
-/// scrambled copy is rendered per client); every other kind stores none.
+/// 左列行的候选值集（落 `matches` 列发 UI）：matching = 右列候选（answer
+/// 自身值集，保序——客户端渲染时本地打乱防对齐泄漏）；classify（pf2）=
+/// 类别标签集合（categories，存储序不打乱——类别集不是对齐泄漏）。其余
+/// 题型不存候选。
 pub(super) fn matching_candidates(activity: &crate::models::ActivityPack) -> Vec<String> {
-    if activity.kind != ActivityKind::Matching {
-        return Vec::new();
+    match activity.kind {
+        ActivityKind::Matching => activity
+            .answer
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ActivityKind::Classify => activity.categories.clone(),
+        _ => Vec::new(),
     }
-    activity
-        .answer
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// Shared payload validation for course activities and custom questions so
@@ -2830,6 +2833,9 @@ pub(super) fn validate_question_payload(
         answer: answer.clone(),
         explanation: explanation.to_owned(),
         distractors,
+        // 手工编辑面没有 categories 字段（判别题不在自拟/编辑白名单——
+        // pf2 白名单面不动）：恒空，classify 在形状闸即被拒。
+        categories: Vec::new(),
         tol: None,
         section_key: None,
         difficulty: None,

@@ -667,6 +667,7 @@
   "kindMatching": "Matching",
   "kindOpenQuestion": "Open question",
   "matchingPickPlaceholder": "Pick a match",
+  "classifyPickPlaceholder": "Pick a category",
   "numericPlaceholder": "Enter a number",
   "samplingTitle": "Goal-aware sampling",
   "samplingLine": "Sampled {{sampled}}/{{total}} files by goal",

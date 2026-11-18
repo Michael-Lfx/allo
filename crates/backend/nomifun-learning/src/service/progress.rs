@@ -595,6 +595,24 @@ pub(super) fn evaluate(
             let correct = alignment.len() == expected.len() && item_results.iter().all(|ok| *ok);
             (correct, item_results)
         }
+        // classify（pf2 判别题）：逐对象类别精确比对——类别是短规范标签
+        // （校验闸已断近重复空间），逐位置比对公平。逐对象结果（pf1）：哪
+        // 个对象归错类可见，与 matching 同构。
+        ActivityKind::Classify => {
+            let Some(alignment) = response.as_array() else {
+                return Err(AppError::BadRequest(
+                    "classify response must be an array aligned with the objects".into(),
+                ));
+            };
+            let Some(expected) = config.answer.as_array() else {
+                return Err(AppError::Internal(
+                    "classify activity has a malformed stored answer".into(),
+                ));
+            };
+            let item_results = positional(alignment, expected);
+            let correct = alignment.len() == expected.len() && item_results.iter().all(|ok| *ok);
+            (correct, item_results)
+        }
     };
     let score = if correct { 1.0 } else { 0.0 };
     let feedback = if correct {

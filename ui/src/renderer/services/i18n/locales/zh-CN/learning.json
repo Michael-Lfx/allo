@@ -667,6 +667,7 @@
   "kindMatching": "匹配题",
   "kindOpenQuestion": "开放题",
   "matchingPickPlaceholder": "选择匹配项",
+  "classifyPickPlaceholder": "选择类别",
   "numericPlaceholder": "输入数值",
   "samplingTitle": "按目标采样",
   "samplingLine": "已按目标采样 {{sampled}}/{{total}} 个文件",

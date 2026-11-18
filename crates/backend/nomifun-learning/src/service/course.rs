@@ -1010,7 +1010,7 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
                         "activity prompt is required".into(),
                     ));
                 }
-                // Shared per-kind shape rules (all nine kinds) with the
+                // Shared per-kind shape rules (all ten kinds) with the
                 // manual-authoring bounds (2-5 options).
                 if let Err(error) = activity.validate_shape((2, 5), true) {
                     return Err(AppError::BadRequest(error));

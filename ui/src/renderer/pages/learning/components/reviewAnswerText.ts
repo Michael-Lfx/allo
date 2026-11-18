@@ -16,8 +16,9 @@ const scalarText = (value: unknown): string => {
 
 /**
  * 揭示正确答案的可读文本。答案形状由题型隐式决定（后端 `validate_shape`），
- * 前端按 `kind` 分派：matching 按左列逐对、ordering 按序号列出；未知形状
- * 兜底为 JSON，不静默变空串。
+ * 前端按 `kind` 分派：matching/classify 按左列逐对（classify 的 options =
+ * objects 左列，pf2）、ordering 按序号列出；未知形状兜底为 JSON，不静默
+ * 变空串。
  */
 export const answerText = (
   value: unknown,
@@ -29,7 +30,7 @@ export const answerText = (
   if (kind === 'true_false' && typeof value === 'boolean') {
     return value ? translate('learning.trueLabel') : translate('learning.falseLabel');
   }
-  if (kind === 'matching' && Array.isArray(value)) {
+  if ((kind === 'matching' || kind === 'classify') && Array.isArray(value)) {
     return value
       .map((right, index) => `${options[index] ?? `#${index + 1}`} → ${scalarText(right)}`)
       .join('；');

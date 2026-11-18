@@ -114,6 +114,28 @@ describe('题面作答面渲染管线（n1 页面集成断言）', () => {
     expect(markup).toContain('flex-[1_1_60%]');
     expect(markup).toContain('min-w-140px');
   });
+
+  test('classify 行布局（pf2）：对象行 + 类别 select，l1 布局与 matching 同款', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='classify'
+        options={['对象一', '对象二']}
+        matches={['堆区', '栈区']}
+        value={undefined}
+        onChange={noop}
+      />
+    );
+    // 每个对象一行 select（两个对象行）。
+    expect(markup).toContain('对象一');
+    expect(markup).toContain('对象二');
+    expect(countOccurrences(markup, 'arco-select')).toBeGreaterThanOrEqual(2);
+    // l1 布局同款。
+    expect(markup).toContain('flex-[1_1_40%]');
+    expect(markup).toContain('flex-[1_1_60%]');
+    expect(markup).toContain('min-w-140px');
+    // placeholder 走 i18n（类别候选在弹出层渲染，静态 markup 不可见）。
+    expect(markup).toContain('选择类别');
+  });
 });
 
 describe('提交后逐项判分标记（pf1）', () => {
@@ -135,6 +157,37 @@ describe('提交后逐项判分标记（pf1）', () => {
     );
     expect(countOccurrences(markup, MARKED_DANGER)).toBe(1);
     expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(2);
+  });
+
+  test('classify 逐对象行：归错类红、归对类绿（pf2 判别题接 pf1 管道）', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='classify'
+        options={['对象一', '对象二', '对象三']}
+        matches={['堆区', '栈区']}
+        value={['堆区', '堆区', '堆区']}
+        itemResults={[false, true, true]}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(countOccurrences(markup, MARKED_DANGER)).toBe(1);
+    expect(countOccurrences(markup, MARKED_SUCCESS)).toBe(2);
+  });
+
+  test('classify 降级：无 itemResults（旧 attempt / 旧后端）不染色', async () => {
+    const markup = await renderInput(
+      <ActivityInput
+        kind='classify'
+        options={['对象一', '对象二']}
+        matches={['堆区', '栈区']}
+        value={['堆区', '堆区']}
+        disabled
+        onChange={noop}
+      />
+    );
+    expect(markup).not.toContain(MARKED_DANGER);
+    expect(markup).not.toContain(MARKED_SUCCESS);
   });
 
   test('ordering 逐位：错位次红、对位绿', async () => {

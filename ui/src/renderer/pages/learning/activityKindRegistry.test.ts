@@ -1,4 +1,4 @@
-/** 题型注册表（pf5）单测：九 kind descriptor 全量覆盖 + 首例数据钉住。
+/** 题型注册表（pf5）单测：十 kind descriptor 全量覆盖 + 首例数据钉住。
  * 与后端 ActivityKind capability 方法（nomifun-learning models.rs 的
  * activity_kind_registry_tests）语义对齐——两端各带同源测试。 */
 import { describe, expect, test } from 'bun:test';
@@ -14,11 +14,12 @@ const ALL_KINDS: ActivityKind[] = [
   'numeric',
   'ordering',
   'matching',
+  'classify',
   'open_question',
 ];
 
 describe('activityKindRegistry', () => {
-  test('九种题型全量覆盖：一个 kind 一条 descriptor，无缺无余', () => {
+  test('十种题型全量覆盖：一个 kind 一条 descriptor，无缺无余', () => {
     expect(Object.keys(ACTIVITY_KIND_REGISTRY).sort()).toEqual([...ALL_KINDS].sort());
   });
 
@@ -33,7 +34,17 @@ describe('activityKindRegistry', () => {
     });
   });
 
-  test('其余八 kind = active 全能力；reflection/open_question 无逐项反馈', () => {
+  test('classify（pf2）= active 全能力：进生成契约、计门槛、可抽题、逐项反馈', () => {
+    expect(ACTIVITY_KIND_REGISTRY.classify).toEqual({
+      status: 'active',
+      llmGeneratable: true,
+      countsTowardSection: true,
+      reviewEligible: true,
+      perItemFeedback: true,
+    });
+  });
+
+  test('其余九 kind = active 全能力；reflection/open_question 无逐项反馈', () => {
     for (const kind of ALL_KINDS) {
       if (kind === 'matching') continue;
       const descriptor = ACTIVITY_KIND_REGISTRY[kind];

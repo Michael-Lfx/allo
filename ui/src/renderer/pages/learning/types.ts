@@ -7,6 +7,7 @@ export type ActivityKind =
   | 'numeric'
   | 'ordering'
   | 'matching'
+  | 'classify'
   | 'open_question';
 
 /** 课时内部的节段类型（ADR-0002 首期 5 种；交互节暂缓） */
@@ -284,7 +285,8 @@ export interface Activity {
   kind: ActivityKind;
   prompt: string;
   options: string[];
-  /** matching 题的右列候选（按存储顺序；前端渲染时本地打乱） */
+  /** matching 题的右列候选（按存储顺序；前端渲染时本地打乱）/ classify
+   * 题的类别标签集合（pf2，按存储顺序不打乱）；其余题型为空 */
   matches: string[];
   /** 来源节 key；null = 跨节综合题（通用） */
   section_key: string | null;
@@ -374,6 +376,7 @@ export interface ReviewQuestion {
   kind: ActivityKind;
   prompt: string;
   options: string[];
+  /** matching 右列候选 / classify 类别标签集合（pf2）；其余题型为空 */
   matches: string[];
 }
 
@@ -1143,7 +1146,8 @@ export interface QuizRoundQuestionView {
   prompt: string;
   /** 选择题选项（非选择型为空） */
   options: string[];
-  /** 匹配题右列候选（打乱后；非匹配型为空；serde 缺省 → TS 可选） */
+  /** matching 右列候选（打乱后）/ classify 类别标签集合（pf2，存储序）；
+   * 其余题型为空；serde 缺省 → TS 可选 */
   matches?: string[];
   /** 题目所属学习节点（quiz 跨节点会话逐题携带） */
   node_id: string;

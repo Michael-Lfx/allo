@@ -1426,7 +1426,10 @@ pub struct ActivityPack {
     pub kind: ActivityKind,
     #[serde(default, deserialize_with = "de_string_or_empty")]
     pub prompt: String,
-    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
+    /// 选择/排序/匹配/判别的条目列。classify（pf2）的 LLM 契约键是
+    /// `objects`（对象左列）——alias 双读兼容契约键名，存储与视图面沿用
+    /// options（matching 左列同款）。
+    #[serde(default, alias = "objects", deserialize_with = "de_vec_string_or_empty")]
     pub options: Vec<String>,
     #[serde(default)]
     pub answer: Value,
@@ -1436,6 +1439,11 @@ pub struct ActivityPack {
     /// quantities), forcing fine discrimination. Only fill_in_blank uses it.
     #[serde(default, deserialize_with = "de_vec_string_or_empty")]
     pub distractors: Vec<String>,
+    /// 判别维度类别标签集合（pf2，仅 classify）：2-6 个短规范标签、normalize
+    /// 后 pairwise distinct。随候选管道（`candidate_values`）落 matches 列发
+    /// UI；其余题型为空。旧包容缺，serde 缺省。
+    #[serde(default, deserialize_with = "de_vec_string_or_empty")]
+    pub categories: Vec<String>,
     /// Accepted deviation for numeric answers (|response − answer| ≤ tol).
     /// Only numeric uses it; absent means exact match (floats compared with
     /// a tiny epsilon).
@@ -1470,7 +1478,15 @@ pub enum ActivityKind {
     /// 排序题：options 是打乱后的条目，answer 是正确顺序的条目数组。
     Ordering,
     /// 匹配题：options 是左列条目，answer 是与 options 一一对应的右列值数组。
+    /// deprecated（pf5/R-a2）：自由右列 × 逐位置精确比对会结构性误判语义
+    /// 近重复候选，判别场景由 classify 承接；存量判分/渲染/账本保留。
     Matching,
+    /// 判别题（pf2）：objects 是具体对象左列（serde 契约键，alias 落
+    /// options），categories 是判别维度的短规范类别标签集合（2-6 个、
+    /// normalize 后 pairwise distinct），answer 是逐对象类别数组（与
+    /// objects 一一对应）。候选 = 短标签，近重复长句候选在题型上不可能
+    /// 再出现（探针设计缺陷的题型级消除）。
+    Classify,
     /// 开放题：answer 为 null，走 AI 批改（0-10 分制，≥6 及格）。
     OpenQuestion,
 }
@@ -1486,6 +1502,7 @@ impl ActivityKind {
             Self::Numeric => "numeric",
             Self::Ordering => "ordering",
             Self::Matching => "matching",
+            Self::Classify => "classify",
             Self::OpenQuestion => "open_question",
         }
     }
@@ -1502,6 +1519,7 @@ impl ActivityKind {
                 | Self::Numeric
                 | Self::Ordering
                 | Self::Matching
+                | Self::Classify
         )
     }
 
@@ -1510,9 +1528,9 @@ impl ActivityKind {
         matches!(self, Self::Reflection | Self::OpenQuestion)
     }
 
-    /// 全部九种题型——题型注册表（pf5）的遍历枚举源：SQL 派生清单、契约
+    /// 全部十种题型——题型注册表（pf5）的遍历枚举源：SQL 派生清单、契约
     /// 一致性测试与审计都从这里枚举，新增题型只改此表与 serde/try_from。
-    pub const ALL: [ActivityKind; 9] = [
+    pub const ALL: [ActivityKind; 10] = [
         Self::SingleChoice,
         Self::TrueFalse,
         Self::Reflection,
@@ -1521,6 +1539,7 @@ impl ActivityKind {
         Self::Numeric,
         Self::Ordering,
         Self::Matching,
+        Self::Classify,
         Self::OpenQuestion,
     ];
 
@@ -1532,11 +1551,11 @@ impl ActivityKind {
         matches!(self, Self::Matching)
     }
 
-    /// deprecated 题型的接替者（pf2 落地 classify 后收窄为 `ActivityKind`，
-    /// 现以字符串留痕——不引入不存在的枚举值）。active 题型为 None。
-    pub const fn replaced_by(self) -> Option<&'static str> {
+    /// deprecated 题型的接替者（pf2 落地 classify 后收窄为 `ActivityKind`）。
+    /// active 题型为 None。
+    pub const fn replaced_by(self) -> Option<ActivityKind> {
         match self {
-            Self::Matching => Some("classify"),
+            Self::Matching => Some(Self::Classify),
             _ => None,
         }
     }
@@ -1773,6 +1792,66 @@ impl ActivityPack {
                     ));
                 }
             }
+            ActivityKind::Classify => {
+                // objects（对象左列，alias 落 options）：逐行非空即可——
+                // 对象是具体实例，允许长短句；判别约束全部压在 categories
+                // 的形状上（候选 = 短标签，近重复长句候选在题型上不可能
+                // 再出现）。
+                if self.options.is_empty()
+                    || self.options.iter().any(|object| object.trim().is_empty())
+                {
+                    return Err(format!(
+                        "classify \"{}\" needs non-empty objects in the left column (the \"objects\" key), got {} entries",
+                        self.prompt,
+                        self.options.len()
+                    ));
+                }
+                // categories：2-6 个短规范标签，normalize（trim + 小写）后
+                // pairwise distinct——字面 distinct 恰能过字面查重的近重复
+                // 形态在此被机械拒绝；单类别没有判别维度，探针价值为零。
+                let distinct_categories = {
+                    let mut seen = std::collections::HashSet::new();
+                    self.categories.iter().all(|category| {
+                        !category.trim().is_empty()
+                            && seen.insert(category.trim().to_lowercase())
+                    })
+                };
+                if !(2..=6).contains(&self.categories.len()) || !distinct_categories {
+                    return Err(format!(
+                        "classify \"{}\" needs 2-6 distinct non-empty short canonical category labels (categories, pairwise distinct after normalization), got {}",
+                        self.prompt,
+                        self.categories.len()
+                    ));
+                }
+                let Some(answers) = self.answer.as_array() else {
+                    return Err(format!(
+                        "classify \"{}\" answer must be a JSON array of category labels aligned with the objects",
+                        self.prompt
+                    ));
+                };
+                if answers.len() != self.options.len() {
+                    return Err(format!(
+                        "classify \"{}\" answer needs one category per object ({} != {})",
+                        self.prompt,
+                        answers.len(),
+                        self.options.len()
+                    ));
+                }
+                for answer in answers {
+                    let Some(text) = answer.as_str() else {
+                        return Err(format!(
+                            "classify \"{}\" answer items must be category label strings",
+                            self.prompt
+                        ));
+                    };
+                    if !self.categories.iter().any(|category| category == text) {
+                        return Err(format!(
+                            "classify \"{}\" answer must only use the given categories (\"{text}\" is not one)",
+                            self.prompt
+                        ));
+                    }
+                }
+            }
             ActivityKind::Matching => {
                 if self.options.len() < 2 || !distinct_options {
                     return Err(format!(
@@ -1871,6 +1950,7 @@ impl TryFrom<&str> for ActivityKind {
             "numeric" => Ok(Self::Numeric),
             "ordering" => Ok(Self::Ordering),
             "matching" => Ok(Self::Matching),
+            "classify" => Ok(Self::Classify),
             "open_question" => Ok(Self::OpenQuestion),
             other => Err(format!("unsupported activity kind: {other}")),
         }
@@ -2826,7 +2906,8 @@ pub struct ActivityView {
     pub kind: ActivityKind,
     pub prompt: String,
     pub options: Vec<String>,
-    /// Matching questions only: scrambled right-column candidates.
+    /// matching 右列候选（存储序，前端渲染时打乱）/ classify 类别标签集合
+    /// （pf2，存储序不打乱）；其余题型为空。
     #[serde(default)]
     pub matches: Vec<String>,
     pub position: i64,
@@ -2938,7 +3019,7 @@ pub struct ReviewQuestion {
     pub kind: ActivityKind,
     pub prompt: String,
     pub options: Vec<String>,
-    /// Matching questions only: right-column candidates (order preserved).
+    /// matching 右列候选（保序）/ classify 类别标签集合（pf2）；其余题型为空。
     #[serde(default)]
     pub matches: Vec<String>,
 }
@@ -3106,7 +3187,8 @@ pub struct QuizRoundQuestionView {
     pub prompt: String,
     /// 选择题选项（非选择型为空）。
     pub options: Vec<String>,
-    /// 匹配题右列候选（打乱后；非匹配型为空）。
+    /// matching 右列候选（打乱后）/ classify 类别标签集合（pf2，存储序）；
+    /// 其余题型为空。
     #[serde(default)]
     pub matches: Vec<String>,
     /// 题目所属学习节点（quiz 跨节点会话逐题携带）。
@@ -3576,10 +3658,10 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub tol: Option<f64>,
-    /// Matching questions only: the right-column candidate values (the
-    /// answer's own values, order preserved) sent to the UI so the learner
-    /// can pick a match per left item without seeing the alignment.
-    /// Old rows lack it, so it defaults on read.
+    /// Right-column candidate values sent to the UI so the learner can pick
+    /// one candidate per left item without seeing the alignment:
+    /// matching = 右列候选（answer 自身值集，保序）；classify（pf2）= 类别
+    /// 标签集合（categories，2-6 个）。Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub matches: Vec<String>,
     /// 难度档 1-3（e5 消解案：装配面从节点 teaches 档位铸值注入，quiz tier
@@ -4087,15 +4169,16 @@ mod viz_lint_tests {
 
 #[cfg(test)]
 mod activity_kind_registry_tests {
-    //! 题型注册表（pf5）：ActivityKind capability 方法表的九 kind 全量单测。
-    //! 首例数据 = matching deprecated（接替 classify，pf2 落地）——生成契约/
-    //! 节完成门槛/复习抽题全关、存量判分与逐项反馈保留；其余八 kind active
-    //! 全能力，reflection/open_question 无逐项反馈（AI 批改整体判分语义）。
+    //! 题型注册表（pf5）：ActivityKind capability 方法表的十 kind 全量单测。
+    //! 首例数据 = matching deprecated（接替 classify）——生成契约/节完成门槛/
+    //! 复习抽题全关、存量判分与逐项反馈保留；其余九 kind active 全能力，
+    //! reflection/open_question 无逐项反馈（AI 批改整体判分语义）。classify
+    //! （pf2 判别题专有题型）= active 全能力：逐对象判分天然带逐项结果。
     //! 与前端 activityKindRegistry.ts 同源对齐，改任一侧须回改另一侧。
 
     use super::*;
 
-    /// 独立真值表（字面源，不派生自实现）：九 kind × 五能力逐条对账。
+    /// 独立真值表（字面源，不派生自实现）：十 kind × 五能力逐条对账。
     const EXPECTED: [(
         ActivityKind,
         bool, // is_deprecated
@@ -4103,7 +4186,7 @@ mod activity_kind_registry_tests {
         bool, // counts_toward_section
         bool, // review_eligible
         bool, // per_item_feedback
-    ); 9] = [
+    ); 10] = [
         (ActivityKind::SingleChoice, false, true, true, true, true),
         (ActivityKind::TrueFalse, false, true, true, true, true),
         (ActivityKind::Reflection, false, true, true, true, false),
@@ -4111,13 +4194,14 @@ mod activity_kind_registry_tests {
         (ActivityKind::MultiChoice, false, true, true, true, true),
         (ActivityKind::Numeric, false, true, true, true, true),
         (ActivityKind::Ordering, false, true, true, true, true),
+        (ActivityKind::Classify, false, true, true, true, true),
         (ActivityKind::Matching, true, false, false, false, true),
         (ActivityKind::OpenQuestion, false, true, true, true, false),
     ];
 
     #[test]
-    fn all_nine_kinds_are_enumerated_and_round_trip() {
-        assert_eq!(ActivityKind::ALL.len(), 9, "ALL 是注册表遍历的唯一枚举源");
+    fn all_ten_kinds_are_enumerated_and_round_trip() {
+        assert_eq!(ActivityKind::ALL.len(), 10, "ALL 是注册表遍历的唯一枚举源");
         for (kind, _, _, _, _, _) in EXPECTED {
             assert_eq!(ActivityKind::try_from(kind.as_str()), Ok(kind));
             assert!(ActivityKind::ALL.contains(&kind), "{} 缺席 ALL", kind.as_str());
@@ -4148,7 +4232,8 @@ mod activity_kind_registry_tests {
                 assert_eq!(kind.replaced_by(), None, "{}", kind.as_str());
             }
         }
-        assert_eq!(ActivityKind::Matching.replaced_by(), Some("classify"));
+        // pf2 落地 classify 后接替者收窄为枚举值（不再是字符串留痕）。
+        assert_eq!(ActivityKind::Matching.replaced_by(), Some(ActivityKind::Classify));
     }
 
     #[test]

@@ -1388,7 +1388,7 @@ fn audit_findings(
         if activity.prompt.trim().is_empty() {
             findings.push(danger("activity_prompt_empty", format!("{at}: prompt is empty")));
         }
-        // Shared per-kind shape rules (all nine kinds); the generation
+        // Shared per-kind shape rules (all ten kinds); the generation
         // bounds (3-5 options for choice-like kinds) apply.
         if let Err(error) = activity.validate_shape((3, 5), true) {
             findings.push(danger("activity_shape_invalid", format!("{at}: {error}")));
@@ -1403,7 +1403,11 @@ fn audit_findings(
                     "{at}: 题型「{}」已废弃（接替者 {}）——存量题判分与作答原样保留，\
                      随课时重生成自然消失，无需修复动作",
                     activity.kind.as_str(),
-                    activity.kind.replaced_by().unwrap_or("（无）")
+                    activity
+                        .kind
+                        .replaced_by()
+                        .map(|replacement| replacement.as_str())
+                        .unwrap_or("（无）")
                 ),
             ));
         }
@@ -1692,6 +1696,71 @@ mod tests {
                 .iter()
                 .any(|f| f.kind == "activity_kind_deprecated"),
             "active kinds carry no deprecated finding"
+        );
+    }
+
+    /// pf2 审计面：classify 形状违约发 danger finding（挡 finish 闸）——
+    /// categories normalize 查重的机械断言在这里对生成面生效（短标签下查
+    /// 重真正有效：近重复类别标签在审计即被打回）。合法 classify（走
+    /// objects 契约键）零 shape finding；deprecated finding 不误发。
+    #[test]
+    fn classify_shape_violations_audit_as_danger_and_valid_rows_stay_silent() {
+        // 近重复类别（normalize 后 distinct 违约）：字面 distinct 骗过不了
+        // 机械断言——pf2 取证场景的题型级消除。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "classify",
+                    serde_json::json!({
+                        "objects": ["对象一", "对象二"],
+                        "categories": ["堆区", "堆区 "],
+                        "answer": ["堆区", "堆区"]
+                    }),
+                ),
+            },
+        ]);
+        let finding = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "activity_shape_invalid")
+            .expect("normalize-duplicate categories are named by a danger finding");
+        assert_eq!(finding.severity, SEV_DANGER, "shape violations block the finish gate");
+        assert!(finding.message.contains("classify"), "finding names the kind");
+
+        // 合法 classify：无 shape finding、无 deprecated finding。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "classify",
+                    serde_json::json!({
+                        "objects": ["对象一", "对象二"],
+                        "categories": ["堆区", "栈区"],
+                        "answer": ["堆区", "栈区"]
+                    }),
+                ),
+            },
+        ]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "activity_shape_invalid"),
+            "valid classify rows carry no shape finding"
+        );
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "activity_kind_deprecated"),
+            "classify is active: no deprecated finding"
         );
     }
 

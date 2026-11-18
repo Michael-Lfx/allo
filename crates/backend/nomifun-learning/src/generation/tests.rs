@@ -490,6 +490,7 @@
                 answer: json!("A"),
                 explanation: "e".into(),
                 distractors: Vec::new(),
+                categories: Vec::new(),
                 tol: None,
                 section_key: None,
                 difficulty: None,
@@ -502,6 +503,7 @@
                 answer: json!(true),
                 explanation: "e".into(),
                 distractors: Vec::new(),
+                categories: Vec::new(),
                 tol: None,
                 section_key: None,
                 difficulty: None,
@@ -515,6 +517,7 @@
             answer: json!(null),
             explanation: "判分底：答出推理链与一个自取实例。".into(),
             distractors: Vec::new(),
+            categories: Vec::new(),
             tol: None,
             section_key: None,
                 difficulty: None,
@@ -568,6 +571,7 @@ evidence: None,
             answer: json!("A"),
             explanation: "e".into(),
             distractors: Vec::new(),
+            categories: Vec::new(),
             tol: None,
             section_key: None,
             difficulty: None,
@@ -580,6 +584,7 @@ evidence: None,
             answer: json!(null),
             explanation: "评卷要点：说清量与方向的区别。".into(),
             distractors: Vec::new(),
+            categories: Vec::new(),
             tol: None,
             section_key: None,
             difficulty: None,
@@ -613,6 +618,7 @@ evidence: None,
             answer: json!(["magnitude"]),
             explanation: "e".into(),
             distractors: vec!["length".into(), "norm".into()],
+            categories: Vec::new(),
             tol: None,
             section_key: None,
                 difficulty: None,
@@ -636,6 +642,97 @@ evidence: None,
         let no_distractors = ActivityPack { distractors: vec![" ".into()], ..base.clone() };
         assert!(no_distractors.validate_shape((3, 5), true).is_err());
         assert!(no_distractors.validate_shape((2, 5), false).is_ok());
+    }
+
+    /// classify（pf2 判别题专有题型）形状闸：objects（alias 落 options）非空、
+    /// categories 2-6 且 normalize 后 pairwise distinct（短规范标签——近重复
+    /// 长句候选在题型上不可能再出现）、answer 与 objects 逐位对齐且每元素
+    /// ∈ categories。探针设计缺陷的机械消除闸在此收口。
+    #[test]
+    fn classify_rules_pin_objects_categories_and_aligned_answers() {
+        let base = ActivityPack {
+            kind: ActivityKind::Classify,
+            prompt: "把每个对象归入它的存储区域。".into(),
+            // LLM 契约键 objects（serde alias）；左列对象落 options。
+            options: vec![
+                "执行「new Object()」创建的数组".into(),
+                "函数运行时的局部变量".into(),
+                "跨函数共享的单例引用".into(),
+            ],
+            answer: json!(["堆区", "栈区", "堆区"]),
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            tol: None,
+            section_key: None,
+            difficulty: None,
+            evidence: None,
+            categories: vec!["堆区".into(), "栈区".into()],
+        };
+        assert!(base.validate_shape((3, 5), true).is_ok());
+
+        // objects（左列）非空。
+        let no_objects = ActivityPack { options: Vec::new(), ..base.clone() };
+        assert!(no_objects.validate_shape((3, 5), true).is_err());
+
+        // categories 下限 2：单类别没有判别维度，探针价值为零。
+        let one_category =
+            ActivityPack { categories: vec!["堆区".into()], ..base.clone() };
+        assert!(one_category.validate_shape((3, 5), true).is_err());
+
+        // categories 上限 6。
+        let seven_categories = ActivityPack {
+            categories: (0..7).map(|index| format!("类别{index}")).collect(),
+            ..base.clone()
+        };
+        assert!(seven_categories.validate_shape((3, 5), true).is_err());
+
+        // normalize（trim + 小写）后 pairwise distinct：字面 distinct 恰能
+        // 过字面查重的近重复形态在此被机械拒绝。
+        let near_duplicate = ActivityPack {
+            categories: vec!["堆区".into(), "堆区 ".into()],
+            ..base.clone()
+        };
+        assert!(near_duplicate.validate_shape((3, 5), true).is_err());
+        let case_duplicate = ActivityPack {
+            categories: vec!["stack".into(), "Stack".into()],
+            ..base.clone()
+        };
+        assert!(case_duplicate.validate_shape((3, 5), true).is_err());
+
+        // answer 长度必须与 objects 对齐。
+        let misaligned = ActivityPack { answer: json!(["堆区", "栈区"]), ..base.clone() };
+        assert!(misaligned.validate_shape((3, 5), true).is_err());
+
+        // answer 每元素必须 ∈ categories（不在集合内的类别是悬空标签）。
+        let dangling_category =
+            ActivityPack { answer: json!(["堆区", "栈区", "元空间"]), ..base.clone() };
+        assert!(dangling_category.validate_shape((3, 5), true).is_err());
+
+        // answer 必须是字符串数组。
+        let non_string_answer = ActivityPack { answer: json!([true, "栈区", "堆区"]), ..base.clone() };
+        assert!(non_string_answer.validate_shape((3, 5), true).is_err());
+    }
+
+    /// classify 的生成契约行进整课题库块与单题装配（同源表）：短标签约束
+    /// 进 bank 规则段，objects 左列 + categories 2-6 互不相同进契约行。
+    #[test]
+    fn classify_contract_line_enters_the_bank_block_and_single_prompt() {
+        let whole = lesson_system_text();
+        assert!(whole.contains("The ten kinds and their answer shapes:"));
+        let line_prefix = "- classify: ";
+        let whole_line = whole
+            .lines()
+            .find(|line| line.starts_with(line_prefix))
+            .expect("整课题库契约块缺 classify 行");
+        assert!(whole_line.contains("objects"));
+        assert!(whole_line.contains("categories"));
+        assert!(whole_line.contains("2-6"));
+        // bank 规则段：客观题清单与短标签纪律点名 classify。
+        assert!(whole.contains("ordering, matching, classify)"));
+        assert!(whole.contains("classify categories must be SHORT canonical labels"));
+        // 单题/变式装配（同源表渲染）带同一行。
+        let single = super::activities::lesson_activity_system_prompt(ActivityKind::Classify);
+        assert!(single.contains(whole_line), "单题装配缺 classify 契约行");
     }
 
     #[test]
@@ -1338,6 +1435,7 @@ fn activity_with_prompt(prompt: &str) -> ActivityPack {
         answer: json!(true),
         explanation: "e".into(),
         distractors: Vec::new(),
+        categories: Vec::new(),
         tol: None,
         section_key: None,
         difficulty: None,
@@ -1899,8 +1997,8 @@ fn variant_v2_off_arm_is_the_baseline_plus_the_known_language_clause() {
     }
 }
 
-/// 契约同源（on 臂）：单题提示词按请求题型装配的形状行与整课题库九题型块
-/// 中该型的行逐字一致（同一片段源渲染，不另写第二份）——九型全覆盖；
+/// 契约同源（on 臂）：单题提示词按请求题型装配的形状行与整课题库十题型块
+/// 中该型的行逐字一致（同一片段源渲染，不另写第二份）——十型全覆盖；
 /// numeric 的行带「answer is a JSON number」与 tol。
 #[test]
 #[serial_test::serial]
@@ -1908,7 +2006,7 @@ fn variant_v2_on_arm_appends_the_same_source_kind_contract_line() {
     let _restore = VariantSwitchRestore::capture();
     unsafe { std::env::set_var(super::activities::VARIANT_V2_SWITCH_ENV, "on") };
     let whole = lesson_system_text();
-    assert!(whole.contains("The nine kinds and their answer shapes:"));
+    assert!(whole.contains("The ten kinds and their answer shapes:"));
     for kind in [
         ActivityKind::SingleChoice,
         ActivityKind::TrueFalse,
@@ -1918,13 +2016,14 @@ fn variant_v2_on_arm_appends_the_same_source_kind_contract_line() {
         ActivityKind::Numeric,
         ActivityKind::Ordering,
         ActivityKind::Matching,
+        ActivityKind::Classify,
         ActivityKind::OpenQuestion,
     ] {
         let prefix = format!("- {}: ", kind.as_str());
         let whole_line = whole
             .lines()
             .find(|line| line.starts_with(&prefix))
-            .unwrap_or_else(|| panic!("整课题库九题型块缺 {} 行", kind.as_str()))
+            .unwrap_or_else(|| panic!("整课题库十题型块缺 {} 行", kind.as_str()))
             .to_owned();
         let single = super::activities::lesson_activity_system_prompt(kind);
         assert!(
@@ -2099,6 +2198,7 @@ fn variant_v2_evidence_must_appear_verbatim_in_the_present_document() {
         answer: serde_json::json!("a"),
         explanation: "doc".into(),
         distractors: vec![],
+        categories: Vec::new(),
         tol: None,
         section_key: None,
         difficulty: None,
@@ -2201,13 +2301,15 @@ fn variant_v2_evidence_must_appear_verbatim_in_the_present_document() {
     );
 }
 
-/// u10（正优化验收协议）：整课题库提示词逐字节钉——九题型契约拆为同源片段
+/// u10（正优化验收协议）：整课题库提示词逐字节钉——十题型契约拆为同源片段
 /// 表后，HEAD + 契约块 + TAIL 重装配的字节与 golden 常量逐字一致。golden
 /// 字面量 = 基线 65e42c364 的 `LESSON_SYSTEM` 原文 + w03 已知变更
 ///（2026-11-08 形状示例修正：整课示例的字母选项 `options ["A","B","C"]` /
 /// `answer "A"` 改为真实裸文本选项 `options ["水洗处理","日晒处理","蜜处理"]`
 /// / `answer "水洗处理"`——字母答案示例与「裸选项串 + answer 须等于选项串」
-/// 规则打架，诱导首答违约，真机 off 臂 2 次拒答；其余逐字保持原文），是独
+/// 规则打架，诱导首答违约，真机 off 臂 2 次拒答）+ pf2 已知变更
+///（2026-11-18 判别题 classify 进契约：块头 nine→ten、新增 classify 契约行、
+/// 客观题清单与短标签纪律两条规则点名 classify；其余逐字保持原文），是独
 /// 立事实源，只随已声明的变更改动，不随实现漂移。
 #[test]
 fn lesson_system_text_matches_the_historical_golden_byte_for_byte() {
@@ -2287,6 +2389,7 @@ fn lesson_shape_examples_stay_gate_compatible_and_letter_free() {
         answer,
         explanation: "why, grounded in the source".into(),
         distractors: Vec::new(),
+        categories: Vec::new(),
         tol: None,
         section_key: None,
         difficulty: None,
@@ -2344,13 +2447,14 @@ You are given the finished section bodies, the section manifest and its complexi
     }
   ]
 }
-The nine kinds and their answer shapes:
+The ten kinds and their answer shapes:
 - single_choice: 3-5 distinct options; answer is exactly one option string.
 - true_false: answer is a JSON boolean.
 - fill_in_blank: prompt contains exactly one "___" blank; answer is a JSON array of 1-3 equivalent accepted answers; distractors carries near-synonym traps (or physically adjacent quantities) that force fine discrimination.
 - multi_choice: 3-5 distinct options; answer is a JSON array of 2+ option strings, order-insensitive.
 - numeric: answer is a JSON number; "tol" is the accepted deviation (include it when the answer is measured or rounded).
 - ordering: options list the items in scrambled order; answer is the same items in the CORRECT order.
+- classify: objects is the left-column list of concrete items to classify; categories is the set of 2-6 short canonical category labels, pairwise distinct after normalization; answer is an array of category labels aligned one-to-one with objects.
 - matching: options are the left-column items; answer is an array of right-column values aligned one-to-one with options.
 - reflection: answer must be null; asks the learner to explain or apply one idea.
 - open_question: answer must be null; one comprehensive question assembling the whole lesson (graded on a 0-10 scale).
@@ -2358,11 +2462,11 @@ Rules:
 - Variety first: use at least 3 different kinds across the set — never the same kind throughout.
 - Question budget: about (tier budget) questions per content section (concept/example/demo) as stated in the prompt, plus at most one cross-section comprehensive question. Never fewer than 3 activities in total.
 - Every question binds "section_key" to the section that taught it (exact key from the manifest, e.g. "s2"). Only the single comprehensive question may use section_key "general".
-- At least 2 objective questions in total (single_choice, true_false, fill_in_blank, multi_choice, numeric, ordering, matching).
+- At least 2 objective questions in total (single_choice, true_false, fill_in_blank, multi_choice, numeric, ordering, matching, classify).
 - AI-graded questions (reflection plus open_question) together: at least 1, at most 3, and at most one open_question. They must collectively cover the lesson's sections.
 - Order the set easy to hard: open with 1-2 discrimination questions, then application, and close with a synthesis or a deliberate common-mistake trap.
 - Choice options are BARE text without letter prefixes ("A." / "B、" are added by the system automatically) — an option like "A. 权利" is WRONG, write "权利".
-- ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other).
+- ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other); classify categories must be SHORT canonical labels (2-6, pairwise distinct — they are the discrimination axis, never descriptions).
 - Every explanation states WHY the answer is right AND why the tempting wrong options are wrong — for choice questions (single_choice/multi_choice/true_false) walk EVERY option in the explanation and say per option why it is right or wrong, not just the correct one; for geometry/function/data questions the explanation may include one ```svg block.
 - Before submitting, re-solve every question as if you were the candidate: the answer key must match your re-solution, the explanation must match the answer key, and every field must be filled in — AI-graded questions (reflection/open_question) must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
 - Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it. A missing or empty "evidence" on an objective question is a contract violation.

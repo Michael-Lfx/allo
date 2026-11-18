@@ -3495,6 +3495,7 @@ export type I18nKey =
   | 'learning.capacityFeedbackTitle'
   | 'learning.capacityOverloadedCount'
   | 'learning.capacityOverloadedHint'
+  | 'learning.classifyPickPlaceholder'
   | 'learning.complete'
   | 'learning.completed'
   | 'learning.conceptBack'

@@ -186,6 +186,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+            categories: Vec::new(),
             difficulty: None,
                         kind: ActivityKind::TrueFalse,
                         prompt: "A vector has magnitude and direction.".into(),
@@ -505,6 +506,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     estimated_minutes: 10,
                     activities: vec![
                         ActivityPack {
+                            categories: Vec::new(),
                             difficulty: Some(3),
                             kind: ActivityKind::TrueFalse,
                             prompt: "向量既有大小又有方向。".into(),
@@ -517,6 +519,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             evidence: Some("「有大小有方向的量」".into()),
                         },
                         ActivityPack {
+                            categories: Vec::new(),
                             difficulty: Some(3),
                             kind: ActivityKind::Reflection,
                             prompt: "举一个生活中的向量并说明理由。".into(),
@@ -759,6 +762,65 @@ teaching_style: crate::models::TeachingStyle::Standard,
         }
     }
 
+    /// classify（pf2 判别题）：逐对象类别精确比对 + pf1 逐项结果——类别是
+    /// 短规范标签（校验闸已断近重复空间），逐位置比对公平。全对/部分错/
+    /// 形状错误三臂与 matching 同构。
+    #[test]
+    fn evaluate_classify_grades_per_object_with_item_results() {
+        let config = |answer: Value| StoredActivityConfig {
+            options: vec![
+                "执行「new Object()」创建的数组".into(),
+                "函数运行时的局部变量".into(),
+                "跨函数共享的单例引用".into(),
+            ],
+            matches: vec!["堆区".into(), "栈区".into()],
+            answer,
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            tol: None,
+            difficulty: None,
+            evidence: None,
+        };
+        let expected = json!(["堆区", "栈区", "堆区"]);
+
+        // 全对：二元 1.0 + 逐对象全绿。
+        let (score, _, items) =
+            evaluate(ActivityKind::Classify, &config(expected.clone()), &expected).unwrap();
+        assert_eq!((score, items.as_slice()), (1.0, &[true, true, true][..]));
+
+        // 部分错：二元 0.0 + 错对象行可见（pf1 管道）。
+        let (score, _, items) = evaluate(
+            ActivityKind::Classify,
+            &config(expected.clone()),
+            &json!(["堆区", "堆区", "堆区"]),
+        )
+        .unwrap();
+        assert_eq!((score, items.as_slice()), (0.0, &[true, false, true][..]));
+
+        // 长度不齐（坏形状）：不 panic，逐响应行对位判，得分二元不变。
+        let (score, _, items) =
+            evaluate(ActivityKind::Classify, &config(expected), &json!(["堆区"])).unwrap();
+        assert_eq!((score, items.as_slice()), (0.0, &[true][..]));
+
+        // 响应不是数组：BadRequest（作答面形状违约）。
+        let error = evaluate(
+            ActivityKind::Classify,
+            &config(json!(["堆区"])),
+            &Value::String("堆区".into()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("classify response must be an array"));
+
+        // 存储答案不是数组：Internal（判底违约，不是学习者的错）。
+        let error = evaluate(
+            ActivityKind::Classify,
+            &config(Value::String("堆区".into())),
+            &json!(["堆区"]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("malformed stored answer"));
+    }
+
     /// pf1 提交链透传：客观题 submit_attempt 的 AttemptResult 携带逐项
     /// 结果；判分/落库二元语义不变（attempt 表零迁移，字段只在 API 层）。
     #[tokio::test]
@@ -990,6 +1052,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // lesson A seeds a review item for its own question A1, lesson B is
         // never touched.
         let shared = ActivityPack {
+                        categories: Vec::new(),
                         difficulty: None,
             kind: ActivityKind::TrueFalse,
             prompt: String::new(),
@@ -1121,6 +1184,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+            categories: Vec::new(),
             difficulty: None,
                         kind: ActivityKind::Reflection,
                         prompt: "Explain what a vector is.".into(),
@@ -1562,6 +1626,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+            categories: Vec::new(),
             difficulty: None,
                         kind: ActivityKind::FillInBlank,
                         prompt: "A vector has ___ and direction.".into(),
@@ -1716,6 +1781,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     sources: Vec::new(),
                     activities: vec![
                         ActivityPack {
+                            categories: Vec::new(),
                             difficulty: None,
                             kind: ActivityKind::SingleChoice,
                             prompt: "Which term names the size of a vector?".into(),
@@ -1732,6 +1798,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         evidence: None,
                         },
                         ActivityPack {
+                            categories: Vec::new(),
                             difficulty: None,
                             kind: ActivityKind::FillInBlank,
                             prompt: "A vector has ___ and direction.".into(),
@@ -1860,6 +1927,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     sources: Vec::new(),
                     activities: vec![
                         ActivityPack {
+                            categories: Vec::new(),
                             difficulty: None,
                             kind: ActivityKind::SingleChoice,
                             prompt: "Which term names the size of a vector?".into(),
@@ -1876,6 +1944,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             evidence: None,
                         },
                         ActivityPack {
+                            categories: Vec::new(),
                             difficulty: None,
                             kind: ActivityKind::Matching,
                             prompt: "Match each quantity to where it lives.".into(),
@@ -1961,6 +2030,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+                        categories: Vec::new(),
                         difficulty: None,
                         kind: ActivityKind::SingleChoice,
                         prompt: "Which term names the size of a vector?".into(),
@@ -2826,6 +2896,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+                        categories: Vec::new(),
                         difficulty: None,
                         kind: ActivityKind::SingleChoice,
                         prompt: "Pick the size of a vector.".into(),
@@ -2913,6 +2984,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+                        categories: Vec::new(),
                         difficulty: None,
                         kind: ActivityKind::SingleChoice,
                         prompt: "Pick the size of a vector.".into(),
@@ -3948,6 +4020,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     source: None,
                     sources: Vec::new(),
                     activities: vec![ActivityPack {
+                        categories: Vec::new(),
                         difficulty: None,
                         kind: ActivityKind::SingleChoice,
                         prompt: "Pick the size of a vector.".into(),
@@ -4448,6 +4521,7 @@ fn review_log_test_pack() -> CoursePack {
                 source: None,
                 sources: Vec::new(),
                 activities: vec![ActivityPack {
+                    categories: Vec::new(),
                     difficulty: None,
                     kind: ActivityKind::SingleChoice,
                     prompt: "Which term names the size of a vector?".into(),
@@ -5459,6 +5533,7 @@ async fn due_reviews_node_filter_scopes_weak_set_sessions() {
         answer: json!("A"),
         explanation: String::new(),
         distractors: Vec::new(),
+        categories: Vec::new(),
         tol: None,
         section_key: None,
         evidence: None,
@@ -9990,6 +10065,7 @@ async fn xp_node_settlement_excludes_ai_graded_questions_from_ratio() {
         answer: Value::Null,
         explanation: "Interest joins the principal and earns interest in turn.".into(),
         distractors: Vec::new(),
+        categories: Vec::new(),
         tol: None,
         section_key: None,
         evidence: None,

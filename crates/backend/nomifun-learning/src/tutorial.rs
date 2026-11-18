@@ -313,6 +313,7 @@ mod tests {
                         | ActivityKind::Numeric
                         | ActivityKind::Ordering
                         | ActivityKind::Matching
+                        | ActivityKind::Classify
                         | ActivityKind::OpenQuestion => {
                             // covered by validate_shape above; the seeded
                             // tutorial only uses the classic kinds today.
