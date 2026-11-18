@@ -1,17 +1,22 @@
 //! Shared look tokens for Flowy screens.
 
 mod button;
+mod chrome;
 mod context;
 mod controls;
 mod feedback;
 mod overlays;
 mod theme;
 mod tooltip;
+mod typeface;
 
 pub mod icons;
 
 pub use button::{
     Button, IconButton, button, install_initial_tab_focus, interactive,
+};
+pub use chrome::{
+    ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
 };
 pub use context::*;
 pub use controls::*;
@@ -19,6 +24,10 @@ pub use feedback::*;
 pub use overlays::*;
 pub use theme::*;
 pub use tooltip::tooltip_trigger;
+pub use typeface::{
+    PageColumn, PageHeader, SectionHeader, Text, TextRole, Title, TitleLevel,
+    TypeMetrics, page_inset, ui_font,
+};
 
 use serde::{Deserialize, Serialize};
 

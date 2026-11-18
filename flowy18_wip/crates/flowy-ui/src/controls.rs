@@ -104,6 +104,7 @@ impl TextField {
             } else {
                 text_input(input_id)
             };
+            let metrics = theme.control_metrics();
             let input = input
                 .state(self.state.downgrade())
                 .aria_label(self.label)
@@ -116,6 +117,10 @@ impl TextField {
                 .w_full()
                 .px_3()
                 .py_2()
+                .font(crate::ui_font())
+                .text_size(metrics.size)
+                .line_height(metrics.line_height)
+                .font_weight(metrics.weight)
                 .text_color(theme.ink())
                 .when(self.multiline, |el| {
                     el.min_h(px(96.)).whitespace_normal()

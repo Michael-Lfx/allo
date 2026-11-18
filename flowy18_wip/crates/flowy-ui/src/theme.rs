@@ -115,6 +115,38 @@ impl ResolvedTheme {
     pub fn canvas(self) -> Rgba {
         rgb(if self.dark { 0x001c_1c1a } else { 0x00f4_f3ef })
     }
+    /// Quiet neutral surface used by the asset library.
+    pub fn library_canvas(self) -> Rgba {
+        rgb(if self.dark { 0x001c_1c1a } else { 0x00f8_f8f7 })
+    }
+    pub fn library_ink(self) -> Rgba {
+        rgb(if self.dark { 0x00f4_f3ef } else { 0x001a_1a1a })
+    }
+    pub fn library_line(self) -> Rgba {
+        rgb(if self.dark { 0x0035_3532 } else { 0x00e9_e9e8 })
+    }
+    pub fn library_muted(self) -> Rgba {
+        rgb(if self.dark { 0x00ad_ada8 } else { 0x0073_7373 })
+    }
+    pub fn library_selected(self) -> Rgba {
+        rgb(if self.dark { 0x0036_3632 } else { 0x00e9_e9e8 })
+    }
+    /// File-type colors are identity marks, not action states.
+    pub fn library_image(self) -> Rgba {
+        rgb(0x00ff_ab0f)
+    }
+    pub fn library_on_file(self) -> Rgba {
+        rgb(0x00ff_ffff)
+    }
+    pub fn library_document(self) -> Rgba {
+        rgb(0x004e_80ee)
+    }
+    pub fn library_website(self) -> Rgba {
+        rgb(0x0000_86ff)
+    }
+    pub fn library_app(self) -> Rgba {
+        rgb(if self.dark { 0x0065_6561 } else { 0x0033_3333 })
+    }
     pub fn dock(self) -> Rgba {
         rgb(if self.dark { 0x0024_2422 } else { 0x00f7_f6f3 })
     }
@@ -126,6 +158,34 @@ impl ResolvedTheme {
     }
     pub fn muted(self) -> Rgba {
         rgb(if self.dark { 0x00a8_a49c } else { 0x006b_6861 })
+    }
+    /// Unselected library tabs. Lighter and cooler than `muted`.
+    pub fn tab_idle(self) -> Rgba {
+        rgb(if self.dark { 0x00a6_a6a2 } else { 0x008e_8e8e })
+    }
+    /// Selected library tab label. Dark gray, lighter than `ink`.
+    pub fn tab_selected(self) -> Rgba {
+        rgb(if self.dark { 0x00d6_d6d2 } else { 0x0036_3636 })
+    }
+    /// Selected library tab fill. Cooler than `soft`.
+    pub fn tab_selected_bg(self) -> Rgba {
+        rgb(if self.dark { 0x0034_3432 } else { 0x00ec_ecea })
+    }
+    /// Search placeholder. Between an idle tab and a toolbar icon.
+    pub fn placeholder(self) -> Rgba {
+        rgb(if self.dark { 0x007a_7a76 } else { 0x00a9_a9a9 })
+    }
+    /// Search, sort, and unselected view icons.
+    pub fn toolbar_icon(self) -> Rgba {
+        rgb(if self.dark { 0x00b0_b0ac } else { 0x005c_5c5c })
+    }
+    /// Hairline around the library search field and toolbar buttons.
+    pub fn chrome_line(self) -> Rgba {
+        rgb(if self.dark { 0x003a_3a38 } else { 0x00e6_e6e6 })
+    }
+    /// Track behind the library view switch.
+    pub fn chrome_track(self) -> Rgba {
+        rgb(if self.dark { 0x002a_2a28 } else { 0x00f3_f3f3 })
     }
     pub fn line(self) -> Rgba {
         rgb(if self.dark { 0x003e_3e3a } else { 0x00e6_e2da })
@@ -493,5 +553,28 @@ mod window_tests {
             assert!(theme.dark);
             assert_eq!(theme.options.accent, Accent::Default);
         });
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    use gpui::rgb;
+
+    #[test]
+    fn library_tabs_and_placeholder_match_the_reference() {
+        let light = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Light,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_eq!(light.tab_idle(), rgb(0x008e_8e8e));
+        assert_eq!(light.tab_selected(), rgb(0x0036_3636));
+        assert_eq!(light.tab_selected_bg(), rgb(0x00ec_ecea));
+        assert_eq!(light.placeholder(), rgb(0x00a9_a9a9));
+        assert_eq!(light.toolbar_icon(), rgb(0x005c_5c5c));
+        assert_ne!(light.tab_selected(), light.ink());
     }
 }

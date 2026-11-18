@@ -583,6 +583,7 @@ pub fn menu(
         .aria_label(label)
         .bg(theme.card())
         .text_color(theme.ink())
+        .font(crate::ui_font())
         .border_1()
         .border_color(theme.line())
         .rounded_lg()
