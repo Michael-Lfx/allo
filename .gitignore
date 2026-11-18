@@ -130,3 +130,6 @@ web/packages/runtime/vendor/
 .dsh/
 .tmp/
 .dsh-meow/
+
+# Flowy 1.8 local UI captures, logs, and scratch binaries
+/flowy18_wip/.scratch/
