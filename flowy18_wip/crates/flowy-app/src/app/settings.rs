@@ -1,7 +1,6 @@
 use super::FlowyApp;
 use crate::i18n::Locale;
 use crate::prefs::SendMode;
-use flowy_agent::Plan;
 use flowy_ui as theme;
 use gpui::{
     ClipboardItem, Context, Pixels, SharedString, Size, Window, div,
@@ -863,10 +862,7 @@ impl FlowyApp {
 
     fn account_plan_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let studio = self.studio.read(cx);
-        let plan_key = match studio.plan {
-            Plan::Free => "credits.plan_free",
-            Plan::Paid => "credits.plan_paid",
-        };
+        let plan_key = studio.plan.label_key();
         let (free_label, daily_label, daily_note) = match &studio.credits {
             flowy_studio::CreditsViewState::Ready { free, daily, .. } => {
                 let free = free.map_or_else(

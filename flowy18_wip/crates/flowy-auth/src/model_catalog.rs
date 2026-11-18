@@ -17,6 +17,9 @@ pub struct CloudModel {
     pub max_tokens: u64,
     #[serde(default)]
     pub credit_rate: f64,
+    /// Catalog-declared minimum plan tier; `0` means unrestricted.
+    #[serde(default)]
+    pub min_tier_level: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -93,7 +96,7 @@ mod tests {
     fn fixture() -> serde_json::Value {
         serde_json::from_str(r#"{
             "cloud": [
-                {"id":"AIPC-deepseek-v4-flash","name":"Deepseek-v4-flash","endpoint":"https://server.flowyaipc.com/claw/v1","extra":"{\"context_window\":1000000,\"max_tokens\":384000,\"credit_rate\":0.5}"},
+                {"id":"AIPC-deepseek-v4-flash","name":"Deepseek-v4-flash","endpoint":"https://server.flowyaipc.com/claw/v1","minTierLevel":1,"extra":"{\"context_window\":1000000,\"max_tokens\":384000,\"credit_rate\":0.5}"},
                 {"id":"fixture-2"}, {"id":"fixture-3"}, {"id":"fixture-4"},
                 {"id":"fixture-5"}, {"id":"fixture-6"}, {"id":"fixture-7"},
                 {"id":"fixture-8"}, {"id":"fixture-9"}, {"id":"fixture-10"},
@@ -110,6 +113,8 @@ mod tests {
         assert_eq!(catalog.cloud[0].context_window, 1_000_000);
         assert_eq!(catalog.cloud[0].max_tokens, 384_000);
         assert_eq!(catalog.cloud[0].credit_rate, 0.5);
+        assert_eq!(catalog.cloud[0].min_tier_level, 1);
+        assert_eq!(catalog.cloud[1].min_tier_level, 0);
     }
 
     #[test]

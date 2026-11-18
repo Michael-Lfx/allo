@@ -631,7 +631,15 @@ pub fn menu_item(
     theme: &ResolvedTheme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    crate::button(id, label, disabled, theme, on_click).role(Role::MenuItem)
+    let label = label.into();
+    // `button` only stores the label as the accessible name; menu rows must
+    // also render it, otherwise a popover shows blank rows with just hover and
+    // selection affordances. Colors come from the resolved theme so the row
+    // stays readable in both light and dark mode.
+    crate::button(id, label.clone(), disabled, theme, on_click)
+        .role(Role::MenuItem)
+        .text_color(if disabled { theme.muted() } else { theme.ink() })
+        .child(label)
 }
 
 pub fn select_option(

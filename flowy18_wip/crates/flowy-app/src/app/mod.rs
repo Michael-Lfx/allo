@@ -141,6 +141,9 @@ pub struct FlowyApp {
     catalog_task: Option<Task<()>>,
     catalog_generation: u64,
     catalog_loading: bool,
+    /// Highest unexpired plan tier from the cloud catalog (`effectiveModelTier`).
+    effective_tier: u8,
+    applied_tier: Option<flowy_agent::Model>,
     credits_task: Option<Task<()>>,
     credits_generation: u64,
     credits_poll: Option<Task<()>>,
@@ -454,6 +457,8 @@ impl FlowyApp {
             catalog_task: None,
             catalog_generation: 0,
             catalog_loading: false,
+            effective_tier: 0,
+            applied_tier: None,
             credits_task: None,
             credits_generation: 0,
             credits_poll: None,
@@ -477,52 +482,132 @@ impl FlowyApp {
         }
     }
 
-    fn select_cloud_model(&mut self, id: &str, cx: &mut Context<'_, Self>) {
+    const fn plan_for_effective_tier(tier: u8) -> flowy_agent::Plan {
+        flowy_agent::Plan::from_effective_tier(tier)
+    }
+
+    /// Builds the three tier rows from the current catalog and entitlement.
+    /// Raw model ids stay in this layer; the menu only receives display data.
+    fn tier_views(
+        &self,
+        cx: &Context<'_, Self>,
+    ) -> Vec<flowy_studio::TierView> {
+        let models = &self.studio.read(cx).catalog.models;
+        flowy_agent::CLOUD_TIERS
+            .iter()
+            .map(|spec| {
+                let resolved =
+                    match flowy_agent::resolve_tier(spec.tier, models) {
+                        flowy_agent::TierResolution::Available(model) => {
+                            Some(model)
+                        }
+                        flowy_agent::TierResolution::Unavailable => None,
+                    };
+                let unavailable = resolved.is_none();
+                let locked = flowy_agent::is_locked(
+                    spec.tier,
+                    self.effective_tier,
+                    resolved,
+                );
+                flowy_studio::TierView {
+                    tier: spec.tier,
+                    pro_badge: spec.pro_badge,
+                    locked,
+                    unavailable,
+                    selected: self.prefs.model == spec.tier,
+                }
+            })
+            .collect()
+    }
+
+    fn publish_tier_state(&self, cx: &mut Context<'_, Self>) {
+        let views = self.tier_views(cx);
+        let plan = Self::plan_for_effective_tier(self.effective_tier);
+        self.studio.update(cx, |panel, cx| {
+            panel.set_tiers(views, cx);
+            panel.plan = plan;
+            panel.model = self.prefs.model;
+            cx.notify();
+        });
+    }
+
+    /// Applies one cloud tier. This is the single place that turns a tier into
+    /// an agent configuration; every entry (menu, boot, catalog refresh) goes
+    /// through it.
+    fn select_tier(
+        &mut self,
+        tier: flowy_agent::Model,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !tier.is_cloud() {
+            // Flex BYOK is deferred; keep the option documented but inert.
+            self.note("notice.model_unavailable", cx);
+            return;
+        }
         if self.catalog_loading {
             return;
         }
-        let Some(session) = self.auth.session.as_ref() else {
+        let Some(session) = self.auth.session.clone() else {
             return;
         };
-        if session.access_token.trim().is_empty() {
+        if session.access_token.trim().is_empty()
+            || self.studio.read(cx).agent.turn_status().is_busy()
+        {
             return;
         }
-        if self.studio.read(cx).agent.turn_status().is_busy() {
-            return;
-        }
-        let Some(model) = self
-            .studio
-            .read(cx)
-            .catalog
-            .models
-            .iter()
-            .find(|m| m.id == id)
-            .cloned()
+        let models = self.studio.read(cx).catalog.models.clone();
+        let flowy_agent::TierResolution::Available(model) =
+            flowy_agent::resolve_tier(tier, &models)
         else {
+            // Never move the selected tier onto a model that cannot be
+            // routed: the chip would claim a tier the agent is not using.
+            self.publish_tier_state(cx);
+            self.note("notice.model_unavailable", cx);
             return;
         };
+        let model = model.clone();
+        if flowy_agent::is_locked(tier, self.effective_tier, Some(&model)) {
+            // Keep the current route; the locked row is a discovery surface.
+            self.publish_tier_state(cx);
+            self.note("notice.upgrade_later", cx);
+            return;
+        }
         let config = cloud_model_config(&model, &session.access_token);
         match self.studio.read(cx).agent.apply_config(config) {
             Ok(()) => {
+                self.applied_tier = Some(tier);
+                self.prefs.model = tier;
                 self.prefs.model_id.clone_from(&model.id);
                 let save_failed =
                     self.prefs.save_checked(self.store.root()).is_err();
+                let selected_id = model.id.clone();
                 self.studio.update(cx, |panel, cx| {
-                    panel.catalog.select(model.id);
+                    panel.catalog.select(selected_id);
+                    panel.model = tier;
                     panel.cloud_ready = true;
                     panel.set_notice(
                         save_failed.then_some("notice.session_storage_failed"),
                         cx,
                     );
                 });
+                self.publish_tier_state(cx);
             }
             Err(key) => {
+                self.applied_tier = None;
                 self.studio.update(cx, |panel, cx| {
                     panel.cloud_ready = false;
                     panel.set_notice(Some(key), cx);
                 });
+                self.publish_tier_state(cx);
             }
         }
+    }
+
+    fn apply_selected_tier(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.prefs.model.is_cloud() {
+            self.prefs.model = flowy_agent::Model::Lite;
+        }
+        self.select_tier(self.prefs.model, cx);
     }
 
     fn refresh_models(&mut self, cx: &mut Context<'_, Self>) {
@@ -548,18 +633,16 @@ impl FlowyApp {
             panel.catalog_loading = true;
             cx.notify();
         });
-        let saved_id =
-            if account.as_deref() == Some(self.prefs.model_account.as_str()) {
-                self.prefs.model_id.clone()
-            } else {
-                String::new()
-            };
         if account.is_some()
             && account.as_deref() != Some(self.prefs.model_account.as_str())
         {
+            self.effective_tier = 0;
+            self.applied_tier = None;
             self.studio.update(cx, |panel, _| {
                 panel.cloud_ready = false;
                 panel.catalog = flowy_agent::ProviderCatalog::new();
+                // The previous account's tier rows are meaningless now.
+                panel.tiers.clear();
             });
         }
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
@@ -595,6 +678,17 @@ impl FlowyApp {
                     });
                     match result {
                         Ok(result) => {
+                            // `effectiveModelTier` is the server's authoritative
+                            // entitlement: it covers unexpired personal plans and
+                            // team seats. `currentPlan` is display-only.
+                            app.effective_tier = u8::try_from(
+                                result.effective_model_tier.max(0),
+                            )
+                            .unwrap_or(0)
+                            .min(2);
+                            app.prefs.plan = Self::plan_for_effective_tier(
+                                app.effective_tier,
+                            );
                             let models = result
                                 .cloud
                                 .into_iter()
@@ -605,36 +699,33 @@ impl FlowyApp {
                                     context_window: m.context_window,
                                     max_tokens: m.max_tokens,
                                     credit_rate: m.credit_rate,
+                                    min_tier_level: u8::try_from(
+                                        m.min_tier_level.max(0),
+                                    )
+                                    .unwrap_or(0)
+                                    .min(2),
                                 })
-                                .collect();
+                                .collect::<Vec<_>>();
+                            app.prefs.model_account =
+                                account.clone().unwrap_or_default();
+                            let catalog = flowy_agent::ProviderCatalog::new();
                             app.studio.update(cx, |panel, cx| {
                                 panel.cloud_ready = false;
+                                panel.catalog = catalog;
                                 panel.catalog.replace(models);
-                                if !saved_id.is_empty() {
-                                    panel.catalog.select(saved_id);
-                                }
                                 cx.notify();
                             });
-                            app.prefs.model_account =
-                                account.unwrap_or_default();
-                            let selected =
-                                app.studio.read(cx).catalog.selected.clone();
-                            if let Some(id) = selected {
-                                app.select_cloud_model(&id, cx);
-                            } else {
-                                app.prefs.model_id.clear();
-                                app.prefs.save(app.store.root());
-                                let _ =
-                                    app.studio.read(cx).agent.apply_config(
-                                        Self::disconnected_config(),
-                                    );
-                                app.note("notice.model_unavailable", cx);
-                            }
+                            app.publish_tier_state(cx);
+                            app.apply_selected_tier(cx);
+                            let _ = app.prefs.save_checked(app.store.root());
                         }
                         Err(AuthError::AuthRequired) => app.sign_out(cx),
                         Err(error) => {
-                            app.studio.update(cx, |panel, _| {
-                                panel.cloud_ready = was_ready;
+                            let keep_ready =
+                                was_ready && app.applied_tier.is_some();
+                            app.studio.update(cx, |panel, cx| {
+                                panel.cloud_ready = keep_ready;
+                                cx.notify();
                             });
                             app.note(error.key(), cx);
                         }
@@ -1057,12 +1148,16 @@ impl FlowyApp {
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_task = None;
         self.catalog_loading = false;
+        self.effective_tier = 0;
+        self.applied_tier = None;
         self.credits_generation = self.credits_generation.wrapping_add(1);
         self.credits_task = None;
         self.studio.update(cx, |panel, cx| {
             panel.cloud_ready = false;
             panel.catalog_loading = false;
             panel.catalog = flowy_agent::ProviderCatalog::new();
+            panel.tiers.clear();
+            panel.plan = flowy_agent::Plan::Free;
             panel.credits = flowy_studio::CreditsViewState::Unavailable;
             panel.agent.stop();
             let _ = panel.agent.apply_config(Self::disconnected_config());
@@ -1252,8 +1347,8 @@ impl FlowyApp {
             StudioEvent::OpenFlex => {
                 self.open_flex(cx);
             }
-            StudioEvent::CloudModelSelected(id) => {
-                self.select_cloud_model(id, cx);
+            StudioEvent::TierSelected(tier) => {
+                self.select_tier(*tier, cx);
             }
             StudioEvent::RefreshModels => {
                 self.refresh_models(cx);
@@ -1963,6 +2058,59 @@ mod tests {
         assert!(!catalog_refresh_allowed(true, true, false));
         assert!(!catalog_refresh_allowed(false, false, false));
         assert!(!catalog_refresh_allowed(false, true, true));
+    }
+
+    #[gpui::test]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "GPUI test harness passes &mut TestAppContext"
+    )]
+    fn unavailable_or_locked_tiers_never_change_the_selected_route(
+        cx: &mut TestAppContext,
+    ) {
+        let root = test_root();
+        let app = cx.update(|cx| {
+            cx.new(|cx| {
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx)
+            })
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, cx| {
+                // Inject the session after construction so the startup refresh
+                // never opens a network request in tests.
+                app.auth.session = Some(flowy_auth::Session {
+                    access_token: "test-token".into(),
+                    email: "test@example.com".into(),
+                    display_name: "test".into(),
+                    user_id: Some(1),
+                });
+                app.prefs.model = flowy_agent::Model::Lite;
+                app.effective_tier = 0;
+
+                // The mapped id is missing: unavailable must not move the
+                // selection or pretend the route was applied.
+                app.select_tier(flowy_agent::Model::Standard, cx);
+                assert_eq!(app.prefs.model, flowy_agent::Model::Lite);
+                assert_eq!(app.notice, Some("notice.model_unavailable"));
+                assert_eq!(app.applied_tier, None);
+
+                app.studio.update(cx, |panel, _| {
+                    panel.catalog.replace(vec![flowy_agent::CatalogModel {
+                        id: "AIPC-deepseek-v4.1-flash".into(),
+                        name: "deepseek".into(),
+                        endpoint: "https://example.com/claw/v1".into(),
+                        ..flowy_agent::CatalogModel::default()
+                    }]);
+                });
+                // Present but gated: a Free account must stay on its route.
+                app.select_tier(flowy_agent::Model::Max, cx);
+                assert_eq!(app.prefs.model, flowy_agent::Model::Lite);
+                assert_eq!(app.notice, Some("notice.upgrade_later"));
+                assert_eq!(app.applied_tier, None);
+            });
+        });
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[gpui::test]

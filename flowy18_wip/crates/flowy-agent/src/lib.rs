@@ -11,6 +11,7 @@ mod flex;
 mod handle;
 mod index;
 mod model;
+mod model_directory;
 mod projection;
 mod title;
 
@@ -19,6 +20,10 @@ pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use handle::{AgentHandle, AgentUpdate, SessionSummary};
 pub use model::{Model, Plan};
+pub use model_directory::{
+    CLOUD_TIERS, TierResolution, TierSpec, is_locked, required_level,
+    resolve_tier,
+};
 pub use projection::{ChatLine, TurnStatus};
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
 

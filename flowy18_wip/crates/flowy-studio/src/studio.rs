@@ -1,4 +1,3 @@
-use flowy_agent::Plan;
 use flowy_ui as theme;
 use flowy_ui::text_area;
 use gpui::{Context, SharedString, Window, div, prelude::*, px};
@@ -167,7 +166,7 @@ impl crate::panel::StudioPanel {
     fn model_menu(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let mut menu = theme::menu(
             "model-list-content",
-            self.t("model.title"),
+            self.t("model.menu_title"),
             &self.theme,
             &self.ui,
             cx,
@@ -182,50 +181,109 @@ impl crate::panel::StudioPanel {
         .p(self.theme.space(8.))
         .flex()
         .flex_col()
-        .gap(self.theme.space(4.));
-        for model in &self.catalog.models {
-            let id = model.id.clone();
-            let selected =
-                self.catalog.selected.as_deref() == Some(model.id.as_str());
-            menu = menu.child(
-                theme::menu_item(
-                    SharedString::from(format!("cloud-model-{}", model.id)),
-                    model.name.clone(),
-                    false,
-                    &self.theme,
-                    cx.listener(move |panel, _, _, cx| {
-                        if !panel.agent.turn_status().is_busy() {
-                            cx.emit(
-                                crate::panel::StudioEvent::CloudModelSelected(
-                                    id.clone(),
-                                ),
-                            );
-                            panel.model_menu_open = false;
-                            cx.notify();
-                        }
-                    }),
+        .gap(self.theme.space(4.))
+        .max_h(px(420.))
+        .overflow_y_scroll();
+        for row in &self.tiers {
+            let tier = row.tier;
+            let selected = row.selected;
+            let locked = row.locked || row.unavailable;
+            let pro_badge = row.pro_badge;
+            let unavailable = row.unavailable;
+            // Labels live in the panel's i18n, so `sync_i18n` refreshes the
+            // menu immediately after a locale switch.
+            let label = self.t(tier.name_key());
+            let detail = if unavailable {
+                self.t("model.unavailable")
+            } else {
+                self.t(tier.detail_key())
+            };
+            let title = div()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(8.))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(if locked {
+                            self.theme.muted()
+                        } else {
+                            self.theme.ink()
+                        })
+                        .child(label.clone()),
                 )
-                .aria_selected(selected)
-                .px(self.theme.space(12.))
-                .py(self.theme.space(8.))
-                .rounded_lg()
+                .when(pro_badge, |title| {
+                    title.child(
+                        div()
+                            .px(self.theme.space(6.))
+                            .py(px(1.))
+                            .rounded_md()
+                            .bg(self.theme.soft())
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .child(self.t("model.pro")),
+                    )
+                });
+            let title_row = div()
+                .w_full()
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(self.theme.space(12.))
-                .hover(|row| row.bg(self.theme.soft()))
-                .when(selected, |row| row.child(theme::icons::check())),
+                .child(title)
+                .when(selected, |row| row.child(theme::icons::check()));
+            let row_id = SharedString::from(format!("tier-{}", tier_key(tier)));
+            menu = menu.child(
+                theme::interactive(row_id, label, &self.theme)
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_selected(selected)
+                    .aria_disabled(locked)
+                    .w_full()
+                    .px(self.theme.space(12.))
+                    .py(self.theme.space(8.))
+                    .rounded_lg()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .when(!locked, |row| {
+                        row.cursor_pointer()
+                            .hover(|row| row.bg(self.theme.soft()))
+                    })
+                    .child(title_row)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(self.theme.muted())
+                            .whitespace_normal()
+                            .child(detail),
+                    )
+                    .on_click(cx.listener(move |panel, _, _, cx| {
+                        if panel.agent.turn_status().is_busy() {
+                            return;
+                        }
+                        cx.emit(crate::panel::StudioEvent::TierSelected(tier));
+                        panel.model_menu_open = false;
+                        cx.notify();
+                    })),
             );
         }
-        menu = menu.child(theme::menu_item(
-            "refresh-cloud-models",
-            format!("↻ {}", self.t("model.refresh")),
-            self.catalog_loading,
-            &self.theme,
-            cx.listener(|_, _, _, cx| {
-                cx.emit(crate::panel::StudioEvent::RefreshModels);
-            }),
-        ));
+        // The embedded font has no "↻" glyph, so draw the refresh icon as an
+        // SVG instead of relying on a Unicode character.
+        menu = menu.child(
+            theme::menu_item(
+                "refresh-cloud-models",
+                self.t("model.refresh"),
+                self.catalog_loading,
+                &self.theme,
+                cx.listener(|_, _, _, cx| {
+                    cx.emit(crate::panel::StudioEvent::RefreshModels);
+                }),
+            )
+            .flex()
+            .items_center()
+            .gap(self.theme.space(6.))
+            .child(theme::icons::refresh_cw()),
+        );
         menu
     }
 
@@ -234,6 +292,10 @@ impl crate::panel::StudioPanel {
         self.emit_model(cx);
         self.model_info_open = false;
         cx.notify();
+    }
+
+    const fn plan_key(&self) -> &'static str {
+        self.plan.label_key()
     }
 
     fn top_bar(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -274,12 +336,10 @@ impl crate::panel::StudioPanel {
                     .items_center()
                     .gap(self.theme.space(12.))
                     .child(
-                        div().text_sm().text_color(self.theme.muted()).child(
-                            self.t(match self.plan {
-                                Plan::Free => "credits.plan_free",
-                                Plan::Paid => "credits.plan_paid",
-                            }),
-                        ),
+                        div()
+                            .text_sm()
+                            .text_color(self.theme.muted())
+                            .child(self.t(self.plan_key())),
                     )
                     .child(
                         theme::Button::new("upgrade", self.t("studio.upgrade"))
@@ -355,10 +415,7 @@ impl crate::panel::StudioPanel {
     }
 
     fn credit_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let plan = match self.plan {
-            Plan::Free => "credits.plan_free",
-            Plan::Paid => "credits.plan_paid",
-        };
+        let plan = self.plan_key();
         let mut card = div()
             .id("credit-card")
             .occlude()
@@ -754,5 +811,14 @@ impl crate::panel::StudioPanel {
                     .size(px(14.))
                     .text_color(self.theme.muted()),
             )
+    }
+}
+
+const fn tier_key(tier: flowy_agent::Model) -> &'static str {
+    match tier {
+        flowy_agent::Model::Max => "max",
+        flowy_agent::Model::Standard => "standard",
+        flowy_agent::Model::Lite => "lite",
+        flowy_agent::Model::Flex => "flex",
     }
 }
