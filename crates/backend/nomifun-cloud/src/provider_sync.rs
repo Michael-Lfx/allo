@@ -31,17 +31,33 @@ const AUTO_MODEL_INTELLIGENCE: &str = "AIPC-auto-intelligence";
 const AUTO_MODEL_BALANCE: &str = "AIPC-auto-balance";
 const AUTO_MODEL_COST: &str = "AIPC-auto-cost";
 
+/// Outcome of one Flowy catalog sync.
+///
+/// `effective_model_tier` is the caller's tier from the same catalog response
+/// that supplied each model's `minTierLevel`. It is `0` when the sync did not
+/// learn one. Callers compare that number with the model minimum; a higher
+/// tier from `/user/me` still wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowyCatalogSync {
+    pub synced: bool,
+    pub effective_model_tier: i32,
+}
+
+struct FetchedCatalogModels {
+    entries: Vec<ClawModelEntry>,
+    effective_model_tier: i32,
+}
+
 /// Upsert Flowy Cloud provider with JWT + server model catalog for the model
-/// selector. The boolean reports whether the upstream catalog request
-/// succeeded; `Ok(false)` deliberately preserves an existing local projection
-/// while making the soft sync failure visible to the caller.
+/// selector. `synced == false` deliberately preserves an existing local
+/// projection while making the soft sync failure visible to the caller.
 pub async fn sync_flowy_builtin_provider(
     provider_repo: &Arc<dyn IProviderRepository>,
     provider_model_repo: &Arc<dyn IProviderModelRepository>,
     encryption_key: &[u8; 32],
     server: &ServerConfig,
     data_dir: &std::path::Path,
-) -> Result<bool, String> {
+) -> Result<FlowyCatalogSync, String> {
     let session = ServerSession::from_config(server, data_dir);
     let token = session
         .access_token()
@@ -59,17 +75,22 @@ pub async fn sync_flowy_builtin_provider(
     // so a blip cannot silently leave callers believing a soft-failed sync
     // "updated" anything — and so we never invent a fake one-model catalog
     // that masks the real failure mode (stale DB until the next success).
-    let (catalog_entries, catalog_fields, catalog_synced) =
+    let (catalog_entries, catalog_fields, catalog_synced, effective_model_tier) =
         match fetch_catalog_models(server, &session, data_dir).await {
-            Ok(entries) => {
-                let fields = build_model_fields(&entries, server);
-                (Some(entries), Some(fields), true)
+            Ok(fetched) => {
+                let fields = build_model_fields(&fetched.entries, server);
+                (
+                    Some(fetched.entries),
+                    Some(fields),
+                    true,
+                    fetched.effective_model_tier,
+                )
             }
             Err(e) => {
                 warn!(
                     "Failed to fetch Flowy chat model catalog: {e}; keeping existing local model list"
                 );
-                (None, None, false)
+                (None, None, false, 0)
             }
         };
 
@@ -187,9 +208,13 @@ pub async fn sync_flowy_builtin_provider(
         auto_models = auto_model_count,
         catalog_replaced = catalog_fields.is_some(),
         reasoning_effort_models = reasoning_effort_model_count,
+        effective_model_tier,
         "[reasoning-effort-diagnosis] Synced Flowy Cloud provider from server catalog"
     );
-    Ok(catalog_synced)
+    Ok(FlowyCatalogSync {
+        synced: catalog_synced,
+        effective_model_tier,
+    })
 }
 
 /// Known real output ceilings per model family (lowercase id token).
@@ -333,7 +358,7 @@ async fn fetch_catalog_models(
     server: &ServerConfig,
     session: &ServerSession,
     data_dir: &std::path::Path,
-) -> Result<Vec<ClawModelEntry>, String> {
+) -> Result<FetchedCatalogModels, String> {
     let _ = data_dir;
     let api = FlowyApiClient::new(server).map_err(|e| e.to_string())?;
     let (chat_res, asr_res, tts_res) = tokio::join!(
@@ -374,22 +399,26 @@ async fn fetch_catalog_models(
             "[reasoning-effort-diagnosis] Flowy cloud catalog model capabilities"
         );
     }
-    let asr = match asr_res {
-        Ok(resp) => resp.cloud,
+    let chat_tier = chat.effective_model_tier.max(0);
+    let (asr, asr_tier) = match asr_res {
+        Ok(resp) => (resp.cloud, resp.effective_model_tier.max(0)),
         Err(e) => {
             warn!("Failed to fetch Flowy ASR catalog (category=7): {e}; syncing without ASR models");
-            Vec::new()
+            (Vec::new(), 0)
         }
     };
-    let tts = match tts_res {
-        Ok(resp) => resp.cloud,
+    let (tts, tts_tier) = match tts_res {
+        Ok(resp) => (resp.cloud, resp.effective_model_tier.max(0)),
         Err(e) => {
             warn!("Failed to fetch Flowy TTS catalog (category=8): {e}; syncing without TTS models");
-            Vec::new()
+            (Vec::new(), 0)
         }
     };
     let chat_entries = merge_chat_catalogs(chat.auto, chat.cloud);
-    Ok(merge_catalog_modalities(chat_entries, asr, tts))
+    Ok(FetchedCatalogModels {
+        entries: merge_catalog_modalities(chat_entries, asr, tts),
+        effective_model_tier: chat_tier.max(asr_tier).max(tts_tier),
+    })
 }
 
 fn merge_chat_catalogs(auto: Vec<ClawModelEntry>, cloud: Vec<ClawModelEntry>) -> Vec<ClawModelEntry> {
@@ -1039,9 +1068,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-asr") };
         let session = ServerSession::from_config(&config, tmp.path());
-        let entries = fetch_catalog_models(&config, &session, tmp.path())
+        let fetched = fetch_catalog_models(&config, &session, tmp.path())
             .await
             .expect("catalog");
+        let entries = fetched.entries;
         let seeds = build_profile_seeds(&entries, "openai").unwrap();
 
         assert_eq!(
@@ -1097,11 +1127,15 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-asr-fail") };
         let session = ServerSession::from_config(&config, tmp.path());
-        let entries = fetch_catalog_models(&config, &session, tmp.path())
+        let fetched = fetch_catalog_models(&config, &session, tmp.path())
             .await
             .expect("chat catalog still syncs");
         assert_eq!(
-            entries.iter().map(|e| e.api_model_id()).collect::<Vec<_>>(),
+            fetched
+                .entries
+                .iter()
+                .map(|e| e.api_model_id())
+                .collect::<Vec<_>>(),
             vec!["AIPC-glm-4.7".to_string()]
         );
     }
@@ -1116,7 +1150,7 @@ mod tests {
             .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "1"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7"}]}}"#,
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-glm-4.7","name":"GLM 4.7","minTierLevel":1,"requiredPlanName":"Pro"}],"effectiveModelTier":2}}"#,
             ))
             .mount(&mock)
             .await;
@@ -1124,7 +1158,7 @@ mod tests {
             .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "7"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"code":200,"msg":"ok","data":{"cloud":[]}}"#,
+                r#"{"code":200,"msg":"ok","data":{"cloud":[],"effective_model_tier":1}}"#,
             ))
             .mount(&mock)
             .await;
@@ -1132,7 +1166,7 @@ mod tests {
             .and(path("/api/v2/model/availableListClaw"))
             .and(query_param("category", "8"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-tts","name":"qwen3-tts","category":8}]}}"#,
+                r#"{"code":200,"msg":"ok","data":{"cloud":[{"id":"AIPC-qwen3-tts","name":"qwen3-tts","category":8}],"effectiveModelTier":2}}"#,
             ))
             .mount(&mock)
             .await;
@@ -1144,10 +1178,13 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         unsafe { std::env::set_var("NOMIFUN_SERVER_TOKEN", "jwt-test-catalog-tts") };
         let session = ServerSession::from_config(&config, tmp.path());
-        let entries = fetch_catalog_models(&config, &session, tmp.path())
+        let fetched = fetch_catalog_models(&config, &session, tmp.path())
             .await
             .expect("catalog");
-        let seeds = build_profile_seeds(&entries, "openai").unwrap();
+        let entries = &fetched.entries;
+        let seeds = build_profile_seeds(entries, "openai").unwrap();
+        assert_eq!(fetched.effective_model_tier, 2);
+        assert_eq!(entries[0].min_tier_level, 1);
 
         assert_eq!(
             entries

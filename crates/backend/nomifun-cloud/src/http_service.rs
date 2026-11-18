@@ -271,7 +271,23 @@ impl CloudService {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let authenticated = status.is_logged_in();
-        let profile = status.cached_profile;
+        // The model lock compares this number with each model's min tier.
+        // A profile cached before `effectiveModelTier` existed still has the
+        // plan name, but the missing number deserializes as 0 and locks every
+        // gated model. Refresh while signed in, and keep the cache if the
+        // network is down.
+        let mut profile = status.cached_profile;
+        if authenticated {
+            match mgr.fetch_profile().await {
+                Ok(fresh) => profile = Some(fresh),
+                Err(err) => {
+                    tracing::debug!(
+                        error = %err,
+                        "whoami profile refresh failed; using cached profile"
+                    );
+                }
+            }
+        }
         let plan = profile
             .as_ref()
             .and_then(|p| p.current_plan.as_ref())

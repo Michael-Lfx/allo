@@ -147,6 +147,10 @@ pub struct CloudWebsiteEntryResponse {
 pub struct CloudSyncModelsResponse {
     /// True when the upstream catalog was fetched and written to the local provider row.
     pub synced: bool,
+    /// Caller's effective plan tier from the same catalog response as `minTierLevel`.
+    /// `0` means the sync did not learn a tier.
+    #[serde(default)]
+    pub effective_model_tier: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

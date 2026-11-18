@@ -12,6 +12,7 @@ import {
   type ProviderCatalogRefreshResult,
 } from '@renderer/hooks/agent/useModelProviderList';
 import { setTelemetryCloudAuthenticated } from '@renderer/utils/analytics/telemetryOutbox';
+import { higherEffectiveModelTier } from '@/renderer/utils/model/planGate';
 import {
   identifyCloudUser,
   resetCloudUserIdentity,
@@ -199,6 +200,14 @@ export const CloudAuthProvider: React.FC<React.PropsWithChildren> = ({ children 
       try {
         const result = await restoreModelEnvironment(runId, controller, accountId, force);
         if (!result || !isCurrentRun(runId, controller)) return;
+        const catalogTier = result.effectiveModelTier;
+        if (typeof catalogTier === 'number' && catalogTier > 0) {
+          setWhoami((current) => {
+            if (!current) return current;
+            const next = higherEffectiveModelTier(current.effectiveModelTier, catalogTier);
+            return next === current.effectiveModelTier ? current : { ...current, effectiveModelTier: next };
+          });
+        }
         const nextError = result.error ?? null;
         if (result.status === 'failed') {
           setModelStatus('failed');

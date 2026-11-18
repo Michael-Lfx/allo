@@ -5,10 +5,10 @@
  */
 
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { normalizeEffectiveModelTier } from '@/renderer/utils/model/planGate';
 
 /** Highest unexpired personal or team-seat tier from `/user/me`. */
 export function useEffectiveModelTier(): number {
   const { whoami } = useCloudAuth();
-  const tier = whoami?.effectiveModelTier;
-  return typeof tier === 'number' && Number.isFinite(tier) && tier > 0 ? Math.trunc(tier) : 0;
+  return normalizeEffectiveModelTier(whoami?.effectiveModelTier);
 }
