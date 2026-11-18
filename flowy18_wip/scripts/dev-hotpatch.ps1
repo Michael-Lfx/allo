@@ -182,6 +182,10 @@ foreach ($fingerprintRoot in $fingerprintRoots) {
     }
 }
 
+# ~/.cargo/config.toml sets RUSTC_WRAPPER=sccache with force=true. This
+# workspace config replaces that key with force=false, so the value below
+# reaches dx instead of being overwritten. Do not pass it through --cargo-args:
+# the nested quotes are split on the Windows command line and dx rejects them.
 $env:RUSTC_WRAPPER = $wrapperExe
 
 $dxArgs = @(

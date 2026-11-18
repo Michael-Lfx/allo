@@ -31,11 +31,13 @@ fn main() {
         }
     }
 
-    let mut cmd = Command::new(&args[0]);
-    cmd.args(&args[1..]);
-    // User cargo config forces RUSTC_WRAPPER=sccache onto every child. Leaving it
-    // set makes the rustup proxy refuse `rustc` and skips dx's own capture.
+    // Drop a leading sccache. Cargo's forced RUSTC_WRAPPER puts it in front of
+    // rustc, and the rustup proxy then serves a cached object with no hotpatch.
+    let forward = skip_sccache(&args);
+    let mut cmd = Command::new(&forward[0]);
+    cmd.args(&forward[1..]);
     cmd.env_remove("RUSTC_WRAPPER");
+    cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
     match cmd.status() {
         Ok(status) => exit(status.code().unwrap_or(1)),
         Err(err) => {
@@ -57,6 +59,28 @@ fn expand_rustc_args(args: &[String]) -> Option<Vec<String>> {
         }
     }
     Some(expanded)
+}
+
+fn skip_sccache(args: &[String]) -> &[String] {
+    let mut start = 0;
+    while start < args.len() && is_sccache(&args[start]) {
+        start += 1;
+    }
+    if start >= args.len() {
+        args
+    } else {
+        &args[start..]
+    }
+}
+
+fn is_sccache(arg: &str) -> bool {
+    Path::new(arg)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            name == "sccache" || name == "sccache.exe"
+        })
 }
 
 fn is_rustc(arg: &str) -> bool {
@@ -199,6 +223,24 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_sccache_in_front_of_rustc() {
+        let args = vec![
+            r"C:\sccache.exe".to_string(),
+            r"C:\rustc.exe".to_string(),
+            "--crate-name".to_string(),
+            "flowy_ui".to_string(),
+        ];
+        assert_eq!(
+            skip_sccache(&args),
+            &[
+                r"C:\rustc.exe".to_string(),
+                "--crate-name".to_string(),
+                "flowy_ui".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn expands_cargo_argfile_after_rustc() {
