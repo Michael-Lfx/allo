@@ -23,7 +23,7 @@ pub enum TextRole {
     Caption,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeMetrics {
     pub size: Pixels,
     pub line_height: Pixels,
@@ -166,7 +166,7 @@ impl Title {
 #[must_use]
 pub struct Text {
     role: TextRole,
-    text: gpui::SharedString,
+    content: gpui::SharedString,
     truncate: bool,
 }
 
@@ -174,7 +174,7 @@ impl Text {
     pub fn new(role: TextRole, text: impl Into<gpui::SharedString>) -> Self {
         Self {
             role,
-            text: text.into(),
+            content: text.into(),
             truncate: false,
         }
     }
@@ -192,7 +192,7 @@ impl Text {
         styled_text(
             theme.text_metrics(self.role),
             color,
-            self.text,
+            self.content,
             self.truncate,
         )
     }
@@ -308,7 +308,7 @@ pub struct PageColumn {
 }
 
 impl PageColumn {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             children: Vec::new(),
         }

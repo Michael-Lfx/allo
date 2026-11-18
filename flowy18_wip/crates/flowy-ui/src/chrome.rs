@@ -167,7 +167,7 @@ pub fn icon_segment(
         } else {
             theme.toolbar_icon()
         })
-        .when(selected, |segment| segment.shadow_sm())
+        .when(selected, gpui::Styled::shadow_sm)
         .child(icon)
         .on_click(on_click);
     if !selected {

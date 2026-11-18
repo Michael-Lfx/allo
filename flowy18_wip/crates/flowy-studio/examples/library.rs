@@ -67,7 +67,7 @@ impl Render for LibraryDemo {
                     .and_then(|image| image.save(&path).map_err(Into::into))
                 {
                     Ok(()) => {
-                        eprintln!("Library render saved to {}", path.display())
+                        eprintln!("Library render saved to {}", path.display());
                     }
                     Err(error) => eprintln!("Library capture failed: {error}"),
                 }
