@@ -103,6 +103,7 @@ pub async fn run_turn(
             history.push(converted);
         }
     }
+    let history = repair_tool_call_history(history);
     let context = AgentContext {
         system_prompt: request.system,
         messages: history,
@@ -188,8 +189,11 @@ fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
     }
 }
 
-/// Convert stored messages to pi agent messages. Tool results must carry the
-/// originating tool name via [`MessageSource::Tool`].
+/// Convert stored messages to pi agent messages.
+///
+/// A tool result must carry its originating tool name via
+/// [`MessageSource::Tool`]; legacy rows that predate that field are skipped so
+/// one stale history entry cannot fail a whole turn.
 pub fn to_agent_message(
     message: &Message,
 ) -> Result<Option<AgentMessage>, String> {
@@ -203,14 +207,10 @@ pub fn to_agent_message(
             _ => None,
         })
     {
-        let tool_name = match &message.source {
-            MessageSource::Tool { tool } => tool.clone(),
-            _ => {
-                return Err(
-                    "tool result message is missing its tool name".into()
-                );
-            }
+        let MessageSource::Tool { tool } = &message.source else {
+            return Ok(None);
         };
+        let tool_name = tool.clone();
         let (tool_call_id, content, is_error) = tool_result;
         return Ok(Some(AgentMessage::ToolResult(Box::new(
             ToolResultMessage {
@@ -262,6 +262,82 @@ pub fn to_agent_message(
     }
 }
 
+/// Text recorded for a tool call whose result never made it to disk.
+const RECOVERY_TOOL_RESULT: &str = concat!(
+    "Tool call was interrupted before its result was persisted. ",
+    "The tool was not re-executed during session recovery."
+);
+
+/// Repair tool-call pairing before history reaches the provider.
+///
+/// Policy mirrors pi-rust `rpi-harness/src/messages.rs`
+/// (`repair_orphaned_tool_calls`, MIT licensed), adapted to the host message
+/// vocabulary instead of depending on the harness crate.
+///
+/// Stored history can be truncated mid-turn or predate the current schema, and
+/// strict OpenAI-compatible gateways reject both orphaned tool results and
+/// unanswered tool calls. Keep matching results next to their assistant, drop
+/// unmatched results, and synthesize an error result for a call that never
+/// recorded one (same policy as the pi harness repair).
+fn repair_tool_call_history(history: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    let mut input = history.into_iter().peekable();
+    let mut repaired: Vec<AgentMessage> = Vec::new();
+    while let Some(message) = input.next() {
+        let AgentMessage::Assistant(assistant) = &message else {
+            // A tool result never matched a call: providers reject it.
+            if !matches!(message, AgentMessage::ToolResult(_)) {
+                repaired.push(message);
+            }
+            continue;
+        };
+        let timestamp = assistant.timestamp;
+        let mut pending: Vec<(String, String)> = assistant
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                Content::ToolCall(call) => {
+                    Some((call.id.clone(), call.name.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        repaired.push(message);
+        let mut interleaved = Vec::new();
+        while input.peek().is_some_and(|message| {
+            !matches!(message, AgentMessage::Assistant(_))
+        }) {
+            let message = input.next().expect("peeked message");
+            if let AgentMessage::ToolResult(result) = &message {
+                if let Some(index) = pending.iter().position(|(id, name)| {
+                    id == &result.tool_call_id && name == &result.tool_name
+                }) {
+                    pending.remove(index);
+                    repaired.push(message);
+                }
+            } else {
+                interleaved.push(message);
+            }
+        }
+        for (tool_call_id, tool_name) in pending {
+            repaired.push(AgentMessage::ToolResult(Box::new(
+                ToolResultMessage {
+                    role: ToolResultRole,
+                    tool_call_id,
+                    tool_name,
+                    content: vec![Content::text(RECOVERY_TOOL_RESULT)],
+                    details: None,
+                    usage: None,
+                    added_tool_names: Vec::new(),
+                    is_error: true,
+                    timestamp,
+                },
+            )));
+        }
+        repaired.extend(interleaved);
+    }
+    repaired
+}
+
 fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
     blocks
         .iter()
@@ -280,12 +356,12 @@ fn to_pi_content(blocks: &[ContentBlock]) -> Result<Vec<Content>, String> {
                 name,
                 arguments,
             } => {
+                // Legacy rows may hold truncation or manual edits; the
+                // provider requires syntactically valid JSON, so a corrupted
+                // blob degrades to an empty object instead of failing replay.
                 let arguments: serde_json::Value =
-                    serde_json::from_str(arguments).map_err(|error| {
-                        format!(
-                            "tool call {id} has invalid JSON arguments: {error}"
-                        )
-                    })?;
+                    serde_json::from_str(arguments)
+                        .unwrap_or_else(|_| serde_json::json!({}));
                 Ok(Content::ToolCall(ToolCall {
                     kind: ToolCallType,
                     id: id.clone(),
@@ -418,8 +494,8 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LoopOutcome, ModelRoute, TurnRequest, run_turn, to_agent_message,
-        to_host_messages,
+        LoopOutcome, ModelRoute, TurnRequest, repair_tool_call_history,
+        run_turn, to_agent_message, to_host_messages,
     };
     use crate::types::{
         CancelToken, ContentBlock, Message, MessageSource, Role,
@@ -450,6 +526,116 @@ mod tests {
         let model = route.rpi_model();
         assert_eq!(model.context_window, 1234);
         assert_eq!(model.max_tokens, 567);
+    }
+
+    #[test]
+    fn orphan_tool_call_gets_placeholder_and_orphan_results_are_dropped() {
+        let assistant = Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            }],
+            source: MessageSource::Model {
+                provider: "flowy".into(),
+                model: "m".into(),
+            },
+        };
+        let user = Message {
+            id: "u1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("next")],
+            source: MessageSource::User,
+        };
+        let mut history: Vec<AgentMessage> = Vec::new();
+        for message in [&assistant, &user] {
+            if let Some(converted) = to_agent_message(message).unwrap() {
+                history.push(converted);
+            }
+        }
+        let repaired = repair_tool_call_history(history);
+        assert_eq!(repaired.len(), 3);
+        let AgentMessage::ToolResult(result) = &repaired[1] else {
+            panic!("placeholder tool result expected right after assistant");
+        };
+        assert_eq!(result.tool_call_id, "call-1");
+        assert_eq!(result.tool_name, "read_file");
+        assert!(result.is_error);
+        let AgentMessage::User(next) = &repaired[2] else {
+            panic!("user message must stay after the repaired batch");
+        };
+        assert_eq!(super::user_text(&next.content), "next");
+    }
+
+    #[test]
+    fn unmatched_tool_result_is_dropped_from_provider_history() {
+        let mut history: Vec<AgentMessage> = Vec::new();
+        let user = Message {
+            id: "u1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("hi")],
+            source: MessageSource::User,
+        };
+        history.push(to_agent_message(&user).unwrap().unwrap());
+        history.push(AgentMessage::ToolResult(Box::new(
+            rpi_ai::types::ToolResultMessage {
+                role: rpi_ai::types::ToolResultRole,
+                tool_call_id: "call-9".into(),
+                tool_name: "read_file".into(),
+                content: vec![Content::text("stale")],
+                details: None,
+                usage: None,
+                added_tool_names: Vec::new(),
+                is_error: false,
+                timestamp: 0,
+            },
+        )));
+        let repaired = repair_tool_call_history(history);
+        assert_eq!(repaired.len(), 1);
+        assert!(matches!(repaired[0], AgentMessage::User(_)));
+    }
+
+    #[test]
+    fn invalid_tool_arguments_degrade_to_an_empty_object() {
+        let assistant = Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: "{not json".into(),
+            }],
+            source: MessageSource::Model {
+                provider: "flowy".into(),
+                model: "m".into(),
+            },
+        };
+        let converted = to_agent_message(&assistant).unwrap().unwrap();
+        let AgentMessage::Assistant(assistant) = converted else {
+            panic!("assistant message expected");
+        };
+        let Content::ToolCall(call) = &assistant.content[0] else {
+            panic!("tool call expected");
+        };
+        assert!(call.arguments.is_object());
+        assert_eq!(call.arguments, serde_json::json!({}));
+    }
+
+    #[test]
+    fn legacy_tool_result_without_tool_source_is_skipped() {
+        let message = Message {
+            id: "t-legacy".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "call-9".into(),
+                content: vec![ContentBlock::text("data")],
+                is_error: Some(false),
+            }],
+            source: MessageSource::User,
+        };
+        assert!(to_agent_message(&message).unwrap().is_none());
     }
 
     #[test]
@@ -511,6 +697,42 @@ mod tests {
         assert_eq!(parsed["path"], "a.txt");
     }
 
+    fn scripted_stream_capturing(
+        text: &'static str,
+        stop: StopReason,
+        captured: Arc<std::sync::Mutex<Vec<rpi_ai::types::Message>>>,
+    ) -> rpi_agent::StreamFn {
+        rpi_agent::stream_fn(move |model, context, _| {
+            if let Ok(mut guard) = captured.lock() {
+                *guard = context.messages.clone();
+            }
+            let mut message = AssistantMessage::empty(
+                Api::Other("test".into()),
+                "flowy",
+                model.id.clone(),
+                0,
+            );
+            message.content = vec![Content::text(text)];
+            message.stop_reason = stop;
+            let (mut producer, consumer) =
+                rpi_ai::event_stream::create_assistant_message_event_stream();
+            tokio::spawn(async move {
+                producer
+                    .push(AssistantMessageEvent::Start {
+                        partial: Arc::new(message.clone()),
+                    })
+                    .await;
+                producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message,
+                    })
+                    .await;
+            });
+            consumer
+        })
+    }
+
     fn scripted_stream(
         text: &'static str,
         stop: StopReason,
@@ -553,6 +775,82 @@ mod tests {
             });
             consumer
         })
+    }
+
+    #[tokio::test]
+    async fn orphaned_tool_call_is_repaired_before_the_provider_request() {
+        let assistant = Message {
+            id: "a1".into(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            }],
+            source: MessageSource::Model {
+                provider: "flowy".into(),
+                model: "m".into(),
+            },
+        };
+        // Legacy row without MessageSource::Tool: converted to None, so the
+        // assistant tool call would otherwise reach the provider unanswered.
+        let legacy_result = Message {
+            id: "t1".into(),
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "call-1".into(),
+                content: vec![ContentBlock::text("data")],
+                is_error: Some(false),
+            }],
+            source: MessageSource::User,
+        };
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (emitter, _events) = CollectorEmitter::new();
+        let result = run_turn(
+            TurnRequest {
+                system: String::new(),
+                history: vec![assistant, legacy_result],
+                prompt: "hi".into(),
+                route: route(),
+                tools: Vec::new(),
+                signal: CancelToken::new(),
+            },
+            scripted_stream_capturing(
+                "ok",
+                StopReason::Stop,
+                Arc::clone(&captured),
+            ),
+            Arc::new(emitter),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.outcome, LoopOutcome::Completed);
+        let messages = captured.lock().unwrap().clone();
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            rpi_ai::types::Message::Assistant(assistant)
+                if assistant.content.iter().any(|content| matches!(
+                    content,
+                    Content::ToolCall(call) if call.id == "call-1"
+                ))
+        )));
+        let repaired = messages
+            .iter()
+            .find_map(|message| match message {
+                rpi_ai::types::Message::ToolResult(result)
+                    if result.tool_call_id == "call-1" =>
+                {
+                    Some(result)
+                }
+                _ => None,
+            })
+            .expect("provider request must carry a result for call-1");
+        assert_eq!(repaired.tool_name, "read_file");
+        assert!(repaired.is_error);
+        assert!(
+            Content::text_only(&repaired.content, "")
+                .contains("not re-executed")
+        );
     }
 
     #[tokio::test]
