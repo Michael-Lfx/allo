@@ -76,12 +76,14 @@ Rules:
 - Output JSON only, without Markdown fences or commentary."#;
 
 
-/// 题型答案形状契约（u10 同源片段源）：整课题库提示词的「The ten kinds」
+/// 题型答案形状契约（u10 同源片段源）：整课题库提示词的「The nine kinds」
 /// 块与单题/变式提示词的按题型装配都从这张表渲染——两处永不漂移。行文本
 /// 与拆表前的历史常量逐字一致（golden 单测钉住整课题库面零变化）。numeric
 /// 的行自带「answer is a JSON number」与 tol 语义。classify（pf2）的行
 /// 明确 objects 左列 + categories 短规范标签集合（2-6 个、互不相同）+
-/// answer 逐对象类别数组。
+/// answer 逐对象类别数组。deprecated 题型（pf5 首例 matching）不进本表
+/// ——生成契约面只渲染活跃题型，一致性测试钉住块内 kind 集合恰等
+/// `ActivityKind::llm_generatable`。
 pub(super) const ACTIVITY_KIND_SHAPE_CONTRACT: &[(&str, &str)] = &[
     (
         "single_choice",
@@ -109,10 +111,6 @@ pub(super) const ACTIVITY_KIND_SHAPE_CONTRACT: &[(&str, &str)] = &[
         "objects is the left-column list of concrete items to classify; categories is the set of 2-6 short canonical category labels, pairwise distinct after normalization; answer is an array of category labels aligned one-to-one with objects.",
     ),
     (
-        "matching",
-        "options are the left-column items; answer is an array of right-column values aligned one-to-one with options.",
-    ),
-    (
         "reflection",
         "answer must be null; asks the learner to explain or apply one idea.",
     ),
@@ -134,10 +132,11 @@ pub(super) fn activity_kind_contract_line(kind: ActivityKind) -> String {
     format!("- {name}: {shape}")
 }
 
-/// 整课题库面的十题型契约块（历史「The nine kinds」块的同源渲染，pf2 起
-/// classify 进表为十行）。
+/// 整课题库面的活跃题型契约块（历史「The nine kinds」块的同源渲染；pf2
+/// classify 进表、pf5/F1 deprecated matching 出表——九行恰等注册表
+/// llm_generatable 集合）。
 pub(super) fn activity_kind_contract_block() -> String {
-    let mut block = String::from("The ten kinds and their answer shapes:\n");
+    let mut block = String::from("The nine kinds and their answer shapes:\n");
     for (name, shape) in ACTIVITY_KIND_SHAPE_CONTRACT {
         block.push_str("- ");
         block.push_str(name);
@@ -189,11 +188,11 @@ const LESSON_SYSTEM_TAIL: &str = r#"Rules:
 - Variety first: use at least 3 different kinds across the set — never the same kind throughout.
 - Question budget: about (tier budget) questions per content section (concept/example/demo) as stated in the prompt, plus at most one cross-section comprehensive question. Never fewer than 3 activities in total.
 - Every question binds "section_key" to the section that taught it (exact key from the manifest, e.g. "s2"). Only the single comprehensive question may use section_key "general".
-- At least 2 objective questions in total (single_choice, true_false, fill_in_blank, multi_choice, numeric, ordering, matching, classify).
+- At least 2 objective questions in total (single_choice, true_false, fill_in_blank, multi_choice, numeric, ordering, classify).
 - AI-graded questions (reflection plus open_question) together: at least 1, at most 3, and at most one open_question. They must collectively cover the lesson's sections.
 - Order the set easy to hard: open with 1-2 discrimination questions, then application, and close with a synthesis or a deliberate common-mistake trap.
 - Choice options are BARE text without letter prefixes ("A." / "B、" are added by the system automatically) — an option like "A. 权利" is WRONG, write "权利".
-- ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other); classify categories must be SHORT canonical labels (2-6, pairwise distinct — they are the discrimination axis, never descriptions).
+- ordering items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other); classify categories must be SHORT canonical labels (2-6, pairwise distinct — they are the discrimination axis, never descriptions).
 - Every explanation states WHY the answer is right AND why the tempting wrong options are wrong — for choice questions (single_choice/multi_choice/true_false) walk EVERY option in the explanation and say per option why it is right or wrong, not just the correct one; for geometry/function/data questions the explanation may include one ```svg block.
 - Before submitting, re-solve every question as if you were the candidate: the answer key must match your re-solution, the explanation must match the answer key, and every field must be filled in — AI-graded questions (reflection/open_question) must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
 - Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it. A missing or empty "evidence" on an objective question is a contract violation.
@@ -266,8 +265,9 @@ const LESSON_ACTIVITY_SYSTEM_LANGUAGE_TAIL: &str = "- Questions, options, answer
 ///（`LESSON_ACTIVITY_SYSTEM_BASELINE` + 语言尾段）
 /// 之后（常量本身不改写：off 臂逐字回退旧提示词）。
 /// 适用域写明：fill_in_blank 既有的近义陷阱与必填 distractors 规则不动；
-/// ordering / matching / numeric 不适用。`pub`：ai-agent 的跨宿互钉测试
-/// 需要同时看到传统线（本块）与图线（`DISTRACTOR_MENU_CN`）两宿。
+/// ordering / numeric 不适用（deprecated matching 已随 pf5/F1 出生成面）。
+/// `pub`：ai-agent 的跨宿互钉测试需要同时看到传统线（本块）与图线
+///（`DISTRACTOR_MENU_CN`）两宿。
 pub const DISTRACTOR_MENU_BLOCK: &str = r#"
 Distractor menu (R21, choice questions only — a temptation is a negative example, not noise):
 - Near-miss: an option that matches everything except exactly one stated condition.
@@ -281,7 +281,7 @@ Distractor menu (R21, choice questions only — a temptation is a negative examp
 - Set relation check: an option that confuses subset, superset, overlap or disjointness.
   Applies when the body compares categories or ranges; not applicable when no two sets are in play.
 Prefer a natural negative example whenever one exists; never fabricate a distractor from outside the taught material.
-Scope: the temptation options of single_choice, multi_choice and true_false. fill_in_blank keeps its existing near-synonym trap and mandatory "distractors" rule unchanged. ordering, matching and numeric take no distractor menu.
+Scope: the temptation options of single_choice, multi_choice and true_false. fill_in_blank keeps its existing near-synonym trap and mandatory "distractors" rule unchanged. ordering and numeric take no distractor menu.
 "#;
 
 

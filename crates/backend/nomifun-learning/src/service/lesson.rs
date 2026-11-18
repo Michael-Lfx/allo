@@ -2377,6 +2377,22 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         request: GenerateLessonActivityRequest,
     ) -> Result<GeneratedLessonActivity, AppError> {
+        // deprecated 题型退出生成契约（pf5 注册表，pf2/F1 bank 面收口）：
+        // LLM 单题装配面不再为 deprecated 题型出题——变式面早已按题型跳过
+        //（quiz 变式臂「matching kind has no variant generator」），本闸封
+        // 手动加题预览的残余入口。闸在所有 DB/补全工作之前。自拟题面
+        //（create_lesson_activity）不受废弃约束，照旧放行。
+        if !request.kind.llm_generatable() {
+            let hint = request
+                .kind
+                .replaced_by()
+                .map(|replacement| format!("; use {} instead", replacement.as_str()))
+                .unwrap_or_default();
+            return Err(AppError::UnprocessableEntity(format!(
+                "activity kind {} is deprecated and no longer generated{hint}",
+                request.kind.as_str()
+            )));
+        }
         // The lesson must belong to a course the learner is enrolled in;
         // generation is a read-only preview, so no enrollment is created.
         let enrolled: Option<String> = sqlx::query_scalar(

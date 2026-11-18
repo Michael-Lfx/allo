@@ -2210,6 +2210,52 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(active_rows.0, 1, "active kind seeds normally on manual add");
     }
 
+    /// pf2/F1 生成面收口：LLM 单题装配面（generate_lesson_activity）拒绝
+    /// deprecated 题型——matching 退出生成契约后，变式面早已按题型跳过
+    /// （quiz 变式臂），本闸封手动加题预览的残余入口；自拟题面
+    /// （create_lesson_activity）不受废弃约束，照旧放行。闸在所有
+    /// DB/补全工作之前，无课时上下文即可到达。
+    #[tokio::test]
+    async fn manual_activity_generation_rejects_deprecated_kinds() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let request = |kind| GenerateLessonActivityRequest {
+            kind,
+            provider_id: None,
+            model: None,
+            focus: String::new(),
+        };
+        let error = service
+            .generate_lesson_activity(
+                &UserId::parse(nomifun_db::installation_owner_id(database.pool()).await.unwrap())
+                    .unwrap(),
+                &LearningLessonId::new(),
+                request(ActivityKind::Matching),
+            )
+            .await
+            .expect_err("deprecated matching 不得再进 LLM 单题装配面");
+        let message = format!("{error}");
+        assert!(
+            message.contains("deprecated") && message.contains("matching"),
+            "拒绝理由必须点名 deprecated matching：{message}"
+        );
+        // 活跃题型不受闸影响——同一请求换 classify 通过闸（此测试库无该
+        // 课时，走正常 NotFound 面，证明闸只拦 deprecated）。
+        let active = service
+            .generate_lesson_activity(
+                &UserId::parse(nomifun_db::installation_owner_id(database.pool()).await.unwrap())
+                    .unwrap(),
+                &LearningLessonId::new(),
+                request(ActivityKind::Classify),
+            )
+            .await
+            .expect_err("无课时上下文照常报 NotFound");
+        assert!(
+            !format!("{active}").contains("deprecated"),
+            "活跃题型不得被闸拦截：{active}"
+        );
+    }
+
     #[tokio::test]
     async fn custom_questions_persist_config_and_join_the_review_queue() {
         // 自建题契约：config 落库、进题库、按同一判卷器判分；填空题走 038
