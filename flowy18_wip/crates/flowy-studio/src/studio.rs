@@ -585,6 +585,18 @@ impl crate::panel::StudioPanel {
 
     fn composer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         div()
+            .on_action(cx.listener(
+                |panel, _: &crate::SubmitComposer, _window, cx| {
+                    // The home surface has its own composer; Enter submits here
+                    // too, matching the chat composer's binding.
+                    let draft =
+                        !panel.prompt.read(cx).as_str().trim().is_empty();
+                    if panel.status.is_busy() || !draft || !panel.cloud_ready {
+                        return;
+                    }
+                    panel.send_prompt(cx);
+                },
+            ))
             .px(self.theme.space(32.))
             .pb(self.theme.space(16.))
             .child(

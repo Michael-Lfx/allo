@@ -9,6 +9,11 @@ use gpui::{
 };
 use gpui_ce_elements::editable_text::{EditableTextState, TextChanged};
 
+/// Enter pressed while the composer owns focus.
+#[derive(Clone, Debug, Default, PartialEq, Eq, gpui::Action)]
+#[action(namespace = flowy_studio)]
+pub struct SubmitComposer;
+
 #[derive(Clone, Copy, Debug)]
 pub enum ComposerEvent {
     Send,
@@ -107,6 +112,19 @@ impl ChatComposer {
         let has_draft = !self.prompt.read(cx).as_str().trim().is_empty();
         div()
             .id("chat-composer")
+            .on_action(cx.listener(
+                move |this, _: &SubmitComposer, _window, cx| {
+                    // Enter submits; Shift+Enter keeps inserting newlines via
+                    // the editable-text binding. Empty/running drafts swallow
+                    // Enter so it cannot leave a stray blank line.
+                    let draft =
+                        !this.prompt.read(cx).as_str().trim().is_empty();
+                    if running || !draft || !this.cloud_ready {
+                        return;
+                    }
+                    cx.emit(ComposerEvent::Send);
+                },
+            ))
             .px(self.theme.space(32.))
             .pb(self.theme.space(20.))
             .pt(self.theme.space(8.))
