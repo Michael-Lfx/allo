@@ -45,6 +45,7 @@ perItemFeedback: true`（存量兼容渲染面保留）；其余八 kind = activ
 | quiz 面 | 题库独立管道 | 不受影响 | 零 |
 | XP 结算 | settle.rs | kind-agnostic，不受影响 | 零 |
 | AI 批改 | open_judge.rs | reflection/open 专用，不受影响 | 零 |
+| **复习卡种子** | progress.rs `seed_lesson_review_items` | **跳过 deprecated kind 活动（不种卡）**——2026-11-18 兼容性复核补入：完成旧课时会给永不抽出的 matching 活动种卡（due 徽标虚高 + 死卡堆积）。存量实测：matching 活动 4 道、关联复习卡 **0 张**（当前无存量死卡，但完成旧课时即触发种子路径） | 低 |
 
 **账本零触碰**：已作答 matching attempt/XP/打卡原样保留（学习账本独立
 性）。
@@ -59,6 +60,12 @@ perItemFeedback: true`（存量兼容渲染面保留）；其余八 kind = activ
   两端语义对齐靠同源测试。
 - pf1/pf2/pf3/pf4 挂靠点全部改为 descriptor 派生（pf1 perItemFeedback /
   pf2 llmGeneratable+审计 / pf4 题型指导按判别/联结轴分组）。
+- **⑥复习卡种子面（2026-11-18 兼容性复核补入）**：
+  `seed_lesson_review_items` 种卡跳过 `reviewEligible=false` 的活动——
+  完成旧课时不再给永不抽出的 matching 活动种卡（否则 due 徽标虚高 +
+  死卡堆积）。存量实测：matching 活动共 4 道、关联复习卡 **0 张**（当
+  前零死卡，本条防未来完成旧课时触发种子路径）。+ 测试（旧课时完成 →
+  matching 零种卡、非 deprecated 正常种卡）。
 
 ## Acceptance
 
@@ -67,6 +74,8 @@ perItemFeedback: true`（存量兼容渲染面保留）；其余八 kind = activ
 - stepActivities 过滤测试：matching 行不计门槛、全 deprecated 节自动过、
   非 deprecated 正常。
 - 复习抽题排除测试；契约一致性测试（prose/schema == registry）。
+- 复习卡种子跳过测试（旧课时完成 → matching 零种卡、非 deprecated
+  正常种卡）。
 - `cargo test -p nomifun-learning` / typecheck / 聚焦前端测试 /
   theme / dead-css 绿；smoke EXIT 0（prose 变更兜底）。
 - 真机：练习流不再出现该匹配题、节可直接过、复习不抽到（随波欠账）。
