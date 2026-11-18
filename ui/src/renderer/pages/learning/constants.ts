@@ -36,9 +36,15 @@ export const REVIEW_BANNER_EXPANDED_KEY = 'learning.reviewBannerExpanded';
 /** 结构图自动呈现水位（c5）：某课的结构图被自动呈现过一次的持久标记。值 =
  * 结构 generated_at（ms）；重生成后时间戳更新 → 再次自动呈现一次。 */
 export const STRUCTURE_PRESENTED_KEY = 'learning.structurePresented';
-/** 图工作区头部折叠（f3 Q5）：per-course 折叠标记。值 = { [courseId]: true }
- * （只记折叠；缺席 = 展开——默认展开语义）。 */
-export const GRAPH_HEADER_COLLAPSED_KEY = 'learning.graph.headerCollapsed';
+/** 图工作区头部折叠（f3 Q5；a4 升版 v2）：per-course 折叠标记。值 =
+ * { [courseId]: true }（只记折叠；缺席 = 展开——默认展开语义）。
+ * v2 一次性清 v1 旧偏好：a1 滚动自动折叠落地后「持久折叠」语义已变
+ * （f3 时代的手动折叠标记不再代表同一意图），旧键作废回展开态——初
+ * 使用/老用户都能见到展开态与自动折叠行为（真机 FAIL 教训：入口即折叠
+ * 让自动折叠不可发现）。 */
+export const GRAPH_HEADER_COLLAPSED_KEY = 'learning.graph.headerCollapsed.v2';
+/** v1 旧键（f3 时代）：仅用于一次性清理（读侧发现即移除，a4）。 */
+export const LEGACY_GRAPH_HEADER_COLLAPSED_KEY = 'learning.graph.headerCollapsed';
 
 /** 图工作区头部滚动自动折叠阈值（a1，px）：学习 Tab 正文滚动深度 ≥ 该值时
  * 临时折叠头部（让位正文版面）。临时层不落盘（滚动深度是视口语境不是偏好），

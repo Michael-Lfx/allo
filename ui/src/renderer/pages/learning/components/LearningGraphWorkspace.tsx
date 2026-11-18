@@ -825,19 +825,9 @@ const LearningGraphWorkspace: React.FC<{
       <div className='flex flex-wrap items-start justify-between gap-12px'>
         <div className='min-w-0 flex-1'>
           <div className='flex items-center gap-8px'>
-            {/* a2 显性化：hit area 走常规 small padding（原裸图标极小点击面
-                难发现）、图标 14px、Tooltip 复用 aria 同源词条（零新键）。 */}
-            <Tooltip content={t('learning.learningGraphHeaderCollapse')}>
-              <Button
-                type='text'
-                size='small'
-                aria-label={t('learning.learningGraphHeaderCollapse')}
-                aria-expanded={true}
-                onClick={collapseHeader}
-              >
-                <IconDown className='text-14px' />
-              </Button>
-            </Tooltip>
+            {/* a2 重修（真机 FAIL 教训）：收起钮从标题左侧裸图标移到行尾
+                右侧控件排 + 文字标签「收起头部」（icon+text，与折叠态展
+                开钮同处行尾——两钮同侧，位置规则「切换恒在行尾」）。 */}
             <Title heading={3} className='!m-0'>
               {detail.course.title}
             </Title>
@@ -864,6 +854,21 @@ const LearningGraphWorkspace: React.FC<{
           )}
         </div>
         <div className='flex shrink-0 items-center gap-8px'>
+          {/* a2 重修：收起钮=行尾控件排首位的文字钮（icon+text）——裸图标
+              真机 FAIL（不显眼），文字标签根治发现性；展开态与折叠态的
+              切换钮统一行尾右侧。 */}
+          <Button
+            size='small'
+            type='text'
+            aria-label={t('learning.learningGraphHeaderCollapse')}
+            aria-expanded={true}
+            onClick={collapseHeader}
+          >
+            <span className='flex items-center gap-4px'>
+              <IconDown className='shrink-0 text-14px' />
+              {t('learning.learningGraphHeaderCollapse')}
+            </span>
+          </Button>
           {!detail.course.enabled && (
             <Button
               size='small'
@@ -1010,12 +1015,12 @@ const LearningGraphWorkspace: React.FC<{
       </div>
       </React.Fragment>
       ) : (
-      /* 折叠摘要条（f3 Q5；a3 修订 + a2 显性化）：一行收纳标题块 + 目标段 +
+      /* 折叠摘要条（f3 Q5；a3 修订；a2 重修）：一行收纳标题块 + 目标段 +
           结构/生长控制条。课程名（truncate）+ 结构摘要（structureSummaryText；
           读侧其余态复用结构条文案，折叠不吞状态）+ processing 徽章（后台
-          运行时在此兜底渲染——徽章不被折叠吞）+ 展开钮。a2：展开钮从最左
-          移到摘要文本之后（视觉动线：先读摘要再见钮），hit area 走常规
-          small padding、图标 14px、Tooltip 复用 aria 同源词条（零新键）。
+          运行时在此兜底渲染——徽章不被折叠吞）+ 展开钮。a2 重修（真机
+          FAIL 教训）：裸图标改 icon+text 文字钮「展开头部」置于行尾——
+          与展开态收起钮同处行尾右侧，切换恒在行尾；文字标签根治发现性。
           shrink-0 自然流于 Tabs 之上（d1 高链不变）；钮恒可点（a3：后台
           运行不禁用）。 */
       <div className='flex shrink-0 flex-wrap items-center gap-8px'>
@@ -1026,17 +1031,18 @@ const LearningGraphWorkspace: React.FC<{
         <Text type='secondary' className='min-w-0 text-12px'>
           {headerSummaryText}
         </Text>
-        <Tooltip content={t('learning.learningGraphHeaderExpand')}>
-          <Button
-            type='text'
-            size='small'
-            aria-label={t('learning.learningGraphHeaderExpand')}
-            aria-expanded={false}
-            onClick={collapseHeader}
-          >
+        <Button
+          type='text'
+          size='small'
+          aria-label={t('learning.learningGraphHeaderExpand')}
+          aria-expanded={false}
+          onClick={collapseHeader}
+        >
+          <span className='flex items-center gap-4px'>
             <IconRight className='shrink-0 text-14px' />
-          </Button>
-        </Tooltip>
+            {t('learning.learningGraphHeaderExpand')}
+          </span>
+        </Button>
       </div>
       )}
 

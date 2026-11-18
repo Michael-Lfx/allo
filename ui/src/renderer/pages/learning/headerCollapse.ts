@@ -5,12 +5,14 @@
  * localStorage——读写一律 try/catch 降级，损坏/写失败按未折叠处理）。
  * 值形状：{ [courseId]: true }——只记折叠；缺席 = 展开（默认展开语义）。 */
 
-import { GRAPH_HEADER_COLLAPSED_KEY } from './constants';
+import { GRAPH_HEADER_COLLAPSED_KEY, LEGACY_GRAPH_HEADER_COLLAPSED_KEY } from './constants';
 
-/** 最小存储面（Pick<Storage> 的形状；不依赖 DOM 全局）。 */
+/** 最小存储面（Pick<Storage> 的形状；不依赖 DOM 全局）。removeItem 供
+ * a4 的 v1 旧键一次性清理（缺席实现时调用方 try/catch 兜底）。 */
 export interface HeaderCollapseStore {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
 const memoryStore: HeaderCollapseStore = (() => {
@@ -20,6 +22,9 @@ const memoryStore: HeaderCollapseStore = (() => {
     setItem: (key, value) => {
       map.set(key, value);
     },
+    removeItem: (key) => {
+      map.delete(key);
+    },
   };
 })();
 
@@ -27,14 +32,21 @@ const defaultStore = (): HeaderCollapseStore =>
   typeof localStorage !== 'undefined' ? localStorage : memoryStore;
 
 /** 读某课折叠标记：键损坏/类型不符按未折叠处理（structurePresentation 同
- * 款宽容——默认展开语义不可被脏数据劫持成折叠）。 */
+ * 款宽容——默认展开语义不可被脏数据劫持成折叠）。v2 键缺席时一次性清理
+ * v1 旧键（a4：a1 落地后持久折叠语义已变，旧偏好作废回展开态——读侧
+ * 顺手删，用户无感知）。 */
 export function loadGraphHeaderCollapsed(
   courseId: string,
   store: HeaderCollapseStore = defaultStore()
 ): boolean {
   try {
     const raw = store.getItem(GRAPH_HEADER_COLLAPSED_KEY);
-    if (raw === null) return false;
+    if (raw === null) {
+      // a4 一次性清理：v1 旧偏好作废（无论内容如何），删掉防堆积。
+      // removeItem 可缺省（旧注入方未实现时跳过，try/catch 整体兜底）。
+      store.removeItem?.(LEGACY_GRAPH_HEADER_COLLAPSED_KEY);
+      return false;
+    }
     const parsed: unknown = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return (parsed as Record<string, unknown>)[courseId] === true;
