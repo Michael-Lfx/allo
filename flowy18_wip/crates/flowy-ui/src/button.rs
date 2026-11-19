@@ -163,7 +163,7 @@ impl Button {
         } else {
             gpui::FontWeight::MEDIUM
         })
-        .when(self.framed, |el| toolbar_frame(el, theme))
+        .when(self.framed, |el| toolbar_frame(el, *theme))
         .when(self.disabled, |el| el.opacity(0.5))
         .when(!self.disabled && !loading, move |el| {
             el.hover(move |s| s.bg(hover))
@@ -184,7 +184,7 @@ impl Button {
 
 fn toolbar_frame(
     element: Stateful<Div>,
-    theme: &ResolvedTheme,
+    theme: ResolvedTheme,
 ) -> Stateful<Div> {
     element
         .border_1()
@@ -287,7 +287,7 @@ impl IconButton {
         .when(loading, Styled::cursor_default)
         .when(self.framed, |element| {
             let side = theme.control_height(size);
-            toolbar_frame(element, theme)
+            toolbar_frame(element, *theme)
                 .text_color(theme.toolbar_icon())
                 .w(side)
                 .h(side)
