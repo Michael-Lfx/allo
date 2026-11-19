@@ -88,30 +88,39 @@ impl crate::panel::StudioPanel {
                     .child(path.display().to_string())
             }));
         let action = match task.status {
-            InventoryStatus::WaitingForFolder => theme::Button::new(
-                "inventory-pick",
-                self.t("inventory.pick_folder"),
-            )
-            .render(
-                &self.theme,
-                cx.listener(|panel, _, _, cx| {
-                    panel.pick_inventory_folder(true, cx);
-                }),
-            )
-            .into_any_element(),
-            InventoryStatus::Paused | InventoryStatus::Failed => {
-                theme::Button::new(
-                    "inventory-resume",
-                    self.t("inventory.resume"),
+            InventoryStatus::WaitingForFolder
+            | InventoryStatus::Paused
+            | InventoryStatus::Failed => div()
+                .flex()
+                .flex_wrap()
+                .gap(self.theme.space(8.))
+                .when(task.status != InventoryStatus::WaitingForFolder, |row| {
+                    row.child(
+                        theme::Button::new(
+                            "inventory-resume",
+                            self.t("inventory.resume"),
+                        )
+                        .render(
+                            &self.theme,
+                            cx.listener(|panel, _, _, cx| {
+                                panel.resume_inventory(None, cx);
+                            }),
+                        ),
+                    )
+                })
+                .child(
+                    theme::Button::new(
+                        "inventory-pick",
+                        self.t("inventory.pick_folder"),
+                    )
+                    .render(
+                        &self.theme,
+                        cx.listener(|panel, _, _, cx| {
+                            panel.pick_inventory_folder(true, cx);
+                        }),
+                    ),
                 )
-                .render(
-                    &self.theme,
-                    cx.listener(|panel, _, _, cx| {
-                        panel.resume_inventory(None, cx);
-                    }),
-                )
-                .into_any_element()
-            }
+                .into_any_element(),
             InventoryStatus::Running => {
                 theme::Button::new("inventory-stop", self.t("chat.stop"))
                     .render(
@@ -120,26 +129,87 @@ impl crate::panel::StudioPanel {
                     )
                     .into_any_element()
             }
-            InventoryStatus::Delivered => theme::Button::new(
-                "inventory-open",
-                format!("{} inventory.md", self.t("shell.notify_open")),
-            )
-            .variant(theme::ControlVariant::Primary)
-            .render(
-                &self.theme,
-                cx.listener(|panel, _, _, cx| {
-                    match panel.agent.inventory_artifact() {
-                        Ok(path) => cx.open_with_system(&path),
-                        Err(key) => panel.emit_notice(Some(key), cx),
-                    }
-                }),
-            )
-            .into_any_element(),
+            InventoryStatus::Delivered => div()
+                .flex()
+                .flex_wrap()
+                .gap(self.theme.space(8.))
+                .child(
+                    theme::Button::new(
+                        "inventory-open",
+                        format!("{} inventory.md", self.t("shell.notify_open")),
+                    )
+                    .variant(theme::ControlVariant::Primary)
+                    .render(
+                        &self.theme,
+                        cx.listener(|panel, _, _, cx| {
+                            panel.launch_inventory_file(false, cx);
+                        }),
+                    ),
+                )
+                .child(
+                    theme::Button::new(
+                        "inventory-reveal",
+                        self.t("inventory.reveal"),
+                    )
+                    .render(
+                        &self.theme,
+                        cx.listener(|panel, _, _, cx| {
+                            panel.launch_inventory_file(true, cx);
+                        }),
+                    ),
+                )
+                .into_any_element(),
             InventoryStatus::NeedsReview | InventoryStatus::Cancelled => {
                 return card;
             }
         };
         card.child(div().child(action))
+    }
+
+    fn launch_inventory_file(
+        &mut self,
+        reveal: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let path = match self.agent.inventory_artifact() {
+            Ok(path) => path,
+            Err(key) => {
+                self.emit_notice(Some(key), cx);
+                return;
+            }
+        };
+        #[cfg(not(windows))]
+        if reveal {
+            cx.reveal_path(&path);
+            return;
+        }
+
+        let session = self.agent.active_session_id();
+        let notice = if reveal {
+            "inventory.reveal_failed"
+        } else {
+            "inventory.open_failed"
+        };
+        let launch = cx.background_executor().spawn(async move {
+            #[cfg(windows)]
+            if reveal {
+                return reveal_in_explorer(&path);
+            }
+            open::that_detached(path)
+        });
+        cx.spawn(async move |panel, cx| {
+            let failed = launch.await.is_err();
+            let _ = panel.update(cx, |panel, cx| {
+                if panel.agent.active_session_id() == session {
+                    if failed {
+                        panel.emit_notice(Some(notice), cx);
+                    } else if panel.notice == Some(notice) {
+                        panel.emit_notice(None, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     fn rating_row(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -183,4 +253,26 @@ impl crate::panel::StudioPanel {
         cx.emit(StudioEvent::Rated { stars });
         self.emit_notice(Some("chat.rate_thanks"), cx);
     }
+}
+
+#[cfg(windows)]
+fn reveal_in_explorer(path: &std::path::Path) -> std::io::Result<()> {
+    use std::ffi::OsString;
+    use std::os::windows::process::CommandExt as _;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let explorer = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            std::io::Error::other("Windows directory is unavailable")
+        })?
+        .join("explorer.exe");
+    // Explorer uses its own comma-separated command line. A verified Windows
+    // file path cannot contain the quotes that delimit it.
+    let mut select = OsString::from("/select,\"");
+    select.push(path.as_os_str());
+    select.push("\"");
+    // Explorer hands the selection to the shell and may then exit nonzero.
+    Command::new(explorer).raw_arg(select).spawn().map(|_| ())
 }

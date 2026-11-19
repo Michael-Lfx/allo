@@ -41,6 +41,7 @@ license = "MIT"
 repository = "https://github.com/flowy-app/flowy"
 
 [workspace.dependencies]
+open = { version = "5", features = ["shellexecute-on-windows"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 url = "2.5"
 flowy-core = { path = "crates/flowy-core" }
