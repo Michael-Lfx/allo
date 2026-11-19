@@ -2,9 +2,11 @@
  * 零渲染——这正是决策逻辑抽离的目的。 */
 import { describe, expect, test } from 'bun:test';
 import {
+  ACTIVITY_SKIP_RESPONSE,
   buildSteps,
   coverageTopicTotals,
   deriveModernStep,
+  isActivitySkipResponse,
   isModernPipeline,
   progressDenominator,
   progressPercent,
@@ -455,5 +457,24 @@ describe('S3 进度读数文本（共享展示面）', () => {
     // CourseCard 形：a/N 后随「 N 课时」词条；分母 0 臂只有「—」不带尾缀。
     expect(progressReadoutText(2, 4, ' 4 课时')).toBe('2/4 4 课时');
     expect(progressReadoutText(2, 0, ' 4 课时')).toBe('—');
+  });
+});
+
+// ── sq3: AI 批改题跳过 ────────────────────────────────────────────────
+
+describe('sq3 跳过标记（activitySkip 语义域）', () => {
+  test('ACTIVITY_SKIP_RESPONSE 恰为后端跳过标记形状 {"skipped":true}', () => {
+    expect(ACTIVITY_SKIP_RESPONSE).toEqual({ skipped: true });
+  });
+
+  test('isActivitySkipResponse 只认 {"skipped":true}，作答形状不误判', () => {
+    expect(isActivitySkipResponse({ skipped: true })).toBe(true);
+    expect(isActivitySkipResponse({ skipped: false })).toBe(false);
+    expect(isActivitySkipResponse({})).toBe(false);
+    expect(isActivitySkipResponse({ answer: '写一段自己的代码' })).toBe(false);
+    expect(isActivitySkipResponse('跳过')).toBe(false);
+    expect(isActivitySkipResponse(['跳过'])).toBe(false);
+    expect(isActivitySkipResponse(null)).toBe(false);
+    expect(isActivitySkipResponse(undefined)).toBe(false);
   });
 });

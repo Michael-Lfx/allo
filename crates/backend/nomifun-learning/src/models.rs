@@ -2951,6 +2951,11 @@ pub struct AttemptResult {
     /// = 反序列化面容缺（旧档位回放），对旧客户端是纯增量字段。
     #[serde(default)]
     pub item_results: Vec<bool>,
+    /// 跳过语义（sq3）：本次提交是 `{"skipped":true}` 记下的 skipped
+    /// attempt——未判分（零 LLM 调用），score/passed 恒 0，不计薄弱集/
+    /// XP/记忆面。恒随响应透出（普通作答为 false）；API 层承载，落库面
+    /// 以 response marker 为准（零迁移）。
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
