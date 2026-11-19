@@ -14833,3 +14833,225 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(report.flagged[0].concept_id, kept);
     }
 
+    /// sq5 救济面：题删除（lesson.rs delete_lesson_activity）级联/权属/幂等
+    /// 三件套单测（票面 Acceptance 全覆盖）。
+    ///
+    /// 级联裁决（票面 Terms R-a）：review_items 删（卡随题走——due_today
+    /// 徽标直数 review_items 行，题删了卡留着 = 徽标虚高 + 永不出队的死
+    /// 卡）、question_tags 删（随题，purge_course_content 同款先子后父）、
+    /// learning_attempts 保留（作答事实 = 学习账本，课程删除「账本独立于
+    /// 内容」ADR-0017 族先例——读数面天然剔除悬挂 attempt id：digest/xp/
+    /// quiz 全部 activities 驱动或 inner-join，删题后旧作答不再进入任何
+    /// 前瞻读数，账本行原样留档）。级联不越界：同课时的兄弟题及其卡原样。
+    /// 权属校验照 set_question_tags 惯例（activity→lesson→module→enrollment
+    /// join，未报名/不存在 404 三态合一不泄露存在性）；幂等语义照
+    /// delete_review_item / delete_course 惯例（重复删除 404 NotFound）。
+    #[tokio::test]
+    async fn delete_lesson_activity_cascades_cards_and_tags_keeps_attempts() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "题删除".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![
+                    LessonPack {
+                        title: "Vectors".into(),
+                        summary: String::new(),
+                        purpose: String::new(),
+                        intent: String::new(),
+                        scope: String::new(),
+                        est: 10,
+                        source: None,
+                        sources: Vec::new(),
+                        activities: Vec::new(),
+                        sections: Vec::new(),
+                    },
+                    LessonPack {
+                        title: "Matrices".into(),
+                        summary: String::new(),
+                        purpose: String::new(),
+                        intent: String::new(),
+                        scope: String::new(),
+                        est: 10,
+                        source: None,
+                        sources: Vec::new(),
+                        activities: Vec::new(),
+                        sections: Vec::new(),
+                    },
+                ],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        let course_id = course.course.id.clone();
+        service.enroll(&course_id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course_id, Some(&user_id))
+            .await
+            .unwrap();
+        let lesson = &detail.modules[0].lessons[0];
+        let other_lesson = &detail.modules[0].lessons[1];
+        // 已完成课时手动加题即时种卡（seeder 幂等）——两道题各带一张卡。
+        service
+            .update_lesson_progress(&lesson.id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        let make_request = |prompt: &'static str| CreateLessonActivityRequest {
+            kind: ActivityKind::SingleChoice,
+            prompt: prompt.into(),
+            options: vec!["栈区".into(), "堆区".into()],
+            answer: json!("栈区"),
+            explanation: "局部变量在栈区。".into(),
+            distractors: Vec::new(),
+        };
+        let bad = service
+            .create_lesson_activity(&user_id, &lesson.id, make_request("坏题：裸指代排序"))
+            .await
+            .unwrap();
+        let good = service
+            .create_lesson_activity(&user_id, &lesson.id, make_request("好题：向量大小叫什么"))
+            .await
+            .unwrap();
+        let bad_id = bad.activities[0].id.clone();
+        let good_id = good
+            .activities
+            .iter()
+            .find(|activity| activity.id != bad_id)
+            .map(|activity| activity.id.clone())
+            .unwrap();
+        // 错位对照题：另一课时的题（lesson/activity 错位删除的靶子）。
+        let other = service
+            .create_lesson_activity(&user_id, &other_lesson.id, make_request("邻课时题"))
+            .await
+            .unwrap();
+        let other_id = other.activities.last().unwrap().id.clone();
+        assert_ne!(bad_id, good_id);
+        // 坏题挂标签（删除后必须随题清掉）。
+        service
+            .set_question_tags(&bad_id, &user_id, vec!["坏题".into()])
+            .await
+            .unwrap();
+        // 坏题留一条真实作答（账本面——删除后必须原样保留）。
+        let attempt = service
+            .submit_attempt(&bad_id, &user_id, json!("栈区"), None, None)
+            .await
+            .unwrap();
+        // 删除前：due 队列恰两张卡。
+        let due_before = service
+            .due_reviews(&user_id, 30, &[course_id.clone()], false, false, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(due_before.len(), 2, "删除前两题各一张卡在队");
+
+        // 权属拒绝：未报名的第二用户 404（三态合一），且零级联副作用。
+        let stranger = UserId::new();
+        let stranger_error = service
+            .delete_lesson_activity(&stranger, &lesson.id, &bad_id)
+            .await
+            .unwrap_err();
+        match stranger_error {
+            AppError::NotFound(_) => {}
+            other => panic!("未报名用户应 NotFound，得到 {other:?}"),
+        }
+
+        // 删除坏题：返回的最新课时视图不再含该题。
+        let view = service
+            .delete_lesson_activity(&user_id, &lesson.id, &bad_id)
+            .await
+            .unwrap();
+        assert!(
+            view.activities.iter().all(|activity| activity.id != bad_id),
+            "返回视图不含已删题"
+        );
+        assert_eq!(view.activities.len(), 1, "兄弟题不受影响");
+
+        // 级联面①：题行删。
+        let activity_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(bad_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(activity_rows, 0, "activity 行随删除消失");
+        // 级联面②：卡随题走，无悬挂卡。
+        let card_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_review_items WHERE activity_id = ?",
+        )
+        .bind(bad_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(card_rows, 0, "review_items 卡随题删");
+        // 级联面③：标签随题删。
+        let tag_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_question_tags \
+             WHERE question_id = ? AND source = 'course'",
+        )
+        .bind(bad_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(tag_rows, 0, "question_tags 随题删");
+        // 账本面：作答事实原样保留（学习账本独立性）。
+        let attempt_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_attempts WHERE attempt_id = ? AND activity_id = ?",
+        )
+        .bind(attempt.id.as_str())
+        .bind(bad_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(attempt_rows, 1, "attempts 账本行保留");
+        // 收敛面：due 队列只剩兄弟题的卡——无悬挂卡、无悬挂题。
+        let due_after = service
+            .due_reviews(&user_id, 30, &[course_id.clone()], false, false, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(due_after.len(), 1, "删除后队列收敛为兄弟题一卡");
+        assert_eq!(due_after[0].question.activity_id, Some(good_id.clone()));
+        // 兄弟题的标签面不受越界删除影响（空集）。
+        let good_tags = service
+            .set_question_tags(&good_id, &user_id, vec!["好题".into()])
+            .await
+            .unwrap();
+        assert_eq!(good_tags, vec!["好题".to_owned()], "兄弟题照常可挂标签");
+
+        // 幂等语义：重复删除 = NotFound（delete_review_item 同款收口）。
+        let repeat_error = service
+            .delete_lesson_activity(&user_id, &lesson.id, &bad_id)
+            .await
+            .unwrap_err();
+        match repeat_error {
+            AppError::NotFound(_) => {}
+            other => panic!("重复删除应 NotFound，得到 {other:?}"),
+        }
+        // 题与课时错位（activity 不在该 lesson）同 404，且邻课时题不受牵连。
+        let mismatch_error = service
+            .delete_lesson_activity(&user_id, &lesson.id, &other_id)
+            .await
+            .unwrap_err();
+        match mismatch_error {
+            AppError::NotFound(_) => {}
+            other => panic!("lesson/activity 错位应 NotFound，得到 {other:?}"),
+        }
+        let other_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(other_id.as_str())
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(other_rows, 1, "错位 404 不动邻课时题");
+    }
+

@@ -132,6 +132,14 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/lessons/{id}/activities/generate",
             post(generate_lesson_activity),
         )
+        // sq5 救济面：删除课时内一道题（存量坏题下架）。级联 = 卡随题走
+        // （review_items/question_tags 删、attempts 账本保留），权属校验照
+        // 既有 lesson 路由惯例（404 三态合一）；返回删除后的最新课时视图，
+        // 前端一次调用即收敛练习轮/收编面。
+        .route(
+            "/api/learning/lessons/{id}/activities/{activity_id}",
+            delete(delete_lesson_activity),
+        )
         .route("/api/learning/figures/repair", post(repair_figure))
         .route(
             "/api/learning/activities/{id}/attempts",
@@ -719,6 +727,24 @@ async fn generate_lesson_activity(
         state
             .service
             .generate_lesson_activity(&user.id, &id, request)
+            .await?,
+    )))
+}
+
+/// sq5 救济面：`DELETE /api/learning/lessons/{id}/activities/{activity_id}`。
+/// 权属校验与级联在 service 面（lesson.rs delete_lesson_activity）；响应 =
+/// 删除后的最新课时视图（练习轮/收编面一次调用收敛）。
+async fn delete_lesson_activity(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, activity_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+    let id = parse_id::<LearningLessonId>(id)?;
+    let activity_id = parse_id::<LearningActivityId>(activity_id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .delete_lesson_activity(&user.id, &id, &activity_id)
             .await?,
     )))
 }
