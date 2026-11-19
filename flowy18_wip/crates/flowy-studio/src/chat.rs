@@ -16,19 +16,16 @@ impl crate::panel::StudioPanel {
             .flex_col()
             .child(self.feed.clone())
             .child(self.working.clone())
-            .when(
-                matches!(self.status, TurnStatus::Completed),
-                |column| {
-                    column.child(
-                        div()
-                            .w_full()
-                            .max_w(px(760.))
-                            .mx_auto()
-                            .px(self.theme.space(32.))
-                            .child(self.rating_row(cx)),
-                    )
-                },
-            )
+            .when(matches!(self.status, TurnStatus::Completed), |column| {
+                column.child(
+                    div()
+                        .w_full()
+                        .max_w(px(760.))
+                        .mx_auto()
+                        .px(self.theme.space(32.))
+                        .child(self.rating_row(cx)),
+                )
+            })
             .child(self.composer.clone())
     }
 

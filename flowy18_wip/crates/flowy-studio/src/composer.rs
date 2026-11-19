@@ -206,9 +206,7 @@ impl ChatComposer {
                 .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
                 .aria_expanded(self.model_menu_open)
                 .on_click(cx.listener(|_, _, _, cx| {
-                    cx.emit(ComposerEvent::ModelMenu(
-                        "composer-model-trigger",
-                    ));
+                    cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
                 })),
             "composer-model-trigger",
             &self.ui,

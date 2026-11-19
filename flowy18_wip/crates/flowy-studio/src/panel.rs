@@ -1,8 +1,6 @@
 use crate::composer::{ChatComposer, ComposerEvent};
 use crate::feed::{ChatFeed, OpenTask, WorkingIndicator};
-use flowy_agent::{
-    AgentHandle, LlmConfig, Model, Plan, ProviderCatalog,
-};
+use flowy_agent::{AgentHandle, LlmConfig, Model, Plan, ProviderCatalog};
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
 use flowy_ui::{ResolvedTheme, UiContext};
