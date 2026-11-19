@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "إخفاء تفاصيل التنفيذ",
+  "history.show_work": "عرض تفاصيل التنفيذ",
+  "markdown.copy_code": "نسخ الرمز",
+  "markdown.copy_source": "نسخ Markdown",
   "inventory.auto": "المخرج · تلقائي",
   "inventory.example": "أنشئ قائمة بمحتويات المجلد المحدد.",
   "inventory.home_title": "كيف يمكن أن يساعدك {product}؟",

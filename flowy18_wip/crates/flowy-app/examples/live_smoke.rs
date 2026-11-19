@@ -110,6 +110,9 @@ fn main() {
                 println!("[{index}] tool_result: error={is_error} {text}");
             }
             ChatLine::Status { text } => println!("[{index}] status: {text}"),
+            ChatLine::TaskReceipt { task_id, .. } => {
+                println!("[{index}] task receipt: {task_id}");
+            }
         }
     }
     match status {

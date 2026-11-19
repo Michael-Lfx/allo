@@ -153,8 +153,8 @@ impl ChatComposer {
                     .rounded_xl()
                     .border_1()
                     .border_color(self.theme.line())
-                    .bg(self.theme.composer())
-                    .shadow_md()
+                    .bg(self.theme.card())
+                    .shadow_sm()
                     .px(self.theme.space(12.))
                     .pt(self.theme.space(12.))
                     .pb(self.theme.space(8.))
@@ -168,22 +168,20 @@ impl ChatComposer {
                             .placeholder(SharedString::from(
                                 self.t("chat.do_anything"),
                             ))
-                            .placeholder_color(self.theme.composer_muted())
-                            .caret_color(gpui::rgb_to_hsla(
-                                self.theme.on_composer(),
-                            ))
+                            .placeholder_color(self.theme.muted())
+                            .caret_color(gpui::rgb_to_hsla(self.theme.ink()))
                             .caret_blink_interval_500ms()
                             .w_full()
                             .min_h(px(44.))
                             .max_h(px(160.))
                             .whitespace_normal()
                             .overflow_y_scroll()
-                            .text_color(self.theme.on_composer()),
+                            .text_color(self.theme.ink()),
                     )
                     .children(self.folder.as_ref().map(|folder| {
                         div()
                             .text_xs()
-                            .text_color(self.theme.composer_muted())
+                            .text_color(self.theme.muted())
                             .child(folder.clone())
                     }))
                     .child(
@@ -192,12 +190,6 @@ impl ChatComposer {
                             .flex_wrap()
                             .items_center()
                             .gap(self.theme.space(4.))
-                            .child(self.chat_composer_chip(
-                                "composer-model",
-                                self.composer_model_label(),
-                                true,
-                                cx,
-                            ))
                             .child(self.chat_composer_chip(
                                 "composer-access",
                                 self.t("inventory.pick_folder"),
@@ -215,6 +207,12 @@ impl ChatComposer {
                                 cx,
                             ))
                             .child(div().flex_1())
+                            .child(self.chat_composer_chip(
+                                "composer-model",
+                                self.composer_model_label(),
+                                true,
+                                cx,
+                            ))
                             .child(
                                 self.composer_submit(running, has_draft, cx),
                             ),
@@ -242,7 +240,7 @@ impl ChatComposer {
             "composer-model" | "composer-access" | "composer-mode"
         );
         let control = theme::interactive(id, label.clone(), &self.theme)
-            .focus_visible(|style| style.border_color(self.theme.on_composer()))
+            .focus_visible(|style| style.border_color(self.theme.focus_ring()))
             .min_h(self.theme.control_height(theme::ControlSize::Small))
             .px(self.theme.space(8.))
             .rounded_md()
@@ -251,9 +249,9 @@ impl ChatComposer {
             .gap(self.theme.space(4.))
             .text_xs()
             .text_color(if primary {
-                self.theme.on_composer()
+                self.theme.ink()
             } else {
-                self.theme.composer_muted()
+                self.theme.muted()
             })
             .when(primary, |el| el.child(theme::icons::sparkles()))
             .child(label)
@@ -299,13 +297,6 @@ impl ChatComposer {
         has_draft: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let composer_theme = theme::ResolvedTheme::resolve(
-            theme::ThemeOptions {
-                mode: theme::ThemeMode::Dark,
-                ..self.theme.options
-            },
-            true,
-        );
         // A missing cloud model means no live routing is configured; keep the
         // send affordance disabled instead of failing after the click.
         let has_draft = has_draft && self.cloud_ready;
@@ -318,7 +309,7 @@ impl ChatComposer {
             .size(theme::ControlSize::Small)
             .variant(theme::ControlVariant::Ghost)
             .render(
-                &composer_theme,
+                &self.theme,
                 cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::Stop);
                 }),
@@ -333,7 +324,7 @@ impl ChatComposer {
             .variant(theme::ControlVariant::Primary)
             .disabled(!has_draft)
             .render(
-                &composer_theme,
+                &self.theme,
                 cx.listener(|_, _, _, cx| {
                     cx.emit(ComposerEvent::Send);
                 }),

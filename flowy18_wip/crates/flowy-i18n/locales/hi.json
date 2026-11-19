@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "काम का विवरण छिपाएँ",
+  "history.show_work": "काम का विवरण दिखाएँ",
+  "markdown.copy_code": "कोड कॉपी करें",
+  "markdown.copy_source": "Markdown कॉपी करें",
   "inventory.auto": "आउटपुट · स्वचालित",
   "inventory.example": "चुने हुए फ़ोल्डर की सूची बनाओ।",
   "inventory.home_title": "{product} आपकी किस काम में मदद करे?",

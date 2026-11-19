@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Приховати перебіг",
+  "history.show_work": "Показати перебіг",
+  "markdown.copy_code": "Копіювати код",
+  "markdown.copy_source": "Копіювати Markdown",
   "inventory.auto": "Результат · Автоматично",
   "inventory.example": "Склади перелік вмісту вибраної папки.",
   "inventory.home_title": "Чим може допомогти {product}?",

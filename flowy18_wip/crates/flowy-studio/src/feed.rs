@@ -1,5 +1,5 @@
 //! Independently rendered, variable-height message feed and elapsed-time indicator.
-use flowy_agent::ChatLine;
+use flowy_agent::{ChatHistory, ChatLine, TurnStatus};
 use flowy_i18n::I18n;
 use flowy_ui::{self as theme, ResolvedTheme, UiContext};
 use gpui::{
@@ -7,6 +7,8 @@ use gpui::{
     Subscription, Window, div, list, prelude::*, px,
 };
 use std::collections::{HashMap, HashSet};
+
+use crate::{history::Projection, markdown};
 
 pub struct ChatFeed {
     lines: Vec<ChatLine>,
@@ -17,6 +19,9 @@ pub struct ChatFeed {
     row_focus: HashMap<u64, gpui::FocusHandle>,
     list: ListState,
     expanded_feed: HashSet<String>,
+    history: ChatHistory,
+    projection: Projection,
+    expanded_turns: HashMap<String, HashSet<usize>>,
     theme: ResolvedTheme,
     i18n: I18n,
     _theme_sub: Subscription,
@@ -86,6 +91,9 @@ impl ChatFeed {
             states: HashMap::new(),
             list,
             expanded_feed: HashSet::new(),
+            history: ChatHistory::default(),
+            projection: Projection::default(),
+            expanded_turns: HashMap::new(),
             theme,
             i18n,
             _theme_sub: theme_sub,
@@ -93,6 +101,131 @@ impl ChatFeed {
             rendered: 0,
             #[cfg(test)]
             rendered_rows: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn sync_history(
+        &mut self,
+        session: Option<String>,
+        history: ChatHistory,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let same_session =
+            session.as_deref().unwrap_or_default() == self.session;
+        let top = self.list.logical_scroll_top();
+        let anchor = same_session
+            .then(|| self.projection.source_rows.get(top.item_ix).copied())
+            .flatten();
+        let anchor = anchor.filter(|&source| {
+            history.rows.get(source) == self.history.rows.get(source)
+        });
+        self.history = history;
+        self.apply_projection(session, anchor, cx);
+    }
+
+    fn apply_projection(
+        &mut self,
+        session: Option<String>,
+        hidden_anchor: Option<usize>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let name = session.as_deref().unwrap_or_default();
+        let projection = Projection::build(
+            &self.history.rows,
+            self.history.streaming,
+            self.history.status == TurnStatus::Completed,
+            self.expanded_turns.get(name),
+        );
+        let changed = projection != self.projection;
+        let remeasure: Vec<_> = self
+            .projection
+            .streaming
+            .into_iter()
+            .chain(projection.streaming)
+            .chain(
+                self.projection
+                    .folds
+                    .keys()
+                    .filter(|row| {
+                        projection.folds.get(row)
+                            != self.projection.folds.get(row)
+                    })
+                    .copied(),
+            )
+            .chain(
+                projection
+                    .folds
+                    .keys()
+                    .filter(|row| {
+                        projection.folds.get(row)
+                            != self.projection.folds.get(row)
+                    })
+                    .copied(),
+            )
+            .collect();
+        let rows = projection
+            .source_rows
+            .iter()
+            .map(|&index| self.history.rows[index].clone())
+            .collect();
+        self.projection = projection;
+        self.sync_rows(session, rows, cx);
+        if let Some(&row) =
+            hidden_anchor.and_then(|source| self.projection.hidden.get(&source))
+        {
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: row,
+                offset_in_item: px(0.),
+            });
+        }
+        if changed {
+            for row in
+                remeasure.into_iter().filter(|&row| row < self.lines.len())
+            {
+                self.list.remeasure_items(row..row + 1);
+            }
+            cx.notify();
+        }
+    }
+
+    fn set_turn_expanded(
+        &mut self,
+        key: usize,
+        show: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let expanded =
+            self.expanded_turns.entry(self.session.clone()).or_default();
+        let changed = if show {
+            expanded.insert(key)
+        } else {
+            expanded.remove(&key)
+        };
+        if !changed {
+            return;
+        }
+        let top = self.list.logical_scroll_top();
+        let source = self.projection.source_rows.get(top.item_ix).copied();
+        self.apply_projection(Some(self.session.clone()), source, cx);
+        if let Some(index) = source.and_then(|source| {
+            self.projection
+                .source_rows
+                .iter()
+                .position(|&row| row == source)
+        }) {
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: index,
+                offset_in_item: if self
+                    .projection
+                    .folds
+                    .get(&index)
+                    .is_some_and(|fold| !fold.expanded)
+                {
+                    px(0.)
+                } else {
+                    top.offset_in_item
+                },
+            });
         }
     }
 
@@ -203,6 +336,64 @@ impl ChatFeed {
     fn format_duration_secs(&self, secs: u64) -> String {
         self.tf("chat.duration_secs", &[("n", &secs.max(1).to_string())])
     }
+    fn history_line(
+        &self,
+        index: usize,
+        cx: &Context<'_, Self>,
+    ) -> gpui::AnyElement {
+        let line = &self.lines[index];
+        let Some(fold) = self.projection.folds.get(&index).copied() else {
+            return self.chat_line(index, line, cx).into_any_element();
+        };
+        let key = if fold.expanded {
+            "history.hide_work"
+        } else {
+            "history.show_work"
+        };
+        let title = self.t(key);
+        let feed = cx.weak_entity();
+        let show = !fold.expanded;
+        let semantic = move |_: Option<&gpui::accesskit::ActionData>,
+                             _: &mut Window,
+                             cx: &mut gpui::App| {
+            let _ = feed.update(cx, |feed, cx| {
+                feed.set_turn_expanded(fold.key, show, cx);
+            });
+        };
+        let button = theme::interactive(
+            ("turn-fold", self.row_ids[index]),
+            title.clone(),
+            &self.theme,
+        )
+        .aria_expanded(fold.expanded)
+        .text_xs()
+        .text_color(self.theme.muted())
+        .px(self.theme.space(8.))
+        .py(self.theme.space(4.))
+        .child(title)
+        .on_a11y_action(gpui::accesskit::Action::Click, semantic.clone())
+        .on_a11y_action(
+            if show {
+                gpui::accesskit::Action::Expand
+            } else {
+                gpui::accesskit::Action::Collapse
+            },
+            semantic,
+        )
+        .on_click(cx.listener(move |feed, _, _, cx| {
+            feed.set_turn_expanded(fold.key, show, cx);
+        }));
+        div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .child(button)
+            .when(fold.expanded, |row| {
+                row.child(self.chat_line(index, line, cx))
+            })
+            .into_any_element()
+    }
+
     fn chat_line(
         &self,
         index: usize,
@@ -233,7 +424,11 @@ impl ChatFeed {
                 .py(self.theme.space(4.))
                 .text_sm()
                 .whitespace_normal()
-                .child(text.clone())
+                .child(if self.projection.streaming == Some(index) {
+                    div().child(text.clone())
+                } else {
+                    markdown::render(text, self.theme, &self.i18n)
+                })
                 .into_any_element(),
             ChatLine::Reasoning {
                 text,
@@ -292,12 +487,13 @@ impl ChatFeed {
                 };
                 div()
                     .id(("chat-status", self.row_ids[index]))
+                    .role(gpui::Role::Status)
+                    .aria_label(label.clone())
                     .flex()
                     .items_center()
                     .gap(self.theme.space(8.))
                     .text_sm()
                     .text_color(self.theme.muted())
-                    .child(theme::icons::check())
                     .child(label)
                     .into_any_element()
             }
@@ -542,13 +738,18 @@ impl Render for ChatFeed {
                         div()
                             .id(("chat-row", feed.row_ids[index]))
                             .track_focus(&feed.row_focus[&feed.row_ids[index]])
-                            .px(feed.theme.space(32.))
-                            .py(feed.theme.space(4.))
-                            .child(feed.chat_line(
-                                index,
-                                &feed.lines[index],
-                                cx,
-                            ))
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(760.))
+                                    .min_w_0()
+                                    .px(feed.theme.space(32.))
+                                    .py(feed.theme.space(4.))
+                                    .child(feed.history_line(index, cx)),
+                            )
                             .into_any_element()
                     })
                     .unwrap_or_else(|_| div().into_any_element())
@@ -656,6 +857,84 @@ impl Render for WorkingIndicator {
 mod tests {
     use super::*;
     use gpui::{ListOffset, TestAppContext};
+
+    #[gpui::test]
+    fn folding_a_read_detail_returns_to_its_turn_control(
+        cx: &mut TestAppContext,
+    ) {
+        let (feed, cx) = cx.add_window_view(|_, cx| {
+            let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
+            ChatFeed::new(
+                ui,
+                I18n::embedded("Flowy"),
+                Some("fold".into()),
+                Vec::new(),
+                cx,
+            )
+        });
+        let mut rows = vec![
+            ChatLine::User {
+                text: "request".into(),
+            },
+            ChatLine::Tool {
+                text: "first detail".into(),
+            },
+            ChatLine::Tool {
+                text: "second detail".into(),
+            },
+            ChatLine::Assistant {
+                text: "**answer**".into(),
+            },
+        ];
+        rows.extend((0..100).map(|id| ChatLine::User {
+            text: format!("next {id}"),
+        }));
+        feed.update(cx, |feed, cx| {
+            feed.sync_history(
+                Some("fold".into()),
+                ChatHistory {
+                    rows,
+                    streaming: None,
+                    status: TurnStatus::Completed,
+                },
+                cx,
+            );
+            assert!(!feed.projection.folds[&1].expanded);
+            feed.list.scroll_to(ListOffset {
+                item_ix: 1,
+                offset_in_item: px(0.),
+            });
+        });
+        cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.draw(cx).clear(cx);
+            let id = window
+                .a11y_tree()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("展开执行过程"))
+                .map(|(id, _)| *id)
+                .unwrap();
+            window.perform_a11y_action(
+                id,
+                gpui::accesskit::Action::Expand,
+                None,
+                cx,
+            );
+        });
+        feed.update(cx, |feed, cx| {
+            assert!(feed.projection.folds[&1].expanded);
+            feed.list.scroll_to(ListOffset {
+                item_ix: 2,
+                offset_in_item: px(7.),
+            });
+            feed.set_turn_expanded(1, false, cx);
+            let top = feed.list.logical_scroll_top();
+            assert_eq!(top.item_ix, 1);
+            assert_eq!(top.offset_in_item, px(0.));
+        });
+    }
 
     #[gpui::test]
     #[expect(

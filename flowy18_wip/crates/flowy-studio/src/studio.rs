@@ -13,6 +13,8 @@ impl crate::panel::StudioPanel {
             .flex_1()
             .min_w_0()
             .h_full()
+            .bg(self.theme.canvas())
+            .text_color(self.theme.ink())
             .relative()
             .flex()
             .flex_col();
@@ -473,6 +475,10 @@ impl crate::panel::StudioPanel {
                     .gap(self.theme.space(12.))
                     .child(
                         div()
+                            .id("home-goal")
+                            .role(gpui::Role::Heading)
+                            .aria_level(1)
+                            .aria_label(self.t("inventory.home_title"))
                             .px(self.theme.space(32.))
                             .text_center()
                             .text_size(px(36.))

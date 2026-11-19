@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "실행 과정 숨기기",
+  "history.show_work": "실행 과정 보기",
+  "markdown.copy_code": "코드 복사",
+  "markdown.copy_source": "Markdown 복사",
   "inventory.auto": "결과물 · 자동",
   "inventory.example": "선택한 폴더의 목록을 만들어 주세요.",
   "inventory.home_title": "{product}가 무엇을 도와드릴까요?",

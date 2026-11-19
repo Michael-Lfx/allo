@@ -15,7 +15,9 @@ flowy-i18n = { workspace = true }
 flowy-ui = { workspace = true }
 gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
+pulldown-cmark = { workspace = true }
 serde = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Skrýt průběh",
+  "history.show_work": "Zobrazit průběh",
+  "markdown.copy_code": "Kopírovat kód",
+  "markdown.copy_source": "Kopírovat Markdown",
   "inventory.auto": "Výstup · Automaticky",
   "inventory.example": "Vytvořte soupis vybrané složky.",
   "inventory.home_title": "S čím vám může {product} pomoci?",

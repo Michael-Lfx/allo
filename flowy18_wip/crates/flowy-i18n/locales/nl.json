@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Stappen verbergen",
+  "history.show_work": "Stappen tonen",
+  "markdown.copy_code": "Code kopiëren",
+  "markdown.copy_source": "Markdown kopiëren",
   "inventory.auto": "Resultaat · Automatisch",
   "inventory.example": "Maak een inventaris van de geselecteerde map.",
   "inventory.home_title": "Waar kan {product} je mee helpen?",

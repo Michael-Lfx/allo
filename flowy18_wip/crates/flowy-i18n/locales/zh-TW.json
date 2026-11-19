@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "收合執行過程",
+  "history.show_work": "展開執行過程",
+  "markdown.copy_code": "複製程式碼",
+  "markdown.copy_source": "複製 Markdown 原文",
   "inventory.auto": "交付物 · 自動",
   "inventory.example": "為選取的資料夾產生一份清單。",
   "inventory.home_title": "你想讓 {product} 幫你做什麼？",

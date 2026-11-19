@@ -112,6 +112,7 @@ pub struct StudioPanel {
     pub(crate) inventory: Option<InventorySummary>,
     inventory_draft: bool,
     selected_folder: Option<PathBuf>,
+    picker_generation: u64,
     submission: Option<u128>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
@@ -260,6 +261,7 @@ impl StudioPanel {
             inventory,
             inventory_draft: false,
             selected_folder: None,
+            picker_generation: 0,
             submission: None,
             working,
             status,
@@ -292,6 +294,7 @@ impl StudioPanel {
             pump: None,
         };
         panel.start_pump(cx);
+        panel.refresh_chat(cx);
         // A persisted failed status must be visible on the first frame too.
         panel.refresh_working(cx);
         panel
@@ -346,15 +349,15 @@ impl StudioPanel {
 
     fn refresh_chat(&mut self, cx: &mut Context<'_, Self>) {
         let session = self.agent.active_session_id();
-        let lines = self.agent.lines();
+        let history = self.agent.chat_history();
+        let status = history.status.clone();
         self.feed
-            .update(cx, |feed, cx| feed.sync_rows(session, lines, cx));
+            .update(cx, |feed, cx| feed.sync_history(session, history, cx));
         let inventory = self.agent.active_inventory();
         if inventory != self.inventory {
             self.inventory = inventory;
             cx.notify();
         }
-        let status = self.agent.turn_status();
         if status != self.status {
             let was_busy = self.status.is_busy();
             self.status = status;
@@ -576,6 +579,7 @@ impl StudioPanel {
         cx: &mut Context<'_, Self>,
     ) {
         self.inventory_draft = inventory;
+        self.picker_generation = self.picker_generation.wrapping_add(1);
         self.submission = None;
         if !inventory {
             self.selected_folder = None;
@@ -590,7 +594,7 @@ impl StudioPanel {
     }
 
     pub(crate) fn pick_inventory_folder(
-        &self,
+        &mut self,
         resume: bool,
         cx: &Context<'_, Self>,
     ) {
@@ -602,10 +606,13 @@ impl StudioPanel {
         });
         let session = self.agent.active_session_id();
         let surface = self.surface;
+        self.picker_generation = self.picker_generation.wrapping_add(1);
+        let generation = self.picker_generation;
         cx.spawn(async move |weak, cx| {
             let result = picked.await;
             let _ = weak.update(cx, |panel, cx| {
-                if panel.agent.active_session_id() != session
+                if panel.picker_generation != generation
+                    || panel.agent.active_session_id() != session
                     || panel.surface != surface
                 {
                     return;
@@ -702,7 +709,6 @@ impl StudioPanel {
             self.t("gallery.browse"),
             &self.theme,
         )
-        .w_full()
         .px(self.theme.space(16.))
         .py(self.theme.space(12.))
         .rounded_xl()

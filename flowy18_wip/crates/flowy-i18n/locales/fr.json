@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Masquer les étapes",
+  "history.show_work": "Afficher les étapes",
+  "markdown.copy_code": "Copier le code",
+  "markdown.copy_source": "Copier le Markdown",
   "inventory.auto": "Livrable · Auto",
   "inventory.example": "Fais l’inventaire du dossier sélectionné.",
   "inventory.home_title": "Comment {product} peut-il vous aider ?",

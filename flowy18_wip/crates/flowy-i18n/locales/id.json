@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Sembunyikan proses",
+  "history.show_work": "Tampilkan proses",
+  "markdown.copy_code": "Salin kode",
+  "markdown.copy_source": "Salin Markdown",
   "inventory.auto": "Hasil · Otomatis",
   "inventory.example": "Buat daftar isi folder yang dipilih.",
   "inventory.home_title": "Apa yang bisa {product} bantu?",

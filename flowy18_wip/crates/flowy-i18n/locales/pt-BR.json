@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Ocultar etapas",
+  "history.show_work": "Mostrar etapas",
+  "markdown.copy_code": "Copiar código",
+  "markdown.copy_source": "Copiar Markdown",
   "inventory.auto": "Entrega · Automática",
   "inventory.example": "Faça um inventário da pasta selecionada.",
   "inventory.home_title": "Como {product} pode ajudar você?",

@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "実行の詳細を隠す",
+  "history.show_work": "実行の詳細を表示",
+  "markdown.copy_code": "コードをコピー",
+  "markdown.copy_source": "Markdown をコピー",
   "inventory.auto": "成果物 · 自動",
   "inventory.example": "選んだフォルダーの一覧を作ってください。",
   "inventory.home_title": "{product} に何を手伝ってほしいですか？",

@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Adımları gizle",
+  "history.show_work": "Adımları göster",
+  "markdown.copy_code": "Kodu kopyala",
+  "markdown.copy_source": "Markdown'u kopyala",
   "inventory.auto": "Çıktı · Otomatik",
   "inventory.example": "Seçili klasörün envanterini çıkar.",
   "inventory.home_title": "{product} sana nasıl yardımcı olabilir?",
