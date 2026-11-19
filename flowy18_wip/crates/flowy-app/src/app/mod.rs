@@ -1882,6 +1882,9 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("secondary-]", NavigateForward, None),
         // Cursor / VS Code: search view
         KeyBinding::new("secondary-shift-f", OpenSearch, None),
+        // With no tray icon, closing the window is the only pointer route out;
+        // this binding keeps quitting reachable from the keyboard as well.
+        KeyBinding::new("ctrl-q", flowy_shell::QuitApp, None),
     ]);
     cx.set_reduce_motion(true);
     flowy_ui::install_initial_tab_focus(cx).detach();
@@ -1926,8 +1929,15 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         .expect("open main window");
     window
         .update(cx, |app, window, cx| {
-            window.on_window_should_close(cx, |window, _cx| {
-                window.set_visible(false);
+            window.on_window_should_close(cx, |window, cx| {
+                // Hide to the tray only when a tray icon exists to bring the
+                // window back; otherwise closing would strand the process
+                // with no window and no way to quit.
+                if flowy_shell::tray_available() {
+                    window.set_visible(false);
+                    return false;
+                }
+                cx.quit();
                 false
             });
             app.apply_appearance(window, cx);

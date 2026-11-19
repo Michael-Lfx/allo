@@ -2164,6 +2164,7 @@ dependencies = [
  "directories",
  "gpui-ce",
  "gpui-tray",
+ "tracing",
 ]
 
 [[package]]
