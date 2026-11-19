@@ -3,8 +3,9 @@
 //! Cargo puts long rustc invocations in a `@cargo-argfile`, with `--crate-name`
 //! inside that file. dioxus-cli 0.7.10 only scans direct argv, so the tip binary
 //! never gets a `{crate}.bin.json` and fat linking fails with "Missing rustc capture".
-//! This wrapper expands those argfiles, writes the capture dx expects, then forwards
-//! the original short command so the process limit is unchanged.
+//! This wrapper expands those argfiles to write the capture dx expects and forwards
+//! the original command. It keeps the library search paths in a persistent response
+//! file so dx can replay the capture within the Windows command-line limit.
 
 use std::env;
 use std::fs;
@@ -160,10 +161,14 @@ fn write_capture(args_dir: &Path, rustc_args: &[String]) -> Result<(), String> {
     fs::create_dir_all(args_dir)
         .map_err(|err| format!("create {}: {err}", args_dir.display()))?;
     let path = args_dir.join(format!("{crate_name}.{suffix}.json"));
+    let search_paths =
+        args_dir.join(format!("{crate_name}.{suffix}.search-paths.rsp"));
+    let replay_args = pack_search_paths(rustc_args, &search_paths)
+        .map_err(|err| format!("write {}: {err}", search_paths.display()))?;
     let mut file = fs::File::create(&path)
         .map_err(|err| format!("create {}: {err}", path.display()))?;
     write!(file, "{{\"args\":[").map_err(|err| err.to_string())?;
-    for (index, arg) in rustc_args.iter().enumerate() {
+    for (index, arg) in replay_args.iter().enumerate() {
         if index > 0 {
             write!(file, ",").map_err(|err| err.to_string())?;
         }
@@ -185,6 +190,35 @@ fn write_capture(args_dir: &Path, rustc_args: &[String]) -> Result<(), String> {
     }
     writeln!(file, "]}}").map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn pack_search_paths(
+    args: &[String],
+    path: &Path,
+) -> std::io::Result<Vec<String>> {
+    // dx inspects flags such as --out-dir, -Cextra-filename and -Clinker.
+    // Leave those visible while moving the bulky -L pairs out of argv.
+    let mut replay = Vec::new();
+    let mut paths = String::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-L" {
+            if let Some(value) = iter.next() {
+                if paths.is_empty() {
+                    replay.push(format!("@{}", path.display()));
+                }
+                paths.push_str("-L\n");
+                paths.push_str(value);
+                paths.push('\n');
+                continue;
+            }
+        }
+        replay.push(arg.clone());
+    }
+    if !paths.is_empty() {
+        fs::write(path, paths)?;
+    }
+    Ok(replay)
 }
 
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -286,6 +320,44 @@ mod tests {
             fs::read_to_string(dir.join("flowy_app.bin.json")).unwrap();
         assert!(written.contains(r#""--crate-name","flowy_app""#));
         assert!(written.contains(r#""envs":["#));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn capture_keeps_replay_metadata_visible_and_packs_search_paths() {
+        let dir = std::env::temp_dir()
+            .join(format!("dx-capture-packed-{}", std::process::id()));
+        let args = [
+            r"C:\rustc.exe",
+            "--crate-name",
+            "flowy_ui",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            r"C:\out",
+            "-C",
+            "extra-filename=-abc",
+            "-L",
+            r"native=C:\path with spaces\one",
+            "-L",
+            r"dependency=C:\two",
+            "-Clinker=link.exe",
+        ]
+        .map(str::to_owned);
+        write_capture(&dir, &args).unwrap();
+        let capture =
+            fs::read_to_string(dir.join("flowy_ui.lib.json")).unwrap();
+        let response_path = dir.join("flowy_ui.lib.search-paths.rsp");
+        assert!(capture
+            .contains(&json_escape(&format!("@{}", response_path.display()))));
+        assert!(capture
+            .contains(r#""--out-dir","C:\\out","-C","extra-filename=-abc""#));
+        assert!(capture.contains(r#""-Clinker=link.exe""#));
+        assert!(!capture.contains("path with spaces"));
+        assert_eq!(
+            read_argfile(response_path.to_str().unwrap()).unwrap(),
+            &args[9..13]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

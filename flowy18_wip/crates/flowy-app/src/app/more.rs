@@ -35,14 +35,8 @@ impl FlowyApp {
             cx.notify();
         });
         self.user_menu = false;
-        if self.section == Section::More {
-            self.persona.menu = !self.persona.menu;
-            cx.notify();
-            return;
-        }
-        self.persona.menu = true;
-        self.notice = None;
-        self.push_section(Section::More, cx);
+        self.persona.menu = !self.persona.menu;
+        cx.notify();
     }
 
     pub fn more_flyout(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -72,13 +66,23 @@ impl FlowyApp {
         window: &mut gpui::Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut page = div().id("more-page").size_full().flex().flex_col();
+        let mut page = div()
+            .id("more-page")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col();
         page = if self.persona.page == Page::Personal {
-            page.child(self.personal_canvas(cx))
+            page.child(self.personal_canvas(window, cx))
         } else if self.persona.page == Page::Skills {
             page.child(self.skills_canvas(window, cx))
         } else {
-            page.child(self.more_note("more.computer", "more.computer_body"))
+            page.child(
+                theme::PageHeader::new(self.t("more.computer"))
+                    .render(&self.theme, window),
+            )
+            .child(self.more_note("more.computer_body"))
         };
         page
     }
@@ -144,10 +148,14 @@ impl FlowyApp {
             .hover(|row| row.bg(self.theme.soft()))
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 cx.stop_propagation();
+                app.persona.menu = false;
                 app.persona.page = page;
-                app.section = Section::More;
                 app.notice = None;
-                app.sync_studio_surface(cx);
+                if app.section == Section::More {
+                    app.sync_studio_surface(cx);
+                } else {
+                    app.push_section(Section::More, cx);
+                }
                 cx.notify();
             }))
             .child(menu_icon(page))
@@ -160,46 +168,52 @@ impl FlowyApp {
             .when(selected, |row| row.child(theme::icons::check()))
     }
 
-    fn more_note(
-        &self,
-        title_key: &'static str,
-        body_key: &'static str,
-    ) -> impl IntoElement {
-        div().flex_1().px_10().pt_8().child(
-            div()
-                .w_full()
-                .max_w(px(560.))
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(
-                    div()
-                        .text_size(self.theme.heading_size())
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(self.t(title_key)),
-                )
-                .child(
-                    div()
-                        .text_size(self.theme.body_size())
-                        .text_color(self.theme.muted())
-                        .child(self.t(body_key)),
-                ),
-        )
-    }
-
-    fn personal_canvas(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn more_note(&self, body_key: &'static str) -> impl IntoElement {
         div()
-            .id("more-scroll")
+            .id("computer-scroll")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .child(
                 div()
-                    .min_h_full()
+                    .w_full()
+                    .max_w(px(560.))
                     .px_10()
                     .pt_8()
-                    .pb_6()
-                    .child(self.personal_column(cx)),
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
+                    .child(self.t(body_key)),
+            )
+    }
+
+    fn personal_canvas(
+        &self,
+        window: &gpui::Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                theme::PageHeader::new(self.t("more.personal"))
+                    .render(&self.theme, window),
+            )
+            .child(
+                div()
+                    .id("more-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .min_h_full()
+                            .px_10()
+                            .pt_8()
+                            .pb_6()
+                            .child(self.personal_column(cx)),
+                    ),
             )
     }
 
@@ -211,12 +225,6 @@ impl FlowyApp {
             .flex()
             .flex_col()
             .gap_5()
-            .child(
-                div()
-                    .text_size(self.theme.heading_size())
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(self.t("more.personal")),
-            )
             .child(self.personal_tabs(cx));
         column = if self.persona.tab == Tab::Profile {
             column
@@ -269,6 +277,7 @@ impl FlowyApp {
             } else {
                 self.theme.muted()
             })
+            .border_0()
             .border_b_2()
             .border_color(if selected {
                 self.theme.ink()

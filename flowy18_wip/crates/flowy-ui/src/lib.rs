@@ -16,7 +16,7 @@ pub use button::{
     Button, IconButton, button, install_initial_tab_focus, interactive,
 };
 pub use chrome::{
-    ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
+    FilterTabs, ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
 };
 pub use context::*;
 pub use controls::*;
@@ -25,8 +25,8 @@ pub use overlays::*;
 pub use theme::*;
 pub use tooltip::tooltip_trigger;
 pub use typeface::{
-    PageColumn, PageHeader, SectionHeader, Text, TextRole, Title, TitleLevel,
-    TypeMetrics, page_inset, ui_font,
+    PAGE_MAX_WIDTH, PageColumn, PageHeader, SectionHeader, Text, TextRole,
+    Title, TitleLevel, TypeMetrics, page_inset, ui_font,
 };
 
 use serde::{Deserialize, Serialize};

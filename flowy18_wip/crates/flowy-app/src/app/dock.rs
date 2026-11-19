@@ -74,6 +74,7 @@ impl FlowyApp {
         div()
             .id("dock")
             .w(px(theme::DOCK_WIDTH))
+            .flex_shrink_0()
             .h_full()
             .flex()
             .flex_col()

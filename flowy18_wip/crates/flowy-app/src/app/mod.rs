@@ -1398,9 +1398,6 @@ impl FlowyApp {
         } else {
             canvas.child(self.studio.clone())
         };
-        if self.persona.menu && self.section == Section::More {
-            canvas = canvas.child(self.more_flyout(cx));
-        }
         canvas
     }
 
@@ -2000,7 +1997,7 @@ fn credits_state_from_balance(balance: i64) -> flowy_studio::CreditsViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext, accesskit};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn test_root() -> std::path::PathBuf {
@@ -2058,6 +2055,114 @@ mod tests {
         assert!(!catalog_refresh_allowed(true, true, false));
         assert!(!catalog_refresh_allowed(false, false, false));
         assert!(!catalog_refresh_allowed(false, true, true));
+    }
+
+    #[gpui::test]
+    fn more_menu_is_single_and_closes_after_selection(cx: &mut TestAppContext) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        fn click(cx: &mut VisualTestContext, label: &str) {
+            let id = cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("app accessibility tree");
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .unwrap_or_else(|| panic!("missing button {label:?}"))
+                    .0
+            });
+            cx.update(|window, cx| {
+                window.perform_a11y_action(
+                    id,
+                    accesskit::Action::Click,
+                    None,
+                    cx,
+                );
+            });
+            draw(cx);
+        }
+
+        let root = test_root();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.section = Section::More;
+            app.ota.checked = true;
+            app
+        });
+        let (more, skills, automation, menu_labels) =
+            cx.read_entity(&app, |app, _| {
+                (
+                    app.t("dock.more"),
+                    app.t("more.skills"),
+                    app.t("dock.automation"),
+                    ["more.computer", "more.skills", "more.personal"]
+                        .map(|key| app.t(key)),
+                )
+            });
+        draw(cx);
+        click(cx, &more);
+        cx.update(|window, _| {
+            let tree = window.a11y_tree().expect("open More menu");
+            for label in &menu_labels {
+                assert_eq!(
+                    tree.nodes
+                        .iter()
+                        .filter(|(_, node)| {
+                            node.label() == Some(label.as_str())
+                                && node.role() == accesskit::Role::Button
+                        })
+                        .count(),
+                    1,
+                    "More menu item {label:?} must render exactly once",
+                );
+            }
+        });
+        click(cx, &skills);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.persona.page, more::Page::Skills);
+            assert!(!app.persona.menu, "selection must close the menu");
+        });
+        click(cx, &automation);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.section, Section::Automation);
+        });
+        click(cx, &more);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(
+                app.section,
+                Section::Automation,
+                "opening More must preserve the current page",
+            );
+            assert!(app.persona.menu, "first click must open the menu");
+        });
+        click(cx, &more);
+        cx.read_entity(&app, |app, _| {
+            assert!(!app.persona.menu);
+            assert_eq!(app.section, Section::Automation);
+        });
+        click(cx, &more);
+        click(cx, &skills);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.section, Section::More);
+            assert_eq!(app.persona.page, more::Page::Skills);
+            assert!(!app.persona.menu);
+            assert_eq!(app.nav_back.last(), Some(&Section::Automation));
+        });
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[gpui::test]

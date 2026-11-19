@@ -6,6 +6,14 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
 
+# dx launches a copy with a hash in the executable name.
+$runningFlowy = Get-Process -Name 'flowy-app', 'flowy-app-*', 'flowy_app' -ErrorAction SilentlyContinue
+if ($null -ne $runningFlowy) {
+    $pids = ($runningFlowy | Select-Object -ExpandProperty Id) -join ", "
+    Write-Error "Flowy is already running (PID: $pids). Close the existing Flowy windows and stop any previous dx serve session before starting again."
+    exit 1
+}
+
 # Dioxus hot-patching captures rustc invocations through its own workspace
 # wrapper. A user-level RUSTC_WRAPPER=sccache (and cargo [env] force=true)
 # hides that capture. Clear both here; the dx capture wrapper is installed
@@ -73,13 +81,6 @@ if (-not [string]::IsNullOrWhiteSpace($env:LIB)) {
 }
 $env:LIB = $libPaths -join ";"
 
-$runningFlowy = Get-Process -Name flowy_app -ErrorAction SilentlyContinue
-if ($null -ne $runningFlowy) {
-    $pids = ($runningFlowy | Select-Object -ExpandProperty Id) -join ", "
-    Write-Error "flowy-app.exe is already running (PID: $pids). Close the existing Flowy windows before starting dx serve."
-    exit 1
-}
-
 $helpOutput = (& $dxPath serve --help 2>&1 | Out-String)
 $helpExitCode = $LASTEXITCODE
 if ($helpExitCode -ne 0) {
@@ -114,6 +115,7 @@ if ($wrapperStale) {
         exit 1
     }
 }
+$wrapperBuildTime = (Get-Item -LiteralPath $wrapperExe).LastWriteTimeUtc
 
 # dx 0.7.10 busts target/<triple>/<profile>/.fingerprint. This workspace uses
 # Cargo's build-dir layout (target/<triple>/desktop-dev/build/<pkg>/<hash>/fingerprint),
@@ -142,8 +144,11 @@ if ($memberPattern.Success) {
             continue
         }
         $crateName = $packageName.Replace("-", "_")
-        $captured = $null -ne $latestCapture -and (Test-Path -LiteralPath (Join-Path $latestCapture.FullName "$crateName.lib.json"))
-        if (-not $captured) {
+        $capture = if ($null -ne $latestCapture) {
+            Get-Item -LiteralPath (Join-Path $latestCapture.FullName "$crateName.lib.json") -ErrorAction SilentlyContinue
+        }
+        # Refresh old captures after wrapper updates so dx cannot replay a stale, oversized command line.
+        if ($null -eq $capture -or $capture.LastWriteTimeUtc -lt $wrapperBuildTime) {
             $packagesToBust += $packageName
         }
     }
@@ -191,6 +196,7 @@ $env:RUSTC_WRAPPER = $wrapperExe
 $dxArgs = @(
     "serve",
     $hotPatchFlag,
+    "--hot-reload", "true",
     "--package", "flowy-desktop",
     "--bin", "flowy-app",
     "--platform", "windows",

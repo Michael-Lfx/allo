@@ -479,7 +479,7 @@ impl crate::panel::StudioPanel {
         let doc = self.document.document();
         div()
             .w_full()
-            .max_w(px(980.))
+            .max_w(px(theme::PAGE_MAX_WIDTH))
             .mx_auto()
             .px(self.theme.space(32.))
             .pt(self.theme.space(40.))

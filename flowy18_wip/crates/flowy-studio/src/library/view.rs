@@ -4,7 +4,7 @@ use super::model::{
 use flowy_i18n::I18n;
 use flowy_ui::{self as theme, UiContext};
 use gpui::{
-    Context, Entity, FocusHandle, IntoElement, ParentElement, Render, Role,
+    Context, Entity, FocusHandle, IntoElement, ParentElement, Render,
     SharedString, Subscription, Window, div, prelude::*, px,
 };
 use gpui_ce_elements::editable_text::{
@@ -292,14 +292,10 @@ impl LibraryPanel {
 
     fn filters(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         let t = self.theme(cx);
-        let mut filters = div()
-            .id("library-filters")
-            .role(Role::TabList)
-            .aria_label(self.t("library.categories"))
-            .flex()
-            .gap(px(4.))
-            .items_center()
-            .flex_wrap();
+        let mut filters = theme::FilterTabs::new(
+            "library-filters",
+            self.t("library.categories"),
+        );
         for (index, category) in Category::ALL.into_iter().enumerate() {
             let selected = self.model.category == category;
             filters = filters.child(
@@ -340,7 +336,7 @@ impl LibraryPanel {
                 )),
             );
         }
-        filters
+        filters.render()
     }
 
     fn content(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -977,8 +973,10 @@ impl Render for LibraryPanel {
             .id("library")
             .track_focus(&self.focus)
             .relative()
-            .size_full()
-            .bg(t.library_canvas())
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(t.canvas())
             .text_color(t.library_ink())
             .flex()
             .flex_col()

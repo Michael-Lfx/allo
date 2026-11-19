@@ -113,10 +113,6 @@ impl ResolvedTheme {
         self.body_size() * 4.
     }
     pub fn canvas(self) -> Rgba {
-        rgb(if self.dark { 0x001c_1c1a } else { 0x00f4_f3ef })
-    }
-    /// Quiet neutral surface used by the asset library.
-    pub fn library_canvas(self) -> Rgba {
         rgb(if self.dark { 0x001c_1c1a } else { 0x00f8_f8f7 })
     }
     pub fn library_ink(self) -> Rgba {
