@@ -144,7 +144,19 @@ impl ResolvedTheme {
         rgb(if self.dark { 0x0065_6561 } else { 0x0033_3333 })
     }
     pub fn dock(self) -> Rgba {
-        rgb(if self.dark { 0x0024_2422 } else { 0x00f7_f6f3 })
+        rgb(if self.dark { 0x0024_2422 } else { 0x00f1_f1f1 })
+    }
+    pub fn dock_selected(self) -> Rgba {
+        rgb(if self.dark { 0x0036_3632 } else { 0x00e3_e3e3 })
+    }
+    pub fn dock_hover(self) -> Rgba {
+        rgb(if self.dark { 0x0030_302e } else { 0x00e9_e9e9 })
+    }
+    pub fn account_menu_surface(self) -> Rgba {
+        rgb(if self.dark { 0x0034_3432 } else { 0x00f7_f7f7 })
+    }
+    pub fn account_menu_hover(self) -> Rgba {
+        rgb(if self.dark { 0x003a_3a38 } else { 0x00e9_e9e9 })
     }
     pub fn card(self) -> Rgba {
         rgb(if self.dark { 0x002c_2c2a } else { 0x00ff_ffff })
@@ -572,5 +584,29 @@ mod reference_tests {
         assert_eq!(light.placeholder(), rgb(0x00a9_a9a9));
         assert_eq!(light.toolbar_icon(), rgb(0x005c_5c5c));
         assert_ne!(light.tab_selected(), light.ink());
+    }
+
+    #[test]
+    fn dock_navigation_surfaces_match_the_reference() {
+        let light = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Light,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_eq!(light.dock(), rgb(0x00f1_f1f1));
+        assert_eq!(light.dock_selected(), rgb(0x00e3_e3e3));
+        assert_eq!(light.dock_hover(), rgb(0x00e9_e9e9));
+        assert_ne!(light.dock_selected(), light.dock_hover());
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_ne!(dark.dock_selected(), dark.dock());
+        assert_ne!(dark.dock_hover(), dark.dock());
     }
 }
