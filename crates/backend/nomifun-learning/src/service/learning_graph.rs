@@ -1,5 +1,6 @@
 use super::*;
 
+use super::progress::attempt_not_skipped_sql;
 use crate::learning_graph::concept_search;
 use crate::models::{ConceptSearchMode, ConceptSearchResults};
 
@@ -3077,7 +3078,11 @@ impl LearningService {
 
     /// 行为摘要折叠（ADR-0009 Amendment 1 三件：趋势 / 卡点 / 真实保留率）。
     /// 返回 None = 课程无作答历史（窗口为空，教练上下文整块省略）。
-    async fn fold_behavior_digest(
+    /// 行为摘要折叠（ADR-0009 Amendment 1 三件：趋势 / 卡点 / 真实保留率）。
+    /// 返回 None = 课程无作答历史（窗口为空，教练上下文整块省略）。
+    /// sq3：skipped attempt（跳过标记）不进摘要——跳过 ≠ 作答 ≠ 失败，
+    /// 计入会拉低趋势正确率并伪造卡点节点（消费清单①）。
+    pub(super) async fn fold_behavior_digest(
         &self,
         course_id: &LearningCourseId,
         user_id: &UserId,
@@ -3087,14 +3092,15 @@ impl LearningService {
         let now = now_ms();
         let today = crate::scheduler::review_day_number(now, tz);
         // 窗口候选作答：近 60 学习日足够覆盖 7/10 双条款窗口。
-        let attempt_rows: Vec<(String, i64, i64, f64)> = sqlx::query_as(
+        let not_skipped = attempt_not_skipped_sql("a");
+        let attempt_rows: Vec<(String, i64, i64, f64)> = sqlx::query_as(&format!(
             "SELECT l.lesson_id, a.created_at, a.passed, a.score FROM learning_attempts a \
              JOIN learning_enrollments e ON e.enrollment_id = a.enrollment_id AND e.user_id = ? \
              JOIN learning_activities act ON act.activity_id = a.activity_id \
              JOIN learning_lessons l ON l.lesson_id = act.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE m.course_id = ? AND a.created_at >= ?",
-        )
+             WHERE m.course_id = ? AND a.created_at >= ? AND {not_skipped}"
+        ))
         .bind(user_id.as_str())
         .bind(course_id.as_str())
         .bind(now - 60 * 24 * 60 * 60 * 1000)
@@ -3116,7 +3122,8 @@ impl LearningService {
             .collect();
 
         // 停滞基线（全历史）：最近一次答对的学习日，从未答对则首次作答日。
-        let base_rows: Vec<(String, Option<i64>, i64)> = sqlx::query_as(
+        // sq3 同谓词剔 skipped：跳过既不是答对也不是作答，不得充当基线端点。
+        let base_rows: Vec<(String, Option<i64>, i64)> = sqlx::query_as(&format!(
             "SELECT l.lesson_id, \
                     MAX(CASE WHEN a.passed = 1 OR a.score >= 0.6 THEN a.created_at END), \
                     MIN(a.created_at) \
@@ -3125,8 +3132,9 @@ impl LearningService {
              JOIN learning_activities act ON act.activity_id = a.activity_id \
              JOIN learning_lessons l ON l.lesson_id = act.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE m.course_id = ? GROUP BY l.lesson_id",
-        )
+             WHERE m.course_id = ? AND {base_not_skipped} GROUP BY l.lesson_id",
+            base_not_skipped = attempt_not_skipped_sql("a")
+        ))
         .bind(user_id.as_str())
         .bind(course_id.as_str())
         .fetch_all(&self.pool)

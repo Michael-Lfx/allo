@@ -1576,6 +1576,272 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(*completer.last_override.lock().unwrap(), None);
     }
 
+    // ── sq3: AI 批改题跳过（skipped attempt 语义）────────────────────
+
+    /// 跳过语义（sq3 R-a）：AI 批改题提交 `{"skipped":true}` = 记一次
+    /// skipped attempt——零 LLM 调用、零判分，落库 score=0.0/passed=0 +
+    /// response marker（信封内，零迁移），AttemptResult.skipped 供前端
+    /// 渲染「已跳过」态。attempt 追加式：跳过后重答是第二行，账本只增
+    /// 不改（重答入口裁决：允许）。
+    #[tokio::test]
+    async fn skip_attempt_marks_skipped_without_grading() {
+        let completer = ScriptedCompleter::new(
+            "{\"score\":1.0,\"feedback\":\"should never be called\",\"missing_points\":[]}",
+            false,
+        );
+        let (service, pool, user_id, activity_id) =
+            reflection_service_with_completer(completer.clone()).await;
+        let result = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                json!({ "skipped": true }),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.score, 0.0);
+        assert!(!result.passed);
+        assert!(
+            result.skipped,
+            "AttemptResult must carry skipped for the render face"
+        );
+        assert!(result.missing_points.is_empty());
+        assert!(result.item_results.is_empty());
+        assert_eq!(
+            completer.calls.load(AtomicOrdering::SeqCst),
+            0,
+            "skip must never reach the LLM grader"
+        );
+        let (score, passed): (f64, i64) =
+            sqlx::query_as("SELECT score, passed FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(score, 0.0);
+        assert_eq!(passed, 0);
+        let response_json: String =
+            sqlx::query_scalar("SELECT response_json FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            response_json.contains("\"skipped\":true"),
+            "marker must persist inside response_json, got {response_json}"
+        );
+        // 重答入口（追加式）：真实作答在跳过之后追加第二行，不覆盖首行。
+        let graded = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("A vector has magnitude and direction.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(graded.passed);
+        assert!(!graded.skipped);
+        let attempts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(attempts, 2, "re-answer must append, not overwrite");
+    }
+
+    /// 防刷门语义（sq3 R-b）的服务端半边：客观题不接受跳过标记——提交
+    /// 即 400，且不落任何 attempt 行（跳过按钮只在 AI 批改题卡出现，但
+    /// API 面必须自守，不依赖前端自觉）。守卫缺位时该标记会被规则判卷
+    /// 吃成一次「答错」attempt（污染账本与统计面）。
+    #[tokio::test]
+    async fn skip_marker_on_objective_question_is_rejected() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let course = service.import_course(valid_pack()).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+        let error = service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                json!({ "skipped": true }),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::BadRequest(_)),
+            "objective skip must be a client error, got {error}"
+        );
+        let attempts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_attempts WHERE activity_id = ?")
+                .bind(activity_id.as_str())
+                .fetch_one(database.pool())
+                .await
+                .unwrap();
+        assert_eq!(attempts, 0, "rejected skip must not persist an attempt row");
+    }
+
+    /// 消费清单①（sq3 R-a）：行为摘要（fold_behavior_digest——教练上下文
+    /// 的趋势/卡点读数，即后端唯一按 attempt 行全量消费的对码面）不得把
+    /// skipped attempt 计成作答：跳过 ≠ 作答 ≠ 失败，混入会拉低正确率、
+    /// 伪造卡点（`correct=false` 直进 blockers）。薄弱集复习会话（u9）走
+    /// review 队列（种卡双闸 objective-only），AI 批改题本就不入队——该面
+    /// 结构性不受影响，此处钉的是 attempt 直读面。
+    #[tokio::test]
+    async fn behavior_digest_excludes_skipped_attempts() {
+        let completer = ScriptedCompleter::new(
+            "{\"score\":1.0,\"feedback\":\"ok\",\"missing_points\":[]}",
+            false,
+        );
+        let (service, pool, user_id, activity_id) =
+            reflection_service_with_completer(completer.clone()).await;
+        let course_id: String = sqlx::query_scalar(
+            "SELECT m.course_id FROM learning_activities a \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE a.activity_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let course_id = parse_id::<LearningCourseId>(course_id).unwrap();
+        // 先记一次跳过：摘要必须整块缺席（None），不得伪造失败窗口。
+        service
+            .submit_attempt(&activity_id, &user_id, json!({ "skipped": true }), None, None)
+            .await
+            .unwrap();
+        let digest = service
+            .fold_behavior_digest(&course_id, &user_id)
+            .await
+            .unwrap();
+        assert!(
+            digest.is_none(),
+            "a lone skipped attempt must not fabricate a behavior window"
+        );
+        // 补一次真实判对：窗口只数真实作答（1 节 1 次全对，正确率 1.0）。
+        service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("A vector has magnitude and direction.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let digest = service
+            .fold_behavior_digest(&course_id, &user_id)
+            .await
+            .unwrap()
+            .expect("a real graded attempt must open the window");
+        assert_eq!(digest.window_nodes, 1);
+        // 单日窗口的对半折叠（fold 约定）：唯一作答日落在后半窗——
+        // 全对 = (1, 1.0)；若跳过行混入会是 (2, 0.5)。
+        assert_eq!(digest.second_half, Some((1, 1.0)));
+    }
+
+    /// 消费清单①的姊妹面（sq3 R-a）：节点弱先信号（covered_node_signals，
+    /// q2 载体/教练节点读数）的「作答面最近触及」不把 skipped 计成触及
+    /// ——跳过不是作答，节点信号不得因跳过而变新鲜。
+    #[tokio::test]
+    async fn node_signals_do_not_count_skipped_as_touch() {
+        let completer = ScriptedCompleter::new(String::new(), true);
+        let (service, pool, user_id, activity_id) =
+            reflection_service_with_completer(completer).await;
+        let node: String = sqlx::query_scalar(
+            "SELECT lesson_id FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let signals_of = || {
+            let node = node.clone();
+            async {
+                let settings = service.scheduler_settings().await;
+                service
+                    .covered_node_signals(&user_id, &[node], now_ms(), &settings)
+                    .await
+                    .unwrap()
+            }
+        };
+        service
+            .submit_attempt(&activity_id, &user_id, json!({ "skipped": true }), None, None)
+            .await
+            .unwrap();
+        let signals = signals_of().await;
+        assert_eq!(signals.len(), 1);
+        assert_eq!(
+            signals[0].touch_ms, None,
+            "skip must not refresh the node's attempt touch"
+        );
+        // 真实判对（重试环烧尽即错误面——这里换 on 臂可判脚本）后触及。
+        let graded = ScriptedCompleter::new(
+            "{\"score\":1.0,\"feedback\":\"ok\",\"missing_points\":[]}",
+            false,
+        );
+        *service.course_completer.write().unwrap() = Some(graded);
+        service
+            .submit_attempt(
+                &activity_id,
+                &user_id,
+                Value::String("A vector has magnitude and direction.".into()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let signals = signals_of().await;
+        assert!(
+            signals[0].touch_ms.is_some(),
+            "a real graded attempt must refresh the touch"
+        );
+    }
+
+    /// 账本不变式（sq3 R-c，ADR-0017 族）：跳过不写任何 XP 事件——打卡
+    /// 账本（checkin 只读 learning_xp_events）与 XP 读数（今日 XP/ETA 同源）
+    /// 与跳过零耦合；课时未完成也天然无 node 结算。缺口任一即学习账本
+    /// 独立性被破。
+    #[tokio::test]
+    async fn skipped_attempt_leaves_xp_ledger_and_checkin_untouched() {
+        let completer = ScriptedCompleter::new(String::new(), true);
+        let (service, _pool, user_id, activity_id) =
+            reflection_service_with_completer(completer).await;
+        service
+            .submit_attempt(&activity_id, &user_id, json!({ "skipped": true }), None, None)
+            .await
+            .unwrap();
+        let reading = service.xp_reading(&user_id).await.unwrap();
+        assert_eq!(reading.today_xp, 0, "skip must not earn XP");
+        assert!(!reading.goal_achieved);
+        assert!(
+            reading.eta_days.is_none() || reading.eta_days == Some(0),
+            "ETA must stay on its untouched pace projection"
+        );
+        let checkin = service.checkin_today(&user_id).await.unwrap();
+        assert!(!checkin.completed, "skip must not lock the daily check-in");
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM learning_xp_events")
+                .fetch_one(service.pool_for_tests())
+                .await
+                .unwrap();
+        assert_eq!(events, 0, "skip must not write any xp event");
+    }
+
     #[tokio::test]
     async fn objective_attempts_never_touch_the_completer() {
         let database = nomifun_db::init_database_memory().await.unwrap();

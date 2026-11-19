@@ -68,7 +68,7 @@
 
 use std::collections::HashMap;
 
-use super::progress::evaluate;
+use super::progress::{attempt_not_skipped_sql, evaluate};
 use super::*;
 
 use crate::models::{
@@ -196,9 +196,9 @@ struct VariantPayload {
 
 /// 候选节点的弱项读数（账面回放派生；见模块文档「弱先七档」）。
 #[derive(Debug, Default)]
-struct NodeSignal {
+pub(super) struct NodeSignal {
     /// 候选节点（lesson ULID；ULID 兜底破平键）。
-    node: String,
+    pub(super) node: String,
     escalated: bool,
     /// 节点真保留率 `Σ(review−lapse) / Σreview`；`None` = 无推进样本。
     retention: Option<f64>,
@@ -210,7 +210,8 @@ struct NodeSignal {
     /// 节点卡最小 FSRS 预测可提取性；`None` = 无卡可预测。
     min_r: Option<f64>,
     /// 最近触及时点（作答/推进最大时戳）；`None` = 从未触及。
-    touch_ms: Option<i64>,
+    /// sq3：skipped attempt 不刷新触及——跳过不是作答。
+    pub(super) touch_ms: Option<i64>,
 }
 
 impl LearningService {
@@ -764,7 +765,8 @@ impl LearningService {
     // ------------------------------------------------------------- 内部件
 
     /// 弱先信号的账面回放（零新存储；七档见模块文档）。
-    async fn covered_node_signals(
+    /// sq3：作答面触及流剔 skipped attempt——跳过不是作答，不刷新节点触及。
+    pub(super) async fn covered_node_signals(
         &self,
         user_id: &UserId,
         nodes: &[String],
@@ -841,14 +843,16 @@ impl LearningService {
                 signal.touch_ms = Some(signal.touch_ms.map_or(last, |current| current.max(last)));
             }
         }
-        // 作答面：最近触及（attempts 流）。
+        // 作答面：最近触及（attempts 流）。sq3：跳过标记行剔出触及流。
+        let not_skipped = attempt_not_skipped_sql("at");
         let attempt_sql = format!(
             "SELECT a.lesson_id AS node, MAX(at.created_at) AS last_attempt \
              FROM learning_attempts at \
              JOIN learning_activities a ON a.activity_id = at.activity_id \
              WHERE at.enrollment_id IN \
                (SELECT enrollment_id FROM learning_enrollments WHERE user_id = ?) \
-               AND a.lesson_id IN ({placeholders}) GROUP BY a.lesson_id"
+               AND a.lesson_id IN ({placeholders}) AND {not_skipped} \
+             GROUP BY a.lesson_id"
         );
         let mut attempt_query = sqlx::query(&attempt_sql).bind(user_id.as_str());
         for node in nodes {

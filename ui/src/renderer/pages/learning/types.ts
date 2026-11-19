@@ -357,6 +357,11 @@ export interface AttemptResult {
    * ordering 逐位、单结果题型单元素、AI 批改恒空。旧后端/旧记录不带
    * 此字段（可选承载），缺席 = 前端降级为全局文案。 */
   item_results?: boolean[];
+  /** 跳过语义（sq3）：本次提交是 `{"skipped":true}` 记下的 skipped
+   * attempt——未判分（零 LLM 调用），score/passed 恒 0，前端据此渲染
+   * 「已跳过」中性态（danger 红评语不出现）。旧后端不带此字段（可选
+   * 承载），缺席按普通作答处理。 */
+  skipped?: boolean;
 }
 
 /** 作答记录 = 判卷结果 + 提交的原始作答；response 用于回看时回显用户答案 */

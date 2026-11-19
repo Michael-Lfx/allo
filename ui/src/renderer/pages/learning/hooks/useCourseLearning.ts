@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
+import { isActivitySkipResponse } from '../model';
 import type {
   Activity,
   AttemptRecord,
@@ -138,8 +139,14 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
     async (activity: Activity, response: unknown) => {
       // 模型门只拦 AI 判分题型：谓词镜像后端 nomifun-learning 的
       // ActivityKind::is_ai_graded（Reflection | OpenQuestion），两端须同步改。
-      // 客观题纯规则判分、零 AI 调用，未选模型照常提交。
-      if (!modelChoice && (activity.kind === 'reflection' || activity.kind === 'open_question')) {
+      // 客观题纯规则判分、零 AI 调用，未选模型照常提交。跳过提交豁免
+      // （sq3）：跳过零 LLM 调用，是这个题型在模型门/判分失败前的逃生门
+      // ——门自己把它锁死就名存实亡了。
+      if (
+        !modelChoice &&
+        !isActivitySkipResponse(response) &&
+        (activity.kind === 'reflection' || activity.kind === 'open_question')
+      ) {
         Message.warning(t('learning.form.modelPending'));
         return;
       }

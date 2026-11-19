@@ -28,6 +28,25 @@ export const sectionStatusTagColors: Record<SectionStatus, string> = {
   failed: 'red',
 };
 
+// ── sq3: AI 批改题跳过（activitySkip 语义域）──────────────────────────
+
+/** 跳过标记（sq3 R-a）：AI 批改题的跳过提交载体——与后端
+ * `response_marks_skipped` 的判定形状互为镜像，两端同形改一侧须回改另一
+ * 侧。提交即记 skipped attempt（零 LLM 判分），响应面以 AttemptResult
+ * .skipped 回透。 */
+export const ACTIVITY_SKIP_RESPONSE = { skipped: true } as const;
+
+/** 判定一次提交是否为跳过（模型门前置豁免用）：跳过不需要 AI 模型——
+ * 未选模型也必须放行跳过，否则跳过这个逃生门自己被模型门锁死。 */
+export function isActivitySkipResponse(response: unknown): boolean {
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    !Array.isArray(response) &&
+    (response as { skipped?: unknown }).skipped === true
+  );
+}
+
 // ── 分节 stepper（新规范：练习节 = 一等练习轮；旧清单回退综合步）──────
 
 /** 分节交付的一步：节正文 + 该节绑定的练习题；null = 综合题收尾步 */

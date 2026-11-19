@@ -27,6 +27,7 @@ import { STRUCTURE_PILL_POLL_MS } from '../constants';
 import { formatGrowthElapsed } from '../growthTaskPill';
 import { CapacityFeedbackCard } from './CapacityFeedbackCard';
 import {
+  ACTIVITY_SKIP_RESPONSE,
   buildSteps,
   canGoToStep,
   lessonProgressLine,
@@ -52,7 +53,10 @@ import { LessonQuestionDialog } from './LessonQuestionDialog';
 const { Text, Paragraph } = Typography;
 
 /// 逐题练习块（测试缝：导出供 missingPointsTitle 双语断言单测直接渲染判
-/// 错结果面，InlineRenderBoundary 先例同款）。
+/// 错结果面，InlineRenderBoundary 先例同款）。sq3：AI 批改题（reflection/
+/// open_question）未作答卡出「跳过」钮（客观题不加——防刷门语义，后端
+/// skip 守卫镜像自守）；已跳过态呈中性徽标 + 重答入口（attempt 追加式，
+/// 重答走既有提交流），danger 红评语与缺失要点块不再出现。
 export function ActivityBlock({
   activity,
   disabled,
@@ -70,7 +74,16 @@ export function ActivityBlock({
   onSubmit: (activity: Activity, response: unknown) => void;
 }) {
   const { t } = useTranslation();
-  const [response, setResponse] = useState<unknown>(initialResponse);
+  const aiGraded = activity.kind === 'reflection' || activity.kind === 'open_question';
+  const skipped = result?.skipped === true;
+  // 重答入口（sq3 R-b 裁决：允许重答）：本地覆写已跳过态，输入/提交回到
+  // 未作答形态；重答提交是追加 attempt，不覆盖既有跳过行（账本只增不改）。
+  const [reanswering, setReanswering] = useState(false);
+  const skippedView = skipped && !reanswering;
+  const interactive = reanswering || !disabled;
+  const [response, setResponse] = useState<unknown>(
+    skippedView ? undefined : initialResponse
+  );
   const hasResponse =
     typeof response === 'string'
       ? response.trim().length > 0
@@ -88,21 +101,47 @@ export function ActivityBlock({
         options={activity.options}
         matches={activity.matches}
         value={response}
-        disabled={disabled}
-        itemResults={result?.item_results}
+        disabled={!interactive}
+        itemResults={skippedView ? undefined : result?.item_results}
         onChange={setResponse}
       />
       <div className='mt-12px flex items-center gap-10px'>
         <Button
           type='primary'
           size='small'
-          disabled={!hasResponse || disabled}
+          disabled={!hasResponse || !interactive}
           loading={loading}
-          onClick={() => onSubmit(activity, response)}
+          onClick={() => {
+            setReanswering(false);
+            onSubmit(activity, response);
+          }}
         >
           {t('learning.submit')}
         </Button>
-        {result && (
+        {/* 跳过钮（sq3 R-b）：只在 AI 批改题未作答卡（含重答态）出现；已
+            跳过态与客观题不加（防刷门语义——跳过是开放式题的精力逃生门，
+            不是通用旁路）。 */}
+        {aiGraded && !skippedView && interactive && (!result || reanswering) && (
+          <Button
+            size='small'
+            disabled={loading}
+            onClick={() => onSubmit(activity, ACTIVITY_SKIP_RESPONSE)}
+          >
+            {t('learning.activitySkipButton')}
+          </Button>
+        )}
+        {skippedView && (
+          <div className='flex flex-wrap items-center gap-8px'>
+            <Text type='secondary'>{t('learning.activitySkippedBadge')}</Text>
+            <Text type='secondary' className='text-12px'>
+              {t('learning.activitySkippedHint')}
+            </Text>
+            <Button size='mini' onClick={() => setReanswering(true)}>
+              {t('learning.activitySkipReanswer')}
+            </Button>
+          </div>
+        )}
+        {result && !skippedView && (
           <div>
             <Text type={result.passed ? 'success' : 'error'}>
               {result.passed ? t('learning.correct') : t('learning.incorrect')}

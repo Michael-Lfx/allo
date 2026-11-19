@@ -25,6 +25,30 @@ fn validate_progress_shape(
     }
 }
 
+/// 跳过标记（sq3 R-a）：AI 批改题的响应载体 `{"skipped":true}`。落库面
+/// 以 response_json 内的 marker 为准（信封 `$.response.skipped`，零迁移），
+/// 消费面剔除统一走 [`attempt_not_skipped_sql`] 同一谓词。
+pub(super) fn response_marks_skipped(response: &Value) -> bool {
+    response.get("skipped").and_then(Value::as_bool) == Some(true)
+}
+
+/// 跳过 attempt 的固定反馈文案（落库面；前端按 skipped 态渲染双语说明，
+/// 不渲染本字段——它是账本可读性 prose，不是学习者面文案）。
+const SKIPPED_ATTEMPT_FEEDBACK: &str =
+    "Skipped: this open question was not graded and is excluded from \
+     weak-set/XP/memory accounting.";
+
+/// 消费面剔除谓词（sq3 R-a 消费清单）：`alias` 是 learning_attempts 的
+/// SQL 别名。skipped attempt（response marker 命中）不进任何作答统计——
+/// 跳过 ≠ 作答 ≠ 失败。`json_extract` 对无 marker 行返回 NULL，
+/// `COALESCE(…, 0) = 0` 保证历史行/普通作答行恒通过（`NOT (… = 1)` 会被
+/// NULL 吞行，不可用）。
+pub(super) fn attempt_not_skipped_sql(alias: &str) -> String {
+    format!(
+        "COALESCE(json_extract({alias}.response_json, '$.response.skipped'), 0) = 0"
+    )
+}
+
 impl LearningService {
 
     pub async fn update_lesson_progress(
@@ -170,7 +194,21 @@ impl LearningService {
         // learner. The old silent fallback passed every non-empty answer
         // with a score of 1.0, hiding grading failures behind a fake
         // success.
-        let (score, feedback, missing_points, item_results) = if kind.is_ai_graded() {
+        // 跳过语义（sq3 R-a）：`{"skipped":true}` 只对 AI 批改题成立——
+        // 客观题是防刷门语义（作答即判分，无跳过面），API 面自守不依赖
+        // 前端自觉。跳过 = 零 LLM 调用、零判分，落库 score=0.0/passed=0
+        // + response marker + 固定反馈（schema 零迁移）；消费面（薄弱集/
+        // XP/记忆）按 marker 剔除。
+        if response_marks_skipped(&response) && !kind.is_ai_graded() {
+            return Err(AppError::BadRequest(format!(
+                "{} questions do not accept the skipped marker",
+                kind.as_str()
+            )));
+        }
+        let skipped = kind.is_ai_graded() && response_marks_skipped(&response);
+        let (score, feedback, missing_points, item_results) = if skipped {
+            (0.0, SKIPPED_ATTEMPT_FEEDBACK.to_owned(), Vec::new(), Vec::new())
+        } else if kind.is_ai_graded() {
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
                 // Always rejected: the evaluator errors on empty responses.
@@ -258,6 +296,8 @@ impl LearningService {
             // 逐项结果（pf1）同走 API 层不落库：判分即产出，随提交响应
             // 透传；AI 批改题恒空，attempt 表零迁移。
             item_results,
+            // 跳过语义（sq3）：响应面随 marker 透出，前端据此渲染已跳过态。
+            skipped,
         })
     }
 
