@@ -85,8 +85,9 @@ part_of: map.md
 - feat commit：`795a04425ecb97f333486ab2668e4c266887df4d`（wave/sq1，
   基点 4074e38fc）
 - docs commit：本节所在提交（追加于 feat 之后）。
-- 合入集成：`git merge feat/learn1116`（合入尖端后的 merge commit 见
-  wave/sq1 分支头）。
+- 合入集成：`git merge feat/learn1116` → merge commit
+  `bad8c3c64`（Merge branch 'feat/learn1116' into wave/sq1，零冲突；
+  合入 sq5 的删除路由 + 前端删除入口与 i18n 双侧键）。
 
 ### 裁决点落地
 
@@ -139,8 +140,8 @@ part_of: map.md
 
 | 命令 | 结果 |
 | --- | --- |
-| `cargo test -p nomifun-learning` | 1000 passed / 0 failed（全改后） |
-| `cargo test -p nomifun-ai-agent` | lib 1175 passed + 16 个集成测试目标全过 / 0 failed（清盘后冷重建全绿） |
+| `cargo test -p nomifun-learning` | 1000 passed / 0 failed（全改后）；合入后再跑 1001 passed / 0 failed（含 sq5 新增服务测试，合入态全绿） |
+| `cargo test -p nomifun-ai-agent` | lib 1175 passed + 16 个集成测试目标全过 / 0 failed（清盘后冷重建全绿；合入后复跑同全绿） |
 | `cargo fmt -p nomifun-learning -p nomifun-ai-agent -- --check` | clean |
 | `bun run check`（UI） | 未跑——本票零 UI 改动（R-d 不做，前端未触碰） |
 
