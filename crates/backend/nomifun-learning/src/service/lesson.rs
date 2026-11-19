@@ -1880,7 +1880,7 @@ impl LearningService {
                 "sections": [section_key],
             }));
         }
-        self.persist_rewritten_section(lesson_id, section_key, &body, degraded)
+        self.persist_rewritten_section(&course_id, lesson_id, section_key, &body, degraded)
             .await?;
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
@@ -1939,8 +1939,14 @@ impl LearningService {
         }
 
         // 手动编辑视为接管：降级兜底标记随人工正文清除。
-        self.persist_rewritten_section(lesson_id, section_key, &request.body_md, false)
-            .await?;
+        self.persist_rewritten_section(
+            &course_id,
+            lesson_id,
+            section_key,
+            &request.body_md,
+            false,
+        )
+        .await?;
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
@@ -2005,8 +2011,15 @@ impl LearningService {
     /// （双读回退的文本同步）。`degraded` 标记当前正文是否为降级纯文字
     /// 兜底（ADR-0008）——AI 重写降级时置位，兑现承诺的重写与手动编辑
     /// 清除。单事务——节更新与 summary 拼装同生共死。
+    ///
+    /// sq2（R-b 改写面裁决落地）：提交后对被改节重跑一次词面扫描（零
+    /// LLM、复用提取层同一词表 + 跨节点承诺词表）——生成期正文闸此前
+    /// 不覆盖改写/手动编辑落库面。命中 → warning + tracing 留痕，**不
+    /// 阻断**用户操作（手动编辑是用户主权面；AI 重写走既有 degraded
+    /// 通道提示）。scope 缺席/空白（传统课与旧图档）= 零扫描。
     async fn persist_rewritten_section(
         &self,
+        course_id: &LearningCourseId,
         lesson_id: &LearningLessonId,
         section_key: &str,
         body: &str,
@@ -2055,7 +2068,47 @@ impl LearningService {
             .await
             .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
+        self.rescan_section_boundary(course_id, lesson_id, section_key, &body)
+            .await;
         Ok(())
+    }
+
+    /// sq2（R-b 改写面）：落库后对被改节重跑一次词面扫描（零 LLM——纯
+    /// 词面机械核对，复用 [`scope_findings`] 提取层同一词表 + 跨节点承诺
+    /// 词表）。命中 → warning + tracing 留痕，不阻断用户操作（手动编辑是
+    /// 用户主权面，AI 重写可走既有 degraded 通道提示——票面裁决原文）。
+    /// known_names 取课程名单喂提取层定词干/整词粒度；查询失败如实跳过
+    /// （留痕面不是硬门）。scope 缺席/空白（DB 默认空串）= 零扫描。
+    async fn rescan_section_boundary(
+        &self,
+        course_id: &LearningCourseId,
+        lesson_id: &LearningLessonId,
+        section_key: &str,
+        body: &str,
+    ) {
+        let scope: Option<String> = sqlx::query_scalar(
+            "SELECT scope FROM learning_lessons WHERE lesson_id = ?",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let Some(scope) = scope.and_then(|scope| non_empty_column(scope)) else {
+            return;
+        };
+        let known_names = self.course_known_names(course_id).await.unwrap_or(None);
+        let known = known_names.as_deref().unwrap_or(&[]);
+        let hits = crate::learning_graph::scope_findings::rescan_body_messages(&scope, known, body);
+        if !hits.is_empty() {
+            tracing::warn!(
+                target: "nomifun_learning",
+                lesson_id = lesson_id.as_str(),
+                section_key,
+                hits = %hits.join("；"),
+                "section_boundary_rescan: 被改节命中教学范围排除词/跨节点承诺词表（留痕不阻断）"
+            );
+        }
     }
 
     /// 批量取一组课时的已生成节摘要（`status='ready'` 节的标题+要点，按

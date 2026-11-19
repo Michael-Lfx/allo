@@ -65,11 +65,12 @@ pub use generation::variant_readings;
 // y06 的 `DISTRACTOR_MENU_BLOCK` 同因再导出：R21 标记需要在两宿同时可见
 // （EN 题库面 / CN 图线活动契约）。sq1 的 `STEM_SELF_CONTAINED_RULE` 与
 // `DANGLING_REFERENCE_TERMS` 同因再导出：题面自足条款与机械门词表要在
-// ai-agent 宿的三面一致性测试里对齐。
+// ai-agent 宿的三面一致性测试里对齐。sq2 的 `SCOPE_BOUNDARY_RULE` 同因
+// 再导出：题面 scope 边界条款跨宿一致性测试用。
 pub use generation::{
     CONTENT_DISCIPLINE_V2_BLOCK, CONTENT_DISCIPLINE_V2_SWITCH_ENV, DANGLING_REFERENCE_TERMS,
-    DISTRACTOR_MENU_BLOCK, STEM_SELF_CONTAINED_RULE, content_discipline_v2_enabled,
-    is_content_discipline_v2_disabled_value,
+    DISTRACTOR_MENU_BLOCK, SCOPE_BOUNDARY_RULE, STEM_SELF_CONTAINED_RULE,
+    content_discipline_v2_enabled, is_content_discipline_v2_disabled_value,
 };
 pub use generation::{
     KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,

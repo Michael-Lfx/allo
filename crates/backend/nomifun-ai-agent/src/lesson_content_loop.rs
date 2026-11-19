@@ -189,6 +189,20 @@ const LINKING_MATERIALS_CN: &str = "\n- 联结类题目（ordering / fill_in_bla
 /// 先例扩面；传统线英文条款 `STEM_SELF_CONTAINED_RULE` 同票同款）。
 const ACTIVITY_STEM_SELF_CONTAINED_CN: &str = "\n- 题面自足：作答所需的一切材料（代码段、数据、剧情、图示内容）必须在题面原样重述；禁止裸指代「演示中/上例/前文/例题中/如图所示/上一节/前一章」指向课内其它节而不重述——先重述材料再提问，裸指代题会被审计门以 danger 打回。";
 
+/// sq2 题面 scope 边界条款（agent 线【活动契约】注入，无开关恒在）：教学
+/// 范围声明排除的概念不得成为任何题的考点轴——「正文提及 ≠ 可考」。审计
+/// 机械门（`activity_scope_boundary_hit` danger）配对执法；传统线英文条款
+/// `SCOPE_BOUNDARY_RULE` 同票同款（三面一致性测试钉住，sq1 先例扩面）。
+const ACTIVITY_SCOPE_BOUNDARY_CN: &str = "\n- 考点轴边界（教学范围）：用户消息带「教学范围：」行时，该行「不教 X」类排除的概念不得成为任何题的考点轴——不进题干判定要求、不进选项正确性判定维度、不进判底解析的判定依据；正文边界句可以点名 X 说明边界，但题目不得测试它（正文提及 ≠ 可考）。越界题会被审计门以 danger 打回——换用本节点已教判据重写题面与选项。";
+
+/// sq2 正文边界条款（agent 线正文写作面注入，无开关恒在）：正文半两条
+/// 禁令——禁跨节点承诺（后续节点由教练独立生成，预告不可验证；边界说明
+/// 只许「本节点不展开 X」形式，同节点内下一节预告合法）+ 边界说明不立名
+/// （名单外未立名概念不承载功能意义——「归 X 机制处理」类功能提领会喂给
+/// 出题链「正文教过」的假依据；已教框架内能闭环的就闭环）。传统线孪生见
+/// nomifun-learning `BODY_BOUNDARY_BLOCK`（NARRATIVE_VOICE 两处手写同款）。
+const BODY_BOUNDARY_CN: &str = "\n- 正文边界纪律：正文不得预告其它节点教什么/何时教（「下一节点起再谈」「后面会讲 X」类承诺不可验证——后续节点的范围由教练后续独立生成，正文写作时它还不存在）；边界说明只写「本节点不展开 X」形式，同节点内的下一节预告合法。「课程已知概念」名单外的未立名概念不在正文承载功能意义（「归 X 机制处理」类违规——拿名单外名词当讲解构件，会喂给出题链「正文教过」的假依据）；已教框架内能闭环的就闭环，不引入悬空名词。";
+
 /// 时长预算面（k03，开关 `NOMI_LEARNING_EST_BUDGET` 的语义臂，learnhub
 /// #178 换血版）：预算行照读之外，意图画像四角（预算 × teaches 档位 ×
 /// 概念首现 × assumes）定内容雄心；超预算先砍雄心再砍内容，收敛不住 =
@@ -285,6 +299,9 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     // sq1：题面自足条款（无开关恒在，同命装配——与 DISTRACTOR_MENU_CN 等
     // 同款占位注入）。
     let stem_self_contained = ACTIVITY_STEM_SELF_CONTAINED_CN;
+    // sq2：题面 scope 边界条款 + 正文边界条款（无开关恒在，同款占位注入）。
+    let activity_scope_boundary = ACTIVITY_SCOPE_BOUNDARY_CN;
+    let body_boundary = BODY_BOUNDARY_CN;
     format!(
         r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
@@ -297,7 +314,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 {budget_clause}- 构件词边界：节标题、要点、例题与练习只把 用户消息「课程已知概念」名单 ∪ 本节点 teaches 的概念当工作词；名单外的领域名词不立名——不进节标题、不进要点、不作讲解构件（那是后续节点的内容，不预教），需要该意思时用日常词表述（范围、找不满足的例子、至少有一个）。本节点 teaches 的概念与教学必需的记号读法除外。
 - 练习形态按档位：照示范复制本节点行为的练习（照例题格式改写、套格式、判断对错）各档都合法；练习引入本节点未教的方法论或推理链（归纳原理、多步推理证明一类）即越档——teaches 标「知道」的节点尤其如此：练习止于辨认与复制，方法论归「会用/能教」档。节清单定稿后逐节核对：每道练习考的是「示范过的行为」还是「没教过的方法」。{discrimination_template}
 - 取材池（考察的概念域）：例题与练习考察的概念优先取自「课程已知概念」名单——用已教/已声明的概念出题，兼旧概念复习；情境载体另跟受众条款走，两不相扰。名单内多样轮换：不在单一概念上连出多题，不同题目轮换概念域与情境载体，避免同模子例句连排。{completeness_planning}{segmented_examples_planning}
-- 声明优先（创建意图/教学范围）：用户消息带「创建意图：」「教学范围：」两行时，这两行是本节点意图与边界的**第一真相**——节安排不越出声明的教学范围，与意图画像冲突处照声明（「节点档位」行与开头「程度声明」照旧管档位与深度，分工不替代）；范围内讲透、范围外不无痕展开——范围外名词不立名、不展开、不作讲解构件；在小结或引入处点名边界（「本节点不教 X」一类）是对边界的诚实说明，不构成对 X 的引用，更不构成引入豁免。两行缺席（旧档节点）= 无声明面，照既有纪律走。
+- 声明优先（创建意图/教学范围）：用户消息带「创建意图：」「教学范围：」两行时，这两行是本节点意图与边界的**第一真相**——节安排不越出声明的教学范围，与意图画像冲突处照声明（「节点档位」行与开头「程度声明」照旧管档位与深度，分工不替代）；范围内讲透、范围外不无痕展开——范围外名词不立名、不展开、不作讲解构件；在小结或引入处点名边界（「本节点不教 X」一类）是对边界的诚实说明，不构成对 X 的引用，更不构成引入豁免。两行缺席（旧档节点）= 无声明面，照既有纪律走。{body_boundary}
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形元素与文字必须完整落在 viewBox 内——画出画布边缘的文本/形状 = 图形缺陷（渲染端按声明尺寸裁剪，超界内容会被切掉）。图形块不计入篇幅。
 - 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
@@ -314,7 +331,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}{verification_discipline}{linking_materials}
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - objective 题必须带 evidence：≤120 字的正文逐字引用（word-for-word，改写不算），锚定题干——判底揭底全靠它；缺 evidence 的客观题会被审计门以 danger 打回。
-{stem_self_contained}
+{stem_self_contained}{activity_scope_boundary}
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
 【工具使用纪律】
@@ -345,6 +362,9 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 - reflections_multiple（warning）：可保留——只有 danger 才阻断发布。
 - activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
 - activity_prompt_dangling_reference：update_activity 按位置重写该题题面——把所引材料（代码/数据/剧情/图示内容）在题面原样重述后再提问，去掉「演示中/上例/前文」类裸指代措辞。
+- activity_scope_boundary_hit：update_activity 按位置重写该题——教学范围声明的排除概念不得作考点轴（正文提及 ≠ 可考），换用本节点已教判据重出题面与选项。
+- scope_boundary_hit：ls_set_section_body 重写被点名节——排除概念只在「本节点不展开 X」边界句里点名，不在正文承载功能意义（「归 X 机制处理」类功能性提及删掉，用已教框架闭环）。
+- cross_node_promise（warning 留痕，可不动作）：删「下一节点起再谈」类跨节点承诺措辞——边界说明只写「本节点不展开 X」，同节点内的下一节预告合法。
 - evidence_missing：update_activity 按位置为每道被点名的客观题补一条 ≤120 字逐字引用（word-for-word，从正文复制，改写不算）。
 - section_invalid（缺可视化）：按清单里该节的 visual 重写正文——用 $$公式$$ / ```svg / ```jsxgraph / ```mermaid / 表格承载核心讲解，文字作旁注。
 - viz_block_lint（mermaid 括号不平衡/引号不配平/节点未定义）：修复该围栏块语法，或改用表格/公式承载该节讲解（终检已系统剔除的 viz_block_lint_dropped 按降级声明保留，无需重画）。
@@ -2716,6 +2736,57 @@ mod tests {
             REPAIR_LESSON_AGENT_SYSTEM.contains("evidence_missing"),
             "修复环缺 evidence finding 的修复动作映射"
         );
+    }
+
+    /// sq2（R-a/R-b）scope 边界双面条款一致性（sq1 三面一致性先例扩面）：
+    /// agent 线【活动契约】带题面半条款（正文提及 ≠ 可考）、正文写作面带
+    /// 正文半两条禁令（禁跨节点承诺 + 边界说明不立名）；修复环对三个
+    /// finding（题面越界 danger / 正文越界 danger / 承诺 warning）各带修复
+    /// 动作映射（门与修复环闭合）；条款关键短语「正文提及 ≠ 可考」在题面
+    /// 半逐字在场（两线同款，传统线英文条款由 nomifun-learning 宿自己的
+    /// `scope_boundary_rule_is_carried_by_both_traditional_faces` 钉）。
+    #[test]
+    fn scope_boundary_clauses_span_activity_and_body_faces_with_repair_mappings() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        assert!(
+            system.contains(ACTIVITY_SCOPE_BOUNDARY_CN),
+            "agent 线【活动契约】缺题面 scope 边界条款：{system}"
+        );
+        assert!(
+            system.contains(BODY_BOUNDARY_CN),
+            "agent 线正文写作面缺正文边界条款（两条禁令）：{system}"
+        );
+        // 题面半裁决句逐字在场：「正文提及 ≠ 可考」（契约 ↔ 票面 R-a 同句）。
+        for phrase in ["正文提及 ≠ 可考", "不得成为任何题的考点轴", "换用本节点已教判据重写"] {
+            assert!(
+                ACTIVITY_SCOPE_BOUNDARY_CN.contains(phrase),
+                "题面半条款缺裁决短语「{phrase}」：{ACTIVITY_SCOPE_BOUNDARY_CN}"
+            );
+        }
+        // 正文半两条禁令的裁决形态在场。
+        for phrase in [
+            "不得预告其它节点",
+            "本节点不展开 X",
+            "同节点内的下一节预告合法",
+            "不引入悬空名词",
+        ] {
+            assert!(
+                BODY_BOUNDARY_CN.contains(phrase),
+                "正文半条款缺裁决短语「{phrase}」：{BODY_BOUNDARY_CN}"
+            );
+        }
+        // 修复环：三个 finding 各带修复动作映射行（题面/正文 danger 门 +
+        // 承诺 warning 留痕）。
+        for finding in [
+            "activity_scope_boundary_hit",
+            "scope_boundary_hit",
+            "cross_node_promise",
+        ] {
+            assert!(
+                REPAIR_LESSON_AGENT_SYSTEM.contains(finding),
+                "修复环缺 {finding} 的修复动作映射"
+            );
+        }
     }
 
     /// n3（#177/#178 条款移植）：规划面四条款（构件词边界 / 练习形态按

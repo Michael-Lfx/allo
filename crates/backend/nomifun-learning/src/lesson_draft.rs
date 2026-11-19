@@ -1393,6 +1393,19 @@ fn audit_findings(
         }
     }
 
+    // ── sq2（R-b）：scope 排除词双粒度表——每课时提取一次，题面门与正文
+    // 门同表（known_names 喂提取层定词干/整词粒度；名单缺席 = 空名单 =
+    // 词干面激进——适用界原文「名单零命中才词干匹配」）。graph 缺席或
+    // scope 空白 = 零排除面（旧档/传统课零开销）。
+    let excluded_terms = context.graph.as_ref().and_then(|graph| {
+        graph.scope.as_deref().map(|scope| {
+            crate::learning_graph::scope_findings::excluded_terms_dual(
+                scope,
+                graph.known_names.as_deref().unwrap_or(&[]),
+            )
+        })
+    });
+
     // ── Per-activity rules (shape), position-aware ──
     let mut seen_prompts: Vec<String> = Vec::new();
     for (position, activity) in activities.iter().enumerate() {
@@ -1420,6 +1433,32 @@ fn audit_findings(
                         "{at}: 题面裸指代课内其它材料（命中：{}）——作答所需材料必须\
                          在题面原样重述（代码/数据/剧情/图示内容），先重述再提问；\
                          update_activity 重写该题题面",
+                        hits.join("、")
+                    ),
+                ));
+            }
+        }
+        // sq2（R-b/R-c）题面 scope 越界机械门：题干 + 全部选项，零豁免
+        //（R-c 题面收窄——题面无「写边界」的合法场景，否定性提及同样把
+        // 排除概念立成判定轴）；explanation 不入扫面（判底揭示面允许点名
+        // 边界排除理由——裁决落地）；reflection/open_question 题干同扫
+        //（契约口径「不得成为任何题的考点轴」）。danger 阻断发布：回收
+        // 超纲题（position 7）的判定轴整条建立在 scope 排除概念上——
+        // 修复指引点名换判据，agent 修复轮按 findings 自修。
+        if let Some(terms) = &excluded_terms {
+            let options: Vec<&str> = activity.options.iter().map(String::as_str).collect();
+            let hits = crate::learning_graph::scope_findings::activity_boundary_hits(
+                terms,
+                activity.prompt.trim(),
+                &options,
+            );
+            if !hits.is_empty() {
+                findings.push(danger(
+                    "activity_scope_boundary_hit",
+                    format!(
+                        "{at}: 题面/选项命中教学范围排除概念（命中：{}）——scope 声明\
+                         点名的概念不得成为任何题的考点轴（正文边界句提及 ≠ 可考）；\
+                         换用本节点已教判据重写：update_activity 重写该题题面与选项",
                         hits.join("、")
                     ),
                 ));
@@ -1533,35 +1572,55 @@ fn audit_findings(
             }
         }
         // ── scope 边界词面核对（absorb-8 z03，learnhub #205 Q1=b 域中立
-        // 移植，报告-only 零拦截）：「教学范围」声明排除段名词串 vs 节标题
-        // 与正文——「不该无痕地生成」由人判读 findings，不由机械打回；
-        // 否定性提及豁免（范围外点名 ≠ 引用）。scope 缺席/空白（旧档）=
-        // 零扫描零开销（模块对空 scope 恒返回空表）。
-        if let Some(scope) = context
-            .graph
-            .as_ref()
-            .and_then(|graph| graph.scope.as_deref())
-        {
-            // 排除词串每课时提取一次，逐节复用（scope None = 不提取零开销）。
-            let excluded_terms =
-                crate::learning_graph::scope_findings::excluded_terms(scope);
+        // 移植；sq2 双面收口）：「教学范围」声明排除段名词串（双粒度——
+        // 词干/整词，与题面门同表）vs 节标题与正文。sq2 起未豁免命中升
+        // **danger**（票面倾向落地：功能性提及正是超纲题的判死弹药——
+        // 正文面自己就是弹药生产者，warning 报告面拦不住发布；否定性提及
+        // 豁免保留，合法边界句不受伤）。scope 缺席/空白（旧档）= 零扫描
+        // 零开销（模块对空 scope 恒返回空表）。
+        if let Some(terms) = &excluded_terms {
             for section in section_manifest.into_iter().flatten() {
                 let body = section_bodies
                     .get(&section.section_key)
                     .map(|(body, _)| body.as_str())
                     .unwrap_or("");
                 for message in crate::learning_graph::scope_findings::scan_section_with_terms(
-                    &excluded_terms,
+                    terms,
                     &section.section_key,
                     &section.title,
                     body,
                 ) {
-                    findings.push(warning("scope_boundary_hit", message));
+                    findings.push(danger("scope_boundary_hit", message));
                 }
             }
             if let Some(document) = document {
-                for message in crate::learning_graph::scope_findings::scan_body(scope, document) {
-                    findings.push(warning("scope_boundary_hit", message));
+                for message in crate::learning_graph::scope_findings::scan_body(terms, document) {
+                    findings.push(danger("scope_boundary_hit", message));
+                }
+            }
+        }
+        // sq2（R-a 正文半禁令 1）跨节点承诺词面（warning 报告面）：正文预
+        // 告其它节点教什么/何时教的指点措辞逐行点名——后续节点由教练独立
+        // 生成，承诺不可验证；同节点内下一节预告合法（词表收「下一节点」
+        // 不收「下一节」）。不阻断：题面危险已被题面门 danger 兜住，本条
+        // 是生成纪律的观测面；换说法的语义越界不设机制面（R-d 归真机走查）。
+        for (key, body) in &bodies {
+            for line in body.lines() {
+                for term in crate::learning_graph::scope_findings::cross_node_promise_hits(line)
+                {
+                    let where_ = if key == "document" {
+                        "正文".to_owned()
+                    } else {
+                        format!("节 {key} 正文")
+                    };
+                    findings.push(warning(
+                        "cross_node_promise",
+                        format!(
+                            "{where_}出现跨节点承诺措辞「{term}」——正文不得预告其它节点\
+                             教什么/何时教（后续节点由教练独立生成，承诺不可验证）；\
+                             边界说明只写「本节点不展开 X」形式，同节点内的下一节预告合法"
+                        ),
+                    ));
                 }
             }
         }
@@ -2090,12 +2149,13 @@ mod tests {
         );
     }
 
-    /// scope 边界词面核对（absorb-8 z03，报告-only）：图路径 scope 声明
-    /// 排除段名词串撞节标题/正文 → `scope_boundary_hit` warning（指名来源
-    /// 字段「教学范围」与命中位置）；否定性提及豁免；scope 缺席/空（旧档）
-    /// 与传统路径零扫描零 finding。
+    /// scope 边界词面核对（absorb-8 z03 移植；sq2 双面收口）：图路径 scope
+    /// 声明排除段名词串撞节标题/正文 → `scope_boundary_hit` **danger**
+    ///（sq2 倾向落地：未豁免命中升 danger 挡 finish 闸——功能性提及是超纲
+    /// 题的判死弹药）；否定性提及豁免保留（合法边界句零 finding）；scope
+    /// 缺席/空（旧档）与传统路径零扫描零 finding。
     #[test]
-    fn audit_names_scope_boundary_hits_without_blocking() {
+    fn audit_scope_boundary_hits_block_the_gate_and_negations_stay_exempt() {
         let graph_ctx = |scope: Option<&str>| {
             let mut ctx = context();
             ctx.graph = Some(GraphLessonContext {
@@ -2115,7 +2175,7 @@ mod tests {
         };
         let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
         // 播种负样本（票面场景）：scope「不引入方程」+ 节标题含「方程」→
-        // 命中一条，指名来源与位置。
+        // 命中一条，指名来源与位置；sq2 起升 danger（挡 finish 闸）。
         let mut draft = LessonDraft::new(graph_ctx(Some("教四则运算；不引入方程")));
         draft.apply_ops(vec![LessonOp::SetDocument {
             document: format!("## 描述\n{body}\n## 例子·方程的初步认识\n{body}\n## 验证\n{body}\n"),
@@ -2126,7 +2186,10 @@ mod tests {
             .filter(|f| f.kind == "scope_boundary_hit")
             .collect();
         assert_eq!(hits.len(), 1, "标题命中一条：{:?}", draft.findings);
-        assert_eq!(hits[0].severity, SEV_WARNING, "观察条非阻断");
+        assert_eq!(
+            hits[0].severity, SEV_DANGER,
+            "sq2 升 danger：未豁免的功能性提及挡发布"
+        );
         assert!(
             hits[0].message.contains("方程")
                 && hits[0].message.contains("教学范围")
@@ -2135,7 +2198,7 @@ mod tests {
             hits[0].message
         );
 
-        // 否定性提及豁免：正文只在否定子句里点名边界 = 零 finding。
+        // 否定性提及豁免保留：正文只在否定子句里点名边界 = 零 finding。
         let mut draft = LessonDraft::new(graph_ctx(Some("教四则运算；不引入方程")));
         draft.apply_ops(vec![LessonOp::SetDocument {
             document: format!(
@@ -2177,6 +2240,199 @@ mod tests {
                 .iter()
                 .any(|f| f.kind == "scope_boundary_hit"),
             "传统路径零扫描"
+        );
+    }
+
+    /// sq2（R-b/R-c）题面 scope 越界机械门：题干/选项命中 scope 排除概念
+    /// → `activity_scope_boundary_hit` danger（挡 finish 闸，message 点名
+    /// 命中词 + 「换用本节点已教判据重写」修复指引 + 可寻址位置）；题面
+    /// **零豁免**（否定性提及也命中——R-c 题面收窄）；reflection 题干同扫
+    ///（「任何题」口径）；explanation 不入扫面（判底揭示面允许点名边界排除
+    /// 理由——裁决落地）；干净题面零该 finding；词干粒度拦同根变体
+    ///（「回收细节」拦「回收路径」），整词面不误伤已立名域（「引用语法」
+    /// 拦不住「引用」单独出现）。
+    #[test]
+    fn activity_scope_boundary_hits_audit_as_danger_without_negation_exemption() {
+        let graph_ctx = |scope: Option<&str>| {
+            let mut ctx = context();
+            ctx.graph = Some(GraphLessonContext {
+                goal: "g".into(),
+                degree_statement: "d".into(),
+                prerequisite_path: String::new(),
+                upcoming_nodes: String::new(),
+                concept_faces: None,
+                est_minutes: Some(20),
+                known_names: Some(vec!["引用".to_owned(), "局部变量".to_owned()]),
+                teaches_tiers: Vec::new(),
+                precedents: Vec::new(),
+                intent: None,
+                scope: scope.map(str::to_owned),
+            });
+            ctx
+        };
+        // 真实 scope（票面取证原文）：「回收细节」→ 词干「回收」（名单零
+        // 命中）；「引用语法」→ 整词（「引用」已立名）。
+        let scope = "教栈上临时量与堆上长存数据的分界；不教指针/引用语法，不教回收细节，留待后续";
+        let mut draft = LessonDraft::new(graph_ctx(Some(scope)));
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            // 命中臂（票面实锤形态）：选项判定轴 = 回收路径与持有者
+            //（position 7 的 s4 单选题重演）。
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "prompt": "下列哪种写法的回收路径与持有者判断正确？",
+                        "options": ["值仍在堆区，再也用不到", "由引用计数立即回收"],
+                        "answer": "值仍在堆区，再也用不到"
+                    }),
+                ),
+            },
+        ]);
+        let finding = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "activity_scope_boundary_hit")
+            .expect("越界题面被机械门点名");
+        assert_eq!(
+            finding.severity, SEV_DANGER,
+            "题面 scope 越界是 danger：挡 finish 闸"
+        );
+        assert!(finding.message.contains("回收"), "finding 点名命中词干：{}", finding.message);
+        assert!(
+            finding.message.contains("position 0") && finding.message.contains("update_activity"),
+            "finding 位置可寻址 + 带修复指引：{}",
+            finding.message
+        );
+
+        // 零豁免臂：题面的否定性提及同样命中（R-c 收窄——题面无「写边界」
+        // 合法场景）；reflection 题干同扫（「任何题」口径）；explanation
+        // 命中不入扫面（裁决落地）；整词面不误伤「引用」合法使用。
+        let mut draft = LessonDraft::new(graph_ctx(Some(scope)));
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "true_false",
+                    serde_json::json!({
+                        "prompt": "本题不涉及回收细节：局部变量离开作用域后值仍在堆区。",
+                        "answer": true
+                    }),
+                ),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "reflection",
+                    serde_json::json!({
+                        "prompt": "结合本节内容，谈谈回收机制与值生命周期的关系。",
+                        "answer": null
+                    }),
+                ),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "prompt": "函数返回指向该对象的引用时，值存放在哪里？",
+                        "options": ["栈区", "堆区", "寄存器"],
+                        "answer": "堆区",
+                        "explanation": "回收细节留待后续课程，此处只考存储位置。"
+                    }),
+                ),
+            },
+        ]);
+        let hits: Vec<&LessonFinding> = draft
+            .findings
+            .iter()
+            .filter(|f| f.kind == "activity_scope_boundary_hit")
+            .collect();
+        assert_eq!(
+            hits.len(),
+            2,
+            "否定性题面 + reflection 题干命中，explanation 与「引用」合法句不命中：{:?}",
+            hits
+        );
+        assert!(
+            hits.iter().any(|hit| hit.message.contains("position 0")),
+            "true_false 否定性题面命中（零豁免）：{:?}",
+            hits
+        );
+        assert!(
+            hits.iter().any(|hit| hit.message.contains("position 1")),
+            "reflection 题干命中（任何题口径）：{:?}",
+            hits
+        );
+
+        // scope 缺席（graph 无声明面）= 题面门零扫描。
+        let mut draft = LessonDraft::new(graph_ctx(None));
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "prompt": "下列哪种写法的回收路径正确？",
+                        "options": ["引用计数"], "answer": "引用计数"
+                    }),
+                ),
+            },
+        ]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "activity_scope_boundary_hit"),
+            "scope 缺席 = 题面门零扫描：{:?}",
+            draft.findings
+        );
+    }
+
+    /// sq2（R-a 正文半禁令 1）跨节点承诺词面（warning 报告面）：正文
+    /// 「下一节点起再谈」类指点措辞逐条点名；同节点内「下一节」预告合法
+    ///（「下一节」不是「下一节点」的匹配命中）；否定性边界句「本节点不
+    /// 展开 X」不含承诺词零 finding。
+    #[test]
+    fn cross_node_promise_phrases_audit_as_warnings_and_same_node_previews_stay_silent() {
+        let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
+        // 命中臂（票面实锤形态）：s3 收尾「此处不展开那套机制，下一节点起再谈」。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述\n{body}此处不展开那套机制，下一节点起再谈。\n## 例子\n{body}\n## 验证\n{body}\n"),
+        }]);
+        let hits: Vec<&LessonFinding> = draft
+            .findings
+            .iter()
+            .filter(|f| f.kind == "cross_node_promise")
+            .collect();
+        assert_eq!(hits.len(), 1, "承诺措辞一条：{:?}", draft.findings);
+        assert_eq!(hits[0].severity, SEV_WARNING, "正文纪律越界是报告面");
+        assert!(
+            hits[0].message.contains("下一节点") && hits[0].message.contains("不可验证"),
+            "finding 点名措辞并说明理由：{}",
+            hits[0].message
+        );
+
+        // 静默臂：同节点内下一节预告（「下一节」）与「本节点不展开 X」
+        // 边界句零 finding。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!(
+                "## 描述\n{body}这里只立概念，下一节我们算具体数字；本节点不展开回收细节。\n## 例子\n{body}\n## 验证\n{body}\n"
+            ),
+        }]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "cross_node_promise"),
+            "同节点预告与边界句零承诺 finding：{:?}",
+            draft.findings
         );
     }
 

@@ -154,6 +154,14 @@ pub(super) fn activity_kind_contract_block() -> String {
 ///（DISTRACTOR_MENU_BLOCK 同因先例）。
 pub const STEM_SELF_CONTAINED_RULE: &str = "- Self-contained stems: the stem must restate verbatim every piece of material the answer depends on (code, data, scenario facts, diagram content) — a stem that merely points into the lesson (\"in the demo\", \"the example above\", \"the previous section\", \"as shown in the figure\") is unanswerable on a review card and gets rejected; restate the material, then ask.";
 
+/// sq2 题面 scope 边界条款（传统线两面的同源片段源）：整课 TAIL 与单题
+/// BASELINE 各嵌同一句逐字文本——删句或漂移即 `scope_boundary_rule`
+/// 一致性测试红（sq1 题面自足条款同构扩面）。`pub`：ai-agent 的条款
+/// 一致性测试跨宿可见（`STEM_SELF_CONTAINED_RULE` 同因先例）。传统线无
+/// 「教学范围」行（scope 是图节点声明面）——条款作条件式照嵌：faces
+/// 同构、一旦声明面出现即被约束，机械门（audit 共库）照拦。
+pub const SCOPE_BOUNDARY_RULE: &str = "- Scope-boundary concepts are not testable: when the lesson declares a teaching scope (\"不教 X\" / \"X 留待后续\" in the 教学范围 line), X must never become the judging axis of any question — not in the stem's judging requirement, not in the dimensions that decide option correctness, not in the explanation's grounds. The body may name X in a boundary sentence; a question may not test it (a body mention is not a testable concept) — rewrite out-of-bounds questions around the concepts the lesson actually teaches.";
+
 /// Activity stage: a separate, small model call per lesson producing only
 /// the activities and study time. Keeping this JSON tiny and separate from
 /// the long-form document is what makes reliable parsing possible. The
@@ -204,6 +212,7 @@ const LESSON_SYSTEM_TAIL: &str = r#"Rules:
 - Before submitting, re-solve every question as if you were the candidate: the answer key must match your re-solution, the explanation must match the answer key, and every field must be filled in — AI-graded questions (reflection/open_question) must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
 - Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it. A missing or empty "evidence" on an objective question is a contract violation.
 - Self-contained stems: the stem must restate verbatim every piece of material the answer depends on (code, data, scenario facts, diagram content) — a stem that merely points into the lesson ("in the demo", "the example above", "the previous section", "as shown in the figure") is unanswerable on a review card and gets rejected; restate the material, then ask.
+- Scope-boundary concepts are not testable: when the lesson declares a teaching scope ("不教 X" / "X 留待后续" in the 教学范围 line), X must never become the judging axis of any question — not in the stem's judging requirement, not in the dimensions that decide option correctness, not in the explanation's grounds. The body may name X in a boundary sentence; a question may not test it (a body mention is not a testable concept) — rewrite out-of-bounds questions around the concepts the lesson actually teaches.
 - Only test what the section bodies teach — never introduce a concept, notation or conclusion the bodies do not contain.
 - null is allowed ONLY for a reflection or open_question answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the section bodies and the cited excerpt.
@@ -253,6 +262,7 @@ Rules:
 - reflection answer must be null and asks the learner to explain or apply an idea from the document.
 - Every OBJECTIVE kind carries "evidence": a verbatim quote of at most 120 characters copied word-for-word from the lesson document or cited excerpt that anchors the question.
 - Self-contained stems: the stem must restate verbatim every piece of material the answer depends on (code, data, scenario facts, diagram content) — a stem that merely points into the lesson ("in the demo", "the example above", "the previous section", "as shown in the figure") is unanswerable on a review card and gets rejected; restate the material, then ask.
+- Scope-boundary concepts are not testable: when the lesson declares a teaching scope ("不教 X" / "X 留待后续" in the 教学范围 line), X must never become the judging axis of any question — not in the stem's judging requirement, not in the dimensions that decide option correctness, not in the explanation's grounds. The body may name X in a boundary sentence; a question may not test it (a body mention is not a testable concept) — rewrite out-of-bounds questions around the concepts the lesson actually teaches.
 - The explanation walks every option of a choice question (why right / why wrong), not just the correct one.
 - Before submitting, re-solve this question as if you were the candidate: the answer key must match your re-solution and the explanation must match the answer key — a reflection question must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
 - null is allowed ONLY for a reflection answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).

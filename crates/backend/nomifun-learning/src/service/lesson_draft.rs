@@ -490,11 +490,12 @@ mod tests {
         );
     }
 
-    /// scope 边界词面核对 report-only 断言（absorb-8 z03，j07 观察条同律）：
-    /// 有 `scope_boundary_hit` findings 的草稿仍发布成功（warning 通道不进
-    /// 门禁不进重试）——「不该无痕地生成」由人判读 findings，不由机械打回。
+    /// sq2 正文半修复环（scope_boundary_hit 升 danger 的门语义重钉，旧
+    /// report-only 断言随票面裁决退役）：未豁免命中 → finish 被拒（danger
+    /// 挡闸、报告点名 scope_boundary_hit）→ 正文改写为否定性边界句 → 过闸
+    /// 发布。「不该无痕地生成」的处置面 = 修复轮改文，不再是带病发布。
     #[tokio::test]
-    async fn finish_publishes_with_scope_boundary_findings() {
+    async fn scope_boundary_hit_blocks_finish_and_the_repair_loop_publishes() {
         let database = nomifun_db::init_database_memory().await.unwrap();
         let service = LearningService::new(database.pool().clone());
         let mut ctx = context();
@@ -536,7 +537,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        // 命中在案（观察面可见）：warning 级 scope_boundary_hit。
+        // 命中在案：sq2 起 danger 级（挡 finish 闸）。
         let findings = service
             .inspect_lesson_draft(&view.draft_id)
             .unwrap()
@@ -546,11 +547,110 @@ mod tests {
             .filter(|f| f.kind == "scope_boundary_hit")
             .collect();
         assert_eq!(hits.len(), 1, "越界命中在案：{findings:?}");
-        assert_eq!(hits[0].severity, crate::course_outline::SEV_WARNING);
-        // report-only：有 findings 仍发布成功（finish 门只认 danger）。
+        assert_eq!(hits[0].severity, crate::course_outline::SEV_DANGER);
+        let blocked = service
+            .finish_lesson_draft(&view.draft_id, 0)
+            .expect_err("未豁免 scope 命中 = danger，发布被拒");
+        assert!(blocked.to_string().contains("scope_boundary_hit"), "{blocked}");
+
+        // 修复环：正文改成否定性边界句（豁免保留——诚实写边界不报）→ 过闸。
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![LessonOp::SetDocument {
+                    document: format!(
+                        "## 描述\n{body}本课不引入方程，后续课程再展开。\n## 例子\n{body}\n## 验证\n{body}\n"
+                    ),
+                }],
+            )
+            .unwrap();
         let output = service
             .finish_lesson_draft(&view.draft_id, 0)
-            .expect("scope findings 是观察条，不挡发布");
+            .expect("否定性边界句豁免 → 修复后发布成功");
+        assert_eq!(output.activities.len(), 3, "发布成功（管线照常走完）");
+    }
+
+    /// sq2 题面半修复环（票面 Acceptance「audit 修复环测试：题面命中 →
+    /// 改写 → 过闸发布」）：真实 scope 原文（「不教指针/引用语法，不教回
+    /// 收细节，留待后续」）+ 已知概念名单（「引用」已立名）——越界题
+    ///（判定轴 = 回收路径）→ finish 被拒且报告点名 activity_scope_boundary_
+    /// hit → update_activity 换用已教判据重写 → 过闸发布。
+    #[tokio::test]
+    async fn activity_scope_boundary_hit_blocks_finish_and_repair_publishes() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let mut ctx = context();
+        ctx.graph = Some(crate::lesson_draft::GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: Some(vec!["引用".to_owned(), "局部变量".to_owned()]),
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
+            intent: None,
+            scope: Some("教栈上临时量与堆上长存数据的分界；不教指针/引用语法，不教回收细节，留待后续".into()),
+        });
+        let view = service.create_lesson_draft(ctx).unwrap();
+        let body = "这是一个足够长的正文段落，用于通过课时级文档契约的长度下限要求。".repeat(12);
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    LessonOp::SetDocument {
+                        document: format!(
+                            "## 描述\n{body}\n## 例子\n{body}\n## 验证\n{body}\n"
+                        ),
+                    },
+                    // 命中臂（票面实锤形态，position 7 的 s4 单选题重演）：
+                    // 正确选项判定轴整条建立在排除概念「回收」上。
+                    LessonOp::AddActivity {
+                        activity: activity_json("single_choice", serde_json::json!({
+                            "prompt": "下列哪种写法的回收路径与持有者判断正确？",
+                            "options": ["值仍在堆区，再也用不到", "由引用计数立即回收"],
+                            "answer": "值仍在堆区，再也用不到"
+                        })),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("true_false", serde_json::json!({ "answer": true })),
+                    },
+                    LessonOp::AddActivity {
+                        activity: activity_json("reflection", serde_json::json!({ "answer": null })),
+                    },
+                ],
+            )
+            .unwrap();
+        let blocked = service
+            .finish_lesson_draft(&view.draft_id, 0)
+            .expect_err("题面命中 scope 排除概念 = danger，发布被拒");
+        assert!(
+            blocked
+                .to_string()
+                .contains("activity_scope_boundary_hit"),
+            "{blocked}"
+        );
+
+        // 修复环：换用本节点已教判据重写（判定轴 = 已教概念「局部变量/
+        // 栈区」，零排除词）→ 过闸发布。
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![LessonOp::UpdateActivity {
+                    position: 0,
+                    activity: activity_json("single_choice", serde_json::json!({
+                        "prompt": "主流程建立局部变量并在返回后不再使用它，这个值存放在哪里？",
+                        "options": ["栈区", "堆区", "寄存器"],
+                        "answer": "堆区",
+                        "evidence": "这是一个足够长的正文段落。"
+                    })),
+                }],
+            )
+            .unwrap();
+        let output = service
+            .finish_lesson_draft(&view.draft_id, 0)
+            .expect("已教判据重写后过闸发布");
         assert_eq!(output.activities.len(), 3, "发布成功（管线照常走完）");
     }
 
