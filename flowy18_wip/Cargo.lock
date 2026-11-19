@@ -2178,7 +2178,6 @@ dependencies = [
  "gpui-ce",
  "gpui_ce_elements",
  "gpui_ce_platform",
- "open",
  "pulldown-cmark",
  "serde",
  "serde_json",

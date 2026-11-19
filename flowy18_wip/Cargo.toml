@@ -41,7 +41,6 @@ license = "MIT"
 repository = "https://github.com/flowy-app/flowy"
 
 [workspace.dependencies]
-open = "5"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 url = "2.5"
 flowy-core = { path = "crates/flowy-core" }

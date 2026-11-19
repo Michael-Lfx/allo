@@ -11,8 +11,6 @@ enum DockIcon {
     Automation,
     Plugins,
     More,
-    NewProject,
-    Project,
     Task,
 }
 
@@ -26,8 +24,6 @@ impl DockIcon {
             Self::Automation => theme::icons::workflow(),
             Self::Plugins => theme::icons::puzzle(),
             Self::More => theme::icons::ellipsis(),
-            Self::NewProject => theme::icons::folder_plus(),
-            Self::Project => theme::icons::folder(),
             Self::Task => theme::icons::list_check(),
         }
     }
@@ -136,8 +132,6 @@ impl FlowyApp {
             .pb_3()
             .child(brand())
             .child(navigation)
-            .child(group_label(&self.theme, &self.t("dock.projects")))
-            .child(self.project_rows(cx))
             .child(group_label(&self.theme, &self.t("dock.tasks")))
             .child(self.task_rows(cx))
     }
@@ -189,37 +183,6 @@ impl FlowyApp {
             app.user_menu = false;
             app.toggle_more(cx);
         }))
-    }
-
-    fn project_rows(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut rows = div().flex().flex_col();
-        rows = rows.child(
-            item_row(
-                self.theme,
-                "new-project",
-                self.t("dock.new_project"),
-                false,
-                DockIcon::NewProject,
-            )
-            .on_click(cx.listener(|app, _event, _window, cx| {
-                app.user_menu = false;
-                app.add_project(cx);
-            })),
-        );
-        let projects = self.studio.read(cx).projects.clone();
-        for (slot, index) in projects.iter().enumerate() {
-            let id = format!("project-{slot}");
-            let label =
-                self.tf("project.untitled", &[("index", &index.to_string())]);
-            rows = rows.child(item_row(
-                self.theme,
-                id,
-                label,
-                false,
-                DockIcon::Project,
-            ));
-        }
-        rows
     }
 
     fn task_rows(&self, cx: &Context<'_, Self>) -> impl IntoElement {

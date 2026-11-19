@@ -1216,11 +1216,6 @@ impl FlowyApp {
             .update(cx, |panel, cx| panel.fill_prompt_key(key, cx));
     }
 
-    pub fn add_project(&mut self, cx: &mut Context<'_, Self>) {
-        self.studio
-            .update(cx, flowy_studio::StudioPanel::add_project);
-    }
-
     pub fn open_thread(&mut self, title: String, cx: &mut Context<'_, Self>) {
         self.push_section(Section::Studio, cx);
         self.studio
