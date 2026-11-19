@@ -2,7 +2,7 @@
 id: sq3
 title: AI 批改题跳过：练习轮 skip 按钮 + skipped attempt 语义 + 账本不变式
 type: task
-status: in-progress
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md

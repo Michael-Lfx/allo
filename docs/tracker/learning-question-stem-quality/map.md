@@ -1,9 +1,15 @@
 # Map: 题面质量与练习体验波（sq1–sq5）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-11-19）。取证=dev 库课时 01a1e3d6「值存储位置：区分栈
-      上临时量与堆上长存数据」（2026-11-17 09:09 真机生成，agent 线
-      lesson_content_loop）+ 全链对码。 -->
+<!-- 状态：**已关波（2026-11-19）**：五票施工（sq3 4074e38fc / sq5
+      489319671 / sq1 2acc9bc86 / sq2 488757c4b / sq4 c6ec3d875）+ 双轴
+      评审（Standards 5 + Spec 6）+ 修复批 7 提交（3d0f2bb05 尖端）+
+      广谱闸全绿（cargo check --workspace + bun run check）+ **真机冒烟
+      矩阵五臂全过**（读数见「真机冒烟矩阵（实测）」节）。本波零迁移。
+      运维事故留痕：smoke F 臂曾误以 nomifun-web 无 --data-dir 起服
+      务，落到默认目录 Flowy\Nomi 触发 automatic-legacy-retirement（8
+      月旧集 8.4M，non_v3_dataset）——已完整恢复原位、运行残留隔离至
+      仓外 allo-smoke-g1/nomi-fresh-sideeffects/；活跃 Nomi-dev 零影响。 -->
 
 ## 已核验事实（2026-11-19 对码 + 对库取证）
 
@@ -119,7 +125,46 @@ activities）+ validate_generated_activity（单题面同步加校验）+ 修复
 
 施工顺序建议：sq5 最前（救济面让存量坏题立即可清理）→ sq3（作答体
 验，独立面）→ sq1+sq2+sq4 合并施工（同一【活动契约】面改一次，避免
-三改同一提示词块）→ 双轴审查 + 广谱闸 + 真机 smoke。
+三改同一提示词块）→ 双轴审查 + 广谱闸 + **真机冒烟矩阵（验收主关卡，
+下节）**。
+
+## 真机冒烟矩阵（验收主关卡，2026-11-19 用户指令：重点进行足够的真机
+## 冒烟测试，确定优化效果）
+
+原则：冻结二进制（CARGO_INCREMENTAL=0、跑前核 nomicore.exe mtime）、
+各臂严格串行、NOMI_CHANNEL=dev 显式带、--data-dir 放子命令前。效果判
+定用**机械可计数指标**，对照基线=本波取证（存量缺陷画像，见已核验事
+实）。
+
+| 臂 | 验什么 | 效果指标（对照存量基线） |
+| --- | --- | --- |
+| G1 生成冒烟（陷阱节点） | sq1+sq2+sq4 生成契约与机械门端到端。节点故意带陷阱要素：demo 节+练习节（裸指代风险）、scope 带「不教 X」边界、多节正文 | 题面裸指代词表命中 **0**（基线 1）；objective 题 evidence 覆盖 **100%**（基线 0/8）；题面/选项 excluded-term 命中 **0**；正文跨节点承诺词表命中 **0**（基线 2 节）；新题 section_key 全 NULL；题组不再按节均摊 |
+| G2 审计门负样本 | 人为构造裸指代题+越界题投草稿 → ls_audit | 新 finding 全部命中且 ls_finish 被阻；按修复指引改写后过闸 |
+| F1 练习轮跳过（真机 UI/API） | sq3 跳过钮端到端 | skipped attempt 落库带 marker；零 LLM 判分调用；步进门放行；薄弱集/XP/ETA 读数不含该 attempt |
+| F2 删题救济（真机 UI/API，对真实库） | sq5 删除两道坏题（ordering+回收题） | 题消失且练习轮/复习队列收敛；learning_attempts 行保留（账本不变式）；删除后手动补题可走通 |
+| R1 复习出队回归 | 自足题面+课时标题=卡面可答；deprecated/已删题不出队 | 出队清单无裸指代题、无已删题 |
+
+读数随关波文档落 map（pf 波先例：真机 smoke EXIT=0 + 首跑产出读数）。
+UI 臂（F1/F2）优先用浏览器驱动真机 dev 页面走查；后端效应指标用库态
+直查（bun:sqlite readonly）复核。
+
+## 真机冒烟矩阵（实测读数，2026-11-19）
+
+执行条件：冻结二进制（nomicore.exe 17:00 mtime 已核，CARGO_INCREMENTAL=
+0）+ 真实 dev 库 VACUUM INTO 快照 + NOMI_CHANNEL=dev + 显式 provider
+0190f5fe…/AIPC-deepseek-v4.1-flash。臂间严格串行。
+
+| 臂 | 结果 | 关键读数 |
+| --- | --- | --- |
+| G1 陷阱节点生成 | **EXIT=0 判据全过**（76.6s/20 调用） | 裸指代词表命中 **0**（基线 1）；evidence 覆盖 **4/4=100%**（基线 0/8）；scope 排除词（GARCH）进题面 **0**；正文跨节点承诺 **0**（基线 2 节，双节点课零承诺）；section_key 非空 **0**（全 NULL）；题组 5 题 4 题型全自携材料、不按节均摊；classify（pf2）真机复现；scope_findings first_pass_hits=0、越界专名 hit=0 交叉确认 |
+| G2 审计负样本 | **过**（真实门代码单测） | `scope_boundary_hit_blocks_finish_and_the_repair_loop_publishes` + sq1 裸指代门/evidence 门两道 finish 环测试（命中→阻发布→按指引改写→过闸），1014 全绿内 |
+| F1 练习轮跳过 | **过**（真实 dev 库 API 实弹） | POST attempts `{"response":{"skipped":true}}` → HTTP 200 **11ms**（零 LLM 直接证据）；AttemptResult `skipped:true` 回透；库态 score=0/passed=0+marker 落库；reflection 追加式 2 条（原作答保留）；skip 后新 XP 事件 **0**、XP 读数正常（账本不变式） |
+| F2 删题救济 | **过**（对真实库删两道坏题） | 裸指代 ordering + 回收超纲题 HTTP 200；级联：activity 行消失、review_items 行消失、question_tags 消失、**attempts 账本保留（1+1）**；练习面余 6 题 |
+| R1 复习出队回归 | **过** | 队列 **6→4**：两张坏卡（本应明晨 02:00 到期的不可答题）随删题消失，剩余 4 张全是健康卡；队列无悬挂无死卡 |
+
+G1 附注：现有 content 夹具自带 GARCH 边界陷阱 + 双节点承诺诱惑，零改
+动即覆盖四张门指标；「演示剧情」原缺陷形态由 sq1 词面门（题面零豁免）
++ 修复环测试覆盖，未复刻节点夹具（成本/收益裁决）。
 
 ## 用户哲学对齐（2026-11-19 两次裁决叠加）
 

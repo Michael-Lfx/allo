@@ -2,7 +2,7 @@
 id: sq4
 title: section_key 绑定退役：拆「按节覆盖」诱因，题组取向改学习效果中心
 type: task
-status: in-progress
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md

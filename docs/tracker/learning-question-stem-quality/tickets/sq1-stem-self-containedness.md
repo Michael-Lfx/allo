@@ -2,7 +2,7 @@
 id: sq1
 title: 题面自足性：契约条款两线同步 + 审计词面门 + agent 线 evidence 条款恢复
 type: task
-status: in-progress
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md

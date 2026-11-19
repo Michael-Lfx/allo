@@ -2,7 +2,7 @@
 id: sq5
 title: 存量题救济：题删除路由 + 前端入口 + 级联面裁决（attempts 账本保留）
 type: task
-status: in-progress
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md

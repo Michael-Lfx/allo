@@ -2,7 +2,7 @@
 id: sq2
 title: 题目超纲闸 + 正文跨节点承诺/未立名提及禁令（scope 边界双面收口）
 type: task
-status: in-progress
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
