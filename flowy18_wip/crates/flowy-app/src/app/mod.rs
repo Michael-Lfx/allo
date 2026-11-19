@@ -1882,9 +1882,8 @@ pub fn run(cx: &mut App) {
         KeyBinding::new("secondary-]", NavigateForward, None),
         // Cursor / VS Code: search view
         KeyBinding::new("secondary-shift-f", OpenSearch, None),
-        // With no tray icon, closing the window is the only pointer route out;
-        // this binding keeps quitting reachable from the keyboard as well.
-        KeyBinding::new("ctrl-q", flowy_shell::QuitApp, None),
+        // Keep the platform's quit shortcut available without a tray icon.
+        KeyBinding::new("secondary-q", flowy_shell::QuitApp, None),
     ]);
     cx.set_reduce_motion(true);
     flowy_ui::install_initial_tab_focus(cx).detach();
