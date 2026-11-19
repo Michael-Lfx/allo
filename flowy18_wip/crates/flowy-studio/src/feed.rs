@@ -18,7 +18,7 @@ pub struct ChatFeed {
     next_row_id: u64,
     row_focus: HashMap<u64, gpui::FocusHandle>,
     list: ListState,
-    expanded_feed: HashSet<String>,
+    expanded_rows: HashSet<u64>,
     history: ChatHistory,
     projection: Projection,
     expanded_turns: HashMap<String, HashSet<usize>>,
@@ -58,7 +58,6 @@ impl ChatFeed {
         ui: UiContext,
         i18n: I18n,
         session: Option<String>,
-        lines: Vec<ChatLine>,
         cx: &mut Context<'_, Self>,
     ) -> Self {
         let theme = ui.theme.read(cx).resolved();
@@ -70,27 +69,17 @@ impl ChatFeed {
         // A conservative row estimate keeps bottom-aligned chat feeds
         // measurable before the first paint; real row heights replace it as
         // rows enter the viewport.
-        let list = ListState::new(lines.len(), ListAlignment::Bottom, px(200.))
+        let list = ListState::new(0, ListAlignment::Bottom, px(200.))
             .with_uniform_item_height(px(36.));
-        let row_ids: Vec<_> = (0..lines.len() as u64).collect();
-        let row_focus: HashMap<_, _> = row_ids
-            .iter()
-            .map(|id| (*id, cx.focus_handle().tab_stop(false)))
-            .collect();
-        list.splice_focusable(
-            0..lines.len(),
-            row_ids.iter().map(|id| Some(row_focus[id].clone())),
-        );
-        let next_row_id = lines.len() as u64;
         Self {
-            lines,
-            row_ids,
-            next_row_id,
-            row_focus,
+            lines: Vec::new(),
+            row_ids: Vec::new(),
+            next_row_id: 0,
+            row_focus: HashMap::new(),
             session: session.unwrap_or_default(),
             states: HashMap::new(),
             list,
-            expanded_feed: HashSet::new(),
+            expanded_rows: HashSet::new(),
             history: ChatHistory::default(),
             projection: Projection::default(),
             expanded_turns: HashMap::new(),
@@ -229,7 +218,7 @@ impl ChatFeed {
         }
     }
 
-    pub(crate) fn sync_rows(
+    fn sync_rows(
         &mut self,
         session: Option<String>,
         lines: Vec<ChatLine>,
@@ -299,13 +288,19 @@ impl ChatFeed {
         ids.extend_from_slice(&self.row_ids[old_end..]);
         // Splicing a replacement would reset an offset inside a streaming row.
         // Remeasure only when the number of rows is unchanged.
-        if self.row_ids[prefix..old_end] != ids[prefix..new_end] {
+        let old_ids = &self.row_ids[prefix..old_end];
+        let new_ids = &ids[prefix..new_end];
+        if old_ids != new_ids {
             self.list.splice_focusable(
                 prefix..old_end,
-                ids[prefix..new_end]
-                    .iter()
-                    .map(|id| Some(self.row_focus[id].clone())),
+                new_ids.iter().map(|id| Some(self.row_focus[id].clone())),
             );
+            for (offset, id) in old_ids.iter().enumerate() {
+                if new_ids.get(offset) != Some(id) {
+                    self.row_focus.remove(id);
+                    self.expanded_rows.remove(id);
+                }
+            }
         }
         if let Some(top) = top_id
             .and_then(|id| ids.iter().position(|candidate| *candidate == id))
@@ -319,6 +314,16 @@ impl ChatFeed {
         self.row_ids = ids;
         self.lines = lines;
         cx.notify();
+    }
+
+    fn toggle_detail(&mut self, id: u64, cx: &mut Context<'_, Self>) {
+        if let Some(index) = self.row_ids.iter().position(|&row| row == id) {
+            if !self.expanded_rows.remove(&id) {
+                self.expanded_rows.insert(id);
+            }
+            self.list.remeasure_items(index..index + 1);
+            cx.notify();
+        }
     }
 
     pub(crate) fn sync_i18n(&mut self, i18n: I18n, cx: &mut Context<'_, Self>) {
@@ -351,38 +356,25 @@ impl ChatFeed {
             "history.show_work"
         };
         let title = self.t(key);
-        let feed = cx.weak_entity();
         let show = !fold.expanded;
-        let semantic = move |_: Option<&gpui::accesskit::ActionData>,
-                             _: &mut Window,
-                             cx: &mut gpui::App| {
-            let _ = feed.update(cx, |feed, cx| {
-                feed.set_turn_expanded(fold.key, show, cx);
-            });
-        };
-        let button = theme::interactive(
-            ("turn-fold", self.row_ids[index]),
-            title.clone(),
-            &self.theme,
-        )
-        .aria_expanded(fold.expanded)
-        .text_xs()
-        .text_color(self.theme.muted())
-        .px(self.theme.space(8.))
-        .py(self.theme.space(4.))
-        .child(title)
-        .on_a11y_action(gpui::accesskit::Action::Click, semantic.clone())
-        .on_a11y_action(
-            if show {
-                gpui::accesskit::Action::Expand
-            } else {
-                gpui::accesskit::Action::Collapse
-            },
-            semantic,
-        )
-        .on_click(cx.listener(move |feed, _, _, cx| {
-            feed.set_turn_expanded(fold.key, show, cx);
-        }));
+        // A plain button keeps the standard invoke path (pointer, keyboard and
+        // UIA click all land on the same handler); an expanded a11y state would
+        // turn the node into a menu button whose invoke is never delivered.
+        let button =
+            theme::Button::new(("turn-fold", self.row_ids[index]), title)
+                .variant(theme::ControlVariant::Ghost)
+                .size(theme::ControlSize::Small)
+                .render(
+                    &self.theme,
+                    cx.listener(move |feed, _, _, cx| {
+                        feed.set_turn_expanded(fold.key, show, cx);
+                    }),
+                )
+                .min_h(px(0.))
+                .text_xs()
+                .text_color(self.theme.muted())
+                .px(self.theme.space(4.))
+                .py(self.theme.space(4.));
         div()
             .flex()
             .flex_col()
@@ -522,25 +514,23 @@ impl ChatFeed {
         live: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let key = format!("{}:reasoning:{}", self.session, self.row_ids[index]);
-        let expanded = live || self.expanded_feed.contains(&key);
+        let row_id = self.row_ids[index];
+        let expanded = live || self.expanded_rows.contains(&row_id);
         let title = if live {
             self.t("chat.thinking")
         } else {
             let duration = self.format_duration_secs(duration_secs);
             self.tf("chat.thought_for", &[("duration", &duration)])
         };
-        let key_for_click = key;
-        let row_id = self.row_ids[index];
         let mut block = div()
-            .id(("chat-reasoning", self.row_ids[index]))
+            .id(("chat-reasoning", row_id))
             .w_full()
             .flex()
             .flex_col()
             .gap(self.theme.space(4.))
             .child(
                 theme::interactive(
-                    ("chat-reasoning-toggle", self.row_ids[index]),
+                    ("chat-reasoning-toggle", row_id),
                     title.clone(),
                     &self.theme,
                 )
@@ -568,18 +558,8 @@ impl ChatFeed {
                         .child(title),
                 )
                 .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        if panel.expanded_feed.contains(&key_for_click) {
-                            panel.expanded_feed.remove(&key_for_click);
-                        } else {
-                            panel.expanded_feed.insert(key_for_click.clone());
-                        }
-                        if let Some(index) =
-                            panel.row_ids.iter().position(|id| *id == row_id)
-                        {
-                            panel.list.remeasure_items(index..index + 1);
-                        }
-                        cx.notify();
+                    move |feed, _, _, cx| {
+                        feed.toggle_detail(row_id, cx);
                     },
                 )),
             );
@@ -620,22 +600,20 @@ impl ChatFeed {
         running: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let key = format!("{}:tool:{}", self.session, self.row_ids[index]);
-        let expanded = running || self.expanded_feed.contains(&key);
+        let row_id = self.row_ids[index];
+        let expanded = running || self.expanded_rows.contains(&row_id);
         let rail = if running {
             self.theme.accent()
         } else {
             self.theme.muted()
         };
-        let key_for_click = key;
-        let row_id = self.row_ids[index];
         let label = if target.is_empty() {
             name.to_owned()
         } else {
             format!("{name} {target}")
         };
         let mut row = div()
-            .id(("chat-tool", self.row_ids[index]))
+            .id(("chat-tool", row_id))
             .w_full()
             .ml(px(6.))
             .border_l(px(3.))
@@ -645,7 +623,7 @@ impl ChatFeed {
             .flex_col()
             .child(
                 theme::interactive(
-                    ("chat-tool-toggle", self.row_ids[index]),
+                    ("chat-tool-toggle", row_id),
                     label.clone(),
                     &self.theme,
                 )
@@ -685,18 +663,8 @@ impl ChatFeed {
                     },
                 ))
                 .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        if panel.expanded_feed.contains(&key_for_click) {
-                            panel.expanded_feed.remove(&key_for_click);
-                        } else {
-                            panel.expanded_feed.insert(key_for_click.clone());
-                        }
-                        if let Some(index) =
-                            panel.row_ids.iter().position(|id| *id == row_id)
-                        {
-                            panel.list.remeasure_items(index..index + 1);
-                        }
-                        cx.notify();
+                    move |feed, _, _, cx| {
+                        feed.toggle_detail(row_id, cx);
                     },
                 )),
             );
@@ -864,13 +832,7 @@ mod tests {
     ) {
         let (feed, cx) = cx.add_window_view(|_, cx| {
             let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
-            ChatFeed::new(
-                ui,
-                I18n::embedded("Flowy"),
-                Some("fold".into()),
-                Vec::new(),
-                cx,
-            )
+            ChatFeed::new(ui, I18n::embedded("Flowy"), Some("fold".into()), cx)
         });
         let mut rows = vec![
             ChatLine::User {
@@ -918,13 +880,16 @@ mod tests {
                 .unwrap();
             window.perform_a11y_action(
                 id,
-                gpui::accesskit::Action::Expand,
+                gpui::accesskit::Action::Click,
                 None,
                 cx,
             );
         });
         feed.update(cx, |feed, cx| {
             assert!(feed.projection.folds[&1].expanded);
+            let detail_id = feed.row_ids[2];
+            feed.toggle_detail(detail_id, cx);
+            assert!(feed.expanded_rows.contains(&detail_id));
             feed.list.scroll_to(ListOffset {
                 item_ix: 2,
                 offset_in_item: px(7.),
@@ -933,6 +898,8 @@ mod tests {
             let top = feed.list.logical_scroll_top();
             assert_eq!(top.item_ix, 1);
             assert_eq!(top.offset_in_item, px(0.));
+            assert!(!feed.row_focus.contains_key(&detail_id));
+            assert!(!feed.expanded_rows.contains(&detail_id));
         });
     }
 
@@ -981,13 +948,14 @@ mod tests {
                     text: format!("Message {i}"),
                 })
                 .collect();
-            ChatFeed::new(
+            let mut feed = ChatFeed::new(
                 ui,
                 I18n::embedded("Flowy"),
                 Some("first".into()),
-                rows,
                 cx,
-            )
+            );
+            feed.sync_rows(Some("first".into()), rows, cx);
+            feed
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.read_entity(&feed, |feed, _| {
@@ -1044,9 +1012,13 @@ mod tests {
     ) {
         let (feed, cx) = cx.add_window_view(|_, cx| {
             let ui = UiContext::new(theme::ThemeOptions::default(), false, cx);
-            ChatFeed::new(
+            let mut feed = ChatFeed::new(
                 ui,
                 I18n::embedded("Flowy"),
+                Some("first".into()),
+                cx,
+            );
+            feed.sync_rows(
                 Some("first".into()),
                 vec![
                     ChatLine::User {
@@ -1068,7 +1040,8 @@ mod tests {
                 }))
                 .collect(),
                 cx,
-            )
+            );
+            feed
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         // Use a scrollable history and explicitly reveal the streamed row;
