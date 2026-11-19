@@ -3039,6 +3039,12 @@ fn main() -> std::process::ExitCode {
     // see a packaged Chrome there. The backend crate has no Tauri dependency;
     // this env var is the seam (see nomifun_app::browser_resource).
     let tauri_context = generated_tauri_context();
+    if tauri_context.config().identifier == "com.unibuddy.desktop" {
+        // SAFETY: Tauri's runtime threads are only created by .run() below.
+        unsafe {
+            std::env::set_var("NOMIFUN_PRODUCT_CHANNEL", "unibuddy");
+        }
+    }
     if let Ok(resource_dir) = tauri::utils::platform::resource_dir(
         tauri_context.package_info(),
         &tauri::Env::default(),
@@ -3121,6 +3127,7 @@ fn main() -> std::process::ExitCode {
                 } else {
                     None
                 };
+
             // Only probe platform resource/cwd layouts when explicitly requested
             // or when an older/custom host has no embedded frontend. A stale
             // sidecar must never block a valid canonical embedded distribution.

@@ -55,9 +55,12 @@ pub fn nav_item(
         .flex()
         .items_center()
         .gap_2()
-        .bg(if selected { theme.card() } else { theme.dock() })
-        .when(selected, Styled::shadow_sm)
-        .hover(|row| row.bg(theme.card()))
+        .bg(if selected {
+            theme.dock_selected()
+        } else {
+            theme.dock()
+        })
+        .when(!selected, |row| row.hover(|row| row.bg(theme.dock_hover())))
         .child(icon)
         .child(
             div()

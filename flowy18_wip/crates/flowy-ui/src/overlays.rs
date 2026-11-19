@@ -497,6 +497,31 @@ pub fn popover(
     cx: &App,
     rtl: bool,
 ) -> AnyElement {
+    popover_with_direction(id, anchor_id, content, ui, window, cx, rtl, false)
+}
+
+pub fn popover_above(
+    id: impl Into<SharedString>,
+    anchor_id: impl Into<SharedString>,
+    content: impl IntoElement,
+    ui: &UiContext,
+    window: &Window,
+    cx: &App,
+    rtl: bool,
+) -> AnyElement {
+    popover_with_direction(id, anchor_id, content, ui, window, cx, rtl, true)
+}
+
+fn popover_with_direction(
+    id: impl Into<SharedString>,
+    anchor_id: impl Into<SharedString>,
+    content: impl IntoElement,
+    ui: &UiContext,
+    window: &Window,
+    cx: &App,
+    rtl: bool,
+    above: bool,
+) -> AnyElement {
     let id = id.into();
     let anchor_id = anchor_id.into();
     let host = ui.overlays.read(cx);
@@ -516,7 +541,13 @@ pub fn popover(
         .as_ref()
         .filter(|scope| scope.id == id)
         .map(|scope| scope.root.clone());
-    let position = if rtl {
+    let position = if above {
+        if rtl {
+            point(bounds.right(), bounds.top())
+        } else {
+            point(bounds.left(), bounds.top())
+        }
+    } else if rtl {
         point(bounds.right(), bounds.bottom())
     } else {
         point(bounds.left(), bounds.bottom())
@@ -556,13 +587,17 @@ pub fn popover(
         });
     deferred(
         anchored()
-            .anchor(if rtl {
+            .anchor(if above && rtl {
+                Anchor::BottomRight
+            } else if above {
+                Anchor::BottomLeft
+            } else if rtl {
                 Anchor::TopRight
             } else {
                 Anchor::TopLeft
             })
             .position(position)
-            .offset(point(px(0.), px(4.)))
+            .offset(point(px(0.), if above { px(-4.) } else { px(4.) }))
             .snap_to_window_with_margin(px(8.))
             .child(panel),
     )

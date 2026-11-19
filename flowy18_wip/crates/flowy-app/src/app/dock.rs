@@ -33,7 +33,7 @@ impl DockIcon {
     }
 }
 
-const USER_MENU_WIDTH: f32 = 224.0;
+const USER_MENU_WIDTH: f32 = 288.0;
 
 const NAV: &[(&str, &str, Section, DockIcon)] = &[
     // ("search", "dock.search", Section::Search, DockIcon::Search),
@@ -90,17 +90,8 @@ impl FlowyApp {
         _name: &str,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut column = div()
-            .id("dock-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .pt_4()
-            .pb_3()
-            .child(brand())
-            .child(Self::nav_item(
+        let mut navigation =
+            div().flex().flex_col().gap_1().child(Self::nav_item(
                 &self.theme,
                 "new-task",
                 self.t("dock.new_task"),
@@ -118,11 +109,11 @@ impl FlowyApp {
         // ));
 
         for (id, key, section, icon) in NAV {
-            column = if *id == "more" {
-                column.child(self.more_dock_item(*icon, cx))
+            navigation = if *id == "more" {
+                navigation.child(self.more_dock_item(*icon, cx))
             } else {
                 let selected = self.section == *section;
-                column.child(Self::nav_item(
+                navigation.child(Self::nav_item(
                     &self.theme,
                     id,
                     self.t(key),
@@ -134,7 +125,17 @@ impl FlowyApp {
             };
         }
 
-        column
+        div()
+            .id("dock-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .pt_4()
+            .pb_3()
+            .child(brand())
+            .child(navigation)
             .child(group_label(&self.theme, &self.t("dock.projects")))
             .child(self.project_rows(cx))
             .child(group_label(&self.theme, &self.t("dock.tasks")))
@@ -268,7 +269,7 @@ impl FlowyApp {
             .border_t_1()
             .border_color(self.theme.line())
             .px_3()
-            .py_3()
+            .py_2()
             .child(
                 theme::anchor_trigger(
                     theme::interactive(
@@ -277,7 +278,6 @@ impl FlowyApp {
                         &self.theme,
                     )
                     .px_1()
-                    .py_1()
                     .rounded_lg()
                     .flex()
                     .items_center()
@@ -302,6 +302,9 @@ impl FlowyApp {
                         .child(avatar(&self.theme, initial))
                         .child(
                             div()
+                                .h(px(28.))
+                                .flex()
+                                .items_center()
                                 .text_size(self.theme.body_size())
                                 .overflow_hidden()
                                 .whitespace_nowrap()
@@ -370,7 +373,7 @@ impl FlowyApp {
             cx,
         )
         .w(px(USER_MENU_WIDTH))
-        .p_2()
+        .p_1()
         .gap_1()
         .on_click(cx.listener(|_app, _event, _window, cx| {
             cx.stop_propagation();
@@ -437,7 +440,7 @@ impl FlowyApp {
     fn user_menu_header(&self, name: &str, initial: &str) -> impl IntoElement {
         div()
             .px_2()
-            .py_2()
+            .py_1()
             .flex()
             .items_center()
             .gap_2()
@@ -475,14 +478,14 @@ impl FlowyApp {
     ) -> impl IntoElement {
         div()
             .mx_1()
-            .mb_1()
+            .mb_0()
             .px_3()
-            .py_3()
+            .py_2()
             .rounded_lg()
-            .bg(self.theme.soft())
+            .bg(self.theme.account_menu_surface())
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
                     .flex()
@@ -521,6 +524,7 @@ impl FlowyApp {
                 .flex()
                 .items_center()
                 .justify_between()
+                .hover(|row| row.bg(self.theme.account_menu_hover()))
                 .on_click(cx.listener(|app, _event, _window, cx| {
                     cx.stop_propagation();
                     app.user_menu = false;
@@ -573,12 +577,12 @@ impl FlowyApp {
     ) -> impl IntoElement {
         theme::interactive(id, label.clone(), &self.theme)
             .px_2()
-            .py_2()
+            .py(px(1.))
             .rounded_md()
             .flex()
             .items_center()
             .gap_2()
-            .hover(|row| row.bg(self.theme.soft()))
+            .hover(|row| row.bg(self.theme.account_menu_hover()))
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 cx.stop_propagation();
                 action(app, cx);
@@ -599,18 +603,23 @@ impl FlowyApp {
     }
 
     fn user_menu_sign_out(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        theme::Button::new("user-sign-out", self.t("dock.sign_out"))
-            .variant(theme::ControlVariant::Ghost)
-            .icon(theme::icons::log_out())
-            .full_width()
-            .render(
-                &self.theme,
-                cx.listener(|app, _event, _window, cx| {
-                    cx.stop_propagation();
-                    app.user_menu = false;
-                    app.sign_out(cx);
-                }),
-            )
+        let label = self.t("dock.sign_out");
+        theme::interactive("user-sign-out", label.clone(), &self.theme)
+            .px_2()
+            .py(px(1.))
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_color(self.theme.danger())
+            .hover(|row| row.bg(self.theme.account_menu_hover()))
+            .on_click(cx.listener(|app, _event, _window, cx| {
+                cx.stop_propagation();
+                app.user_menu = false;
+                app.sign_out(cx);
+            }))
+            .child(theme::icons::log_out())
+            .child(div().text_size(self.theme.body_size()).child(label))
     }
 }
 

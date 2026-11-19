@@ -1672,15 +1672,28 @@ impl Render for FlowyApp {
             settings::Picker::None => None,
         };
         if let Some((id, anchor, content)) = menu {
-            root = root.child(flowy_ui::popover(
-                id,
-                anchor,
-                content,
-                &self.ui,
-                window,
-                cx,
-                self.i18n.locale().is_rtl(),
-            ));
+            let popover = if id == "user-menu" {
+                flowy_ui::popover_above(
+                    id,
+                    anchor,
+                    content,
+                    &self.ui,
+                    window,
+                    cx,
+                    self.i18n.locale().is_rtl(),
+                )
+            } else {
+                flowy_ui::popover(
+                    id,
+                    anchor,
+                    content,
+                    &self.ui,
+                    window,
+                    cx,
+                    self.i18n.locale().is_rtl(),
+                )
+            };
+            root = root.child(popover);
         }
         if self.prefs.activity && self.screen == Screen::Main {
             root = root.child(self.activity_floater());

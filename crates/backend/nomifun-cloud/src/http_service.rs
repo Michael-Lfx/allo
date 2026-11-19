@@ -34,6 +34,7 @@ struct PendingEntry {
 pub struct CloudService {
     data_dir: PathBuf,
     config: Arc<Mutex<GatewayConfig>>,
+    product_channel: Option<String>,
     pending: Arc<DashMap<String, PendingEntry>>,
     host_runtime: nomifun_api_types::RuntimeKind,
 }
@@ -52,6 +53,10 @@ impl CloudService {
         // moved aside and defaults are used (`load_user_config_file_for_boot`),
         // and `should_persist` below then writes a fresh one.
         let mut config = load_user_config_file_for_boot(&path);
+        let product_channel = std::env::var("NOMIFUN_PRODUCT_CHANNEL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         // Persist when the file is missing OR when base_url/provider were empty —
         // otherwise other services that read yaml from disk (media/vimax) stay
         // gated off by `api_ready() == false` for the whole process lifetime.
@@ -69,13 +74,18 @@ impl CloudService {
         Ok(Self {
             data_dir,
             config: Arc::new(Mutex::new(config)),
+            product_channel,
             pending: Arc::new(DashMap::new()),
             host_runtime,
         })
     }
 
     fn gateway_config(&self) -> GatewayConfig {
-        self.config.lock().expect("cloud config lock").clone()
+        let mut config = self.config.lock().expect("cloud config lock").clone();
+        if let Some(channel) = &self.product_channel {
+            config.server.channel = channel.clone();
+        }
+        config
     }
 
     fn config_path(&self) -> PathBuf {
@@ -144,7 +154,9 @@ impl CloudService {
                 cfg.server.website_url = website_url;
             }
             if let Some(channel) = req.channel {
-                cfg.server.channel = channel;
+                if self.product_channel.is_none() {
+                    cfg.server.channel = channel;
+                }
             }
             if let Some(app) = req.app {
                 cfg.server.app = app;
@@ -784,6 +796,29 @@ mod tests {
         assert!(raw.contains(DEFAULT_WECHAT_FLOWY_SERVER_BASE));
         assert!(raw.contains(DEFAULT_FLOWY_WEBSITE_URL));
         assert!(raw.contains("provider: flowy") || raw.contains("provider: \"flowy\""));
+    }
+
+    #[test]
+    fn branded_product_channel_overrides_login_settings_without_persisting() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CloudService::new(dir.path().to_path_buf()).unwrap();
+        let mut svc = svc;
+        svc.product_channel = Some("unibuddy".to_string());
+
+        assert_eq!(svc.server_settings().channel, "unibuddy");
+        svc.update_server_settings(nomifun_api_types::UpdateCloudServerSettingsRequest {
+            enabled: None,
+            base_url: None,
+            website_url: None,
+            channel: Some("flowy".to_string()),
+            app: None,
+        })
+        .unwrap();
+
+        assert_eq!(svc.server_settings().channel, "unibuddy");
+        let raw = std::fs::read_to_string(config_yaml_path(Some(dir.path()))).unwrap();
+        assert!(raw.contains("channel: flowy"));
+        assert!(!raw.contains("channel: unibuddy"));
     }
 
     #[test]
