@@ -169,12 +169,7 @@ impl ChatComposer {
                             .items_center()
                             .gap(self.theme.space(4.))
                             .child(div().flex_1())
-                            .child(self.chat_composer_chip(
-                                "composer-model",
-                                self.composer_model_label(),
-                                true,
-                                cx,
-                            ))
+                            .child(self.model_chip(cx))
                             .child(
                                 self.composer_submit(running, has_draft, cx),
                             ),
@@ -190,48 +185,34 @@ impl ChatComposer {
         }
     }
 
-    fn chat_composer_chip(
-        &self,
-        id: &'static str,
-        label: String,
-        primary: bool,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let control = theme::interactive(id, label.clone(), &self.theme)
-            .focus_visible(|style| style.border_color(self.theme.focus_ring()))
-            .min_h(self.theme.control_height(theme::ControlSize::Small))
-            .px(self.theme.space(8.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap(self.theme.space(4.))
-            .text_xs()
-            .text_color(if primary {
-                self.theme.ink()
-            } else {
-                self.theme.muted()
-            })
-            .when(primary, |el| el.child(theme::icons::sparkles()))
-            .child(label)
-            .when(id == "composer-model", |el| {
-                el.cursor_pointer()
-                    .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
-                    .aria_expanded(self.model_menu_open)
-            });
-        let control = match id {
-            "composer-model" => control.on_click(cx.listener(|_, _, _, cx| {
-                cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
-            })),
-            _ => control,
-        };
-        match id {
-            "composer-model" => theme::anchor_trigger(
-                control,
-                "composer-model-trigger",
-                &self.ui,
-            ),
-            _ => control,
-        }
+    fn model_chip(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let label = self.composer_model_label();
+        theme::anchor_trigger(
+            theme::interactive("composer-model", label.clone(), &self.theme)
+                .focus_visible(|style| {
+                    style.border_color(self.theme.focus_ring())
+                })
+                .min_h(self.theme.control_height(theme::ControlSize::Small))
+                .px(self.theme.space(8.))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .gap(self.theme.space(4.))
+                .text_xs()
+                .text_color(self.theme.ink())
+                .child(theme::icons::sparkles())
+                .child(label)
+                .cursor_pointer()
+                .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
+                .aria_expanded(self.model_menu_open)
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(ComposerEvent::ModelMenu(
+                        "composer-model-trigger",
+                    ));
+                })),
+            "composer-model-trigger",
+            &self.ui,
+        )
     }
 
     fn composer_submit(
