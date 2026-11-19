@@ -25,8 +25,6 @@ use crate::index::{SessionIndex, SessionRecord as IndexRecord};
 use crate::projection::{ChatHistory, ChatLine, ChatProjection, TurnStatus};
 use crate::title::{self, TITLE_MAX_CHARS};
 
-mod task;
-
 #[derive(Clone, Debug)]
 pub struct SessionSummary {
     pub id: String,
@@ -231,7 +229,6 @@ impl AgentHandle {
         // If the UI index was lost or quarantined, rebuild the visible sessions
         // from the structured history instead of hiding them.
         import_engine_sessions(&engine, &state);
-        task::restore_inventories(&engine, &state);
         // A crash leaves the old status in the file; persist the repaired view.
         if persist_index(&state).is_err() {
             state.report_storage_error();
@@ -431,9 +428,6 @@ impl AgentHandle {
             return Ok(session);
         }
         let id = self.ensure_active_session()?;
-        if crate::inventory::valid_id(&id) {
-            return Err("inventory.use_task_controls");
-        }
         if lock(&state.live)
             .get(&id)
             .is_some_and(|session| session.status.is_busy())
@@ -516,7 +510,6 @@ impl AgentHandle {
         let Some(id) = lock(&self.inner.state.active).clone() else {
             return;
         };
-        task::cancel_inventory(&self.inner.state, &id);
         let engine = lock(&self.inner.engine).clone();
         if let Some(engine) = engine {
             let _ = engine.cancel(&id);

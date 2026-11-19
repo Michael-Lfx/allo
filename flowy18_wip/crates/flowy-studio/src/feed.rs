@@ -493,7 +493,7 @@ impl ChatFeed {
                 let task_id = task_id.clone();
                 theme::Button::new(
                     ("chat-task-receipt", self.row_ids[index]),
-                    self.i18n.tf("inventory.receipt", &[("goal", goal)]),
+                    self.i18n.tf("chat.task_receipt", &[("goal", goal)]),
                 )
                 .render(
                     &self.theme,

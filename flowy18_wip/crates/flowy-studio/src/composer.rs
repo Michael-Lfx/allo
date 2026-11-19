@@ -19,8 +19,6 @@ pub enum ComposerEvent {
     Send,
     Stop,
     ModelMenu(&'static str),
-    Access,
-    InventoryMode,
 }
 
 pub struct ChatComposer {
@@ -35,8 +33,6 @@ pub struct ChatComposer {
     cloud_ready: bool,
     model_menu_open: bool,
     running: bool,
-    inventory: bool,
-    folder: Option<String>,
     _theme_sub: Subscription,
     _prompt_sub: Subscription,
 }
@@ -68,8 +64,6 @@ impl ChatComposer {
             cloud_ready: false,
             model_menu_open: false,
             running: false,
-            inventory: false,
-            folder: None,
             _theme_sub: theme_sub,
             _prompt_sub: prompt_sub,
         }
@@ -105,16 +99,6 @@ impl ChatComposer {
         cx.notify();
     }
 
-    pub(crate) fn sync_inventory(
-        &mut self,
-        inventory: bool,
-        folder: Option<String>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.inventory = inventory;
-        self.folder = folder;
-        cx.notify();
-    }
     fn t(&self, key: &str) -> String {
         self.i18n.t(key)
     }
@@ -178,34 +162,12 @@ impl ChatComposer {
                             .overflow_y_scroll()
                             .text_color(self.theme.ink()),
                     )
-                    .children(self.folder.as_ref().map(|folder| {
-                        div()
-                            .text_xs()
-                            .text_color(self.theme.muted())
-                            .child(folder.clone())
-                    }))
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .items_center()
                             .gap(self.theme.space(4.))
-                            .child(self.chat_composer_chip(
-                                "composer-access",
-                                self.t("inventory.pick_folder"),
-                                false,
-                                cx,
-                            ))
-                            .child(self.chat_composer_chip(
-                                "composer-mode",
-                                self.t(if self.inventory {
-                                    "inventory.mode"
-                                } else {
-                                    "inventory.auto"
-                                }),
-                                false,
-                                cx,
-                            ))
                             .child(div().flex_1())
                             .child(self.chat_composer_chip(
                                 "composer-model",
@@ -235,10 +197,6 @@ impl ChatComposer {
         primary: bool,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let interactive = matches!(
-            id,
-            "composer-model" | "composer-access" | "composer-mode"
-        );
         let control = theme::interactive(id, label.clone(), &self.theme)
             .focus_visible(|style| style.border_color(self.theme.focus_ring()))
             .min_h(self.theme.control_height(theme::ControlSize::Small))
@@ -255,29 +213,14 @@ impl ChatComposer {
             })
             .when(primary, |el| el.child(theme::icons::sparkles()))
             .child(label)
-            .when(interactive, |el| {
+            .when(id == "composer-model", |el| {
                 el.cursor_pointer()
                     .hover(|style| style.bg(self.theme.soft().opacity(0.35)))
-            })
-            .when(id == "composer-model", |el| {
-                el.aria_expanded(self.model_menu_open)
-            })
-            .when(id == "composer-mode", |el| {
-                el.aria_toggled(if self.inventory {
-                    gpui::accesskit::Toggled::True
-                } else {
-                    gpui::accesskit::Toggled::False
-                })
+                    .aria_expanded(self.model_menu_open)
             });
         let control = match id {
             "composer-model" => control.on_click(cx.listener(|_, _, _, cx| {
                 cx.emit(ComposerEvent::ModelMenu("composer-model-trigger"));
-            })),
-            "composer-access" => control.on_click(
-                cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Access)),
-            ),
-            "composer-mode" => control.on_click(cx.listener(|_, _, _, cx| {
-                cx.emit(ComposerEvent::InventoryMode);
             })),
             _ => control,
         };

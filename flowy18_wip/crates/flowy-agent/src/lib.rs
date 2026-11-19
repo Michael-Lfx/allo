@@ -10,7 +10,6 @@ mod config;
 mod flex;
 mod handle;
 mod index;
-mod inventory;
 mod model;
 mod model_directory;
 mod projection;
@@ -20,7 +19,6 @@ pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
 pub use handle::{AgentHandle, AgentUpdate, SessionSummary};
-pub use inventory::{InventoryStatus, InventorySummary};
 pub use model::{Model, Plan};
 pub use model_directory::{
     CLOUD_TIERS, TierResolution, TierSpec, is_locked, required_level,

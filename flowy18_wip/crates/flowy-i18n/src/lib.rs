@@ -334,8 +334,8 @@ mod tests {
     #[test]
     fn placeholders_are_replaced() {
         let i18n = I18n::embedded("Flowy");
-        let text = i18n.tf("project.untitled", &[("index", "3")]);
+        let text = i18n.tf("chat.duration_secs", &[("n", "3")]);
         assert!(text.contains('3'));
-        assert!(!text.contains("{index}"));
+        assert!(!text.contains("{n}"));
     }
 }

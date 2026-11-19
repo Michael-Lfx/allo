@@ -483,11 +483,11 @@ impl crate::panel::StudioPanel {
                             .id("home-goal")
                             .role(gpui::Role::Heading)
                             .aria_level(1)
-                            .aria_label(self.t("inventory.home_title"))
+                            .aria_label(self.t("home.title"))
                             .px(self.theme.space(32.))
                             .text_center()
                             .text_size(px(36.))
-                            .child(self.t("inventory.home_title")),
+                            .child(self.t("home.title")),
                     )
                     .child(self.composer.clone())
                     .child(
@@ -497,22 +497,6 @@ impl crate::panel::StudioPanel {
                             .justify_center()
                             .items_center()
                             .gap(self.theme.space(8.))
-                            .child(
-                                theme::Button::new(
-                                    "inventory-example",
-                                    self.t("inventory.mode"),
-                                )
-                                .render(
-                                    &self.theme,
-                                    cx.listener(|panel, _, _, cx| {
-                                        panel.set_inventory_draft(true, cx);
-                                        panel.fill_prompt_key(
-                                            "inventory.example",
-                                            cx,
-                                        );
-                                    }),
-                                ),
-                            )
                             .child(self.ideas_entry(cx)),
                     ),
             )
