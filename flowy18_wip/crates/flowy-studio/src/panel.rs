@@ -214,7 +214,6 @@ impl StudioPanel {
                 ui.clone(),
                 i18n.clone(),
                 agent.active_session_id(),
-                agent.lines(),
                 cx,
             )
         });
