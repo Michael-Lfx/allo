@@ -49,13 +49,17 @@ export function isActivitySkipResponse(response: unknown): boolean {
 
 // ── 分节 stepper（新规范：练习节 = 一等练习轮；旧清单回退综合步）──────
 
-/** 分节交付的一步：节正文 + 该节绑定的练习题；null = 综合题收尾步 */
+/** 分节交付的一步：节正文 + 该步的作答轮（练习节）；null = 综合步。sq4
+ * 绑定退役：新生成题不再带 section_key 绑定（落库恒 NULL），绑定措辞仅剩
+ * 旧清单数据兼容语义。 */
 export interface LessonStep {
   section: Section | null;
 }
 
-/** 步骤数组：练习节收尾的新规范不含综合步；旧清单（无练习节）且有通用
- * 题时在末尾追加综合步，不与单节内容混排。 */
+/** 步骤数组：练习节收尾的新规范不含综合步；旧清单（无练习节）且存在
+ * section_key===null 的题时在末尾追加综合步，不与单节内容混排。sq4 绑定
+ * 退役后新生成课的题全为 null，但新规范恒带练习节（outline 硬契约）——
+ * 综合步只对旧清单课时（存量数据）触发，新数据零行为变化。 */
 export function buildSteps(sections: Section[], activities: Activity[]): LessonStep[] {
   const hasPractice = sections.some((section) => section.kind === 'practice');
   const hasGeneral = activities.some((activity) => activity.section_key === null);
@@ -65,9 +69,15 @@ export function buildSteps(sections: Section[], activities: Activity[]): LessonS
   ];
 }
 
-/** 某一步的作答轮：练习节出自己绑定的题；收尾练习轮（最后一个练习步）
- * 收编更早练习节未出的题 + 内容节绑定题 + 通用综合题；内容步与综合步不
- * 设门（门禁只拦练习步，见 ADR-0002 追加决策）。
+/** 某一步的作答轮：收尾练习轮（最后一个练习步）收编全部计入题——sq4 绑
+ * 定退役前「收尾轮全收编」已是事实（outline 硬契约「恰好一个收尾练习节」
+ * 下 earlierPracticeKeys 恒空、全部题归收尾轮），退役后语义显式化：新题
+ * section_key 全 NULL，`section_key === null` 臂恒真。内容步与综合步不设
+ * 门（门禁只拦练习步，见 ADR-0002 追加决策）。
+ *
+ * `index !== lastPracticeIndex` 分支（练习节按 section_key 出自己的题）是
+ * 旧契约形态——「恰好一个收尾练习节」契约后不再产生，留代码路径兼容旧清
+ * 单存量数据（sq4 裁决：少动面）。
  *
  * pf5 注册表派生：`countsTowardSection=false` 的活动（首例 deprecated
  * matching）不入作答轮——练习流不再出现是本过滤的下游结果（Q2 隐藏裁
@@ -85,12 +95,13 @@ export function stepActivities(
     ACTIVITY_KIND_REGISTRY[activity.kind].countsTowardSection;
   const lastPracticeIndex = findLastPracticeIndex(steps);
   if (index !== lastPracticeIndex) {
+    // 旧契约形态（多练习节）：非收尾练习节出自己绑定的题（存量数据兼容）。
     return activities.filter(
       (activity) =>
         activity.section_key === entry.section?.section_key && countsTowardSection(activity)
     );
   }
-  // 收尾轮：除更早练习节已出的题外全部归此（本节绑定 + 内容节绑定 + 通用）
+  // 收尾轮：除更早练习节已出的题外全部归此（绑定退役后新题全 NULL → 全收编）
   const earlierPracticeKeys = new Set<string>();
   steps.slice(0, lastPracticeIndex).forEach((step) => {
     if (step.section?.kind === 'practice') earlierPracticeKeys.add(step.section.section_key);

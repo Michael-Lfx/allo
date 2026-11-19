@@ -520,6 +520,8 @@ function SectionedLessonBody({
 }) {
   const { t } = useTranslation();
   const sections = lesson.sections;
+  // sq4 绑定退役：新生成题 section_key 全 NULL（落库恒 NULL，绑定消费面
+  // 退役）——通用题读数只剩旧清单存量语义（null 判据照旧，零行为变化）。
   const generalActivities = lesson.activities.filter(
     (activity) => activity.section_key === null
   );
@@ -528,7 +530,8 @@ function SectionedLessonBody({
   // 可回）。门禁是本地 UI 态不作持久化（ADR-0002：节不新增持久化完成状
   // 态），刷新后重来；无题的练习节不拦。
   const steps = buildSteps(sections, lesson.activities);
-  // 旧清单（无练习节）: 内容节下直接挂各自绑定的题；新规范题目全部归练习轮
+  // 旧清单（无练习节）: 内容节下按 section_key 挂各自绑定的题（存量数据
+  // 兼容；sq4 绑定退役后新题全 NULL，不进此臂）；新规范题目全部归练习轮
   const hasPractice = sections.some((section) => section.kind === 'practice');
   const [current, setCurrent] = useState(0);
   // 课时切换时回到第一节
@@ -600,8 +603,9 @@ function SectionedLessonBody({
       {step.section ? (
         step.section.kind === 'practice' ? (
           // 新规范：练习节 = 一等练习轮(learnhub),内容节只读;练习节可穿插
-          // 在内容节之间,各轮只出自己绑定的题,综合题随最后一轮收尾;轮内
-          // 逐题推进,全部作答完才放行节步进(见下方门禁)。
+          // 在内容节之间,收尾练习轮全收编(sq4 绑定退役:新题 section_key 全
+          // NULL,「全收编」语义显式化;更早练习节出自己题的分支=旧契约形态,
+          // 留存量数据兼容);轮内逐题推进,全部作答完才放行节步进(见下方门禁)。
           <div className='flex flex-col gap-10px'>
             <Markdown>{step.section.body_md}</Markdown>
             <PracticeRound

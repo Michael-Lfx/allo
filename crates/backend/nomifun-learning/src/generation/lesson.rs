@@ -1069,8 +1069,10 @@ pub(crate) fn build_section_body_prompt(
 }
 
 
-/// Stage 3 prompt: the finished sections in full, the manifest for section
-/// binding, and the tier's question budget — one call writes every question.
+/// Stage 3 prompt: the finished sections in full and the manifest for
+/// orientation — one call writes every question. sq4 绑定退役：不再给每节
+/// 配额（questions per content section 句删除），题组取向由系统提示词的
+/// `QUESTION_GROUP_RULE` 承载——manifest 只作课时结构概览面。
 pub(crate) fn build_activities_prompt(
     blueprint: &Blueprint,
     lesson: &BlueprintLesson,
@@ -1079,14 +1081,13 @@ pub(crate) fn build_activities_prompt(
     sections: &[SectionPack],
     grounding: &str,
 ) -> String {
-    let per_section = tier.questions_per_section();
     let mut prompt = format!(
-        "Course: {}\nLesson: {}\nComplexity tier: {} — write about {per_section} questions per content section (concept/example/demo), plus at most 1 cross-section comprehensive question.\n\n",
+        "Course: {}\nLesson: {}\nComplexity tier: {} — size the question set to this tier and organize it around the lesson's core discrimination and derivation axes; no per-section quota.\n\n",
         blueprint.title,
         lesson.title,
         tier.as_str(),
     );
-    prompt.push_str("Section manifest (section_key values for binding):\n");
+    prompt.push_str("Section manifest (the lesson's section structure):\n");
     for section in manifest {
         prompt.push_str(&format!(
             "- {} [{}] {}\n",

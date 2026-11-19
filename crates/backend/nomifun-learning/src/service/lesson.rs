@@ -2276,12 +2276,12 @@ impl LearningService {
                     .filter(|evidence| !evidence.is_empty())
                     .map(str::to_owned),
             };
-            // 「general」是提示词对跨节综合题的约定写法，落库归一为 NULL。
-            let section_key = activity
-                .section_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|key| !key.is_empty() && !key.eq_ignore_ascii_case("general"));
+            // sq4 绑定退役（R-b）：生成落库的新题 section_key 统一写 NULL——
+            // 绑定消费面已退役（后端零消费；前端收尾轮全收编、旧清单综合步
+            // 回退判 section_key===null，NULL 全量安全），「归练习轮」语义显
+            // 式化。列保留为存量兼容位（零迁移）；引擎侧绑定条款已撤（两线
+            // 契约一致），旧「general→NULL 归一」随之失去输入面，自报值一律
+            // 不落列。手动加题 INSERT 本就不带该列（同 NULL）。
             sqlx::query(
                 "INSERT INTO learning_activities (activity_id, lesson_id, kind, prompt, config_json, section_key, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
@@ -2290,7 +2290,7 @@ impl LearningService {
             .bind(activity.kind.as_str())
             .bind(activity.prompt.trim())
             .bind(serde_json::to_string(&config).map_err(internal)?)
-            .bind(section_key)
+            .bind(Option::<String>::None)
             .bind(position as i64)
             .execute(&mut *transaction)
             .await

@@ -1149,7 +1149,9 @@ impl ComplexityTier {
         }
     }
 
-    /// 每内容节的出题数。
+    /// 每内容节的出题数。sq4 绑定退役：不再驱动生成配额（build_activities_
+    /// prompt 的每节配额句已删，题量改由题组取向条款与课时规模定）——保留
+    /// 为档位表的完整性位。
     pub const fn questions_per_section(self) -> usize {
         match self {
             Self::Low => 2,
@@ -1449,7 +1451,10 @@ pub struct ActivityPack {
     /// a tiny epsilon).
     #[serde(default)]
     pub tol: Option<f64>,
-    /// 来源节的 section_key（如 s2）。None = 跨节综合题（通用）。
+    /// 来源节的 section_key（如 s2）。sq4 绑定退役：生成面不再产出绑定——
+    /// 落库恒 NULL（见 `persist_lesson_output`，引擎自报值一律不落列），字
+    /// 段保留为存量数据/旧引擎输出的兼容位（serde 缺省）。None = 未绑节
+    /// （退役后即全部新题；旧清单综合步回退仍以 null 判通用题）。
     #[serde(default)]
     pub section_key: Option<String>,
     /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱）。e5 消解案后**不

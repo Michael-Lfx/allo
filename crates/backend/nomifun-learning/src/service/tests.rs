@@ -398,6 +398,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
     /// e5 difficulty 消解（装配面注入）：课时带 teaches 档位行（apply）时，
     /// 生成落库的全体活动继承铸值难度 Some(2)——注入值压过引擎自报值；
     /// `config_json.difficulty` 即 quiz tier 取数面，值域保持 1-3。
+    /// sq4（R-b）同 seam 扩断言：引擎自报 section_key（节 key / "general"）
+    /// 落库一律归 NULL——绑定退役后「归练习轮」语义显式化，列保留为存量
+    /// 兼容位（零迁移）。
     #[tokio::test]
     async fn lesson_persist_casts_activity_difficulty_from_teaches_tier() {
         let database = nomifun_db::init_database_memory().await.unwrap();
@@ -490,7 +493,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .unwrap();
 
         // 脚本引擎：出两道活动（objective + AI 批改），自报 difficulty=3
-        // ——装配面注入值（apply→2）必须压过自报值。
+        // ——装配面注入值（apply→2）必须压过自报值。自报 section_key 一并
+        // 给出（节 key 与 "general" 各一）——sq4 绑定退役后落库一律归 NULL。
         struct CastingEngine;
 
         #[async_trait::async_trait]
@@ -515,7 +519,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             explanation: "几何定义：有大小有方向的量。".into(),
                             distractors: Vec::new(),
                             tol: None,
-                            section_key: None,
+                            section_key: Some("s2".into()),
                             evidence: Some("「有大小有方向的量」".into()),
                         },
                         ActivityPack {
@@ -528,7 +532,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             explanation: "评卷要点：量与方向并举，例子自洽。".into(),
                             distractors: Vec::new(),
                             tol: None,
-                            section_key: None,
+                            section_key: Some("general".into()),
                             evidence: None,
                         },
                     ],
@@ -556,20 +560,29 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
 
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT config_json FROM learning_activities WHERE lesson_id = ? ORDER BY position",
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT config_json, section_key FROM learning_activities WHERE lesson_id = ? \
+             ORDER BY position",
         )
         .bind(lesson_id.as_str())
         .fetch_all(database.pool())
         .await
         .unwrap();
         assert_eq!(rows.len(), 2);
-        for (config_json,) in rows {
+        for (config_json, section_key) in rows {
             let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
             assert_eq!(
                 config.difficulty,
                 Some(2),
                 "apply tier must cast difficulty 2 (injected wins over declared): {config_json}"
+            );
+            // sq4 绑定退役（R-b）：生成落库的新题 section_key 统一写 NULL——
+            // 引擎自报的节 key 与 "general" 都不再落列；「归练习轮」语义显式
+            // 化（前端收尾轮全收编 + 旧清单综合步回退判 section_key===null，
+            // NULL 全量安全）；列保留为存量兼容位（零迁移）。
+            assert_eq!(
+                section_key, None,
+                "generated activities must persist section_key NULL (binding retired): {config_json}"
             );
         }
     }

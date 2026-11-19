@@ -66,10 +66,11 @@ pub use generation::variant_readings;
 // （EN 题库面 / CN 图线活动契约）。sq1 的 `STEM_SELF_CONTAINED_RULE` 与
 // `DANGLING_REFERENCE_TERMS` 同因再导出：题面自足条款与机械门词表要在
 // ai-agent 宿的三面一致性测试里对齐。sq2 的 `SCOPE_BOUNDARY_RULE` 同因
-// 再导出：题面 scope 边界条款跨宿一致性测试用。
+// 再导出：题面 scope 边界条款跨宿一致性测试用。sq4 的 `QUESTION_GROUP_RULE`
+// 同因再导出：题组取向条款（绑定退役替换条款）跨宿互钉测试用。
 pub use generation::{
     CONTENT_DISCIPLINE_V2_BLOCK, CONTENT_DISCIPLINE_V2_SWITCH_ENV, DANGLING_REFERENCE_TERMS,
-    DISTRACTOR_MENU_BLOCK, SCOPE_BOUNDARY_RULE, STEM_SELF_CONTAINED_RULE,
+    DISTRACTOR_MENU_BLOCK, QUESTION_GROUP_RULE, SCOPE_BOUNDARY_RULE, STEM_SELF_CONTAINED_RULE,
     content_discipline_v2_enabled, is_content_discipline_v2_disabled_value,
 };
 pub use generation::{

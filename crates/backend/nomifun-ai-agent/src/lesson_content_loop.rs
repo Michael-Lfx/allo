@@ -203,6 +203,16 @@ const ACTIVITY_SCOPE_BOUNDARY_CN: &str = "\n- 考点轴边界（教学范围）�
 /// nomifun-learning `BODY_BOUNDARY_BLOCK`（NARRATIVE_VOICE 两处手写同款）。
 const BODY_BOUNDARY_CN: &str = "\n- 正文边界纪律：正文不得预告其它节点教什么/何时教（「下一节点起再谈」「后面会讲 X」类承诺不可验证——后续节点的范围由教练后续独立生成，正文写作时它还不存在）；边界说明只写「本节点不展开 X」形式，同节点内的下一节预告合法。「课程已知概念」名单外的未立名概念不在正文承载功能意义（「归 X 机制处理」类违规——拿名单外名词当讲解构件，会喂给出题链「正文教过」的假依据）；已教框架内能闭环的就闭环，不引入悬空名词。";
 
+/// sq4 题组取向条款（agent 线【活动契约】注入，无开关恒在）：「每题必须带
+/// section_key 绑定」退役后的替换条款（R-a）——按节覆盖出题模式否定（map
+/// 取证：本课 8 题按节均摊 + 演示节 ordering 题即「每节配一题」产物；绑定
+/// 后端零消费、前端收尾轮全收编 = 对学习者可见面零效果，唯一活效果是反向
+/// 诱导按节均摊），题组存在的理由是验证可迁移的判据。数量面挂靠既有「规
+/// 划即雄心」条款（节清单定容量，本条不另立配额）；两个考向（认一认/推一
+/// 推，R20 题库面条款）照旧不动。传统线英文孪生 `QUESTION_GROUP_RULE`
+///（nomifun-learning 宿）由跨宿互钉测试钉住（R14 标记先例）。
+const QUESTION_GROUP_ORIENTATION_CN: &str = "\n- 题组取向：题组围绕本课时 teaches 的核心判别/推导轴组织——题组存在的理由是验证可迁移的判据与推理，不是给每节配一道证明覆盖的题、也不按节均摊；题量照「规划即雄心」条款由节清单容量定，本条不另立配额。";
+
 /// 时长预算面（k03，开关 `NOMI_LEARNING_EST_BUDGET` 的语义臂，learnhub
 /// #178 换血版）：预算行照读之外，意图画像四角（预算 × teaches 档位 ×
 /// 概念首现 × assumes）定内容雄心；超预算先砍雄心再砍内容，收敛不住 =
@@ -219,7 +229,8 @@ const EST_LEGACY_CLAUSE_CN: &str = "- 时长预算：用户消息里有「时长
 /// Generation-loop system prompt. The sectioned contract (ADR-0002) drives
 /// the rounds: plan the manifest once, then one tool call per section body
 /// (the model's attention stays on one learnable unit), then the activities
-/// bound to section keys. The deterministic audit enforces the same rules.
+/// organized by the question-group rule（sq4 绑定退役：不再逐题绑节）. The
+/// deterministic audit enforces the same rules.
 /// 契约数值（节配比 / visual 菜单 / 文字预算）由 nomifun-learning 的渲染
 /// 函数从 owner 表格生成（ADR-0002 追加决策：唯一事实源，禁止手写字面量）。
 static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
@@ -302,6 +313,9 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     // sq2：题面 scope 边界条款 + 正文边界条款（无开关恒在，同款占位注入）。
     let activity_scope_boundary = ACTIVITY_SCOPE_BOUNDARY_CN;
     let body_boundary = BODY_BOUNDARY_CN;
+    // sq4：题组取向条款（无开关恒在，同款占位注入——「每题绑节」退役的
+    // 替换条款）。
+    let question_group_orientation = QUESTION_GROUP_ORIENTATION_CN;
     format!(
         r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
@@ -329,9 +343,8 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / classify）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
 - 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}{verification_discipline}{linking_materials}
-- 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
 - objective 题必须带 evidence：≤120 字的正文逐字引用（word-for-word，改写不算），锚定题干——判底揭底全靠它；缺 evidence 的客观题会被审计门以 danger 打回。
-{stem_self_contained}{activity_scope_boundary}
+{stem_self_contained}{activity_scope_boundary}{question_group_orientation}
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
 【工具使用纪律】
@@ -1722,7 +1735,9 @@ fn ls_set_document(ctx: Arc<LoopContext>) -> OneShotTool {
 /// `ls_patch_activities` 的基础描述（y06 前原文：off 臂逐字回退旧文本）。
 /// pf5：matching 移出题型规则（deprecated，生成契约一致性测试钉住）。
 /// pf2：classify 进题型规则（判别题，接替 matching 的位置语义——第 9 种）。
-const PATCH_ACTIVITIES_DESCRIPTION: &str = "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；open_question 与 reflection 的 answer 必须是 null；每题带 section_key 绑定来源节（跨节综合题用 \"general\"）。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。";
+/// sq4 绑定退役：字段规则的「每题带 section_key 绑定来源节（跨节综合题用
+/// "general"）」句删除——落库恒 NULL，模型不再写该字段（删句断言测试钉）。
+const PATCH_ACTIVITIES_DESCRIPTION: &str = "批量应用活动操作（add_activity / update_activity / remove_activity / set_estimated_minutes），一次调用就是一个批次；操作按数组顺序执行，先执行的操作会改变后续操作的 position。返回每个操作的成功/拒绝明细 + 最新审计 findings。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"add_activity\", \"activity\": {\"kind\": \"single_choice\", \"prompt\": \"期权的本质是什么？\", \"options\": [\"权利\", \"义务\", \"债务\"], \"answer\": \"权利\", \"explanation\": \"买方持有的是权利\"}},\n  {\"op\": \"set_estimated_minutes\", \"minutes\": 15}\n]}\n\n字段规则（9 种题型）：single_choice 3-5 选项且 answer 恰等于其一；multi_choice 是 2+ 选项数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序数组；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；open_question 与 reflection 的 answer 必须是 null。原四种：single_choice 3-5 个选项且 answer 恰等于其一；true_false 的 answer 是布尔；fill_in_blank 的 prompt 恰含一个 \"___\"、answer 是 1-3 个等价答案的数组且必须带 distractors；reflection 的 answer 必须是 null。每批 ≤10 个操作；写正文请用 ls_set_section_body。";
 
 /// y06（learnhub #201）：工具面只补一句负例总闸——长菜单进系统提示词的
 /// 活动契约，不塞工具描述（避免工具面注意力被五型菜单挤占）。
@@ -2785,6 +2800,67 @@ mod tests {
             assert!(
                 REPAIR_LESSON_AGENT_SYSTEM.contains(finding),
                 "修复环缺 {finding} 的修复动作映射"
+            );
+        }
+    }
+
+    /// sq4（R-a）绑定退役删句断言 + 题组取向条款（agent 线两面：系统提示
+    /// 词【活动契约】与 `ls_patch_activities` 工具描述）：「每题必须带
+    /// section_key 绑定到教它的那一节」与工具面「每题带 section_key 绑定
+    /// 来源节」摘除——按节覆盖出题模式退役（绑定后端零消费、前端收尾轮全
+    /// 收编 = 对学习者可见面零效果，唯一活效果是反向诱导按节均摊；删句
+    /// 复活即红）。替换条款（题组取向 `QUESTION_GROUP_ORIENTATION_CN`）：
+    /// 题组围绕本课时 teaches 的核心判别/推导轴组织、不按节均摊、数量挂靠
+    /// 「规划即雄心」；传统线英文孪生（`QUESTION_GROUP_RULE`）由 nomifun-
+    /// learning 宿自己的条款测试与下面的跨宿互钉测试钉。
+    #[test]
+    fn section_binding_sentences_are_retired_and_question_group_orientation_carried() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        assert!(
+            !system.contains("每题必须带 section_key"),
+            "agent 线【活动契约】绑定句残留：{system}"
+        );
+        assert!(
+            !system.contains("绑定到教它的那一节"),
+            "agent 线【活动契约】绑定句残留：{system}"
+        );
+        assert!(
+            !system.contains("跨节综合题用 \"general\""),
+            "agent 线【活动契约】general 约定句残留：{system}"
+        );
+        assert!(
+            !PATCH_ACTIVITIES_DESCRIPTION.contains("section_key"),
+            "工具描述 section_key 字样残留（绑定退役后模型不再写该字段）：{PATCH_ACTIVITIES_DESCRIPTION}"
+        );
+        assert!(
+            system.contains(QUESTION_GROUP_ORIENTATION_CN),
+            "agent 线【活动契约】缺题组取向条款：{system}"
+        );
+        for phrase in ["核心判别/推导轴", "证明覆盖的题", "不按节均摊", "规划即雄心"] {
+            assert!(
+                QUESTION_GROUP_ORIENTATION_CN.contains(phrase),
+                "题组取向条款缺裁决短语「{phrase}」：{QUESTION_GROUP_ORIENTATION_CN}"
+            );
+        }
+    }
+
+    /// sq4 跨宿互钉（R14 标记先例）：题组取向条款两宿同源——CN 块（本宿
+    /// `QUESTION_GROUP_ORIENTATION_CN`）与 EN 块（nomifun-learning
+    /// `QUESTION_GROUP_RULE`，传统线整课题库面）各自携带同一取向的裁决
+    /// 短语；任一宿删句/漂移即红。本测试是唯一能同时看到两宿的位置
+    ///（依赖方向 ai-agent → learning）。
+    #[test]
+    fn question_group_orientation_marker_is_pinned_on_both_host_blocks() {
+        for phrase in ["不按节均摊", "证明覆盖"] {
+            assert!(
+                QUESTION_GROUP_ORIENTATION_CN.contains(phrase),
+                "CN 块（图线宿主）缺裁决短语「{phrase}」——单侧漏改"
+            );
+        }
+        for phrase in ["proof-of-coverage question per section", "even spreading across sections"] {
+            assert!(
+                nomifun_learning::QUESTION_GROUP_RULE.contains(phrase),
+                "EN 块（传统线宿主）缺裁决短语「{phrase}」——单侧漏改"
             );
         }
     }
