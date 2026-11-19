@@ -2643,7 +2643,7 @@ fn complete_main_thread_setup(
         .unwrap_or_else(default_main_window_geometry);
     let win_builder =
         tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("index.html".into()))
-            .title("Flowy")
+            .title(app.package_info().name.as_str())
             .inner_size(
                 main_window_geometry.initial_width,
                 main_window_geometry.initial_height,
@@ -2653,9 +2653,9 @@ fn complete_main_thread_setup(
             .center()
             .initialization_script(&init_script);
     // macOS: Overlay makes the titlebar transparent + extends content under
-    // it, but it does NOT hide the native title text. With the title still
-    // set to "Flowy", AppKit draws that string next to the traffic lights,
-    // overlapping the React sidebar toggle. `hidden_title(true)` maps to
+    // it, but it does NOT hide the native title text. AppKit draws the
+    // product name next to the traffic lights, overlapping the React sidebar
+    // toggle. `hidden_title(true)` maps to
     // `setTitleVisibility(Hidden)` so the OS keeps the title for menus /
     // Mission Control while leaving the titlebar visually empty.
     //
