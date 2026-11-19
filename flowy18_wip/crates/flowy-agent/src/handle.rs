@@ -22,7 +22,7 @@ use flowy_agent_core::{
 
 use crate::config::LlmConfig;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
-use crate::projection::{ChatLine, ChatProjection, TurnStatus};
+use crate::projection::{ChatHistory, ChatLine, ChatProjection, TurnStatus};
 use crate::title::{self, TITLE_MAX_CHARS};
 
 mod task;
@@ -80,6 +80,13 @@ impl UiState {
 
     fn push_update(&self, update: AgentUpdate) {
         lock(&self.updates).push_back(update);
+    }
+
+    fn stream_changed(&self, session: &str) {
+        let mut updates = lock(&self.updates);
+        if !updates.iter().any(|update| matches!(update, AgentUpdate::Session { id } if id == session)) {
+            updates.push_back(AgentUpdate::Session { id: session.to_owned() });
+        }
     }
 
     fn report_storage_error(&self) {
@@ -280,12 +287,20 @@ impl AgentHandle {
     }
 
     pub fn lines(&self) -> Vec<ChatLine> {
+        self.chat_history().rows
+    }
+
+    pub fn chat_history(&self) -> ChatHistory {
         let active = lock(&self.inner.state.active).clone();
         active
             .and_then(|id| {
-                lock(&self.inner.state.live)
-                    .get(&id)
-                    .map(|session| session.projection.visible_lines())
+                lock(&self.inner.state.live).get(&id).map(|session| {
+                    ChatHistory {
+                        rows: session.projection.visible_lines(),
+                        streaming: session.projection.streaming_row(),
+                        status: session.status.clone(),
+                    }
+                })
             })
             .unwrap_or_default()
     }
@@ -513,6 +528,9 @@ impl AgentHandle {
                 session.projection.flush();
                 if session.status.is_busy() {
                     session.status = TurnStatus::Stopped;
+                    session.projection.lines.push(ChatLine::Status {
+                        text: session.status.key().into(),
+                    });
                 }
                 session.turn_started_at = None;
                 session.updated_at = now_ms();
@@ -544,12 +562,14 @@ impl TurnObserver for UiObserver {
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection.apply_text(delta);
         }
+        self.state.stream_changed(session);
     }
 
     fn reasoning(&self, session: &str, delta: &str) {
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection.apply_reasoning(delta);
         }
+        self.state.stream_changed(session);
     }
 
     fn assistant_text(&self, session: &str, text: &str) {
@@ -582,6 +602,7 @@ impl TurnObserver for UiObserver {
                 .push_tool_call(name, tool_target(args), call_id);
             live.updated_at = now_ms();
         }
+        self.state.stream_changed(session);
     }
 
     fn tool_end(
@@ -596,6 +617,7 @@ impl TurnObserver for UiObserver {
             live.projection.finish_tool_call(call_id, text, is_error);
             live.updated_at = now_ms();
         }
+        self.state.stream_changed(session);
     }
 
     fn finished(&self, session: &str, outcome: LoopOutcome) {
@@ -614,6 +636,9 @@ impl TurnObserver for UiObserver {
                 };
                 if outcome != LoopOutcome::Completed {
                     live.auto_title_pending = false;
+                    live.projection.lines.push(ChatLine::Status {
+                        text: live.status.key().into(),
+                    });
                 }
                 live.turn_started_at = None;
                 live.updated_at = now_ms();

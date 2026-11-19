@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "ซ่อนขั้นตอน",
+  "history.show_work": "แสดงขั้นตอน",
+  "markdown.copy_code": "คัดลอกโค้ด",
+  "markdown.copy_source": "คัดลอก Markdown",
   "inventory.auto": "สิ่งส่งมอบ · อัตโนมัติ",
   "inventory.example": "ทำรายการสิ่งที่อยู่ในโฟลเดอร์ที่เลือก",
   "inventory.home_title": "อยากให้ {product} ช่วยอะไร",

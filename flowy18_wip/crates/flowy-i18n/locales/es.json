@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Ocultar proceso",
+  "history.show_work": "Mostrar proceso",
+  "markdown.copy_code": "Copiar código",
+  "markdown.copy_source": "Copiar Markdown",
   "inventory.auto": "Entregable · Automático",
   "inventory.example": "Haz un inventario de la carpeta seleccionada.",
   "inventory.home_title": "¿En qué puede ayudarte {product}?",

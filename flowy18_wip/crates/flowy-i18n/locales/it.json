@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Nascondi passaggi",
+  "history.show_work": "Mostra passaggi",
+  "markdown.copy_code": "Copia codice",
+  "markdown.copy_source": "Copia Markdown",
   "inventory.auto": "Risultato · Automatico",
   "inventory.example": "Crea un inventario della cartella selezionata.",
   "inventory.home_title": "In cosa può aiutarti {product}?",

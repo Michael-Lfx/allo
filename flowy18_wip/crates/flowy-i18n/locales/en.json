@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Hide work",
+  "history.show_work": "Show work",
+  "markdown.copy_code": "Copy code",
+  "markdown.copy_source": "Copy Markdown",
   "inventory.auto": "Deliverable · Auto",
   "inventory.example": "Make an inventory of the selected folder.",
   "inventory.home_title": "What can {product} help you do?",

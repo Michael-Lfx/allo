@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "Ablauf ausblenden",
+  "history.show_work": "Ablauf anzeigen",
+  "markdown.copy_code": "Code kopieren",
+  "markdown.copy_source": "Markdown kopieren",
   "inventory.auto": "Ergebnis · Automatisch",
   "inventory.example": "Erstelle eine Inhaltsliste für den ausgewählten Ordner.",
   "inventory.home_title": "Wobei kann {product} dir helfen?",

@@ -3,9 +3,6 @@ use flowy_agent::{InventoryStatus, InventorySummary, TurnStatus};
 use flowy_ui as theme;
 use gpui::{Context, div, prelude::*, px};
 
-const SUGGESTIONS: &[&str] =
-    &["gallery.documentary", "gallery.budget", "gallery.fashion"];
-
 impl crate::panel::StudioPanel {
     pub(crate) fn chat_canvas(
         &self,
@@ -32,9 +29,11 @@ impl crate::panel::StudioPanel {
                 |column| {
                     column.child(
                         div()
+                            .w_full()
+                            .max_w(px(760.))
+                            .mx_auto()
                             .px(self.theme.space(32.))
-                            .child(self.rating_row(cx))
-                            .child(self.suggestions(cx)),
+                            .child(self.rating_row(cx)),
                     )
                 },
             )
@@ -76,6 +75,7 @@ impl crate::panel::StudioPanel {
                 div()
                     .id("inventory-status")
                     .role(gpui::Role::Status)
+                    .aria_label(self.t(key))
                     .aria_live(gpui::accesskit::Live::Polite)
                     .text_sm()
                     .text_color(self.theme.muted())
@@ -173,39 +173,6 @@ impl crate::panel::StudioPanel {
             );
         }
         row
-    }
-
-    fn suggestions(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut column = div()
-            .id("chat-suggestions")
-            .flex()
-            .flex_col()
-            .gap(self.theme.space(8.))
-            .pt(self.theme.space(8.));
-        for (index, key) in SUGGESTIONS.iter().enumerate() {
-            let key = *key;
-            let label = self.t(key);
-            column = column.child(
-                theme::interactive(
-                    ("chat-suggest", index),
-                    label.clone(),
-                    &self.theme,
-                )
-                .px(self.theme.space(12.))
-                .py(self.theme.space(8.))
-                .rounded_lg()
-                .bg(self.theme.soft())
-                .text_sm()
-                .cursor_pointer()
-                .child(label)
-                .on_click(cx.listener(
-                    move |panel, _, _, cx| {
-                        panel.fill_prompt_key(key, cx);
-                    },
-                )),
-            );
-        }
-        column
     }
 
     pub(crate) fn rate_result(

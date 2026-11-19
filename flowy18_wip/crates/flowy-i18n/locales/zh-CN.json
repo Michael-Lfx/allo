@@ -1,4 +1,8 @@
 {
+  "history.hide_work": "收起执行过程",
+  "history.show_work": "展开执行过程",
+  "markdown.copy_code": "复制代码",
+  "markdown.copy_source": "复制 Markdown 原文",
   "inventory.auto": "交付物 · 自动",
   "inventory.example": "为选中的文件夹生成一份清单。",
   "inventory.home_title": "你想让 {product} 帮你做什么？",

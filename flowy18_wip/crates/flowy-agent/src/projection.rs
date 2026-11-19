@@ -88,6 +88,13 @@ pub struct ChatProjection {
     reasoning_started: Option<std::time::Instant>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ChatHistory {
+    pub rows: Vec<ChatLine>,
+    pub streaming: Option<usize>,
+    pub status: TurnStatus,
+}
+
 impl ChatProjection {
     #[must_use]
     pub fn new() -> Self {
@@ -171,12 +178,20 @@ impl ChatProjection {
         lines
     }
 
+    #[must_use]
+    pub fn streaming_row(&self) -> Option<usize> {
+        (!self.pending.is_empty()).then_some(
+            self.lines.len() + usize::from(!self.pending_reasoning.is_empty()),
+        )
+    }
+
     pub fn push_tool_call(
         &mut self,
         name: impl Into<String>,
         target: impl Into<String>,
         call_id: impl Into<String>,
     ) {
+        self.flush();
         self.lines.push(ChatLine::ToolCall {
             name: name.into(),
             target: target.into(),
@@ -208,6 +223,32 @@ impl ChatProjection {
             text: text.into(),
             is_error,
         });
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::{ChatLine, ChatProjection};
+
+    #[test]
+    fn tools_settle_the_preceding_assistant_fragment_in_place() {
+        let mut projection = ChatProjection::new();
+        projection.push_user("question");
+        projection.apply_text("before");
+        assert_eq!(projection.streaming_row(), Some(1));
+        projection.push_tool_call("tool", "", "call");
+        assert_eq!(projection.streaming_row(), None);
+        projection.finish_tool_call("call", "out", false);
+        projection.apply_text("after");
+        assert_eq!(projection.streaming_row(), Some(4));
+        let rows = projection.visible_lines();
+        assert!(
+            matches!(&rows[1], ChatLine::Assistant { text } if text == "before")
+        );
+        assert!(matches!(&rows[2], ChatLine::ToolCall { .. }));
+        assert!(
+            matches!(&rows[4], ChatLine::Assistant { text } if text == "after")
+        );
     }
 }
 
