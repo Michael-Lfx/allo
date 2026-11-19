@@ -761,33 +761,7 @@ fn import_engine_sessions(engine: &Engine, state: &UiState) {
     let mut live = lock(&state.live);
     for record in records {
         if let Some(existing) = live.get_mut(&record.id) {
-            let mut visible =
-                existing.projection.lines.iter().filter_map(|line| {
-                    if let ChatLine::User { text } = line {
-                        Some(text)
-                    } else {
-                        None
-                    }
-                });
-            for (index, message) in record
-                .messages
-                .iter()
-                .enumerate()
-                .filter(|(_, message)| message.role == Role::User)
-            {
-                match visible.next() {
-                    Some(text) if *text == message.text() => (),
-                    None if message.id.starts_with("submission-") => {
-                        existing.projection.lines.extend(lines_from_messages(
-                            &record.messages[index..],
-                        ));
-                        existing.status = live_status(record.status);
-                        existing.updated_at = record.updated_at;
-                        break;
-                    }
-                    _ => break,
-                }
-            }
+            restore_existing_history(existing, record);
             continue;
         }
         let lines = lines_from_messages(&record.messages);
@@ -819,6 +793,84 @@ fn import_engine_sessions(engine: &Engine, state: &UiState) {
             },
         );
     }
+}
+
+fn restore_existing_history(existing: &mut Live, record: SessionRecord) {
+    let lines = &mut existing.projection.lines;
+    let mut visible = lines.iter().enumerate().filter_map(|(index, line)| {
+        if let ChatLine::User { text } = line {
+            Some((index, text))
+        } else {
+            None
+        }
+    });
+    let mut latest = None;
+    for (index, message) in record
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.role == Role::User)
+    {
+        match visible.next() {
+            Some((row, text)) if *text == message.text() => {
+                latest = Some((row, index));
+            }
+            None if message.id.starts_with("submission-") => {
+                lines.extend(lines_from_messages(&record.messages[index..]));
+                existing.status = live_status(record.status);
+                existing.updated_at = record.updated_at;
+                return;
+            }
+            _ => return,
+        }
+    }
+    // The completed turn can reach disk before the UI index. Match both
+    // prompt sequences so an older reply cannot complete a later rerun.
+    let Some((row, index)) = latest else {
+        return;
+    };
+    if visible.next().is_some()
+        || existing.status != TurnStatus::Stopped
+        || record.status != TurnState::Completed
+        || record.updated_at < existing.updated_at
+    {
+        return;
+    }
+
+    let previous = lines.split_off(row + 1);
+    let mut timings = previous
+        .iter()
+        .filter_map(|line| match line {
+            ChatLine::Reasoning {
+                text,
+                duration_secs,
+                ..
+            } => Some((text, *duration_secs)),
+            _ => None,
+        })
+        .peekable();
+    let mut recovered = lines_from_messages(&record.messages[index + 1..]);
+    for line in &mut recovered {
+        if let ChatLine::Reasoning {
+            text,
+            duration_secs,
+            ..
+        } = line
+            && let Some((_, elapsed)) =
+                timings.next_if(|(saved, _)| *saved == text)
+        {
+            *duration_secs = elapsed;
+        }
+    }
+    lines.extend(recovered);
+    // Task receipts belong to the UI and have no structured message.
+    lines.extend(
+        previous
+            .into_iter()
+            .filter(|line| matches!(line, ChatLine::TaskReceipt { .. })),
+    );
+    existing.status = TurnStatus::Completed;
+    existing.updated_at = record.updated_at;
 }
 
 fn lines_from_messages(messages: &[Message]) -> Vec<ChatLine> {

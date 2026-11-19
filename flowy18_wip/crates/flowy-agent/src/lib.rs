@@ -238,6 +238,119 @@ mod tests {
     }
 
     #[test]
+    fn restoring_completed_turn_repairs_a_stale_index() {
+        use flowy_agent_core::{
+            SessionIndex as History, SessionRecord, TurnState,
+            types::{ContentBlock, Message, MessageSource, Role},
+        };
+
+        let root = ScratchRoot::new("restore-completed-turn");
+        let id = "restored-session";
+        let prompt = ChatLine::User {
+            text: "repeated question".into(),
+        };
+        let earlier = ChatLine::Assistant {
+            text: "earlier answer".into(),
+        };
+        let reasoning = ChatLine::Reasoning {
+            text: "verified details".into(),
+            duration_secs: 3,
+            live: false,
+        };
+        let receipt = ChatLine::TaskReceipt {
+            task_id: "inventory-test".into(),
+            goal: "saved receipt".into(),
+        };
+        let mut index = crate::index::SessionIndex {
+            active: Some(id.into()),
+            sessions: vec![crate::index::SessionRecord {
+                id: id.into(),
+                title: "Existing".into(),
+                updated_at: 1,
+                lines: vec![
+                    prompt.clone(),
+                    earlier.clone(),
+                    prompt.clone(),
+                    reasoning.clone(),
+                    receipt.clone(),
+                ],
+                status: TurnStatus::Running,
+                titled: true,
+            }],
+        };
+        index.save(&root.0).unwrap();
+
+        let user_message = |id: &str| Message {
+            id: id.into(),
+            role: Role::User,
+            content: vec![ContentBlock::text("repeated question")],
+            source: MessageSource::User,
+        };
+        let assistant_message = |id: &str, content| Message {
+            id: id.into(),
+            role: Role::Assistant,
+            content,
+            source: MessageSource::Model {
+                provider: "openai".into(),
+                model: "test".into(),
+            },
+        };
+        History {
+            active: None,
+            sessions: vec![SessionRecord {
+                id: id.into(),
+                updated_at: 2,
+                status: TurnState::Completed,
+                messages: vec![
+                    user_message("u-1"),
+                    assistant_message(
+                        "a-1",
+                        vec![ContentBlock::text("earlier answer")],
+                    ),
+                    user_message("submission-00000000000000000000000000000001"),
+                    assistant_message(
+                        "a-2",
+                        vec![
+                            ContentBlock::Reasoning {
+                                text: "verified details".into(),
+                            },
+                            ContentBlock::text("durably saved answer"),
+                        ],
+                    ),
+                ],
+                ..SessionRecord::default()
+            }],
+        }
+        .save(&root.0)
+        .unwrap();
+
+        let expected = [
+            prompt.clone(),
+            earlier,
+            prompt.clone(),
+            reasoning,
+            ChatLine::Assistant {
+                text: "durably saved answer".into(),
+            },
+            receipt,
+        ];
+        for _ in 0..2 {
+            let handle = mock_handle(&root.0);
+            assert_eq!(handle.turn_status(), TurnStatus::Completed);
+            assert_eq!(handle.lines(), expected);
+        }
+
+        // The same prompt in an additional interrupted turn is a different run.
+        index.sessions[0].lines = expected.to_vec();
+        index.sessions[0].lines.push(prompt);
+        index.sessions[0].updated_at = 2;
+        index.save(&root.0).unwrap();
+        let handle = mock_handle(&root.0);
+        assert_eq!(handle.turn_status(), TurnStatus::Stopped);
+        assert_eq!(handle.lines(), index.sessions[0].lines);
+    }
+
+    #[test]
     fn interrupted_session_can_be_used_after_restart() {
         let root = ScratchRoot::new("interrupted");
         let index = crate::index::SessionIndex {

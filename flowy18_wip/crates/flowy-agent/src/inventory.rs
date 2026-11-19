@@ -416,13 +416,16 @@ mod tests {
         create_junction(&profile, &target);
 
         let root = profile.join("data");
-        assert!(Inventory::ids(&root).unwrap().is_empty());
+        assert_eq!(Inventory::ids(&root).unwrap(), Vec::<String>::new());
         let id = task_id(1);
         let mut task = Inventory::new(id.clone(), None, "inventory".into());
         task.status = InventoryStatus::Running;
         let listing = "# Directory inventory\n";
         task.finish(&root, Some(listing.into())).unwrap();
-        assert_eq!(Inventory::ids(&root).unwrap(), [id.clone()]);
+        assert_eq!(
+            Inventory::ids(&root).unwrap().as_slice(),
+            std::slice::from_ref(&id)
+        );
         let reopened = Inventory::load(&root, &id).unwrap().unwrap();
         assert_eq!(reopened.status, InventoryStatus::Delivered);
         let output = reopened.artifact(&root).unwrap().unwrap();

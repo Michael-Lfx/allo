@@ -38,11 +38,11 @@ impl Projection {
         }
         for turn in starts.windows(2) {
             let (start, end) = (turn[0], turn[1]);
+            let last_turn_row = lines[start..end]
+                .iter()
+                .rfind(|line| !matches!(line, ChatLine::TaskReceipt { .. }));
             let complete = (end < lines.len() || latest_completed)
-                && matches!(
-                    lines.get(end - 1),
-                    Some(ChatLine::Assistant { .. })
-                );
+                && matches!(last_turn_row, Some(ChatLine::Assistant { .. }));
             let marker = complete
                 .then(|| (start + 1..end).find(|&row| collapsible(&lines[row])))
                 .flatten();
@@ -123,6 +123,10 @@ mod tests {
             ChatLine::Assistant {
                 text: "previous result".into(),
             },
+            ChatLine::TaskReceipt {
+                task_id: "inventory-test".into(),
+                goal: "list files".into(),
+            },
             ChatLine::User {
                 text: "second".into(),
             },
@@ -135,18 +139,22 @@ mod tests {
                 text: "incomplete".into(),
             },
         ];
-        let folded = Projection::build(&lines, Some(7), false, None);
-        assert_eq!(folded.source_rows, [0, 1, 2, 4, 5, 6, 7]);
+        let folded = Projection::build(&lines, Some(8), false, None);
+        assert_eq!(folded.source_rows, [0, 1, 2, 4, 5, 6, 7, 8]);
         assert_eq!(folded.hidden[&3], 1);
-        assert_eq!(folded.streaming, Some(6));
+        assert_eq!(folded.streaming, Some(7));
         assert!(!folded.folds[&1].expanded);
         let expanded = Projection::build(
             &lines,
-            Some(7),
+            Some(8),
             false,
             Some(&HashSet::from([1])),
         );
         assert!(expanded.folds[&1].expanded);
         assert_eq!(expanded.source_rows, (0..lines.len()).collect::<Vec<_>>());
+
+        let latest = Projection::build(&lines[..6], None, true, None);
+        assert_eq!(latest.source_rows, [0, 1, 2, 4, 5]);
+        assert_eq!(latest.hidden[&3], 1);
     }
 }
