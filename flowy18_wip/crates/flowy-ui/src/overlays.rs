@@ -497,7 +497,15 @@ pub fn popover(
     cx: &App,
     rtl: bool,
 ) -> AnyElement {
-    popover_with_direction(id, anchor_id, content, ui, window, cx, rtl, false)
+    popover_with_direction(
+        id,
+        anchor_id,
+        content,
+        ui,
+        window,
+        cx,
+        PopoverPlacement { rtl, above: false },
+    )
 }
 
 pub fn popover_above(
@@ -509,7 +517,20 @@ pub fn popover_above(
     cx: &App,
     rtl: bool,
 ) -> AnyElement {
-    popover_with_direction(id, anchor_id, content, ui, window, cx, rtl, true)
+    popover_with_direction(
+        id,
+        anchor_id,
+        content,
+        ui,
+        window,
+        cx,
+        PopoverPlacement { rtl, above: true },
+    )
+}
+
+struct PopoverPlacement {
+    rtl: bool,
+    above: bool,
 }
 
 fn popover_with_direction(
@@ -519,9 +540,9 @@ fn popover_with_direction(
     ui: &UiContext,
     window: &Window,
     cx: &App,
-    rtl: bool,
-    above: bool,
+    placement: PopoverPlacement,
 ) -> AnyElement {
+    let PopoverPlacement { rtl, above } = placement;
     let id = id.into();
     let anchor_id = anchor_id.into();
     let host = ui.overlays.read(cx);
