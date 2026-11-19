@@ -70,11 +70,24 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
         let _ = task.await;
     })
     .detach();
-    if let Ok(handle) = tray::build(cx) {
-        TRAY.with(|slot| {
-            *slot.borrow_mut() = Some(handle);
-        });
+    match tray::build(cx) {
+        Ok(handle) => {
+            TRAY.with(|slot| {
+                *slot.borrow_mut() = Some(handle);
+            });
+        }
+        Err(error) => {
+            tracing::warn!(%error, "system tray unavailable");
+        }
     }
+}
+
+/// Whether the tray icon was created on this thread.
+///
+/// The close button hides the window instead of quitting, so callers must
+/// fall back to a real close when no tray exists to bring it back.
+pub fn tray_available() -> bool {
+    TRAY.with(|slot| slot.borrow().is_some())
 }
 
 pub fn ensure_main_window(cx: &mut App) {
