@@ -246,6 +246,13 @@ export const learningApi = {
       `${BASE}/lessons/${encodeURIComponent(lessonId)}/activities/generate`,
       request
     ),
+  /** 删除课时内一道题（sq5 救济面）：级联 = 卡随题走（复习卡/标签删、
+   * 作答记录账本保留）；响应 = 删除后的最新课时详情，练习轮一次调用收敛。 */
+  deleteLessonActivity: (lessonId: string, activityId: string) =>
+    httpRequest<Lesson>(
+      'DELETE',
+      `${BASE}/lessons/${encodeURIComponent(lessonId)}/activities/${encodeURIComponent(activityId)}`
+    ),
   submitAttempt: (id: string, request: SubmitAttemptRequest) =>
     httpRequest<AttemptResult>('POST', `${BASE}/activities/${encodeURIComponent(id)}/attempts`, request),
   listDueReviews: (

@@ -60,6 +60,7 @@ export function ActivityBlock({
   result,
   initialResponse,
   onSubmit,
+  onDelete,
 }: {
   activity: Activity;
   disabled: boolean;
@@ -68,6 +69,10 @@ export function ActivityBlock({
   /** 回看已答题时回显提交过的作答（组件重挂载后本地输入态已丢） */
   initialResponse?: unknown;
   onSubmit: (activity: Activity, response: unknown) => void;
+  /** sq5 救济面：删题主入口（练习轮/题目卡管理位「删除本题」）。确认框与
+   * API 在容器面（LessonBlock deleteActivity，Modal.confirm 惯例）；缺席 =
+   * 旧调用面零变化。已答态照常在场——救济的典型场景就是答完才发现题坏。 */
+  onDelete?: (activity: Activity) => void;
 }) {
   const { t } = useTranslation();
   const [response, setResponse] = useState<unknown>(initialResponse);
@@ -102,6 +107,17 @@ export function ActivityBlock({
         >
           {t('learning.submit')}
         </Button>
+        {onDelete && (
+          <Button
+            size='mini'
+            type='text'
+            status='danger'
+            className='ml-auto'
+            onClick={() => onDelete(activity)}
+          >
+            {t('learning.activityDelete')}
+          </Button>
+        )}
         {result && (
           <div>
             <Text type={result.passed ? 'success' : 'error'}>
@@ -250,11 +266,14 @@ function PracticeRound({
   busyId,
   attemptResults,
   onAttempt,
+  onDelete,
 }: {
   activities: Activity[];
   busyId: string | null;
   attemptResults: Record<string, AttemptRecord>;
   onAttempt: (activity: Activity, response: unknown) => void;
+  /** 删题主入口透传（sq5）：当前题与回看列表的题目卡都在场 */
+  onDelete?: (activity: Activity) => void;
 }) {
   const { t } = useTranslation();
   // 前缀扫描而非计数：乱序的已答记录（如诊断写入同一题）不会让游标跳题
@@ -295,6 +314,7 @@ function PracticeRound({
             result={attemptResults[activity.id]}
             initialResponse={attemptResults[activity.id]?.response}
             onSubmit={onAttempt}
+            onDelete={onDelete}
           />
         ))}
       </div>
@@ -311,6 +331,7 @@ function PracticeRound({
         result={attemptResults[current.id]}
         initialResponse={attemptResults[current.id]?.response}
         onSubmit={onAttempt}
+        onDelete={onDelete}
       />
       <div className='flex items-center justify-end gap-8px'>
         <Button size='small' disabled={idx === 0} onClick={() => setCursor(idx - 1)}>
@@ -442,6 +463,7 @@ function SectionedLessonBody({
   onSuggestRewriteSection,
   onEditSection,
   sectionBusyKey,
+  onDeleteActivity,
 }: {
   lesson: Lesson;
   busyId: string | null;
@@ -454,6 +476,8 @@ function SectionedLessonBody({
   /** 手动编辑（ADR-0007）：有正文的内容节打开编辑对话框 */
   onEditSection?: (section: Section) => void;
   sectionBusyKey?: string | null;
+  /** 删题主入口透传（sq5）：练习轮与旧清单/综合步的题目卡都在场 */
+  onDeleteActivity?: (activity: Activity) => void;
 }) {
   const { t } = useTranslation();
   const sections = lesson.sections;
@@ -546,6 +570,7 @@ function SectionedLessonBody({
               busyId={busyId}
               attemptResults={attemptResults}
               onAttempt={onAttempt}
+              onDelete={onDeleteActivity}
             />
           </div>
         ) : (
@@ -640,6 +665,7 @@ function SectionedLessonBody({
                     result={attemptResults[activity.id]}
                     initialResponse={attemptResults[activity.id]?.response}
                     onSubmit={onAttempt}
+                    onDelete={onDeleteActivity}
                   />
                 ))}
               </div>
@@ -660,6 +686,7 @@ function SectionedLessonBody({
               result={attemptResults[activity.id]}
               initialResponse={attemptResults[activity.id]?.response}
               onSubmit={onAttempt}
+              onDelete={onDeleteActivity}
             />
           ))}
         </div>
@@ -846,6 +873,32 @@ export function LessonBlock({
       setsectionBusyKey(null);
     }
   };
+  // sq5 救济面：删题主入口（练习轮/题目卡管理位「删除本题」）。确认对话
+  // 框照既有删除惯例（QuestionManager confirmDelete 同款形态：danger 主键
+  // + 成功/失败回执；单题级不进危险区）；级联面（卡随题走、作答账本保留）
+  // 在后端 service。成功后以返回的最新课时详情整体替换本地详情（rewrite
+  // 同款一次调用收敛练习轮/收编面），onRefresh 让大纲与 due 徽标同步。
+  const deleteActivity = (activity: Activity) => {
+    Modal.confirm({
+      title: t('learning.activityDeleteConfirmTitle'),
+      content: t('learning.activityDeleteConfirmHint'),
+      okButtonProps: { status: 'danger' },
+      onOk: async () => {
+        try {
+          const updated = await learningApi.deleteLessonActivity(
+            effectiveLesson.id,
+            activity.id
+          );
+          setDetailLesson(updated);
+          Message.success(t('learning.activityDeleteDone'));
+          onRefresh();
+        } catch (deleteError) {
+          // o1：错误文案走 errorMessage 单源映射，原始报文不进人面。
+          Message.error(errorMessage(t, deleteError));
+        }
+      },
+    });
+  };
   if (!lesson.generated) {
     return (
       <div className='flex flex-col gap-12px'>
@@ -911,6 +964,7 @@ export function LessonBlock({
             onSuggestRewriteSection={(section) => setRewriteDialogSection(section)}
             onEditSection={(section) => setEditDialogSection(section)}
             sectionBusyKey={sectionBusyKey}
+            onDeleteActivity={deleteActivity}
           />
           {rewriteDialogSection && (
             <SectionRewriteDialog
@@ -946,6 +1000,7 @@ export function LessonBlock({
                   result={attemptResults[activity.id]}
                   initialResponse={attemptResults[activity.id]?.response}
                   onSubmit={onAttempt}
+                  onDelete={deleteActivity}
                 />
               ))}
             </div>
