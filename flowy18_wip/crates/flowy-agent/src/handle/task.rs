@@ -409,6 +409,8 @@ mod tests {
     }
 
     fn serve_inventory_turn(mut socket: TcpStream) {
+        // Accepted sockets inherit the listener's nonblocking mode on Windows.
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(4)))
             .unwrap();
