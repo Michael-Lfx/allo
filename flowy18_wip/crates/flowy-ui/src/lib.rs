@@ -16,7 +16,7 @@ pub use button::{
     Button, IconButton, button, install_initial_tab_focus, interactive,
 };
 pub use chrome::{
-    ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
+    FilterTabs, ToolbarSearch, filter_chip, icon_segment, icon_segment_group,
 };
 pub use context::*;
 pub use controls::*;

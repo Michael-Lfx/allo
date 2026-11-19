@@ -129,6 +129,55 @@ pub fn filter_chip(
     chip
 }
 
+/// Shared layout and accessibility semantics for page-level category tabs.
+#[must_use]
+pub struct FilterTabs {
+    id: ElementId,
+    label: SharedString,
+    children: Vec<gpui::AnyElement>,
+}
+
+impl FilterTabs {
+    pub fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            children: Vec::new(),
+        }
+    }
+
+    pub fn child(mut self, child: impl IntoElement) -> Self {
+        self.children.push(child.into_any_element());
+        self
+    }
+
+    pub fn render(self) -> Stateful<Div> {
+        div()
+            .id(self.id)
+            .role(Role::TabList)
+            .aria_label(self.label)
+            .w_full()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap(px(4.))
+            .children(self.children)
+    }
+}
+
+impl std::fmt::Debug for FilterTabs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FilterTabs")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
 pub fn icon_segment_group(theme: &ResolvedTheme) -> Div {
     div()
         .h(px(32.))

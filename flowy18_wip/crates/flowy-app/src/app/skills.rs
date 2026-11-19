@@ -236,29 +236,14 @@ impl FlowyApp {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(
-                        div()
-                            .w_full()
-                            .min_h_full()
-                            .min_w_0()
-                            .px_10()
-                            .pr_12()
-                            .pt_2()
-                            .pb_8()
-                            .child(self.skills_column(cx)),
+                        div().w_full().min_h_full().min_w_0().child(
+                            theme::PageColumn::new()
+                                .child(self.skills_filters(cx))
+                                .child(self.skills_grid(cx))
+                                .render(window),
+                        ),
                     ),
             )
-    }
-
-    fn skills_column(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .w_full()
-            .max_w(px(960.))
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(self.skills_filters(cx))
-            .child(self.skills_grid(cx))
     }
 
     fn skills_header(
@@ -275,34 +260,27 @@ impl FlowyApp {
                 )
                 .render(&self.theme),
             )
-            .trailing(self.skills_ghost_button(
-                "skills-mine",
-                "skills.mine",
-                cx,
-            ))
+            .trailing(self.skills_mine_button(cx))
             .trailing(self.skills_create_button(cx))
             .render(&self.theme, window)
     }
 
-    fn skills_ghost_button(
-        &self,
-        id: &'static str,
-        key: &'static str,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        theme::Button::new(id, self.t(key)).render(
-            &self.theme,
-            cx.listener(|app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.open_skill("mine", cx);
-            }),
-        )
+    fn skills_mine_button(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        theme::Button::new("skills-mine", self.t("skills.mine"))
+            .framed()
+            .render(
+                &self.theme,
+                cx.listener(|app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    app.open_skill("mine", cx);
+                }),
+            )
     }
 
     fn skills_create_button(&self, cx: &Context<'_, Self>) -> impl IntoElement {
         theme::Button::new("skills-create", self.t("skills.create"))
-            .variant(theme::ControlVariant::Primary)
-            .icon(theme::icons::plus())
+            .framed()
+            .trailing_icon(theme::icons::chevron_down().size(px(14.)))
             .render(
                 &self.theme,
                 cx.listener(|app, _event, _window, cx| {
@@ -313,14 +291,8 @@ impl FlowyApp {
     }
 
     fn skills_filters(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut row = div()
-            .id("skills-tabs")
-            .w_full()
-            .flex()
-            .gap_1()
-            .flex_wrap()
-            .border_b_1()
-            .border_color(self.theme.line());
+        let mut row =
+            theme::FilterTabs::new("skills-tabs", self.t("library.categories"));
         for category in Category::ALL {
             let selected = self.skills.filter == category;
             let id =
@@ -341,7 +313,7 @@ impl FlowyApp {
                 )),
             );
         }
-        row
+        row.render()
     }
 
     fn skills_grid(&self, cx: &Context<'_, Self>) -> impl IntoElement {

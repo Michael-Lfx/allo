@@ -56,6 +56,8 @@ pub struct Button {
     disabled: bool,
     loading: bool,
     icon: Option<AnyElement>,
+    trailing_icon: Option<AnyElement>,
+    framed: bool,
     full_width: bool,
 }
 impl Button {
@@ -71,6 +73,8 @@ impl Button {
             disabled: false,
             loading: false,
             icon: None,
+            trailing_icon: None,
+            framed: false,
             full_width: false,
         }
     }
@@ -94,6 +98,15 @@ impl Button {
         self.icon = Some(value.into_any_element());
         self
     }
+    pub fn trailing_icon(mut self, value: impl IntoElement) -> Self {
+        self.trailing_icon = Some(value.into_any_element());
+        self
+    }
+    /// Uses the light frame shared by supporting toolbar controls.
+    pub const fn framed(mut self) -> Self {
+        self.framed = true;
+        self
+    }
     pub const fn full_width(mut self) -> Self {
         self.full_width = true;
         self
@@ -105,7 +118,13 @@ impl Button {
     ) -> crate::A11yElement<Div> {
         let loading_id: ElementId = (self.id.clone(), "loading").into();
         let icon_id: ElementId = (self.id.clone(), "icon").into();
+        let trailing_id: ElementId = (self.id.clone(), "trailing-icon").into();
         let colors = theme.control_colors(self.variant);
+        let hover = if self.framed {
+            theme.soft()
+        } else {
+            colors.hover
+        };
         let loading = self.loading;
         let label = self.label.clone();
         let leading = if loading {
@@ -144,17 +163,34 @@ impl Button {
         } else {
             gpui::FontWeight::MEDIUM
         })
+        .when(self.framed, |el| toolbar_frame(el, theme))
         .when(self.disabled, |el| el.opacity(0.5))
         .when(!self.disabled && !loading, move |el| {
-            el.hover(move |s| s.bg(colors.hover))
+            el.hover(move |s| s.bg(hover))
         })
         .when(loading, Styled::cursor_default)
         .children(
             leading.map(|icon| div().id(leading_id).aria_hidden().child(icon)),
         )
-        .child(label);
+        .child(label)
+        .children(
+            self.trailing_icon
+                .filter(|_| !loading)
+                .map(|icon| div().id(trailing_id).aria_hidden().child(icon)),
+        );
         crate::A11yElement::new(element.into_element()).busy(loading)
     }
+}
+
+fn toolbar_frame(
+    element: Stateful<Div>,
+    theme: &ResolvedTheme,
+) -> Stateful<Div> {
+    element
+        .border_1()
+        .border_color(theme.chrome_line())
+        .bg(theme.card())
+        .rounded(px(10.))
 }
 impl std::fmt::Debug for Button {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -251,12 +287,8 @@ impl IconButton {
         .when(loading, Styled::cursor_default)
         .when(self.framed, |element| {
             let side = theme.control_height(size);
-            element
-                .border_1()
-                .border_color(theme.chrome_line())
-                .bg(theme.card())
+            toolbar_frame(element, theme)
                 .text_color(theme.toolbar_icon())
-                .rounded(px(10.))
                 .w(side)
                 .h(side)
                 .min_w(side)
