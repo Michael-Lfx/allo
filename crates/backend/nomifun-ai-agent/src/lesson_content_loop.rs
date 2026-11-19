@@ -181,6 +181,14 @@ const VERIFICATION_DISCIPLINE_CN: &str = "\n- 验证题纪律（全题型通用�
 /// 判别模板条款承载，本条只管联结轴。
 const LINKING_MATERIALS_CN: &str = "\n- 联结类题目（ordering / fill_in_blank）的材料按「依据 → 目标 → 条件」组织：每空每序位对应一个可从已教依据推出的环节，条件给足、不让学习者凭空猜；既有近义干扰规则不变。";
 
+/// sq1 题面自足条款（agent 线【活动契约】注入，无开关恒在）：作答材料在
+/// 题面原样重述、禁裸指代——裸指代题刷卡卡面（题面+选项+课时标题）不可
+/// 答，且审计机械门（`activity_prompt_dangling_reference` danger）会把
+/// 它打回。词表与 nomifun-learning 的机械门词表
+///（`DANGLING_REFERENCE_TERMS`）逐词同源，三面一致性测试钉住（pf5/F1
+/// 先例扩面；传统线英文条款 `STEM_SELF_CONTAINED_RULE` 同票同款）。
+const ACTIVITY_STEM_SELF_CONTAINED_CN: &str = "\n- 题面自足：作答所需的一切材料（代码段、数据、剧情、图示内容）必须在题面原样重述；禁止裸指代「演示中/上例/前文/例题中/如图所示/上一节/前一章」指向课内其它节而不重述——先重述材料再提问，裸指代题会被审计门以 danger 打回。";
+
 /// 时长预算面（k03，开关 `NOMI_LEARNING_EST_BUDGET` 的语义臂，learnhub
 /// #178 换血版）：预算行照读之外，意图画像四角（预算 × teaches 档位 ×
 /// 概念首现 × assumes）定内容雄心；超预算先砍雄心再砍内容，收敛不住 =
@@ -274,6 +282,9 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     };
     let visual_menu = visual_menu_text();
     let prose_budgets = prose_budget_rules();
+    // sq1：题面自足条款（无开关恒在，同命装配——与 DISTRACTOR_MENU_CN 等
+    // 同款占位注入）。
+    let stem_self_contained = ACTIVITY_STEM_SELF_CONTAINED_CN;
     format!(
         r#"你是一名课时内容设计代理：把给定的一个课时规划为若干「节」，逐节撰写正文并设计检索题目，通过工具逐步构建，最终通过确定性审计门禁发布。
 
@@ -302,6 +313,8 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / classify）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
 - 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；classify 的 objects 是对象左列、categories 是短规范类别标签集合（2-6 个、互不相同）、answer 是逐对象类别数组；reflection 与 open_question 的 answer 必须是 null。{question_coverage}{distractor_menu}{verification_discipline}{linking_materials}
 - 每题必须带 section_key 绑定到教它的那一节（清单里的 key）；至多 1 道跨节综合题用 "general"。
+- objective 题必须带 evidence：≤120 字的正文逐字引用（word-for-word，改写不算），锚定题干——判底揭底全靠它；缺 evidence 的客观题会被审计门以 danger 打回。
+{stem_self_contained}
 - estimated_minutes：5-60 的小整数，反映整体课时长度。
 
 【工具使用纪律】
@@ -331,6 +344,8 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 - reflections_too_many：remove_activity 删多余的反思题。
 - reflections_multiple（warning）：可保留——只有 danger 才阻断发布。
 - activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
+- activity_prompt_dangling_reference：update_activity 按位置重写该题题面——把所引材料（代码/数据/剧情/图示内容）在题面原样重述后再提问，去掉「演示中/上例/前文」类裸指代措辞。
+- evidence_missing：update_activity 按位置为每道被点名的客观题补一条 ≤120 字逐字引用（word-for-word，从正文复制，改写不算）。
 - section_invalid（缺可视化）：按清单里该节的 visual 重写正文——用 $$公式$$ / ```svg / ```jsxgraph / ```mermaid / 表格承载核心讲解，文字作旁注。
 - viz_block_lint（mermaid 括号不平衡/引号不配平/节点未定义）：修复该围栏块语法，或改用表格/公式承载该节讲解（终检已系统剔除的 viz_block_lint_dropped 按降级声明保留，无需重画）。
 - math_verify_failed（warning 留痕）：本课生成期 verify_math 核验失败未必已全部修正——报告点名具体数值时按 R14 重算并用 verify_math 复核后改正文；无点名则无需动作（warning 不挡发布）。
@@ -2022,9 +2037,11 @@ mod tests {
     /// Three valid activities (2 objective + 1 reflection) — clears the
     /// activity half of the audit gate.
     fn valid_activity_ops() -> serde_json::Value {
+        // sq1（R-c）：objective 题缺 evidence 升 danger 后，可发布的活动
+        // fixture 逐题带正文逐字引用（已知变更——判底揭底有源）。
         serde_json::json!({ "operations": [
-            { "op": "add_activity", "activity": { "kind": "single_choice", "prompt": "期权的本质是什么？", "options": ["权利", "义务", "债务"], "answer": "权利", "explanation": "买方持有的是权利而非义务。" } },
-            { "op": "add_activity", "activity": { "kind": "true_false", "prompt": "期权卖方没有履约义务。", "answer": false, "explanation": "卖方承担履约义务。" } },
+            { "op": "add_activity", "activity": { "kind": "single_choice", "prompt": "期权的本质是什么？", "options": ["权利", "义务", "债务"], "answer": "权利", "explanation": "买方持有的是权利而非义务。", "evidence": "买方持有权利，卖方负有义务。" } },
+            { "op": "add_activity", "activity": { "kind": "true_false", "prompt": "期权卖方没有履约义务。", "answer": false, "explanation": "卖方承担履约义务。", "evidence": "卖方承担履约义务。" } },
             { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "用身边合同或规则的例子说明：权利可以放弃，义务不履行会有后果，两者不对等。" } },
             { "op": "set_estimated_minutes", "minutes": 15 }
         ] })
@@ -2659,6 +2676,46 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    /// sq1（R-a/R-b/R-c）题面自足条款三面一致性 + 契约↔门词表对齐（pf5
+    /// 同源一致性先例扩面）：三处出题契约面——agent 线【活动契约】（本宿
+    /// 常量注入）、传统线整课 TAIL 与单题/变式面 BASELINE（nomifun-learning
+    /// 宿，条款逐字 = `STEM_SELF_CONTAINED_RULE`，由该宿自己的
+    /// stem_self_contained_rule_is_carried_by_both_traditional_faces 钉）
+    /// 都带「题面自足」条款；agent 线中文条款逐词点名的裸指代词与机械门
+    /// 词表（`DANGLING_REFERENCE_TERMS`）对齐；agent 线契约恢复 objective
+    /// 题必带 evidence 条款（R-c 契约半）；修复环提示词对两个 finding 各
+    /// 带修复动作映射（门与修复环闭合）。
+    #[test]
+    fn stem_self_contained_clause_spans_all_three_generation_faces_and_matches_gate_terms() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        assert!(
+            system.contains(ACTIVITY_STEM_SELF_CONTAINED_CN),
+            "agent 线【活动契约】缺题面自足条款：{system}"
+        );
+        // R-c 契约半：agent 线【活动契约】恢复 objective 题必带 evidence。
+        assert!(
+            system.contains("objective 题必须带 evidence"),
+            "agent 线【活动契约】缺 evidence 条款：{system}"
+        );
+        // 契约↔门词表对齐：条款点名的每个裸指代词都进机械门词表（词表
+        // 加词不改条款、或条款改词不同步词表，都在此红）。
+        for term in nomifun_learning::DANGLING_REFERENCE_TERMS {
+            assert!(
+                ACTIVITY_STEM_SELF_CONTAINED_CN.contains(*term),
+                "机械门词表词「{term}」未在 agent 线条款点名"
+            );
+        }
+        // 修复环：repair 提示词对两个 finding 各带修复动作映射行。
+        assert!(
+            REPAIR_LESSON_AGENT_SYSTEM.contains("activity_prompt_dangling_reference"),
+            "修复环缺裸指代 finding 的修复动作映射"
+        );
+        assert!(
+            REPAIR_LESSON_AGENT_SYSTEM.contains("evidence_missing"),
+            "修复环缺 evidence finding 的修复动作映射"
+        );
     }
 
     /// n3（#177/#178 条款移植）：规划面四条款（构件词边界 / 练习形态按

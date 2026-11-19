@@ -346,6 +346,27 @@ pub(crate) fn evidence_missing(activity: &ActivityPack) -> bool {
             .is_none_or(str::is_empty)
 }
 
+/// sq1（R-b）题面裸指代保守词表：题面（prompt）命中任一词 = 指向课内
+/// 其它节材料而不重述——刷卡卡面只有题面+选项+课时标题，裸指代题进刷卡
+/// 后不可答。audit danger finding（`activity_prompt_dangling_reference`）
+/// 与单题 validator（`validate_generated_activity`）同源共用这张表（两处
+/// 永不漂移）。保守口径：只收「指向课内它处的指示语」，不做语义判定。
+/// 误伤裁决（sq1 票面）：题面自带完整材料后「对上例判断」类合法用法
+/// 不豁免——重述材料后改措辞即可，词表面无豁免分支。
+pub const DANGLING_REFERENCE_TERMS: &[&str] =
+    &["演示中", "上例", "前文", "如图所示", "例题中", "上一节", "前一章"];
+
+/// objective 题面在保守词表上的命中词（保序）；空 = 干净题面。
+pub(crate) fn prompt_dangling_reference_hits(prompt: &str) -> Vec<&'static str> {
+    let mut hits = Vec::new();
+    for term in DANGLING_REFERENCE_TERMS {
+        if prompt.contains(*term) {
+            hits.push(*term);
+        }
+    }
+    hits
+}
+
 
 /// One question already present in the lesson, listed in the generation
 /// prompt so the model produces something novel instead of a paraphrase.
@@ -539,6 +560,22 @@ pub(super) fn validate_generated_activity(
     // manual-authoring option bounds (2-5) — narrower than the generation
     // stage, wider than a hand-authored single choice.
     activity.validate_shape((2, 5), true)?;
+    // sq1（R-b 单题面）：objective 题面裸指代校验（audit 同款词表）——AI
+    // 手动加题与变式站新产同拦；变式以旧题面为换皮底，旧题面裸指代则变式
+    // 遗传裸指代，在单题面拦新产（存量坏题面的变式由删源题兜底）。置于
+    // 证据逐字核之前：裸指代违约消息不被证据门遮蔽。reflection 不核
+    // （audit 同款口径）。
+    if activity.kind.is_objective() {
+        let hits = prompt_dangling_reference_hits(activity.prompt.trim());
+        if !hits.is_empty() {
+            return Err(format!(
+                "the question stem references lesson context instead of restating \
+                 it (bare pointer: {}) — restate the referenced material inside \
+                 the stem (code, data, scenario, diagram content), then ask",
+                hits.join("、")
+            ));
+        }
+    }
     // 新颖性门（k04）：on 臂三口径相似度 ≥0.7 命中（含换数/换情境的雷同），
     // 消息带命中题面与分值；off 臂退回旧「规范化精确/子串」判定。
     if qb_similarity_enabled() {

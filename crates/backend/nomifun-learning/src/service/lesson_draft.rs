@@ -252,7 +252,10 @@ mod tests {
         let mut value = serde_json::json!({
             "kind": kind,
             "prompt": "期权的本质是什么？",
-            "explanation": "因为买方持有权利。"
+            "explanation": "因为买方持有权利。",
+            // sq1（R-c）evidence_missing 升 danger 后，发布面 fixture 须带
+            // 逐字引用才能过 finish 闸（已知变更：判底揭底有源）。
+            "evidence": "买方持有权利，卖方负有义务。"
         });
         if let (Some(object), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
             object.extend(extra.clone());

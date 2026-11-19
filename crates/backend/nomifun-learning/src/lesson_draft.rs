@@ -1302,17 +1302,29 @@ fn audit_findings(
             format!("lesson has {} activities; the design guidance is 3-5", activities.len()),
         ));
     }
-    // 证据回引（t2）：objective 题缺 evidence 留痕（生成面已硬门拒重试，
-    // 这里兜住历史行与旁路写入——修补回合输入面）。
-    let missing_evidence = activities
+    // 证据回引（t2 → sq1 R-c 升 danger）：objective 题缺 evidence——判底
+    // 揭底无源；传统线生成面硬门（evidence_missing 拒重试）在 agent 线
+    // 整个丢失，审计面兜住回归（按代次发生的 evidence 全空课时实锤）。
+    // 位置点名让修复轮 update_activity 按位补齐。
+    let missing_evidence_positions: Vec<usize> = activities
         .iter()
-        .filter(|activity| crate::generation::evidence_missing(activity))
-        .count();
-    if missing_evidence > 0 {
-        findings.push(warning(
+        .enumerate()
+        .filter(|(_, activity)| crate::generation::evidence_missing(activity))
+        .map(|(position, _)| position)
+        .collect();
+    if !missing_evidence_positions.is_empty() {
+        let positions = missing_evidence_positions
+            .iter()
+            .map(|position| position.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        findings.push(danger(
             "evidence_missing",
             format!(
-                "{missing_evidence} objective question(s) carry no evidence quote — the grade-time reveal shows nothing beneath the explanation"
+                "objective question(s) at position(s) {positions} carry no evidence \
+                 quote — the grade-time reveal shows nothing beneath the explanation；\
+                 update_activity 为每道被点名的客观题补一条 ≤120 字逐字引用\
+                 （word-for-word，改写不算）"
             ),
         ));
     }
@@ -1392,6 +1404,26 @@ fn audit_findings(
         // bounds (3-5 options for choice-like kinds) apply.
         if let Err(error) = activity.validate_shape((3, 5), true) {
             findings.push(danger("activity_shape_invalid", format!("{at}: {error}")));
+        }
+        // sq1（R-b）题面裸指代机械门：保守词表命中 objective 题面 =
+        // danger——题面引用课内其它节材料而不重述，刷卡卡面（题面+选项+
+        // 课时标题）不可答。修复指引点名重述；agent 修复轮按 findings
+        // 自修，门与修复环闭合。词表与单题 validator 同源（两处永不漂移）。
+        // reflection/open_question 不扫（票面口径：机械门只管客观题面）。
+        if activity.kind.is_objective() {
+            let hits =
+                crate::generation::prompt_dangling_reference_hits(activity.prompt.trim());
+            if !hits.is_empty() {
+                findings.push(danger(
+                    "activity_prompt_dangling_reference",
+                    format!(
+                        "{at}: 题面裸指代课内其它材料（命中：{}）——作答所需材料必须\
+                         在题面原样重述（代码/数据/剧情/图示内容），先重述再提问；\
+                         update_activity 重写该题题面",
+                        hits.join("、")
+                    ),
+                ));
+            }
         }
         // pf5 注册表面：deprecated 题型（注册表 is_deprecated 派生）发
         // warning finding——存量兼容、不挡发布（「随重生成自然消失」）；
@@ -1696,6 +1728,180 @@ mod tests {
                 .iter()
                 .any(|f| f.kind == "activity_kind_deprecated"),
             "active kinds carry no deprecated finding"
+        );
+    }
+
+    /// sq1（R-b）：题面裸指代机械门——保守词表命中 objective 题面 =
+    /// danger finding（挡 finish 闸），message 点名命中词 + 修复指引
+    /// （重述材料）+ 可寻址位置；干净题面零该 finding；非 objective
+    /// 题面（reflection）不发（机械门只扫 objective 题面，票面口径）。
+    /// 误伤裁决（票面倾向落地）：题面自带完整材料后「对上例判断」类合法
+    /// 用法不豁免——重述材料后改措辞即可，词表保守面无豁免分支。
+    #[test]
+    fn dangling_reference_prompts_audit_as_danger_and_clean_prompts_stay_silent() {
+        // 命中臂：ordering 题面裸指代「演示中」（sq1 取证的实锤形态）。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "ordering",
+                    serde_json::json!({
+                        "prompt": "把演示中值建立与失效的先后顺序排好。",
+                        "options": ["主流程建立局部量", "返回值装入引用"],
+                        "answer": ["主流程建立局部量", "返回值装入引用"]
+                    }),
+                ),
+            },
+        ]);
+        let finding = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "activity_prompt_dangling_reference")
+            .expect("bare-pointer prompt is named by an audit finding");
+        assert_eq!(finding.severity, SEV_DANGER, "裸指代是 danger：挡 finish 闸");
+        assert!(finding.message.contains("演示中"), "finding 点名命中词");
+        assert!(finding.message.contains("重述"), "finding 带修复指引（重述材料）");
+        assert!(
+            finding.message.contains("position 0"),
+            "finding 位置可寻址（修复轮按位修）：{}",
+            finding.message
+        );
+
+        // 多词命中 + 位置留痕：第二个活动题面命中「上例」「前文」两个词。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "options": ["权利", "义务", "债务"], "answer": "权利"
+                    }),
+                ),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "true_false",
+                    serde_json::json!({
+                        "prompt": "结合上例与前文判断：权利可以放弃。",
+                        "answer": true
+                    }),
+                ),
+            },
+        ]);
+        let finding = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "activity_prompt_dangling_reference")
+            .expect("multi-term hit is named by one finding");
+        assert!(finding.message.contains("position 1"), "{}", finding.message);
+        assert!(finding.message.contains("上例"), "{}", finding.message);
+        assert!(finding.message.contains("前文"), "{}", finding.message);
+
+        // 静默臂：材料在题面重述的干净题面零该 finding；reflection 命中
+        // 词表也不发（机械门只扫 objective 题面）。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "prompt": "主流程建立「订单名」时，这个名字的值存放在哪里？",
+                        "options": ["栈区", "堆区", "寄存器"], "answer": "栈区"
+                    }),
+                ),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "reflection",
+                    serde_json::json!({
+                        "prompt": "结合演示中的时序，说说哪些值活不过函数返回。",
+                        "answer": null
+                    }),
+                ),
+            },
+        ]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "activity_prompt_dangling_reference"),
+            "干净题面与 reflection 题面零裸指代 finding：{:?}",
+            draft.findings
+        );
+    }
+
+    /// sq1（R-c）：objective 题缺 evidence = danger finding（升级自
+    /// warning——传统线生成面硬门在 agent 线整个丢失，审计面兜住；判底
+    /// 揭底有源）。message 点名缺失位置让修复轮按位补齐；带 evidence 的
+    /// objective 题与 reflection 不发该 finding。
+    #[test]
+    fn objective_activities_without_evidence_audit_as_danger_with_positions() {
+        // 缺失臂：一道 single_choice 无 evidence → danger + 位置点名。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "options": ["权利", "义务", "债务"], "answer": "权利"
+                    }),
+                ),
+            },
+        ]);
+        let finding = draft
+            .findings
+            .iter()
+            .find(|f| f.kind == "evidence_missing")
+            .expect("objective activity without evidence is named");
+        assert_eq!(
+            finding.severity, SEV_DANGER,
+            "缺 evidence 升 danger：挡 finish 闸（agent 线唯一闸）"
+        );
+        assert!(
+            finding.message.contains("position(s) 0"),
+            "finding 点名缺失位置：{}",
+            finding.message
+        );
+
+        // 静默臂：objective 题带 evidence、reflection 无 evidence —— 零该
+        // finding。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![
+            LessonOp::SetDocument {
+                document: long_document(),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "single_choice",
+                    serde_json::json!({
+                        "options": ["权利", "义务", "债务"], "answer": "权利",
+                        "evidence": "买方持有权利，卖方负有义务。"
+                    }),
+                ),
+            },
+            LessonOp::AddActivity {
+                activity: activity_json(
+                    "reflection",
+                    serde_json::json!({ "answer": null }),
+                ),
+            },
+        ]);
+        assert!(
+            !draft.findings.iter().any(|f| f.kind == "evidence_missing"),
+            "带 evidence 的 objective 题与 reflection 零 finding：{:?}",
+            draft.findings
         );
     }
 
@@ -2034,11 +2240,16 @@ mod tests {
             LessonOp::SetEstimatedMinutes { minutes: 15 },
             LessonOp::AddActivity {
                 activity: activity_json("single_choice", serde_json::json!({
-                    "options": ["权利", "义务", "债务"], "answer": "权利"
+                    "options": ["权利", "义务", "债务"], "answer": "权利",
+                    // sq1（R-c）：evidence_missing 升 danger——objective 题
+                    // 缺 evidence 挡发布，fixture 带逐字引用（已知变更）。
+                    "evidence": "买方持有权利，卖方负有义务。"
                 })),
             },
             LessonOp::AddActivity {
-                activity: activity_json("true_false", serde_json::json!({ "answer": false })),
+                activity: activity_json("true_false", serde_json::json!({
+                    "answer": false, "evidence": "买方持有权利，卖方负有义务。"
+                })),
             },
             LessonOp::AddActivity {
                 activity: activity_json("reflection", serde_json::json!({ "answer": null })),

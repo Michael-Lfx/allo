@@ -147,6 +147,13 @@ pub(super) fn activity_kind_contract_block() -> String {
     block
 }
 
+/// sq1 题面自足条款（传统线两面的同源片段源）：整课 TAIL 与单题 BASELINE
+/// 各嵌同一句逐字文本——删句或漂移即 `stem_self_contained_rule` 一致性
+/// 测试红（pf5/F1 题型一致性先例扩面）。`pub`：ai-agent 的三面一致性
+/// 测试要把契约词与门词表（`DANGLING_REFERENCE_TERMS`）对齐，两宿同见
+///（DISTRACTOR_MENU_BLOCK 同因先例）。
+pub const STEM_SELF_CONTAINED_RULE: &str = "- Self-contained stems: the stem must restate verbatim every piece of material the answer depends on (code, data, scenario facts, diagram content) — a stem that merely points into the lesson (\"in the demo\", \"the example above\", \"the previous section\", \"as shown in the figure\") is unanswerable on a review card and gets rejected; restate the material, then ask.";
+
 /// Activity stage: a separate, small model call per lesson producing only
 /// the activities and study time. Keeping this JSON tiny and separate from
 /// the long-form document is what makes reliable parsing possible. The
@@ -196,6 +203,7 @@ const LESSON_SYSTEM_TAIL: &str = r#"Rules:
 - Every explanation states WHY the answer is right AND why the tempting wrong options are wrong — for choice questions (single_choice/multi_choice/true_false) walk EVERY option in the explanation and say per option why it is right or wrong, not just the correct one; for geometry/function/data questions the explanation may include one ```svg block.
 - Before submitting, re-solve every question as if you were the candidate: the answer key must match your re-solution, the explanation must match the answer key, and every field must be filled in — AI-graded questions (reflection/open_question) must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
 - Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it. A missing or empty "evidence" on an objective question is a contract violation.
+- Self-contained stems: the stem must restate verbatim every piece of material the answer depends on (code, data, scenario facts, diagram content) — a stem that merely points into the lesson ("in the demo", "the example above", "the previous section", "as shown in the figure") is unanswerable on a review card and gets rejected; restate the material, then ask.
 - Only test what the section bodies teach — never introduce a concept, notation or conclusion the bodies do not contain.
 - null is allowed ONLY for a reflection or open_question answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the section bodies and the cited excerpt.
@@ -244,6 +252,7 @@ Rules:
 - fill_in_blank prompt contains exactly one "___" blank; answer is a JSON array of 1-3 equivalent accepted answers; provide near-synonym distractors in "distractors" to force fine discrimination.
 - reflection answer must be null and asks the learner to explain or apply an idea from the document.
 - Every OBJECTIVE kind carries "evidence": a verbatim quote of at most 120 characters copied word-for-word from the lesson document or cited excerpt that anchors the question.
+- Self-contained stems: the stem must restate verbatim every piece of material the answer depends on (code, data, scenario facts, diagram content) — a stem that merely points into the lesson ("in the demo", "the example above", "the previous section", "as shown in the figure") is unanswerable on a review card and gets rejected; restate the material, then ask.
 - The explanation walks every option of a choice question (why right / why wrong), not just the correct one.
 - Before submitting, re-solve this question as if you were the candidate: the answer key must match your re-solution and the explanation must match the answer key — a reflection question must carry a real "explanation" too. When anything disagrees, fix it to match the re-solution before submitting.
 - null is allowed ONLY for a reflection answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
@@ -544,3 +553,9 @@ pub use self::snapshot::{
 
 /// 证据回引硬门（t2，判分底展示面）：lesson_draft 审计兜历史行用。
 pub(crate) use self::activities::evidence_missing;
+// sq1（R-b）题面裸指代机械门的词表与扫描：lesson_draft 审计（danger
+// finding）与单题 validator 共用这一张表；词表常量 pub 再导出（ai-agent
+// 的三面一致性测试要把契约条款词与门词表对齐，DISTRACTOR_MENU_BLOCK
+// 同因先例）。
+pub(crate) use self::activities::prompt_dangling_reference_hits;
+pub use self::activities::DANGLING_REFERENCE_TERMS;
