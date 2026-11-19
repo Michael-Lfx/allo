@@ -2,7 +2,7 @@
 id: sq2
 title: 题目超纲闸 + 正文跨节点承诺/未立名提及禁令（scope 边界双面收口）
 type: task
-status: open
+status: in-progress
 assignee:
 blocked_by: []
 part_of: map.md
@@ -99,3 +99,38 @@ part_of: map.md
 - audit 修复环测试：题面命中 → 改写 → 过闸发布。
 - 两线契约一致性测试同步（含正文半两条新禁令）。
 - 真机 smoke 抽查：新生成正文零跨节点承诺、题面无 scope 排除词根。
+
+## Resolution
+
+施工收口（2026-11-19，wave/sq2 尖端 `8c4002b1f`）。**接手留痕**：原实
+施代理在 learning 套件+goldens 自报全绿后死于平台侧瞬时故障（captcha
+验证超时，ai-agent 套件未跑、改动未提交）；编排方接手跑完两套全量并
+提交，测试为本收口人亲跑非代理自报。
+
+- **R-a 契约两线同步落地**：题面半「正文提及 ≠ 可考」+ 正文半两条禁
+  令（禁跨节点承诺/边界说明不立名）进 agent 线【活动契约】与传统线
+  TAIL；两宿一致性测试钉住（`scope_boundary_clauses_span_activity_and_
+  body_faces_with_repair_mappings` + `scope_boundary_rule_is_carried_by_
+  both_traditional_faces`），修复环提示词含 scope 映射。
+- **R-b 机械闸落地**：`excluded_terms_dual(scope, known_names)` 双粒度
+  提取——头名词域注册表/已知名单零命中 → 词干面（「回收细节」→词干
+  「回收」），头名词已立名 → 整词面（「引用语法」退整词，防「引用语
+  法→引用」误伤）；扫描面扩 activities（prompt+options，**题面零豁
+  免**=R-c）；正文未豁免命中升 **danger**（裁决点按倾向落，否定性豁免
+  保留）；`persist_rewritten_section` 落库后对被改节重扫（scope+跨节
+  点承诺词表，warning+tracing 留痕不阻断用户操作——改写面裁决点按倾
+  向落）。
+- **三件验收底线专测**（`real_scope_dual_granularity_hits_the_three_
+  acceptance_cases`，真实 scope 原文进测试）：①题面「回收路径」被词
+  干「回收」命中；②正文 mermaid Note「回收机制」命中（子句无否定表
+  述不豁免）；③合法句「返回指向该对象的引用」不命中（「引用」已立名
+  退整词面的反误伤证据）。逐名确认真实执行（log 三查各 1 hit ok）。
+- **修复环闭环测试**：`scope_boundary_hit_blocks_finish_and_the_repair_
+  loop_publishes`——danger 命中阻断 ls_finish → 按指引改写 → 发布过闸。
+- **检查记录（本收口人亲跑）**：`cargo test -p nomifun-learning` →
+  **1010 passed / 0 failed**；`cargo test -p nomifun-ai-agent` → lib
+  **1176 passed** / 3 ignored + 集成目标 1+1+1+6+7 全过；`cargo fmt
+  --check` 两包 clean。UI 零改动不跑 bun。
+- **留痕**：R-d 语义越界零机制面照 z03 同律；手动表单/手动编辑无 LLM
+  不可拦（sq5 删除+人审兜底）。真机冒烟矩阵 G1/G2 臂验收待编排方统一
+  执行。
