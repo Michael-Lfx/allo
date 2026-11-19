@@ -78,7 +78,7 @@ impl Inventory {
             return Ok(None);
         }
         let path = task_dir(root, id).join("task.json");
-        checked_path(&path)?;
+        checked_storage_path(root, &path)?;
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -104,13 +104,13 @@ impl Inventory {
 
     pub fn save(&self, root: &Path) -> io::Result<()> {
         let path = task_dir(root, &self.id).join("task.json");
-        checked_path(&path)?;
+        checked_storage_path(root, &path)?;
         save_json(&path, self)
     }
 
     pub fn ids(root: &Path) -> io::Result<Vec<String>> {
         let dir = root.join("inventories");
-        checked_path(&dir)?;
+        checked_storage_path(root, &dir)?;
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -166,7 +166,7 @@ impl Inventory {
         self.save(root)?;
         let output = task_dir(root, &self.id).join(FILE_NAME);
         let created = (|| -> io::Result<()> {
-            checked_path(&output)?;
+            checked_storage_path(root, &output)?;
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -198,7 +198,7 @@ impl Inventory {
 
     fn verify_output(&self, root: &Path) -> io::Result<Option<PathBuf>> {
         let path = task_dir(root, &self.id).join(FILE_NAME);
-        checked_path(&path)?;
+        checked_storage_path(root, &path)?;
         let info = match fs::symlink_metadata(&path) {
             Ok(info) => info,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -255,19 +255,41 @@ fn checked_path(path: &Path) -> io::Result<()> {
         ));
     }
     for part in path.ancestors().filter(|part| part.file_name().is_some()) {
-        match fs::symlink_metadata(part) {
-            Ok(info) if is_link(&info) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "linked path",
-                ));
-            }
-            Ok(_) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error),
-        }
+        reject_link(part)?;
     }
     Ok(())
+}
+
+fn checked_storage_path(root: &Path, path: &Path) -> io::Result<()> {
+    // The host's data root can be redirected by the OS or user profile.
+    // Check each managed component before probing anything beneath it.
+    let relative = path.strip_prefix(root).map_err(|_| {
+        io::Error::new(io::ErrorKind::PermissionDenied, "outside data root")
+    })?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "relative traversal",
+            ));
+        };
+        current.push(name);
+        reject_link(&current)?;
+    }
+    Ok(())
+}
+
+fn reject_link(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(info) if is_link(&info) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "linked path",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn scan(folder: &Path, signal: &CancelToken) -> io::Result<String> {
@@ -352,6 +374,110 @@ pub fn inventory_tool(
 #[cfg(test)]
 mod tests {
     use super::{FILE_NAME, Inventory, InventoryStatus, fs, task_dir, task_id};
+
+    #[cfg(windows)]
+    fn create_junction(link: &std::path::Path, target: &std::path::Path) {
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction -Path $env:FLOWY_TEST_LINK -Target $env:FLOWY_TEST_TARGET | Out-Null",
+            ])
+            .env("FLOWY_TEST_LINK", link)
+            .env("FLOWY_TEST_TARGET", target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "create junction: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_redirected_data_directory_but_rejects_managed_junctions() {
+        use std::io::ErrorKind;
+
+        use crate::{AgentHandle, AgentUpdate, LlmConfig};
+
+        let sandbox = std::env::temp_dir().join(format!(
+            "flowy-inventory-junctions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile = sandbox.join("profile");
+        let target = sandbox.join("redirected");
+        fs::create_dir_all(&target).unwrap();
+        create_junction(&profile, &target);
+
+        let root = profile.join("data");
+        assert!(Inventory::ids(&root).unwrap().is_empty());
+        let id = task_id(1);
+        let mut task = Inventory::new(id.clone(), None, "inventory".into());
+        task.status = InventoryStatus::Running;
+        let listing = "# Directory inventory\n";
+        task.finish(&root, Some(listing.into())).unwrap();
+        assert_eq!(Inventory::ids(&root).unwrap(), [id.clone()]);
+        let reopened = Inventory::load(&root, &id).unwrap().unwrap();
+        assert_eq!(reopened.status, InventoryStatus::Delivered);
+        let output = reopened.artifact(&root).unwrap().unwrap();
+        assert_eq!(fs::read_to_string(&output).unwrap(), listing);
+        {
+            let handle =
+                AgentHandle::with_config(root.clone(), LlmConfig::default());
+            assert!(
+                !handle
+                    .drain_updates()
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::StorageError))
+            );
+            assert!(
+                handle
+                    .list_sessions()
+                    .iter()
+                    .any(|session| session.id == id)
+            );
+        }
+
+        let task_path = task_dir(&root, &id);
+        let moved_task = sandbox.join("moved-task");
+        fs::rename(&task_path, &moved_task).unwrap();
+        create_junction(&task_path, &moved_task);
+        assert_eq!(
+            Inventory::load(&root, &id).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            reopened.save(&root).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            reopened.artifact(&root).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            fs::read_to_string(moved_task.join(FILE_NAME)).unwrap(),
+            listing
+        );
+        fs::remove_dir(task_path).unwrap();
+
+        let inventories = root.join("inventories");
+        let moved_inventories = sandbox.join("moved-inventories");
+        fs::rename(&inventories, &moved_inventories).unwrap();
+        create_junction(&inventories, &moved_inventories);
+        assert_eq!(
+            Inventory::ids(&root).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+        fs::remove_dir(inventories).unwrap();
+        fs::remove_dir(profile).unwrap();
+        fs::remove_dir_all(sandbox).unwrap();
+    }
 
     #[test]
     fn recovery_claims_verified_bytes_only_and_preserves_unknown_output() {
