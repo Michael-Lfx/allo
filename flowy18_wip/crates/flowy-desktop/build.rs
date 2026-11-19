@@ -9,11 +9,11 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=FLOWY_BRAND");
-    #[cfg(windows)]
-    embed_windows_icon();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_windows_icon();
+    }
 }
 
-#[cfg(windows)]
 fn embed_windows_icon() {
     let manifest = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"),
@@ -100,7 +100,6 @@ fn embed_windows_icon() {
 }
 
 /// Newest `rc.exe` from the installed Windows SDK.
-#[cfg(windows)]
 fn find_resource_compiler() -> Option<PathBuf> {
     let sdk_root = std::env::var_os("ProgramFiles(x86)")
         .map(PathBuf::from)?
