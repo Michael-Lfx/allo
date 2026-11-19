@@ -2366,6 +2366,85 @@ impl LearningService {
         self.lesson_view(lesson_id, Some(&enrollment)).await
     }
 
+    /// sq5 救济面：删除课时内一道题（存量坏题的下架路径）。权属校验照既有
+    /// lesson 路由惯例（create_lesson_activity / set_question_tags 同款
+    /// join：activity 须属本课时、课时须属本用户已报名课程；不存在/不属于/
+    /// 未报名 404 三态合一，不泄露存在性）。级联裁决（票面 Terms R-a）：
+    /// - `learning_review_items` 删（卡随题走——题没了卡还出队会炸 join，
+    ///   且 due_today 徽标直数 review_items 行，死卡 = 徽标虚高；硬删复用
+    ///   单卡删除语义（delete_review_item），不用 archive 墓碑——墓碑是课
+    ///   程级删除的账本保全形态，单题救济无此需要；已删课程的卡由课程级
+    ///   清理覆盖，本路由对已 purge 的题本就 404，不双删）；
+    /// - `learning_question_tags` 删（随题；course 命名空间，purge_course_
+    ///   content 先子后父同款；自拟题走 custom 命名空间不受影响）；
+    /// - `learning_attempts` 保留（作答事实 = 学习账本，课程删除「账本独立
+    ///   于内容」ADR-0017 族先例；attempt 挂空题 id 的读数面处置已对码：
+    ///   digest/xp/quiz 读数全部 activities 驱动或 inner-join，悬挂 id 天然
+    ///   剔除，前瞻面零改动，账本行原样留档）。
+    /// 级联不越界：兄弟题及其卡/标签原样；错位（activity 不在本 lesson）
+    /// 与重复删除同 404（delete_review_item / delete_course 幂等收口惯例）。
+    /// 返回删除后的最新课时视图——前端一次调用即收敛练习轮/收编面。
+    pub async fn delete_lesson_activity(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        activity_id: &LearningActivityId,
+    ) -> Result<LessonView, AppError> {
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        // 权属校验：课时须属于本用户已报名课程。
+        let enrollment_id: String = sqlx::query_scalar(
+            "SELECT e.enrollment_id FROM learning_enrollments e \
+             JOIN learning_modules m ON m.course_id = e.course_id \
+             JOIN learning_lessons l ON l.module_id = m.module_id \
+             WHERE e.user_id = ? AND l.lesson_id = ?",
+        )
+        .bind(user_id.as_str())
+        .bind(lesson_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+        // 错位前置（activity 须属本课时）：不依赖回滚语义，先定位后动手。
+        sqlx::query_scalar::<_, String>(
+            "SELECT activity_id FROM learning_activities \
+             WHERE activity_id = ? AND lesson_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .bind(lesson_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| AppError::NotFound(format!("learning activity {activity_id}")))?;
+        // 先子后父（purge_course_content 同款次序）：卡随题走（限本用户报
+        // 名，多课程报名互不越界）。
+        sqlx::query(
+            "DELETE FROM learning_review_items WHERE activity_id = ? AND enrollment_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .bind(&enrollment_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        // 标签随题删（course 命名空间）。
+        sqlx::query(
+            "DELETE FROM learning_question_tags WHERE question_id = ? AND source = 'course'",
+        )
+        .bind(activity_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        // 题本体删。
+        sqlx::query("DELETE FROM learning_activities WHERE activity_id = ? AND lesson_id = ?")
+            .bind(activity_id.as_str())
+            .bind(lesson_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        transaction.commit().await.map_err(internal)?;
+        let enrollment: LearningEnrollmentId = parse_id(enrollment_id)?;
+        self.lesson_view(lesson_id, Some(&enrollment)).await
+    }
+
     /// Generates ONE additional activity draft for an existing lesson, in the
     /// learner-chosen kind, grounded in the finished lesson document and its
     /// cited excerpt — with every existing question listed so the model must
