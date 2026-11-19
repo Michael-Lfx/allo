@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## UniBuddy v1.1.0 - 2026-11-19
+
+- UniBuddy displays its own product name in the main window and uses the `unibuddy` cloud-login channel.
+
 ## v1.7.2 - 2026-11-17
 
 - The voice suite now repairs incrementally: when a model file fails its pinned SHA256 check, only the missing or corrupted files are downloaded again, and the readiness check reruns automatically after the repair finishes.
