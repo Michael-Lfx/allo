@@ -25,8 +25,8 @@ pub use overlays::*;
 pub use theme::*;
 pub use tooltip::tooltip_trigger;
 pub use typeface::{
-    PageColumn, PageHeader, SectionHeader, Text, TextRole, Title, TitleLevel,
-    TypeMetrics, page_inset, ui_font,
+    PAGE_MAX_WIDTH, PageColumn, PageHeader, SectionHeader, Text, TextRole,
+    Title, TitleLevel, TypeMetrics, page_inset, ui_font,
 };
 
 use serde::{Deserialize, Serialize};

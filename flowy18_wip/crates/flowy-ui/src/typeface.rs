@@ -6,6 +6,8 @@ use gpui::{
 use crate::ResolvedTheme;
 
 const NARROW_WIDTH: f32 = 768.;
+/// Shared maximum width for the primary page content column.
+pub const PAGE_MAX_WIDTH: f32 = 980.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TitleLevel {
@@ -321,11 +323,12 @@ impl PageColumn {
 
     pub fn render(self, window: &Window) -> gpui::Div {
         let inset = page_inset(window.viewport_size().width);
-        div().w_full().px(inset).pt(px(16.)).pb(inset).child(
+        div().w_full().pt(px(16.)).pb(inset).child(
             div()
                 .w_full()
-                .max_w(px(960.))
+                .max_w(px(PAGE_MAX_WIDTH))
                 .mx_auto()
+                .px(inset)
                 .flex()
                 .flex_col()
                 .gap(px(24.))
