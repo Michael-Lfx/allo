@@ -35,14 +35,8 @@ impl FlowyApp {
             cx.notify();
         });
         self.user_menu = false;
-        if self.section == Section::More {
-            self.persona.menu = !self.persona.menu;
-            cx.notify();
-            return;
-        }
-        self.persona.menu = true;
-        self.notice = None;
-        self.push_section(Section::More, cx);
+        self.persona.menu = !self.persona.menu;
+        cx.notify();
     }
 
     pub fn more_flyout(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -144,10 +138,14 @@ impl FlowyApp {
             .hover(|row| row.bg(self.theme.soft()))
             .on_click(cx.listener(move |app, _event, _window, cx| {
                 cx.stop_propagation();
+                app.persona.menu = false;
                 app.persona.page = page;
-                app.section = Section::More;
                 app.notice = None;
-                app.sync_studio_surface(cx);
+                if app.section == Section::More {
+                    app.sync_studio_surface(cx);
+                } else {
+                    app.push_section(Section::More, cx);
+                }
                 cx.notify();
             }))
             .child(menu_icon(page))
