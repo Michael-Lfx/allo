@@ -2,7 +2,7 @@
 id: sq1
 title: 题面自足性：契约条款两线同步 + 审计词面门 + agent 线 evidence 条款恢复
 type: task
-status: open
+status: in-progress
 assignee:
 blocked_by: []
 part_of: map.md
@@ -77,3 +77,83 @@ part_of: map.md
 - agent 线 evidence 校验单测（缺 evidence → danger → 修复环补齐）。
 - 真机 smoke 出题抽查：新生成题面零裸指代、objective 题带 evidence、
   变式站对旧坏题面的行为留痕。
+
+## Resolution（2026-11-19 施工落地）
+
+### 落地哈希
+
+- feat commit：`795a04425ecb97f333486ab2668e4c266887df4d`（wave/sq1，
+  基点 4074e38fc）
+- docs commit：本节所在提交（追加于 feat 之后）。
+- 合入集成：`git merge feat/learn1116`（合入尖端后的 merge commit 见
+  wave/sq1 分支头）。
+
+### 裁决点落地
+
+- **误伤豁免（R-b，票面倾向「不豁免」）**：照倾向落地——词表纯
+  contains 命中、无豁免分支；题面自带完整材料后「对上例判断」类合法
+  用法同样命中，处置=修复指引「把所引材料在题面重述后再提问」（重述
+  后自然不再用指示语开题）。钉在
+  `dangling_reference_prompts_audit_as_danger_and_clean_prompts_stay_silent`
+  与词表常量 `DANGLING_REFERENCE_TERMS` 的 doc 注记。
+- **机械门扫描面（R-b）**：objective 题面 only（票面口径）——
+  reflection/open_question 题面不扫；单题面 validator 同款口径
+  （objective only，reflection 不核），两处语义一致。
+- **evidence 落点（R-c）**：审计既有 `evidence_missing` warning 升
+  **danger**（两线共库审计，agent 线唯一闸）+ 位置点名（修复轮
+  update_activity 按位补齐）；agent 线【活动契约】补回「objective 题
+  必带 evidence」条款（契约半恢复，传统线 TAIL 原有同款条款未动）。
+- **真机 smoke（Acceptance 末条）**：本工位无 provider 凭据，未跑——
+  如实留痕。机械面（门/环/三面一致性/变式拦截）已由单测覆盖；真机
+  抽查（新生成题面零裸指代、变式站对旧坏题面的行为读数）留给发布面。
+
+### 施工纪要
+
+- 三面契约：agent 线 `ACTIVITY_STEM_SELF_CONTAINED_CN`（无开关恒在，
+  同命装配注入【活动契约】）；传统线 `STEM_SELF_CONTAINED_RULE`
+  逐字嵌进整课 TAIL 与单题/变式 BASELINE。一致性测试两道：
+  learning 宿 `stem_self_contained_rule_is_carried_by_both_traditional_faces`
+  + ai-agent 宿
+  `stem_self_contained_clause_spans_all_three_generation_faces_and_matches_gate_terms`
+  （后者兼钉契约↔门词表逐词对齐与修复环映射行，pf5/F1 同源先例扩面）。
+- 机械门：audit finding `activity_prompt_dangling_reference`（danger，
+  词表=演示中|上例|前文|如图所示|例题中|上一节|前一章，与
+  `prompt_dangling_reference_hits` 同源共用一张表）；
+  `validate_generated_activity` 同款校验置证据逐字核之前（AI 加题+
+  变式站新产都拦；变式继承场景单测钉住：旧题面「上例/前文」遗传进
+  变式即拒）。
+- golden 已知变更留痕：`GOLDEN_LESSON_SYSTEM` /
+  `GOLDEN_LESSON_ACTIVITY_SYSTEM` 各嵌题面自足条款一句（逐字 =
+  `STEM_SELF_CONTAINED_RULE`，TAIL 在 evidence 行后、BASELINE 在
+  evidence 行后），两常量 doc 注明 sq1 已知变更——**这是「已知变更」
+  不是破坏**。
+- 修复环：`REPAIR_LESSON_AGENT_SYSTEM` 增两行修复动作映射
+  （activity_prompt_dangling_reference / evidence_missing →
+  update_activity 按位重写/补引用）。
+- 波及面如实修复：evidence 升 danger 后，两 crate 的发布面 fixture
+  （service finish 门 4 测 + lesson_draft finish_gate + ai-agent
+  scripted 循环 `valid_activity_ops`）objective 题补 evidence——已知
+  变更，非放宽。
+
+### 检查记录
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test -p nomifun-learning` | 1000 passed / 0 failed（全改后） |
+| `cargo test -p nomifun-ai-agent` | lib 1175 passed + 16 个集成测试目标全过 / 0 failed（清盘后冷重建全绿） |
+| `cargo fmt -p nomifun-learning -p nomifun-ai-agent -- --check` | clean |
+| `bun run check`（UI） | 未跑——本票零 UI 改动（R-d 不做，前端未触碰） |
+
+### 机器事故留痕（不阻塞，透明留痕）
+
+- `[build] build-dir = "{workspace-root}/build.noindex"`（.cargo/
+  config.toml）使每个 worktree 独立积累构建缓存；票面给的
+  `CARGO_BUILD_DIR` 环境变量对该配置**不生效**（实测 rustc 仍落
+  worktree build.noindex）。本工位构建把系统盘顶到 100% 满
+  （rustc "no space on device"，连锁出现 rmeta 损坏假象）。
+- 处置：删除本 worktree（allo-wt-sq1）与**已完成并合入**的 sq3/sq5
+  worktree 的 build.noindex/target（均为可重建构建产物，mtime 静止
+  >1h；sq1/sq3/sq5 三处共释放 ~26G）。主仓 `allo/build.noindex`
+  （活跃中，属并发代理）未触碰。共享缓存指令建议后续修正为对该配置
+  真实生效的方式（如 `CARGO_TARGET_DIR` 或 config.local.toml 覆写
+  build-dir）。
