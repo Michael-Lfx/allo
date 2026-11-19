@@ -195,7 +195,7 @@ impl crate::panel::StudioPanel {
             if reveal {
                 return reveal_in_explorer(&path);
             }
-            open::that_detached(path)
+            open::that(path)
         });
         cx.spawn(async move |panel, cx| {
             let failed = launch.await.is_err();
