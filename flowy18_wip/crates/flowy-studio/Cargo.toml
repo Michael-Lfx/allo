@@ -15,6 +15,7 @@ flowy-i18n = { workspace = true }
 flowy-ui = { workspace = true }
 gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
+open = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }
 url = { workspace = true }

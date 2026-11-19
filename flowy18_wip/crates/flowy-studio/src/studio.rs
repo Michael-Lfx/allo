@@ -23,13 +23,18 @@ impl crate::panel::StudioPanel {
             column = column.child(self.top_bar(cx));
         }
         if let Some(notice) = self.notice {
+            let message = self.t(notice);
             column = column.child(
                 div()
+                    .id("studio-notice")
+                    .role(gpui::Role::Status)
+                    .aria_live(gpui::accesskit::Live::Polite)
+                    .aria_label(message.clone())
                     .px(self.theme.space(32.))
                     .py(self.theme.space(8.))
                     .text_sm()
                     .text_color(self.theme.muted())
-                    .child(self.t(notice)),
+                    .child(message),
             );
         }
         column = if self.surface == crate::panel::StudioSurface::Home {
