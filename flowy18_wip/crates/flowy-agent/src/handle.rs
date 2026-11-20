@@ -744,11 +744,22 @@ impl TurnObserver for UiObserver {
         text: &str,
         is_error: bool,
     ) {
+        // Tool paths may be relative; resolve them against the session working
+        // directory so the card can open the real folder later.
+        let cwd = lock(&self.state.live)
+            .get(session)
+            .and_then(|live| {
+                live.workspace.as_ref().map(|workspace| workspace.root.clone())
+            })
+            .unwrap_or_else(|| {
+                self.state.root.join("sessions").join("cwd")
+            });
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection.finish_tool_call(call_id, text, is_error);
             // Drop the cached arguments either way; a failed call leaves the
             // file untouched, so only settled calls get a change row.
-            let change = take_file_change(&self.state.tool_args, session, call_id);
+            let change =
+                take_file_change(&self.state.tool_args, session, call_id, &cwd);
             if !is_error && let Some(change) = change {
                 live.projection.push_file_change(
                     change.path,
@@ -1361,30 +1372,48 @@ struct FileChangeDraft {
     binary: bool,
 }
 
+/// Resolve a tool path against the session directory: `write_file` and
+/// `edit_file` accept relative paths and resolve them inside the tool, so the
+/// raw argument is what reaches this row.
+fn resolve_change_path(raw: &str, cwd: &Path) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = Path::new(trimmed);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    Some(absolute.to_string_lossy().into_owned())
+}
+
 /// Build the change row from the tool arguments, then drop them.
 fn take_file_change(
     args: &Mutex<HashMap<String, serde_json::Value>>,
     session: &str,
     call_id: &str,
+    cwd: &Path,
 ) -> Option<FileChangeDraft> {
     let value = lock(args).remove(&tool_arg_key(session, call_id))?;
-    let path = value.get("path")?.as_str()?.to_owned();
+    let path = resolve_change_path(value.get("path")?.as_str()?, cwd)?;
     if let (Some(old), Some(new)) = (
         value.get("old_string").and_then(|v| v.as_str()),
         value.get("new_string").and_then(|v| v.as_str()),
     ) {
-        let binary = is_binary(old) || is_binary(new);
-        let (added, removed) = if binary {
-            (0, 0)
+        let counted = if is_binary(old) || is_binary(new) {
+            None
         } else {
             line_delta(old, new)
         };
+        let (added, removed) = counted.unwrap_or((0, 0));
         return Some(FileChangeDraft {
             path,
             kind: FileChangeKind::Update,
             added,
             removed,
-            binary,
+            binary: counted.is_none(),
         });
     }
     // `write_file` replaces the whole file, so the previous content is not in
@@ -1409,8 +1438,16 @@ fn is_binary(text: &str) -> bool {
     text.as_bytes().contains(&0)
 }
 
-/// Added and removed line counts for one change; the card only needs a size.
-fn line_delta(old: &str, new: &str) -> (u32, u32) {
+/// Line counts are a hint on the card, so a very large edit is left uncounted
+/// instead of spending seconds inside the diff on the turn path.
+const MAX_DIFF_BYTES: usize = 200 * 1024;
+
+/// Added and removed line counts for one change; `None` when the edit is too
+/// large to count cheaply.
+fn line_delta(old: &str, new: &str) -> Option<(u32, u32)> {
+    if old.len().saturating_add(new.len()) > MAX_DIFF_BYTES {
+        return None;
+    }
     use similar::{ChangeTag, TextDiff};
     let mut added = 0u32;
     let mut removed = 0u32;
@@ -1421,7 +1458,7 @@ fn line_delta(old: &str, new: &str) -> (u32, u32) {
             ChangeTag::Equal => {}
         }
     }
-    (added, removed)
+    Some((added, removed))
 }
 
 #[cfg(test)]
@@ -1510,13 +1547,14 @@ mod guard_tests {
                     "new_string": "a\nB\nc",
                 }),
             );
-        let edit = take_file_change(&args, "s", "c1").expect("edit change");
-        assert_eq!(edit.path, "src/a.rs");
+        let edit =
+            take_file_change(&args, "s", "c1", Path::new("/work")).expect("edit change");
+        assert!(edit.path.ends_with("a.rs"), "path={}", edit.path);
         assert_eq!(edit.kind, FileChangeKind::Update);
         assert_eq!((edit.added, edit.removed), (1, 1));
         assert!(!edit.binary);
         // The cached arguments are dropped once the row is built.
-        assert!(take_file_change(&args, "s", "c1").is_none());
+        assert!(take_file_change(&args, "s", "c1", Path::new("/work")).is_none());
     }
 
     #[test]
@@ -1528,8 +1566,36 @@ mod guard_tests {
                 tool_arg_key("s", "c2"),
                 json!({ "path": "new.md", "content": "one\ntwo\n" }),
             );
-        let write = take_file_change(&args, "s", "c2").expect("write change");
+        let write =
+            take_file_change(&args, "s", "c2", Path::new("/work")).expect("write change");
         assert_eq!(write.kind, FileChangeKind::Add);
         assert_eq!((write.added, write.removed), (2, 0));
+    }
+
+    #[test]
+    fn relative_tool_paths_resolve_against_the_session_directory() {
+        let args = Mutex::new(HashMap::new());
+        args.lock()
+            .expect("lock")
+            .insert(
+                tool_arg_key("s", "c3"),
+                json!({ "path": "notes/a.md", "content": "x\n" }),
+            );
+        let change =
+            take_file_change(&args, "s", "c3", Path::new("/work")).expect("change");
+        assert!(change.path.contains("notes"), "path={}", change.path);
+        assert!(change.path.ends_with("a.md"));
+    }
+
+    #[test]
+    fn blank_tool_paths_produce_no_row() {
+        let args = Mutex::new(HashMap::new());
+        args.lock()
+            .expect("lock")
+            .insert(
+                tool_arg_key("s", "c4"),
+                json!({ "path": "   ", "content": "x" }),
+            );
+        assert!(take_file_change(&args, "s", "c4", Path::new("/work")).is_none());
     }
 }

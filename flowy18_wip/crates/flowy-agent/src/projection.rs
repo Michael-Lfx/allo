@@ -248,6 +248,8 @@ impl ChatProjection {
     }
 
     /// Append the file-change row for a tool call that already settled.
+    /// Consecutive writes to the same path fold into one row so a turn that
+    /// rewrites a file several times does not produce duplicate cards.
     pub fn push_file_change(
         &mut self,
         path: impl Into<String>,
@@ -256,8 +258,23 @@ impl ChatProjection {
         removed: u32,
         binary: bool,
     ) {
+        let path = path.into();
+        if let Some(ChatLine::FileChange {
+            path: last_path,
+            added: last_added,
+            removed: last_removed,
+            binary: last_binary,
+            ..
+        }) = self.lines.last_mut()
+            && last_path.as_str() == path.as_str()
+        {
+            *last_added = last_added.saturating_add(added);
+            *last_removed = last_removed.saturating_add(removed);
+            *last_binary = *last_binary || binary;
+            return;
+        }
         self.lines.push(ChatLine::FileChange {
-            path: path.into(),
+            path,
             change: kind,
             added,
             removed,
