@@ -4675,11 +4675,15 @@ impl ReplayRunReadout {
 /// 登记表/已教账快照的最小投影（生产 gate_batch 折进 `provenance_known`
 /// 的同一面；`replay_concept_review` 零 DB 依赖，靠它喂机械核与点名派生）。
 struct ReplayFixture {
-    /// readout 行标签（reject-anchor / pass-anchor / live-pass-anchor；display
+    /// readout 行标签（reject-anchor / pass-anchor / live-real-batch；display
     /// 面——分流一律走 [`ReplayDirection`]，不走这个串）。
     label: &'static str,
-    /// 方向锚（rs5 修复 B：装配点定枚举，dispatch 编译期穷尽）。
-    direction: ReplayDirection,
+    /// 方向锚（rs5 修复 B：装配点定枚举，dispatch 编译期穷尽）。`None` =
+    /// **readout-only 夹具**：逐跑读数照实打印，但不进方向 hits/flaky 汇总
+    /// 与方向翻转读数——方向没有构造性保证的夹具不得冒充方向锚（真机
+    /// 2026-11-20 实录：live 批 + 近似 known 面点名清单爆 ~100 片段，评审
+    /// 正确打回——薄面近似的「pass 期望」不成立，见 [`live_real_batch_fixture`]）。
+    direction: Option<ReplayDirection>,
     /// 学习目标（进 CoachContext + 课程语境词切片）。
     goal: String,
     /// 已知面（已教名 ∪ 登记表名 ∪ 本批铸名；小写折叠同生产口径）。
@@ -4694,7 +4698,7 @@ struct ReplayFixture {
 fn reject_anchor_fixture() -> ReplayFixture {
     ReplayFixture {
         label: "reject-anchor",
-        direction: ReplayDirection::RejectAnchor,
+        direction: Some(ReplayDirection::RejectAnchor),
         goal: "认识三角形与它的组成".into(),
         known: vec!["三角形".into(), "图形".into()],
         batch: nomifun_learning::ProposedBatch {
@@ -4728,7 +4732,7 @@ fn reject_anchor_fixture() -> ReplayFixture {
 /// 变量绑定/参数传递/程序输出）∪ 三铸名 ∪ 登记表最小造数连接名。批文本全部
 /// 落在已知面 ∪ 虚字内——点名清单机械派生必须干净（机械面单测钉住），模型
 /// 应放行。断言口径：≥N-1/N 跑 pass。真实形态原文回放见
-/// [`live_pass_anchor_fixture`]（G 夹具，readout 形态）。
+/// [`live_real_batch_fixture`]（G 夹具，readout-only 形态）。
 fn pass_anchor_fixture() -> ReplayFixture {
     let known: Vec<String> = [
         // 已教名（11-20 live 课已教账快照）。
@@ -4807,7 +4811,7 @@ fn pass_anchor_fixture() -> ReplayFixture {
     };
     ReplayFixture {
         label: "pass-anchor",
-        direction: ReplayDirection::PassAnchor,
+        direction: Some(ReplayDirection::PassAnchor),
         goal: "函数的内存世界：栈、堆与求值".into(),
         known,
         batch: nomifun_learning::ProposedBatch {
@@ -4858,7 +4862,13 @@ const REVIEW_REPLAY_LIVE_BATCH_JSON: &str = r#"{"nodes":[{"title":"栈帧分配�
 /// 臂内）。**readout 形态夹具**：真实形态点名清单本就不干净——不要求
 /// 「派生干净」单测断言，只断言装配成功与方向计数照实记账。方向期望 =
 /// pass（今日 live 实过审）。
-fn live_pass_anchor_fixture() -> ReplayFixture {
+/// G 夹具：11-20 live 三节点批原文（真机过审形态），known 面 = 批内
+/// assumes 名 ∪ 三铸名的**近似投影**。`direction: None`（readout-only，
+/// 见 [`ReplayFixture.direction`]）：真机 2026-11-20 实录——薄面近似下
+/// 机械点名清单爆 ~100 片段、评审 3/3 正确打回（problems=3），「pass
+/// 期望」在近似面上不成立；本夹具的价值 = 真实形态的耗时/usage/点名
+/// 派生读数 + 已知面敏感性观察，不冒充方向锚。
+fn live_real_batch_fixture() -> ReplayFixture {
     let known: Vec<String> = [
         // 批内 assumes 名（live 已教账快照的近似投影）。
         "函数定义",
@@ -4879,8 +4889,8 @@ fn live_pass_anchor_fixture() -> ReplayFixture {
         serde_json::from_str(REVIEW_REPLAY_LIVE_BATCH_JSON)
             .expect("11-20 live 批 JSON 原文必须可解析（夹具 const 与录制逐字一致）");
     ReplayFixture {
-        label: "live-pass-anchor",
-        direction: ReplayDirection::PassAnchor,
+        label: "live-real-batch",
+        direction: None,
         goal: "函数的内存世界：栈、堆与求值".into(),
         known,
         batch,
@@ -5004,12 +5014,13 @@ async fn run_review_replay(
         .as_ref()
         .map(|archiving| archiving.run_dir().join("calls.jsonl"));
 
-    // G 夹具（11-20 live 批原文）为 readout 形态：装配成功 + 方向计数照实
-    // 记账，不参与「派生干净」类机械面断言（真实形态点名清单本就不干净）。
+    // G 夹具（11-20 live 批原文）为 readout-only：逐跑读数照实打印，不进
+    // 方向汇总（薄面近似下方向无构造性保证——真机 2026-11-20 实录见
+    // [`live_real_batch_fixture`] 文档）。
     let fixtures = [
         reject_anchor_fixture(),
         pass_anchor_fixture(),
-        live_pass_anchor_fixture(),
+        live_real_batch_fixture(),
     ];
     let mut any_verdict = false;
     let mut summaries = Vec::new();
@@ -5031,15 +5042,7 @@ async fn run_review_replay(
             fixture.known.len()
         );
         let total = readouts.len();
-        let hits = readouts
-            .iter()
-            .filter(|readout| readout.direction_hit(fixture.direction))
-            .count();
         let degraded = readouts.iter().filter(|readout| readout.degraded).count();
-        let anchor = match fixture.direction {
-            ReplayDirection::RejectAnchor => "方向锚=problems 非空（打回）",
-            ReplayDirection::PassAnchor => "方向锚=pass 且非降级（放行）",
-        };
         for (index, readout) in readouts.iter().enumerate() {
             println!(
                 "[review-replay] fixture={} run {}/{}: verdict={} elapsed_ms={} llm_calls={} reasoning_tokens={}",
@@ -5055,13 +5058,34 @@ async fn run_review_replay(
                     .unwrap_or_else(|| "absent".into()),
             );
         }
-        println!(
-            "[review-replay] fixture={} summary: direction hits={hits}/{total} flaky={}/{total} degraded={degraded}/{total} ({anchor})",
-            fixture.label,
-            total - hits
-        );
-        any_verdict |= readouts.iter().any(|readout| !readout.degraded);
-        summaries.push((fixture.label, hits, total, degraded));
+        // 方向汇总只对方向锚夹具；readout-only 夹具给 degraded 读数行
+        // （评审缺席与耗时/usage 观察对它同样有价值）。
+        match fixture.direction {
+            Some(direction) => {
+                let anchor = match direction {
+                    ReplayDirection::RejectAnchor => "方向锚=problems 非空（打回）",
+                    ReplayDirection::PassAnchor => "方向锚=pass 且非降级（放行）",
+                };
+                let hits = readouts
+                    .iter()
+                    .filter(|readout| readout.direction_hit(direction))
+                    .count();
+                println!(
+                    "[review-replay] fixture={} summary: direction hits={hits}/{total} flaky={}/{total} degraded={degraded}/{total} ({anchor})",
+                    fixture.label,
+                    total - hits
+                );
+                any_verdict |= readouts.iter().any(|readout| !readout.degraded);
+                summaries.push((fixture.label, hits, total, degraded));
+            }
+            None => {
+                println!(
+                    "[review-replay] fixture={} summary: readout-only degraded={degraded}/{total}（方向无构造性保证，不进方向汇总）",
+                    fixture.label,
+                );
+                any_verdict |= readouts.iter().any(|readout| !readout.degraded);
+            }
+        }
     }
     // 方向翻转读数（锁方向口径）：不达 100% 照记——readout 非门禁，EXIT
     // 不因翻转改变（票面验收 = flaky 率如实进 readout 供 Resolution 对账）。
@@ -5233,10 +5257,12 @@ mod review_replay_tests {
         );
     }
 
-    /// G 夹具（11-20 live 批原文，readout 形态）：装配成功（批 JSON 原文
-    /// 逐字可解析 + 三节点/三铸名/assumes 名近似 known 面在场）+ 方向计数
-    /// 照实记账。**不断言「派生干净」**——真实形态点名清单本就不干净（live
-    /// 门面本就带 3 条 name_hint 告警），naming 只读不判。
+    /// G 夹具（11-20 live 批原文，readout-only 形态）：装配成功（批 JSON
+    /// 原文逐字可解析 + 三节点/三铸名/assumes 名近似 known 面在场）+
+    /// `direction: None`（真机 2026-11-20 实录：薄面近似下评审 3/3 正确
+    /// 打回——「pass 期望」在近似 known 面上无构造性保证，不冒充方向锚）。
+    /// **不断言「派生干净」**——真实形态点名清单本就不干净（本跑实录
+    /// naming_derived ~100 词），naming 只读不判。
     #[tokio::test]
     #[serial_test::serial]
     async fn live_batch_fixture_assembles_and_counts_direction_honestly() {
@@ -5253,7 +5279,7 @@ mod review_replay_tests {
             Vec::new(),
             vec![pass_verdict(), pass_verdict(), pass_verdict()],
         );
-        let live = live_pass_anchor_fixture();
+        let live = live_real_batch_fixture();
         // 装配成功：批 JSON 原文可解析且三节点 teaches/三铸名/known 近似面在场。
         assert_eq!(live.batch.nodes.len(), 3, "11-20 live 批三节点");
         assert_eq!(live.batch.mints.len(), 3, "随批三铸名");
@@ -5287,19 +5313,23 @@ mod review_replay_tests {
                 "live 夹具 known 近似面缺 assumes/铸名：{name}"
             );
         }
-        // 方向计数照实记账：3 跑全放行 → hits=3/3（期望 pass，今日 live 实
-        // 过审；readout 形态不在此断言派生干净与否）。
+        // readout-only：direction 无构造性保证 → None，不进方向汇总；方向
+        // 计数只在显式给锚时进行（Scripted 3 跑全放行 + 显式 pass 锚 → 3/3）。
+        assert!(
+            live.direction.is_none(),
+            "live 夹具是 readout-only，不得冒充方向锚（真机实录见夹具文档）"
+        );
         let (readouts, _naming) = replay_fixture_runs(&scripted, None, &live, 3, None)
             .await
             .unwrap();
         let hits = readouts
             .iter()
-            .filter(|readout| readout.direction_hit(live.direction))
+            .filter(|readout| readout.direction_hit(ReplayDirection::PassAnchor))
             .count();
         assert_eq!(
             hits,
             3,
-            "三跑全放行 → 方向照实记账（readout 形态不判派生）：{readouts:?}"
+            "三跑全放行 → 显式 pass 锚下照实记账（readout 形态不判派生）：{readouts:?}"
         );
         assert!(readouts.iter().all(|readout| !readout.degraded));
     }
