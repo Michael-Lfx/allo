@@ -59,6 +59,11 @@ pub enum ChatLine {
         #[serde(default)]
         binary: bool,
     },
+    /// Every file one turn touched, folded into a single summary row so a long
+    /// turn does not stack one card per tool call.
+    FileChanges {
+        files: Vec<FileEntry>,
+    },
 }
 
 /// How a file changed during one settled tool call.
@@ -69,6 +74,17 @@ pub enum FileChangeKind {
     Update,
     Delete,
     Move,
+}
+
+/// One file inside a turn summary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEntry {
+    pub path: String,
+    pub change: FileChangeKind,
+    pub added: u32,
+    pub removed: u32,
+    #[serde(default)]
+    pub binary: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,27 +275,40 @@ impl ChatProjection {
         binary: bool,
     ) {
         let path = path.into();
-        if let Some(ChatLine::FileChange {
-            path: last_path,
-            added: last_added,
-            removed: last_removed,
-            binary: last_binary,
-            ..
-        }) = self.lines.last_mut()
-            && last_path.as_str() == path.as_str()
-        {
-            *last_added = last_added.saturating_add(added);
-            *last_removed = last_removed.saturating_add(removed);
-            *last_binary = *last_binary || binary;
-            return;
-        }
-        self.lines.push(ChatLine::FileChange {
-            path,
+        let entry = FileEntry {
+            path: path.clone(),
             change: kind,
             added,
             removed,
             binary,
+        };
+        // Fold into this turn's summary row. The turn starts at the last user
+        // message, so walking back stops there.
+        if let Some(ChatLine::FileChanges { files }) = self.turn_summary_mut() {
+            if let Some(existing) = files.iter_mut().find(|f| f.path == path) {
+                existing.added = existing.added.saturating_add(added);
+                existing.removed = existing.removed.saturating_add(removed);
+                existing.binary = existing.binary || binary;
+                return;
+            }
+            files.push(entry);
+            return;
+        }
+        self.lines.push(ChatLine::FileChanges {
+            files: vec![entry],
         });
+    }
+
+    /// The current turn's summary row, if one already exists.
+    fn turn_summary_mut(&mut self) -> Option<&mut ChatLine> {
+        for line in self.lines.iter_mut().rev() {
+            match line {
+                ChatLine::FileChanges { .. } => return Some(line),
+                ChatLine::User { .. } => return None,
+                _ => {}
+            }
+        }
+        None
     }
 }
 
@@ -311,7 +340,65 @@ mod streaming_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatLine, ChatProjection, TurnStatus};
+    use super::{ChatLine, ChatProjection, FileChangeKind, TurnStatus};
+
+    #[test]
+    fn one_turn_folds_every_file_into_a_single_row() {
+        let mut projection = ChatProjection::new();
+        projection.push_user("build it");
+        projection.push_tool_call("write_file", "a.rs", "c1");
+        projection.push_file_change("a.rs", FileChangeKind::Add, 3, 0, false);
+        projection.push_tool_call("write_file", "b.rs", "c2");
+        projection.push_file_change("b.rs", FileChangeKind::Add, 5, 0, false);
+
+        let rows = projection.visible_lines();
+        let summaries: Vec<_> = rows
+            .iter()
+            .filter_map(|line| match line {
+                ChatLine::FileChanges { files } => Some(files),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries.len(), 1, "one summary per turn");
+        assert_eq!(summaries[0].len(), 2);
+        let added: u32 = summaries[0].iter().map(|file| file.added).sum();
+        assert_eq!(added, 8);
+    }
+
+    #[test]
+    fn rewriting_a_file_in_one_turn_accumulates() {
+        let mut projection = ChatProjection::new();
+        projection.push_user("edit");
+        projection.push_file_change("a.rs", FileChangeKind::Update, 2, 1, false);
+        projection.push_file_change("a.rs", FileChangeKind::Update, 4, 3, false);
+
+        let rows = projection.visible_lines();
+        let files = match rows
+            .iter()
+            .find(|line| matches!(line, ChatLine::FileChanges { .. }))
+        {
+            Some(ChatLine::FileChanges { files }) => files,
+            _ => panic!("expected one summary row"),
+        };
+        assert_eq!(files.len(), 1, "same path must not duplicate");
+        assert_eq!((files[0].added, files[0].removed), (6, 4));
+    }
+
+    #[test]
+    fn a_new_user_turn_starts_a_new_summary() {
+        let mut projection = ChatProjection::new();
+        projection.push_user("one");
+        projection.push_file_change("a.rs", FileChangeKind::Add, 1, 0, false);
+        projection.push_user("two");
+        projection.push_file_change("b.rs", FileChangeKind::Add, 2, 0, false);
+
+        let summaries = projection
+            .visible_lines()
+            .iter()
+            .filter(|line| matches!(line, ChatLine::FileChanges { .. }))
+            .count();
+        assert_eq!(summaries, 2, "each user turn owns its own summary");
+    }
 
     #[test]
     fn text_is_visible_while_streaming_and_durable_after_flush() {
