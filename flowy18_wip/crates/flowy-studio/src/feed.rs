@@ -41,6 +41,11 @@ pub struct RevealFile(pub String);
 
 impl gpui::EventEmitter<RevealFile> for ChatFeed {}
 
+/// Ask the panel to open the deliverables drawer for one turn's files.
+pub struct OpenDeliverables(pub Vec<flowy_agent::FileEntry>);
+
+impl gpui::EventEmitter<OpenDeliverables> for ChatFeed {}
+
 /// Keeps a long path readable in a narrow card: the tail (folder and file
 /// name) matters more than the drive or repository root.
 fn display_path(path: &str) -> String {
@@ -532,6 +537,9 @@ impl ChatFeed {
             } => self
                 .file_change_row(index, path, change, *added, *removed, *binary, cx)
                 .into_any_element(),
+            ChatLine::FileChanges { files } => self
+                .file_changes_row(index, files, cx)
+                .into_any_element(),
         }
     }
 
@@ -594,6 +602,54 @@ impl ChatFeed {
         .child(div().text_xs().child(delta))
         .on_click(cx.listener(move |_, _, _, cx| {
             cx.emit(RevealFile(target.clone()));
+        }))
+    }
+
+    /// One turn's file work, folded into a single summary row.
+    fn file_changes_row(
+        &self,
+        index: usize,
+        files: &[flowy_agent::FileEntry],
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let count = files.len();
+        let added: u32 = files.iter().map(|file| file.added).sum();
+        let removed: u32 = files.iter().map(|file| file.removed).sum();
+        // Every file unreadable as text means the totals say nothing.
+        let all_binary = files.iter().all(|file| file.binary);
+        let label = self.tf(
+            "chat.file_changes",
+            &[("count", &count.to_string())],
+        );
+        let delta = if all_binary {
+            "\u{2014}".to_owned()
+        } else if removed == 0 {
+            format!("+{added}")
+        } else {
+            format!("+{added} \u{2212}{removed}")
+        };
+        let all = files.to_vec();
+        theme::interactive(
+            ("chat-file-changes", self.row_ids[index]),
+            SharedString::from(label.clone()),
+            &self.theme,
+        )
+        .w_full()
+        .px(self.theme.space(12.))
+        .py(self.theme.space(8.))
+        .gap(self.theme.space(8.))
+        .flex()
+        .items_center()
+        .rounded_lg()
+        .border_1()
+        .border_color(self.theme.line())
+        .bg(self.theme.card())
+        .cursor_pointer()
+        .child(theme::icons::code_file().size(px(20.)))
+        .child(div().flex_1().min_w_0().text_sm().child(label))
+        .child(div().text_xs().child(delta))
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.emit(OpenDeliverables(all.clone()));
         }))
     }
 

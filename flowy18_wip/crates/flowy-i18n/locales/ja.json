@@ -664,5 +664,13 @@
   "home.starter.data.script.title": "Statistics script",
   "home.starter.data.script.prompt": "Write a statistics script for the data in the current workspace, run it and explain how to reproduce the result. Confirm the data format first, then pick the script language, and fall back to available tools when no interpreter is present.",
   "home.starter.replace_hint": "The composer already has text. Replace it?",
-  "home.starter.replace": "Replace"
+  "home.starter.replace": "Replace",
+  "home.starter.pick_category": "Pick a starting point",
+  "chat.file_changes": "{count} file(s)",
+  "chat.deliverables": "Deliverables",
+  "chat.close": "Close",
+  "chat.back": "Back",
+  "chat.preview_missing": "The file is missing or unreadable",
+  "chat.preview_too_large": "Larger than 1MB, cannot preview",
+  "chat.preview_binary": "Binary file, cannot preview"
 }
