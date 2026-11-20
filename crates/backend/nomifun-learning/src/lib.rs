@@ -99,7 +99,8 @@ pub use learning_graph::ConceptTier;
 /// rs5 R-b 病历回放缝（smoke review-replay 臂）：录制批 + 臂内装配面直通
 /// 评审单函数；批/上下文/铸名类型随行导出供臂内装配（零服务端状态）。
 pub use learning_graph::{
-    CoachContext, ConceptMint, ProposedBatch, ProposedNode, ReplayReviewVerdict,
+    CoachContext, ConceptMint, ProposedBatch, ProposedNode, ReplayFragmentReadout,
+    ReplayProvenanceReadout, ReplayReviewVerdict,
     REVIEW_FRAGMENTS_SWITCH_ENV, REVIEW_PROVENANCE_SWITCH_ENV, replay_concept_review,
 };
 pub use learning_graph::ConceptRefInput;

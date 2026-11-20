@@ -135,9 +135,12 @@ pub(crate) struct TableOutcome {
     pub(crate) normalized: Vec<ProvenanceNormalization>,
 }
 
-/// 挂号表机械核对（纯函数）：违规 = `Err`（死因，进重试反馈），通过 =
-/// `Ok`（表结果，进读数）。`pass` = 结论是否放行（缺失行 + 放行 = 自相矛盾）。
-/// `external_anchors` = 本批复用命中的登记表概念锚（f1 A1）：行 concept 的
+/// 挂号表机械核对（**非纯函数**——rs2 修复 E 注释如实化：除返回
+/// [`TableOutcome`] 外还**就地改写** `rows`——常识行撞名池的机械归一改判行
+/// source/ref，归一记录随 [`TableOutcome::normalized`] 一并返回）：违规 =
+/// `Err`（死因，进重试反馈），通过 =
+/// `Ok`（表结果，进读数）。`pass` = 结论是否放行（缺失行 + 放行 =
+/// 自相矛盾）。`external_anchors` = 本批复用命中的登记表概念锚（f1 A1）：行 concept 的
 /// 合法域 = 批内提名 ∪ 锚 canonical（小写折叠，对齐 known_names 风格）；
 /// 命中锚的行数进读数（A5）。
 ///
@@ -156,34 +159,42 @@ pub(crate) fn validate_term_provenance(
     external_anchors: &[ExternalAnchor],
 ) -> Result<TableOutcome, String> {
     // 名字池一律小写折叠（allo 名字解析全口径小写；池由 gate_batch 装配）。
+    // rs2 修复（评审批 A）：批内提名与 teaches 键**同口径折叠**——此前两池
+    // 按字面比对而 known 池折叠，大写异形词从自教臂滑到已教臂。折叠只作用
+    // 在键比较；行数据（concept/term/ref 原文）不改写，提名显示名另存一份
+    // 原文供死因逐字点名。
     let known = known_names;
+    let key = |value: &str| value.trim().to_lowercase();
     // 提名集（mints canonical ∪ 别名名）+ 定义对照域（canonical/提名名 → 定义）。
-    let mut nominees: HashSet<&str> = HashSet::new();
-    let mut definitions: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut nominees: HashSet<String> = HashSet::new();
+    let mut nominee_display: Vec<&str> = Vec::new();
+    let mut definitions: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for mint in &batch.mints {
         let canonical = mint.canonical.trim();
         if canonical.is_empty() {
             continue;
         }
-        nominees.insert(canonical);
-        definitions.insert(canonical, mint.definition.trim());
+        nominees.insert(key(canonical));
+        nominee_display.push(canonical);
+        definitions.insert(key(canonical), mint.definition.trim());
     }
     for nomination in &batch.new_aliases {
         let name = nomination.name.trim();
         if name.is_empty() {
             continue;
         }
-        nominees.insert(name);
-        definitions.insert(name, nomination.definition.trim());
+        nominees.insert(key(name));
+        nominee_display.push(name);
+        definitions.insert(key(name), nomination.definition.trim());
     }
     // 自教域 = 批内节点 teaches 的键，**不含提名**：提名只是命名通道，
     // 把定义里预设的构件词标成「自教 → 某条提名」是纸面自证（learnhub
-    // place-value 病例同型）。
-    let self_taught: HashSet<&str> = batch
+    // place-value 病例同型）。键折叠同 known 池口径（rs2 修复 A）。
+    let self_taught: HashSet<String> = batch
         .nodes
         .iter()
         .flat_map(|node| node.teaches.iter())
-        .map(|concept| concept.name.trim())
+        .map(|concept| key(&concept.name))
         .filter(|name| !name.is_empty())
         .collect();
     // 本批复用命中锚的正名（小写折叠，对齐 known_names 风格；f1 A1）——
@@ -192,7 +203,6 @@ pub(crate) fn validate_term_provenance(
         .iter()
         .map(|anchor| anchor.canonical.trim().to_lowercase())
         .collect();
-    let key = |value: &str| value.trim().to_lowercase();
 
     // 归一后行 source 会改写，covered 取 owned 串避免与可变借用冲突（rs2）。
     let mut covered: HashSet<String> = HashSet::new();
@@ -200,17 +210,20 @@ pub(crate) fn validate_term_provenance(
     let mut normalized: Vec<ProvenanceNormalization> = Vec::new();
     for row in rows.iter_mut() {
         let concept = row.concept.trim();
+        let concept_key = key(concept);
         // f1（A1）：行 concept 合法域 = 批内提名 ∪ 本批复用命中锚——canonical
         // 落锚集 = 复用登记表存量，合法（命中行数进读数）。空 concept 与
         // 「两域皆无」（提名、锚都不在）同罪同文：凭空/存量概念不得作为行
         // concept，死因共用一份措辞（A2：指引让重试可满足，替代短路 belt）。
-        if concept.is_empty() || (!nominees.contains(concept) && !anchors.contains(&key(concept))) {
+        // 键比对一律折叠（rs2 修复 A）。
+        if concept.is_empty() || (!nominees.contains(&concept_key) && !anchors.contains(&concept_key))
+        {
             return Err(format!(
                 "行 concept 「{}」不在批内提名，也不在本批复用命中——登记表存量概念不得作为行 concept（本批未复用它）：删除该行，或改锚本批实际铸造/提名的概念",
                 concept
             ));
         }
-        if !nominees.contains(concept) {
+        if !nominees.contains(&concept_key) {
             // 走到这里的批外概念必已命中锚（两域皆无已在上方打回）。
             external_hits += 1;
         }
@@ -221,7 +234,7 @@ pub(crate) fn validate_term_provenance(
         // 空定义不豁免（learnhub 同构：对照域查在即逐字核对，没有「空定义
         // 跳过」臂——空定义无处逐字落地，常识/缺失行照判行伪）。
         if matches!(row.source, TermSource::CommonSense | TermSource::Missing) {
-            if let Some(definition) = definitions.get(concept)
+            if let Some(definition) = definitions.get(&concept_key)
                 && !term_grounded(&row.term, definition)
             {
                 return Err(format!(
@@ -230,7 +243,7 @@ pub(crate) fn validate_term_provenance(
                 ));
             }
         }
-        covered.insert(concept.to_owned());
+        covered.insert(concept_key.clone());
         match row.source {
             TermSource::CommonSense => {
                 if row.ref_name.as_deref().is_some_and(|r| !r.trim().is_empty()) {
@@ -242,7 +255,7 @@ pub(crate) fn validate_term_provenance(
                     // 上方挡住）；可无歧义归位的两种形态就地改判并留痕，不整
                     // 份作废重掷。
                     let grounded = definitions
-                        .get(concept)
+                        .get(&concept_key)
                         .is_some_and(|definition| term_grounded(&row.term, definition));
                     if !grounded {
                         return Err(format!(
@@ -251,9 +264,12 @@ pub(crate) fn validate_term_provenance(
                         ));
                     }
                     // 改判拿走 owned 串（行就地改写，行借用不得横跨写点）。
+                    // term 折叠进对照键（rs2 修复 A）：大写异形的 teaches/提名
+                    // 名同口径命中，ref/归一记录仍写行原文。
                     let concept = concept.to_owned();
                     let term = row.term.trim().to_owned();
-                    if self_taught.contains(term.as_str()) && term != concept {
+                    let term_key = key(&term);
+                    if self_taught.contains(&term_key) && term_key != concept_key {
                         row.source = TermSource::SelfTaught;
                         row.ref_name = Some(term.clone());
                         normalized.push(ProvenanceNormalization {
@@ -262,7 +278,7 @@ pub(crate) fn validate_term_provenance(
                             source: TermSource::SelfTaught,
                             ref_name: term,
                         });
-                    } else if !nominees.contains(term.as_str()) {
+                    } else if !nominees.contains(&term_key) {
                         row.source = TermSource::Taught;
                         row.ref_name = Some(term.clone());
                         normalized.push(ProvenanceNormalization {
@@ -290,8 +306,8 @@ pub(crate) fn validate_term_provenance(
                     ));
                 }
                 // 名池含本批新铸与提名：指向本批提名 = 拿本批自己的产出当
-                // 「已教」出处，与自教循环自证同型，不得过关。
-                if nominees.contains(reference) {
+                // 「已教」出处，与自教循环自证同型，不得过关（键折叠同口径）。
+                if nominees.contains(&key(reference)) {
                     return Err(format!(
                         "已教行「{}」的 ref 「{reference}」是本批提名（不能当作已教出处）",
                         row.term.trim()
@@ -301,14 +317,14 @@ pub(crate) fn validate_term_provenance(
             TermSource::SelfTaught => {
                 let reference = required_ref(row)?;
                 // 循环自证：概念自己的定义引用了某词，又说该词由本概念自教
-                // ——定义预设的词不可能由定义自身供给。
-                if reference == concept {
+                // ——定义预设的词不可能由定义自身供给（折叠口径比对）。
+                if key(reference) == concept_key {
                     return Err(format!(
                         "自教行「{}」的 ref 指向提名概念自身（循环自证，该词仍无出处）",
                         row.term.trim()
                     ));
                 }
-                if !self_taught.contains(reference) {
+                if !self_taught.contains(&key(reference)) {
                     return Err(format!(
                         "自教行「{}」的 ref 「{reference}」不在批内 teaches（提名本身不是出处）",
                         row.term.trim()
@@ -331,10 +347,11 @@ pub(crate) fn validate_term_provenance(
             }
         }
     }
-    let uncovered: Vec<&str> = nominees
+    // 提名缺行照逐字点名原文（nominee_display 原文，键比对已折叠）。
+    let uncovered: Vec<&str> = nominee_display
         .iter()
-        .filter(|name| !covered.contains(**name))
         .copied()
+        .filter(|name| !covered.contains(&key(name)))
         .collect();
     if !uncovered.is_empty() {
         return Err(format!("提名缺挂号表行：{}", uncovered.join("、")));
@@ -687,6 +704,52 @@ mod tests {
         assert_eq!(read.normalized.len(), 1, "同形异义行机械归一：{read:?}");
         assert_eq!(rows[0].source, TermSource::Taught);
         assert_eq!(rows[0].ref_name.as_deref(), Some("次数"));
+    }
+
+    // ── 大小写折叠回归（rs2 修复 A：批内提名/teaches 键与 known 池同口径）──
+
+    /// 大写异形的 teaches 名（「Ownership」）与折叠后的 term（「ownership」）
+    /// 同口径命中自教臂：修复前 teaches 键按字面比对而 known 池折叠，异形词
+    /// 从自教臂滑到已教臂（ref 指向批外概念 = 出处判定失真）。行 term/ref
+    /// 写原文不改写（折叠面只限键比较）。
+    #[test]
+    fn case_variant_taught_name_normalizes_to_self_taught() {
+        let mut batch = batch();
+        batch.nodes[0].teaches[0].name = "Ownership".into();
+        batch.mints[0].definition = "ownership 不变式下多读一写：引用随作用域在编译期检查。".into();
+        let known: HashSet<String> = ["ownership", "引用"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut rows = vec![
+            row("借用", "ownership", TermSource::CommonSense, None),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let read = validate_term_provenance(&mut rows, true, &batch, &known, &[]).unwrap();
+        assert_eq!(read.normalized.len(), 1, "大写异形 teaches 名须同折叠口径归一：{read:?}");
+        assert_eq!(
+            rows[0].source,
+            TermSource::SelfTaught,
+            "自教臂命中（不滑到已教臂）"
+        );
+        assert_eq!(rows[0].ref_name.as_deref(), Some("ownership"), "行数据写原文");
+        assert_eq!(read.normalized[0].source, TermSource::SelfTaught);
+    }
+
+    /// 大写异形的提名名（mint canonical「Borrowing」）折叠进提名集：已教 ref
+    /// 指向它仍判「本批提名」（拿本批产出当已教出处，不得过关）——修复前
+    /// 字面比对漏判放行；行 concept 大写异形（「borrowing」）也同口径命中
+    /// 提名域。
+    #[test]
+    fn case_variant_nominee_ref_still_counts_as_batch_nomination() {
+        let mut batch = batch();
+        batch.mints[0].canonical = "Borrowing".into();
+        let mut rows = vec![
+            row("borrowing", "作用域", TermSource::Taught, Some("borrowing")),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let error = validate_term_provenance(&mut rows, true, &batch, &known(), &[]).unwrap_err();
+        assert!(error.contains("本批提名"), "{error}");
     }
 
     #[test]

@@ -166,14 +166,17 @@ fn relates(a: &str, b: &str) -> bool {
 /// 建模」+ scope「不引入方程」）裁决引任一边界来源合法——单行硬比把合法
 /// 裁决核伪 → 两连重试 → Degraded 保守放行整场评审被跳过（learnhub 病历）。
 /// 违者 = 结论不可用走评审重试（与「名词却放行」同缝，调用方恰一次带死因）。
+/// `taught_names` = [`batch_taught_names`] 的逐批一次结果（rs5 修复 D：调用方
+/// [`validate_fragments`] 算好传入——此前每个「范围外」行重建全批 Vec）。
 fn check_out_of_scope_row(
     fv: &FragmentVerdict,
     naming: &[NameFragment],
+    taught_names: &[&str],
     batch: &ProposedBatch,
 ) -> Result<(), String> {
     // 正向快路（rs3 #213 ①B）：term 逐字命中本批教出名集 = 出处机械可证，
     // 放行；词不在教出名集时落下方三条件，语义与快路引入前逐字节一致。
-    if batch_taught_names(batch)
+    if taught_names
         .iter()
         .any(|name| super::provenance::term_grounded(&fv.term, name))
     {
@@ -261,12 +264,15 @@ pub(crate) fn validate_fragments(
     batch: &ProposedBatch,
 ) -> Result<Vec<NameFragment>, String> {
     let mut unhandled: Vec<NameFragment> = Vec::new();
+    // 教出名集逐批一次（rs5 修复 D）：此前每个「范围外」裁决行都重建全批
+    // Vec——快路对照域在批级不变，提升到循环外算一次传入。
+    let taught_names = batch_taught_names(batch);
     for frag in naming {
         let verdict = verdicts.iter().find(|fv| relates(&fv.term, &frag.term));
         let problem_named = problems.iter().any(|p| p.issue.contains(&frag.term));
         match verdict {
             Some(fv) if fv.verdict == FragmentRuling::OutOfScope => {
-                check_out_of_scope_row(fv, naming, batch)?;
+                check_out_of_scope_row(fv, naming, &taught_names, batch)?;
             }
             Some(fv) if fv.verdict == FragmentRuling::Noun => {
                 if pass || !problems.iter().any(|p| relates(&p.issue, &frag.term)) {
@@ -377,7 +383,18 @@ fn merged_naming_rows(naming: &[NameFragment]) -> Vec<(&str, Vec<FragmentSource>
 /// 读数口径（p01）：合并渲染后行数 = 机械派生待裁决词数（真机病历：127
 /// 行清单对 92 unique terms——合并行数才是模型的实际裁决负担）。
 pub(crate) fn merged_row_count(naming: &[NameFragment]) -> usize {
-    merged_naming_rows(naming).len()
+    merged_unique_terms(naming).len()
+}
+
+/// 合并渲染口径的 unique 词保序列（rs5 修复 F③ 单源提取）：同词跨源只记
+/// 一词、按首现行序——[`merged_row_count`] 与回放臂
+/// `replay_concept_review` 的 `naming_terms` 共用此实现（两处同口径，改
+/// 一处须查另一处的条款由单源消解）。
+pub(crate) fn merged_unique_terms(naming: &[NameFragment]) -> Vec<&str> {
+    merged_naming_rows(naming)
+        .iter()
+        .map(|(term, _)| *term)
+        .collect()
 }
 
 /// 点名清单派生（纯函数；absorb-8 z02 四源扩面，learnhub #205
