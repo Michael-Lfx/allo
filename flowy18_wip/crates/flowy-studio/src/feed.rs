@@ -35,6 +35,35 @@ pub struct OpenTask(pub String);
 
 impl gpui::EventEmitter<OpenTask> for ChatFeed {}
 
+/// Keeps a long path readable in a narrow card: the tail (folder and file
+/// name) matters more than the drive or repository root.
+fn display_path(path: &str) -> String {
+    const MAX: usize = 64;
+    if path.chars().count() <= MAX {
+        return path.to_owned();
+    }
+    let tail: String = path
+        .chars()
+        .skip(path.chars().count() - (MAX - 1))
+        .collect();
+    format!("\u{2026}{tail}")
+}
+
+/// Opens the folder holding `path`. The feed has no notice channel, so a
+/// failure is logged rather than surfaced.
+fn reveal_parent(path: &str) {
+    let folder = std::path::Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let Some(folder) = folder else {
+        tracing::warn!(target: "flowy.file", path, "no containing folder");
+        return;
+    };
+    if open::that(folder).is_err() {
+        tracing::warn!(target: "flowy.file", path, "could not open the containing folder");
+    }
+}
+
 struct StoredFeed {
     lines: Vec<ChatLine>,
     row_ids: Vec<u64>,
@@ -503,7 +532,75 @@ impl ChatFeed {
                 )
                 .into_any_element()
             }
+            ChatLine::FileChange {
+                path,
+                change,
+                added,
+                removed,
+                binary,
+            } => self
+                .file_change_row(index, path, change, *added, *removed, *binary)
+                .into_any_element(),
         }
+    }
+
+    /// One changed file: type icon, file name, full path, and line delta.
+    /// Clicking opens the containing folder, matching the project view action.
+    fn file_change_row(
+        &self,
+        index: usize,
+        path: &str,
+        kind: &flowy_agent::FileChangeKind,
+        added: u32,
+        removed: u32,
+        binary: bool,
+    ) -> impl IntoElement {
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        let icon = crate::file_kind::from_path(path)
+            .map_or_else(theme::icons::code_file, |kind| kind.icon());
+        // Line counts only mean something for text; a binary change shows a dash.
+        let delta = if binary {
+            "\u{2014}".to_owned()
+        } else if removed == 0 {
+            format!("+{added}")
+        } else {
+            format!("+{added} \u{2212}{removed}")
+        };
+        let target = path.to_owned();
+        let _ = kind;
+        theme::interactive(
+            ("chat-file-change", self.row_ids[index]),
+            SharedString::from(name.to_owned()),
+            &self.theme,
+        )
+        .w_full()
+        .px(self.theme.space(12.))
+        .py(self.theme.space(8.))
+        .gap(self.theme.space(8.))
+        .flex()
+        .items_center()
+        .rounded_lg()
+        .border_1()
+        .border_color(self.theme.line())
+        .bg(self.theme.card())
+        .cursor_pointer()
+        .child(icon.size(px(20.)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_sm().child(name.to_owned()))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.theme.muted())
+                        .child(display_path(path)),
+                ),
+        )
+        .child(div().text_xs().child(delta))
+        .on_click(move |_, _, _| reveal_parent(&target))
     }
 
     fn reasoning_block(

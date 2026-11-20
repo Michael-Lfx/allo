@@ -489,6 +489,10 @@ impl crate::panel::StudioPanel {
                             .text_size(px(36.))
                             .child(self.t("home.title")),
                     )
+                    .child(self.starter_section(cx))
+                    .when(self.pending_starter.is_some(), |column| {
+                        column.child(self.starter_confirm_row(cx))
+                    })
                     .child(self.composer.clone())
                     .child(
                         div()

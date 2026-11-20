@@ -1,6 +1,7 @@
 use super::model::{
     Category, LibraryItem, LibraryModel, LibrarySort, LibraryView,
 };
+use crate::file_kind::FileKind;
 use flowy_i18n::I18n;
 use flowy_ui::{self as theme, UiContext};
 use gpui::{
@@ -35,31 +36,10 @@ enum LibraryFileIcon {
 
 impl LibraryFileIcon {
     fn from_item(item: &LibraryItem) -> Option<Self> {
-        let extension = item
-            .title
-            .rsplit_once('.')
-            .map_or_default(|(_, extension)| extension.to_ascii_lowercase());
-        let by_extension = match extension.as_str() {
-            "java" => Some(Self::Java),
-            "c" | "cc" | "cpp" | "cs" | "css" | "go" | "h" | "hpp" | "htm"
-            | "html" | "js" | "json" | "jsx" | "kt" | "kts" | "log" | "md"
-            | "markdown" | "php" | "ps1" | "py" | "rb" | "rs" | "scss"
-            | "sh" | "swift" | "toml" | "ts" | "tsx" | "txt" | "xml"
-            | "yaml" | "yml" => Some(Self::Code),
-            "doc" | "docx" | "odt" | "rtf" => Some(Self::Document),
-            "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp"
-            | "avif" => Some(Self::Image),
-            "aac" | "flac" | "m4a" | "mp3" | "ogg" | "wav" => Some(Self::Audio),
-            "avi" | "mkv" | "mov" | "mp4" | "webm" => Some(Self::Video),
-            "pdf" => Some(Self::Pdf),
-            "odp" | "ppt" | "pptx" => Some(Self::Presentation),
-            "csv" | "ods" | "xls" | "xlsx" => Some(Self::Spreadsheet),
-            "7z" | "bz2" | "gz" | "rar" | "tar" | "tgz" | "xz" | "zip" => {
-                Some(Self::Archive)
-            }
-            _ => None,
-        };
-        by_extension.or(match item.category {
+        if let Some(kind) = crate::file_kind::from_path(item.title.as_str()) {
+            return Some(kind.into());
+        }
+        match item.category {
             Category::Document => Some(Self::Document),
             Category::Table => Some(Self::Spreadsheet),
             Category::Image => Some(Self::Image),
@@ -71,21 +51,46 @@ impl LibraryFileIcon {
             | Category::Website
             | Category::Game
             | Category::MobileApp => None,
-        })
+        }
     }
 
     fn icon(self) -> gpui::Img {
-        match self {
-            Self::Code => theme::icons::code_file(),
-            Self::Document => theme::icons::docx_file(),
-            Self::Java => theme::icons::java_file(),
-            Self::Image => theme::icons::jpg_file(),
-            Self::Audio => theme::icons::mp3_file(),
-            Self::Video => theme::icons::mp4_file(),
-            Self::Pdf => theme::icons::pdf_file(),
-            Self::Presentation => theme::icons::ppt_file(),
-            Self::Spreadsheet => theme::icons::xls_file(),
-            Self::Archive => theme::icons::zip_file(),
+        FileKind::from(self).icon()
+    }
+}
+
+/// Keeps the view's historical names readable while the classification and
+/// the artwork live in [`FileKind`].
+impl From<FileKind> for LibraryFileIcon {
+    fn from(kind: FileKind) -> Self {
+        match kind {
+            FileKind::Code => Self::Code,
+            FileKind::Document => Self::Document,
+            FileKind::Java => Self::Java,
+            FileKind::Image => Self::Image,
+            FileKind::Audio => Self::Audio,
+            FileKind::Video => Self::Video,
+            FileKind::Pdf => Self::Pdf,
+            FileKind::Presentation => Self::Presentation,
+            FileKind::Spreadsheet => Self::Spreadsheet,
+            FileKind::Archive => Self::Archive,
+        }
+    }
+}
+
+impl From<LibraryFileIcon> for FileKind {
+    fn from(icon: LibraryFileIcon) -> Self {
+        match icon {
+            LibraryFileIcon::Code => Self::Code,
+            LibraryFileIcon::Document => Self::Document,
+            LibraryFileIcon::Java => Self::Java,
+            LibraryFileIcon::Image => Self::Image,
+            LibraryFileIcon::Audio => Self::Audio,
+            LibraryFileIcon::Video => Self::Video,
+            LibraryFileIcon::Pdf => Self::Pdf,
+            LibraryFileIcon::Presentation => Self::Presentation,
+            LibraryFileIcon::Spreadsheet => Self::Spreadsheet,
+            LibraryFileIcon::Archive => Self::Archive,
         }
     }
 }
