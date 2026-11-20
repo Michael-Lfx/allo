@@ -1796,7 +1796,7 @@ impl Render for FlowyApp {
             root = root.child(flowy_ui::popover(
                 "project-menu",
                 anchor,
-                self.project_menu_content(project_id, cx),
+                self.project_menu_content(project_id, window, cx),
                 &self.ui,
                 window,
                 cx,
@@ -2170,7 +2170,7 @@ fn credits_state_from_balance(balance: i64) -> flowy_studio::CreditsViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, VisualTestContext, accesskit};
+    use gpui::{Focusable, TestAppContext, VisualTestContext, accesskit};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn test_root() -> std::path::PathBuf {
@@ -2333,6 +2333,172 @@ mod tests {
     }
 
     #[gpui::test]
+    fn project_group_header_hover_covers_label_space_and_add_button(
+        cx: &mut TestAppContext,
+    ) {
+        fn draw(cx: &mut VisualTestContext) {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.set_a11y_forced(true);
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+
+        fn has_header_fill(
+            cx: &mut VisualTestContext,
+            sample: gpui::Point<gpui::Pixels>,
+            color: gpui::Rgba,
+        ) -> bool {
+            cx.update(|window, _| {
+                let sample = sample.scale(window.scale_factor());
+                window.painted_quads().iter().any(|quad| {
+                    quad.bounds.contains(&sample)
+                        && quad.background == gpui::Background::from(color)
+                })
+            })
+        }
+
+        fn new_project_bounds(
+            cx: &mut VisualTestContext,
+            label: &str,
+        ) -> Option<gpui::Bounds<gpui::Pixels>> {
+            cx.update(|window, _| {
+                let id = window
+                    .a11y_tree()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .map(|(id, _)| *id)?;
+                window.a11y_node_bounds(id)
+            })
+        }
+
+        for dark in [false, true] {
+            let root = test_root();
+            let folder = root.join("workspace");
+            std::fs::create_dir_all(&folder).unwrap();
+            let (app, cx) = cx.add_window_view(|_, cx| {
+                let mut app =
+                    FlowyApp::new(SessionStore::new(root.clone()), dark, cx);
+                app.screen = Screen::Main;
+                app.ota.checked = true;
+                app
+            });
+            app.update(cx, |app, cx| {
+                app.studio.update(cx, |panel, cx| {
+                    panel.create_project("Client", &folder, cx).unwrap();
+                });
+                let id = app.studio.read(cx).projects[0].id.clone();
+                app.expanded_projects.insert(id);
+                cx.notify();
+            });
+            for _ in 0..4 {
+                draw(cx);
+            }
+            let (add_label, hover) = cx.read_entity(&app, |app, _| {
+                (app.t("dock.new_project"), app.theme.dock_selected())
+            });
+            let header_bounds = cx
+                .debug_bounds("project-group-header")
+                .expect("project group header bounds");
+            let project_bounds =
+                cx.debug_bounds("project-row").expect("project row bounds");
+            let nav_bounds = cx
+                .debug_bounds("dock-nav-item")
+                .expect("dock nav item bounds");
+            assert_eq!(header_bounds.size, nav_bounds.size);
+            assert_eq!(project_bounds.size, nav_bounds.size);
+            assert_eq!(
+                project_bounds.origin.y
+                    - (header_bounds.origin.y + header_bounds.size.height),
+                px(2.)
+            );
+            let sample = gpui::point(px(130.), header_bounds.center().y);
+            let project_sample = project_bounds.center();
+            let outside = gpui::point(px(300.), px(80.));
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            draw(cx);
+            assert!(!has_header_fill(cx, sample, hover));
+            assert!(
+                !has_header_fill(cx, project_sample, hover),
+                "an expanded project row must not stay highlighted: dark={dark}"
+            );
+            assert!(
+                cx.debug_bounds("project-actions").is_none(),
+                "project actions stay hidden until hover: dark={dark}"
+            );
+            assert!(
+                new_project_bounds(cx, &add_label).is_none(),
+                "new project button stays hidden until the heading is hovered: dark={dark}"
+            );
+            cx.simulate_mouse_move(
+                project_sample,
+                None,
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            assert!(
+                has_header_fill(cx, project_sample, hover),
+                "project row must highlight while hovered: dark={dark}"
+            );
+            let actions_bounds = cx
+                .debug_bounds("project-actions")
+                .expect("hovered project actions bounds");
+            assert!(
+                actions_bounds.size.width > px(0.),
+                "project actions appear on hover: dark={dark}, bounds={actions_bounds:?}"
+            );
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            draw(cx);
+            assert!(!has_header_fill(cx, project_sample, hover));
+
+            cx.simulate_mouse_move(sample, None, gpui::Modifiers::default());
+            draw(cx);
+            assert!(
+                has_header_fill(cx, sample, hover),
+                "project heading must highlight while hovered: dark={dark}"
+            );
+            let add_bounds = new_project_bounds(cx, &add_label).expect(
+                "new project button appears when the heading is hovered",
+            );
+            assert_eq!(add_bounds.center().y, header_bounds.center().y);
+            for pointer in
+                [gpui::point(px(24.), sample.y), sample, add_bounds.center()]
+            {
+                cx.simulate_mouse_move(
+                    pointer,
+                    None,
+                    gpui::Modifiers::default(),
+                );
+                draw(cx);
+                assert!(
+                    has_header_fill(cx, sample, hover),
+                    "project heading must highlight across its entire row: dark={dark}, pointer={pointer:?}"
+                );
+                assert!(
+                    new_project_bounds(cx, &add_label).is_some(),
+                    "new project button stays visible across the heading: dark={dark}, pointer={pointer:?}"
+                );
+            }
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            draw(cx);
+            assert!(!has_header_fill(cx, sample, hover));
+            assert!(
+                new_project_bounds(cx, &add_label).is_none(),
+                "new project button hides when the pointer leaves the heading: dark={dark}"
+            );
+            drop(app);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[gpui::test]
     fn project_create_dialog_exposes_fields_and_cancel_keeps_registry_empty(
         cx: &mut TestAppContext,
     ) {
@@ -2389,6 +2555,15 @@ mod tests {
                     app.t("more.cancel"),
                 )
             });
+        draw(cx);
+        let header = cx
+            .debug_bounds("project-group-header")
+            .expect("project group header bounds");
+        cx.simulate_mouse_move(
+            header.center(),
+            None,
+            gpui::Modifiers::default(),
+        );
         draw(cx);
         click(cx, &new_project);
         cx.read_entity(&app, |app, _| {
@@ -2484,6 +2659,28 @@ mod tests {
             });
         });
         draw(cx);
+        fn hover_row(cx: &mut VisualTestContext) {
+            let center = cx.update(|window, _| {
+                let node = window
+                    .a11y_tree()
+                    .expect("project row")
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some("Client")
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .expect("project name")
+                    .0;
+                window
+                    .a11y_node_bounds(node)
+                    .expect("project name bounds")
+                    .center()
+            });
+            cx.simulate_mouse_move(center, None, gpui::Modifiers::default());
+            draw(cx);
+        }
+        hover_row(cx);
 
         let (options, pin, expand, new_task) =
             cx.read_entity(&app, |app, _| {
@@ -2531,6 +2728,7 @@ mod tests {
             assert!(app.studio.read(cx).projects[0].pinned);
         });
 
+        hover_row(cx);
         click(cx, &options);
         let delete = cx.read_entity(&app, |app, _| app.t("project.delete"));
         click(cx, &delete);
@@ -2539,6 +2737,7 @@ mod tests {
         });
         let cancel = cx.read_entity(&app, |app, _| app.t("more.cancel"));
         click(cx, &cancel);
+        hover_row(cx);
         click(cx, &options);
         click(cx, &delete);
         click(cx, &delete);
@@ -2546,6 +2745,159 @@ mod tests {
             assert!(app.studio.read(cx).projects.is_empty());
         });
         assert!(folder.is_dir(), "project removal must preserve local files");
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn project_new_task_click_adds_a_blank_task(cx: &mut TestAppContext) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        let root = test_root();
+        let folder = root.join("workspace");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.ota.checked = true;
+            app
+        });
+        let project_id = app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                panel
+                    .create_project("Client", &folder, cx)
+                    .expect("project")
+                    .id
+            })
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.expanded_projects.insert(project_id.clone());
+                cx.notify();
+            });
+        });
+        draw(cx);
+
+        let name = cx.update(|window, _| {
+            let node = window
+                .a11y_tree()
+                .expect("project row")
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.label() == Some("Client")
+                        && node.role() == accesskit::Role::Button
+                })
+                .expect("project name")
+                .0;
+            window
+                .a11y_node_bounds(node)
+                .expect("project name bounds")
+                .center()
+        });
+        let modifiers = gpui::Modifiers::default();
+        cx.simulate_mouse_move(name, None, modifiers);
+        draw(cx);
+
+        let label = cx.read_entity(&app, |app, _| app.t("project.new_task"));
+        let button = cx.update(|window, _| {
+            window
+                .a11y_tree()
+                .expect("project actions")
+                .nodes
+                .iter()
+                .filter_map(|(id, node)| {
+                    if node.label() != Some(label.as_str())
+                        || node.role() != accesskit::Role::Button
+                    {
+                        return None;
+                    }
+                    window.a11y_node_bounds(*id)
+                })
+                .min_by(|left, right| {
+                    left.size
+                        .width
+                        .partial_cmp(&right.size.width)
+                        .expect("button width")
+                })
+                .expect("project new task button")
+                .center()
+        });
+        cx.simulate_mouse_move(button, None, modifiers);
+        draw(cx);
+        cx.simulate_mouse_down(button, gpui::MouseButton::Left, modifiers);
+        cx.simulate_mouse_up(button, gpui::MouseButton::Left, modifiers);
+        draw(cx);
+
+        cx.read_entity(&app, |app, cx| {
+            let panel = app.studio.read(cx);
+            let sessions = panel.agent.list_sessions();
+            assert_eq!(sessions.len(), 1, "the click should create one task");
+            let active = panel.agent.active_session_id();
+            let created = sessions
+                .iter()
+                .find(|session| Some(&session.id) == active.as_ref())
+                .expect("the new task should be selected");
+            assert_eq!(
+                created.project_id.as_deref(),
+                Some(project_id.as_str())
+            );
+            assert!(created.title.is_empty());
+            assert_eq!(panel.surface, StudioSurface::Home);
+            assert_eq!(app.section, Section::Studio);
+            assert!(app.expanded_projects.contains(&project_id));
+        });
+        let focused = cx.update(|window, cx| {
+            let handle = app
+                .read(cx)
+                .studio
+                .read(cx)
+                .prompt
+                .read(cx)
+                .focus_handle(cx);
+            handle.is_focused(window)
+        });
+        assert!(focused, "the composer should take focus");
+        let task_label = cx.read_entity(&app, |app, _| app.t("dock.new_task"));
+        let (nav_left, task_left) = cx.update(|window, _| {
+            let mut rows: Vec<_> = window
+                .a11y_tree()
+                .expect("dock tree")
+                .nodes
+                .iter()
+                .filter_map(|(id, node)| {
+                    if node.label() != Some(task_label.as_str())
+                        || node.role() != accesskit::Role::Button
+                    {
+                        return None;
+                    }
+                    window.a11y_node_bounds(*id)
+                })
+                .collect();
+            rows.sort_by(|left, right| {
+                left.origin.y.partial_cmp(&right.origin.y).expect("row y")
+            });
+            assert!(
+                rows.len() >= 2,
+                "the dock and the project should each show the new task"
+            );
+            (rows[0].left(), rows[rows.len() - 1].left())
+        });
+        assert!(
+            (nav_left - task_left).abs() < gpui::px(1.),
+            "project task highlight should share the dock row's left edge"
+        );
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }

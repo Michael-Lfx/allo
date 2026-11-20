@@ -534,6 +534,20 @@ impl StudioPanel {
         }
     }
 
+    /// Creates an empty session in the workspace `open_project` just prepared.
+    pub fn create_task(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        self.agent.create_session()?;
+        self.surface = StudioSurface::Home;
+        self.refresh_chat(cx);
+        self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+        Ok(())
+    }
+
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
         match self.agent.select_session(id) {
             Ok(()) => {

@@ -1,6 +1,6 @@
 use super::{FlowyApp, Section, state};
 use flowy_ui as theme;
-use gpui::{ColorExt, Context, Window, div, prelude::*, px};
+use gpui::{Context, Focusable, Pixels, TextRun, Window, div, prelude::*, px};
 
 impl FlowyApp {
     pub(super) fn open_project_create(&mut self, cx: &mut Context<'_, Self>) {
@@ -114,12 +114,23 @@ impl FlowyApp {
     pub(super) fn project_new_task(
         &mut self,
         id: &str,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        self.open_project(id, cx);
-        self.expanded_projects.insert(id.to_owned());
-        self.studio.update(cx, flowy_studio::StudioPanel::new_task);
+        self.user_menu = false;
         self.project_menu = None;
+        self.expanded_projects.insert(id.to_owned());
+        self.push_section(Section::Studio, cx);
+        let created = self.studio.update(cx, |panel, cx| {
+            panel.open_project(id, cx)?;
+            panel.create_task(cx)
+        });
+        if let Err(key) = created {
+            self.studio.update(cx, |panel, cx| panel.note(key, cx));
+        } else {
+            let prompt = self.studio.read(cx).prompt.read(cx).focus_handle(cx);
+            window.focus(&prompt, cx);
+        }
         cx.notify();
     }
 
@@ -282,19 +293,12 @@ impl FlowyApp {
         window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let scrim = if self.theme.dark {
-            self.theme.scrim()
-        } else {
-            gpui::rgb(0).opacity(0.30)
-        };
         theme::modal_layer(
             "project-create-layer",
             &self.theme,
             &self.ui,
             self.project_create_dialog(window, cx),
         )
-        .bg(scrim)
-        .backdrop_blur(px(6.))
     }
 
     fn project_create_dialog(
@@ -506,13 +510,16 @@ impl FlowyApp {
             } else {
                 self.theme.muted()
             })
-            .child(theme::icons::folder())
+            .child(theme::icons::folder().size(px(14.)))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .whitespace_nowrap()
                     .truncate()
+                    .when(folder.is_none(), |text| {
+                        text.text_size(self.theme.body_size())
+                    })
                     .child(label),
             )
             .on_click(cx.listener(|app, _event, _window, cx| {
@@ -523,6 +530,7 @@ impl FlowyApp {
     pub(super) fn project_menu_content(
         &self,
         project_id: &str,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let project = self
@@ -539,13 +547,32 @@ impl FlowyApp {
         let view_id = project_id.to_owned();
         let collapse_id = project_id.to_owned();
         let delete_id = project_id.to_owned();
-        let compact_width = matches!(
-            self.i18n.locale(),
-            flowy_i18n::Locale::ZhCn
-                | flowy_i18n::Locale::ZhTw
-                | flowy_i18n::Locale::ZhHk
-                | flowy_i18n::Locale::Ja
-                | flowy_i18n::Locale::Ko
+        let pin_label = self.t(if pinned {
+            "project.unpin"
+        } else {
+            "project.pin"
+        });
+        let edit_label = self.t("project.edit");
+        let copy_label = self.t("project.copy");
+        let view_label = self.t("project.view");
+        let show_label =
+            self.t(if self.expanded_projects.contains(project_id) {
+                "project.show_less"
+            } else {
+                "project.show_more"
+            });
+        let delete_label = self.t("project.delete");
+        let width = project_menu_width(
+            window,
+            &[
+                pin_label.as_str(),
+                edit_label.as_str(),
+                copy_label.as_str(),
+                view_label.as_str(),
+                show_label.as_str(),
+                delete_label.as_str(),
+            ],
+            self.theme.body_size(),
         );
         theme::menu(
             "project-menu-content",
@@ -554,7 +581,7 @@ impl FlowyApp {
             &self.ui,
             cx,
         )
-        .w(px(if compact_width { 106. } else { 184. }))
+        .w(width)
         .p_1()
         .gap_1()
         .on_click(
@@ -563,11 +590,7 @@ impl FlowyApp {
         .child(self.project_menu_row(
             "project-pin",
             theme::icons::pin(),
-            self.t(if pinned {
-                "project.unpin"
-            } else {
-                "project.pin"
-            }),
+            pin_label,
             false,
             cx,
             move |app, cx| app.project_pin(&pin_id, cx),
@@ -575,7 +598,7 @@ impl FlowyApp {
         .child(self.project_menu_row(
             "project-edit",
             theme::icons::folder_pen(),
-            self.t("project.edit"),
+            edit_label,
             false,
             cx,
             move |app, cx| app.edit_project(&edit_id, cx),
@@ -583,7 +606,7 @@ impl FlowyApp {
         .child(self.project_menu_row(
             "project-copy",
             theme::icons::copy(),
-            self.t("project.copy"),
+            copy_label,
             false,
             cx,
             move |app, cx| app.copy_project(&copy_id, cx),
@@ -591,7 +614,7 @@ impl FlowyApp {
         .child(self.project_menu_row(
             "project-view",
             theme::icons::eye(),
-            self.t("project.view"),
+            view_label,
             false,
             cx,
             move |app, cx| app.view_project(&view_id, cx),
@@ -599,11 +622,7 @@ impl FlowyApp {
         .child(self.project_menu_row(
             "project-show-less",
             theme::icons::chevrons_up_down(),
-            self.t(if self.expanded_projects.contains(project_id) {
-                "project.show_less"
-            } else {
-                "project.show_more"
-            }),
+            show_label,
             false,
             cx,
             move |app, cx| {
@@ -615,7 +634,7 @@ impl FlowyApp {
         .child(self.project_menu_row(
             "project-delete",
             theme::icons::trash(),
-            self.t("project.delete"),
+            delete_label,
             true,
             cx,
             move |app, cx| app.request_project_delete(&delete_id, cx),
@@ -648,10 +667,8 @@ impl FlowyApp {
             })
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    .flex_shrink_0()
                     .whitespace_nowrap()
-                    .truncate()
                     .text_size(self.theme.body_size())
                     .text_color(if danger {
                         self.theme.danger()
@@ -779,4 +796,34 @@ impl FlowyApp {
             ),
         )
     }
+}
+
+/// Width of the project menu so every label fits on one line.
+///
+/// Chrome is the menu border and padding, the row border and padding, the
+/// 16px icon, and the row gap. `border_1` / `border_2` are pixels; padding and
+/// gap are rems.
+fn project_menu_width(
+    window: &Window,
+    labels: &[&str],
+    font_size: Pixels,
+) -> Pixels {
+    let font = theme::ui_font();
+    let text = labels
+        .iter()
+        .map(|label| {
+            let run = TextRun {
+                len: label.len(),
+                font: font.clone(),
+                ..Default::default()
+            };
+            window
+                .text_system()
+                .layout_line(*label, font_size, &[run])
+                .width
+        })
+        .max()
+        .unwrap_or(px(0.));
+    let rem = window.rem_size();
+    text + px(30.) + rem * 2.
 }
