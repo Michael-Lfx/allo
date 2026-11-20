@@ -1,4 +1,5 @@
 use super::FlowyApp;
+use crate::prefs::Plan;
 use flowy_ui as theme;
 use gpui::{
     Context, Pixels, SharedString, Size, Window, div, prelude::*, px, rgb,
@@ -69,6 +70,8 @@ impl Author {
 
 struct Skill {
     id: &'static str,
+    /// Slash-command name without the leading `/`.
+    command: &'static str,
     title: &'static str,
     body: &'static str,
     summary: &'static str,
@@ -79,11 +82,14 @@ struct Skill {
     tint: u32,
     mark: &'static str,
     prompts: &'static [&'static str],
+    required_plan: Plan,
+    details_url: Option<&'static str>,
 }
 
 const SKILLS: &[Skill] = &[
     Skill {
         id: "excel",
+        command: "excel",
         title: "skills.excel",
         body: "skills.excel_body",
         summary: "skills.excel_summary",
@@ -94,9 +100,12 @@ const SKILLS: &[Skill] = &[
         tint: 0x001e_7a46,
         mark: "X",
         prompts: &["skills.excel_p1", "skills.excel_p2", "skills.excel_p3"],
+        required_plan: Plan::Free,
+        details_url: None,
     },
     Skill {
         id: "traffic",
+        command: "traffic",
         title: "skills.traffic",
         body: "skills.traffic_body",
         summary: "skills.traffic_summary",
@@ -111,9 +120,12 @@ const SKILLS: &[Skill] = &[
             "skills.traffic_p2",
             "skills.traffic_p3",
         ],
+        required_plan: Plan::Free,
+        details_url: None,
     },
     Skill {
         id: "slides",
+        command: "slides",
         title: "skills.slides",
         body: "skills.slides_body",
         summary: "skills.slides_summary",
@@ -124,9 +136,12 @@ const SKILLS: &[Skill] = &[
         tint: 0x00c4_5c26,
         mark: "SD",
         prompts: &["skills.slides_p1", "skills.slides_p2", "skills.slides_p3"],
+        required_plan: Plan::Free,
+        details_url: None,
     },
     Skill {
         id: "research",
+        command: "research",
         title: "skills.research",
         body: "skills.research_body",
         summary: "skills.research_summary",
@@ -141,9 +156,12 @@ const SKILLS: &[Skill] = &[
             "skills.research_p2",
             "skills.research_p3",
         ],
+        required_plan: Plan::Free,
+        details_url: None,
     },
     Skill {
         id: "nano",
+        command: "nano-banana",
         title: "skills.nano",
         body: "skills.nano_body",
         summary: "skills.nano_summary",
@@ -154,9 +172,12 @@ const SKILLS: &[Skill] = &[
         tint: 0x00f2_c94c,
         mark: "NB",
         prompts: &["skills.nano_p1", "skills.nano_p2", "skills.nano_p3"],
+        required_plan: Plan::Pro,
+        details_url: None,
     },
     Skill {
         id: "flux",
+        command: "flux",
         title: "skills.flux",
         body: "skills.flux_body",
         summary: "skills.flux_summary",
@@ -167,9 +188,12 @@ const SKILLS: &[Skill] = &[
         tint: 0x00d4_5a2a,
         mark: "FX",
         prompts: &["skills.flux_p1", "skills.flux_p2", "skills.flux_p3"],
+        required_plan: Plan::Pro,
+        details_url: None,
     },
     Skill {
         id: "script",
+        command: "script",
         title: "skills.script",
         body: "skills.script_body",
         summary: "skills.script_summary",
@@ -180,9 +204,12 @@ const SKILLS: &[Skill] = &[
         tint: 0x0024_3b55,
         mark: "</>",
         prompts: &["skills.script_p1", "skills.script_p2", "skills.script_p3"],
+        required_plan: Plan::Free,
+        details_url: None,
     },
     Skill {
         id: "pipeline",
+        command: "ops-pipeline",
         title: "skills.pipeline",
         body: "skills.pipeline_body",
         summary: "skills.pipeline_summary",
@@ -197,9 +224,12 @@ const SKILLS: &[Skill] = &[
             "skills.pipeline_p2",
             "skills.pipeline_p3",
         ],
+        required_plan: Plan::Pro,
+        details_url: None,
     },
     Skill {
         id: "clip",
+        command: "highlight-clip",
         title: "skills.clip",
         body: "skills.clip_body",
         summary: "skills.clip_summary",
@@ -210,6 +240,8 @@ const SKILLS: &[Skill] = &[
         tint: 0x0011_1a28,
         mark: "AV",
         prompts: &["skills.clip_p1", "skills.clip_p2", "skills.clip_p3"],
+        required_plan: Plan::Ultra,
+        details_url: None,
     },
 ];
 
@@ -612,7 +644,7 @@ impl FlowyApp {
                                     .child(self.t(skill.title)),
                             )
                             .child(self.skill_dialog_meta(skill))
-                            .child(self.skill_dialog_actions(cx)),
+                            .child(self.skill_dialog_actions(skill, cx)),
                     )
                     .child(skill_hero(skill, &self.theme)),
             )
@@ -664,35 +696,295 @@ impl FlowyApp {
             )
     }
 
-    fn skill_dialog_actions(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn skill_dialog_actions(
+        &self,
+        skill: &Skill,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let id = skill.id;
+        let added = self.skill_is_added(id);
+        let primary_label = if added {
+            self.t("skills.try_out")
+        } else {
+            self.t("skills.add")
+        };
+        let mut primary = theme::Button::new("skill-add", primary_label)
+            .variant(theme::ControlVariant::Primary);
+        if !added {
+            primary = primary.icon(theme::icons::plus());
+        }
         div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap_2()
-            .child(
-                theme::Button::new("skill-add", self.t("skills.add"))
-                    .variant(theme::ControlVariant::Primary)
-                    .icon(theme::icons::plus())
-                    .render(
-                        &self.theme,
-                        cx.listener(|app, _event, _window, cx| {
-                            cx.stop_propagation();
-                            app.note("skills.add_later", cx);
-                        }),
-                    ),
-            )
+            .child(primary.render(
+                &self.theme,
+                cx.listener(move |app, _event, _window, cx| {
+                    cx.stop_propagation();
+                    if app.skill_is_added(id) {
+                        app.try_skill(id, cx);
+                    } else {
+                        app.add_skill(id, cx);
+                    }
+                }),
+            ))
             .child(
                 theme::Button::new("skill-details", self.t("skills.details"))
                     .icon(theme::icons::book())
                     .render(
                         &self.theme,
-                        cx.listener(|app, _event, _window, cx| {
+                        cx.listener(move |app, _event, _window, cx| {
                             cx.stop_propagation();
-                            app.note("skills.details_later", cx);
+                            app.open_skill_details(id, cx);
                         }),
                     ),
             )
+    }
+
+    fn skill_is_added(&self, id: &str) -> bool {
+        self.prefs.skills.iter().any(|skill| skill == id)
+    }
+
+    fn add_skill(&mut self, id: &'static str, cx: &mut Context<'_, Self>) {
+        let Some(skill) = skill_by_id(id) else {
+            return;
+        };
+        if self.skill_is_added(id) {
+            return;
+        }
+        if skill.required_plan.level() > self.prefs.plan.level() {
+            self.activate_dialog(
+                super::state::ActiveDialog::SkillUnlock(id),
+                cx,
+            );
+            return;
+        }
+        self.prefs.skills.push(id.to_owned());
+        let _ = self.prefs.save_checked(self.store.root());
+        cx.notify();
+    }
+
+    fn try_skill(&mut self, id: &'static str, cx: &mut Context<'_, Self>) {
+        let Some(skill) = skill_by_id(id) else {
+            return;
+        };
+        self.active_dialog = super::state::ActiveDialog::None;
+        self.studio
+            .update(cx, flowy_studio::StudioPanel::new_task);
+        let draft =
+            self.tf("skills.try_draft", &[("command", skill.command)]);
+        self.fill_prompt(&draft, cx);
+        self.push_section(super::Section::Studio, cx);
+    }
+
+    fn open_skill_details(
+        &mut self,
+        id: &'static str,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(skill) = skill_by_id(id) else {
+            return;
+        };
+        if let Some(url) = skill.details_url {
+            cx.open_url(url);
+            return;
+        }
+        self.activate_dialog(super::state::ActiveDialog::SkillDocs(id), cx);
+    }
+
+    fn close_skill_unlock(&mut self, cx: &mut Context<'_, Self>) {
+        let id = self.active_dialog.skill().unwrap_or("");
+        if id.is_empty() {
+            self.active_dialog = super::state::ActiveDialog::None;
+        } else {
+            self.active_dialog = super::state::ActiveDialog::Skill(id);
+        }
+        cx.notify();
+    }
+
+    fn close_skill_docs(&mut self, cx: &mut Context<'_, Self>) {
+        self.close_skill_unlock(cx);
+    }
+
+    pub(super) fn skill_unlock_layer(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let frame = self.theme.modal_size(window.viewport_size());
+        theme::modal_layer(
+            "skill-unlock-layer",
+            &self.theme,
+            &self.ui,
+            theme::dialog(
+                "skill-unlock-card",
+                self.t("skills.unlock_title"),
+                &self.theme,
+                &self.ui,
+                cx,
+            )
+            .w(px(360.))
+            .max_w(frame.width)
+            .bg(self.theme.canvas())
+            .shadow_md()
+            .px_5()
+            .py_4()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .on_click(
+                cx.listener(|_app, _event, _window, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(self.theme.heading_size())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.t("skills.unlock_title")),
+                    )
+                    .child(
+                        theme::IconButton::new(
+                            "close-skill-unlock",
+                            self.t("ui.close"),
+                            theme::icons::x(),
+                        )
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.close_skill_unlock(cx)
+                            }),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("skills.unlock_body")),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .gap_3()
+                    .child(
+                        theme::Button::new(
+                            "cancel-skill-unlock",
+                            self.t("more.cancel"),
+                        )
+                        .variant(theme::ControlVariant::Secondary)
+                        .full_width()
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.close_skill_unlock(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        theme::Button::new(
+                            "upgrade-skill-unlock",
+                            self.t("model.upgrade"),
+                        )
+                        .variant(theme::ControlVariant::Primary)
+                        .full_width()
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.close_skill_unlock(cx);
+                                app.note("notice.upgrade_later", cx);
+                            }),
+                        ),
+                    ),
+            ),
+        )
+    }
+
+    pub(super) fn skill_docs_layer(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let frame = self.theme.modal_size(window.viewport_size());
+        let id = self.active_dialog.skill().unwrap_or("");
+        let skill = skill_by_id(id);
+        let title = skill.map_or_else(
+            || self.t("skills.details"),
+            |skill| self.t(skill.title),
+        );
+        let body = skill.map_or_else(String::new, |skill| {
+            let command = skill.command;
+            let detail = self.t(skill.body);
+            let hint =
+                self.tf("skills.details_body", &[("command", command)]);
+            format!("{detail}\n\n{hint}")
+        });
+        theme::modal_layer(
+            "skill-docs-layer",
+            &self.theme,
+            &self.ui,
+            theme::dialog(
+                "skill-docs-card",
+                title.clone(),
+                &self.theme,
+                &self.ui,
+                cx,
+            )
+            .w(px(420.))
+            .max_w(frame.width)
+            .max_h(frame.height)
+            .bg(self.theme.canvas())
+            .shadow_md()
+            .px_5()
+            .py_4()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .on_click(
+                cx.listener(|_app, _event, _window, cx| cx.stop_propagation()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(self.theme.heading_size())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        theme::IconButton::new(
+                            "close-skill-docs",
+                            self.t("ui.close"),
+                            theme::icons::x(),
+                        )
+                        .size(theme::ControlSize::Small)
+                        .render(
+                            &self.theme,
+                            cx.listener(|app, _event, _window, cx| {
+                                app.close_skill_docs(cx)
+                            }),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(self.theme.body_size())
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(body),
+            ),
+        )
     }
 
     fn skill_dialog_body(

@@ -48,6 +48,7 @@ pub struct Preferences {
     pub launch_at_login: bool,
     pub flex_provider: Option<FlexProvider>,
     pub flex_api_key: String,
+    pub skills: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,6 +87,8 @@ struct File {
     flex_provider: Option<FlexProvider>,
     #[serde(default)]
     flex_api_key: String,
+    #[serde(default)]
+    skills: Vec<String>,
 }
 
 const fn default_font_size() -> u8 {
@@ -124,6 +127,7 @@ impl Default for Preferences {
             launch_at_login: false,
             flex_provider: None,
             flex_api_key: String::new(),
+            skills: Vec::new(),
         }
     }
 }
@@ -175,6 +179,7 @@ impl Preferences {
             launch_at_login: false,
             flex_provider: None,
             flex_api_key: String::new(),
+            skills: Vec::new(),
         });
         if !(MIN_SUPPORTED_VERSION..=VERSION).contains(&file.version) {
             return Self::default();
@@ -210,6 +215,7 @@ impl Preferences {
             launch_at_login: file.launch_at_login,
             flex_provider: file.flex_provider,
             flex_api_key: file.flex_api_key,
+            skills: file.skills,
         }
     }
 
@@ -250,6 +256,7 @@ impl Preferences {
             launch_at_login: self.launch_at_login,
             flex_provider: self.flex_provider,
             flex_api_key: self.flex_api_key.clone(),
+            skills: self.skills.clone(),
         };
         let bytes =
             serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;

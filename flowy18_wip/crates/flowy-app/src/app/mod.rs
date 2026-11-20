@@ -216,6 +216,18 @@ impl FlowyApp {
                     cx.notify();
                 });
             }
+            "skill-unlock" => {
+                if let state::ActiveDialog::SkillUnlock(id) =
+                    self.active_dialog
+                {
+                    self.active_dialog = state::ActiveDialog::Skill(id);
+                }
+            }
+            "skill-docs" => {
+                if let state::ActiveDialog::SkillDocs(id) = self.active_dialog {
+                    self.active_dialog = state::ActiveDialog::Skill(id);
+                }
+            }
             _ if self.active_dialog.scope() == Some(scope) => {
                 self.active_dialog = state::ActiveDialog::None;
                 self.settings.picker = settings::Picker::None;
@@ -1691,8 +1703,23 @@ impl Render for FlowyApp {
             state::ActiveDialog::Idea(_) => {
                 root.child(self.idea_layer(window, cx))
             }
-            state::ActiveDialog::Skill(_) => {
-                root.child(self.skill_layer(window, cx))
+            state::ActiveDialog::Skill(_)
+            | state::ActiveDialog::SkillUnlock(_)
+            | state::ActiveDialog::SkillDocs(_) => {
+                let mut root = root.child(self.skill_layer(window, cx));
+                if matches!(
+                    self.active_dialog,
+                    state::ActiveDialog::SkillUnlock(_)
+                ) {
+                    root = root.child(self.skill_unlock_layer(window, cx));
+                }
+                if matches!(
+                    self.active_dialog,
+                    state::ActiveDialog::SkillDocs(_)
+                ) {
+                    root = root.child(self.skill_docs_layer(window, cx));
+                }
+                root
             }
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
             state::ActiveDialog::ProjectCreate => {

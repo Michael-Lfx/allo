@@ -138,6 +138,8 @@ pub(super) enum ActiveDialog {
     Ideas,
     Idea(&'static str),
     Skill(&'static str),
+    SkillUnlock(&'static str),
+    SkillDocs(&'static str),
     Invite,
     ProjectCreate,
     ProjectDelete,
@@ -155,6 +157,8 @@ impl ActiveDialog {
             Self::Ideas => Some("ideas"),
             Self::Idea(_) => Some("idea"),
             Self::Skill(_) => Some("skill"),
+            Self::SkillUnlock(_) => Some("skill-unlock"),
+            Self::SkillDocs(_) => Some("skill-docs"),
             Self::Invite => Some("invite"),
             Self::ProjectCreate => Some("project-create"),
             Self::ProjectDelete => Some("project-delete"),
@@ -172,10 +176,11 @@ impl ActiveDialog {
         }
     }
     pub(super) const fn skill(self) -> Option<&'static str> {
-        if let Self::Skill(id) = self {
-            Some(id)
-        } else {
-            None
+        match self {
+            Self::Skill(id) | Self::SkillUnlock(id) | Self::SkillDocs(id) => {
+                Some(id)
+            }
+            _ => None,
         }
     }
 }
