@@ -43,14 +43,33 @@ pub fn brand() -> Brand {
 /// Bind product identity before `install`. Needed for autostart paths that run
 /// in `main` ahead of the GPUI `run` callback.
 pub fn configure_brand(brand: Brand) {
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "shell::configure_brand",
+        product = brand.product,
+        scheme = brand.url_scheme,
+        "brand"
+    );
     let _ = BRAND.set(brand);
 }
 
 pub fn enqueue_urls(urls: Vec<String>) {
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "shell::enqueue_urls",
+        count = urls.len(),
+        "deep link"
+    );
     deep_link::enqueue(urls);
 }
 
 pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "shell::install",
+        product = brand.product,
+        "enter"
+    );
     configure_brand(brand);
     let _ = OPEN_MAIN.set(open_main);
     cx.on_action(|_: &ShowMainWindow, cx| {
@@ -66,6 +85,12 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
     });
     cx.spawn(async move |cx| {
         let scheme = brand.url_scheme;
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "shell::register_url_scheme",
+            scheme,
+            "register"
+        );
         let task = cx.update(|cx| cx.register_url_scheme(scheme));
         let _ = task.await;
     })
@@ -75,11 +100,26 @@ pub fn install(brand: Brand, open_main: fn(&mut App), cx: &mut App) {
             TRAY.with(|slot| {
                 *slot.borrow_mut() = Some(handle);
             });
+            tracing::debug!(
+                target: "flowy.boot",
+                stage = "shell::tray::build",
+                "tray ready"
+            );
         }
         Err(error) => {
-            tracing::warn!(%error, "system tray unavailable");
+            tracing::warn!(
+                target: "flowy.boot",
+                stage = "shell::tray::build",
+                %error,
+                "system tray unavailable"
+            );
         }
     }
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "shell::install",
+        "done"
+    );
 }
 
 /// Whether the tray icon was created on this thread.
@@ -91,5 +131,10 @@ pub fn tray_available() -> bool {
 }
 
 pub fn ensure_main_window(cx: &mut App) {
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "shell::ensure_main_window",
+        "open_main"
+    );
     OPEN_MAIN.get().expect("flowy_shell::install")(cx);
 }

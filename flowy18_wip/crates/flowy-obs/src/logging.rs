@@ -115,13 +115,29 @@ pub fn init_tracing(log_dir: &Path, log_level: Option<&str>) -> LogGuards {
         );
     }
 
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "init_tracing",
+        path = %log_dir.display(),
+        level = ?log_level,
+        "subscriber installed"
+    );
+
     for (level, message) in drain_boot_notes() {
         match level {
             BootNoteLevel::Info => {
-                tracing::info!(target: "flowy.boot", "{message}");
+                tracing::debug!(
+                    target: "flowy.boot",
+                    stage = "init_tracing::boot_note",
+                    "{message}"
+                );
             }
             BootNoteLevel::Warn => {
-                tracing::warn!(target: "flowy.boot", "{message}");
+                tracing::warn!(
+                    target: "flowy.boot",
+                    stage = "init_tracing::boot_note",
+                    "{message}"
+                );
             }
         }
     }

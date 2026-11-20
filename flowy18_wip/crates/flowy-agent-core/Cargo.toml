@@ -18,6 +18,7 @@ rpi-ai = { workspace = true }
 rpi-tools = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 tokio = { version = "1", features = [
     "fs",
     "io-util",

@@ -228,12 +228,25 @@ impl FlowyApp {
         system_dark: bool,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new",
+            system_dark,
+            "enter"
+        );
         let session = store.load();
         let screen = if session.is_some() {
             Screen::Main
         } else {
             Screen::Login
         };
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new::SessionStore::load",
+            signed_in = session.is_some(),
+            ?screen,
+            "session"
+        );
         let prefs = Preferences::load(store.root());
         let ui = flowy_ui::UiContext::new(
             Self::theme_options(&prefs),
@@ -248,6 +261,12 @@ impl FlowyApp {
         if let Some(dir) = I18n::dev_dir() {
             i18n.reload_dir(&dir);
         }
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new",
+            locale = %prefs.locale.code(),
+            "ui + i18n ready"
+        );
         let email =
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
         let code =
@@ -275,6 +294,11 @@ impl FlowyApp {
         place(&instructions, &saved.instructions, cx);
         place(&font_size_field, &prefs.font_size.to_string(), cx);
         place(&flex_api_key, &prefs.flex_api_key, cx);
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new",
+            "→ StudioPanel::new"
+        );
         let studio = {
             let product = crate::brand::product();
             let store_root = store.root().to_path_buf();
@@ -303,6 +327,11 @@ impl FlowyApp {
                 )
             })
         };
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new",
+            "→ LibraryPanel::new"
+        );
         let library = {
             let items = library_items();
             let i18n = i18n.clone();
@@ -466,9 +495,20 @@ impl FlowyApp {
             shell_watch: None,
             subscriptions,
         };
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new",
+            "→ refresh_models / refresh_credits"
+        );
         app.refresh_models(cx);
         app.refresh_credits(cx);
         app.start_credits_poll(cx);
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::new",
+            ?screen,
+            "done"
+        );
         app
     }
 
@@ -612,16 +652,26 @@ impl FlowyApp {
 
     fn refresh_models(&mut self, cx: &mut Context<'_, Self>) {
         let busy = self.studio.read(cx).agent.turn_status().is_busy();
-        if !catalog_refresh_allowed(
-            self.catalog_loading,
-            self.auth.session.is_some(),
-            busy,
-        ) {
+        let signed_in = self.auth.session.is_some();
+        if !catalog_refresh_allowed(self.catalog_loading, signed_in, busy) {
+            tracing::debug!(
+                target: "flowy.boot",
+                stage = "FlowyApp::refresh_models",
+                loading = self.catalog_loading,
+                signed_in,
+                busy,
+                "skip"
+            );
             return;
         }
         let Some(session) = self.auth.session.clone() else {
             return;
         };
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::refresh_models",
+            "fetch available_models"
+        );
         let client = AuthClient::from_env();
         let account = session
             .user_id
@@ -742,6 +792,12 @@ impl FlowyApp {
     /// balance. Background failures only affect the display state; they never
     /// sign the user out.
     fn refresh_credits(&mut self, cx: &mut Context<'_, Self>) {
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "FlowyApp::refresh_credits",
+            signed_in = self.auth.session.is_some(),
+            "enter"
+        );
         let Some(session) = self.auth.session.clone() else {
             self.studio.update(cx, |panel, cx| {
                 if panel.credits != flowy_studio::CreditsViewState::Unavailable
@@ -1197,6 +1253,11 @@ impl FlowyApp {
     }
 
     pub fn send_prompt(&mut self, cx: &mut Context<'_, Self>) {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "FlowyApp::send_prompt",
+            "enter"
+        );
         self.sync_studio_surface(cx);
         self.studio
             .update(cx, flowy_studio::StudioPanel::send_prompt);
@@ -1846,6 +1907,11 @@ fn product_mark(size: f32) -> gpui::Img {
 }
 
 pub fn run(cx: &mut App) {
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "app::run",
+        "enter"
+    );
     cx.set_app_identity(crate::brand::bundle_id(), crate::brand::product());
     cx.bind_keys(
         default_bindings().as_keybindings(Some(DEFAULT_INPUT_CONTEXT)),
@@ -1882,6 +1948,11 @@ pub fn run(cx: &mut App) {
     ]);
     cx.set_reduce_motion(true);
     flowy_ui::install_initial_tab_focus(cx).detach();
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "app::run",
+        "→ shell::install"
+    );
     flowy_shell::install(
         flowy_shell::Brand {
             product: crate::brand::product(),
@@ -1894,12 +1965,27 @@ pub fn run(cx: &mut App) {
         },
         cx,
     );
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "app::run",
+        "→ open_main_window"
+    );
     let window = open_main_window(cx);
     bind_shell_main_window(window);
     cx.activate(true);
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "app::run",
+        "done (window open + activated)"
+    );
 }
 
 pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "open_main_window",
+        "enter"
+    );
     let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1912,11 +1998,23 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
         ..WindowOptions::default()
     };
     let store = SessionStore::new(crate::session::default_root());
+    tracing::debug!(
+        target: "flowy.boot",
+        stage = "open_main_window::SessionStore::new",
+        root = %store.root().display(),
+        "session store"
+    );
     let window = cx
         .open_window(options, |window, cx| {
             let dark = matches!(
                 window.appearance(),
                 WindowAppearance::Dark | WindowAppearance::VibrantDark
+            );
+            tracing::debug!(
+                target: "flowy.boot",
+                stage = "open_main_window::open_window",
+                dark,
+                "→ FlowyApp::new"
             );
             cx.new(|cx| FlowyApp::new(store, dark, cx))
         })
@@ -1944,6 +2042,12 @@ pub fn open_main_window(cx: &mut App) -> gpui::WindowHandle<FlowyApp> {
                 });
             app.subscriptions.push(subscription);
             apply_pending_deep_links(app, cx);
+            tracing::debug!(
+                target: "flowy.boot",
+                stage = "open_main_window",
+                ?app.screen,
+                "post-open hooks done"
+            );
         })
         .ok();
     window

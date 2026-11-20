@@ -124,6 +124,14 @@ impl AgentHandle {
 
     #[must_use]
     pub fn with_config(store_root: PathBuf, config: LlmConfig) -> Self {
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "AgentHandle::with_config",
+            root = %store_root.display(),
+            live = config.api_key.is_some(),
+            model = %config.model,
+            "enter"
+        );
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -140,10 +148,20 @@ impl AgentHandle {
             }),
         };
         handle.boot(config);
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "AgentHandle::with_config",
+            "done"
+        );
         handle
     }
 
     fn boot(&self, config: LlmConfig) {
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "AgentHandle::boot",
+            "enter"
+        );
         let state = Arc::clone(&self.inner.state);
         let index = match SessionIndex::load(&state.root) {
             Ok(index) => index,
@@ -236,6 +254,12 @@ impl AgentHandle {
         hydrate_engine(&engine, &state, &config);
         sync_engine_titles(&engine, &state);
         *lock(&self.inner.engine) = Some(engine);
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "AgentHandle::boot",
+            sessions = lock(&state.live).len(),
+            "done"
+        );
     }
 
     pub fn apply_config(&self, config: LlmConfig) -> Result<(), &'static str> {
@@ -411,6 +435,13 @@ impl AgentHandle {
         submission: Option<u128>,
     ) -> Result<String, &'static str> {
         let text = text.trim();
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "AgentHandle::submit_message",
+            chars = text.chars().count(),
+            retry = submission.is_some(),
+            "enter"
+        );
         if text.is_empty() {
             return Err("notice.prompt_empty");
         }
@@ -444,6 +475,15 @@ impl AgentHandle {
             .is_none()
             .then(|| echo_stream_fn(prompt.clone()));
         let cwd = ensure_tool_cwd(&state.root);
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "AgentHandle::submit_message",
+            session = %id,
+            live = config.api_key.is_some(),
+            model = %config.model,
+            base_url = %config.base_url,
+            "→ Engine::start_with_config"
+        );
         let turn = engine
             .start_with_config(
                 id.clone(),
@@ -496,9 +536,23 @@ impl AgentHandle {
         let state = Arc::clone(state);
         let receipt = id.clone();
         self.inner.runtime.spawn(async move {
-            if matches!(turn.await, Ok(LoopOutcome::Completed))
+            let outcome = turn.await;
+            tracing::debug!(
+                target: "flowy.prompt",
+                stage = "AgentHandle::submit_message",
+                session = %id,
+                ok = outcome.is_ok(),
+                "turn finished"
+            );
+            if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
             {
+                tracing::debug!(
+                    target: "flowy.prompt",
+                    stage = "AgentHandle::generate_title",
+                    session = %id,
+                    "sidecar LLM"
+                );
                 generate_title(engine, state, config, signal, id, prompt).await;
             }
         });

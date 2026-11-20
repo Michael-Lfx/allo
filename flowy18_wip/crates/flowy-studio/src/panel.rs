@@ -157,6 +157,14 @@ impl StudioPanel {
         ui: UiContext,
         cx: &mut Context<'_, Self>,
     ) -> Self {
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "StudioPanel::new",
+            store_root = %config.store_root.display(),
+            ?config.model,
+            ?config.plan,
+            "enter"
+        );
         let StudioConfig {
             product,
             i18n,
@@ -176,12 +184,23 @@ impl StudioPanel {
                     cx.notify();
                 }
             });
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "StudioPanel::new",
+            "→ AgentHandle::with_config"
+        );
         let agent = AgentHandle::with_config(store_root.clone(), llm);
         let surface = if agent.has_messages() {
             StudioSurface::Chat
         } else {
             StudioSurface::Home
         };
+        tracing::debug!(
+            target: "flowy.boot",
+            stage = "StudioPanel::new",
+            ?surface,
+            "agent ready"
+        );
         let theme = ui.theme.read(cx).resolved();
         let theme_sub = cx.observe(&ui.theme, |panel, entity, cx| {
             panel.theme = entity.read(cx).resolved();
@@ -225,7 +244,14 @@ impl StudioPanel {
         let composer_sub =
             cx.subscribe(&composer, |panel, _, event: &ComposerEvent, cx| {
                 match event {
-                    ComposerEvent::Send => panel.send_prompt(cx),
+                    ComposerEvent::Send => {
+                        tracing::debug!(
+                            target: "flowy.prompt",
+                            stage = "ui.composer.Send",
+                            "send"
+                        );
+                        panel.send_prompt(cx);
+                    }
                     ComposerEvent::Stop => panel.stop_turn(cx),
                     ComposerEvent::ModelMenu(anchor) => {
                         panel.model_menu_open = !panel.model_menu_open
@@ -491,12 +517,33 @@ impl StudioPanel {
     }
 
     pub fn send_prompt(&mut self, cx: &mut Context<'_, Self>) {
-        if !self.cloud_ready || self.catalog.selected_model().is_none() {
+        let model = self.catalog.selected_model().map(|m| m.id.clone());
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "StudioPanel::send_prompt",
+            cloud_ready = self.cloud_ready,
+            model = ?model,
+            chars = self.prompt.read(cx).as_str().trim().chars().count(),
+            "enter"
+        );
+        if !self.cloud_ready || model.is_none() {
+            tracing::debug!(
+                target: "flowy.prompt",
+                stage = "StudioPanel::send_prompt",
+                reason = "cloud_or_model",
+                "reject"
+            );
             self.emit_notice(Some("notice.agent_failed"), cx);
             return;
         }
         let text = self.prompt.read(cx).as_str().trim().to_string();
         if text.is_empty() {
+            tracing::debug!(
+                target: "flowy.prompt",
+                stage = "StudioPanel::send_prompt",
+                reason = "empty",
+                "reject"
+            );
             self.emit_notice(Some("notice.prompt_empty"), cx);
             return;
         }
@@ -516,7 +563,15 @@ impl StudioPanel {
                 cx.emit(StudioEvent::SessionsChanged);
                 cx.notify();
             }
-            Err(key) => self.emit_notice(Some(key), cx),
+            Err(key) => {
+                tracing::debug!(
+                    target: "flowy.prompt",
+                    stage = "StudioPanel::send_prompt",
+                    reason = key,
+                    "AgentHandle::send failed"
+                );
+                self.emit_notice(Some(key), cx);
+            }
         }
     }
 

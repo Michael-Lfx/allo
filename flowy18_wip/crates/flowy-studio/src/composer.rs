@@ -122,6 +122,11 @@ impl ChatComposer {
                     if running || !draft || !this.cloud_ready {
                         return;
                     }
+                    tracing::debug!(
+                        target: "flowy.prompt",
+                        stage = "ui.composer.SubmitComposer",
+                        "submit"
+                    );
                     cx.emit(ComposerEvent::Send);
                 },
             ))
@@ -248,6 +253,11 @@ impl ChatComposer {
             .render(
                 &self.theme,
                 cx.listener(|_, _, _, cx| {
+                    tracing::debug!(
+                        target: "flowy.prompt",
+                        stage = "ui.composer.chat-send",
+                        "click"
+                    );
                     cx.emit(ComposerEvent::Send);
                 }),
             )

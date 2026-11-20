@@ -17,6 +17,7 @@ gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

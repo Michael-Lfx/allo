@@ -94,6 +94,16 @@ pub async fn run_turn(
     stream_fn: StreamFn,
     emit: Arc<dyn AgentEmitter>,
 ) -> Result<TurnResult, String> {
+    tracing::debug!(
+        target: "flowy.prompt",
+        stage = "run_turn",
+        model = %request.route.model,
+        base_url = %request.route.base_url,
+        history = request.history.len(),
+        tools = request.tools.len(),
+        chars = request.prompt.chars().count(),
+        "→ run_agent_loop"
+    );
     let prompts = vec![AgentMessage::User(UserMessage::new(
         UserContent::Text(request.prompt),
         now_ms(),
@@ -143,6 +153,13 @@ pub async fn run_turn(
             .map_err(|error| error.to_string())?;
     let outcome = outcome_of(&new_messages);
     let messages = to_host_messages(&new_messages);
+    tracing::debug!(
+        target: "flowy.prompt",
+        stage = "run_turn",
+        ?outcome,
+        new_messages = messages.len(),
+        "done"
+    );
     Ok(TurnResult { messages, outcome })
 }
 

@@ -265,6 +265,14 @@ impl Engine {
         session_id: &str,
         prompt: &str,
     ) -> Result<LoopOutcome, RunError> {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "Engine::run",
+            session = %session_id,
+            chars = prompt.chars().count(),
+            mode = "live",
+            "enter"
+        );
         let prepared = self.prepare(session_id, prompt, None, true, None)?;
         self.run_prepared(session_id, prompt, prepared, None).await
     }
@@ -276,6 +284,13 @@ impl Engine {
         prompt: &str,
         stream: StreamFn,
     ) -> Result<LoopOutcome, RunError> {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "Engine::run_with_stream",
+            session = %session_id,
+            chars = prompt.chars().count(),
+            "enter"
+        );
         let prepared = self.prepare(session_id, prompt, None, false, None)?;
         self.run_prepared(session_id, prompt, prepared, Some(stream))
             .await
@@ -291,6 +306,14 @@ impl Engine {
         submission: Option<u128>,
     ) -> Result<BoxFuture<'static, Result<LoopOutcome, RunError>>, RunError>
     {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "Engine::start_with_config",
+            session = %session_id,
+            chars = prompt.chars().count(),
+            echo = stream.is_some(),
+            "enter"
+        );
         let prepared = self.prepare(
             &session_id,
             &prompt,
@@ -314,6 +337,14 @@ impl Engine {
         needs_credential: bool,
         submission: Option<u128>,
     ) -> Result<PreparedTurn, RunError> {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "Engine::prepare",
+            session = %session_id,
+            chars = prompt.chars().count(),
+            needs_credential,
+            "enter"
+        );
         let (prepared, saved) = {
             let mut inner = self.inner.lock().unwrap();
             let config = config.unwrap_or_else(|| inner.config.clone());
@@ -396,6 +427,16 @@ impl Engine {
             )
         });
         let tools = build_tools(&config, session_id, ticket.signal().clone());
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "Engine::run_prepared",
+            session = %session_id,
+            history = history.len(),
+            tools = tools.len(),
+            model = %config.route.model,
+            base_url = %config.route.base_url,
+            "→ run_turn"
+        );
         let request = TurnRequest {
             session_id: Some(session_id.to_owned()),
             system: config.system,

@@ -71,6 +71,15 @@ pub fn openai_stream_fn(
     route: &ModelRoute,
     api_key: Option<String>,
 ) -> StreamFn {
+    tracing::debug!(
+        target: "flowy.prompt",
+        stage = "openai_stream_fn::build",
+        provider = %route.provider,
+        model = %route.model,
+        base_url = %route.base_url,
+        has_key = api_key.is_some(),
+        "provider ready"
+    );
     let model = route.rpi_model();
     let provider =
         Arc::new(OpenAiCompletionsProvider::with_models_without_env_api_key(
@@ -80,6 +89,13 @@ pub fn openai_stream_fn(
             vec![model.clone()],
         ));
     rpi_agent::stream_fn(move |_requested, context, options| {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "openai_stream_fn::invoke",
+            model = %model.id,
+            base_url = %model.base_url,
+            "→ HTTP Provider::stream_simple"
+        );
         let provider = Arc::clone(&provider);
         let model = model.clone();
         let context = context.clone();
@@ -92,6 +108,12 @@ pub fn openai_stream_fn(
             while let Some(event) = inner.next().await {
                 producer.push(event).await;
             }
+            tracing::debug!(
+                target: "flowy.prompt",
+                stage = "openai_stream_fn::invoke",
+                model = %model.id,
+                "stream ended"
+            );
         });
         consumer
     })
