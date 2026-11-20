@@ -6,7 +6,6 @@ mod composer;
 mod credits;
 mod feed;
 mod file_kind;
-mod file_target;
 mod history;
 pub mod library;
 mod markdown;
