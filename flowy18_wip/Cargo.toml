@@ -43,6 +43,7 @@ repository = "https://github.com/flowy-app/flowy"
 [workspace.dependencies]
 open = "5"
 pulldown-cmark = { version = "0.13.6", default-features = false }
+similar = "2"
 url = "2.5"
 flowy-core = { path = "crates/flowy-core" }
 flowy-app = { path = "crates/flowy-app" }
@@ -165,5 +166,8 @@ debug-assertions = true
 
 # Local fix for a self-deadlock in gpui-ce 0.3.0: the macOS launch callback
 # kept the platform mutex locked, so the first open_window never returned.
-[patch.crates-io]
-gpui_ce_macos = { path = ".scratch/gpui_ce_macos-0.3.0" }
+# Disabled: `.scratch/gpui_ce_macos-0.3.0` is absent from this checkout and no
+# crate depends on `gpui_ce_macos`, so this patch failed every cargo command.
+# Restore it together with the patched source when macOS builds need it.
+# [patch.crates-io]
+# gpui_ce_macos = { path = ".scratch/gpui_ce_macos-0.3.0" }

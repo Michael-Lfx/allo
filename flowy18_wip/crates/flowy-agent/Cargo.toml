@@ -12,6 +12,7 @@ publish = false
 flowy-agent-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+similar = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = { workspace = true }
 
