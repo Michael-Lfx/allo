@@ -5,11 +5,14 @@ mod chat;
 mod composer;
 mod credits;
 mod feed;
+mod file_kind;
+mod file_target;
 mod history;
 pub mod library;
 mod markdown;
 mod panel;
 mod projects;
+mod starter;
 mod studio;
 
 pub use composer::SubmitComposer;

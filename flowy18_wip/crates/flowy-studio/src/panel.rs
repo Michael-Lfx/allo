@@ -138,6 +138,8 @@ pub struct StudioPanel {
     pub product: &'static str,
     pub surface: StudioSurface,
     pub notice: Option<&'static str>,
+    /// Starter copy held back until the user confirms replacing the draft.
+    pub(crate) pending_starter: Option<String>,
     _prompt_sub: gpui::Subscription,
     pump: Option<Task<()>>,
 }
@@ -322,6 +324,7 @@ impl StudioPanel {
             product,
             surface,
             notice: initial_notice,
+            pending_starter: None,
             _prompt_sub: prompt_sub,
             pump: None,
         };
@@ -658,6 +661,40 @@ impl StudioPanel {
     ) {
         let text = self.t(key);
         self.fill_prompt(&text, cx);
+    }
+
+    /// Fills the prompt from a starter, asking first if a draft would be lost.
+    pub(crate) fn request_fill_prompt(
+        &mut self,
+        text: String,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let draft_empty = self.prompt.read(cx).as_str().trim().is_empty();
+        if draft_empty {
+            self.pending_starter = None;
+            self.fill_prompt(&text, cx);
+            return;
+        }
+        self.pending_starter = Some(text);
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_pending_starter(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(text) = self.pending_starter.take() {
+            self.fill_prompt(&text, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_pending_starter(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.pending_starter = None;
+        cx.notify();
     }
 
     pub fn create_project(

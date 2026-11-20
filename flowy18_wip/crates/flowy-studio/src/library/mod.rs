@@ -1,7 +1,7 @@
 //! Resource browsing with injected data. Demo fixtures belong to examples.
 
 pub mod model;
-mod view;
+pub(crate) mod view;
 
 pub use model::{
     Category, LibraryItem, LibraryModel, LibrarySort, LibraryView,
