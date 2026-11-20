@@ -160,6 +160,11 @@ impl FlowyApp {
         theme::IconButton::new(id, self.t(label_key), icon)
             .size(theme::ControlSize::Small)
             .render(&self.theme, on_click)
+            // The title bar drag region is painted behind these buttons. GPUI
+            // reports the first window-control hitbox under the pointer, so a
+            // button must block that region. Otherwise Windows treats the click
+            // as a caption drag and minimize never runs.
+            .occlude()
             .window_control_area(area)
     }
 

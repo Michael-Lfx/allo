@@ -770,10 +770,8 @@ impl FlowyApp {
             return;
         };
         self.active_dialog = super::state::ActiveDialog::None;
-        self.studio
-            .update(cx, flowy_studio::StudioPanel::new_task);
-        let draft =
-            self.tf("skills.try_draft", &[("command", skill.command)]);
+        self.studio.update(cx, flowy_studio::StudioPanel::new_task);
+        let draft = self.tf("skills.try_draft", &[("command", skill.command)]);
         self.fill_prompt(&draft, cx);
         self.push_section(super::Section::Studio, cx);
     }
@@ -922,8 +920,7 @@ impl FlowyApp {
         let body = skill.map_or_else(String::new, |skill| {
             let command = skill.command;
             let detail = self.t(skill.body);
-            let hint =
-                self.tf("skills.details_body", &[("command", command)]);
+            let hint = self.tf("skills.details_body", &[("command", command)]);
             format!("{detail}\n\n{hint}")
         });
         theme::modal_layer(
