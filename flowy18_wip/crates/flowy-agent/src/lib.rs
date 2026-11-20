@@ -24,7 +24,9 @@ pub use model_directory::{
     CLOUD_TIERS, TierResolution, TierSpec, is_locked, required_level,
     resolve_tier,
 };
-pub use projection::{ChatHistory, ChatLine, TurnStatus};
+pub use projection::{
+    ChatHistory, ChatLine, FileChangeKind, TurnStatus,
+};
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
 
 #[cfg(test)]

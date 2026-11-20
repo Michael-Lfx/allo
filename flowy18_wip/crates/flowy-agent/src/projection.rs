@@ -47,6 +47,28 @@ pub enum ChatLine {
         task_id: String,
         goal: String,
     },
+    /// One file the agent changed, summarised for the chat card.
+    FileChange {
+        path: String,
+        /// Named `change` because `kind` is the enum's own serde tag.
+        change: FileChangeKind,
+        added: u32,
+        removed: u32,
+        /// Non-text content: line counts carry no meaning, so the card says so
+        /// instead of printing zeros.
+        #[serde(default)]
+        binary: bool,
+    },
+}
+
+/// How a file changed during one settled tool call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeKind {
+    Add,
+    Update,
+    Delete,
+    Move,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +244,24 @@ impl ChatProjection {
         self.lines.push(ChatLine::ToolResult {
             text: text.into(),
             is_error,
+        });
+    }
+
+    /// Append the file-change row for a tool call that already settled.
+    pub fn push_file_change(
+        &mut self,
+        path: impl Into<String>,
+        kind: FileChangeKind,
+        added: u32,
+        removed: u32,
+        binary: bool,
+    ) {
+        self.lines.push(ChatLine::FileChange {
+            path: path.into(),
+            change: kind,
+            added,
+            removed,
+            binary,
         });
     }
 }
