@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.7.3 - 2026-11-20
+
+- Ultra members keep their plan tier when models are locked. Branded builds keep their own product channel and main-window title.
+
 ## UniBuddy v1.1.0 - 2026-11-19
 
 - UniBuddy displays its own product name in the main window and uses the `unibuddy` cloud-login channel.
