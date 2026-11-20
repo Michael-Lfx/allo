@@ -143,6 +143,7 @@ lucide_icons! {
     external_link => "external-link.svg",
     file_plus => "file-plus.svg",
     folder => "folder.svg",
+    folder_open => "folder-open.svg",
     folder_pen => "folder-pen.svg",
     folder_plus => "folder-plus.svg",
     hash => "hash.svg",

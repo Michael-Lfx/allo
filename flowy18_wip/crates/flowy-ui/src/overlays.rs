@@ -505,6 +505,30 @@ pub fn popover(
         window,
         cx,
         PopoverPlacement { rtl, above: false },
+        true,
+    )
+}
+
+/// Positions a hover card without taking the pointer. A tooltip must not
+/// occlude its trigger, or the click that the card is describing never lands.
+pub(crate) fn information_popover(
+    id: impl Into<SharedString>,
+    anchor_id: impl Into<SharedString>,
+    content: impl IntoElement,
+    ui: &UiContext,
+    window: &Window,
+    cx: &App,
+    rtl: bool,
+) -> AnyElement {
+    popover_with_direction(
+        id,
+        anchor_id,
+        content,
+        ui,
+        window,
+        cx,
+        PopoverPlacement { rtl, above: false },
+        false,
     )
 }
 
@@ -525,6 +549,7 @@ pub fn popover_above(
         window,
         cx,
         PopoverPlacement { rtl, above: true },
+        true,
     )
 }
 
@@ -541,6 +566,7 @@ fn popover_with_direction(
     window: &Window,
     cx: &App,
     placement: PopoverPlacement,
+    capture_pointer: bool,
 ) -> AnyElement {
     let PopoverPlacement { rtl, above } = placement;
     let id = id.into();
@@ -574,38 +600,45 @@ fn popover_with_direction(
         point(bounds.left(), bounds.bottom())
     };
     let weak = ui.overlays.downgrade();
-    let outside_host = ui.overlays.downgrade();
-    let scope = id.clone();
-    let outside_scope = id.clone();
-    let panel = div()
+    let outside_scope = capture_pointer.then(|| id.clone());
+    let validate_scope = id.clone();
+    let mut panel = div()
         .id(id)
-        .occlude()
         .key_context("FlowyPopover")
         .when_some(focus, |panel, focus| {
             panel.track_focus(&focus).tab_stop(true)
         })
-        .max_h((window.viewport_size().height - px(32.)).max(px(48.)))
-        .overflow_y_scroll()
-        .child(content)
         .on_prepaint(move |_, _, cx| {
             let _ = weak.update(cx, |host, cx| {
-                host.validate_anchor(scope.clone(), anchor_id.as_ref(), cx);
+                host.validate_anchor(
+                    validate_scope.clone(),
+                    anchor_id.as_ref(),
+                    cx,
+                );
             });
-        })
-        .on_mouse_down_out(move |event, _, cx| {
-            // Let the trigger perform its normal toggle rather than closing
-            // on mouse-down and reopening on its following click.
-            if bounds.contains(&event.position) {
-                return;
-            }
-            let _ = outside_host.update(cx, |_, cx| {
-                cx.emit(OverlayEvent::CloseRequested {
-                    scope: outside_scope.clone(),
-                    reason: CloseReason::Outside,
-                });
-            });
-            cx.stop_propagation();
         });
+    if let Some(outside_scope) = outside_scope {
+        let outside_host = ui.overlays.downgrade();
+        panel = panel
+            .occlude()
+            .max_h((window.viewport_size().height - px(32.)).max(px(48.)))
+            .overflow_y_scroll()
+            .on_mouse_down_out(move |event, _, cx| {
+                // Let the trigger perform its normal toggle rather than closing
+                // on mouse-down and reopening on its following click.
+                if bounds.contains(&event.position) {
+                    return;
+                }
+                let _ = outside_host.update(cx, |_, cx| {
+                    cx.emit(OverlayEvent::CloseRequested {
+                        scope: outside_scope.clone(),
+                        reason: CloseReason::Outside,
+                    });
+                });
+                cx.stop_propagation();
+            });
+    }
+    let panel = panel.child(content);
     deferred(
         anchored()
             .anchor(if above && rtl {

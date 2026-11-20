@@ -114,10 +114,14 @@ where
                 window.refresh();
             }));
         });
-        wrapper = wrapper.child(crate::popover(
-            id.clone(),
+        wrapper = wrapper.child(super::overlays::information_popover(
+            SharedString::from(format!("{id}-layer")),
             anchor,
-            crate::tooltip(id, text, &theme),
+            crate::tooltip(
+                SharedString::from(format!("{id}-tip")),
+                text,
+                &theme,
+            ),
             ui,
             window,
             cx,
@@ -238,5 +242,62 @@ mod tests {
         assert!(tooltip_visible(cx));
         press(cx, "escape");
         assert!(!tooltip_visible(cx));
+    }
+
+    #[gpui::test]
+    fn clicking_the_trigger_fires_while_the_tooltip_is_open(
+        cx: &mut TestAppContext,
+    ) {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct ClickHarness {
+            ui: UiContext,
+            clicks: Rc<Cell<usize>>,
+        }
+
+        impl Render for ClickHarness {
+            fn render(
+                &mut self,
+                window: &mut Window,
+                cx: &mut Context<'_, Self>,
+            ) -> impl IntoElement {
+                self.ui
+                    .overlays
+                    .update(cx, |host, _| host.begin_frame(window));
+                let theme = self.ui.snapshot(cx);
+                let clicks = self.clicks.clone();
+                let trigger = crate::Button::new("help", "Help")
+                    .render(&theme, move |_, _, _| {
+                        clicks.set(clicks.get() + 1);
+                    })
+                    .absolute()
+                    .left(gpui::px(80.))
+                    .top(gpui::px(80.));
+                div().id("root").size_full().child(tooltip_trigger(
+                    "help-tooltip",
+                    trigger,
+                    "Helpful information",
+                    &self.ui,
+                    window,
+                    cx,
+                    false,
+                ))
+            }
+        }
+
+        let clicks = Rc::new(Cell::new(0));
+        let clicks_for_view = clicks.clone();
+        let (_, cx) = cx.add_window_view(move |_, cx| ClickHarness {
+            ui: UiContext::new(crate::ThemeOptions::default(), false, cx),
+            clicks: clicks_for_view,
+        });
+        let trigger = gpui::point(gpui::px(94.), gpui::px(94.));
+        let modifiers = gpui::Modifiers::default();
+        cx.simulate_mouse_move(trigger, None, modifiers);
+        assert!(tooltip_visible(cx));
+        cx.simulate_mouse_down(trigger, gpui::MouseButton::Left, modifiers);
+        cx.simulate_mouse_up(trigger, gpui::MouseButton::Left, modifiers);
+        assert_eq!(clicks.get(), 1);
     }
 }

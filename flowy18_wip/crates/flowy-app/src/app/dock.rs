@@ -1,6 +1,6 @@
 use super::{FlowyApp, Section};
 use flowy_ui as theme;
-use gpui::{Context, Window, div, prelude::*, px};
+use gpui::{ColorExt, Context, Window, div, prelude::*, px};
 
 #[derive(Clone, Copy)]
 enum DockIcon {
@@ -137,7 +137,7 @@ impl FlowyApp {
             .pb_3()
             .child(brand())
             .child(navigation)
-            .child(self.project_group_label(cx))
+            .child(self.project_group_label(window, cx))
             .child(self.project_rows(window, cx))
             .child(group_label(&self.theme, &self.t("dock.tasks")))
             .child(self.task_rows(cx))
@@ -152,11 +152,15 @@ impl FlowyApp {
         icon: DockIcon,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        item_row(*theme, id, label, selected, icon).on_click(cx.listener(
-            move |app, _event, _window, cx| {
-                app.select_navigation(id, section, cx);
-            },
-        ))
+        let row = item_row(*theme, id, label, selected, icon);
+        let row = if id == "new-task" {
+            row.debug_selector(|| "dock-nav-item".into())
+        } else {
+            row
+        };
+        row.on_click(cx.listener(move |app, _event, _window, cx| {
+            app.select_navigation(id, section, cx);
+        }))
     }
 
     pub(super) fn select_navigation(
@@ -197,154 +201,116 @@ impl FlowyApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
-        let mut rows = div().flex().flex_col();
-        let (mut projects, sessions, active_project_id) = {
+        let (mut projects, sessions) = {
             let studio = self.studio.read(cx);
-            (
-                studio.projects.clone(),
-                studio.agent.list_sessions(),
-                studio.active_project_id.clone(),
-            )
+            (studio.projects.clone(), studio.agent.list_sessions())
         };
         projects.sort_by_key(|project| !project.pinned);
         let active_session = self.studio.read(cx).agent.active_session_id();
+        let mut rows = div().mt(px(2.)).flex().flex_col().gap(px(2.));
         for project in projects {
             let project_id = project.id.clone();
             let expanded = self.expanded_projects.contains(&project_id);
-            let selected =
-                active_project_id.as_deref() == Some(project_id.as_str());
             let toggle_icon = if expanded {
                 theme::icons::chevron_down()
             } else {
-                theme::icons::folder()
+                theme::icons::folder_open()
             };
-            let row = div()
-                .id(format!("project-row-{project_id}"))
-                .mx_2()
-                .my_1()
-                .pl_1()
-                .pr_1()
-                .h(px(36.))
-                .rounded_lg()
-                .flex()
-                .items_center()
-                .gap_1()
-                .bg(if selected || expanded {
-                    self.theme.dock_selected()
-                } else {
-                    self.theme.dock()
-                })
-                .when(!selected && !expanded, |row| {
-                    row.hover(|row| row.bg(self.theme.dock_hover()))
-                })
-                .child(
-                    theme::IconButton::new(
-                        format!("project-expand-{project_id}"),
-                        if expanded {
-                            self.tf(
-                                "project.collapse",
-                                &[("name", &project.name)],
-                            )
-                        } else {
-                            self.tf(
-                                "project.expand",
-                                &[("name", &project.name)],
-                            )
-                        },
-                        toggle_icon,
-                    )
-                    .size(theme::ControlSize::Small)
-                    .render(
+            let menu_open =
+                self.project_menu.as_deref() == Some(project_id.as_str());
+            let toggle_label = if expanded {
+                self.tf("project.collapse", &[("name", &project.name)])
+            } else {
+                self.tf("project.expand", &[("name", &project.name)])
+            };
+            let hovered = window.use_keyed_state(
+                gpui::SharedString::from(format!(
+                    "project-row-hovered-{project_id}"
+                )),
+                cx,
+                |_, _| false,
+            );
+            let show_actions = *hovered.read(cx) || menu_open;
+            let row =
+                dock_nav_row(&self.theme, format!("project-row-{project_id}"))
+                    .bg(self.theme.dock())
+                    .when(show_actions, |row| {
+                        row.bg(self.theme.dock_selected())
+                    })
+                    .hover(|row| row.bg(self.theme.dock_selected()))
+                    .on_hover({
+                        let hovered = hovered.clone();
+                        move |active, window, cx| {
+                            let changed = hovered.update(cx, |state, cx| {
+                                if *state == *active {
+                                    return false;
+                                }
+                                *state = *active;
+                                cx.notify();
+                                true
+                            });
+                            if changed {
+                                window.refresh();
+                            }
+                        }
+                    })
+                    .debug_selector(|| "project-row".into())
+                    .child(project_folder_toggle(
+                        window,
                         &self.theme,
+                        format!("project-expand-{project_id}"),
+                        toggle_label,
+                        toggle_icon,
                         cx.listener({
                             let id = project_id.clone();
                             move |app, _event, _window, cx| {
                                 app.toggle_project_expanded(&id, cx);
                             }
                         }),
-                    ),
-                )
-                .child(
-                    theme::interactive(
-                        format!("project-open-{project_id}"),
-                        project.name.clone(),
-                        &self.theme,
-                    )
-                    .h_full()
-                    .min_w_0()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .whitespace_nowrap()
+                    ))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(self.theme.body_size())
-                            .child(project.name.clone()),
-                    )
-                    .when(project.pinned, |row| {
-                        row.child(
-                            theme::icons::pin().text_color(self.theme.muted()),
+                        theme::interactive(
+                            format!("project-open-{project_id}"),
+                            project.name.clone(),
+                            &self.theme,
                         )
-                    })
-                    .on_click(cx.listener({
-                        let id = project_id.clone();
-                        move |app, _event, _window, cx| {
-                            app.user_menu = false;
-                            app.open_project(&id, cx);
-                        }
-                    })),
-                );
-            let row = if expanded {
-                let menu_anchor = format!("project-menu-trigger-{project_id}");
-                row.child(theme::anchor_trigger(
-                    theme::IconButton::new(
-                        format!("project-menu-button-{project_id}"),
-                        self.t("project.menu"),
-                        theme::icons::ellipsis(),
-                    )
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &self.theme,
-                        cx.listener({
+                        .border_0()
+                        .h_full()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .whitespace_nowrap()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(self.theme.body_size())
+                                .child(project.name.clone()),
+                        )
+                        .when(project.pinned, |row| {
+                            row.child(
+                                theme::icons::pin()
+                                    .text_color(self.theme.muted()),
+                            )
+                        })
+                        .on_click(cx.listener({
                             let id = project_id.clone();
                             move |app, _event, _window, cx| {
-                                app.toggle_project_menu(&id, cx);
+                                app.user_menu = false;
+                                app.open_project(&id, cx);
                             }
-                        }),
-                    ),
-                    menu_anchor,
-                    &self.ui,
-                ))
-                .child(theme::tooltip_trigger(
-                    format!("project-new-task-tip-{project_id}"),
-                    theme::IconButton::new(
-                        format!("project-new-task-{project_id}"),
-                        self.t("project.new_task"),
-                        theme::icons::square_pen(),
+                        })),
                     )
-                    .size(theme::ControlSize::Small)
-                    .render(
-                        &self.theme,
-                        cx.listener({
-                            let id = project_id.clone();
-                            move |app, _event, _window, cx| {
-                                app.project_new_task(&id, cx);
-                            }
-                        }),
-                    ),
-                    self.t("project.new_task"),
-                    &self.ui,
-                    window,
-                    cx,
-                    self.i18n.locale().is_rtl(),
-                ))
-            } else {
-                row
-            };
+                    .when(show_actions, |row| {
+                        row.child(self.project_row_actions(
+                            window,
+                            cx,
+                            &project_id,
+                        ))
+                    });
             rows = rows.child(row);
 
             if expanded {
@@ -367,6 +333,62 @@ impl FlowyApp {
         rows
     }
 
+    fn project_row_actions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        project_id: &str,
+    ) -> impl IntoElement {
+        let menu_anchor = format!("project-menu-trigger-{project_id}");
+        div()
+            .id(format!("project-actions-{project_id}"))
+            .flex()
+            .items_center()
+            .debug_selector(|| "project-actions".into())
+            .child(theme::anchor_trigger(
+                dock_icon_button(
+                    window,
+                    theme::IconButton::new(
+                        format!("project-menu-button-{project_id}"),
+                        self.t("project.menu"),
+                        theme::icons::ellipsis(),
+                    ),
+                    &self.theme,
+                    cx.listener({
+                        let id = project_id.to_owned();
+                        move |app, _event, _window, cx| {
+                            app.toggle_project_menu(&id, cx);
+                        }
+                    }),
+                ),
+                menu_anchor,
+                &self.ui,
+            ))
+            .child(theme::tooltip_trigger(
+                format!("project-new-task-tip-{project_id}"),
+                dock_icon_button(
+                    window,
+                    theme::IconButton::new(
+                        format!("project-new-task-{project_id}"),
+                        self.t("project.new_task"),
+                        theme::icons::square_pen(),
+                    ),
+                    &self.theme,
+                    cx.listener({
+                        let id = project_id.to_owned();
+                        move |app, _event, window, cx| {
+                            app.project_new_task(&id, window, cx);
+                        }
+                    }),
+                ),
+                self.t("project.new_task"),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ))
+    }
+
     fn project_task_row(
         &self,
         session_id: &str,
@@ -378,9 +400,8 @@ impl FlowyApp {
         let session_id = session_id.to_owned();
         theme::interactive(id, title.clone(), &self.theme)
             .mx_2()
-            .ml(px(18.))
-            .h(px(34.))
-            .px_2()
+            .px(self.theme.space(8.))
+            .py(self.theme.space(4.))
             .rounded_md()
             .flex()
             .items_center()
@@ -389,7 +410,7 @@ impl FlowyApp {
             .when(!selected, |row| {
                 row.hover(|row| row.bg(self.theme.dock_hover()))
             })
-            .child(theme::icons::book().text_color(self.theme.muted()))
+            .child(div().w(px(16.)).h(px(16.)).flex_shrink_0())
             .child(
                 div()
                     .min_w_0()
@@ -458,35 +479,62 @@ impl FlowyApp {
         rows
     }
 
-    fn project_group_label(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .px_4()
-            .pt_4()
-            .pb_1()
-            .flex()
-            .items_center()
+    fn project_group_label(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let hovered = window.use_keyed_state(
+            gpui::SharedString::from("project-group-header-hovered"),
+            cx,
+            |_, _| false,
+        );
+        let show_add = *hovered.read(cx);
+        let line = body_line_height(&self.theme, window);
+        let header = dock_nav_row(&self.theme, "project-group-header")
             .justify_between()
+            .bg(self.theme.dock())
+            .hover(|row| row.bg(self.theme.dock_selected()))
+            .on_hover({
+                let hovered = hovered.clone();
+                move |active, window, cx| {
+                    let changed = hovered.update(cx, |state, cx| {
+                        if *state == *active {
+                            return false;
+                        }
+                        *state = *active;
+                        cx.notify();
+                        true
+                    });
+                    if changed {
+                        window.refresh();
+                    }
+                }
+            })
+            .debug_selector(|| "project-group-header".into())
             .child(
                 div()
                     .text_size(self.theme.caption_size())
+                    .line_height(line)
                     .text_color(self.theme.muted())
                     .child(self.t("dock.projects")),
             )
-            .child(
-                theme::IconButton::new(
-                    "new-project",
-                    self.t("dock.new_project"),
-                    theme::icons::plus(),
-                )
-                .size(theme::ControlSize::Small)
-                .render(
+            .when(show_add, |row| {
+                row.child(dock_icon_button(
+                    window,
+                    theme::IconButton::new(
+                        "new-project",
+                        self.t("dock.new_project"),
+                        theme::icons::plus(),
+                    ),
                     &self.theme,
                     cx.listener(|app, _event, _window, cx| {
                         app.user_menu = false;
                         app.open_project_create(cx);
                     }),
-                ),
-            )
+                ))
+            });
+        div().pt_4().child(header)
     }
 
     fn dock_footer(
@@ -881,6 +929,72 @@ fn group_label(
         .text_size(theme.caption_size())
         .text_color(theme.muted())
         .child(text.to_string())
+}
+
+/// Same inset, padding, border, and radius as a dock navigation row.
+fn dock_nav_row(
+    theme: &flowy_ui::ResolvedTheme,
+    id: impl Into<gpui::ElementId>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .border_2()
+        .border_color(theme.line().opacity(0.))
+        .mx_2()
+        .px(theme.space(8.))
+        .py(theme.space(4.))
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_2()
+}
+
+fn body_line_height(
+    theme: &flowy_ui::ResolvedTheme,
+    window: &Window,
+) -> gpui::Pixels {
+    window.pixel_snap(px(theme.body_size().as_f32() * gpui::phi().as_f32()))
+}
+
+fn dock_icon_button(
+    window: &Window,
+    button: theme::IconButton,
+    theme: &flowy_ui::ResolvedTheme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> theme::A11yElement<gpui::Div> {
+    let line = body_line_height(theme, window);
+    button
+        .size(theme::ControlSize::Small)
+        .render(theme, on_click)
+        .w(line)
+        .h(line)
+        .min_w(line)
+        .min_h(line)
+        .flex_shrink_0()
+}
+
+/// Project folder toggle. Same hit target as the other dock icons, with no
+/// fill of its own, so hovering it stays on the row background.
+fn project_folder_toggle(
+    window: &Window,
+    theme: &flowy_ui::ResolvedTheme,
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    icon: impl IntoElement,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let line = body_line_height(theme, window);
+    theme::interactive(id, label, theme)
+        .w(line)
+        .h(line)
+        .min_w(line)
+        .min_h(line)
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_click(on_click)
+        .child(icon)
 }
 
 fn item_row(
