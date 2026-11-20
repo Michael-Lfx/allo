@@ -25,7 +25,7 @@ pub use model_directory::{
     resolve_tier,
 };
 pub use projection::{
-    ChatHistory, ChatLine, FileChangeKind, TurnStatus,
+    ChatHistory, ChatLine, FileChangeKind, FileEntry, TurnStatus,
 };
 pub use title::{TITLE_MAX_CHARS, clamp_title, fallback_title};
 
