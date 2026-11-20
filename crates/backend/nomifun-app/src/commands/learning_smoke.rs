@@ -4607,12 +4607,13 @@ async fn run_grade(
 
 // ── rs5 R-b：review-replay 臂（病历回放夹具过真实评审）─────────────────────
 //
-// 两夹具批（批 JSON + known surface 全在臂内装配）过真实模型 N 跑，断言打回
-// 方向不翻转，flaky 率写进 readout（锁方向口径：不达 100% 照记）。读数面非
-// 门禁——方向翻转只在 readout 如实留痕（EXIT 保持 0），唯一硬判据沿 smoke
-// 惯例「全灭 0/n」语义 = 两夹具全部评审缺席（degraded）。每跑落 Archiving
-// 档案（管线已挂，coach 调用自动进 calls.jsonl 含 usage），per-run
-// elapsed/reasoning_tokens 从 calls.jsonl 增量行聚合供耗时观察。
+// 三夹具批（reject 锚 / 合成 pass 锚 / 11-20 live 批原文 pass 锚——批 JSON +
+// known surface 全在臂内装配）过真实模型 N 跑，断言打回方向不翻转，flaky 率
+// 写进 readout（锁方向口径：不达 100% 照记）。读数面非门禁——方向翻转只在
+// readout 如实留痕（EXIT 保持 0），唯一硬判据沿 smoke 惯例「全灭 0/n」语义
+// = 全部夹具评审缺席（degraded）。每跑落 Archiving 档案（管线已挂，coach
+// 调用自动进 calls.jsonl 含 usage），per-run elapsed/reasoning_tokens 从
+// calls.jsonl 增量行聚合供耗时观察。
 
 /// 每夹具真模型跑数（票面建议 3-5；常量可调）。
 const REVIEW_REPLAY_RUNS: usize = 3;
@@ -4632,16 +4633,29 @@ struct ReplayRunReadout {
     reasoning_tokens: Option<u64>,
 }
 
+/// 方向锚两值（rs5 修复 B）：小枚举替代 `"reject-anchor"` 字面量分流——
+/// 装配点定枚举、`direction_hit` 编译期穷尽，label 笔误不再静默按 pass 计。
+/// readout 行标签是 display 面（[`ReplayFixture::label`] 原文照印），分流
+/// 一律走本枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayDirection {
+    /// reject 锚：problems 非空 = 打回。
+    RejectAnchor,
+    /// pass 锚：problems 空且非降级 = 放行。
+    PassAnchor,
+}
+
 impl ReplayRunReadout {
     /// 方向命中判定（锁定方向口径）：reject 锚 = problems 非空；pass 锚 =
     /// problems 空且非降级（降级放行 ≠ 评审通过——静默降级是 watch 面）。
-    fn direction_hit(&self, anchor: &str) -> bool {
+    /// rs5 修复 B：入参为枚举，编译期穷尽，无 `_` 兜底。
+    fn direction_hit(&self, anchor: ReplayDirection) -> bool {
         if self.degraded {
             return false;
         }
         match anchor {
-            "reject-anchor" => self.problems > 0,
-            _ => self.problems == 0,
+            ReplayDirection::RejectAnchor => self.problems > 0,
+            ReplayDirection::PassAnchor => self.problems == 0,
         }
     }
 
@@ -4661,8 +4675,11 @@ impl ReplayRunReadout {
 /// 登记表/已教账快照的最小投影（生产 gate_batch 折进 `provenance_known`
 /// 的同一面；`replay_concept_review` 零 DB 依赖，靠它喂机械核与点名派生）。
 struct ReplayFixture {
-    /// readout 行标签（reject-anchor / pass-anchor）。
+    /// readout 行标签（reject-anchor / pass-anchor / live-pass-anchor；display
+    /// 面——分流一律走 [`ReplayDirection`]，不走这个串）。
     label: &'static str,
+    /// 方向锚（rs5 修复 B：装配点定枚举，dispatch 编译期穷尽）。
+    direction: ReplayDirection,
     /// 学习目标（进 CoachContext + 课程语境词切片）。
     goal: String,
     /// 已知面（已教名 ∪ 登记表名 ∪ 本批铸名；小写折叠同生产口径）。
@@ -4677,6 +4694,7 @@ struct ReplayFixture {
 fn reject_anchor_fixture() -> ReplayFixture {
     ReplayFixture {
         label: "reject-anchor",
+        direction: ReplayDirection::RejectAnchor,
         goal: "认识三角形与它的组成".into(),
         known: vec!["三角形".into(), "图形".into()],
         batch: nomifun_learning::ProposedBatch {
@@ -4709,7 +4727,8 @@ fn reject_anchor_fixture() -> ReplayFixture {
 /// 三节点 + 随批三铸名；known surface = 已教名（调用栈/函数定义/值存储位置/
 /// 变量绑定/参数传递/程序输出）∪ 三铸名 ∪ 登记表最小造数连接名。批文本全部
 /// 落在已知面 ∪ 虚字内——点名清单机械派生必须干净（机械面单测钉住），模型
-/// 应放行。断言口径：≥N-1/N 跑 pass。
+/// 应放行。断言口径：≥N-1/N 跑 pass。真实形态原文回放见
+/// [`live_pass_anchor_fixture`]（G 夹具，readout 形态）。
 fn pass_anchor_fixture() -> ReplayFixture {
     let known: Vec<String> = [
         // 已教名（11-20 live 课已教账快照）。
@@ -4788,6 +4807,7 @@ fn pass_anchor_fixture() -> ReplayFixture {
     };
     ReplayFixture {
         label: "pass-anchor",
+        direction: ReplayDirection::PassAnchor,
         goal: "函数的内存世界：栈、堆与求值".into(),
         known,
         batch: nomifun_learning::ProposedBatch {
@@ -4825,19 +4845,59 @@ fn pass_anchor_fixture() -> ReplayFixture {
     }
 }
 
+/// 11-20 live 日志批原文（G 夹具的批 JSON，录制逐字内嵌）：真实三节点批，
+/// live 门面带 3 条 `ng.mints.name_hint` 告警（批内「」段与定义用语的点名
+/// 形态如实保留——夹具不清洗）。readout 形态夹具：真实形态点名清单本就不
+/// 干净，机械面单测不断言「派生干净」。
+const REVIEW_REPLAY_LIVE_BATCH_JSON: &str = r#"{"nodes":[{"title":"栈帧分配：追踪函数调用时栈帧的压入与回收","purpose":"练什么：画出嵌套与递归调用时栈帧的压入顺序、各帧存放内容与返回后的回收，解释为什么栈上数据是临时的。切入：从「餐厅后厨按订单先后占台备菜、出菜后台面空出来给下一单」的排队占位经验切入，升级为函数调用在栈上压栈弹栈的机制语言。","intent":"衔接已教的调用栈（会读活动记录）与卡住的值存储位置（只知栈上临时、不知为何临时），把「栈上临时量」落实为「调用时开辟、返回时回收」的分配机制，为后续堆分配的对照和内存管理线铺底。","scope":"教函数调用时栈帧的压入、返回时弹出与空间回收，能用栈帧叠放图解释嵌套与递归调用中局部数据的存活范围，并指出调用栈报错链与栈帧的对应。不教栈帧的具体内存布局细节（寄存器、对齐），不教栈溢出排查。","est":20,"difficulty":3,"teaches":[{"name":"栈帧分配","tier":"apply"}],"assumes":[{"name":"函数定义","tier":"apply"},{"name":"调用栈","tier":"apply"},{"name":"值存储位置","tier":"apply"}]},{"title":"堆分配：演练堆上空间的申请、使用与释放","purpose":"练什么：对一段段「申请—读写—释放」的生命周期程序，标出堆上空间从何而来、何时归还。切入：从「租储物柜：东西要放多久自己定、占着不还柜子会一直满着」的日常经验切入，升级为堆区空间的显式申请与释放语义。","intent":"值存储位置只给了「堆上长存」的静态区分，没给动态机制；本节点补上申请与释放这一半，并与栈帧分配同轴对照（栈自动回收 vs 堆显式管理），为后续垃圾回收、引用计数与所有权转移开接口。","scope":"教按需向堆区申请一块空间、用地址访问它、不再使用时显式释放的完整周期，并对比栈上自动回收与堆上需要手动管理的差异。不教自动回收机制（垃圾回收、引用计数，留待后续），不教指针语法与指针算术。","est":20,"difficulty":3,"teaches":[{"name":"堆分配","tier":"apply"}],"assumes":[{"name":"值存储位置","tier":"apply"},{"name":"变量绑定","tier":"apply"}]},{"title":"求值策略：比较实参的立即求值与按需求值","purpose":"练什么：对带输出实参的调用程序，预测在立即求值与按需求值两种策略下实参表达式各被求值几次、输出顺序如何。切入：从「点菜时后厨先把所有原料备齐（立即），还是做到哪道菜才现取哪道菜的料（按需）」的备菜经验切入，升级为调用时实参何时被求值的执行规则。","intent":"执行模型线此前只有编译/解释的宏观区分，求值策略是它第一个「调用时实参发生了什么」的微观台阶；它把参数传递从结构（怎么交接）深化到语义（何时交接），是与短路求值同构的「立即/按需」二分，也是跨语言迁移对照表的关键列。","scope":"教两种求值策略：立即求值（实参在进入被调方前就先求值）与按需求值（实参延迟到首次使用才求值），用实参表达式里带输出的调用观察求值次数差异。不教按值/按引用传参的分类（参数传递的深化，留待后续），不教惰性求值的编译器优化细节。","est":25,"difficulty":3,"teaches":[{"name":"求值策略","tier":"apply"}],"assumes":[{"name":"函数定义","tier":"apply"},{"name":"参数传递","tier":"apply"},{"name":"程序输出","tier":"know"}]}],"mints":[{"canonical":"栈帧分配","aliases":["栈帧"],"definition":"函数调用时为其活动记录在栈上开辟、函数返回时回收的一块空间。","source":"教练提名：函数调用栈的存储单元"},{"canonical":"堆分配","aliases":[],"definition":"程序按需在堆区申请一块长度不定的空间，并在不再使用时显式释放。","source":"教练提名：值存储位置中堆区的动态应用"},{"canonical":"求值策略","aliases":["参数求值时机"],"definition":"规定函数调用时实参表达式在何时被求值（立即或按需）的规则。","source":"教练提名：参数传递的求值时机维度"}],"new_aliases":[],"note":"本批以「值存储位置」卡点为靶，长栈帧分配与堆分配两个对称半块（栈侧为何临时、堆侧如何长存），同轴对照而非同质重复；求值策略另开执行模型线的微观台阶，批内覆盖内存与执行两线。"}"#;
+
+/// pass 方向锚·真实形态（G 夹具，11-20 live 日志 batch_json 原文回放）：
+/// 三节点批（栈帧分配/堆分配/求值策略）+ 随批三铸名按录制原文装配；known
+/// 面 = 批内 assumes/teaches 名（调用栈/函数定义/值存储位置/变量绑定/参数
+/// 传递/程序输出）∪ 三铸名的**近似装配**（live 已教账/登记表全量投影不在
+/// 臂内）。**readout 形态夹具**：真实形态点名清单本就不干净——不要求
+/// 「派生干净」单测断言，只断言装配成功与方向计数照实记账。方向期望 =
+/// pass（今日 live 实过审）。
+fn live_pass_anchor_fixture() -> ReplayFixture {
+    let known: Vec<String> = [
+        // 批内 assumes 名（live 已教账快照的近似投影）。
+        "函数定义",
+        "调用栈",
+        "值存储位置",
+        "变量绑定",
+        "参数传递",
+        "程序输出",
+        // 本批三铸名（teaches 正名；生产 known 含本批产出，gate_batch 同缝）。
+        "栈帧分配",
+        "堆分配",
+        "求值策略",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    let batch: nomifun_learning::ProposedBatch =
+        serde_json::from_str(REVIEW_REPLAY_LIVE_BATCH_JSON)
+            .expect("11-20 live 批 JSON 原文必须可解析（夹具 const 与录制逐字一致）");
+    ReplayFixture {
+        label: "live-pass-anchor",
+        direction: ReplayDirection::PassAnchor,
+        goal: "函数的内存世界：栈、堆与求值".into(),
+        known,
+        batch,
+    }
+}
+
 /// calls.jsonl 自 `skip` 行起的增量 usage 聚合（rs5 臂耗时观察面）：返回
 /// (增量行数, reasoning_tokens 合计)。usage 缺席行（"absent"/error 行）如实
 /// 跳过不造数；无任何数字行 = reasoning None。`skip` 原地推进消费行数；
-/// 文件缺席/不可读 = (0, None)（档案面没建起来不冒充读数）。
-fn usage_delta_since(
-    path: Option<&Path>,
-    skip: &mut usize,
-) -> Result<(u64, Option<u64>)> {
+/// 文件缺席/不可读 = (0, None)（档案面没建起来不冒充读数）。rs5 修复 F①：
+/// 无失败路径（缺席臂照实返回零读数），不再包 `Result`。
+fn usage_delta_since(path: Option<&Path>, skip: &mut usize) -> (u64, Option<u64>) {
     let Some(path) = path else {
-        return Ok((0, None));
+        return (0, None);
     };
     let Ok(log) = std::fs::read_to_string(path) else {
-        return Ok((0, None));
+        return (0, None);
     };
     let lines: Vec<&str> = log.lines().collect();
     let fresh = lines.len().saturating_sub(*skip);
@@ -4853,20 +4913,18 @@ fn usage_delta_since(
         }
     }
     *skip = lines.len();
-    Ok((
-        fresh as u64,
-        reasoning_seen.then_some(reasoning_total),
-    ))
+    (fresh as u64, reasoning_seen.then_some(reasoning_total))
 }
 
-/// EXIT 判定（smoke 惯例「唯一硬判据 = 全灭 0/n」语义的方向面）：两夹具
-/// 全部跑评审缺席（degraded）= 评审管线真机没走通 → 非零 2；方向翻转/部分
-/// flaky 只进 readout（EXIT 恒 0——锁方向口径：不达 100% 照记）。
-fn review_replay_exit_code(all_degraded: bool) -> u8 {
+/// EXIT 判定（smoke 惯例「唯一硬判据 = 全灭 0/n」语义的方向面）：夹具
+/// 全部跑评审缺席（degraded）= 评审管线真机没走通 → 非零退出；方向翻转/
+/// 部分 flaky 只进 readout（EXIT 恒成功——锁方向口径：不达 100% 照记）。
+/// rs5 修复 F②：直接返回进程退出码单源——调用点不再各写一份常量 2。
+fn review_replay_exit_code(all_degraded: bool) -> ExitCode {
     if all_degraded {
-        2
+        ExitCode::from(2)
     } else {
-        0
+        ExitCode::SUCCESS
     }
 }
 
@@ -4900,7 +4958,7 @@ async fn replay_fixture_runs(
         if naming_terms.is_empty() {
             naming_terms = verdict.naming_terms.clone();
         }
-        let (llm_calls, reasoning_tokens) = usage_delta_since(usage_log, &mut consumed_lines)?;
+        let (llm_calls, reasoning_tokens) = usage_delta_since(usage_log, &mut consumed_lines);
         readouts.push(ReplayRunReadout {
             problems: verdict.problems.len(),
             degraded: verdict.degraded,
@@ -4946,7 +5004,13 @@ async fn run_review_replay(
         .as_ref()
         .map(|archiving| archiving.run_dir().join("calls.jsonl"));
 
-    let fixtures = [reject_anchor_fixture(), pass_anchor_fixture()];
+    // G 夹具（11-20 live 批原文）为 readout 形态：装配成功 + 方向计数照实
+    // 记账，不参与「派生干净」类机械面断言（真实形态点名清单本就不干净）。
+    let fixtures = [
+        reject_anchor_fixture(),
+        pass_anchor_fixture(),
+        live_pass_anchor_fixture(),
+    ];
     let mut any_verdict = false;
     let mut summaries = Vec::new();
     for fixture in &fixtures {
@@ -4969,13 +5033,12 @@ async fn run_review_replay(
         let total = readouts.len();
         let hits = readouts
             .iter()
-            .filter(|readout| readout.direction_hit(fixture.label))
+            .filter(|readout| readout.direction_hit(fixture.direction))
             .count();
         let degraded = readouts.iter().filter(|readout| readout.degraded).count();
-        let anchor = if fixture.label == "reject-anchor" {
-            "方向锚=problems 非空（打回）"
-        } else {
-            "方向锚=pass 且非降级（放行）"
+        let anchor = match fixture.direction {
+            ReplayDirection::RejectAnchor => "方向锚=problems 非空（打回）",
+            ReplayDirection::PassAnchor => "方向锚=pass 且非降级（放行）",
         };
         for (index, readout) in readouts.iter().enumerate() {
             println!(
@@ -5011,21 +5074,24 @@ async fn run_review_replay(
             );
         }
     }
-    if review_replay_exit_code(!any_verdict) != 0 {
+    let exit = review_replay_exit_code(!any_verdict);
+    if exit != ExitCode::SUCCESS {
         eprintln!(
-            "review-replay: 两夹具全部评审缺席（degraded {REVIEW_REPLAY_RUNS}/{REVIEW_REPLAY_RUNS}）\
-             ——评审管线真机没走通（凭据/模型可用性先查）"
+            "review-replay: {}个夹具全部评审缺席（degraded {REVIEW_REPLAY_RUNS}/{REVIEW_REPLAY_RUNS}）\
+             ——评审管线真机没走通（凭据/模型可用性先查）",
+            fixtures.len()
         );
-        return Ok(ExitCode::from(2));
+        return Ok(exit);
     }
     println!(
-        "OK review-replay runs={REVIEW_REPLAY_RUNS} fixtures=2 方向翻转={} ({} mode)",
+        "OK review-replay runs={REVIEW_REPLAY_RUNS} fixtures={} 方向翻转={} ({} mode)",
+        fixtures.len(),
         if flipped { "有（readout 见上行）" } else { "无" },
         db.as_deref()
             .map(|_| "--db 复用")
             .unwrap_or("从零临时库"),
     );
-    Ok(ExitCode::SUCCESS)
+    Ok(exit)
 }
 
 #[cfg(test)]
@@ -5167,6 +5233,77 @@ mod review_replay_tests {
         );
     }
 
+    /// G 夹具（11-20 live 批原文，readout 形态）：装配成功（批 JSON 原文
+    /// 逐字可解析 + 三节点/三铸名/assumes 名近似 known 面在场）+ 方向计数
+    /// 照实记账。**不断言「派生干净」**——真实形态点名清单本就不干净（live
+    /// 门面本就带 3 条 name_hint 告警），naming 只读不判。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn live_batch_fixture_assembles_and_counts_direction_honestly() {
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        // Scripted 按词分流：live 批不含「三角形」→ 全走 pass 桶（3 跑全放行）。
+        let scripted = ScriptedReplay::new(
+            Vec::new(),
+            vec![pass_verdict(), pass_verdict(), pass_verdict()],
+        );
+        let live = live_pass_anchor_fixture();
+        // 装配成功：批 JSON 原文可解析且三节点 teaches/三铸名/known 近似面在场。
+        assert_eq!(live.batch.nodes.len(), 3, "11-20 live 批三节点");
+        assert_eq!(live.batch.mints.len(), 3, "随批三铸名");
+        let teaches: Vec<&str> = live
+            .batch
+            .nodes
+            .iter()
+            .flat_map(|node| node.teaches.iter().map(|teach| teach.name.as_str()))
+            .collect();
+        assert_eq!(teaches, ["栈帧分配", "堆分配", "求值策略"]);
+        let mints: Vec<&str> = live
+            .batch
+            .mints
+            .iter()
+            .map(|mint| mint.canonical.as_str())
+            .collect();
+        assert_eq!(mints, ["栈帧分配", "堆分配", "求值策略"]);
+        for name in [
+            "函数定义",
+            "调用栈",
+            "值存储位置",
+            "变量绑定",
+            "参数传递",
+            "程序输出",
+            "栈帧分配",
+            "堆分配",
+            "求值策略",
+        ] {
+            assert!(
+                live.known.iter().any(|known_name| known_name == name),
+                "live 夹具 known 近似面缺 assumes/铸名：{name}"
+            );
+        }
+        // 方向计数照实记账：3 跑全放行 → hits=3/3（期望 pass，今日 live 实
+        // 过审；readout 形态不在此断言派生干净与否）。
+        let (readouts, _naming) = replay_fixture_runs(&scripted, None, &live, 3, None)
+            .await
+            .unwrap();
+        let hits = readouts
+            .iter()
+            .filter(|readout| readout.direction_hit(live.direction))
+            .count();
+        assert_eq!(
+            hits,
+            3,
+            "三跑全放行 → 方向照实记账（readout 形态不判派生）：{readouts:?}"
+        );
+        assert!(readouts.iter().all(|readout| !readout.degraded));
+    }
+
     /// 断言计数与 flaky 记账（Scripted 三跑）：reject 桶 2 拒 1 放 →
     /// hits=2/3、flaky=1/3；全放行臂 → flaky=3/3 照记（锁定方向口径：
     /// readout 如实，不在此判 EXIT）。
@@ -5191,7 +5328,7 @@ mod review_replay_tests {
             .unwrap();
         let hits = readouts
             .iter()
-            .filter(|readout| readout.direction_hit("reject-anchor"))
+            .filter(|readout| readout.direction_hit(ReplayDirection::RejectAnchor))
             .count();
         assert_eq!(hits, 2, "2 拒 1 放 → hits=2/3：{readouts:?}");
         assert_eq!(3 - hits, 1, "flaky=1/3 记账");
@@ -5208,7 +5345,7 @@ mod review_replay_tests {
             .unwrap();
         let hits = readouts
             .iter()
-            .filter(|readout| readout.direction_hit("reject-anchor"))
+            .filter(|readout| readout.direction_hit(ReplayDirection::RejectAnchor))
             .count();
         assert_eq!(hits, 0, "全放行 → 方向全灭：{readouts:?}");
         assert_eq!(3 - hits, 3, "flaky=3/3 照记");
@@ -5233,20 +5370,22 @@ mod review_replay_tests {
             .unwrap();
         assert_eq!(readouts.len(), 1);
         assert!(readouts[0].degraded, "桶空传输双败 → 评审缺席：{readouts:?}");
-        assert!(!readouts[0].direction_hit("reject-anchor"));
+        assert!(!readouts[0].direction_hit(ReplayDirection::RejectAnchor));
         assert_eq!(readouts[0].verdict_word(), "degraded");
     }
 
-    /// EXIT 语义（smoke「唯一硬判据 = 全灭 0/n」方向面）：两夹具全部评审
-    /// 缺席 → 非零 2；有任一有效结论 → 0（方向翻转不改变 EXIT）。
+    /// EXIT 语义（smoke「唯一硬判据 = 全灭 0/n」方向面）：夹具全部评审
+    /// 缺席 → 非零；有任一有效结论 → 成功（方向翻转不改变 EXIT）。F②：
+    /// 退出码单源（函数直接返回 ExitCode，调用点不再复写常量 2）。
     #[test]
     fn exit_code_gates_only_on_total_review_absence() {
-        assert_eq!(review_replay_exit_code(false), 0);
-        assert_eq!(review_replay_exit_code(true), 2);
+        assert_eq!(review_replay_exit_code(false), ExitCode::SUCCESS);
+        assert_eq!(review_replay_exit_code(true), ExitCode::from(2));
     }
 
     /// calls.jsonl 增量 usage 聚合：reasoning 求和、absent/error 行如实跳过、
-    /// skip 推进后增量为零；文件缺席 = (0, None)（不冒充读数）。
+    /// skip 推进后增量为零；文件缺席 = (0, None)（不冒充读数）。F①：无
+    /// 失败路径，返回裸元组。
     #[test]
     fn usage_delta_since_sums_reasoning_and_treats_absent_as_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -5261,26 +5400,26 @@ mod review_replay_tests {
         )
         .unwrap();
         let mut skip = 0usize;
-        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip).unwrap();
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip);
         assert_eq!(calls, 3);
         assert_eq!(reasoning, Some(9561));
         // skip 已推进：无新行 = 零增量。
-        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip).unwrap();
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip);
         assert_eq!(calls, 0);
         assert_eq!(reasoning, None);
         // 追加一行带 reasoning 的调用 → 增量恰一行。
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
         writeln!(file, r#"{{"usage":{{"reasoning_tokens":28579}}}}"#).unwrap();
-        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip).unwrap();
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip);
         assert_eq!(calls, 1);
         assert_eq!(reasoning, Some(28579));
         // 文件缺席臂。
         let mut skip = 0usize;
         let (calls, reasoning) =
-            usage_delta_since(Some(&dir.path().join("missing.jsonl")), &mut skip).unwrap();
+            usage_delta_since(Some(&dir.path().join("missing.jsonl")), &mut skip);
         assert_eq!((calls, reasoning), (0, None));
-        let (calls, reasoning) = usage_delta_since(None, &mut skip).unwrap();
+        let (calls, reasoning) = usage_delta_since(None, &mut skip);
         assert_eq!((calls, reasoning), (0, None));
     }
 }

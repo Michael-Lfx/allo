@@ -2013,6 +2013,35 @@ pub(crate) async fn concept_review(
 
 // ── rs5 R-b 病历回放缝（smoke review-replay 臂专用公开面）─────────────────
 
+/// 回放评审的挂号表机械读数（rs5 修复 C：命名结构替代匿名
+/// `(usize, usize, usize, bool)` 四元组——字段名即语义，臂 readout 消费点
+/// 不再靠位置猜）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplayProvenanceReadout {
+    /// 被接受的结论携带的挂号表行数。
+    pub rows: usize,
+    /// 机械校验判「结论不可用」的次数（含表缺失/行伪/表键解析失败）。
+    pub invalid: usize,
+    /// 带死因重试评审的次数（0 或 1——恰一次）。
+    pub retried: usize,
+    /// 重试仍败 → Degraded 保守放行。
+    pub degraded: bool,
+}
+
+/// 回放评审的碎片裁决机械读数（rs5 修复 C：命名结构替代匿名四元组）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplayFragmentReadout {
+    /// 机械派生待裁决词数（合并渲染口径去重保序，与 `merged_row_count`
+    /// 同源——[`fragment_verdict::merged_unique_terms`] 单源）。
+    pub fragments: usize,
+    /// 被接受的结论携带的裁决行数。
+    pub rows: usize,
+    /// 未处置片段数（report-only 降 findings / enforce 合成打回）。
+    pub unhandled: usize,
+    /// 「名词却放行」类自相矛盾两连败 → Degraded 保守放行。
+    pub degraded: bool,
+}
+
 /// 一次回放评审的公开投影（[`replay_concept_review`] 的返回面）：方向判定
 /// 只看 problems/degraded 两字段，机械读数随行透出——臂 readout 与夹具机械
 /// 面单测（Scripted 注入）共用这个形状，不回传 crate 内私有类型
@@ -2028,10 +2057,10 @@ pub struct ReplayReviewVerdict {
     /// 机械派生的点名清单词（term 原文，合并渲染口径去重保序）：夹具机械
     /// 面断言（reject 夹具必含折叠名词、pass 夹具必须干净）与臂读数共用。
     pub naming_terms: Vec<String>,
-    /// 挂号表机械校验读数 (rows, invalid, retried, degraded)。
-    pub provenance: (usize, usize, usize, bool),
-    /// 碎片裁决机械读数 (fragments, rows, unhandled, degraded)。
-    pub fragments: (usize, usize, usize, bool),
+    /// 挂号表机械校验读数。
+    pub provenance: ReplayProvenanceReadout,
+    /// 碎片裁决机械读数。
+    pub fragments: ReplayFragmentReadout,
 }
 
 /// 录制批过真实评审的单缝回放（rs5 R-b）：[`concept_review`] 的公开薄封装
@@ -2057,13 +2086,13 @@ pub async fn replay_concept_review(
     known.extend(crate::service::course_context_terms(&context.goal, &context.goal));
     let naming = fragment_verdict::derive_naming_list(batch, &known, &course_lexicon);
     // 点名清单读数（合并渲染口径去重保序）与生产 `merged_row_count` 同源：
-    // 同词跨源只记一词——臂读数与夹具机械面断言都按词看。
-    let mut naming_terms: Vec<String> = Vec::new();
-    for fragment in &naming {
-        if !naming_terms.iter().any(|term| term == &fragment.term) {
-            naming_terms.push(fragment.term.clone());
-        }
-    }
+    // 同词跨源只记一词——臂读数与夹具机械面断言都按词看（rs5 修复 F③：
+    // unique 词保序口径与 `merged_row_count` 共用单源实现，两处同口径由
+    // [`fragment_verdict::merged_unique_terms`] 保证）。
+    let naming_terms: Vec<String> = fragment_verdict::merged_unique_terms(&naming)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     let outcome = concept_review(
         completer,
         model_override,
@@ -2090,18 +2119,18 @@ pub async fn replay_concept_review(
             .collect(),
         degraded: outcome.degraded,
         naming_terms,
-        provenance: (
-            outcome.provenance.rows,
-            outcome.provenance.invalid,
-            outcome.provenance.retried,
-            outcome.provenance.degraded,
-        ),
-        fragments: (
-            outcome.fragments.fragments,
-            outcome.fragments.rows,
-            outcome.fragments.unhandled,
-            outcome.fragments.degraded,
-        ),
+        provenance: ReplayProvenanceReadout {
+            rows: outcome.provenance.rows,
+            invalid: outcome.provenance.invalid,
+            retried: outcome.provenance.retried,
+            degraded: outcome.provenance.degraded,
+        },
+        fragments: ReplayFragmentReadout {
+            fragments: outcome.fragments.fragments,
+            rows: outcome.fragments.rows,
+            unhandled: outcome.fragments.unhandled,
+            degraded: outcome.fragments.degraded,
+        },
     })
 }
 
