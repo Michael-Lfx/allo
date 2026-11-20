@@ -1,6 +1,6 @@
 use super::{FlowyApp, Section, state};
 use flowy_ui as theme;
-use gpui::{ColorExt, Context, Window, div, prelude::*, px};
+use gpui::{Context, Window, div, prelude::*, px};
 
 impl FlowyApp {
     pub(super) fn open_project_create(&mut self, cx: &mut Context<'_, Self>) {
@@ -282,19 +282,12 @@ impl FlowyApp {
         window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let scrim = if self.theme.dark {
-            self.theme.scrim()
-        } else {
-            gpui::rgb(0).opacity(0.30)
-        };
         theme::modal_layer(
             "project-create-layer",
             &self.theme,
             &self.ui,
             self.project_create_dialog(window, cx),
         )
-        .bg(scrim)
-        .backdrop_blur(px(6.))
     }
 
     fn project_create_dialog(
