@@ -136,6 +136,8 @@ pub struct FlowyApp {
     pub(crate) project_create: state::ProjectCreateState,
     pub(crate) project_menu: Option<String>,
     pub(crate) expanded_projects: HashSet<String>,
+    pub(crate) projects_open: bool,
+    pub(crate) tasks_open: bool,
     pub(crate) persona: PersonaState,
     pub(crate) appearance: AppearanceChrome,
     pub(crate) flex: FlexState,
@@ -217,8 +219,7 @@ impl FlowyApp {
                 });
             }
             "skill-unlock" => {
-                if let state::ActiveDialog::SkillUnlock(id) =
-                    self.active_dialog
+                if let state::ActiveDialog::SkillUnlock(id) = self.active_dialog
                 {
                     self.active_dialog = state::ActiveDialog::Skill(id);
                 }
@@ -489,6 +490,8 @@ impl FlowyApp {
             project_create,
             project_menu: None,
             expanded_projects,
+            projects_open: true,
+            tasks_open: true,
             persona: PersonaState {
                 page: more::Page::Personal,
                 tab: more::Tab::Profile,
@@ -2499,6 +2502,133 @@ mod tests {
     }
 
     #[gpui::test]
+    fn project_and_task_sections_collapse_and_expand(cx: &mut TestAppContext) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        fn click(cx: &mut VisualTestContext, label: &str) {
+            let id = cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("app accessibility tree");
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .unwrap_or_else(|| panic!("missing button {label:?}"))
+                    .0
+            });
+            cx.update(|window, cx| {
+                window.perform_a11y_action(
+                    id,
+                    accesskit::Action::Click,
+                    None,
+                    cx,
+                );
+            });
+            draw(cx);
+        }
+
+        fn button_count(cx: &mut VisualTestContext, label: &str) -> usize {
+            cx.update(|window, _| {
+                window
+                    .a11y_tree()
+                    .expect("app accessibility tree")
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .count()
+            })
+        }
+
+        let root = test_root();
+        let folder = root.join("workspace");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.ota.checked = true;
+            app
+        });
+        app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                panel.create_project("Client", &folder, cx).unwrap();
+                panel.agent.set_workspace_for_new_sessions(None);
+                panel.agent.create_session().unwrap();
+            });
+            cx.notify();
+        });
+        draw(cx);
+
+        let (
+            collapse_projects,
+            expand_projects,
+            collapse_tasks,
+            expand_tasks,
+            task_label,
+        ) = cx.read_entity(&app, |app, _| {
+            let projects = app.t("dock.projects");
+            let tasks = app.t("dock.tasks");
+            (
+                app.tf("dock.collapse", &[("name", &projects)]),
+                app.tf("dock.expand", &[("name", &projects)]),
+                app.tf("dock.collapse", &[("name", &tasks)]),
+                app.tf("dock.expand", &[("name", &tasks)]),
+                app.t("dock.new_task"),
+            )
+        });
+        assert!(cx.debug_bounds("project-row").is_some());
+        let tasks_open = button_count(cx, &task_label);
+        assert!(
+            tasks_open > 1,
+            "a loose task should render under the tasks heading"
+        );
+
+        click(cx, &collapse_projects);
+        cx.read_entity(&app, |app, _| {
+            assert!(!app.projects_open);
+            assert!(app.tasks_open);
+        });
+        assert!(cx.debug_bounds("project-row").is_none());
+        assert_eq!(button_count(cx, &task_label), tasks_open);
+
+        click(cx, &expand_projects);
+        cx.read_entity(&app, |app, _| assert!(app.projects_open));
+        assert!(cx.debug_bounds("project-row").is_some());
+
+        click(cx, &collapse_tasks);
+        cx.read_entity(&app, |app, _| {
+            assert!(app.projects_open);
+            assert!(!app.tasks_open);
+        });
+        assert!(cx.debug_bounds("project-row").is_some());
+        assert!(
+            button_count(cx, &task_label) < tasks_open,
+            "collapsing tasks hides the loose task row"
+        );
+
+        click(cx, &expand_tasks);
+        cx.read_entity(&app, |app, _| assert!(app.tasks_open));
+        assert_eq!(button_count(cx, &task_label), tasks_open);
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
     fn project_create_dialog_exposes_fields_and_cancel_keeps_registry_empty(
         cx: &mut TestAppContext,
     ) {
@@ -2898,6 +3028,91 @@ mod tests {
             (nav_left - task_left).abs() < gpui::px(1.),
             "project task highlight should share the dock row's left edge"
         );
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn project_name_and_icon_toggle_expansion(cx: &mut TestAppContext) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        fn click(cx: &mut VisualTestContext, label: &str) {
+            let id = cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("app accessibility tree");
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .unwrap_or_else(|| panic!("missing button {label:?}"))
+                    .0
+            });
+            cx.update(|window, cx| {
+                window.perform_a11y_action(
+                    id,
+                    accesskit::Action::Click,
+                    None,
+                    cx,
+                );
+            });
+            draw(cx);
+        }
+
+        let root = test_root();
+        let folder = root.join("workspace");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.ota.checked = true;
+            app
+        });
+        let project_id = app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                panel
+                    .create_project("Client", &folder, cx)
+                    .expect("project")
+                    .id
+            })
+        });
+        draw(cx);
+
+        let name = "Client";
+        let expanded = |cx: &mut VisualTestContext| {
+            cx.read_entity(&app, |app, _| {
+                app.expanded_projects.contains(&project_id)
+            })
+        };
+        assert!(!expanded(cx), "a new project starts collapsed");
+
+        click(cx, name);
+        assert!(expanded(cx), "the project name expands its tasks");
+        click(cx, name);
+        assert!(!expanded(cx), "the project name collapses its tasks");
+
+        let expand = cx.read_entity(&app, |app, _| {
+            app.tf("project.expand", &[("name", name)])
+        });
+        click(cx, &expand);
+        assert!(expanded(cx), "the folder icon expands its tasks");
+        let collapse = cx.read_entity(&app, |app, _| {
+            app.tf("project.collapse", &[("name", name)])
+        });
+        click(cx, &collapse);
+        assert!(!expanded(cx), "the folder icon collapses its tasks");
+
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }

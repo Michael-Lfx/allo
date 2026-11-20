@@ -137,10 +137,8 @@ impl FlowyApp {
             .pb_3()
             .child(brand())
             .child(navigation)
-            .child(self.project_group_label(window, cx))
-            .child(self.project_rows(window, cx))
-            .child(group_label(&self.theme, &self.t("dock.tasks")))
-            .child(self.task_rows(cx))
+            .child(self.project_section(window, cx))
+            .child(self.task_section(window, cx))
     }
 
     fn nav_item(
@@ -211,11 +209,6 @@ impl FlowyApp {
         for project in projects {
             let project_id = project.id.clone();
             let expanded = self.expanded_projects.contains(&project_id);
-            let toggle_icon = if expanded {
-                theme::icons::chevron_down()
-            } else {
-                theme::icons::folder_open()
-            };
             let menu_open =
                 self.project_menu.as_deref() == Some(project_id.as_str());
             let toggle_label = if expanded {
@@ -230,7 +223,15 @@ impl FlowyApp {
                 cx,
                 |_, _| false,
             );
-            let show_actions = *hovered.read(cx) || menu_open;
+            let row_hovered = *hovered.read(cx);
+            let show_actions = row_hovered || menu_open;
+            // The folder glyph stays put. The disclosure chevron replaces it
+            // only while the pointer is on this row.
+            let toggle_icon = if row_hovered {
+                theme::icons::chevron_down()
+            } else {
+                theme::icons::folder_open()
+            };
             let row =
                 dock_nav_row(&self.theme, format!("project-row-{project_id}"))
                     .bg(self.theme.dock())
@@ -270,7 +271,7 @@ impl FlowyApp {
                     ))
                     .child(
                         theme::interactive(
-                            format!("project-open-{project_id}"),
+                            format!("project-name-{project_id}"),
                             project.name.clone(),
                             &self.theme,
                         )
@@ -300,7 +301,7 @@ impl FlowyApp {
                             let id = project_id.clone();
                             move |app, _event, _window, cx| {
                                 app.user_menu = false;
-                                app.open_project(&id, cx);
+                                app.toggle_project_expanded(&id, cx);
                             }
                         })),
                     )
@@ -479,20 +480,87 @@ impl FlowyApp {
         rows
     }
 
-    fn project_group_label(
+    fn project_section(
         &self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        let open = self.projects_open;
+        let toggle =
+            cx.listener(|app, _event: &gpui::ClickEvent, _window, cx| {
+                app.toggle_projects_section(cx);
+            });
+        let mut section = div().child(self.section_header(
+            window,
+            cx,
+            "project-group-header",
+            "dock.projects",
+            open,
+            true,
+            toggle,
+        ));
+        if open {
+            section = section.child(self.project_rows(window, cx));
+        }
+        section
+    }
+
+    fn task_section(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement {
+        let open = self.tasks_open;
+        let toggle =
+            cx.listener(|app, _event: &gpui::ClickEvent, _window, cx| {
+                app.toggle_tasks_section(cx);
+            });
+        let mut section = div().child(self.section_header(
+            window,
+            cx,
+            "task-group-header",
+            "dock.tasks",
+            open,
+            false,
+            toggle,
+        ));
+        if open {
+            section = section.child(self.task_rows(cx));
+        }
+        section
+    }
+
+    fn section_header(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+        id: &'static str,
+        title_key: &'static str,
+        open: bool,
+        add_project: bool,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> impl IntoElement {
         let hovered = window.use_keyed_state(
-            gpui::SharedString::from("project-group-header-hovered"),
+            gpui::SharedString::from(format!("{id}-hovered")),
             cx,
             |_, _| false,
         );
-        let show_add = *hovered.read(cx);
+        let row_hovered = *hovered.read(cx);
+        let show_add = add_project && row_hovered;
         let line = body_line_height(&self.theme, window);
-        let header = dock_nav_row(&self.theme, "project-group-header")
-            .justify_between()
+        let title = self.t(title_key);
+        let toggle_label = self.tf(
+            if open { "dock.collapse" } else { "dock.expand" },
+            &[("name", title.as_str())],
+        );
+        let header = theme::interactive(id, toggle_label, &self.theme)
+            .mx_2()
+            .px(self.theme.space(8.))
+            .py(self.theme.space(4.))
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
             .bg(self.theme.dock())
             .hover(|row| row.bg(self.theme.dock_selected()))
             .on_hover({
@@ -511,13 +579,39 @@ impl FlowyApp {
                     }
                 }
             })
-            .debug_selector(|| "project-group-header".into())
+            .debug_selector(move || id.into())
+            .on_click(on_click)
             .child(
                 div()
-                    .text_size(self.theme.caption_size())
-                    .line_height(line)
-                    .text_color(self.theme.muted())
-                    .child(self.t("dock.projects")),
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(self.theme.caption_size())
+                            .line_height(line)
+                            .text_color(self.theme.muted())
+                            .child(title),
+                    )
+                    .when(row_hovered, |label| {
+                        let disclosure = if open {
+                            theme::icons::chevron_down()
+                        } else if self.i18n.locale().is_rtl() {
+                            theme::icons::chevron_left()
+                        } else {
+                            theme::icons::chevron_right()
+                        };
+                        label.child(
+                            disclosure
+                                .size(px(12.))
+                                .text_color(self.theme.muted()),
+                        )
+                    }),
             )
             .when(show_add, |row| {
                 row.child(dock_icon_button(
@@ -529,12 +623,28 @@ impl FlowyApp {
                     ),
                     &self.theme,
                     cx.listener(|app, _event, _window, cx| {
+                        cx.stop_propagation();
                         app.user_menu = false;
                         app.open_project_create(cx);
                     }),
                 ))
             });
         div().pt_4().child(header)
+    }
+
+    pub(super) fn toggle_projects_section(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.user_menu = false;
+        self.projects_open = !self.projects_open;
+        cx.notify();
+    }
+
+    pub(super) fn toggle_tasks_section(&mut self, cx: &mut Context<'_, Self>) {
+        self.user_menu = false;
+        self.tasks_open = !self.tasks_open;
+        cx.notify();
     }
 
     fn dock_footer(
@@ -916,19 +1026,6 @@ fn brand() -> impl IntoElement {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(crate::brand::product().to_string()),
         )
-}
-
-fn group_label(
-    theme: &flowy_ui::ResolvedTheme,
-    text: &str,
-) -> impl IntoElement {
-    div()
-        .px_4()
-        .pt_4()
-        .pb_1()
-        .text_size(theme.caption_size())
-        .text_color(theme.muted())
-        .child(text.to_string())
 }
 
 /// Same inset, padding, border, and radius as a dock navigation row.

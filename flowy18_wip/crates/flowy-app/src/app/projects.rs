@@ -18,19 +18,6 @@ impl FlowyApp {
         self.activate_dialog(state::ActiveDialog::ProjectCreate, cx);
     }
 
-    pub(super) fn open_project(
-        &mut self,
-        project_id: &str,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.user_menu = false;
-        self.expanded_projects.insert(project_id.to_owned());
-        self.push_section(Section::Studio, cx);
-        self.studio.update(cx, |panel, cx| {
-            let _ = panel.open_project(project_id, cx);
-        });
-    }
-
     pub(super) fn edit_project(
         &mut self,
         project_id: &str,
@@ -119,6 +106,7 @@ impl FlowyApp {
     ) {
         self.user_menu = false;
         self.project_menu = None;
+        self.projects_open = true;
         self.expanded_projects.insert(id.to_owned());
         self.push_section(Section::Studio, cx);
         let created = self.studio.update(cx, |panel, cx| {
@@ -261,6 +249,7 @@ impl FlowyApp {
             };
         match result {
             Ok(_) => {
+                self.projects_open = true;
                 if let Some(project_id) =
                     self.studio.read(cx).active_project_id.clone()
                 {
