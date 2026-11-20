@@ -57,3 +57,14 @@
 - [x] PR 分支以 `9f51499af` 为基线，Windows Rust 1.100 下原 Clippy、fmt、四 crate 测试均退出 0；agent 24 / app 22 / auth 11 / studio 18，0 failed。
 - [x] 特性分支原命令为 agent 28 / app 24 / auth 12 / studio 20，0 failed；另行重跑 1 个既有 ignored 离线性能用例并通过。
 - [x] Library 示例使用现有锁文件离线构建。Windows Library Demo 已构建。原生截图与 UIA 交互未取得完整通过证据；Studio 既有 GPUI 排序菜单测试通过。
+
+## 2026-11-20 · 首页选择器与交付物抽屉
+
+- 目标：首页从平铺模板改成「居中标语 + 5 个文字 chips + 4 张示例卡」，并加交付物右抽屉。
+- [x] T1：chip 选中态 120ms 淡入（ElementId 带选中状态，切换时重播）。
+- [x] T2：同一轮的文件变更折叠成一张汇总卡（`ChatLine::FileChanges`），同路径累加，新的用户消息重新开卡。
+- [x] T3：右侧交付物抽屉（宽 360），列出文件并支持文本与图片预览；超过 1MB 或二进制显示原因。
+- [x] T4：全量测试 agent 41 / i18n 5 / studio 43，0 failed；编译告警 0。
+- 验收命令：`cd flowy18_wip && mkdir -p ../.test-tmp && TEMP=D:/workSpace/git_clone_test/allo/.test-tmp TMP=<同值> cargo test -p flowy-agent -p flowy-i18n -p flowy-studio`。
+- 未做：提交（等人工实测）；Markdown 富文本预览（当前按纯文本显示）。
+- 环境注记：系统临时目录写文件被拒（os error 5），测试必须带 TEMP/TMP 重定向。

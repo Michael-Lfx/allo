@@ -44,6 +44,15 @@ Also:
 - Do not stretch header actions / grids to the window edge on wide screens; right margin comes from the capped column, not only from padding.
 - Prefer `min_w_0` on flex children that can overflow horizontally.
 
+## Motion tokens
+
+Durations and curves live in `crates/flowy-studio/src/motion.rs`. Never write
+`Duration::from_millis` inline for UI motion. The values and curves themselves
+are specified in the repository `DESIGN.md`; this file only says where they live.
+
+Entrance needs travel, not just opacity: a fade alone is invisible on the dark
+canvas. Pair it with `motion::ENTER_OFFSET`.
+
 ## Interaction surfaces
 
 - Prefer `flowy_ui::interactive` / `Button` / `TextField` over bare `div().on_click()` for operable controls.
