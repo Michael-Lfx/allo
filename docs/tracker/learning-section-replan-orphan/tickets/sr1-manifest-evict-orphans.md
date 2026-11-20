@@ -2,7 +2,7 @@
 id: sr1
 title: manifest 重排真整组替换：清单外孤儿正文机械驱逐 + sections() 清单内过滤兜底
 type: task
-status: in-progress
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -48,3 +48,28 @@ sA–sD）后，草稿层把新旧两套节全部发布（9 节、标题重复�
 - **真机复跑重生臂**（新快照重置「值存储位置」节点 → 冻结二进制 →
   API 同步重生）：节集合无重复、节数=清单数、键名标准、五指标维持
   （裸指代 0/回收进题面 0/evidence 100%/承诺 0/section_key NULL）。
+
+## Resolution
+
+已施工收口（2026-11-20）。
+
+- **R-a 落地**（lesson_draft.rs `SetSectionManifest`）：清单落定后
+  `section_bodies.retain` 只留清单内键——「整组替换」名实相符；幸存键
+  的「已写正文按 key 保留 + planned 换新」语义原样。
+- **R-b 落地**（`sections()`）：filter 增加 manifest 成员判定（防御纵
+  深；legacy 单文档清单缺席语义不变——None → 全滤=旧行为空表）。
+- **R-c**：审计门未加（机械已保证）。
+- **回归钉**：`manifest_replan_evicts_orphan_bodies_and_sections_follow_
+  manifest`——首排 s1/s2 写正文 → 换键重排 [sA,s2] → s1 孤儿驱逐、
+  发布集合=清单数且顺序=清单序、幸存键语义原样。测试自身踩过两个门
+  （概念节可视化硬门、练习节 40 字下限），已按合法形态落。
+- **检查**：`cargo test -p nomifun-learning` 全量 **1013 passed / 0
+  failed**；fmt clean；warning 零新增（55 条存量债与广谱闸记录一致）。
+- **真机复跑（G1-R 二轮）**：新快照重置「值存储位置」节点 → 冻结二进
+  制（nomifun-web 09:39 mtime）→ API 同步重生 65.8s HTTP 200 → 节集
+  合 **4 节**（修复前同条件 9 节）、键名标准唯一、双练习壳消失；五指
+  标维持全达标（裸指代 0/回收进题面 0/evidence 4/4/承诺 0/section_key
+  NULL）。快照（含课程数据副本）已删除。
+- **边界留痕**：重生既有课时的旧 attempts/review_items 悬挂面（WARN
+  11+4 orphans，读侧 INNER JOIN 天然剔除、账本行保留）按 Q4 裁决另立
+  候选小票；重排诱因（返工链策略）不在修复范围。
