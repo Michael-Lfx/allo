@@ -591,6 +591,23 @@ pub enum LearningSmokeCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// 病历回放臂（rs5 R-b）：两夹具批（reject=三角形折叠 / pass=干净三节点）
+    /// 过真实评审 N 跑（N=3，常量可调），断言打回方向不翻转，flaky 率写进
+    /// readout（锁方向口径：不达 100% 照记）。读数面非门禁——方向翻转只在
+    /// readout 如实留痕（EXIT 保持 0）；唯一硬判据 = 两夹具评审全灭（全部
+    /// 降级缺席）。运行必挂 ArchivingCompleter（per-run elapsed/reasoning
+    /// 读数取自 calls.jsonl 增量行）。
+    ReviewReplay {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -755,6 +772,44 @@ mod tests {
             .is_err(),
             "--triage-only 与 --plan-only 互斥"
         );
+    }
+
+    #[test]
+    fn learning_smoke_review_replay_parses_provider_model_pair() {
+        // rs5 R-b 臂：--db + --provider/--model 成对形态解析。
+        let cli = Cli::try_parse_from([
+            "nomicore",
+            "learning-smoke",
+            "review-replay",
+            "--db",
+            "/dev/smoke.sqlite",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5",
+        ])
+        .unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        let super::LearningSmokeCommand::ReviewReplay {
+            db,
+            provider,
+            model,
+        } = command
+        else {
+            panic!("expected review-replay");
+        };
+        assert_eq!(db, Some(PathBuf::from("/dev/smoke.sqlite")));
+        assert_eq!(provider.as_deref(), Some("openai"));
+        assert_eq!(model.as_deref(), Some("gpt-5"));
+
+        // 缺省形态（从零临时库）也合法。
+        let cli = Cli::try_parse_from(["nomicore", "learning-smoke", "review-replay"]).unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        assert!(matches!(command, super::LearningSmokeCommand::ReviewReplay { .. }));
     }
 
     #[test]

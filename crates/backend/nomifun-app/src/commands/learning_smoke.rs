@@ -133,6 +133,11 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
         } => run_grow(cli, goal, rounds, db, provider, model, true).await,
+        LearningSmokeCommand::ReviewReplay {
+            db,
+            provider,
+            model,
+        } => run_review_replay(cli, db, provider, model).await,
     }
 }
 
@@ -4597,5 +4602,685 @@ async fn run_grade(
         // 判据失败 = 退出码 2（learnhub smoke-grade 同款；布景/接线错误走
         // anyhow 非零）。
         Ok(ExitCode::from(2))
+    }
+}
+
+// ── rs5 R-b：review-replay 臂（病历回放夹具过真实评审）─────────────────────
+//
+// 两夹具批（批 JSON + known surface 全在臂内装配）过真实模型 N 跑，断言打回
+// 方向不翻转，flaky 率写进 readout（锁方向口径：不达 100% 照记）。读数面非
+// 门禁——方向翻转只在 readout 如实留痕（EXIT 保持 0），唯一硬判据沿 smoke
+// 惯例「全灭 0/n」语义 = 两夹具全部评审缺席（degraded）。每跑落 Archiving
+// 档案（管线已挂，coach 调用自动进 calls.jsonl 含 usage），per-run
+// elapsed/reasoning_tokens 从 calls.jsonl 增量行聚合供耗时观察。
+
+/// 每夹具真模型跑数（票面建议 3-5；常量可调）。
+const REVIEW_REPLAY_RUNS: usize = 3;
+
+/// 单跑读数：方向判定面 + 耗时/用量观察面。
+#[derive(Debug)]
+struct ReplayRunReadout {
+    /// problems 条数（reject 方向面：>0 = 打回）。
+    problems: usize,
+    /// 评审缺席降级（true = 本跑无有效结论，不计方向命中）。
+    degraded: bool,
+    /// 本跑墙钟耗时（毫秒）。
+    elapsed_ms: u128,
+    /// 本跑 calls.jsonl 增量行数（评审死因重试含在内）。
+    llm_calls: u64,
+    /// 增量行 reasoning_tokens 合计（None = 无 usage 行，缺席如实不造数）。
+    reasoning_tokens: Option<u64>,
+}
+
+impl ReplayRunReadout {
+    /// 方向命中判定（锁定方向口径）：reject 锚 = problems 非空；pass 锚 =
+    /// problems 空且非降级（降级放行 ≠ 评审通过——静默降级是 watch 面）。
+    fn direction_hit(&self, anchor: &str) -> bool {
+        if self.degraded {
+            return false;
+        }
+        match anchor {
+            "reject-anchor" => self.problems > 0,
+            _ => self.problems == 0,
+        }
+    }
+
+    /// readout 行的结论词。
+    fn verdict_word(&self) -> String {
+        if self.degraded {
+            "degraded".into()
+        } else if self.problems > 0 {
+            format!("reject(problems={})", self.problems)
+        } else {
+            "pass".into()
+        }
+    }
+}
+
+/// 夹具批（两臂对照）：批 JSON + known surface 全在臂内装配——known 是
+/// 登记表/已教账快照的最小投影（生产 gate_batch 折进 `provenance_known`
+/// 的同一面；`replay_concept_review` 零 DB 依赖，靠它喂机械核与点名派生）。
+struct ReplayFixture {
+    /// readout 行标签（reject-anchor / pass-anchor）。
+    label: &'static str,
+    /// 学习目标（进 CoachContext + 课程语境词切片）。
+    goal: String,
+    /// 已知面（已教名 ∪ 登记表名 ∪ 本批铸名；小写折叠同生产口径）。
+    known: Vec<String>,
+    batch: nomifun_learning::ProposedBatch,
+}
+
+/// reject 方向锚（rs5 ③病历同形，learnhub #169）：「三角形」定义折入未在册
+/// 名词（线段/内角）。登记表最小造数：三角形（本批铸名）与图形（定义背景
+/// 用语）在册，折叠名词在登记表/已教账**全无**——点名清单机械派生必指名，
+/// 模型应打回（problems 非空）。断言口径：≥N-1/N 跑 problems 非空。
+fn reject_anchor_fixture() -> ReplayFixture {
+    ReplayFixture {
+        label: "reject-anchor",
+        goal: "认识三角形与它的组成".into(),
+        known: vec!["三角形".into(), "图形".into()],
+        batch: nomifun_learning::ProposedBatch {
+            nodes: vec![nomifun_learning::ProposedNode {
+                title: "判读三角形".into(),
+                purpose: String::new(),
+                intent: "教三角形的三要素判读，本课唯一的图形学习点。".into(),
+                scope: "只教三角形的判读；不教四边形与圆。".into(),
+                est: Some(10),
+                difficulty: Some(2),
+                teaches: vec![nomifun_learning::ConceptRefInput {
+                    name: "三角形".into(),
+                    tier: nomifun_learning::ConceptTier::Teach,
+                }],
+                assumes: Vec::new(),
+            }],
+            mints: vec![nomifun_learning::ConceptMint {
+                canonical: "三角形".into(),
+                aliases: Vec::new(),
+                definition: "由三条线段围成的图形，内角和是 180 度。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: "rs5 R-b reject 锚：定义折入未在册名词（线段/内角），登记表全无。".into(),
+        },
+    }
+}
+
+/// pass 方向锚（11-20 live 日志三节点批同形）：栈帧分配/堆分配/求值策略
+/// 三节点 + 随批三铸名；known surface = 已教名（调用栈/函数定义/值存储位置/
+/// 变量绑定/参数传递/程序输出）∪ 三铸名 ∪ 登记表最小造数连接名。批文本全部
+/// 落在已知面 ∪ 虚字内——点名清单机械派生必须干净（机械面单测钉住），模型
+/// 应放行。断言口径：≥N-1/N 跑 pass。
+fn pass_anchor_fixture() -> ReplayFixture {
+    let known: Vec<String> = [
+        // 已教名（11-20 live 课已教账快照）。
+        "调用栈",
+        "函数定义",
+        "值存储位置",
+        "变量绑定",
+        "参数传递",
+        "程序输出",
+        // 本批三铸名（生产 known 含本批产出，gate_batch :3493 同缝）。
+        "栈帧分配",
+        "堆分配",
+        "求值策略",
+        // 登记表最小造数：批文本用语的着落名（已教账连接名）。
+        "函数",
+        "调用",
+        "变量",
+        "参数",
+        "数据",
+        "程序",
+        "程序员",
+        "内存",
+        "存储",
+        "位置",
+        "准备",
+        "手动",
+        "自动",
+        "回收",
+        "释放",
+        "生命周期",
+        "管理",
+        "方式",
+        "顺序",
+        "规则",
+        "取值",
+        "求值",
+        "决定",
+        "表达式",
+        "影响",
+        "编译器",
+        "优化",
+        "细节",
+        "节点",
+        "时机",
+        "栈帧",
+        "代价",
+        "速度",
+        "差别",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    let node = |title: &str, intent: &str, scope: &str, teaches: &str, assumes: &str| {
+        nomifun_learning::ProposedNode {
+            title: title.into(),
+            purpose: String::new(),
+            intent: intent.into(),
+            scope: scope.into(),
+            est: Some(15),
+            difficulty: Some(2),
+            teaches: vec![nomifun_learning::ConceptRefInput {
+                name: teaches.into(),
+                tier: nomifun_learning::ConceptTier::Teach,
+            }],
+            assumes: vec![nomifun_learning::ConceptRefInput {
+                name: assumes.into(),
+                tier: nomifun_learning::ConceptTier::Apply,
+            }],
+        }
+    };
+    let mint = |canonical: &str, definition: &str| nomifun_learning::ConceptMint {
+        canonical: canonical.into(),
+        aliases: Vec::new(),
+        definition: definition.into(),
+        source: None,
+    };
+    ReplayFixture {
+        label: "pass-anchor",
+        goal: "函数的内存世界：栈、堆与求值".into(),
+        known,
+        batch: nomifun_learning::ProposedBatch {
+            nodes: vec![
+                node(
+                    "栈帧分配",
+                    "函数调用的值存储位置要有一个准备规则，栈帧分配教这个规则。",
+                    "只教调用栈的栈帧分配；堆分配与求值策略各有节点。",
+                    "栈帧分配",
+                    "函数定义",
+                ),
+                node(
+                    "堆分配",
+                    "数据的生命周期由程序员管理，堆分配教这个管理方式。",
+                    "教堆分配与栈帧分配的代价差别；不教手动内存释放的细节。",
+                    "堆分配",
+                    "函数定义",
+                ),
+                node(
+                    "求值策略",
+                    "表达式求值的取值顺序，由求值策略决定。",
+                    "教求值顺序对程序输出的影响；不教编译器优化的细节。",
+                    "求值策略",
+                    "参数传递",
+                ),
+            ],
+            mints: vec![
+                mint("栈帧分配", "函数调用的值存储位置在调用栈，栈帧回收由调用栈自动管理。"),
+                mint("堆分配", "数据的存储位置不在调用栈，生命周期由程序员手动管理。"),
+                mint("求值策略", "表达式取值的顺序规则，决定参数传递的求值时机。"),
+            ],
+            new_aliases: Vec::new(),
+            note: "rs5 R-b pass 锚：11-20 live 日志三节点批同形，批文本全落在已知面。".into(),
+        },
+    }
+}
+
+/// calls.jsonl 自 `skip` 行起的增量 usage 聚合（rs5 臂耗时观察面）：返回
+/// (增量行数, reasoning_tokens 合计)。usage 缺席行（"absent"/error 行）如实
+/// 跳过不造数；无任何数字行 = reasoning None。`skip` 原地推进消费行数；
+/// 文件缺席/不可读 = (0, None)（档案面没建起来不冒充读数）。
+fn usage_delta_since(
+    path: Option<&Path>,
+    skip: &mut usize,
+) -> Result<(u64, Option<u64>)> {
+    let Some(path) = path else {
+        return Ok((0, None));
+    };
+    let Ok(log) = std::fs::read_to_string(path) else {
+        return Ok((0, None));
+    };
+    let lines: Vec<&str> = log.lines().collect();
+    let fresh = lines.len().saturating_sub(*skip);
+    let mut reasoning_total = 0u64;
+    let mut reasoning_seen = false;
+    for line in lines.iter().skip(*skip) {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(reasoning) = record["usage"]["reasoning_tokens"].as_u64() {
+            reasoning_total += reasoning;
+            reasoning_seen = true;
+        }
+    }
+    *skip = lines.len();
+    Ok((
+        fresh as u64,
+        reasoning_seen.then_some(reasoning_total),
+    ))
+}
+
+/// EXIT 判定（smoke 惯例「唯一硬判据 = 全灭 0/n」语义的方向面）：两夹具
+/// 全部跑评审缺席（degraded）= 评审管线真机没走通 → 非零 2；方向翻转/部分
+/// flaky 只进 readout（EXIT 恒 0——锁方向口径：不达 100% 照记）。
+fn review_replay_exit_code(all_degraded: bool) -> u8 {
+    if all_degraded {
+        2
+    } else {
+        0
+    }
+}
+
+/// 单夹具 N 跑：真实评审逐跑计时，calls.jsonl 增量行聚合 per-run usage。
+/// 返回（逐跑读数, 首跑点名清单词——夹具机械面读数，逐跑同形取一次）。
+async fn replay_fixture_runs(
+    completer: &dyn nomifun_learning::LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    fixture: &ReplayFixture,
+    runs: usize,
+    usage_log: Option<&Path>,
+) -> Result<(Vec<ReplayRunReadout>, Vec<String>)> {
+    let context = nomifun_learning::CoachContext {
+        goal: fixture.goal.clone(),
+        taught_summary: fixture.known.join("、"),
+        ..Default::default()
+    };
+    let mut readouts = Vec::new();
+    let mut naming_terms = Vec::new();
+    let mut consumed_lines = 0usize;
+    for _ in 0..runs {
+        let started = std::time::Instant::now();
+        let verdict = nomifun_learning::replay_concept_review(
+            completer,
+            model_override,
+            &fixture.batch,
+            &context,
+            &fixture.known,
+        )
+        .await?;
+        if naming_terms.is_empty() {
+            naming_terms = verdict.naming_terms.clone();
+        }
+        let (llm_calls, reasoning_tokens) = usage_delta_since(usage_log, &mut consumed_lines)?;
+        readouts.push(ReplayRunReadout {
+            problems: verdict.problems.len(),
+            degraded: verdict.degraded,
+            elapsed_ms: started.elapsed().as_millis(),
+            llm_calls,
+            reasoning_tokens,
+        });
+    }
+    Ok((readouts, naming_terms))
+}
+
+/// `learning-smoke review-replay`（rs5 R-b）：病历回放臂。接线同应用（临时
+/// 库 / --db + ArchivingCompleter 必挂），夹具批在臂内装配后过真实评审
+/// N 跑；方向翻转只留痕，评审全灭才非零。
+async fn run_review_replay(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 臂直调评审单缝，不经 LearningService——wire 只取组合根接线（provider
+    // 解析 + Archiving 挂载），service 面不用。
+    let (_wiring, archiving, live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let model_override = provider
+        .as_deref()
+        .zip(model.as_deref())
+        .map(|(provider, model)| {
+            (
+                nomifun_common::ProviderId::parse(provider).expect("provider id"),
+                model.to_owned(),
+            )
+        });
+    // 管线 completer（= Archiving 挂载结果；coach 调用自动进 calls.jsonl）。
+    let pipeline: Arc<dyn nomifun_learning::LearningCompleter> = archiving
+        .clone()
+        .map(|archiving| archiving as Arc<dyn nomifun_learning::LearningCompleter>)
+        .unwrap_or_else(|| live.clone());
+    let usage_log = archiving
+        .as_ref()
+        .map(|archiving| archiving.run_dir().join("calls.jsonl"));
+
+    let fixtures = [reject_anchor_fixture(), pass_anchor_fixture()];
+    let mut any_verdict = false;
+    let mut summaries = Vec::new();
+    for fixture in &fixtures {
+        let (readouts, naming) = replay_fixture_runs(
+            pipeline.as_ref(),
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
+            fixture,
+            REVIEW_REPLAY_RUNS,
+            usage_log.as_deref(),
+        )
+        .await?;
+        println!(
+            "[review-replay] fixture={} naming_derived=[{}] known={}",
+            fixture.label,
+            naming.join("、"),
+            fixture.known.len()
+        );
+        let total = readouts.len();
+        let hits = readouts
+            .iter()
+            .filter(|readout| readout.direction_hit(fixture.label))
+            .count();
+        let degraded = readouts.iter().filter(|readout| readout.degraded).count();
+        let anchor = if fixture.label == "reject-anchor" {
+            "方向锚=problems 非空（打回）"
+        } else {
+            "方向锚=pass 且非降级（放行）"
+        };
+        for (index, readout) in readouts.iter().enumerate() {
+            println!(
+                "[review-replay] fixture={} run {}/{}: verdict={} elapsed_ms={} llm_calls={} reasoning_tokens={}",
+                fixture.label,
+                index + 1,
+                total,
+                readout.verdict_word(),
+                readout.elapsed_ms,
+                readout.llm_calls,
+                readout
+                    .reasoning_tokens
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "absent".into()),
+            );
+        }
+        println!(
+            "[review-replay] fixture={} summary: direction hits={hits}/{total} flaky={}/{total} degraded={degraded}/{total} ({anchor})",
+            fixture.label,
+            total - hits
+        );
+        any_verdict |= readouts.iter().any(|readout| !readout.degraded);
+        summaries.push((fixture.label, hits, total, degraded));
+    }
+    // 方向翻转读数（锁方向口径）：不达 100% 照记——readout 非门禁，EXIT
+    // 不因翻转改变（票面验收 = flaky 率如实进 readout 供 Resolution 对账）。
+    let flipped = summaries.iter().any(|(_, hits, total, _)| *hits < *total);
+    for (label, hits, total, degraded) in &summaries {
+        if *hits < *total {
+            println!(
+                "[review-replay] 方向翻转读数：{label} hits={hits}/{total} degraded={degraded}/{total}\
+                 ——flaky 率照实记录（不锁行完备性，只锁方向）"
+            );
+        }
+    }
+    if review_replay_exit_code(!any_verdict) != 0 {
+        eprintln!(
+            "review-replay: 两夹具全部评审缺席（degraded {REVIEW_REPLAY_RUNS}/{REVIEW_REPLAY_RUNS}）\
+             ——评审管线真机没走通（凭据/模型可用性先查）"
+        );
+        return Ok(ExitCode::from(2));
+    }
+    println!(
+        "OK review-replay runs={REVIEW_REPLAY_RUNS} fixtures=2 方向翻转={} ({} mode)",
+        if flipped { "有（readout 见上行）" } else { "无" },
+        db.as_deref()
+            .map(|_| "--db 复用")
+            .unwrap_or("从零临时库"),
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod review_replay_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// 夹具机械面/记账面的 Scripted completer：按 prompt 关键词分流
+    /// （三角形批 → reject 桶，栈帧批 → pass 桶），桶空 = Err（传输臂注入
+    /// ——评审两连败降级；cfg(test) 下 rs4 退避常量为零不减速）。
+    struct ScriptedReplay {
+        reject: std::sync::Mutex<VecDeque<Result<String, nomifun_common::AppError>>>,
+        pass: std::sync::Mutex<VecDeque<Result<String, nomifun_common::AppError>>>,
+        /// 捕获的评审 user 面（点名清单块/批次渲染抽查面）。
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedReplay {
+        fn new(
+            reject: Vec<Result<String, nomifun_common::AppError>>,
+            pass: Vec<Result<String, nomifun_common::AppError>>,
+        ) -> Self {
+            Self {
+                reject: std::sync::Mutex::new(reject.into()),
+                pass: std::sync::Mutex::new(pass.into()),
+                prompts: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl nomifun_learning::LearningCompleter for ScriptedReplay {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, nomifun_common::AppError> {
+            unreachable!("review only uses the json seam")
+        }
+
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, nomifun_common::AppError> {
+            self.prompts.lock().unwrap().push(user.to_owned());
+            let bucket = if user.contains("三角形") {
+                &self.reject
+            } else {
+                &self.pass
+            };
+            let mut guard = bucket.lock().unwrap();
+            guard
+                .pop_front()
+                .unwrap_or_else(|| Err(nomifun_common::AppError::Internal("script exhausted".into())))
+        }
+    }
+
+    /// 契约面合法的打回结论（两机械面关臂下 problems 直通，无表/无裁决行）。
+    fn reject_verdict() -> Result<String, nomifun_common::AppError> {
+        Ok(serde_json::to_string(&serde_json::json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints",
+                  "issue": "「三角形」定义折入未在册名词「线段」「内角」，查无出处",
+                  "advice": "并入本批某提名定义改写绕开，或并入某节点 teaches 挂号自教" }
+            ]
+        }))
+        .unwrap())
+    }
+
+    fn pass_verdict() -> Result<String, nomifun_common::AppError> {
+        Ok(serde_json::to_string(&serde_json::json!({ "verdict": "pass" })).unwrap())
+    }
+
+    /// 夹具机械面（rs5 R-b 钉装配）：reject 锚的点名派生必指名折叠名词
+    /// （线段/内角）且 known 面不含它们；pass 锚的点名派生必须干净（批文本
+    /// 全落已知面）且 known 面含已教名与三铸名。Scripted 注入不起真模型。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn fixtures_assemble_locked_directions_with_clean_pass_naming() {
+        // 两机械面关臂：夹具机械面只看批装配 + 点名派生（回包内容不相干）。
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        let scripted = ScriptedReplay::new(vec![pass_verdict()], vec![pass_verdict()]);
+
+        let reject = reject_anchor_fixture();
+        // known 面（登记表最小造数投影）：折叠名词查无出处。
+        for folded in ["线段", "内角"] {
+            assert!(
+                !reject.known.iter().any(|name| name.contains(folded)),
+                "折叠名词 {folded} 不得在 reject 夹具的已知面"
+            );
+        }
+        let (readouts, naming) = replay_fixture_runs(&scripted, None, &reject, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(readouts.len(), 1);
+        assert!(
+            naming.iter().any(|term| term.contains("线段"))
+                && naming.iter().any(|term| term.contains("内角")),
+            "reject 夹具点名派生必须指名折叠名词：{naming:?}"
+        );
+
+        let pass = pass_anchor_fixture();
+        for taught in [
+            "调用栈",
+            "函数定义",
+            "值存储位置",
+            "变量绑定",
+            "参数传递",
+            "程序输出",
+            "栈帧分配",
+            "堆分配",
+            "求值策略",
+        ] {
+            assert!(
+                pass.known.iter().any(|name| name == taught),
+                "pass 夹具已知面缺已教名/铸名：{taught}"
+            );
+        }
+        let (_, pass_naming) = replay_fixture_runs(&scripted, None, &pass, 1, None)
+            .await
+            .unwrap();
+        assert!(
+            pass_naming.is_empty(),
+            "pass 夹具点名派生必须干净（批文本全落已知面）：{pass_naming:?}"
+        );
+    }
+
+    /// 断言计数与 flaky 记账（Scripted 三跑）：reject 桶 2 拒 1 放 →
+    /// hits=2/3、flaky=1/3；全放行臂 → flaky=3/3 照记（锁定方向口径：
+    /// readout 如实，不在此判 EXIT）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn direction_counting_records_flaky_without_gating() {
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        // reject 桶：2 拒 1 放（第 3 跑模型放行 = flaky 现场）。
+        let scripted = ScriptedReplay::new(
+            vec![reject_verdict(), reject_verdict(), pass_verdict()],
+            Vec::new(),
+        );
+        let (readouts, _) = replay_fixture_runs(&scripted, None, &reject_anchor_fixture(), 3, None)
+            .await
+            .unwrap();
+        let hits = readouts
+            .iter()
+            .filter(|readout| readout.direction_hit("reject-anchor"))
+            .count();
+        assert_eq!(hits, 2, "2 拒 1 放 → hits=2/3：{readouts:?}");
+        assert_eq!(3 - hits, 1, "flaky=1/3 记账");
+        assert!(readouts.iter().all(|readout| !readout.degraded));
+
+        // 全放行臂：3 跑全放行 → flaky=3/3（票面「不达 100% 照记」的记账面
+        // ——方向翻转只在 readout 留痕，EXIT 判定另测）。
+        let scripted = ScriptedReplay::new(
+            vec![pass_verdict(), pass_verdict(), pass_verdict()],
+            Vec::new(),
+        );
+        let (readouts, _) = replay_fixture_runs(&scripted, None, &reject_anchor_fixture(), 3, None)
+            .await
+            .unwrap();
+        let hits = readouts
+            .iter()
+            .filter(|readout| readout.direction_hit("reject-anchor"))
+            .count();
+        assert_eq!(hits, 0, "全放行 → 方向全灭：{readouts:?}");
+        assert_eq!(3 - hits, 3, "flaky=3/3 照记");
+    }
+
+    /// 降级跑不计方向命中（静默降级放行 = watch 面）：桶空 = 传输双败 →
+    /// degraded=true、direction_hit=false（cfg(test) 退避为零）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn degraded_runs_are_not_direction_hits() {
+        let _provenance = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_PROVENANCE_SWITCH_ENV,
+            Some("off"),
+        );
+        let _fragments = nomifun_learning::switch_env_guard(
+            nomifun_learning::REVIEW_FRAGMENTS_SWITCH_ENV,
+            Some("off"),
+        );
+        let scripted = ScriptedReplay::new(Vec::new(), Vec::new());
+        let (readouts, _) = replay_fixture_runs(&scripted, None, &reject_anchor_fixture(), 1, None)
+            .await
+            .unwrap();
+        assert_eq!(readouts.len(), 1);
+        assert!(readouts[0].degraded, "桶空传输双败 → 评审缺席：{readouts:?}");
+        assert!(!readouts[0].direction_hit("reject-anchor"));
+        assert_eq!(readouts[0].verdict_word(), "degraded");
+    }
+
+    /// EXIT 语义（smoke「唯一硬判据 = 全灭 0/n」方向面）：两夹具全部评审
+    /// 缺席 → 非零 2；有任一有效结论 → 0（方向翻转不改变 EXIT）。
+    #[test]
+    fn exit_code_gates_only_on_total_review_absence() {
+        assert_eq!(review_replay_exit_code(false), 0);
+        assert_eq!(review_replay_exit_code(true), 2);
+    }
+
+    /// calls.jsonl 增量 usage 聚合：reasoning 求和、absent/error 行如实跳过、
+    /// skip 推进后增量为零；文件缺席 = (0, None)（不冒充读数）。
+    #[test]
+    fn usage_delta_since_sums_reasoning_and_treats_absent_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls.jsonl");
+        std::fs::write(
+            &log,
+            concat!(
+                r#"{"usage":{"input_tokens":10,"output_tokens":100,"reasoning_tokens":9561}}"#, "\n",
+                r#"{"usage":"absent"}"#, "\n",
+                r#"{"ok":false,"error":"boom"}"#, "\n",
+            ),
+        )
+        .unwrap();
+        let mut skip = 0usize;
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip).unwrap();
+        assert_eq!(calls, 3);
+        assert_eq!(reasoning, Some(9561));
+        // skip 已推进：无新行 = 零增量。
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip).unwrap();
+        assert_eq!(calls, 0);
+        assert_eq!(reasoning, None);
+        // 追加一行带 reasoning 的调用 → 增量恰一行。
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        writeln!(file, r#"{{"usage":{{"reasoning_tokens":28579}}}}"#).unwrap();
+        let (calls, reasoning) = usage_delta_since(Some(&log), &mut skip).unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(reasoning, Some(28579));
+        // 文件缺席臂。
+        let mut skip = 0usize;
+        let (calls, reasoning) =
+            usage_delta_since(Some(&dir.path().join("missing.jsonl")), &mut skip).unwrap();
+        assert_eq!((calls, reasoning), (0, None));
+        let (calls, reasoning) = usage_delta_since(None, &mut skip).unwrap();
+        assert_eq!((calls, reasoning), (0, None));
     }
 }
