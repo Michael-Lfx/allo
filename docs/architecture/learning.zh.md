@@ -380,8 +380,13 @@ provider 凭据复用 `resolve_provider_config` 现链），缺省从零临时 S
 
 运行必挂 `nomifun_ai_agent::ArchivingCompleter`（每次调用的
 prompt/response/耗时落 `<data-dir>/observation/learning-smoke/<run>/`
-JSONL）；生产运行不挂（零开销）。无凭据临时库在任何需 LLM 的档位如实非
-零退出。
+JSONL）。无凭据临时库在任何需 LLM 的档位如实非零退出。
+
+生产侧调用档案（rs1）：开关 `NOMI_LEARNING_LIVE_ARCHIVE`（缺省 off，
+dev 渠道缺省 on；显式 off 任何渠道都关）把生产管线教练调用逐调用一行落
+`<data-dir>/observation/learning-live/YYYY-MM-DD/`，开关 off = 零写入零
+建目录；o2 的 `NOMI_LEARNING_CALL_ARCHIVE`（dev 面，按 run）同缝保留。
+**档案行内含 prompt/回包全文，注意数据目录同样的访问边界。**
 
 ## 相关但独立的 harness
 

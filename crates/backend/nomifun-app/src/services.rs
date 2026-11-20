@@ -2776,33 +2776,66 @@ impl AppServices {
             encryption_key,
             workspace: data_dir.clone(),
         });
-        // 调用留痕（o2，`NOMI_LEARNING_CALL_ARCHIVE`，缺省关）：开 = 包
-        // ArchivingCompleter，每次管线 LLM 调用一行 JSONL（system/user/
-        // response 全文 + per-call usage）落 `observation/learning-dev/
-        // run-*/`——与 learning-smoke 的必挂（同机制）同律不同目录，互不
-        // 混写。挂载失败只降级留痕，绝不阻断启动（观测面纪律同 smoke）。
-        let learning_completer: Arc<dyn nomifun_learning::LearningCompleter> =
-            if nomifun_learning::call_archive_enabled() {
-                let obs_root = data_dir.join("observation").join("learning-dev");
-                match nomifun_ai_agent::archiving_completer::ArchivingCompleter::new(
-                    live_learning_completer.clone(),
-                    &obs_root,
-                ) {
-                    Ok(archiving) => {
-                        tracing::info!(
-                            run_dir = %archiving.run_dir().display(),
-                            "learning call archive mounted (NOMI_LEARNING_CALL_ARCHIVE=on)"
-                        );
-                        Arc::new(archiving)
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            "learning call archive mount failed — continuing unarchived"
-                        );
-                        live_learning_completer
-                    }
+        // 两个档案开关共用的挂载体：mount 失败只降级留痕，绝不阻断启动
+        // （观测面纪律同 smoke）。
+        let mount_archive = |completer: Arc<dyn nomifun_learning::LearningCompleter>,
+                             dir: std::path::PathBuf,
+                             switch_label: &'static str|
+         -> Arc<dyn nomifun_learning::LearningCompleter> {
+            match nomifun_ai_agent::archiving_completer::ArchivingCompleter::new_in_dir(
+                completer.clone(),
+                &dir,
+            ) {
+                Ok(archiving) => {
+                    tracing::info!(
+                        run_dir = %archiving.run_dir().display(),
+                        switch = switch_label,
+                        "learning call archive mounted"
+                    );
+                    Arc::new(archiving)
                 }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        switch = switch_label,
+                        "learning call archive mount failed — continuing unarchived"
+                    );
+                    completer
+                }
+            }
+        };
+        // live 调用档案（rs1，`NOMI_LEARNING_LIVE_ARCHIVE`）：开 = 包
+        // ArchivingCompleter，每次管线 LLM 调用一行 JSONL（system/user/
+        // response 全文 + per-call usage）落 `observation/learning-live/
+        // YYYY-MM-DD/`——按日不按 run（live 无 run 概念；目录取启动日本地
+        // 日，跨天滚动随进程重启自然换日，常驻跨天留观察）。行内含 prompt/
+        // 回包全文，隐私面要求关臂零写入零建目录（不 mount = 零 IO，不是
+        // 只不落盘不采集）。未设臂按渠道缺省：stable 缺省关；dev 渠道
+        // （`crate::channel` 非 stable，编译期 NOMI_CHANNEL）缺省 on，供真
+        // 机法证随开随查；显式 off 在 dev 里仍是隐私总闸。
+        let learning_completer: Arc<dyn nomifun_learning::LearningCompleter> =
+            if nomifun_learning::live_archive_enabled_with_unset_default(
+                crate::channel::channel() != "stable",
+            ) {
+                let day_dir = data_dir
+                    .join("observation")
+                    .join("learning-live")
+                    .join(chrono::Local::now().format("%Y-%m-%d").to_string());
+                mount_archive(
+                    live_learning_completer.clone(),
+                    day_dir,
+                    "NOMI_LEARNING_LIVE_ARCHIVE=on",
+                )
+            } else if nomifun_learning::call_archive_enabled() {
+                // o2 dev 面（按 run，`learning-dev/run-*/`）原样保留：
+                // rs1 开关优先，二者皆开只挂一层——嵌套双层包 = 每调用双
+                // 份全文落盘，写放大。
+                let obs_root = data_dir.join("observation").join("learning-dev");
+                mount_archive(
+                    live_learning_completer.clone(),
+                    obs_root,
+                    "NOMI_LEARNING_CALL_ARCHIVE=on",
+                )
             } else {
                 live_learning_completer
             };
