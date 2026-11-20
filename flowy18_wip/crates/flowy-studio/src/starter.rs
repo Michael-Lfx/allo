@@ -176,7 +176,7 @@ impl crate::panel::StudioPanel {
                     .id("home-starters-scroll")
                     .w_full()
                     .max_w(px(760.))
-                    .max_h(px(320.))
+                    .max_h(px(468.))
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(column),
@@ -196,23 +196,15 @@ impl crate::panel::StudioPanel {
             &self.theme,
         )
         .w_full()
-        .px(self.theme.space(16.))
-        .py(self.theme.space(12.))
-        .rounded_xl()
+        .px(self.theme.space(14.))
+        .py(self.theme.space(8.))
+        .rounded_lg()
         .border_1()
         .border_color(self.theme.line())
         .bg(self.theme.card())
-        .flex()
-        .flex_col()
-        .gap(self.theme.space(2.))
         .hover(|style| style.bg(self.theme.soft()))
-        .child(div().text_sm().child(title))
-        .child(
-            div()
-                .text_xs()
-                .text_color(self.theme.muted())
-                .child(prompt.clone()),
-        )
+        .text_sm()
+        .child(title)
         .on_click(cx.listener(move |panel, _, _, cx| {
             panel.request_fill_prompt(prompt.clone(), cx);
         }))
