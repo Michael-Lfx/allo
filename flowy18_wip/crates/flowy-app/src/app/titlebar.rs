@@ -52,6 +52,15 @@ impl FlowyApp {
             .justify_start()
             .gap_1()
             .child(self.titlebar_tool(
+                "titlebar-search",
+                "titlebar.search",
+                theme::icons::search().size(px(16.)),
+                main,
+                cx.listener(|app, _, _, cx| {
+                    app.open_search(cx);
+                }),
+            ))
+            .child(self.titlebar_tool(
                 "titlebar-toggle-dock",
                 "titlebar.toggle_dock",
                 theme::icons::panel_left().size(px(16.)),
@@ -71,15 +80,6 @@ impl FlowyApp {
                 theme::icons::arrow_right().size(px(16.)),
                 can_forward,
                 cx.listener(|app, _, _, cx| app.navigate_forward(cx)),
-            ))
-            .child(self.titlebar_tool(
-                "titlebar-search",
-                "titlebar.search",
-                theme::icons::search().size(px(16.)),
-                main,
-                cx.listener(|app, _, _, cx| {
-                    app.open_search(cx);
-                }),
             ))
     }
 
