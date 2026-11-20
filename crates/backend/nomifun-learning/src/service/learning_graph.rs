@@ -2941,6 +2941,7 @@ impl LearningService {
                 review_provenance_retried: provenance.retried,
                 review_provenance_degraded: provenance.degraded,
                 review_provenance_external_hits: provenance.external_hits,
+                review_provenance_normalized: provenance.normalized,
                 review_fragments_total: fragments.fragments,
                 review_fragments_rows: fragments.rows,
                 review_fragments_unhandled: fragments.unhandled,

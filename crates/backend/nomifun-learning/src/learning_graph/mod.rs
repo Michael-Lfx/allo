@@ -959,8 +959,10 @@ const CRITERION_ONE_TABLE_CLAUSE: &str = r#"   - **逐词落行（按表核对�
 "#;
 
 /// 挂号表的输出契约段（m3，织入评审系统提示词尾部）：行形状 + 来源四值 +
-/// 逐字规则 + 同形词盲区注记（#176 真机「次数」案：机械核行只认字面）+
-/// 机械执法语义。词表与 `provenance::TERM_SOURCES` 互钉，改词表须同步。
+/// 逐字规则 + 机械执法语义。词表与 `provenance::TERM_SOURCES` 互钉，改词表
+/// 须同步。rs2（learnhub #252）：同形词盲区注记（#176）退役——常识行撞名池
+/// 由机械归一接手（`provenance::validate_term_provenance` 三前提改判+
+/// findings 留痕），提示词不再教模型自己绕。
 /// p01（prompt-context-fixes）：自证禁令显性化——循环自证原本只埋在「报
 /// 自教」行内文中（run-1793828585963 病历：条款在场、首轮仍犯
 /// `{term:滤杯, ref:手冲器具功能}` = ref 指 concept 自身，死因重试 +303s
@@ -976,7 +978,6 @@ const TABLE_OUTPUT_CONTRACT: &str = r#"
 - 报**常识**：不写 `ref`；term 是课程外、无需教学、不承载本课知识功能的通用背景词，「简单」不等于常识。
 - 报**缺失**：查无出处时如实报缺失——不写 `ref`，且该结论必须 pass=false 并在 problems 里指名该名词；标缺失却 pass = 自相矛盾，结论无效。缺失是合法的自认通道，绝不要把查无出处的缺口洗成常识。
 - **常识/缺失行的 term 必须逐字取自该提名定义原文**（可带尾随括注，如「数（直线上点对应的数）」）；已教/自教行写的是定义所预设的概念名，不要求逐字出现在定义里。
-- **同形词盲区注记**：机械核行只认字面、无词义维度——常识行的 term 逐字命中已教账/登记表名池即判事实矛盾，哪怕词义不同；确属同形异义时按已教行挂该名字的 `ref`（机械面绿），词义出入写进 findings 留痕供数据面复核。
 "#;
 
 /// advice 范围条款（m5 #175A，learnhub node-growth-review.md「advice 范围
@@ -1507,6 +1508,9 @@ fn is_candidate_meta_debris(candidate: &str) -> bool {
 /// 行伪/表键解析失败 = 结论不可用，**恰一次**带死因重试评审；仍败 =
 /// Degraded 保守放行（评审器故障 ≠ 批缺陷），降级留痕走 findings（调用方
 /// 落 j09 通道）。重试只重掷评审（死因进评审反馈），不动外层 j03 预算。
+/// rs2（learnhub #252）：常识行撞名池的例外是机械归一——三前提齐备（常识
+/// 行 ∧ 已过定义原文逐字核 ∧ ref 为空）就地改判自教/已教 ref=term，改判行
+/// 转 findings 留痕（node="批"）不挡门，结论照常可用；残余行伪仍走重试。
 ///
 /// 碎片裁决面（m9 补接，独立清单独立校验，不并挂号表；absorb-8 z02 三值
 /// 扩面）：每个点名片段必须有显式裁决——`名词` 判决却放行/未指名 =
@@ -1858,7 +1862,7 @@ pub(crate) async fn concept_review(
             }
             return review_unavailable_outcome(&death, readout, frag_readout, &last_parsed_problems);
         }
-        let verdict = match serde_json::from_value::<Verdict>(value) {
+        let mut verdict = match serde_json::from_value::<Verdict>(value) {
             Ok(verdict) => {
                 // u02 降级保全的事实源：最后一次成功解析的 verdict 的
                 // problems——后续任一降级出口把它们转 findings 留痕。
@@ -1913,11 +1917,14 @@ pub(crate) async fn concept_review(
         }
         // 挂号表机械核对（m3；原文路径保留）。f1（A1）：放行域 = 批内提名
         // ∪（机械锚 ∪ 核验通过的 reuse 裁决锚）——锚集在响应后拼定。
+        // rs2：常识行撞名池的机械归一随校验就地改判，改判行转 findings 留痕
+        // （node="批"，不挡门），随结论走既有 j09 通道。
+        let mut normalization_findings = Vec::new();
         if provenance_on {
             let mut anchors = gate.external_anchors_mech.clone();
             anchors.extend(verify_reuse_rulings(&verdict.reuse, gate));
             match provenance::validate_term_provenance(
-                &verdict.term_provenance,
+                &mut verdict.term_provenance,
                 verdict.verdict == "pass",
                 batch,
                 &known,
@@ -1926,6 +1933,9 @@ pub(crate) async fn concept_review(
                 Ok(outcome) => {
                     readout.rows = outcome.rows;
                     readout.external_hits = outcome.external_hits;
+                    readout.normalized = outcome.normalized.len();
+                    normalization_findings =
+                        provenance::normalization_findings(&outcome.normalized, batch);
                 }
                 Err(reason) => {
                     readout.invalid += 1;
@@ -1979,16 +1989,20 @@ pub(crate) async fn concept_review(
                     // 未处置分流（learnhub L1/L3 同款）：enforce on = 合成打
                     // 回问题（L1 级门失败，走既有重裁回路）；off（v1 缺省）
                     // = report-only 降 findings（j09 通道 → k02 水位消费）。
-                    let (extra_problems, extra_findings) = if enforce_on {
+                    let (extra_problems, fragment_findings) = if enforce_on {
                         (fragment_verdict::unhandled_problems(&unhandled), Vec::new())
                     } else {
                         (Vec::new(), fragment_verdict::unhandled_findings(&unhandled))
                     };
+                    // rs2：归一 findings 在前（机械裁决事实），碎片 report-only
+                    // 在后——两路 extra 同批透出，不改 problems 判定。
+                    let mut extra_findings = normalization_findings;
+                    extra_findings.extend(fragment_findings);
                     return verdict_outcome(verdict, readout, frag_readout, extra_problems, extra_findings);
                 }
             }
         }
-        return verdict_outcome(verdict, readout, frag_readout, Vec::new(), Vec::new());
+        return verdict_outcome(verdict, readout, frag_readout, Vec::new(), normalization_findings);
     }
     unreachable!("review attempts loop always returns inside the body")
 }
@@ -3392,7 +3406,7 @@ mod tests {
 
     /// m3 挂号表臂：评审系统提示词织入表格条款——判据①改「按表核对」（V2
     /// 框定/四入口措辞保留为表的语义说明）+ 输出契约段（来源四值/逐字规则/
-    /// 同形词盲区）。条款覆盖短语断言：改词表/删条款 = 本测试红。
+    /// 机械执法语义）。条款覆盖短语断言：改词表/删条款 = 本测试红。
     #[test]
     #[serial_test::serial]
     fn provenance_arm_weaves_the_table_contract_into_the_review_prompt() {
@@ -3420,23 +3434,23 @@ mod tests {
             "逐字取自该提名定义原文",
             "至少一行",
             "结论无效",
-            // 同形词盲区注记（#176）。
-            "同形词盲区",
         ] {
             assert!(system.contains(phrase), "挂号表臂缺「{phrase}」");
         }
+        // rs2（learnhub #252）：同形词盲区注记退役——常识行撞名池由机械归一
+        // 接手（provenance::validate_term_provenance 三前提改判+findings 留
+        // 痕），提示词不再教模型自己绕。
+        assert!(
+            !system.contains("同形词盲区"),
+            "同形词条款已退役，不得回潜"
+        );
         // 表臂不出现 V1 旧并句（V1 把「随批铸名」算出处，与表矛盾）。
         assert!(!system.contains("三处皆无的名词"));
 
         // off 臂零表条款：不要求表 = k07 后行为（提示词与机械校验都不在）。
         let _off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
         let plain = concept_review_system();
-        for phrase in [
-            "term_provenance",
-            "已教|自教|常识|缺失",
-            "逐词落行",
-            "同形词盲区",
-        ] {
+        for phrase in ["term_provenance", "已教|自教|常识|缺失", "逐词落行"] {
             assert!(!plain.contains(phrase), "off 臂不得出现「{phrase}」");
         }
         assert!(plain.contains("登记表外名词"), "off 臂照常走 V2 措辞");
@@ -3689,7 +3703,7 @@ mod tests {
         );
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0 }
+            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0, normalized: 0 }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
@@ -3739,6 +3753,161 @@ mod tests {
         assert!(
             prompts[1].contains("循环自证") && prompts[1].contains("指向提名概念自身"),
             "次轮反馈文案点名循环自证：{}",
+            prompts[1]
+        );
+    }
+
+    /// rs2（learnhub #252 裁决 B 平移）红绿样（rs5 病历②「次数同形」随身
+    /// 夹具随本票落地）：常识行撞名池（同形异义，计数义撞已教概念义）在
+    /// 旧语义下整份作废重掷——归一语义下机械改判已教 ref=次数、findings
+    /// 留痕（node="批"）、单轮结论可用零重掷。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn counting_homograph_pool_hit_normalizes_without_retry_and_leaves_findings() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![pass_with_table(serde_json::json!([
+                { "concept": "多项式", "term": "次数", "source": "常识" }
+            ]))]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let batch = ProposedBatch {
+            nodes: Vec::new(),
+            mints: vec![ConceptMint {
+                canonical: "多项式".into(),
+                aliases: Vec::new(),
+                definition: "由变量与系数经加减乘与正整数次幂构成，次数取各项次数的最大值。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let review = concept_review(
+            &completer,
+            None,
+            &batch,
+            &CoachContext::default(),
+            "",
+            &["次数".to_owned()],
+            &[],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        assert!(review.problems.is_empty(), "归一后结论可用不重掷：{review:?}");
+        assert_eq!(
+            completer.0.lock().unwrap().1.len(),
+            1,
+            "零重掷（旧语义下该形态整份作废重掷）"
+        );
+        assert_eq!(review.provenance.normalized, 1, "归一行数进读数：{review:?}");
+        assert_eq!(review.findings.len(), 1, "改判逐条进 findings：{review:?}");
+        assert_eq!(review.findings[0].node, "批", "批级意见不点名节点：{review:?}");
+        assert!(
+            review.findings[0].issue.contains("次数")
+                && review.findings[0].issue.contains("已教")
+                && review.findings[0].issue.contains("ref=次数"),
+            "finding 点名 term 与改判后 source/ref：{:?}",
+            review.findings[0]
+        );
+    }
+
+    /// rs5 病历①随身夹具（随本票落地；输出契约负例原文同形——run-
+    /// 1793828585963 病历的滤杯案）：自教行 ref 指向提名自身的循环自证
+    /// 仍走死因重试恰一次——归一只认常识行，自教行伪不在归一域。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn filter_cup_circular_self_reference_still_retries() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let bad = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "term_provenance": [
+                { "concept": "手冲器具功能", "term": "滤杯", "source": "自教", "ref": "手冲器具功能" }
+            ]
+        }))
+        .unwrap();
+        let good = pass_with_table(serde_json::json!([
+            { "concept": "手冲器具功能", "term": "滤杯", "source": "常识" }
+        ]));
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![bad, good].into_iter(),
+            Vec::new(),
+        )));
+        let batch = ProposedBatch {
+            nodes: Vec::new(),
+            mints: vec![ConceptMint {
+                canonical: "手冲器具功能".into(),
+                aliases: Vec::new(),
+                definition: "手冲器具功能由滤杯、水柱与注水手法共同决定。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let review = concept_review(
+            &completer,
+            None,
+            &batch,
+            &CoachContext::default(),
+            "",
+            &[],
+            &[],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        assert!(review.problems.is_empty(), "次轮修正恢复：{review:?}");
+        assert_eq!(review.provenance.rows, 1, "{review:?}");
+        assert_eq!(review.provenance.invalid, 1, "首轮循环自证被拒");
+        assert_eq!(review.provenance.retried, 1, "带死因重试恰一次");
+        assert_eq!(review.provenance.normalized, 0, "自教行伪不得归一：{review:?}");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 2, "循环自证仍须重试：{prompts:?}");
+        assert!(
+            prompts[1].contains("循环自证"),
+            "次轮反馈文案点名循环自证：{}",
+            prompts[1]
+        );
+    }
+
+    /// rs2（上游 #252 :2178 形态平移）：带 ref 的常识行撞名池仍 Err 重试
+    /// ——归一前提 ref 为空不成立，次轮反馈点名「不得带 ref」。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn common_sense_row_with_ref_and_pool_hit_retries_once() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let bad = pass_with_table(serde_json::json!([
+            { "concept": "借用", "term": "所有权", "source": "常识", "ref": "借用" }
+        ]));
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![bad, pass_with_table(legal_table())].into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+            &[],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        assert!(review.problems.is_empty(), "次轮修正恢复：{review:?}");
+        assert_eq!(review.provenance.rows, 2, "{review:?}");
+        assert_eq!(review.provenance.normalized, 0, "带 ref 行不得归一：{review:?}");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 2, "带 ref 的常识行仍须重试");
+        assert!(
+            prompts[1].contains("不得带 ref"),
+            "次轮反馈须指名常识行不得带 ref：{}",
             prompts[1]
         );
     }
@@ -3944,7 +4113,7 @@ mod tests {
         assert!(review.findings.is_empty(), "恢复则不留痕：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0 }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0 }
         );
     }
 
@@ -4016,7 +4185,7 @@ mod tests {
         assert!(review.findings.is_empty(), "次轮干净结论恢复：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0 }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0, normalized: 0 }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert!(

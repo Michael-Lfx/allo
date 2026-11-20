@@ -11,11 +11,12 @@
 //!   合法的自认通道，机械层据此强制「自认缺失却放行 = 结论不可用」。
 //! - **机械核对只核「行的真伪」**：ref 逐字可解析（已教 → 已知名池；自教 →
 //!   批内 teaches 键）、自教 ref 不得指向提名自身（循环自证）、已教 ref 不得
-//!   指向本批提名（拿本批产出当已教出处，同循环形态）、常识行 term 不得逐字
-//!   命中名池（事实矛盾）、批内提名全覆盖、concept ∈ 提名集、常识/缺失行的
-//!   term 逐字落在该提名定义里（尾随括注容忍；已教/自教行写的是被预设的
-//!   概念名，不做逐字要求）。**行的完备性与常识真伪不机械核**（评审员漏列
-//!   名词与常识裁量归语义层，本模块不做分词点名）。
+//!   指向本批提名（拿本批产出当已教出处，同循环形态）、常识行 term 逐字命中
+//!   名池（事实矛盾）按三前提机械归一（rs2，learnhub #252 裁决 B 平移——
+//!   详见 [`validate_term_provenance`]）、批内提名全覆盖、concept ∈ 提名集、
+//!   常识/缺失行的 term 逐字落在该提名定义里（尾随括注容忍；已教/自教行写的
+//!   是被预设的概念名，不做逐字要求）。**行的完备性与常识真伪不机械核**
+//!   （评审员漏列名词与常识裁量归语义层，本模块不做分词点名）。
 //! - **校验失败 = 结论不可用**：调用方恰一次带死因重试评审，仍败 = Degraded
 //!   保守放行 + findings 留痕（评审器故障 ≠ 批缺陷）。校验域 = 门面注入的
 //!   已知名池（[`super::GateOutcome`] 装配：已教账 ∪ 登记表活跃名+别名 ∪
@@ -92,6 +93,8 @@ pub(crate) struct ProvenanceReadout {
     /// 行 concept 命中本批复用锚的行数（f1 A5 观察位：挂号行锚定 registry
     /// 概念的真机可观察信号）。
     pub(crate) external_hits: usize,
+    /// 常识行撞名池机械归一的行数（rs2 读数位：归一频率真机可观察不造数）。
+    pub(crate) normalized: usize,
 }
 
 impl ProvenanceReadout {
@@ -101,15 +104,35 @@ impl ProvenanceReadout {
         self.retried += other.retried;
         self.degraded |= other.degraded;
         self.external_hits += other.external_hits;
+        self.normalized += other.normalized;
     }
 }
 
+/// 常识行撞名池的机械归一记录（rs2，learnhub #252 裁决 B 平移）：逐字命中
+/// 名池、已过定义原文逐字核、ref 为空的常识行，可无歧义改判为自教/已教；
+/// 改判逐条留痕（node="批"，issue 点名 term → 改判 source/ref），不挡门。
+/// 声明仍被改写而不是被接受——E1 常识通道不开放；机械层不裁同形词语义，
+/// 残余错配靠 findings + 人工抽查兜底。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProvenanceNormalization {
+    /// 所属提名。
+    pub(crate) concept: String,
+    /// 定义里的名词（归一的 term）。
+    pub(crate) term: String,
+    /// 改判后的来源（自教/已教）。
+    pub(crate) source: TermSource,
+    /// 改判后的逐字出处（= term）。
+    pub(crate) ref_name: String,
+}
+
 /// 挂号表机械核对结果：行数（进 `readout.rows`）+ 批外锚命中行数（进
-/// `readout.external_hits`，f1 A5）。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// `readout.external_hits`，f1 A5）+ 归一记录（rs2，进 `readout.normalized`
+/// 计数并交调用方转 findings，不挡门）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TableOutcome {
     pub(crate) rows: usize,
     pub(crate) external_hits: usize,
+    pub(crate) normalized: Vec<ProvenanceNormalization>,
 }
 
 /// 挂号表机械核对（纯函数）：违规 = `Err`（死因，进重试反馈），通过 =
@@ -117,8 +140,16 @@ pub(crate) struct TableOutcome {
 /// `external_anchors` = 本批复用命中的登记表概念锚（f1 A1）：行 concept 的
 /// 合法域 = 批内提名 ∪ 锚 canonical（小写折叠，对齐 known_names 风格）；
 /// 命中锚的行数进读数（A5）。
+///
+/// # rs2（learnhub #252 裁决 B 平移）：常识行撞名池从「整份作废重掷」改
+/// 「机械归一+留痕」——归一三前提 = 常识行 ∧ 已过定义原文逐字核 ∧ ref 为空
+/// （缺一不归一，维持 `Err`）；可无歧义归位的两种形态就地改写 `rows`：命中
+/// 批内 teaches 键且 term ≠ 本条提名 → 自教 ref=term，命中名池且非本批提名
+/// → 已教 ref=term。改判行随 [`TableOutcome::normalized`] 交调用方转
+/// findings（不挡门）。其余残余形态（带 ref / 未逐字落地 / 只提名未教 /
+/// 缺失行放行）维持原 `Err`，不放宽。
 pub(crate) fn validate_term_provenance(
-    rows: &[TermProvenance],
+    rows: &mut [TermProvenance],
     pass: bool,
     batch: &ProposedBatch,
     known_names: &HashSet<String>,
@@ -163,9 +194,11 @@ pub(crate) fn validate_term_provenance(
         .collect();
     let key = |value: &str| value.trim().to_lowercase();
 
-    let mut covered: HashSet<&str> = HashSet::new();
+    // 归一后行 source 会改写，covered 取 owned 串避免与可变借用冲突（rs2）。
+    let mut covered: HashSet<String> = HashSet::new();
     let mut external_hits = 0usize;
-    for row in rows {
+    let mut normalized: Vec<ProvenanceNormalization> = Vec::new();
+    for row in rows.iter_mut() {
         let concept = row.concept.trim();
         // f1（A1）：行 concept 合法域 = 批内提名 ∪ 本批复用命中锚——canonical
         // 落锚集 = 复用登记表存量，合法（命中行数进读数）。空 concept 与
@@ -197,17 +230,55 @@ pub(crate) fn validate_term_provenance(
                 ));
             }
         }
-        covered.insert(concept);
+        covered.insert(concept.to_owned());
         match row.source {
             TermSource::CommonSense => {
                 if row.ref_name.as_deref().is_some_and(|r| !r.trim().is_empty()) {
                     return Err(format!("常识行「{}」不得带 ref", row.term.trim()));
                 }
                 if known.contains(&key(&row.term)) {
-                    return Err(format!(
-                        "常识行「{}」逐字命中名池（事实矛盾，应为已教/自教）",
-                        row.term.trim()
-                    ));
+                    // rs2（learnhub #252 裁决 B）：逐字命中名池 = 事实矛盾行。
+                    // 归一三前提 = 已过定义原文逐字核且 ref 为空（ref 空已在
+                    // 上方挡住）；可无歧义归位的两种形态就地改判并留痕，不整
+                    // 份作废重掷。
+                    let grounded = definitions
+                        .get(concept)
+                        .is_some_and(|definition| term_grounded(&row.term, definition));
+                    if !grounded {
+                        return Err(format!(
+                            "常识行「{}」逐字命中名池（事实矛盾，应为已教/自教）",
+                            row.term.trim()
+                        ));
+                    }
+                    // 改判拿走 owned 串（行就地改写，行借用不得横跨写点）。
+                    let concept = concept.to_owned();
+                    let term = row.term.trim().to_owned();
+                    if self_taught.contains(term.as_str()) && term != concept {
+                        row.source = TermSource::SelfTaught;
+                        row.ref_name = Some(term.clone());
+                        normalized.push(ProvenanceNormalization {
+                            concept: concept.clone(),
+                            term: term.clone(),
+                            source: TermSource::SelfTaught,
+                            ref_name: term,
+                        });
+                    } else if !nominees.contains(term.as_str()) {
+                        row.source = TermSource::Taught;
+                        row.ref_name = Some(term.clone());
+                        normalized.push(ProvenanceNormalization {
+                            concept,
+                            term: term.clone(),
+                            source: TermSource::Taught,
+                            ref_name: term,
+                        });
+                    } else {
+                        // 只提名未教（含 term == concept 的循环自证形态）：归位
+                        // 成已教 ref=term 会拿本批提名当出处，维持原判重试。
+                        return Err(format!(
+                            "常识行「{}」逐字命中名池但只命中本批提名（提名本身不是出处，不能机械归位）",
+                            row.term.trim()
+                        ));
+                    }
                 }
             }
             TermSource::Taught => {
@@ -260,11 +331,49 @@ pub(crate) fn validate_term_provenance(
             }
         }
     }
-    let uncovered: Vec<&str> = nominees.difference(&covered).copied().collect();
+    let uncovered: Vec<&str> = nominees
+        .iter()
+        .filter(|name| !covered.contains(**name))
+        .copied()
+        .collect();
     if !uncovered.is_empty() {
         return Err(format!("提名缺挂号表行：{}", uncovered.join("、")));
     }
-    Ok(TableOutcome { rows: rows.len(), external_hits })
+    Ok(TableOutcome { rows: rows.len(), external_hits, normalized })
+}
+
+/// 归一记录 → findings 行（rs2；调用方走既有 j09 warn 通道落库，k02 水位
+/// 消费——零新面）。field 按提名归属取 `new_concepts` / `new_aliases`（名实
+/// 相符，下行维护面据此定位）；node="批" = 批级意见不点名任何节点（与
+/// advice 范围条款对齐）。
+pub(crate) fn normalization_findings(
+    normalized: &[ProvenanceNormalization],
+    batch: &ProposedBatch,
+) -> Vec<super::ReviewFinding> {
+    let aliases: HashSet<&str> = batch
+        .new_aliases
+        .iter()
+        .map(|nomination| nomination.name.trim())
+        .collect();
+    normalized
+        .iter()
+        .map(|row| super::ReviewFinding {
+            node: "批".into(),
+            field: if aliases.contains(row.concept.as_str()) {
+                "new_aliases"
+            } else {
+                "new_concepts"
+            }
+            .into(),
+            issue: format!(
+                "常识行「{}」逐字命中名池（事实矛盾），机械改判为 {}（ref={}）",
+                row.term,
+                row.source.as_str(),
+                row.ref_name
+            ),
+            advice: "留痕不挡门；人工抽查词义贴合，同形词错配时回退评审重裁".into(),
+        })
+        .collect()
 }
 
 /// 行名词是否逐字来自定义原文。宽容面：去掉首尾空白与**尾随括注**（模型常
@@ -391,7 +500,7 @@ mod tests {
 
     #[test]
     fn legal_table_passes_with_row_count() {
-        let read = validate_term_provenance(&legal_rows(), true, &batch(), &known(), &[]).unwrap();
+        let read = validate_term_provenance(&mut legal_rows(), true, &batch(), &known(), &[]).unwrap();
         assert_eq!(read.rows, 3, "合法表过，行数进读数");
         assert_eq!(read.external_hits, 0, "无锚批零命中");
     }
@@ -401,28 +510,28 @@ mod tests {
         // 零提名批：空表空转（legacy 形态兼容——off 臂与空批都不卡）。
         let batch = ProposedBatch::default();
         assert_eq!(
-            validate_term_provenance(&[], true, &batch, &known(), &[]).map(|o| o.rows),
+            validate_term_provenance(&mut [], true, &batch, &known(), &[]).map(|o| o.rows),
             Ok(0)
         );
     }
 
     #[test]
     fn taught_ref_not_in_pool_is_red() {
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::Taught, Some("不存在的概念")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("不在名池"), "{error}");
     }
 
     #[test]
     fn taught_or_self_taught_row_without_ref_is_red() {
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::Taught, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺 ref"), "{error}");
     }
 
@@ -430,11 +539,11 @@ mod tests {
     fn self_taught_ref_pointing_at_own_nomination_is_circular() {
         // 三角形折叠图案的程序形态：定义引用某词，又称该词由本提名自教
         // ——定义预设的词不可能由定义自身供给，循环自证不得过门。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::SelfTaught, Some("借用")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("循环自证"), "{error}");
     }
 
@@ -442,22 +551,22 @@ mod tests {
     fn self_taught_ref_must_be_batch_teaches() {
         // 自教域 = 批内 teaches 的键：「引用」在名池但批内无人教——提名本身
         // 不是出处，挂不出自教行。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "引用", TermSource::SelfTaught, Some("引用")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("不在批内 teaches"), "{error}");
     }
 
     #[test]
     fn self_taught_ref_into_batch_teaches_passes() {
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::SelfTaught, Some("所有权")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
         assert_eq!(
-            validate_term_provenance(&rows, true, &batch(), &known(), &[]).map(|o| o.rows),
+            validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).map(|o| o.rows),
             Ok(2)
         );
     }
@@ -466,68 +575,163 @@ mod tests {
     fn taught_ref_pointing_at_batch_nomination_is_red() {
         // 名池含本批新铸（「借用」）；拿本批提名当「已教」出处 = 与自教循环
         // 自证同型，不得过关。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "作用域", TermSource::Taught, Some("借用")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("本批提名"), "{error}");
     }
 
+    // ── 常识行撞名池机械归一（rs2；learnhub #252 裁决 B 平移）──────────────
+
+    /// 归一三前提（缺一不归一，维持 Err）齐备 + 命中批内 teaches 键且
+    /// term ≠ 本条提名 → 自教 ref=term：行就地改写，归一记录随
+    /// [`TableOutcome`] 交调用方转 findings。
     #[test]
-    fn common_sense_row_hitting_name_pool_is_red() {
-        // 常识行 term 逐字命中名池 = 事实矛盾（应为已教/自教）。
-        let rows = vec![
+    fn common_sense_row_hitting_batch_teaches_normalizes_to_self_taught() {
+        let mut rows = vec![
             row("借用", "所有权", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let read = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap();
+        assert_eq!(read.rows, 2);
+        assert_eq!(read.normalized.len(), 1, "常识行须归一：{read:?}");
+        assert_eq!(rows[0].source, TermSource::SelfTaught, "行就地改写");
+        assert_eq!(rows[0].ref_name.as_deref(), Some("所有权"));
+        assert_eq!(read.normalized[0].concept, "借用");
+        assert_eq!(read.normalized[0].term, "所有权");
+        assert_eq!(read.normalized[0].source, TermSource::SelfTaught);
+        assert_eq!(read.normalized[0].ref_name, "所有权");
+    }
+
+    /// 三前提齐备 + 命中名池且非本批提名（「引用」在名池但批内无人教）
+    /// → 已教 ref=term。词义同形异义与否机械层不裁，findings 留痕兜底。
+    #[test]
+    fn common_sense_row_hitting_taught_pool_normalizes_to_taught() {
+        let mut rows = vec![
+            row("借用", "引用", TermSource::CommonSense, None),
+            row("折引用", "所有权", TermSource::Taught, Some("所有权")),
+        ];
+        let read = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap();
+        assert_eq!(read.normalized.len(), 1, "常识行须归一：{read:?}");
+        assert_eq!(rows[0].source, TermSource::Taught);
+        assert_eq!(rows[0].ref_name.as_deref(), Some("引用"));
+        assert_eq!(read.normalized[0].concept, "借用");
+        assert_eq!(read.normalized[0].source, TermSource::Taught);
+        assert_eq!(read.normalized[0].ref_name, "引用");
+    }
+
+    /// 归一前提 = 常识行 ref 为空；带 ref（哪怕 term 撞名池、ref 指向本批
+    /// 提名）的常识行仍是行伪 → Err，不得静默归一丢 ref（上游 #252 :2178
+    /// 形态平移）。
+    #[test]
+    fn common_sense_row_with_ref_and_pool_hit_stays_retryable() {
+        let mut rows = vec![
+            row("借用", "所有权", TermSource::CommonSense, Some("借用")),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
+        assert!(error.contains("不得带 ref"), "{error}");
+        assert_eq!(rows[0].source, TermSource::CommonSense, "带 ref 行不得归一");
+    }
+
+    /// 归一前提 = 已过定义原文逐字核：锚概念行无定义对照域（核不了），
+    /// term 撞名池也维持 Err——名池命中不得绕过落地核。
+    #[test]
+    fn common_sense_row_hitting_pool_without_verbatim_grounding_stays_retryable() {
+        let anchors = vec![anchor("百分数改写为小数")];
+        let mut rows = vec![
+            row("借用", "所有权", TermSource::Taught, Some("所有权")),
+            row("百分数改写为小数", "折引用", TermSource::CommonSense, None),
+        ];
+        let error =
+            validate_term_provenance(&mut rows, true, &batch(), &known(), &anchors).unwrap_err();
         assert!(error.contains("命中名池"), "{error}");
+        assert_eq!(rows[1].source, TermSource::CommonSense, "未过逐字核不得归一");
+    }
+
+    /// 只提名未教：term 撞名池且逐字落地，但只命中本批提名（批内无人教）
+    /// ——机械归位成已教 ref=term 会拿本批产出当出处，维持 Err 重试
+    /// （term == concept 的循环自证形态同走此臂）。
+    #[test]
+    fn common_sense_row_hitting_pool_but_only_nominated_stays_retryable() {
+        let mut batch = batch();
+        batch.new_aliases[0].definition = "对借用概念的另一叫法。".into();
+        let mut rows = vec![
+            row("借用", "所有权", TermSource::Taught, Some("所有权")),
+            row("折引用", "借用", TermSource::CommonSense, None),
+        ];
+        let error = validate_term_provenance(&mut rows, true, &batch, &known(), &[]).unwrap_err();
+        assert!(error.contains("只命中本批提名"), "{error}");
+    }
+
+    /// 「次数」型同形异义（learnhub #252 驱动案）：计数义「次数」撞已教
+    /// 「次数」概念——机械层不裁词义，三前提齐备即归一为已教 ref=次数，
+    /// 词义出入由 findings 留痕 + 人工抽查兜底（回退条件在票面）。
+    #[test]
+    fn counting_homograph_pool_hit_normalizes_to_taught() {
+        let mut batch = batch();
+        batch.nodes.clear();
+        batch.mints[0] = ConceptMint {
+            canonical: "多项式".into(),
+            aliases: Vec::new(),
+            definition: "由变量与系数经加减乘与正整数次幂构成，次数取各项次数的最大值。".into(),
+            source: None,
+        };
+        batch.new_aliases.clear();
+        let known: HashSet<String> = ["次数"].into_iter().map(str::to_owned).collect();
+        let mut rows = vec![row("多项式", "次数", TermSource::CommonSense, None)];
+        let read = validate_term_provenance(&mut rows, true, &batch, &known, &[]).unwrap();
+        assert_eq!(read.rows, 1);
+        assert_eq!(read.normalized.len(), 1, "同形异义行机械归一：{read:?}");
+        assert_eq!(rows[0].source, TermSource::Taught);
+        assert_eq!(rows[0].ref_name.as_deref(), Some("次数"));
     }
 
     #[test]
     fn common_sense_or_missing_row_with_ref_is_red() {
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "作用域", TermSource::CommonSense, Some("所有权")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("常识行") && error.contains("不得带 ref"), "{error}");
 
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "作用域", TermSource::Missing, Some("所有权")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, false, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, false, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺失行") && error.contains("不得带 ref"), "{error}");
     }
 
     #[test]
     fn uncovered_nomination_is_red() {
         // 漏行：某条提名没有任何挂号行 = 提名定义无人核查。
-        let rows = vec![row("借用", "所有权", TermSource::Taught, Some("所有权"))];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let mut rows = vec![row("借用", "所有权", TermSource::Taught, Some("所有权"))];
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺挂号表行") && error.contains("折引用"), "{error}");
     }
 
     #[test]
     fn row_concept_outside_nominations_is_red() {
-        let rows = vec![
+        let mut rows = vec![
             row("幽灵", "作用域", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("不在批内提名"), "{error}");
     }
 
     #[test]
     fn common_sense_term_must_be_verbatim_in_definition() {
         // 常识/缺失行声称的是定义原文里的某个词；改写成综述 = 行失真。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "资源独占的约束", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
     }
 
@@ -538,32 +742,32 @@ mod tests {
     fn empty_definition_cannot_ground_common_sense_or_missing_rows() {
         let mut batch = batch();
         batch.mints[0].definition = String::new();
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "作用域", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch, &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch, &known(), &[]).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
 
         // 缺失行同走这一臂（pass=false 避开缺失行「自认缺口却放行」先报）。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "作用域", TermSource::Missing, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, false, &batch, &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, false, &batch, &known(), &[]).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
     }
 
     #[test]
     fn grounded_term_tolerates_trailing_parenthetical() {
         // 尾随括注可去：term「作用域（编译期检查）」的括注前头逐字在定义里。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::Taught, Some("所有权")),
             row("借用", "作用域（编译期检查）", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
         assert_eq!(
-            validate_term_provenance(&rows, true, &batch(), &known(), &[]).map(|o| o.rows),
+            validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).map(|o| o.rows),
             Ok(3)
         );
     }
@@ -571,15 +775,15 @@ mod tests {
     #[test]
     fn missing_row_with_pass_is_self_contradictory() {
         // 第四值承重：自认缺口却放行 = 表变成橡皮章，结论不可用。
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::Missing, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
+        let error = validate_term_provenance(&mut rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺口未打回"), "{error}");
         // 配套 pass=false = 自洽（缺失行合法，结论照打回）。
         assert_eq!(
-            validate_term_provenance(&rows, false, &batch(), &known(), &[]).map(|o| o.rows),
+            validate_term_provenance(&mut rows, false, &batch(), &known(), &[]).map(|o| o.rows),
             Ok(2)
         );
     }
@@ -593,6 +797,7 @@ mod tests {
             retried: 1,
             degraded: false,
             external_hits: 0,
+            normalized: 2,
         });
         total.merge(&ProvenanceReadout {
             rows: 2,
@@ -600,6 +805,7 @@ mod tests {
             retried: 0,
             degraded: true,
             external_hits: 2,
+            normalized: 1,
         });
         assert_eq!(
             total,
@@ -608,7 +814,8 @@ mod tests {
                 invalid: 1,
                 retried: 1,
                 degraded: true,
-                external_hits: 2
+                external_hits: 2,
+                normalized: 3
             }
         );
     }
@@ -631,12 +838,12 @@ mod tests {
     #[test]
     fn external_anchor_canonical_releases_row_concept_and_counts_hits() {
         let anchors = vec![anchor("百分数改写为小数")];
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::Taught, Some("所有权")),
             row("百分数改写为小数", "作用域", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let read = validate_term_provenance(&rows, true, &batch(), &known(), &anchors).unwrap();
+        let read = validate_term_provenance(&mut rows, true, &batch(), &known(), &anchors).unwrap();
         assert_eq!(read.rows, 3, "锚放行后全表过：{read:?}");
         assert_eq!(read.external_hits, 1, "命中锚的行数进读数");
     }
@@ -649,7 +856,7 @@ mod tests {
         // 名池加锚正名（gate_batch 装配口径：登记表活跃名并入 known）。
         let mut known = known();
         known.insert("百分数改写为小数".to_owned());
-        let rows = vec![
+        let mut rows = vec![
             row("借用", "所有权", TermSource::Taught, Some("所有权")),
             row(
                 "百分数改写为小数",
@@ -659,7 +866,7 @@ mod tests {
             ),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let read = validate_term_provenance(&rows, true, &batch(), &known, &anchors).unwrap();
+        let read = validate_term_provenance(&mut rows, true, &batch(), &known, &anchors).unwrap();
         assert_eq!(read.rows, 3, "taught+ref=正名路径全绿：{read:?}");
         assert_eq!(read.external_hits, 1);
     }
@@ -670,12 +877,12 @@ mod tests {
     fn fabricated_concept_outside_both_domains_stays_red_with_stock_guidance() {
         // 锚在场也救不了两域皆无的凭空概念。
         let anchors = vec![anchor("百分数改写为小数")];
-        let rows = vec![
+        let mut rows = vec![
             row("幽灵", "作用域", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
         let error =
-            validate_term_provenance(&rows, true, &batch(), &known(), &anchors).unwrap_err();
+            validate_term_provenance(&mut rows, true, &batch(), &known(), &anchors).unwrap_err();
         assert!(error.contains("不在批内提名"), "{error}");
         assert!(error.contains("本批复用命中"), "死因点名锚域：{error}");
         assert!(
@@ -689,8 +896,8 @@ mod tests {
     #[test]
     fn nominee_rows_take_the_current_branch_and_skip_anchor_counting() {
         let anchors = vec![anchor("借用")];
-        let rows = legal_rows();
-        let read = validate_term_provenance(&rows, true, &batch(), &known(), &anchors).unwrap();
+        let mut rows = legal_rows();
+        let read = validate_term_provenance(&mut rows, true, &batch(), &known(), &anchors).unwrap();
         assert_eq!(read.rows, 3);
         assert_eq!(read.external_hits, 0, "提名行不算锚命中");
     }
