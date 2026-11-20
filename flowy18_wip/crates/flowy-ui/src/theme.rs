@@ -201,6 +201,12 @@ impl ResolvedTheme {
     pub fn border_strong(self) -> Rgba {
         rgb(if self.dark { 0x0096_938c } else { 0x0085_8178 })
     }
+    pub(crate) fn quiet_field_border(self) -> Rgba {
+        rgb(if self.dark { 0x0045_4543 } else { 0x00da_d8d3 })
+    }
+    pub(crate) fn quiet_field_hover_border(self) -> Rgba {
+        rgb(if self.dark { 0x006a_6a66 } else { 0x00ad_aaa3 })
+    }
     pub fn soft(self) -> Rgba {
         rgb(if self.dark { 0x0034_3432 } else { 0x00ef_eee9 })
     }

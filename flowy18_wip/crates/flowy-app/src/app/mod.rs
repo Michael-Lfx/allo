@@ -8,6 +8,7 @@ mod invite;
 mod login;
 mod more;
 mod ota;
+mod projects;
 mod settings;
 mod skills;
 mod state;
@@ -35,6 +36,7 @@ use state::{
     AppearanceChrome, AuthState, FlexState, GalleryState, InviteState,
     LegalDoc, LoginPhase, LoginStep, PersonaState, SettingsState, SkillsState,
 };
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -132,6 +134,9 @@ pub struct FlowyApp {
     pub ota: ota::OtaController,
     pub(crate) settings: SettingsState,
     pub(crate) invite: InviteState,
+    pub(crate) project_create: state::ProjectCreateState,
+    pub(crate) project_menu: Option<String>,
+    pub(crate) expanded_projects: HashSet<String>,
     pub(crate) persona: PersonaState,
     pub(crate) appearance: AppearanceChrome,
     pub(crate) flex: FlexState,
@@ -196,6 +201,9 @@ impl FlowyApp {
             }
             "user-menu" => {
                 self.close_user_menu(cx);
+            }
+            "project-menu" => {
+                self.project_menu = None;
             }
             "model-list" | "model-info" | "credit-card" => {
                 self.studio.update(cx, |panel, cx| {
@@ -275,6 +283,15 @@ impl FlowyApp {
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
         let invite_email =
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
+        let project_create = state::ProjectCreateState {
+            name: text_field(cx),
+            folder: None,
+            status: None,
+            title_key: "project.create_title",
+            picker_generation: 0,
+            editing_project_id: None,
+            deleting_project_id: None,
+        };
         let invite_book = invite::load(store.root());
         let saved = crate::persona::load(store.root());
         let nickname = text_field(cx);
@@ -368,6 +385,13 @@ impl FlowyApp {
             cx.subscribe(&invite_email, |_, _, _: &TextChanged, cx| {
                 cx.notify();
             }),
+            cx.subscribe(
+                &project_create.name,
+                |app, _, _: &TextChanged, cx| {
+                    app.project_create.status = None;
+                    cx.notify();
+                },
+            ),
             cx.subscribe(&nickname, |app, _, _: &TextChanged, cx| {
                 app.touch_profile(cx);
             }),
@@ -402,6 +426,8 @@ impl FlowyApp {
                 app.on_studio_event(event, cx);
             }),
         ];
+        let expanded_projects =
+            studio.read(cx).active_project_id.iter().cloned().collect();
         let mut app = Self {
             active_dialog: state::ActiveDialog::None,
             ui,
@@ -453,6 +479,9 @@ impl FlowyApp {
                 emails: invite_book.emails,
                 email: invite_email,
             },
+            project_create,
+            project_menu: None,
+            expanded_projects,
             persona: PersonaState {
                 menu: false,
                 page: more::Page::Personal,
@@ -1435,7 +1464,7 @@ impl FlowyApp {
     fn main_canvas(
         &self,
         window: &mut Window,
-        cx: &Context<'_, Self>,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let mut canvas = div()
             .size_full()
@@ -1567,6 +1596,9 @@ impl Render for FlowyApp {
             }
             settings::Picker::None if self.persona.menu => Some("more-flyout"),
             settings::Picker::None if self.user_menu => Some("user-menu"),
+            settings::Picker::None if self.project_menu.is_some() => {
+                Some("project-menu")
+            }
             settings::Picker::None
                 if self.active_dialog == state::ActiveDialog::None
                     && self.screen == Screen::Main
@@ -1683,6 +1715,12 @@ impl Render for FlowyApp {
                 root.child(self.skill_layer(window, cx))
             }
             state::ActiveDialog::Invite => root.child(self.invite_layer(cx)),
+            state::ActiveDialog::ProjectCreate => {
+                root.child(self.projects_layer(window, cx))
+            }
+            state::ActiveDialog::ProjectDelete => {
+                root.child(self.project_delete_layer(window, cx))
+            }
             state::ActiveDialog::Flex => root.child(self.flex_layer(cx)),
             state::ActiveDialog::Import | state::ActiveDialog::Knowledge => {
                 root.child(self.more_layer(cx))
@@ -1750,6 +1788,18 @@ impl Render for FlowyApp {
                 )
             };
             root = root.child(popover);
+        }
+        if let Some(project_id) = &self.project_menu {
+            let anchor = format!("project-menu-trigger-{project_id}");
+            root = root.child(flowy_ui::popover(
+                "project-menu",
+                anchor,
+                self.project_menu_content(project_id, cx),
+                &self.ui,
+                window,
+                cx,
+                self.i18n.locale().is_rtl(),
+            ));
         }
         if self.prefs.activity && self.screen == Screen::Main {
             root = root.child(self.activity_floater());
@@ -2283,6 +2333,224 @@ mod tests {
             assert!(!app.persona.menu);
             assert_eq!(app.nav_back.last(), Some(&Section::Automation));
         });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn project_create_dialog_exposes_fields_and_cancel_keeps_registry_empty(
+        cx: &mut TestAppContext,
+    ) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        fn click(cx: &mut VisualTestContext, label: &str) {
+            let id = cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("app accessibility tree");
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .unwrap_or_else(|| panic!("missing button {label:?}"))
+                    .0
+            });
+            cx.update(|window, cx| {
+                window.perform_a11y_action(
+                    id,
+                    accesskit::Action::Click,
+                    None,
+                    cx,
+                );
+            });
+            draw(cx);
+        }
+
+        let root = test_root();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.ota.checked = true;
+            app
+        });
+        let (new_project, name, choose_folder, create, cancel) = cx
+            .read_entity(&app, |app, _| {
+                (
+                    app.t("dock.new_project"),
+                    app.t("project.name"),
+                    app.t("project.folder"),
+                    app.t("project.create"),
+                    app.t("more.cancel"),
+                )
+            });
+        draw(cx);
+        click(cx, &new_project);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.active_dialog, state::ActiveDialog::ProjectCreate);
+        });
+        cx.update(|window, _| {
+            let tree = window.a11y_tree().expect("project dialog tree");
+            assert!(tree.nodes.iter().any(|(_, node)| {
+                node.label() == Some(name.as_str())
+                    && node.role() == accesskit::Role::TextInput
+            }));
+            for label in [&choose_folder, &create, &cancel] {
+                assert!(
+                    tree.nodes.iter().any(|(_, node)| {
+                        node.label() == Some(label.as_str())
+                            && node.role() == accesskit::Role::Button
+                    }),
+                    "missing project dialog control {label:?}"
+                );
+            }
+        });
+        click(cx, &cancel);
+        cx.read_entity(&app, |app, cx| {
+            assert_eq!(app.active_dialog, state::ActiveDialog::None);
+            assert!(app.studio.read(cx).projects.is_empty());
+        });
+        assert!(!root.join("projects.json").exists());
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn project_row_menu_pins_and_unregisters_without_deleting_folder(
+        cx: &mut TestAppContext,
+    ) {
+        fn draw(cx: &mut VisualTestContext) {
+            for _ in 0..4 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.set_a11y_forced(true);
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            cx.run_until_parked();
+        }
+
+        fn click(cx: &mut VisualTestContext, label: &str) {
+            let id = cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("app accessibility tree");
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some(label)
+                            && node.role() == accesskit::Role::Button
+                    })
+                    .unwrap_or_else(|| panic!("missing button {label:?}"))
+                    .0
+            });
+            cx.update(|window, cx| {
+                window.perform_a11y_action(
+                    id,
+                    accesskit::Action::Click,
+                    None,
+                    cx,
+                );
+            });
+            draw(cx);
+        }
+
+        let root = test_root();
+        let folder = root.join("workspace");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let mut app =
+                FlowyApp::new(SessionStore::new(root.clone()), false, cx);
+            app.screen = Screen::Main;
+            app.ota.checked = true;
+            app
+        });
+        let project = app.update(cx, |app, cx| {
+            app.studio.update(cx, |panel, cx| {
+                panel.create_project("Client", &folder, cx).unwrap()
+            })
+        });
+        let _project_session = cx.read_entity(&app, |app, cx| {
+            app.studio.read(cx).agent.create_session().unwrap()
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.expanded_projects.insert(project.id.clone());
+                cx.notify();
+            });
+        });
+        draw(cx);
+
+        let (options, pin, expand, new_task) =
+            cx.read_entity(&app, |app, _| {
+                (
+                    app.t("project.menu"),
+                    app.t("project.pin"),
+                    app.tf("project.collapse", &[("name", "Client")]),
+                    app.t("project.new_task"),
+                )
+            });
+        for label in [&options, &expand, &new_task] {
+            cx.update(|window, _| {
+                let tree = window.a11y_tree().expect("project row tree");
+                assert!(
+                    tree.nodes.iter().any(|(_, node)| {
+                        node.label() == Some(label.as_str())
+                            && node.role() == accesskit::Role::Button
+                    }),
+                    "missing project row control {label:?}"
+                );
+            });
+        }
+        let nested_task = cx.read_entity(&app, |app, _| app.t("dock.new_task"));
+        cx.update(|window, _| {
+            let tree = window.a11y_tree().expect("project task tree");
+            assert!(
+                tree.nodes.iter().any(|(_, node)| {
+                    node.label() == Some(nested_task.as_str())
+                        && node.role() == accesskit::Role::Button
+                }),
+                "the project's session should render inside its expanded group"
+            );
+        });
+
+        click(cx, &options);
+        cx.update(|window, _| {
+            let tree = window.a11y_tree().expect("project menu tree");
+            assert!(tree.nodes.iter().any(|(_, node)| {
+                node.label() == Some(pin.as_str())
+                    && node.role() == accesskit::Role::Button
+            }));
+        });
+        click(cx, &pin);
+        cx.read_entity(&app, |app, cx| {
+            assert!(app.studio.read(cx).projects[0].pinned);
+        });
+
+        click(cx, &options);
+        let delete = cx.read_entity(&app, |app, _| app.t("project.delete"));
+        click(cx, &delete);
+        cx.read_entity(&app, |app, _| {
+            assert_eq!(app.active_dialog, state::ActiveDialog::ProjectDelete);
+        });
+        let cancel = cx.read_entity(&app, |app, _| app.t("more.cancel"));
+        click(cx, &cancel);
+        click(cx, &options);
+        click(cx, &delete);
+        click(cx, &delete);
+        cx.read_entity(&app, |app, cx| {
+            assert!(app.studio.read(cx).projects.is_empty());
+        });
+        assert!(folder.is_dir(), "project removal must preserve local files");
+        drop(app);
         let _ = std::fs::remove_dir_all(root);
     }
 

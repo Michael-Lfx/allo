@@ -18,7 +18,7 @@ mod title;
 pub use catalog::{CatalogModel, ProviderCatalog};
 pub use config::LlmConfig;
 pub use flex::FlexProvider;
-pub use handle::{AgentHandle, AgentUpdate, SessionSummary};
+pub use handle::{AgentHandle, AgentUpdate, AgentWorkspace, SessionSummary};
 pub use model::{Model, Plan};
 pub use model_directory::{
     CLOUD_TIERS, TierResolution, TierSpec, is_locked, required_level,
@@ -57,6 +57,63 @@ mod tests {
                 ..LlmConfig::default()
             },
         )
+    }
+
+    #[test]
+    fn project_workspace_follows_sessions_and_restores_after_restart() {
+        let root = ScratchRoot::new("project-workspaces");
+        let project_a = AgentWorkspace {
+            project_id: "project-a".into(),
+            root: root.0.join("projects/a"),
+        };
+        let project_b = AgentWorkspace {
+            project_id: "project-b".into(),
+            root: root.0.join("projects/b"),
+        };
+        std::fs::create_dir_all(&project_a.root).unwrap();
+        std::fs::create_dir_all(&project_b.root).unwrap();
+
+        let handle = mock_handle(&root.0);
+        handle.set_workspace_for_new_sessions(Some(project_a.clone()));
+        let session_a = handle.create_session().unwrap();
+        handle.clear_active().unwrap();
+        handle.set_workspace_for_new_sessions(Some(project_b.clone()));
+        let session_b = handle.create_session().unwrap();
+
+        assert!(handle.list_sessions().iter().any(|session| {
+            session.id == session_a
+                && session.project_id.as_deref() == Some("project-a")
+        }));
+
+        handle.select_session(&session_a).unwrap();
+        assert_eq!(handle.active_workspace(), Some(project_a.clone()));
+        handle.select_session(&session_b).unwrap();
+        assert_eq!(handle.active_workspace(), Some(project_b.clone()));
+        let index = crate::index::SessionIndex::load(&root.0).unwrap();
+        assert_eq!(
+            index
+                .sessions
+                .iter()
+                .find(|session| session.id == session_a)
+                .unwrap()
+                .workspace,
+            Some(project_a.clone()),
+        );
+        assert_eq!(
+            index
+                .sessions
+                .iter()
+                .find(|session| session.id == session_b)
+                .unwrap()
+                .workspace,
+            Some(project_b.clone()),
+        );
+        drop(handle);
+
+        let reopened = mock_handle(&root.0);
+        assert_eq!(reopened.active_workspace(), Some(project_b));
+        reopened.select_session(&session_a).unwrap();
+        assert_eq!(reopened.active_workspace(), Some(project_a));
     }
 
     struct ScratchRoot(std::path::PathBuf);
@@ -178,6 +235,7 @@ mod tests {
                 lines: lines.clone(),
                 status: TurnStatus::Completed,
                 titled: true,
+                workspace: None,
             }],
         }
         .save(&root.0)
@@ -224,6 +282,7 @@ mod tests {
                 lines: lines.clone(),
                 status: TurnStatus::Completed,
                 titled: true,
+                workspace: None,
             }],
         }
         .save(&root.0)
@@ -274,6 +333,7 @@ mod tests {
                 ],
                 status: TurnStatus::Running,
                 titled: true,
+                workspace: None,
             }],
         };
         index.save(&root.0).unwrap();
@@ -375,6 +435,7 @@ mod tests {
                 ],
                 status: TurnStatus::Running,
                 titled: true,
+                workspace: None,
             }],
         };
         std::fs::create_dir_all(root.0.join("sessions")).unwrap();
@@ -527,6 +588,7 @@ mod tests {
                 lines: lines.clone(),
                 status: TurnStatus::Completed,
                 titled: true,
+                workspace: None,
             }],
         }
         .save(&root.0)

@@ -7,6 +7,7 @@ use crate::prefs::FlexProvider;
 use crate::session::Session;
 use gpui::{Entity, Task, WindowAppearance};
 use gpui_ce_elements::editable_text::EditableTextState;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginStep {
@@ -78,6 +79,16 @@ pub struct SettingsState {
     pub(super) query: Entity<EditableTextState>,
 }
 
+pub struct ProjectCreateState {
+    pub(super) name: Entity<EditableTextState>,
+    pub(super) folder: Option<PathBuf>,
+    pub(super) status: Option<&'static str>,
+    pub(super) title_key: &'static str,
+    pub(super) picker_generation: u64,
+    pub(super) editing_project_id: Option<String>,
+    pub(super) deleting_project_id: Option<String>,
+}
+
 pub struct InviteState {
     pub(super) panel: invite::Panel,
     pub(super) status: Option<&'static str>,
@@ -128,6 +139,8 @@ pub(super) enum ActiveDialog {
     Ideas,
     Idea(&'static str),
     Skill(&'static str),
+    ProjectCreate,
+    ProjectDelete,
     Invite,
     Flex,
     Import,
@@ -143,6 +156,8 @@ impl ActiveDialog {
             Self::Ideas => Some("ideas"),
             Self::Idea(_) => Some("idea"),
             Self::Skill(_) => Some("skill"),
+            Self::ProjectCreate => Some("project-create"),
+            Self::ProjectDelete => Some("project-delete"),
             Self::Invite => Some("invite"),
             Self::Flex => Some("flex"),
             Self::Import => Some("import"),

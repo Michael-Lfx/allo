@@ -1,7 +1,7 @@
 //! Controlled inputs and selection controls. Domain values stay in the caller.
 use crate::{ControlSize, ResolvedTheme, interactive};
 use gpui::{
-    App, Div, ElementId, Entity, IntoElement, ParentElement, Role,
+    App, Div, ElementId, Entity, IntoElement, ParentElement, Pixels, Role,
     SharedString, Stateful, Styled, Window, accesskit, div, prelude::*, px,
 };
 use gpui_ce_elements::editable_text::{EditableTextElement, EditableTextState};
@@ -33,6 +33,8 @@ pub struct TextField {
     placeholder: SharedString,
     mode: InputMode,
     multiline: bool,
+    multiline_height: Pixels,
+    quiet: bool,
     error: Option<SharedString>,
 }
 impl TextField {
@@ -48,6 +50,8 @@ impl TextField {
             placeholder: SharedString::default(),
             mode: InputMode::Editable,
             multiline: false,
+            multiline_height: px(96.),
+            quiet: false,
             error: None,
         }
     }
@@ -63,6 +67,16 @@ impl TextField {
         self.multiline = value;
         self
     }
+    pub const fn multiline_height(mut self, height: Pixels) -> Self {
+        self.multiline = true;
+        self.multiline_height = height;
+        self
+    }
+    /// A lighter field for forms on the page canvas.
+    pub const fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
     pub fn invalid(mut self, message: impl Into<SharedString>) -> Self {
         self.error = Some(message.into());
         self
@@ -72,6 +86,8 @@ impl TextField {
         let disabled = self.mode == InputMode::Disabled;
         let border = if self.error.is_some() {
             theme.danger()
+        } else if self.quiet {
+            theme.quiet_field_border()
         } else {
             theme.border_strong()
         };
@@ -82,8 +98,16 @@ impl TextField {
             .rounded_lg()
             .border_1()
             .border_color(border)
-            .bg(theme.soft())
-            .text_color(theme.ink());
+            .bg(if self.quiet {
+                theme.canvas()
+            } else {
+                theme.soft()
+            })
+            .text_color(theme.ink())
+            .when(self.quiet && !disabled && self.error.is_none(), |shell| {
+                let hover_border = theme.quiet_field_hover_border();
+                shell.hover(move |style| style.border_color(hover_border))
+            });
         if disabled {
             // A non-interactive text presentation has no hidden editor tab stop or mouse handler.
             shell = shell
@@ -104,7 +128,12 @@ impl TextField {
             } else {
                 text_input(input_id)
             };
-            let metrics = theme.control_metrics();
+            let metrics = if self.quiet {
+                theme.text_metrics(crate::TextRole::Body)
+            } else {
+                theme.control_metrics()
+            };
+            let focus_ring = theme.focus_ring();
             let input = input
                 .state(self.state.downgrade())
                 .aria_label(self.label)
@@ -122,8 +151,17 @@ impl TextField {
                 .line_height(metrics.line_height)
                 .font_weight(metrics.weight)
                 .text_color(theme.ink())
+                .when(self.quiet, |el| {
+                    el.py(px(if self.multiline { 12. } else { 6. }))
+                })
+                .when(self.quiet && self.error.is_none(), |el| {
+                    el.rounded_lg()
+                        .border_1()
+                        .border_color(gpui::transparent_black())
+                        .focus(move |style| style.border_color(focus_ring))
+                })
                 .when(self.multiline, |el| {
-                    el.min_h(px(96.)).whitespace_normal()
+                    el.min_h(self.multiline_height).whitespace_normal()
                 })
                 .when(!self.multiline, |el| {
                     el.min_h_auto().whitespace_nowrap()
