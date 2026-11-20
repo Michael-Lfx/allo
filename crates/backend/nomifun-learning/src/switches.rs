@@ -122,6 +122,36 @@ pub fn call_archive_enabled() -> bool {
     call_archive_enabled_value(std::env::var(CALL_ARCHIVE_SWITCH_ENV).ok().as_deref())
 }
 
+/// live 调用档案开关（rs1，`NOMI_LEARNING_LIVE_ARCHIVE`）：行内含 prompt/
+/// 回包全文，隐私面要求关臂零写入零建目录（不是只不落盘不采集）。按日
+/// 目录（`observation/learning-live/YYYY-MM-DD/`，live 无 run 概念）。取值
+/// 三臂：显式 off/0/false = 关（任何渠道缺省之上的隐私总闸——dev 渠道
+/// 缺省 on 也压不住显式 off）；显式其它取值 = 开；未设 = 调用方注入的
+/// 渠道缺省（渠道判定缝在 app 层 `crate::channel`，stable 缺省关、dev
+/// 渠道缺省 on 供真机法证随开随查——env 名与取值语义单源住址仍在本
+/// 文件，app 层只注入缺省值）。与 o2 的 [`CALL_ARCHIVE_SWITCH_ENV`]（按
+/// run，learning-dev/）同缝不同目录：接线处本开关优先，二者皆开不双层
+/// 包（写放大）。
+pub const LIVE_ARCHIVE_SWITCH_ENV: &str = "NOMI_LEARNING_LIVE_ARCHIVE";
+
+/// live 档案开关判定（取值注入面，纯函数——测试不触进程 env）。`value`
+/// = None 是「未设」臂，返回调用方按渠道注入的 `unset_default`。
+pub fn live_archive_enabled_value(value: Option<&str>, unset_default: bool) -> bool {
+    match value {
+        Some(value) => !is_off_switch_value(value),
+        None => unset_default,
+    }
+}
+
+/// live 档案开关的进程读数：`unset_default` 由调用方按渠道注入
+/// （stable = false；dev 渠道 = true）。
+pub fn live_archive_enabled_with_unset_default(unset_default: bool) -> bool {
+    live_archive_enabled_value(
+        std::env::var(LIVE_ARCHIVE_SWITCH_ENV).ok().as_deref(),
+        unset_default,
+    )
+}
+
 /// 开放题评审执行器开关（n5 机制面开关臂，`NOMI_LEARNING_OPEN_JUDGE`）：
 /// 未设或其它取值 = 新评审链（重试环 N=2 带原因回灌 + 90s 显式超时 +
 /// complete_json_with_thinking 通道 + schema 互斥校验）；off/0/false =
@@ -401,6 +431,32 @@ mod tests {
         }
         for value in ["on", "1", "true", "yes", ""] {
             assert!(call_archive_enabled_value(Some(value)), "{value:?} = 开（挂 ArchivingCompleter）");
+        }
+    }
+
+    /// live 调用档案开关（rs1）：显式 off 系 = 关（任何渠道缺省之上都是
+    /// 隐私总闸——行内含 prompt/回包全文，off 时必须零写入）；显式其它
+    /// 取值 = 开；未设 = 调用方注入的渠道缺省（stable 缺省关，dev 渠道
+    /// 缺省 on——渠道判定缝在 app 层，本文件只单源管取值语义）。
+    /// 纯函数面测试（不触进程 env）。
+    #[test]
+    fn live_archive_switch_explicit_off_wins_and_unset_takes_injected_default() {
+        // 未设臂：渠道缺省注入面（两臂都钉——stable=off / dev=on）。
+        assert!(!live_archive_enabled_value(None, false), "未设 + stable 缺省 = 关");
+        assert!(live_archive_enabled_value(None, true), "未设 + dev 渠道缺省 = on");
+        // 显式 off 取值 = 关（dev 缺省 on 也压不住显式 off——隐私总闸）。
+        for value in ["off", "OFF", "0", "false", " False ", " off "] {
+            assert!(
+                !live_archive_enabled_value(Some(value), true),
+                "{value:?} = 关（显式 off 压过渠道缺省）"
+            );
+        }
+        // 显式非 off 取值 = 开（stable 缺省 off 也压不住显式 on——取证总闸）。
+        for value in ["on", "1", "true", "yes", ""] {
+            assert!(
+                live_archive_enabled_value(Some(value), false),
+                "{value:?} = 开（显式 on 压过 stable 缺省）"
+            );
         }
     }
 

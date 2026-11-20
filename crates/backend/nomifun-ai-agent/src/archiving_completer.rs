@@ -1,8 +1,12 @@
 //! Observing [`LearningCompleter`] (wayfinder ticket s1): wraps any
 //! completer, archiving every call — success or failure — as one JSONL line
-//! under `<obs_root>/<run-ts>/calls.jsonl` (system + user + response full
-//! text, elapsed time and outcome). Smoke runs MUST mount it; production runs
-//! never do (zero overhead).
+//! under the caller-chosen observation directory (system + user + response
+//! full text, elapsed time and outcome). Mounting policy lives at the wiring
+//! seams: smoke runs MUST mount it (`learning_smoke.rs`, per-run dirs);
+//! production mounts only behind an opt-in switch — rs1
+//! `NOMI_LEARNING_LIVE_ARCHIVE`（per-day，services.rs）或 o2
+//! `NOMI_LEARNING_CALL_ARCHIVE`（per-run dev 面）——开关 off = 零写入零建
+//! 目录（not mounted = zero overhead）。
 //!
 //! Probe-style calls (the `learning-smoke json` capability read-out) bypass
 //! this wrapper and hit the inner completer directly — they are not pipeline
@@ -45,8 +49,18 @@ impl ArchivingCompleter {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis())
             .unwrap_or(0);
-        let run_dir = obs_root.join(format!("run-{run_ts}"));
-        std::fs::create_dir_all(&run_dir)
+        Self::new_in_dir(inner, &obs_root.join(format!("run-{run_ts}")))
+    }
+
+    /// 目录策略放宽面（rs1 live 档案）：调用方自带完整观测目录（live 按
+    /// 日 `observation/learning-live/YYYY-MM-DD/`，live 无 run 概念），
+    /// 建目录 + 开日志与 [`new`] 同律，行格式零改动。目录粒度决策留在
+    /// 调用方——本类型只管逐调用一行。
+    pub fn new_in_dir(
+        inner: std::sync::Arc<dyn LearningCompleter>,
+        run_dir: &Path,
+    ) -> Result<Self, AppError> {
+        std::fs::create_dir_all(run_dir)
             .map_err(|error| AppError::Internal(format!("observation dir: {error}")))?;
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -56,7 +70,7 @@ impl ArchivingCompleter {
         Ok(Self {
             inner,
             log: Mutex::new(log),
-            run_dir,
+            run_dir: run_dir.to_path_buf(),
             redactions: Mutex::new(Vec::new()),
         })
     }
@@ -448,5 +462,44 @@ mod tests {
             std::fs::read_to_string(absent.run_dir().join("calls.jsonl")).unwrap();
         let absent_record: serde_json::Value = serde_json::from_str(absent_log.trim()).unwrap();
         assert_eq!(absent_record["usage"], serde_json::json!("absent"), "{absent_log}");
+    }
+
+    /// 目录策略放宽面（rs1 live 档案）：new_in_dir 落调用方自带的完整观测
+    /// 目录（live 按日 `learning-live/YYYY-MM-DD/`，无 run 概念），嵌套
+    /// 目录自动创建；行格式零改动（与 new 的 run-* 臂同一条 archive 通路
+    /// ——method/ok/response 字段同形）。
+    #[tokio::test]
+    async fn new_in_dir_archives_into_exact_directory() {
+        let obs = tempfile::tempdir().unwrap();
+        let day_dir = obs.path().join("learning-live").join("2026-11-20");
+        let completer =
+            ArchivingCompleter::new_in_dir(std::sync::Arc::new(Echo), &day_dir).unwrap();
+        assert_eq!(completer.run_dir(), day_dir);
+        completer
+            .complete_json(None, "sys", "usr", 128, None)
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(day_dir.join("calls.jsonl")).unwrap();
+        let record: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+        assert_eq!(record["method"], "complete_json");
+        assert_eq!(record["ok"], serde_json::json!(true));
+        assert_eq!(record["response"], "{\"ok\":true}");
+    }
+
+    /// 冒烟臂的按 run 目录策略不被放宽面波及：new 仍落
+    /// `<obs_root>/run-<ts>/`（一次冒烟运行一个目录）。
+    #[test]
+    fn new_keeps_run_ts_directory_policy() {
+        let obs = tempfile::tempdir().unwrap();
+        let completer =
+            ArchivingCompleter::new(std::sync::Arc::new(Echo), obs.path()).unwrap();
+        assert_eq!(completer.run_dir().parent().unwrap(), obs.path());
+        let name = completer
+            .run_dir()
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        assert!(name.starts_with("run-"), "{name}");
     }
 }
