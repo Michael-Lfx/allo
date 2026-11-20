@@ -994,26 +994,29 @@ const ADVICE_SCOPE_CLAUSE: &str = r#"
 /// 碎片裁决的输出契约段（m9 补接，learnhub #173 评审点名条款同构；absorb-8
 /// z02 三值扩面——learnhub #205 v1.20 同构；织入评审系统提示词尾部、挂号表
 /// 契约之后）：`fragments` 数组行形状 + 裁决三值词表 + 来源标记 + 范围外
-/// 裁决规则与三件机械核 + 全覆盖执法语义。与 `term_provenance` 并行不并表
+/// 裁决规则与机械核 + 全覆盖执法语义。与 `term_provenance` 并行不并表
 /// ——碎片 = 未着落的命名残片（缺口本身），provenance = 定义名词的出处
 /// （出处面），两物各核。词表与 `fragment_verdict::FRAGMENT_VERDICTS` /
 /// `FRAGMENT_SOURCES` 互钉。范围外机械核描述与
 /// `fragment_verdict::check_out_of_scope_row` 逐条对齐（learnhub `20f1dcf`
-/// 最终语义：按词判任一边界在场行、跨源多行合法；单行硬比不吸）。
-/// p01（prompt-context-fixes）三项扩写：噪声定义补「声明面正向提及且出处
-/// 已覆盖」的放行出口（真机 run-1793828585963 病历：滤杯/流程线等被自创
-/// 「scope 覆盖」话术挂在噪声名下，字面执行模型则误判名词打回好批）；清单
-/// 同词多源合并为一行的配套（渲染与读数面已合并，核验零改动）。与挂号表
-/// 的共用出处条款独立成段（[`FRAGMENT_PROVENANCE_RELATION_CLAUSE`]，两表
-/// 面都开才织入——挂号表 off 臂提示词里不存在该表）。
+/// 最终语义：按词判任一边界在场行、跨源多行合法；单行硬比不吸；rs3 增
+/// #213 正向快路——term 逐字命中本批教出名集先行放行）。
+/// p01（prompt-context-fixes）清单瘦身半边（同词多源合并渲染为一行）保留；
+/// 其噪声「声明面正向提及且出处已覆盖」散文自证出口已退役（rs3，learnhub
+/// #213 平移 2026-11-05：run-1793828585963 病历实锤该出口被「自创 scope 覆
+/// 盖」话术滥用且散文不可机械核验）——正向提及回归上游语义 = 范围外(b)
+/// （本批教出可指认的正向声明）+ 快路机械核，噪声回归纯切词/元语言义；
+/// #218 未来提及边界句随 #213 一并织入。与挂号表的共用出处条款独立成段
+/// （[`FRAGMENT_PROVENANCE_RELATION_CLAUSE`]，两表面都开才织入——挂号表
+/// off 臂提示词里不存在该表）。
 const FRAGMENT_OUTPUT_CONTRACT: &str = r#"
 【碎片裁决 fragments——输出硬约束】
 - 待审批次末尾的【机械点名清单】是机械层对本批提名定义、节点显示名与各节点 intent/scope 声明做已知词掩码后仍未有着落的 CJK 片段（宁滥勿缺，必含切词噪声），每行已标注来源（[definition]=提名定义、[node_title]=节点显示名、[intent]=节点意图、[scope]=教学范围；同词跨源已合并为一行、来源标签并列）。通过与打回的结论都必须携带 `fragments` 数组：清单里**每个片段都要有显式裁决**，缺数组或漏片段 = 结论无效（与挂号表同路：带死因重试恰一次，仍败按 Degraded 保守放行并留痕）。
 - 每行形状：{ "term": "片段原文", "verdict": "噪声|名词|范围外", "source": "definition|node_title|intent|scope", "note": "一句话依据" }。term 与清单逐字对照（子串互含也算处置——允许对片段做最小辨认）；source 从该词行标注的来源标签照填（同词多标签任取其一；判「范围外」必须引 intent/scope 来源）。
 - 清单中同词多源合并为一行——输出**每个词一行**即可，term 相同的一行裁决覆盖它的全部来源行（子串互含亦同）。
-- 裁**噪声**：切词碎片或元语言组合（停用词/虚字残留、跨词边界噪声），放行；note 写一句依据（进观测面审计档案）。另一类同判**噪声**——**声明面正向提及且出处已覆盖**：[node_title]/[intent]/[scope] 来源的片段若属本节点 teaches（或其别名/定义词面）、已教账、课程外常识的词面，或 intent/scope 的角色/路线描述词，判**噪声**放行，note 写明出处（如『本节点 teaches 手冲器具功能覆盖』）；这些词不是登记缺口。「像名词」但拿不准的，按名词处理。
+- 裁**噪声**：切词碎片或元语言组合（停用词/虚字残留、跨词边界噪声），放行；note 写一句依据（进观测面审计档案）。「像名词」但拿不准的，按名词处理。
 - 裁**名词**：像样的领域名词却无出处——必须 pass=false 且在 problems 里指名该片段；判名词却放行 = 自相矛盾，结论无效。修法限三选一：并入本批某提名定义改写绕开 / 并入某节点 teaches 挂号自教 / 课程用语表增词提案（写进 findings，勿自行改登记表）。
-- 裁**范围外**：该片段在本批某节点的 intent/scope 声明里被明确划出边界（「不教 X」「X 留待后续」类否定性边界提及）——诚实写边界不打回，放行。写『不教积分』不是使用积分：只出现在标题/定义里的正向用词不构成边界声明，不得判范围外。**范围外的机械核（三条不满足任一 = 结论无效，与挂号表同路重试）**：①该词在清单里须有 [intent] 或 [scope] 来源的行（同词跨源多行都合法，引任一边界来源即可）；②行报 source 须为 intent/scope（边界声明只住这两处）；③term 须逐字命中本批某节点对应字段（intent→intent、scope→scope）的原文——scope 没写过的边界不成立。
+- 裁**范围外**：该片段在本批某节点的 intent/scope 声明里是下列两种**声明面提及**之一——诚实写边界、正向声明教什么，都不打回，放行：(a)**否定性边界提及**：「不教 X」「X 留待后续」一类不碰声明；(b)**本批教出可指认的正向声明**：提及的词是本批某学习点 teaches 的概念名或本批新提名的名字，写它就是在声明本批要教什么。写『不教积分』不是使用积分：只出现在标题/定义里的正向用词不构成边界声明，不得判范围外。**未来提及边界**：intent/scope 里「为后续…」「后面讲…」这类指向后续学习点的路线图提及，是学习点的**角色声明**，不是本点内容的前提——判**噪声**，不作「范围外」（正向的后续提及同样不是「范围外」）；但若该词是本课目标线的核心概念、且这句提及是在声明本课/本线要做什么（如「概率的每一次计算…」），按**名词**处置——查无出处照打。**范围外的机械核（正向快路先行，快路不中且三条不满足任一 = 结论无效，与挂号表同路重试）**：**正向快路**——term 逐字命中**本批教出名集**（各学习点 teaches 的概念名 ∪ 本批新提名的名字）即放行，出处机械可证；快路只收紧，越界概念进不了此出口。快路不中则：①该词在清单里须有 [intent] 或 [scope] 来源的行（同词跨源多行都合法，引任一边界来源即可）；②行报 source 须为 intent/scope（边界声明只住这两处）；③term 须逐字命中本批某节点对应字段（intent→intent、scope→scope）的原文——scope 没写过的边界不成立。
 - 未处置的片段由机器按档处置（report-only 降 findings 留痕 / enforce 合成打回）；你只管逐条裁决，不要把清单当打回理由凭空造问题。
 "#;
 
@@ -1514,8 +1517,9 @@ fn is_candidate_meta_debris(candidate: &str) -> bool {
 ///
 /// 碎片裁决面（m9 补接，独立清单独立校验，不并挂号表；absorb-8 z02 三值
 /// 扩面）：每个点名片段必须有显式裁决——`名词` 判决却放行/未指名 =
-/// 自相矛盾、`范围外` 行不过机械核（[`fragment_verdict::check_out_of_scope_row`]
-/// 三件：边界在场行 + 行报边界来源 + term 逐字命中）皆 = 结论不可用
+/// 自相矛盾、`范围外` 行不过机械核（[`fragment_verdict::check_out_of_scope_row`]：
+/// rs3 正向快路先行——term 逐字命中本批教出名集即放行；否则三件：边界在
+/// 场行 + 行报边界来源 + term 逐字命中）皆 = 结论不可用
 /// （同路重试恰一次）；未处置片段按 `fragment_enforce` 分档（缺省 false =
 /// report-only 降 findings；true = 合成打回问题，L1 级门失败走既有重裁
 /// 回路）。开关读数在调用方（服务面读 `NOMI_LEARNING_LEXICON_ENFORCE`，
@@ -4242,9 +4246,18 @@ mod tests {
             "宁滥勿缺",
             "\"source\": \"definition|node_title|intent|scope\"",
             "同词多标签任取其一",
-            // p01 第四出口：噪声定义扩义——声明面正向提及且出处已覆盖。
-            "声明面正向提及且出处已覆盖",
-            "这些词不是登记缺口",
+            // rs3（learnhub #213）：p01 噪声「声明面正向提及且出处已覆盖」
+            // 散文自证出口退役——正向提及回归范围外(b) + 正向快路机械核。
+            "本批教出可指认的正向声明",
+            "正向快路",
+            "本批教出名集",
+            "快路只收紧",
+            "快路不中且三条不满足任一",
+            // rs3（learnhub #218）未来提及边界句：路线图提及判噪声不作
+            // 范围外；核心概念借句声明本课角色按名词处置。
+            "未来提及边界",
+            "判**噪声**，不作「范围外」",
+            "按**名词**处置——查无出处照打",
             "不重复找出处",
             // p01 清单瘦身的 prompt 配套：合并渲染 + 一行覆盖多源。
             "同词多源合并为一行",
@@ -4258,6 +4271,13 @@ mod tests {
         ] {
             assert!(system.contains(phrase), "碎片臂缺「{phrase}」");
         }
+        // p01 噪声出口退役钉（rs3）：散文自证出口不得残留（正向提及回归
+        // 范围外(b)+快路机械核，噪声回归纯切词/元语言义）。
+        assert!(
+            !system.contains("声明面正向提及且出处已覆盖")
+                && !system.contains("这些词不是登记缺口"),
+            "p01 噪声「声明面正向提及」出口已退役，契约不得残留"
+        );
         // 挂号表两臂同织（正交面，off 挂号表不牵连碎片）。
         let _provenance_off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
         let v1_arm = concept_review_system();
@@ -4508,6 +4528,125 @@ mod tests {
             prompts[1].contains("【评审缺席重试】")
                 && prompts[1].contains("ng.review.problems"),
             "次轮须携带违约条目死因：{}",
+            prompts[1]
+        );
+    }
+
+    /// rs5 ③病历夹具（learnhub #169 三角形批同形，reject 方向钉）：「三角形」
+    /// 定义折入未在册名词（线段/内角）判**名词**——problems 必须指名折叠
+    /// 名词，方向 = 打回（结论被尊重，不降级不重试；不锁挂号表行完备性：
+    /// 本夹具挂号表面 off，碎片裁决独立核）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn triangle_definition_folding_into_unregistered_nouns_is_rejected() {
+        let _provenance_off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let _fragments = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "on");
+        let reply = serde_json::to_string(&serde_json::json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "", "field": "mints", "issue": "「三角形」定义折入未在册名词「线段」「内角」，查无出处",
+                  "advice": "并入本批某提名定义改写绕开，或并入某节点 teaches 挂号自教" }
+            ],
+            "fragments": [
+                { "term": "线段", "verdict": "名词", "note": "定义折入的构件名词，查无出处" },
+                { "term": "内角", "verdict": "名词", "note": "定义折入的构件名词，查无出处" }
+            ]
+        }))
+        .unwrap();
+        let completer = ScriptedReview(std::sync::Mutex::new((vec![reply].into_iter(), Vec::new())));
+        let batch = ProposedBatch {
+            nodes: vec![node("判读三角形", vec![], vec![])],
+            mints: vec![ConceptMint {
+                canonical: "三角形".into(),
+                aliases: Vec::new(),
+                definition: "由三条线段围成的图形，内角和是 180 度。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let review = concept_review(
+            &completer,
+            None,
+            &batch,
+            &CoachContext::default(),
+            "",
+            &[],
+            &[naming_frag("线段"), naming_frag("内角")],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        // reject 方向：problems 原样透出且指名两个折叠名词；无降级留痕、
+        // 单轮出闸（名词裁决 + 指名自洽，不吃重试）。
+        assert_eq!(review.problems.len(), 1, "打回方向：{review:?}");
+        assert!(
+            review.problems[0].issue.contains("线段") && review.problems[0].issue.contains("内角"),
+            "problems 指名折叠名词：{:?}",
+            review.problems[0]
+        );
+        assert!(!review.degraded, "{review:?}");
+        assert!(review.findings.is_empty(), "无缺席/未处置留痕：{review:?}");
+        assert_eq!(
+            review.fragments,
+            fragment_verdict::FragmentReadout { fragments: 2, rows: 2, unhandled: 0, degraded: false },
+            "{review:?}"
+        );
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 1, "自洽结论单轮出闸：{prompts:?}");
+    }
+
+    /// rs5 ④病历夹具（learnhub 11-17 59,617 字符呓语同形）：评审把思考写成
+    /// 意识流回包（超长非 JSON 散文，「We need answer JSON」式开头）→
+    /// parse-fail → 死因重试恰一次 → 合法回包救回（Degraded 不触发）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn rambling_non_json_reply_retries_once_with_death_cause_then_recovers() {
+        let _provenance_off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let _fragments = set_env(REVIEW_FRAGMENTS_SWITCH_ENV, "on");
+        // 几 KB 长中文散文（真机病历 59k 的机制等价物，无需等长）：无任何
+        // JSON 对象边界——意识流把六份输出契约揉进思考直接外吐。
+        let mut ramble =
+            String::from("We need answer JSON 我先把这一批的学习点从根源上重新审视一遍，");
+        for _ in 0..80 {
+            ramble.push_str(
+                "拾起手冲器具的流速差异要从研磨度说起，温度计的读数窗口决定了闷蒸时长的判断，\
+                 而滤纸的绕流路径又反过来约束了注水手法的选择余地，",
+            );
+        }
+        let legal = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "fragments": [ { "term": "线段", "verdict": "噪声", "note": "切词碎片" } ]
+        }))
+        .unwrap();
+        let completer =
+            ScriptedReview(std::sync::Mutex::new((vec![ramble, legal].into_iter(), Vec::new())));
+        let batch = batch_of(vec![node("判读三角形", vec![], vec![])]);
+        let review = concept_review(
+            &completer,
+            None,
+            &batch,
+            &CoachContext::default(),
+            "",
+            &[],
+            &[naming_frag("线段")],
+            false,
+            &review_gate(),
+            "",
+        )
+        .await;
+        assert!(review.problems.is_empty(), "救回不阻断：{review:?}");
+        assert!(!review.degraded, "合法回包救回，Degraded 不触发：{review:?}");
+        assert!(!review.fragments.degraded, "{review:?}");
+        assert_eq!(review.fragments.rows, 1, "救回结论照常消费：{review:?}");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 2, "死因重试恰一次：{prompts:?}");
+        assert!(
+            prompts[1].contains("【评审缺席重试】")
+                && prompts[1].contains("评审回包不是单个 JSON 对象"),
+            "次轮携带 parse-fail 死因：{}",
             prompts[1]
         );
     }
