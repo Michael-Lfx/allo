@@ -605,5 +605,6 @@
   "library.category.other": "Overig",
   "library.sort.newest": "Nieuwste eerst",
   "library.sort.oldest": "Oudste eerst",
-  "library.sort.name": "Naam"
+  "library.sort.name": "Naam",
+  "more.knowledge_help": "Sla herbruikbare context voor je taken op. Je kennis blijft op deze computer."
 }

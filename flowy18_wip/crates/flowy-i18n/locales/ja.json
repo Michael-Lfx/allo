@@ -605,5 +605,6 @@
   "library.category.other": "その他",
   "library.sort.newest": "新しい順",
   "library.sort.oldest": "古い順",
-  "library.sort.name": "名前"
+  "library.sort.name": "名前",
+  "more.knowledge_help": "タスクで繰り返し使えるコンテキストを保存します。知識はこのコンピューターに保存されます。"
 }

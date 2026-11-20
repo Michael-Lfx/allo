@@ -605,5 +605,6 @@
   "library.category.other": "기타",
   "library.sort.newest": "최신순",
   "library.sort.oldest": "오래된순",
-  "library.sort.name": "이름"
+  "library.sort.name": "이름",
+  "more.knowledge_help": "작업에 반복해서 사용할 수 있는 컨텍스트를 저장하세요. 지식은 이 컴퓨터에 보관됩니다."
 }

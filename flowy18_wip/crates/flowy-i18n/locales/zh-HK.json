@@ -605,5 +605,6 @@
   "library.category.other": "其他",
   "library.sort.newest": "最新優先",
   "library.sort.oldest": "最早優先",
-  "library.sort.name": "名稱"
+  "library.sort.name": "名稱",
+  "more.knowledge_help": "儲存可在任務中重複使用的背景資訊。知識只會儲存在這部電腦上。"
 }

@@ -605,5 +605,6 @@
   "library.category.other": "Lainnya",
   "library.sort.newest": "Terbaru dahulu",
   "library.sort.oldest": "Terlama dahulu",
-  "library.sort.name": "Nama"
+  "library.sort.name": "Nama",
+  "more.knowledge_help": "Simpan konteks yang dapat digunakan kembali untuk tugas Anda. Pengetahuan Anda tetap di komputer ini."
 }

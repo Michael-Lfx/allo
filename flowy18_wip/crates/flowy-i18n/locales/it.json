@@ -605,5 +605,6 @@
   "library.category.other": "Altro",
   "library.sort.newest": "Più recenti prima",
   "library.sort.oldest": "Meno recenti prima",
-  "library.sort.name": "Nome"
+  "library.sort.name": "Nome",
+  "more.knowledge_help": "Salva il contesto riutilizzabile per le tue attività. Le tue conoscenze restano su questo computer."
 }

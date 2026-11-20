@@ -605,5 +605,6 @@
   "library.category.other": "Otros",
   "library.sort.newest": "Más recientes primero",
   "library.sort.oldest": "Más antiguos primero",
-  "library.sort.name": "Nombre"
+  "library.sort.name": "Nombre",
+  "more.knowledge_help": "Guarda contexto reutilizable para tus tareas. Tus conocimientos permanecen en este equipo."
 }

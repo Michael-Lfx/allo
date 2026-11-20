@@ -605,5 +605,6 @@
   "library.category.other": "Inne",
   "library.sort.newest": "Od najnowszych",
   "library.sort.oldest": "Od najstarszych",
-  "library.sort.name": "Nazwa"
+  "library.sort.name": "Nazwa",
+  "more.knowledge_help": "Zapisuj kontekst wielokrotnego użytku do zadań. Twoja wiedza pozostanie na tym komputerze."
 }

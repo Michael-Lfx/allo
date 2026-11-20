@@ -100,7 +100,6 @@ pub enum Section {
     Library,
     Create,
     Automation,
-    Plugins,
     More,
 }
 
@@ -175,7 +174,6 @@ impl FlowyApp {
     ) {
         self.settings.picker = settings::Picker::None;
         self.flex.provider_menu = false;
-        self.persona.menu = false;
         self.user_menu = false;
         self.gallery.idea_note = false;
         self.studio.update(cx, |panel, cx| {
@@ -195,9 +193,6 @@ impl FlowyApp {
             }
             "flex-provider-menu" => {
                 self.flex.provider_menu = false;
-            }
-            "more-flyout" => {
-                self.persona.menu = false;
             }
             "user-menu" => {
                 self.close_user_menu(cx);
@@ -483,7 +478,6 @@ impl FlowyApp {
             project_menu: None,
             expanded_projects,
             persona: PersonaState {
-                menu: false,
                 page: more::Page::Personal,
                 tab: more::Tab::Profile,
                 status: None,
@@ -1268,7 +1262,6 @@ impl FlowyApp {
         self.dock_visible = true;
         self.nav_back.clear();
         self.nav_forward.clear();
-        self.persona.menu = false;
         self.persona.status = None;
         self.user_menu = false;
         self.notice = None;
@@ -1370,18 +1363,6 @@ impl FlowyApp {
                         StudioSurface::Placeholder {
                             title_key: "dock.create",
                             detail_key: "section.create",
-                        },
-                        cx,
-                    );
-                    panel.set_notice(notice, cx);
-                });
-            }
-            Section::Plugins => {
-                self.studio.update(cx, |panel, cx| {
-                    panel.set_surface(
-                        StudioSurface::Placeholder {
-                            title_key: "dock.plugins",
-                            detail_key: "section.plugins",
                         },
                         cx,
                     );
@@ -1594,7 +1575,6 @@ impl Render for FlowyApp {
             settings::Picker::None if self.flex.provider_menu => {
                 Some("flex-provider-menu")
             }
-            settings::Picker::None if self.persona.menu => Some("more-flyout"),
             settings::Picker::None if self.user_menu => Some("user-menu"),
             settings::Picker::None if self.project_menu.is_some() => {
                 Some("project-menu")
@@ -1723,7 +1703,7 @@ impl Render for FlowyApp {
             }
             state::ActiveDialog::Flex => root.child(self.flex_layer(cx)),
             state::ActiveDialog::Import | state::ActiveDialog::Knowledge => {
-                root.child(self.more_layer(cx))
+                root.child(self.more_layer(window, cx))
             }
             state::ActiveDialog::Legal(_) => root.child(self.legal_layer(cx)),
         };
@@ -1752,11 +1732,6 @@ impl Render for FlowyApp {
                 "flex-provider-menu",
                 "flex-provider",
                 self.flex_provider_menu(cx).into_any_element(),
-            )),
-            settings::Picker::None if self.persona.menu => Some((
-                "more-flyout",
-                "more-trigger",
-                self.more_flyout(cx).into_any_element(),
             )),
             settings::Picker::None if self.user_menu => Some((
                 "user-menu",
@@ -2229,7 +2204,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn more_menu_is_single_and_closes_after_selection(cx: &mut TestAppContext) {
+    fn skills_and_personalization_are_direct_navigation_items(
+        cx: &mut TestAppContext,
+    ) {
         fn draw(cx: &mut VisualTestContext) {
             for _ in 0..4 {
                 cx.run_until_parked();
@@ -2274,21 +2251,29 @@ mod tests {
             app.ota.checked = true;
             app
         });
-        let (more, skills, automation, menu_labels) =
-            cx.read_entity(&app, |app, _| {
+        let (plugins, more, skills, personalization, automation) = cx
+            .read_entity(&app, |app, _| {
                 (
+                    app.t("dock.plugins"),
                     app.t("dock.more"),
                     app.t("more.skills"),
+                    app.t("more.personal"),
                     app.t("dock.automation"),
-                    ["more.computer", "more.skills", "more.personal"]
-                        .map(|key| app.t(key)),
                 )
             });
         draw(cx);
-        click(cx, &more);
         cx.update(|window, _| {
-            let tree = window.a11y_tree().expect("open More menu");
-            for label in &menu_labels {
+            let tree = window.a11y_tree().expect("app accessibility tree");
+            for label in [&plugins, &more] {
+                assert!(
+                    tree.nodes.iter().all(|(_, node)| {
+                        node.label() != Some(label.as_str())
+                            || node.role() != accesskit::Role::Button
+                    }),
+                    "hidden navigation item {label:?} must not render",
+                );
+            }
+            for label in [&skills, &personalization] {
                 assert_eq!(
                     tree.nodes
                         .iter()
@@ -2298,39 +2283,23 @@ mod tests {
                         })
                         .count(),
                     1,
-                    "More menu item {label:?} must render exactly once",
+                    "direct navigation item {label:?} must render once",
                 );
             }
         });
         click(cx, &skills);
         cx.read_entity(&app, |app, _| {
             assert_eq!(app.persona.page, more::Page::Skills);
-            assert!(!app.persona.menu, "selection must close the menu");
+            assert_eq!(app.section, Section::More);
         });
         click(cx, &automation);
         cx.read_entity(&app, |app, _| {
             assert_eq!(app.section, Section::Automation);
         });
-        click(cx, &more);
-        cx.read_entity(&app, |app, _| {
-            assert_eq!(
-                app.section,
-                Section::Automation,
-                "opening More must preserve the current page",
-            );
-            assert!(app.persona.menu, "first click must open the menu");
-        });
-        click(cx, &more);
-        cx.read_entity(&app, |app, _| {
-            assert!(!app.persona.menu);
-            assert_eq!(app.section, Section::Automation);
-        });
-        click(cx, &more);
-        click(cx, &skills);
+        click(cx, &personalization);
         cx.read_entity(&app, |app, _| {
             assert_eq!(app.section, Section::More);
-            assert_eq!(app.persona.page, more::Page::Skills);
-            assert!(!app.persona.menu);
+            assert_eq!(app.persona.page, more::Page::Personal);
             assert_eq!(app.nav_back.last(), Some(&Section::Automation));
         });
         let _ = std::fs::remove_dir_all(root);

@@ -605,5 +605,6 @@
   "library.category.other": "อื่นๆ",
   "library.sort.newest": "ใหม่ที่สุดก่อน",
   "library.sort.oldest": "เก่าที่สุดก่อน",
-  "library.sort.name": "ชื่อ"
+  "library.sort.name": "ชื่อ",
+  "more.knowledge_help": "บันทึกบริบทที่ใช้ซ้ำได้สำหรับงานของคุณ ความรู้จะอยู่ในคอมพิวเตอร์เครื่องนี้"
 }

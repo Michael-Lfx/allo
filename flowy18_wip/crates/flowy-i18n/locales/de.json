@@ -605,5 +605,6 @@
   "library.category.other": "Sonstige",
   "library.sort.newest": "Neueste zuerst",
   "library.sort.oldest": "Älteste zuerst",
-  "library.sort.name": "Name"
+  "library.sort.name": "Name",
+  "more.knowledge_help": "Speichern Sie wiederverwendbaren Kontext für Ihre Aufgaben. Ihr Wissen bleibt auf diesem Computer."
 }

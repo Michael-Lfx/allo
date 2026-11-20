@@ -605,5 +605,6 @@
   "library.category.other": "Інше",
   "library.sort.newest": "Спочатку найновіші",
   "library.sort.oldest": "Спочатку найстаріші",
-  "library.sort.name": "Назва"
+  "library.sort.name": "Назва",
+  "more.knowledge_help": "Зберігайте контекст, який можна повторно використовувати для завдань. Знання залишаються на цьому комп’ютері."
 }

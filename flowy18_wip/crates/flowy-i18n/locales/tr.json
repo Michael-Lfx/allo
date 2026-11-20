@@ -605,5 +605,6 @@
   "library.category.other": "Diğer",
   "library.sort.newest": "Önce en yeni",
   "library.sort.oldest": "Önce en eski",
-  "library.sort.name": "Ad"
+  "library.sort.name": "Ad",
+  "more.knowledge_help": "Görevleriniz için yeniden kullanılabilir bağlamı kaydedin. Bilginiz bu bilgisayarda kalır."
 }

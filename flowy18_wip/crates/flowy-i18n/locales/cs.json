@@ -605,5 +605,6 @@
   "library.category.other": "Ostatní",
   "library.sort.newest": "Od nejnovějších",
   "library.sort.oldest": "Od nejstarších",
-  "library.sort.name": "Název"
+  "library.sort.name": "Název",
+  "more.knowledge_help": "Uložte kontext, který lze opakovaně použít v úkolech. Vaše znalosti zůstanou v tomto počítači."
 }

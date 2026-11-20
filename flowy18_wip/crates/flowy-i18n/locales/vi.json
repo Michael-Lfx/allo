@@ -605,5 +605,6 @@
   "library.category.other": "Khác",
   "library.sort.newest": "Mới nhất trước",
   "library.sort.oldest": "Cũ nhất trước",
-  "library.sort.name": "Tên"
+  "library.sort.name": "Tên",
+  "more.knowledge_help": "Lưu ngữ cảnh có thể dùng lại cho các tác vụ. Kiến thức của bạn vẫn ở trên máy tính này."
 }

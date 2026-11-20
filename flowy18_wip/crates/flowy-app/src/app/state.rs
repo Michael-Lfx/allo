@@ -99,7 +99,6 @@ pub struct InviteState {
 }
 
 pub struct PersonaState {
-    pub(super) menu: bool,
     pub(super) page: more::Page,
     pub(super) tab: more::Tab,
     pub(super) status: Option<&'static str>,
@@ -139,9 +138,9 @@ pub(super) enum ActiveDialog {
     Ideas,
     Idea(&'static str),
     Skill(&'static str),
+    Invite,
     ProjectCreate,
     ProjectDelete,
-    Invite,
     Flex,
     Import,
     Knowledge,
@@ -156,9 +155,9 @@ impl ActiveDialog {
             Self::Ideas => Some("ideas"),
             Self::Idea(_) => Some("idea"),
             Self::Skill(_) => Some("skill"),
+            Self::Invite => Some("invite"),
             Self::ProjectCreate => Some("project-create"),
             Self::ProjectDelete => Some("project-delete"),
-            Self::Invite => Some("invite"),
             Self::Flex => Some("flex"),
             Self::Import => Some("import"),
             Self::Knowledge => Some("knowledge"),

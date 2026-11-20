@@ -9,8 +9,8 @@ enum DockIcon {
     Library,
     Create,
     Automation,
-    Plugins,
-    More,
+    Skills,
+    Personalization,
     Task,
 }
 
@@ -22,8 +22,8 @@ impl DockIcon {
             Self::Library => theme::icons::library(),
             Self::Create => theme::icons::plus(),
             Self::Automation => theme::icons::workflow(),
-            Self::Plugins => theme::icons::puzzle(),
-            Self::More => theme::icons::ellipsis(),
+            Self::Skills => theme::icons::sparkles(),
+            Self::Personalization => theme::icons::sliders_horizontal(),
             Self::Task => theme::icons::list_check(),
         }
     }
@@ -46,13 +46,6 @@ const NAV: &[(&str, &str, Section, DockIcon)] = &[
         Section::Automation,
         DockIcon::Automation,
     ),
-    (
-        "plugins",
-        "dock.plugins",
-        Section::Plugins,
-        DockIcon::Plugins,
-    ),
-    ("more", "dock.more", Section::More, DockIcon::More),
 ];
 
 impl FlowyApp {
@@ -106,21 +99,32 @@ impl FlowyApp {
         // ));
 
         for (id, key, section, icon) in NAV {
-            navigation = if *id == "more" {
-                navigation.child(self.more_dock_item(*icon, cx))
-            } else {
-                let selected = self.section == *section;
-                navigation.child(Self::nav_item(
-                    &self.theme,
-                    id,
-                    self.t(key),
-                    selected,
-                    *section,
-                    *icon,
-                    cx,
-                ))
-            };
+            let selected = self.section == *section;
+            navigation = navigation.child(Self::nav_item(
+                &self.theme,
+                id,
+                self.t(key),
+                selected,
+                *section,
+                *icon,
+                cx,
+            ));
         }
+        navigation = navigation
+            .child(self.more_page_dock_item(
+                "skills",
+                "more.skills",
+                super::more::Page::Skills,
+                DockIcon::Skills,
+                cx,
+            ))
+            .child(self.more_page_dock_item(
+                "personalization",
+                "more.personal",
+                super::more::Page::Personal,
+                DockIcon::Personalization,
+                cx,
+            ));
 
         div()
             .id("dock-scroll")
@@ -161,7 +165,6 @@ impl FlowyApp {
         section: Section,
         cx: &mut Context<'_, Self>,
     ) {
-        self.persona.menu = false;
         self.user_menu = false;
         if id == "new-task" {
             self.studio.update(cx, flowy_studio::StudioPanel::new_task);
@@ -171,21 +174,22 @@ impl FlowyApp {
         self.push_section(section, cx);
     }
 
-    fn more_dock_item(
+    fn more_page_dock_item(
         &self,
+        id: &'static str,
+        key: &'static str,
+        page: super::more::Page,
         icon: DockIcon,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        let selected = self.section == Section::More;
-        theme::anchor_trigger(
-            item_row(self.theme, "more", self.t("dock.more"), selected, icon),
-            "more-trigger",
-            &self.ui,
+        let selected =
+            self.section == Section::More && self.persona.page == page;
+        item_row(self.theme, id, self.t(key), selected, icon).on_click(
+            cx.listener(move |app, _event, _window, cx| {
+                app.user_menu = false;
+                app.select_more_page(page, cx);
+            }),
         )
-        .on_click(cx.listener(|app, _event, _window, cx| {
-            app.user_menu = false;
-            app.toggle_more(cx);
-        }))
     }
 
     fn project_rows(
@@ -558,7 +562,6 @@ impl FlowyApp {
             panel.model_menu_open = false;
             cx.notify();
         });
-        self.persona.menu = false;
         self.user_menu = !self.user_menu;
         cx.notify();
     }
@@ -747,6 +750,9 @@ impl FlowyApp {
                     self.t("credits.balance"),
                     &self.theme,
                 )
+                .px_2()
+                .py(px(1.))
+                .rounded_md()
                 .flex()
                 .items_center()
                 .justify_between()

@@ -605,5 +605,6 @@
   "library.category.other": "أخرى",
   "library.sort.newest": "الأحدث أولاً",
   "library.sort.oldest": "الأقدم أولاً",
-  "library.sort.name": "الاسم"
+  "library.sort.name": "الاسم",
+  "more.knowledge_help": "احفظ المعلومات السياقية القابلة لإعادة الاستخدام لمهامك. تبقى معرفتك على هذا الكمبيوتر."
 }
