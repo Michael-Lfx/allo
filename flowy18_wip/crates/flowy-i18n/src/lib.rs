@@ -176,7 +176,9 @@ impl I18n {
     pub fn t(&self, key: &str) -> String {
         let text = self
             .lookup(self.locale, key)
-            .or_else(|| self.lookup(Locale::ZhCn, key))
+            // English is the source language: a locale that misses a key reads
+            // the English wording, not Chinese.
+            .or_else(|| self.lookup(Locale::En, key))
             .unwrap_or_else(|| key.to_string());
         text.replace("{product}", self.product)
     }
@@ -321,6 +323,24 @@ mod tests {
         assert_eq!(i18n.t("login.sign_in_title"), "Sign in now");
         assert_eq!(i18n.t("login.email"), original);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_key_falls_back_to_english_not_chinese() {
+        let mut i18n = I18n::embedded("Flowy");
+        i18n.set_locale(Locale::Ja);
+        // `t` substitutes `{product}`, so compare against the substituted form.
+        let english = i18n.messages[&Locale::En]["home.title"]
+            .replace("{product}", "Flowy");
+        assert_ne!(
+            english, i18n.messages[&Locale::ZhCn]["home.title"],
+            "test needs locales that differ for this key"
+        );
+        i18n.messages
+            .get_mut(&Locale::Ja)
+            .expect("ja locale is embedded")
+            .remove("home.title");
+        assert_eq!(i18n.t("home.title"), english);
     }
 
     #[test]
