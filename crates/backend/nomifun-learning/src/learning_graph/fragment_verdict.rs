@@ -111,8 +111,10 @@ pub(crate) enum FragmentRuling {
     /// 像样的领域名词却无出处——必须 pass=false 且 problems 指名该片段。
     #[serde(rename = "名词")]
     Noun,
-    /// intent/scope 里的否定性边界提及（「不教 X」「X 留待后续」）——诚实
-    /// 写边界不打回，过 [`check_out_of_scope_row`] 三件机械核放行。
+    /// intent/scope 里的否定性边界提及（「不教 X」「X 留待后续」）与本批
+    /// 教出可指认的正向声明（rs3 #213 扩义同构）——诚实写边界、正向声明
+    /// 教什么不打回，过 [`check_out_of_scope_row`] 机械核放行（正向快路
+    /// 先行：term 逐字命中本批教出名集即放行；否则三件核）。
     #[serde(rename = "范围外")]
     OutOfScope,
 }
@@ -148,7 +150,12 @@ fn relates(a: &str, b: &str) -> bool {
 }
 
 /// 「范围外」行的机械核（absorb-8 z02；learnhub #205 `20f1dcf` 最终语义逐条
-/// 移植——2026-11-04 真机病历修正后的形态）：合法性 =
+/// 移植——2026-11-04 真机病历修正后的形态；rs3 增 learnhub #213 正向快路）：
+/// **正向快路（先行）**——term 逐字命中「本批教出名集」（[`batch_taught_names`]：
+/// 各节点 teaches 概念名 ∪ 本批新提名名，与挂号表逐字口径同源）= 声明出处
+/// 机械可证，无条件放行（不赖边界在场行；快路只收紧——仅对本批教出的词
+/// 放行，越界概念进不了此出口，维持「名词→打回」）。**快路外现行三条件
+/// 零改动**（否定性边界原样）：合法性 =
 /// ①该词在机械清单里存在 intent/scope 来源的在场行（按词判断、跨源多行
 /// 合法；词仅出现在显示名/定义的正向用词时「范围外」无从谈起——谎报 scope
 /// 来源借逐字命中逃逸的堵法）；
@@ -164,6 +171,14 @@ fn check_out_of_scope_row(
     naming: &[NameFragment],
     batch: &ProposedBatch,
 ) -> Result<(), String> {
+    // 正向快路（rs3 #213 ①B）：term 逐字命中本批教出名集 = 出处机械可证，
+    // 放行；词不在教出名集时落下方三条件，语义与快路引入前逐字节一致。
+    if batch_taught_names(batch)
+        .iter()
+        .any(|name| super::provenance::term_grounded(&fv.term, name))
+    {
+        return Ok(());
+    }
     if !naming
         .iter()
         .any(|f| f.source.is_boundary() && relates(&fv.term, &f.term))
@@ -205,13 +220,35 @@ fn check_out_of_scope_row(
     Ok(())
 }
 
+/// 本批教出名集（rs3 #213 ①B 快路的逐字对照域；learnhub `batch_taught_names`
+/// 同构）：各节点 teaches 指向的概念名 ∪ 本批铸名正名 ∪ 铸名别名 ∪ 别名
+/// 提名名——纯批内派生（评审输入既有数据，与挂号表逐字口径同源），不查
+/// 登记表、不做登记表别名展开——展开域（已教账 ∪ 登记表）本就在已知掩码
+/// 面，点名清单点不出来的词用不上快路。
+fn batch_taught_names(batch: &ProposedBatch) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for node in &batch.nodes {
+        for teach in &node.teaches {
+            names.push(teach.name.as_str());
+        }
+    }
+    for mint in &batch.mints {
+        names.push(mint.canonical.as_str());
+        names.extend(mint.aliases.iter().map(String::as_str));
+    }
+    for alias in &batch.new_aliases {
+        names.push(alias.name.as_str());
+    }
+    names
+}
+
 /// 点名处置机械核对（纯函数）：**每个片段必须有显式决定**——
 /// - `噪声` 裁决行（note 依据）→ 放行；
 /// - `名词` 裁决行 → 必须 pass=false 且 problems 指名该片段（子串命中），
 ///   否则 = 判名词却放行，自相矛盾 → 结论不可用（`Err`，恰一次带死因重试；
 ///   enforce 与 report-only 两档都不容）；
-/// - `范围外` 裁决行 → [`check_out_of_scope_row`] 三件机械核，违者 =
-///   结论不可用（同路重试）；
+/// - `范围外` 裁决行 → [`check_out_of_scope_row`] 机械核（rs3 正向快路
+///   先行 + 三件核），违者 = 结论不可用（同路重试）；
 /// - 无裁决行但 problems 指名 → 打回处置，放行；
 /// - 全无 = 未处置，返回给调用方按 enforcement 分档（enforce = 合成打回
 ///   问题；report-only = 降 findings）。词表外裁决在解析面已拒
@@ -392,7 +429,9 @@ pub(crate) fn derive_naming_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::learning_graph::{ConceptMint, ConceptNewAlias, ProposedBatch, ProposedNode};
+    use crate::learning_graph::{
+        ConceptMint, ConceptNewAlias, ConceptRefInput, ConceptTier, ProposedBatch, ProposedNode,
+    };
 
     fn verdict(term: &str, word: &str, note: &str) -> FragmentVerdict {
         FragmentVerdict {
@@ -1022,5 +1061,137 @@ mod tests {
         let verdicts = vec![verdict("方程", "范围外", "没带来源标记")];
         let error = validate_fragments(&verdicts, true, &[], &naming, &batch).unwrap_err();
         assert!(error.contains("缺 source"), "{error}");
+    }
+
+    // ── 正向快路（rs3，learnhub #213 ①B 逐字平移）+ #218 未来提及边界 ─────
+
+    /// 教出名集测试批：节点 teaches「乘方」＋铸名「乘方」——两源同入本批
+    /// 教出名集（teaches 概念名 ∪ 新提名名）。
+    fn batch_with_taught_names() -> ProposedBatch {
+        let mut node = node_with_brief(
+            "把连乘写成乘方记号",
+            "由连乘经验引出乘方，本批教出乘方",
+            "教乘方记号与读法",
+        );
+        node.teaches = vec![ConceptRefInput { name: "乘方".into(), tier: ConceptTier::Know }];
+        ProposedBatch {
+            nodes: vec![node],
+            mints: vec![ConceptMint {
+                canonical: "乘方".into(),
+                aliases: Vec::new(),
+                definition: "相同因数连乘的记号。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        }
+    }
+
+    /// 快路命中臂①（learnhub `positive_mention_of_batch_nomination_passes_
+    /// via_fast_path` 同构）：intent 正向教学声明提及本批教出名判范围外 →
+    /// 无条件放行——出处机械可证，不赖 intent/scope 机械在场行。点名清单
+    /// 只有显示名来源行（正向用词不构成边界声明）——无边界在场行，原三
+    /// 条件第一件即拒的形态；快路以教出名集放行。行报 source 缺席（容旧
+    /// 形态）同样经快路放行（无条件性）。
+    #[test]
+    fn positive_mention_of_batch_taught_name_passes_via_fastpath() {
+        let batch = batch_with_taught_names();
+        let naming = vec![frag("乘方", FragmentSource::NodeTitle)];
+        let verdicts = vec![verdict_with_source("乘方", "范围外", "intent", "正向教学声明，本批教出")];
+        assert_eq!(
+            validate_fragments(&verdicts, true, &[], &naming, &batch),
+            Ok(vec![]),
+            "快路命中：教出名集内放行，三条件不满足也放行"
+        );
+        let legacy = vec![verdict("乘方", "范围外", "正向声明，本批教出（无来源标记）")];
+        assert_eq!(
+            validate_fragments(&legacy, true, &[], &naming, &batch),
+            Ok(vec![]),
+            "快路无条件：source 缺席同样放行"
+        );
+    }
+
+    /// 快路只收紧臂②：教出名集外的正向词判范围外——快路不救，三条件不
+    /// 满足（term 未逐字命中对应字段原文）照旧拒（结论不可用走重试）。
+    #[test]
+    fn positive_word_outside_taught_set_still_needs_three_conditions() {
+        let batch = batch_with_taught_names();
+        let naming = vec![frag("对数", FragmentSource::Intent)];
+        let verdicts = vec![verdict_with_source("对数", "范围外", "intent", "正向提过对数")];
+        let error = validate_fragments(&verdicts, true, &[], &naming, &batch).unwrap_err();
+        assert!(error.contains("未逐字命中"), "{error}");
+    }
+
+    /// 快路逃逸臂③：越界词（不在教出名集）借「scope 原文写过 + 行报 scope」
+    /// 试图借快路逃逸——快路不中（词不在教出名集），三条件第一件即拒
+    /// （机械清单无边界在场行）——仍拒，维持「名词→打回」方向。
+    #[test]
+    fn out_of_bounds_word_cannot_escape_via_fastpath() {
+        let mut node = node_with_brief("认识对数记号", "由乘方逆引入对数", "不教对数记号的推广");
+        node.teaches = vec![ConceptRefInput { name: "乘方".into(), tier: ConceptTier::Know }];
+        let batch = ProposedBatch {
+            nodes: vec![node],
+            mints: vec![ConceptMint {
+                canonical: "乘方".into(),
+                aliases: Vec::new(),
+                definition: "相同因数连乘的记号。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        // 机械来源 = node_title（无 intent/scope 在场行）；行谎报 scope 且
+        // scope 文本确写过该词——快路不中，在场行核仍拒。
+        let naming = vec![frag("对数记号", FragmentSource::NodeTitle)];
+        let verdicts = vec![verdict_with_source("对数记号", "范围外", "scope", "scope 里划过该边界")];
+        let error = validate_fragments(&verdicts, true, &[], &naming, &batch).unwrap_err();
+        assert!(error.contains("没有 intent/scope 来源的机械在场行"), "{error}");
+    }
+
+    /// #218 未来提及边界两臂之一：路线图提及（「为后续方程建模备料」）判
+    /// **噪声**放行——学习点角色声明不作范围外（正向的后续提及同样不是
+    /// 「范围外」）。
+    #[test]
+    fn roadmap_mention_is_judged_noise_not_out_of_scope() {
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief("列出数量关系式", "为后续方程建模备料", "不做展开与化简")],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let naming = vec![frag("方程", FragmentSource::Intent)];
+        let verdicts = vec![verdict("方程", "噪声", "路线图提及——学习点角色声明，非本点前提")];
+        assert_eq!(
+            validate_fragments(&verdicts, true, &[], &naming, &batch),
+            Ok(vec![]),
+            "路线图提及判噪声放行，不作范围外"
+        );
+    }
+
+    /// #218 未来提及边界两臂之二：核心概念借句声明本课角色（「概率的每一次
+    /// 计算…」）按**名词**处置——判名词必须打回且 problems 指名；判名词却
+    /// 放行 = 自相矛盾（与一般名词同缝机械核）。
+    #[test]
+    fn core_concept_role_declaration_judged_noun_needs_reject_with_naming() {
+        let batch = ProposedBatch {
+            nodes: vec![node_with_brief(
+                "体会随机性",
+                "概率的每一次计算都依赖样本空间的刻画",
+                "只做定性体会",
+            )],
+            mints: Vec::new(),
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let naming = vec![frag("概率", FragmentSource::Intent)];
+        let verdicts = vec![verdict("概率", "名词", "本课目标线核心概念借句声明本课角色，查无出处")];
+        let problems = vec![problem("登记表外名词「概率」查无出处，打回")];
+        assert_eq!(
+            validate_fragments(&verdicts, false, &problems, &naming, &batch),
+            Ok(vec![]),
+            "本课角色声明判名词 + 打回指名 = 合法"
+        );
+        let error = validate_fragments(&verdicts, true, &[], &naming, &batch).unwrap_err();
+        assert!(error.contains("判「名词」却放行"), "{error}");
     }
 }
