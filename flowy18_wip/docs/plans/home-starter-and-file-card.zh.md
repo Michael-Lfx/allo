@@ -26,7 +26,7 @@
 
 **只允许改这些路径**：
 
-1. `flowy18_wip/crates/flowy-studio/src/` 下：`starter.rs`（新建）、`file_target.rs`（新建）、`file_kind.rs`（新建）、`file_card.rs`（新建）、`lib.rs`、`studio.rs`、`panel.rs`、`feed.rs`、`library/mod.rs`、`library/view.rs`。
+1. `flowy18_wip/crates/flowy-studio/src/` 下：`starter.rs`（新建）、`file_kind.rs`（新建）、`lib.rs`、`studio.rs`、`panel.rs`、`feed.rs`（文件卡片直接渲染于此，未单建 `file_card.rs`）、`library/mod.rs`、`library/view.rs`。
 2. `flowy18_wip/crates/flowy-agent/src/` 下：`projection.rs`、`handle.rs`。
 3. `flowy18_wip/crates/flowy-i18n/src/lib.rs` 与 `flowy18_wip/crates/flowy-i18n/locales/*.json`。
 4. `flowy18_wip/crates/flowy-studio/Cargo.toml`、`flowy18_wip/crates/flowy-agent/Cargo.toml`、根 `flowy18_wip/Cargo.toml`（只为加 `similar` 依赖）。
@@ -61,6 +61,8 @@
 死规矩：**不许调用任何 `fs::` API**，否则算失败（渲染期不能碰磁盘）。
 
 验收：`cargo test -p flowy-studio file_target` 全过，且 `grep -n "fs::" flowy-studio/src/file_target.rs` 无输出。
+
+状态（2026-11-20）：模块实现后没有调用点——文件卡片直接取 `ChatLine::FileChange` 的路径，不需要从自由文本识别，编译器报 14 个 dead-code 告警。已由 `refactor(studio): remove the unused file target module` 移除，29 个单测一并删除；将来要做「正文里的路径也可点」时，从 `863a6cb6a` 取回。
 
 ### T2 · 首页起步区骨架
 
