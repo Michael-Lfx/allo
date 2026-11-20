@@ -127,8 +127,15 @@ Four semantic surfaces define depth:
 
 Prefer tonal separation and hairline borders. Shadows are structural and
 ambient, not decorative. Avoid nested cards. Motion reinforces elevation with
-opacity and transform only: 120ms for feedback, 180ms for state changes, and
-240ms for spatial transitions. Use exponential ease-out curves; never bounce.
+opacity and transform only, never layout. Three durations cover the product and
+are declared once, in `flowy18_wip/crates/flowy-studio/src/motion.rs`: 150ms for
+high-frequency state such as chip selection, 240ms for medium content swaps, and
+320ms for large travel such as a drawer. Curves follow IBM Carbon: standard
+`cubic-bezier(0.2, 0, 0.38, 0.9)`, entrance `(0, 0, 0.38, 0.9)`, exit
+`(0.2, 0, 1, 0.9)`. 800ms is a ceiling reserved for full-screen transitions, not
+a target; ordinary product interaction stays at or below 400ms. Entrance pairs
+the fade with 8px of travel, because a fade alone is invisible on a dark
+surface. Never bounce.
 
 ## Components
 
