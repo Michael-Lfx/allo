@@ -21,6 +21,7 @@ use flowy_agent_core::{
 };
 
 use crate::config::LlmConfig;
+pub use crate::index::AgentWorkspace;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
 use crate::projection::{ChatHistory, ChatLine, ChatProjection, TurnStatus};
 use crate::title::{self, TITLE_MAX_CHARS};
@@ -30,6 +31,7 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub updated_at: u64,
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -53,12 +55,14 @@ struct Live {
     status: TurnStatus,
     updated_at: u64,
     turn_started_at: Option<u64>,
+    workspace: Option<AgentWorkspace>,
 }
 
 struct UiState {
     root: PathBuf,
     live: Mutex<HashMap<String, Live>>,
     active: Mutex<Option<String>>,
+    workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     updates: Mutex<VecDeque<AgentUpdate>>,
     load_failed: Mutex<bool>,
     dispatch: Mutex<()>,
@@ -70,6 +74,7 @@ impl UiState {
             root,
             live: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
+            workspace_for_new_sessions: Mutex::new(None),
             updates: Mutex::new(VecDeque::new()),
             load_failed: Mutex::new(false),
             dispatch: Mutex::new(()),
@@ -238,11 +243,18 @@ impl AgentHandle {
                         status,
                         updated_at: record.updated_at,
                         turn_started_at: None,
+                        workspace: record.workspace,
                     },
                 );
             }
             drop(live);
+            let active_workspace = active.as_ref().and_then(|id| {
+                lock(&state.live)
+                    .get(id)
+                    .and_then(|session| session.workspace.clone())
+            });
             *lock(&state.active) = active;
+            *lock(&state.workspace_for_new_sessions) = active_workspace;
         }
         // If the UI index was lost or quarantined, rebuild the visible sessions
         // from the structured history instead of hiding them.
@@ -287,6 +299,10 @@ impl AgentHandle {
                 id: id.clone(),
                 title: session.title.clone(),
                 updated_at: session.updated_at,
+                project_id: session
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| workspace.project_id.clone()),
             })
             .collect();
         drop(live);
@@ -296,6 +312,28 @@ impl AgentHandle {
 
     pub fn active_session_id(&self) -> Option<String> {
         lock(&self.inner.state.active).clone()
+    }
+
+    /// Set the workspace inherited by sessions created from this context.
+    /// Existing sessions retain the workspace saved with their own history.
+    pub fn set_workspace_for_new_sessions(
+        &self,
+        workspace: Option<AgentWorkspace>,
+    ) {
+        *lock(&self.inner.state.workspace_for_new_sessions) = workspace;
+    }
+
+    /// Return the active session's workspace, or the context for the next
+    /// session when no session is active.
+    #[must_use]
+    pub fn active_workspace(&self) -> Option<AgentWorkspace> {
+        let active = lock(&self.inner.state.active).clone();
+        if let Some(id) = active {
+            return lock(&self.inner.state.live)
+                .get(&id)
+                .and_then(|session| session.workspace.clone());
+        }
+        lock(&self.inner.state.workspace_for_new_sessions).clone()
     }
 
     pub fn has_messages(&self) -> bool {
@@ -364,6 +402,8 @@ impl AgentHandle {
         }
         let id = format!("s-{}", next_stamp());
         let now = now_ms();
+        let workspace =
+            lock(&self.inner.state.workspace_for_new_sessions).clone();
         let engine = lock(&self.inner.engine)
             .clone()
             .ok_or("notice.agent_failed")?;
@@ -384,6 +424,7 @@ impl AgentHandle {
                 status: TurnStatus::Idle,
                 updated_at: now,
                 turn_started_at: None,
+                workspace,
             },
         );
         *lock(&self.inner.state.active) = Some(id.clone());
@@ -395,10 +436,12 @@ impl AgentHandle {
     }
 
     pub fn select_session(&self, id: &str) -> Result<(), &'static str> {
-        if !lock(&self.inner.state.live).contains_key(id) {
-            return Err("notice.agent_failed");
-        }
+        let workspace = lock(&self.inner.state.live)
+            .get(id)
+            .map(|session| session.workspace.clone())
+            .ok_or("notice.agent_failed")?;
         *lock(&self.inner.state.active) = Some(id.to_owned());
+        *lock(&self.inner.state.workspace_for_new_sessions) = workspace;
         if persist_index(&self.inner.state).is_err() {
             self.inner.state.report_storage_error();
         }
@@ -474,7 +517,10 @@ impl AgentHandle {
             .api_key
             .is_none()
             .then(|| echo_stream_fn(prompt.clone()));
-        let cwd = ensure_tool_cwd(&state.root);
+        let workspace = lock(&state.live)
+            .get(&id)
+            .and_then(|session| session.workspace.clone());
+        let cwd = session_working_directory(&state.root, workspace.as_ref());
         tracing::debug!(
             target: "flowy.prompt",
             stage = "AgentHandle::submit_message",
@@ -771,6 +817,7 @@ fn persist_index(state: &UiState) -> Result<(), &'static str> {
             lines: session.projection.lines.clone(),
             status: session.status.clone(),
             titled: session.titled,
+            workspace: session.workspace.clone(),
         })
         .collect();
     sessions.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
@@ -837,6 +884,7 @@ fn import_engine_sessions(engine: &Engine, state: &UiState) {
                 status: live_status(record.status),
                 updated_at: record.updated_at,
                 turn_started_at: None,
+                workspace: None,
             },
         );
     }
@@ -1106,6 +1154,13 @@ fn ensure_tool_cwd(root: &Path) -> PathBuf {
     dir
 }
 
+fn session_working_directory(
+    root: &Path,
+    workspace: Option<&AgentWorkspace>,
+) -> PathBuf {
+    workspace.map_or_else(|| ensure_tool_cwd(root), |item| item.root.clone())
+}
+
 fn recover_corrupt_history(root: &Path) -> std::io::Result<()> {
     let path = flowy_agent_core::SessionIndex::path(root);
     if !path.exists() {
@@ -1242,7 +1297,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod guard_tests {
-    use super::{confined_to, path_guard, tool_registry};
+    use super::{
+        AgentWorkspace, confined_to, path_guard, session_working_directory,
+        tool_registry,
+    };
     use flowy_agent_core::types::ToolCallArgs;
     use serde_json::json;
     use std::path::Path;
@@ -1288,5 +1346,22 @@ mod guard_tests {
         let other = if cfg!(windows) { "bash" } else { "powershell" };
         assert!(!names.iter().any(|name| name == other));
         assert!(!names.iter().any(|name| name == "todo_write"));
+    }
+
+    #[test]
+    fn session_workspace_overrides_default_tool_directory() {
+        let root = Path::new("/flowy-data");
+        let workspace = AgentWorkspace {
+            project_id: "project-a".into(),
+            root: Path::new("/work/project-a").to_path_buf(),
+        };
+        assert_eq!(
+            session_working_directory(root, Some(&workspace)),
+            workspace.root,
+        );
+        assert_eq!(
+            session_working_directory(root, None),
+            root.join("sessions").join("cwd"),
+        );
     }
 }

@@ -7,6 +7,10 @@ The SVG files in this directory are selected from [Lucide](https://github.com/lu
 The vendored files are pinned to Lucide commit
 [`55782beff3a0133df79c417eb68f96e8f19e2404`](https://github.com/lucide-icons/lucide/tree/55782beff3a0133df79c417eb68f96e8f19e2404).
 
+The project sidebar additions `briefcase-business.svg`, `folder-pen.svg`,
+`pin.svg`, and `trash.svg` are pinned to Lucide commit
+[`2ba961714cfa1a753e9d32a7b0458ae14fe4f50e`](https://github.com/lucide-icons/lucide/tree/2ba961714cfa1a753e9d32a7b0458ae14fe4f50e).
+
 Lucide Icons and Contributors — ISC License:
 
 ```text

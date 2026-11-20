@@ -698,6 +698,24 @@ pub fn menu_item(
         .child(label)
 }
 
+pub fn menu_item_with_icon(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    disabled: bool,
+    theme: &ResolvedTheme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let id = id.into();
+    let icon_id: ElementId = (id.clone(), "icon").into();
+    let label = label.into();
+    crate::button(id, label.clone(), disabled, theme, on_click)
+        .role(Role::MenuItem)
+        .text_color(if disabled { theme.muted() } else { theme.ink() })
+        .child(div().id(icon_id).aria_hidden().child(icon))
+        .child(label)
+}
+
 pub fn select_option(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,

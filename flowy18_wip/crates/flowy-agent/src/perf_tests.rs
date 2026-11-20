@@ -101,6 +101,7 @@ fn offline_agent_baseline() {
                         lines,
                         status: TurnStatus::Completed,
                         titled: true,
+                        workspace: None,
                     }],
                 }
                 .save(&root.0)

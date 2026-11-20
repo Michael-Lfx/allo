@@ -23,6 +23,7 @@ tracing = { workspace = true }
 getrandom = { workspace = true }
 gpui = { workspace = true }
 gpui_ce_elements = { workspace = true }
+open = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

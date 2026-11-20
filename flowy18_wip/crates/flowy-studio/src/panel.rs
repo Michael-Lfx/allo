@@ -1,6 +1,8 @@
 use crate::composer::{ChatComposer, ComposerEvent};
 use crate::feed::{ChatFeed, OpenTask, WorkingIndicator};
-use flowy_agent::{AgentHandle, LlmConfig, Model, Plan, ProviderCatalog};
+use flowy_agent::{
+    AgentHandle, AgentWorkspace, LlmConfig, Model, Plan, ProviderCatalog,
+};
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
 use flowy_ui::{ResolvedTheme, UiContext};
@@ -113,6 +115,9 @@ pub struct StudioPanel {
     last_elapsed: Option<u64>,
     _theme_sub: gpui::Subscription,
     _overlay_sub: gpui::Subscription,
+    pub projects: Vec<crate::projects::Project>,
+    pub active_project_id: Option<String>,
+    project_store_failed: bool,
     pub document: DocumentSession,
     pub agent: AgentHandle,
     pub credits: crate::CreditsViewState,
@@ -262,6 +267,24 @@ impl StudioPanel {
                 }
             });
         let status = agent.turn_status();
+        let project_load = crate::projects::load(&store_root);
+        let (projects, project_store_failed) = match project_load {
+            Ok(projects) => (projects, false),
+            Err(_) => (Vec::new(), true),
+        };
+        let active_workspace = agent.active_workspace();
+        let active_project_id = active_workspace
+            .as_ref()
+            .map(|workspace| workspace.project_id.clone());
+        let initial_notice = if project_store_failed {
+            Some("project.storage_error")
+        } else if active_workspace.as_ref().is_some_and(|workspace| {
+            !crate::projects::root_available(&workspace.root)
+        }) {
+            Some("project.folder_unavailable")
+        } else {
+            None
+        };
         let mut panel = Self {
             ui,
             theme,
@@ -276,6 +299,9 @@ impl StudioPanel {
             _theme_sub: theme_sub,
             _overlay_sub: overlay_sub,
             prompt,
+            projects,
+            active_project_id,
+            project_store_failed,
             document: DocumentSession::new(product),
             agent,
             credits: crate::CreditsViewState::Unavailable,
@@ -295,7 +321,7 @@ impl StudioPanel {
             store_root,
             product,
             surface,
-            notice: None,
+            notice: initial_notice,
             _prompt_sub: prompt_sub,
             pump: None,
         };
@@ -418,6 +444,9 @@ impl StudioPanel {
         notice: Option<&'static str>,
         cx: &mut Context<'_, Self>,
     ) {
+        let notice = notice.or_else(|| {
+            self.project_store_failed.then_some("project.storage_error")
+        });
         if self.notice != notice {
             self.notice = notice;
             cx.notify();
@@ -459,6 +488,9 @@ impl StudioPanel {
         notice: Option<&'static str>,
         cx: &mut Context<'_, Self>,
     ) {
+        let notice = notice.or_else(|| {
+            self.project_store_failed.then_some("project.storage_error")
+        });
         self.notice = notice;
         cx.emit(StudioEvent::Notice(notice));
         cx.notify();
@@ -475,8 +507,10 @@ impl StudioPanel {
     pub fn reset_session(&mut self, cx: &mut Context<'_, Self>) {
         self.model_info_open = false;
         self.model_menu_open = false;
+        self.active_project_id = None;
         self.document = DocumentSession::new(self.product);
         let _ = self.agent.clear_active();
+        self.agent.set_workspace_for_new_sessions(None);
         self.surface = StudioSurface::Home;
         self.refresh_chat(cx);
         self.emit_notice(None, cx);
@@ -503,12 +537,24 @@ impl StudioPanel {
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
         match self.agent.select_session(id) {
             Ok(()) => {
+                let workspace = self.agent.active_workspace();
+                self.active_project_id =
+                    workspace.as_ref().map(|value| value.project_id.clone());
                 self.surface = if self.agent.has_messages() {
                     StudioSurface::Chat
                 } else {
                     StudioSurface::Home
                 };
                 self.refresh_chat(cx);
+                self.emit_notice(
+                    workspace
+                        .as_ref()
+                        .filter(|value| {
+                            !crate::projects::root_available(&value.root)
+                        })
+                        .map(|_| "project.folder_unavailable"),
+                    cx,
+                );
                 cx.emit(StudioEvent::SessionsChanged);
                 cx.notify();
             }
@@ -545,6 +591,12 @@ impl StudioPanel {
                 "reject"
             );
             self.emit_notice(Some("notice.prompt_empty"), cx);
+            return;
+        }
+        if self.agent.active_workspace().is_some_and(|workspace| {
+            !crate::projects::root_available(&workspace.root)
+        }) {
+            self.emit_notice(Some("project.folder_unavailable"), cx);
             return;
         }
         let id = *self.submission.get_or_insert_with(new_submission_id);
@@ -592,6 +644,142 @@ impl StudioPanel {
     ) {
         let text = self.t(key);
         self.fill_prompt(&text, cx);
+    }
+
+    pub fn create_project(
+        &mut self,
+        name: &str,
+        folder: &std::path::Path,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<crate::projects::Project, &'static str> {
+        if self.project_store_failed {
+            return Err("project.storage_error");
+        }
+        let project = crate::projects::create(
+            &self.store_root,
+            &mut self.projects,
+            name,
+            folder,
+        )
+        .map_err(|error| error.notice_key())?;
+        self.open_project(&project.id, cx)?;
+        Ok(project)
+    }
+
+    pub fn update_project(
+        &mut self,
+        id: &str,
+        name: &str,
+        folder: &std::path::Path,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        if self.project_store_failed {
+            return Err("project.storage_error");
+        }
+        let project = crate::projects::update(
+            &self.store_root,
+            &mut self.projects,
+            id,
+            name,
+            folder,
+        )
+        .map_err(|error| error.notice_key())?;
+        if self.active_project_id.as_deref() == Some(id) {
+            self.agent
+                .set_workspace_for_new_sessions(Some(AgentWorkspace {
+                    project_id: project.id,
+                    root: project.root,
+                }));
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn remove_project(
+        &mut self,
+        id: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        if self.project_store_failed {
+            return Err("project.storage_error");
+        }
+        let was_active = self.active_project_id.as_deref() == Some(id);
+        crate::projects::remove(&self.store_root, &mut self.projects, id)
+            .map_err(|error| error.notice_key())?;
+        if was_active {
+            self.active_project_id = None;
+            let _ = self.agent.clear_active();
+            self.agent.set_workspace_for_new_sessions(None);
+            self.surface = StudioSurface::Home;
+            self.refresh_chat(cx);
+            self.emit_notice(None, cx);
+        }
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn set_project_pinned(
+        &mut self,
+        id: &str,
+        pinned: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        if self.project_store_failed {
+            return Err("project.storage_error");
+        }
+        crate::projects::set_pinned(
+            &self.store_root,
+            &mut self.projects,
+            id,
+            pinned,
+        )
+        .map_err(|error| error.notice_key())?;
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn view_project(&self, id: &str) -> Result<(), &'static str> {
+        let project = self
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .ok_or("project.folder_unavailable")?;
+        if !crate::projects::root_available(&project.root) {
+            return Err("project.folder_unavailable");
+        }
+        open::that(&project.root).map_err(|_| "project.view_failed")
+    }
+
+    pub fn open_project(
+        &mut self,
+        id: &str,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<(), &'static str> {
+        let Some(project) =
+            self.projects.iter().find(|project| project.id == id)
+        else {
+            return Err("project.folder_unavailable");
+        };
+        if !crate::projects::root_available(&project.root) {
+            self.emit_notice(Some("project.folder_unavailable"), cx);
+            return Err("project.folder_unavailable");
+        }
+        let workspace = AgentWorkspace {
+            project_id: project.id.clone(),
+            root: project.root.clone(),
+        };
+        let project_id = project.id.clone();
+        let clear_error = self.agent.clear_active().err();
+        self.agent.set_workspace_for_new_sessions(Some(workspace));
+        self.active_project_id = Some(project_id);
+        self.surface = StudioSurface::Home;
+        self.prompt.update(cx, |state, cx| state.emplace("", cx));
+        self.refresh_chat(cx);
+        self.emit_notice(clear_error, cx);
+        cx.emit(StudioEvent::SessionsChanged);
+        cx.notify();
+        Ok(())
     }
 
     pub fn note(&mut self, key: &'static str, cx: &mut Context<'_, Self>) {
@@ -675,6 +863,89 @@ mod tests {
     use super::*;
     use gpui::TestAppContext;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui::test]
+    fn creating_a_project_persists_and_opens_its_workspace(
+        cx: &mut TestAppContext,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-studio-project-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let folder = root.join("workspace");
+        std::fs::create_dir_all(&folder).unwrap();
+        let panel = cx.update(|cx| {
+            let ui =
+                UiContext::new(flowy_ui::ThemeOptions::default(), false, cx);
+            cx.new(|cx| {
+                StudioPanel::new(
+                    StudioConfig {
+                        product: "Flowy",
+                        i18n: I18n::embedded("Flowy"),
+                        model: Model::Lite,
+                        plan: Plan::Free,
+                        model_info_version: String::new(),
+                        model_info_open: false,
+                        store_root: root.clone(),
+                        llm: LlmConfig {
+                            api_key: None,
+                            base_url: String::new(),
+                            model: String::new(),
+                            provider: String::new(),
+                            ..LlmConfig::default()
+                        },
+                    },
+                    ui,
+                    cx,
+                )
+            })
+        });
+        let created = panel
+            .update(cx, |panel, cx| panel.create_project("Client", &folder, cx))
+            .unwrap();
+        assert_eq!(
+            crate::projects::load(&root).unwrap(),
+            vec![created.clone()]
+        );
+        cx.read_entity(&panel, |panel, _| {
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(created.id.as_str())
+            );
+            assert_eq!(
+                panel.agent.active_workspace(),
+                Some(flowy_agent::AgentWorkspace {
+                    project_id: created.id.clone(),
+                    root: created.root.clone(),
+                })
+            );
+        });
+
+        let session = cx.read_entity(&panel, |panel, _| {
+            panel.agent.create_session().unwrap()
+        });
+        panel.update(cx, |panel, cx| panel.open_session(&session, cx));
+        cx.read_entity(&panel, |panel, _| {
+            assert_eq!(
+                panel.active_project_id.as_deref(),
+                Some(created.id.as_str())
+            );
+            assert_eq!(
+                panel
+                    .agent
+                    .active_workspace()
+                    .as_ref()
+                    .map(|value| &value.root),
+                Some(&created.root)
+            );
+        });
+        drop(panel);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[gpui::test]
     #[expect(

@@ -7,6 +7,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::projection::{ChatLine, TurnStatus};
 
+/// A project workspace attached to a chat session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspace {
+    pub project_id: String,
+    pub root: PathBuf,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub id: String,
@@ -18,6 +25,8 @@ pub struct SessionRecord {
     pub status: TurnStatus,
     #[serde(default)]
     pub titled: bool,
+    #[serde(default)]
+    pub workspace: Option<AgentWorkspace>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -140,6 +149,56 @@ mod tests {
                 .unwrap()
                 .all(|entry| entry.unwrap().file_name() == "index.json")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_sessions_without_workspace_remain_unassigned() {
+        let json = br#"{
+            "active": "s-legacy",
+            "sessions": [{
+                "id": "s-legacy",
+                "title": "old session",
+                "updated_at": 1,
+                "lines": [],
+                "titled": false
+            }]
+        }"#;
+        let index: SessionIndex = serde_json::from_slice(json).unwrap();
+        assert!(index.sessions[0].workspace.is_none());
+    }
+
+    #[test]
+    fn workspace_roundtrips_with_session_index() {
+        let root = std::env::temp_dir().join(format!(
+            "flowy-index-workspace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = AgentWorkspace {
+            project_id: "project-1".into(),
+            root: root.join("project-root"),
+        };
+        SessionIndex {
+            active: Some("s-1".into()),
+            sessions: vec![SessionRecord {
+                id: "s-1".into(),
+                title: "task".into(),
+                updated_at: 1,
+                lines: Vec::new(),
+                status: TurnStatus::Idle,
+                titled: false,
+                workspace: Some(workspace.clone()),
+            }],
+        }
+        .save(&root)
+        .unwrap();
+
+        let loaded = SessionIndex::load(&root).unwrap();
+        assert_eq!(loaded.sessions[0].workspace.as_ref(), Some(&workspace));
         fs::remove_dir_all(root).unwrap();
     }
 }

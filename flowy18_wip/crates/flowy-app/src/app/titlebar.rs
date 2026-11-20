@@ -213,7 +213,6 @@ impl FlowyApp {
 
     fn apply_section(&mut self, section: Section, cx: &mut Context<'_, Self>) {
         self.section = section;
-        self.persona.menu = false;
         self.user_menu = false;
         if section == Section::Studio {
             self.notice = None;

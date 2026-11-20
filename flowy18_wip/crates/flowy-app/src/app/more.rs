@@ -4,12 +4,15 @@ use crate::persona::{
     limited, read_patch, save,
 };
 use flowy_ui as theme;
-use gpui::{AnyElement, ClipboardItem, Context, Entity, div, prelude::*, px};
+use gpui::{
+    ClipboardItem, Context, Entity, Pixels, Size, Window, div, prelude::*, px,
+};
 use gpui_ce_elements::editable_text::EditableTextState;
+
+mod personalization;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Page {
-    Computer,
     Skills,
     Personal,
 }
@@ -22,49 +25,11 @@ pub(super) enum Tab {
 
 const PASTE_MAX: usize = 8000;
 
-const MENU: &[(&str, &str, Page)] = &[
-    ("more-computer", "more.computer", Page::Computer),
-    ("more-skills", "more.skills", Page::Skills),
-    ("more-personal", "more.personal", Page::Personal),
-];
-
 impl FlowyApp {
-    pub(super) fn toggle_more(&mut self, cx: &mut Context<'_, Self>) {
-        self.studio.update(cx, |panel, cx| {
-            panel.model_menu_open = false;
-            cx.notify();
-        });
-        self.user_menu = false;
-        self.persona.menu = !self.persona.menu;
-        cx.notify();
-    }
-
-    pub fn more_flyout(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut menu = div()
-            .id("more-flyout")
-            .occlude()
-            .w(px(196.))
-            .bg(self.theme.card())
-            .border_1()
-            .border_color(self.theme.line())
-            .rounded(self.theme.modal_radius())
-            .shadow_md()
-            .p_1()
-            .flex()
-            .flex_col()
-            .on_click(cx.listener(|_app, _event, _window, cx| {
-                cx.stop_propagation();
-            }));
-        for (id, key, page) in MENU {
-            menu = menu.child(self.more_flyout_row(id, key, *page, cx));
-        }
-        menu
-    }
-
     pub fn more_canvas(
         &self,
         window: &mut gpui::Window,
-        cx: &Context<'_, Self>,
+        cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
         let mut page = div()
             .id("more-page")
@@ -73,29 +38,40 @@ impl FlowyApp {
             .h_full()
             .flex()
             .flex_col();
-        page = if self.persona.page == Page::Personal {
-            page.child(self.personal_canvas(window, cx))
-        } else if self.persona.page == Page::Skills {
+        page = if self.persona.page == Page::Skills {
             page.child(self.skills_canvas(window, cx))
         } else {
-            page.child(
-                theme::PageHeader::new(self.t("more.computer"))
-                    .render(&self.theme, window),
-            )
-            .child(self.more_note("more.computer_body"))
+            page.child(self.personal_canvas(window, cx))
         };
         page
     }
 
+    pub(super) fn select_more_page(
+        &mut self,
+        page: Page,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.persona.page = page;
+        self.notice = None;
+        if self.section == Section::More {
+            self.sync_studio_surface(cx);
+            cx.notify();
+        } else {
+            self.push_section(Section::More, cx);
+        }
+    }
+
     pub(super) fn more_layer(
         &self,
+        window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
+        let frame = self.theme.modal_size(window.viewport_size());
         let content =
             if self.active_dialog == super::state::ActiveDialog::Knowledge {
-                self.knowledge_dialog(cx).into_any_element()
+                self.knowledge_dialog(frame, cx).into_any_element()
             } else {
-                self.import_dialog(cx).into_any_element()
+                self.import_dialog(frame, cx).into_any_element()
             };
         theme::modal_layer("more-layer", &self.theme, &self.ui, content)
     }
@@ -127,305 +103,6 @@ impl FlowyApp {
     pub(super) fn touch_knowledge_body(&self, cx: &mut Context<'_, Self>) {
         clamp_text(&self.persona.knowledge_body, KNOWLEDGE_MAX, cx);
         cx.notify();
-    }
-
-    fn more_flyout_row(
-        &self,
-        id: &'static str,
-        key: &'static str,
-        page: Page,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let selected = self.persona.page == page;
-        theme::interactive(id, self.t(key), &self.theme)
-            .px_2()
-            .py_2()
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .hover(|row| row.bg(self.theme.soft()))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                cx.stop_propagation();
-                app.persona.menu = false;
-                app.persona.page = page;
-                app.notice = None;
-                if app.section == Section::More {
-                    app.sync_studio_surface(cx);
-                } else {
-                    app.push_section(Section::More, cx);
-                }
-                cx.notify();
-            }))
-            .child(menu_icon(page))
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(self.theme.body_size())
-                    .child(self.t(key)),
-            )
-            .when(selected, |row| row.child(theme::icons::check()))
-    }
-
-    fn more_note(&self, body_key: &'static str) -> impl IntoElement {
-        div()
-            .id("computer-scroll")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(560.))
-                    .px_10()
-                    .pt_8()
-                    .text_size(self.theme.body_size())
-                    .text_color(self.theme.muted())
-                    .child(self.t(body_key)),
-            )
-    }
-
-    fn personal_canvas(
-        &self,
-        window: &gpui::Window,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                theme::PageHeader::new(self.t("more.personal"))
-                    .render(&self.theme, window),
-            )
-            .child(
-                div()
-                    .id("more-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .min_h_full()
-                            .px_10()
-                            .pt_8()
-                            .pb_6()
-                            .child(self.personal_column(cx)),
-                    ),
-            )
-    }
-
-    fn personal_column(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        let mut column = div()
-            .w_full()
-            .max_w(px(760.))
-            .min_h_full()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(self.personal_tabs(cx));
-        column = if self.persona.tab == Tab::Profile {
-            column
-                .child(self.import_card(cx))
-                .child(self.profile_fields(cx))
-                .child(div().flex_1())
-                .child(self.import_footer(cx))
-        } else {
-            column.child(self.knowledge_pane(cx))
-        };
-        column
-    }
-
-    fn personal_tabs(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .gap_6()
-            .border_b_1()
-            .border_color(self.theme.line())
-            .child(self.personal_tab(
-                "more-tab-profile",
-                "more.profile",
-                Tab::Profile,
-                cx,
-            ))
-            .child(self.personal_tab(
-                "more-tab-knowledge",
-                "more.knowledge",
-                Tab::Knowledge,
-                cx,
-            ))
-    }
-
-    fn personal_tab(
-        &self,
-        id: &'static str,
-        key: &'static str,
-        tab: Tab,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        let selected = self.persona.tab == tab;
-        theme::interactive(id, self.t(key), &self.theme)
-            .role(gpui::Role::Tab)
-            .aria_selected(selected)
-            .pb_2()
-            .cursor_pointer()
-            .text_size(self.theme.body_size())
-            .text_color(if selected {
-                self.theme.ink()
-            } else {
-                self.theme.muted()
-            })
-            .border_0()
-            .border_b_2()
-            .border_color(if selected {
-                self.theme.ink()
-            } else {
-                self.theme.canvas()
-            })
-            .child(self.t(key))
-            .on_click(cx.listener(move |app, _event, _window, cx| {
-                app.persona.tab = tab;
-                cx.notify();
-            }))
-    }
-
-    fn import_card(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        theme::interactive(
-            "import-memory-card",
-            self.t("more.import_card"),
-            &self.theme,
-        )
-        .w_full()
-        .px_4()
-        .py_3()
-        .rounded_xl()
-        .border_1()
-        .border_color(self.theme.line())
-        .bg(self.theme.card())
-        .flex()
-        .items_center()
-        .gap_3()
-        .cursor_pointer()
-        .hover(|card| card.bg(self.theme.soft()))
-        .on_click(cx.listener(|app, _event, _window, cx| {
-            app.open_import(cx);
-        }))
-        .child(card_mark(&self.theme))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(self.theme.body_size())
-                        .child(self.t("more.import_card")),
-                )
-                .child(
-                    div()
-                        .text_size(self.theme.caption_size())
-                        .text_color(self.theme.muted())
-                        .whitespace_normal()
-                        .child(self.t("more.import_card_body")),
-                ),
-        )
-        .child(theme::icons::chevron_right().text_color(self.theme.muted()))
-    }
-
-    fn profile_fields(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .gap_4()
-                    .child(self.named_field(
-                        "more-nickname",
-                        "more.nickname",
-                        "more.nickname_placeholder",
-                        &self.persona.nickname,
-                        cx,
-                    ))
-                    .child(self.named_field(
-                        "more-occupation",
-                        "more.occupation",
-                        "more.occupation_placeholder",
-                        &self.persona.occupation,
-                        cx,
-                    )),
-            )
-            .child(labeled_area(
-                self,
-                cx,
-                "more-about",
-                self.persona.about.clone(),
-                self.t("more.about_placeholder"),
-                self.count_text(
-                    self.persona.about.read(cx).as_str(),
-                    ABOUT_MAX,
-                ),
-                120.,
-            ))
-            .child(
-                div()
-                    .text_size(self.theme.caption_size())
-                    .text_color(self.theme.muted())
-                    .child(self.t("more.about_hint")),
-            )
-            .child(labeled_area(
-                self,
-                cx,
-                "more-instructions",
-                self.persona.instructions.clone(),
-                self.t("more.instructions_placeholder"),
-                self.count_text(
-                    self.persona.instructions.read(cx).as_str(),
-                    INSTRUCTIONS_MAX,
-                ),
-                96.,
-            ))
-    }
-
-    fn named_field(
-        &self,
-        id: &'static str,
-        label_key: &'static str,
-        placeholder_key: &'static str,
-        state: &Entity<EditableTextState>,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(field_label(self.t(label_key)))
-            .child(single_line(
-                cx,
-                &self.theme,
-                id,
-                state.clone(),
-                self.t(placeholder_key),
-            ))
-    }
-
-    fn import_footer(&self, cx: &Context<'_, Self>) -> impl IntoElement {
-        div().w_full().flex().justify_center().child(
-            theme::Button::new("open-import-memory", self.t("more.import"))
-                .variant(theme::ControlVariant::Secondary)
-                .render(
-                    &self.theme,
-                    cx.listener(|app, _event, _window, cx| {
-                        app.open_import(cx);
-                    }),
-                ),
-        )
     }
 
     fn knowledge_pane(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -517,7 +194,11 @@ impl FlowyApp {
             })
     }
 
-    fn import_dialog(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn import_dialog(
+        &self,
+        frame: Size<Pixels>,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let prompt = self.import_prompt();
         let ready = !self
             .persona
@@ -526,8 +207,7 @@ impl FlowyApp {
             .as_str()
             .trim()
             .is_empty();
-        let mut card = dialog_shell(self, "import-memory-dialog", cx)
-            .child(self.dialog_title("more.import_title", cx))
+        let mut body = dialog_fields()
             .child(
                 div()
                     .text_size(self.theme.body_size())
@@ -557,34 +237,43 @@ impl FlowyApp {
             )
             .child(prompt_box(&self.theme, &prompt));
         if let Some(key) = self.persona.status {
-            card = card.child(
+            body = body.child(
                 div()
                     .text_size(self.theme.caption_size())
                     .text_color(self.theme.muted())
                     .child(self.t(key)),
             );
         }
-        card.child(step_heading(
-            &self.theme,
-            "2",
-            self.t("more.import_step_paste"),
-        ))
-        .child(
-            div()
-                .text_size(self.theme.caption_size())
-                .text_color(self.theme.muted())
-                .whitespace_normal()
-                .child(self.t("more.import_step_paste_body")),
-        )
-        .child(counted_area(
+        let paste_label = self.t("more.import_step_paste");
+        let body = body
+            .child(step_heading(&self.theme, "2", paste_label.clone()))
+            .child(
+                div()
+                    .text_size(self.theme.caption_size())
+                    .text_color(self.theme.muted())
+                    .whitespace_normal()
+                    .child(self.t("more.import_step_paste_body")),
+            )
+            .child(
+                theme::TextField::new(
+                    "import-paste",
+                    paste_label,
+                    self.persona.import_paste.clone(),
+                )
+                .placeholder(self.t("more.import_placeholder"))
+                .quiet()
+                .multiline_height(px(120.))
+                .render(&self.theme, cx),
+            );
+        dialog_shell(
+            self,
+            "import-memory-dialog",
+            "more.import_title",
+            frame,
             cx,
-            &self.theme,
-            "import-paste",
-            self.persona.import_paste.clone(),
-            self.t("more.import_placeholder"),
-            String::new(),
-            120.,
-        ))
+        )
+        .child(self.dialog_title("more.import_title", cx))
+        .child(dialog_body("import-memory-scroll", body))
         .child(self.dialog_actions(
             "cancel-import",
             "confirm-import",
@@ -594,7 +283,11 @@ impl FlowyApp {
         ))
     }
 
-    fn knowledge_dialog(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn knowledge_dialog(
+        &self,
+        frame: Size<Pixels>,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
         let ready = !self
             .persona
             .knowledge_name
@@ -606,8 +299,7 @@ impl FlowyApp {
             self.persona.knowledge_body.read(cx).as_str(),
             KNOWLEDGE_MAX,
         );
-        dialog_shell(self, "add-knowledge-dialog", cx)
-            .child(self.dialog_title("more.add_title", cx))
+        let body = dialog_fields()
             .child(field_label(self.t("more.knowledge_name")))
             .child(single_line(
                 cx,
@@ -633,7 +325,10 @@ impl FlowyApp {
                 self.t("more.knowledge_body_placeholder"),
                 count,
                 140.,
-            ))
+            ));
+        dialog_shell(self, "add-knowledge-dialog", "more.add_title", frame, cx)
+            .child(self.dialog_title("more.add_title", cx))
+            .child(dialog_body("add-knowledge-scroll", body))
             .child(self.dialog_actions(
                 "cancel-knowledge",
                 "save-knowledge",
@@ -650,6 +345,7 @@ impl FlowyApp {
     ) -> impl IntoElement {
         div()
             .flex()
+            .flex_shrink_0()
             .items_start()
             .justify_between()
             .gap_3()
@@ -700,6 +396,7 @@ impl FlowyApp {
     ) -> impl IntoElement {
         div()
             .flex()
+            .flex_shrink_0()
             .justify_end()
             .gap_2()
             .child(self.cancel_button(cancel_id, cx))
@@ -926,15 +623,14 @@ impl FlowyApp {
 fn dialog_shell(
     app: &FlowyApp,
     id: &'static str,
+    title: &'static str,
+    frame: Size<Pixels>,
     cx: &Context<'_, FlowyApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = &app.theme;
-    theme::dialog(id, app.t("more.personal"), theme, &app.ui, cx)
-        .w(px(480.))
-        .max_h(px(640.))
-        .overflow_y_scroll()
-        .bg(theme.card())
-        .rounded_xl()
+    theme::dialog(id, app.t(title), theme, &app.ui, cx)
+        .w(frame.width.min(px(480.)))
+        .max_h(frame.height.min(px(640.)))
         .shadow_md()
         .px_6()
         .pt_4()
@@ -945,6 +641,20 @@ fn dialog_shell(
         .on_click(cx.listener(|_app, _event, _window, cx| {
             cx.stop_propagation();
         }))
+}
+
+fn dialog_body(id: &'static str, fields: impl IntoElement) -> impl IntoElement {
+    div()
+        .id(id)
+        .w_full()
+        .min_h_0()
+        .flex_auto()
+        .overflow_y_scroll()
+        .child(fields)
+}
+
+fn dialog_fields() -> gpui::Div {
+    div().w_full().min_w_0().flex().flex_col().gap_3()
 }
 
 fn single_line(
@@ -970,43 +680,14 @@ fn counted_area(
 ) -> impl IntoElement {
     let input = theme::TextField::new(id, placeholder.clone(), state)
         .placeholder(placeholder)
-        .multiline(true)
-        .render(theme, cx)
-        .min_h(px(height));
+        .multiline_height(px(height))
+        .render(theme, cx);
     div().w_full().flex().flex_col().child(input).child(
         div()
             .text_size(theme.caption_size())
             .text_color(theme.muted())
             .child(count),
     )
-}
-
-fn labeled_area(
-    app: &FlowyApp,
-    cx: &Context<'_, FlowyApp>,
-    id: &'static str,
-    state: Entity<EditableTextState>,
-    placeholder: String,
-    count: String,
-    height: f32,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .child(field_label(app.t(if id == "more-about" {
-            "more.about"
-        } else {
-            "more.instructions"
-        })))
-        .child(counted_area(
-            cx,
-            &app.theme,
-            id,
-            state,
-            placeholder,
-            count,
-            height,
-        ))
 }
 
 fn field_label(text: String) -> impl IntoElement {
@@ -1062,25 +743,6 @@ fn prompt_box(theme: &flowy_ui::ResolvedTheme, text: &str) -> impl IntoElement {
         box_ = box_.child(row);
     }
     box_
-}
-
-fn card_mark(theme: &flowy_ui::ResolvedTheme) -> impl IntoElement {
-    div()
-        .size(px(28.))
-        .rounded_md()
-        .bg(theme.soft())
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(theme::icons::file_plus())
-}
-
-fn menu_icon(page: Page) -> AnyElement {
-    match page {
-        Page::Computer => theme::icons::monitor().into_any_element(),
-        Page::Skills => theme::icons::sparkles().into_any_element(),
-        Page::Personal => theme::icons::sliders_horizontal().into_any_element(),
-    }
 }
 
 fn assign_text(
