@@ -1,5 +1,5 @@
 use crate::composer::{ChatComposer, ComposerEvent};
-use crate::feed::{ChatFeed, OpenTask, WorkingIndicator};
+use crate::feed::{ChatFeed, OpenTask, RevealFile, WorkingIndicator};
 use flowy_agent::{
     AgentHandle, AgentWorkspace, LlmConfig, Model, Plan, ProviderCatalog,
 };
@@ -109,6 +109,7 @@ pub struct StudioPanel {
     pub(crate) composer: Entity<ChatComposer>,
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
+    _reveal_sub: gpui::Subscription,
     submission: Option<u128>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
@@ -140,6 +141,9 @@ pub struct StudioPanel {
     pub notice: Option<&'static str>,
     /// Starter copy held back until the user confirms replacing the draft.
     pub(crate) pending_starter: Option<String>,
+    /// Draft text at the moment a starter was queued; editing away from it
+    /// cancels the replacement.
+    pending_snapshot: String,
     _prompt_sub: gpui::Subscription,
     pump: Option<Task<()>>,
 }
@@ -185,8 +189,18 @@ impl StudioPanel {
         let prompt =
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
         let prompt_sub =
-            cx.subscribe(&prompt, |panel, _, _: &TextChanged, cx| {
+            cx.subscribe(&prompt, |panel, prompt, _: &TextChanged, cx| {
                 panel.submission = None;
+                // Editing the draft invalidates a queued starter replacement.
+                // The event trails the edit, so compare against the draft that
+                // was current when the starter was queued instead of clearing
+                // unconditionally.
+                if panel.pending_starter.is_some() {
+                    let current = prompt.read(cx).as_str().to_owned();
+                    if current != panel.pending_snapshot {
+                        panel.pending_starter = None;
+                    }
+                }
                 if panel.surface != StudioSurface::Chat {
                     cx.notify();
                 }
@@ -238,6 +252,9 @@ impl StudioPanel {
         let working = cx.new(|cx| WorkingIndicator::new(ui.clone(), cx));
         let feed_sub = cx.subscribe(&feed, |panel, _, event: &OpenTask, cx| {
             panel.open_session(&event.0, cx);
+        });
+        let reveal_sub = cx.subscribe(&feed, |panel, _, event: &RevealFile, cx| {
+            panel.reveal_file(&event.0, cx);
         });
         let composer = cx.new(|cx| {
             ChatComposer::new(
@@ -294,6 +311,7 @@ impl StudioPanel {
             composer,
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
+            _reveal_sub: reveal_sub,
             submission: None,
             working,
             status,
@@ -325,6 +343,7 @@ impl StudioPanel {
             surface,
             notice: initial_notice,
             pending_starter: None,
+            pending_snapshot: String::new(),
             _prompt_sub: prompt_sub,
             pump: None,
         };
@@ -484,6 +503,21 @@ impl StudioPanel {
 
     pub(crate) fn tf(&self, key: &str, vars: &[(&str, &str)]) -> String {
         self.i18n.tf(key, vars)
+    }
+
+    /// Open the folder holding `path`. This is the only step that can fail, so
+    /// a failure goes through the existing notice channel instead of silence.
+    fn reveal_file(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+        let folder = std::path::Path::new(path)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty());
+        let Some(folder) = folder else {
+            self.emit_notice(Some("project.view_failed"), cx);
+            return;
+        };
+        if open::that(folder).is_err() {
+            self.emit_notice(Some("project.view_failed"), cx);
+        }
     }
 
     pub(crate) fn emit_notice(
@@ -675,6 +709,7 @@ impl StudioPanel {
             self.fill_prompt(&text, cx);
             return;
         }
+        self.pending_snapshot = self.prompt.read(cx).as_str().to_owned();
         self.pending_starter = Some(text);
         cx.notify();
     }

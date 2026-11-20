@@ -35,6 +35,12 @@ pub struct OpenTask(pub String);
 
 impl gpui::EventEmitter<OpenTask> for ChatFeed {}
 
+/// Ask the panel to reveal a file's folder. The feed only emits: opening can
+/// fail, and the failure needs the panel's notice channel.
+pub struct RevealFile(pub String);
+
+impl gpui::EventEmitter<RevealFile> for ChatFeed {}
+
 /// Keeps a long path readable in a narrow card: the tail (folder and file
 /// name) matters more than the drive or repository root.
 fn display_path(path: &str) -> String {
@@ -47,21 +53,6 @@ fn display_path(path: &str) -> String {
         .skip(path.chars().count() - (MAX - 1))
         .collect();
     format!("\u{2026}{tail}")
-}
-
-/// Opens the folder holding `path`. The feed has no notice channel, so a
-/// failure is logged rather than surfaced.
-fn reveal_parent(path: &str) {
-    let folder = std::path::Path::new(path)
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    let Some(folder) = folder else {
-        tracing::warn!(target: "flowy.file", path, "no containing folder");
-        return;
-    };
-    if open::that(folder).is_err() {
-        tracing::warn!(target: "flowy.file", path, "could not open the containing folder");
-    }
 }
 
 struct StoredFeed {
@@ -539,7 +530,7 @@ impl ChatFeed {
                 removed,
                 binary,
             } => self
-                .file_change_row(index, path, change, *added, *removed, *binary)
+                .file_change_row(index, path, change, *added, *removed, *binary, cx)
                 .into_any_element(),
         }
     }
@@ -554,6 +545,7 @@ impl ChatFeed {
         added: u32,
         removed: u32,
         binary: bool,
+        cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         let icon = crate::file_kind::from_path(path)
@@ -600,7 +592,9 @@ impl ChatFeed {
                 ),
         )
         .child(div().text_xs().child(delta))
-        .on_click(move |_, _, _| reveal_parent(&target))
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.emit(RevealFile(target.clone()));
+        }))
     }
 
     fn reasoning_block(
