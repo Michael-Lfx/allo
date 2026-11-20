@@ -2,6 +2,7 @@
 //! never supplies demonstration records to the production application.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
@@ -108,6 +109,7 @@ pub struct LibraryModel {
     pub category: Category,
     pub sort: LibrarySort,
     pub view: LibraryView,
+    favorites: BTreeSet<String>,
 }
 
 impl LibraryModel {
@@ -192,7 +194,25 @@ impl LibraryModel {
     pub fn remove(&mut self, id: &str) -> bool {
         let previous_len = self.items.len();
         self.items.retain(|item| item.id != id);
+        self.favorites.remove(id);
         previous_len != self.items.len()
+    }
+
+    pub fn is_favorite(&self, id: &str) -> bool {
+        self.favorites.contains(id)
+    }
+
+    /// Toggle one existing item's favorite state and return its new value.
+    pub fn toggle_favorite(&mut self, id: &str) -> Option<bool> {
+        if !self.items.iter().any(|item| item.id == id) {
+            return None;
+        }
+        if self.favorites.remove(id) {
+            Some(false)
+        } else {
+            self.favorites.insert(id.to_owned());
+            Some(true)
+        }
     }
 
     /// Empty names are rejected so a rename cannot make a row unidentifiable.
@@ -304,7 +324,11 @@ mod tests {
         assert!(model.rename("a", " renamed.jpg "));
         assert_eq!(model.items[0].title, "renamed.jpg");
         assert_eq!(ids(&model.filtered("renamed")), vec!["a"]);
+        assert_eq!(model.toggle_favorite("a"), Some(true));
+        assert!(model.is_favorite("a"));
+        assert_eq!(model.toggle_favorite("absent"), None);
         assert!(model.remove("a"));
+        assert!(!model.is_favorite("a"));
         assert!(!model.remove("a"));
         assert_eq!(ids(&model.filtered("")), vec!["b"]);
     }

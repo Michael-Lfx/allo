@@ -623,14 +623,42 @@ impl LibraryPanel {
         }))
     }
 
-    /// Same 14px text and 32px row as the view-options button menu.
-    fn menu_row(
-        item: gpui::Stateful<gpui::Div>,
+    fn action_menu_row(
+        id: impl Into<gpui::ElementId>,
+        label: String,
+        icon: impl IntoElement,
         theme: theme::ResolvedTheme,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> gpui::Stateful<gpui::Div> {
+        theme::menu_item_with_icon(id, label, icon, false, &theme, on_click)
+            .h(px(36.))
+            .max_h(px(36.))
+            .px(px(11.))
+            .border_0()
+            .rounded(px(6.))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .text_size(px(14.))
+            .line_height(px(20.))
+            .font_weight(gpui::FontWeight::NORMAL)
+            .text_color(theme.ink())
+            .bg(theme.card())
+            .hover(move |style| style.bg(theme.soft()))
+    }
+
+    fn sort_menu_row(
+        id: impl Into<gpui::ElementId>,
+        label: String,
+        mark: impl IntoElement,
+        theme: theme::ResolvedTheme,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<gpui::Div> {
         let metrics = theme.control_metrics();
         let hover = theme.soft();
-        item.h(px(32.))
+        theme::menu_item_with_icon(id, label, mark, false, &theme, on_click)
+            .h(px(32.))
             .max_h(px(32.))
             .px(px(8.))
             .border_0()
@@ -638,6 +666,7 @@ impl LibraryPanel {
             .overflow_hidden()
             .flex()
             .items_center()
+            .gap(px(8.))
             .text_size(metrics.size)
             .line_height(metrics.line_height)
             .font_weight(gpui::FontWeight::NORMAL)
@@ -671,105 +700,74 @@ impl LibraryPanel {
                     LibrarySort::Oldest,
                     LibrarySort::Name,
                 ] {
-                    menu = menu.child(
-                        Self::menu_row(
-                            theme::menu_item(
-                                SharedString::from(format!(
-                                    "library-sort-{}",
-                                    sort.key()
-                                )),
-                                self.t(sort.key()),
-                                false,
-                                &t,
-                                cx.listener(move |panel, _, _, cx| {
-                                    panel.model.sort = sort;
-                                    panel.popup = None;
-                                    cx.notify();
-                                }),
-                            ),
-                            t,
-                        )
-                        .gap(px(8.))
-                        .child(div().w(px(16.)).when(
-                            sort == self.model.sort,
-                            |mark| {
-                                mark.child(theme::icons::check().size(px(14.)))
-                            },
-                        ))
-                        .child(self.t(sort.key())),
-                    );
+                    let label = self.t(sort.key());
+                    let check = div()
+                        .size(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(sort == self.model.sort, |mark| {
+                            mark.child(theme::icons::check().size(px(14.)))
+                        });
+                    menu = menu.child(Self::sort_menu_row(
+                        SharedString::from(format!(
+                            "library-sort-{}",
+                            sort.key()
+                        )),
+                        label,
+                        check,
+                        t,
+                        cx.listener(move |panel, _, _, cx| {
+                            panel.model.sort = sort;
+                            panel.popup = None;
+                            cx.notify();
+                        }),
+                    ));
                 }
                 ("library-sort-menu", SharedString::from("library-sort"))
             }
             Popup::Item(id) => {
-                let preview_id = id.clone();
-                let rename_id = id.clone();
-                let remove_id = id.clone();
+                let favorite_label = if self.model.is_favorite(id) {
+                    self.t("library.favorite.remove")
+                } else {
+                    self.t("library.favorite.add")
+                };
+                let favorite_id = id.clone();
                 menu = menu
-                    .child(
-                        Self::menu_row(
-                            theme::menu_item(
-                                "library-menu-preview",
-                                self.t("library.preview"),
-                                false,
-                                &t,
-                                cx.listener(move |panel, _, _, cx| {
-                                    panel.preview = Some(preview_id.clone());
-                                    panel.popup = None;
-                                    cx.notify();
-                                }),
-                            ),
-                            t,
-                        )
-                        .child(self.t("library.preview")),
-                    )
-                    .child(
-                        Self::menu_row(
-                            theme::menu_item(
-                                "library-menu-rename",
-                                self.t("library.rename"),
-                                false,
-                                &t,
-                                cx.listener(move |panel, _, _, cx| {
-                                    if let Some(item) = panel
-                                        .model
-                                        .items
-                                        .iter()
-                                        .find(|item| item.id == rename_id)
-                                    {
-                                        let title = item.title.clone();
-                                        panel.rename.update(cx, |state, cx| {
-                                            state.emplace(&title, cx);
-                                        });
-                                        panel.renaming =
-                                            Some(rename_id.clone());
-                                    }
-                                    panel.popup = None;
-                                    cx.notify();
-                                }),
-                            ),
-                            t,
-                        )
-                        .child(self.t("library.rename")),
-                    )
-                    .child(
-                        Self::menu_row(
-                            theme::menu_item(
-                                "library-menu-remove",
-                                self.t("library.remove"),
-                                false,
-                                &t,
-                                cx.listener(move |panel, _, _, cx| {
-                                    panel.model.remove(&remove_id);
-                                    panel.popup = None;
-                                    cx.notify();
-                                }),
-                            ),
-                            t,
-                        )
-                        .text_color(t.danger())
-                        .child(self.t("library.remove")),
-                    );
+                    .w(px(205.))
+                    .rounded(px(14.))
+                    .child(Self::action_menu_row(
+                        "library-menu-download",
+                        self.t("library.download"),
+                        theme::icons::download().size(px(16.)),
+                        t,
+                        cx.listener(|panel, _, _, cx| {
+                            panel.popup = None;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(div().mx(px(8.)).my(px(2.)).h(px(1.)).bg(t.line()))
+                    .child(Self::action_menu_row(
+                        "library-menu-locate-task",
+                        self.t("library.locate_task"),
+                        theme::icons::external_link().size(px(16.)),
+                        t,
+                        cx.listener(|panel, _, _, cx| {
+                            panel.popup = None;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(Self::action_menu_row(
+                        "library-menu-favorite",
+                        favorite_label,
+                        theme::icons::star().size(px(16.)),
+                        t,
+                        cx.listener(move |panel, _, _, cx| {
+                            let _ = panel.model.toggle_favorite(&favorite_id);
+                            panel.popup = None;
+                            cx.notify();
+                        }),
+                    ));
                 (
                     "library-item-menu",
                     SharedString::from(format!("library-more-{id}")),
@@ -1181,7 +1179,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sort_and_item_menu_preview_close_through_escape(
+    fn item_menu_actions_toggle_favorites_and_escape_closes_menu(
         cx: &mut TestAppContext,
     ) {
         let (host, cx) = cx.add_window_view(|_, cx| LibraryHarness::new(cx));
@@ -1200,18 +1198,35 @@ mod tests {
         activate(cx, "Sort", accesskit::Role::Button);
         activate(cx, "Newest first", accesskit::Role::MenuItem);
         activate(cx, "More actions", accesskit::Role::Button);
+        let item_labels = cx.update(|window, _| {
+            let tree = window.a11y_tree().expect("library accessibility tree");
+            tree.nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.role() == accesskit::Role::MenuItem)
+                        .then(|| node.label().map(str::to_owned))
+                        .flatten()
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            item_labels,
+            ["Download", "Locate in task", "Add to favorites"]
+        );
         cx.read_entity(&panel, |panel, _| {
             assert!(matches!(panel.popup, Some(Popup::Item(_))));
         });
-        activate(cx, "Preview", accesskit::Role::MenuItem);
+        activate(cx, "Add to favorites", accesskit::Role::MenuItem);
         cx.read_entity(&panel, |panel, cx| {
-            assert_eq!(panel.preview.as_deref(), Some("1104-byd-presentation"));
+            assert!(panel.model.is_favorite("1104-byd-presentation"));
             assert!(panel.popup.is_none());
-            assert!(panel.ui.overlays.read(cx).modal_active());
+            assert!(!panel.ui.overlays.read(cx).modal_active());
         });
-        press(cx, "escape");
+        activate(cx, "More actions", accesskit::Role::Button);
+        activate(cx, "Remove from favorites", accesskit::Role::MenuItem);
         cx.read_entity(&panel, |panel, cx| {
-            assert!(panel.preview.is_none());
+            assert!(!panel.model.is_favorite("1104-byd-presentation"));
+            assert!(panel.popup.is_none());
             assert!(!panel.ui.overlays.read(cx).modal_active());
         });
         activate(cx, "Sort", accesskit::Role::Button);

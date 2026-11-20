@@ -125,7 +125,7 @@ impl ResolvedTheme {
         rgb(if self.dark { 0x00ad_ada8 } else { 0x0073_7373 })
     }
     pub fn library_selected(self) -> Rgba {
-        rgb(if self.dark { 0x0036_3632 } else { 0x00e9_e9e8 })
+        rgb(if self.dark { 0x0036_3632 } else { 0x00f0_f0ef })
     }
     /// File-type colors are identity marks, not action states.
     pub fn library_image(self) -> Rgba {
@@ -590,6 +590,27 @@ mod reference_tests {
         assert_eq!(light.placeholder(), rgb(0x00a9_a9a9));
         assert_eq!(light.toolbar_icon(), rgb(0x005c_5c5c));
         assert_ne!(light.tab_selected(), light.ink());
+    }
+
+    #[test]
+    fn library_item_hover_matches_the_reference() {
+        let light = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Light,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_eq!(light.library_selected(), rgb(0x00f0_f0ef));
+
+        let dark = ResolvedTheme::resolve(
+            ThemeOptions {
+                mode: ThemeMode::Dark,
+                ..ThemeOptions::default()
+            },
+            false,
+        );
+        assert_eq!(dark.library_selected(), rgb(0x0036_3632));
     }
 
     #[test]

@@ -68,7 +68,9 @@ where
     let anchor = SharedString::from(format!("{id}-anchor"));
     let shown = {
         let state = state.read(cx);
-        (state.hovered || focus.is_focused(window)) && !state.dismissed
+        let keyboard_focus =
+            focus.is_focused(window) && window.last_input_was_keyboard();
+        (state.hovered || keyboard_focus) && !state.dismissed
     };
     let trigger = crate::anchor_trigger(
         trigger
@@ -77,7 +79,9 @@ where
             .aria_description(text.clone())
             .on_hover(move |value, window, cx| {
                 hovered.update(cx, |state, cx| {
-                    if *value && !state.hovered && !state.focused {
+                    let keyboard_focus =
+                        state.focused && window.last_input_was_keyboard();
+                    if *value && !state.hovered && !keyboard_focus {
                         state.dismissed = false;
                     }
                     state.hovered = *value;
@@ -171,6 +175,44 @@ mod tests {
         }
     }
 
+    fn tooltip_visible(cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(Window::simulate_next_frame);
+        cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.draw(cx).clear(cx);
+            window
+                .a11y_tree()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::Tooltip)
+        })
+    }
+
+    #[gpui::test]
+    fn pointer_leaving_the_trigger_dismisses_tooltip_after_click(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, cx) = cx.add_window_view(|_, cx| Harness {
+            ui: UiContext::new(crate::ThemeOptions::default(), false, cx),
+        });
+        assert!(!tooltip_visible(cx));
+        let trigger = gpui::point(gpui::px(94.), gpui::px(94.));
+        let outside = gpui::point(gpui::px(40.), gpui::px(40.));
+        let modifiers = gpui::Modifiers::default();
+        cx.simulate_mouse_move(trigger, None, modifiers);
+        assert!(tooltip_visible(cx));
+        cx.simulate_mouse_move(outside, None, modifiers);
+        assert!(!tooltip_visible(cx));
+
+        cx.simulate_mouse_move(trigger, None, modifiers);
+        cx.simulate_mouse_down(trigger, gpui::MouseButton::Left, modifiers);
+        cx.simulate_mouse_up(trigger, gpui::MouseButton::Left, modifiers);
+        assert!(tooltip_visible(cx));
+        cx.simulate_mouse_move(outside, None, modifiers);
+        assert!(!tooltip_visible(cx), "a click must not pin the tooltip");
+    }
+
     #[gpui::test]
     fn keyboard_focus_reveals_tooltip_and_escape_dismisses_it(
         cx: &mut TestAppContext,
@@ -182,19 +224,6 @@ mod tests {
         let (_, cx) = cx.add_window_view(|_, cx| Harness {
             ui: UiContext::new(crate::ThemeOptions::default(), false, cx),
         });
-        let tooltip_visible = |cx: &mut gpui::VisualTestContext| {
-            cx.update(Window::simulate_next_frame);
-            cx.update(|window, cx| {
-                window.set_a11y_forced(true);
-                window.draw(cx).clear(cx);
-                window
-                    .a11y_tree()
-                    .unwrap()
-                    .nodes
-                    .iter()
-                    .any(|(_, node)| node.role() == Role::Tooltip)
-            })
-        };
         assert!(!tooltip_visible(cx));
         let press = |cx: &mut gpui::VisualTestContext, key: &str| {
             let keystroke = gpui::Keystroke::parse(key).unwrap();
