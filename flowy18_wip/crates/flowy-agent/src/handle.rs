@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowy_agent_core::{
     Engine, EngineConfig, LoopOutcome, ModelRoute, RunError, SessionRecord,
-    TurnObserver, TurnState, complete_text, echo_stream_fn,
+    TurnObserver, TurnState, complete_text, echo_stream_fn, log_preview,
     tools::{
         ToolGuard, ToolRegistry, pi_shell_definition, register_builtin_tools,
     },
@@ -583,13 +583,39 @@ impl AgentHandle {
         let receipt = id.clone();
         self.inner.runtime.spawn(async move {
             let outcome = turn.await;
-            tracing::debug!(
-                target: "flowy.prompt",
-                stage = "AgentHandle::submit_message",
-                session = %id,
-                ok = outcome.is_ok(),
-                "turn finished"
-            );
+            match &outcome {
+                Ok(LoopOutcome::Completed) => {
+                    tracing::debug!(
+                        target: "flowy.prompt",
+                        stage = "AgentHandle::submit_message",
+                        session = %id,
+                        ok = true,
+                        "turn finished"
+                    );
+                }
+                Ok(loop_outcome) => {
+                    tracing::warn!(
+                        target: "flowy.prompt",
+                        stage = "AgentHandle::submit_message",
+                        session = %id,
+                        ok = false,
+                        ?loop_outcome,
+                        prompt_preview = %log_preview(&prompt, 200),
+                        "turn finished"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "flowy.prompt",
+                        stage = "AgentHandle::submit_message",
+                        session = %id,
+                        ok = false,
+                        error = %error,
+                        prompt_preview = %log_preview(&prompt, 200),
+                        "turn finished"
+                    );
+                }
+            }
             if matches!(outcome, Ok(LoopOutcome::Completed))
                 && let Some(signal) = title_signal
             {

@@ -469,6 +469,22 @@ impl Engine {
                     .rev()
                     .find(|message| message.role == Role::Assistant)
                     .map_or_default(Message::text);
+                if result.outcome == LoopOutcome::Failed {
+                    let error = result
+                        .error
+                        .as_deref()
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or(final_text.as_str());
+                    tracing::warn!(
+                        target: "flowy.prompt",
+                        stage = "Engine::run_prepared",
+                        session = %session_id,
+                        error = %crate::loop_runner::log_preview(error, 500),
+                        prompt_preview = %crate::loop_runner::log_preview(prompt, 200),
+                        new_messages = result.messages.len(),
+                        "turn failed"
+                    );
+                }
                 if !final_text.is_empty() {
                     self.observer.assistant_text(session_id, &final_text);
                 }
@@ -480,8 +496,13 @@ impl Engine {
                 }) {
                     new_messages.remove(0);
                 }
+                let error = result.error.clone().or_else(|| {
+                    (result.outcome == LoopOutcome::Failed
+                        && !final_text.is_empty())
+                        .then_some(final_text.clone())
+                });
                 record.messages.extend(new_messages);
-                record.status = status_for(result.outcome);
+                record.status = status_for(result.outcome, error.as_deref());
                 if inner.index.save(&self.root).is_err() {
                     self.observer.storage_error(session_id);
                 }
@@ -489,6 +510,14 @@ impl Engine {
                 Ok(result.outcome)
             }
             Err(message) => {
+                tracing::warn!(
+                    target: "flowy.prompt",
+                    stage = "Engine::run_prepared",
+                    session = %session_id,
+                    error = %crate::loop_runner::log_preview(&message, 500),
+                    prompt_preview = %crate::loop_runner::log_preview(prompt, 200),
+                    "turn failed"
+                );
                 record.status = TurnState::Error {
                     message: message.clone(),
                 };
@@ -536,12 +565,16 @@ fn build_tools(
         .collect()
 }
 
-fn status_for(outcome: LoopOutcome) -> TurnState {
+fn status_for(outcome: LoopOutcome, error: Option<&str>) -> TurnState {
     match outcome {
         LoopOutcome::Completed => TurnState::Completed,
         LoopOutcome::Aborted => TurnState::Stopped,
         LoopOutcome::Failed => TurnState::Error {
-            message: "model reported an error".into(),
+            message: error
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("model reported an error")
+                .to_owned(),
         },
     }
 }
@@ -577,6 +610,30 @@ impl AgentEmitter for EngineEmitter {
                         AssistantMessageEvent::ThinkingDelta { delta, .. },
                     ..
                 } => observer.reasoning(&session, &delta),
+                AgentEvent::MessageUpdate {
+                    assistant_message_event:
+                        AssistantMessageEvent::Error { error, reason, .. },
+                    ..
+                } => {
+                    let text: String = error
+                        .content
+                        .iter()
+                        .filter_map(|content| match content {
+                            rpi_ai::types::Content::Text(text) => {
+                                Some(text.text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    tracing::warn!(
+                        target: "flowy.prompt",
+                        stage = "EngineEmitter",
+                        session = %session,
+                        ?reason,
+                        error = %crate::loop_runner::log_preview(&text, 500),
+                        "assistant stream error"
+                    );
+                }
                 AgentEvent::ToolExecutionStart {
                     tool_call_id,
                     tool_name,

@@ -73,6 +73,20 @@ impl std::fmt::Debug for TurnRequest {
 pub struct TurnResult {
     pub messages: Vec<Message>,
     pub outcome: LoopOutcome,
+    /// Last assistant error text when [`LoopOutcome::Failed`].
+    pub error: Option<String>,
+}
+
+/// Truncate text for diagnostic logs (UTF-8 safe by character count).
+#[must_use]
+pub fn log_preview(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
 }
 
 /// Terminal state of one turn, derived from the last assistant message.
@@ -104,6 +118,7 @@ pub async fn run_turn(
         chars = request.prompt.chars().count(),
         "→ run_agent_loop"
     );
+    let prompt_preview = log_preview(&request.prompt, 200);
     let prompts = vec![AgentMessage::User(UserMessage::new(
         UserContent::Text(request.prompt),
         now_ms(),
@@ -152,15 +167,32 @@ pub async fn run_turn(
             .await
             .map_err(|error| error.to_string())?;
     let outcome = outcome_of(&new_messages);
+    let error = failure_detail(&new_messages);
     let messages = to_host_messages(&new_messages);
-    tracing::debug!(
-        target: "flowy.prompt",
-        stage = "run_turn",
-        ?outcome,
-        new_messages = messages.len(),
-        "done"
-    );
-    Ok(TurnResult { messages, outcome })
+    if outcome == LoopOutcome::Failed {
+        tracing::warn!(
+            target: "flowy.prompt",
+            stage = "run_turn",
+            ?outcome,
+            new_messages = messages.len(),
+            error = error.as_deref().unwrap_or(""),
+            prompt_preview = %prompt_preview,
+            "done"
+        );
+    } else {
+        tracing::debug!(
+            target: "flowy.prompt",
+            stage = "run_turn",
+            ?outcome,
+            new_messages = messages.len(),
+            "done"
+        );
+    }
+    Ok(TurnResult {
+        messages,
+        outcome,
+        error,
+    })
 }
 
 /// One-shot text completion with no tools or history, used for sidecar tasks
@@ -207,6 +239,33 @@ fn outcome_of(new_messages: &[AgentMessage]) -> LoopOutcome {
         Some(StopReason::Aborted) => LoopOutcome::Aborted,
         Some(_) | None => LoopOutcome::Completed,
     }
+}
+
+fn failure_detail(new_messages: &[AgentMessage]) -> Option<String> {
+    let last = new_messages.iter().rev().find_map(|message| match message {
+        AgentMessage::Assistant(assistant) => Some(assistant),
+        _ => None,
+    })?;
+    if last.stop_reason != StopReason::Error {
+        return None;
+    }
+    let text = assistant_plain_text(last);
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn assistant_plain_text(assistant: &AssistantMessage) -> String {
+    assistant
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            Content::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Convert stored messages to pi agent messages.
@@ -514,8 +573,8 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LoopOutcome, ModelRoute, TurnRequest, repair_tool_call_history,
-        run_turn, to_agent_message, to_host_messages,
+        LoopOutcome, ModelRoute, TurnRequest, log_preview,
+        repair_tool_call_history, run_turn, to_agent_message, to_host_messages,
     };
     use crate::types::{
         CancelToken, ContentBlock, Message, MessageSource, Role,
@@ -919,5 +978,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.outcome, LoopOutcome::Failed);
+        assert_eq!(result.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn log_preview_truncates_by_char_count() {
+        assert_eq!(log_preview("hi", 10), "hi");
+        assert_eq!(log_preview("abcdefghij", 5), "abcde…");
+        assert_eq!(log_preview("你好世界", 2), "你好…");
     }
 }
