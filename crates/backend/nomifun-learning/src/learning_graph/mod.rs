@@ -1154,6 +1154,21 @@ const REVIEW_PROVENANCE_ATTEMPTS: usize = 2;
 /// 次，二者都用尽才降级。外层 j03 预算与指纹早停不动。
 const REVIEW_TRANSPORT_ATTEMPTS: usize = 2;
 
+/// 传输重试退避间隔（rs4）：SSE 掉线等传输故障多为瞬时（故障窗口秒级重
+/// 叠），0s 瞬时重发大概率撞同一故障——传输臂 `continue` 重发前 sleep 本
+/// 常量（11-16 两次实录「首败→0s 重发即败→Degraded」的处方）。只挂传输
+/// 臂：契约违约臂有回包（模型侧问题），「瞬时」假设不成立，不加退避。
+/// cfg(test) 置 0——重试族 11 测零减速；生产恒 1.5s（编译期断言锁 >0）。
+#[cfg(not(test))]
+const REVIEW_TRANSPORT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1500);
+#[cfg(not(test))]
+const _: () = assert!(
+    REVIEW_TRANSPORT_RETRY_BACKOFF.as_nanos() > 0,
+    "生产构建传输重试退避必须为正"
+);
+#[cfg(test)]
+const REVIEW_TRANSPORT_RETRY_BACKOFF: std::time::Duration = std::time::Duration::ZERO;
+
 /// 评审系统提示词装配（k07 判据①两臂 + m3 挂号表臂 + m5 advice 范围条
 /// 款 + m9 碎片裁决臂）：挂号表开 = V2 框定措辞 + 按表核对程序句 + 表输
 /// 出契约段（V2 off 不改表臂——V1 并句把「随批铸名」算出处，与表的「批内
@@ -1796,6 +1811,9 @@ pub(crate) async fn concept_review(
                     feedback = format!(
                         "【评审调用失败重试】上一轮评审调用失败（{error}），没有收到回包——请完整重新评审本批"
                     );
+                    // rs4：重发前退避（瞬时传输故障窗口秒级重叠，0s 重发大
+                    // 概率撞同一故障）。只挂传输臂；契约违约臂有回包，不加。
+                    tokio::time::sleep(REVIEW_TRANSPORT_RETRY_BACKOFF).await;
                     continue;
                 }
                 tracing::warn!(
