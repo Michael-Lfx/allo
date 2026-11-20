@@ -2011,6 +2011,100 @@ pub(crate) async fn concept_review(
     unreachable!("review attempts loop always returns inside the body")
 }
 
+// ── rs5 R-b 病历回放缝（smoke review-replay 臂专用公开面）─────────────────
+
+/// 一次回放评审的公开投影（[`replay_concept_review`] 的返回面）：方向判定
+/// 只看 problems/degraded 两字段，机械读数随行透出——臂 readout 与夹具机械
+/// 面单测（Scripted 注入）共用这个形状，不回传 crate 内私有类型
+/// （`ReviewOutcome`/`NameFragment` 均为 `pub(crate)`）。
+#[derive(Debug, Clone)]
+pub struct ReplayReviewVerdict {
+    /// problems 的 issue 原文（reject 方向读数面：非空 = 打回）。
+    pub problems: Vec<String>,
+    /// findings 的 issue 原文（留痕读数面：评审缺席/归一/未处置片段）。
+    pub findings: Vec<String>,
+    /// 评审缺席降级信号（r01）：true = 本跑无有效评审结论（不计方向命中）。
+    pub degraded: bool,
+    /// 机械派生的点名清单词（term 原文，合并渲染口径去重保序）：夹具机械
+    /// 面断言（reject 夹具必含折叠名词、pass 夹具必须干净）与臂读数共用。
+    pub naming_terms: Vec<String>,
+    /// 挂号表机械校验读数 (rows, invalid, retried, degraded)。
+    pub provenance: (usize, usize, usize, bool),
+    /// 碎片裁决机械读数 (fragments, rows, unhandled, degraded)。
+    pub fragments: (usize, usize, usize, bool),
+}
+
+/// 录制批过真实评审的单缝回放（rs5 R-b）：[`concept_review`] 的公开薄封装
+/// ——评审语义零分叉（同函数/同开关/同机械核/同重试预算/同超时），点名清
+/// 单在此按生产同源派生（调用方装配的已知面 ∪ 仓库级基础用语；课程层快照
+/// 缺席 = 空课程词表，豁免面仅剩 base）。零 DB 依赖：登记表/已教账快照由
+/// 调用方折进 `known_names`（小写折叠，与生产 `provenance_known` 同一投影
+/// 面；生产里 [`GateOutcome::provenance_known`] 的装配单源在 gate_batch）。
+pub async fn replay_concept_review(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    batch: &ProposedBatch,
+    context: &CoachContext,
+    known_names: &[String],
+) -> Result<ReplayReviewVerdict, nomifun_common::AppError> {
+    let base = lexicon::parse_base().map_err(nomifun_common::AppError::Internal)?;
+    let course_lexicon = lexicon::course_lexicon_from_snapshot(None)
+        .map_err(nomifun_common::AppError::Internal)?;
+    let mut known: Vec<String> = known_names.to_vec();
+    known.extend(lexicon::grounded_words(&base, &course_lexicon));
+    // 课程语境词（u04 on 臂同缝）：目标文本切片进已知面——生产评审的已知面
+    // 同款（derive_naming_list 调用点 :3556 原样复用；off 臂函数自回空表）。
+    known.extend(crate::service::course_context_terms(&context.goal, &context.goal));
+    let naming = fragment_verdict::derive_naming_list(batch, &known, &course_lexicon);
+    // 点名清单读数（合并渲染口径去重保序）与生产 `merged_row_count` 同源：
+    // 同词跨源只记一词——臂读数与夹具机械面断言都按词看。
+    let mut naming_terms: Vec<String> = Vec::new();
+    for fragment in &naming {
+        if !naming_terms.iter().any(|term| term == &fragment.term) {
+            naming_terms.push(fragment.term.clone());
+        }
+    }
+    let outcome = concept_review(
+        completer,
+        model_override,
+        batch,
+        context,
+        "",
+        &known,
+        &naming,
+        crate::lexicon_enforce_enabled(),
+        &GateOutcome::default(),
+        "",
+    )
+    .await;
+    Ok(ReplayReviewVerdict {
+        problems: outcome
+            .problems
+            .into_iter()
+            .map(|problem| problem.issue)
+            .collect(),
+        findings: outcome
+            .findings
+            .into_iter()
+            .map(|finding| finding.issue)
+            .collect(),
+        degraded: outcome.degraded,
+        naming_terms,
+        provenance: (
+            outcome.provenance.rows,
+            outcome.provenance.invalid,
+            outcome.provenance.retried,
+            outcome.provenance.degraded,
+        ),
+        fragments: (
+            outcome.fragments.fragments,
+            outcome.fragments.rows,
+            outcome.fragments.unhandled,
+            outcome.fragments.degraded,
+        ),
+    })
+}
+
 /// Render the review problems for the redraft prompt.
 pub fn format_review_problems(problems: &[ReviewProblem]) -> String {
     problems

@@ -606,6 +606,11 @@ pub(crate) use crate::learning_graph::system_action::{
     SystemActionKind, SystemActionResult, SystemActionTrigger,
 };
 
+/// 课程语境词切片（u04 on 臂单源）：rs5 R-b 病历回放缝
+/// （`learning_graph::replay_concept_review`）生产同缝复用——评审已知面的
+/// 课程层增词与 `derive_naming_list` 调用点同一函数。
+pub(crate) use learning_graph::course_context_terms;
+
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档把判底/作答原文注册进
 /// `ArchivingCompleter` 时引用同一常量——占位文本单源。
 pub use open_judge::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
