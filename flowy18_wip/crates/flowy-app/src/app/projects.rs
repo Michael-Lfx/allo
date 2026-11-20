@@ -1,6 +1,6 @@
 use super::{FlowyApp, Section, state};
 use flowy_ui as theme;
-use gpui::{ColorExt, Context, Window, div, prelude::*, px};
+use gpui::{Context, Window, div, prelude::*, px};
 
 impl FlowyApp {
     pub(super) fn open_project_create(&mut self, cx: &mut Context<'_, Self>) {
