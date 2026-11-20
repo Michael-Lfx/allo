@@ -23,7 +23,9 @@ use flowy_agent_core::{
 use crate::config::LlmConfig;
 pub use crate::index::AgentWorkspace;
 use crate::index::{SessionIndex, SessionRecord as IndexRecord};
-use crate::projection::{ChatHistory, ChatLine, ChatProjection, TurnStatus};
+use crate::projection::{
+    ChatHistory, ChatLine, ChatProjection, FileChangeKind, TurnStatus,
+};
 use crate::title::{self, TITLE_MAX_CHARS};
 
 #[derive(Clone, Debug)]
@@ -61,6 +63,9 @@ struct Live {
 struct UiState {
     root: PathBuf,
     live: Mutex<HashMap<String, Live>>,
+    /// File-tool arguments held between `tool_start` and `tool_end`, keyed by
+    /// session and call id, so the change card never re-reads the file.
+    tool_args: Mutex<HashMap<String, serde_json::Value>>,
     active: Mutex<Option<String>>,
     workspace_for_new_sessions: Mutex<Option<AgentWorkspace>>,
     updates: Mutex<VecDeque<AgentUpdate>>,
@@ -73,6 +78,7 @@ impl UiState {
         Self {
             root,
             live: Mutex::new(HashMap::new()),
+            tool_args: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             workspace_for_new_sessions: Mutex::new(None),
             updates: Mutex::new(VecDeque::new()),
@@ -716,6 +722,12 @@ impl TurnObserver for UiObserver {
         name: &str,
         args: &serde_json::Value,
     ) {
+        // Only file-writing tools can produce a change row; keep their
+        // arguments until the call settles.
+        if matches!(name, "write_file" | "edit_file") {
+            lock(&self.state.tool_args)
+                .insert(tool_arg_key(session, call_id), args.clone());
+        }
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection
                 .push_tool_call(name, tool_target(args), call_id);
@@ -734,6 +746,18 @@ impl TurnObserver for UiObserver {
     ) {
         if let Some(live) = lock(&self.state.live).get_mut(session) {
             live.projection.finish_tool_call(call_id, text, is_error);
+            // Drop the cached arguments either way; a failed call leaves the
+            // file untouched, so only settled calls get a change row.
+            let change = take_file_change(&self.state.tool_args, session, call_id);
+            if !is_error && let Some(change) = change {
+                live.projection.push_file_change(
+                    change.path,
+                    change.kind,
+                    change.added,
+                    change.removed,
+                    change.binary,
+                );
+            }
             live.updated_at = now_ms();
         }
         self.state.stream_changed(session);
@@ -763,6 +787,9 @@ impl TurnObserver for UiObserver {
                 live.updated_at = now_ms();
             }
         }
+        // Interrupted turns can leave cached tool arguments behind.
+        lock(&self.state.tool_args)
+            .retain(|key, _| !key.starts_with(&format!("{session}\u{1}")));
         if persist_index(&self.state).is_err() {
             self.state.report_storage_error();
         }
@@ -1321,15 +1348,94 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Cache key for one tool call: call ids repeat across sessions.
+fn tool_arg_key(session: &str, call_id: &str) -> String {
+    format!("{session}\u{1}{call_id}")
+}
+
+struct FileChangeDraft {
+    path: String,
+    kind: FileChangeKind,
+    added: u32,
+    removed: u32,
+    binary: bool,
+}
+
+/// Build the change row from the tool arguments, then drop them.
+fn take_file_change(
+    args: &Mutex<HashMap<String, serde_json::Value>>,
+    session: &str,
+    call_id: &str,
+) -> Option<FileChangeDraft> {
+    let value = lock(args).remove(&tool_arg_key(session, call_id))?;
+    let path = value.get("path")?.as_str()?.to_owned();
+    if let (Some(old), Some(new)) = (
+        value.get("old_string").and_then(|v| v.as_str()),
+        value.get("new_string").and_then(|v| v.as_str()),
+    ) {
+        let binary = is_binary(old) || is_binary(new);
+        let (added, removed) = if binary {
+            (0, 0)
+        } else {
+            line_delta(old, new)
+        };
+        return Some(FileChangeDraft {
+            path,
+            kind: FileChangeKind::Update,
+            added,
+            removed,
+            binary,
+        });
+    }
+    // `write_file` replaces the whole file, so the previous content is not in
+    // the arguments; the card reports the written size and no removals.
+    let content = value.get("content")?.as_str()?;
+    let binary = is_binary(content);
+    Some(FileChangeDraft {
+        path,
+        kind: FileChangeKind::Add,
+        added: if binary {
+            0
+        } else {
+            content.lines().count() as u32
+        },
+        removed: 0,
+        binary,
+    })
+}
+
+/// Content carrying a NUL byte is not text; counting its lines is meaningless.
+fn is_binary(text: &str) -> bool {
+    text.as_bytes().contains(&0)
+}
+
+/// Added and removed line counts for one change; the card only needs a size.
+fn line_delta(old: &str, new: &str) -> (u32, u32) {
+    use similar::{ChangeTag, TextDiff};
+    let mut added = 0u32;
+    let mut removed = 0u32;
+    for change in TextDiff::from_lines(old, new).iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Insert => added += 1,
+            ChangeTag::Delete => removed += 1,
+            ChangeTag::Equal => {}
+        }
+    }
+    (added, removed)
+}
+
 #[cfg(test)]
 mod guard_tests {
     use super::{
         AgentWorkspace, confined_to, path_guard, session_working_directory,
-        tool_registry,
+        take_file_change, tool_arg_key, tool_registry,
     };
+    use crate::projection::FileChangeKind;
     use flowy_agent_core::types::ToolCallArgs;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::path::Path;
+    use std::sync::Mutex;
 
     fn args(name: &str, arguments: serde_json::Value) -> ToolCallArgs {
         ToolCallArgs {
@@ -1389,5 +1495,41 @@ mod guard_tests {
             session_working_directory(root, None),
             root.join("sessions").join("cwd"),
         );
+    }
+
+    #[test]
+    fn file_change_counts_changed_lines_for_edits() {
+        let args = Mutex::new(HashMap::new());
+        args.lock()
+            .expect("lock")
+            .insert(
+                tool_arg_key("s", "c1"),
+                json!({
+                    "path": "src/a.rs",
+                    "old_string": "a\nb\nc",
+                    "new_string": "a\nB\nc",
+                }),
+            );
+        let edit = take_file_change(&args, "s", "c1").expect("edit change");
+        assert_eq!(edit.path, "src/a.rs");
+        assert_eq!(edit.kind, FileChangeKind::Update);
+        assert_eq!((edit.added, edit.removed), (1, 1));
+        assert!(!edit.binary);
+        // The cached arguments are dropped once the row is built.
+        assert!(take_file_change(&args, "s", "c1").is_none());
+    }
+
+    #[test]
+    fn file_change_reports_only_additions_for_whole_file_writes() {
+        let args = Mutex::new(HashMap::new());
+        args.lock()
+            .expect("lock")
+            .insert(
+                tool_arg_key("s", "c2"),
+                json!({ "path": "new.md", "content": "one\ntwo\n" }),
+            );
+        let write = take_file_change(&args, "s", "c2").expect("write change");
+        assert_eq!(write.kind, FileChangeKind::Add);
+        assert_eq!((write.added, write.removed), (2, 0));
     }
 }
