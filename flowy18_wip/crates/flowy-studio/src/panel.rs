@@ -1,14 +1,18 @@
 use crate::composer::{ChatComposer, ComposerEvent};
-use crate::feed::{ChatFeed, OpenTask, RevealFile, WorkingIndicator};
+use crate::deliverables::PreviewBody;
+use crate::feed::{
+    ChatFeed, OpenDeliverables, OpenTask, RevealFile, WorkingIndicator,
+};
+use crate::starter::catalog::Category;
 use flowy_agent::{
-    AgentHandle, AgentWorkspace, LlmConfig, Model, Plan, ProviderCatalog,
+    AgentHandle, AgentWorkspace, FileEntry, LlmConfig, Model, Plan,
+    ProviderCatalog,
 };
 use flowy_core::DocumentSession;
 use flowy_i18n::I18n;
 use flowy_ui::{ResolvedTheme, UiContext};
 use gpui::{
-    Context, Entity, EventEmitter, IntoElement, ParentElement, Render, Styled,
-    Task, Window, div, prelude::*,
+    Context, Entity, EventEmitter, IntoElement, Task, Window, prelude::*,
 };
 use gpui_ce_elements::editable_text::{
     EditableTextState, StringStorage, TextChanged,
@@ -110,6 +114,7 @@ pub struct StudioPanel {
     _composer_sub: gpui::Subscription,
     _feed_sub: gpui::Subscription,
     _reveal_sub: gpui::Subscription,
+    _deliverables_sub: gpui::Subscription,
     submission: Option<u128>,
     pub(crate) working: Entity<WorkingIndicator>,
     pub(crate) status: flowy_agent::TurnStatus,
@@ -140,10 +145,16 @@ pub struct StudioPanel {
     pub surface: StudioSurface,
     pub notice: Option<&'static str>,
     /// Starter copy held back until the user confirms replacing the draft.
-    pub(crate) pending_starter: Option<String>,
-    /// Draft text at the moment a starter was queued; editing away from it
-    /// cancels the replacement.
-    pending_snapshot: String,
+    /// Category whose examples the home stage shows.
+    pub(crate) starter_category: Category,
+    /// Files the deliverables drawer lists; `None` keeps it closed.
+    pub(crate) deliverables: Option<Vec<FileEntry>>,
+    /// Path being previewed inside the drawer.
+    pub(crate) preview_file: Option<String>,
+    /// Loaded once when the file is picked, so rendering never touches disk.
+    pub(crate) preview_body: Option<PreviewBody>,
+    /// Composer drafts keyed by session, so switching tasks does not leak text.
+    drafts: std::collections::HashMap<String, String>,
     _prompt_sub: gpui::Subscription,
     pump: Option<Task<()>>,
 }
@@ -189,18 +200,8 @@ impl StudioPanel {
         let prompt =
             cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
         let prompt_sub =
-            cx.subscribe(&prompt, |panel, prompt, _: &TextChanged, cx| {
+            cx.subscribe(&prompt, |panel, _, _: &TextChanged, cx| {
                 panel.submission = None;
-                // Editing the draft invalidates a queued starter replacement.
-                // The event trails the edit, so compare against the draft that
-                // was current when the starter was queued instead of clearing
-                // unconditionally.
-                if panel.pending_starter.is_some() {
-                    let current = prompt.read(cx).as_str().to_owned();
-                    if current != panel.pending_snapshot {
-                        panel.pending_starter = None;
-                    }
-                }
                 if panel.surface != StudioSurface::Chat {
                     cx.notify();
                 }
@@ -256,6 +257,10 @@ impl StudioPanel {
         let reveal_sub = cx.subscribe(&feed, |panel, _, event: &RevealFile, cx| {
             panel.reveal_file(&event.0, cx);
         });
+        let deliverables_sub =
+            cx.subscribe(&feed, |panel, _, event: &OpenDeliverables, cx| {
+                panel.open_deliverables(event.0.clone(), cx);
+            });
         let composer = cx.new(|cx| {
             ChatComposer::new(
                 ui.clone(),
@@ -312,6 +317,7 @@ impl StudioPanel {
             _composer_sub: composer_sub,
             _feed_sub: feed_sub,
             _reveal_sub: reveal_sub,
+            _deliverables_sub: deliverables_sub,
             submission: None,
             working,
             status,
@@ -342,8 +348,11 @@ impl StudioPanel {
             product,
             surface,
             notice: initial_notice,
-            pending_starter: None,
-            pending_snapshot: String::new(),
+            starter_category: Category::Website,
+            deliverables: None,
+            preview_file: None,
+            preview_body: None,
+            drafts: std::collections::HashMap::new(),
             _prompt_sub: prompt_sub,
             pump: None,
         };
@@ -586,8 +595,16 @@ impl StudioPanel {
     }
 
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
+        // The draft belongs to the session being left; keep it there.
+        if let Some(current) = self.agent.active_session_id() {
+            let draft = self.prompt.read(cx).as_str().to_owned();
+            self.drafts.insert(current, draft);
+        }
         match self.agent.select_session(id) {
             Ok(()) => {
+                // Restore whatever this session had typed before.
+                let draft = self.drafts.get(id).cloned().unwrap_or_default();
+                self.fill_prompt(&draft, cx);
                 let workspace = self.agent.active_workspace();
                 self.active_project_id =
                     workspace.as_ref().map(|value| value.project_id.clone());
@@ -697,38 +714,59 @@ impl StudioPanel {
         self.fill_prompt(&text, cx);
     }
 
-    /// Fills the prompt from a starter, asking first if a draft would be lost.
+    /// Fills the prompt from a starter. Picking one means "show me this
+    /// prompt", so an existing draft is replaced without asking.
     pub(crate) fn request_fill_prompt(
         &mut self,
         text: String,
         cx: &mut Context<'_, Self>,
     ) {
-        let draft_empty = self.prompt.read(cx).as_str().trim().is_empty();
-        if draft_empty {
-            self.pending_starter = None;
-            self.fill_prompt(&text, cx);
+        self.fill_prompt(&text, cx);
+    }
+
+    /// Switches which category's examples the home stage shows.
+    pub(crate) fn set_starter_category(
+        &mut self,
+        category: Category,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.starter_category == category {
             return;
         }
-        self.pending_snapshot = self.prompt.read(cx).as_str().to_owned();
-        self.pending_starter = Some(text);
+        self.starter_category = category;
         cx.notify();
     }
 
-    pub(crate) fn confirm_pending_starter(
+    pub(crate) fn starter_category(&self) -> Category {
+        self.starter_category
+    }
+    pub(crate) fn open_deliverables(
         &mut self,
+        files: Vec<FileEntry>,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(text) = self.pending_starter.take() {
-            self.fill_prompt(&text, cx);
-        }
+        self.deliverables = Some(files);
+        self.preview_file = None;
         cx.notify();
     }
 
-    pub(crate) fn cancel_pending_starter(
+    pub(crate) fn close_deliverables(&mut self, cx: &mut Context<'_, Self>) {
+        self.deliverables = None;
+        self.preview_file = None;
+        self.preview_body = None;
+        cx.notify();
+    }
+
+    /// Picks a file to preview; `None` returns the drawer to the list.
+    pub(crate) fn set_preview_file(
         &mut self,
+        path: Option<String>,
         cx: &mut Context<'_, Self>,
     ) {
-        self.pending_starter = None;
+        self.preview_body = path
+            .as_deref()
+            .map(crate::deliverables::load_preview);
+        self.preview_file = path;
         cx.notify();
     }
 
@@ -895,31 +933,6 @@ impl StudioPanel {
         }
     }
 
-    pub(crate) fn ideas_entry(
-        &self,
-        cx: &Context<'_, Self>,
-    ) -> impl IntoElement {
-        flowy_ui::interactive(
-            "studio-ideas",
-            self.t("gallery.browse"),
-            &self.theme,
-        )
-        .px(self.theme.space(16.))
-        .py(self.theme.space(12.))
-        .rounded_xl()
-        .bg(self.theme.soft())
-        .cursor_pointer()
-        .child(
-            div()
-                .text_sm()
-                .text_color(self.theme.muted())
-                .child(self.t("gallery.browse")),
-        )
-        .on_click(cx.listener(|_panel, _, _, cx| {
-            cx.emit(StudioEvent::OpenIdeas);
-            cx.notify();
-        }))
-    }
 }
 
 impl Render for StudioPanel {

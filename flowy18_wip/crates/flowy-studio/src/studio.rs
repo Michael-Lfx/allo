@@ -38,7 +38,16 @@ impl crate::panel::StudioPanel {
             );
         }
         column = if self.surface == crate::panel::StudioSurface::Home {
-            column.child(self.studio(cx))
+            column.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.studio(cx))
+                    .when_some(self.deliverables.as_ref(), |row, _| {
+                        row.child(self.deliverables_drawer(cx))
+                    }),
+            )
         } else if self.surface == crate::panel::StudioSurface::Chat {
             column.child(self.chat_canvas(cx))
         } else if self.surface == crate::panel::StudioSurface::Automation {
@@ -470,38 +479,32 @@ impl crate::panel::StudioPanel {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .justify_center()
             .child(
                 div()
-                    .min_h(gpui::relative(1.))
+                    .w_full()
                     .flex()
                     .flex_col()
-                    .justify_center()
                     .py(self.theme.space(32.))
                     .gap(self.theme.space(12.))
+                    // Each block centres itself; a parent `items_center`
+                    // would collapse `w_full` children to their content.
                     .child(
                         div()
-                            .id("home-goal")
-                            .role(gpui::Role::Heading)
-                            .aria_level(1)
-                            .aria_label(self.t("home.title"))
-                            .px(self.theme.space(32.))
-                            .text_center()
-                            .text_size(px(36.))
-                            .child(self.t("home.title")),
-                    )
-                    .child(self.starter_section(cx))
-                    .when(self.pending_starter.is_some(), |column| {
-                        column.child(self.starter_confirm_row(cx))
-                    })
-                    .child(self.composer.clone())
-                    .child(
-                        div()
+                            .w_full()
                             .flex()
-                            .flex_wrap()
                             .justify_center()
-                            .items_center()
-                            .gap(self.theme.space(8.))
-                            .child(self.ideas_entry(cx)),
+                            .child(self.starter_section(cx)),
+                    )
+                    .child(
+                        div().w_full().flex().justify_center().child(
+                            div()
+                                .w_full()
+                                .max_w(px(880.))
+                                .child(self.composer.clone()),
+                        ),
                     ),
             )
     }
