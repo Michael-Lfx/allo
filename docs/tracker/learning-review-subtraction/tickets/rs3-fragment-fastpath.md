@@ -2,7 +2,7 @@
 id: rs3
 title: 吸收 learnhub #213/#218——正向快路机械出口 + p01 散文出口退役
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: map.md
@@ -68,3 +68,27 @@ part_of: map.md
 - **回退条件（负优化判定）**：真机再现「该打回的登记缺口被快路/范围外
   放行」（缺口自我复制形态）或好批被误判名词打回的翻案环回升 → 回退
   p1 出口或收窄快路词集，换法重立。
+
+## Resolution
+
+已施工收口（2026-11-20，implement-spec 波 Wave2）。
+
+- **落地**（wave/rs3 37ec6adeb，并入 feat/learn1116 merge 0920d905e）：
+  2 文件 +331/−21。`check_out_of_scope_row` 三条件前置**正向快路**
+  （term 逐字命中本批教出名集→无条件放行；集外落原三条件、语义逐字
+  节一致）；p01 散文出口整段退役（噪声回归纯切词/元语言义）；范围外
+  扩义 (a)∪(b) + #218 未来提及边界句（上游逐字平移）；机械核措辞改
+  「快路先行，快路不中且三条不满足任一=无效」。词表零改动。
+- **偏离 R-a 一处（已核安全）**：教出名集在上游三源外多收铸名别名
+  （allo `ConceptMint.aliases` 为上游所无；与服务面 `provenance_known`
+  本批提名臂口径对齐）——别名仍是「本批要教什么」的机械可证声明，
+  快路只收紧的越界词进不来。
+- **TDD 红绿**：快路/契约断言先红后绿；夹具③三角形折叠（reject 方向
+  钉）+④59k 呓语（parse-fail→死因重试恰一次→救回、Degraded 不触发）
+  随票落地（rs5 R-a 后半）。退役钉含 `!contains("声明面正向提及且
+  出处已覆盖")`。
+- **检查**：基线（合并树起步）1022/0 → 完工全量
+  `cargo test -p nomifun-learning` **1029 passed / 0 failed**
+  （396.92s，恰好 +7 只增不减）；fmt 过；零 AI 署名。
+- **并后 A/B（回退判定的读数，挂真机）**：双臂对照 reject 不翻转、
+  fragments 读数 unhandled 不升、噪声↓范围外↑分布迁移符合预期。
