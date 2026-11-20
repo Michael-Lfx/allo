@@ -801,6 +801,19 @@ impl LessonDraft {
                     );
                 }
                 self.section_manifest = Some(sections);
+                // sr1：整组替换的真语义——清单外键的已写正文一并驱逐。重排
+                // 换键（返工轮换名重规划）若不清孤儿，发布会把新旧两套节一
+                // 并落库（9 节重复课时页实锤：G1-R 真实课程重生臂）。「已写
+                // 正文按 key 保留」只属于幸存键（上方循环已搬运 planned）。
+                let manifest_keys: std::collections::HashSet<&str> = self
+                    .section_manifest
+                    .as_ref()
+                    .expect("manifest just set")
+                    .iter()
+                    .map(|section| section.section_key.as_str())
+                    .collect();
+                self.section_bodies
+                    .retain(|key, _| manifest_keys.contains(key.as_str()));
                 // 超容自报（k03）：只收下非空自报；开关 off 时按缺席处理
                 // （旧行为）——形状条款零内容拦截，恶劣值裁 None 不退稿。
                 self.capacity_note = if est_budget_enabled() {
@@ -1020,6 +1033,14 @@ impl LessonDraft {
             .section_bodies
             .iter()
             .filter_map(|(key, (body, planned))| {
+                // sr1 防御纵深：只产出清单内键——孤儿正文即便因未来回归残
+                // 留于 section_bodies，也进不了发布面。
+                let in_manifest = self.section_manifest.as_ref().is_some_and(|manifest| {
+                    manifest.iter().any(|item| &item.section_key == key)
+                });
+                if !in_manifest {
+                    return None;
+                }
                 planned.as_ref().map(|planned| crate::models::SectionPack {
                     section_key: key.clone(),
                     kind: planned.kind,
@@ -2728,6 +2749,93 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == "visual_none_heavy"));
+    }
+
+    /// sr1：manifest 重排真整组替换——被放弃键的已写正文机械驱逐，孤儿不
+    /// 进发布面；幸存键的「已写正文按 key 保留」语义原样（G1-R 真实课程
+    /// 重生臂 9 节重复课时页实锤的回归钉）。
+    #[test]
+    fn manifest_replan_evicts_orphan_bodies_and_sections_follow_manifest() {
+        let mut draft = LessonDraft::new(context());
+        let prose =
+            "这是一个足够长的概念讲解正文段落，用于通过节级质检门的文字下限要求。".repeat(6);
+        let concept_body = |heading: &str| {
+            format!(
+                "## {heading}\n\n```mermaid\nflowchart TD\nA[本金] -->|计息| B[本息]\n```\n\n{prose}"
+            )
+        };
+        // 首排：s1 概念 + s2 练习；s1 写正文。
+        draft
+            .apply_ops(vec![LessonOp::SetSectionManifest {
+                sections: vec![
+                    manifest_pack("s1", SectionKind::Concept, "流程图"),
+                    manifest_pack("s2", SectionKind::Practice, "无"),
+                ],
+                capacity_note: None,
+            }])
+            .accepted
+            .into_iter()
+            .next()
+            .expect("manifest accepted");
+        draft.apply_ops(vec![LessonOp::SetSectionBody {
+            section_key: "s1".into(),
+            body: concept_body("t-s1"),
+        }]);
+        assert!(
+            draft.section_bodies.contains_key("s1"),
+            "s1 正文过可视化门落库（测试自身的红绿前提）"
+        );
+
+        // 重排换键名：sA 概念 + s2 练习——s1 被放弃。
+        draft
+            .apply_ops(vec![LessonOp::SetSectionManifest {
+                sections: vec![
+                    manifest_pack("sA", SectionKind::Concept, "流程图"),
+                    manifest_pack("s2", SectionKind::Practice, "无"),
+                ],
+                capacity_note: None,
+            }])
+            .accepted
+            .into_iter()
+            .next()
+            .expect("replan accepted");
+
+        // 被放弃键 s1 的正文被驱逐；清单内键不受影响。
+        assert!(
+            !draft.section_bodies.contains_key("s1"),
+            "被放弃键 s1 的已写正文被整组替换驱逐"
+        );
+        assert!(draft.section_bodies.len() <= 2, "无清单外残留");
+        // 孤儿不进发布面（此刻清单内仅 sA 已写正文）。
+        let sections = draft.sections();
+        assert!(
+            sections.iter().all(|section| section.section_key != "s1"),
+            "s1 孤儿不进发布面"
+        );
+
+        // 幸存键 s2 语义原样 + 新键 sA 写正文后发布 = 清单序 [sA, s2]。
+        draft.apply_ops(vec![LessonOp::SetSectionBody {
+            section_key: "sA".into(),
+            body: concept_body("t-sA"),
+        }]);
+        let s2_report = draft.apply_ops(vec![LessonOp::SetSectionBody {
+            section_key: "s2".into(),
+            body: "## t-s2\n\n练习节只写能力目标与作答引导，不超过两百五十字的正文字数上限要求；作答前先圈出每个值，再逐值写依据。".into(),
+        }]);
+        assert!(
+            s2_report.rejected.is_empty(),
+            "s2 正文被拒: {:?}",
+            s2_report.rejected
+        );
+        let sections = draft.sections();
+        assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.section_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sA", "s2"],
+            "发布节集合=清单数且顺序=清单序"
+        );
     }
 
     /// ── k03：est 时长预算行 + 超容自报 capacity_note ──
