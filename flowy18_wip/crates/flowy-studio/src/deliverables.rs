@@ -16,7 +16,7 @@ use gpui::{
 use crate::panel::StudioPanel;
 
 /// Reading more than this on the UI path would stall the frame.
-const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 
 /// What the drawer shows for the selected file.
 pub(crate) enum PreviewBody {
