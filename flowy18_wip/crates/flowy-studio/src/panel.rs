@@ -595,16 +595,19 @@ impl StudioPanel {
     }
 
     pub fn open_session(&mut self, id: &str, cx: &mut Context<'_, Self>) {
-        // The draft belongs to the session being left; keep it there.
-        if let Some(current) = self.agent.active_session_id() {
+        // Reopening the current session must not round-trip its own draft.
+        let same = self.agent.active_session_id().as_deref() == Some(id);
+        if !same && let Some(current) = self.agent.active_session_id() {
             let draft = self.prompt.read(cx).as_str().to_owned();
             self.drafts.insert(current, draft);
         }
         match self.agent.select_session(id) {
             Ok(()) => {
-                // Restore whatever this session had typed before.
-                let draft = self.drafts.get(id).cloned().unwrap_or_default();
-                self.fill_prompt(&draft, cx);
+                if !same {
+                    // Restore whatever this session had typed before.
+                    let draft = self.drafts.get(id).cloned().unwrap_or_default();
+                    self.fill_prompt(&draft, cx);
+                }
                 let workspace = self.agent.active_workspace();
                 self.active_project_id =
                     workspace.as_ref().map(|value| value.project_id.clone());
