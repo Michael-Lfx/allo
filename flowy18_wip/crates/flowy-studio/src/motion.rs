@@ -68,6 +68,22 @@ fn axis(t: f32, p1: f32, p2: f32) -> f32 {
     3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t
 }
 
+/// Holds the curve at 0 for the first `share` of the run, then plays it. This
+/// is how siblings stagger: GPUI's [`gpui::Animation`] has no delay field.
+pub(crate) fn delayed(
+    share: f32,
+    ease: impl Fn(f32) -> f32 + 'static,
+) -> impl Fn(f32) -> f32 + 'static {
+    let share = share.clamp(0.0, 0.9);
+    move |t| {
+        if t <= share {
+            0.0
+        } else {
+            ease((t - share) / (1.0 - share))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FAST, MODERATE, SLOW, cubic_bezier, entrance, exit, standard};

@@ -13,31 +13,57 @@ use crate::panel::StudioPanel;
 use catalog::{Category, Starter};
 use flowy_ui as theme;
 use gpui::{
-    Animation, AnimationExt, Context, IntoElement, ObjectFit, SharedString, div,
-    prelude::*, px,
+    Animation, AnimationExt, Context, IntoElement, ObjectFit, SharedString,
+    Window, div, prelude::*, px,
 };
 
 /// Width of the whole stage, shared by the slogan, the chips and the cards.
 const STAGE_W: f32 = 880.;
-const COVER_H: f32 = 132.;
+const COVER_H: f32 = 150.;
 
 impl StudioPanel {
     /// Slogan, category chips and the current category's four examples.
-    pub fn starter_section(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    pub fn starter_section(
+        &self,
+        window: &Window,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        // The stage shrinks with the window instead of overflowing it; the
+        // sidebar and its gutters are reserved first.
+        let stage_w = (window.viewport_size().width - px(300.))
+            .min(px(STAGE_W))
+            .max(px(320.));
         let category = self.starter_category();
         let title = self.t("home.title");
-        let mut strip = div()
-            .w_full()
-            .flex()
-            .flex_wrap()
-            .gap(self.theme.space(12.));
+        let gap = self.theme.space(12.);
+        // Narrow screens show fewer cards and scroll sideways instead of
+        // wrapping, so more examples can be added without a layout change.
+        let visible = if stage_w >= px(760.) {
+            4.0
+        } else if stage_w >= px(560.) {
+            3.0
+        } else {
+            2.0
+        };
+        let card_w = (stage_w - gap * (visible - 1.0)) / visible;
+        let mut row = div().flex().gap(gap).flex_none();
         for (index, starter) in category.examples().iter().enumerate() {
-            strip = strip.child(self.example_card(starter, index as u64, cx));
+            row = row.child(self.example_card(
+                starter,
+                index as u64,
+                category,
+                card_w,
+                cx,
+            ));
         }
+        let strip = div()
+            .id("home-starters-row")
+            .w_full()
+            .overflow_x_scroll()
+            .child(row);
         div()
             .id("home-starters")
-            .w_full()
-            .max_w(px(STAGE_W))
+            .w(stage_w)
             .flex()
             .flex_col()
             .items_center()
@@ -48,28 +74,13 @@ impl StudioPanel {
                     .role(gpui::Role::Heading)
                     .aria_level(1)
                     .aria_label(title.clone())
+                    .w_full()
                     .text_2xl()
                     .text_center()
                     .child(title),
             )
             .child(self.category_chips(cx))
-            .child(
-                strip
-                    .with_animation(
-                        // Keyed by category so switching replays the entrance.
-                        ("home-starter-cards", category as u32 as u64),
-                        Animation::new(crate::motion::MODERATE)
-                            .with_easing(crate::motion::entrance()),
-                        |strip, delta| {
-                            // Movement carries the motion; the fade alone was
-                            // invisible on the dark surface.
-                            strip.opacity(delta).relative().top(px(
-                                crate::motion::ENTER_OFFSET * (1.0 - delta),
-                            ))
-                        },
-                    )
-                    .into_any_element(),
-            )
+            .child(strip)
     }
 
     fn category_chips(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -123,24 +134,27 @@ impl StudioPanel {
         &self,
         starter: &Starter,
         index: u64,
+        category: Category,
+        card_w: gpui::Pixels,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let title = self.t(starter.title_key);
         let prompt = self.t(starter.prompt_key);
         let cover = starter.cover();
+        // Cards arrive one after another: each holds its curve slightly longer
+        // than the previous one, so the row reads as a sequence.
+        let delay = index as f32 * 0.07;
         theme::interactive(
             ("home-starter-example", index),
             SharedString::from(title.clone()),
             &self.theme,
         )
-        .flex_1()
+        .w(card_w)
         // Below this the card becomes unreadable, so wrap instead of squeezing.
         .min_w(px(180.))
         .flex()
         .flex_col()
         .rounded_xl()
-        .border_1()
-        .border_color(self.theme.line())
         .bg(self.theme.card())
         .overflow_hidden()
         .hover(|style| style.bg(self.theme.soft()))
@@ -170,6 +184,21 @@ impl StudioPanel {
             // Picking previews the prompt; it never sends.
             panel.request_fill_prompt(prompt.clone(), cx);
         }))
+        .with_animation(
+            // Keyed by category so a switcher replays the stagger.
+            (
+                "home-starter-card",
+                category as u32 as u64 * 8 + index,
+            ),
+            Animation::new(crate::motion::MODERATE).with_easing(
+                crate::motion::delayed(delay, crate::motion::entrance()),
+            ),
+            move |card, delta| {
+                card.opacity(delta)
+                    .relative()
+                    .top(px(crate::motion::ENTER_OFFSET * (1.0 - delta)))
+            },
+        )
     }
 }
 
