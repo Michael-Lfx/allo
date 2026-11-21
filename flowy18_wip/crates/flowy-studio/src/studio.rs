@@ -43,7 +43,7 @@ impl crate::panel::StudioPanel {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.studio(cx))
+                    .child(self.studio(window, cx))
                     .when_some(self.deliverables.as_ref(), |row, _| {
                         row.child(self.deliverables_drawer(cx))
                     }),
@@ -473,7 +473,11 @@ impl crate::panel::StudioPanel {
         card
     }
 
-    fn studio(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+    fn studio(&self, window: &Window, cx: &Context<'_, Self>) -> impl IntoElement {
+        // Same budget the starter stage uses, so both columns stay aligned.
+        let stage_w = (window.viewport_size().width - px(300.))
+            .min(px(880.))
+            .max(px(320.));
         div()
             .id("studio-scroll")
             .flex_1()
@@ -481,13 +485,13 @@ impl crate::panel::StudioPanel {
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .justify_center()
             .child(
                 div()
                     .w_full()
                     .flex()
                     .flex_col()
-                    .py(self.theme.space(32.))
+                    .pt(self.theme.space(96.))
+                    .pb(self.theme.space(32.))
                     .gap(self.theme.space(12.))
                     // Each block centres itself; a parent `items_center`
                     // would collapse `w_full` children to their content.
@@ -496,13 +500,12 @@ impl crate::panel::StudioPanel {
                             .w_full()
                             .flex()
                             .justify_center()
-                            .child(self.starter_section(cx)),
+                            .child(self.starter_section(window, cx)),
                     )
                     .child(
                         div().w_full().flex().justify_center().child(
                             div()
-                                .w_full()
-                                .max_w(px(880.))
+                                .w(stage_w)
                                 .child(self.composer.clone()),
                         ),
                     ),

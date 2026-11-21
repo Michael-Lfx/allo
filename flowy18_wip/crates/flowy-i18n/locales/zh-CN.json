@@ -665,7 +665,6 @@
   "home.starter.data.script.prompt": "为当前工作区里的数据写一个统计脚本，跑出结果并说明如何复现。先确认数据格式，再选脚本语言；没有解释器时改用现有工具。",
   "home.starter.replace_hint": "输入框里已有内容，是否替换？",
   "home.starter.replace": "替换",
-  "home.starter.pick_category": "选一个方向开始",
   "chat.file_changes": "{count} 个文件",
   "chat.deliverables": "交付物",
   "chat.close": "关闭",
