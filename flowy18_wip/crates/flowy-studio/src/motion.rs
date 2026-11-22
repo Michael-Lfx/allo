@@ -84,6 +84,13 @@ pub(crate) fn delayed(
     }
 }
 
+/// Delay share for the `index`-th sibling, expressed in milliseconds against
+/// the run's total so callers do not hand-tune fractions.
+pub(crate) fn stagger(index: u64, step_ms: u64, total: Duration) -> f32 {
+    let delay = index as f32 * step_ms as f32;
+    (delay / total.as_millis().max(1) as f32).min(0.75)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FAST, MODERATE, SLOW, cubic_bezier, entrance, exit, standard};

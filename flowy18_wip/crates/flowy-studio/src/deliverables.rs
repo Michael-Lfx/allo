@@ -9,8 +9,8 @@ use std::sync::Arc;
 use flowy_agent::FileEntry;
 use flowy_ui as theme;
 use gpui::{
-    Context, Image, ImageFormat, IntoElement, SharedString, div, img, prelude::*,
-    px,
+    Animation, AnimationExt, Context, Image, ImageFormat, IntoElement,
+    SharedString, div, img, prelude::*, px,
 };
 
 use crate::panel::StudioPanel;
@@ -118,6 +118,19 @@ impl StudioPanel {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(body),
+            )
+            .with_animation(
+                // The drawer travels in from the edge. Closing removes it at
+                // once, which reads as a dismiss rather than a broken exit.
+                "deliverables-drawer",
+                Animation::new(crate::motion::SLOW)
+                    .with_easing(crate::motion::entrance()),
+                |drawer, delta| {
+                    drawer
+                        .opacity(delta)
+                        .relative()
+                        .left(px(18. * (1.0 - delta)))
+                },
             )
     }
 
