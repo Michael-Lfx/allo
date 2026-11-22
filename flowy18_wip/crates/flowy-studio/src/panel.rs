@@ -573,6 +573,9 @@ impl StudioPanel {
         match self.agent.clear_active() {
             Ok(()) => {
                 self.surface = StudioSurface::Home;
+                // A fresh task starts at the first card, not wherever the last
+                // row happened to be scrolled to.
+                self.starter_offset = 0.;
                 self.refresh_chat(cx);
                 self.emit_notice(None, cx);
                 self.prompt.update(cx, |state, cx| state.emplace("", cx));
