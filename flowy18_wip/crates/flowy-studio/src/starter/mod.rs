@@ -176,7 +176,7 @@ impl StudioPanel {
         chip = if selected {
             // Teal marks the selected intent. It is used as ink, not as a
             // background: white on teal fails the contrast check in flowy-ui.
-            chip.bg(soft).text_color(gpui::rgb(0x002d_d4bf))
+            chip.bg(soft).text_color(self.theme.starter_ink())
         } else {
             chip.text_color(self.theme.muted())
                 .hover(move |style| style.bg(soft))
@@ -235,7 +235,7 @@ impl StudioPanel {
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
                 .text_sm()
-                .bg(gpui::rgba(0x9F00_0000))
+                .bg(self.theme.scrim())
                 .child(title),
         )
         .on_click(cx.listener(move |panel, _, _, cx| {
