@@ -671,5 +671,6 @@
   "chat.back": "Back",
   "chat.preview_missing": "The file is missing or unreadable",
   "chat.preview_too_large": "Larger than 1MB, cannot preview",
-  "chat.preview_binary": "Binary file, cannot preview"
+  "chat.preview_binary": "Binary file, cannot preview",
+  "chat.no_deliverables": "No files changed this turn"
 }

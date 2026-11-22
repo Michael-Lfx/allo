@@ -351,6 +351,28 @@ impl ChatFeed {
         }
     }
 
+    /// The most recent turn that changed files, for the drawer toggle.
+    /// Old sessions only carry the single-file row, so both shapes count.
+    pub(crate) fn latest_deliverables(&self) -> Option<Vec<flowy_agent::FileEntry>> {
+        self.lines.iter().rev().find_map(|line| match line {
+            ChatLine::FileChanges { files } => Some(files.clone()),
+            ChatLine::FileChange {
+                path,
+                change,
+                added,
+                removed,
+                binary,
+            } => Some(vec![flowy_agent::FileEntry {
+                path: path.clone(),
+                change: *change,
+                added: *added,
+                removed: *removed,
+                binary: *binary,
+            }]),
+            _ => None,
+        })
+    }
+
     pub(crate) fn sync_i18n(&mut self, i18n: I18n, cx: &mut Context<'_, Self>) {
         self.i18n = i18n;
         self.list.remeasure_items(0..self.lines.len());

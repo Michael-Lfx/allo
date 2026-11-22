@@ -37,24 +37,27 @@ impl crate::panel::StudioPanel {
                     .child(message),
             );
         }
-        column = if self.surface == crate::panel::StudioSurface::Home {
-            column.child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.studio(window, cx))
-                    .when_some(self.deliverables.as_ref(), |row, _| {
-                        row.child(self.deliverables_drawer(cx))
-                    }),
-            )
+        // The drawer sits beside whichever surface is showing, so it works in
+        // the conversation too, not just on the home stage.
+        let content = if self.surface == crate::panel::StudioSurface::Home {
+            self.studio(window, cx).into_any_element()
         } else if self.surface == crate::panel::StudioSurface::Chat {
-            column.child(self.chat_canvas(cx))
+            self.chat_canvas(cx).into_any_element()
         } else if self.surface == crate::panel::StudioSurface::Automation {
-            column.child(self.automation_canvas(cx))
+            self.automation_canvas(cx).into_any_element()
         } else {
-            column.child(self.section_page())
+            self.section_page().into_any_element()
         };
+        column = column.child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .child(content)
+                .when_some(self.deliverables.as_ref(), |row, _| {
+                    row.child(self.deliverables_drawer(cx))
+                }),
+        );
         if self.model_info_open && !self.model_menu_open && chrome {
             column = column.child(theme::popover(
                 "model-info",
@@ -350,6 +353,25 @@ impl crate::panel::StudioPanel {
                     .flex()
                     .items_center()
                     .gap(self.theme.space(12.))
+                    .when(
+                        self.surface == crate::panel::StudioSurface::Chat,
+                        |row| {
+                            row.child(
+                                theme::Button::new(
+                                    "deliverables",
+                                    self.t("chat.deliverables"),
+                                )
+                                .variant(theme::ControlVariant::Ghost)
+                                .size(theme::ControlSize::Small)
+                                .render(
+                                    &self.theme,
+                                    cx.listener(|panel, _, _, cx| {
+                                        panel.toggle_deliverables(cx);
+                                    }),
+                                ),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .text_sm()
@@ -474,13 +496,12 @@ impl crate::panel::StudioPanel {
     }
 
     fn studio(&self, window: &Window, cx: &Context<'_, Self>) -> impl IntoElement {
-        // Same budget the starter stage uses, so both columns stay aligned.
-        let stage_w = (window.viewport_size().width - px(300.))
-            .min(px(880.))
-            .max(px(320.));
+        // The width is left to flex: this column takes whatever the drawer
+        // leaves, so an open drawer shrinks it without any pixel math.
         div()
             .id("studio-scroll")
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
             .flex()
@@ -488,6 +509,7 @@ impl crate::panel::StudioPanel {
             .child(
                 div()
                     .w_full()
+                    .flex_1()
                     .flex()
                     .flex_col()
                     .pt(self.theme.space(96.))
@@ -505,7 +527,8 @@ impl crate::panel::StudioPanel {
                     .child(
                         div().w_full().flex().justify_center().child(
                             div()
-                                .w(stage_w)
+                                .w_full()
+                                .max_w(px(880.))
                                 .child(self.composer.clone()),
                         ),
                     ),

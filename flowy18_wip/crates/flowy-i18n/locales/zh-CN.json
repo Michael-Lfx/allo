@@ -671,5 +671,6 @@
   "chat.back": "返回",
   "chat.preview_missing": "文件不存在或无法读取",
   "chat.preview_too_large": "文件超过 1MB，无法预览",
-  "chat.preview_binary": "二进制文件，无法预览"
+  "chat.preview_binary": "二进制文件，无法预览",
+  "chat.no_deliverables": "这一轮还没有改动文件"
 }
