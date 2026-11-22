@@ -147,6 +147,10 @@ pub struct StudioPanel {
     /// Starter copy held back until the user confirms replacing the draft.
     /// Category whose examples the home stage shows.
     pub(crate) starter_category: Category,
+    /// Horizontal offset of the example row in logical pixels, 0 or negative.
+    /// Owned here because `ScrollHandle::max_offset` stays 0 until the node has
+    /// been laid out, which made arrow presses clamp straight back to zero.
+    pub(crate) starter_offset: f32,
     /// Files the deliverables drawer lists; `None` keeps it closed.
     pub(crate) deliverables: Option<Vec<FileEntry>>,
     /// Path being previewed inside the drawer.
@@ -212,11 +216,9 @@ impl StudioPanel {
             "→ AgentHandle::with_config"
         );
         let agent = AgentHandle::with_config(store_root.clone(), llm);
-        let surface = if agent.has_messages() {
-            StudioSurface::Chat
-        } else {
-            StudioSurface::Home
-        };
+        // Startup always lands on a fresh task. The previous conversation stays
+        // in the sidebar and is reopened on purpose, not by launching.
+        let surface = StudioSurface::Home;
         tracing::debug!(
             target: "flowy.boot",
             stage = "StudioPanel::new",
@@ -349,6 +351,7 @@ impl StudioPanel {
             surface,
             notice: initial_notice,
             starter_category: Category::Website,
+            starter_offset: 0.,
             deliverables: None,
             preview_file: None,
             preview_body: None,
@@ -751,6 +754,24 @@ impl StudioPanel {
         self.deliverables = Some(files);
         self.preview_file = None;
         cx.notify();
+    }
+
+    /// Horizontal space the deliverables drawer takes from the content area.
+    pub(crate) fn drawer_width(&self) -> f32 {
+        if self.deliverables.is_some() { 360. } else { 0. }
+    }
+
+    /// Opens the drawer with the latest turn's files, or closes it if open.
+    pub(crate) fn toggle_deliverables(&mut self, cx: &mut Context<'_, Self>) {
+        if self.deliverables.is_some() {
+            self.close_deliverables(cx);
+            return;
+        }
+        let files = self.feed.read(cx).latest_deliverables();
+        match files {
+            Some(files) => self.open_deliverables(files, cx),
+            None => self.emit_notice(Some("chat.no_deliverables"), cx),
+        }
     }
 
     pub(crate) fn close_deliverables(&mut self, cx: &mut Context<'_, Self>) {
