@@ -42,7 +42,10 @@ if ($null -eq $windowsLinker) {
     exit 1
 }
 
-$linkerPath = "link.exe"
+# An absolute path, not a bare `link.exe`: on machines where MSYS's
+# /usr/bin precedes MSVC on PATH, a bare name resolves to the coreutils hard
+# link helper and every rustc link fails with LNK1104 / exit 1104.
+$linkerPath = $windowsLinker.Source
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linkerPath
 $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linkerPath
 
