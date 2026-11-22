@@ -19,51 +19,67 @@ use gpui::{
 
 /// Width of the whole stage, shared by the slogan, the chips and the cards.
 const STAGE_W: f32 = 880.;
-const COVER_H: f32 = 150.;
+/// Card height. One value: alternating heights made the row look misaligned.
+const CARD_H: f32 = 170.;
+/// Cards grow above this width and refuse to shrink below it, so a narrow
+/// window scrolls instead of squeezing them into unreadable slivers.
+const CARD_MIN_W: f32 = 180.;
 
 impl StudioPanel {
     /// Slogan, category chips and the current category's four examples.
     pub fn starter_section(
         &self,
-        window: &Window,
+        _window: &Window,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
-        // The stage shrinks with the window instead of overflowing it; the
-        // sidebar and its gutters are reserved first.
-        let stage_w = (window.viewport_size().width - px(300.))
-            .min(px(STAGE_W))
-            .max(px(320.));
+        let gap = self.theme.space(12.);
         let category = self.starter_category();
         let title = self.t("home.title");
-        let gap = self.theme.space(12.);
-        // Narrow screens show fewer cards and scroll sideways instead of
-        // wrapping, so more examples can be added without a layout change.
-        let visible = if stage_w >= px(760.) {
-            4.0
-        } else if stage_w >= px(560.) {
-            3.0
-        } else {
-            2.0
-        };
-        let card_w = (stage_w - gap * (visible - 1.0)) / visible;
+        // One row, never wrapping: the row keeps its natural width and the host
+        // above scrolls, so a narrow window shows fewer cards instead of
+        // stacking them.
         let mut row = div().flex().gap(gap).flex_none();
         for (index, starter) in category.examples().iter().enumerate() {
             row = row.child(self.example_card(
                 starter,
                 index as u64,
                 category,
-                card_w,
                 cx,
             ));
         }
+        // One row, never wrapping. The offset is owned by the panel rather than
+        // a `ScrollHandle`: GPUI leaves `max_offset` at zero until the node has
+        // been laid out, and `set_offset` then clamps every press back to zero.
+        let total =
+            category.examples().len() as f32 * (CARD_MIN_W + 40. + 12.) - 12.;
+        let max_scroll = (total - STAGE_W).max(0.);
+        let offset = self.starter_offset.clamp(-max_scroll, 0.);
         let strip = div()
             .id("home-starters-row")
             .w_full()
-            .overflow_x_scroll()
-            .child(row);
+            .overflow_hidden()
+            .child(row.relative().left(px(offset)));
+        let show_prev = offset < -0.5;
+        let show_next = offset > -max_scroll + 0.5;
+        let mut rail = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(self.theme.space(8.));
+        if show_prev {
+            rail = rail.child(self.carousel_arrow(-1, max_scroll, cx));
+        }
+        rail = rail.child(div().flex_1().min_w_0().child(strip));
+        if show_next {
+            rail = rail.child(self.carousel_arrow(1, max_scroll, cx));
+        }
         div()
             .id("home-starters")
-            .w(stage_w)
+            // `w_full` collapses inside a centred flex row; `flex_1` takes the
+            // width from the parent, which is what makes the row responsive.
+            .flex_1()
+            .min_w_0()
+            .max_w(px(STAGE_W))
             .flex()
             .flex_col()
             .items_center()
@@ -80,7 +96,45 @@ impl StudioPanel {
                     .child(title),
             )
             .child(self.category_chips(cx))
-            .child(strip)
+            .child(rail)
+    }
+
+    /// One circular carousel arrow. Callers only render it when it can act.
+    fn carousel_arrow(
+        &self,
+        direction: i32,
+        max_scroll: f32,
+        cx: &Context<'_, Self>,
+    ) -> impl IntoElement {
+        let icon = if direction < 0 {
+            theme::icons::chevron_left()
+        } else {
+            theme::icons::chevron_right()
+        };
+        theme::interactive(
+            ("home-carousel", if direction < 0 { 0u64 } else { 1 }),
+            SharedString::from(if direction < 0 { "previous" } else { "next" }),
+            &self.theme,
+        )
+        .w(px(30.))
+        .h(px(30.))
+        .rounded_full()
+        .border_1()
+        .border_color(self.theme.line())
+        .bg(self.theme.card())
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .child(icon)
+        .on_click(cx.listener(move |panel, _, _, cx| {
+            // Offset grows negative when moving right; clamp against the known
+            // content width so the row never scrolls past its own end.
+            let step = if direction < 0 { 660. } else { -660. };
+            panel.starter_offset =
+                (panel.starter_offset + step).clamp(-max_scroll, 0.);
+            cx.notify();
+        }))
     }
 
     fn category_chips(&self, cx: &Context<'_, Self>) -> impl IntoElement {
@@ -120,7 +174,9 @@ impl StudioPanel {
         );
         let soft = self.theme.soft();
         chip = if selected {
-            chip.bg(soft).text_color(self.theme.accent())
+            // Teal marks the selected intent. It is used as ink, not as a
+            // background: white on teal fails the contrast check in flowy-ui.
+            chip.bg(soft).text_color(gpui::rgb(0x002d_d4bf))
         } else {
             chip.text_color(self.theme.muted())
                 .hover(move |style| style.bg(soft))
@@ -135,49 +191,51 @@ impl StudioPanel {
         starter: &Starter,
         index: u64,
         category: Category,
-        card_w: gpui::Pixels,
         cx: &Context<'_, Self>,
     ) -> impl IntoElement {
         let title = self.t(starter.title_key);
         let prompt = self.t(starter.prompt_key);
         let cover = starter.cover();
+        // Uniform height: alternating heights read as a misaligned row.
+        let height = CARD_H;
         // Cards arrive one after another: each holds its curve slightly longer
         // than the previous one, so the row reads as a sequence.
-        let delay = index as f32 * 0.07;
+        let delay = crate::motion::stagger(
+            index,
+            24,
+            crate::motion::MODERATE,
+        );
         theme::interactive(
             ("home-starter-example", index),
             SharedString::from(title.clone()),
             &self.theme,
         )
-        .w(card_w)
+        .w(px(CARD_MIN_W + 40.))
+        .h(px(height))
         // Below this the card becomes unreadable, so wrap instead of squeezing.
         .min_w(px(180.))
         .flex()
         .flex_col()
         .rounded_xl()
-        .bg(self.theme.card())
+        .bg(self.theme.soft())
         .overflow_hidden()
-        .hover(|style| style.bg(self.theme.soft()))
         .child(
-            // Media sits flush against the rounded top, so it carries the
-            // corner itself (GPUI clips rectangles, not curves).
+            // The cover takes the remaining height; the band below darkens
+            // the image edge and carries the title.
             div()
                 .w_full()
-                .h(px(COVER_H))
-                .rounded_t_xl()
+                .flex_1()
+                .min_h_0()
                 .overflow_hidden()
-                .child(
-                    cover
-                        .w_full()
-                        .h(px(COVER_H))
-                        .object_fit(ObjectFit::Cover),
-                ),
+                .child(cover.w_full().h_full().object_fit(ObjectFit::Cover)),
         )
         .child(
             div()
+                .w_full()
                 .px(self.theme.space(10.))
                 .py(self.theme.space(8.))
                 .text_sm()
+                .bg(gpui::rgba(0x9F00_0000))
                 .child(title),
         )
         .on_click(cx.listener(move |panel, _, _, cx| {
