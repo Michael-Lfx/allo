@@ -762,11 +762,6 @@ impl StudioPanel {
         cx.notify();
     }
 
-    /// Horizontal space the deliverables drawer takes from the content area.
-    pub(crate) fn drawer_width(&self) -> f32 {
-        if self.deliverables.is_some() { 360. } else { 0. }
-    }
-
     /// Opens the drawer with the latest turn's files, or closes it if open.
     pub(crate) fn toggle_deliverables(&mut self, cx: &mut Context<'_, Self>) {
         if self.deliverables.is_some() {
