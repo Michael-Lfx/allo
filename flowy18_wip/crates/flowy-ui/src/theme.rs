@@ -265,6 +265,11 @@ impl ResolvedTheme {
             Accent::Purple => rgb(0x006b_46c1),
         }
     }
+    /// Teal used as ink, never as a fill: white on teal fails the contrast
+    /// check, so the selected starter chip tints its label instead of its box.
+    pub fn starter_ink(self) -> Rgba {
+        rgb(0x002d_d4bf)
+    }
     /// Discrete spacing recipe. Arbitrary values are snapped to the nearest defined step.
     pub fn space(self, base: f32) -> Pixels {
         const STEPS: [f32; 9] = [2., 4., 8., 12., 16., 24., 32., 48., 64.];

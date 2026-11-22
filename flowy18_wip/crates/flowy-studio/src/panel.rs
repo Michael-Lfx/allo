@@ -740,6 +740,9 @@ impl StudioPanel {
             return;
         }
         self.starter_category = category;
+        // Each category is a different row; carrying the old offset over would
+        // open the new one mid-scroll, potentially past its own end.
+        self.starter_offset = 0.;
         cx.notify();
     }
 
